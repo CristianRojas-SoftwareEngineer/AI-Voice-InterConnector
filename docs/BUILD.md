@@ -263,7 +263,7 @@ segundos: el step valida con `grep -qx '  - default'` (bash) / `-notmatch
 Queda **manual** (requiere modelo, audio real y hardware por SO): `doctor`,
 `setup` y una síntesis real (`speak`). La validación end-to-end de los
 instaladores por SO es por diseño **externa al pipeline** (consume mucha
-cuota del runner al cargar el modelo Chatterbox y los ~2 GB de pesos en cada
+cuota del runner al cargar el modelo Chatterbox y los ~4 GB de pesos en cada
 build): Windows la realiza el propietario sobre su equipo local; Linux y macOS
 dependen de feedback de usuarios reales que prueben la instalación y
 ejecución. El smoke test automatizado en CI cubre la parte proporcional a

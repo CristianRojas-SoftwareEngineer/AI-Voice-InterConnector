@@ -70,9 +70,9 @@ def emit_json(payload: dict) -> None:
 
 
 # Umbral mínimo de espacio libre en disco para descargar el modelo en 'setup'.
-# El language pack + Voice Encoder ocupan varios cientos de MB; 2 GB deja margen
-# para la descarga, la descompresión y la caché temporal de HuggingFace.
-MIN_FREE_DISK_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+# El language pack + Voice Encoder ocupan ~4 GB medidos en caché; 6 GB deja
+# margen para los .incomplete de la descarga y la caché temporal de HuggingFace.
+MIN_FREE_DISK_BYTES = 6 * 1024 * 1024 * 1024  # 6 GB
 
 # RAM recomendada para una síntesis fluida (chequeo advisory de 'doctor').
 # Por debajo de este umbral la inferencia en CPU funciona pero puede paginar en
@@ -1432,9 +1432,9 @@ def cmd_setup(args):
             _emit_setup_json(already_cached=True, downloaded=False)
             return
 
-        # Pre-chequeo de espacio en disco antes de descargar: el modelo
-        # pesa varios cientos de MB; con menos de 2 GB libres la descarga puede
-        # fallar a medias y dejar una caché truncada. Se aborta antes de empezar.
+        # Pre-chequeo de espacio en disco antes de descargar: el modelo pesa
+        # ~4 GB; por debajo de MIN_FREE_DISK_BYTES la descarga puede fallar a
+        # medias y dejar una caché truncada. Se aborta antes de empezar.
         # disk_usage exige una ruta existente: en una máquina limpia la caché aún
         # no existe, así que se sube al primer ancestro presente.
         import shutil
@@ -1446,7 +1446,7 @@ def cmd_setup(args):
             free_gb = free / (1024 ** 3)
             print(
                 f"[FAIL] Espacio en disco insuficiente: {free_gb:.1f} GB libres, "
-                "se requieren al menos 2 GB para descargar el modelo. "
+                f"se requieren al menos {MIN_FREE_DISK_BYTES // 1024 ** 3} GB para el modelo (~4 GB). "
                 "Libera espacio y reintenta 'tts-sidecar setup'.",
                 file=sys.stderr,
             )
@@ -1618,7 +1618,7 @@ def cmd_daemon(args):
         # el daemon (el .exe no puede ejecutar `python -m ...`).
         # Exige el modelo en caché antes de cargar el engine, igual que 'start':
         # sin este gate, 'daemon serve' sin 'setup' dispararía la red de seguridad
-        # del engine (descarga de cientos de MB). Las descargas son responsabilidad
+        # del engine (descarga de ~4 GB). Las descargas son responsabilidad
         # exclusiva de 'setup'.
         _require_model_cached("es-mx-latam")
         from .daemon.run import serve

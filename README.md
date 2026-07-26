@@ -172,7 +172,7 @@ proyectos open source) en una versión futura. Detalle paso a paso en
 
 ### Provisión del modelo (`setup`)
 
-El modelo de voz **`es-mx-latam`** (varios cientos de MB) **no** viene incluido en
+El modelo de voz **`es-mx-latam`** (~4 GB) **no** viene incluido en
 el ejecutable: se descarga una sola vez a la caché de HuggingFace de tu usuario
 (`~/.cache/huggingface/hub`). Esto es homólogo en los 3 SO:
 

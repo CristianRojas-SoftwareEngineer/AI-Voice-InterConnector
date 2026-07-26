@@ -119,7 +119,7 @@ comportamiento es el mismo.
 
 ## Primer uso: provisionar el modelo (`setup`)
 
-El modelo de voz `es-mx-latam` (varios cientos de MB) no viene incluido: se
+El modelo de voz `es-mx-latam` (~4 GB) no viene incluido: se
 descarga una sola vez a la caché de HuggingFace (`~/.cache/huggingface/hub` por
 defecto; si defines `HF_HOME` o `HF_HUB_CACHE`, se respeta esa ubicación)
 mediante el comando `setup`.
@@ -838,7 +838,7 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
 - **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
   funciona pero puede paginar (ralentizarse) en textos largos. `doctor` emite un
   `[WARN]` de RAM por debajo de 8 GB (no bloquea nada).
-- **Disco**: ~1 GB para el modelo descargado (`setup` aborta si hay menos de 2 GB
+- **Disco**: ~4 GB para el modelo descargado (`setup` aborta si hay menos de 6 GB
   libres). El bundle PyInstaller `--onedir` ocupa del orden de 1-2 GB adicionales
   sin comprimir (Windows/macOS y el AppImage `arm64` de Linux, que resuelven
   `torch` desde el lock universal); el AppImage `x86_64` de Linux es más liviano

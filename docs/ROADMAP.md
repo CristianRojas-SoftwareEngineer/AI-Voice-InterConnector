@@ -129,7 +129,7 @@ Toda rama respeta las mismas reglas:
       `%LOCALAPPDATA%\Programs\tts-sidecar`, borrado al final.
 
    El motivo no es solo simetría, sino **atomicidad ante fallos**: borrar primero
-   el residuo pesado e independiente (el modelo, ~2 GB) hace que una interrupción
+   el residuo pesado e independiente (el modelo, ~4 GB) hace que una interrupción
    a media desinstalación deje atrás solo el binario —barato y fácil de borrar a
    mano—, nunca gigabytes huérfanos. Windows **obliga** a este orden (no puede
    borrar su `.exe` en ejecución, ver su rama); Unix lo adopta por consistencia y

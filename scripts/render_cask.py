@@ -48,7 +48,7 @@ cask "{cask_name}" do
   ]
 
   caveats <<~EOS
-    El modelo de voz (es-mx-latam, varios cientos de MB) no viene incluido:
+    El modelo de voz (es-mx-latam, ~4 GB) no viene incluido:
     descargalo una sola vez con:
       tts-sidecar setup
 
