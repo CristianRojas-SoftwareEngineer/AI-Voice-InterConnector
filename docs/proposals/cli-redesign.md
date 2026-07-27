@@ -30,12 +30,6 @@
   - [2.11. `cleanup`, `setup` y `voice`](#211-cleanup-setup-y-voice)
   - [2.12. Contratos externos](#212-contratos-externos)
 - [3. El puente](#3-el-puente)
-  - [3.1. El orden y por qué](#31-el-orden-y-por-qué)
-  - [3.2. Movimiento 1 — limpieza](#32-movimiento-1--limpieza)
-  - [3.3. Movimiento 2 — el contrato de salida](#33-movimiento-2--el-contrato-de-salida)
-  - [3.4. Movimiento 3 — la feature](#34-movimiento-3--la-feature)
-  - [3.5. Puertas de verificación](#35-puertas-de-verificación)
-  - [3.6. Documentación pública](#36-documentación-pública)
 
 ---
 
@@ -802,30 +796,3 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 ## 3. El puente
 
-> ⏳ **Pendiente de redacción.** Cómo se llega del estado actual al objetivo, en tres movimientos.
->
-> ⚠️ **El índice que sigue es un placeholder, no el índice definitivo.** Esta sección se deriva de la sección 2 ya resuelta —la distancia entre el estado actual y el objetivo *es* el trabajo—, así que no puede tener forma antes que ella. Se **reestructura y reescribe entera** una vez cerrada la sección 2. Los títulos de abajo no comprometen nada.
-
-### 3.1. El orden y por qué
-
-> ⏳ **Pendiente de redacción.** El argumento de no-invertibilidad que fija el orden de los tres cortes.
-
-### 3.2. Movimiento 1 — limpieza
-
-> ⏳ **Pendiente de redacción.** Pasos del movimiento, con su verificación.
-
-### 3.3. Movimiento 2 — el contrato de salida
-
-> ⏳ **Pendiente de redacción.** Pasos del movimiento, con la tabla de reclasificación de códigos.
-
-### 3.4. Movimiento 3 — la feature
-
-> ⏳ **Pendiente de redacción.** Pasos del movimiento, con su verificación.
-
-### 3.5. Puertas de verificación
-
-> ⏳ **Pendiente de redacción.** Una puerta por movimiento, con sus comprobaciones ejecutables.
-
-### 3.6. Documentación pública
-
-> ⏳ **Pendiente de redacción.** Qué cambia en `USAGE.md`, `docs/DAEMON-MODE.md`, `docs/NARRATION-INTEGRATION.md` y `CHANGELOG.md`.
