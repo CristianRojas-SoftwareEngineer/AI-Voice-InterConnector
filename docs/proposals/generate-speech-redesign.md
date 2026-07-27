@@ -1,5 +1,7 @@
 ﻿# Propuesta: rediseño del contrato de `speak` → `speech synthesize`
 
+> **Superado por [`cli-redesign.md`](cli-redesign.md)**, que es la fuente única del rediseño de la CLI. Este documento se conserva solo por trazabilidad: no es fuente de estructura ni de decisiones vigentes.
+
 **Estado**: propuesta, sin implementar. Ninguna decisión de este documento está en el código.
 **Alcance**: contrato público de la CLI (comandos, flags, códigos de salida, payloads `--json`) y el almacén de audio generado.
 **Base**: commit `26735cd`, working tree limpio, 580 tests en verde.

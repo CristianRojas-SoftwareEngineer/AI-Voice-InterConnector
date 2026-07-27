@@ -30,6 +30,12 @@
   - [2.11. `cleanup`, `setup` y `voice`](#211-cleanup-setup-y-voice)
   - [2.12. Contratos externos](#212-contratos-externos)
 - [3. El puente](#3-el-puente)
+  - [3.1. Por qué el orden no es reversible](#31-por-qué-el-orden-no-es-reversible)
+  - [3.2. Movimiento 1 — Limpieza](#32-movimiento-1--limpieza)
+  - [3.3. Movimiento 2 — El contrato de salida](#33-movimiento-2--el-contrato-de-salida)
+  - [3.4. Movimiento 3 — La feature](#34-movimiento-3--la-feature)
+  - [3.5. El reparto de la suite de tests](#35-el-reparto-de-la-suite-de-tests)
+  - [3.6. La documentación pública](#36-la-documentación-pública)
 
 ---
 
@@ -796,3 +802,266 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 ## 3. El puente
 
+La sección 1 describe un estado y la sección 2 otro. Entre ambos hay trabajo, y su orden no es libre: hay pasos que solo son baratos si otro ocurrió antes, y pasos que solo son correctos si otro ocurrió antes. Esta sección fija ese orden y el argumento de cada decisión.
+
+El puente tiene tres movimientos: **limpieza**, **el contrato de salida** y **la feature**. Un movimiento no es una unidad de esfuerzo sino un punto de reposo: al final de cada uno la suite está en verde y el repositorio es coherente consigo mismo, aunque no haya llegado todavía al estado objetivo. Cada movimiento cierra con una puerta que enumera lo que debe ser cierto para pasar al siguiente.
+
+### 3.1. Por qué el orden no es reversible
+
+Los tres movimientos hacen cosas distintas con el código. El movimiento 1 **quita**: retira superficie, entradas y vocabulario, sin tocar ningún entero de salida ni añadir comportamiento. El movimiento 2 **cambia cómo se sale**: opera sobre una superficie ya reducida y no añade ni quita comandos. El movimiento 3 **añade**: es el único que introduce comportamiento nuevo.
+
+Cuatro restricciones fijan ese orden. Las tres primeras son de coste; la cuarta también, pero con una consecuencia sobre la calidad del código que se escribe.
+
+**Limpiar antes de remapear.** El movimiento 1 elimina `--output`, las dos entradas de audio crudas y el sandbox de rutas. Dos de los sitios que la reclasificación tocaría desaparecen con ellos: `cli.py:281` (`--json` sin `--output`) y `cli.py:353` (ruta fuera del sandbox del daemon). Remapear primero significa cambiarles el entero y borrarlos después.
+
+**Remapear antes de abrir el canal.** El movimiento 2 convierte 38 salidas de `cli.py` en excepciones, y doce de ellas además cambian de entero. Reescribir un sitio para convertirlo y volver a él para renumerarlo es tocar dos veces lo mismo. Ambos órdenes producen el mismo código final; uno cuesta un diff mecánico de más sobre la partida más cara del puente.
+
+**El canal antes de la convergencia del despacho.** Aquí hay solape de región, no solo de coste: `cli.py:353` cae dentro del bloque de despacho `cli.py:337-401`. Mientras esa salida sea un `sys.exit()`, cada rama del despacho es su propio terminador y no hay nada que converger sin arrastrar la salida intermedia dentro de la cola común.
+
+**El contrato de salida antes de la feature.** Todo lo que el movimiento 3 escribe es código nuevo. Si naciera antes del movimiento 2, nacería con `sys.exit()` y con el entero viejo, para convertirse acto seguido: código escrito para ser reescrito. Después, `speech synthesize` se escribe directamente con `raise CliError(...)` y con el 6 ya disponible para la colisión de etiqueta.
+
+Una de las piezas de trabajo se parte entre dos movimientos, y conviene decir por qué. `_emit_audio` (`cli.py:111`) hace hoy dos cosas: escribe un archivo y reproduce. Separarlas —y renombrar la función a `_play_audio`— es vocabulario y reparto de responsabilidades: no necesita el canal de error, y cae en el movimiento 1. **Converger las tres ramas del despacho en una cola única de emisión es otra cosa**: no es limpieza aplazada sino el primer consumidor del invariante que el canal instala —ninguna salida no-cero fuera de `main()`—, y solo cuando el `sys.exit()` del despacho es un `raise` deja de ser terminador de rama. Va en el movimiento 2, después del canal.
+
+Dos huecos que este corte cierra y que conviene dar por cubiertos: el desacople de síntesis y emisión queda absorbido por el movimiento 1 en lugar de quedar suelto, y `speech synthesize` nace en el movimiento 3 sobre un contrato de salida completo, sin conversión posterior.
+
+### 3.2. Movimiento 1 — Limpieza
+
+Este movimiento solo quita. No introduce comportamiento nuevo y no cambia ningún entero de salida: al terminarlo, la tabla de códigos sigue siendo la de la sección 1. Cinco pasos.
+
+#### Paso 1.1 — Retirar el sandbox de rutas y las entradas de audio crudas
+
+`--voice-audio` y `--speech-audio` desaparecen del parser. `SynthesizeRequest` (`daemon/protocol.py:60`) pierde `speech_audio` (`daemon/protocol.py:68`) y su gemelo, y pasa a recibir `voice: str`. Se eliminan `allowed_audio_dirs()` (`voices.py:76`), `daemon_session_dir()` (`voices.py:57`), `_validate_audio_path` (`daemon/server.py:111`), `_paths_allowed_by_daemon` (`cli.py:129`) y `_check_audio_paths_present` (`cli.py:155`). Con ellos se va la regla de validación de `cmd_speak` cuya salida está en `cli.py:353`.
+
+`protocol.SCHEMA_VERSION` sube a `"2"` en este paso: el cambio de forma de `SynthesizeRequest` es su causa, y la causa y el bump no se separan.
+
+Implementa §2.1 —ninguna superficie acepta rutas del llamador— y la frontera del daemon de §2.12.
+
+**Tests.** Caen los dieciocho que ejercitan el sandbox: `tests/test_daemon_sandbox.py` entero (10), seis de `tests/test_daemon.py` (`TestSynthesizeAllowedPaths`, `TestSynthesizeHeaderValidationAndCanonicalPath` y `TestDaemonSessionSandbox`, dos cada una) y los dos de `TestCmdSpeakVoiceAudioDaemonSandbox` en `tests/test_cli.py`. Caen los dieciocho sin excepción, incluidos `test_allowed_audio_dirs_excludes_general_tempdir` (`tests/test_daemon_sandbox.py:57-63`) y `test_rejects_wav_in_general_tempdir` (`tests/test_daemon.py:323-345`): parecen salvables porque su asunto es el rechazo del tempdir general y no la lista de permitidos, pero al desaparecer `allowed_audio_dirs()` la aserción se queda sin sujeto. Su intención —que nada se escriba fuera del almacén— reaparece en el paso 3.1, sobre el único escritor que queda.
+
+**Verificación.** `grep -rn "voice_audio\|speech_audio\|allowed_audio_dirs\|daemon_session_dir" src/` sin coincidencias.
+
+#### Paso 1.2 — Liberar el vocabulario `speech`
+
+`voice clone --speech` (`cli.py:1774`) pasa a `--speech-reference/-s`, y la entrada de timbre a `--timbre-reference/-t`. En disco, `speech.wav` (`voices.py:126`) pasa a `speech-reference.wav` y el archivo de timbre a `timbre-reference.wav`; `_is_valid_voice_dir` (`voices.py:113`) y `_resolve_voice_dir` (`voices.py:132`) se ajustan, y las voces de fábrica bajo `paths.bundled_voices_dir()` (`paths.py:82`) se renombran en el paquete.
+
+Va antes del movimiento 3 porque `speech` es el nombre del grupo que ese movimiento crea. Mientras el término signifique a la vez «archivo de referencia de una voz» y «grupo de comandos», toda lectura del código es ambigua, y la ambigüedad es más cara cuando ya hay código nuevo escrito sobre ella.
+
+Implementa la resolución del vocabulario de §2.2 y el grupo `voice` de §2.11.
+
+**Tests.** Los de `voice clone` y los de layout del directorio de voz.
+
+**Verificación.** Un test que liste una voz de fábrica y confirme los nombres nuevos de ambos WAV.
+
+#### Paso 1.3 — `speak` pasa a ser `speech say` y pierde `--output`
+
+El comando `speak` (`cli.py:1735-1760`, con `cmd_speak` en `cli.py:260`) se renombra a `speech say`. `--output/-o` desaparece; con él desaparece la regla que exige `--output` bajo `--json` (`cli.py:281`) y `_emit_speak_json` (`cli.py:243`) pierde la clave `output`.
+
+`cli.SCHEMA_VERSION` (`cli.py:55`) sube a `"2"` **en este paso, no en uno posterior**: la pérdida de la clave es la ruptura que el número anuncia, y separarlos dejaría una versión que no describe su payload.
+
+El destino del renombrado es `say` y no `synthesize`, y eso decide que el paso viva aquí. `say` sintetiza y reproduce sin persistir, que es lo que `speak` hacía sin `--output`. Con ese destino, el contrato del integrador se rompe una sola vez y `docs/NARRATION-INTEGRATION.md` cambia de comando una sola vez.
+
+Implementa el reparto del grupo `speech` de §2.3, las dos versiones de esquema de §2.10 y el contrato del integrador de §2.12.
+
+**Tests.** Las 79 menciones de `speak` en `tests/test_cli.py`, las 16 de `tests/test_daemon.py` y las 60 de `cmd_speak` —todas en `test_cli.py`— cambian de nombre. Las 18 apariciones de `--output` en `test_cli.py` son todas sustantivas: ejercitan el flag real, aseveran sobre la clave `output` del payload o sobre el mensaje `[Archivo] Audio guardado`. Se retiran, y las que solo pasaban `output=` para que el test no sonara se simplifican mockeando el reproductor.
+
+**Verificación.** `grep -rn "output_path\|ensure_parent_dir" src/` sin coincidencias.
+
+#### Paso 1.4 — Separar sintetizar de emitir
+
+`_emit_audio(audio_bytes, output)` (`cli.py:111`) escribe un archivo y reproduce. Sin `--output` solo queda lo segundo: la función pasa a `_play_audio(audio_bytes)` y la síntesis deja de decidir qué se hace con los bytes.
+
+Es la precondición de código de dos cosas que llegan después: la convergencia del paso 2.3 y el bucle de `--play` del paso 3.3, que necesita poder reproducir el mismo audio varias veces sin sintetizarlo de nuevo.
+
+Implementa el criterio de una responsabilidad por sub-acción de §2.1.
+
+**Verificación.** `grep -n "_emit_audio" src/` sin coincidencias.
+
+#### Paso 1.5 — Parametrizar el validador de segmentos
+
+`_validate_voice_name` (`voices.py:28`) pasa a `_validate_path_segment(value, kind=…)`, con `kind` tomando `"voz"` o `"etiqueta"`.
+
+Va aquí porque el movimiento 3 crea las etiquetas del almacén y necesita el validador ya parametrizado; hacerlo allí mezclaría un refactor con una feature en el mismo diff. Y es el paso de menor prioridad del movimiento: si algo se aplaza, es esto, y su caída deja la lista sin huecos porque ningún otro paso depende de él dentro del movimiento.
+
+En este paso **no cambia ningún código de salida**: el identificador ilegal sigue saliendo por `EXIT_INVALID_INPUT`, que todavía vale 4. Lo único que cambia es que el mensaje se parametriza por `kind`.
+
+Implementa la validación de identificadores de §2.8.
+
+**Verificación.** Los tests de nombres de voz pasan sin modificación alguna; el mensaje de error nombra el `kind` recibido.
+
+#### Puerta del movimiento 1
+
+- La suite completa en verde.
+- Los tres `grep` de eliminación (pasos 1.1, 1.3 y 1.4) sin coincidencias.
+- `protocol.SCHEMA_VERSION == "2"` y `cli.SCHEMA_VERSION == "2"`.
+- `speak` no existe en el parser; `speech say` sí, y acepta la misma invocación menos `--output`.
+- **La tabla de códigos de salida es idéntica a la de la sección 1.** Es la comprobación que prueba que el movimiento fue limpieza y no otra cosa.
+
+### 3.3. Movimiento 2 — El contrato de salida
+
+Este movimiento no añade ni quita superficie: la que hay al empezarlo es la que hay al terminarlo. Cambia cómo la CLI comunica el fallo —qué entero y por qué canal— sobre una superficie ya reducida. Tres pasos.
+
+#### Paso 2.1 — Extraer las constantes y remapear la tabla
+
+Se crea `exit_codes.py`, módulo hoja sin importaciones del paquete, con las diez constantes de §2.9. `cli.py` deja de definirlas (`cli.py:43-49`) y las reexporta para no romper a quien las importe desde ahí; `daemon/run.py` pasa a importarlas del módulo hoja. `EXIT_DAEMON_PORT_IN_USE` (`daemon/run.py:33`) desaparece y su único sitio (`daemon/run.py:152`) pasa a `EXIT_STATE_CONFLICT`: el 6 tiene un solo dueño y el puerto ocupado es un caso suyo, no un código propio.
+
+**Doce sitios cambian de entero.**
+
+| Sitio | Situación | Hoy | Nuevo |
+|---|---|---|---|
+| `cli.py:285` | `--text` vacío | 4 | **2** |
+| `cli.py:299` | `--text` excede `MAX_TEXT_LENGTH` | 4 | **2** |
+| `cli.py:551` | Nombre de voz ilegal | 4 | **2** |
+| `cli.py:1013` | `setup --uninstall --json` sin `--yes` | 4 | **2** |
+| `cli.py:1539` | `cleanup --json` sin `--yes` | 4 | **2** |
+| `cli.py:475` | La voz ya existe y no hay `--force` | 4 | **6** |
+| `cli.py:1140` | Caskroom presente: abortar para no dejar estado híbrido | 4 | **6** |
+| `cli.py:528` | La voz es de fábrica y es de solo lectura | 4 | **7** |
+| `cli.py:1003` | Instalación pip/uv: `--uninstall` solo aplica al canal nativo | 4 | **7** |
+| `cli.py:1026` | `setup --uninstall` no soporta esta plataforma | 4 | **7** |
+| `cli.py:1126` | `--uninstall` solo aplica a la instalación nativa de macOS | 4 | **7** |
+| `cli.py:1229` | La desinstalación de Windows la gestiona el instalador | 4 | **7** |
+
+**Tres sitios más no cambian de entero porque dejan de existir.** `cli.py:281` y `cli.py:353` los borró el movimiento 1. `cli.py:270` —la validación manual de `--daemon` y `--no-daemon`— lo borra este paso, sustituyéndolo por `add_mutually_exclusive_group()`. Conviene leer el comentario que hoy lo justifica (`cli.py:268-269`): la validación es manual porque «el exit 2 nativo de argparse colisionaría con `EXIT_MODEL_MISSING` del contrato congelado». El intercambio del 2 y el 4 retira exactamente esa razón. El remapeo no solo permite la exclusión declarativa: la convierte en la opción correcta, y ese es el argumento de fondo del intercambio —el 2 vuelve a significar lo que argparse ya hace que signifique.
+
+**Ocho sitios más se reclasifican desde el 1.** `cli.py:547` y `cli.py:920` pasan a **6**. `cli.py:1367` y `cli.py:1453` pasan a **8**, junto con las cuatro ramas de precondición de `_describe_provision_failure()` (`cli.py:1283`, `:1292`, `:1301`, `:1307`).
+
+**Ocho sitios se quedan en 1**, porque no admiten mejor clasificación sin inventarla: los cinco `except Exception` genéricos (`cli.py:420`, `:478`, `:554`, `:588`, `:599`), los dos chequeos de `doctor` cuando `checks_failed > 0` (`cli.py:829` en la rama `--json`, `cli.py:842` en texto plano) y el `OSError` de bind que no es puerto ocupado (`daemon/run.py:154`).
+
+**Dos consecuencias que no son enteros.** La primera: `voices.py:203-204` señaliza hoy la colisión de nombre con un `ValueError` genérico, que `cmd_voice_clone` captura en el mismo `except ValueError` (`cli.py:472-475`) que usa para las demás causas. Para que la colisión salga con 6 y las demás con 2 hace falta distinguirlas, así que este paso declara `VoiceExistsError(ValueError)` y la captura antes del genérico. La clase **no existe hoy en el árbol**: es trabajo de este paso, no un dato del estado actual. La segunda: `_describe_provision_failure()` (`cli.py:1260-1313`) devuelve `str`; pasa a devolver la terna `(code, reason, message)`, y sus cuatro ramas de precondición son las que alimentan el 8.
+
+Implementa §2.9, el mecanismo declarativo de §2.6 y la salida por conflicto de `voice clone` de §2.11.
+
+**Coste medido.** No hay literales numéricos de salida fuera de los bloques de constantes: los 139 usos son por nombre. De los doce sitios que cambian de entero, once son `sys.exit()` de una línea; el restante abre las cuatro ramas de la función clasificadora y cambia de firma.
+
+**Tests.** Las 29 apariciones de `EXIT_INVALID_INPUT` en `test_cli.py` cambian de entero o de constante. Las de `EXIT_ERROR` —3 en `test_cli.py`, 5 en `test_daemon.py`, 1 en `test_voices.py`— se revisan una a una contra los ocho sitios reclasificados; `tests/test_cli.py:2425` pasa de `EXIT_ERROR` a `EXIT_PRECONDITION_FAILED`. `tests/test_daemon_run.py:117` y el docstring de `tests/test_daemon.py:1125` pierden `EXIT_DAEMON_PORT_IN_USE`, pero los literales `6` de `tests/test_daemon.py:1157`, `:1166` y `:1180` siguen siendo correctos: cambia el nombre y el dueño del entero, no su valor. `tests/test_cli.py:1158` migra de invocar el comando con un `args` falso a un test de parser, porque la exclusión mutua deja de ser código del comando.
+
+**Verificación.** Ningún `EXIT_*` definido fuera de `exit_codes.py`. Un test por ruta de fallo de parseo comprobando 2; uno que fije en 0 la invocación de un grupo sin sub-acción (`cli.py:1883` y `cli.py:1888`); uno de conflicto por superficie —`voice clone`, el bind del daemon, el borrado de una voz con archivos abiertos— comprobando 6; uno por cada llamador del 7; y para el 8, un test por sitio.
+
+#### Paso 2.2 — Abrir el canal de error
+
+`CliError(code, reason, message)` es la única forma de fallo. Hereda de **`BaseException`, no de `Exception`**, y la razón es concreta: los cinco `except Exception` genéricos que se quedan en 1 capturarían la excepción clasificada y la convertirían en un error genérico, deshaciendo el paso anterior en silencio.
+
+Las 38 salidas no-cero de `cli.py` pasan a `raise CliError(...)`. De los 40 `sys.exit()` del archivo, los dos que no se tocan son los `sys.exit(EXIT_OK)` de `cli.py:1883` y `:1888`. Es la partida más cara del puente: diff grande y mecánico, sin diseño nuevo por comando.
+
+Una subclase de `ArgumentParser` sobrescribe `error()` para levantar `CliError(EXIT_INVALID_INPUT, "usage_error", message)`, con lo que el fallo de parseo entra por el mismo canal que todo lo demás y conserva el texto que argparse formatea. `parse_args()` pasa a llamarse dentro del handler de `main()`.
+
+`main()` es el único punto de traducción: mensaje humano a `stderr`, payload a `stdout` cuando hay `--json`, y el entero. De ahí sale el invariante del movimiento: **ninguna salida no-cero fuera de `main()`**. La clave `ok` desaparece de los tres payloads de `daemon` (`cli.py:1646`, `:1663`, `:1675`) porque el entero ya dice lo que ella decía.
+
+Dos exclusiones deliberadas. `SystemExit` con código 0 pasa intacto: es como argparse implementa `--help`, y capturarlo convertiría la ayuda en un fallo. `daemon serve` queda fuera del mecanismo: no tiene `--json` y su salida no es un payload.
+
+Implementa §2.10.
+
+**Tests.** Los 17 sitios de `emit_json()` quedan cubiertos por el otro lado: los 13 exclusivos de éxito no cambian, y los cuatro mixtos —`cli.py:821` en `doctor`, y `cli.py:1651`, `:1663`, `:1680` en los verbos de `daemon`— ganan cobertura de su rama de error, que hoy no emite nada.
+
+**Verificación.** `not issubclass(CliError, Exception)`. Payload de error en toda salida no-cero bajo `--json`, con un caso de flag desconocido y otro de grupo excluyente violado comprobando que el `message` es el que argparse formatea. `--help` en los tres niveles con exit 0 y **sin** payload de error. Degradación ante un `reason` desconocido. Y el invariante: ninguna salida no-cero fuera de `main()`.
+
+#### Paso 2.3 — Converger el despacho en una cola única de emisión
+
+El bloque `cli.py:337-401` tiene tres ramas —daemon exigido, autodetección, directa— y cada una emite por su cuenta antes de terminar: `_emit_speak_json` en `cli.py:400` para una, la reproducción para otra. Tras el paso 2.2, la salida de `cli.py:353` es un `raise` que abandona el bloque por excepción en lugar de terminar una rama, y las tres ramas pasan a producir exactamente lo mismo: los bytes y las métricas. La emisión sale del bloque y queda detrás de él, una sola vez.
+
+Este es el primer consumidor del invariante que el paso anterior instala, y por eso va después y no antes. Con el `sys.exit()` todavía en su sitio la convergencia sería posible, pero obligaría a preservar una salida intermedia dentro de la cola común, que es justo lo que la cola común pretende eliminar.
+
+Implementa §2.5.
+
+**Verificación.** `grep -n "_play_audio(" src/tts_sidecar/cli.py` y `grep -n "_emit_speak_json(" src/tts_sidecar/cli.py` devuelven **dos líneas cada uno** —la definición y un único sitio de llamada—. Es lo que distingue una cola única de emitir antes de cada `return`.
+
+#### Puerta del movimiento 2
+
+- La suite completa en verde.
+- Los dos `grep` del paso 2.3 devolviendo dos líneas cada uno.
+- `grep -n "EXIT_INVALID_INPUT = 4\|EXIT_MODEL_MISSING = 2" src/` sin resultados, y ningún `EXIT_*` definido fuera de `exit_codes.py`.
+- `not issubclass(CliError, Exception)`.
+- Ninguna salida no-cero fuera de `main()`.
+- **La superficie de comandos es la misma con la que terminó el movimiento 1.** Es la comprobación simétrica de la puerta anterior: prueba que este movimiento tocó el contrato de salida y nada más.
+
+### 3.4. Movimiento 3 — La feature
+
+El único movimiento que añade. Todo lo que escribe nace sobre un contrato de salida completo: cada salida nueva se escribe ya con `raise CliError(...)` y con su entero definitivo, sin conversión posterior. Seis pasos.
+
+#### Paso 3.1 — El almacén de habla sintética
+
+`data_root()/synthetic-speech/<voz>/<etiqueta>.wav`, hermano de `voices/`. Cada WAV lleva un sidecar `.json` homónimo con `text`, `voice` y `created_at`. El WAV es el recurso de registro —existencia, colisión, enumeración—; el `.json` no lo es, y su ausencia degrada la información pero no invalida el clip. La escritura es atómica vía `os.replace`, y el sidecar se publica antes que el WAV para que ningún WAV visible carezca de metadatos.
+
+El validador del paso 1.5 se usa aquí con `kind="etiqueta"`; es el consumidor que justificaba haberlo parametrizado antes.
+
+Implementa §2.8.
+
+**Tests.** Aquí reaparece la intención de los dos tests de tempdir que cayeron en el paso 1.1: un test que confirme que nada se escribe fuera de `data_root()/synthetic-speech/`, ahora sobre el único escritor que queda.
+
+#### Paso 3.2 — `speech synthesize`
+
+`--text/-t` y `--label/-l`, ambos requeridos. Siempre persiste. La etiqueta ya tomada sin `--force` sale con 6; `--force` sobre una etiqueta libre es un no-op declarado, no un error.
+
+Implementa el reparto de §2.3 y las reglas de validación de §2.6.
+
+#### Paso 3.3 — El bucle de `--play`
+
+Cuatro opciones: repetir, aceptar y guardar, regenerar, descartar. Consume `_play_audio` del paso 1.4, que es lo que permite repetir sin volver a sintetizar.
+
+Implementa §2.4.
+
+#### Paso 3.4 — `speech play`, `speech list` y `speech remove`
+
+Operan solo sobre el almacén; ninguna acepta rutas del llamador. `--label` requerido en `play` y en `remove`. La etiqueta inexistente sale con 3.
+
+Implementa §2.3 y la enumeración de §2.8.
+
+#### Paso 3.5 — El despacho a las tres superficies que necesitan el modelo
+
+`speech synthesize`, `speech say` y `voice clone` reciben los tres modos: `--daemon`, que ahora **exige** el daemon y sale con 5 si no está; `--no-daemon`; y la autodetección, que degrada con aviso por `stderr`. En las tres, el par es un grupo mutuamente excluyente declarativo. `voice clone` gana el despacho que hoy no tiene, con lo que su precompute contra el daemon (`cli.py:453`) deja de ser su único camino hacia el modelo.
+
+Implementa §2.5.
+
+#### Paso 3.6 — `cleanup` y el WARN de `setup`
+
+`cleanup` gana `--synthetic-speech`, y `--voices` arrastra los namespaces de habla sintética de las voces que borra, salvo `synthetic-speech/default/`. El chequeo de audio de `setup` degrada de FAIL a WARN, y este es el movimiento donde eso tiene sentido: solo aquí existe el sumidero al que el chequeo remite.
+
+Implementa §2.11.
+
+**Tests.** `tests/test_cli.py:925` cambia el aserto del mensaje del WARN de `setup`.
+
+#### Puerta del movimiento 3
+
+- La suite completa en verde.
+- Un test que recorra el parser real y exija `--json` en toda sub-acción salvo `daemon serve`.
+- Un test por cada fila de las matrices de §2.7 —incluidas las filas de `--json`— y uno por cada regla de validación de §2.6.
+- Un test que fije las **claves exactas** de los cinco payloads del grupo `speech`, no su contenido, de modo que reintroducir la clave de ruta por descuido rompa la suite.
+- Cada salida no-cero nueva fija su payload de error: `code` y `message`, con el par `(code, reason)` como cláusula de futuro.
+- La tabla de códigos de `USAGE.md` y `exit_codes.py` coinciden.
+
+### 3.5. El reparto de la suite de tests
+
+La suite tiene 552 tests en 29 archivos. Su migración no es un anexo del puente: cada test que cae o cambia lo hace por un paso concreto, y ese paso es su dueño. La tabla recuenta el reparto ya declarado en cada paso.
+
+| Superficie de test | Volumen medido | Paso dueño | Qué le ocurre |
+|---|---|---|---|
+| Sandbox de rutas | 18 (`test_daemon_sandbox.py` 10, `test_daemon.py` 6, `test_cli.py` 2) | 1.1 | Se borran los dieciocho |
+| Layout del directorio de voz | Los de `voice clone` y `voice list` | 1.2 | Nombres nuevos de ambos WAV |
+| `speak` como comando | 79 en `test_cli.py`, 16 en `test_daemon.py` | 1.3 | Renombre a `speech say` |
+| `cmd_speak` como símbolo | 60, todas en `test_cli.py` | 1.3 | Renombre |
+| `--output` | 18 en `test_cli.py`, todas sustantivas | 1.3 | Se retiran o se reescriben sin el flag |
+| Nombres ilegales | Los de `_validate_voice_name` | 1.5, luego 2.1 | Intactos en el 1.5; cambian de entero (4 → 2) en el 2.1 |
+| `EXIT_INVALID_INPUT` | 29 en `test_cli.py` | 2.1 | Cambian de entero o de constante |
+| `EXIT_ERROR` | 3 + 5 + 1 (`test_cli.py`, `test_daemon.py`, `test_voices.py`) | 2.1 | Los de los ocho sitios reclasificados pasan a 6 u 8 |
+| `EXIT_DAEMON_PORT_IN_USE` | `test_daemon_run.py:117`, `test_daemon.py:1125` | 2.1 | Cambian de nombre; los literales `6` siguen valiendo |
+| Payloads bajo `--json` | 17 sitios de `emit_json()`, 13 de éxito puro | 2.2 | Los cuatro mixtos ganan cobertura de su rama de error |
+| Grupo `speech` completo | Ninguno hoy | 3.1-3.4 | Se escriben |
+| Matrices y reglas | Ninguno hoy | 3.1-3.6 | Se escriben contra §2.6 y §2.7 |
+
+El criterio general: **exigir tests intactos donde el entero cambia volvería el criterio imposible**. En el paso 1.5 los tests de nombres pasan sin tocarlos porque nada cambia de valor; en el 2.1 cambian, y el cambio esperado es exactamente el entero, no la aserción.
+
+### 3.6. La documentación pública
+
+Ningún archivo de documentación se actualiza al final del puente en bloque: cada uno cambia en el movimiento que le quita el sujeto.
+
+**Movimiento 1.** `USAGE.md:463-532`, el bloque de `speak`, que documenta `--output` y la degradación por sandbox. `docs/DAEMON-MODE.md:316-335`, la sección «Seguridad: directorios de audio permitidos», se reescribe entera. `docs/NARRATION-INTEGRATION.md:42` y `:49`, donde `speak --text "<msg>" --daemon` es el contrato del integrador —la invocación que la skill de narración emite—, cambia a `speech say` una sola vez. `SECURITY.md:61-67` **no sobrevive**: sus líneas describen la validación de rutas, la contención en directorios permitidos y el riesgo de symlink aceptado; el movimiento 1 les retira el sujeto, y el riesgo aceptado deja de existir en lugar de mitigarse.
+
+**Movimiento 2.** La tabla de códigos de `USAGE.md:900-908` pasa de siete filas a diez, con las dos columnas del criterio y ejemplos en la fila del 2. Se añade un apartado para el payload de error con sus tres reglas, incluida la de consumo.
+
+**Movimiento 3.** El grupo `speech` completo en `USAGE.md` con sus matrices, la normalización a minúsculas de los identificadores y los flags nuevos de `cleanup`.
+
+**Al cierre.** `CHANGELOG.md` recibe una entrada de cambio incompatible que recoge la desaparición de `speak`, el remapeo de los enteros y la clave `error`. `docs/DESIGN.md:178-179`, `docs/GOAL.md:126` y `docs/DISTRIBUTION.md:93` son menciones puntuales de `speak --output` que se corrigen de una línea.
+
+**No cambian.** `docs/ROADMAP.md`: sus nueve menciones son todas de `EXIT_INVALID_INPUT` por nombre (`:111`, `:181`, `:204`, `:218`, `:250`, `:294`, `:312`, `:314`, `:319`), y la constante conserva su nombre aunque cambie de valor.
+
+`tts-sidecar-narrator` tampoco requiere cambios hoy: no ramifica por código de salida y solo lee `status.running` del payload de `daemon`. Ese cero mide el coste de migración de hoy, no la vigencia del contrato — la ventana se cierra en cuanto la primera skill ramifique por uno de estos códigos.
