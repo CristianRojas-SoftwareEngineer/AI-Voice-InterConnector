@@ -921,7 +921,7 @@ Se crea `exit_codes.py`, módulo hoja sin importaciones del paquete, con las die
 | `cli.py:1126` | `--uninstall` solo aplica a la instalación nativa de macOS | 4 | **7** |
 | `cli.py:1229` | La desinstalación de Windows la gestiona el instalador | 4 | **7** |
 
-**Tres sitios más no cambian de entero porque dejan de existir.** `cli.py:281` y `cli.py:353` los borró el movimiento 1. `cli.py:270` —la validación manual de `--daemon` y `--no-daemon`— lo borra este paso, sustituyéndolo por `add_mutually_exclusive_group()`. Conviene leer el comentario que hoy lo justifica (`cli.py:268-269`): la validación es manual porque «el exit 2 nativo de argparse colisionaría con `EXIT_MODEL_MISSING` del contrato congelado». El intercambio del 2 y el 4 retira exactamente esa razón. El remapeo no solo permite la exclusión declarativa: la convierte en la opción correcta, y ese es el argumento de fondo del intercambio —el 2 vuelve a significar lo que argparse ya hace que signifique.
+**Tres sitios más no cambian de entero porque dejan de existir.** `cli.py:281` y `cli.py:353` los borró el movimiento 1. `cli.py:270` —la validación manual de `--daemon` y `--no-daemon`— lo borra este paso, sustituyéndolo por `add_mutually_exclusive_group()`. Conviene leer el comentario que hoy lo justifica (`cli.py:266-267`): la validación es manual porque «el exit 2 nativo de argparse colisionaría con `EXIT_MODEL_MISSING` del contrato congelado». El intercambio del 2 y el 4 retira exactamente esa razón. El remapeo no solo permite la exclusión declarativa: la convierte en la opción correcta, y ese es el argumento de fondo del intercambio —el 2 vuelve a significar lo que argparse ya hace que signifique.
 
 **Ocho sitios más se reclasifican desde el 1.** `cli.py:547` y `cli.py:920` pasan a **6**. `cli.py:1367` y `cli.py:1453` pasan a **8**, junto con las cuatro ramas de precondición de `_describe_provision_failure()` (`cli.py:1283`, `:1292`, `:1301`, `:1307`).
 
@@ -992,25 +992,33 @@ Implementa §2.8.
 
 `--text/-t` y `--label/-l`, ambos requeridos. Siempre persiste. La etiqueta ya tomada sin `--force` sale con 6; `--force` sobre una etiqueta libre es un no-op declarado, no un error.
 
-Implementa el reparto de §2.3 y las reglas de validación de §2.6.
+Implementa el reparto de §2.3, las reglas de validación de §2.6 y las filas de `synthesize` de las matrices de §2.7.
+
+**Verificación.** Un test por fila de la matriz de `synthesize`, incluidas las de `--json`; uno de colisión de etiqueta comprobando 6; uno de `--force` sobre etiqueta libre comprobando que no altera el resultado.
 
 #### Paso 3.3 — El bucle de `--play`
 
 Cuatro opciones: repetir, aceptar y guardar, regenerar, descartar. Consume `_play_audio` del paso 1.4, que es lo que permite repetir sin volver a sintetizar.
 
-Implementa §2.4.
+Implementa §2.4 y las filas de `--play` de §2.7.
+
+**Verificación.** Un test por opción del bucle; uno que confirme que repetir no vuelve a sintetizar; uno que confirme que descartar no deja ni WAV ni sidecar en el almacén.
 
 #### Paso 3.4 — `speech play`, `speech list` y `speech remove`
 
 Operan solo sobre el almacén; ninguna acepta rutas del llamador. `--label` requerido en `play` y en `remove`. La etiqueta inexistente sale con 3.
 
-Implementa §2.3 y la enumeración de §2.8.
+Implementa §2.3, la enumeración de §2.8 y las filas de `play`, `list` y `remove` de §2.7.
+
+**Verificación.** Un test por fila de las tres matrices; uno de etiqueta inexistente por sub-acción comprobando 3; uno que confirme que `list` enumera por el WAV y no por el sidecar.
 
 #### Paso 3.5 — El despacho a las tres superficies que necesitan el modelo
 
 `speech synthesize`, `speech say` y `voice clone` reciben los tres modos: `--daemon`, que ahora **exige** el daemon y sale con 5 si no está; `--no-daemon`; y la autodetección, que degrada con aviso por `stderr`. En las tres, el par es un grupo mutuamente excluyente declarativo. `voice clone` gana el despacho que hoy no tiene, con lo que su precompute contra el daemon (`cli.py:453`) deja de ser su único camino hacia el modelo.
 
-Implementa §2.5.
+Implementa §2.5 y las filas de despacho de §2.7.
+
+**Verificación.** Los tres modos por cada una de las tres superficies, nueve casos; `--daemon` sin daemon levantado comprobando 5 en las tres; el aviso por `stderr` de la autodetección presente y el `stdout` de `--json` limpio de él.
 
 #### Paso 3.6 — `cleanup` y el WARN de `setup`
 
