@@ -300,10 +300,10 @@ class TestStopDuringStartupWindow:
         assert "no está corriendo" in capsys.readouterr().err
 
     def test_generic_cli_cmdline_is_not_a_daemon_marker(self, capsys):
-        """Otro comando del CLI ('tts-sidecar speak') no debe confundirse con
-        el daemon en arranque: solo cuentan los markers específicos."""
+        """Otro comando del CLI ('tts-sidecar speech say') no debe confundirse
+        con el daemon en arranque: solo cuentan los markers específicos."""
         manager = self._manager_offline()
-        cli_proc = self._proc(555, ["tts-sidecar", "speak", "--text", "hola"])
+        cli_proc = self._proc(555, ["tts-sidecar", "speech", "say", "--text", "hola"])
         psutil_mock = self._psutil_with_processes([cli_proc])
 
         with patch.dict(sys.modules, {"psutil": psutil_mock}):

@@ -52,7 +52,7 @@ EXIT_INTERRUPTED = 130        # interrupción por el usuario (128 + SIGINT)
 # Se emite como "schema_version" en TODOS los payloads JSON. Es un campo aditivo:
 # los consumidores lo usan para detectar cambios de forma; añadir claves nuevas no
 # incrementa la versión, solo lo haría un cambio incompatible de las existentes.
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 def emit_json(payload: dict) -> None:
@@ -138,7 +138,7 @@ def _warn_compute_backend_ignored(args):
 def _synthesize_via_daemon(args, voice):
     """Sintetiza vía daemon, emite el audio (reproducción o archivo) y retorna
     el `SynthesisResult` (audio + métricas), para que el llamador pueda emitir
-    `speak --json` con la misma forma que el modo directo.
+    `speech say --json` con la misma forma que el modo directo.
 
     Asume el daemon disponible: cualquier fallo de comunicación o síntesis
     propaga la excepción al llamador (sin fallback silencioso a modo directo).
@@ -162,7 +162,7 @@ def _synthesize_via_daemon(args, voice):
     elapsed = time.time() - synth_start
     log(f"[Servidor] Síntesis completada ({elapsed:.1f}s)")
 
-    _emit_audio(result.audio_bytes, args.output)
+    _emit_audio(result.audio_bytes, None)
     return result
 
 
@@ -179,14 +179,9 @@ def _require_model_cached(model: str = "es-mx-latam"):
 
 
 def _emit_speak_json(args, voice_name: str, result, daemon: bool) -> None:
-    """Payload --json de `speak`: metadatos + métricas, idéntico en ambas rutas.
-
-    `result` es el `SynthesisResult` de la síntesis (misma forma en modo
-    directo y vía daemon); `--output` ya es obligatorio en modo --json (Tarea
-    4), así que `args.output` siempre está presente aquí.
-    """
+    """Payload --json de `speech say`: metadatos + métricas, idéntico en modo
+    directo y vía daemon."""
     emit_json({
-        "output": str(Path(args.output).resolve()),
         "voice": voice_name,
         "t3_time": result.metrics.t3,
         "s3gen_time": result.metrics.s3gen,
@@ -195,8 +190,8 @@ def _emit_speak_json(args, voice_name: str, result, daemon: bool) -> None:
 
 
 @timed_command
-def cmd_speak(args):
-    """Sintetiza texto; reproduce el audio, o lo guarda a un archivo si se da --output."""
+def cmd_speech_say(args):
+    """Sintetiza texto y reproduce el audio."""
 
     try:
         # --daemon y --no-daemon son contradictorios; un consumidor
@@ -205,17 +200,6 @@ def cmd_speak(args):
         # de argparse colisionaría con EXIT_MODEL_MISSING del contrato congelado.
         if getattr(args, "daemon", False) and getattr(args, "no_daemon", False):
             print("Error: --daemon y --no-daemon son mutuamente excluyentes.", file=sys.stderr)
-            sys.exit(EXIT_INVALID_INPUT)
-
-        # --json solo tiene sentido acoplado a --output: el archivo es el canal
-        # de datos y stdout el canal de control (un payload de metadatos, no el
-        # audio en base64). Se valida antes de cualquier trabajo.
-        if getattr(args, "json", False) and not args.output:
-            print(
-                "Error: speak --json requiere --output (el archivo es el canal "
-                "de datos; --json solo emite metadatos/métricas a stdout).",
-                file=sys.stderr,
-            )
             sys.exit(EXIT_INVALID_INPUT)
 
         if not args.text or not args.text.strip():
@@ -231,7 +215,7 @@ def cmd_speak(args):
             print(
                 f"Error: el texto tiene {len(args.text)} caracteres; el máximo "
                 f"permitido es {MAX_TEXT_LENGTH}. Fragmenta el texto en varias "
-                "llamadas a 'speak'.",
+                "llamadas a 'speech say'.",
                 file=sys.stderr,
             )
             sys.exit(EXIT_INVALID_INPUT)
@@ -252,7 +236,7 @@ def cmd_speak(args):
         _require_model_cached()
 
         # Nombre de voz efectivo para el payload --json y para la síntesis: el
-        # de --voice, o "default" cuando cmd_speak recurre a la voz de fábrica.
+        # de --voice, o "default" cuando cmd_speech_say recurre a la voz de fábrica.
         voice_name = getattr(args, "voice", None) or "default"
 
         # Despacho de tres ramas:
@@ -293,17 +277,12 @@ def cmd_speak(args):
             # motor (etapa y tokens del T3) actualizan la etiqueta del spinner.
             result = engine.speak(
                 text=args.text,
-                output_path=args.output,
                 timbre_reference=timbre_reference,
                 speech_reference=speech_reference,
                 progress_callback=lambda ev: _sp.update(format_progress_event(ev)),
             )
 
-        if args.output:
-            # engine.speak ya escribió el archivo vía output_path
-            log(f"[Archivo] Audio guardado: {args.output}")
-        else:
-            _emit_audio(result.audio_bytes, None)
+        _emit_audio(result.audio_bytes, None)
 
         if getattr(args, "json", False):
             _emit_speak_json(args, voice_name, result, daemon=False)
@@ -1639,28 +1618,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", help="Comandos disponibles")
 
-    # comando speak (unificado: reproduce el audio, o lo guarda a archivo con --output)
-    speak_parser = subparsers.add_parser("speak", help="Sintetiza voz; la reproduce, o la guarda con --output")
-    speak_parser.add_argument("--text", "-t", required=True, help="Texto a sintetizar")
-    speak_parser.add_argument("--voice", "-v", help="Nombre de la voz a usar (auto-carga timbre-reference.wav + speech-reference.wav)")
-    speak_parser.add_argument("--output", "-o", help="Ruta del archivo WAV de salida (si se omite, se reproduce el audio)")
-    speak_parser.add_argument("--compute-backend", "-cb", default="auto",
+    # grupo de comandos speech (say)
+    speech_parser = subparsers.add_parser("speech", help="Sintetiza y reproduce habla")
+    speech_subparsers = speech_parser.add_subparsers(dest="action", help="Acciones de habla")
+
+    speech_say = speech_subparsers.add_parser("say", help="Sintetiza voz y la reproduce")
+    speech_say.add_argument("--text", "-t", required=True, help="Texto a sintetizar")
+    speech_say.add_argument("--voice", "-v", help="Nombre de la voz a usar (auto-carga timbre-reference.wav + speech-reference.wav)")
+    speech_say.add_argument("--compute-backend", "-cb", default="auto",
                               choices=["auto", "cpu", "cuda", "mps"],
                               help="Backend de cómputo para la inferencia; 'auto' detecta el mejor "
                                    "disponible (default: auto)")
-    speak_parser.add_argument("--daemon", action="store_true",
+    speech_say.add_argument("--daemon", action="store_true",
                               help="Usar el daemon sin sondeo previo; si falla, se reporta el error "
                                    "(sin flags, se sondea el daemon y se usa solo si responde). "
                                    "Mutuamente excluyente con --no-daemon (exit 4 si se combinan)")
-    speak_parser.add_argument("--no-daemon", action="store_true",
+    speech_say.add_argument("--no-daemon", action="store_true",
                               help="Forzar modo directo, sin sondear el daemon. "
                                    "Mutuamente excluyente con --daemon (exit 4 si se combinan)")
-    speak_parser.add_argument("--json", action="store_true",
+    speech_say.add_argument("--json", action="store_true",
                               help="Emitir a stdout un payload JSON de metadatos y métricas "
-                                   "(voz, tiempos t3/s3gen, vía daemon o no). Requiere --output: "
-                                   "el archivo es el canal de datos, --json solo el de control "
-                                   "(exit 4 si se usa sin --output)")
-    speak_parser.set_defaults(func=cmd_speak)
+                                   "(voz, tiempos t3/s3gen, vía daemon o no)")
+    speech_say.set_defaults(func=cmd_speech_say)
 
     # grupo de comandos voice (list / clone / remove)
     voice_parser = subparsers.add_parser("voice", help="Gestiona las voces registradas")

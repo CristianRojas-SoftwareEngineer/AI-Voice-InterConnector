@@ -35,7 +35,6 @@ class MockArgs:
     def __init__(self, **kwargs):
         self.text = kwargs.get("text", "test text")
         self.voice = kwargs.get("voice", None)
-        self.output = kwargs.get("output", None)
         self.model = kwargs.get("model", "es-mx-latam")
         self.compute_backend = kwargs.get("compute_backend", "auto")
         self.name = kwargs.get("name", "testcli")
@@ -255,10 +254,10 @@ class TestVoiceMessages:
 
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     def test_speak_does_not_refer_to_setup_if_user_audio_missing(self, _cached, capsys):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
 
         with pytest.raises(SystemExit):
-            cmd_speak(MockArgs(text="hola", voice="voz_inexistente", no_daemon=True))
+            cmd_speech_say(MockArgs(text="hola", voice="voz_inexistente", no_daemon=True))
 
         err = capsys.readouterr().err
         assert "Error:" in err
@@ -327,35 +326,36 @@ class TestCmdSpeakDaemonDispatch:
     def _args(self, **kw):
         kw.setdefault("timbre_reference", _make_wav("v.wav"))
         kw.setdefault("speech_reference", _make_wav("s.wav"))
-        kw.setdefault("output", os.path.join(_VOICE_TMP, "out.wav"))
         return MockArgs(**kw)
 
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
     @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
-    def test_without_flags_uses_daemon_if_responsive(self, mock_running, mock_client_cls, _cached, tmp_path):
-        from tts_sidecar.cli import cmd_speak
+    def test_without_flags_uses_daemon_if_responsive(self, mock_running, mock_client_cls, _cached, mock_player_cls):
+        from tts_sidecar.cli import cmd_speech_say
 
         client = MagicMock()
         client.synthesize.return_value = _synth_result()
         mock_client_cls.return_value = client
 
-        cmd_speak(self._args(output=str(tmp_path / "out.wav")))
+        cmd_speech_say(self._args())
 
         mock_running.assert_called_once()
         client.synthesize.assert_called_once()
 
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.engine.ChatterboxEngine")
     @patch("tts_sidecar.daemon.is_daemon_running", return_value=False)
-    def test_without_flags_falls_back_to_direct_if_unresponsive(self, mock_running, mock_engine_cls, _cached, tmp_path):
-        from tts_sidecar.cli import cmd_speak
+    def test_without_flags_falls_back_to_direct_if_unresponsive(self, mock_running, mock_engine_cls, _cached, mock_player_cls):
+        from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
         engine.speak.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
-        cmd_speak(self._args(output=str(tmp_path / "out.wav")))
+        cmd_speech_say(self._args())
 
         mock_running.assert_called_once()
         engine.speak.assert_called_once()
@@ -364,7 +364,7 @@ class TestCmdSpeakDaemonDispatch:
     @patch("tts_sidecar.daemon.DaemonIPCClient")
     @patch("tts_sidecar.daemon.is_daemon_running")
     def test_explicit_daemon_does_not_probe_and_fails_on_error(self, mock_running, mock_client_cls, _cached):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
         from tts_sidecar.daemon import DaemonIPCError
 
         client = MagicMock()
@@ -372,21 +372,22 @@ class TestCmdSpeakDaemonDispatch:
         mock_client_cls.return_value = client
 
         with pytest.raises(SystemExit):
-            cmd_speak(self._args(daemon=True))
+            cmd_speech_say(self._args(daemon=True))
 
         mock_running.assert_not_called()
 
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.engine.ChatterboxEngine")
     @patch("tts_sidecar.daemon.is_daemon_running")
-    def test_no_daemon_does_not_probe(self, mock_running, mock_engine_cls, _cached, tmp_path):
-        from tts_sidecar.cli import cmd_speak
+    def test_no_daemon_does_not_probe(self, mock_running, mock_engine_cls, _cached, mock_player_cls):
+        from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
         engine.speak.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
-        cmd_speak(self._args(no_daemon=True, output=str(tmp_path / "out.wav")))
+        cmd_speech_say(self._args(no_daemon=True))
 
         mock_running.assert_not_called()
         engine.speak.assert_called_once()
@@ -401,19 +402,20 @@ class TestCmdSpeakLiveProgress:
         kw.setdefault("speech_reference", _make_wav("s.wav"))
         return MockArgs(**kw)
 
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
     @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
     def test_daemon_passes_formatted_on_progress(
-        self, mock_running, mock_client_cls, _cached, tmp_path
+        self, mock_running, mock_client_cls, _cached, mock_player_cls
     ):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
 
         client = MagicMock()
         client.synthesize.return_value = _synth_result()
         mock_client_cls.return_value = client
 
-        cmd_speak(self._args(daemon=True, output=str(tmp_path / "out.wav")))
+        cmd_speech_say(self._args(daemon=True))
 
         _, kwargs = client.synthesize.call_args
         on_progress = kwargs.get("on_progress")
@@ -422,19 +424,20 @@ class TestCmdSpeakLiveProgress:
         # (en no-TTY el spinner es un no-op, pero la ruta debe ser segura).
         on_progress({"event": "progress", "stage": "t3", "tokens": 42})
 
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.engine.ChatterboxEngine")
     @patch("tts_sidecar.daemon.is_daemon_running", return_value=False)
     def test_direct_passes_formatted_progress_callback(
-        self, mock_running, mock_engine_cls, _cached, tmp_path
+        self, mock_running, mock_engine_cls, _cached, mock_player_cls
     ):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
         engine.speak.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
-        cmd_speak(self._args(no_daemon=True, output=str(tmp_path / "out.wav")))
+        cmd_speech_say(self._args(no_daemon=True))
 
         _, kwargs = engine.speak.call_args
         progress_callback = kwargs.get("progress_callback")
@@ -444,27 +447,10 @@ class TestCmdSpeakLiveProgress:
 
 class TestCmdSpeak:
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
-    @patch("tts_sidecar.engine.ChatterboxEngine")
-    def test_cmd_speak_saves_with_output(self, mock_engine_cls, mock_cached, capsys):
-        from tts_sidecar.cli import cmd_speak
-
-        engine = MagicMock()
-        engine.speak.return_value = _synth_result()
-        mock_engine_cls.get_instance.return_value = engine
-
-        cmd_speak(MockArgs(text="hola", output="out.wav", no_daemon=True))
-
-        # engine.speak recibe el output_path y escribe el archivo directamente
-        _, kwargs = engine.speak.call_args
-        assert kwargs["output_path"] == "out.wav"
-        err = capsys.readouterr().err
-        assert "Audio guardado: out.wav" in err
-
-    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.engine.ChatterboxEngine")
     def test_cmd_speak_plays_without_output(self, mock_engine_cls, mock_player_cls, mock_cached):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
         engine.speak.return_value = _synth_result()
@@ -472,7 +458,7 @@ class TestCmdSpeak:
         player = MagicMock()
         mock_player_cls.return_value = player
 
-        cmd_speak(MockArgs(text="hola", output=None, no_daemon=True))
+        cmd_speech_say(MockArgs(text="hola", no_daemon=True))
 
         player.play.assert_called_once_with(b"RIFF")
 
@@ -967,22 +953,22 @@ class TestExitCodes:
         assert "setup" in capsys.readouterr().err
 
     def test_empty_text_exits_4(self):
-        from tts_sidecar.cli import cmd_speak, EXIT_INVALID_INPUT
+        from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
 
         with pytest.raises(SystemExit) as exc:
-            cmd_speak(MockArgs(text="   ", no_daemon=True))
+            cmd_speech_say(MockArgs(text="   ", no_daemon=True))
         assert exc.value.code == EXIT_INVALID_INPUT
 
     def test_nonexistent_voice_exits_3(self):
-        from tts_sidecar.cli import cmd_speak, EXIT_NOT_FOUND
+        from tts_sidecar.cli import cmd_speech_say, EXIT_NOT_FOUND
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True):
             with pytest.raises(SystemExit) as exc:
-                cmd_speak(MockArgs(text="hola", voice="voz_inexistente", no_daemon=True))
+                cmd_speech_say(MockArgs(text="hola", voice="voz_inexistente", no_daemon=True))
         assert exc.value.code == EXIT_NOT_FOUND
 
     def test_unreachable_daemon_with_flag_exits_5(self):
-        from tts_sidecar.cli import cmd_speak, EXIT_DAEMON_UNREACHABLE
+        from tts_sidecar.cli import cmd_speech_say, EXIT_DAEMON_UNREACHABLE
         from tts_sidecar.daemon import DaemonIPCError
 
         def _falla(args, voice):
@@ -991,7 +977,7 @@ class TestExitCodes:
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
                 patch("tts_sidecar.cli._synthesize_via_daemon", side_effect=_falla):
             with pytest.raises(SystemExit) as exc:
-                cmd_speak(MockArgs(
+                cmd_speech_say(MockArgs(
                     text="hola",
                     daemon=True,
                 ))
@@ -1018,12 +1004,12 @@ class TestExitCodes:
     def test_daemon_and_no_daemon_conflict_exits_4(self, capsys):
         """--daemon y --no-daemon simultáneos → error claro y exit 4,
         antes de cualquier trabajo (incluido el gate de modelo)."""
-        from tts_sidecar.cli import cmd_speak, EXIT_INVALID_INPUT
+        from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
 
         with patch("tts_sidecar.model_cache.is_model_cached",
                    side_effect=AssertionError("el gate de modelo no debe evaluarse")):
             with pytest.raises(SystemExit) as exc:
-                cmd_speak(MockArgs(text="hola", daemon=True, no_daemon=True))
+                cmd_speech_say(MockArgs(text="hola", daemon=True, no_daemon=True))
         assert exc.value.code == EXIT_INVALID_INPUT
         assert "mutuamente excluyentes" in capsys.readouterr().err
 
@@ -1577,84 +1563,74 @@ class TestSetupUninstall:
 
 
 class TestSpeakJSON:
-    """speak --json emite metadatos + métricas a stdout, acoplado a --output,
-    idéntico campo a campo en ruta directa y vía daemon."""
+    """speech say --json emite metadatos + métricas a stdout, idéntico campo a
+    campo en ruta directa y vía daemon."""
 
     def _args(self, **kw):
         kw.setdefault("timbre_reference", _make_wav("v.wav"))
         kw.setdefault("speech_reference", _make_wav("s.wav"))
         return MockArgs(**kw)
 
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.voices.voice_paths")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.engine.ChatterboxEngine")
-    def test_direct_json_payload(self, mock_engine_cls, _cached, mock_voice_paths, tmp_path, capsys):
+    def test_direct_json_payload(self, mock_engine_cls, _cached, mock_voice_paths, mock_player_cls, capsys):
         import json
-        from tts_sidecar.cli import cmd_speak, SCHEMA_VERSION
+        from tts_sidecar.cli import cmd_speech_say, SCHEMA_VERSION
 
         mock_voice_paths.return_value = (_make_wav("v.wav"), _make_wav("s.wav"))
         engine = MagicMock()
         engine.speak.return_value = _synth_result(t3=1.5, s3gen=2.5)
         mock_engine_cls.get_instance.return_value = engine
 
-        out_path = tmp_path / "out.wav"
-        cmd_speak(self._args(
-            no_daemon=True, output=str(out_path), json=True, voice="mi_voz",
+        cmd_speech_say(self._args(
+            no_daemon=True, json=True, voice="mi_voz",
             timbre_reference=None, speech_reference=None,
         ))
 
         payload = json.loads(capsys.readouterr().out)
         assert payload == {
             "schema_version": SCHEMA_VERSION,
-            "output": str(out_path.resolve()),
             "voice": "mi_voz",
             "t3_time": 1.5,
             "s3gen_time": 2.5,
             "daemon": False,
         }
 
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
-    def test_daemon_json_payload(self, mock_client_cls, _cached, tmp_path, capsys):
+    def test_daemon_json_payload(self, mock_client_cls, _cached, mock_player_cls, capsys):
         import json
-        from tts_sidecar.cli import cmd_speak, SCHEMA_VERSION
+        from tts_sidecar.cli import cmd_speech_say, SCHEMA_VERSION
 
         client = MagicMock()
         client.synthesize.return_value = _synth_result(t3=3.0, s3gen=4.0)
         mock_client_cls.return_value = client
 
-        out_path = tmp_path / "out.wav"
-        cmd_speak(self._args(daemon=True, output=str(out_path), json=True))
+        cmd_speech_say(self._args(daemon=True, json=True))
 
         payload = json.loads(capsys.readouterr().out)
         assert payload == {
             "schema_version": SCHEMA_VERSION,
-            "output": str(out_path.resolve()),
             "voice": "default",
             "t3_time": 3.0,
             "s3gen_time": 4.0,
             "daemon": True,
         }
 
-    def test_json_without_output_exits_4(self, capsys):
-        from tts_sidecar.cli import cmd_speak, EXIT_INVALID_INPUT
-
-        with pytest.raises(SystemExit) as exc_info:
-            cmd_speak(self._args(json=True, output=None))
-
-        assert exc_info.value.code == EXIT_INVALID_INPUT
-        assert "--output" in capsys.readouterr().err
-
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.engine.ChatterboxEngine")
-    def test_without_json_stdout_stays_empty(self, mock_engine_cls, _cached, tmp_path, capsys):
-        from tts_sidecar.cli import cmd_speak
+    def test_without_json_stdout_stays_empty(self, mock_engine_cls, _cached, mock_player_cls, capsys):
+        from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
         engine.speak.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
-        cmd_speak(self._args(no_daemon=True, output=str(tmp_path / "out.wav"), json=False))
+        cmd_speech_say(self._args(no_daemon=True, json=False))
 
         assert capsys.readouterr().out == ""
 
@@ -1906,10 +1882,10 @@ class TestDaemonVerbsJSON:
 
 class TestCmdSpeakEmptyText:
     def test_empty_text_is_rejected(self, capsys):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
 
         with pytest.raises(SystemExit):
-            cmd_speak(MockArgs(text="   "))
+            cmd_speech_say(MockArgs(text="   "))
 
         err = capsys.readouterr().err
         assert "--text" in err
@@ -1978,7 +1954,7 @@ class TestSchemaVersionJSON:
 # parser declara, así que un comando --json nuevo sin añadir aquí (o viceversa)
 # hace fallar el test, en vez de quedar fuera de la cobertura en silencio.
 _JSON_COVERED_COMMANDS = {
-    "speak", "devices", "doctor", "setup", "cleanup", "version",
+    "speech say", "devices", "doctor", "setup", "cleanup", "version",
     "voice list", "voice clone", "voice remove",
     "daemon start", "daemon stop", "daemon restart", "daemon status",
 }
@@ -2076,20 +2052,20 @@ class TestSpeakLongText:
     """Un texto muy largo emite una advertencia (no bloqueante) a stderr."""
 
     def test_long_text_warns_and_continues(self, capsys):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
 
         largo = "a" * 2500
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
             with pytest.raises(SystemExit):
-                cmd_speak(MockArgs(text=largo, no_daemon=True))
+                cmd_speech_say(MockArgs(text=largo, no_daemon=True))
         assert "Advertencia" in capsys.readouterr().err
 
     def test_short_text_does_not_warn(self, capsys):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
             with pytest.raises(SystemExit):
-                cmd_speak(MockArgs(text="Hola mundo", no_daemon=True))
+                cmd_speech_say(MockArgs(text="Hola mundo", no_daemon=True))
         assert "Advertencia" not in capsys.readouterr().err
 
 
@@ -2097,49 +2073,51 @@ class TestSingleTextLimit:
     """texto > MAX_TEXT_LENGTH falla con exit 4 antes de cualquier despacho."""
 
     def test_text_exceeds_max_text_length_exits_4_without_daemon(self, capsys):
-        from tts_sidecar.cli import cmd_speak, EXIT_INVALID_INPUT
+        from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
         from tts_sidecar.daemon.protocol import MAX_TEXT_LENGTH
 
         demasiado_largo = "a" * (MAX_TEXT_LENGTH + 1)
         with pytest.raises(SystemExit) as exc_info:
-            cmd_speak(MockArgs(text=demasiado_largo, no_daemon=True))
+            cmd_speech_say(MockArgs(text=demasiado_largo, no_daemon=True))
         assert exc_info.value.code == EXIT_INVALID_INPUT
         assert str(MAX_TEXT_LENGTH) in capsys.readouterr().err
 
     @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
     def test_text_exceeds_max_text_length_exits_4_with_daemon(self, _running, capsys):
-        from tts_sidecar.cli import cmd_speak, EXIT_INVALID_INPUT
+        from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
         from tts_sidecar.daemon.protocol import MAX_TEXT_LENGTH
 
         demasiado_largo = "a" * (MAX_TEXT_LENGTH + 1)
         with pytest.raises(SystemExit) as exc_info:
-            cmd_speak(MockArgs(text=demasiado_largo))
+            cmd_speech_say(MockArgs(text=demasiado_largo))
         assert exc_info.value.code == EXIT_INVALID_INPUT
 
 
 class TestComputeBackendIgnoredViaDaemon:
     """--compute-backend explícito con daemon activo emite un warning."""
 
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
     def test_backend_non_auto_with_explicit_daemon_warns(
-        self, mock_client_cls, _cached, capsys, tmp_path
+        self, mock_client_cls, _cached, mock_player_cls, capsys
     ):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
 
         mock_client_cls.return_value.synthesize.return_value = _synth_result(b"RIFF....")
-        cmd_speak(MockArgs(daemon=True, compute_backend="cuda", output=str(tmp_path / "out.wav")))
+        cmd_speech_say(MockArgs(daemon=True, compute_backend="cuda"))
         assert "--compute-backend" in capsys.readouterr().err
 
+    @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
     def test_backend_auto_with_daemon_does_not_warn(
-        self, mock_client_cls, _cached, capsys, tmp_path
+        self, mock_client_cls, _cached, mock_player_cls, capsys
     ):
-        from tts_sidecar.cli import cmd_speak
+        from tts_sidecar.cli import cmd_speech_say
 
         mock_client_cls.return_value.synthesize.return_value = _synth_result(b"RIFF....")
-        cmd_speak(MockArgs(daemon=True, compute_backend="auto", output=str(tmp_path / "out.wav")))
+        cmd_speech_say(MockArgs(daemon=True, compute_backend="auto"))
         assert "--compute-backend" not in capsys.readouterr().err
 
 
