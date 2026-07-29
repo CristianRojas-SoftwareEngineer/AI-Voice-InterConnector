@@ -193,7 +193,7 @@ def test_precompute_and_save_calls_compute_and_save(monkeypatch, tmp_path):
     prep = ConditionalsPreparer()
     voice_dir = str(tmp_path)
 
-    prep.precompute_and_save(voice_dir, "ref.wav", "speech-reference.wav", tts, "cpu")
+    prep.precompute_and_save(voice_dir, "timbre-reference.wav", "speech-reference.wav", tts, "cpu")
 
     expected = os.path.join(voice_dir, "conditionals.pt")
     assert saved == [expected]

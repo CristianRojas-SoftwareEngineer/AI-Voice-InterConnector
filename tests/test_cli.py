@@ -38,8 +38,8 @@ class MockArgs:
         self.model = kwargs.get("model", "es-mx-latam")
         self.compute_backend = kwargs.get("compute_backend", "auto")
         self.name = kwargs.get("name", "testcli")
-        self.timbre_reference = kwargs.get("timbre_reference", "ref.wav")
-        self.speech_reference = kwargs.get("speech_reference", "speech-reference.wav")
+        self.timbre_reference = kwargs.get("timbre_reference", "timbre.wav")
+        self.speech_reference = kwargs.get("speech_reference", "speech.wav")
         self.daemon = kwargs.get("daemon", False)
         self.no_daemon = kwargs.get("no_daemon", False)
         self.json = kwargs.get("json", False)
@@ -122,7 +122,7 @@ class TestCmdVoiceClone:
         from tts_sidecar.cli import cmd_voice_clone, EXIT_MODEL_MISSING
 
         with pytest.raises(SystemExit) as exc:
-            cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="ref.wav", speech_reference="speech-reference.wav"))
+            cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="timbre.wav", speech_reference="speech.wav"))
 
         assert exc.value.code == EXIT_MODEL_MISSING
         assert "setup" in capsys.readouterr().err
@@ -138,11 +138,11 @@ class TestCmdVoiceClone:
         """Con daemon activo, precomputa vía IPC sin cargar el motor en frío."""
         from tts_sidecar.cli import cmd_voice_clone
 
-        mock_register.return_value = ("/path/to/ref.wav", "/path/to/speech-reference.wav")
+        mock_register.return_value = ("/path/to/timbre-reference.wav", "/path/to/speech-reference.wav")
         mock_client_cls.return_value.precompute_voice.return_value = True
 
         with patch("tts_sidecar.engine.ChatterboxEngine") as mock_engine_cls:
-            cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="ref.wav", speech_reference="speech-reference.wav"))
+            cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="timbre.wav", speech_reference="speech.wav"))
             mock_engine_cls.assert_not_called()
 
         out = capsys.readouterr().out
@@ -159,11 +159,11 @@ class TestCmdVoiceClone:
         """Sin daemon, carga el motor en modo directo y precomputa."""
         from tts_sidecar.cli import cmd_voice_clone
 
-        mock_register.return_value = ("/path/to/ref.wav", "/path/to/speech-reference.wav")
+        mock_register.return_value = ("/path/to/timbre-reference.wav", "/path/to/speech-reference.wav")
 
         with patch("tts_sidecar.engine.ChatterboxEngine") as mock_engine_cls:
             engine = mock_engine_cls.get_instance.return_value
-            cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="ref.wav", speech_reference="speech-reference.wav"))
+            cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="timbre.wav", speech_reference="speech.wav"))
             engine.precompute_voice.assert_called_once_with("newvoice")
 
         assert "precomputados" in capsys.readouterr().out
@@ -177,11 +177,11 @@ class TestCmdVoiceClone:
         """Un fallo del precómputo avisa pero no aborta el clonado (lazy fallback)."""
         from tts_sidecar.cli import cmd_voice_clone
 
-        mock_register.return_value = ("/path/to/ref.wav", "/path/to/speech-reference.wav")
+        mock_register.return_value = ("/path/to/timbre-reference.wav", "/path/to/speech-reference.wav")
 
         with patch("tts_sidecar.engine.ChatterboxEngine") as mock_engine_cls:
             mock_engine_cls.get_instance.side_effect = RuntimeError("boom")
-            cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="ref.wav", speech_reference="speech-reference.wav"))
+            cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="timbre.wav", speech_reference="speech.wav"))
 
         captured = capsys.readouterr()
         assert "Voz 'newvoice' clonada" in captured.out
@@ -199,15 +199,15 @@ class TestCmdVoiceClone:
         import json
         from tts_sidecar.cli import cmd_voice_clone, SCHEMA_VERSION
 
-        mock_register.return_value = ("/path/to/ref.wav", "/path/to/speech-reference.wav")
+        mock_register.return_value = ("/path/to/timbre-reference.wav", "/path/to/speech-reference.wav")
         mock_client_cls.return_value.precompute_voice.return_value = True
 
-        cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="ref.wav", speech_reference="speech-reference.wav", json=True))
+        cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="timbre.wav", speech_reference="speech.wav", json=True))
 
         assert json.loads(capsys.readouterr().out) == {
             "schema_version": SCHEMA_VERSION,
             "name": "newvoice",
-            "reference": "/path/to/ref.wav",
+            "reference": "/path/to/timbre-reference.wav",
             "speech": "/path/to/speech-reference.wav",
             "precomputed": True,
         }
