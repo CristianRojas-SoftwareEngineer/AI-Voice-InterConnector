@@ -3,7 +3,7 @@
 **Estado**: propuesta, sin implementar. Ninguna decisión de este documento está en el código.
 **Alcance**: contrato público de la CLI (comandos, flags, códigos de salida, payloads `--json`) y el almacén de habla sintética.
 **Base**: commit `26735cd`, el último que toca `src/`. Todo lo descrito en la sección 1 está verificado contra el árbol de trabajo.
-**Sustituye a**: `generate-speech-redesign.md`, que se conserva solo por trazabilidad. Este documento es la fuente única; el anterior no debe consultarse para saber qué va a existir.
+**Sustituye a**: `generate-speech-redesign.md`, retirado en el commit `b098b49` una vez colapsado aquí. Este documento es la fuente única del rediseño.
 
 ---
 
