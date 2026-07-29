@@ -67,27 +67,6 @@ class TestBundledVoicesDir:
         )
 
 
-class TestEnsureParentDir:
-    def test_creates_missing_parent(self, tmp_path):
-        target = tmp_path / "nested" / "deep" / "out.wav"
-        paths.ensure_parent_dir(str(target))
-        assert os.path.isdir(target.parent)
-
-    def test_is_idempotent(self, tmp_path):
-        target = tmp_path / "a" / "b.wav"
-        paths.ensure_parent_dir(str(target))
-        # Segunda invocación no debe lanzar (exist_ok=True).
-        paths.ensure_parent_dir(str(target))
-        assert os.path.isdir(target.parent)
-
-    def test_works_when_parent_exists(self, tmp_path):
-        existing = tmp_path / "existing"
-        existing.mkdir()
-        target = existing / "out.wav"
-        paths.ensure_parent_dir(str(target))
-        assert os.path.isdir(existing)
-
-
 def test_default_voice_resolves_without_monkeypatching_roots():
     """La voz 'default' se resuelve directamente vía factory_voices_root(),
     sin necesidad de parchear rutas (a diferencia de los tests de voices.py

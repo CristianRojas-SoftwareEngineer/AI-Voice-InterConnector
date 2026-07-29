@@ -9,20 +9,17 @@ import io
 import wave
 from pathlib import Path
 
-from .paths import ensure_parent_dir
-
 import numpy as np
 
 
 class AudioWriter:
-    """Convierte audio a bytes WAV PCM 16-bit mono y opcionalmente los guarda a disco."""
+    """Convierte audio a bytes WAV PCM 16-bit mono."""
 
-    def write(self, audio_data, sample_rate: int, path=None) -> bytes:
-        """Convierte `audio_data` a bytes WAV PCM 16-bit mono.
+    def write(self, audio_data, sample_rate: int) -> bytes:
+        """Convierte `audio_data` a bytes WAV PCM 16-bit mono y los retorna.
 
-        Si `path` se da, crea los directorios padre y escribe el archivo; en
-        ambos casos retorna los bytes WAV. El sample rate se pasa explícitamente
-        (el orquestador lo toma de `tts.sr`) en vez de leerse de `self._tts`.
+        El sample rate se pasa explícitamente (el orquestador lo toma de
+        `tts.sr`) en vez de leerse de `self._tts`.
         """
         if hasattr(audio_data, 'numpy'):
             audio_np = audio_data.numpy()
@@ -45,11 +42,6 @@ class AudioWriter:
             audio_np = audio_np / max_val
 
         wav_bytes = self._to_wav_bytes(audio_np, sample_rate)
-
-        if path is not None:
-            ensure_parent_dir(path)
-            with open(path, 'wb') as f:
-                f.write(wav_bytes)
 
         return wav_bytes
 

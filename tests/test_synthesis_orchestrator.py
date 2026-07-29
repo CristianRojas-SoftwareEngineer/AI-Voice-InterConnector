@@ -1,7 +1,7 @@
 """Tests para SynthesisOrchestrator.
 
 Validan el flujo extraído de `ChatterboxEngine._speak_impl`: emisión de etapas,
-guardado opcional, ciclo de vida de `_active_progress_cb` (limpieza en finally,
+ciclo de vida de `_active_progress_cb` (limpieza en finally,
 un callback roto no aborta), memoización de conditionals por mtime y recomputo
 ante un `conditionals.pt` corrupto. Usan dobles ligeros del motor (sin cargar el
 modelo real) y ejercen el orquestador directamente.
@@ -48,28 +48,12 @@ class TestOrchestratorSynthesize:
 
         events = []
         eng._orchestrator.synthesize(
-            "hola", None, str(speech), None, lambda ev: events.append(ev)
+            "hola", None, str(speech), lambda ev: events.append(ev)
         )
 
         stages = [ev["stage"] for ev in events]
         assert stages == ["conditionals", "tts", "encoding"]
         assert all(ev["event"] == "progress" for ev in events)
-
-    def test_emits_saving_with_output_path(self, tmp_path):
-        eng = _engine_with_orchestrator()
-        eng._conditionals_prep.compute = lambda *a, **kw: None
-        speech = tmp_path / "speech-reference.wav"
-        speech.write_bytes(b"RIFF")
-        out = tmp_path / "out.wav"
-
-        events = []
-        eng._orchestrator.synthesize(
-            "hola", None, str(speech), str(out), lambda ev: events.append(ev)
-        )
-        assert [ev["stage"] for ev in events] == [
-            "conditionals", "tts", "encoding", "saving",
-        ]
-        assert out.exists(), "el orquestador debe guardar el archivo cuando hay output_path"
 
     def test_returns_valid_wav_bytes(self, tmp_path):
         eng = _engine_with_orchestrator()
@@ -77,7 +61,7 @@ class TestOrchestratorSynthesize:
         speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
-        result = eng._orchestrator.synthesize("hola", None, str(speech), None, None)
+        result = eng._orchestrator.synthesize("hola", None, str(speech), None)
         assert isinstance(result.audio_bytes, bytes)
         with wave.open(__import__("io").BytesIO(result.audio_bytes), 'rb') as wf:
             assert wf.getnchannels() == 1
@@ -90,7 +74,7 @@ class TestOrchestratorSynthesize:
         speech.write_bytes(b"RIFF")
 
         eng._orchestrator.synthesize(
-            "hola", None, str(speech), None, lambda ev: None
+            "hola", None, str(speech), lambda ev: None
         )
         assert eng._active_progress_cb is None
 
@@ -103,7 +87,7 @@ class TestOrchestratorSynthesize:
         def boom(ev):
             raise RuntimeError("callback roto")
 
-        result = eng._orchestrator.synthesize("hola", None, str(speech), None, boom)
+        result = eng._orchestrator.synthesize("hola", None, str(speech), boom)
         assert isinstance(result.audio_bytes, bytes)
         assert eng._active_progress_cb is None
 
@@ -120,7 +104,7 @@ class TestOrchestratorConditionals:
         recomputos = []
         eng._conditionals_prep.compute = lambda *a, **kw: recomputos.append(kw)
 
-        eng._orchestrator.synthesize("hola", None, str(speech), None, None)
+        eng._orchestrator.synthesize("hola", None, str(speech), None)
         assert recomputos, "el orquestador debe recomputar cuando conditionals.pt es corrupto"
 
     def test_memoization_by_mtime(self, tmp_path):
@@ -140,15 +124,15 @@ class TestOrchestratorConditionals:
         eng.load_precomputed_conditionals = fake_load
         eng._conditionals_prep.compute = lambda *a, **kw: None
 
-        eng._orchestrator.synthesize("hola", None, str(speech), None, None)
-        eng._orchestrator.synthesize("hola otra vez", None, str(speech), None, None)
+        eng._orchestrator.synthesize("hola", None, str(speech), None)
+        eng._orchestrator.synthesize("hola otra vez", None, str(speech), None)
         assert len(loads) == 1, "la segunda síntesis de la misma voz no debe releer disco"
 
         # Un conditionals.pt regenerado (mtime nuevo) invalida la memoización
         mtime = conds.stat().st_mtime + 10
         import os
         os.utime(conds, (mtime, mtime))
-        eng._orchestrator.synthesize("hola de nuevo", None, str(speech), None, None)
+        eng._orchestrator.synthesize("hola de nuevo", None, str(speech), None)
         assert len(loads) == 2
 
 

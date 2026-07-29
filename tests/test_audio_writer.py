@@ -1,4 +1,4 @@
-"""Tests para AudioWriter: conversión a WAV y guardado a disco.
+"""Tests para AudioWriter: conversión a WAV.
 
 El módulo es puro (no carga el modelo); los tests usan numpy y re-leen el WAV
 resultante con el módulo `wave` para validar la codificación PCM 16-bit mono.
@@ -64,20 +64,7 @@ class TestWriteInMemory:
         _, _, _, int16 = _read_wav(out)
         assert int16.max() == 32767  # normalizado, sin desbordamiento
 
-
-class TestWriteToFile:
-    def test_creates_file_with_content(self, tmp_path):
-        audio = np.full(2400, 0.5, dtype=np.float32)
-        out_path = tmp_path / "sub" / "dir" / "out.wav"
-        out = AudioWriter().write(audio, sample_rate=24000, path=str(out_path))
-        assert out_path.exists()
-        # El archivo en disco coincide con los bytes retornados.
-        assert out_path.read_bytes() == out
-        _, _, n, _ = _read_wav(out_path.read_bytes())
-        tail_frames = int(24000 * 0.05)
-        assert n == 2400 + tail_frames
-
-    def test_pathless_write_does_not_touch_disk(self, tmp_path):
+    def test_write_does_not_touch_disk(self, tmp_path):
         audio = np.full(100, 0.1, dtype=np.float32)
-        AudioWriter().write(audio, sample_rate=24000)  # sin path
+        AudioWriter().write(audio, sample_rate=24000)
         assert not any(tmp_path.iterdir())

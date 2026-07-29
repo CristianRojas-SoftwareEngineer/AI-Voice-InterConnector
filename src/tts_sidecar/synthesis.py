@@ -35,7 +35,6 @@ class SynthesisOrchestrator:
         text: str,
         timbre_reference,
         speech_reference,
-        output_path,
         progress_callback,
     ) -> SynthesisResult:
         """Ejecuta la síntesis completa y retorna el audio + las métricas.
@@ -48,11 +47,11 @@ class SynthesisOrchestrator:
         engine = self.engine
         engine._active_progress_cb = progress_callback
         try:
-            return self._synthesize_impl(text, timbre_reference, speech_reference, output_path)
+            return self._synthesize_impl(text, timbre_reference, speech_reference)
         finally:
             engine._active_progress_cb = None
 
-    def _synthesize_impl(self, text, timbre_reference, speech_reference, output_path) -> SynthesisResult:
+    def _synthesize_impl(self, text, timbre_reference, speech_reference) -> SynthesisResult:
         engine = self.engine
 
         # Stage 1: Carga de conditionals
@@ -97,12 +96,6 @@ class SynthesisOrchestrator:
         with StageTimer("3-Speak", "Etapa 3/4: Convirtiendo a WAV"):
             sample_rate = getattr(engine._tts, 'sr', 24000)
             wav_bytes = self.audio_writer.write(wav, sample_rate)
-
-        # Stage 4: Guardado a archivo (opcional)
-        if output_path:
-            engine._emit_progress(stage="saving")
-            with StageTimer("4-Speak", "Etapa 4/4: Guardando en archivo"):
-                self.audio_writer.write(wav, sample_rate, output_path)
 
         # Métricas tipadas publicadas por el engine (SynthesisMetrics), pobladas
         # por los wrappers timed_t3/timed_s3gen en engine._apply_synthesis_optimizations.

@@ -126,7 +126,7 @@ class TestCorruptConditionals:
         eng._tts = FakeTTS()
         monkeypatch.setattr(
             eng._orchestrator.audio_writer, "write",
-            lambda audio_data, sample_rate, path=None: b"RIFF",
+            lambda audio_data, sample_rate: b"RIFF",
         )
 
         assert eng.speak("hola", speech_reference=str(speech)).audio_bytes == b"RIFF"
@@ -179,7 +179,7 @@ class TestUnifiedParameters:
         eng = self._engine_stub(tmp_path)
         monkeypatch.setattr(
             eng._orchestrator.audio_writer, "write",
-            lambda audio_data, sample_rate, path=None: b"RIFF",
+            lambda audio_data, sample_rate: b"RIFF",
         )
         speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
@@ -196,7 +196,7 @@ class TestUnifiedParameters:
         eng = self._engine_stub(tmp_path)
         monkeypatch.setattr(
             eng._orchestrator.audio_writer, "write",
-            lambda audio_data, sample_rate, path=None: b"RIFF",
+            lambda audio_data, sample_rate: b"RIFF",
         )
 
         voice = tmp_path / "voz"

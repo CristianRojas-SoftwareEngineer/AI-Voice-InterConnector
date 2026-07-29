@@ -446,19 +446,17 @@ class ChatterboxEngine:
         text: str,
         timbre_reference: Optional[str] = None,
         speech_reference: Optional[str] = None,
-        output_path: Optional[str] = None,
         verbose: bool = True,
         progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> SynthesisResult:
         """
-        Genera y opcionalmente guarda audio a partir de texto.
+        Genera audio a partir de texto.
 
         Args:
             text: Texto a sintetizar (español)
             timbre_reference: Archivo de audio para el Voice Encoder (audio completo para el embedding de timbre)
             speech_reference: Archivo de audio para el conditioning del T3 (6s) + decoder S3Gen (10s).
                          Si es None pero se da timbre_reference, se usa timbre_reference para ambos.
-            output_path: Ruta opcional para guardar el archivo WAV
             verbose: Si es True, imprime info de timing por etapa (default True)
             progress_callback: Callback opcional que recibe dicts de progreso
                 (`{"event":"progress","stage":...,"tokens":...}`) en cada
@@ -473,11 +471,9 @@ class ChatterboxEngine:
         """
         if not timbre_reference and not speech_reference:
             raise ValueError(
-                "Se requiere al menos un archivo de audio. "
-                "Usa --voice para una voz registrada, --voice-audio para el timbre "
-                "o --speech-audio para el conditioning. Sin ninguno de estos, la CLI "
-                "recurre a la voz de fábrica 'default'. "
-                "Si solo se da --voice-audio, se usa para ambos."
+                "Se requiere al menos un archivo de audio de referencia. "
+                "Usa `--voice` para una voz registrada; sin él, la CLI recurre "
+                "a la voz de fábrica 'default'."
             )
 
         # Si solo hay timbre_reference, úsalo para ambos
@@ -487,7 +483,7 @@ class ChatterboxEngine:
         # Façade delgado: el flujo de síntesis y el ciclo de vida de
         # _active_progress_cb viven en el orquestador, no en el engine.
         return self._orchestrator.synthesize(
-            text, timbre_reference, speech_reference, output_path, progress_callback
+            text, timbre_reference, speech_reference, progress_callback
         )
 
     def precompute_voice(self, name: str) -> None:

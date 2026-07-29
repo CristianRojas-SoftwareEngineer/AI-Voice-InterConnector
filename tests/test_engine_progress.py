@@ -48,7 +48,7 @@ class TestSpeakProgressCallback:
         eng = _engine_stub(tmp_path)
         monkeypatch.setattr(
             eng._orchestrator.audio_writer, "write",
-            lambda audio_data, sample_rate, path=None: b"RIFF",
+            lambda audio_data, sample_rate: b"RIFF",
         )
         eng._conditionals_prep.compute = lambda *a, **kw: None
 
@@ -68,36 +68,11 @@ class TestSpeakProgressCallback:
         assert stages == ["conditionals", "tts", "encoding"]
         assert all(ev["event"] == "progress" for ev in events)
 
-    def test_emits_saving_with_output_path(self, tmp_path, monkeypatch):
-        eng = _engine_stub(tmp_path)
-        # El guardado ahora vive en AudioWriter.write (recibe path); el doble lo
-        # ignora y solo retorna bytes, así que no toca disco.
-        monkeypatch.setattr(
-            eng._orchestrator.audio_writer, "write",
-            lambda audio_data, sample_rate, path=None: b"RIFF",
-        )
-        eng._conditionals_prep.compute = lambda *a, **kw: None
-
-        speech = tmp_path / "speech-reference.wav"
-        speech.write_bytes(b"RIFF")
-        out = tmp_path / "out.wav"
-
-        events = []
-        eng.speak(
-            "hola",
-            speech_reference=str(speech),
-            output_path=str(out),
-            progress_callback=lambda ev: events.append(ev),
-        )
-        assert [ev["stage"] for ev in events] == [
-            "conditionals", "tts", "encoding", "saving",
-        ]
-
     def test_callback_is_cleared_in_finally(self, tmp_path, monkeypatch):
         eng = _engine_stub(tmp_path)
         monkeypatch.setattr(
             eng._orchestrator.audio_writer, "write",
-            lambda audio_data, sample_rate, path=None: b"RIFF",
+            lambda audio_data, sample_rate: b"RIFF",
         )
         eng._conditionals_prep.compute = lambda *a, **kw: None
         speech = tmp_path / "speech-reference.wav"
@@ -110,7 +85,7 @@ class TestSpeakProgressCallback:
         eng = _engine_stub(tmp_path)
         monkeypatch.setattr(
             eng._orchestrator.audio_writer, "write",
-            lambda audio_data, sample_rate, path=None: b"RIFF",
+            lambda audio_data, sample_rate: b"RIFF",
         )
         eng._conditionals_prep.compute = lambda *a, **kw: None
         speech = tmp_path / "speech-reference.wav"
