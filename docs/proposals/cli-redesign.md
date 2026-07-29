@@ -431,6 +431,8 @@ Sin `--play`, `synthesize` sintetiza, guarda y termina. Con `--play`, reproduce 
 
 `speech say` sintetiza y reproduce, y no escribe nada en el almacén. Es el destino de la invocación que solo quiere oír el resultado: la que no nombra un artefacto porque no lo quiere.
 
+**Son dos usos que no se cruzan, y el diseño no supone que la síntesis sea determinista.** `say` es locución continua, generada al vuelo: cada mensaje es distinto del anterior y se descarta al sonar, así que persistir no tendría sentido. `synthesize` es para grabar un mensaje reutilizable —el caso de los mensajes por defecto— y reproducirlo después sin volver a sintetizarlo. No existe un recorrido que salte de `say` a `synthesize` para «quedarse» con una toma ya oída: quien quiere conservar usa `synthesize` desde el principio. Por eso la reproducción sin re-síntesis la garantiza **el almacén** —se guarda un WAV y se reproduce ese WAV—, y no una supuesta reproducibilidad del motor entre dos llamadas. Dentro de `synthesize`, la variación entre tomas es esperada y es justo lo que «rechazar y regenerar» aprovecha; «aceptar y guardar» persiste la toma que sonó, nunca una nueva.
+
 #### El bucle de `--play`: cuatro opciones
 
 | Opción | Efecto | Costo |
