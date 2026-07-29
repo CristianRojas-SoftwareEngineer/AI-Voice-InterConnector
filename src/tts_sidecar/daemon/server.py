@@ -6,7 +6,6 @@ Expone endpoints HTTP para síntesis TTS con el modelo persistente en memoria.
 import base64
 import gc
 import logging
-import os
 import queue
 import threading
 from dataclasses import dataclass
@@ -108,44 +107,6 @@ MAX_INFLIGHT_SYNTHESIS = 4
 _admission_semaphore = threading.BoundedSemaphore(MAX_INFLIGHT_SYNTHESIS)
 
 
-def _validate_audio_path(path: str, field: str, allowed_dirs: list[str]) -> str:
-    """Valida y canoniza una ruta de audio de entrada del daemon.
-
-    Devuelve ``os.path.realpath(path)`` (ruta canónica, resuelta una sola vez)
-    si la ruta:
-      - tiene extensión ``.wav`` (case-insensitive) y es un archivo existente,
-      - queda contenida en alguno de ``allowed_dirs`` (contención vía realpath
-        para evitar escapes por symlink), y
-      - es un WAV válido (header RIFF/WAVE de 12 bytes).
-
-    En cualquier otro caso lanza ``HTTPException(400)`` con un ``detail`` que
-    no expone rutas del sistema. El caller (``synthesize``) reusa el realpath
-    devuelto para pasarlo al engine, cerrando la ventana de symlink swap.
-    """
-    if not path.lower().endswith(".wav") or not os.path.isfile(path):
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field}: se requiere una ruta a un archivo .wav existente",
-        )
-    real_path = os.path.realpath(path)
-    if not any(real_path == d or real_path.startswith(d + os.sep) for d in allowed_dirs):
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field}: la ruta no está en un directorio permitido",
-        )
-    try:
-        with open(real_path, "rb") as f:
-            header = f.read(12)
-    except OSError:
-        header = b""
-    if len(header) < 12 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field}: el archivo no es un WAV válido",
-        )
-    return real_path
-
-
 @app.post("/synthesize")
 def synthesize(
     req: SynthesizeRequest,
@@ -163,30 +124,14 @@ def synthesize(
     síntesis falla en el hilo worker, se emite una línea `error`. El esquema de
     cada línea lo define protocol.py (ProgressEvent/ResultEvent/ErrorEvent).
 
-    La validación de rutas de audio ocurre ANTES de arrancar la síntesis: un
-    400/503 de validación sigue siendo una respuesta de error inmediata (no un
-    frame del stream).
+    El daemon resuelve el nombre de voz de la petición contra su propio
+    registro antes de sintetizar; una voz no registrada produce un frame
+    `error` (vía el `except FileNotFoundError` de más abajo), no una
+    respuesta 400/503.
     """
     engine = state.engine
     if not engine:
         raise HTTPException(status_code=503, detail="Modelo no cargado")
-
-    # Valida las rutas de audio antes de que lleguen a librosa.load: deben
-    # existir, ser .wav y quedar contenidas en un directorio permitido
-    # (sin esto, cualquier proceso local podía hacer que el daemon
-    # leyera un .wav arbitrario del sistema de archivos). Los mensajes de error
-    # no exponen rutas del sistema.
-    allowed_dirs = [os.path.realpath(d) for d in voices.allowed_audio_dirs()]
-    # Cada ruta se resuelve a su forma canónica UNA sola vez dentro de
-    # _validate_audio_path y esa misma ruta (no la cruda de la petición) es la
-    # que se pasa a engine.speak: sin esto, quedaba una ventana entre validar
-    # y usar en la que el archivo podía cambiar (symlink swap) sin volver a
-    # pasar por la validación.
-    real_paths: dict[str, str] = {}
-    for field, path in (("voice_audio", req.voice_audio), ("speech_audio", req.speech_audio)):
-        if path is None:
-            continue
-        real_paths[field] = _validate_audio_path(path, field, allowed_dirs)
 
     # Admisión no bloqueante: si ya hay MAX_INFLIGHT_SYNTHESIS peticiones en
     # vuelo, se rechaza de inmediato en vez de apilar otro thread worker.
@@ -221,10 +166,11 @@ def synthesize(
                             raise SynthesisCancelled()
                         q.put(("progress", ev))
 
+                    ref_path, speech_path = voices.voice_paths(req.voice)
                     result = engine.speak(
                         text=req.text,
-                        voice_audio=real_paths.get("voice_audio"),
-                        speech_audio=real_paths.get("speech_audio"),
+                        voice_audio=ref_path,
+                        speech_audio=speech_path,
                         verbose=True,
                         progress_callback=push,
                     )

@@ -21,12 +21,6 @@ from typing import Literal, Optional
 # trivial de un payload ilimitado.
 MAX_TEXT_LENGTH = 5000
 
-# Tope de longitud para las rutas de audio: por encima del límite práctico de
-# ruta en los tres SO soportados (Windows MAX_PATH extendido, Linux/macOS
-# PATH_MAX), evita payloads desproporcionados antes de que lleguen a la
-# validación de directorio permitido de /synthesize.
-MAX_AUDIO_PATH_LENGTH = 4096
-
 # Tope de longitud del nombre de voz: holgado sobre el límite de nombre de
 # archivo de los tres SO (255), suficiente para acotar el payload antes de que
 # la resolución en el registro (voices.voice_paths) lo valide de verdad.
@@ -39,10 +33,12 @@ class ProtocolModel(BaseModel):
     Centraliza la política de compatibilidad hacia adelante y hacia atrás en
     un solo punto, en vez de dejarla como el default implícito de Pydantic en
     cada modelo:
-      - `schema_version`: fijo en "1" mientras los cambios sean aditivos
-        (campo nuevo con default). Un cliente/daemon viejo que no lo conozca
-        simplemente lo ignora al parsear; un cambio incompatible de un campo
-        existente sí ameritaría incrementarlo.
+      - `schema_version`: subió a "2" con el cambio incompatible de
+        `SynthesizeRequest`, que dejó de aceptar rutas de audio crudas y pasó
+        a recibir el nombre de una voz registrada. Mientras los cambios sean
+        aditivos (campo nuevo con default) no hace falta incrementarlo: un
+        cliente/daemon viejo que no lo conozca simplemente lo ignora al
+        parsear; un cambio incompatible de un campo existente sí lo amerita.
       - `extra="ignore"`: un campo desconocido en el payload (p. ej. un daemon
         más nuevo enviando un campo que este proceso aún no conoce) se
         descarta en vez de fallar la validación. Sin esto, el skew de
@@ -54,7 +50,7 @@ class ProtocolModel(BaseModel):
     """
     model_config = ConfigDict(extra="ignore")
 
-    schema_version: str = "1"
+    schema_version: str = "2"
 
 
 class SynthesizeRequest(BaseModel):
@@ -62,10 +58,11 @@ class SynthesizeRequest(BaseModel):
 
     El daemon sirve un único modelo y compute backend fijados al arrancar; la
     petición no lleva `model` ni `compute_backend` (el servidor los ignoraría).
+    La petición lleva el nombre de una voz ya registrada; el daemon resuelve
+    sus rutas de audio desde su propio registro (nunca una ruta del llamador).
     """
     text: str = Field(min_length=1, max_length=MAX_TEXT_LENGTH)
-    voice_audio: Optional[str] = Field(default=None, max_length=MAX_AUDIO_PATH_LENGTH)
-    speech_audio: Optional[str] = Field(default=None, max_length=MAX_AUDIO_PATH_LENGTH)
+    voice: str = Field(min_length=1, max_length=MAX_VOICE_NAME_LENGTH)
 
 
 # ---------------------------------------------------------------------------

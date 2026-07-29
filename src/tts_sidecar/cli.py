@@ -87,16 +87,8 @@ def _resolve_voice_paths(args):
     """Resuelve las rutas de audio de una voz a partir de su nombre SIN cargar el modelo."""
     from . import voices
 
-    voice_audio = getattr(args, 'voice_audio', None)
-    speech_audio = getattr(args, 'speech_audio', None)
-
-    if getattr(args, 'voice', None):
-        # Resuelve directamente desde el sistema de archivos: no se necesita el modelo.
-        voice_audio, speech_audio = voices.voice_paths(args.voice)
-    elif not voice_audio and not speech_audio:
-        # Sin --voice ni audios explícitos: usar la voz de fábrica 'default'
-        # (resolución usuario→fábrica), de modo que `speak --text "Hola"` funcione.
-        voice_audio, speech_audio = voices.voice_paths("default")
+    voice_name = getattr(args, 'voice', None) or "default"
+    voice_audio, speech_audio = voices.voice_paths(voice_name)
 
     # Resuelve a rutas absolutas contra el CWD del cliente antes de que crucen la
     # frontera de proceso hacia el daemon, que tiene otro directorio de trabajo.
@@ -126,59 +118,6 @@ def _emit_audio(audio_bytes, output):
         log("[Reproducción] Reproducción finalizada")
 
 
-def _paths_allowed_by_daemon(voice_audio, speech_audio) -> bool:
-    """Replica la sandbox de rutas del daemon (server.py) en el cliente.
-
-    Permite detectar ANTES del despacho si --voice-audio/--speech-audio
-    quedarán fuera de los directorios que la sandbox del servidor acepta
-    (voices.allowed_audio_dirs()), evitando el 400 opaco «la ruta no está en
-    un directorio permitido». No relaja ni duplica la sandbox del servidor:
-    solo la anticipa para dar un mensaje accionable en el cliente. La
-    *existencia/extensión* del archivo la anticipa en cambio la función hermana
-    `_check_audio_paths_present`, dejando aquí solo la contención
-    de la sandbox como responsabilidad.
-    """
-    from . import voices
-
-    allowed_dirs = [os.path.realpath(d) for d in voices.allowed_audio_dirs()]
-    for path in (voice_audio, speech_audio):
-        if path is None:
-            continue
-        real_path = os.path.realpath(path)
-        if not any(
-            real_path == d or real_path.startswith(d + os.sep) for d in allowed_dirs
-        ):
-            return False
-    return True
-
-
-def _check_audio_paths_present(voice_audio, speech_audio) -> str | None:
-    """Valida existencia/extensión de los audios en el cliente (UX, no seguridad).
-
-    Hermana de `_paths_allowed_by_daemon`; responde una
-    pregunta distinta —«¿el archivo existe y es .wav?»— y no colapsa ambas en un
-    solo booleano (la contención sigue siendo responsabilidad de la sandbox). Se invoca
-    centralmente en `cmd_speak` antes de cargar el modelo (directo) o del
-    round-trip (daemon), fallando temprano y con mensaje uniforme en ambos modos.
-
-    Este chequeo es de UX y **no reemplaza** la frontera de seguridad
-    del servidor. `server.py._validate_audio_path` sigue revalidando con un único
-    `realpath` (cierra la ventana TOCTOU de symlink-swap); aquí solo anticipamos
-    el error para ahorrar latencia y dar un mensaje accionable al cliente.
-
-    Retorna `None` si ambas rutas (no nulas) son archivos `.wav` existentes, o un
-    mensaje de error en caso contrario.
-    """
-    for path in (voice_audio, speech_audio):
-        if path is None:
-            continue
-        if not path.lower().endswith(".wav"):
-            return f"{path}: la ruta no apunta a un archivo .wav"
-        if not os.path.isfile(path):
-            return f"{path}: el archivo no existe"
-    return None
-
-
 def _warn_compute_backend_ignored(args):
     """Avisa si --compute-backend se ignora porque la síntesis va vía daemon.
 
@@ -196,7 +135,7 @@ def _warn_compute_backend_ignored(args):
         )
 
 
-def _synthesize_via_daemon(args, voice_audio, speech_audio):
+def _synthesize_via_daemon(args, voice):
     """Sintetiza vía daemon, emite el audio (reproducción o archivo) y retorna
     el `SynthesisResult` (audio + métricas), para que el llamador pueda emitir
     `speak --json` con la misma forma que el modo directo.
@@ -217,8 +156,7 @@ def _synthesize_via_daemon(args, voice_audio, speech_audio):
     with Spinner("Sintetizando vía daemon…") as sp:
         result = client.synthesize(
             text=args.text,
-            voice_audio=voice_audio,
-            speech_audio=speech_audio,
+            voice=voice,
             on_progress=lambda ev: sp.update(format_progress_event(ev)),
         )
     elapsed = time.time() - synth_start
@@ -313,26 +251,9 @@ def cmd_speak(args):
         # Las descargas son responsabilidad exclusiva de 'setup'.
         _require_model_cached()
 
-        # Resuelve las rutas de audio de la voz SIN cargar el modelo.
-        voice_audio, speech_audio = _resolve_voice_paths(args)
-        # Nombre de voz efectivo para el payload --json: el de --voice, o
-        # "default" cuando cmd_speak recurre a la voz de fábrica.
+        # Nombre de voz efectivo para el payload --json y para la síntesis: el
+        # de --voice, o "default" cuando cmd_speak recurre a la voz de fábrica.
         voice_name = getattr(args, "voice", None) or "default"
-
-        # Validación central de existencia/extensión de
-        # audio en el cliente, antes de cargar el modelo (directo) o del round-trip
-        # (daemon). Falla temprano y con mensaje uniforme en ambos modos; la
-        # frontera de seguridad queda en el servidor, que revalida.
-        audio_problem = _check_audio_paths_present(voice_audio, speech_audio)
-        if audio_problem is not None:
-            print(f"Error: {audio_problem}.", file=sys.stderr)
-            print(
-                "Sugerencia: clona el audio como voz "
-                "(tts-sidecar voice clone --name <nombre> --reference <ref> "
-                "--speech <habla>) o usa --no-daemon para sintetizar con esta ruta.",
-                file=sys.stderr,
-            )
-            sys.exit(EXIT_NOT_FOUND)
 
         # Despacho de tres ramas:
         #   --daemon:    usar el daemon sin sondeo previo; un fallo se reporta.
@@ -340,40 +261,27 @@ def cmd_speak(args):
         #   sin flags:   health check corto; daemon si responde, directo si no.
         if getattr(args, 'daemon', False):
             _warn_compute_backend_ignored(args)
-            if not _paths_allowed_by_daemon(voice_audio, speech_audio):
-                print(
-                    "Error: --daemon está activo pero la ruta de audio está fuera de "
-                    "los directorios que el daemon tiene permitido leer (sandbox de "
-                    "server.py). Alternativas:",
-                    file=sys.stderr,
-                )
-                print("  1. Clona el audio como voz: tts-sidecar voice clone --name <nombre> --reference <ref> --speech <habla>", file=sys.stderr)
-                print("  2. Usa --no-daemon para sintetizar en modo directo con esta ruta", file=sys.stderr)
-                print("  3. Copia el audio dentro del directorio de voces del usuario", file=sys.stderr)
-                sys.exit(EXIT_INVALID_INPUT)
-            result = _synthesize_via_daemon(args, voice_audio, speech_audio)
+            result = _synthesize_via_daemon(args, voice_name)
             if getattr(args, "json", False):
                 _emit_speak_json(args, voice_name, result, daemon=True)
             return
         if not getattr(args, 'no_daemon', False):
             from .daemon import is_daemon_running
             if is_daemon_running():
-                if _paths_allowed_by_daemon(voice_audio, speech_audio):
-                    _warn_compute_backend_ignored(args)
-                    result = _synthesize_via_daemon(args, voice_audio, speech_audio)
-                    if getattr(args, "json", False):
-                        _emit_speak_json(args, voice_name, result, daemon=True)
-                    return
-                print(
-                    "[Servidor] La ruta de audio está fuera de los directorios permitidos "
-                    "por el daemon; usando modo directo",
-                    file=sys.stderr,
-                )
+                _warn_compute_backend_ignored(args)
+                result = _synthesize_via_daemon(args, voice_name)
+                if getattr(args, "json", False):
+                    _emit_speak_json(args, voice_name, result, daemon=True)
+                return
             else:
                 log("[Servidor] No disponible; usando modo directo")
 
         # Modo directo: los imports solo se cargan cuando no se usa el daemon.
         from .engine import ChatterboxEngine
+
+        # Resuelve las rutas de audio de la voz SIN cargar el modelo: solo la
+        # rama directa necesita rutas (el daemon resuelve el nombre por su cuenta).
+        voice_audio, speech_audio = _resolve_voice_paths(args)
 
         # Spinner de liveness durante los dos tramos largos y opacos: la carga del
         # modelo (primer speak) y la síntesis. Las líneas [Stage N/4] que emite el
@@ -1740,11 +1648,6 @@ def build_parser() -> argparse.ArgumentParser:
                               choices=["auto", "cpu", "cuda", "mps"],
                               help="Backend de cómputo para la inferencia; 'auto' detecta el mejor "
                                    "disponible (default: auto)")
-    speak_parser.add_argument("--voice-audio",
-                              help="Archivo de audio para el Voice Encoder (audio completo para el embedding de timbre)")
-    speak_parser.add_argument("--speech-audio",
-                              help="Archivo de audio para el conditioning del T3 (6s) + decoder S3Gen (10s). "
-                                   "Usa un segmento de habla limpia (10s+ recomendado).")
     speak_parser.add_argument("--daemon", action="store_true",
                               help="Usar el daemon sin sondeo previo; si falla, se reporta el error "
                                    "(sin flags, se sondea el daemon y se usa solo si responde). "

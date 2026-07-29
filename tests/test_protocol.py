@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from tts_sidecar.daemon.protocol import (
     MAX_TEXT_LENGTH,
-    MAX_AUDIO_PATH_LENGTH,
+    MAX_VOICE_NAME_LENGTH,
     SynthesizeRequest,
     HealthResponse,
     VoicesResponse,
@@ -19,51 +19,50 @@ from tts_sidecar.daemon.protocol import (
 
 class TestSynthesizeRequest:
     def test_valid_request(self):
-        req = SynthesizeRequest(text="hola mundo")
+        req = SynthesizeRequest(text="hola mundo", voice="crist")
         assert req.text == "hola mundo"
+        assert req.voice == "crist"
 
     def test_full_request(self):
-        req = SynthesizeRequest(
-            text="test",
-            voice_audio="/path/to/voice.wav",
-            speech_audio="/path/to/speech.wav",
-        )
+        req = SynthesizeRequest(text="test", voice="crist")
         assert req.text == "test"
-        assert req.voice_audio == "/path/to/voice.wav"
-        assert req.speech_audio == "/path/to/speech.wav"
+        assert req.voice == "crist"
 
     def test_missing_text(self):
         with pytest.raises(ValueError):
-            SynthesizeRequest()
+            SynthesizeRequest(voice="crist")
+
+    def test_missing_voice(self):
+        with pytest.raises(ValueError):
+            SynthesizeRequest(text="hola")
 
     def test_empty_text_rejected(self):
         with pytest.raises(ValueError):
-            SynthesizeRequest(text="")
+            SynthesizeRequest(text="", voice="crist")
 
     def test_excessive_text_rejected(self):
         with pytest.raises(ValueError):
-            SynthesizeRequest(text="a" * (MAX_TEXT_LENGTH + 1))
+            SynthesizeRequest(text="a" * (MAX_TEXT_LENGTH + 1), voice="crist")
 
     def test_text_at_limit_accepted(self):
-        assert len(SynthesizeRequest(text="a" * MAX_TEXT_LENGTH).text) == MAX_TEXT_LENGTH
+        req = SynthesizeRequest(text="a" * MAX_TEXT_LENGTH, voice="crist")
+        assert len(req.text) == MAX_TEXT_LENGTH
 
     def test_protocol_without_model_or_compute_backend(self):
         campos = SynthesizeRequest.model_fields
         assert "model" not in campos
         assert "compute_backend" not in campos
 
-    def test_excessive_audio_path_rejected(self):
-        """voice_audio/speech_audio tienen tope de longitud."""
-        excessive_path = "a" * (MAX_AUDIO_PATH_LENGTH + 1)
+    def test_excessive_voice_name_rejected(self):
+        """El nombre de voz tiene tope de longitud."""
+        excessive_name = "a" * (MAX_VOICE_NAME_LENGTH + 1)
         with pytest.raises(ValueError):
-            SynthesizeRequest(text="hola", voice_audio=excessive_path)
-        with pytest.raises(ValueError):
-            SynthesizeRequest(text="hola", speech_audio=excessive_path)
+            SynthesizeRequest(text="hola", voice=excessive_name)
 
-    def test_audio_path_at_limit_accepted(self):
-        path = "a" * MAX_AUDIO_PATH_LENGTH
-        req = SynthesizeRequest(text="hola", voice_audio=path)
-        assert len(req.voice_audio) == MAX_AUDIO_PATH_LENGTH
+    def test_voice_name_at_limit_accepted(self):
+        name = "a" * MAX_VOICE_NAME_LENGTH
+        req = SynthesizeRequest(text="hola", voice=name)
+        assert len(req.voice) == MAX_VOICE_NAME_LENGTH
 
 
 class TestHealthResponse:
@@ -142,81 +141,42 @@ class TestStreamEvents:
 
 
 class TestUnicodeBoundaries:
-    """Los topes de longitud (MAX_TEXT_LENGTH/MAX_AUDIO_PATH_LENGTH) se
+    """Los topes de longitud (MAX_TEXT_LENGTH/MAX_VOICE_NAME_LENGTH) se
     validan en Pydantic v2 por longitud de la cadena Python (code points), no
     por bytes UTF-8: un acento o un emoji no deben contar doble."""
 
     def test_multibyte_text_at_limit_accepted(self):
         text = "ñ" * MAX_TEXT_LENGTH
-        req = SynthesizeRequest(text=text)
+        req = SynthesizeRequest(text=text, voice="crist")
         assert len(req.text) == MAX_TEXT_LENGTH
 
     def test_multibyte_text_over_limit_rejected(self):
         with pytest.raises(ValueError):
-            SynthesizeRequest(text="ñ" * (MAX_TEXT_LENGTH + 1))
+            SynthesizeRequest(text="ñ" * (MAX_TEXT_LENGTH + 1), voice="crist")
 
     def test_emoji_counts_as_single_codepoint(self):
         """Un emoji fuera del BMP es un solo code point en Python 3 (no un par
         de surrogates UTF-16): no debe contar doble contra el límite."""
         text = "😀" * MAX_TEXT_LENGTH
-        req = SynthesizeRequest(text=text)
+        req = SynthesizeRequest(text=text, voice="crist")
         assert len(req.text) == MAX_TEXT_LENGTH
         with pytest.raises(ValueError):
-            SynthesizeRequest(text="😀" * (MAX_TEXT_LENGTH + 1))
+            SynthesizeRequest(text="😀" * (MAX_TEXT_LENGTH + 1), voice="crist")
 
-    def test_unicode_audio_path_at_limit_accepted(self):
-        path = "ñ" * MAX_AUDIO_PATH_LENGTH
-        req = SynthesizeRequest(text="hola", voice_audio=path)
-        assert len(req.voice_audio) == MAX_AUDIO_PATH_LENGTH
+    def test_unicode_voice_name_at_limit_accepted(self):
+        name = "ñ" * MAX_VOICE_NAME_LENGTH
+        req = SynthesizeRequest(text="hola", voice=name)
+        assert len(req.voice) == MAX_VOICE_NAME_LENGTH
 
-    def test_unicode_audio_path_over_limit_rejected(self):
-        path = "ñ" * (MAX_AUDIO_PATH_LENGTH + 1)
+    def test_unicode_voice_name_over_limit_rejected(self):
+        name = "ñ" * (MAX_VOICE_NAME_LENGTH + 1)
         with pytest.raises(ValueError):
-            SynthesizeRequest(text="hola", voice_audio=path)
+            SynthesizeRequest(text="hola", voice=name)
 
     def test_text_with_accents_and_spanish_punctuation_roundtrips(self):
         text = "¿Cómo estás? ¡Qué bien! Ñoño güiro."
-        req = SynthesizeRequest(text=text)
+        req = SynthesizeRequest(text=text, voice="crist")
         assert req.text == text
-
-
-class TestCrossFieldValidation:
-    """voice_audio y speech_audio son independientes entre sí (ambos
-    Optional, cada uno con su propio tope) — se valida que combinarlos no
-    interfiera con la validación individual de cada campo."""
-
-    def test_both_audio_fields_set_simultaneously(self):
-        req = SynthesizeRequest(text="hola", voice_audio="/a/ref.wav", speech_audio="/a/speech.wav")
-        assert req.voice_audio == "/a/ref.wav"
-        assert req.speech_audio == "/a/speech.wav"
-
-    def test_neither_audio_field_set_defaults_to_none(self):
-        req = SynthesizeRequest(text="hola")
-        assert req.voice_audio is None
-        assert req.speech_audio is None
-
-    def test_one_field_at_max_other_none(self):
-        path = "a" * MAX_AUDIO_PATH_LENGTH
-        req = SynthesizeRequest(text="hola", voice_audio=path, speech_audio=None)
-        assert len(req.voice_audio) == MAX_AUDIO_PATH_LENGTH
-        assert req.speech_audio is None
-
-    def test_both_fields_at_max_simultaneously_accepted(self):
-        path = "b" * MAX_AUDIO_PATH_LENGTH
-        req = SynthesizeRequest(text="hola", voice_audio=path, speech_audio=path)
-        assert len(req.voice_audio) == MAX_AUDIO_PATH_LENGTH
-        assert len(req.speech_audio) == MAX_AUDIO_PATH_LENGTH
-
-    def test_one_field_over_limit_rejects_even_if_other_valid(self):
-        valid = "a" * MAX_AUDIO_PATH_LENGTH
-        excessive = "b" * (MAX_AUDIO_PATH_LENGTH + 1)
-        with pytest.raises(ValueError):
-            SynthesizeRequest(text="hola", voice_audio=valid, speech_audio=excessive)
-
-    def test_speech_audio_over_limit_rejects_even_when_voice_audio_absent(self):
-        excessive = "c" * (MAX_AUDIO_PATH_LENGTH + 1)
-        with pytest.raises(ValueError):
-            SynthesizeRequest(text="hola", speech_audio=excessive)
 
 
 class TestUnicodeInStreamEvents:
@@ -252,12 +212,12 @@ class TestProtocolVersioning:
         VoicesResponse: {"voices": []},
     }
 
-    def test_all_models_declare_schema_version_1(self):
+    def test_all_models_declare_schema_version_2(self):
         import json
 
         for model_cls, kwargs in self.MODELS_WITH_REQUIRED.items():
             payload = json.loads(model_cls(**kwargs).model_dump_json())
-            assert payload["schema_version"] == "1", model_cls.__name__
+            assert payload["schema_version"] == "2", model_cls.__name__
 
     def test_unknown_extra_fields_are_ignored_forward_skew(self):
         """Un daemon más nuevo que envía un campo desconocido no rompe un
@@ -272,7 +232,7 @@ class TestProtocolVersioning:
         health = HealthResponse.model_validate({
             "status": "healthy", "model_loaded": True, "uptime_seconds": 1.0,
         })
-        assert health.schema_version == "1"
+        assert health.schema_version == "2"
         assert health.version == ""
 
     def test_health_response_carries_version(self):

@@ -33,7 +33,7 @@ class TestServerConcurrency:
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(tmp_path)])
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
 
         old_engine = server.app.state.daemon.engine
         server.app.state.daemon.engine = SlowEngine()
@@ -44,7 +44,7 @@ class TestServerConcurrency:
 
                 def synth():
                     result["resp"] = client.post(
-                        "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                        "/synthesize", json={"text": "hola", "voice": "crist"}
                     )
 
                 t = threading.Thread(target=synth)
@@ -85,7 +85,7 @@ class TestServerAdmissionControl:
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(tmp_path)])
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
         monkeypatch.setattr(server, "_admission_semaphore", threading.BoundedSemaphore(1))
 
         old_engine = server.app.state.daemon.engine
@@ -97,7 +97,7 @@ class TestServerAdmissionControl:
 
                 def synth():
                     result["resp"] = client.post(
-                        "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                        "/synthesize", json={"text": "hola", "voice": "crist"}
                     )
 
                 t = threading.Thread(target=synth)
@@ -107,7 +107,7 @@ class TestServerAdmissionControl:
                 # Cupo agotado (BoundedSemaphore(1) ya tomado por la primera
                 # síntesis en curso): la segunda petición se rechaza de inmediato.
                 second = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                    "/synthesize", json={"text": "hola", "voice": "crist"}
                 )
                 assert second.status_code == 503
 
@@ -126,7 +126,7 @@ class TestServerAdmissionControl:
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(tmp_path)])
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
         monkeypatch.setattr(server, "_admission_semaphore", threading.BoundedSemaphore(1))
 
         class FakeEngine:
@@ -140,12 +140,12 @@ class TestServerAdmissionControl:
         try:
             with TestClient(server.app) as client:
                 first = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                    "/synthesize", json={"text": "hola", "voice": "crist"}
                 )
                 assert first.status_code == 200
 
                 second = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                    "/synthesize", json={"text": "hola", "voice": "crist"}
                 )
                 assert second.status_code == 200
         finally:
@@ -171,7 +171,7 @@ class TestServerAdmissionControl:
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(tmp_path)])
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
         monkeypatch.setattr(server, "_admission_semaphore", threading.BoundedSemaphore(1))
 
         old_engine = server.app.state.daemon.engine
@@ -180,7 +180,7 @@ class TestServerAdmissionControl:
             with TestClient(server.app) as client:
                 def synth():
                     client.post(
-                        "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                        "/synthesize", json={"text": "hola", "voice": "crist"}
                     )
 
                 t = threading.Thread(target=synth)
@@ -188,7 +188,7 @@ class TestServerAdmissionControl:
                 assert started.wait(timeout=10), "la síntesis no arrancó"
 
                 resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                    "/synthesize", json={"text": "hola", "voice": "crist"}
                 )
                 assert resp.status_code == 503
                 detail = resp.json()["detail"]
@@ -199,178 +199,6 @@ class TestServerAdmissionControl:
                 t.join(timeout=10)
         finally:
             server.app.state.daemon.engine = old_engine
-
-
-class TestSynthesizeAllowedPaths:
-    def test_rejects_path_outside_allowed_dirs(self, tmp_path, monkeypatch):
-        """Una ruta .wav fuera de voices_root()/tempdir se rechaza con 400."""
-        from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
-
-        # Directorio ajeno a los permitidos (no es voices_root, factory ni tempdir).
-        outside_root = tmp_path / "fuera_de_lo_permitido"
-        outside_root.mkdir()
-        wav = outside_root / "voz.wav"
-        wav.write_bytes(b"RIFF")
-
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(tmp_path / "voices_permitido")])
-
-        old_engine = server.app.state.daemon.engine
-        server.app.state.daemon.engine = MagicMock()
-        try:
-            with TestClient(server.app) as client:
-                resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
-                )
-                assert resp.status_code == 400
-                assert str(wav) not in resp.text
-        finally:
-            server.app.state.daemon.engine = old_engine
-
-    def test_accepts_path_within_voices_root(self, tmp_path, monkeypatch):
-        """Una ruta dentro de voices_root() sigue siendo aceptada."""
-        from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
-
-        allowed_root = tmp_path / "voices_permitido"
-        allowed_root.mkdir()
-        wav = allowed_root / "voz.wav"
-        wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(allowed_root)])
-
-        fake_engine = MagicMock()
-        fake_engine.speak.return_value = SynthesisResult(
-            audio_bytes=b"RIFF" + b"\x00" * 40, metrics=SynthesisMetrics()
-        )
-
-        old_engine = server.app.state.daemon.engine
-        server.app.state.daemon.engine = fake_engine
-        try:
-            with TestClient(server.app) as client:
-                resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
-                )
-                assert resp.status_code == 200
-        finally:
-            server.app.state.daemon.engine = old_engine
-
-
-class TestSynthesizeHeaderValidationAndCanonicalPath:
-    def test_rejects_wav_extension_with_non_wav_header(self, tmp_path, monkeypatch):
-        """Extensión .wav pero contenido no-RIFF/WAVE: rechazado con 400."""
-        from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
-
-        allowed_root = tmp_path / "voices_permitido"
-        allowed_root.mkdir()
-        wav = allowed_root / "voz.wav"
-        wav.write_bytes(b"no soy un wav")
-
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(allowed_root)])
-
-        old_engine = server.app.state.daemon.engine
-        server.app.state.daemon.engine = MagicMock()
-        try:
-            with TestClient(server.app) as client:
-                resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
-                )
-                assert resp.status_code == 400
-        finally:
-            server.app.state.daemon.engine = old_engine
-
-    def test_passes_canonical_path_to_engine(self, tmp_path, monkeypatch):
-        """El motor recibe os.path.realpath(path), resuelto una sola vez en la validación."""
-        import os
-        from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
-
-        allowed_root = tmp_path / "voices_permitido"
-        allowed_root.mkdir()
-        wav = allowed_root / "voz.wav"
-        wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(allowed_root)])
-
-        fake_engine = MagicMock()
-        fake_engine.speak.return_value = SynthesisResult(
-            audio_bytes=b"RIFF" + b"\x00" * 40, metrics=SynthesisMetrics()
-        )
-
-        old_engine = server.app.state.daemon.engine
-        server.app.state.daemon.engine = fake_engine
-        try:
-            with TestClient(server.app) as client:
-                resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
-                )
-                assert resp.status_code == 200
-                _, kwargs = fake_engine.speak.call_args
-                assert kwargs["speech_audio"] == os.path.realpath(str(wav))
-        finally:
-            server.app.state.daemon.engine = old_engine
-
-
-class TestDaemonSessionSandbox:
-    """El sandbox real acota el tempdir a `<tempdir>/tts-sidecar/`; el
-    tempdir compartido general ya no es un directorio permitido."""
-
-    def test_rejects_wav_in_general_tempdir(self, monkeypatch, tmp_path):
-        """Usa el tmp_path aislado de pytest en vez de escribir en la
-        raíz de tempfile.gettempdir() (riesgo de colisión entre runs
-        concurrentes y limpieza manual). tmp_path sigue siendo un directorio
-        DISTINTO de daemon_session_dir() (<tempdir>/tts-sidecar/), así que el
-        test sigue ejerciendo exactamente lo que se busca: rutas fuera de los
-        directorios permitidos deben rechazarse."""
-        from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-
-        wav = tmp_path / "tts_sidecar_test_reject.wav"
-        wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-
-        old_engine = server.app.state.daemon.engine
-        server.app.state.daemon.engine = MagicMock()
-        try:
-            with TestClient(server.app) as client:
-                resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
-                )
-                assert resp.status_code == 400
-        finally:
-            server.app.state.daemon.engine = old_engine
-
-    def test_accepts_wav_in_namespaced_session_dir(self):
-        import os
-        from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
-
-        session_dir = voices.ensure_daemon_session_dir()
-        wav = os.path.join(session_dir, "tts_sidecar_test_accept.wav")
-        with open(wav, "wb") as f:
-            f.write(b"RIFF\x00\x00\x00\x00WAVE")
-
-        fake_engine = MagicMock()
-        fake_engine.speak.return_value = SynthesisResult(
-            audio_bytes=b"RIFF" + b"\x00" * 40, metrics=SynthesisMetrics()
-        )
-
-        old_engine = server.app.state.daemon.engine
-        server.app.state.daemon.engine = fake_engine
-        try:
-            with TestClient(server.app) as client:
-                resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": wav}
-                )
-                assert resp.status_code == 200
-        finally:
-            server.app.state.daemon.engine = old_engine
-            os.remove(wav)
 
 
 class TestKillPidVerified:
@@ -648,7 +476,7 @@ class TestDaemonManager:
 
         progreso = []
         client = DaemonIPCClient()
-        result = client.synthesize(text="hola", on_progress=progreso.append)
+        result = client.synthesize(text="hola", voice="crist", on_progress=progreso.append)
         assert result.audio_bytes == audio
         assert result.metrics.t3 == 9.7
         assert result.metrics.s3gen == 7.0
@@ -675,7 +503,7 @@ class TestDaemonManager:
 
         client = DaemonIPCClient()
         with pytest.raises(DaemonIPCError, match="Error del daemon: internal error"):
-            client.synthesize(text="hola")
+            client.synthesize(text="hola", voice="crist")
 
     @patch("requests.post")
     def test_synthesize_http_error_immediate(self, mock_post):
@@ -689,7 +517,7 @@ class TestDaemonManager:
 
         client = DaemonIPCClient()
         with pytest.raises(DaemonIPCError, match="Error del daemon: ruta no permitida"):
-            client.synthesize(text="hola")
+            client.synthesize(text="hola", voice="crist")
 
     @patch("requests.post")
     def test_synthesize_without_result_frame_fails(self, mock_post):
@@ -705,7 +533,7 @@ class TestDaemonManager:
 
         client = DaemonIPCClient()
         with pytest.raises(DaemonIPCError, match="no devolvió audio"):
-            client.synthesize(text="hola")
+            client.synthesize(text="hola", voice="crist")
 
     @patch("requests.post")
     def test_synthesize_non_json_line_raises(self, mock_post):
@@ -720,7 +548,7 @@ class TestDaemonManager:
 
         client = DaemonIPCClient()
         with pytest.raises(DaemonIPCError, match="línea no-JSON"):
-            client.synthesize(text="hola")
+            client.synthesize(text="hola", voice="crist")
 
     @patch("requests.post")
     def test_synthesize_unknown_event_raises(self, mock_post):
@@ -736,7 +564,7 @@ class TestDaemonManager:
 
         client = DaemonIPCClient()
         with pytest.raises(DaemonIPCError, match="desconocido"):
-            client.synthesize(text="hola")
+            client.synthesize(text="hola", voice="crist")
 
     @patch("requests.post")
     def test_synthesize_result_without_audio_raises(self, mock_post):
@@ -752,7 +580,7 @@ class TestDaemonManager:
 
         client = DaemonIPCClient()
         with pytest.raises(DaemonIPCError, match="no conforme"):
-            client.synthesize(text="hola")
+            client.synthesize(text="hola", voice="crist")
 
     @patch("requests.post")
     def test_synthesize_result_invalid_base64_raises(self, mock_post):
@@ -773,7 +601,7 @@ class TestDaemonManager:
 
         client = DaemonIPCClient()
         with pytest.raises(DaemonIPCError, match="no decodificable"):
-            client.synthesize(text="hola")
+            client.synthesize(text="hola", voice="crist")
 
     @patch("requests.post")
     def test_stop_swallows_request_exception_and_reports_by_state(self, mock_post):
@@ -812,7 +640,7 @@ class TestSynthesizeStreaming:
         allowed_root.mkdir()
         wav = allowed_root / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(allowed_root)])
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
         return wav
 
     def test_order_progress_then_result(self, tmp_path, monkeypatch):
@@ -837,7 +665,7 @@ class TestSynthesizeStreaming:
         try:
             with TestClient(server.app) as client:
                 resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                    "/synthesize", json={"text": "hola", "voice": "crist"}
                 )
                 assert resp.status_code == 200
                 assert resp.headers["content-type"].startswith("application/x-ndjson")
@@ -867,7 +695,7 @@ class TestSynthesizeStreaming:
         try:
             with TestClient(server.app) as client:
                 resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                    "/synthesize", json={"text": "hola", "voice": "crist"}
                 )
                 assert resp.status_code == 200
                 lines = [json.loads(l) for l in resp.text.splitlines() if l.strip()]
@@ -909,7 +737,7 @@ class TestDaemonStateInjection:
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
         try:
             with TestClient(server.app) as client:
-                resp = client.post("/synthesize", json={"text": "hola"})
+                resp = client.post("/synthesize", json={"text": "hola", "voice": "crist"})
                 assert resp.status_code == 503
         finally:
             server.app.dependency_overrides.clear()
@@ -927,7 +755,7 @@ class TestDaemonStateInjection:
                 resp = client.post("/voices/precompute", json={"name": "crist"})
                 assert resp.status_code == 200
                 assert resp.json() == {
-                    "schema_version": "1",
+                    "schema_version": "2",
                     "name": "crist",
                     "precomputed": True,
                 }
@@ -1213,7 +1041,7 @@ class TestSynthesisCancellation:
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(tmp_path)])
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
 
         class FakeEngine:
             def speak(self, progress_callback=None, **kwargs):
@@ -1227,7 +1055,7 @@ class TestSynthesisCancellation:
         try:
             with TestClient(server.app) as client:
                 resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                    "/synthesize", json={"text": "hola", "voice": "crist"}
                 )
                 assert resp.status_code == 200
                 lines = [json.loads(l) for l in resp.text.splitlines() if l.strip()]
@@ -1237,7 +1065,7 @@ class TestSynthesisCancellation:
 
                 # El semáforo se liberó: una segunda petición responde 200.
                 second = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                    "/synthesize", json={"text": "hola", "voice": "crist"}
                 )
                 assert second.status_code == 200
         finally:
@@ -1253,7 +1081,7 @@ class TestSynthesisCancellation:
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(tmp_path)])
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
         audio = b"RIFF" + b"\x00" * 40
 
         class FakeEngine:
@@ -1268,7 +1096,7 @@ class TestSynthesisCancellation:
         try:
             with TestClient(server.app) as client:
                 resp = client.post(
-                    "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                    "/synthesize", json={"text": "hola", "voice": "crist"}
                 )
                 assert resp.status_code == 200
                 lines = [json.loads(l) for l in resp.text.splitlines() if l.strip()]
@@ -1301,7 +1129,7 @@ class TestSynthesisCancellation:
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(tmp_path)])
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
 
         TOTAL = 50
 
@@ -1332,7 +1160,7 @@ class TestSynthesisCancellation:
 
         monkeypatch.setattr(server, "StreamingResponse", _CaptureStreaming)
         try:
-            req = SynthesizeRequest(text="hola", speech_audio=str(wav))
+            req = SynthesizeRequest(text="hola", voice="crist")
             state = server.app.state.daemon
             # synthesize() valida la ruta, toma el semáforo y construye el
             # StreamingResponse (captura el generador event_stream).
@@ -1371,7 +1199,7 @@ class TestDaemonMemoryClear:
         allowed_root.mkdir()
         wav = allowed_root / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
-        monkeypatch.setattr(voices, "allowed_audio_dirs", lambda: [str(allowed_root)])
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
 
         # Mock de la rutina de limpieza
         mock_clear = MagicMock()
@@ -1388,7 +1216,7 @@ class TestDaemonMemoryClear:
             with patch("tts_sidecar.daemon.server._clear_model_memory", mock_clear):
                 with TestClient(server.app) as client:
                     resp = client.post(
-                        "/synthesize", json={"text": "hola", "speech_audio": str(wav)}
+                        "/synthesize", json={"text": "hola", "voice": "crist"}
                     )
                     assert resp.status_code == 200
 

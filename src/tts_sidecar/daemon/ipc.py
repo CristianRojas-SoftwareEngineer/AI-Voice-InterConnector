@@ -86,8 +86,7 @@ class DaemonIPCClient:
     def synthesize(
         self,
         text: str,
-        voice_audio: Optional[str] = None,
-        speech_audio: Optional[str] = None,
+        voice: str,
         on_progress: Optional[Callable[[dict], None]] = None,
     ) -> SynthesisResult:
         """
@@ -114,8 +113,7 @@ class DaemonIPCClient:
                 f"{self.base_url}/synthesize",
                 json={
                     "text": text,
-                    "voice_audio": voice_audio,
-                    "speech_audio": speech_audio,
+                    "voice": voice,
                 },
                 timeout=self.REQUEST_TIMEOUT,
                 stream=True,
