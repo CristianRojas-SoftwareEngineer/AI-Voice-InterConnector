@@ -169,8 +169,8 @@ def synthesize(
                     ref_path, speech_path = voices.voice_paths(req.voice)
                     result = engine.speak(
                         text=req.text,
-                        voice_audio=ref_path,
-                        speech_audio=speech_path,
+                        timbre_reference=ref_path,
+                        speech_reference=speech_path,
                         verbose=True,
                         progress_callback=push,
                     )

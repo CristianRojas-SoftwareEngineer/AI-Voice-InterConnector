@@ -88,16 +88,16 @@ def _resolve_voice_paths(args):
     from . import voices
 
     voice_name = getattr(args, 'voice', None) or "default"
-    voice_audio, speech_audio = voices.voice_paths(voice_name)
+    timbre_reference, speech_reference = voices.voice_paths(voice_name)
 
     # Resuelve a rutas absolutas contra el CWD del cliente antes de que crucen la
     # frontera de proceso hacia el daemon, que tiene otro directorio de trabajo.
-    if voice_audio:
-        voice_audio = str(Path(voice_audio).resolve())
-    if speech_audio:
-        speech_audio = str(Path(speech_audio).resolve())
+    if timbre_reference:
+        timbre_reference = str(Path(timbre_reference).resolve())
+    if speech_reference:
+        speech_reference = str(Path(speech_reference).resolve())
 
-    return voice_audio, speech_audio
+    return timbre_reference, speech_reference
 
 
 def _emit_audio(audio_bytes, output):
@@ -281,7 +281,7 @@ def cmd_speak(args):
 
         # Resuelve las rutas de audio de la voz SIN cargar el modelo: solo la
         # rama directa necesita rutas (el daemon resuelve el nombre por su cuenta).
-        voice_audio, speech_audio = _resolve_voice_paths(args)
+        timbre_reference, speech_reference = _resolve_voice_paths(args)
 
         # Spinner de liveness durante los dos tramos largos y opacos: la carga del
         # modelo (primer speak) y la síntesis. Las líneas [Stage N/4] que emite el
@@ -294,8 +294,8 @@ def cmd_speak(args):
             result = engine.speak(
                 text=args.text,
                 output_path=args.output,
-                voice_audio=voice_audio,
-                speech_audio=speech_audio,
+                timbre_reference=timbre_reference,
+                speech_reference=speech_reference,
                 progress_callback=lambda ev: _sp.update(format_progress_event(ev)),
             )
 
@@ -350,8 +350,8 @@ def cmd_voice_clone(args):
         from . import voices
         ref_path, speech_path = voices.clone_voice_files(
             name=args.name,
-            reference_audio=args.reference,
-            speech_audio=args.speech,
+            timbre_reference=args.timbre_reference,
+            speech_reference=args.speech_reference,
             force=getattr(args, "force", False),
         )
 
@@ -440,7 +440,7 @@ def cmd_voice_remove(args):
 
     except (PermissionError, OSError) as e:
         # En Windows, shutil.rmtree falla con PermissionError si
-        # reference.wav/speech.wav están abiertos por otro proceso (p. ej. el
+        # timbre-reference.wav/speech-reference.wav están abiertos por otro proceso (p. ej. el
         # daemon o un reproductor). Sin esta rama, el except genérico de abajo
         # reportaba el mismo mensaje que un nombre de voz inválido.
         print(
@@ -1642,7 +1642,7 @@ def build_parser() -> argparse.ArgumentParser:
     # comando speak (unificado: reproduce el audio, o lo guarda a archivo con --output)
     speak_parser = subparsers.add_parser("speak", help="Sintetiza voz; la reproduce, o la guarda con --output")
     speak_parser.add_argument("--text", "-t", required=True, help="Texto a sintetizar")
-    speak_parser.add_argument("--voice", "-v", help="Nombre de la voz a usar (auto-carga reference.wav + speech.wav)")
+    speak_parser.add_argument("--voice", "-v", help="Nombre de la voz a usar (auto-carga timbre-reference.wav + speech-reference.wav)")
     speak_parser.add_argument("--output", "-o", help="Ruta del archivo WAV de salida (si se omite, se reproduce el audio)")
     speak_parser.add_argument("--compute-backend", "-cb", default="auto",
                               choices=["auto", "cpu", "cuda", "mps"],
@@ -1672,9 +1672,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     voice_clone = voice_subparsers.add_parser("clone", help="Clona una voz desde dos archivos de audio")
     voice_clone.add_argument("--name", "-n", required=True, help="Nombre de la voz")
-    voice_clone.add_argument("--reference", "-r", required=True,
+    voice_clone.add_argument("--timbre-reference", "-t", required=True,
                              help="Archivo de audio de referencia para el timbre (cualquier largo, se usa el audio completo)")
-    voice_clone.add_argument("--speech", "-s", required=True,
+    voice_clone.add_argument("--speech-reference", "-s", required=True,
                              help="Archivo de audio de habla para el conditioning del T3 (10+ segundos de habla limpia)")
     voice_clone.add_argument("--force", "-f", action="store_true",
                              help="Sobrescribir la voz si ya existe (usuario o fábrica homónima)")

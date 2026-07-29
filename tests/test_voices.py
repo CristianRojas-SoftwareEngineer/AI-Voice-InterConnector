@@ -1,7 +1,7 @@
 """Tests de la resolución y listado de voces (criterio dual-audio).
 
-Una voz solo es válida con sus dos archivos: reference.wav (timbre) y
-speech.wav (conditioning). Cubre _resolve_voice_dir y list_voices con la
+Una voz solo es válida con sus dos archivos: timbre-reference.wav (timbre) y
+speech-reference.wav (conditioning). Cubre _resolve_voice_dir y list_voices con la
 precedencia usuario→fábrica sobre directorios temporales.
 """
 
@@ -48,9 +48,9 @@ def _make_voice(root, name, reference=True, speech=True):
     voice = root / name
     voice.mkdir()
     if reference:
-        (voice / "reference.wav").write_bytes(b"RIFF")
+        (voice / "timbre-reference.wav").write_bytes(b"RIFF")
     if speech:
-        (voice / "speech.wav").write_bytes(b"RIFF")
+        (voice / "speech-reference.wav").write_bytes(b"RIFF")
     return voice
 
 
@@ -83,10 +83,10 @@ class TestRegisterVoiceFiles:
 
         ref_path, speech_path = voices.clone_voice_files("nueva", str(ref), str(speech))
 
-        assert (user_root / "nueva" / "reference.wav").read_bytes() == b"RIFF-ref"
-        assert (user_root / "nueva" / "speech.wav").read_bytes() == b"RIFF-speech"
-        assert ref_path.endswith("reference.wav")
-        assert speech_path.endswith("speech.wav")
+        assert (user_root / "nueva" / "timbre-reference.wav").read_bytes() == b"RIFF-ref"
+        assert (user_root / "nueva" / "speech-reference.wav").read_bytes() == b"RIFF-speech"
+        assert ref_path.endswith("timbre-reference.wav")
+        assert speech_path.endswith("speech-reference.wav")
 
     def test_unreadable_audio_leaves_no_broken_voice(self, voice_roots, tmp_path, monkeypatch):
         user_root, _ = voice_roots
@@ -115,7 +115,7 @@ class TestRegisterVoiceFiles:
 
         voices.clone_voice_files("existente", str(ref), str(speech), force=True)
 
-        assert (user_root / "existente" / "reference.wav").read_bytes() == b"RIFF-ref"
+        assert (user_root / "existente" / "timbre-reference.wav").read_bytes() == b"RIFF-ref"
 
     def test_clone_rejects_symlink_target(self, voice_roots, tmp_path, monkeypatch, symlink):
         """No se registra una voz cuyo directorio destino es un symlink.
@@ -226,8 +226,8 @@ class TestSymlinkRejection:
         user_root, _ = voice_roots
         real = user_root / "real"
         real.mkdir()
-        (real / "reference.wav").write_bytes(b"RIFF")
-        (real / "speech.wav").write_bytes(b"RIFF")
+        (real / "timbre-reference.wav").write_bytes(b"RIFF")
+        (real / "speech-reference.wav").write_bytes(b"RIFF")
         symlink(real, user_root / "v")
         assert voices._resolve_voice_dir("v") is None
 
@@ -235,18 +235,18 @@ class TestSymlinkRejection:
         user_root, _ = voice_roots
         v = user_root / "v"
         v.mkdir()
-        (v / "speech.wav").write_bytes(b"RIFF")
+        (v / "speech-reference.wav").write_bytes(b"RIFF")
         external = user_root / "external_ref.wav"
         external.write_bytes(b"RIFF")
-        symlink(external, v / "reference.wav")
+        symlink(external, v / "timbre-reference.wav")
         assert voices._resolve_voice_dir("v") is None
 
     def test_symlinked_voice_dir_not_listed(self, voice_roots, symlink):
         user_root, _ = voice_roots
         real = user_root / "real"
         real.mkdir()
-        (real / "reference.wav").write_bytes(b"RIFF")
-        (real / "speech.wav").write_bytes(b"RIFF")
+        (real / "timbre-reference.wav").write_bytes(b"RIFF")
+        (real / "speech-reference.wav").write_bytes(b"RIFF")
         symlink(real, user_root / "v")
         assert "v" not in voices.list_voices()
 
@@ -321,8 +321,8 @@ def test_voice_paths_of_listed_voice_never_fails(voice_roots):
     _make_voice(user_root, "sin_speech", speech=False)
     for name in voices.list_voices():
         ref, speech = voices.voice_paths(name)
-        assert ref.endswith("reference.wav")
-        assert speech.endswith("speech.wav")
+        assert ref.endswith("timbre-reference.wav")
+        assert speech.endswith("speech-reference.wav")
 
 
 def test_factory_default_voice_is_bundled():

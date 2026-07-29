@@ -43,7 +43,7 @@ class TestOrchestratorSynthesize:
     def test_emits_stage_events(self, tmp_path):
         eng = _engine_with_orchestrator()
         eng._conditionals_prep.compute = lambda *a, **kw: None
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         events = []
@@ -58,7 +58,7 @@ class TestOrchestratorSynthesize:
     def test_emits_saving_with_output_path(self, tmp_path):
         eng = _engine_with_orchestrator()
         eng._conditionals_prep.compute = lambda *a, **kw: None
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
         out = tmp_path / "out.wav"
 
@@ -74,7 +74,7 @@ class TestOrchestratorSynthesize:
     def test_returns_valid_wav_bytes(self, tmp_path):
         eng = _engine_with_orchestrator()
         eng._conditionals_prep.compute = lambda *a, **kw: None
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         result = eng._orchestrator.synthesize("hola", None, str(speech), None, None)
@@ -86,7 +86,7 @@ class TestOrchestratorSynthesize:
     def test_callback_is_cleared_in_finally(self, tmp_path):
         eng = _engine_with_orchestrator()
         eng._conditionals_prep.compute = lambda *a, **kw: None
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         eng._orchestrator.synthesize(
@@ -97,7 +97,7 @@ class TestOrchestratorSynthesize:
     def test_callback_exception_does_not_break_synthesis(self, tmp_path):
         eng = _engine_with_orchestrator()
         eng._conditionals_prep.compute = lambda *a, **kw: None
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         def boom(ev):
@@ -114,7 +114,7 @@ class TestOrchestratorConditionals:
         voice = tmp_path / "voz"
         voice.mkdir()
         (voice / "conditionals.pt").write_bytes(b"basura")
-        speech = voice / "speech.wav"
+        speech = voice / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         recomputos = []
@@ -129,7 +129,7 @@ class TestOrchestratorConditionals:
         voice.mkdir()
         conds = voice / "conditionals.pt"
         conds.write_bytes(b"valido")
-        speech = voice / "speech.wav"
+        speech = voice / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         loads = []

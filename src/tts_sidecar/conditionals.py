@@ -25,32 +25,32 @@ class ConditionalsPreparer:
     y en tests se puede sustituir por un doble.
     """
 
-    def compute(self, tts, compute_backend, voice_audio_path, speech_audio_path):
+    def compute(self, tts, compute_backend, timbre_reference_path, speech_reference_path):
         """
         Computa los conditionals con fuentes de audio separadas.
 
-        - voice_audio_path: audio para el Voice Encoder (usa el audio COMPLETO para el embedding de timbre)
-        - speech_audio_path: audio para el conditioning del T3 (6s) + decoder S3Gen (10s)
+        - timbre_reference_path: audio para el Voice Encoder (usa el audio COMPLETO para el embedding de timbre)
+        - speech_reference_path: audio para el conditioning del T3 (6s) + decoder S3Gen (10s)
 
-        Si voice_audio_path es None, usa speech_audio_path para todo (el
+        Si timbre_reference_path es None, usa speech_reference_path para todo (el
         conditioning del T3 reutiliza ese mismo buffer de habla).
         """
         import librosa
         from chatterbox.mtl_tts import Conditionals, T3Cond
 
         # --- Carga el audio UNA vez a 24kHz ---
-        ref_24k_speech, _ = librosa.load(speech_audio_path, sr=24000)
+        ref_24k_speech, _ = librosa.load(speech_reference_path, sr=24000)
 
         # --- Voice Encoder: usa el audio completo para el timbre ---
-        if voice_audio_path:
-            ref_24k_voice, _ = librosa.load(voice_audio_path, sr=24000)
+        if timbre_reference_path:
+            ref_24k_voice, _ = librosa.load(timbre_reference_path, sr=24000)
             ref_16k_voice = librosa.resample(ref_24k_voice, orig_sr=24000, target_sr=16000)
             # El conditioning del T3 solo consume ENC_COND_LEN muestras a 16k:
             # se recorta a 24k antes de resamplear en vez de bajar el audio completo.
             head_24k = ref_24k_speech[: tts.ENC_COND_LEN * 24000 // 16000]
             ref_16k_speech = librosa.resample(head_24k, orig_sr=24000, target_sr=16000)
         else:
-            # Sin voice_audio, el timbre exige el audio completo a 16k; el
+            # Sin timbre_reference, el timbre exige el audio completo a 16k; el
             # conditioning del T3 reutiliza ese mismo buffer.
             ref_16k_speech = librosa.resample(ref_24k_speech, orig_sr=24000, target_sr=16000)
             ref_16k_voice = ref_16k_speech
@@ -108,8 +108,8 @@ class ConditionalsPreparer:
     def precompute_and_save(
         self,
         voice_dir: str,
-        reference_audio: str,
-        speech_audio: str,
+        timbre_reference: str,
+        speech_reference: str,
         tts,
         compute_backend: str,
     ):
@@ -119,5 +119,5 @@ class ConditionalsPreparer:
         Reutiliza el cómputo único de `compute` y crea un archivo
         `conditionals.pt` en el directorio de la voz.
         """
-        conds = self.compute(tts, compute_backend, reference_audio, speech_audio)
+        conds = self.compute(tts, compute_backend, timbre_reference, speech_reference)
         conds.save(os.path.join(voice_dir, "conditionals.pt"))

@@ -1,7 +1,7 @@
 """
 Tests deterministas de `ConditionalsPreparer` (extracción de engine.py).
 
-Cubren `compute` (ramas con/sin voice_audio), `load_precomputed` (presente/
+Cubren `compute` (ramas con/sin timbre_reference), `load_precomputed` (presente/
 ausente) y `precompute_and_save`, sin el modelo real: se stubbean `librosa`,
 `torch` y `chatterbox.mtl_tts` en `sys.modules`, y el cómputo corre contra un
 `FakeTTS` que expone los atributos que lee `compute`.
@@ -126,21 +126,21 @@ def _install_fakes(monkeypatch, load_calls=None):
 
 
 @pytest.mark.parametrize("with_voice", [True, False])
-def test_compute_with_and_without_voice_audio(monkeypatch, with_voice):
+def test_compute_with_and_without_timbre_reference(monkeypatch, with_voice):
     """Ejercita ambas ramas (engine.py:694-705) verificando la fuente de audio."""
     load_calls = []
     _install_fakes(monkeypatch, load_calls=load_calls)
 
     tts = _FakeTTS()
     prep = ConditionalsPreparer()
-    speech = "speech.wav"
+    speech = "speech-reference.wav"
     voice = "voice.wav" if with_voice else None
 
     result = prep.compute(tts, "cpu", voice, speech)
 
     assert isinstance(result, _FakeConditionals)
     assert result.s3gen_ref is not None and "ref" in result.s3gen_ref
-    # Con voice_audio se cargan ambos archivos; sin él, uno solo (se reusa).
+    # Con timbre_reference se cargan ambos archivos; sin él, uno solo (se reusa).
     assert len(load_calls) == (2 if with_voice else 1)
 
 
@@ -150,7 +150,7 @@ def test_compute_returns_conditionals_with_prompt_tokens(monkeypatch):
     tts = _FakeTTS()
     prep = ConditionalsPreparer()
 
-    result = prep.compute(tts, "cpu", "voice.wav", "speech.wav")
+    result = prep.compute(tts, "cpu", "voice.wav", "speech-reference.wav")
 
     assert isinstance(result.t3_cond, _FakeT3Cond)
     assert "cond_prompt_speech_tokens" in result.t3_cond.kwargs
@@ -193,7 +193,7 @@ def test_precompute_and_save_calls_compute_and_save(monkeypatch, tmp_path):
     prep = ConditionalsPreparer()
     voice_dir = str(tmp_path)
 
-    prep.precompute_and_save(voice_dir, "ref.wav", "speech.wav", tts, "cpu")
+    prep.precompute_and_save(voice_dir, "ref.wav", "speech-reference.wav", tts, "cpu")
 
     expected = os.path.join(voice_dir, "conditionals.pt")
     assert saved == [expected]

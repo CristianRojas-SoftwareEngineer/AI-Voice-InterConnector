@@ -70,7 +70,7 @@ def _is_symlink(path: str) -> bool:
     """True si `path` es un symlink, sin seguirlo.
 
     `os.path.islink` inspecciona solo el segmento nombrado (no sus ancestros),
-    de modo que un enlace en `registry/<nombre>` o en `reference.wav` se detecta
+    de modo que un enlace en `registry/<nombre>` o en `timbre-reference.wav` se detecta
     sin recorrer el árbol ni rechazar raíces legítimas que el usuario haya
     enlazado (p. ej. `data_root` mismo). Es portable a Windows, a
     diferencia de `O_NOFOLLOW` (POSIX).
@@ -79,8 +79,8 @@ def _is_symlink(path: str) -> bool:
 
 
 def _is_valid_voice_dir(candidate: str) -> bool:
-    """Una voz es válida solo con sus dos audios: reference.wav (timbre) y
-    speech.wav (conditioning), igual que exige `voice clone`.
+    """Una voz es válida solo con sus dos audios: timbre-reference.wav (timbre) y
+    speech-reference.wav (conditioning), igual que exige `voice clone`.
 
     Cualquier componente symlink (el directorio de la voz o sus dos
     `.wav`) la hace inválida, para que `list_voices` y `voice_paths` coincidan
@@ -90,8 +90,8 @@ def _is_valid_voice_dir(candidate: str) -> bool:
     """
     if _is_symlink(candidate):
         return False
-    ref = os.path.join(candidate, "reference.wav")
-    speech = os.path.join(candidate, "speech.wav")
+    ref = os.path.join(candidate, "timbre-reference.wav")
+    speech = os.path.join(candidate, "speech-reference.wav")
     if _is_symlink(ref) or _is_symlink(speech):
         return False
     return os.path.exists(ref) and os.path.exists(speech)
@@ -143,8 +143,8 @@ def remove_voice(name: str) -> bool:
 
 def clone_voice_files(
     name: str,
-    reference_audio: str,
-    speech_audio: str,
+    timbre_reference: str,
+    speech_reference: str,
     force: bool = False,
 ) -> tuple[str, str]:
     """Valida y copia los audios de una voz como clon de usuario, SIN el modelo.
@@ -161,7 +161,7 @@ def clone_voice_files(
     """
     # Import local: librosa es pesada y solo la necesita este comando.
     import librosa
-    for label, path in (("reference", reference_audio), ("speech", speech_audio)):
+    for label, path in (("reference", timbre_reference), ("speech", speech_reference)):
         try:
             librosa.load(path, sr=24000, duration=1.0)
         except Exception as e:
@@ -178,10 +178,10 @@ def clone_voice_files(
     # ya los rechaza al leer). Se rechaza antes de tocar el filesystem.
     if _is_symlink(target):
         raise ValueError(f"La voz '{name}' apunta a un symlink; no se puede clonar.")
-    ref_path = os.path.join(target, "reference.wav")
-    speech_path = os.path.join(target, "speech.wav")
-    shutil.copy2(reference_audio, ref_path)
-    shutil.copy2(speech_audio, speech_path)
+    ref_path = os.path.join(target, "timbre-reference.wav")
+    speech_path = os.path.join(target, "speech-reference.wav")
+    shutil.copy2(timbre_reference, ref_path)
+    shutil.copy2(speech_reference, speech_path)
     return (ref_path, speech_path)
 
 
@@ -197,10 +197,10 @@ def voice_paths(name: str) -> tuple[str, str]:
             f"Voz '{name}' no encontrada (ni en las voces de usuario ni en las de fábrica). "
             f"Clónala con 'tts-sidecar voice clone' o usa la voz 'default'."
         )
-    ref_path = os.path.join(target, "reference.wav")
-    speech_path = os.path.join(target, "speech.wav")
+    ref_path = os.path.join(target, "timbre-reference.wav")
+    speech_path = os.path.join(target, "speech-reference.wav")
     if not os.path.exists(ref_path):
-        raise FileNotFoundError(f"Voz '{name}': reference.wav no encontrado en {ref_path}")
+        raise FileNotFoundError(f"Voz '{name}': timbre-reference.wav no encontrado en {ref_path}")
     if not os.path.exists(speech_path):
-        raise FileNotFoundError(f"Voz '{name}': speech.wav no encontrado en {speech_path}")
+        raise FileNotFoundError(f"Voz '{name}': speech-reference.wav no encontrado en {speech_path}")
     return (ref_path, speech_path)

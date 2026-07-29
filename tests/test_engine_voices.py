@@ -24,9 +24,9 @@ class _FakePreparer:
     def compute(self, *args, **kwargs):
         return object()
 
-    def precompute_and_save(self, voice_dir, reference_audio, speech_audio, tts, compute_backend):
+    def precompute_and_save(self, voice_dir, timbre_reference, speech_reference, tts, compute_backend):
         self.precompute_calls.append(
-            (voice_dir, reference_audio, speech_audio, tts, compute_backend)
+            (voice_dir, timbre_reference, speech_reference, tts, compute_backend)
         )
 
     def load_precomputed(self, voice_dir, compute_backend):
@@ -45,7 +45,7 @@ def engine(monkeypatch):
     eng._tts = object()
 
     def fake_voice_paths(name):
-        return (f"/voices/{name}/reference.wav", f"/voices/{name}/speech.wav")
+        return (f"/voices/{name}/timbre-reference.wav", f"/voices/{name}/speech-reference.wav")
 
     monkeypatch.setattr(voices_mod, "voice_paths", fake_voice_paths)
     return eng
@@ -57,7 +57,7 @@ def test_precompute_voice_invokes_preparer_with_registry_paths(engine):
     engine.precompute_voice("v")
 
     assert engine._conditionals_prep.precompute_calls == [
-        ("/voices/v", "/voices/v/reference.wav", "/voices/v/speech.wav", engine._tts, "cpu")
+        ("/voices/v", "/voices/v/timbre-reference.wav", "/voices/v/speech-reference.wav", engine._tts, "cpu")
     ]
 
 

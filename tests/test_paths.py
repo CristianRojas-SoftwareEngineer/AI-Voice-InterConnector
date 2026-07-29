@@ -55,8 +55,8 @@ class TestBundledVoicesDir:
 
     def test_default_voice_exists_with_both_audio_files(self):
         default_dir = os.path.join(paths.bundled_voices_dir(), "default")
-        assert os.path.isfile(os.path.join(default_dir, "reference.wav"))
-        assert os.path.isfile(os.path.join(default_dir, "speech.wav"))
+        assert os.path.isfile(os.path.join(default_dir, "timbre-reference.wav"))
+        assert os.path.isfile(os.path.join(default_dir, "speech-reference.wav"))
 
     def test_resolves_under_meipass_when_frozen(self, monkeypatch, tmp_path):
         monkeypatch.setattr(paths.sys, "frozen", True, raising=False)

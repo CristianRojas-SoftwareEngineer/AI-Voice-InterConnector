@@ -52,13 +52,13 @@ class TestSpeakProgressCallback:
         )
         eng._conditionals_prep.compute = lambda *a, **kw: None
 
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         events = []
         eng.speak(
             "hola",
-            speech_audio=str(speech),
+            speech_reference=str(speech),
             progress_callback=lambda ev: events.append(ev),
         )
 
@@ -78,14 +78,14 @@ class TestSpeakProgressCallback:
         )
         eng._conditionals_prep.compute = lambda *a, **kw: None
 
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
         out = tmp_path / "out.wav"
 
         events = []
         eng.speak(
             "hola",
-            speech_audio=str(speech),
+            speech_reference=str(speech),
             output_path=str(out),
             progress_callback=lambda ev: events.append(ev),
         )
@@ -100,10 +100,10 @@ class TestSpeakProgressCallback:
             lambda audio_data, sample_rate, path=None: b"RIFF",
         )
         eng._conditionals_prep.compute = lambda *a, **kw: None
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
-        eng.speak("hola", speech_audio=str(speech), progress_callback=lambda ev: None)
+        eng.speak("hola", speech_reference=str(speech), progress_callback=lambda ev: None)
         assert eng._active_progress_cb is None
 
     def test_callback_exception_does_not_break_synthesis(self, tmp_path, monkeypatch):
@@ -113,13 +113,13 @@ class TestSpeakProgressCallback:
             lambda audio_data, sample_rate, path=None: b"RIFF",
         )
         eng._conditionals_prep.compute = lambda *a, **kw: None
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         def boom(ev):
             raise RuntimeError("callback roto")
 
-        assert eng.speak("hola", speech_audio=str(speech), progress_callback=boom).audio_bytes == b"RIFF"
+        assert eng.speak("hola", speech_reference=str(speech), progress_callback=boom).audio_bytes == b"RIFF"
 
 
 class TestTokenCountingIter:

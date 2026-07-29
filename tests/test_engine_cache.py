@@ -110,7 +110,7 @@ class TestCorruptConditionals:
         voice = tmp_path / "voz"
         voice.mkdir()
         (voice / "conditionals.pt").write_bytes(b"basura")
-        speech = voice / "speech.wav"
+        speech = voice / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         recomputos = []
@@ -129,7 +129,7 @@ class TestCorruptConditionals:
             lambda audio_data, sample_rate, path=None: b"RIFF",
         )
 
-        assert eng.speak("hola", speech_audio=str(speech)).audio_bytes == b"RIFF"
+        assert eng.speak("hola", speech_reference=str(speech)).audio_bytes == b"RIFF"
         assert recomputos, "speak debe recomputar los conditionals cuando el .pt es corrupto"
 
 
@@ -181,11 +181,11 @@ class TestUnifiedParameters:
             eng._orchestrator.audio_writer, "write",
             lambda audio_data, sample_rate, path=None: b"RIFF",
         )
-        speech = tmp_path / "speech.wav"
+        speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
         eng._conditionals_prep.compute = lambda *a, **kw: None
 
-        eng.speak("hola", speech_audio=str(speech))
+        eng.speak("hola", speech_reference=str(speech))
 
         assert eng._tts.last_generate_kwargs["exaggeration"] == ChatterboxEngine.EXAGGERATION
 
@@ -203,7 +203,7 @@ class TestUnifiedParameters:
         voice.mkdir()
         conds = voice / "conditionals.pt"
         conds.write_bytes(b"valido")
-        speech = voice / "speech.wav"
+        speech = voice / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
         loads = []
@@ -215,14 +215,14 @@ class TestUnifiedParameters:
 
         eng.load_precomputed_conditionals = fake_load
 
-        eng.speak("hola", speech_audio=str(speech))
-        eng.speak("hola otra vez", speech_audio=str(speech))
+        eng.speak("hola", speech_reference=str(speech))
+        eng.speak("hola otra vez", speech_reference=str(speech))
         assert len(loads) == 1, "la segunda síntesis de la misma voz no debe releer disco"
 
         # Un conditionals.pt regenerado (mtime nuevo) invalida la memoización
         mtime = os.path.getmtime(conds) + 10
         os.utime(conds, (mtime, mtime))
-        eng.speak("hola de nuevo", speech_audio=str(speech))
+        eng.speak("hola de nuevo", speech_reference=str(speech))
         assert len(loads) == 2
 
 

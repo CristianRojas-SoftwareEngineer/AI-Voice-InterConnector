@@ -33,8 +33,8 @@ class SynthesisOrchestrator:
     def synthesize(
         self,
         text: str,
-        voice_audio,
-        speech_audio,
+        timbre_reference,
+        speech_reference,
         output_path,
         progress_callback,
     ) -> SynthesisResult:
@@ -48,19 +48,19 @@ class SynthesisOrchestrator:
         engine = self.engine
         engine._active_progress_cb = progress_callback
         try:
-            return self._synthesize_impl(text, voice_audio, speech_audio, output_path)
+            return self._synthesize_impl(text, timbre_reference, speech_reference, output_path)
         finally:
             engine._active_progress_cb = None
 
-    def _synthesize_impl(self, text, voice_audio, speech_audio, output_path) -> SynthesisResult:
+    def _synthesize_impl(self, text, timbre_reference, speech_reference, output_path) -> SynthesisResult:
         engine = self.engine
 
         # Stage 1: Carga de conditionals
         engine._emit_progress(stage="conditionals")
         with StageTimer("1-Speak", "Etapa 1/4: Cargando conditionals"):
             voice_dir = None
-            if speech_audio:
-                voice_dir = os.path.dirname(speech_audio)
+            if speech_reference:
+                voice_dir = os.path.dirname(speech_reference)
                 conditionals_path = os.path.join(voice_dir, "conditionals.pt")
                 if os.path.exists(conditionals_path):
                     conds_key = (voice_dir, os.path.getmtime(conditionals_path))
@@ -78,14 +78,14 @@ class SynthesisOrchestrator:
                         # en vez de sintetizar en silencio con los conds previos.
                         log("   -> conditionals.pt inválido, recomputando on-the-fly...")
                         engine._conds_cache_key = None
-                        self._compute_conditionals(voice_audio, speech_audio)
+                        self._compute_conditionals(timbre_reference, speech_reference)
                 else:
                     log("   -> Calculando conditionals on-the-fly...")
                     engine._conds_cache_key = None
-                    self._compute_conditionals(voice_audio, speech_audio)
+                    self._compute_conditionals(timbre_reference, speech_reference)
             else:
                 engine._conds_cache_key = None
-                self._compute_conditionals(voice_audio, speech_audio)
+                self._compute_conditionals(timbre_reference, speech_reference)
 
         # Stage 2: Generación TTS con los parámetros optimizados del engine.
         engine._emit_progress(stage="tts")
@@ -111,12 +111,12 @@ class SynthesisOrchestrator:
         metrics = getattr(engine, "_synthesis_metrics", None) or SynthesisMetrics()
         return SynthesisResult(audio_bytes=wav_bytes, metrics=metrics)
 
-    def _compute_conditionals(self, voice_audio, speech_audio) -> None:
+    def _compute_conditionals(self, timbre_reference, speech_reference) -> None:
         """Computa los conditionals on-the-fly y los asigna a `engine._tts.conds`.
 
         Espejo del antiguo `_prepare_conditionals_multi` del engine.
         """
         engine = self.engine
         engine._tts.conds = self.conditionals_prep.compute(
-            engine._tts, engine.compute_backend, voice_audio, speech_audio
+            engine._tts, engine.compute_backend, timbre_reference, speech_reference
         )
