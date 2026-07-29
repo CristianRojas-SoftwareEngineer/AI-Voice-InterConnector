@@ -25,10 +25,10 @@ from . import paths
 _VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-def _validate_voice_name(name: str) -> str:
-    """Valida un nombre de voz antes de componer cualquier ruta con él.
+def _validate_path_segment(value: str, kind: str = "voz") -> str:
+    """Valida un segmento de ruta (p. ej. nombre de voz) antes de componer cualquier ruta con él.
 
-    Rechaza nombres vacíos, con separadores de ruta, rutas absolutas o `..`,
+    Rechaza valores vacíos, con separadores de ruta, rutas absolutas o `..`,
     eliminando la clase de escapes de ruta (p. ej. `voice remove --name ..`
     resolvería al padre del registro y lo borraría).
 
@@ -36,12 +36,12 @@ def _validate_voice_name(name: str) -> str:
     case-insensitive (macOS APFS, Docker volumes sobre NTFS, etc.). La defensa
     anti-escape usa realpath así que el directorio real siempre queda dentro del registro.
     """
-    if not name or not _VOICE_NAME_RE.match(name) or ".." in name or name == ".":
+    if not value or not _VOICE_NAME_RE.match(value) or ".." in value or value == ".":
         raise ValueError(
-            f"Nombre de voz inválido: {name!r}. "
+            f"Nombre de {kind} inválido: {value!r}. "
             "Usa solo letras, números, punto, guion y guion bajo (sin '..' ni separadores de ruta)."
         )
-    return name.lower()
+    return value.lower()
 
 
 def voices_root() -> str:
@@ -56,7 +56,7 @@ def factory_voices_root() -> str:
 
 def voice_dir(name: str) -> str:
     """Directorio de una voz de usuario concreta (destino de escritura)."""
-    name = _validate_voice_name(name)  # Normaliza a minúsculas
+    name = _validate_path_segment(name, kind="voz")  # Normaliza a minúsculas
     root = voices_root()
     target = os.path.join(root, name)
     # Defensa en profundidad: la ruta resuelta debe quedar dentro del registro.
@@ -99,7 +99,7 @@ def _is_valid_voice_dir(candidate: str) -> bool:
 
 def _resolve_voice_dir(name: str) -> str | None:
     """Devuelve el directorio de una voz con precedencia usuario→fábrica, o None."""
-    _validate_voice_name(name)
+    _validate_path_segment(name, kind="voz")
     for root in (voices_root(), factory_voices_root()):
         candidate = os.path.join(root, name)
         if _is_valid_voice_dir(candidate):
