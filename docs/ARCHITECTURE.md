@@ -132,10 +132,10 @@ speak --text "Hola" -v mi_voz
 
 Chatterbox permite clonar cualquier voz a partir de ~10 segundos de audio. Cada voz requiere dos archivos:
 
-1. `voice clone --name mi_voz --reference timbre.wav --speech condicion.wav` clona la voz
-2. Los archivos se guardan en `voices/mi_voz/reference.wav` y `voices/mi_voz/speech.wav`
-   - `reference.wav` → Voice Encoder (timbre completo)
-   - `speech.wav` → T3 conditioning + S3Gen decoder (patrón de habla)
+1. `voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav` clona la voz
+2. Los archivos se guardan en `voices/mi_voz/timbre-reference.wav` y `voices/mi_voz/speech-reference.wav`
+   - `timbre-reference.wav` → Voice Encoder (timbre completo)
+   - `speech-reference.wav` → T3 conditioning + S3Gen decoder (patrón de habla)
 3. El clonado **precomputa los conditionals** de la voz a `voices/mi_voz/conditionals.pt`
    (con el modelo caliente del daemon si está activo, o cargándolo en frío si no),
    de modo que exige el modelo provisionado (`setup`). Un fallo del precómputo no

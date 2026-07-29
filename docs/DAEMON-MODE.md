@@ -9,7 +9,6 @@ El daemon mode mantiene el modelo de Chatterbox en memoria entre invocaciones de
 - [Arquitectura](#arquitectura)
 - [Comandos del Daemon](#comandos-del-daemon)
 - [Cancelación cooperativa del cliente](#cancelación-cooperativa-del-cliente)
-- [Seguridad: directorios de audio permitidos](#seguridad-directorios-de-audio-permitidos)
 - [Parámetros Optimizados](#parámetros-optimizados)
 - [Métricas de Rendimiento](#métricas-de-rendimiento)
 - [Decisiones de Diseño](#decisiones-de-diseño)
@@ -94,14 +93,12 @@ src/tts_sidecar/
 POST /synthesize
 {
   "text": "Hola mundo",
-  "voice_audio": "/path/to/reference.wav",
-  "speech_audio": "/path/to/speech.wav"
+  "voice": "nombre-de-voz-registrada"
 }
 ```
 
 El protocolo no lleva `model` ni `compute_backend`: el daemon sirve un único modelo
-fijado al arrancar, con el backend de cómputo resuelto una sola vez (auto-detect o override vía variable de entorno). `text` está acotado a 5000 caracteres y las rutas de audio
-deben existir y ser `.wav` (validación previa a la síntesis).
+fijado al arrancar, con el backend de cómputo resuelto una sola vez (auto-detect o override vía variable de entorno). `text` está acotado a 5000 caracteres.
 
 **Response** (Daemon → CLI):
 
@@ -133,10 +130,9 @@ desconocido, esquema inválido o `audio_b64` no decodificable) — sin toleranci
 frames sucios. El cliente reenvía cada `progress` validado al spinner de `speak`
 para mostrar progreso real (p. ej. «Generando voz · 210 tokens»); ver más abajo.
 
-> **Errores de validación**: los rechazos de ruta de audio inválida (sandbox de
-> directorios permitidos) o de modelo no cargado siguen siendo respuestas HTTP de
-> error inmediatas (`400`/`503` con cuerpo JSON `{"detail": ...}`), **no** frames
-> del stream: se validan antes de arrancar la síntesis.
+> **Errores de validación**: el rechazo por modelo no cargado sigue siendo una
+> respuesta HTTP de error inmediata (`503` con cuerpo JSON `{"detail": ...}`),
+> **no** un frame del stream: se valida antes de arrancar la síntesis.
 
 ### Versionado del protocolo
 
@@ -312,27 +308,6 @@ romper el contrato best-effort para otras excepciones del callback (ver
 > S3Gen, la cancelación solo se aplica tras completar esa etapa (unos segundos de
 > consumo residual). No reportes como bug «cancelé y el daemon siguió consumiendo
 > unos segundos»: es el comportamiento documentado para esa ventana.
-
-## Seguridad: directorios de audio permitidos
-
-El endpoint `/synthesize` **no acepta rutas de audio arbitrarias del sistema
-de archivos**: `voice_audio`/`speech_audio` deben resolver (tras seguir
-symlinks) dentro de un directorio permitido —un directorio de voces conocido
-(fábrica o usuario) o el subdirectorio de sesión del daemon bajo el tempdir del
-SO (`<tempdir>/tts-sidecar/`), donde los clientes IPC preparan audio de sesión;
-ver `voices.allowed_audio_dirs()` en `src/tts_sidecar/voices.py`. El tempdir
-compartido general (`%TEMP%`/`/tmp`) **no** es un directorio permitido: acotarlo
-al subdirectorio namespaced evita que cualquier proceso local plante un `.wav`
-en el temp compartido para que el daemon lo lea. Cualquier otra ruta se rechaza
-con `400`.
-
-Esta restricción evita que un proceso local cualquiera use el daemon como
-lector arbitrario de `.wav` del sistema (el daemon escucha en loopback sin
-autenticación; ver `SECURITY.md`). **No se relaja bajo ninguna circunstancia.**
-El CLI (`speak --voice-audio`/`--speech-audio`) anticipa esta restricción del
-lado cliente antes de despachar al daemon: sin `--daemon` explícito degrada a
-modo directo con un aviso; con `--daemon` explícito falla con un mensaje
-accionable (ver USAGE.md, sección de `speak`).
 
 ## Parámetros Optimizados
 

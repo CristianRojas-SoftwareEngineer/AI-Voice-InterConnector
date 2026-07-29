@@ -12,7 +12,7 @@
   - [`version`](#version)
   - [`doctor`](#doctor)
   - [`devices`](#devices)
-  - [`speak`](#speak)
+  - [`speech say`](#speech-say)
   - [`voice clone`](#voice-clone)
   - [`voice list`](#voice-list)
   - [`voice remove`](#voice-remove)
@@ -32,7 +32,7 @@
   - ["OneDrive user-data-dir" [WARN] en doctor (Windows)](#onedrive-user-data-dir-warn-en-doctor-windows)
   - ["Voice 'x' not found"](#voice-x-not-found)
   - ["La voz 'x' ya existe"](#la-voz-x-ya-existe)
-  - ["reference.wav/speech.wav not found"](#referencewavspeechwav-not-found)
+  - ["timbre-reference.wav/speech-reference.wav not found"](#timbre-referencewavspeech-referencewav-not-found)
   - ["Voz 'x' es una voz de fábrica (solo lectura)"](#voz-x-es-una-voz-de-fábrica-solo-lectura)
   - [Error al eliminar una voz: "uno de sus archivos parece estar en uso"](#error-al-eliminar-una-voz-uno-de-sus-archivos-parece-estar-en-uso)
   - [Sin audio de salida](#sin-audio-de-salida)
@@ -301,8 +301,8 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `name` | string | Nombre de la voz registrada |
-| `reference` | string | Ruta absoluta del `reference.wav` copiado (timbre) |
-| `speech` | string | Ruta absoluta del `speech.wav` copiado (conditioning) |
+| `reference` | string | Ruta absoluta del `timbre-reference.wav` copiado (timbre) |
+| `speech` | string | Ruta absoluta del `speech-reference.wav` copiado (conditioning) |
 
 **`voice remove --json`**
 
@@ -416,35 +416,31 @@ Dispositivos de salida de audio:
 
 ---
 
-### `speak`
+### `speech say`
 
-Sintetiza texto. Sin `--output` reproduce el audio inmediatamente por los
-altavoces; con `--output` lo guarda en un archivo WAV sin reproducirlo.
+Sintetiza texto y reproduce el audio inmediatamente por los altavoces.
 
-Sin `--voice` ni audios explícitos, `speak` usa la voz de fábrica **`default`**
-(empaquetada, de solo lectura), por lo que el ejemplo mínimo funciona recién
-instalado, sin clonar nada:
+Sin `--voice`, `speech say` usa la voz de fábrica **`default`** (empaquetada,
+de solo lectura), por lo que el ejemplo mínimo funciona recién instalado, sin
+clonar nada:
 
 ```bash
 # Reproducir con la voz de fábrica 'default'
-tts-sidecar speak --text "Hola mundo"
+tts-sidecar speech say --text "Hola mundo"
 
 # Usar una voz registrada
-tts-sidecar speak --text "Hola mundo" --voice mi_voz
-
-# Guardar a archivo WAV
-tts-sidecar speak --text "Hola mundo" --output output.wav
+tts-sidecar speech say --text "Hola mundo" --voice mi_voz
 ```
 
 **Qué esperar:** el comando reporta su progreso por etapas con timestamps. En
 modo directo (sin daemon), la primera etapa es la carga del modelo (~15–30 s) y
-luego la síntesis; al final, el audio suena por los altavoces (o se anuncia el
-archivo guardado). En una terminal interactiva verás además un indicador de
-progreso en vivo (etapa y avance de tokens del T3) sobre stderr; ver «Progreso en
-vivo» más abajo. El siguiente ejemplo es la salida capturada (sin TTY):
+luego la síntesis; al final, el audio suena por los altavoces. En una terminal
+interactiva verás además un indicador de progreso en vivo (etapa y avance de
+tokens del T3) sobre stderr; ver «Progreso en vivo» más abajo. El siguiente
+ejemplo es la salida capturada (sin TTY):
 
 ```
-Iniciando speak...
+Iniciando speech say...
 [10:00:01] Usando modelo en caché: es-mx-latam (...)...
 [10:00:20] Modelo cargado: es-MX-Latam (vocab=2454, compute_backend=cpu, builtin_voice=sí)...
 [10:00:20] [1-Speak] Etapa 1/4: Cargando conditionals...
@@ -460,9 +456,6 @@ Iniciando speak...
 Finalizado en 41.5s
 ```
 
-Con `--output`, en lugar de las líneas de `[Reproducción]` verás
-`[Archivo] Audio guardado: output.wav` y el archivo quedará en la ruta indicada.
-
 **Orígenes de voz (resolución usuario→fábrica):**
 - **Fábrica**: voces empaquetadas en el ejecutable, de solo lectura (incluye
   `default`). Idénticas en desarrollo y en cualquier instalación.
@@ -472,10 +465,7 @@ Con `--output`, en lugar de las líneas de `[Reproducción]` verás
 
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
-- `--output, -o`: Ruta del archivo WAV de salida; si se omite, el audio se reproduce
-- `--voice, -v`: Nombre de la voz clonada a usar (auto-carga sus dos audios)
-- `--voice-audio`: Ruta a archivo de audio para timbre (usa `--speech-audio` si no se especifica)
-- `--speech-audio`: Ruta a archivo de audio para conditioning (usa `--voice-audio` si no se especifica)
+- `--voice, -v`: Nombre de la voz registrada a usar (auto-carga sus dos audios)
 - `--daemon`: Usar el daemon sin sondeo previo; si falla, el error se reporta (sin fallback a directo)
 - `--no-daemon`: Forzar modo directo, sin sondear el daemon
 
@@ -489,17 +479,17 @@ muestra en el log de arranque del motor (`Modelo cargado: …,
 compute_backend=…`). Si quieres forzar uno concreto (p. ej. CPU para
 reproducibilidad), pasa el valor explícito. **Nota:** vía daemon el backend
 queda fijado desde su arranque; un `--compute-backend` distinto de `auto` en
-una invocación individual se ignora y `speak` avisa por stderr. Para forzar
+una invocación individual se ignora y `speech say` avisa por stderr. Para forzar
 un backend distinto usa `--no-daemon`, o reinicia el daemon con la variable
 de entorno correspondiente.
 
 **Límite de longitud del texto:** `--text` acepta hasta 5000 caracteres; por
-encima de ese límite `speak` falla con exit 4 (`INVALID_INPUT`) antes de
+encima de ese límite `speech say` falla con exit 4 (`INVALID_INPUT`) antes de
 intentar sintetizar, en modo directo o vía daemon. Por encima de 2000
 caracteres (sin llegar a 5000) se emite una advertencia no bloqueante por
 stderr: el T3 topa la generación en 500 tokens, así que un texto muy largo
 puede truncarse en el audio resultante — se recomienda fragmentar el texto en
-varias llamadas a `speak`.
+varias llamadas a `speech say`.
 
 No hay opción de modelo: TTS Sidecar está especializado en español
 latinoamericano y usa siempre el modelo `es-mx-latam` provisionado por `setup`.
@@ -508,28 +498,11 @@ Tú solo gestionas las voces.
 **Ejemplos:**
 ```bash
 # Usando voz registrada
-tts-sidecar speak --text "Hola mundo" --voice mi_voz
-
-# Usando archivos de audio directamente (sin clonar voz)
-tts-sidecar speak --text "Hola" --voice-audio timbre.wav --speech-audio condicion.wav
-
-# Guardar a archivo con voz registrada
-tts-sidecar speak --text "Hola mundo" --voice mi_voz --output audio.wav
+tts-sidecar speech say --text "Hola mundo" --voice mi_voz
 
 # Forzar modo directo
-tts-sidecar speak --text "Hola" --voice mi_voz --no-daemon
+tts-sidecar speech say --text "Hola" --voice mi_voz --no-daemon
 ```
-
-> **`--voice-audio`/`--speech-audio` vía daemon**: el daemon solo acepta rutas
-> de audio dentro de los directorios de voces (fábrica o usuario) o del
-> subdirectorio de sesión del daemon (`<tempdir>/tts-sidecar/`), no un archivo
-> arbitrario del sistema ni el tempdir compartido general. Si el daemon está
-> activo y tu audio vive fuera de esos directorios, tienes tres alternativas: (1) clona el audio
-> como voz con `voice clone` y usa `--voice`; (2) fuerza `--no-daemon` para
-> sintetizar en modo directo con esa ruta; o (3) copia el audio dentro del
-> directorio de voces del usuario. Sin `--daemon` explícito, el CLI detecta la
-> restricción y degrada a modo directo automáticamente con un aviso por
-> stderr; con `--daemon` explícito, falla con exit 4 y el mismo mensaje.
 
 ---
 
@@ -538,7 +511,7 @@ tts-sidecar speak --text "Hola" --voice mi_voz --no-daemon
 Clona una voz a partir de dos archivos de audio.
 
 ```bash
-tts-sidecar voice clone --name mi_voz --reference timbre.wav --speech condicion.wav
+tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
 ```
 
 **Qué esperar:** el comando valida que ambos audios sean cargables, copia los
@@ -548,8 +521,8 @@ la voz (`conditionals.pt`) y confirma:
 ```
 Iniciando voice_clone...
 Voz 'mi_voz' clonada:
-  timbre (reference): <ruta>/voices/mi_voz/reference.wav
-  habla (conditioning): <ruta>/voices/mi_voz/speech.wav
+  timbre (reference): <ruta>/voices/mi_voz/timbre-reference.wav
+  habla (conditioning): <ruta>/voices/mi_voz/speech-reference.wav
   conditionals: precomputados
 Finalizado en 3.1s
 ```
@@ -571,21 +544,21 @@ computarán en la primera síntesis.
 
 **Opciones:**
 - `--name, -n` (requerido): Nombre para la voz
-- `--reference, -r` (requerido): Audio para timbre (cualquier largo — el audio completo se usa para el embedding)
-- `--speech, -s` (requerido): Audio para conditioning (10+ segundos de habla limpia)
+- `--timbre-reference, -t` (requerido): Audio para timbre (cualquier largo — el audio completo se usa para el embedding)
+- `--speech-reference, -s` (requerido): Audio para conditioning (10+ segundos de habla limpia)
 - `--force, -f`: Sobrescribir la voz si ya existe (incluida una de fábrica homónima)
 - `--json`: Emitir el resultado como JSON (nombre y rutas registradas; ver la
   referencia de esquemas más arriba)
 
 **¿Por qué dos archivos?**
-- `--reference` captura el **timbre** de la voz (cómo suena)
-- `--speech` provee el **patrón de habla** (ritmo, entonación)
+- `--timbre-reference` captura el **timbre** de la voz (cómo suena)
+- `--speech-reference` provee el **patrón de habla** (ritmo, entonación)
 
 Pueden ser el mismo archivo si solo tienes una grabación, pero separar ambos da
 mejores resultados.
 
 **Requisitos del audio:**
-- Duración: 10+ segundos recomendados para `--speech`; `--reference` puede ser de cualquier largo
+- Duración: 10+ segundos recomendados para `--speech-reference`; `--timbre-reference` puede ser de cualquier largo
 - Idioma: Español latinoamericano
 - Calidad: Sin ruido de fondo, habla clara
 - Formato: WAV 16-bit
@@ -862,7 +835,7 @@ De principio a fin, desde grabar tu voz hasta escucharla sintetizada:
 #    habla.wav   - 10+ segundos de habla limpia y continua
 
 # 2. Clona la voz
-tts-sidecar voice clone --name mi_voz --reference timbre.wav --speech habla.wav
+tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav
 # → Voz 'mi_voz' clonada: (rutas de los dos archivos copiados)
 
 # 3. Verifica que aparece
@@ -985,16 +958,16 @@ tts-sidecar voice list
 `voice clone` no sobrescribe voces por accidente. Si quieres reemplazarla:
 
 ```bash
-tts-sidecar voice clone --name mi_voz --reference timbre.wav --speech habla.wav --force
+tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav --force
 ```
 
-### "reference.wav/speech.wav not found"
+### "timbre-reference.wav/speech-reference.wav not found"
 
 La voz no tiene los archivos necesarios. Puede que se registró con el formato
 antiguo. Vuelve a clonar:
 
 ```bash
-tts-sidecar voice clone --name mi_voz --reference timbre.wav --speech condicion.wav --force
+tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav --force
 ```
 
 ### "Voz 'x' es una voz de fábrica (solo lectura)"

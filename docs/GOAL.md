@@ -116,7 +116,7 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 ./tts-sidecar daemon status        # Verificar que está activo
 
 # 4. Clonación de voz (requiere dos archivos de audio)
-./tts-sidecar voice clone --name mi_voz --reference timbre.wav --speech condicion.wav
+./tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
 
 # 5. Listar voces registradas (verifica que la voz quedó registrada)
 ./tts-sidecar voice list
@@ -159,7 +159,7 @@ TTS-Sidecar/
 │       ├── paths.py          # Rutas: fábrica relativa al paquete, datos en user-data-dir por SO
 │       ├── model_cache.py    # Detección del modelo en la caché de HF
 │       ├── voices/           # Voces de FÁBRICA (empaquetadas en wheel y bundle)
-│       │   └── default/      # reference.wav + speech.wav
+│       │   └── default/      # timbre-reference.wav + speech-reference.wav
 │       └── daemon/           # Daemon mode (FastAPI + IPC)
 │           ├── daemon.py    # Gestor del ciclo de vida
 │           ├── server.py    # Endpoints FastAPI
@@ -184,7 +184,7 @@ TTS-Sidecar/
 2. [ ] El instalador de Linux funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
 3. [ ] El instalador de macOS funciona en el mínimo declarado por `LSMinimumSystemVersion` (Apple Silicon; Mac Intel no soportado) — derivado dinámicamente del `MACOSX_DEPLOYMENT_TARGET` del toolchain de build, no un número fijo (validación E2E por SO, ver "Validación E2E" más abajo)
 4. [x] `tts-sidecar speak --text "Hola mundo"` reproduce audio en español
-5. [x] `tts-sidecar voice clone --name test --reference ref.wav --speech speech.wav` clona la voz
+5. [x] `tts-sidecar voice clone --name test --timbre-reference ref.wav --speech-reference speech.wav` clona la voz
 6. [x] El audio generado suena en español con las características de la voz de referencia
 7. [x] El español latinoamericano suena natural y con buena prosodia
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)

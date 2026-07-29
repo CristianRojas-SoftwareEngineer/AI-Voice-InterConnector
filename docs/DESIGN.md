@@ -21,7 +21,7 @@ TTS Sidecar es un motor de síntesis de voz (TTS) **100% local** que usa **Chatt
 
 - **Licencia**: GPL-3.0-or-later (código del proyecto); el modelo y las dependencias conservan sus licencias permisivas (MIT/BSD/Apache)
 - **Idiomas**: 23+ incluyendo Español (es)
-- **Clonación**: diseño dual-audio (`reference.wav` + `speech.wav`, ~10 segundos)
+- **Clonación**: diseño dual-audio (`timbre-reference.wav` + `speech-reference.wav`, ~10 segundos)
 - **Parámetros del modelo**: 500M
 - **Hardware**: CPU, CUDA, MPS (Apple Silicon)
 
@@ -77,8 +77,8 @@ TTS-Sidecar/
 │       ├── model_cache.py         # Detección del modelo en la caché de HF
 │       ├── voices/                # Voces de FÁBRICA (commiteadas, empaquetadas, solo lectura)
 │       │   └── default/           # Voz por defecto (derivada de assets/audios/)
-│       │       ├── reference.wav      # Timbre de voz (cualquier largo)
-│       │       └── speech.wav         # Conditioning (10s+)
+│       │       ├── timbre-reference.wav # Timbre de voz (cualquier largo)
+│       │       └── speech-reference.wav # Conditioning (10s+)
 │       └── daemon/                # Daemon mode (FastAPI + IPC)
 │           ├── daemon.py          # Gestor del ciclo de vida
 │           ├── server.py          # Endpoints FastAPI
@@ -119,7 +119,7 @@ TTS-Sidecar/
 | **Licencia** | MIT |
 | **Parámetros** | 500M |
 | **Idiomas** | 23+ (es, en, fr, de, pt, etc.) |
-| **Clonación de voz** | Diseño dual-audio (`reference.wav` + `speech.wav`, ~10s) |
+| **Clonación de voz** | Diseño dual-audio (`timbre-reference.wav` + `speech-reference.wav`, ~10s) |
 | **Inferencia** | CPU, CUDA, MPS |
 
 ## Flujo de síntesis
@@ -132,8 +132,8 @@ TTS-Sidecar/
                     │
                     ▼
 3. ChatterboxTTS.generate(text, language=es,
-       reference.wav → Voice Encoder (timbre),
-       speech.wav    → T3 conditioning + S3Gen decoder)
+       timbre-reference.wav → Voice Encoder (timbre),
+       speech-reference.wav    → T3 conditioning + S3Gen decoder)
                     │
                     ▼
 4. El modelo produce audio WAV (24kHz, mono)
@@ -179,7 +179,7 @@ tts-sidecar speak --text "Hola" -v mi_voz
 tts-sidecar speak --text "Hola" --output audio.wav -v mi_voz
 
 # Clonación de voz (requiere dos archivos de audio)
-tts-sidecar voice clone --name mi_voz --reference timbre.wav --speech condicion.wav
+tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
 
 # Listar voces
 tts-sidecar voice list

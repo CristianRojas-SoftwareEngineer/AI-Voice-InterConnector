@@ -39,14 +39,14 @@ JSON:
 
 | Superficie | Qué consume el plugin | Compromiso de estabilidad |
 |------------|-----------------------|----------------------------|
-| `speak --text "<msg>" --daemon` | Síntesis y reproducción de cada locución. Usa el daemon y falla si no está levantado (no lo arranca solo). | Mantener el flag `--daemon` y su semántica (usar el daemon, no auto-arrancarlo). |
+| `speech say --text "<msg>" --daemon` | Síntesis y reproducción de cada locución. Usa el daemon y falla si no está levantado (no lo arranca solo). | Mantener el flag `--daemon` y su semántica (usar el daemon, no auto-arrancarlo). |
 | `doctor --json` | Verifica el entorno; busca en `checks[]` el elemento con `name == "Chatterbox model"` y lee su `status`. | Mantener `checks[].name == "Chatterbox model"` y los valores `PASS`/`FAIL`. |
 | `daemon status --json` | Lee `running` para saber si el daemon corre. | Mantener el campo booleano `running`. |
 | `daemon start` | Levanta el daemon para dejar el modelo en memoria. | Mantener el subcomando y su arranque desanclable. |
 
 Cambiar cualquiera de estos nombres, flags o campos **rompe la narración** sin
 que este repo tenga tests que lo detecten (el plugin vive fuera). Por eso esta
-tabla es el contrato a preservar; al tocar `cli.py` en `speak`, `doctor` o
+tabla es el contrato a preservar; al tocar `cli.py` en `speech say`, `doctor` o
 `daemon`, revísala.
 
 ## Qué NO comparten los dos proyectos

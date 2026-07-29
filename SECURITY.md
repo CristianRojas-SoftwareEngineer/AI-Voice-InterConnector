@@ -58,13 +58,8 @@ limitada, pero conviene explicitar sus supuestos:
   ese riesgo residual en lugar de introducir un secreto que el propio cliente IPC
   tendría que generar y persistir, sin ganancia real bajo un binding exclusivo a
   loopback y modelo single-user.
-- El endpoint de síntesis valida la entrada (`text` acotado a 5000 caracteres; las
-  rutas de audio deben existir y ser `.wav`) antes de procesarla.
-- La validación de rutas de audio resuelve symlinks (`realpath`) y exige contención
-  en directorios permitidos. Ese control asume el modelo single-user anterior: **no**
-  pretende resistir ataques de symlink entre usuarios locales de un mismo host
-  (TOCTOU/re-apuntado por otro usuario). Es un **riesgo aceptado**, coherente con el
-  punto anterior: el daemon no provee aislamiento entre usuarios locales.
+- El endpoint de síntesis valida la entrada (`text` acotado a 5000 caracteres)
+  antes de procesarla.
 - No reenvíes ni expongas el puerto 8765 a interfaces de red externas.
 
 ### Modelo y provisión

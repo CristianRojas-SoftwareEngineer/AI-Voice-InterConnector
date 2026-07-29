@@ -222,7 +222,7 @@ python scripts/build_macos.py     # macOS
 ```bash
 # Clonar tu voz (requiere ~10 segundos de audio en español)
 # Se necesitan DOS archivos: reference (timbre) y speech (conditioning)
-tts-sidecar voice clone --name mi_voz --reference timbre.wav --speech condicion.wav
+tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
 
 # Sintetizar con tu voz clonada
 tts-sidecar speak --text "Hola mundo" -v mi_voz
@@ -262,7 +262,7 @@ Registrar una voz de usuario con el mismo nombre que una de fábrica la sobrescr
 
 ```bash
 tts-sidecar speak --text "..."          # Sintetizar y reproducir (--output guarda a WAV)
-tts-sidecar voice clone --name X --reference ref.wav --speech speech.wav  # Clonar voz
+tts-sidecar voice clone --name X --timbre-reference ref.wav --speech-reference speech.wav  # Clonar voz
 tts-sidecar voice remove --name X       # Eliminar voz
 tts-sidecar voice list                  # Listar voces (--json disponible)
 tts-sidecar devices                     # Dispositivos de audio (--json disponible)
