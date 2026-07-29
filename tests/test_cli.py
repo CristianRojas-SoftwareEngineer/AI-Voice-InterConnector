@@ -2121,19 +2121,6 @@ class TestComputeBackendIgnoredViaDaemon:
         assert "--compute-backend" not in capsys.readouterr().err
 
 
-class TestEmitAudioCreatesParentDirs:
-    """_emit_audio crea los directorios padres de --output, como el modo directo."""
-
-    def test_output_in_nonexistent_dir_is_created(self, tmp_path):
-        from tts_sidecar.cli import _emit_audio
-
-        destino = tmp_path / "nuevo" / "sub" / "audio.wav"
-        assert not destino.parent.exists()
-        _emit_audio(b"RIFF....", str(destino))
-        assert destino.exists()
-        assert destino.read_bytes() == b"RIFF...."
-
-
 class TestVoiceAddWithoutComputeBackend:
     """voice clone --compute-backend ya no existe (flag muerta eliminada)."""
 

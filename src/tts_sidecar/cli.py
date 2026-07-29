@@ -28,7 +28,6 @@ import sys
 # de módulo de abajo son livianos (stdlib + timing) y no arrastran chatterbox;
 # las dependencias pesadas se importan de forma perezosa dentro de cada comando.
 from . import bootstrap
-from .paths import ensure_parent_dir
 
 import argparse
 import json
@@ -100,22 +99,13 @@ def _resolve_voice_paths(args):
     return timbre_reference, speech_reference
 
 
-def _emit_audio(audio_bytes, output):
-    """Reproduce los bytes de audio, o los escribe a un archivo si se da una ruta de salida."""
-    if output:
-        # El cliente daemon escribe los bytes recibidos en su
-        # propio filesystem; el helper compartido ensure_parent_dir (paths)
-        # crea el directorio padre, igual que AudioWriter.write en el servidor.
-        ensure_parent_dir(output)
-        with open(output, 'wb') as f:
-            f.write(audio_bytes)
-        log(f"[Archivo] Audio guardado: {output}")
-    else:
-        log("[Reproducción] Reproduciendo audio...")
-        from .audio import AudioPlayer
-        player = AudioPlayer()
-        player.play(audio_bytes)
-        log("[Reproducción] Reproducción finalizada")
+def _play_audio(audio_bytes):
+    """Reproduce los bytes de audio."""
+    log("[Reproducción] Reproduciendo audio...")
+    from .audio import AudioPlayer
+    player = AudioPlayer()
+    player.play(audio_bytes)
+    log("[Reproducción] Reproducción finalizada")
 
 
 def _warn_compute_backend_ignored(args):
@@ -162,7 +152,7 @@ def _synthesize_via_daemon(args, voice):
     elapsed = time.time() - synth_start
     log(f"[Servidor] Síntesis completada ({elapsed:.1f}s)")
 
-    _emit_audio(result.audio_bytes, None)
+    _play_audio(result.audio_bytes)
     return result
 
 
@@ -282,7 +272,7 @@ def cmd_speech_say(args):
                 progress_callback=lambda ev: _sp.update(format_progress_event(ev)),
             )
 
-        _emit_audio(result.audio_bytes, None)
+        _play_audio(result.audio_bytes)
 
         if getattr(args, "json", False):
             _emit_speak_json(args, voice_name, result, daemon=False)

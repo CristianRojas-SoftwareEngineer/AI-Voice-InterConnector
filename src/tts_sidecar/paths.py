@@ -34,11 +34,10 @@ from pathlib import Path
 def ensure_parent_dir(path) -> None:
     """Crea el directorio padre de `path` (recursivo, idempotente).
 
-    Extraído de `AudioWriter.write` y `cli._emit_audio`: ambos
-    aseguraban el directorio padre en procesos distintos (engine en el
-    servidor vs cliente daemon) con implementaciones paralelas de la misma
-    lógica. Un solo punto de verdad elimina el olor de código sin alterar el
-    contrato de escritura de archivos del daemon.
+    Extraído de `AudioWriter.write`: aseguraba el directorio padre en el
+    servidor con una implementación paralela de la misma lógica. Un solo
+    punto de verdad elimina el olor de código sin alterar el contrato de
+    escritura de archivos del daemon.
     """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
