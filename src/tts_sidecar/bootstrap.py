@@ -31,20 +31,29 @@ _applied = False
 # warning benigno de una dependencia, y es el punto único y auditable de la
 # lista de silencios. Ver la sección «Warnings silenciados» de CLAUDE.md.
 #
-# Formato de cada entrada: (message, category, module)
-#   - ("pkg_resources is deprecated", Warning): lo emite `perth` (dep. de
-#     chatterbox) al importar `pkg_resources` en Python 3.13. `category=Warning`
-#     (no DeprecationWarning) porque `perth` lo emite como UserWarning en esta
-#     versión; con Warning queda acotado por mensaje y cubre ambas categorías.
-#   - (None, DeprecationWarning, r"^diffusers\."): el warning de
-#     `LoRACompatibleLinear` al importar `chatterbox`; se filtra por módulo
-#     para no atarnos al texto exacto del mensaje. El warning real es
-#     FutureWarning (no DeprecationWarning), así que la categoría del
-#     filtro debe coincidir.
+# Formato de cada entrada: (message_regex, category, module_regex)
+#   module_regex se probará contra el __name__ del frame del stacklevel del
+#   warning; cuando PyTorch usa stacklevel alto en sdp_kernel, el frame
+#   coincide con "contextlib" y no "torch.*", así que un filtro por módulo
+#   no funciona — se usa message_regex en su lugar.
+#   message_regex se probará contra el texto del warning; se ancla al
+#   inicio (re.match), así que se incluye la subcadena exacta del mensaje.
+#
+# Entradas:
+#   - ("pkg_resources is deprecated", Warning, None): lo emite `perth` (dep.
+#     de chatterbox) al importar `pkg_resources` en Python 3.13.
+#   - (None, FutureWarning, r"^diffusers\."): el warning de
+#     LoRACompatibleLinear al importar chatterbox; filtra por módulo diffusers.
+#   - (r".*torch\.backends\.cuda\.sdp_kernel", FutureWarning, None): el
+#     warning de sdp_kernel deprecation de PyTorch es transitivo vía
+#     chatterbox y el stacklevel de PyTorch lo reporta contra el frame
+#     de contextlib, no contra un módulo torch — por eso se filtra por
+#     el texto del mensaje con un prefijo .* para atravesar el carácter
+#     de apertura de comilla invertida del aviso.
 _SILENCED_WARNINGS: list[tuple[str | None, type[Warning], str | None]] = [
     ("pkg_resources is deprecated", Warning, None),
     (None, FutureWarning, r"^diffusers\."),
-    (None, FutureWarning, r"^torch\."),
+    (r".*torch\.backends\.cuda\.sdp_kernel", FutureWarning, None),
 ]
 
 

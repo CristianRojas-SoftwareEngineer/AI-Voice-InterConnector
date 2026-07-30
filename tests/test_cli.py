@@ -2519,7 +2519,8 @@ class TestBootstrap:
     def test_silenced_warnings_allow_list_has_expected_entries(self, monkeypatch):
         """La allow-list `_SILENCED_WARNINGS` declara las tres supresiones
         benignas conocidas: pkg_resources, diffusers (LoRACompatibleLinear) y
-        torch (sdp_kernel)."""
+        torch (sdp_kernel, filtrado por mensaje porque el stacklevel de
+        PyTorch apunta a contextlib)."""
         bootstrap = self._reset(monkeypatch)
         assert (
             "pkg_resources is deprecated", Warning, None
@@ -2528,7 +2529,7 @@ class TestBootstrap:
             None, FutureWarning, r"^diffusers\."
         ) in bootstrap._SILENCED_WARNINGS
         assert (
-            None, FutureWarning, r"^torch\."
+            r".*torch\.backends\.cuda\.sdp_kernel", FutureWarning, None
         ) in bootstrap._SILENCED_WARNINGS
 
     def test_apply_does_not_silence_unrelated_warnings(self, monkeypatch):
