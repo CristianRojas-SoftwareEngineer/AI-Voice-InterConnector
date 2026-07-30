@@ -247,12 +247,12 @@ daemon.
 
 **`daemon start` / `stop` / `restart --json`** — payload de resultado de la
 acción (no de estado; para eso está `daemon status --json`). Los mensajes
-informativos van a stderr; el exit code sigue reflejando `ok`.
+informativos van a stderr. El éxito o fallo lo transporta el exit code: un
+fallo emite el payload de error (`error`) y sale no-cero, no una clave `ok`.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `action` | string | `"start"`, `"stop"` o `"restart"` |
-| `ok` | boolean | Si la acción tuvo éxito (coherente con el exit code: `false` ⇒ exit 5) |
 | `pid` | number | Solo en `start`/`restart` con éxito, si el gestor expone el PID del daemon lanzado |
 
 `daemon serve` (servidor en primer plano) no tiene `--json`: su contrato es el
@@ -874,10 +874,13 @@ desde el binario como desde el código fuente. En concreto:
   |--------|-------------|---------|
   | `0` | Éxito | Síntesis o comando completado |
   | `1` | Error genérico | Fallo inesperado; `doctor` con algún chequeo fallido |
-  | `2` | Modelo no provisionado | `speak`/`daemon start` sin ejecutar `setup` |
+  | `2` | Entrada inválida | `--text` vacío; nombre de voz ilegal; uso incorrecto (argparse) |
   | `3` | Voz o audio no encontrado | `--voice inexistente`; `voice remove` de una voz ausente |
-  | `4` | Entrada inválida | `--text` vacío; nombre de voz ilegal; colisión en `voice clone` sin `--force` |
+  | `4` | Modelo no provisionado | `speak`/`daemon start` sin ejecutar `setup` |
   | `5` | Daemon inalcanzable | `speak --daemon` sin daemon; `daemon start/stop/restart` fallido |
+  | `6` | Conflicto de estado | Colisión en `voice clone` sin `--force`; voz ocupada; puerto del daemon en uso |
+  | `7` | Operación no aplicable | Voz de fábrica de solo lectura; plataforma no soportada; `setup --uninstall` fuera del canal nativo |
+  | `8` | Precondición de entorno incumplida | Credenciales, red, permisos o disco insuficientes al provisionar |
   | `130` | Interrupción del usuario | Ctrl+C (128 + SIGINT) durante cualquier comando |
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el
   audio generado para un mismo texto y voz es equivalente en cualquier SO.

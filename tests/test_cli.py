@@ -7,6 +7,8 @@ import warnings
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from tts_sidecar.exit_codes import CliError, EXIT_NOT_APPLICABLE, EXIT_STATE_CONFLICT
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import tempfile
@@ -121,11 +123,11 @@ class TestCmdVoiceClone:
         """Sin modelo cacheado, el clonado aborta (exit 2) antes de copiar audios."""
         from tts_sidecar.cli import cmd_voice_clone, EXIT_MODEL_MISSING
 
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_voice_clone(MockArgs(name="newvoice", timbre_reference="timbre.wav", speech_reference="speech.wav"))
 
         assert exc.value.code == EXIT_MODEL_MISSING
-        assert "setup" in capsys.readouterr().err
+        assert "setup" in exc.value.message
         mock_register.assert_not_called()
 
     @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
@@ -231,7 +233,7 @@ class TestCmdVoiceRemove:
 
         mock_remove_voice.return_value = False
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(CliError):
             cmd_voice_remove(MockArgs(name="nonexistent"))
 
 
@@ -245,7 +247,7 @@ class TestVoiceMessages:
 
         mock_resolve.return_value = "/fabrica/default"
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(CliError):
             cmd_voice_remove(MockArgs(name="default"))
 
         err = capsys.readouterr().err
@@ -256,7 +258,7 @@ class TestVoiceMessages:
     def test_speak_does_not_refer_to_setup_if_user_audio_missing(self, _cached, capsys):
         from tts_sidecar.cli import cmd_speech_say
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(CliError):
             cmd_speech_say(MockArgs(text="hola", voice="voz_inexistente", no_daemon=True))
 
         err = capsys.readouterr().err
@@ -371,7 +373,7 @@ class TestCmdSpeakDaemonDispatch:
         client.synthesize.side_effect = DaemonIPCError("no conecta")
         mock_client_cls.return_value = client
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(CliError):
             cmd_speech_say(self._args(daemon=True))
 
         mock_running.assert_not_called()
@@ -536,11 +538,10 @@ class TestCmdDevicesError:
 
         mock_get_devices.side_effect = RuntimeError("PortAudio no disponible")
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(CliError) as exc:
             cmd_devices(MockArgs())
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in exc.value.message
 
 
 # En Windows, crear symlinks sin privilegios elevados exige Developer
@@ -714,11 +715,11 @@ class TestSetupLinuxPath:
         link.parent.mkdir(parents=True)
         link.write_text("no soy un symlink", encoding="utf-8")
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(CliError) as exc:
             cmd_setup(MockArgs(remove_path=True))
 
         assert link.exists()
-        assert "no es un symlink" in capsys.readouterr().err
+        assert "no es un symlink" in exc.value.message
 
     def test_path_warning_uses_posix_paths(self, monkeypatch, tmp_path, capsys):
         # L-01: la línea sugerida debe ser bash válido (forward slashes),
@@ -756,7 +757,7 @@ class TestSetupLinuxPath:
             lambda: [("FAIL", "Chatterbox TTS", "NO INSTALADO")],
         )
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(CliError):
             cli.cmd_setup(MockArgs(remove_path=False))
 
         link = home / ".local" / "bin" / "tts-sidecar"
@@ -791,10 +792,10 @@ class TestSetupAudioAdvisory:
             cli, "_environment_checks",
             lambda: [("FAIL", "Chatterbox TTS", "NO INSTALADO")],
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(CliError) as exc:
             cli.cmd_setup(MockArgs(remove_path=False))
 
-        assert "[FAIL] Chatterbox TTS" in capsys.readouterr().err
+        assert "[FAIL] Chatterbox TTS" in exc.value.message
 
     def test_doctor_keeps_audio_fail_with_exit_1(self, monkeypatch, capsys):
         import tts_sidecar.cli as cli
@@ -804,7 +805,7 @@ class TestSetupAudioAdvisory:
             lambda: [("FAIL", "Audio library", "sin subsistema de sonido")],
         )
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True):
-            with pytest.raises(SystemExit) as exc_info:
+            with pytest.raises(CliError) as exc_info:
                 cli.cmd_doctor(MockArgs(json=False))
 
         assert exc_info.value.code == 1
@@ -947,15 +948,15 @@ class TestExitCodes:
         from tts_sidecar.cli import _require_model_cached, EXIT_MODEL_MISSING
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(CliError) as exc:
                 _require_model_cached()
         assert exc.value.code == EXIT_MODEL_MISSING
-        assert "setup" in capsys.readouterr().err
+        assert "setup" in exc.value.message
 
     def test_empty_text_exits_4(self):
         from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
 
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_speech_say(MockArgs(text="   ", no_daemon=True))
         assert exc.value.code == EXIT_INVALID_INPUT
 
@@ -963,7 +964,7 @@ class TestExitCodes:
         from tts_sidecar.cli import cmd_speech_say, EXIT_NOT_FOUND
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(CliError) as exc:
                 cmd_speech_say(MockArgs(text="hola", voice="voz_inexistente", no_daemon=True))
         assert exc.value.code == EXIT_NOT_FOUND
 
@@ -976,7 +977,7 @@ class TestExitCodes:
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
                 patch("tts_sidecar.cli._synthesize_via_daemon", side_effect=_falla):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(CliError) as exc:
                 cmd_speech_say(MockArgs(
                     text="hola",
                     daemon=True,
@@ -987,17 +988,32 @@ class TestExitCodes:
         from tts_sidecar.cli import cmd_devices, EXIT_ERROR
 
         with patch("tts_sidecar.audio.get_audio_devices", side_effect=RuntimeError("boom")):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(CliError) as exc:
                 cmd_devices(MockArgs())
         assert exc.value.code == EXIT_ERROR
 
-    def test_voice_clone_collision_exits_4(self):
+    def test_voice_clone_collision_exits_6(self):
+        """Colisión de nombre sin --force → EXIT_STATE_CONFLICT (6): el recurso
+        está ocupado, distinto del EXIT_INVALID_INPUT (2) del audio ilegible."""
+        from tts_sidecar.cli import cmd_voice_clone, EXIT_STATE_CONFLICT
+        from tts_sidecar.voices import VoiceExistsError
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("tts_sidecar.voices.clone_voice_files",
+                      side_effect=VoiceExistsError("La voz 'dup' ya existe")):
+            with pytest.raises(CliError) as exc:
+                cmd_voice_clone(MockArgs(name="dup"))
+        assert exc.value.code == EXIT_STATE_CONFLICT
+
+    def test_voice_clone_unreadable_audio_exits_2(self):
+        """Audio ilegible → EXIT_INVALID_INPUT (2): ValueError genérico, no
+        colisión; el 2 y el 6 no se colapsan en un solo entero."""
         from tts_sidecar.cli import cmd_voice_clone, EXIT_INVALID_INPUT
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
                 patch("tts_sidecar.voices.clone_voice_files",
-                      side_effect=ValueError("La voz 'dup' ya existe")):
-            with pytest.raises(SystemExit) as exc:
+                      side_effect=ValueError("El audio de speech no es cargable")):
+            with pytest.raises(CliError) as exc:
                 cmd_voice_clone(MockArgs(name="dup"))
         assert exc.value.code == EXIT_INVALID_INPUT
 
@@ -1008,10 +1024,10 @@ class TestExitCodes:
 
         with patch("tts_sidecar.model_cache.is_model_cached",
                    side_effect=AssertionError("el gate de modelo no debe evaluarse")):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(CliError) as exc:
                 cmd_speech_say(MockArgs(text="hola", daemon=True, no_daemon=True))
         assert exc.value.code == EXIT_INVALID_INPUT
-        assert "mutuamente excluyentes" in capsys.readouterr().err
+        assert "mutuamente excluyentes" in exc.value.message
 
     def test_voice_list_filenotfound_points_to_voices_dir_not_setup(self, capsys):
         """El FileNotFoundError de voice list menciona el directorio de
@@ -1021,12 +1037,11 @@ class TestExitCodes:
         with patch("tts_sidecar.voices.list_voices",
                    side_effect=FileNotFoundError("directorio ilegible")), \
                 patch("tts_sidecar.voices.voices_root", return_value="/ruta/voices"):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(CliError) as exc:
                 cmd_voice_list(MockArgs())
         assert exc.value.code == EXIT_NOT_FOUND
-        err = capsys.readouterr().err
-        assert "/ruta/voices" in err
-        assert "setup" not in err
+        assert "/ruta/voices" in exc.value.message
+        assert "setup" not in exc.value.message
 
     def test_daemon_start_failure_exits_5(self):
         import argparse
@@ -1038,7 +1053,7 @@ class TestExitCodes:
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
                 patch("tts_sidecar.daemon.DaemonManager", return_value=manager):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(CliError) as exc:
                 cmd_daemon(args)
         assert exc.value.code == EXIT_DAEMON_UNREACHABLE
 
@@ -1053,7 +1068,7 @@ class TestExitCodes:
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
                 patch("tts_sidecar.daemon.run.serve", serve):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(CliError) as exc:
                 cmd_daemon(args)
         assert exc.value.code == EXIT_MODEL_MISSING
         serve.assert_not_called()
@@ -1289,35 +1304,35 @@ class TestSetupUninstall:
 
     def test_uninstall_plataforma_no_soportada_falla(self, monkeypatch, capsys):
         # Con el dispatch, darwin/win32 son ramas válidas; solo una plataforma
-        # realmente fuera del dispatch (freebsd) cae en EXIT_INVALID_INPUT.
-        from tts_sidecar.cli import cmd_setup, EXIT_INVALID_INPUT
+        # realmente fuera del dispatch (freebsd) cae en EXIT_NOT_APPLICABLE.
+        from tts_sidecar.cli import cmd_setup, EXIT_NOT_APPLICABLE
 
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         monkeypatch.setattr(sys, "platform", "freebsd")
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_setup(MockArgs(uninstall=True))
-        assert exc.value.code == EXIT_INVALID_INPUT
-        assert "no soporta la plataforma" in capsys.readouterr().err
+        assert exc.value.code == EXIT_NOT_APPLICABLE
+        assert "no soporta la plataforma" in exc.value.message
 
     def test_uninstall_guard_canal_nativo(self, monkeypatch, capsys):
-        # Proceso no congelado (fuente o pip/uv) → aborta remitiendo a pip.
-        from tts_sidecar.cli import cmd_setup, EXIT_INVALID_INPUT
+        # Proceso no congelado (fuente o pip/uv) → EXIT_NOT_APPLICABLE.
+        from tts_sidecar.cli import cmd_setup, EXIT_NOT_APPLICABLE
 
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(sys, "frozen", False, raising=False)
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_setup(MockArgs(uninstall=True))
-        assert exc.value.code == EXIT_INVALID_INPUT
-        assert "pip uninstall" in capsys.readouterr().err
+        assert exc.value.code == EXIT_NOT_APPLICABLE
+        assert "pip uninstall" in exc.value.message
 
     def test_uninstall_json_requiere_yes(self, monkeypatch, tmp_path, capsys):
         from tts_sidecar.cli import cmd_setup, EXIT_INVALID_INPUT
 
         self._fake_home_linux(monkeypatch, tmp_path)
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_setup(MockArgs(uninstall=True, json=True))
         assert exc.value.code == EXIT_INVALID_INPUT
-        assert "requiere --yes" in capsys.readouterr().err
+        assert "requiere --yes" in exc.value.message
 
     # ---- Contrato compartido (rama Linux como representante) ------------------
 
@@ -1501,13 +1516,13 @@ class TestSetupUninstall:
         exe.write_bytes(b"bin")
         monkeypatch.setattr(sys, "executable", str(exe))
 
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_setup(MockArgs(uninstall=True, yes=True))
-        assert exc.value.code == EXIT_INVALID_INPUT
-        assert "bundle .app" in capsys.readouterr().err
+        assert exc.value.code == EXIT_NOT_APPLICABLE
+        assert "bundle .app" in exc.value.message
 
     def test_uninstall_macos_homebrew_difiere_a_brew(self, monkeypatch, tmp_path, capsys):
-        from tts_sidecar.cli import cmd_setup, EXIT_INVALID_INPUT
+        from tts_sidecar.cli import cmd_setup, EXIT_STATE_CONFLICT
 
         self._fake_macos(monkeypatch, tmp_path)
         propio1, propio2, voices = self._fake_cleanup_env(tmp_path, monkeypatch)
@@ -1516,10 +1531,10 @@ class TestSetupUninstall:
         # Metadata del Caskroom presente bajo HOMEBREW_PREFIX.
         (tmp_path / "brew" / "Caskroom" / "tts-sidecar").mkdir(parents=True)
 
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_setup(MockArgs(uninstall=True, yes=True))
-        assert exc.value.code == EXIT_INVALID_INPUT
-        assert "brew uninstall --cask --zap" in capsys.readouterr().err
+        assert exc.value.code == EXIT_STATE_CONFLICT
+        assert "brew uninstall --cask --zap" in exc.value.message
         # Aborta sin borrar nada.
         assert app.exists()
         assert propio1.exists() and voices.exists()
@@ -1554,9 +1569,9 @@ class TestSetupUninstall:
         exe, popen = self._fake_windows(monkeypatch, tmp_path, key_present=False)
         propio1, propio2, voices = self._fake_cleanup_env(tmp_path, monkeypatch)
 
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_setup(MockArgs(uninstall=True, yes=True))
-        assert exc.value.code == EXIT_INVALID_INPUT
+        assert exc.value.code == EXIT_NOT_APPLICABLE
         # La validación del registro precede al cleanup: datos intactos.
         assert propio1.exists() and voices.exists()
         popen.assert_not_called()
@@ -1774,19 +1789,17 @@ class TestWriteCommandsJSON:
 
         propio1, propio2, voices = self._cleanup_env(tmp_path, monkeypatch)
 
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_cleanup(self._cleanup_args(all=True, json=True))
 
         assert exc.value.code == EXIT_INVALID_INPUT
-        captured = capsys.readouterr()
-        assert "--yes" in captured.err and "--dry-run" in captured.err
-        assert captured.out == ""  # stdout intacto: sin JSON parcial ni prosa
+        assert "--yes" in exc.value.message and "--dry-run" in exc.value.message
         assert propio1.exists() and propio2.exists() and voices.exists()
 
 
 class TestDaemonVerbsJSON:
     """daemon start/stop/restart --json emiten un payload de acción
-    ({"action","ok"}, con "pid" cuando el manager lo expone)."""
+    ({"action"}, con "pid" cuando el manager lo expone)."""
 
     def _args(self, action, **kw):
         import argparse
@@ -1809,7 +1822,7 @@ class TestDaemonVerbsJSON:
 
         payload = json.loads(capsys.readouterr().out)
         assert payload == {
-            "schema_version": SCHEMA_VERSION, "action": "start", "ok": True, "pid": 4242,
+            "schema_version": SCHEMA_VERSION, "action": "start", "pid": 4242,
         }
 
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
@@ -1822,12 +1835,12 @@ class TestDaemonVerbsJSON:
         manager.start.return_value = False
         mock_manager_cls.return_value = manager
 
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_daemon(self._args("start"))
 
         assert exc.value.code == EXIT_DAEMON_UNREACHABLE
         payload = json.loads(capsys.readouterr().out)
-        assert payload == {"schema_version": SCHEMA_VERSION, "action": "start", "ok": False}
+        assert payload == {"schema_version": SCHEMA_VERSION, "action": "start"}
 
     @patch("tts_sidecar.daemon.DaemonManager")
     def test_stop_json_payload_success(self, mock_manager_cls, capsys):
@@ -1842,7 +1855,7 @@ class TestDaemonVerbsJSON:
 
         captured = capsys.readouterr()
         assert json.loads(captured.out) == {
-            "schema_version": SCHEMA_VERSION, "action": "stop", "ok": True,
+            "schema_version": SCHEMA_VERSION, "action": "stop",
         }
         assert captured.err == ""
 
@@ -1855,12 +1868,12 @@ class TestDaemonVerbsJSON:
         manager.stop.return_value = False
         mock_manager_cls.return_value = manager
 
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(CliError) as exc:
             cmd_daemon(self._args("stop"))
 
         assert exc.value.code == EXIT_DAEMON_UNREACHABLE
         payload = json.loads(capsys.readouterr().out)
-        assert payload == {"schema_version": SCHEMA_VERSION, "action": "stop", "ok": False}
+        assert payload == {"schema_version": SCHEMA_VERSION, "action": "stop"}
 
     @patch("tts_sidecar.daemon.DaemonManager")
     def test_restart_json_payload_success(self, mock_manager_cls, capsys):
@@ -1876,7 +1889,7 @@ class TestDaemonVerbsJSON:
 
         payload = json.loads(capsys.readouterr().out)
         assert payload == {
-            "schema_version": SCHEMA_VERSION, "action": "restart", "ok": True, "pid": 777,
+            "schema_version": SCHEMA_VERSION, "action": "restart", "pid": 777,
         }
 
 
@@ -1884,11 +1897,10 @@ class TestCmdSpeakEmptyText:
     def test_empty_text_is_rejected(self, capsys):
         from tts_sidecar.cli import cmd_speech_say
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(CliError) as exc:
             cmd_speech_say(MockArgs(text="   "))
 
-        err = capsys.readouterr().err
-        assert "--text" in err
+        assert "--text" in exc.value.message
 
 
 class TestSchemaVersionJSON:
@@ -2056,7 +2068,7 @@ class TestSpeakLongText:
 
         largo = "a" * 2500
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
-            with pytest.raises(SystemExit):
+            with pytest.raises(CliError):
                 cmd_speech_say(MockArgs(text=largo, no_daemon=True))
         assert "Advertencia" in capsys.readouterr().err
 
@@ -2064,7 +2076,7 @@ class TestSpeakLongText:
         from tts_sidecar.cli import cmd_speech_say
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
-            with pytest.raises(SystemExit):
+            with pytest.raises(CliError):
                 cmd_speech_say(MockArgs(text="Hola mundo", no_daemon=True))
         assert "Advertencia" not in capsys.readouterr().err
 
@@ -2077,10 +2089,10 @@ class TestSingleTextLimit:
         from tts_sidecar.daemon.protocol import MAX_TEXT_LENGTH
 
         demasiado_largo = "a" * (MAX_TEXT_LENGTH + 1)
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(CliError) as exc_info:
             cmd_speech_say(MockArgs(text=demasiado_largo, no_daemon=True))
         assert exc_info.value.code == EXIT_INVALID_INPUT
-        assert str(MAX_TEXT_LENGTH) in capsys.readouterr().err
+        assert str(MAX_TEXT_LENGTH) in exc_info.value.message
 
     @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
     def test_text_exceeds_max_text_length_exits_4_with_daemon(self, _running, capsys):
@@ -2088,7 +2100,7 @@ class TestSingleTextLimit:
         from tts_sidecar.daemon.protocol import MAX_TEXT_LENGTH
 
         demasiado_largo = "a" * (MAX_TEXT_LENGTH + 1)
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(CliError) as exc_info:
             cmd_speech_say(MockArgs(text=demasiado_largo))
         assert exc_info.value.code == EXIT_INVALID_INPUT
 
@@ -2126,13 +2138,15 @@ class TestVoiceAddWithoutComputeBackend:
 
     def test_parser_rejects_compute_backend(self, monkeypatch, capsys):
         from tts_sidecar.cli import main
+        from tts_sidecar.exit_codes import EXIT_INVALID_INPUT
 
         monkeypatch.setattr(sys, "argv", [
             "tts-sidecar", "voice", "clone", "--name", "x", "--timbre-reference", "r.wav",
             "--speech-reference", "s.wav", "--compute-backend", "cuda",
         ])
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exc:
             main()
+        assert exc.value.code == EXIT_INVALID_INPUT
         assert "unrecognized" in capsys.readouterr().err.lower()
 
 
@@ -2252,10 +2266,10 @@ class TestSetupDiskAndForceUpdate:
                                         free=1 * 1024 ** 3)
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
                 patch("shutil.disk_usage", return_value=poco):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(CliError) as exc:
                 cli.cmd_setup(MockArgs(remove_path=False))
-        assert exc.value.code == cli.EXIT_ERROR
-        assert "Espacio en disco insuficiente" in capsys.readouterr().err
+        assert exc.value.code == cli.EXIT_PRECONDITION_FAILED
+        assert "Espacio en disco insuficiente" in exc.value.message
 
     def test_disk_not_checked_if_already_cached(self, monkeypatch, capsys):
         import tts_sidecar.cli as cli
@@ -2286,7 +2300,7 @@ class TestSetupDiskAndForceUpdate:
         with patch("tts_sidecar.model_cache.model_cache_dirs", return_value=[model_dir]), \
                 patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
                 patch("shutil.disk_usage", return_value=poco):
-            with pytest.raises(SystemExit):
+            with pytest.raises(CliError):
                 cli.cmd_setup(MockArgs(remove_path=False, force_update=True))
 
         assert not model_dir.exists()

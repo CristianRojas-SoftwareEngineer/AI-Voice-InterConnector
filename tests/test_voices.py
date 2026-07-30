@@ -104,7 +104,7 @@ class TestRegisterVoiceFiles:
         ref, speech = self._audios(tmp_path)
         self._mock_librosa(monkeypatch)
 
-        with pytest.raises(ValueError, match="ya existe"):
+        with pytest.raises(voices.VoiceExistsError, match="ya existe"):
             voices.clone_voice_files("existente", str(ref), str(speech))
 
     def test_force_overwrites(self, voice_roots, tmp_path, monkeypatch):
@@ -258,9 +258,10 @@ class TestCmdVoiceRemoveIOErrors:
         import argparse
         return argparse.Namespace(name=name)
 
-    def test_permission_error_gives_different_message_and_exits_1(self, voice_roots, monkeypatch, capsys):
+    def test_permission_error_gives_different_message_and_exits_6(self, voice_roots, monkeypatch, capsys):
         import shutil as shutil_module
         from tts_sidecar import cli
+        from tts_sidecar.exit_codes import EXIT_STATE_CONFLICT
 
         user_root, _ = voice_roots
         _make_voice(user_root, "mia")
@@ -270,26 +271,26 @@ class TestCmdVoiceRemoveIOErrors:
 
         monkeypatch.setattr(shutil_module, "rmtree", _raise_permission_error)
 
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(cli.CliError) as exc_info:
             cli.cmd_voice_remove(self._args("mia"))
 
-        assert exc_info.value.code == 1
+        assert exc_info.value.code == EXIT_STATE_CONFLICT
         err = capsys.readouterr().err
         assert "en uso" in err
         assert "no encontrada" not in err
 
     def test_nonexistent_voice_gives_different_message(self, voice_roots, capsys):
         from tts_sidecar import cli
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
 
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(cli.CliError) as exc_info:
             cli.cmd_voice_remove(self._args("no_existe"))
 
         # Contrato de exit codes: voz no encontrada → EXIT_NOT_FOUND (3),
-        # distinto del EXIT_ERROR (1) genérico del caso PermissionError de arriba.
-        assert exc_info.value.code == 3
-        err = capsys.readouterr().err
-        assert "no encontrada" in err
-        assert "en uso" not in err
+        # distinto del EXIT_STATE_CONFLICT (6) del caso PermissionError de arriba.
+        assert exc_info.value.code == EXIT_NOT_FOUND
+        assert "no encontrada" in exc_info.value.message
+        assert "en uso" not in exc_info.value.message
 
 
 class TestCapitalizationCollision:

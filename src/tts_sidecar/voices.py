@@ -25,6 +25,15 @@ from . import paths
 _VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
+class VoiceExistsError(ValueError):
+    """La voz ya existe (usuario o fábrica) y no se pasó force.
+
+    Subclase de ValueError para distinguir la colisión de nombre —recurso
+    ocupado, exit 6— del audio ilegible o el nombre ilegal, que siguen siendo
+    ValueError genéricos con exit 2.
+    """
+
+
 def _validate_path_segment(value: str, kind: str = "voz") -> str:
     """Valida un segmento de ruta (p. ej. nombre de voz) antes de componer cualquier ruta con él.
 
@@ -156,8 +165,9 @@ def clone_voice_files(
     primer `speak` con la voz.
 
     Raises:
-        ValueError: si algún audio no es cargable, o si la voz ya existe
-                    (usuario o fábrica) y no se pasó force.
+        ValueError: si algún audio no es cargable.
+        VoiceExistsError: si la voz ya existe (usuario o fábrica) y no se pasó
+                    force.
     """
     # Import local: librosa es pesada y solo la necesita este comando.
     import librosa
@@ -169,7 +179,7 @@ def clone_voice_files(
 
     # La colisión con una voz existente (usuario o fábrica homónima) exige --force
     if not force and _resolve_voice_dir(name) is not None:
-        raise ValueError(f"La voz '{name}' ya existe. Usa --force para sobrescribirla.")
+        raise VoiceExistsError(f"La voz '{name}' ya existe. Usa --force para sobrescribirla.")
 
     target = voice_dir(name)
     os.makedirs(target, exist_ok=True)

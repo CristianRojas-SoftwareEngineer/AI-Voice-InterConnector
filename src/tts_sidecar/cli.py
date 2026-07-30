@@ -10,10 +10,13 @@ Contrato de salida (estable entre SO y lenguajes):
     causa sin parsear texto):
       0   éxito
       1   error genérico (incluye chequeos fallidos de doctor)
-      2   modelo no provisionado (ejecutar 'setup')
-      3   voz o archivo de audio no encontrado
-      4   entrada inválida (texto vacío, nombre de voz ilegal, colisión)
+      2   entrada inválida (texto vacío, nombre ilegal, colisión, uso incorrecto)
+      3   recurso no encontrado (voz o archivo de audio)
+      4   modelo no provisionado (ejecutar 'setup')
       5   daemon inalcanzable o no gestionable
+      6   conflicto de estado (recurso ocupado, colisión de voz, puerto daemón en uso)
+      7   operación no aplicable al contexto actual (sólo lectura, plataforma no soportada)
+      8   precondición de entorno incumplida (credenciales, red, permisos, disco)
       130 interrupción por el usuario (Ctrl+C)
   - stdout/stderr se fuerzan a UTF-8 para una codificación consistente en toda
     plataforma.
@@ -35,17 +38,24 @@ import os
 import platform
 from pathlib import Path
 
+from .exit_codes import (  # noqa: F401
+    EXIT_OK,
+    EXIT_ERROR,
+    EXIT_INVALID_INPUT,
+    EXIT_NOT_FOUND,
+    EXIT_MODEL_MISSING,
+    EXIT_DAEMON_UNREACHABLE,
+    EXIT_STATE_CONFLICT,
+    EXIT_NOT_APPLICABLE,
+    EXIT_PRECONDITION_FAILED,
+    EXIT_INTERRUPTED,
+    CliError,
+)
 from .timing import timed_command, StageTimer, Spinner, log, format_progress_event
 
-# Mapa de códigos de salida del CLI — CONTRATO PÚBLICO CONGELADO (ver USAGE.md).
-# Un orquestador distingue causas sin parsear texto: no cambiar los valores.
-EXIT_OK = 0                   # éxito
-EXIT_ERROR = 1                # error genérico (incluye chequeos fallidos de doctor)
-EXIT_MODEL_MISSING = 2        # modelo no provisionado (ejecutar 'setup')
-EXIT_NOT_FOUND = 3            # voz o archivo de audio no encontrado
-EXIT_INVALID_INPUT = 4        # entrada inválida (texto vacío, nombre ilegal, colisión)
-EXIT_DAEMON_UNREACHABLE = 5   # daemon inalcanzable o no gestionable
-EXIT_INTERRUPTED = 130        # interrupción por el usuario (128 + SIGINT)
+# Los códigos de salida y CliError viven en exit_codes.py y se
+# re-exportan aquí para que sea la única superficie que necesita
+# importar tts_sidecar.exit_codes desde la CLI.
 
 # Versión del esquema de la salida --json del CLI (contrato legible por máquina).
 # Se emite como "schema_version" en TODOS los payloads JSON. Es un campo aditivo:
@@ -66,6 +76,18 @@ def emit_json(payload: dict) -> None:
     """
     payload.setdefault("schema_version", SCHEMA_VERSION)
     print(json.dumps(payload))
+
+
+def _translate_cli_error(e: CliError) -> None:
+    """Traduce una CliError a la salida estándar de la CLI y sale con su code.
+
+    Imprime `e.message` a stderr. Si `--json` está en `sys.argv`, emite
+    el payload de error como JSON a stdout y luego llama a `sys.exit(e.code)`.
+    """
+    print(e.message, file=sys.stderr)
+    if "--json" in sys.argv:
+        emit_json({"error": {"code": e.code, "reason": e.reason, "message": e.message}})
+    sys.exit(e.code)
 
 
 # Umbral mínimo de espacio libre en disco para descargar el modelo en 'setup'.
@@ -126,9 +148,7 @@ def _warn_compute_backend_ignored(args):
 
 
 def _synthesize_via_daemon(args, voice):
-    """Sintetiza vía daemon, emite el audio (reproducción o archivo) y retorna
-    el `SynthesisResult` (audio + métricas), para que el llamador pueda emitir
-    `speech say --json` con la misma forma que el modo directo.
+    """Sintetiza vía daemon y retorna el `SynthesisResult` (audio + métricas).
 
     Asume el daemon disponible: cualquier fallo de comunicación o síntesis
     propaga la excepción al llamador (sin fallback silencioso a modo directo).
@@ -152,7 +172,6 @@ def _synthesize_via_daemon(args, voice):
     elapsed = time.time() - synth_start
     log(f"[Servidor] Síntesis completada ({elapsed:.1f}s)")
 
-    _play_audio(result.audio_bytes)
     return result
 
 
@@ -160,12 +179,12 @@ def _require_model_cached(model: str = "es-mx-latam"):
     """Verifica que el modelo esté en caché y, si no lo está, aborta remitiendo a 'setup'."""
     from .model_cache import is_model_cached
     if not is_model_cached(model):
-        print(
-            f"Error: el modelo '{model}' no está descargado.",
-            file=sys.stderr,
+        raise CliError(
+            EXIT_MODEL_MISSING,
+            "model_missing",
+            f"Error: el modelo '{model}' no está descargado.\n"
+            "Ejecuta 'tts-sidecar setup' para descargarlo antes de continuar.",
         )
-        print("Ejecuta 'tts-sidecar setup' para descargarlo antes de continuar.", file=sys.stderr)
-        sys.exit(EXIT_MODEL_MISSING)
 
 
 def _emit_speak_json(args, voice_name: str, result, daemon: bool) -> None:
@@ -189,12 +208,12 @@ def cmd_speech_say(args):
         # Validación manual (no add_mutually_exclusive_group): el exit 2 nativo
         # de argparse colisionaría con EXIT_MODEL_MISSING del contrato congelado.
         if getattr(args, "daemon", False) and getattr(args, "no_daemon", False):
-            print("Error: --daemon y --no-daemon son mutuamente excluyentes.", file=sys.stderr)
-            sys.exit(EXIT_INVALID_INPUT)
+            raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                            "Error: --daemon y --no-daemon son mutuamente excluyentes.")
 
         if not args.text or not args.text.strip():
-            print("Error: --text no puede estar vacío.", file=sys.stderr)
-            sys.exit(EXIT_INVALID_INPUT)
+            raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                            "Error: --text no puede estar vacío.")
 
         # Límite único de texto validado en el cliente antes de cualquier
         # despacho, con el mismo exit code (4) sin importar la ruta (directo o
@@ -202,13 +221,13 @@ def cmd_speech_say(args):
         # defensa en profundidad, no como la única fuente de la validación.
         from .daemon.protocol import MAX_TEXT_LENGTH
         if len(args.text) > MAX_TEXT_LENGTH:
-            print(
+            raise CliError(
+                EXIT_INVALID_INPUT,
+                "usage_error",
                 f"Error: el texto tiene {len(args.text)} caracteres; el máximo "
                 f"permitido es {MAX_TEXT_LENGTH}. Fragmenta el texto en varias "
                 "llamadas a 'speech say'.",
-                file=sys.stderr,
             )
-            sys.exit(EXIT_INVALID_INPUT)
 
         # Advertencia no bloqueante para textos muy largos: el T3 topa a
         # MAX_NEW_TOKENS=500, así que una entrada larga puede truncarse en la
@@ -233,49 +252,53 @@ def cmd_speech_say(args):
         #   --daemon:    usar el daemon sin sondeo previo; un fallo se reporta.
         #   --no-daemon: modo directo sin sondear.
         #   sin flags:   health check corto; daemon si responde, directo si no.
+        # Todas las ramas solo computan `result`; la reproducción y la
+        # emisión JSON se hacen una sola vez, después del bloque.
+        daemon_flag = False
+        synthesized = False
+
         if getattr(args, 'daemon', False):
             _warn_compute_backend_ignored(args)
             result = _synthesize_via_daemon(args, voice_name)
-            if getattr(args, "json", False):
-                _emit_speak_json(args, voice_name, result, daemon=True)
-            return
-        if not getattr(args, 'no_daemon', False):
+            daemon_flag = True
+            synthesized = True
+        elif not getattr(args, 'no_daemon', False):
             from .daemon import is_daemon_running
             if is_daemon_running():
                 _warn_compute_backend_ignored(args)
                 result = _synthesize_via_daemon(args, voice_name)
-                if getattr(args, "json", False):
-                    _emit_speak_json(args, voice_name, result, daemon=True)
-                return
+                daemon_flag = True
+                synthesized = True
             else:
                 log("[Servidor] No disponible; usando modo directo")
 
-        # Modo directo: los imports solo se cargan cuando no se usa el daemon.
-        from .engine import ChatterboxEngine
+        if not synthesized:
+            # Modo directo: los imports solo se cargan cuando no se usa el daemon.
+            from .engine import ChatterboxEngine
 
-        # Resuelve las rutas de audio de la voz SIN cargar el modelo: solo la
-        # rama directa necesita rutas (el daemon resuelve el nombre por su cuenta).
-        timbre_reference, speech_reference = _resolve_voice_paths(args)
+            # Resuelve las rutas de audio de la voz SIN cargar el modelo: solo la
+            # rama directa necesita rutas (el daemon resuelve el nombre por su cuenta).
+            timbre_reference, speech_reference = _resolve_voice_paths(args)
 
-        # Spinner de liveness durante los dos tramos largos y opacos: la carga del
-        # modelo (primer speak) y la síntesis. Las líneas [Stage N/4] que emite el
-        # engine vía log() se intercalan de forma coordinada (timing._active_spinner).
-        with Spinner("Cargando modelo…") as _sp:
-            engine = ChatterboxEngine.get_instance(compute_backend=args.compute_backend)
-            _sp.update("Sintetizando voz…")
-            # Mismo formateador de progreso que el modo daemon: los eventos del
-            # motor (etapa y tokens del T3) actualizan la etiqueta del spinner.
-            result = engine.speak(
-                text=args.text,
-                timbre_reference=timbre_reference,
-                speech_reference=speech_reference,
-                progress_callback=lambda ev: _sp.update(format_progress_event(ev)),
-            )
+            # Spinner de liveness durante los dos tramos largos y opacos: la carga del
+            # modelo (primer speak) y la síntesis. Las líneas [Stage N/4] que emite el
+            # engine vía log() se intercalan de forma coordinada (timing._active_spinner).
+            with Spinner("Cargando modelo…") as _sp:
+                engine = ChatterboxEngine.get_instance(compute_backend=args.compute_backend)
+                _sp.update("Sintetizando voz…")
+                # Mismo formateador de progreso que el modo daemon: los eventos del
+                # motor (etapa y tokens del T3) actualizan la etiqueta del spinner.
+                result = engine.speak(
+                    text=args.text,
+                    timbre_reference=timbre_reference,
+                    speech_reference=speech_reference,
+                    progress_callback=lambda ev: _sp.update(format_progress_event(ev)),
+                )
 
         _play_audio(result.audio_bytes)
 
         if getattr(args, "json", False):
-            _emit_speak_json(args, voice_name, result, daemon=False)
+            _emit_speak_json(args, voice_name, result, daemon=daemon_flag)
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -283,18 +306,18 @@ def cmd_speech_say(args):
         # voz ausentes no se resuelven descargando el modelo.
         from .model_cache import is_model_cached
         if not is_model_cached("es-mx-latam"):
-            print("Ejecuta 'tts-sidecar setup' primero.", file=sys.stderr)
-            sys.exit(EXIT_MODEL_MISSING)
-        sys.exit(EXIT_NOT_FOUND)
+            raise CliError(EXIT_MODEL_MISSING, "model_missing",
+                            "Ejecuta 'tts-sidecar setup' primero.")
+        raise CliError(EXIT_NOT_FOUND, "not_found",
+                        "Voz no encontrada.")
     except Exception as e:
         # Un fallo del daemon (--daemon o sondeo automático) es inalcanzabilidad,
         # no un error genérico de síntesis: se distingue con su propio código.
         from .daemon import DaemonIPCError
         if isinstance(e, DaemonIPCError):
-            print(f"Error: no se pudo sintetizar vía daemon: {e}", file=sys.stderr)
-            sys.exit(EXIT_DAEMON_UNREACHABLE)
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(EXIT_ERROR)
+            raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                            f"Error: no se pudo sintetizar vía daemon: {e}")
+        raise CliError(EXIT_ERROR, "generic", f"Error: {e}")
 
 
 @timed_command
@@ -310,13 +333,13 @@ def cmd_voice_clone(args):
     registrada y el primer `speak --voice <nombre>` recae en el cómputo
     on-the-fly.
     """
+    from . import voices
     try:
         # Exige el modelo en caché antes de tocar el filesystem: el precómputo lo
         # necesita, así que un modelo ausente aborta con exit 2 sin dejar una voz
         # a medias. Las descargas son responsabilidad exclusiva de 'setup'.
         _require_model_cached()
 
-        from . import voices
         ref_path, speech_path = voices.clone_voice_files(
             name=args.name,
             timbre_reference=args.timbre_reference,
@@ -346,13 +369,14 @@ def cmd_voice_clone(args):
         else:
             print("  conditionals: se computarán en la primera síntesis")
 
+    except voices.VoiceExistsError as e:
+        raise CliError(EXIT_STATE_CONFLICT, "voice_exists",
+                        f"Error al clonar la voz: {e}")
     except ValueError as e:
-        # Audio ilegible, nombre de voz inválido o colisión sin --force.
-        print(f"Error al clonar la voz: {e}", file=sys.stderr)
-        sys.exit(EXIT_INVALID_INPUT)
+        raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                        f"Error al clonar la voz: {e}")
     except Exception as e:
-        print(f"Error al clonar la voz: {e}", file=sys.stderr)
-        sys.exit(EXIT_ERROR)
+        raise CliError(EXIT_ERROR, "generic", f"Error al clonar la voz: {e}")
 
 
 def _precompute_cloned_voice(args) -> bool:
@@ -402,10 +426,11 @@ def cmd_voice_remove(args):
                 f"Voz '{args.name}' es una voz de fábrica (solo lectura) y no puede eliminarse.",
                 file=sys.stderr,
             )
-            sys.exit(EXIT_INVALID_INPUT)
+            raise CliError(EXIT_INVALID_INPUT, "factory_voice",
+                           f"Voz '{args.name}' es una voz de fábrica y no puede eliminarse.")
         else:
-            print(f"Voz '{args.name}' no encontrada.", file=sys.stderr)
-            sys.exit(EXIT_NOT_FOUND)
+            raise CliError(EXIT_NOT_FOUND, "voice_not_found",
+                           f"Voz '{args.name}' no encontrada.")
 
     except (PermissionError, OSError) as e:
         # En Windows, shutil.rmtree falla con PermissionError si
@@ -421,14 +446,14 @@ def cmd_voice_remove(args):
             f"proceso que lo retiene y vuelve a intentarlo. Detalle: {e}",
             file=sys.stderr,
         )
-        sys.exit(EXIT_ERROR)
+        raise CliError(EXIT_STATE_CONFLICT, "voice_remove_io_error",
+                        f"Error al eliminar la voz '{args.name}': archivo en uso.")
     except ValueError as e:
-        # Nombre de voz inválido (escapes de ruta, caracteres no permitidos).
-        print(f"Error al eliminar la voz: {e}", file=sys.stderr)
-        sys.exit(EXIT_INVALID_INPUT)
+        raise CliError(EXIT_INVALID_INPUT, "invalid_voice_name",
+                        f"Error al eliminar la voz: {e}")
     except Exception as e:
-        print(f"Error al eliminar la voz: {e}", file=sys.stderr)
-        sys.exit(EXIT_ERROR)
+        raise CliError(EXIT_ERROR, "voice_remove_error",
+                        f"Error al eliminar la voz: {e}")
 
 
 def cmd_voice_list(args):
@@ -451,18 +476,10 @@ def cmd_voice_list(args):
             print("  tts-sidecar voice clone --name mi_voz --reference timbre.wav --speech habla.wav")
 
     except FileNotFoundError as e:
-        # Listar voces es una operación pura de filesystem; remitir a
-        # 'setup' (provisión del modelo) no resuelve un directorio de voces
-        # ilegible. Se orienta al directorio real implicado.
-        print(f"Error: {e}", file=sys.stderr)
-        print(
-            f"Revisa el directorio de voces de usuario: {voices.voices_root()}",
-            file=sys.stderr,
-        )
-        sys.exit(EXIT_NOT_FOUND)
+        raise CliError(EXIT_NOT_FOUND, "not_found",
+                        f"Error: {e}\nRevisa el directorio de voces de usuario: {voices.voices_root()}")
     except Exception as e:
-        print(f"Error al listar las voces: {e}", file=sys.stderr)
-        sys.exit(EXIT_ERROR)
+        raise CliError(EXIT_ERROR, "generic", f"Error al listar las voces: {e}")
 
 
 def cmd_devices(args):
@@ -472,8 +489,7 @@ def cmd_devices(args):
     try:
         devices = get_audio_devices()
     except Exception as e:
-        print(f"Error al enumerar los dispositivos de audio: {e}", file=sys.stderr)
-        sys.exit(EXIT_ERROR)
+        raise CliError(EXIT_ERROR, "generic", f"Error al enumerar los dispositivos de audio: {e}")
 
     if getattr(args, "json", False):
         emit_json({"devices": devices})
@@ -703,7 +719,8 @@ def cmd_doctor(args):
             "failed": checks_failed,
         })
         if checks_failed > 0:
-            sys.exit(EXIT_ERROR)
+            raise CliError(EXIT_ERROR, "generic",
+                             f"Chequeos: {checks_passed} exitosos, {checks_failed} fallidos")
         return
 
     print("=== TTS Sidecar Doctor ===\n")
@@ -716,7 +733,8 @@ def cmd_doctor(args):
     print(f"Chequeos: {checks_passed} exitosos, {checks_failed} fallidos")
 
     if checks_failed > 0:
-        sys.exit(EXIT_ERROR)
+        raise CliError(EXIT_ERROR, "generic",
+                         f"Chequeos: {checks_passed} exitosos, {checks_failed} fallidos")
 
 
 def _path_symlink() -> Path:
@@ -790,11 +808,8 @@ def _remove_linux_path() -> bool:
         print(f"Symlink eliminado: {link}", file=sys.stderr)
         return True
     elif link.exists():
-        print(
-            f"Error: {link} existe pero no es un symlink; no se elimina.",
-            file=sys.stderr,
-        )
-        sys.exit(EXIT_ERROR)
+        raise CliError(EXIT_STATE_CONFLICT, "state_conflict",
+                         f"Error: {link} existe pero no es un symlink; no se elimina.")
     else:
         print(f"No hay nada que quitar: {link} no existe.", file=sys.stderr)
         return False
@@ -871,23 +886,17 @@ def _uninstall(args):
 
     # Guard de canal nativo: --uninstall solo aplica al AppImage / .app / Inno.
     if not paths.is_frozen():
-        print(
-            "Error: 'setup --uninstall' solo aplica al canal nativo "
-            "(AppImage de Linux, .app de macOS o instalador de Windows).\n"
-            "  Si instalaste vía pip/uv, desinstala con: pip uninstall tts-sidecar",
-            file=sys.stderr,
-        )
-        sys.exit(EXIT_INVALID_INPUT)
+        raise CliError(EXIT_NOT_APPLICABLE, "not_applicable",
+                         "Error: 'setup --uninstall' solo aplica al canal nativo "
+                         "(AppImage de Linux, .app de macOS o instalador de Windows).\n"
+                         "  Si instalaste vía pip/uv, desinstala con: pip uninstall tts-sidecar")
 
     # Gate --json/--yes: la confirmación interactiva del cleanup contaminaría
     # stdout, reservado para el único payload JSON.
     if getattr(args, "json", False) and not getattr(args, "yes", False):
-        print(
-            "Error: setup --uninstall --json requiere --yes (la confirmación "
-            "interactiva del cleanup contaminaría stdout).",
-            file=sys.stderr,
-        )
-        sys.exit(EXIT_INVALID_INPUT)
+        raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                         "Error: setup --uninstall --json requiere --yes (la confirmación "
+                         "interactiva del cleanup contaminaría stdout).")
 
     if sys.platform == "linux":
         _uninstall_linux(args)
@@ -896,11 +905,8 @@ def _uninstall(args):
     elif sys.platform == "win32":
         _uninstall_windows(args)
     else:
-        print(
-            f"Error: 'setup --uninstall' no soporta la plataforma '{sys.platform}'.",
-            file=sys.stderr,
-        )
-        sys.exit(EXIT_INVALID_INPUT)
+        raise CliError(EXIT_NOT_APPLICABLE, "not_applicable",
+                         f"Error: 'setup --uninstall' no soporta la plataforma '{sys.platform}'.")
 
 
 def _uninstall_linux(args):
@@ -995,26 +1001,20 @@ def _uninstall_macos(args):
     # 1. Localizar el .app desde sys.executable (se borra al final; se valida ya).
     app_bundle = Path(sys.executable).resolve().parents[2]
     if app_bundle.suffix != ".app":
-        print(
-            f"Error: el ejecutable no reside en un bundle .app ({app_bundle}).\n"
-            "  'setup --uninstall' solo aplica a la instalación nativa de macOS.",
-            file=sys.stderr,
-        )
-        sys.exit(EXIT_INVALID_INPUT)
+        raise CliError(EXIT_NOT_APPLICABLE, "not_applicable",
+                         f"Error: el ejecutable no reside en un bundle .app ({app_bundle}).\n"
+                         "  'setup --uninstall' solo aplica a la instalación nativa de macOS.")
 
     # 2. Detección de Homebrew Cask por metadata del Caskroom (no por ruta del
     # .app). Si existe, la desinstalación no aplica: se difiere a brew --zap.
     brew_prefix = os.environ.get("HOMEBREW_PREFIX", "/opt/homebrew")
     caskroom_meta = Path(brew_prefix) / "Caskroom" / "tts-sidecar"
     if caskroom_meta.exists():
-        print(
-            "Error: tts-sidecar está instalado vía Homebrew Cask.\n"
-            "  Desinstálalo con: brew uninstall --cask --zap tts-sidecar\n"
-            "  (su 'zap' ya borra los datos; hacerlo a mano dejaría el Caskroom "
-            "inconsistente).",
-            file=sys.stderr,
-        )
-        sys.exit(EXIT_INVALID_INPUT)
+        raise CliError(EXIT_STATE_CONFLICT, "state_conflict",
+                         "Error: tts-sidecar está instalado vía Homebrew Cask.\n"
+                         "  Desinstálalo con: brew uninstall --cask --zap tts-sidecar\n"
+                         "  (su 'zap' ya borra los datos; hacerlo a mano dejaría el Caskroom "
+                         "inconsistente).")
 
     removed_paths = []
 
@@ -1097,13 +1097,10 @@ def _uninstall_windows(args):
     except OSError:
         quiet_uninstall = None
     if not quiet_uninstall:
-        print(
-            "Error: no se encontró el registro del instalador nativo de Windows.\n"
-            "  'setup --uninstall' solo aplica a la instalación por el instalador "
-            "de Windows; desinstala desde Configuración → Aplicaciones.",
-            file=sys.stderr,
-        )
-        sys.exit(EXIT_INVALID_INPUT)
+        raise CliError(EXIT_NOT_APPLICABLE, "not_applicable",
+                         "Error: no se encontró el registro del instalador nativo de Windows.\n"
+                         "  'setup --uninstall' solo aplica a la instalación por el instalador "
+                         "de Windows; desinstala desde Configuración → Aplicaciones.")
 
     removed_paths = []
 
@@ -1240,8 +1237,7 @@ def cmd_setup(args):
                 print("[WARN] La reproducción de audio no estará disponible; "
                       "la síntesis a archivo (speak --output) funciona igual.", file=sys.stderr)
                 continue
-            print(f"[FAIL] {name}: {detail}", file=sys.stderr)
-            sys.exit(EXIT_ERROR)
+            raise CliError(EXIT_PRECONDITION_FAILED, "environment_failed", f"[FAIL] {name}: {detail}")
         print(f"[{status}] {name}: {detail}", file=sys.stderr)
 
     # 3. Provisión del modelo (idempotente): descarga solo si no está ya en caché.
@@ -1321,13 +1317,13 @@ def cmd_setup(args):
         free = shutil.disk_usage(probe).free
         if free < MIN_FREE_DISK_BYTES:
             free_gb = free / (1024 ** 3)
-            print(
-                f"[FAIL] Espacio en disco insuficiente: {free_gb:.1f} GB libres, "
-                f"se requieren al menos {MIN_FREE_DISK_BYTES // 1024 ** 3} GB para el modelo (~4 GB). "
-                "Libera espacio y reintenta 'tts-sidecar setup'.",
-                file=sys.stderr,
-            )
-            sys.exit(EXIT_ERROR)
+            raise CliError(
+            EXIT_PRECONDITION_FAILED,
+            "disk_insufficient",
+            f"[FAIL] Espacio en disco insuficiente: {free_gb:.1f} GB libres, "
+            f"se requieren al menos {MIN_FREE_DISK_BYTES // 1024 ** 3} GB para el modelo (~4 GB). "
+            "Libera espacio y reintenta 'tts-sidecar setup'.",
+        )
 
         print("\nDescargando el modelo es-mx-latam...", file=sys.stderr)
         print("(Puede tardar varios minutos en la primera ejecución)\n", file=sys.stderr)
@@ -1366,8 +1362,8 @@ def cmd_setup(args):
         _emit_setup_json(already_cached=False, downloaded=True)
 
     except Exception as e:
-        print(_describe_provision_failure(e), file=sys.stderr)
-        sys.exit(EXIT_ERROR)
+        message = _describe_provision_failure(e)
+        raise CliError(EXIT_ERROR, "provision_failed", message)
 
 
 from typing import NamedTuple
@@ -1408,12 +1404,12 @@ def cmd_cleanup(args):
     info_out = sys.stderr if json_mode else sys.stdout
 
     if json_mode and not (getattr(args, "yes", False) or getattr(args, "dry_run", False)):
-        print(
+        raise CliError(
+            EXIT_INVALID_INPUT,
+            "usage_error",
             "Error: cleanup --json requiere --yes o --dry-run (la confirmación "
             "interactiva contaminaría stdout).",
-            file=sys.stderr,
         )
-        sys.exit(EXIT_INVALID_INPUT)
 
     def _emit_cleanup_json(removed_paths):
         if json_mode:
@@ -1520,7 +1516,7 @@ def cmd_daemon(args):
             max_retries=args.max_retries or 0,
         )
         if json_mode:
-            payload = {"action": "start", "ok": success}
+            payload = {"action": "start"}
             if success:
                 pid = manager._read_pid()
                 if pid is not None:
@@ -1531,25 +1527,27 @@ def cmd_daemon(args):
         else:
             print("No se pudo iniciar el daemon", file=sys.stderr)
         if not success:
-            sys.exit(EXIT_DAEMON_UNREACHABLE)
+            raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                           "No se pudo iniciar el daemon.")
 
     elif args.action == "stop":
         json_mode = getattr(args, "json", False)
         success = manager.stop()
         if json_mode:
-            emit_json({"action": "stop", "ok": success})
+            emit_json({"action": "stop"})
         elif success:
             print("Daemon detenido")
         else:
             print("No se pudo detener el daemon", file=sys.stderr)
         if not success:
-            sys.exit(EXIT_DAEMON_UNREACHABLE)
+            raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                           "No se pudo detener el daemon.")
 
     elif args.action == "restart":
         json_mode = getattr(args, "json", False)
         success = manager.restart()
         if json_mode:
-            payload = {"action": "restart", "ok": success}
+            payload = {"action": "restart"}
             if success:
                 pid = manager._read_pid()
                 if pid is not None:
@@ -1560,7 +1558,8 @@ def cmd_daemon(args):
         else:
             print("No se pudo reiniciar el daemon", file=sys.stderr)
         if not success:
-            sys.exit(EXIT_DAEMON_UNREACHABLE)
+            raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                           "No se pudo reiniciar el daemon.")
 
     elif args.action == "status":
         status = manager.status()
@@ -1593,6 +1592,15 @@ def top_level_subparsers(parser: argparse.ArgumentParser) -> argparse.Action:
     raise RuntimeError("El parser no tiene subparsers de nivel superior")
 
 
+class _CLIParser(argparse.ArgumentParser):
+    """Parser CLI que traduce errores de análisis a CliError en vez de
+    llamar a sys.exit, para que main() pueda capturarlos y traducirlos
+    como parte del canal de error único."""
+
+    def error(self, message: str) -> None:
+        raise CliError(EXIT_INVALID_INPUT, "usage_error", message)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construye el parser completo del CLI (subcomandos, flags, despacho).
 
@@ -1601,7 +1609,7 @@ def build_parser() -> argparse.ArgumentParser:
     este mismo parser para descubrir qué subcomandos declaran --json, en vez de
     mantener una lista aparte que puede desincronizarse del código real.
     """
-    parser = argparse.ArgumentParser(
+    parser = _CLIParser(
         prog="tts-sidecar",
         description="TTS Sidecar - TTS 100% local con clonación de voz"
     )
@@ -1742,25 +1750,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main():
     """Punto de entrada principal de la CLI."""
-    # Capa única de bootstrap: primera acción del proceso en la vía pip
-    # (`tts_sidecar.cli:main`) y en la congelada (`bin/tts-sidecar` → main).
-    # Idempotente, así que una invocación previa de otro entry point es no-op.
     bootstrap.apply()
-
     parser = build_parser()
-    args = parser.parse_args()
+
+    try:
+        args = parser.parse_args()
+    except CliError as e:
+        _translate_cli_error(e)
+        return
 
     if not args.command:
         parser.print_help()
         sys.exit(EXIT_OK)
 
-    # Los grupos de comandos (voice, daemon) sin sub-acción no tienen func: mostrar ayuda.
     if not hasattr(args, "func"):
         top_level_subparsers(parser).choices[args.command].print_help()
         sys.exit(EXIT_OK)
 
     try:
         args.func(args)
+    except CliError as e:
+        _translate_cli_error(e)
     except KeyboardInterrupt:
         # Cierre limpio ante Ctrl+C: sin traceback, mensaje de una línea a stderr
         # y el código 130 convencional (128 + SIGINT). Solo actúa si la excepción

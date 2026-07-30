@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from tts_sidecar.compute_backend import ComputeBackendResolver
 from tts_sidecar.daemon import run as daemon_run
+from tts_sidecar.exit_codes import EXIT_STATE_CONFLICT
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +115,7 @@ class TestServeAutoRestart:
         ) as mock_run:
             with pytest.raises(SystemExit) as exc:
                 daemon_run.serve(auto_restart=True, max_retries=5)
-        assert exc.value.code == daemon_run.EXIT_DAEMON_PORT_IN_USE
+        assert exc.value.code == EXIT_STATE_CONFLICT
         assert mock_run.call_count == 1
         daemon_run.time.sleep.assert_not_called()
 

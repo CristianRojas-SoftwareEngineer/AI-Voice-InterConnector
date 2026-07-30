@@ -950,7 +950,7 @@ class TestRemoveOwnPidfile:
 
 class TestServePortInUse:
     """El bind del puerto 8765 distingue EADDRINUSE y sale con
-    EXIT_DAEMON_PORT_IN_USE (6), sin reintentar ni reportar éxito (0)."""
+    EXIT_STATE_CONFLICT (6), sin reintentar ni reportar éxito (0)."""
 
     def _serve_that_fails_bind(self, errno_value, auto_restart=False):
         """Ejercita serve() con server.run() forzado a un OSError de bind.

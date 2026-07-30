@@ -21,16 +21,10 @@ import uvicorn
 
 from .server import app, DaemonState
 from .ipc import DEFAULT_PORT
-from ..cli import EXIT_ERROR
+from ..exit_codes import EXIT_ERROR, EXIT_STATE_CONFLICT
 from ..timing import StageTimer, log
 
 logger = logging.getLogger(__name__)
-
-
-# Código de salida dedicado cuando el bind del puerto falla por estar ya en
-# uso. Refleja el contrato de cli.py (0–5 y 130) y vive en el paquete daemon
-# (no en cli) para evitar un ciclo de import: cli ya importa daemon.run.
-EXIT_DAEMON_PORT_IN_USE = 6
 
 
 def _remove_own_pidfile():
@@ -149,7 +143,7 @@ def serve(port: int = DEFAULT_PORT, auto_restart: bool = False, max_retries: int
                     f"Daemon: el puerto {port} ya está en uso. Detén el daemon "
                     f"en ejecución con 'tts-sidecar daemon stop' e intenta de nuevo."
                 )
-                sys.exit(EXIT_DAEMON_PORT_IN_USE)
+                sys.exit(EXIT_STATE_CONFLICT)
             log(f"Daemon: no se pudo enlazar el puerto {port}: {e}")
             sys.exit(EXIT_ERROR)
         except KeyboardInterrupt:
