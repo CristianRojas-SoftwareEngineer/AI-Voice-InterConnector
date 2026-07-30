@@ -317,6 +317,8 @@ new ProcessBuilder("./tts-sidecar", "speech", "say", "--text", "Hola").start()
 
 ## Licencia
 
+Copyright © 2026 Cristián Rojas Arredondo.
+
 **GPL-3.0-or-later** — el código de `tts-sidecar` se distribuye bajo la GNU General Public
 License v3 (ver [LICENSE](LICENSE)). Es software libre y de uso comercial permitido, con la
 condición copyleft de que los trabajos derivados que se distribuyan se liberen bajo la misma

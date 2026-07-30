@@ -47,7 +47,7 @@ no se empaqueta en el binario y se licencia por separado (MIT, ResembleAI).
 
 Si recibiste este binario sin acceso a las URLs anteriores, puedes solicitar
 el código fuente abriendo un issue en el repositorio o contactando al
-mantenedor del proyecto.
+mantenedor del proyecto, Cristián Rojas Arredondo.
 """
 
 

@@ -408,7 +408,7 @@ def _info_plist_content(version, icon_name=None):
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>NSHumanReadableCopyright</key>
-    <string>GPL-3.0-or-later</string>
+    <string>© 2026 Cristián Rojas Arredondo — GPL-3.0-or-later</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

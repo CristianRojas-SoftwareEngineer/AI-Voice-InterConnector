@@ -49,7 +49,7 @@ VSVersionInfo(
           StringStruct(u'FileDescription', u'TTS Sidecar - motor de sintesis de voz offline'),
           StringStruct(u'FileVersion', u'{version}'),
           StringStruct(u'InternalName', u'tts-sidecar'),
-          StringStruct(u'LegalCopyright', u'GPL-3.0-or-later'),
+          StringStruct(u'LegalCopyright', u'(C) 2026 Cristian Rojas Arredondo - GPL-3.0-or-later'),
           StringStruct(u'OriginalFilename', u'tts-sidecar.exe'),
           StringStruct(u'ProductName', u'TTS Sidecar'),
           StringStruct(u'ProductVersion', u'{version}')])
