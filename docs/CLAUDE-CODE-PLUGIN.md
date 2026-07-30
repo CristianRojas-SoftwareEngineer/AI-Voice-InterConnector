@@ -24,10 +24,10 @@ cada turno (y en avisos relevantes), el usuario escucha un mensaje conversaciona
 corto —no el texto en bruto del asistente, sino una locución procesada, en
 español.
 
-El plugin es un **consumidor** del CLI público (`tts-sidecar` en PATH: `speak`,
-`doctor`, `daemon`): no importa el paquete `tts_sidecar`, no comparte código ni
-requiere el árbol fuente. Por eso vive en su propio repositorio, con ciclo de
-vida y versionado disjuntos de los del motor.
+El plugin es un **consumidor** del CLI público (`tts-sidecar` en PATH:
+`speech say`, `doctor`, `daemon`): no importa el paquete `tts_sidecar`, no
+comparte código ni requiere el árbol fuente. Por eso vive en su propio
+repositorio, con ciclo de vida y versionado disjuntos de los del motor.
 
 ## Propiedades de diseño
 
