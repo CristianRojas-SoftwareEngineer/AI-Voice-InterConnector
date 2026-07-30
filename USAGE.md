@@ -225,7 +225,7 @@ Tanto los comandos de lectura (`version`, `doctor`, `devices`, `voice list`,
 `tts-sidecar` desde otro programa: ningún comando obliga a parsear texto.
 
 Todo payload `--json` incluye el campo **`"schema_version"`** (actualmente
-`"1"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
+`"2"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
 nuevas no lo incrementa; solo un cambio incompatible de las claves existentes lo
 haría. Un consumidor puede leerlo para detectar cambios de contrato.
 
@@ -233,7 +233,7 @@ haría. Un consumidor puede leerlo para detectar cambios de contrato.
 
 Los payloads siguientes son **parte del contrato programático**: sus claves son
 estables (los cambios solo pueden ser aditivos mientras `schema_version` sea
-`"1"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
+`"2"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
 diagnóstico/progreso va a stderr. La clave `schema_version` (string) se omite de
 las tablas por brevedad: está presente en todos.
 
@@ -331,6 +331,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `name` | string | Nombre de la voz registrada |
 | `reference` | string | Ruta absoluta del `timbre-reference.wav` copiado (timbre) |
 | `speech` | string | Ruta absoluta del `speech-reference.wav` copiado (conditioning) |
+| `precomputed` | boolean | `true` si los conditionals se precomputaron al clonar (voz lista sin recomputar en la primera síntesis) |
 
 **`voice remove --json`**
 
@@ -361,7 +362,7 @@ proceso, así que no entra en `removed` sino en un campo adicional `delegated`
 porque aún existe cuando se emite el payload.
 
 **`cleanup --json`** — requiere `--yes` o `--dry-run` (la confirmación
-interactiva contaminaría stdout); sin ellos, error en stderr y exit 4. Los
+interactiva contaminaría stdout); sin ellos, error en stderr y exit 2. Los
 listados informativos van a stderr.
 
 | Clave | Tipo | Significado |

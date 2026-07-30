@@ -175,8 +175,8 @@ tts-sidecar speech say --text "Hola mundo"
 # Síntesis con voz clonada
 tts-sidecar speech say --text "Hola" -v mi_voz
 
-# Exportar a archivo (speech synthesize con --label guarda en vez de reproducir)
-tts-sidecar speech synthesize --text "Hola" --label NUEVA --output audio.wav -v mi_voz
+# Sintetizar y guardar en el almacén (no reproduce)
+tts-sidecar speech synthesize --text "Hola" --label NUEVA -v mi_voz
 
 # Clonación de voz (requiere dos archivos de audio)
 tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav

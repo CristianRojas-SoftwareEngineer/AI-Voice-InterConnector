@@ -42,7 +42,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 - **Clonación de voz**: ~10 segundos de audio de referencia
 - **100% offline**: Sin APIs externas ni conexiones a internet
 - **Instalador por plataforma**: Un instalador único por SO que despliega el bundle PyInstaller `--onedir` (carpeta de la aplicación)
-- **CLI universal**: `subprocess.run(["./tts-sidecar", "speech synthesize", "--text", "..."])`
+- **CLI universal**: `subprocess.run(["./tts-sidecar", "speech", "say", "--text", "..."])`
 - **Audio nativo**: APIs nativas del sistema operativo
 
 ## Instalación
@@ -194,7 +194,7 @@ uv tool install tts-sidecar
 # o: pipx install tts-sidecar
 
 tts-sidecar setup     # provisiona el modelo, idéntico al canal nativo
-tts-sidecar speech synthesize --text "Hola mundo"
+tts-sidecar speech say --text "Hola mundo"
 ```
 
 > Linux: `sounddevice` requiere la librería del sistema `libportaudio2` para
@@ -225,11 +225,11 @@ python scripts/build_macos.py     # macOS
 # Se necesitan DOS archivos: reference (timbre) y speech (conditioning)
 tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
 
-# Sintetizar con tu voz clonada
-tts-sidecar speech synthesize --text "Hola mundo" -v mi_voz
+# Sintetizar y reproducir con tu voz clonada
+tts-sidecar speech say --text "Hola mundo" -v mi_voz
 
-# Persistir a archivo WAV (la persistencia es automática con speech synthesize)
-tts-sidecar speech synthesize --text "Hola mundo" -v mi_voz
+# Sintetizar y guardar en el almacén bajo una etiqueta (--label es requerido)
+tts-sidecar speech synthesize --text "Hola mundo" -v mi_voz --label saludo
 ```
 
 ### Síntesis básica
@@ -241,8 +241,8 @@ tts-sidecar speech say --text "Hola mundo"
 # Sobrescribir la voz por defecto con una voz registrada
 tts-sidecar speech say --text "Hola mundo" --voice mi_voz
 
-# Persistir a archivo WAV (la persistencia es automática con speech synthesize)
-tts-sidecar speech synthesize --text "Hola mundo"
+# Sintetizar y guardar en el almacén bajo una etiqueta (--label es requerido)
+tts-sidecar speech synthesize --text "Hola mundo" --label saludo
 ```
 
 > Sin `--voice` ni audios explícitos, `speech synthesize` y `speech say`
@@ -263,8 +263,8 @@ Registrar una voz de usuario con el mismo nombre que una de fábrica la sobrescr
 ### Comandos disponibles
 
 ```bash
-tts-sidecar speech say --text "..."          # Sintetizar y reproducir sin persistir
-tts-sidecar speech synthesize --text "..."    # Sintetizar y persistir en WAV
+tts-sidecar speech say --text "..."                    # Sintetizar y reproducir sin persistir
+tts-sidecar speech synthesize --text "..." --label L   # Sintetizar y persistir en el almacén
 tts-sidecar voice clone --name X --timbre-reference ref.wav --speech-reference speech.wav  # Clonar voz
 tts-sidecar voice remove --name X       # Eliminar voz
 tts-sidecar voice list                  # Listar voces (--json disponible)
@@ -278,24 +278,24 @@ tts-sidecar version                     # Versión (--json disponible)
 
 ```bash
 # Bash/shell
-./tts-sidecar speech synthesize --text "Hola mundo"
+./tts-sidecar speech say --text "Hola mundo"
 
 # Python
-subprocess.run(["./tts-sidecar", "speech", "synthesize", "--text", "Hola mundo"])
+subprocess.run(["./tts-sidecar", "speech", "say", "--text", "Hola mundo"])
 
 # Node.js
-child_process.spawn("./tts-sidecar", ["speech", "synthesize", "--text", "Hola mundo"])
+child_process.spawn("./tts-sidecar", ["speech", "say", "--text", "Hola mundo"])
 
 # Rust
 std::process::Command::new("./tts-sidecar")
-    .args(["speech", "synthesize", "--text", "Hola"])
+    .args(["speech", "say", "--text", "Hola"])
     .output()?;
 
 # Go
-exec.Command("./tts-sidecar", "speech", "synthesize", "--text", "Hola")
+exec.Command("./tts-sidecar", "speech", "say", "--text", "Hola")
 
 # Java
-new ProcessBuilder("./tts-sidecar", "speech", "synthesize", "--text", "Hola").start()
+new ProcessBuilder("./tts-sidecar", "speech", "say", "--text", "Hola").start()
 ```
 
 ## Arquitectura

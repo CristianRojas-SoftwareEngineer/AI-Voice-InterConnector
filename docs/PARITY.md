@@ -66,7 +66,7 @@ Las tres brechas de esta fase quedaron **cerradas**:
 
 ### Estado
 
-**Paridad completa.** Mismos comandos, mismo daemon (puerto 8765), mismos esquemas `--json` y exit codes, mismas voces de fábrica y de usuario (`data_root()` por SO), mismo fail-fast de `speak`/`daemon start` sin modelo. Las diferencias de backend de audio (pycaw/sounddevice/afplay) son tecnologías equivalentes, no diferencias de experiencia.
+**Paridad completa.** Mismos comandos, mismo daemon (puerto 8765), mismos esquemas `--json` y exit codes, mismas voces de fábrica y de usuario (`data_root()` por SO), mismo fail-fast de `speech say`/`daemon start` sin modelo. Las diferencias de backend de audio (pycaw/sounddevice/afplay) son tecnologías equivalentes, no diferencias de experiencia.
 
 Única salvedad, aceptada como limitación de toolchain y documentada en el README: la cobertura de arquitecturas no es simétrica (sin Windows ARM64, sin Mac Intel).
 

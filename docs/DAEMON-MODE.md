@@ -350,14 +350,14 @@ del watermark PerthNet y el timing por sub-etapa:
 ## Compatibilidad
 
 - El **contrato del CLI** (comandos, flags, códigos de salida, stdout = datos /
-  stderr = progreso) no cambia: los comandos del grupo `speech` (`speech synthesize`,
+  stderr = progreso) es estable: los comandos del grupo `speech` (`speech synthesize`,
   `speech say`) aceptan `--daemon`, `--no-daemon` y las demás flags de manera
-  idéntica; `speak` fue eliminado en el Movimiento 1 y no existe en la superficie
-  actual.
-- El **protocolo interno daemon→cliente** de `/synthesize` sí cambió: pasó de un
-  cuerpo binario WAV a un stream NDJSON (progreso + `result` con audio base64).
-  Daemon y cliente viajan siempre en la misma versión (no hay usuarios externos
-  desplegados), así que no se conserva la variante binaria ni se negocia
-  capacidad; si actualizas el binario, actualiza ambos lados a la vez.
-- Si el daemon no está corriendo, el CLI degrada a modo directo exactamente como
-  antes; `--no-daemon` fuerza ese modo directo.
+  idéntica.
+- El **protocolo interno daemon→cliente** de `/synthesize` es un stream NDJSON:
+  N líneas `progress` (etapa y tokens en vivo), seguidas de una línea `result`
+  con el audio en base64 y los tiempos por sub-etapa, o una línea `error` si la
+  síntesis falla. Daemon y cliente viajan siempre en la misma versión (no hay
+  usuarios externos desplegados), así que no se negocia capacidad; si
+  actualizas el binario, actualiza ambos lados a la vez.
+- Si el daemon no está corriendo, el CLI degrada a modo directo; `--no-daemon`
+  fuerza ese modo directo explícitamente.

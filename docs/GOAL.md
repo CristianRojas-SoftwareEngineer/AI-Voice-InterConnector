@@ -123,7 +123,7 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 
 # 6. Síntesis a través del daemon (añade -v mi_voz para usar la voz clonada)
 ./tts-sidecar speech say --text "Hola mundo" [-v mi_voz]                    # Reproducir
-./tts-sidecar speech synthesize --text "Hola mundo" [-v mi_voz] --label LOCUCION --output audio.wav  # Exportar WAV
+./tts-sidecar speech synthesize --text "Hola mundo" [-v mi_voz] --label LOCUCION  # Sintetiza y guarda la locución en el almacén
 
 # 7. Eliminar voz clonada (limpieza)
 ./tts-sidecar voice remove --name mi_voz
