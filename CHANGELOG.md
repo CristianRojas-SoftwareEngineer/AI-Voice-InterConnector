@@ -59,9 +59,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - **Lista de warnings silenciados en `bootstrap.py`**: el filtro allow-list
   declaraba `(None, DeprecationWarning, r"^diffusers\.")` pero el warning
   real de diffusers es `FutureWarning`; la categoría errónea hacía que el
-  filtro nunca lo alcanzara. Corregido a `FutureWarning`. Se añade también
-  `FutureWarning` de `torch` (sdp_kernel deprecation de PyTorch, transitivo
-  vía chatterbox) a la misma lista allow-list.
+  filtro nunca lo alcanzara. Corregido a `FutureWarning`. Se añade una
+  entrada para `torch.backends.cuda.sdp_kernel` (FutureWarning), advertencia
+  deprecación de PyTorch que es transitiva vía chatterbox. El filtro usa un
+  patrón de mensaje (`.*torch\.backends\.cuda\.sdp_kernel`) en lugar de un
+  filtro por módulo, porque PyTorch usa un valor de `stacklevel` alto en ese
+  warning que hace que el frame reportado sea `contextlib` y no un módulo
+  `torch.*`. La entrada de LoRACompatibleLinear ya no necesita estar en la
+  lista de supresión porque `peft` la elimina desde la raíz (diffusers usa
+  el backend PEFT cuando peft está instalado).
 
 ### Eliminado
   habla sintética (`data_root()/synthetic-speech/`), incluida la voz
