@@ -38,10 +38,13 @@ _applied = False
 #     versión; con Warning queda acotado por mensaje y cubre ambas categorías.
 #   - (None, DeprecationWarning, r"^diffusers\."): el warning de
 #     `LoRACompatibleLinear` al importar `chatterbox`; se filtra por módulo
-#     para no atarnos al texto exacto del mensaje.
+#     para no atarnos al texto exacto del mensaje. El warning real es
+#     FutureWarning (no DeprecationWarning), así que la categoría del
+#     filtro debe coincidir.
 _SILENCED_WARNINGS: list[tuple[str | None, type[Warning], str | None]] = [
     ("pkg_resources is deprecated", Warning, None),
-    (None, DeprecationWarning, r"^diffusers\."),
+    (None, FutureWarning, r"^diffusers\."),
+    (None, FutureWarning, r"^torch\."),
 ]
 
 

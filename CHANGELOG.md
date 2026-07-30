@@ -49,7 +49,21 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ### Añadido
 
-- **`cleanup --synthetic-speech`**: elimina toda la raíz del almacén de
+- **`peft` como dependencia directa**: se añade `peft>=0.13.0` a
+  `pyproject.toml`. Con `peft` instalado, diffusers usa el backend PEFT
+  en lugar de la clase legada `LoRACompatibleLinear`, eliminando el
+  `FutureWarning` asociado desde la fuente (no a través de supresión).
+
+### Corregido
+
+- **Lista de warnings silenciados en `bootstrap.py`**: el filtro allow-list
+  declaraba `(None, DeprecationWarning, r"^diffusers\.")` pero el warning
+  real de diffusers es `FutureWarning`; la categoría errónea hacía que el
+  filtro nunca lo alcanzara. Corregido a `FutureWarning`. Se añade también
+  `FutureWarning` de `torch` (sdp_kernel deprecation de PyTorch, transitivo
+  vía chatterbox) a la misma lista allow-list.
+
+### Eliminado
   habla sintética (`data_root()/synthetic-speech/`), incluida la voz
   `default`. Complementa `--voices` (que preserva `default`) y `--model`.
 - **`--voices` arrastra las locuciones de habla sintética**: al borrar

@@ -2517,14 +2517,18 @@ class TestBootstrap:
             )
 
     def test_silenced_warnings_allow_list_has_expected_entries(self, monkeypatch):
-        """La allow-list `_SILENCED_WARNINGS` debe declarar exactamente las dos
-        supresiones benignas conocidas."""
+        """La allow-list `_SILENCED_WARNINGS` declara las tres supresiones
+        benignas conocidas: pkg_resources, diffusers (LoRACompatibleLinear) y
+        torch (sdp_kernel)."""
         bootstrap = self._reset(monkeypatch)
         assert (
             "pkg_resources is deprecated", Warning, None
         ) in bootstrap._SILENCED_WARNINGS
         assert (
-            None, DeprecationWarning, r"^diffusers\."
+            None, FutureWarning, r"^diffusers\."
+        ) in bootstrap._SILENCED_WARNINGS
+        assert (
+            None, FutureWarning, r"^torch\."
         ) in bootstrap._SILENCED_WARNINGS
 
     def test_apply_does_not_silence_unrelated_warnings(self, monkeypatch):

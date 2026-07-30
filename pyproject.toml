@@ -25,6 +25,7 @@ classifiers = [
 # para desarrollo/CI que además incluye las herramientas de build.
 dependencies = [
     "chatterbox-tts>=0.1.7",
+    "peft>=0.13.0",
     # numba (vía librosa) tope <2.5; chatterbox-tts declara numpy>=2.0.0 sin
     # tope superior, lo que deja a resolvedores agresivos (uv) fijar numpy en
     # su última versión y retroceder numba hasta releases sin soporte 3.13.
