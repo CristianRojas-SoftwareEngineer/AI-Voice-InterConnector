@@ -187,7 +187,7 @@ def _require_model_cached(model: str = "es-mx-latam"):
         )
 
 
-def _emit_speak_json(voice_name: str) -> None:
+def _emit_say_json(voice_name: str) -> None:
     """Payload --json de `speech say`: solo la voz efectiva (§2.10).
 
     No repite el `text` (el llamador acaba de mandarlo) ni emite tiempos ni
@@ -321,7 +321,7 @@ def cmd_speech_say(args):
         _play_audio(result.audio_bytes)
 
         if getattr(args, "json", False):
-            _emit_speak_json(voice_name)
+            _emit_say_json(voice_name)
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -564,7 +564,7 @@ def cmd_voice_clone(args):
     precómputo ejecuta el modelo. Si hay un daemon activo, el precómputo lo hace
     con el modelo caliente (sin carga en frío); si no, carga el modelo en modo
     directo. Un fallo del precómputo no aborta el clonado: la voz queda
-    registrada y el primer `speak --voice <nombre>` recae en el cómputo
+    registrada y el primer `speech say --voice <nombre>` recae en el cómputo
     on-the-fly.
     """
     from . import voices
@@ -721,7 +721,7 @@ def cmd_voice_list(args):
                 print(f"  - {voice}")
         else:
             print("No hay voces registradas. Ejecuta:")
-            print("  tts-sidecar voice clone --name mi_voz --reference timbre.wav --speech habla.wav")
+            print("  tts-sidecar voice clone --name mi_voz --timbre-reference timbre-reference.wav --speech-reference speech-reference.wav")
 
     except FileNotFoundError as e:
         raise CliError(EXIT_NOT_FOUND, "not_found",

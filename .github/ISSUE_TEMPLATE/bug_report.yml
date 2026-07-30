@@ -34,7 +34,7 @@ body:
       label: Comando reproducible
       description: El comando exacto (con sus flags) que reproduce el problema.
       render: shell
-      placeholder: tts-sidecar speak --text "Hola" --voice mi_voz
+      placeholder: tts-sidecar speech say --text "Hola" --voice mi_voz
     validations:
       required: true
   - type: textarea
