@@ -80,7 +80,7 @@ Authenticode. Diseño completo de los tres instaladores en
 # Con uv (recomendado: https://docs.astral.sh/uv/)
 uv tool install tts-sidecar
 tts-sidecar setup      # provisiona el modelo, idéntico al canal nativo
-tts-sidecar speak --text "Hola mundo"
+tts-sidecar speech say --text "Hola mundo"
 
 # Con pipx
 pipx install tts-sidecar
@@ -90,7 +90,7 @@ tts-sidecar setup
 **Prerequisito en Linux**: `sounddevice` requiere la librería del sistema
 `libportaudio2` para reproducir audio (no la trae empaquetada, a diferencia
 del bundle nativo). Instálala antes de `setup` si vas a reproducir audio
-directamente (no es necesaria si solo usas `speak --output` a archivo):
+directamente (no es necesaria si solo usas `speech synthesize --text T --label L` a archivo):
 
 ```bash
 # Debian/Ubuntu

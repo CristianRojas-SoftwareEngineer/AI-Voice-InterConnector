@@ -53,9 +53,9 @@
 
 El archivo `bin/tts-sidecar` es el **punto de entrada único** de la aplicación. Está escrito en **Python 3**, pero deliberadamente **no lleva extensión `.py`**:
 
-- **Convención de comando CLI**: el objetivo del proyecto es exponer una herramienta invocable como `tts-sidecar speak ...`, no como `tts-sidecar.py speak ...`. Los comandos de terminal no llevan extensión (igual que `git`, `node` o `pip`), de modo que el archivo se nombra como el comando final que representa.
-- **Shebang en vez de extensión**: la primera línea es `#!/usr/bin/env python3`. En Linux/macOS, con el bit de ejecución activo (`chmod +x`), el sistema operativo lee esa línea para saber con qué intérprete ejecutarlo; la extensión `.py` solo orienta a editores y humanos, el SO nunca la necesita. Por eso `./tts-sidecar speak ...` funciona sin nombrar a Python.
-- **Invocación en desarrollo bajo Windows**: Windows ignora el shebang, así que en desarrollo el entry point se invoca explícitamente a través del intérprete: `python bin/tts-sidecar speak --text "Hola"`.
+- **Convención de comando CLI**: el objetivo del proyecto es exponer una herramienta invocable como `tts-sidecar speech say ...`, no como `tts-sidecar.py speak ...`. Los comandos de terminal no llevan extensión (igual que `git`, `node` o `pip`), de modo que el archivo se nombra como el comando final que representa.
+- **Shebang en vez de extensión**: la primera línea es `#!/usr/bin/env python3`. En Linux/macOS, con el bit de ejecución activo (`chmod +x`), el sistema operativo lee esa línea para saber con qué intérprete ejecutarlo; la extensión `.py` solo orienta a editores y humanos, el SO nunca la necesita. Por eso `./tts-sidecar speech say ...` funciona sin nombrar a Python.
+- **Invocación en desarrollo bajo Windows**: Windows ignora el shebang, así que en desarrollo el entry point se invoca explícitamente a través del intérprete: `python bin/tts-sidecar speech say --text "Hola"`.
 
 El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings, ajusta `sys.path`, parchea `pkg_resources` para Python 3.13+) y delega en `tts_sidecar.cli.main`. Además es la **semilla de compilación** que reciben los scripts de `scripts/build_*.py`: PyInstaller lo toma como entrada y produce el bundle final. Véase `docs/BUILD.md`.
 
@@ -107,12 +107,12 @@ TTS-Sidecar/
 ## Flujo de Síntesis
 
 ```
-speak --text "Hola" -v mi_voz
+speech say --text "Hola" -v mi_voz
        │
        ▼
 ┌──────────────────┐
 │ ChatterboxEngine │
-│ speak()         │
+│ speech say()     │
 │                 │
 │ 1. Cargar modelo│
 │ 2. Generar     │
@@ -140,7 +140,7 @@ Chatterbox permite clonar cualquier voz a partir de ~10 segundos de audio. Cada 
    (con el modelo caliente del daemon si está activo, o cargándolo en frío si no),
    de modo que exige el modelo provisionado (`setup`). Un fallo del precómputo no
    aborta el clonado: los conditionals se computan en la primera síntesis.
-4. `speak --text "..." -v mi_voz` usa la voz automáticamente, cargando los
+4. `speech say --text "..." -v mi_voz` usa la voz automáticamente, cargando los
    conditionals precomputados desde disco
 
 ## Extensibilidad

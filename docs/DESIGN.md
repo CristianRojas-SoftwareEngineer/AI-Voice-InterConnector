@@ -66,7 +66,7 @@ TTS-Sidecar/
 │       ├── engine.py              # Façade / composition root de síntesis
 │       ├── compute_backend.py     # ComputeBackendResolver: detección/resolución de backend (cuda/mps/cpu)
 │       ├── audio_writer.py        # AudioWriter: audio → bytes WAV PCM 16-bit mono
-│       ├── synthesis.py           # SynthesisOrchestrator: flujo speak (conditionals → generate → encode → save)
+│       ├── synthesis.py           # SynthesisOrchestrator: flujo speech synthesize (conditionals → generate → encode → save)
 │       ├── model_loader.py        # ModelLoader: carga del checkpoint según caché (inyectable)
 │       ├── conditionals.py        # ConditionalsPreparer: cómputo/carga de conditionals (inyectable)
 │       ├── audio.py               # Reproducción de audio multiplataforma
@@ -125,7 +125,7 @@ TTS-Sidecar/
 ## Flujo de síntesis
 
 ```
-1. El usuario ejecuta: tts-sidecar speak --text "Hola" -v mi_voz
+1. El usuario ejecuta: tts-sidecar speech say --text "Hola" -v mi_voz
                     │
                     ▼
 2. La CLI parsea argumentos y carga ChatterboxEngine
@@ -161,7 +161,7 @@ Las voces se separan en dos orígenes y se resuelven por nombre con precedencia
   fábrica.
 
 Sin `--voice` ni audios explícitos, la CLI usa la voz `default`, de modo que
-`tts-sidecar speak --text "Hola"` funciona sin registrar nada.
+`tts-sidecar speech synthesize --text "Hola" --label NUEVA` funciona sin registrar nada.
 
 ## Comandos CLI
 
@@ -170,13 +170,13 @@ Sin `--voice` ni audios explícitos, la CLI usa la voz `default`, de modo que
 tts-sidecar setup
 
 # Síntesis básica
-tts-sidecar speak --text "Hola mundo"
+tts-sidecar speech say --text "Hola mundo"
 
 # Síntesis con voz clonada
-tts-sidecar speak --text "Hola" -v mi_voz
+tts-sidecar speech say --text "Hola" -v mi_voz
 
-# Exportar a archivo (speak con --output guarda en vez de reproducir)
-tts-sidecar speak --text "Hola" --output audio.wav -v mi_voz
+# Exportar a archivo (speech synthesize con --label guarda en vez de reproducir)
+tts-sidecar speech synthesize --text "Hola" --label NUEVA --output audio.wav -v mi_voz
 
 # Clonación de voz (requiere dos archivos de audio)
 tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
@@ -193,16 +193,16 @@ tts-sidecar devices
 
 ```bash
 # Bash
-./tts-sidecar speak --text "Hola"
+./tts-sidecar speech say --text "Hola"
 
 # Python
-subprocess.run(["./tts-sidecar", "speak", "--text", "Hola"])
+subprocess.run(["./tts-sidecar", "speech", "say", "--text", "Hola"])
 
 # Node.js
-child_process.spawn("./tts-sidecar", ["speak", "--text", "Hola"])
+child_process.spawn("./tts-sidecar", ["speech", "say", "--text", "Hola"])
 
 # Rust
-std::process::Command::new("./tts-sidecar").args(["speak", "--text", "Hola"]).output()
+std::process::Command::new("./tts-sidecar").args(["speech", "say", "--text", "Hola"]).output()
 ```
 
 ## Compilación PyInstaller

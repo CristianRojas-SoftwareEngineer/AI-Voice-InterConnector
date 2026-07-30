@@ -122,8 +122,8 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 ./tts-sidecar voice list
 
 # 6. Síntesis a través del daemon (añade -v mi_voz para usar la voz clonada)
-./tts-sidecar speak --text "Hola mundo" [-v mi_voz]                    # Reproducir
-./tts-sidecar speak --text "Hola mundo" [-v mi_voz] --output audio.wav  # Exportar WAV
+./tts-sidecar speech say --text "Hola mundo" [-v mi_voz]                    # Reproducir
+./tts-sidecar speech synthesize --text "Hola mundo" [-v mi_voz] --label LOCUCION --output audio.wav  # Exportar WAV
 
 # 7. Eliminar voz clonada (limpieza)
 ./tts-sidecar voice remove --name mi_voz
@@ -183,7 +183,7 @@ TTS-Sidecar/
 1. [ ] El instalador de Windows (.exe) funciona en Windows 10/11 sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo)
 2. [ ] El instalador de Linux funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
 3. [ ] El instalador de macOS funciona en el mínimo declarado por `LSMinimumSystemVersion` (Apple Silicon; Mac Intel no soportado) — derivado dinámicamente del `MACOSX_DEPLOYMENT_TARGET` del toolchain de build, no un número fijo (validación E2E por SO, ver "Validación E2E" más abajo)
-4. [x] `tts-sidecar speak --text "Hola mundo"` reproduce audio en español
+4. [x] `tts-sidecar speech say --text "Hola mundo"` reproduce audio en español
 5. [x] `tts-sidecar voice clone --name test --timbre-reference ref.wav --speech-reference speech.wav` clona la voz
 6. [x] El audio generado suena en español con las características de la voz de referencia
 7. [x] El español latinoamericano suena natural y con buena prosodia
@@ -193,11 +193,11 @@ TTS-Sidecar/
 
 ### Validación E2E
 
-La validación end-to-end de los instaladores (instalar → `setup` → `speak` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga del modelo Chatterbox + descarga de ~4 GB de pesos + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** del binario congelado (`tts-sidecar version`, exit 0) en los cuatro jobs de build, que detecta empaquetados rotos (metadata faltante, `--collect-all` incompleto) sin pagar el coste del modelo.
+La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga del modelo Chatterbox + descarga de ~4 GB de pesos + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** del binario congelado (`tts-sidecar version`, exit 0) en los cuatro jobs de build, que detecta empaquetados rotos (metadata faltante, `--collect-all` incompleto) sin pagar el coste del modelo.
 
 Fuera del pipeline, la validación se reparte así:
 
-- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speak` → desinstalar, y registrando el resultado.
+- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speech synthesize` → desinstalar, y registrando el resultado.
 - **Linux y macOS**: dependen de **feedback de usuarios reales** que prueben la instalación y ejecución en sus equipos. Ese feedback (positivo o negativo) es la entrada de issues que cierra el circuito y guía correcciones específicas por plataforma.
 
 Por tanto, los criterios 1-3 y 9 no son "pendientes" en el sentido de tareas olvidadas: son el **borde externo** del proceso de calidad, donde el propietario más el feedback de la comunidad reemplazan a un runner de CI que no podría ejercitar la matriz de hardware/SO real. Cualquier issue reportado en estos criterios se incorpora al ciclo de desarrollo como bug prioritario y motiva fixes versionados.

@@ -261,7 +261,7 @@ segundos: el step valida con `grep -qx '  - default'` (bash) / `-notmatch
 'default'` (PowerShell) que la voz de fábrica `default` quedó empaquetada.
 
 Queda **manual** (requiere modelo, audio real y hardware por SO): `doctor`,
-`setup` y una síntesis real (`speak`). La validación end-to-end de los
+`setup` y una síntesis real (`speech synthesize`). La validación end-to-end de los
 instaladores por SO es por diseño **externa al pipeline** (consume mucha
 cuota del runner al cargar el modelo Chatterbox y los ~4 GB de pesos en cada
 build): Windows la realiza el propietario sobre su equipo local; Linux y macOS
@@ -301,7 +301,7 @@ guiada + desinstalación limpia):
 | Dependencias de build | Política interactiva común (`ensure_build_dependency`) | Ídem | Ídem |
 
 > El modelo `es-mx-latam` se descarga a `~/.cache/huggingface/hub` y no se
-> empaqueta en el ejecutable; `speak` y `daemon start` fallan rápido remitiendo
+> empaqueta en el ejecutable; `speech synthesize` y `daemon start` fallan rápido remitiendo
 > a `setup` mientras falte.
 
 La tabla describe los artefactos descargados a mano. Las tres plataformas

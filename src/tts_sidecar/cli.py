@@ -290,7 +290,7 @@ def _dispatch_synthesis(args, voice_name: str):
     timbre_reference, speech_reference = _resolve_voice_paths(args)
 
     # Spinner de liveness durante los dos tramos largos y opacos: la carga del
-    # modelo (primer speak) y la síntesis. Las líneas [Stage N/4] del engine se
+    # modelo (primer speech synthesize) y la síntesis. Las líneas [Stage N/4] del engine se
     # intercalan de forma coordinada (timing._active_spinner).
     with Spinner("Cargando modelo…") as _sp:
         engine = ChatterboxEngine.get_instance(compute_backend=args.compute_backend)
@@ -623,7 +623,7 @@ def _precompute_cloned_voice(args) -> bool:
       sin flags:   autodetección: modelo caliente del daemon si está, directo si no.
     Salvo con --daemon caído (exit 5), cualquier fallo del precómputo se captura,
     se avisa por stderr y se devuelve False para que el clonado siga siendo
-    exitoso (la voz queda registrada y el primer `speak` computa los conditionals).
+    exitoso (la voz queda registrada y el primer `speech synthesize` computa los conditionals).
     """
     from .daemon import is_daemon_running, DaemonIPCClient
 
@@ -1583,7 +1583,7 @@ def cmd_setup(args):
 
         # snapshot_download es solo red/disco, sin cargar el modelo en RAM
         # (~2 GB) como hacía ChatterboxEngine.get_instance; la carga real queda
-        # para doctor/el primer 'speak', que ya validan el header safetensors.
+        # para doctor/el primer 'speech synthesize', que ya validan el header safetensors.
         # revision fijada: la descarga es determinista y un push
         # posterior al repo del modelo no se propaga a los usuarios.
         from huggingface_hub import snapshot_download
@@ -1596,7 +1596,7 @@ def cmd_setup(args):
 
         # El language pack no incluye ve.safetensors (Voice Encoder): se comparte
         # con el modelo base. Se provisiona aquí explícitamente para que ningún
-        # 'speak' posterior necesite red tras un setup exitoso.
+        # 'speech synthesize' posterior necesite red tras un setup exitoso.
         from .model_cache import is_ve_cached, BASE_MODEL_REPO, BASE_MODEL_REVISION
         if not is_ve_cached():
             print("\nDescargando el Voice Encoder (ve.safetensors)...", file=sys.stderr)
