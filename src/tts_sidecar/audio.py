@@ -69,6 +69,20 @@ class AudioPlayer:
                 "No hay librería de reproducción de audio disponible para Linux. "
                 "Instala sounddevice."
             )
+        except OSError as e:
+            # El paquete sounddevice SÍ está instalado, pero PortAudio (la
+            # librería nativa del sistema que sounddevice carga vía CFFI al
+            # importarse) no se encontró. Es el caso típico del canal PyPI en
+            # Linux: el wheel de sounddevice no empaqueta PortAudio (a
+            # diferencia del AppImage, que la trae embebida).
+            raise OSError(
+                "No se encontró la librería nativa PortAudio requerida por "
+                "sounddevice. Instala el paquete del sistema: "
+                "'sudo apt install libportaudio2' (Debian/Ubuntu) o "
+                "'sudo dnf install portaudio' (Fedora). No es necesaria si "
+                "solo usas 'speech synthesize' para guardar a archivo. "
+                f"Detalle: {e}"
+            ) from e
 
     def play(self, audio_bytes: bytes) -> None:
         """Reproduce audio desde bytes WAV."""

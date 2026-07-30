@@ -125,7 +125,13 @@ def _play_audio(audio_bytes):
     """Reproduce los bytes de audio."""
     log("[Reproducción] Reproduciendo audio...")
     from .audio import AudioPlayer
-    player = AudioPlayer()
+    try:
+        player = AudioPlayer()
+    except OSError as e:
+        # PortAudio (dependencia nativa de sounddevice) falta en el sistema:
+        # precondición de entorno incumplida, no un error genérico. El mensaje
+        # accionable ya viene armado desde AudioPlayer._init_linux.
+        raise CliError(EXIT_PRECONDITION_FAILED, "audio_library_missing", f"[FAIL] {e}")
     player.play(audio_bytes)
     log("[Reproducción] Reproducción finalizada")
 
@@ -784,12 +790,20 @@ def _environment_checks() -> list[tuple[str, str, str]]:
         system = platform.system()
         lib_name = {"Windows": "pycaw", "Linux": "sounddevice", "Darwin": "sounddevice"}.get(system, "audio")
         if degraded:
-            checks.append((
-                "FAIL",
-                "Audio library",
-                f"{lib_name} importado pero no se pudo enumerar ningún dispositivo real "
-                "(host sin audio o sin subsistema de sonido)",
-            ))
+            if system == "Linux":
+                detail = (
+                    f"{lib_name} no pudo enumerar ningún dispositivo real. Puede ser "
+                    "un host sin audio (headless/SSH), o que falte la librería nativa "
+                    "PortAudio: instala 'libportaudio2' (Debian/Ubuntu, "
+                    "'sudo apt install libportaudio2') o 'portaudio' (Fedora, "
+                    "'sudo dnf install portaudio')."
+                )
+            else:
+                detail = (
+                    f"{lib_name} importado pero no se pudo enumerar ningún dispositivo real "
+                    "(host sin audio o sin subsistema de sonido)"
+                )
+            checks.append(("FAIL", "Audio library", detail))
         else:
             checks.append(("PASS", "Audio library", f"{lib_name} ({system}) — {len(devices)} dispositivo(s)"))
     except ImportError:

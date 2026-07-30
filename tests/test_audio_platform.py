@@ -176,6 +176,25 @@ class TestAudioPlayerDispatch:
             with pytest.raises(ImportError, match="sounddevice"):
                 AudioPlayer()
 
+    @patch("platform.system", return_value="Linux")
+    def test_linux_without_portaudio_raises_actionable_oserror(self, _system):
+        # sounddevice instalado pero PortAudio (libportaudio2) ausente: el import
+        # de sounddevice levanta OSError al cargar la librería nativa vía CFFI.
+        # Se simula interceptando __import__ para ese módulo; el mensaje debe
+        # remitir a la instalación de libportaudio2, no a "instala sounddevice".
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "sounddevice":
+                raise OSError("PortAudio library not found")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_fake_import):
+            with pytest.raises(OSError, match="libportaudio2"):
+                AudioPlayer()
+
     @patch("platform.system", return_value="Plan9")
     def test_unsupported_platform_raises_runtime_error(self, _system):
         with pytest.raises(RuntimeError, match="Plan9"):

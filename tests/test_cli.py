@@ -531,7 +531,7 @@ class TestEnvironmentChecksAudio:
         assert "no se pudo enumerar" in audio_check[2]
 
     def test_linux_degraded_audio_gives_fail(self, monkeypatch):
-        """Linux/macOS ahora usan la misma enumeración real que Windows."""
+        """En Linux el detalle degradado apunta a la causa PortAudio/libportaudio2."""
         import platform as platform_module
         from tts_sidecar import cli
 
@@ -544,7 +544,8 @@ class TestEnvironmentChecksAudio:
         checks = cli._environment_checks()
         audio_check = next(c for c in checks if c[1] == "Audio library")
         assert audio_check[0] == "FAIL"
-        assert "no se pudo enumerar" in audio_check[2]
+        assert "PortAudio" in audio_check[2]
+        assert "libportaudio2" in audio_check[2]
 
     def test_macos_real_audio_gives_pass(self, monkeypatch):
         import platform as platform_module
@@ -560,6 +561,25 @@ class TestEnvironmentChecksAudio:
         audio_check = next(c for c in checks if c[1] == "Audio library")
         assert audio_check[0] == "PASS"
         assert "1 dispositivo" in audio_check[2]
+
+
+class TestPlayAudioMissingPortAudio:
+    def test_oserror_from_player_becomes_precondition_cli_error(self):
+        """Si AudioPlayer falla por PortAudio ausente, _play_audio lo traduce a
+        CliError(EXIT_PRECONDITION_FAILED) en vez de propagar un OSError crudo."""
+        from tts_sidecar import cli
+        from tts_sidecar.exit_codes import EXIT_PRECONDITION_FAILED
+
+        with patch(
+            "tts_sidecar.audio.AudioPlayer",
+            side_effect=OSError("falta libportaudio2"),
+        ):
+            with pytest.raises(CliError) as exc:
+                cli._play_audio(b"RIFF....WAVEfmt ")
+
+        assert exc.value.code == EXIT_PRECONDITION_FAILED
+        assert exc.value.reason == "audio_library_missing"
+        assert "libportaudio2" in exc.value.message
 
 
 class TestCmdDevicesError:
