@@ -2109,8 +2109,12 @@ def main():
         # y el código 130 convencional (128 + SIGINT). Solo actúa si la excepción
         # escapa hasta aquí: el shutdown graceful de uvicorn en 'daemon serve'
         # la maneja antes y no pasa por esta rama.
-        print("Interrumpido por el usuario.", file=sys.stderr)
-        sys.exit(EXIT_INTERRUPTED)
+        _translate_cli_error(
+            CliError(
+                EXIT_INTERRUPTED, "interrupted",
+                "Interrumpido por el usuario.",
+            )
+        )
 
 
 if __name__ == "__main__":

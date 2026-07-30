@@ -57,7 +57,6 @@ class MockArgs:
         self.force = kwargs.get("force", False)
         self.synthetic_speech = kwargs.get("synthetic_speech", False)
         self.voices = kwargs.get("voices", False)
-        self.all = kwargs.get("all", False)
         self.dry_run = kwargs.get("dry_run", False)
         self.cleanup_parser = kwargs.get("cleanup_parser", None)
 

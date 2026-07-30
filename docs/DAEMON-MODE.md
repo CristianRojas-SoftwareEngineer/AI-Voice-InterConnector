@@ -19,11 +19,12 @@ El daemon mode mantiene el modelo de Chatterbox en memoria entre invocaciones de
 Sin daemon, cada ejecución del CLI funciona así:
 
 ```
-$ tts-sidecar speak --text "Hola"
+$ tts-sidecar speech synthesize --text "Hola" --label demo
 → Nuevo proceso Python
 → Importa engine.py
 → ChatterboxEngine.__init__() carga modelo (~5-8s)
 → Genera audio (~45s)
+→ Persiste el WAV en data_root()/synthetic-speech/demo/<etiqueta>.wav
 → Proceso termina
 → Modelo en RAM se libera
 ```
@@ -40,7 +41,7 @@ El daemon es un servidor HTTP persistente que mantiene el modelo cargado:
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          Cliente CLI                                 │
-│                            (cmd_speak)                               │
+│          speech synthesize | speech say (3-mode dispatch)          │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
                                │ ¿Daemon corriendo?
@@ -127,8 +128,9 @@ cada línea lo define `daemon/protocol.py` (`ProgressEvent` / `ResultEvent` /
 valida cada línea con `model_validate` contra esos mismos modelos y aborta con
 `DaemonIPCError` ante cualquier frame no conforme (línea no-JSON, `event`
 desconocido, esquema inválido o `audio_b64` no decodificable) — sin tolerancia a
-frames sucios. El cliente reenvía cada `progress` validado al spinner de `speak`
-para mostrar progreso real (p. ej. «Generando voz · 210 tokens»); ver más abajo.
+frames sucios. El cliente reenvía cada `progress` validado al spinner de
+`speech synthesize` (o `speech say`) para mostrar progreso real (p. ej. «Generando
+voz · 210 tokens»); ver más abajo.
 
 > **Errores de validación**: el rechazo por modelo no cargado sigue siendo una
 > respuesta HTTP de error inmediata (`503` con cuerpo JSON `{"detail": ...}`),
@@ -182,21 +184,22 @@ tts-sidecar daemon restart
 # Ver estado del daemon
 tts-sidecar daemon status
 
-# Sin flags: speak sondea el daemon y lo usa si responde (directo si no)
-tts-sidecar speak --text "Hola"
+# Sin flags: synthesis sondea el daemon y lo usa si responde (autodetect)
+tts-sidecar speech synthesize --text "Hola" --label demo
 
-# Forzar daemon (sin sondeo previo; falla si el daemon no responde)
-tts-sidecar speak --text "Hola" --daemon
+# Forzar daemon (sin sondear previo; falla si el daemon no responde)
+tts-sidecar speech synthesize --text "Hola" --label demo --daemon
 
 # Forzar modo directo (sin sondear el daemon)
-tts-sidecar speak --text "Hola" --no-daemon
+tts-sidecar speech synthesize --text "Hola" --label demo --no-daemon
 ```
 
-> **Código de salida para integradores**: `speak --daemon` termina con código
-> **5** (daemon inalcanzable) si el daemon no responde, en lugar del código de
-> error genérico. Los comandos `daemon start/stop/restart` también devuelven `5`
-> cuando la operación de ciclo de vida falla. Ver la tabla completa de códigos en
-> `USAGE.md` (sección «Experiencia unificada entre sistemas operativos»).
+> **Código de salida para integradores**: `speech synthesize --daemon` (y
+> `speech say --daemon`) terminan con código **5** (daemon inalcanzable) si el
+> daemon no responde, en lugar del código de error genérico. Los comandos
+> `daemon start/stop/restart` también devuelven `5` cuando la operación de
+> ciclo de vida falla. Ver la tabla completa de códigos en `USAGE.md`
+> (sección «Experiencia unificada entre sistemas operativos»).
 
 > **Ventana de arranque (30-90 s)**: el puerto 8765 no abre hasta que el modelo
 > termina de cargarse en memoria, lo que puede tardar entre 30 y 90 segundos
@@ -244,32 +247,33 @@ tts-sidecar speak --text "Hola" --no-daemon
 > comparten), y los tres modos de ejecución (fuente, pip-install, congelado)
 > resuelven la misma ruta porque `data_root()` no depende de `__file__`.
 
-> **Indicador de progreso durante `speak`**: aunque la síntesis ocurre en el
-> proceso del daemon, su progreso **real** viaja al cliente por el stream NDJSON
-> de `/synthesize` (etapa actual + conteo de tokens del T3 en vivo). `speak`
-> alimenta con esos eventos un **spinner** sobre **stderr** que muestra la etapa
-> y el avance (p. ej. «Generando voz · 210 tokens», subiendo) — tanto en modo
-> daemon (eventos del stream) como en modo directo (mismo `progress_callback` del
-> motor, sin HTTP). Es un indicador de etapa y avance de tokens, **no un
-> porcentaje** del total. Solo aparece en terminales interactivas (TTY): si la
-> salida está redirigida a un archivo o pipe, o corre en CI, el spinner se
-> desactiva por completo y stdout queda intacto (contrato del CLI: stdout =
-> datos, stderr = progreso).
+> **Indicador de progreso durante `speech synthesize` y `speech say`**:
+> aunque la síntesis ocurre en el proceso del daemon, su progreso **real** viaja
+> al cliente por el stream NDJSON de `/synthesize` (etapa actual + conteo de
+> tokens del T3 en vivo). El CLI alimenta con esos eventos un **spinner** sobre
+> **stderr** que muestra la etapa y el avance (p. ej. «Generando voz · 210
+> tokens», subiendo) — tanto en modo daemon (eventos del stream) como en modo
+> directo (mismo `progress_callback` del motor, sin HTTP). Es un indicador de
+> etapa y avance de tokens, **no un porcentaje** del total. Solo aparece en
+> terminales interactivas (TTY): si la salida está redirigida a un archivo o
+> pipe, o corre en CI, el spinner se desactiva por completo y stdout queda
+> intacto (contrato del CLI: stdout = datos, stderr = progreso).
 
 > **Timeout de síntesis del cliente**: el cliente IPC espera la respuesta de
 > `/synthesize` hasta **300 s** por defecto (audio largo en CPU lenta). Un
 > consumidor programático que prefiera fallar antes puede reducirlo con la
 > variable de entorno **`TTS_SIDECAR_REQUEST_TIMEOUT`** (segundos, admite
 > decimales; un valor inválido o no positivo se ignora y se conserva el
-> default). Al expirar, `speak --daemon` falla con el error IPC estándar; no
-> hay reintento automático.
+> default). Al expirar, `speech synthesize --daemon` (o `speech say --daemon`)
+> falla con el error IPC estándar; no hay reintento automático.
 
 > **Control de admisión (tope de concurrencia)**: `/synthesize` admite como
 > máximo **4** síntesis concurrentes (1 activa + hasta 3 en espera sobre el
 > lock interno de síntesis). Una petición que exceda ese cupo recibe
 > `HTTP 503` de inmediato, sin llegar a lanzar un hilo worker — el cliente IPC
-> ya convierte cualquier no-200 en `DaemonIPCError`, por lo que `speak --daemon`
-> falla con el mismo código de salida **5** que un daemon inalcanzable. El tope
+> ya convierte cualquier no-200 en `DaemonIPCError`, por lo que `speech synthesize
+> --daemon` (o `speech say --daemon`) falla con el mismo código de salida **5**
+> que un daemon inalcanzable. El tope
 > es fijo (`MAX_INFLIGHT_SYNTHESIS` en `server.py`), no configurable, y protege
 > al proceso de acumular un thread sin límite por ráfaga de invocaciones
 > concurrentes.
@@ -346,8 +350,10 @@ del watermark PerthNet y el timing por sub-etapa:
 ## Compatibilidad
 
 - El **contrato del CLI** (comandos, flags, códigos de salida, stdout = datos /
-  stderr = progreso) no cambia: `speak`, `--daemon`, `--no-daemon` y el resto se
-  comportan igual desde el punto de vista del integrador.
+  stderr = progreso) no cambia: los comandos del grupo `speech` (`speech synthesize`,
+  `speech say`) aceptan `--daemon`, `--no-daemon` y las demás flags de manera
+  idéntica; `speak` fue eliminado en el Movimiento 1 y no existe en la superficie
+  actual.
 - El **protocolo interno daemon→cliente** de `/synthesize` sí cambió: pasó de un
   cuerpo binario WAV a un stream NDJSON (progreso + `result` con audio base64).
   Daemon y cliente viajan siempre en la misma versión (no hay usuarios externos

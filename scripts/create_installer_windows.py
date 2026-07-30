@@ -187,7 +187,7 @@ def info_after_text() -> str:
         "Marca la casilla \"Descargar ahora el modelo de voz (setup)\" para hacerlo\r\n"
         "al terminar, o ejecútalo más tarde desde una terminal con:\r\n\r\n"
         "    tts-sidecar setup\r\n\r\n"
-        "Hasta que el modelo esté descargado, los comandos 'speak' y 'daemon start'\r\n"
+        "Hasta que el modelo esté descargado, los comandos 'speech synthesize' y 'daemon start'\r\n"
         "fallarán de inmediato y te recordarán ejecutar 'tts-sidecar setup'.\r\n\r\n"
         "El instalador añadió la carpeta de instalación al PATH de tu usuario, por lo\r\n"
         "que podrás invocar 'tts-sidecar' por nombre en una terminal nueva.\r\n\r\n"
