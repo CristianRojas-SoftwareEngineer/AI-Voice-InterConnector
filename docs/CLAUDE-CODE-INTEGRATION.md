@@ -1,17 +1,18 @@
-# Integración con el plugin de narración de Claude Code
+# Integración con Claude Code
 
-Este documento describe la integración de TTS-Sidecar con el plugin de narración
-por voz **tts-sidecar-narrator**, desde la perspectiva del **motor (el
-proveedor)**.
+Este documento describe la integración de TTS-Sidecar con **tts-sidecar-narrator**,
+un plugin de [Claude Code](https://code.claude.com) que narra por voz la actividad
+de la sesión, desde la perspectiva del **motor (el proveedor)**.
 
-La contraparte, escrita desde la perspectiva del plugin, está en su repositorio:
+La contraparte, escrita desde la perspectiva del plugin, vive en su repositorio:
 [docs/INTEGRATION.md](https://github.com/CristianRojas-SoftwareEngineer/tts-sidecar-narrator/blob/main/docs/INTEGRATION.md).
-El documento de diseño original y puntero al repo es
-[CLAUDE-CODE-PLUGIN.md](CLAUDE-CODE-PLUGIN.md).
+El diseño completo, la arquitectura de sus componentes y sus decisiones detalladas
+también viven allá; este repo solo documenta el contrato que debe preservar.
 
 ## Tabla de contenidos
 
 - [Rol en el sistema de narración](#rol-en-el-sistema-de-narración)
+- [Qué es el plugin](#qué-es-el-plugin)
 - [El contrato de integración](#el-contrato-de-integración)
 - [Qué NO comparten los dos proyectos](#qué-no-comparten-los-dos-proyectos)
 - [Punto de entrada para el usuario](#punto-de-entrada-para-el-usuario)
@@ -30,6 +31,27 @@ La dependencia es **unidireccional**: el plugin consume a TTS-Sidecar. Este repo
 **no** conoce, importa ni depende del plugin — no hay ningún código, test ni
 build de TTS-Sidecar que sepa de su existencia. El plugin es, a efectos del
 motor, un consumidor externo más de la CLI, como un script de usuario.
+
+## Qué es el plugin
+
+`tts-sidecar-narrator` **narra por voz** la actividad de la sesión de Claude
+Code. Al final de cada turno (y en avisos relevantes) el usuario escucha un
+mensaje conversacional corto en español —no el texto en bruto del asistente,
+sino una locución procesada.
+
+Es un **consumidor** del CLI público (`tts-sidecar` en PATH): no importa el
+paquete `tts_sidecar`, no comparte código ni requiere el árbol fuente. Sus
+propiedades relevantes para esta integración:
+
+- **Automático**: disparado por hooks (`Stop`, `Notification`), sin intervención
+  del modelo ni del usuario. `SessionStart` verifica el entorno y deja el daemon
+  caliente.
+- **No intrusivo**: nunca bloquea ni retrasa el turno; falla en silencio si
+  TTS-Sidecar no está disponible.
+
+El resto de sus propiedades de diseño (costo cero, sin runtime extra,
+multiplataforma, activación/desactivación) vive en el repositorio del plugin,
+que es su fuente de verdad.
 
 ## El contrato de integración
 
@@ -51,6 +73,9 @@ tabla es el contrato a preservar; al tocar `cli.py` en `speech say`, `doctor` o
 
 ## Qué NO comparten los dos proyectos
 
+El acoplamiento real es solo el contrato público del CLI; todo lo demás es
+disjunto, y por eso el plugin vive en su propio repositorio:
+
 - **Código**: el plugin es TypeScript sobre el Node.js que trae Claude Code; no
   importa el paquete `tts_sidecar`.
 - **Versionado**: TTS-Sidecar versiona el motor (binarios por SO, PyPI); el
@@ -59,10 +84,23 @@ tabla es el contrato a preservar; al tocar `cli.py` en `speech say`, `doctor` o
 - **CI e infraestructura**: PyInstaller + pytest + gates de cobertura aquí;
   toolchain TypeScript + `claude plugin validate` allá.
 
+Además, el modelo de distribución de plugins (marketplaces) asume un repo git
+propio.
+
 ## Punto de entrada para el usuario
 
 Desde el lado del motor no hay nada que instalar para el plugin: basta con que
 `tts-sidecar` esté en el `PATH` y el modelo esté en caché (`tts-sidecar setup`).
-El plugin y su comando `/tts-sidecar-narrator:install` se encargan del resto. El
-detalle de cómo el plugin orquesta hooks y degradación vive en su
+
+El repositorio del plugin dobla como su propio marketplace:
+
+```
+/plugin marketplace add CristianRojas-SoftwareEngineer/tts-sidecar-narrator
+/plugin install tts-sidecar-narrator@tts-sidecar-narrator
+/tts-sidecar-narrator:install
+```
+
+El comando `/tts-sidecar-narrator:install` guía la instalación del binario
+TTS-Sidecar, la descarga del modelo y la activación de la narración. El detalle
+de cómo el plugin orquesta hooks y degradación vive en su
 [documento de integración](https://github.com/CristianRojas-SoftwareEngineer/tts-sidecar-narrator/blob/main/docs/INTEGRATION.md).

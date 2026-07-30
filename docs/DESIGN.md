@@ -9,7 +9,6 @@
 - [Flujo de síntesis](#flujo-de-síntesis)
 - [Modelo de voces de dos niveles](#modelo-de-voces-de-dos-niveles)
 - [Comandos CLI](#comandos-cli)
-- [Invocación desde otros lenguajes](#invocación-desde-otros-lenguajes)
 - [Compilación PyInstaller](#compilación-pyinstaller)
 - [Extensibilidad](#extensibilidad)
 - [Warnings silenciados](#warnings-silenciados)
@@ -165,45 +164,12 @@ Sin `--voice` ni audios explícitos, la CLI usa la voz `default`, de modo que
 
 ## Comandos CLI
 
-```bash
-# Provisión (primera vez - chequeos + descarga el modelo si falta)
-tts-sidecar setup
-
-# Síntesis básica
-tts-sidecar speech say --text "Hola mundo"
-
-# Síntesis con voz clonada
-tts-sidecar speech say --text "Hola" -v mi_voz
-
-# Sintetizar y guardar en el almacén (no reproduce)
-tts-sidecar speech synthesize --text "Hola" --label NUEVA -v mi_voz
-
-# Clonación de voz (requiere dos archivos de audio)
-tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
-
-# Listar voces
-tts-sidecar voice list
-
-# Diagnóstico (--json para salida legible por máquina)
-tts-sidecar doctor
-tts-sidecar devices
-```
-
-## Invocación desde otros lenguajes
-
-```bash
-# Bash
-./tts-sidecar speech say --text "Hola"
-
-# Python
-subprocess.run(["./tts-sidecar", "speech", "say", "--text", "Hola"])
-
-# Node.js
-child_process.spawn("./tts-sidecar", ["speech", "say", "--text", "Hola"])
-
-# Rust
-std::process::Command::new("./tts-sidecar").args(["speech", "say", "--text", "Hola"]).output()
-```
+La referencia de comandos y flags no vive aquí para evitar deriva: el manual de
+usuario ([USAGE.md](../USAGE.md)) documenta cada comando y su uso, y el contrato
+normativo ([CLI-CONTRACT.md](CLI-CONTRACT.md)) fija la superficie estable (exit
+codes, esquema `--json`, payloads). La invocación desde otros lenguajes
+(`subprocess`, `child_process`, `std::process`) está en el
+[README](../README.md#invocación-desde-cualquier-lenguaje).
 
 ## Compilación PyInstaller
 
