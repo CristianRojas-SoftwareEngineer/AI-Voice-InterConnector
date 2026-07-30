@@ -144,37 +144,7 @@ Las vías idiomáticas por SO (desinstalador de Inno en Configuración → Aplic
 
 ### Estructura del proyecto
 
-```
-TTS-Sidecar/
-├── src/
-│   └── tts_sidecar/       # Paquete Python (publicable en PyPI)
-│       ├── __init__.py       # Fuente única de versión (__version__)
-│       ├── __main__.py       # Entry point de `python -m tts_sidecar`
-│       ├── bootstrap.py      # apply() idempotente: warnings, env vars, mock pkg_resources
-│       ├── engine.py         # Wrapper de Chatterbox
-│       ├── audio.py          # Reproducción de audio nativa
-│       ├── cli.py            # Interfaz CLI (invoca bootstrap.apply())
-│       ├── timing.py         # Instrumentación y timing
-│       ├── voices.py         # Resolución de voces usuario→fábrica
-│       ├── paths.py          # Rutas: fábrica relativa al paquete, datos en user-data-dir por SO
-│       ├── model_cache.py    # Detección del modelo en la caché de HF
-│       ├── voices/           # Voces de FÁBRICA (empaquetadas en wheel y bundle)
-│       │   └── default/      # timbre-reference.wav + speech-reference.wav
-│       └── daemon/           # Daemon mode (FastAPI + IPC)
-│           ├── daemon.py    # Gestor del ciclo de vida
-│           ├── server.py    # Endpoints FastAPI
-│           ├── ipc.py       # Cliente HTTP
-│           ├── protocol.py  # Modelos Pydantic
-│           └── run.py       # Entry point (usa bootstrap.apply())
-├── bin/
-│   └── tts-sidecar          # Script de entry point (modo fuente)
-├── scripts/                  # Scripts de build por SO
-├── tests/                    # Suite de tests pytest
-└── docs/
-```
-
-> El modelo `es-mx-latam` no se almacena en el repo: reside en la caché de
-> HuggingFace del usuario (`~/.cache/huggingface/hub`) tras `tts-sidecar setup`.
+Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 ## Criterios de aceptación
 
@@ -229,7 +199,7 @@ Especificaciones **no comprometidas** para el goal inmediato. No se trabajan aho
 
 ## Firma de código y notarización
 
-**Motivación**: los binarios del canal nativo no están firmados, por lo que Windows SmartScreen y macOS Gatekeeper bloquean el primer arranque cuando el artefacto se descarga por navegador (ver `SECURITY.md` §"Artefactos sin firmar" y `docs/BUILD.md` §"Limitación conocida: firma de código y notarización"). Los instaladores de una línea y el canal PyPI ya mitigan esta fricción (descarga por CLI sin Mark-of-the-Web / launcher generado localmente), pero no la eliminan para la descarga directa desde el navegador.
+**Motivación**: los binarios del canal nativo no están firmados, por lo que Windows SmartScreen y macOS Gatekeeper bloquean el primer arranque cuando el artefacto se descarga por navegador. El mecanismo y las mitigaciones ya vigentes (instaladores de una línea, canal PyPI) están explicados en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar); ninguna de ellas elimina el bloqueo para la descarga directa desde el navegador (ver también `docs/BUILD.md` §"Limitación conocida: firma de código y notarización").
 
 **Justificación del diferimiento**: la firma es un gate que solo vale la pena cuando el proyecto/producto esté **cristalizado y completo** — idealmente sin bugs y con funcionalidad completa y equivalente entre los 3 sistemas operativos ([docs/PARITY.md](PARITY.md) sin brechas abiertas). El producto aún está en desarrollo: firmar ahora significaría re-tramitar la confianza externa (aprobación de SignPath OSS, cuenta Apple Developer de pago) sobre artefactos que siguen cambiando de forma. Solo entonces se iniciará el proceso de firma.
 

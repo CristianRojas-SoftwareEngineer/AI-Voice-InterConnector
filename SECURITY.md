@@ -104,18 +104,33 @@ instalación sin ejecutar nada. Ninguno requiere privilegios elevados:
   advertencia de Gatekeeper en el primer arranque.
 - **Windows** (`install-windows.ps1`): instalación per-user
   (`%LOCALAPPDATA%\Programs\tts-sidecar`, PATH en `HKCU\Environment`), sin UAC.
-  La descarga por CLI (`Invoke-WebRequest`) no aplica el Mark-of-the-Web, por lo
-  que el instalador descargado por el script no dispara SmartScreen; Microsoft
-  Defender **Antivirus** es independiente del MOTW y puede marcar el binario sin
-  firma — en ese caso aplica el runbook WDSI de más abajo. Como `irm | iex` no
-  escribe un `.ps1` en disco, no pasa por la Execution Policy; la alternativa
-  inspeccionable es `iwr <url> -OutFile install-windows.ps1; .\install-windows.ps1`.
+  El navegador sella todo archivo descargado con el Mark-of-the-Web, la marca
+  que dispara SmartScreen; la descarga por CLI (`Invoke-WebRequest`) no la
+  aplica, por lo que el instalador descargado por el script no dispara
+  SmartScreen. Microsoft Defender **Antivirus** es independiente del MOTW y
+  puede marcar el binario sin firma — en ese caso aplica el runbook WDSI de
+  más abajo. Como `irm | iex` no escribe un `.ps1` en disco, no pasa por la
+  Execution Policy; la alternativa inspeccionable es
+  `iwr <url> -OutFile install-windows.ps1; .\install-windows.ps1`.
 
 ## Artefactos sin firmar
 
 Los binarios distribuidos **no están firmados ni notarizados**: Gatekeeper (macOS) y
 SmartScreen (Windows) advierten en el primer arranque, y cada release —al ser
 un archivo nuevo sin reputación acumulada— vuelve a disparar la advertencia.
+
+Ambos avisos dependen de una marca que **solo añade el navegador** al descargar
+un archivo de internet: en Windows es el *Mark-of-the-Web* (MOTW, `ZoneId=3`),
+en macOS el atributo extendido `com.apple.quarantine`. Una descarga por línea
+de comandos (`curl`, `Invoke-WebRequest`, `gh`) no la aplica, y un binario
+generado localmente (como el launcher del canal PyPI, ver
+[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)) tampoco la lleva nunca; por eso
+los instaladores de una línea de este proyecto no disparan la advertencia
+aunque el binario siga sin firmar. La firma de código (ver «Ruta prevista»
+abajo) es el arreglo de fondo: sustituye la advertencia de reputación por una
+confirmación de identidad del editor, independientemente del medio de
+descarga.
+
 Sin firma de código, la única verificación de integridad disponible es cotejar
 el SHA-256 del artefacto descargado contra el archivo `SHA256SUMS.txt`
 publicado junto a cada

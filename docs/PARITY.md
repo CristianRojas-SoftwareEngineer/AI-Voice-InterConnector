@@ -32,6 +32,9 @@ Fecha de corte: **v0.6.0**. Cada brecha se identifica por un **nombre descriptiv
 
 ## Fase 1 — Instalación
 
+Mecánica interna de cada script (flujo paso a paso, checksum, dependencias del
+host) en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
+
 ### Estado
 
 - **Windows**: `install-windows.ps1` (`irm | iex`) resuelve el release, verifica el checksum, instala en silencio per-user (sin UAC, PATH en HKCU) y encadena `tts-sidecar setup`. Cero prerequisitos: PowerShell viene con el SO.
@@ -60,7 +63,7 @@ Las tres brechas de esta fase quedaron **cerradas**:
 
 ### Qué falta para la paridad
 
-- **Brecha de *firma de código* [MITIGADA, diferida al goal a largo plazo, cross-SO]**: la solución de fondo es la **firma de código/notarización** (goal a largo plazo, `docs/GOAL.md`): firma Authenticode en Windows (SmartScreen) y notarización en macOS (Gatekeeper). Los one-liners de ambos SO descargan por CLI y esquivan el Mark-of-the-Web, y el Cask de macOS limpia además la cuarentena; pero el `.exe` de Windows y el `.dmg` de macOS **descargados por navegador** disparan la advertencia del SO respectivo, porque ambos binarios son sin firmar. No es una asimetría exclusiva de macOS: Windows tiene el mismo comportamiento con SmartScreen. Es cross-SO por naturaleza, y está diferida porque su fondo depende de terceros (SignPath OSS, Apple Developer).
+- **Brecha de *firma de código* [MITIGADA, diferida al goal a largo plazo, cross-SO]**: la solución de fondo es la **firma de código/notarización** (goal a largo plazo, `docs/GOAL.md`). El mecanismo por el que los one-liners y el Cask ya mitigan el síntoma —sin resolverlo— está explicado en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar): el `.exe` de Windows y el `.dmg` de macOS **descargados por navegador** siguen disparando la advertencia del SO respectivo, porque ambos binarios son sin firmar. No es una asimetría exclusiva de macOS: Windows tiene el mismo comportamiento con SmartScreen. Es cross-SO por naturaleza, y está diferida porque su fondo depende de terceros (SignPath OSS, Apple Developer).
 
 ## Fase 3 — Uso
 

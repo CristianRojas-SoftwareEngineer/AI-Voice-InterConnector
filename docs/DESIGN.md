@@ -5,6 +5,7 @@
 - [Resumen ejecutivo](#resumen-ejecutivo)
 - [Arquitectura](#arquitectura)
 - [Estructura del proyecto](#estructura-del-proyecto)
+- [El entry point `bin/tts-sidecar`](#el-entry-point-bintts-sidecar)
 - [Motor Chatterbox Multilingual V3](#motor-chatterbox-multilingual-v3)
 - [Flujo de síntesis](#flujo-de-síntesis)
 - [Modelo de voces de dos niveles](#modelo-de-voces-de-dos-niveles)
@@ -68,10 +69,13 @@ TTS-Sidecar/
 │       ├── synthesis.py           # SynthesisOrchestrator: flujo speech synthesize (conditionals → generate → encode → save)
 │       ├── model_loader.py        # ModelLoader: carga del checkpoint según caché (inyectable)
 │       ├── conditionals.py        # ConditionalsPreparer: cómputo/carga de conditionals (inyectable)
+│       ├── exceptions.py          # Excepciones compartidas del motor y del daemon (sin imports pesados)
 │       ├── audio.py               # Reproducción de audio multiplataforma
 │       ├── timing.py              # Instrumentación y timing
 │       ├── cli.py                 # Interfaz CLI
+│       ├── exit_codes.py          # Códigos de salida del CLI — contrato público congelado
 │       ├── voices.py              # Resolución de voces usuario→fábrica
+│       ├── synthetic_speech.py    # Almacén de habla sintética grabada por `speech` (WAV + sidecar JSON)
 │       ├── paths.py               # Rutas por SO (user-data-dir, modo congelado)
 │       ├── model_cache.py         # Detección del modelo en la caché de HF
 │       ├── voices/                # Voces de FÁBRICA (commiteadas, empaquetadas, solo lectura)
@@ -79,6 +83,7 @@ TTS-Sidecar/
 │       │       ├── timbre-reference.wav # Timbre de voz (cualquier largo)
 │       │       └── speech-reference.wav # Conditioning (10s+)
 │       └── daemon/                # Daemon mode (FastAPI + IPC)
+│           ├── __init__.py        # Ensambla las exportaciones públicas del paquete daemon
 │           ├── daemon.py          # Gestor del ciclo de vida
 │           ├── server.py          # Endpoints FastAPI
 │           ├── ipc.py             # Cliente HTTP del daemon
@@ -109,6 +114,16 @@ TTS-Sidecar/
 
 > El modelo `es-mx-latam` no vive en el repo ni en el bundle: reside en la caché
 > de HuggingFace del usuario (`~/.cache/huggingface/hub`) tras `tts-sidecar setup`.
+
+## El entry point `bin/tts-sidecar`
+
+El archivo `bin/tts-sidecar` es el **punto de entrada único** de la aplicación. Está escrito en **Python 3**, pero deliberadamente **no lleva extensión `.py`**:
+
+- **Convención de comando CLI**: el objetivo del proyecto es exponer una herramienta invocable como `tts-sidecar speech say ...`, no como `tts-sidecar.py speak ...`. Los comandos de terminal no llevan extensión (igual que `git`, `node` o `pip`), de modo que el archivo se nombra como el comando final que representa.
+- **Shebang en vez de extensión**: la primera línea es `#!/usr/bin/env python3`. En Linux/macOS, con el bit de ejecución activo (`chmod +x`), el sistema operativo lee esa línea para saber con qué intérprete ejecutarlo; la extensión `.py` solo orienta a editores y humanos, el SO nunca la necesita. Por eso `./tts-sidecar speech say ...` funciona sin nombrar a Python.
+- **Invocación en desarrollo bajo Windows**: Windows ignora el shebang, así que en desarrollo el entry point se invoca explícitamente a través del intérprete: `python bin/tts-sidecar speech say --text "Hola"`.
+
+El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings, ajusta `sys.path`, parchea `pkg_resources` para Python 3.13+) y delega en `tts_sidecar.cli.main`. Además es la **semilla de compilación** que reciben los scripts de `scripts/build_*.py`: PyInstaller lo toma como entrada y produce el bundle final. Véase `docs/BUILD.md`.
 
 ## Motor Chatterbox Multilingual V3
 

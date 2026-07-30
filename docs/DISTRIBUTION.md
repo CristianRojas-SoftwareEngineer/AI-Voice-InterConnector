@@ -63,16 +63,10 @@ artefacto nativo (no un canal nuevo), con un script por SO:
 
 El `.dmg` descargado a mano (con sus scripts `.command` de
 instalación/desinstalación, ahora per-user sin `sudo`) sigue siendo un canal
-válido en paralelo. La justificación técnica de la vía de Windows es el *Mark of
-the Web* (MOTW): el navegador sí sella el `.exe` con la marca de Internet
-(`ZoneId=3`) y dispara SmartScreen, pero la descarga por CLI (`curl`, `gh`,
-PowerShell `Invoke-WebRequest`/`WebClient`) **no** la aplica, así que el
-instalador bajado por `install-windows.ps1` no dispara SmartScreen al ejecutarse. El
-binario sigue sin firmar: Microsoft Defender Antivirus es independiente del MOTW
-y puede marcarlo (ver runbook WDSI en `SECURITY.md`); la advertencia de
-SmartScreen para la descarga por navegador solo la resuelve la firma de código
-Authenticode. Diseño completo de los tres instaladores en
-[docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
+válido en paralelo. El porqué de que `install-windows.ps1` no dispare
+SmartScreen (a diferencia de la descarga por navegador) está explicado en
+[SECURITY.md](../SECURITY.md#artefactos-sin-firmar); diseño completo de los
+tres instaladores en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
 
 ### Canal PyPI (`uv tool install` / `pipx`)
 
@@ -122,17 +116,16 @@ pipx uninstall tts-sidecar
 
 ## Por qué el canal pip evita SmartScreen/Gatekeeper
 
-Windows SmartScreen y macOS Gatekeeper inspeccionan archivos descargados de
-internet que llevan la **Mark of the Web** (Windows) o el atributo de
-cuarentena `com.apple.quarantine` (macOS): ambos los añade el navegador al
-descargar un instalador. El canal pip no distribuye un binario descargado:
-`pip`/`uv`/`pipx` descargan el **paquete** (wheel) desde PyPI y generan el
-**launcher ejecutable localmente**, en la máquina del usuario, en el momento
-de la instalación. Un archivo generado localmente no lleva Mark-of-the-Web ni
-cuarentena, así que ninguno de los dos sistemas de reputación se activa. Esta
-es una propiedad estructural del mecanismo de instalación, no una mitigación
-parcial: el canal pip no tiene el problema que el canal nativo sí tiene (ver
-`SECURITY.md` §"Artefactos sin firmar" y `docs/BUILD.md` §"Limitación
+El mecanismo de Mark-of-the-Web/cuarentena que dispara SmartScreen y
+Gatekeeper (detallado en
+[SECURITY.md](../SECURITY.md#artefactos-sin-firmar)) solo lo añade el
+navegador a un archivo descargado. El canal pip no distribuye un binario
+descargado: `pip`/`uv`/`pipx` descargan el **paquete** (wheel) desde PyPI y
+generan el **launcher ejecutable localmente**, en la máquina del usuario, en
+el momento de la instalación. Un archivo generado localmente no lleva
+Mark-of-the-Web ni cuarentena, así que ninguno de los dos sistemas de
+reputación se activa: es una propiedad estructural del mecanismo de
+instalación, no una mitigación parcial (ver `docs/BUILD.md` §"Limitación
 conocida: firma de código y notarización" para el detalle del canal nativo).
 
 ## Registro de la decisión A vs. B

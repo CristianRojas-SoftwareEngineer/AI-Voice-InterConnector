@@ -144,14 +144,10 @@ verifica tu descarga contra él antes de ejecutar el instalador (ver
 
 Al ejecutar por primera vez el instalador **descargado desde el navegador**,
 **es esperable** que el sistema lo bloquee con una advertencia («Windows
-protegió tu PC» / «no se puede verificar el desarrollador»). **No indica
-malware**: los binarios distribuidos no están firmados con un certificado de
-código (los certificados son de pago y el proyecto aún no los financia), así
-que el sistema muestra «editor desconocido» y, al ser cada release un archivo
-nuevo sin historial de descargas, carece de reputación acumulada ante
-SmartScreen. La advertencia depende del *Mark-of-the-Web*, que solo aplica el
-navegador: el instalador de una línea (`irm | iex`) descarga por CLI, sin la
-marca, y no la dispara.
+protegió tu PC» / «no se puede verificar el desarrollador»); no indica
+malware. El porqué del mecanismo (Mark-of-the-Web / cuarentena, y la firma de
+código como arreglo de fondo diferido) está en
+[SECURITY.md](SECURITY.md#artefactos-sin-firmar).
 
 - **Windows (SmartScreen)**: pulsa **Más información** → **Ejecutar de todas
   formas**.
@@ -165,9 +161,7 @@ marca, y no la dispara.
 
 Solo ocurre en el primer arranque. La forma objetiva de confiar en el artefacto
 es **verificar su SHA-256** contra el `SHA256SUMS.txt` del Release (ver
-[SECURITY.md](SECURITY.md)). Está previsto firmar los binarios vía
-[SignPath Foundation](https://signpath.org/) (firma de código gratuita para
-proyectos open source) en una versión futura. Detalle paso a paso en
+[SECURITY.md](SECURITY.md)). Detalle paso a paso en
 [USAGE.md](USAGE.md#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar).
 
 ### Provisión del modelo (`setup`)
@@ -340,7 +334,6 @@ desde código fuente con ese lock. El detalle completo y verificado está en
 - [docs/GOAL.md](docs/GOAL.md) - Meta del proyecto
 - [docs/ROADMAP.md](docs/ROADMAP.md) - Estado actual y roadmap al goal inmediato
 - [docs/DESIGN.md](docs/DESIGN.md) - Diseño técnico
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - Arquitectura del sistema
 - [docs/DAEMON-MODE.md](docs/DAEMON-MODE.md) - Daemon mode (servidor persistente)
 - [docs/BUILD.md](docs/BUILD.md) - Guía de compilación PyInstaller
 - [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) - Canales de distribución (nativo + PyPI)

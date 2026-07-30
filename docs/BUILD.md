@@ -227,7 +227,7 @@ instalador de Windows además emite compresión `lzma/normal` (progreso por arch
 lugar del `lzma2/max` silencioso que CircleCI mataba) y usa `INSTALLER_TIMEOUT` holgado.
 
 > El entry point `bin/tts-sidecar` es la semilla que PyInstaller empaqueta. El bundle
-> resultante hereda ese nombre en `dist/tts-sidecar/`. Véase `docs/ARCHITECTURE.md` para
+> resultante hereda ese nombre en `dist/tts-sidecar/`. Véase `docs/DESIGN.md` para
 > el detalle del entry point.
 
 ### Opciones clave de PyInstaller
@@ -320,13 +320,13 @@ producen; todos se apoyan en el artefacto nativo tal cual. Diseño completo en
 Los artefactos **no están firmados ni notarizados**: en macOS, Gatekeeper
 bloquea la primera apertura del `.app`/`.dmg` (clic derecho → Abrir, o
 `xattr -d com.apple.quarantine`); en Windows, SmartScreen muestra la advertencia
-de editor desconocido en el instalador (solo sobre archivos descargados de
-internet, que llevan la Mark of the Web — un build local no la dispara).
-Firmar/notarizar con identidad propia requiere certificados de pago (Apple
-Developer ID, certificado Authenticode) y queda fuera del alcance actual del
-pipeline; la ruta prevista para Windows y macOS está registrada como
-goal a largo plazo en [docs/GOAL.md](GOAL.md#goal-a-largo-plazo)
-(ver también `SECURITY.md` §«Artefactos sin firmar»).
+de editor desconocido en el instalador. El porqué del mecanismo
+(Mark-of-the-Web, y la firma de código como arreglo de fondo) está en
+[SECURITY.md](../SECURITY.md#artefactos-sin-firmar). Firmar/notarizar con
+identidad propia requiere certificados de pago (Apple Developer ID,
+certificado Authenticode) y queda fuera del alcance actual del pipeline; la
+ruta prevista para Windows y macOS está registrada como goal a largo plazo en
+[docs/GOAL.md](GOAL.md#goal-a-largo-plazo).
 
 Como mitigación aditiva ya implementada (no sustituye a la firma), el proyecto
 publica en paralelo un **canal PyPI** (`uv tool install tts-sidecar`) que no
