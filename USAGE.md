@@ -12,7 +12,12 @@
   - [`version`](#version)
   - [`doctor`](#doctor)
   - [`devices`](#devices)
-  - [`speech say`](#speech-say)
+  - [El grupo `speech`](#el-grupo-speech)
+    - [`speech synthesize`](#speech-synthesize)
+    - [`speech say`](#speech-say)
+    - [`speech play`](#speech-play)
+    - [`speech list`](#speech-list)
+    - [`speech remove`](#speech-remove)
   - [`voice clone`](#voice-clone)
   - [`voice list`](#voice-list)
   - [`voice remove`](#voice-remove)
@@ -100,7 +105,7 @@ tts-sidecar <comando>
 
 Linux requiere la librería del sistema `libportaudio2` para reproducir audio
 (`sudo apt install libportaudio2` / `sudo dnf install portaudio`); no es
-necesaria para `speak --output` a archivo. Este canal no dispara
+necesaria para `speech synthesize --text T --label L` a archivo. Este canal no dispara
 SmartScreen/Gatekeeper (ver más abajo).
 
 ### Desarrollador (desde el código fuente)
@@ -133,7 +138,7 @@ ejecutado desde el AppImage; en Windows y macOS ese paso lo cubren el instalador
 y el script del `.dmg`), después corre los chequeos de entorno (los mismos que
 `doctor`) y por último descarga el modelo solo si falta. Un fallo del chequeo de
 audio **no detiene la provisión**: `setup` lo degrada a `[WARN]` y continúa,
-porque la síntesis a archivo (`speak --output`) funciona sin subsistema de
+porque la síntesis a archivo (`speech synthesize --text T --label L`) funciona sin subsistema de
 sonido (p. ej. en hosts headless o sesiones SSH); `doctor`, en cambio, lo sigue
 reportando como `[FAIL]` con salida 1, como señal diagnóstica. En la primera
 ejecución verás algo como:
@@ -190,7 +195,7 @@ Es un modo mutuamente excluyente con `--remove-path` y `--uninstall`. Sin el fla
   # → symlink en ~/.local/bin + chequeos + descarga del modelo
 
   # Desde entonces, en una terminal nueva:
-  tts-sidecar speak --text "Hola"
+  tts-sidecar speech say --text "Hola"
 
   # Desinstalación limpia en un comando (datos + symlink + AppImage):
   tts-sidecar setup --uninstall
@@ -208,7 +213,7 @@ Es un modo mutuamente excluyente con `--remove-path` y `--uninstall`. Sin el fla
   versiones anteriores a 0.5.0, indicando cómo quitarlo); el `.app` se borra
   arrastrándolo a la Papelera.
 
-> **Importante**: hasta que el modelo esté provisionado, `speak` y `daemon start`
+> **Importante**: hasta que el modelo esté provisionado, `speech say` y `daemon start`
 > **abortan de inmediato** con un mensaje que remite a `tts-sidecar setup`. Nunca
 > disparan una descarga silenciosa.
 
@@ -232,18 +237,41 @@ estables (los cambios solo pueden ser aditivos mientras `schema_version` sea
 diagnóstico/progreso va a stderr. La clave `schema_version` (string) se omite de
 las tablas por brevedad: está presente en todos.
 
-**`speak --json`** — requiere `--output` (el archivo es el canal de datos;
-`--json` solo emite metadatos/métricas a stdout). Sin `--output`, error en
-stderr y exit 4. El payload es idéntico campo a campo en modo directo y vía
-daemon.
+**`speech synthesize --json`** — el bucle interactivo de `--play` es
+incompatible con `--json` (exit 2 si se combinan), así que bajo `--json` la
+persistencia es siempre cierta cuando la salida es 0. El payload es idéntico
+campo a campo en modo directo y vía daemon.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `output` | string | Ruta absoluta del archivo WAV escrito |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
+| `label` | string | Etiqueta de la locución guardada (normalizada a minúsculas) |
 | `t3_time` | number | Segundos del T3 autoregresivo |
 | `s3gen_time` | number | Segundos del vocoder S3Gen |
 | `daemon` | boolean | `true` si la síntesis se despachó vía daemon, `false` en modo directo |
+
+**`speech say --json`** — no persiste nada, así que solo emite la voz
+efectiva; no repite el `text` (el llamador acaba de mandarlo) ni tiempos de
+síntesis.
+
+| Clave | Tipo | Significado |
+|-------|------|-------------|
+| `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
+
+**`speech play --json`** / **`speech remove --json`** — el código de salida ya
+transporta el resultado (0 = éxito, 3 = etiqueta inexistente); el payload solo
+identifica la locución afectada.
+
+| Clave | Tipo | Significado |
+|-------|------|-------------|
+| `voice` | string | Nombre de la voz de la locución |
+| `label` | string | Etiqueta de la locución |
+
+**`speech list --json`**
+
+| Clave | Tipo | Significado |
+|-------|------|-------------|
+| `synthetic_speech` | array de objetos | Un objeto por locución guardada: `voice` (string), `label` (string), `text` (string, texto completo sin truncar), `created_at` (string, ISO 8601 UTC) |
 
 **`daemon start` / `stop` / `restart --json`** — payload de resultado de la
 acción (no de estado; para eso está `daemon status --json`). Los mensajes
@@ -416,9 +444,100 @@ Dispositivos de salida de audio:
 
 ---
 
-### `speech say`
+### El grupo `speech`
 
-Sintetiza texto y reproduce el audio inmediatamente por los altavoces.
+Cinco sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`) y
+tres que gestionan el almacén de locuciones guardadas (`play`, `list`,
+`remove`). Cada una tiene una sola responsabilidad, y el nombre declara su
+costo: sintetizar paga GPU y puede exigir el modelo provisionado; gestionar el
+almacén no.
+
+| Sub-acción | Qué hace | Persiste | Necesita el modelo |
+|---|---|---|---|
+| `speech synthesize` | Sintetiza y guarda una locución | sí | sí |
+| `speech say` | Sintetiza y reproduce, no guarda | no | sí |
+| `speech play` | Reproduce una locución guardada | no | no |
+| `speech list` | Lista las locuciones guardadas | no | no |
+| `speech remove` | Borra una locución guardada | no | no |
+
+**En las cinco, `--voice/-v` es opcional**; si se omite, usa la voz de fábrica
+`default`. **La voz y la etiqueta (`--label/-l`) se normalizan a minúsculas**
+antes de resolver rutas: `--label Saludo` y `--label saludo` son la misma
+locución (el archivo se llama `saludo.wav`), y lo mismo aplica al nombre de la
+voz.
+
+**Despacho al daemon (solo `synthesize` y `say`, que son las que necesitan el
+modelo):** tres modos, iguales a los de `voice clone`:
+- Sin flags: sondea el daemon y lo usa si responde; si no, sintetiza en modo
+  directo (carga el modelo al vuelo).
+- `--daemon`: exige el daemon; si no está activo, sale con exit **5** en vez de
+  degradar.
+- `--no-daemon`: fuerza el modo directo, sin sondear.
+
+`--daemon` y `--no-daemon` son mutuamente excluyentes: combinarlos sale con
+exit **2** antes de cualquier trabajo. `speech play`, `speech list` y `speech
+remove` no tocan el modelo ni el daemon: no declaran estos flags.
+
+#### `speech synthesize`
+
+Sintetiza texto y lo guarda en el almacén de habla sintética
+(`data_root()/synthetic-speech/<voz>/<etiqueta>.wav`); a diferencia de
+`speech say`, siempre persiste.
+
+```bash
+tts-sidecar speech synthesize --text "Bienvenido" --label saludo
+tts-sidecar speech synthesize --text "Bienvenido" --label saludo --voice mi_voz
+```
+
+**Qué esperar:** las mismas etapas de síntesis que `speech say` (ver más
+abajo) y, al terminar:
+
+```
+Locución 'saludo' guardada (voz 'default').
+```
+
+**Opciones:**
+- `--text, -t` (requerido): Texto a sintetizar
+- `--label, -l` (requerido): Etiqueta de la locución en el almacén (normalizada a minúsculas)
+- `--voice, -v`: Nombre de la voz a usar (default: `default`)
+- `--play, -p`: Reproduce la toma y pregunta antes de guardar (ver «El bucle de `--play`» más abajo); requiere terminal interactiva en la entrada estándar y es incompatible con `--json`
+- `--force, -f`: Sobrescribe la locución si la etiqueta ya existe para la voz
+- `--compute-backend, -cb`: igual que en `speech say`
+- `--daemon` / `--no-daemon`: igual que en `speech say`
+- `--json`: Emite `{"voice", "label", "t3_time", "s3gen_time", "daemon"}` (ver la referencia de esquemas)
+
+**Colisión de etiqueta:** sin `--force`, guardar sobre una etiqueta que ya
+existe para la voz sale con exit **6**, sin gastar GPU (la comprobación es
+previa a la síntesis). Con `--play`, la etiqueta se revalida también al
+aceptar, por si quedó ocupada mientras el bucle esperaba una respuesta;
+`--force` sobre una etiqueta libre es un no-op.
+
+**El bucle de `--play`:** con `--play`, tras sintetizar el audio se reproduce
+y aparece un menú de cuatro opciones (por stderr; `--json` es incompatible con
+`--play`):
+
+```
+¿Qué quieres hacer con esta toma?
+  1) Reproducir otra vez
+  2) Aceptar y guardar
+  3) Rechazar y regenerar
+  4) Rechazar y descartar
+Opción [1-4]:
+```
+
+- **Reproducir otra vez**: repite los mismos bytes en memoria, sin volver a sintetizar.
+- **Aceptar y guardar**: persiste la toma que acabas de oír y termina con exit 0.
+- **Rechazar y regenerar**: sintetiza otra toma (T3+S3Gen; los conditionals de una voz registrada ya están precomputados) y vuelve a preguntar.
+- **Rechazar y descartar**: termina con exit 0 sin guardar nada.
+
+Ctrl-D en la pregunta equivale a «rechazar y descartar». `speech synthesize
+--play` requiere una terminal interactiva en la entrada estándar; sin ella,
+sale con exit 2 antes de sintetizar.
+
+#### `speech say`
+
+Sintetiza texto y reproduce el audio inmediatamente por los altavoces, sin
+guardar nada en el almacén.
 
 Sin `--voice`, `speech say` usa la voz de fábrica **`default`** (empaquetada,
 de solo lectura), por lo que el ejemplo mínimo funciona recién instalado, sin
@@ -470,7 +589,7 @@ Finalizado en 41.5s
 - `--no-daemon`: Forzar modo directo, sin sondear el daemon
 
 `--daemon` y `--no-daemon` son **mutuamente excluyentes**: combinarlos produce
-un error en stderr y exit 4 (`INVALID_INPUT`), antes de cualquier trabajo.
+un error en stderr y exit 2 (`INVALID_INPUT`), antes de cualquier trabajo.
 - `--compute-backend, -cb`: Backend de cómputo para la inferencia (`auto`, `cpu`, `cuda`, `mps`; default: `auto`)
 
 Sin valor, `tts-sidecar` detecta automáticamente el mejor backend disponible
@@ -484,8 +603,9 @@ un backend distinto usa `--no-daemon`, o reinicia el daemon con la variable
 de entorno correspondiente.
 
 **Límite de longitud del texto:** `--text` acepta hasta 5000 caracteres; por
-encima de ese límite `speech say` falla con exit 4 (`INVALID_INPUT`) antes de
-intentar sintetizar, en modo directo o vía daemon. Por encima de 2000
+encima de ese límite `speech say` falla con exit 2 (`INVALID_INPUT`) antes de
+intentar sintetizar, en modo directo o vía daemon (misma regla y mismo límite
+en `speech synthesize`). Por encima de 2000
 caracteres (sin llegar a 5000) se emite una advertencia no bloqueante por
 stderr: el T3 topa la generación en 500 tokens, así que un texto muy largo
 puede truncarse en el audio resultante — se recomienda fragmentar el texto en
@@ -503,6 +623,67 @@ tts-sidecar speech say --text "Hola mundo" --voice mi_voz
 # Forzar modo directo
 tts-sidecar speech say --text "Hola" --voice mi_voz --no-daemon
 ```
+
+#### `speech play`
+
+Reproduce una locución ya guardada; no toca el modelo ni el daemon.
+
+```bash
+tts-sidecar speech play --label saludo
+tts-sidecar speech play --label saludo --voice mi_voz --json
+```
+
+**Opciones:**
+- `--label, -l` (requerido): Etiqueta de la locución (normalizada a minúsculas)
+- `--voice, -v`: Nombre de la voz (default: `default`)
+- `--json`: Emite `{"voice", "label"}`
+
+Una etiqueta inexistente para la voz sale con exit **3**.
+
+#### `speech list`
+
+Lista las locuciones guardadas, opcionalmente filtradas por voz.
+
+```bash
+tts-sidecar speech list
+tts-sidecar speech list --voice mi_voz
+tts-sidecar speech list --json
+```
+
+**Qué esperar:**
+
+```
+[default] saludo: Bienvenido
+[mi_voz] despedida: Hasta luego, gracias por tu visita a nuestra tien...
+```
+
+El texto se muestra truncado a 60 caracteres en la salida humana; el payload
+`--json` (`{"synthetic_speech": [...]}`) lleva el texto completo. Una locución
+sin sidecar de metadatos se muestra como `(sin metadatos)`.
+
+**Opciones:**
+- `--voice, -v`: Filtra por voz; sin él lista las locuciones de todas las voces
+- `--json`: Emite `{"synthetic_speech": [{"voice", "label", "text", "created_at"}]}`
+
+Con `--voice` apuntando a una voz inexistente, el comando sale con exit **3**
+(para que «voz mal escrita» no se confunda con «sin locuciones»).
+
+#### `speech remove`
+
+Borra una locución guardada (el WAV y su sidecar de metadatos, si existen).
+
+```bash
+tts-sidecar speech remove --label saludo
+tts-sidecar speech remove --label saludo --voice mi_voz
+```
+
+**Opciones:**
+- `--label, -l` (requerido): Etiqueta de la locución (normalizada a minúsculas)
+- `--voice, -v`: Nombre de la voz (default: `default`)
+- `--json`: Emite `{"voice", "label"}`
+
+Una etiqueta inexistente sale con exit **3**. El borrado masivo es tarea de
+`cleanup --synthetic-speech` (ver más abajo).
 
 ---
 
@@ -528,10 +709,10 @@ Finalizado en 3.1s
 ```
 
 A partir de ese momento la voz aparece en `voice list` y puede usarse con
-`speak --voice mi_voz`.
+`speech say --voice mi_voz`.
 
 El clonado **precomputa los conditionals** en el momento de clonar, de modo que
-toda síntesis posterior con `speak --voice mi_voz` los carga desde disco en vez
+toda síntesis posterior con `speech synthesize --voice mi_voz` (o `speech say --voice mi_voz`) los carga desde disco en vez
 de recomputarlos (latencia estable, sin sobrecosto en la primera reproducción).
 Por eso `voice clone` requiere el modelo provisionado (`tts-sidecar setup`): el
 precómputo ejecuta el modelo. Si hay un [daemon](#modo-daemon) activo, el
@@ -547,6 +728,9 @@ computarán en la primera síntesis.
 - `--timbre-reference, -t` (requerido): Audio para timbre (cualquier largo — el audio completo se usa para el embedding)
 - `--speech-reference, -s` (requerido): Audio para conditioning (10+ segundos de habla limpia)
 - `--force, -f`: Sobrescribir la voz si ya existe (incluida una de fábrica homónima)
+- `--daemon` / `--no-daemon`: igual que en las sub-acciones de `speech`;
+  con `--daemon` el precómputo aprovecha el modelo caliente; sin flags se
+  sondea el daemon y se usa solo si responde
 - `--json`: Emitir el resultado como JSON (nombre y rutas registradas; ver la
   referencia de esquemas más arriba)
 
@@ -612,11 +796,14 @@ usuario. Es la contraparte de `setup` y completa el ciclo de vida
 instalación→desinstalación.
 
 ```bash
-tts-sidecar cleanup --model      # elimina el modelo descargado
-tts-sidecar cleanup --voices     # elimina las voces de usuario
-tts-sidecar cleanup --all        # ambos
-tts-sidecar cleanup --all --dry-run   # lista lo que se borraría, sin borrar
-tts-sidecar cleanup --all --yes       # borra sin pedir confirmación (uso programático)
+tts-sidecar cleanup --model              # elimina el modelo descargado
+tts-sidecar cleanup --voices             # elimina las voces de usuario y arrastra
+                                            sus locuciones de habla sintética
+                                            (salvo 'default')
+tts-sidecar cleanup --synthetic-speech   # elimina toda la raíz de habla sintética
+tts-sidecar cleanup --all                # los tres anteriores
+tts-sidecar cleanup --all --dry-run      # lista lo que se borraría, sin borrar
+tts-sidecar cleanup --all --yes          # borra sin pedir confirmación (uso programático)
 tts-sidecar cleanup --all --yes --json   # salida JSON (requiere --yes o --dry-run)
 ```
 
@@ -749,7 +936,7 @@ Daemon en ejecución:
 
 ### Uso con daemon
 
-`speak` despacha según tres ramas:
+`speech say` despacha según tres ramas:
 
 - **Sin flags**: sondea el daemon con un health check corto y lo usa si responde;
   si no, cae al modo directo sin error.
@@ -759,22 +946,22 @@ Daemon en ejecución:
 
 ```bash
 # El daemon se usa automáticamente si está disponible
-tts-sidecar speak --text "Hola" --voice mi_voz
+tts-sidecar speech say --text "Hola" --voice mi_voz
 
 # Forzar modo daemon (falla si el daemon no responde)
-tts-sidecar speak --text "Hola" --voice mi_voz --daemon
+tts-sidecar speech say --text "Hola" --voice mi_voz --daemon
 
 # Forzar modo directo (sin daemon)
-tts-sidecar speak --text "Hola" --voice mi_voz --no-daemon
+tts-sidecar speech say --text "Hola" --voice mi_voz --no-daemon
 ```
 
-**Qué esperar** con el daemon activo: `speak` omite la etapa de carga del modelo
+**Qué esperar** con el daemon activo: `speech say` omite la etapa de carga del modelo
 y la síntesis empieza de inmediato. Aunque la síntesis ocurre en el proceso del
 daemon, su **progreso real** viaja al cliente por el stream de `/synthesize`
 (etapa actual y conteo de tokens del T3 en vivo):
 
 ```
-Iniciando speak...
+Iniciando speech say...
 [10:05:01] [Servidor] Enviando solicitud de síntesis...
 [10:05:19]    [Etapa 2a] T3 autoregresivo: 12.0s...
 [10:05:19]    [Etapa 2b] S3Gen vocoder:   6.0s...
@@ -789,7 +976,7 @@ muestran con el **mismo formato en ambos modos** (directo y daemon), para que
 puedas comparar el rendimiento.
 
 **Progreso en vivo (solo en terminal interactiva):** en una TTY, mientras dura la
-síntesis `speak` muestra sobre **stderr** un indicador giratorio que se actualiza
+síntesis `speech say` muestra sobre **stderr** un indicador giratorio que se actualiza
 con la etapa y el avance de tokens del T3 (p. ej. `Generando voz · 210 tokens`,
 subiendo), tanto en modo daemon como directo. Es un indicador de etapa y avance,
 **no un porcentaje** del total. Si la salida está redirigida a un archivo o pipe,
@@ -843,12 +1030,12 @@ tts-sidecar voice list
 # → Voces registradas: default, mi_voz
 
 # 4. Escúchala
-tts-sidecar speak --text "Hola, esto es una prueba" --voice mi_voz
+tts-sidecar speech say --text "Hola, esto es una prueba" --voice mi_voz
 # → etapas de síntesis + reproducción por los altavoces
 
 # 5. O genera un archivo
-tts-sidecar speak --text "Hola, esto es una prueba" --voice mi_voz --output mi_voz.wav
-# → [Archivo] Audio guardado: mi_voz.wav
+tts-sidecar speech synthesize --text "Hola, esto es una prueba" --label prueba --voice mi_voz
+# → Locución 'prueba' guardada (voz 'mi_voz').
 ```
 
 La voz queda guardada de forma permanente: en futuras sesiones basta con
@@ -876,8 +1063,8 @@ desde el binario como desde el código fuente. En concreto:
   | `1` | Error genérico | Fallo inesperado; `doctor` con algún chequeo fallido |
   | `2` | Entrada inválida | `--text` vacío; nombre de voz ilegal; uso incorrecto (argparse) |
   | `3` | Voz o audio no encontrado | `--voice inexistente`; `voice remove` de una voz ausente |
-  | `4` | Modelo no provisionado | `speak`/`daemon start` sin ejecutar `setup` |
-  | `5` | Daemon inalcanzable | `speak --daemon` sin daemon; `daemon start/stop/restart` fallido |
+  | `4` | Modelo no provisionado | `speech say`/`daemon start` sin ejecutar `setup` |
+  | `5` | Daemon inalcanzable | `speech say --daemon` sin daemon; `daemon start/stop/restart` fallido |
   | `6` | Conflicto de estado | Colisión en `voice clone` sin `--force`; voz ocupada; puerto del daemon en uso |
   | `7` | Operación no aplicable | Voz de fábrica de solo lectura; plataforma no soportada; `setup --uninstall` fuera del canal nativo |
   | `8` | Precondición de entorno incumplida | Credenciales, red, permisos o disco insuficientes al provisionar |
@@ -887,7 +1074,7 @@ desde el binario como desde el código fuente. En concreto:
 - **El motor auto-detecta el mejor backend de cómputo disponible** (CUDA en
   NVIDIA, MPS en Apple Silicon, CPU en otro caso); se puede forzar uno
   concreto con `--compute-backend` (`auto` por default). La detección corre
-  una sola vez al cargar el motor (en cada `speak` sin daemon, y una vez por
+  una sola vez al cargar el motor (en cada `speech say` sin daemon, y una vez por
   arranque del daemon).
 
 Las únicas diferencias son internas y no cambian la forma de usar la aplicación:
@@ -914,7 +1101,7 @@ Las únicas diferencias son internas y no cambian la forma de usar la aplicació
 
 ### "el modelo 'es-mx-latam' no está descargado"
 
-`speak` y `daemon start` requieren el modelo provisionado y nunca lo descargan
+`speech say` y `daemon start` requieren el modelo provisionado y nunca lo descargan
 por sí mismos. Ejecuta la provisión una vez:
 
 ```bash
@@ -993,7 +1180,7 @@ archivos de la voz. Ciérralo (p. ej. `tts-sidecar daemon stop`) y reintenta.
    tiene un subsistema de audio funcional (p. ej. sesiones remotas o headless)
 
 En un host sin audio puedes seguir usando la síntesis a archivo
-(`tts-sidecar speak --text "Hola" --output audio.wav`); `setup` también funciona
+(`tts-sidecar speech synthesize --text T --label L`); `setup` también funciona
 allí (degrada el chequeo de audio a `[WARN]` y provisiona igual).
 
 ### El sistema bloquea el primer arranque (binarios sin firmar)

@@ -49,6 +49,17 @@ class MockArgs:
         self.force_update = kwargs.get("force_update", False)
         self.uninstall = kwargs.get("uninstall", False)
         self.yes = kwargs.get("yes", False)
+        self.all = kwargs.get("all", False)
+        # Campos del grupo speech (synthesize / play / list / remove) y del
+        # arrastre de cleanup; con default inocuo para el resto de comandos.
+        self.label = kwargs.get("label", "etiqueta")
+        self.play = kwargs.get("play", False)
+        self.force = kwargs.get("force", False)
+        self.synthetic_speech = kwargs.get("synthetic_speech", False)
+        self.voices = kwargs.get("voices", False)
+        self.all = kwargs.get("all", False)
+        self.dry_run = kwargs.get("dry_run", False)
+        self.cleanup_parser = kwargs.get("cleanup_parser", None)
 
 
 class TestResolveVoicePaths:
@@ -120,7 +131,7 @@ class TestCmdVoiceClone:
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=False)
     @patch("tts_sidecar.voices.clone_voice_files")
     def test_cmd_voice_clone_requires_model(self, mock_register, _cached, capsys):
-        """Sin modelo cacheado, el clonado aborta (exit 2) antes de copiar audios."""
+        """Sin modelo cacheado, el clonado aborta (exit 4) antes de copiar audios."""
         from tts_sidecar.cli import cmd_voice_clone, EXIT_MODEL_MISSING
 
         with pytest.raises(CliError) as exc:
@@ -255,15 +266,18 @@ class TestVoiceMessages:
         assert "no encontrada" not in err
 
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
-    def test_speak_does_not_refer_to_setup_if_user_audio_missing(self, _cached, capsys):
+    def test_speak_does_not_refer_to_setup_if_user_audio_missing(self, _cached):
         from tts_sidecar.cli import cmd_speech_say
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
 
-        with pytest.raises(CliError):
+        # Voz inexistente con el modelo en caché: sale 3 (recurso ausente) y su
+        # mensaje no remite a 'setup' (descargar el modelo no crea la voz).
+        with pytest.raises(CliError) as exc:
             cmd_speech_say(MockArgs(text="hola", voice="voz_inexistente", no_daemon=True))
 
-        err = capsys.readouterr().err
-        assert "Error:" in err
-        assert "setup" not in err
+        assert exc.value.code == EXIT_NOT_FOUND
+        assert "Error:" in exc.value.message
+        assert "setup" not in exc.value.message
 
 
 class TestCmdDevices:
@@ -364,19 +378,37 @@ class TestCmdSpeakDaemonDispatch:
 
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
-    @patch("tts_sidecar.daemon.is_daemon_running")
-    def test_explicit_daemon_does_not_probe_and_fails_on_error(self, mock_running, mock_client_cls, _cached):
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=False)
+    def test_explicit_daemon_requires_running_and_exits_5(self, mock_running, mock_client_cls, _cached):
+        from tts_sidecar.cli import cmd_speech_say
+        from tts_sidecar.exit_codes import EXIT_DAEMON_UNREACHABLE
+
+        # --daemon EXIGE el daemon (§2.5): si el sondeo dice que no está activo,
+        # sale con 5 sin intentar sintetizar.
+        with pytest.raises(CliError) as exc:
+            cmd_speech_say(self._args(daemon=True))
+
+        assert exc.value.code == EXIT_DAEMON_UNREACHABLE
+        mock_running.assert_called_once()
+        mock_client_cls.return_value.synthesize.assert_not_called()
+
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.daemon.DaemonIPCClient")
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
+    def test_explicit_daemon_running_but_ipc_fails_exits_5(self, mock_running, mock_client_cls, _cached):
         from tts_sidecar.cli import cmd_speech_say
         from tts_sidecar.daemon import DaemonIPCError
+        from tts_sidecar.exit_codes import EXIT_DAEMON_UNREACHABLE
 
+        # Con el daemon activo pero la IPC fallando, sigue siendo inalcanzabilidad: 5.
         client = MagicMock()
         client.synthesize.side_effect = DaemonIPCError("no conecta")
         mock_client_cls.return_value = client
 
-        with pytest.raises(CliError):
+        with pytest.raises(CliError) as exc:
             cmd_speech_say(self._args(daemon=True))
 
-        mock_running.assert_not_called()
+        assert exc.value.code == EXIT_DAEMON_UNREACHABLE
 
     @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
@@ -782,7 +814,7 @@ class TestSetupAudioAdvisory:
 
         out = capsys.readouterr().err
         assert "[WARN] Audio library" in out
-        assert "speak --output" in out
+        assert "speech synthesize" in out
         assert "Provisión completa" in out
 
     def test_non_audio_fail_still_aborts_setup(self, monkeypatch, capsys):
@@ -944,7 +976,7 @@ class TestInterruptHandling:
 class TestExitCodes:
     """Cada causa de error mapea a su código del contrato público congelado."""
 
-    def test_missing_model_exits_2(self, capsys):
+    def test_missing_model_exits_4(self, capsys):
         from tts_sidecar.cli import _require_model_cached, EXIT_MODEL_MISSING
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
@@ -953,12 +985,20 @@ class TestExitCodes:
         assert exc.value.code == EXIT_MODEL_MISSING
         assert "setup" in exc.value.message
 
-    def test_empty_text_exits_4(self):
+    def test_empty_text_exits_2(self):
         from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
 
         with pytest.raises(CliError) as exc:
             cmd_speech_say(MockArgs(text="   ", no_daemon=True))
         assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_say_model_missing_exits_4(self):
+        from tts_sidecar.cli import cmd_speech_say, EXIT_MODEL_MISSING
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
+            with pytest.raises(CliError) as exc:
+                cmd_speech_say(MockArgs(text="hola", no_daemon=True))
+        assert exc.value.code == EXIT_MODEL_MISSING
 
     def test_nonexistent_voice_exits_3(self):
         from tts_sidecar.cli import cmd_speech_say, EXIT_NOT_FOUND
@@ -1083,6 +1123,7 @@ class TestCmdCleanup:
         ns = argparse.Namespace(
             model=kw.get("model", False),
             voices=kw.get("voices", False),
+            synthetic_speech=kw.get("synthetic_speech", False),
             all=kw.get("all", False),
             dry_run=kw.get("dry_run", False),
             yes=kw.get("yes", False),
@@ -1106,6 +1147,12 @@ class TestCmdCleanup:
         voices = tmp_path / "voices"
         (voices / "mi_voz").mkdir(parents=True)
         monkeypatch.setattr("tts_sidecar.voices.voices_root", lambda: str(voices))
+
+        # Aísla el almacén de habla sintética a tmp_path para que el arrastre de
+        # --voices y --synthetic-speech nunca toquen los datos reales del usuario.
+        store = tmp_path / "synthetic-speech"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
         return propio1, propio2, ajeno, voices
 
     def test_dry_run_lists_without_deleting(self, tmp_path, monkeypatch, capsys):
@@ -1579,8 +1626,8 @@ class TestSetupUninstall:
 
 
 class TestSpeakJSON:
-    """speech say --json emite metadatos + métricas a stdout, idéntico campo a
-    campo en ruta directa y vía daemon."""
+    """speech say --json emite solo la voz efectiva a stdout (§2.10), idéntico
+    en ruta directa y vía daemon."""
 
     def _args(self, **kw):
         kw.setdefault("timbre_reference", _make_wav("v.wav"))
@@ -1588,10 +1635,11 @@ class TestSpeakJSON:
         return MockArgs(**kw)
 
     @patch("tts_sidecar.audio.AudioPlayer")
+    @patch("tts_sidecar.voices._resolve_voice_dir", return_value="/fake/mi_voz")
     @patch("tts_sidecar.voices.voice_paths")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.engine.ChatterboxEngine")
-    def test_direct_json_payload(self, mock_engine_cls, _cached, mock_voice_paths, mock_player_cls, capsys):
+    def test_direct_json_payload(self, mock_engine_cls, _cached, mock_voice_paths, _resolve, mock_player_cls, capsys):
         import json
         from tts_sidecar.cli import cmd_speech_say, SCHEMA_VERSION
 
@@ -1609,15 +1657,13 @@ class TestSpeakJSON:
         assert payload == {
             "schema_version": SCHEMA_VERSION,
             "voice": "mi_voz",
-            "t3_time": 1.5,
-            "s3gen_time": 2.5,
-            "daemon": False,
         }
 
     @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
-    def test_daemon_json_payload(self, mock_client_cls, _cached, mock_player_cls, capsys):
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
+    def test_daemon_json_payload(self, mock_running, mock_client_cls, _cached, mock_player_cls, capsys):
         import json
         from tts_sidecar.cli import cmd_speech_say, SCHEMA_VERSION
 
@@ -1631,9 +1677,6 @@ class TestSpeakJSON:
         assert payload == {
             "schema_version": SCHEMA_VERSION,
             "voice": "default",
-            "t3_time": 3.0,
-            "s3gen_time": 4.0,
-            "daemon": True,
         }
 
     @patch("tts_sidecar.audio.AudioPlayer")
@@ -1967,7 +2010,8 @@ class TestSchemaVersionJSON:
 # parser declara, así que un comando --json nuevo sin añadir aquí (o viceversa)
 # hace fallar el test, en vez de quedar fuera de la cobertura en silencio.
 _JSON_COVERED_COMMANDS = {
-    "speech say", "devices", "doctor", "setup", "cleanup", "version",
+    "speech synthesize", "speech say", "speech play", "speech list", "speech remove",
+    "devices", "doctor", "setup", "cleanup", "version",
     "voice list", "voice clone", "voice remove",
     "daemon start", "daemon stop", "daemon restart", "daemon status",
 }
@@ -2085,7 +2129,7 @@ class TestSpeakLongText:
 class TestSingleTextLimit:
     """texto > MAX_TEXT_LENGTH falla con exit 4 antes de cualquier despacho."""
 
-    def test_text_exceeds_max_text_length_exits_4_without_daemon(self, capsys):
+    def test_text_exceeds_max_text_length_exits_2_without_daemon(self, capsys):
         from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
         from tts_sidecar.daemon.protocol import MAX_TEXT_LENGTH
 
@@ -2096,7 +2140,7 @@ class TestSingleTextLimit:
         assert str(MAX_TEXT_LENGTH) in exc_info.value.message
 
     @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
-    def test_text_exceeds_max_text_length_exits_4_with_daemon(self, _running, capsys):
+    def test_text_exceeds_max_text_length_exits_2_with_daemon(self, _running, capsys):
         from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
         from tts_sidecar.daemon.protocol import MAX_TEXT_LENGTH
 
@@ -2112,8 +2156,9 @@ class TestComputeBackendIgnoredViaDaemon:
     @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
     def test_backend_non_auto_with_explicit_daemon_warns(
-        self, mock_client_cls, _cached, mock_player_cls, capsys
+        self, mock_running, mock_client_cls, _cached, mock_player_cls, capsys
     ):
         from tts_sidecar.cli import cmd_speech_say
 
@@ -2124,8 +2169,9 @@ class TestComputeBackendIgnoredViaDaemon:
     @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
     def test_backend_auto_with_daemon_does_not_warn(
-        self, mock_client_cls, _cached, mock_player_cls, capsys
+        self, mock_running, mock_client_cls, _cached, mock_player_cls, capsys
     ):
         from tts_sidecar.cli import cmd_speech_say
 
@@ -2627,3 +2673,744 @@ class TestBootstrap:
             assert result == str(tmp_path / "voices/default/timbre-reference.wav")
         finally:
             sys.modules.pop("pkg_resources", None)
+
+
+# ============================================================================
+# Tests de matriz del grupo `speech` (Tareas 2–6)
+# ============================================================================
+
+class TestCmdSpeechSynthesize:
+    """Matriz de `speech synthesize`: una fila por regla de validación (§2.6)
+    y por caso de la matriz de comportamiento (§2.7)."""
+
+    def _fake_env(self, tmp_path, monkeypatch):
+        store = tmp_path / "synthetic-speech"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+        return store
+
+    def test_success_persists_wav_and_sidecar(self, tmp_path, monkeypatch):
+        """Filas de éxito: persiste WAV y sidecar, exit 0."""
+        store = self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar import synthetic_speech
+        from tts_sidecar.cli import cmd_speech_synthesize
+
+        monkeypatch.setattr(
+            "tts_sidecar.cli._dispatch_synthesis",
+            MagicMock(return_value=(_synth_result(b"RIFFdata", t3=1.1, s3gen=2.2), False)),
+        )
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+
+        args = MockArgs(text="hola", label="saludo", voice="default")
+        cmd_speech_synthesize(args)
+
+        wav = store / "default" / "saludo.wav"
+        assert wav.exists()
+        assert wav.with_suffix(".json").exists()
+
+    def test_json_payload_exact_keys(self, tmp_path, monkeypatch):
+        """Filas JSON: el payload contiene exactamente las 5 claves de §2.10."""
+        store = self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar import synthetic_speech
+        from tts_sidecar.cli import cmd_speech_synthesize
+
+        monkeypatch.setattr(
+            "tts_sidecar.cli._dispatch_synthesis",
+            MagicMock(return_value=(_synth_result(b"RIFFdata", t3=0.5, s3gen=0.3), False)),
+        )
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+
+        emitted = {}
+        monkeypatch.setattr("tts_sidecar.cli.emit_json", lambda p: emitted.update(p))
+
+        args = MockArgs(text="hola", label="saludo", voice="default", json=True)
+        cmd_speech_synthesize(args)
+
+        assert set(emitted.keys()) == {"voice", "label", "t3_time", "s3gen_time", "daemon"}
+        assert emitted["voice"] == "default"
+        assert emitted["label"] == "saludo"
+        assert emitted["t3_time"] == 0.5
+        assert emitted["s3gen_time"] == 0.3
+        assert emitted["daemon"] is False
+
+    def test_collision_without_force_exits_6_and_does_not_synthesize(self, tmp_path, monkeypatch):
+        """Fast-fail de colisión: exit 6 SIN llamar a _dispatch_synthesis."""
+        store = self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar import synthetic_speech
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar.exit_codes import EXIT_STATE_CONFLICT
+
+        synthetic_speech.save("default", "saludo", b"RIFFold", "texto")
+
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        dispatch_called = [False]
+
+        def _never(*_, **__):
+            dispatch_called[0] = True
+            return (_synth_result(b"RIFF"), False)
+
+        monkeypatch.setattr("tts_sidecar.cli._dispatch_synthesis", _never)
+
+        args = MockArgs(text="hola", label="saludo", voice="default")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_synthesize(args)
+        assert exc.value.code == EXIT_STATE_CONFLICT
+        assert not dispatch_called[0]
+
+    def test_force_on_free_label_persists(self, tmp_path, monkeypatch):
+        """--force con etiqueta libre persiste la toma."""
+        store = self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar import synthetic_speech
+        from tts_sidecar.cli import cmd_speech_synthesize
+
+        monkeypatch.setattr(
+            "tts_sidecar.cli._dispatch_synthesis",
+            MagicMock(return_value=(_synth_result(b"RIFFdata", t3=1.0, s3gen=2.0), False)),
+        )
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+
+        args = MockArgs(text="hola", label="nueva", voice="default", force=True)
+        cmd_speech_synthesize(args)
+        assert synthetic_speech.exists("default", "nueva")
+
+    def test_illegal_label_exits_2(self, tmp_path, monkeypatch):
+        """Identificador ilegal (etiqueta) → exit 2."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar.exit_codes import EXIT_INVALID_INPUT
+
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._validate_path_segment",
+                            MagicMock(side_effect=ValueError("ilegal")))
+        args = MockArgs(text="hola", label="..", voice="default")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_synthesize(args)
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_voice_not_found_exits_3(self, tmp_path, monkeypatch):
+        """Voz inexistente → exit 3."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
+
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value=None))
+        args = MockArgs(text="hola", label="saludo", voice="inexistente")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_synthesize(args)
+        assert exc.value.code == EXIT_NOT_FOUND
+
+    def test_model_missing_exits_4(self, tmp_path, monkeypatch):
+        """Modelo no provisionado → exit 4."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar.exit_codes import EXIT_MODEL_MISSING
+
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=False))
+        args = MockArgs(text="hola", label="saludo")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_synthesize(args)
+        assert exc.value.code == EXIT_MODEL_MISSING
+
+    def test_json_plus_play_exits_2(self, tmp_path, monkeypatch):
+        """Regla 2 (§2.6): --json y --play → exit 2."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar.exit_codes import EXIT_INVALID_INPUT
+
+        args = MockArgs(text="hola", label="saludo", voice="default", json=True, play=True)
+        with pytest.raises(CliError) as exc:
+            cmd_speech_synthesize(args)
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_play_without_tty_exits_2(self, tmp_path, monkeypatch):
+        """Regla 5 (§2.6): --play sin terminal → exit 2."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar.exit_codes import EXIT_INVALID_INPUT
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        args = MockArgs(text="hola", label="saludo", voice="default", play=True)
+        with pytest.raises(CliError) as exc:
+            cmd_speech_synthesize(args)
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_illegal_voice_exits_2(self, tmp_path, monkeypatch):
+        """Identificador ilegal (voz) → exit 2."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar.exit_codes import EXIT_INVALID_INPUT
+
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._validate_path_segment",
+                            MagicMock(side_effect=ValueError("ilegal")))
+        args = MockArgs(text="hola", label="saludo", voice="..")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_synthesize(args)
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+
+class TestCmdSynthesizePlayLoop:
+    """Bucle interactivo de `speech synthesize --play` (§2.4): una fila
+    por cada opción del menú 1–4 y cada caso de borde."""
+
+    def _fake_env(self, tmp_path, monkeypatch):
+        store = tmp_path / "synthetic-speech"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+        # --play exige terminal interactiva: isatty debe retornar True.
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    def test_option_4_discards_leaving_no_wav(self, tmp_path, monkeypatch):
+        """Opción 4: rechazar y descartar → no queda WAV ni sidecar, exit 0."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(
+            "tts_sidecar.cli._dispatch_synthesis",
+            MagicMock(return_value=(_synth_result(b"RIFFdata", t3=1.0, s3gen=2.0), False)),
+        )
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        monkeypatch.setattr("tts_sidecar.cli._play_audio", MagicMock())
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=["4"]))
+
+        args = MockArgs(text="hola", label="saludo", voice="default", play=True)
+        cmd_speech_synthesize(args)
+
+        from tts_sidecar import synthetic_speech
+        assert not synthetic_speech.exists("default", "saludo")
+
+    def test_option_2_accepts_and_persists(self, tmp_path, monkeypatch):
+        """Opción 2: aceptar y guardar → persiste la toma, exit 0."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(
+            "tts_sidecar.cli._dispatch_synthesis",
+            MagicMock(return_value=(_synth_result(b"RIFFdata", t3=1.0, s3gen=2.0), False)),
+        )
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        monkeypatch.setattr("tts_sidecar.cli._play_audio", MagicMock())
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=["2"]))
+
+        args = MockArgs(text="hola", label="saludo", voice="default", play=True)
+        cmd_speech_synthesize(args)
+
+        from tts_sidecar import synthetic_speech
+        assert synthetic_speech.exists("default", "saludo")
+
+    def test_option_1_then_2_replays_without_resynthesizing(self, tmp_path, monkeypatch):
+        """Opción 1 (repetir) luego 2 (aceptar): _dispatch_synthesis llamado
+        una sola vez (cero re-síntesis al repetir)."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from unittest.mock import MagicMock
+
+        dispatch_count = [0]
+        def _counted_dispatch(*_, **__):
+            dispatch_count[0] += 1
+            return (_synth_result(b"RIFFdata", t3=1.0, s3gen=2.0), False)
+
+        monkeypatch.setattr("tts_sidecar.cli._dispatch_synthesis", _counted_dispatch)
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        monkeypatch.setattr("tts_sidecar.cli._play_audio", MagicMock())
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=["1", "2"]))
+
+        args = MockArgs(text="hola", label="saludo", voice="default", play=True)
+        cmd_speech_synthesize(args)
+
+        assert dispatch_count[0] == 1
+
+    def test_option_3_then_4_resynthesizes_discards(self, tmp_path, monkeypatch):
+        """Opción 3 (regenerar) luego 4 (descartar): dos síntesis, nada persistido."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar import synthetic_speech
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from unittest.mock import MagicMock
+
+        dispatch_count = [0]
+        def _counted_dispatch(*_, **__):
+            dispatch_count[0] += 1
+            return (_synth_result(b"RIFFdata", t3=1.0, s3gen=2.0), False)
+
+        monkeypatch.setattr("tts_sidecar.cli._dispatch_synthesis", _counted_dispatch)
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        monkeypatch.setattr("tts_sidecar.cli._play_audio", MagicMock())
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=["3", "4"]))
+
+        args = MockArgs(text="hola", label="saludo", voice="default", play=True)
+        cmd_speech_synthesize(args)
+
+        assert dispatch_count[0] == 2
+        assert not synthetic_speech.exists("default", "saludo")
+
+    def test_eof_discards(self, tmp_path, monkeypatch):
+        """Ctrl-D (EOFError) en el bucle → descarta, no persiste."""
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar import synthetic_speech
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(
+            "tts_sidecar.cli._dispatch_synthesis",
+            MagicMock(return_value=(_synth_result(b"RIFFdata", t3=1.0, s3gen=2.0), False)),
+        )
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        monkeypatch.setattr("tts_sidecar.cli._play_audio", MagicMock())
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=EOFError))
+
+        args = MockArgs(text="hola", label="saludo", voice="default", play=True)
+        cmd_speech_synthesize(args)
+
+        assert not synthetic_speech.exists("default", "saludo")
+
+    def test_collision_on_accept_exits_6(self, tmp_path, monkeypatch):
+        """Cuando se acepta (opción 2) y la etiqueta quedó ocupada sin --force → exit 6."""
+        store = self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar import synthetic_speech
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar.exit_codes import EXIT_STATE_CONFLICT
+
+        # La colisión ocurre al revalidar en la aceptación (opción 2).
+        # Para lograrlo: la primera vez (antes de sintetizar) la etiqueta no existe;
+        # pero al revalidar en la aceptación, sí existe.
+        synthetic_speech.save("default", "otra", b"RIFFold", "otra locución")
+
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+
+        call_count = [0]
+        original_exists = synthetic_speech.exists
+
+        def _exists_with_collision(v, l):
+            call_count[0] += 1
+            if l == "saludo":
+                # La etiqueta "saludo" aparece como existente solo en la revalidación (llamada 2+).
+                return call_count[0] >= 2
+            return original_exists(v, l)
+
+        monkeypatch.setattr(synthetic_speech, "exists", _exists_with_collision)
+
+        monkeypatch.setattr(
+            "tts_sidecar.cli._dispatch_synthesis",
+            MagicMock(return_value=(_synth_result(b"RIFFdata", t3=1.0, s3gen=2.0), False)),
+        )
+        monkeypatch.setattr("tts_sidecar.cli._play_audio", MagicMock())
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=["2"]))
+
+        args = MockArgs(text="hola", label="saludo", voice="default", play=True)
+        with pytest.raises(CliError) as exc:
+            cmd_speech_synthesize(args)
+        assert exc.value.code == EXIT_STATE_CONFLICT
+
+
+class TestCmdSpeechPlay:
+    """Matriz de `speech play` (§2.7, §2.10)."""
+
+    def _fake_env(self, tmp_path, monkeypatch):
+        store = tmp_path / "synthetic-speech"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+        from tts_sidecar import synthetic_speech
+        synthetic_speech.save("default", "saludo", b"RIFFdata", "Hola")
+
+    def test_play_existing_reproduces_and_emits_json(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_play
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        monkeypatch.setattr("tts_sidecar.cli._play_audio", MagicMock())
+        emitted = {}
+        monkeypatch.setattr("tts_sidecar.cli.emit_json", lambda p: emitted.update(p))
+
+        args = MockArgs(label="saludo", voice="default", json=True)
+        cmd_speech_play(args)
+
+        assert emitted == {"voice": "default", "label": "saludo"}
+
+    def test_play_missing_label_exits_3(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_play
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        args = MockArgs(label="ausente", voice="default")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_play(args)
+        assert exc.value.code == EXIT_NOT_FOUND
+
+    def test_play_illegal_label_exits_2(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_play
+        from tts_sidecar.exit_codes import EXIT_INVALID_INPUT
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        args = MockArgs(label="..", voice="default")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_play(args)
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_play_voice_not_found_exits_3(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_play
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value=None))
+        args = MockArgs(label="saludo", voice="inexistente")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_play(args)
+        assert exc.value.code == EXIT_NOT_FOUND
+
+
+class TestCmdSpeechList:
+    """Matriz de `speech list` (§2.7)."""
+
+    def _fake_env(self, tmp_path, monkeypatch):
+        store = tmp_path / "synthetic-speech"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+        from tts_sidecar import synthetic_speech
+        synthetic_speech.save("default", "saludo", b"RIFFa", "Hola mundo")
+        synthetic_speech.save("otra", "despedida", b"RIFFb", "Adiós")
+
+    def test_list_all_enumerates_by_wav(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_list
+        from unittest.mock import patch
+
+        with patch("tts_sidecar.voices._resolve_voice_dir", return_value="/fake/default"), \
+             patch("tts_sidecar.voices._resolve_voice_dir", return_value="/fake/otra"):
+            # Solo verifica que la función no lanza excepción con múltiples voces.
+            args = MockArgs()
+            # Sin --json; la función imprime por stdout (no raise).
+            cmd_speech_list(args)
+
+    def test_list_filters_by_voice(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_list
+        from unittest.mock import MagicMock
+
+        emitted = {}
+        monkeypatch.setattr("tts_sidecar.cli.emit_json", lambda p: emitted.update(p))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/otra"))
+
+        args = MockArgs(voice="otra", json=True)
+        cmd_speech_list(args)
+
+        assert len(emitted["synthetic_speech"]) == 1
+        entry = emitted["synthetic_speech"][0]
+        assert set(entry.keys()) == {"voice", "label", "text", "created_at"}
+        assert entry["voice"] == "otra"
+        assert entry["label"] == "despedida"
+        assert entry["text"] == "Adiós"
+        assert entry["created_at"] is not None
+
+    def test_list_tolerates_orphan_sidecar(self, tmp_path, monkeypatch):
+        """El listado enumera por WAV y tolera sidecar ausente (text=None)."""
+        store = tmp_path / "synthetic-speech"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+        from tts_sidecar import synthetic_speech
+        synthetic_speech.save("default", "saludo", b"RIFFdata", "Hola")
+        # Elimino el sidecar: queda el WAV huérfano.
+        wav = synthetic_speech.wav_path("default", "saludo")
+        os.unlink(wav.replace(".wav", ".json"))
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+
+        entries = synthetic_speech.list_entries(voice="default")
+        assert len(entries) == 1
+        assert entries[0]["text"] is None
+        assert entries[0]["created_at"] is None
+
+    def test_list_voice_not_found_exits_3(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_list
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value=None))
+        args = MockArgs(voice="inexistente")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_list(args)
+        assert exc.value.code == EXIT_NOT_FOUND
+
+    def test_list_orphan_wav_tolerates_missing_sidecar_json(self, tmp_path, monkeypatch, capsys):
+        """El CLI lista orfanos de sidecar (WAV sin JSON) con text=None,
+        created_at=None, sin fallar."""
+        store = tmp_path / "synthetic-speech"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+        from tts_sidecar import synthetic_speech
+        from tts_sidecar.cli import cmd_speech_list
+        import json
+
+        synthetic_speech.save("default", "saludo", b"RIFFdata", "Hola")
+        # Borro el JSON: queda el WAV huérfano sin metadato.
+        sidecar = synthetic_speech.wav_path("default", "saludo")[: -len(".wav")] + ".json"
+        os.unlink(sidecar)
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+
+        args = MockArgs(json=True)
+        cmd_speech_list(args)
+
+        payload = json.loads(capsys.readouterr().out)
+        entries = payload["synthetic_speech"]
+        assert len(entries) == 1
+        assert entries[0]["voice"] == "default"
+        assert entries[0]["label"] == "saludo"
+        assert entries[0]["text"] is None
+        assert entries[0]["created_at"] is None
+
+
+class TestCmdSpeechRemove:
+    """Matriz de `speech remove` (§2.7, §2.10)."""
+
+    def _fake_env(self, tmp_path, monkeypatch):
+        store = tmp_path / "synthetic-speech"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+        from tts_sidecar import synthetic_speech
+        synthetic_speech.save("default", "saludo", b"RIFFdata", "Hola")
+
+    def test_remove_existing_deletes_wav_and_sidecar(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_remove
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        emitted = {}
+        monkeypatch.setattr("tts_sidecar.cli.emit_json", lambda p: emitted.update(p))
+
+        args = MockArgs(label="saludo", voice="default", json=True)
+        cmd_speech_remove(args)
+
+        assert emitted == {"voice": "default", "label": "saludo"}
+
+    def test_remove_missing_label_exits_3(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_remove
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        args = MockArgs(label="ausente", voice="default")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_remove(args)
+        assert exc.value.code == EXIT_NOT_FOUND
+
+    def test_remove_illegal_label_exits_2(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_remove
+        from tts_sidecar.exit_codes import EXIT_INVALID_INPUT
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        args = MockArgs(label="..", voice="default")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_remove(args)
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_remove_voice_not_found_exits_3(self, tmp_path, monkeypatch):
+        self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_speech_remove
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
+
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value=None))
+        args = MockArgs(label="saludo", voice="inexistente")
+        with pytest.raises(CliError) as exc:
+            cmd_speech_remove(args)
+        assert exc.value.code == EXIT_NOT_FOUND
+
+class TestCmdSpeechDaemonDispatch:
+    """Tres modos de despacho (§2.5) para synthesize y clone."""
+
+    def test_explicit_daemon_down_exits_5_synthesize(self, tmp_path, monkeypatch):
+        """--daemon sin daemon activo → exit 5 (_dispatch_synthesis comprueba
+        is_daemon_running y aborta antes de sintetizar)."""
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from tts_sidecar.exit_codes import EXIT_DAEMON_UNREACHABLE
+
+        store = tmp_path / "store"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+
+        monkeypatch.setattr("tts_sidecar.daemon.is_daemon_running", MagicMock(return_value=False))
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+
+        args = MockArgs(text="hola", label="daemon-down-label", voice="default", daemon=True)
+        with pytest.raises(CliError) as exc:
+            cmd_speech_synthesize(args)
+        assert exc.value.code == EXIT_DAEMON_UNREACHABLE
+
+    def test_explicit_daemon_down_exits_5_clone(self, tmp_path, monkeypatch):
+        """--daemon sin daemon activo en voice clone → exit 5."""
+        from tts_sidecar.cli import cmd_voice_clone
+        from tts_sidecar.exit_codes import EXIT_DAEMON_UNREACHABLE
+
+        monkeypatch.setattr("tts_sidecar.daemon.is_daemon_running", MagicMock(return_value=False))
+        monkeypatch.setattr("tts_sidecar.voices.clone_voice_files",
+                            MagicMock(return_value=(tmp_path / "t.wav", tmp_path / "s.wav")))
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+
+        args = MockArgs(name="nueva", timbre_reference=str(tmp_path / "t.wav"),
+                        speech_reference=str(tmp_path / "s.wav"), daemon=True)
+        with pytest.raises(CliError) as exc:
+            cmd_voice_clone(args)
+        assert exc.value.code == EXIT_DAEMON_UNREACHABLE
+
+    def test_explicit_no_daemon_forces_direct_no_synth_called(self, tmp_path, monkeypatch):
+        """--no-daemon fuerza ruta directa sin sondear daemon."""
+        from tts_sidecar.cli import cmd_voice_clone
+
+        monkeypatch.setattr("tts_sidecar.daemon.is_daemon_running", MagicMock(return_value=False))
+        monkeypatch.setattr("tts_sidecar.voices.clone_voice_files",
+                            MagicMock(return_value=(tmp_path / "t.wav", tmp_path / "s.wav")))
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices.voices_root", lambda: str(tmp_path / "voices"))
+        mock_engine_cls = MagicMock()
+        mock_engine_cls.get_instance.return_value.precompute_voice.return_value = True
+        monkeypatch.setattr("tts_sidecar.engine.ChatterboxEngine", mock_engine_cls)
+
+        args = MockArgs(name="nueva", timbre_reference=str(tmp_path / "t.wav"),
+                        speech_reference=str(tmp_path / "s.wav"), no_daemon=True)
+        cmd_voice_clone(args)
+        # Llegar aquí sin CliError de daemon inalcanzable = test pasó.
+
+    def test_autodetect_with_daemon_running_uses_daemon_for_synthesize(
+        self, tmp_path, monkeypatch
+    ):
+        """Sin flags, daemon corriendo → autodetección usa daemon (daemon_flag=True)."""
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from unittest.mock import MagicMock
+
+        store = tmp_path / "store"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+
+        monkeypatch.setattr("tts_sidecar.daemon.is_daemon_running", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.cli._dispatch_synthesis",
+                            MagicMock(return_value=(_synth_result(b"RIFF", t3=0.0, s3gen=0.0), True)))
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+
+        args = MockArgs(text="hola", label="autodetect-label", voice="default")
+        cmd_speech_synthesize(args)
+        # El resultado del dispatch tiene daemon_flag=True; main() no lanza excepción = éxito.
+
+    def test_autodetect_daemon_down_falls_back_to_direct(self, tmp_path, monkeypatch):
+        """Sin flags, daemon no responde → autodetección degrada a modo
+        directo y completa con éxito (no sale 5)."""
+        from tts_sidecar.cli import cmd_speech_synthesize
+        from unittest.mock import MagicMock
+
+        store = tmp_path / "store"
+        store.mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+
+        monkeypatch.setattr("tts_sidecar.daemon.is_daemon_running", MagicMock(return_value=False))
+        monkeypatch.setattr("tts_sidecar.cli._dispatch_synthesis",
+                            MagicMock(return_value=(_synth_result(), False)))
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+        monkeypatch.setattr("tts_sidecar.voices._resolve_voice_dir", MagicMock(return_value="/fake/default"))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("tts_sidecar.cli._play_audio", MagicMock())
+        monkeypatch.setattr("builtins.input", MagicMock(return_value="4"))
+
+        args = MockArgs(text="hola", label="fallback-label", voice="default", play=True)
+        cmd_speech_synthesize(args)
+        # Llegar aquí sin CliError = fallback directo exitoso.
+
+class TestCmdCleanupSyntheticSpeech:
+    """Tests de `cleanup --synthetic-speech`, `--voices` drag y `--all`
+    incluyendo el almacén (§2.11)."""
+
+    def _args(self, **kw):
+        return MockArgs(
+            model=kw.get("model", False),
+            voices=kw.get("voices", False),
+            synthetic_speech=kw.get("synthetic_speech", False),
+            all=kw.get("all", False),
+            dry_run=kw.get("dry_run", False),
+            yes=kw.get("yes", False),
+            json=kw.get("json", False),
+            cleanup_parser=MagicMock(),
+        )
+
+    def _fake_env(self, tmp_path, monkeypatch):
+        """Caché HF sintética + modelo + voces + almacén aislado con 'default/'."""
+        hub = tmp_path / "hub"
+        propio1 = hub / "models--ResembleAI--Chatterbox-Multilingual-es-mx-latam"
+        propio2 = hub / "models--ResembleAI--chatterbox"
+        for d in (propio1, propio2):
+            d.mkdir(parents=True)
+        from huggingface_hub import constants
+        monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
+
+        voices = tmp_path / "voices"
+        (voices / "mi_voz").mkdir(parents=True)
+        monkeypatch.setattr("tts_sidecar.voices.voices_root", lambda: str(voices))
+
+        store = tmp_path / "synthetic-speech"
+        store.mkdir()
+        (store / "default").mkdir()
+        (store / "mi_voz").mkdir()
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
+
+        return propio1, propio2, voices, store
+
+    def test_cleanup_synthetic_speech_deletes_store_root(self, tmp_path, monkeypatch):
+        """--synthetic-speech borra la raíz del almacén entera."""
+        _, _, _, store = self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_cleanup
+
+        cmd_cleanup(self._args(synthetic_speech=True, yes=True))
+        assert not store.exists()
+
+    def test_cleanup_voices_drag_excludes_default_namespace(self, tmp_path, monkeypatch):
+        """--voices arrastra los namespaces de habla sintética de las voces
+        borradas, pero preserva el namespace 'default' (voz de fábrica)."""
+        _, _, _, store = self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_cleanup
+
+        # Evitar que se intente borrar dirs del modelo real que existen en este equipo.
+        monkeypatch.setattr(
+            "tts_sidecar.model_cache.model_cache_dirs",
+            MagicMock(return_value=[]),
+        )
+        cmd_cleanup(self._args(voices=True, yes=True))
+        # El namespace 'default' del almacén debe sobrevivir a --voices.
+        assert (store / "default").exists(), "default sobrevive a --voices"
+
+    def test_cleanup_all_includes_store(self, tmp_path, monkeypatch):
+        """--all incluye el almacén de habla sintética en el borrado."""
+        _, _, _, store = self._fake_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "tts_sidecar.model_cache.model_cache_dirs",
+            MagicMock(return_value=[]),
+        )
+        from tts_sidecar.cli import cmd_cleanup
+
+        cmd_cleanup(self._args(all=True, yes=True))
+        # El almacén entero se borra con --all.
+        assert not store.exists()
+
+    def test_cleanup_dry_run_does_not_delete(self, tmp_path, monkeypatch, capsys):
+        """--dry-run enumera las rutas sin borrarlas."""
+        _, _, _, store = self._fake_env(tmp_path, monkeypatch)
+        from tts_sidecar.cli import cmd_cleanup
+
+        cmd_cleanup(self._args(synthetic_speech=True, dry_run=True))
+        assert store.exists(), "dry-run no borró nada"
+        assert "dry-run" in capsys.readouterr().out

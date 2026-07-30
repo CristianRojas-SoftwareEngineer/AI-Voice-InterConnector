@@ -30,6 +30,8 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ### Cambiado
 
+- **Cambio incompatible acumulado en los tres movimientos del rediseño**: recoge las tres rupturas de contrato que se consolidan en 0.9.0: (1) **desaparición del comando `speak`**, eliminado en el Movimiento 1 y reemplazado sucesivamente por `speech say` (Movimiento 2) y `speech synthesize` (Movimiento 3), sin que quede ningún alias de `speak` en la superficie de la CLI; (2) **remapeo de códigos de salida a enteros**, con las constantes `EXIT_*` en camelCase de `exit_codes.py` sustituyendo al antiguo sistema de nombres, y `main()` como único traductor de causas a enteros; (3) **clave `"error"` en los payloads `--json` del canal de error**, de modo que `main()` traduce toda salida no-cero a un objeto `{"schema_version","error":{"code","reason","message"}}` en stdout bajo `--json`, en lugar de dejar stdout vacío como ocurría con los errores de `speak`.
+
 - **`voice clone` precomputa los conditionals en el momento de clonar**: antes el
   clonado solo validaba y copiaba los audios, y la preparación de la voz (cómputo
   de conditionals) se difería a cada síntesis — que, sin `conditionals.pt` en
@@ -44,6 +46,23 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   clonado: la voz queda registrada con un aviso por stderr y sus conditionals se
   computan en la primera síntesis (red de seguridad on-the-fly conservada). El
   payload `--json` incluye la clave `precomputed`.
+
+### Añadido
+
+- **`cleanup --synthetic-speech`**: elimina toda la raíz del almacén de
+  habla sintética (`data_root()/synthetic-speech/`), incluida la voz
+  `default`. Complementa `--voices` (que preserva `default`) y `--model`.
+- **`--voices` arrastra las locuciones de habla sintética**: al borrar
+  voces de usuario con `cleanup --voices`, las locuciones guardadas en los
+  namespaces de habla sintética de esas voces se eliminan en la misma
+  operación, excepto las de `default` (voz de fábrica de solo lectura).
+  Anteriormente esos archivos huérfanos quedaban como residuo.
+- **`voice clone --daemon` y `--no-daemon`**: el precómputo de conditionals
+  al clonar una voz ahora despacha según los tres modos (autodetect,
+  `--daemon`, `--no-daemon`), igual que las sub-acciones de `speech`. Sin
+  flags se sondea el daemon y se usa solo si responde; con `--daemon` se
+  exige y sale 5 si no está activo; con `--no-daemon` se fuerza modo
+  directo.
 
 ### Eliminado
 

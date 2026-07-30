@@ -187,110 +187,141 @@ def _require_model_cached(model: str = "es-mx-latam"):
         )
 
 
-def _emit_speak_json(args, voice_name: str, result, daemon: bool) -> None:
-    """Payload --json de `speech say`: metadatos + métricas, idéntico en modo
-    directo y vía daemon."""
-    emit_json({
-        "voice": voice_name,
-        "t3_time": result.metrics.t3,
-        "s3gen_time": result.metrics.s3gen,
-        "daemon": daemon,
-    })
+def _emit_speak_json(voice_name: str) -> None:
+    """Payload --json de `speech say`: solo la voz efectiva (§2.10).
+
+    No repite el `text` (el llamador acaba de mandarlo) ni emite tiempos ni
+    la vía de despacho: lo único que el llamador puede no saber es qué voz se
+    usó, porque si no pasó --voice la eligió el sistema.
+    """
+    emit_json({"voice": voice_name})
+
+
+def _validate_synthesis_text(text: str) -> None:
+    """Valida el texto de síntesis (reglas 3 y 4 de §2.6), común a say y synthesize.
+
+    Texto vacío o solo espacios y texto que excede `MAX_TEXT_LENGTH` salen con 2,
+    validado en el cliente antes de cualquier despacho (el tope del daemon es
+    defensa en profundidad). El aviso de truncado por texto largo (>2000) es no
+    bloqueante y va por stderr.
+    """
+    if not text or not text.strip():
+        raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                       "Error: --text no puede estar vacío.")
+
+    from .daemon.protocol import MAX_TEXT_LENGTH
+    if len(text) > MAX_TEXT_LENGTH:
+        raise CliError(
+            EXIT_INVALID_INPUT,
+            "usage_error",
+            f"Error: el texto tiene {len(text)} caracteres; el máximo permitido es "
+            f"{MAX_TEXT_LENGTH}. Fragmenta el texto en varias llamadas.",
+        )
+
+    if len(text) > 2000:
+        print(
+            f"Advertencia: el texto tiene {len(text)} caracteres; los textos "
+            "muy largos pueden truncarse al sintetizar (límite interno de tokens). "
+            "Considera fragmentarlo en oraciones o párrafos para mejores resultados.",
+            file=sys.stderr,
+        )
+
+
+def _validate_identifier(value: str, kind: str) -> str:
+    """Valida y normaliza un identificador (voz o etiqueta); exit 2 si es ilegal.
+
+    Delega en el único validador parametrizado (`voices._validate_path_segment`),
+    de modo que voz y etiqueta comparten regex y defensa anti-escape; `kind` fija
+    el sustantivo del mensaje para que el error apunte al flag correcto (§2.8).
+    """
+    from . import voices
+    try:
+        return voices._validate_path_segment(value, kind=kind)
+    except ValueError as e:
+        raise CliError(EXIT_INVALID_INPUT, "invalid_identifier", f"Error: {e}")
+
+
+def _require_voice_exists(voice_name: str) -> None:
+    """Exige que la voz exista (usuario o fábrica); exit 3 si no (§2.6).
+
+    Se aplica en las cinco sub-acciones de `speech` para que «voz mal escrita»
+    nunca se disfrace de «sin resultados».
+    """
+    from . import voices
+    if voices._resolve_voice_dir(voice_name) is None:
+        raise CliError(
+            EXIT_NOT_FOUND, "voice_not_found",
+            f"Error: la voz '{voice_name}' no existe. Clónala con 'tts-sidecar "
+            "voice clone' o usa la voz 'default'.",
+        )
+
+
+def _dispatch_synthesis(args, voice_name: str):
+    """Despacho de tres modos (§2.5). Devuelve `(result, daemon_flag)`.
+
+    Compartido por `speech synthesize` y `speech say`: ambas sintetizan igual y
+    solo difieren en el destino de `result` (disco o parlantes).
+      --daemon:    exige el daemon; exit 5 si no está activo (no degrada).
+      --no-daemon: fuerza modo directo sin sondear.
+      sin flags:   autodetección: daemon si responde, directo si no.
+    """
+    from .daemon import is_daemon_running
+
+    if getattr(args, "daemon", False):
+        if not is_daemon_running():
+            raise CliError(
+                EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                "Error: se exigió el daemon (--daemon) pero no está activo. "
+                "Inícialo con 'tts-sidecar daemon start' o reintenta sin --daemon.",
+            )
+        _warn_compute_backend_ignored(args)
+        return _synthesize_via_daemon(args, voice_name), True
+
+    if not getattr(args, "no_daemon", False) and is_daemon_running():
+        _warn_compute_backend_ignored(args)
+        return _synthesize_via_daemon(args, voice_name), True
+
+    # Modo directo: los imports pesados solo se cargan cuando no se usa el daemon.
+    log("[Servidor] No disponible o desactivado; usando modo directo")
+    from .engine import ChatterboxEngine
+
+    # Resuelve las rutas de audio de la voz SIN cargar el modelo: solo la rama
+    # directa las necesita (el daemon resuelve el nombre por su cuenta).
+    timbre_reference, speech_reference = _resolve_voice_paths(args)
+
+    # Spinner de liveness durante los dos tramos largos y opacos: la carga del
+    # modelo (primer speak) y la síntesis. Las líneas [Stage N/4] del engine se
+    # intercalan de forma coordinada (timing._active_spinner).
+    with Spinner("Cargando modelo…") as _sp:
+        engine = ChatterboxEngine.get_instance(compute_backend=args.compute_backend)
+        _sp.update("Sintetizando voz…")
+        result = engine.speak(
+            text=args.text,
+            timbre_reference=timbre_reference,
+            speech_reference=speech_reference,
+            progress_callback=lambda ev: _sp.update(format_progress_event(ev)),
+        )
+    return result, False
 
 
 @timed_command
 def cmd_speech_say(args):
-    """Sintetiza texto y reproduce el audio."""
-
+    """Sintetiza texto y reproduce el audio (no persiste)."""
     try:
-        if not args.text or not args.text.strip():
-            raise CliError(EXIT_INVALID_INPUT, "usage_error",
-                            "Error: --text no puede estar vacío.")
+        _validate_synthesis_text(args.text)
 
-        # Límite único de texto validado en el cliente antes de cualquier
-        # despacho, con el mismo exit code (4) sin importar la ruta (directo o
-        # daemon). El límite del daemon (protocol.MAX_TEXT_LENGTH) queda como
-        # defensa en profundidad, no como la única fuente de la validación.
-        from .daemon.protocol import MAX_TEXT_LENGTH
-        if len(args.text) > MAX_TEXT_LENGTH:
-            raise CliError(
-                EXIT_INVALID_INPUT,
-                "usage_error",
-                f"Error: el texto tiene {len(args.text)} caracteres; el máximo "
-                f"permitido es {MAX_TEXT_LENGTH}. Fragmenta el texto en varias "
-                "llamadas a 'speech say'.",
-            )
+        # Nombre de voz efectivo: el de --voice, o "default" (voz de fábrica).
+        voice_name = _validate_identifier(getattr(args, "voice", None) or "default", "voz")
 
-        # Advertencia no bloqueante para textos muy largos: el T3 topa a
-        # MAX_NEW_TOKENS=500, así que una entrada larga puede truncarse en la
-        # síntesis. Se avisa por stderr (sin abortar) sugiriendo fragmentar.
-        if len(args.text) > 2000:
-            print(
-                f"Advertencia: el texto tiene {len(args.text)} caracteres; los textos "
-                "muy largos pueden truncarse al sintetizar (límite interno de tokens). "
-                "Considera fragmentarlo en oraciones o párrafos para mejores resultados.",
-                file=sys.stderr,
-            )
-
-        # Exige que el modelo esté en caché antes de sintetizar.
-        # Las descargas son responsabilidad exclusiva de 'setup'.
+        # Exige el modelo en caché antes de sintetizar (descargas → 'setup').
         _require_model_cached()
+        _require_voice_exists(voice_name)
 
-        # Nombre de voz efectivo para el payload --json y para la síntesis: el
-        # de --voice, o "default" cuando cmd_speech_say recurre a la voz de fábrica.
-        voice_name = getattr(args, "voice", None) or "default"
-
-        # Despacho de tres ramas:
-        #   --daemon:    usar el daemon sin sondeo previo; un fallo se reporta.
-        #   --no-daemon: modo directo sin sondear.
-        #   sin flags:   health check corto; daemon si responde, directo si no.
-        # Todas las ramas solo computan `result`; la reproducción y la
-        # emisión JSON se hacen una sola vez, después del bloque.
-        daemon_flag = False
-        synthesized = False
-
-        if getattr(args, 'daemon', False):
-            _warn_compute_backend_ignored(args)
-            result = _synthesize_via_daemon(args, voice_name)
-            daemon_flag = True
-            synthesized = True
-        elif not getattr(args, 'no_daemon', False):
-            from .daemon import is_daemon_running
-            if is_daemon_running():
-                _warn_compute_backend_ignored(args)
-                result = _synthesize_via_daemon(args, voice_name)
-                daemon_flag = True
-                synthesized = True
-            else:
-                log("[Servidor] No disponible; usando modo directo")
-
-        if not synthesized:
-            # Modo directo: los imports solo se cargan cuando no se usa el daemon.
-            from .engine import ChatterboxEngine
-
-            # Resuelve las rutas de audio de la voz SIN cargar el modelo: solo la
-            # rama directa necesita rutas (el daemon resuelve el nombre por su cuenta).
-            timbre_reference, speech_reference = _resolve_voice_paths(args)
-
-            # Spinner de liveness durante los dos tramos largos y opacos: la carga del
-            # modelo (primer speak) y la síntesis. Las líneas [Stage N/4] que emite el
-            # engine vía log() se intercalan de forma coordinada (timing._active_spinner).
-            with Spinner("Cargando modelo…") as _sp:
-                engine = ChatterboxEngine.get_instance(compute_backend=args.compute_backend)
-                _sp.update("Sintetizando voz…")
-                # Mismo formateador de progreso que el modo daemon: los eventos del
-                # motor (etapa y tokens del T3) actualizan la etiqueta del spinner.
-                result = engine.speak(
-                    text=args.text,
-                    timbre_reference=timbre_reference,
-                    speech_reference=speech_reference,
-                    progress_callback=lambda ev: _sp.update(format_progress_event(ev)),
-                )
-
+        result, _daemon_flag = _dispatch_synthesis(args, voice_name)
         _play_audio(result.audio_bytes)
 
         if getattr(args, "json", False):
-            _emit_speak_json(args, voice_name, result, daemon=daemon_flag)
+            _emit_speak_json(voice_name)
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -310,6 +341,217 @@ def cmd_speech_say(args):
             raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
                             f"Error: no se pudo sintetizar vía daemon: {e}")
         raise CliError(EXIT_ERROR, "generic", f"Error: {e}")
+
+
+@timed_command
+def cmd_speech_synthesize(args):
+    """Sintetiza texto y lo guarda en el almacén de habla sintética (§2.4)."""
+    from . import synthetic_speech
+
+    try:
+        # Regla 2 (§2.6): --json y --play son incompatibles (el bucle usa
+        # stdin/stdout y contaminaría el payload).
+        if getattr(args, "json", False) and getattr(args, "play", False):
+            raise CliError(
+                EXIT_INVALID_INPUT, "usage_error",
+                "Error: --play y --json son incompatibles: el bucle interactivo "
+                "usa la entrada y la salida estándar y contaminaría el payload.",
+            )
+
+        # Regla 5 (§2.6): --play exige terminal en la entrada estándar. Se
+        # rechaza antes de sintetizar.
+        if getattr(args, "play", False) and not sys.stdin.isatty():
+            raise CliError(
+                EXIT_INVALID_INPUT, "usage_error",
+                "Error: --play requiere una terminal interactiva en la entrada "
+                "estándar; no la hay en esta invocación.",
+            )
+
+        _validate_synthesis_text(args.text)
+        voice_name = _validate_identifier(getattr(args, "voice", None) or "default", "voz")
+        label = _validate_identifier(args.label, "etiqueta")
+
+        _require_model_cached()
+        _require_voice_exists(voice_name)
+
+        force = getattr(args, "force", False)
+        # Fast-fail de colisión antes de gastar GPU (§2.4): etiqueta tomada sin
+        # --force sale 6 sin sintetizar.
+        if not force and synthetic_speech.exists(voice_name, label):
+            raise CliError(
+                EXIT_STATE_CONFLICT, "label_exists",
+                f"Error: la etiqueta '{label}' ya existe para la voz '{voice_name}'. "
+                "Usa --force para sobrescribirla o elige otra etiqueta.",
+            )
+
+        result, daemon_flag = _dispatch_synthesis(args, voice_name)
+
+        if getattr(args, "play", False):
+            # Bucle interactivo: reproduce y pregunta antes de guardar. La
+            # persistencia (o su ausencia) la decide el bucle.
+            _synthesize_play_loop(args, voice_name, label, result, force)
+            return
+
+        synthetic_speech.save(voice_name, label, result.audio_bytes, args.text)
+
+        if getattr(args, "json", False):
+            emit_json({
+                "voice": voice_name,
+                "label": label,
+                "t3_time": result.metrics.t3,
+                "s3gen_time": result.metrics.s3gen,
+                "daemon": daemon_flag,
+            })
+        else:
+            print(f"Locución '{label}' guardada (voz '{voice_name}').")
+
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        from .model_cache import is_model_cached
+        if not is_model_cached("es-mx-latam"):
+            raise CliError(EXIT_MODEL_MISSING, "model_missing",
+                            "Ejecuta 'tts-sidecar setup' primero.")
+        raise CliError(EXIT_NOT_FOUND, "not_found", "Voz no encontrada.")
+    except Exception as e:
+        from .daemon import DaemonIPCError
+        if isinstance(e, DaemonIPCError):
+            raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                            f"Error: no se pudo sintetizar vía daemon: {e}")
+        raise CliError(EXIT_ERROR, "generic", f"Error: {e}")
+
+
+def _synthesize_play_loop(args, voice_name: str, label: str, result, force: bool) -> None:
+    """Bucle interactivo de `speech synthesize --play` (§2.4).
+
+    Reproduce la toma y ofrece cuatro opciones por un menú numerado en stderr:
+      1) reproducir otra vez (mismos bytes en memoria, cero síntesis),
+      2) aceptar y guardar (persiste la toma que sonó, exit 0),
+      3) rechazar y regenerar (re-sintetiza y vuelve a preguntar),
+      4) rechazar y descartar (exit 0, sin escribir).
+    Ctrl-D (EOF) mapea a «descartar y salir». La regla 2 garantiza que aquí
+    nunca coexiste --json, así que la pregunta y los avisos van por stderr sin
+    contaminar ningún payload.
+    """
+    from . import synthetic_speech
+
+    _play_audio(result.audio_bytes)
+    while True:
+        print(
+            "\n¿Qué quieres hacer con esta toma?\n"
+            "  1) Reproducir otra vez\n"
+            "  2) Aceptar y guardar\n"
+            "  3) Rechazar y regenerar\n"
+            "  4) Rechazar y descartar",
+            file=sys.stderr,
+        )
+        try:
+            choice = input("Opción [1-4]: ").strip()
+        except EOFError:
+            # Ctrl-D: descartar y salir (exit 0, sin persistir).
+            print("\nDescartado: no se guardó nada.", file=sys.stderr)
+            return
+
+        if choice == "1":
+            _play_audio(result.audio_bytes)
+        elif choice == "2":
+            # Revalida la colisión al escribir: la ventana del bucle pudo tomar
+            # la etiqueta. Sin --force, colisión → exit 6 (§2.4).
+            if not force and synthetic_speech.exists(voice_name, label):
+                raise CliError(
+                    EXIT_STATE_CONFLICT, "label_exists",
+                    f"Error: la etiqueta '{label}' quedó ocupada para la voz "
+                    f"'{voice_name}' mientras decidías. Usa --force o elige otra.",
+                )
+            synthetic_speech.save(voice_name, label, result.audio_bytes, args.text)
+            print(f"Guardado: locución '{label}' (voz '{voice_name}').", file=sys.stderr)
+            return
+        elif choice == "3":
+            result, _daemon_flag = _dispatch_synthesis(args, voice_name)
+            _play_audio(result.audio_bytes)
+        elif choice == "4":
+            print("Descartado: no se guardó nada.", file=sys.stderr)
+            return
+        else:
+            print("Opción no válida; escribe 1, 2, 3 o 4.", file=sys.stderr)
+
+
+@timed_command
+def cmd_speech_play(args):
+    """Reproduce una locución guardada (no toca el modelo ni el daemon)."""
+    from . import synthetic_speech
+
+    voice_name = _validate_identifier(getattr(args, "voice", None) or "default", "voz")
+    label = _validate_identifier(args.label, "etiqueta")
+    _require_voice_exists(voice_name)
+
+    # La existencia de la locución la decide el WAV (§2.8): ausente → 3.
+    if not synthetic_speech.exists(voice_name, label):
+        raise CliError(
+            EXIT_NOT_FOUND, "label_not_found",
+            f"Error: la locución '{label}' no existe para la voz '{voice_name}'.",
+        )
+
+    with open(synthetic_speech.wav_path(voice_name, label), "rb") as f:
+        audio_bytes = f.read()
+    _play_audio(audio_bytes)
+
+    if getattr(args, "json", False):
+        emit_json({"voice": voice_name, "label": label})
+
+
+def cmd_speech_list(args):
+    """Lista las locuciones guardadas (opcionalmente filtradas por voz)."""
+    from . import synthetic_speech
+
+    voice_filter = getattr(args, "voice", None)
+    if voice_filter is not None:
+        voice_filter = _validate_identifier(voice_filter, "voz")
+        _require_voice_exists(voice_filter)
+
+    entries = synthetic_speech.list_entries(voice=voice_filter)
+
+    if getattr(args, "json", False):
+        # Texto completo en el payload legible por máquina (§2.10).
+        emit_json({"synthetic_speech": entries})
+        return
+
+    if not entries:
+        print("No hay locuciones guardadas.")
+        return
+
+    # Texto truncado en la salida humana (§2.8).
+    for e in entries:
+        text = e["text"]
+        if text is None:
+            shown = "(sin metadatos)"
+        elif len(text) > 60:
+            shown = text[:57] + "..."
+        else:
+            shown = text
+        print(f"[{e['voice']}] {e['label']}: {shown}")
+
+
+@timed_command
+def cmd_speech_remove(args):
+    """Borra una locución guardada (WAV + sidecar)."""
+    from . import synthetic_speech
+
+    voice_name = _validate_identifier(getattr(args, "voice", None) or "default", "voz")
+    label = _validate_identifier(args.label, "etiqueta")
+    _require_voice_exists(voice_name)
+
+    # `remove` borra ambos archivos si están y devuelve si algo existía; una
+    # locución ausente (ni WAV ni sidecar) sale 3 (§2.8).
+    if not synthetic_speech.remove(voice_name, label):
+        raise CliError(
+            EXIT_NOT_FOUND, "label_not_found",
+            f"Error: la locución '{label}' no existe para la voz '{voice_name}'.",
+        )
+
+    if getattr(args, "json", False):
+        emit_json({"voice": voice_name, "label": label})
+    else:
+        print(f"Locución '{label}' (voz '{voice_name}') eliminada.")
 
 
 @timed_command
@@ -374,15 +616,29 @@ def cmd_voice_clone(args):
 def _precompute_cloned_voice(args) -> bool:
     """Precomputa los conditionals de la voz recién clonada; True si tuvo éxito.
 
-    Daemon-first: usa el modelo caliente del daemon si está activo, o lo carga
-    en frío en modo directo. Cualquier fallo (daemon o motor) se captura, se
-    avisa por stderr y se devuelve False para que el clonado siga siendo exitoso
-    (la voz queda registrada y el primer `speak` computa los conditionals).
+    Honra los tres modos de despacho (§2.5), en simetría con las dos superficies
+    que sintetizan:
+      --daemon:    exige el daemon; exit 5 si no está activo (no degrada).
+      --no-daemon: fuerza la ruta directa (carga el modelo en frío).
+      sin flags:   autodetección: modelo caliente del daemon si está, directo si no.
+    Salvo con --daemon caído (exit 5), cualquier fallo del precómputo se captura,
+    se avisa por stderr y se devuelve False para que el clonado siga siendo
+    exitoso (la voz queda registrada y el primer `speak` computa los conditionals).
     """
     from .daemon import is_daemon_running, DaemonIPCClient
 
+    # --daemon exige el daemon: su ausencia sale 5 (CliError escapa del clonado).
+    if getattr(args, "daemon", False):
+        if not is_daemon_running():
+            raise CliError(
+                EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                "Error: se exigió el daemon (--daemon) para precomputar la voz "
+                "pero no está activo. Inícialo con 'tts-sidecar daemon start'.",
+            )
+        return DaemonIPCClient().precompute_voice(args.name)
+
     try:
-        if is_daemon_running():
+        if not getattr(args, "no_daemon", False) and is_daemon_running():
             return DaemonIPCClient().precompute_voice(args.name)
         from .engine import ChatterboxEngine
         with Spinner("Cargando modelo…") as _sp:
@@ -1198,8 +1454,9 @@ def cmd_setup(args):
     se delega al desinstalador de Inno (el SO mantiene el lock del .exe).
 
     setup es provisión, no diagnóstico: el FAIL del chequeo de audio se degrada
-    a WARN y la provisión continúa (la síntesis a archivo con `speak --output`
-    funciona sin subsistema de sonido, p. ej. en hosts headless/SSH). Cualquier
+    a WARN y la provisión continúa (la síntesis a disco con `speech synthesize
+    --text T --label L` funciona sin subsistema de sonido, p. ej. en hosts
+    headless/SSH). Cualquier
     otro FAIL sigue abortando. El rol diagnóstico lo cumple `doctor`, que
     conserva el FAIL de audio con salida 1.
     """
@@ -1230,7 +1487,8 @@ def cmd_setup(args):
             if name == "Audio library":
                 print(f"[WARN] {name}: {detail}", file=sys.stderr)
                 print("[WARN] La reproducción de audio no estará disponible; "
-                      "la síntesis a archivo (speak --output) funciona igual.", file=sys.stderr)
+                      "la síntesis a disco ('speech synthesize --text T --label L') "
+                      "funciona igual.", file=sys.stderr)
                 continue
             raise CliError(EXIT_PRECONDITION_FAILED, "environment_failed", f"[FAIL] {name}: {detail}")
         print(f"[{status}] {name}: {detail}", file=sys.stderr)
@@ -1415,8 +1673,9 @@ def cmd_cleanup(args):
 
     do_model = getattr(args, "model", False) or getattr(args, "all", False)
     do_voices = getattr(args, "voices", False) or getattr(args, "all", False)
+    do_synthetic = getattr(args, "synthetic_speech", False) or getattr(args, "all", False)
 
-    if not do_model and not do_voices:
+    if not do_model and not do_voices and not do_synthetic:
         # Sin flags no se borra nada: se muestra la ayuda del comando
         # (a stderr en modo --json, para no contaminar stdout).
         if json_mode:
@@ -1437,6 +1696,25 @@ def cmd_cleanup(args):
     if do_voices:
         from . import voices
         targets.append((Path(voices.voices_root()), "voces de usuario"))
+    if do_synthetic:
+        # --synthetic-speech (y --all) borran la raíz del almacén entera,
+        # 'default' incluido (§2.11).
+        from . import synthetic_speech
+        targets.append((Path(synthetic_speech.store_root()), "habla sintética"))
+    elif do_voices:
+        # Arrastre de --voices: solo los namespaces de habla sintética de las
+        # voces que se borran, excepto 'default' (voz de fábrica de solo lectura
+        # que --voices no borra). Con la raíz separada del registro, el arrastre
+        # es código explícito y no un efecto del rmtree (§2.8, §2.11).
+        from . import synthetic_speech
+        store_root = Path(synthetic_speech.store_root())
+        if store_root.exists():
+            for entry in sorted(os.listdir(store_root)):
+                if entry == "default":
+                    continue
+                namespace = store_root / entry
+                if namespace.is_dir():
+                    targets.append((namespace, "habla sintética de voz"))
 
     existing = [(p, kind) for p, kind in targets if p.exists()]
 
@@ -1611,9 +1889,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", help="Comandos disponibles")
 
-    # grupo de comandos speech (say)
-    speech_parser = subparsers.add_parser("speech", help="Sintetiza y reproduce habla")
+    # grupo de comandos speech (synthesize / say / play / list / remove)
+    speech_parser = subparsers.add_parser("speech", help="Sintetiza, reproduce y gestiona habla")
     speech_subparsers = speech_parser.add_subparsers(dest="action", help="Acciones de habla")
+
+    # speech synthesize: sintetiza y guarda en el almacén (persiste siempre).
+    speech_synth = speech_subparsers.add_parser("synthesize", help="Sintetiza voz y la guarda en el almacén")
+    speech_synth.add_argument("--text", "-t", required=True, help="Texto a sintetizar")
+    speech_synth.add_argument("--label", "-l", required=True,
+                              help="Etiqueta de la locución en el almacén (se normaliza a minúsculas: "
+                                   "'Saludo' y 'saludo' son la misma etiqueta)")
+    speech_synth.add_argument("--voice", "-v", help="Nombre de la voz a usar (default: 'default')")
+    speech_synth.add_argument("--play", "-p", action="store_true",
+                              help="Reproduce la toma y pregunta antes de guardar (requiere terminal; "
+                                   "incompatible con --json)")
+    speech_synth.add_argument("--force", "-f", action="store_true",
+                              help="Sobrescribir la locución si la etiqueta ya existe para la voz")
+    speech_synth.add_argument("--compute-backend", "-cb", default="auto",
+                              choices=["auto", "cpu", "cuda", "mps"],
+                              help="Backend de cómputo para la inferencia (solo surte efecto en la ruta "
+                                   "directa); 'auto' detecta el mejor disponible (default: auto)")
+    speech_synth_daemon = speech_synth.add_mutually_exclusive_group()
+    speech_synth_daemon.add_argument("--daemon", action="store_true",
+                              help="Exige el daemon; si no está activo, sale con 5 (sin flags se sondea "
+                                   "y se usa solo si responde). Mutuamente excluyente con --no-daemon")
+    speech_synth_daemon.add_argument("--no-daemon", action="store_true",
+                              help="Forzar modo directo, sin sondear el daemon. "
+                                   "Mutuamente excluyente con --daemon")
+    speech_synth.add_argument("--json", action="store_true",
+                              help="Emitir a stdout un payload JSON (voz, etiqueta, tiempos t3/s3gen, "
+                                   "vía daemon o no); incompatible con --play")
+    speech_synth.set_defaults(func=cmd_speech_synthesize)
 
     speech_say = speech_subparsers.add_parser("say", help="Sintetiza voz y la reproduce")
     speech_say.add_argument("--text", "-t", required=True, help="Texto a sintetizar")
@@ -1631,9 +1937,28 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Forzar modo directo, sin sondear el daemon. "
                                    "Mutuamente excluyente con --daemon (exit 2 si se combinan)")
     speech_say.add_argument("--json", action="store_true",
-                              help="Emitir a stdout un payload JSON de metadatos y métricas "
-                                   "(voz, tiempos t3/s3gen, vía daemon o no)")
+                              help="Emitir a stdout un payload JSON con la voz efectiva usada")
     speech_say.set_defaults(func=cmd_speech_say)
+
+    # speech play: reproduce una locución guardada (no toca modelo ni daemon).
+    speech_play = speech_subparsers.add_parser("play", help="Reproduce una locución guardada")
+    speech_play.add_argument("--label", "-l", required=True, help="Etiqueta de la locución (normalizada a minúsculas)")
+    speech_play.add_argument("--voice", "-v", help="Nombre de la voz (default: 'default')")
+    speech_play.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina (voz, etiqueta)")
+    speech_play.set_defaults(func=cmd_speech_play)
+
+    # speech list: lista las locuciones guardadas (filtro opcional por voz).
+    speech_list = speech_subparsers.add_parser("list", help="Lista las locuciones guardadas")
+    speech_list.add_argument("--voice", "-v", help="Filtra por voz; sin él lista todas las voces")
+    speech_list.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina (texto completo)")
+    speech_list.set_defaults(func=cmd_speech_list)
+
+    # speech remove: borra una locución guardada.
+    speech_remove = speech_subparsers.add_parser("remove", help="Borra una locución guardada")
+    speech_remove.add_argument("--label", "-l", required=True, help="Etiqueta de la locución (normalizada a minúsculas)")
+    speech_remove.add_argument("--voice", "-v", help="Nombre de la voz (default: 'default')")
+    speech_remove.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina (voz, etiqueta)")
+    speech_remove.set_defaults(func=cmd_speech_remove)
 
     # grupo de comandos voice (list / clone / remove)
     voice_parser = subparsers.add_parser("voice", help="Gestiona las voces registradas")
@@ -1651,6 +1976,14 @@ def build_parser() -> argparse.ArgumentParser:
                              help="Archivo de audio de habla para el conditioning del T3 (10+ segundos de habla limpia)")
     voice_clone.add_argument("--force", "-f", action="store_true",
                              help="Sobrescribir la voz si ya existe (usuario o fábrica homónima)")
+    voice_clone_daemon = voice_clone.add_mutually_exclusive_group()
+    voice_clone_daemon.add_argument("--daemon", action="store_true",
+                             help="Exige el daemon para precomputar los conditionals; si no está activo, "
+                                  "sale con 5 (sin flags se sondea y se usa solo si responde). "
+                                  "Mutuamente excluyente con --no-daemon")
+    voice_clone_daemon.add_argument("--no-daemon", action="store_true",
+                             help="Fuerza el precómputo en modo directo, sin sondear el daemon. "
+                                  "Mutuamente excluyente con --daemon")
     voice_clone.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
     voice_clone.set_defaults(func=cmd_voice_clone)
 
@@ -1698,9 +2031,13 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Elimina el modelo descargado (solo las carpetas de este proyecto "
                                      "dentro de la caché de HuggingFace)")
     cleanup_parser.add_argument("--voices", action="store_true",
-                                help="Elimina las voces de usuario registradas con 'voice clone'")
+                                help="Elimina las voces de usuario registradas con 'voice clone' "
+                                     "(arrastra sus locuciones de habla sintética, salvo las de 'default')")
+    cleanup_parser.add_argument("--synthetic-speech", action="store_true",
+                                help="Elimina la raíz de habla sintética entera "
+                                     "(todas las locuciones guardadas con 'speech synthesize', 'default' incluida)")
     cleanup_parser.add_argument("--all", action="store_true",
-                                help="Elimina el modelo y las voces de usuario")
+                                help="Elimina el modelo, las voces de usuario y la habla sintética")
     cleanup_parser.add_argument("--dry-run", action="store_true",
                                 help="Lista lo que se borraría sin borrar nada")
     cleanup_parser.add_argument("--yes", "-y", action="store_true",
