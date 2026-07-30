@@ -343,6 +343,7 @@ desde código fuente con ese lock. El detalle completo y verificado está en
 - [docs/BUILD.md](docs/BUILD.md) - Guía de compilación PyInstaller
 - [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) - Canales de distribución (nativo + PyPI)
 - [docs/PARITY.md](docs/PARITY.md) - Estado de paridad de experiencia entre Windows, Linux y macOS
+- [docs/MANUAL-VALIDATION.md](docs/MANUAL-VALIDATION.md) - Recorrido manual de validación de la superficie de la CLI
 
 ## Comunidad y soporte
 
