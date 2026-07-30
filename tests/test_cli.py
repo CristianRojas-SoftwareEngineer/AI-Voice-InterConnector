@@ -1017,17 +1017,18 @@ class TestExitCodes:
                 cmd_voice_clone(MockArgs(name="dup"))
         assert exc.value.code == EXIT_INVALID_INPUT
 
-    def test_daemon_and_no_daemon_conflict_exits_4(self, capsys):
-        """--daemon y --no-daemon simultáneos → error claro y exit 4,
-        antes de cualquier trabajo (incluido el gate de modelo)."""
-        from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
+    def test_daemon_and_no_daemon_conflict_exits_2(self, monkeypatch, capsys):
+        """--daemon y --no-daemon simultáneos → argparse los rechaza por el
+        grupo mutuamente excluyente, antes de despachar (SystemExit 2)."""
+        from tts_sidecar.cli import main
 
-        with patch("tts_sidecar.model_cache.is_model_cached",
-                   side_effect=AssertionError("el gate de modelo no debe evaluarse")):
-            with pytest.raises(CliError) as exc:
-                cmd_speech_say(MockArgs(text="hola", daemon=True, no_daemon=True))
-        assert exc.value.code == EXIT_INVALID_INPUT
-        assert "mutuamente excluyentes" in exc.value.message
+        monkeypatch.setattr(sys, "argv", [
+            "tts-sidecar", "speech", "say", "--text", "hola", "--daemon", "--no-daemon",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 2
+        assert "not allowed with" in capsys.readouterr().err
 
     def test_voice_list_filenotfound_points_to_voices_dir_not_setup(self, capsys):
         """El FileNotFoundError de voice list menciona el directorio de
@@ -2148,6 +2149,70 @@ class TestVoiceAddWithoutComputeBackend:
             main()
         assert exc.value.code == EXIT_INVALID_INPUT
         assert "unrecognized" in capsys.readouterr().err.lower()
+
+
+class TestDescribeProvisionFailure:
+    """_describe_provision_failure clasifica el fallo en la terna (code, reason, message).
+
+    Las cuatro familias de precondición salen con EXIT_PRECONDITION_FAILED (8) y
+    su reason; lo que no encaja se queda en EXIT_ERROR (1) como fallo genérico.
+    """
+
+    def test_gated_repo_es_credentials_8(self):
+        from tts_sidecar.cli import _describe_provision_failure, EXIT_PRECONDITION_FAILED
+        from huggingface_hub.errors import GatedRepoError
+
+        resp = MagicMock()
+        resp.status_code = 403
+        code, reason, message = _describe_provision_failure(
+            GatedRepoError("gated", response=resp))
+        assert code == EXIT_PRECONDITION_FAILED
+        assert reason == "credentials"
+        assert message.startswith("[FAIL]")
+
+    def test_http_401_403_es_credentials_8(self):
+        from tts_sidecar.cli import _describe_provision_failure, EXIT_PRECONDITION_FAILED
+        from huggingface_hub.errors import HfHubHTTPError
+
+        resp = MagicMock()
+        resp.status_code = 401
+        code, reason, _ = _describe_provision_failure(
+            HfHubHTTPError("401", response=resp))
+        assert code == EXIT_PRECONDITION_FAILED
+        assert reason == "credentials"
+
+    def test_request_exception_es_network_8(self):
+        from tts_sidecar.cli import _describe_provision_failure, EXIT_PRECONDITION_FAILED
+        import requests
+
+        code, reason, _ = _describe_provision_failure(
+            requests.exceptions.ConnectionError("sin red"))
+        assert code == EXIT_PRECONDITION_FAILED
+        assert reason == "network"
+
+    def test_permission_error_es_permissions_8(self):
+        from tts_sidecar.cli import _describe_provision_failure, EXIT_PRECONDITION_FAILED
+
+        code, reason, _ = _describe_provision_failure(PermissionError("denegado"))
+        assert code == EXIT_PRECONDITION_FAILED
+        assert reason == "permissions"
+
+    def test_enospc_es_disk_full_8(self):
+        import errno
+        from tts_sidecar.cli import _describe_provision_failure, EXIT_PRECONDITION_FAILED
+
+        e = OSError("sin espacio")
+        e.errno = errno.ENOSPC
+        code, reason, _ = _describe_provision_failure(e)
+        assert code == EXIT_PRECONDITION_FAILED
+        assert reason == "disk_full"
+
+    def test_generico_se_queda_en_error_1(self):
+        from tts_sidecar.cli import _describe_provision_failure, EXIT_ERROR
+
+        code, reason, _ = _describe_provision_failure(ValueError("desconocido"))
+        assert code == EXIT_ERROR
+        assert reason == "provision_failed"
 
 
 class TestDoctorRAM:

@@ -203,14 +203,6 @@ def cmd_speech_say(args):
     """Sintetiza texto y reproduce el audio."""
 
     try:
-        # --daemon y --no-daemon son contradictorios; un consumidor
-        # programático espera un diagnóstico, no que uno gane en silencio.
-        # Validación manual (no add_mutually_exclusive_group): el exit 2 nativo
-        # de argparse colisionaría con EXIT_MODEL_MISSING del contrato congelado.
-        if getattr(args, "daemon", False) and getattr(args, "no_daemon", False):
-            raise CliError(EXIT_INVALID_INPUT, "usage_error",
-                            "Error: --daemon y --no-daemon son mutuamente excluyentes.")
-
         if not args.text or not args.text.strip():
             raise CliError(EXIT_INVALID_INPUT, "usage_error",
                             "Error: --text no puede estar vacío.")
@@ -1131,60 +1123,63 @@ def _uninstall_windows(args):
         })
 
 
-def _describe_provision_failure(e: Exception) -> str:
-    """Mensaje [FAIL] accionable según la causa del fallo de provisión.
+def _describe_provision_failure(e: Exception):
+    """Terna (code, reason, message) accionable según la causa del fallo.
 
-    Clasifica en tres familias observables sin depender del texto de la
+    Clasifica en cuatro familias observables sin depender del texto de la
     excepción: credenciales/acceso (HTTP 401/403, repos gated de HuggingFace),
-    red (DNS, timeout, conexión) y disco (sin espacio, permisos). El orden de
-    los isinstance importa: RequestException hereda de OSError, así que las
-    familias HTTP/red se descartan antes de diagnosticar disco.
+    red (DNS, timeout, conexión), permisos y disco. Cada familia es una
+    precondición de entorno, así que sale con EXIT_PRECONDITION_FAILED (8) y su
+    reason; lo que no encaja en ninguna es un fallo genérico y se queda en
+    EXIT_ERROR (1). El orden de los isinstance importa: RequestException hereda
+    de OSError, así que las familias HTTP/red se descartan antes de diagnosticar
+    disco.
     """
     import errno
 
     try:
         from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
         if isinstance(e, GatedRepoError):
-            return (
+            return (EXIT_PRECONDITION_FAILED, "credentials", (
                 "[FAIL] La provisión falló por acceso: el repo del modelo requiere "
                 "autorización (gated). Acepta las condiciones en HuggingFace o define "
                 f"un HF_TOKEN con acceso y reintenta 'tts-sidecar setup'. Detalle: {e}"
-            )
+            ))
         if isinstance(e, HfHubHTTPError):
             status = getattr(getattr(e, "response", None), "status_code", None)
             if status in (401, 403):
-                return (
+                return (EXIT_PRECONDITION_FAILED, "credentials", (
                     f"[FAIL] La provisión falló por credenciales (HTTP {status}): el "
                     "token HF_TOKEN falta, expiró o no tiene acceso al repo del modelo. "
                     f"Revísalo y reintenta 'tts-sidecar setup'. Detalle: {e}"
-                )
+                ))
     except ImportError:
         pass
 
     try:
         import requests
         if isinstance(e, requests.exceptions.RequestException):
-            return (
+            return (EXIT_PRECONDITION_FAILED, "network", (
                 "[FAIL] La provisión falló por un problema de red: verifica tu conexión "
                 "(o el proxy/firewall) y reintenta 'tts-sidecar setup'. "
                 f"Detalle: {e}"
-            )
+            ))
     except ImportError:
         pass
 
     if isinstance(e, PermissionError):
-        return (
+        return (EXIT_PRECONDITION_FAILED, "permissions", (
             "[FAIL] La provisión falló por permisos de escritura en la caché del "
             "modelo (~/.cache/huggingface o HF_HOME). Corrige los permisos y "
             f"reintenta 'tts-sidecar setup'. Detalle: {e}"
-        )
+        ))
     if isinstance(e, OSError) and e.errno == errno.ENOSPC:
-        return (
+        return (EXIT_PRECONDITION_FAILED, "disk_full", (
             "[FAIL] La provisión falló por falta de espacio en disco. Libera espacio "
             f"y reintenta 'tts-sidecar setup'. Detalle: {e}"
-        )
+        ))
 
-    return f"[FAIL] La provisión falló: {e}"
+    return (EXIT_ERROR, "provision_failed", f"[FAIL] La provisión falló: {e}")
 
 
 def cmd_setup(args):
@@ -1362,8 +1357,8 @@ def cmd_setup(args):
         _emit_setup_json(already_cached=False, downloaded=True)
 
     except Exception as e:
-        message = _describe_provision_failure(e)
-        raise CliError(EXIT_ERROR, "provision_failed", message)
+        code, reason, message = _describe_provision_failure(e)
+        raise CliError(code, reason, message)
 
 
 from typing import NamedTuple
@@ -1627,13 +1622,14 @@ def build_parser() -> argparse.ArgumentParser:
                               choices=["auto", "cpu", "cuda", "mps"],
                               help="Backend de cómputo para la inferencia; 'auto' detecta el mejor "
                                    "disponible (default: auto)")
-    speech_say.add_argument("--daemon", action="store_true",
+    speech_say_daemon = speech_say.add_mutually_exclusive_group()
+    speech_say_daemon.add_argument("--daemon", action="store_true",
                               help="Usar el daemon sin sondeo previo; si falla, se reporta el error "
                                    "(sin flags, se sondea el daemon y se usa solo si responde). "
-                                   "Mutuamente excluyente con --no-daemon (exit 4 si se combinan)")
-    speech_say.add_argument("--no-daemon", action="store_true",
+                                   "Mutuamente excluyente con --no-daemon (exit 2 si se combinan)")
+    speech_say_daemon.add_argument("--no-daemon", action="store_true",
                               help="Forzar modo directo, sin sondear el daemon. "
-                                   "Mutuamente excluyente con --daemon (exit 4 si se combinan)")
+                                   "Mutuamente excluyente con --daemon (exit 2 si se combinan)")
     speech_say.add_argument("--json", action="store_true",
                               help="Emitir a stdout un payload JSON de metadatos y métricas "
                                    "(voz, tiempos t3/s3gen, vía daemon o no)")
