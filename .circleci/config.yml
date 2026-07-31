@@ -29,11 +29,13 @@ parameters:
       sin plugins.
   pyenv_version:
     type: string
-    default: "v2.5.3"
+    default: "v2.8.1"
     description: >
       Versión fija de pyenv (tag git) instalada en los jobs macOS. Se clona
       desde el tag en ~/.pyenv en vez de vía Homebrew, para un pin
-      determinista e independiente de la imagen de CI.
+      determinista e independiente de la imagen de CI. Debe ser una tag que
+      incluya la definición de python-build para << pipeline.parameters.python_version >>:
+      v2.5.3 no la traía y python-build fallaba con «definition not found».
 
 commands:
   smoke_test_frozen_bundle:
