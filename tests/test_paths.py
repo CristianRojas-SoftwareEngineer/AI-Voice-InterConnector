@@ -67,6 +67,14 @@ class TestBundledVoicesDir:
         )
 
 
+class TestDaemonPidfile:
+    def test_resolves_under_data_root(self, monkeypatch, tmp_path):
+        """El pidfile/lock del daemon vive en data_root() como 'daemon.pid'."""
+        monkeypatch.setattr(paths.sys, "platform", "linux")
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        assert paths.daemon_pidfile() == os.path.join(paths.data_root(), "daemon.pid")
+
+
 def test_default_voice_resolves_without_monkeypatching_roots():
     """La voz 'default' se resuelve directamente vía factory_voices_root(),
     sin necesidad de parchear rutas (a diferencia de los tests de voices.py

@@ -815,6 +815,98 @@ class TestDaemonStateInjection:
         finally:
             server.app.dependency_overrides.clear()
 
+    def test_shutdown_503_when_no_server_registered(self):
+        """Sin instancia de server registrada, /shutdown responde 503 (el kill
+        por PID es la red de seguridad) en vez de intentar el apagado graceful."""
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        override_state = server.DaemonState(engine=MagicMock(), server=None)
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                resp = client.post("/shutdown")
+                assert resp.status_code == 503
+        finally:
+            server.app.dependency_overrides.clear()
+
+    def test_list_voices_success(self):
+        """/voices devuelve la lista que reporta el engine inyectado."""
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        engine = MagicMock()
+        engine.list_voices.return_value = ["crist", "otra"]
+        override_state = server.DaemonState(engine=engine)
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                resp = client.get("/voices")
+                assert resp.status_code == 200
+                assert resp.json() == {
+                    "schema_version": "2",
+                    "voices": ["crist", "otra"],
+                }
+        finally:
+            server.app.dependency_overrides.clear()
+
+    def test_list_voices_503_when_no_engine(self):
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        override_state = server.DaemonState(engine=None)
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                resp = client.get("/voices")
+                assert resp.status_code == 503
+        finally:
+            server.app.dependency_overrides.clear()
+
+    def test_precompute_voice_500_on_internal_error(self):
+        """Un error genérico del engine se mapea a 500 sin filtrar el detalle."""
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        engine = MagicMock()
+        engine.precompute_voice.side_effect = RuntimeError("fallo interno /ruta/secreta")
+        override_state = server.DaemonState(engine=engine)
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                resp = client.post("/voices/precompute", json={"name": "crist"})
+                assert resp.status_code == 500
+                assert resp.json()["detail"] == "Error interno de precómputo"
+                assert "secreta" not in resp.text
+        finally:
+            server.app.dependency_overrides.clear()
+
+    def test_synthesize_error_event_when_voice_resource_missing(self):
+        """Si voice_paths lanza FileNotFoundError, el stream emite un evento
+        error genérico sin filtrar la ruta interna real."""
+        import json
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        engine = MagicMock()
+        override_state = server.DaemonState(engine=engine)
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with patch.object(
+                server.voices,
+                "voice_paths",
+                side_effect=FileNotFoundError("falta /ruta/secreta"),
+            ):
+                with TestClient(server.app) as client:
+                    resp = client.post("/synthesize", json={"text": "hola", "voice": "crist"})
+                    assert resp.status_code == 200
+                    lines = [json.loads(l) for l in resp.text.splitlines() if l.strip()]
+                    assert lines[-1]["event"] == "error"
+                    assert lines[-1]["detail"] == "Recurso de voz no encontrado"
+                    assert "secreta" not in resp.text
+        finally:
+            server.app.dependency_overrides.clear()
+
 
 class TestDaemonStartLock:
     """El lock de arranque atómico (pidfile con O_EXCL) serializa los
