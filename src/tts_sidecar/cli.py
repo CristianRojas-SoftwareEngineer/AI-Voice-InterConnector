@@ -981,8 +981,10 @@ def cmd_doctor(args):
             "failed": checks_failed,
         })
         if checks_failed > 0:
-            raise CliError(EXIT_ERROR, "generic",
-                             f"Chequeos: {checks_passed} exitosos, {checks_failed} fallidos")
+            # Salida por veredicto: el reporte ya se emitió como único objeto
+            # JSON; main() honra este retorno como sys.exit(1) sin adjuntar un
+            # objeto 'error'. El exit 1 de doctor es un veredicto, no un fallo.
+            return EXIT_ERROR
         return
 
     print("=== TTS Sidecar Doctor ===\n")
@@ -995,8 +997,9 @@ def cmd_doctor(args):
     print(f"Chequeos: {checks_passed} exitosos, {checks_failed} fallidos")
 
     if checks_failed > 0:
-        raise CliError(EXIT_ERROR, "generic",
-                         f"Chequeos: {checks_passed} exitosos, {checks_failed} fallidos")
+        # Veredicto: el reporte ya se imprimió; main() sale con 1 sin duplicar
+        # la línea de resumen en stderr como haría CliError.
+        return EXIT_ERROR
 
 
 def _path_symlink() -> Path:
@@ -1802,51 +1805,55 @@ def cmd_daemon(args):
             auto_restart=args.autorestart,
             max_retries=args.max_retries or 0,
         )
-        if json_mode:
-            payload = {"action": "start"}
-            if success:
-                pid = manager._read_pid()
-                if pid is not None:
-                    payload["pid"] = pid
-            emit_json(payload)
-        elif success:
-            print("Daemon iniciado correctamente")
-        else:
-            print("No se pudo iniciar el daemon", file=sys.stderr)
+        # Levantar antes de emitir: en fallo, main() emite solo el objeto
+        # 'error' bajo --json; el payload de acción se emite solo en éxito.
         if not success:
+            if not json_mode:
+                print("No se pudo iniciar el daemon", file=sys.stderr)
             raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
                            "No se pudo iniciar el daemon.")
+        if json_mode:
+            payload = {"action": "start"}
+            pid = manager._read_pid()
+            if pid is not None:
+                payload["pid"] = pid
+            emit_json(payload)
+        else:
+            print("Daemon iniciado correctamente")
 
     elif args.action == "stop":
         json_mode = getattr(args, "json", False)
         success = manager.stop()
-        if json_mode:
-            emit_json({"action": "stop"})
-        elif success:
-            print("Daemon detenido")
-        else:
-            print("No se pudo detener el daemon", file=sys.stderr)
+        # Levantar antes de emitir: en fallo solo el objeto 'error'; el payload
+        # de acción se emite solo en éxito.
         if not success:
+            if not json_mode:
+                print("No se pudo detener el daemon", file=sys.stderr)
             raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
                            "No se pudo detener el daemon.")
+        if json_mode:
+            emit_json({"action": "stop"})
+        else:
+            print("Daemon detenido")
 
     elif args.action == "restart":
         json_mode = getattr(args, "json", False)
         success = manager.restart()
-        if json_mode:
-            payload = {"action": "restart"}
-            if success:
-                pid = manager._read_pid()
-                if pid is not None:
-                    payload["pid"] = pid
-            emit_json(payload)
-        elif success:
-            print("Daemon reiniciado")
-        else:
-            print("No se pudo reiniciar el daemon", file=sys.stderr)
+        # Levantar antes de emitir: en fallo solo el objeto 'error'; el payload
+        # de acción se emite solo en éxito.
         if not success:
+            if not json_mode:
+                print("No se pudo reiniciar el daemon", file=sys.stderr)
             raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
                            "No se pudo reiniciar el daemon.")
+        if json_mode:
+            payload = {"action": "restart"}
+            pid = manager._read_pid()
+            if pid is not None:
+                payload["pid"] = pid
+            emit_json(payload)
+        else:
+            print("Daemon reiniciado")
 
     elif args.action == "status":
         status = manager.status()
@@ -2115,7 +2122,7 @@ def main():
         sys.exit(EXIT_OK)
 
     try:
-        args.func(args)
+        result = args.func(args)
     except CliError as e:
         _translate_cli_error(e)
     except KeyboardInterrupt:
@@ -2129,6 +2136,13 @@ def main():
                 "Interrumpido por el usuario.",
             )
         )
+    else:
+        # Salida por veredicto: el comando ya emitió su payload propio y pide
+        # salir con código ≠ 0 devolviendo un entero (p. ej. 'doctor' con FAIL).
+        # main() sigue siendo el único punto de salida no-cero; no se adjunta
+        # objeto 'error'. Un retorno None (o 0) conserva el exit 0 implícito.
+        if isinstance(result, int) and result != 0:
+            sys.exit(result)
 
 
 if __name__ == "__main__":

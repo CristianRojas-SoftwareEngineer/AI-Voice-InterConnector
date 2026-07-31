@@ -856,11 +856,14 @@ class TestSetupAudioAdvisory:
             lambda: [("FAIL", "Audio library", "sin subsistema de sonido")],
         )
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True):
-            with pytest.raises(CliError) as exc_info:
-                cli.cmd_doctor(MockArgs(json=False))
+            # Salida por veredicto: retorna EXIT_ERROR en vez de levantar.
+            result = cli.cmd_doctor(MockArgs(json=False))
 
-        assert exc_info.value.code == 1
-        assert "[FAIL] Audio library" in capsys.readouterr().out
+        assert result == cli.EXIT_ERROR
+        captured = capsys.readouterr()
+        assert "[FAIL] Audio library" in captured.out
+        # La ruta humana no duplica la línea de resumen en stderr.
+        assert captured.err == ""
 
 
 class TestCheckAvx2:
@@ -1891,8 +1894,7 @@ class TestDaemonVerbsJSON:
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonManager")
     def test_start_json_payload_failure_exits_5(self, mock_manager_cls, _cached, capsys):
-        import json
-        from tts_sidecar.cli import cmd_daemon, SCHEMA_VERSION, EXIT_DAEMON_UNREACHABLE
+        from tts_sidecar.cli import cmd_daemon, EXIT_DAEMON_UNREACHABLE
 
         manager = MagicMock()
         manager.start.return_value = False
@@ -1902,8 +1904,9 @@ class TestDaemonVerbsJSON:
             cmd_daemon(self._args("start"))
 
         assert exc.value.code == EXIT_DAEMON_UNREACHABLE
-        payload = json.loads(capsys.readouterr().out)
-        assert payload == {"schema_version": SCHEMA_VERSION, "action": "start"}
+        # En fallo no se emite payload de acción: main() emitirá solo el objeto
+        # 'error'. Aquí, sin pasar por main(), stdout queda vacío.
+        assert capsys.readouterr().out == ""
 
     @patch("tts_sidecar.daemon.DaemonManager")
     def test_stop_json_payload_success(self, mock_manager_cls, capsys):
@@ -1924,8 +1927,7 @@ class TestDaemonVerbsJSON:
 
     @patch("tts_sidecar.daemon.DaemonManager")
     def test_stop_json_payload_failure_exits_5(self, mock_manager_cls, capsys):
-        import json
-        from tts_sidecar.cli import cmd_daemon, SCHEMA_VERSION, EXIT_DAEMON_UNREACHABLE
+        from tts_sidecar.cli import cmd_daemon, EXIT_DAEMON_UNREACHABLE
 
         manager = MagicMock()
         manager.stop.return_value = False
@@ -1935,8 +1937,8 @@ class TestDaemonVerbsJSON:
             cmd_daemon(self._args("stop"))
 
         assert exc.value.code == EXIT_DAEMON_UNREACHABLE
-        payload = json.loads(capsys.readouterr().out)
-        assert payload == {"schema_version": SCHEMA_VERSION, "action": "stop"}
+        # En fallo no se emite payload de acción; stdout queda vacío.
+        assert capsys.readouterr().out == ""
 
     @patch("tts_sidecar.daemon.DaemonManager")
     def test_restart_json_payload_success(self, mock_manager_cls, capsys):
@@ -1954,6 +1956,79 @@ class TestDaemonVerbsJSON:
         assert payload == {
             "schema_version": SCHEMA_VERSION, "action": "restart", "pid": 777,
         }
+
+
+class TestJsonChannelSingleObjectViaMain:
+    """La ruta completa por main() emite exactamente UN objeto JSON en la salida
+    no-cero de los cuatro comandos afectados: doctor (veredicto, exit 1) y
+    daemon start/stop/restart (error, exit 5). json.loads sobre todo stdout
+    fallaría si hubiera dos objetos concatenados."""
+
+    def test_doctor_json_fail_single_object_via_main(self, monkeypatch, capsys):
+        import json
+        from tts_sidecar.cli import main, EXIT_ERROR
+
+        monkeypatch.setattr(sys, "argv", ["tts-sidecar", "doctor", "--json"])
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
+            with pytest.raises(SystemExit) as exc:
+                main()
+
+        assert exc.value.code == EXIT_ERROR
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["failed"] > 0
+        assert "error" not in payload
+
+    def _daemon_main(self, monkeypatch, action, manager):
+        from tts_sidecar.cli import main
+
+        monkeypatch.setattr(sys, "argv", ["tts-sidecar", "daemon", action, "--json"])
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("tts_sidecar.daemon.DaemonManager", return_value=manager):
+            with pytest.raises(SystemExit) as exc:
+                main()
+        return exc.value.code
+
+    def test_daemon_start_fail_single_error_object_via_main(self, monkeypatch, capsys):
+        import json
+        from tts_sidecar.cli import EXIT_DAEMON_UNREACHABLE
+
+        manager = MagicMock()
+        manager.start.return_value = False
+
+        code = self._daemon_main(monkeypatch, "start", manager)
+
+        assert code == EXIT_DAEMON_UNREACHABLE
+        payload = json.loads(capsys.readouterr().out)
+        assert set(payload.get("error", {})) == {"code", "reason", "message"}
+        assert "action" not in payload
+
+    def test_daemon_stop_fail_single_error_object_via_main(self, monkeypatch, capsys):
+        import json
+        from tts_sidecar.cli import EXIT_DAEMON_UNREACHABLE
+
+        manager = MagicMock()
+        manager.stop.return_value = False
+
+        code = self._daemon_main(monkeypatch, "stop", manager)
+
+        assert code == EXIT_DAEMON_UNREACHABLE
+        payload = json.loads(capsys.readouterr().out)
+        assert set(payload.get("error", {})) == {"code", "reason", "message"}
+        assert "action" not in payload
+
+    def test_daemon_restart_fail_single_error_object_via_main(self, monkeypatch, capsys):
+        import json
+        from tts_sidecar.cli import EXIT_DAEMON_UNREACHABLE
+
+        manager = MagicMock()
+        manager.restart.return_value = False
+
+        code = self._daemon_main(monkeypatch, "restart", manager)
+
+        assert code == EXIT_DAEMON_UNREACHABLE
+        payload = json.loads(capsys.readouterr().out)
+        assert set(payload.get("error", {})) == {"code", "reason", "message"}
+        assert "action" not in payload
 
 
 class TestCmdSpeakEmptyText:
@@ -2007,6 +2082,23 @@ class TestSchemaVersionJSON:
                 cmd_doctor(MockArgs(json=True))
         payload = json.loads(capsys.readouterr().out)
         assert payload["schema_version"] == SCHEMA_VERSION
+
+    def test_doctor_json_fail_emits_single_object_verdict(self, capsys):
+        """doctor --json con FAIL emite un solo objeto (el reporte) y sale por
+        veredicto (return EXIT_ERROR), sin adjuntar objeto 'error'."""
+        import json
+        from tts_sidecar.cli import cmd_doctor, EXIT_ERROR
+
+        # Modelo no cacheado ⇒ FAIL en el reporte.
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
+            result = cmd_doctor(MockArgs(json=True))
+
+        assert result == EXIT_ERROR
+        out = capsys.readouterr().out
+        # Exactamente un objeto JSON: json.loads sobre todo stdout no falla.
+        payload = json.loads(out)
+        assert payload["failed"] > 0
+        assert "error" not in payload
 
     def test_daemon_status_json_includes_schema_version(self, capsys):
         import argparse

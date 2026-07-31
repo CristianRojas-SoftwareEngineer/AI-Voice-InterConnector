@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.9.1 — 2026-07-31](#091--2026-07-31)
 - [0.9.0 — 2026-07-31](#090--2026-07-31)
 - [0.8.0 — 2026-07-22](#080--2026-07-22)
 - [0.7.8 — 2026-07-22](#078--2026-07-22)
@@ -25,6 +26,29 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.9.1] — 2026-07-31
+
+### Corregido
+
+- **Doble emisión JSON en el canal `--json` (una clase de defecto, no un caso
+  aislado)**: cuatro comandos (`doctor` y `daemon start/stop/restart`) violaban la
+  promesa de `emit_json()` de «exactamente un objeto JSON por invocación»: emitían su
+  payload y **luego** levantaban `CliError`, que `main()` traducía en un **segundo**
+  objeto `{"error":{…}}` concatenado en stdout. El síntoma verificado: `doctor --json`
+  con un FAIL escribía dos objetos JSON y reventaba el `JSON.parse` de cualquier
+  consumidor programático. La raíz era doble: (a) el orden emit-then-raise en `daemon`
+  (bug puro) y (b) un hueco de contrato en `doctor`, cuyo exit 1 es un **veredicto**
+  (no un fallo), pero la arquitectura solo sabía salir con código ≠ 0 vía `CliError`,
+  que siempre adjunta el objeto `error`.
+- **Salida por veredicto como tercer formato del canal `--json`**: `main()` ahora honra
+  un retorno entero ≠ 0 de un comando como `sys.exit(code)` sin emitir objeto `error`,
+  preservando la invariante «ninguna salida no-cero fuera de `main()`». `doctor --json`
+  con FAIL emite solo el reporte (`checks`, `failed`) y sale con 1; su ruta humana ya no
+  duplica la línea de resumen en stderr.
+- **`daemon start/stop/restart` levantan antes de emitir**: en fallo, cada subcomando
+  emite solo el objeto `error` (vía `main()`) y sale con 5; en éxito, solo su payload de
+  acción. Antes emitían el payload de acción incluso en fallo.
 
 ## [0.9.0] — 2026-07-31
 

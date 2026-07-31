@@ -457,7 +457,13 @@ La reexportación desde `cli.py` crea dos sitios donde *parecen* vivir las const
 
 #### La invariante del canal
 
-**Bajo `--json`, toda salida no-cero emite el payload de error.** `code` y `message` son obligatorios; `reason` es opcional en cualquier código y se define donde la distinción **ya existe calculada** en el código.
+**Bajo `--json`, toda salida no-cero emite el payload de error, salvo la salida por veredicto.** `code` y `message` son obligatorios; `reason` es opcional en cualquier código y se define donde la distinción **ya existe calculada** en el código.
+
+El canal tiene **tres formatos**, y cada invocación emite **exactamente un objeto JSON**:
+
+1. **Éxito**: el payload propio del comando, vía `emit_json()`, con salida 0.
+2. **Error**: el objeto `{"error": {…}}`, vía `CliError` traducido por `main()`, con salida ≠ 0.
+3. **Veredicto**: código ≠ 0 con el payload **propio** del comando ya emitido y **sin** objeto `error`. Es un dictamen, no un fallo: el comando corrió sin error pero su resultado es negativo. El único caso es **`doctor`**, cuyo exit 1 con FAIL (§9) emite solo el reporte (`checks`, `failed`) y sale con 1.
 
 El payload de error usa una clave de primer nivel `error`, emitida solo bajo `--json`, y deja intacto el stderr en castellano para el uso humano:
 
@@ -476,6 +482,8 @@ Las tres reglas de compatibilidad y la regla de promoción son contrato **de con
 - Los sitios de fallo levantan **`CliError(code, reason, message)`** en vez de imprimir y salir.
 - **`main()` es el único punto que lo traduce**: mensaje humano a stderr, payload a stdout si se pidió `--json`, y salida con el código. No queda otro camino hasta la salida, así que la invariante no necesita vigilancia.
 - El invariante que la protege es mecanizable: **ninguna salida no-cero fuera de `main()`**.
+
+**La salida por veredicto entra por el mismo punto único.** Un comando que ya emitió su payload propio y quiere salir con código ≠ 0 sin adjuntar objeto `error` **devuelve el entero** del código; `main()` honra un retorno entero ≠ 0 con `sys.exit(code)`. No hay tipo de excepción nuevo ni `sys.exit` disperso: la salida sigue pasando por `main()`, así que **ninguna salida no-cero fuera de `main()`** se mantiene. `doctor` es el caso que lo usa: emite su reporte y retorna `EXIT_ERROR` cuando hay FAIL.
 
 **`CliError` hereda de `BaseException`, no de `Exception`, y esa elección no es estilística.** Una señal de control de flujo no debe ser capturable por un manejador de errores de dominio — es la razón por la que `SystemExit` tampoco lo es. Con `Exception` como base, las salidas envueltas en un `except Exception` de su propio comando quedarían capturadas y saldrían con 1, y alguna además pasaría por la función clasificadora de fallos de provisión y se diagnosticaría como imprevisto. Un test afirma que `CliError` **no** desciende de `Exception`, porque el invariante de salidas comprueba la forma de la salida y no su destino.
 
