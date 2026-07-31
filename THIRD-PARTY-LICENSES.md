@@ -155,18 +155,19 @@ herramienta de build; no forma parte del contenido redistribuido más allá del 
 
 ## Inventario completo del lockfile
 
-Generado desde `requirements-lock.txt` (156 paquetes de runtime, directos y transitivos).
+Generado desde `requirements-lock.txt` (158 paquetes de runtime, directos y transitivos).
 Los paquetes `nvidia-*`/`cuda-*` (31) **no forman parte de ningún artefacto distribuido**:
 el build de Linux x64 usa el lock CPU-only (`requirements-lock-linux-cpu.txt`, sin
 `nvidia-*`) y en los demás builds esos paquetes están excluidos por marcador de
 plataforma. Solo aplican a una instalación desde código fuente con el lock universal
 en Linux x86_64.
 
-Resumen por familia: MIT 53 · BSD 37 · NVIDIA (propietaria) 31 · Apache-2.0 21 ·
+Resumen por familia: MIT 53 · BSD 37 · NVIDIA (propietaria) 31 · Apache-2.0 23 ·
 PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
+| `accelerate` | 1.14.0 | Apache Software License | Apache-2.0 |
 | `aiofiles` | 24.1.0 | Apache Software License | Apache-2.0 |
 | `annotated-doc` | 0.0.4 | MIT | MIT |
 | `annotated-types` | 0.7.0 | MIT License | MIT |
@@ -259,6 +260,7 @@ PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 | `orjson` | 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) | MPL-2.0 |
 | `packaging` | 26.2 | Apache-2.0 OR BSD-2-Clause | Apache-2.0 |
 | `pandas` | 3.0.3 | BSD License | BSD |
+| `peft` | 0.20.0 | Apache Software License | Apache-2.0 |
 | `pillow` | 12.3.0 | MIT-CMU | MIT |
 | `platformdirs` | 4.10.0 | MIT | MIT |
 | `pooch` | 1.9.0 | BSD-3-Clause | BSD |

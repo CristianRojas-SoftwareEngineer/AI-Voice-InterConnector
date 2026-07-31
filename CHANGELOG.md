@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [0.9.0 — 2026-07-23](#090--2026-07-23)
+- [0.9.0 — 2026-07-30](#090--2026-07-30)
 - [0.8.0 — 2026-07-22](#080--2026-07-22)
 - [0.7.8 — 2026-07-22](#078--2026-07-22)
 - [0.7.7 — 2026-07-22](#077--2026-07-22)
@@ -26,7 +26,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [0.9.0] — 2026-07-23
+## [0.9.0] — 2026-07-30
 
 ### Cambiado
 
@@ -68,6 +68,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   `torch.*`. La entrada de LoRACompatibleLinear ya no necesita estar en la
   lista de supresión porque `peft` la elimina desde la raíz (diffusers usa
   el backend PEFT cuando peft está instalado).
+- **Guía accionable cuando falta `libportaudio2` en Linux (canal PyPI)**: el
+  wheel de `sounddevice` no trae PortAudio embebido (a diferencia del AppImage),
+  y su ausencia levantaba un `OSError` no capturado (traceback crudo) con un
+  mensaje engañoso que decía «Instala sounddevice» (sounddevice sí está; falta
+  la librería del sistema). Ahora `_init_linux` captura ese `OSError` con un
+  mensaje que remite a `apt install libportaudio2` / `dnf install portaudio`,
+  `_play_audio` lo traduce a una `CliError` limpia con exit code coherente, y el
+  detalle degradado de `doctor`/`setup` en Linux nombra libportaudio2 y su
+  remediación.
 
 ### Eliminado
   habla sintética (`data_root()/synthetic-speech/`), incluida la voz
