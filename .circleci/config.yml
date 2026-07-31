@@ -268,7 +268,22 @@ jobs:
           no_output_timeout: 20m
           command: |
             echo "[STEP] Set up Python 3.13 via pyenv (pinned << pipeline.parameters.python_version >>) - INICIO"
-            git clone https://github.com/pyenv/pyenv.git "$HOME/.pyenv" && cd "$HOME/.pyenv" && git checkout << pipeline.parameters.pyenv_version >> && export PYENV_ROOT="$HOME/.pyenv" && export PATH="$PYENV_ROOT/bin:$PATH"
+            export PYENV_ROOT="$HOME/.pyenv"
+            # La imagen del executor macOS ahora incluye ~/.pyenv y restore_cache
+            # puede repoblar ~/.pyenv/versions: en ambos casos `git clone` fallaría
+            # por destino no vacío. Instalamos pyenv de forma idempotente al TAG GIT
+            # FIJO preservando los CPython ya compilados (versions), para conservar
+            # el pin reproducible sin perder el cache ni chocar con un pyenv preexistente.
+            if [ -d "$PYENV_ROOT/.git" ]; then
+              git -C "$PYENV_ROOT" fetch --tags --force origin
+            else
+              [ -d "$PYENV_ROOT/versions" ] && mv "$PYENV_ROOT/versions" "$HOME/.pyenv-versions.bak"
+              rm -rf "$PYENV_ROOT"
+              git clone https://github.com/pyenv/pyenv.git "$PYENV_ROOT"
+              [ -d "$HOME/.pyenv-versions.bak" ] && rm -rf "$PYENV_ROOT/versions" && mv "$HOME/.pyenv-versions.bak" "$PYENV_ROOT/versions"
+            fi
+            git -C "$PYENV_ROOT" checkout << pipeline.parameters.pyenv_version >>
+            export PATH="$PYENV_ROOT/bin:$PATH"
             pyenv install -s << pipeline.parameters.python_version >>
             pyenv global << pipeline.parameters.python_version >>
             pyenv rehash
@@ -856,7 +871,22 @@ jobs:
           no_output_timeout: 20m
           command: |
             echo "[STEP] Set up Python 3.13 via pyenv (pinned << pipeline.parameters.python_version >>) - INICIO"
-            git clone https://github.com/pyenv/pyenv.git "$HOME/.pyenv" && cd "$HOME/.pyenv" && git checkout << pipeline.parameters.pyenv_version >> && export PYENV_ROOT="$HOME/.pyenv" && export PATH="$PYENV_ROOT/bin:$PATH"
+            export PYENV_ROOT="$HOME/.pyenv"
+            # La imagen del executor macOS ahora incluye ~/.pyenv y restore_cache
+            # puede repoblar ~/.pyenv/versions: en ambos casos `git clone` fallaría
+            # por destino no vacío. Instalamos pyenv de forma idempotente al TAG GIT
+            # FIJO preservando los CPython ya compilados (versions), para conservar
+            # el pin reproducible sin perder el cache ni chocar con un pyenv preexistente.
+            if [ -d "$PYENV_ROOT/.git" ]; then
+              git -C "$PYENV_ROOT" fetch --tags --force origin
+            else
+              [ -d "$PYENV_ROOT/versions" ] && mv "$PYENV_ROOT/versions" "$HOME/.pyenv-versions.bak"
+              rm -rf "$PYENV_ROOT"
+              git clone https://github.com/pyenv/pyenv.git "$PYENV_ROOT"
+              [ -d "$HOME/.pyenv-versions.bak" ] && rm -rf "$PYENV_ROOT/versions" && mv "$HOME/.pyenv-versions.bak" "$PYENV_ROOT/versions"
+            fi
+            git -C "$PYENV_ROOT" checkout << pipeline.parameters.pyenv_version >>
+            export PATH="$PYENV_ROOT/bin:$PATH"
             pyenv install -s << pipeline.parameters.python_version >>
             pyenv global << pipeline.parameters.python_version >>
             pyenv rehash
