@@ -20,13 +20,15 @@ daemon**, contra la versión publicada, y reportar un veredicto por comando.
 
 ## Caveats que debes manejar
 
-1. **Shadowing de PATH.** Hay dos ejecutables `tts-sidecar`: el del install
-   editable (`.../Python313/Scripts/tts-sidecar`, gana en el PATH) y el que
-   instalará `uv tool` (`~/.local/bin/tts-sidecar`). Para probar el **artefacto
-   publicado** y no el editable, verifica con `which -a tts-sidecar` y, o bien
-   invoca el binario de uv por ruta completa, o usa `uv tool run tts-sidecar ...`.
-   Si prefieres validar la ruta de dev, invoca `python bin/tts-sidecar ...` desde
-   el repo. **Decide un solo objetivo y anótalo en el reporte.**
+1. **No invoques nunca el bare command `tts-sidecar`.** El install editable de
+   dev (`.../Python313/Scripts/tts-sidecar`, posición 28 del PATH) **siempre**
+   tapa a cualquier install de `uv tool` (`~/.local/bin`, posición 48): el orden
+   del PATH es fijo y el editable gana. Por eso este recorrido usa un **venv
+   dedicado invocado por ruta absoluta** (variable `$TTS`, ver §Instalación).
+   Esto no es opcional: el bare command validaría el código del repo, no el
+   artefacto de PyPI. El daemon es seguro con este método porque se relanza con
+   `sys.executable -m tts_sidecar.daemon.run` (`daemon.py`), heredando el python
+   del venv y cargando el mismo 0.9.0 publicado.
 2. **No existe `--version`.** La versión se consulta con el subcomando
    `tts-sidecar version` (y `version --json`). `--version` devuelve error de uso.
 3. **`voice clone` requiere dos WAV propios**: `--timbre-reference` (cualquier
@@ -56,14 +58,30 @@ incluya la clave `error` en los fallos.
 
 ## Instalación de la versión a probar
 
-Objetivo por defecto: **artefacto PyPI 0.9.0**.
+Objetivo: **artefacto PyPI 0.9.0**, en un **venv dedicado fuera del repo**, para
+que ni el PATH ni el install editable interfieran. Ejecuta exactamente esto:
 
 ```bash
-uv tool install "tts-sidecar==0.9.0"
-which -a tts-sidecar            # confirma cuál gana; usa la ruta de uv si el editable la tapa
+# 1. Venv aislado (fuera del repo; se borra al cerrar)
+uv venv "$HOME/.tts-sidecar-validation"
+
+# 2. Instala el artefacto publicado exacto en ese venv
+uv pip install --python "$HOME/.tts-sidecar-validation/Scripts/python.exe" "tts-sidecar==0.9.0"
+
+# 3. Fija el binario BAJO PRUEBA por ruta absoluta. En TODO el procedimiento,
+#    donde el texto diga `tts-sidecar`, ejecuta "$TTS" en su lugar.
+TTS="$HOME/.tts-sidecar-validation/Scripts/tts-sidecar.exe"
+
+# 4. Confirma que es el publicado antes de seguir
+"$TTS" version                 # DEBE imprimir 0.9.0; si no, detente y reporta
 ```
 
-(Alternativa nativa: instalar el binario del GitHub Release v0.9.0 y validar ese.)
+> **Regla firme:** cada comando de §Procedimiento se ejecuta como `"$TTS" ...`,
+> nunca como `tts-sidecar ...` a secas. El bare command apunta al editable.
+> (Ruta de Windows: el ejecutable vive en `Scripts/`, no en `bin/`.)
+
+(Alternativa nativa: instalar el binario del GitHub Release v0.9.0 y apuntar
+`$TTS` a él; el resto del recorrido es idéntico.)
 
 ## Procedimiento — superficie completa en orden lógico
 
@@ -130,10 +148,11 @@ como ✅/❌ con el exit code observado.
 
 ## Cierre (opcional, según lo que quiera el propietario)
 
-`setup --uninstall --yes` desinstala en un paso (encadena `cleanup --all`,
-revierte PATH y borra el binario **nativo**). Con la instalación por `uv tool`,
-la desinstalación equivalente es `uv tool uninstall tts-sidecar`. **No ejecutes
-la desinstalación sin confirmarlo con el propietario.**
+Con el método de venv dedicado, deshacer la instalación bajo prueba es borrar el
+venv: `rm -rf "$HOME/.tts-sidecar-validation"` (no toca PATH ni el editable de
+dev). `setup --uninstall --yes` aplica solo a instalaciones **nativas** (encadena
+`cleanup --all`, revierte PATH y borra el binario); no aplica aquí. **No ejecutes
+la desinstalación ni el borrado del venv sin confirmarlo con el propietario.**
 
 ## Criterio de éxito y reporte
 
