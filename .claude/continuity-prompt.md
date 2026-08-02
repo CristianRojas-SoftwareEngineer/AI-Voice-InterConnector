@@ -1,164 +1,70 @@
-# Continuity prompt — validación completa de la superficie del CLI (v0.9.0)
+# Prompt de continuidad — Spike: clonación cross-lingual español→inglés neutro (4 candidatos)
 
-Eres una sesión de Claude Code que continúa el trabajo sobre **TTS-Sidecar**.
-El release **v0.9.0** quedó publicado en firme el 2026-07-31 (PyPI + GitHub
-Release + binarios nativos, pipeline CircleCI #193 verde). Tu tarea es
-**ejecutar y verificar toda la superficie del CLI en orden lógico, con y sin
-daemon**, contra la versión publicada, y reportar un veredicto por comando.
+## Objetivo activo
+Diseñar, **implementar y ejecutar** un spike (experimento desechable, en scratchpad, sin tocar el repo ni la caché HF real) que compare 4 modelos Chatterbox para el objetivo del usuario: **clonar el timbre y la forma de habla de una narración en español y sintetizar inglés lo más NEUTRO posible (sin arrastrar acento españolizado) a partir de texto arbitrario**. Es clonación cross-lingual, NO un traductor (no requiere ASR/MT). Al terminar: reportar (Fase 5), ofrecer limpieza del scratchpad, y NO tocar el repo sin confirmación explícita.
 
-## Estado del entorno al iniciar (ya preparado)
+## Progreso verificado
+- **Requisito del usuario**: inglés neutro, sin acento español. Timbre reconocible deseable. Fuente = texto en inglés (no habla en tiempo real).
+- **El repo hoy bloquea cross-lingual**: `synthesis.py:92` fija `language_id="es"` (única aparición de language_id en todo `src/`); solo carga el pack `es-mx-latam`. Habilitarlo = cambio de código, no config trivial.
+- **Diseño experimental aprobado por el usuario** (vía AskUserQuestion):
+  - Referencia (variable controlada) = **voz `default` empaquetada del repo**: `src/tts_sidecar/voices/default/timbre-reference.wav` + `speech-reference.wav`.
+  - Candidatos = **los 4**: (1) `es-mx-latam` baseline [ya cacheado], (2) multilingüe general, (3) inglés monolingüe base, (4) Chatterbox-Turbo.
+- **Tamaños reales (HF API, verificados)**:
+  - `ResembleAI/Chatterbox-Multilingual-es-mx-latam` (repo 4.26 GB): `t3_es_mx_latam.safetensors` 2144 MB + `s3gen_v3.safetensors` 1056 MB (+ .pt dup) + `grapheme_mtl_merged_expanded_v1.json`. **NO trae ve.safetensors**. Cacheado en: `/c/Users/Cristian/.cache/huggingface/hub/models--ResembleAI--Chatterbox-Multilingual-es-mx-latam/snapshots/27e595bf2fe7be0533ca299d9afafcde08b7cca7/`
+  - `ResembleAI/chatterbox-multilingual` → **HTTP 401, NO EXISTE**. El alias `model_cache.py:15` está muerto. Los pesos multilingües están en `ResembleAI/chatterbox`.
+  - `ResembleAI/chatterbox` (repo 13.87 GB, contiene TODO): `t3_mtl23ls_v3.safetensors` 2144 MB (multi 23-idiomas v3), `t3_cfg.safetensors` 2129.7 MB (inglés base), `s3gen_v3.safetensors` 1056 MB, `s3gen.safetensors` 1056 MB (inglés), `ve.safetensors` 5.7 MB, `tokenizer.json`, `conds.pt`, etc. `ve` ya cacheado en `models--ResembleAI--chatterbox/snapshots/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18/ve.safetensors`.
+  - `ResembleAI/chatterbox-turbo` (repo 4.04 GB, HTTP 200): `t3_turbo_v1.safetensors` 1915.5 MB + `s3gen.safetensors` 1056 MB (+ `s3gen_meanflow` 1064.9 MB) + `ve.safetensors` 5.7 MB + tokenizer estilo GPT-2 (`vocab.json`,`merges.txt`,`added_tokens.json`,`tokenizer_config.json`,`special_tokens_map.json`) + `conds.pt` + `t3_turbo_v1.yaml`.
+- **En memoria todos pesan ~3.2 GB** (T3 ~2.1 GB + s3gen ~1.06 GB + ve). No hay penalización de RAM al cambiar de modelo.
 
-- La **instalación anterior** (uv tool `tts-sidecar` v0.7.8) fue **desinstalada**.
-- El **caché del modelo** de HuggingFace fue **borrado** (`scripts/clean_build.py`
-  eliminó `models--ResembleAI--Chatterbox-Multilingual-es-mx-latam` y
-  `models--ResembleAI--chatterbox`). El primer `setup`/síntesis **re-descargará
-  ~4 GB**; cuéntalo en los tiempos.
-- El **data_root** (`%LOCALAPPDATA%\tts-sidecar` en Windows) está **vacío**: sin
-  voces de usuario, sin locuciones, sin `daemon.pid`. No hay daemon corriendo.
-- Sigue presente un **install editable de desarrollo** (pip, 0.9.0) que apunta al
-  repo. **No lo elimines**: es el entorno de dev y la suite depende de él.
+## Decisiones y trade-offs cerrados
+- **No hay pack de inglés**: el inglés es el idioma base de Chatterbox; los 6 language packs son idiomas no-ingleses. Para inglés hay 2 modelos nativos: base monolingüe (`t3_cfg`) y Turbo.
+- **Para inglés NEUTRO, un modelo nativo de inglés (base/Turbo) es mejor apuesta que el multilingüe**: no tiene fonología española que filtrar. El multilingüe sirve pero requiere `cfg_weight=0` y aun así puede dejar bleed. El `es-mx-latam` es la peor apuesta (fine-tune español) → va como baseline para OÍR el problema.
+- **Palanca anti-accent-bleed**: `cfg_weight=0.0` (documentado por ResembleAI). Trade-off: neutraliza acento pero sacrifica transferencia de estilo/prosodia. Timbre se conserva igual.
+- **Aislamiento (clave del requisito «sin modificar estado»)**: cada condición en su propio proceso. es-mx-latam se lee READ-ONLY del snapshot real (ya cacheado, nada que descargar). Los 3 modelos nuevos descargan a una **caché HF en scratchpad** vía `HF_HOME`/`HF_HUB_CACHE` redirigido POR PROCESO → nunca tocan `~/.cache/huggingface`. Limpieza final = `rm` del scratchpad.
 
-## Caveats que debes manejar
+## Insights de sesión (API verificada de chatterbox 0.1.7)
+- `chatterbox-tts==0.1.7` instalado en **Python global** `C:\Users\Cristian\AppData\Local\Programs\Python\Python313\Lib\site-packages\chatterbox` (NO en `.venv`). El `python` del PATH lo resuelve y tiene chatterbox. Hay un `.venv/` en el repo pero el global ya sirve.
+- Submódulos: `models, mtl_tts, tts, tts_turbo, vc`. **Turbo SÍ está soportado en 0.1.7** (`tts_turbo.ChatterboxTurboTTS`) — no hace falta subir versión.
+- Loaders y `generate` (firmas verificadas):
+  - `tts.ChatterboxTTS.from_local(ckpt_dir, device)` / `.from_pretrained(device)`. `REPO_ID="ResembleAI/chatterbox"`. `from_pretrained` descarga SOLO 5 archivos: `ve.safetensors, t3_cfg.safetensors, s3gen.safetensors, tokenizer.json, conds.pt` (selectivo, NO el repo de 14 GB). `generate(text, repetition_penalty=1.2, min_p=0.05, top_p=1.0, audio_prompt_path=None, exaggeration=0.5, cfg_weight=0.5, temperature=0.8)` — **sin `language_id`** (inglés puro).
+  - `mtl_tts.ChatterboxMultilingualTTS.from_local(ckpt_dir, device)` / `.from_pretrained`. `generate(text, language_id, audio_prompt_path=None, exaggeration=0.5, cfg_weight=0.5, temperature=0.8, repetition_penalty=2.0, min_p=0.05, top_p=1.0)` — `language_id` REQUERIDO (usar `"en"`). **VERIFICAR en `mtl_tts.py` qué T3 baja `from_pretrained` (v2 vs v3)** antes de correr.
+  - `tts_turbo.ChatterboxTurboTTS.from_local(ckpt_dir, device)` / `.from_pretrained`. `generate(text, ..., audio_prompt_path=None, exaggeration=0.0, cfg_weight=0.0, temperature=0.8, top_k=1000, norm_loudness=True)` — inglés puro.
+- **Baseline es-mx-latam**: reutilizar el loader de producción `from tts_sidecar.model_loader import ModelLoader; ModelLoader().load(snapshot_dir, "es-mx-latam", "cpu")` (arma T3(T3Config.multilingual())+s3gen_v3+ve+MTLTokenizer manualmente porque el pack no trae ve ni usa from_local estándar). Luego `generate(text, language_id="en", cfg_weight=0)`.
 
-1. **No invoques nunca el bare command `tts-sidecar`.** El install editable de
-   dev (`.../Python313/Scripts/tts-sidecar`, posición 28 del PATH) **siempre**
-   tapa a cualquier install de `uv tool` (`~/.local/bin`, posición 48): el orden
-   del PATH es fijo y el editable gana. Por eso este recorrido usa un **venv
-   dedicado invocado por ruta absoluta** (variable `$TTS`, ver §Instalación).
-   Esto no es opcional: el bare command validaría el código del repo, no el
-   artefacto de PyPI. El daemon es seguro con este método porque se relanza con
-   `sys.executable -m tts_sidecar.daemon.run` (`daemon.py`), heredando el python
-   del venv y cargando el mismo 0.9.0 publicado.
-2. **No existe `--version`.** La versión se consulta con el subcomando
-   `tts-sidecar version` (y `version --json`). `--version` devuelve error de uso.
-3. **`voice clone` requiere dos WAV propios**: `--timbre-reference` (cualquier
-   largo) y `--speech-reference` (10+ s de habla limpia). Ten dos WAV a mano
-   antes del paso 6; sin ellos, ese bloque no se puede ejercitar.
+## Estado en curso
+- Sin código escrito aún. Todo el diseño está en este prompt.
+- Scratchpad de sesión: `C:\Users\Cristian\AppData\Local\Temp\claude\C--Users-Cristian-Desktop-Proyectos-Voices-TTS-Sidecar\06d2a977-a048-4971-ae30-0f905d4e1199\scratchpad`
+- Archivos clave del repo (solo lectura, referencia): `src/tts_sidecar/synthesis.py:92`, `src/tts_sidecar/model_loader.py` (`_load_es_latam`), `src/tts_sidecar/model_cache.py:14-43`, `src/tts_sidecar/engine.py:135-217` (params: MAX_NEW_TOKENS=500, N_CFM_TIMESTEPS=4, EXAGGERATION=0.75, watermark bypass).
 
-## Fuentes canónicas (léelas antes de empezar)
+## Bloqueadores y preguntas abiertas
+- Verificar qué checkpoint T3 baja `ChatterboxMultilingualTTS.from_pretrained` (leer `mtl_tts.py`). Si no es el deseado, descargar `t3_mtl23ls_v3.safetensors` con `hf_hub_download(repo_id="ResembleAI/chatterbox", filename=..., cache_dir=scratchpad)` y armar dir para `from_local`.
+- Confirmar que Turbo `from_pretrained` resuelve su tokenizer GPT-2 sin fricción.
+- CPU-only: cada síntesis tarda minutos; 4 candidatos × ~2 frases = ~8 generaciones. Puede ser lento; considerar 1 frase corta + 1 media (<300 chars c/u por el límite del modelo).
 
-- `docs/MANUAL-VALIDATION.md` — recorrido base en orden lógico. **Esta es la
-  secuencia madre**; el procedimiento de abajo la extiende con la matriz
-  daemon/no-daemon y las aserciones de exit code. No la contradigas.
-- `docs/CLI-CONTRACT.md` — contrato normativo de comandos, flags y payloads
-  `--json`.
-- `src/tts_sidecar/exit_codes.py` — tabla congelada de códigos de salida.
+## Próximos pasos (ordenados)
+1. **Implementar y ejecutar el diseño experimental completo** (instrucción del usuario). Concretamente:
+   a. Verificar en `mtl_tts.py`/`tts_turbo.py` los archivos que baja cada `from_pretrained` y ajustar la descarga selectiva.
+   b. Escribir en scratchpad un script por condición (o uno parametrizado que corra cada condición **en su propio proceso**), con `HF_HOME` redirigido a `scratchpad/hfcache` para los 3 modelos nuevos y SIN redirigir para el baseline es-mx-latam (lee caché real read-only).
+   c. Variables controladas idénticas: misma referencia (voz `default`), mismo set de texto en inglés (1 corta + 1 media), `cfg_weight=0`, `exaggeration=0.5`, `torch.manual_seed` fijo, device `cpu`. es-mx-latam y multilingüe usan `language_id="en"`.
+   d. Salida: un `.wav` por candidato×frase en scratchpad, nombrados por condición.
+   e. Ejecutar, capturar stdout/stderr, diagnosticar fallos antes de reintentar.
+2. **Reportar (Fase 5)**: pregunta del spike + respuesta directa, tabla por condición, interpretación causal, limitaciones (la neutralidad es perceptual → el usuario debe escuchar los WAV).
+3. **Ofrecer limpieza** del scratchpad (incl. `hfcache`). No implementar cambios en el repo sin confirmación; si quedan decisiones abiertas, usar `resolve-open-decisions`.
 
-## Contrato de exit codes (para las aserciones)
+## Fuentes a re-leer post-compactación
+- `src/tts_sidecar/model_loader.py` — método `_load_es_latam`: cómo arma el modelo es-mx-latam (para reutilizarlo en el baseline).
+- `src/tts_sidecar/synthesis.py:54-98` — ruta real de síntesis (params a replicar).
+- `C:\Users\...\site-packages\chatterbox\mtl_tts.py` — `from_pretrained`/`from_local` y qué T3 baja el multilingüe.
+- `C:\Users\...\site-packages\chatterbox\tts_turbo.py` — loader y tokenizer de Turbo.
+- `src/tts_sidecar/voices/default/` — confirmar nombres exactos de los WAV de referencia.
 
-```
-0 éxito | 1 error genérico | 2 entrada inválida/uso | 3 recurso no encontrado
-4 modelo no provisionado (setup) | 5 daemon inalcanzable | 6 conflicto de estado
-7 no aplicable al contexto | 8 precondición de entorno | 130 interrupción (SIGINT)
-```
+## No repetir
+- NO usar el alias `ResembleAI/chatterbox-multilingual` (HTTP 401, muerto). Los pesos multi están en `ResembleAI/chatterbox`.
+- NO descargar el repo `chatterbox` entero (13.87 GB): usar `from_pretrained` (baja 5 archivos) o `hf_hub_download` por archivo.
+- NO escribir modelos nuevos en la caché HF real: redirigir `HF_HOME` a scratchpad por proceso.
+- NO tocar el repo ni la caché real; NO re-descargar es-mx-latam (leerlo read-only del snapshot cacheado).
+- Turbo YA está soportado en 0.1.7 (`tts_turbo`) — no subir versión de chatterbox-tts.
+- NO empezar a implementar hasta completar `/compact` → `/continuity-prompt resume`.
 
-Tras cada comando, captura el exit code (`echo $?` en bash) y compáralo con el
-esperado. Con `--json`, valida además que el payload sea JSON parseable y que
-incluya la clave `error` en los fallos.
-
-## Instalación de la versión a probar
-
-Objetivo: **artefacto PyPI 0.9.0**, en un **venv dedicado fuera del repo**, para
-que ni el PATH ni el install editable interfieran. Ejecuta exactamente esto:
-
-```bash
-# 1. Venv aislado (fuera del repo; se borra al cerrar)
-uv venv "$HOME/.tts-sidecar-validation"
-
-# 2. Instala el artefacto publicado exacto en ese venv
-uv pip install --python "$HOME/.tts-sidecar-validation/Scripts/python.exe" "tts-sidecar==0.9.0"
-
-# 3. Fija el binario BAJO PRUEBA por ruta absoluta. En TODO el procedimiento,
-#    donde el texto diga `tts-sidecar`, ejecuta "$TTS" en su lugar.
-TTS="$HOME/.tts-sidecar-validation/Scripts/tts-sidecar.exe"
-
-# 4. Confirma que es el publicado antes de seguir
-"$TTS" version                 # DEBE imprimir 0.9.0; si no, detente y reporta
-```
-
-> **Regla firme:** cada comando de §Procedimiento se ejecuta como `"$TTS" ...`,
-> nunca como `tts-sidecar ...` a secas. El bare command apunta al editable.
-> (Ruta de Windows: el ejecutable vive en `Scripts/`, no en `bin/`.)
-
-(Alternativa nativa: instalar el binario del GitHub Release v0.9.0 y apuntar
-`$TTS` a él; el resto del recorrido es idéntico.)
-
-## Procedimiento — superficie completa en orden lógico
-
-Ejecuta en este orden; cada paso asume que el anterior pasó. Marca cada comando
-como ✅/❌ con el exit code observado.
-
-### 1. Identidad y diagnóstico (sin modelo aún)
-- `tts-sidecar version` → 0; imprime `0.9.0`.
-- `tts-sidecar version --json` → 0; JSON con la versión.
-- `tts-sidecar doctor` → puede salir **1** si el modelo aún no está (chequeo
-  fallido esperado); léelo como diagnóstico, no como bug.
-- `tts-sidecar doctor --json` → JSON de diagnóstico.
-- `tts-sidecar devices` y `--json` → 0; lista dispositivos de salida.
-
-### 2. Provisión del modelo (re-descarga ~4 GB)
-- `tts-sidecar setup` → 0; descarga el modelo es-mx-latam (idempotente).
-- Repite `tts-sidecar doctor` → ahora debe salir **0** (modelo presente).
-
-### 3. Síntesis con la voz de fábrica — **sin daemon**
-- `tts-sidecar speech say --text "Hola mundo, prueba de síntesis." --no-daemon` → 0.
-- `tts-sidecar speech say --text "Voz de fábrica." --no-daemon --json` → 0; JSON con la voz efectiva.
-- `tts-sidecar speech synthesize --text "Guardando a archivo." --label prueba --no-daemon` → 0.
-- `tts-sidecar speech synthesize --text "Otra toma." --label prueba --no-daemon` → **6** (colisión de etiqueta).
-- `tts-sidecar speech synthesize --text "Sobrescrita." --label prueba --no-daemon --force` → 0.
-
-### 4. Almacén de locuciones (agnóstico al daemon)
-- `tts-sidecar speech list` / `--json` → 0; aparece `prueba`.
-- `tts-sidecar speech play --label prueba` → 0 (reproduce sin re-sintetizar).
-- `tts-sidecar speech remove --label prueba` → 0.
-- `tts-sidecar speech play --label prueba` → **3** (ya no existe).
-
-### 5. Voces de fábrica (agnóstico al daemon)
-- `tts-sidecar voice list` / `--json` → 0; aparece `default`.
-
-### 6. Clonación de voz — **sin y con daemon** (requiere 2 WAV)
-- `tts-sidecar voice clone --name mi_voz -t timbre.wav -s habla.wav --no-daemon` → 0.
-- `tts-sidecar voice clone --name mi_voz -t timbre.wav -s habla.wav --no-daemon` → **6** (ya existe) y con `--force` → 0.
-- `tts-sidecar speech say --text "Mi voz clonada." --voice mi_voz --no-daemon` → 0.
-- Deja `mi_voz` registrada para el paso 7 (se reusará vía daemon), o re-clónala allí.
-
-### 7. Camino con daemon — **misma síntesis, modelo en memoria**
-- `tts-sidecar daemon status` → daemon detenido (exit distinto de 0 esperado; anótalo).
-- `tts-sidecar daemon start` → 0; luego `daemon status` → 0 (corriendo).
-- `tts-sidecar speech say --text "Síntesis vía daemon." --daemon` → 0.
-- `tts-sidecar speech say --text "Con voz vía daemon." --voice mi_voz --daemon` → 0.
-- `tts-sidecar speech synthesize --text "Guardada vía daemon." --label demo --daemon --json` → 0; JSON con tiempos t3/s3gen y marca de que fue vía daemon.
-- `tts-sidecar voice clone --name mi_voz2 -t timbre.wav -s habla.wav --daemon` → 0 (precómputo vía daemon).
-- `tts-sidecar daemon restart` → 0; `daemon status` → 0.
-- `tts-sidecar daemon stop` → 0; `daemon status` → daemon detenido.
-- **Modo estricto:** con el daemon detenido, `tts-sidecar speech say --text "x" --daemon` → **5** (exige daemon y no está).
-- (Opcional) `tts-sidecar daemon serve` en primer plano en otra terminal y Ctrl-C → **130**.
-
-### 8. Limpieza de datos (`cleanup`) — verifica antes de borrar
-- `tts-sidecar cleanup --dry-run` → 0; lista qué borraría sin borrar.
-- `tts-sidecar cleanup --voices --yes` → 0 (borra voces de usuario, no `default`).
-- `tts-sidecar voice list` → ya no aparecen `mi_voz`/`mi_voz2`.
-- `tts-sidecar cleanup --json` **sin** `--yes`/`--dry-run` → **2** (requiere uno de esos).
-
-### 9. Casos de error esperados (cierre del contrato)
-- `tts-sidecar speech say --text "x" --voice no_existe` → **3**; mensaje en español con sugerencia.
-- `tts-sidecar voice remove --name no_existe` → **3**.
-- `tts-sidecar speech say --text "x" --daemon --no-daemon` → **2** (flags mutuamente excluyentes).
-- `tts-sidecar speech synthesize --text "x" --label y --play --json` → **2** (`--play` incompatible con `--json`).
-
-## Cierre (opcional, según lo que quiera el propietario)
-
-Con el método de venv dedicado, deshacer la instalación bajo prueba es borrar el
-venv: `rm -rf "$HOME/.tts-sidecar-validation"` (no toca PATH ni el editable de
-dev). `setup --uninstall --yes` aplica solo a instalaciones **nativas** (encadena
-`cleanup --all`, revierte PATH y borra el binario); no aplica aquí. **No ejecutes
-la desinstalación ni el borrado del venv sin confirmarlo con el propietario.**
-
-## Criterio de éxito y reporte
-
-- Éxito: cada comando devuelve el exit code esperado y, con `--json`, un payload
-  parseable coherente con `docs/CLI-CONTRACT.md`.
-- Entrega una tabla por comando (comando · modo · exit esperado · exit observado ·
-  ✅/❌ · nota). Para cualquier ❌, documenta el comando exacto, stdout/stderr y el
-  exit code, y contrástalo con el contrato antes de concluir si es bug o esperado.
-- Recuerda: `doctor` sin modelo y `daemon status` sin daemon **no** son fallos.
+---
+Instrucción post-compactación: Ejecuta `/continuity-prompt resume` para leer este archivo desde disco. Revisa las fuentes listadas, valida el estado del workspace y continúa desde el paso 1 de «Próximos pasos» sin reabrir decisiones ya cerradas salvo nueva evidencia.
