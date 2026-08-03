@@ -297,8 +297,8 @@ case ":$PATH:" in
         ;;
 esac
 echo
-echo "El modelo de voz (es-mx-latam, ~4 GB) no viene incluido:"
-echo "se descarga una sola vez con 'tts-sidecar setup'."
+echo "Los modelos de voz (es-mx-latam y en, ~8 GB en total) no vienen incluidos:"
+echo "se descargan una sola vez con 'tts-sidecar setup'."
 read -p "¿Descargar ahora el modelo de voz? (s/n): " RESPUESTA
 case "$RESPUESTA" in
     [sSyY]*)

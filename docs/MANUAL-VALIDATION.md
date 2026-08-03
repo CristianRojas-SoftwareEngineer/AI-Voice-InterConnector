@@ -7,7 +7,7 @@ ejecuta en Windows sobre cada release, y que sirve de guion para el feedback de
 usuarios reales en Linux y macOS. El pipeline de CI solo corre un **smoke test
 automatizado** del binario congelado (`tts-sidecar version`, exit 0); la matriz de
 comandos de abajo es la parte que **no** cabe en un runner de CI porque exige
-cargar el modelo Chatterbox, descargar ~4 GB de pesos y sintetizar audio real.
+cargar los modelos Chatterbox, descargar ~8 GB de pesos (ambos modelos) y sintetizar audio real.
 
 La secuencia está en orden lógico: cada paso asume que el anterior pasó. Ejecutar
 tras instalar el artefacto del release (en Windows,
@@ -58,7 +58,7 @@ tts-sidecar doctor --json
 Solo si no se hizo desde el instalador.
 
 ```bash
-# Descarga el modelo es-mx-latam a ~/.cache/huggingface/hub (idempotente)
+# Descarga ambos modelos (es-mx-latam y en) a ~/.cache/huggingface/hub (idempotente)
 tts-sidecar setup
 ```
 

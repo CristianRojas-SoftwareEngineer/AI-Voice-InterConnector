@@ -48,8 +48,8 @@ cask "{cask_name}" do
   ]
 
   caveats <<~EOS
-    El modelo de voz (es-mx-latam, ~4 GB) no viene incluido:
-    descargalo una sola vez con:
+    Los modelos de voz (es-mx-latam + en, ~8 GB en total) no vienen incluidos:
+    descargalos una sola vez con:
       tts-sidecar setup
 
     Licencia: GPL-3.0-or-later. La oferta de codigo fuente (GPLv3 seccion 6)

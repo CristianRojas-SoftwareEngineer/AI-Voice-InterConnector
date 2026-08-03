@@ -1518,7 +1518,7 @@ def _describe_provision_failure(e: Exception):
 
 
 def cmd_setup(args):
-    """Provisiona el runtime: corre los chequeos de entorno y descarga el modelo si falta.
+    """Provisiona el runtime: corre los chequeos de entorno y descarga los modelos si faltan.
 
     En Linux, ejecutado desde un AppImage, también integra el comando en el PATH
     (symlink de $APPIMAGE en ~/.local/bin); --remove-path revierte ese symlink
@@ -1590,7 +1590,7 @@ def cmd_setup(args):
             return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
         freed_total = 0
-        print("\n[force-update] Eliminando el modelo en caché para re-descargarlo...", file=sys.stderr)
+        print("\n[force-update] Eliminando los modelos en caché para re-descargarlos...", file=sys.stderr)
         for p in model_cache_dirs():
             if not p.name.startswith("models--ResembleAI--"):
                 raise RuntimeError(f"Ruta inesperada fuera del proyecto: {p}")
@@ -1856,7 +1856,7 @@ def cmd_cleanup(args):
         shutil.rmtree(p)
         print(f"Eliminado: {p}", file=info_out)
     print(
-        "Limpieza completa. 'tts-sidecar setup' reprovisiona el modelo cuando lo necesites.",
+        "Limpieza completa. 'tts-sidecar setup' reprovisiona los modelos cuando los necesites.",
         file=info_out,
     )
     removed = [p for p, _kind in existing]
@@ -2142,7 +2142,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # comando setup
-    setup_parser = subparsers.add_parser("setup", help="Provisiona el runtime: corre chequeos, descarga el modelo si falta "
+    setup_parser = subparsers.add_parser("setup", help="Provisiona el runtime: corre chequeos, descarga los modelos si faltan "
                                                        "y en Linux (AppImage) integra el comando en el PATH")
     # --remove-path, --force-update y --uninstall son modos mutuamente
     # excluyentes de setup: cada uno corta el flujo normal de provisión.
@@ -2151,8 +2151,8 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Elimina el symlink de PATH (~/.local/bin/tts-sidecar) creado por setup en Linux "
                                  "y termina sin correr chequeos ni descargas")
     setup_mode.add_argument("--force-update", action="store_true",
-                            help="Elimina el modelo en caché y lo vuelve a descargar (fuerza una "
-                                 "re-descarga limpia, p. ej. para actualizarlo)")
+                            help="Elimina ambos modelos en caché y los vuelve a descargar (fuerza una "
+                                 "re-descarga limpia, p. ej. para actualizarlos)")
     setup_mode.add_argument("--uninstall", action="store_true",
                             help="Desinstala tts-sidecar en un paso (canal nativo, los 3 SO): encadena "
                                  "'cleanup --all', revierte la integración de PATH y borra el binario")
@@ -2166,10 +2166,10 @@ def build_parser() -> argparse.ArgumentParser:
     # comando cleanup
     cleanup_parser = subparsers.add_parser(
         "cleanup",
-        help="Desaprovisiona los datos del proyecto (modelo descargado y/o voces de usuario)",
+        help="Desaprovisiona los datos del proyecto (modelos descargados y/o voces de usuario)",
     )
     cleanup_parser.add_argument("--model", action="store_true",
-                                help="Elimina el modelo descargado (solo las carpetas de este proyecto "
+                                help="Elimina los modelos descargados (solo las carpetas de este proyecto "
                                      "dentro de la caché de HuggingFace)")
     cleanup_parser.add_argument("--voices", action="store_true",
                                 help="Elimina las voces de usuario registradas con 'voice clone' "
@@ -2178,7 +2178,7 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Elimina la raíz de habla sintética entera "
                                      "(todas las locuciones guardadas con 'speech synthesize', 'default' incluida)")
     cleanup_parser.add_argument("--all", action="store_true",
-                                help="Elimina el modelo, las voces de usuario y la habla sintética")
+                                help="Elimina los modelos, las voces de usuario y la habla sintética")
     cleanup_parser.add_argument("--dry-run", action="store_true",
                                 help="Lista lo que se borraría sin borrar nada")
     cleanup_parser.add_argument("--yes", "-y", action="store_true",

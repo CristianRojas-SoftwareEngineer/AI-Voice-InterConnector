@@ -62,9 +62,9 @@ JSON:
 | Superficie | Qué consume el plugin | Compromiso de estabilidad |
 |------------|-----------------------|----------------------------|
 | `speech say --text "<msg>" --daemon` | Síntesis y reproducción de cada locución. Usa el daemon y falla si no está levantado (no lo arranca solo). | Mantener el flag `--daemon` y su semántica (usar el daemon, no auto-arrancarlo). |
-| `doctor --json` | Verifica el entorno; busca en `checks[]` el elemento con `name == "Chatterbox model"` y lee su `status`. | Mantener `checks[].name == "Chatterbox model"` y los valores `PASS`/`FAIL`. |
+| `doctor --json` | Verifica el entorno; busca en `checks[]` los elementos cuyo `name` empieza con `"Chatterbox model"` (uno por idioma: `"Chatterbox model (es-latam)"` y `"Chatterbox model (en)"`) y lee su `status`. | Mantener el prefijo `checks[].name == "Chatterbox model"` (con sufijo ` (<idioma>)` por modelo) y los valores `PASS`/`FAIL`. |
 | `daemon status --json` | Lee `running` para saber si el daemon corre. | Mantener el campo booleano `running`. |
-| `daemon start` | Levanta el daemon para dejar el modelo en memoria. | Mantener el subcomando y su arranque desanclable. |
+| `daemon start` | Levanta el daemon para dejar los modelos en memoria. | Mantener el subcomando y su arranque desanclable. |
 
 Cambiar cualquiera de estos nombres, flags o campos **rompe la narración** sin
 que este repo tenga tests que lo detecten (el plugin vive fuera). Por eso esta
@@ -90,7 +90,7 @@ propio.
 ## Punto de entrada para el usuario
 
 Desde el lado del motor no hay nada que instalar para el plugin: basta con que
-`tts-sidecar` esté en el `PATH` y el modelo esté en caché (`tts-sidecar setup`).
+`tts-sidecar` esté en el `PATH` y los modelos estén en caché (`tts-sidecar setup`).
 
 El repositorio del plugin dobla como su propio marketplace:
 
@@ -101,6 +101,6 @@ El repositorio del plugin dobla como su propio marketplace:
 ```
 
 El comando `/tts-sidecar-narrator:install` guía la instalación del binario
-TTS-Sidecar, la descarga del modelo y la activación de la narración. El detalle
+TTS-Sidecar, la descarga de los modelos y la activación de la narración. El detalle
 de cómo el plugin orquesta hooks y degradación vive en su
 [documento de integración](https://github.com/CristianRojas-SoftwareEngineer/tts-sidecar-narrator/blob/main/docs/INTEGRATION.md).

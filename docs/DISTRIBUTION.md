@@ -29,9 +29,10 @@ fricción del primer arranque.
 | **Publicación en CI** | Job `publish-release` → GitHub Release directo | Job `publish-pypi` → publicación directa a PyPI |
 | **Reversibilidad de la publicación** | El Release es público al publicarse: revertir implica borrar un Release ya público | Irreversible: un paquete subido no se puede sobrescribir, solo yankear |
 
-En ambos casos, `setup` provisiona el modelo `es-mx-latam` en la caché de
-HuggingFace del usuario (`~/.cache/huggingface/hub`) de forma idéntica: el
-modelo nunca viaja dentro del paquete, en ningún canal.
+En ambos casos, `setup` (default `--language all`) provisiona ambos modelos
+(`es-mx-latam` y `en`) en la caché de HuggingFace del usuario
+(`~/.cache/huggingface/hub`) de forma idéntica: ningún modelo viaja dentro del
+paquete, en ningún canal.
 
 ## Instalación por canal
 
@@ -55,7 +56,7 @@ artefacto nativo (no un canal nuevo), con un script por SO:
   Homebrew: el Cask del tap propio (`brew tap
   CristianRojas-SoftwareEngineer/tts-sidecar && brew install --cask
   tts-sidecar`), que resuelve PATH, desinstalación (`--zap`) y cuarentena sin
-  intervención manual, pero exige Homebrew y no provisiona el modelo.
+  intervención manual, pero exige Homebrew y no provisiona los modelos.
 - **Windows** — `install-windows.ps1` (`irm | iex`) descarga el instalador Inno Setup
   del release, verifica su checksum y lo ejecuta en silencio (instalación
   per-user: `%LOCALAPPDATA%\Programs`, PATH de usuario en HKCU, sin UAC),
@@ -73,7 +74,7 @@ tres instaladores en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
 ```bash
 # Con uv (recomendado: https://docs.astral.sh/uv/)
 uv tool install tts-sidecar
-tts-sidecar setup      # provisiona el modelo, idéntico al canal nativo
+tts-sidecar setup      # provisiona ambos modelos (default all), idéntico al canal nativo
 tts-sidecar speech say --text "Hola mundo"
 
 # Con pipx
@@ -108,7 +109,7 @@ pipx upgrade tts-sidecar
 **Desinstalación**:
 
 ```bash
-tts-sidecar cleanup --all --yes   # elimina modelo y voces de usuario (igual que en el canal nativo)
+tts-sidecar cleanup --all --yes   # elimina ambos modelos y voces de usuario (igual que en el canal nativo)
 uv tool uninstall tts-sidecar
 # o
 pipx uninstall tts-sidecar

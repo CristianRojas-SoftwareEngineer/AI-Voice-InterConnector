@@ -57,13 +57,13 @@ humano.
   una línea no participan del canal PyPI). Si cualquiera de esas puertas falla
   en el pipeline del tag, ni los builds ni `publish-pypi` llegan a ejecutarse. Correr la suite en local antes de
   taggear sigue siendo la única manera de anticipar ese resultado.
-- **Revisiones fijadas del modelo auditadas**: las constantes
+- **Revisiones fijadas de los modelos auditadas**: las constantes
   `MODEL_REVISIONS` y `BASE_MODEL_REVISION` de `src/tts_sidecar/model_cache.py`
   apuntan a los commit hashes de HuggingFace que este release distribuye. Si el
-  release debe incorporar una versión nueva del modelo: consultar el `sha`
+  release debe incorporar una versión nueva de alguno de los modelos: consultar el `sha`
   vigente (`https://huggingface.co/api/models/<repo>`), auditar el diff de esa
   revisión en HF, actualizar las constantes y verificar con
-  `setup --force-update` + `doctor`. Si no hay cambio de modelo, no hay nada
+  `setup --force-update` + `doctor`. Si no hay cambio de modelos, no hay nada
   que hacer (el pin existente sigue vigente).
 - **Prerequisito operativo (una sola vez):** existe el context `github-release`
   en CircleCI (Organization Settings → Contexts) con la variable `GH_TOKEN` = un

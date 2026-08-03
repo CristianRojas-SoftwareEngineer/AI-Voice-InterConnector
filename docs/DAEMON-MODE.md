@@ -1,6 +1,6 @@
 # Daemon Mode
 
-El daemon mode mantiene el modelo de Chatterbox en memoria entre invocaciones del CLI, eliminando el overhead de carga (~15-30s) en cada llamada.
+El daemon mode mantiene los modelos de Chatterbox en memoria entre invocaciones del CLI, eliminando el overhead de carga (~15-30s) en cada llamada.
 
 ## Tabla de contenidos
 
@@ -218,8 +218,8 @@ tts-sidecar speech synthesize --text "Hola" --label demo --no-daemon
 > ciclo de vida falla. Ver la tabla completa de códigos en `USAGE.md`
 > (sección «Experiencia unificada entre sistemas operativos»).
 
-> **Ventana de arranque (30-90 s)**: el puerto 8765 no abre hasta que el modelo
-> termina de cargarse en memoria, lo que puede tardar entre 30 y 90 segundos
+> **Ventana de arranque (30-90 s)**: el puerto 8765 no abre hasta que los modelos
+> terminan de cargarse en memoria (default `all`, ambos), lo que puede tardar entre 30 y 90 segundos
 > según el hardware. `daemon start` bloquea internamente hasta confirmar
 > «Daemon listo» (o el timeout de 120 s) antes de devolver el control, así que
 > un script que lo invoca y espera esa confirmación no necesita hacer nada
@@ -353,7 +353,7 @@ flags de síntesis.
 | Métrica | Sin Daemon | Con Daemon |
 |---------|------------|------------|
 | Tiempo síntesis | ~50s | ~15-20s |
-| Carga de modelo | 5-8s por llamada | 5-8s solo al iniciar |
+| Carga de modelo | 5-8s por llamada | 5-8s por modelo, solo al iniciar |
 | Overhead compilación | ~30s por llamada | ~1.6s solo al inicio |
 
 ## Decisiones de Diseño

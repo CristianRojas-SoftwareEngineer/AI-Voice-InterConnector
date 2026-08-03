@@ -263,7 +263,7 @@ segundos: el step valida con `grep -qx '  - default'` (bash) / `-notmatch
 Queda **manual** (requiere modelo, audio real y hardware por SO): `doctor`,
 `setup` y una síntesis real (`speech synthesize`). La validación end-to-end de los
 instaladores por SO es por diseño **externa al pipeline** (consume mucha
-cuota del runner al cargar el modelo Chatterbox y los ~4 GB de pesos en cada
+cuota del runner al cargar los modelos Chatterbox y los ~8 GB de pesos (ambos modelos) en cada
 build): Windows la realiza el propietario sobre su equipo local; Linux y macOS
 dependen de feedback de usuarios reales que prueben la instalación y
 ejecución. El smoke test automatizado en CI cubre la parte proporcional a
@@ -279,7 +279,7 @@ pytest tests/ -v
 dist/tts-sidecar/tts-sidecar.exe version
 dist/tts-sidecar/tts-sidecar.exe doctor
 
-# Provisionar el modelo es-mx-latam (chequeos + descarga si falta; idempotente)
+# Provisionar los modelos es-mx-latam + en (chequeos + descarga si falta; idempotente)
 dist/tts-sidecar/tts-sidecar.exe setup
 
 # Instalador (Windows)
@@ -294,15 +294,16 @@ guiada + desinstalación limpia):
 
 | Aspecto | Windows | Linux | macOS |
 |---------|---------|-------|-------|
-| PATH | Automático: el instalador agrega `{app}` al PATH del usuario (HKCU, per-user, sin UAC) | `tts-sidecar setup` crea el symlink `~/.local/bin/tts-sidecar → $APPIMAGE` | Opt-in: `Instalar (PATH + modelo).command` del `.dmg` (symlink en `/usr/local/bin`, con sudo) |
-| Guía hacia `setup` | Página informativa + casilla post-instalación que lo ejecuta en contexto de usuario | `setup` es el punto único de provisión (modelo + PATH) | El script de instalación ofrece ejecutar `setup` (sin sudo) tras enlazar |
+| PATH | Automático: el instalador agrega `{app}` al PATH del usuario (HKCU, per-user, sin UAC) | `tts-sidecar setup` crea el symlink `~/.local/bin/tts-sidecar → $APPIMAGE` | Opt-in: `Instalar (PATH + modelos).command` del `.dmg` (symlink en `/usr/local/bin`, con sudo) |
+| Guía hacia `setup` | Página informativa + casilla post-instalación que lo ejecuta en contexto de usuario | `setup` es el punto único de provisión (modelos + PATH) | El script de instalación ofrece ejecutar `setup` (sin sudo) tras enlazar |
 | Desinstalación | Desinstalador de Inno Setup, sin admin (revierte la entrada de PATH en HKCU) | `tts-sidecar setup --remove-path` + borrar el `.AppImage` | `Desinstalar (quitar del PATH).command` del `.dmg` + arrastrar el `.app` a la Papelera |
-| Datos provisionados | `tts-sidecar cleanup --all` (paso previo recomendado en los tres SO: elimina modelo y voces de usuario antes de desinstalar el binario) | Ídem | Ídem |
+| Datos provisionados | `tts-sidecar cleanup --all` (paso previo recomendado en los tres SO: elimina ambos modelos y voces de usuario antes de desinstalar el binario) | Ídem | Ídem |
 | Dependencias de build | Política interactiva común (`ensure_build_dependency`) | Ídem | Ídem |
 
-> El modelo `es-mx-latam` se descarga a `~/.cache/huggingface/hub` y no se
-> empaqueta en el ejecutable; `speech synthesize` y `daemon start` fallan rápido remitiendo
-> a `setup` mientras falte.
+> `setup` sin `--language` descarga ambos modelos (`es-mx-latam` y `en`, el
+> base de inglés para síntesis cross-lingual) a `~/.cache/huggingface/hub`; ninguno
+> se empaqueta en el ejecutable. `speech synthesize` y `daemon start` fallan rápido
+> remitiendo a `setup --language <idioma>` mientras el modelo requerido falte.
 
 La tabla describe los artefactos descargados a mano. Las tres plataformas
 tienen además una instalación auto-hospedada de una línea que resuelve PATH,
@@ -742,7 +743,7 @@ Los paquetes que requieren `--collect-all` son: `chatterbox`, `transformers`,
   script de empaquetado consume.
 - **Tiempo de build**: ~10 min en frío, ~5 min incremental.
 - **Windows**: el instalador Inno Setup es el artefacto que recibe el usuario final;
-  ajusta el `PATH`, muestra la página informativa del modelo y ofrece ejecutar `setup`.
+  ajusta el `PATH`, muestra la página informativa de los modelos y ofrece ejecutar `setup`.
 - **Linux**: el AppImage es un único archivo ejecutable, compatible con la mayoría de
   distribuciones; `tts-sidecar setup` lo integra en el PATH (symlink en `~/.local/bin`).
 - **macOS**: el `.dmg` es el instalador estándar de macOS; incluye el `.app` bundle más

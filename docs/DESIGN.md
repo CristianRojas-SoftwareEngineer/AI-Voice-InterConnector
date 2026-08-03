@@ -77,7 +77,7 @@ TTS-Sidecar/
 │       ├── voices.py              # Resolución de voces usuario→fábrica
 │       ├── synthetic_speech.py    # Almacén de habla sintética grabada por `speech` (WAV + sidecar JSON)
 │       ├── paths.py               # Rutas por SO (user-data-dir, modo congelado)
-│       ├── model_cache.py         # Detección del modelo en la caché de HF
+│       ├── model_cache.py         # Detección de los modelos en la caché de HF
 │       ├── voices/                # Voces de FÁBRICA (commiteadas, empaquetadas, solo lectura)
 │       │   └── default/           # Voz por defecto (derivada de assets/audios/)
 │       │       ├── timbre-reference.wav # Timbre de voz (cualquier largo)
@@ -129,7 +129,7 @@ El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings
 
 | Aspecto | Detalle |
 |---------|---------|
-| **Modelo** | `es-mx-latam` (`ResembleAI/Chatterbox-Multilingual-es-mx-latam`) |
+| **Modelos** | `es-mx-latam` (`ResembleAI/Chatterbox-Multilingual-es-mx-latam`, ~4 GB) y `en` (`ResembleAI/chatterbox`, ~4 GB) |
 | **Licencia** | MIT |
 | **Parámetros** | 500M |
 | **Idiomas** | 23+ (es, en, fr, de, pt, etc.) |

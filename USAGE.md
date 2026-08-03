@@ -189,7 +189,7 @@ pedido queda sin re-descargar hasta el siguiente `setup`:
 
 ```bash
 tts-sidecar setup --force-update
-# [force-update] Eliminando el modelo en caché para re-descargarlo...
+# [force-update] Eliminando los modelos en caché para re-descargarlos...
 # [force-update] Espacio liberado total: ... MB
 # → a continuación, la descarga normal de setup
 ```
@@ -409,7 +409,7 @@ tts-sidecar 0.1.0
 ### `doctor`
 
 Verifica que todos los componentes estén disponibles: la librería TTS, el
-subsistema de audio, el modelo descargado y las voces.
+subsistema de audio, los modelos descargados y las voces.
 
 ```bash
 tts-sidecar doctor
@@ -828,12 +828,12 @@ eliminarse; el comando lo indica y termina con error si lo intentas.
 
 ### `cleanup`
 
-Desaprovisiona los datos del proyecto: el modelo descargado y/o las voces de
+Desaprovisiona los datos del proyecto: los modelos descargados y/o las voces de
 usuario. Es la contraparte de `setup` y completa el ciclo de vida
 instalación→desinstalación.
 
 ```bash
-tts-sidecar cleanup --model              # elimina el modelo descargado
+tts-sidecar cleanup --model              # elimina los modelos descargados
 tts-sidecar cleanup --voices             # elimina las voces de usuario y arrastra
                                             sus locuciones de habla sintética
                                             (salvo 'default')
@@ -855,7 +855,7 @@ El borrado es **quirúrgico**: dentro de la caché de HuggingFace solo se
 eliminan las carpetas de los dos repos que usa el proyecto
 (`Chatterbox-Multilingual-es-mx-latam` y `chatterbox` de ResembleAI), nunca
 modelos de otros proyectos; `--voices` elimina únicamente el directorio de
-voces de usuario. Todo es recuperable: `setup` reprovisiona el modelo y
+voces de usuario. Todo es recuperable: `setup` reprovisiona los modelos y
 `voice clone` vuelve a clonar voces.
 
 ---
@@ -923,10 +923,10 @@ binario.
   `Instalar (PATH + modelo).command` del volumen nuevo.
 - **PyPI**: `uv tool upgrade tts-sidecar` / `pipx upgrade tts-sidecar`.
 
-En los cuatro casos, el modelo descargado (`~/.cache/huggingface/hub`) se
-reutiliza tal cual. Cada versión del binario fija la revisión exacta del modelo
-que usa: si tu caché contiene otra revisión (por ejemplo, la de una versión
-anterior), `setup` la detecta como no provisionada y descarga la revisión
+En los cuatro casos, los modelos descargados (`~/.cache/huggingface/hub`) se
+reutilizan tal cual. Cada versión del binario fija las revisiones exactas de los
+modelos que usa: si tu caché contiene otra revisión (por ejemplo, la de una
+versión anterior), `setup` la detecta como no provisionada y descarga la revisión
 requerida, reutilizando los archivos que no cambiaron entre revisiones (la
 caché de HuggingFace deduplica por contenido).
 
@@ -1042,8 +1042,9 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
 - **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
   funciona pero puede paginar (ralentizarse) en textos largos. `doctor` emite un
   `[WARN]` de RAM por debajo de 8 GB (no bloquea nada).
-- **Disco**: ~4 GB para el modelo descargado (`setup` aborta si hay menos de 6 GB
-  libres). El bundle PyInstaller `--onedir` ocupa del orden de 1-2 GB adicionales
+- **Disco**: ~8 GB para los modelos descargados (~4 GB c/u; el chequeo de `setup`
+  escala con los modelos pendientes: ~6 GB libres por modelo, ~12 GB con ambos).
+  El bundle PyInstaller `--onedir` ocupa del orden de 1-2 GB adicionales
   sin comprimir (Windows/macOS y el AppImage `arm64` de Linux, que resuelven
   `torch` desde el lock universal); el AppImage `x86_64` de Linux es más liviano
   al instalar `torch`/`torchaudio` CPU-only sin el stack `nvidia-*-cu12` (ver
