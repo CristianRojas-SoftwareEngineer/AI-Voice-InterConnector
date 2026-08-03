@@ -61,7 +61,7 @@ from .timing import timed_command, StageTimer, Spinner, log, format_progress_eve
 # Se emite como "schema_version" en TODOS los payloads JSON. Es un campo aditivo:
 # los consumidores lo usan para detectar cambios de forma; añadir claves nuevas no
 # incrementa la versión, solo lo haría un cambio incompatible de las existentes.
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 
 def emit_json(payload: dict) -> None:
@@ -173,6 +173,10 @@ def _synthesize_via_daemon(args, voice):
         result = client.synthesize(
             text=args.text,
             voice=voice,
+            language=getattr(args, "language", "es-latam"),
+            exaggeration=getattr(args, "exaggeration", None),
+            cfg_weight=getattr(args, "cfg_weight", None),
+            temperature=getattr(args, "temperature", None),
             on_progress=lambda ev: sp.update(format_progress_event(ev)),
         )
     elapsed = time.time() - synth_start
@@ -181,7 +185,7 @@ def _synthesize_via_daemon(args, voice):
     return result
 
 
-def _require_model_cached(model: str = "es-mx-latam"):
+def _require_model_cached(model: str = "es-mx-latam", language: str = "es-latam"):
     """Verifica que el modelo esté en caché y, si no lo está, aborta remitiendo a 'setup'."""
     from .model_cache import is_model_cached
     if not is_model_cached(model):
@@ -189,8 +193,21 @@ def _require_model_cached(model: str = "es-mx-latam"):
             EXIT_MODEL_MISSING,
             "model_missing",
             f"Error: el modelo '{model}' no está descargado.\n"
-            "Ejecuta 'tts-sidecar setup' para descargarlo antes de continuar.",
+            f"Ejecuta 'tts-sidecar setup --language {language}' para descargarlo antes de continuar.",
         )
+
+
+def _require_models_cached_for_daemon(language: str) -> None:
+    """Exige en caché el/los modelo(s) que el daemon precargará (§3.9).
+
+    `language` "all" precarga ambos (es-latam y en); un valor concreto solo
+    exige el suyo. Reutiliza `_require_model_cached` (mismo mensaje remitiendo
+    a 'setup --language <x>') para cada idioma a precargar.
+    """
+    from .model_cache import model_for
+    languages_to_preload = ["es-latam", "en"] if language == "all" else [language]
+    for lang in languages_to_preload:
+        _require_model_cached(model_for(lang), lang)
 
 
 def _emit_say_json(voice_name: str) -> None:
@@ -231,6 +248,33 @@ def _validate_synthesis_text(text: str) -> None:
             "Considera fragmentarlo en oraciones o párrafos para mejores resultados.",
             file=sys.stderr,
         )
+
+
+def _validate_synthesis_params(args) -> None:
+    """Valida los overrides de síntesis (§3.5 del rediseño cross-lingual).
+
+    `cfg_weight=0.0` es un crash conocido en el inglés base (asume batch=2 en
+    t3.py, y solo lo duplica si cfg_weight > 0.0); valores negativos o de
+    temperatura no positiva tampoco tienen sentido físico. Exit 2 si algo no
+    calza, igual que el resto de validaciones client-side del texto.
+    """
+    cfg_weight = getattr(args, "cfg_weight", None)
+    if cfg_weight is not None and cfg_weight <= 0.0:
+        raise CliError(
+            EXIT_INVALID_INPUT, "usage_error",
+            "Error: --cfg-weight debe ser mayor que 0 (0.0 provoca un crash "
+            "conocido en el inglés base).",
+        )
+
+    exaggeration = getattr(args, "exaggeration", None)
+    if exaggeration is not None and exaggeration < 0.0:
+        raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                       "Error: --exaggeration no puede ser negativo.")
+
+    temperature = getattr(args, "temperature", None)
+    if temperature is not None and temperature <= 0.0:
+        raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                       "Error: --temperature debe ser mayor que 0.")
 
 
 def _validate_identifier(value: str, kind: str) -> str:
@@ -298,14 +342,20 @@ def _dispatch_synthesis(args, voice_name: str):
     # Spinner de liveness durante los dos tramos largos y opacos: la carga del
     # modelo (primer speech synthesize) y la síntesis. Las líneas [Stage N/4] del engine se
     # intercalan de forma coordinada (timing._active_spinner).
+    from .model_cache import model_for
+    model = model_for(getattr(args, "language", "es-latam"))
+
     with Spinner("Cargando modelo…") as _sp:
-        engine = ChatterboxEngine.get_instance(compute_backend=args.compute_backend)
+        engine = ChatterboxEngine.get_instance(model=model, compute_backend=args.compute_backend)
         _sp.update("Sintetizando voz…")
         result = engine.synthesize(
             text=args.text,
             timbre_reference=timbre_reference,
             speech_reference=speech_reference,
             progress_callback=lambda ev: _sp.update(format_progress_event(ev)),
+            exaggeration=getattr(args, "exaggeration", None),
+            cfg_weight=getattr(args, "cfg_weight", None),
+            temperature=getattr(args, "temperature", None),
         )
     return result, False
 
@@ -315,12 +365,15 @@ def cmd_speech_say(args):
     """Sintetiza texto y reproduce el audio (no persiste)."""
     try:
         _validate_synthesis_text(args.text)
+        _validate_synthesis_params(args)
 
         # Nombre de voz efectivo: el de --voice, o "default" (voz de fábrica).
         voice_name = _validate_identifier(getattr(args, "voice", None) or "default", "voz")
 
         # Exige el modelo en caché antes de sintetizar (descargas → 'setup').
-        _require_model_cached()
+        language = getattr(args, "language", "es-latam")
+        from .model_cache import model_for
+        _require_model_cached(model_for(language), language)
         _require_voice_exists(voice_name)
 
         result, _daemon_flag = _dispatch_synthesis(args, voice_name)
@@ -333,10 +386,11 @@ def cmd_speech_say(args):
         print(f"Error: {e}", file=sys.stderr)
         # Remitir a setup solo cuando el faltante es el modelo: un audio o una
         # voz ausentes no se resuelven descargando el modelo.
-        from .model_cache import is_model_cached
-        if not is_model_cached("es-mx-latam"):
+        from .model_cache import is_model_cached, model_for
+        language = getattr(args, "language", "es-latam")
+        if not is_model_cached(model_for(language)):
             raise CliError(EXIT_MODEL_MISSING, "model_missing",
-                            "Ejecuta 'tts-sidecar setup' primero.")
+                            f"Ejecuta 'tts-sidecar setup --language {language}' primero.")
         raise CliError(EXIT_NOT_FOUND, "not_found",
                         "Voz no encontrada.")
     except Exception as e:
@@ -374,10 +428,13 @@ def cmd_speech_synthesize(args):
             )
 
         _validate_synthesis_text(args.text)
+        _validate_synthesis_params(args)
         voice_name = _validate_identifier(getattr(args, "voice", None) or "default", "voz")
         label = _validate_identifier(args.label, "etiqueta")
 
-        _require_model_cached()
+        language = getattr(args, "language", "es-latam")
+        from .model_cache import model_for
+        _require_model_cached(model_for(language), language)
         _require_voice_exists(voice_name)
 
         force = getattr(args, "force", False)
@@ -413,10 +470,11 @@ def cmd_speech_synthesize(args):
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        from .model_cache import is_model_cached
-        if not is_model_cached("es-mx-latam"):
+        from .model_cache import is_model_cached, model_for
+        language = getattr(args, "language", "es-latam")
+        if not is_model_cached(model_for(language)):
             raise CliError(EXIT_MODEL_MISSING, "model_missing",
-                            "Ejecuta 'tts-sidecar setup' primero.")
+                            f"Ejecuta 'tts-sidecar setup --language {language}' primero.")
         raise CliError(EXIT_NOT_FOUND, "not_found", "Voz no encontrada.")
     except Exception as e:
         from .daemon import DaemonIPCError
@@ -918,13 +976,17 @@ def cmd_doctor(args):
     # lista de (status, name, detail) con status en PASS/FAIL/SKIP
     checks = _environment_checks()
 
-    # Chequea el modelo: verifica que es-mx-latam esté en caché (sin cargar ni descargar)
+    # Chequea el modelo: verifica por idioma qué hay en caché (sin cargar ni descargar)
     try:
         from .model_cache import is_model_cached
-        if is_model_cached("es-mx-latam"):
-            checks.append(("PASS", "Chatterbox model", "es-mx-latam presente en la caché"))
-        else:
-            checks.append(("FAIL", "Chatterbox model", "es-mx-latam no está en caché (ejecuta: tts-sidecar setup)"))
+        for language, model in (("es-latam", "es-mx-latam"), ("en", "en")):
+            if is_model_cached(model):
+                checks.append(("PASS", f"Chatterbox model ({language})", f"{model} presente en la caché"))
+            else:
+                checks.append((
+                    "FAIL", f"Chatterbox model ({language})",
+                    f"{model} no está en caché (ejecuta: tts-sidecar setup --language {language})",
+                ))
     except Exception as e:
         checks.append(("FAIL", "Chatterbox model", f"{e} (ejecuta: tts-sidecar setup)"))
 
@@ -1541,23 +1603,29 @@ def cmd_setup(args):
             print(f"[force-update] Espacio liberado total: {freed_total / 1_048_576:.1f} MB", file=sys.stderr)
 
     try:
-        from .model_cache import is_model_cached
+        from .model_cache import is_model_cached, model_for
 
-        def _emit_setup_json(already_cached: bool, downloaded: bool):
+        language = getattr(args, "language", "all")
+        # Default "all": baja ambos modelos (garantiza offline es+en desde el
+        # primer uso). El flag sirve para reducir el alcance, no ampliarlo.
+        requested_languages = ["es-latam", "en"] if language == "all" else [language]
+        models_to_provision = [model_for(lang) for lang in requested_languages]
+
+        def _emit_setup_json(results: dict):
             """Payload --json de setup (los [PASS]/[FAIL] de progreso van a stderr)."""
             if getattr(args, "json", False):
                 emit_json({
-                    "model": "es-mx-latam",
-                    "already_cached": already_cached,
-                    "downloaded": downloaded,
+                    "language": language,
+                    "models": results,
                     "cache_dir": model_dir,
                 })
 
         def _purge_incomplete():
             """Limpia los '*.incomplete' huérfanos tras una provisión completa.
 
-            Solo se invoca con el modelo ya íntegro en caché: en ese punto ningún
-            .incomplete es una descarga reanudable, son parciales huérfanos.
+            Solo se invoca con el/los modelo(s) ya íntegro(s) en caché: en ese
+            punto ningún .incomplete es una descarga reanudable, son parciales
+            huérfanos.
             """
             from .model_cache import purge_incomplete_downloads
             freed = purge_incomplete_downloads()
@@ -1568,35 +1636,43 @@ def cmd_setup(args):
                     file=sys.stderr,
                 )
 
-        if is_model_cached("es-mx-latam"):
-            print(f"\n[PASS] El modelo 'es-mx-latam' ya está en caché en: {model_dir}", file=sys.stderr)
+        results = {}
+        pending = []
+        for model in models_to_provision:
+            if is_model_cached(model):
+                print(f"\n[PASS] El modelo '{model}' ya está en caché en: {model_dir}", file=sys.stderr)
+                results[model] = {"already_cached": True, "downloaded": False}
+            else:
+                pending.append(model)
+                results[model] = {"already_cached": False, "downloaded": False}
+
+        if not pending:
             print("Provisión completa. No hay nada que descargar.", file=sys.stderr)
             _purge_incomplete()
-            _emit_setup_json(already_cached=True, downloaded=False)
+            _emit_setup_json(results)
             return
 
-        # Pre-chequeo de espacio en disco antes de descargar: el modelo pesa
-        # ~4 GB; por debajo de MIN_FREE_DISK_BYTES la descarga puede fallar a
-        # medias y dejar una caché truncada. Se aborta antes de empezar.
-        # disk_usage exige una ruta existente: en una máquina limpia la caché aún
-        # no existe, así que se sube al primer ancestro presente.
+        # Pre-chequeo de espacio en disco antes de descargar: cada modelo pesa
+        # ~4 GB; por debajo del umbral (escalado por nº de modelos pendientes)
+        # la descarga puede fallar a medias y dejar una caché truncada. Se
+        # aborta antes de empezar. disk_usage exige una ruta existente: en una
+        # máquina limpia la caché aún no existe, así que se sube al primer
+        # ancestro presente.
         import shutil
         probe = hub_cache_path()
         while not probe.exists() and probe != probe.parent:
             probe = probe.parent
         free = shutil.disk_usage(probe).free
-        if free < MIN_FREE_DISK_BYTES:
+        required = MIN_FREE_DISK_BYTES * len(pending)
+        if free < required:
             free_gb = free / (1024 ** 3)
             raise CliError(
             EXIT_PRECONDITION_FAILED,
             "disk_insufficient",
             f"[FAIL] Espacio en disco insuficiente: {free_gb:.1f} GB libres, "
-            f"se requieren al menos {MIN_FREE_DISK_BYTES // 1024 ** 3} GB para el modelo (~4 GB). "
-            "Libera espacio y reintenta 'tts-sidecar setup'.",
+            f"se requieren al menos {required // 1024 ** 3} GB para {len(pending)} "
+            "modelo(s) (~4 GB c/u). Libera espacio y reintenta 'tts-sidecar setup'.",
         )
-
-        print("\nDescargando el modelo es-mx-latam...", file=sys.stderr)
-        print("(Puede tardar varios minutos en la primera ejecución)\n", file=sys.stderr)
 
         # snapshot_download es solo red/disco, sin cargar el modelo en RAM
         # (~2 GB) como hacía ChatterboxEngine.get_instance; la carga real queda
@@ -1605,31 +1681,38 @@ def cmd_setup(args):
         # posterior al repo del modelo no se propaga a los usuarios.
         from huggingface_hub import snapshot_download
         from .model_cache import MODELS, MODEL_REVISIONS
-        snapshot_download(
-            repo_id=MODELS["es-mx-latam"],
-            revision=MODEL_REVISIONS["es-mx-latam"],
-            token=os.getenv("HF_TOKEN"),
-        )
-
-        # El language pack no incluye ve.safetensors (Voice Encoder): se comparte
-        # con el modelo base. Se provisiona aquí explícitamente para que ningún
-        # 'speech synthesize' posterior necesite red tras un setup exitoso.
-        from .model_cache import is_ve_cached, BASE_MODEL_REPO, BASE_MODEL_REVISION
-        if not is_ve_cached():
-            print("\nDescargando el Voice Encoder (ve.safetensors)...", file=sys.stderr)
-            from huggingface_hub import hf_hub_download
-            hf_hub_download(
-                repo_id=BASE_MODEL_REPO,
-                filename="ve.safetensors",
-                revision=BASE_MODEL_REVISION,
+        for model in pending:
+            print(f"\nDescargando el modelo {model}...", file=sys.stderr)
+            print("(Puede tardar varios minutos en la primera ejecución)\n", file=sys.stderr)
+            snapshot_download(
+                repo_id=MODELS[model],
+                revision=MODEL_REVISIONS[model],
                 token=os.getenv("HF_TOKEN"),
             )
-            print("[PASS] Voice Encoder descargado.", file=sys.stderr)
+            results[model]["downloaded"] = True
 
-        print("\n[PASS] ¡Modelo descargado correctamente!", file=sys.stderr)
+        # El language pack es-mx-latam no incluye ve.safetensors (Voice
+        # Encoder): se comparte con el modelo base. Solo hace falta este paso
+        # explícito si es-mx-latam se acaba de descargar en esta corrida; si
+        # "en" también se provisionó (su snapshot completo ya trae ve), la
+        # descarga queda consolidada (is_ve_cached ya lo encuentra).
+        if "es-mx-latam" in pending:
+            from .model_cache import is_ve_cached, BASE_MODEL_REPO, BASE_MODEL_REVISION
+            if not is_ve_cached():
+                print("\nDescargando el Voice Encoder (ve.safetensors)...", file=sys.stderr)
+                from huggingface_hub import hf_hub_download
+                hf_hub_download(
+                    repo_id=BASE_MODEL_REPO,
+                    filename="ve.safetensors",
+                    revision=BASE_MODEL_REVISION,
+                    token=os.getenv("HF_TOKEN"),
+                )
+                print("[PASS] Voice Encoder descargado.", file=sys.stderr)
+
+        print("\n[PASS] ¡Modelo(s) descargado(s) correctamente!", file=sys.stderr)
         print(f"  Ubicación: {model_dir}", file=sys.stderr)
         _purge_incomplete()
-        _emit_setup_json(already_cached=False, downloaded=True)
+        _emit_setup_json(results)
 
     except Exception as e:
         code, reason, message = _describe_provision_failure(e)
@@ -1783,11 +1866,13 @@ def cmd_daemon(args):
         # sin este gate, 'daemon serve' sin 'setup' dispararía la red de seguridad
         # del engine (descarga de ~4 GB). Las descargas son responsabilidad
         # exclusiva de 'setup'.
-        _require_model_cached("es-mx-latam")
+        language = getattr(args, "language", "all") or "all"
+        _require_models_cached_for_daemon(language)
         from .daemon.run import serve
         serve(
             auto_restart=getattr(args, "auto_restart", False),
             max_retries=getattr(args, "max_retries", 0) or 0,
+            language=language,
         )
         return
 
@@ -1796,14 +1881,16 @@ def cmd_daemon(args):
     manager = DaemonManager()
 
     if args.action == "start":
-        # Exige que el modelo esté en caché antes de lanzar el servidor.
-        # Las descargas son responsabilidad exclusiva de 'setup'.
-        _require_model_cached("es-mx-latam")
+        # Exige que el/los modelo(s) a precargar estén en caché antes de
+        # lanzar el servidor. Las descargas son responsabilidad exclusiva de 'setup'.
+        language = getattr(args, "language", "all") or "all"
+        _require_models_cached_for_daemon(language)
         json_mode = getattr(args, "json", False)
         success = manager.start(
             background=True,
             auto_restart=args.autorestart,
             max_retries=args.max_retries or 0,
+            language=language,
         )
         # Levantar antes de emitir: en fallo, main() emite solo el objeto
         # 'error' bajo --json; el payload de acción se emite solo en éxito.
@@ -1865,7 +1952,11 @@ def cmd_daemon(args):
         if status.get("running"):
             print(f"Daemon en ejecución:")
             print(f"  Estado: {status.get('status', 'desconocido')}")
-            print(f"  Modelo cargado: {status.get('model_loaded', False)}")
+            # model_loaded es un dict por idioma (§3.11): qué modelos están
+            # calientes en RAM, no un booleano único.
+            loaded = status.get("model_loaded") or {}
+            cargados = ", ".join(lang for lang, ok in loaded.items() if ok) or "ninguno"
+            print(f"  Modelos cargados: {cargados}")
             print(f"  Tiempo activo: {status.get('uptime_seconds', 0):.1f}s")
         else:
             print("Daemon no está en ejecución")
@@ -1930,6 +2021,16 @@ def build_parser() -> argparse.ArgumentParser:
                               choices=["auto", "cpu", "cuda", "mps"],
                               help="Backend de cómputo para la inferencia (solo surte efecto en la ruta "
                                    "directa); 'auto' detecta el mejor disponible (default: auto)")
+    speech_synth.add_argument("--language", choices=["es-latam", "en"], default="es-latam",
+                              help="Idioma/modelo de síntesis (default: es-latam); 'en' reutiliza el "
+                                   "timbre clonado para producir audio en inglés (síntesis cross-lingual)")
+    speech_synth.add_argument("--exaggeration", type=float, default=None,
+                              help="Override de exaggeration (default: el de la ruta de --language)")
+    speech_synth.add_argument("--cfg-weight", type=float, default=None,
+                              help="Override de cfg_weight (default: el de la ruta de --language); "
+                                   "0.0 no está permitido (crash conocido en el inglés base)")
+    speech_synth.add_argument("--temperature", type=float, default=None,
+                              help="Override de temperature (default: el de la ruta de --language)")
     speech_synth_daemon = speech_synth.add_mutually_exclusive_group()
     speech_synth_daemon.add_argument("--daemon", action="store_true",
                               help="Exige el daemon; si no está activo, sale con 5 (sin flags se sondea "
@@ -1949,6 +2050,16 @@ def build_parser() -> argparse.ArgumentParser:
                               choices=["auto", "cpu", "cuda", "mps"],
                               help="Backend de cómputo para la inferencia; 'auto' detecta el mejor "
                                    "disponible (default: auto)")
+    speech_say.add_argument("--language", choices=["es-latam", "en"], default="es-latam",
+                              help="Idioma/modelo de síntesis (default: es-latam); 'en' reutiliza el "
+                                   "timbre clonado para producir audio en inglés (síntesis cross-lingual)")
+    speech_say.add_argument("--exaggeration", type=float, default=None,
+                              help="Override de exaggeration (default: el de la ruta de --language)")
+    speech_say.add_argument("--cfg-weight", type=float, default=None,
+                              help="Override de cfg_weight (default: el de la ruta de --language); "
+                                   "0.0 no está permitido (crash conocido en el inglés base)")
+    speech_say.add_argument("--temperature", type=float, default=None,
+                              help="Override de temperature (default: el de la ruta de --language)")
     speech_say_daemon = speech_say.add_mutually_exclusive_group()
     speech_say_daemon.add_argument("--daemon", action="store_true",
                               help="Usar el daemon sin sondeo previo; si falla, se reporta el error "
@@ -2040,6 +2151,8 @@ def build_parser() -> argparse.ArgumentParser:
                                  "'cleanup --all', revierte la integración de PATH y borra el binario")
     setup_parser.add_argument("--yes", "-y", action="store_true",
                               help="Omite la confirmación interactiva del cleanup encadenado por --uninstall")
+    setup_parser.add_argument("--language", choices=["es-latam", "en", "all"], default="all",
+                              help="Idioma(s) a provisionar (default: all, ambos modelos)")
     setup_parser.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
     setup_parser.set_defaults(func=cmd_setup)
 
@@ -2074,6 +2187,8 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_start = daemon_subparsers.add_parser("start", help="Inicia el daemon")
     daemon_start.add_argument("--autorestart", action="store_true", help="Auto-reinicio en caso de crash")
     daemon_start.add_argument("--max-retries", type=int, help="Máximo de intentos de reinicio")
+    daemon_start.add_argument("--language", choices=["es-latam", "en", "all"], default="all",
+                              help="Idioma(s) a precargar en caliente (default: all, ambos modelos)")
     daemon_start.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
     daemon_start.set_defaults(func=cmd_daemon)
 
@@ -2092,6 +2207,8 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_serve = daemon_subparsers.add_parser("serve", help="Ejecuta el servidor del daemon en primer plano")
     daemon_serve.add_argument("--auto-restart", action="store_true", help="Auto-reinicio en caso de crash")
     daemon_serve.add_argument("--max-retries", type=int, default=0, help="Máximo de intentos de reinicio (0 = infinito)")
+    daemon_serve.add_argument("--language", choices=["es-latam", "en", "all"], default="all",
+                              help="Idioma(s) a precargar en caliente (default: all, ambos modelos)")
     daemon_serve.set_defaults(func=cmd_daemon)
 
     # comando version

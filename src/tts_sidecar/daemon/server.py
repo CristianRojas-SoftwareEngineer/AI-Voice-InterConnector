@@ -8,7 +8,6 @@ import gc
 import logging
 import queue
 import threading
-from dataclasses import dataclass
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request, Depends
@@ -28,7 +27,6 @@ from .protocol import (
 )
 
 
-@dataclass
 class DaemonState:
     """Estado del daemon inyectado en los endpoints vía Depends(get_daemon_state).
 
@@ -39,10 +37,39 @@ class DaemonState:
     composition root (`run.py`) es el único que lo puebla. No se conservan
     setters módulo-level: eso solo cambiaría la forma del global sin romper el
     acoplamiento (la «trampa del parche barato» del hallazgo).
+
+    El daemon sirve múltiples modelos (uno por idioma, rediseño cross-lingual):
+    `engines` es el registro por idioma (es-latam/en), no un motor único.
+    `engine` se conserva como propiedad de compatibilidad sobre `engines["es-latam"]`
+    para el código y los tests de un solo modelo.
     """
-    engine: Optional[object] = None
-    server: Optional[object] = None
-    start_time: Optional[float] = None
+
+    def __init__(
+        self,
+        engine: Optional[object] = None,
+        engines: Optional[dict] = None,
+        server: Optional[object] = None,
+        start_time: Optional[float] = None,
+        compute_backend: str = "auto",
+    ):
+        self.engines: dict = dict(engines) if engines is not None else {}
+        if engine is not None:
+            self.engines.setdefault("es-latam", engine)
+        self.server = server
+        self.start_time = start_time
+        self.compute_backend = compute_backend
+
+    @property
+    def engine(self) -> Optional[object]:
+        """Motor «por defecto» (es-latam), por compatibilidad con código de un solo modelo."""
+        return self.engines.get("es-latam")
+
+    @engine.setter
+    def engine(self, value: Optional[object]) -> None:
+        if value is None:
+            self.engines.pop("es-latam", None)
+        else:
+            self.engines["es-latam"] = value
 
 
 def get_daemon_state(request: Request) -> "DaemonState":
@@ -87,8 +114,8 @@ async def health_check(state: DaemonState = Depends(get_daemon_state)):
     """Endpoint de health check."""
     import time
     return HealthResponse(
-        status="healthy" if state.engine else "initializing",
-        model_loaded=state.engine is not None,
+        status="healthy" if state.engines else "initializing",
+        model_loaded={lang: lang in state.engines for lang in ("es-latam", "en")},
         uptime_seconds=time.time() - state.start_time if state.start_time else 0,
         version=__version__,
     )
@@ -128,8 +155,26 @@ def synthesize(
     registro antes de sintetizar; una voz no registrada produce un frame
     `error` (vía el `except FileNotFoundError` de más abajo), no una
     respuesta 400/503.
+
+    `req.language` selecciona el motor: si no está caliente en `state.engines`,
+    se carga perezosamente desde disco (nunca dispara una descarga), reutilizando
+    la caché de `ChatterboxEngine` con el `compute_backend` fijado al arrancar
+    el daemon.
     """
-    engine = state.engine
+    engine = state.engines.get(req.language)
+    if engine is None:
+        from ..model_cache import model_for
+        from ..engine import ChatterboxEngine
+
+        try:
+            engine = ChatterboxEngine.get_instance(
+                model=model_for(req.language), compute_backend=state.compute_backend,
+            )
+        except Exception:
+            engine = None
+        else:
+            state.engines[req.language] = engine
+
     if not engine:
         raise HTTPException(status_code=503, detail="Modelo no cargado")
 
@@ -173,6 +218,9 @@ def synthesize(
                         speech_reference=speech_path,
                         verbose=True,
                         progress_callback=push,
+                        exaggeration=req.exaggeration,
+                        cfg_weight=req.cfg_weight,
+                        temperature=req.temperature,
                     )
                     # engine.synthesize devuelve un SynthesisResult (audio + métricas
                     # tipadas), no un dict suelto leído por convención de claves.
@@ -230,13 +278,20 @@ def synthesize(
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
+def _any_engine(state: "DaemonState") -> Optional[object]:
+    """Devuelve cualquier motor caliente: list_voices/precompute_voice son
+    operaciones sobre el registro de voces, no específicas de un idioma."""
+    return next(iter(state.engines.values()), None)
+
+
 @app.get("/voices", response_model=VoicesResponse)
 async def list_voices(state: DaemonState = Depends(get_daemon_state)):
     """Lista las voces registradas."""
-    if not state.engine:
+    engine = _any_engine(state)
+    if not engine:
         raise HTTPException(status_code=503, detail="Modelo no cargado")
 
-    return VoicesResponse(voices=state.engine.list_voices())
+    return VoicesResponse(voices=engine.list_voices())
 
 
 @app.post("/voices/precompute", response_model=PrecomputeVoiceResponse)
@@ -252,7 +307,7 @@ def precompute_voice(
     dispositivo con una síntesis en vuelo. El engine lee los audios desde el
     registro (voice_paths), dentro de los directorios permitidos.
     """
-    engine = state.engine
+    engine = _any_engine(state)
     if not engine:
         raise HTTPException(status_code=503, detail="Modelo no cargado")
 
@@ -293,10 +348,10 @@ async def shutdown(state: DaemonState = Depends(get_daemon_state)):
     """
     if state.server is not None:
         state.server.should_exit = True
-        # Libera la referencia al engine (permite al GC recolectar los
-        # tensores/modelos que retiene) y limpia la caché CUDA fragmentada,
+        # Libera las referencias a los motores (permite al GC recolectar los
+        # tensores/modelos que retienen) y limpia la caché CUDA fragmentada,
         # igual que al final de cada síntesis.
-        state.engine = None
+        state.engines.clear()
         _clear_model_memory()
         return {"status": "shutting_down"}
     # Sin instancia registrada (no debería ocurrir): el kill por PID es la red de seguridad.

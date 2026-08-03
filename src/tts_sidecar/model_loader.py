@@ -7,7 +7,8 @@ inyección, sin instanciar `ChatterboxEngine` ni descargar pesos.
 
 El routing replica exactamente `engine.py:440-443`: la ruta de caché que
 contiene "es-mx-latam" usa el loader del language pack; cualquier otra ruta usa
-el loader multilingüe base.
+el loader del inglés base (`ChatterboxTTS.from_local`), que desde el rediseño
+cross-lingual es una ruta de producción activa (modelo `en`), no un path muerto.
 """
 
 import os
@@ -142,5 +143,6 @@ class ModelLoader:
         return tts
 
     def _load_multilingual(self, cache_dir: Path, compute_backend: str):
-        """Carga el modelo multilingüe base (path de producción del modelo 'multilingual')."""
+        """Carga el inglés base (path de producción del modelo 'en'); también
+        recibe el alias legacy 'multilingual', sin invocación real del CLI."""
         return ChatterboxTTS.from_local(cache_dir, compute_backend)

@@ -122,26 +122,33 @@ A partir de aquí, todos los ejemplos usan `tts-sidecar <comando>`; si trabajas
 desde el código fuente, sustituye por `python bin/tts-sidecar <comando>`. El
 comportamiento es el mismo.
 
-## Primer uso: provisionar el modelo (`setup`)
+## Primer uso: provisionar el/los modelo(s) (`setup`)
 
-El modelo de voz `es-mx-latam` (~4 GB) no viene incluido: se
-descarga una sola vez a la caché de HuggingFace (`~/.cache/huggingface/hub` por
-defecto; si defines `HF_HOME` o `HF_HUB_CACHE`, se respeta esa ubicación)
-mediante el comando `setup`.
+TTS Sidecar sirve **dos modelos**, uno por idioma: `es-mx-latam` (español
+latinoamericano, ~4 GB) y `en` (inglés base, ~4 GB), ninguno incluido en el
+ejecutable. `setup --language {es-latam,en,all}` (default **`all`**) descarga a
+la caché de HuggingFace (`~/.cache/huggingface/hub` por defecto; si defines
+`HF_HOME` o `HF_HUB_CACHE`, se respeta esa ubicación) los modelos del idioma
+pedido; `all` descarga ambos, garantizando que la síntesis cross-lingual
+(reutilizar el timbre de una voz clonada para hablar en el otro idioma) funcione
+sin pasos adicionales.
 
 ```bash
-tts-sidecar setup
+tts-sidecar setup                     # ambos modelos (default: --language all)
+tts-sidecar setup --language es-latam # solo el modelo en español
+tts-sidecar setup --language en       # solo el modelo en inglés
 ```
 
 **Qué esperar:** `setup` integra primero el comando en el PATH (solo en Linux,
 ejecutado desde el AppImage; en Windows y macOS ese paso lo cubren el instalador
 y el script del `.dmg`), después corre los chequeos de entorno (los mismos que
-`doctor`) y por último descarga el modelo solo si falta. Un fallo del chequeo de
-audio **no detiene la provisión**: `setup` lo degrada a `[WARN]` y continúa,
-porque la síntesis a archivo (`speech synthesize --text T --label L`) funciona sin subsistema de
-sonido (p. ej. en hosts headless o sesiones SSH); `doctor`, en cambio, lo sigue
-reportando como `[FAIL]` con salida 1, como señal diagnóstica. En la primera
-ejecución verás algo como:
+`doctor`) y por último descarga cada modelo pedido solo si falta. Un fallo del
+chequeo de audio **no detiene la provisión**: `setup` lo degrada a `[WARN]` y
+continúa, porque la síntesis a archivo (`speech synthesize --text T --label L`)
+funciona sin subsistema de sonido (p. ej. en hosts headless o sesiones SSH);
+`doctor`, en cambio, lo sigue reportando como `[FAIL]` con salida 1, como señal
+diagnóstica. En la primera ejecución (con el default `--language all`) verás
+algo como:
 
 ```
 === TTS Sidecar Setup ===
@@ -152,22 +159,33 @@ ejecución verás algo como:
 Descargando el modelo es-mx-latam...
 (Puede tardar varios minutos en la primera ejecución)
 
-[PASS] ¡Modelo descargado correctamente!
+Descargando el modelo en...
+(Puede tardar varios minutos en la primera ejecución)
+
+[PASS] ¡Modelo(s) descargado(s) correctamente!
   Ubicación: ~/.cache/huggingface/hub
 ```
 
-Si lo vuelves a ejecutar con el modelo ya descargado, termina de inmediato sin
-descargar nada (es idempotente):
+El chequeo de espacio en disco escala con el número de modelos pendientes
+(~6 GB requeridos por modelo, no solo por la corrida): con ambos por descargar,
+`setup` exige el doble de espacio libre que con uno solo.
+
+Si lo vuelves a ejecutar con los modelos ya descargados, termina de inmediato
+sin descargar nada (es idempotente, por modelo):
 
 ```
 [PASS] El modelo 'es-mx-latam' ya está en caché en: ~/.cache/huggingface/hub
+[PASS] El modelo 'en' ya está en caché en: ~/.cache/huggingface/hub
 Provisión completa. No hay nada que descargar.
 ```
 
 **Forzar una re-descarga limpia (`--force-update`):** si necesitas re-descargar
-el modelo (p. ej. una caché corrupta o para actualizarlo a la revisión fijada por
-una versión nueva), `setup --force-update` elimina primero el modelo en caché y
-luego lo vuelve a descargar, informando el espacio liberado:
+el/los modelo(s) (p. ej. una caché corrupta o para actualizarlos a la revisión
+fijada por una versión nueva), `setup --force-update` elimina primero **ambos**
+modelos en caché (`es-mx-latam` y `en`, sin importar el `--language` pedido) y
+luego descarga según `--language` (default `all`, ambos), informando el espacio
+liberado. Si combinas `--force-update` con `--language <uno-solo>`, el modelo no
+pedido queda sin re-descargar hasta el siguiente `setup`:
 
 ```bash
 tts-sidecar setup --force-update
@@ -225,7 +243,7 @@ Tanto los comandos de lectura (`version`, `doctor`, `devices`, `voice list`,
 `tts-sidecar` desde otro programa: ningún comando obliga a parsear texto.
 
 Todo payload `--json` incluye el campo **`"schema_version"`** (actualmente
-`"2"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
+`"3"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
 nuevas no lo incrementa; solo un cambio incompatible de las claves existentes lo
 haría. Un consumidor puede leerlo para detectar cambios de contrato.
 
@@ -233,7 +251,7 @@ haría. Un consumidor puede leerlo para detectar cambios de contrato.
 
 Los payloads siguientes son **parte del contrato programático**: sus claves son
 estables (los cambios solo pueden ser aditivos mientras `schema_version` sea
-`"2"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
+`"3"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
 diagnóstico/progreso va a stderr. La clave `schema_version` (string) se omite de
 las tablas por brevedad: está presente en todos.
 
@@ -321,7 +339,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 |-------|------|-------------|
 | `running` | boolean | Si el daemon responde al health check |
 | `status` | string | Solo con `running: true`: estado reportado (`"healthy"`, `"initializing"`, `"unknown"`) |
-| `model_loaded` | boolean | Solo con `running: true`: si el modelo está cargado |
+| `model_loaded` | objeto | Solo con `running: true`: dict `{"es-latam": boolean, "en": boolean}` — qué modelo(s) están calientes en RAM (un idioma ausente/`false` se cargaría perezosamente al primer uso) |
 | `uptime_seconds` | number | Solo con `running: true`: segundos desde el arranque |
 
 **`voice clone --json`**
@@ -344,9 +362,8 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `model` | string | Alias del modelo provisionado (`"es-mx-latam"`) |
-| `already_cached` | boolean | `true` si no hubo nada que descargar (idempotencia) |
-| `downloaded` | boolean | `true` si esta ejecución descargó el modelo |
+| `language` | string | El `--language` pedido (`"es-latam"`, `"en"` o `"all"`) |
+| `models` | objeto | Un objeto por modelo provisionado (`"es-mx-latam"` y/o `"en"`, según `language`), cada uno con `already_cached` (boolean, `true` si no hubo nada que descargar) y `downloaded` (boolean, `true` si esta ejecución lo descargó) |
 | `cache_dir` | string | Raíz de la caché de HuggingFace usada |
 
 Con `--remove-path` (Linux), el payload es distinto: `remove_path` (boolean,
@@ -409,12 +426,17 @@ Plataforma: Windows 11 / Linux 6.x / Darwin 24.x
 
 [PASS] Chatterbox TTS: 0.3.x
 [PASS] Audio library: pycaw (Windows) — 2 dispositivo(s)
-[PASS] Chatterbox model: es-mx-latam presente en la caché
+[PASS] Chatterbox model (es-latam): es-mx-latam presente en la caché
+[PASS] Chatterbox model (en): en presente en la caché
 [PASS] Voices directory: 1 voz(voces) disponible(s)
 [PASS] RAM: 16.0 GB
 
-Chequeos: 5 exitosos, 0 fallidos
+Chequeos: 6 exitosos, 0 fallidos
 ```
+
+Cada idioma (`es-latam`/`en`) se reporta como un chequeo `Chatterbox model
+(<idioma>)` independiente: si falta uno solo, ese chequeo falla y remite a
+`tts-sidecar setup --language <idioma>`, sin afectar al otro idioma ya provisionado.
 
 Termina con código de salida 0 si todo pasa, y 1 si algún chequeo falla (cada
 `[FAIL]` indica cómo corregirlo, p. ej. `ejecuta: tts-sidecar setup`).
@@ -504,6 +526,10 @@ Locución 'saludo' guardada (voz 'default').
 - `--play, -p`: Reproduce la toma y pregunta antes de guardar (ver «El bucle de `--play`» más abajo); requiere terminal interactiva en la entrada estándar y es incompatible con `--json`
 - `--force, -f`: Sobrescribe la locución si la etiqueta ya existe para la voz
 - `--compute-backend, -cb`: igual que en `speech say`
+- `--language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); `en` reutiliza el timbre clonado para producir audio en inglés (síntesis cross-lingual)
+- `--exaggeration`: Override de expresividad emocional (default: el de la ruta de `--language`); no puede ser negativo, sale con exit 2 si lo es
+- `--cfg-weight`: Override de cfg_weight (default: el de la ruta de `--language`); `0.0` no está permitido (crash conocido en el inglés base), debe ser `> 0.0`, sale con exit 2 si no
+- `--temperature`: Override de temperature (default: el de la ruta de `--language`); debe ser `> 0.0`, sale con exit 2 si no
 - `--daemon` / `--no-daemon`: igual que en `speech say`
 - `--json`: Emite `{"voice", "label", "t3_time", "s3gen_time", "daemon"}` (ver la referencia de esquemas)
 
@@ -586,6 +612,10 @@ Finalizado en 41.5s
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
 - `--voice, -v`: Nombre de la voz registrada a usar (auto-carga sus dos audios)
+- `--language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); `en` reutiliza el timbre clonado para producir audio en inglés (síntesis cross-lingual)
+- `--exaggeration`: Override de expresividad emocional (default: el de la ruta de `--language`); no puede ser negativo, sale con exit 2 si lo es
+- `--cfg-weight`: Override de cfg_weight (default: el de la ruta de `--language`); `0.0` no está permitido (crash conocido en el inglés base), debe ser `> 0.0`, sale con exit 2 si no
+- `--temperature`: Override de temperature (default: el de la ruta de `--language`); debe ser `> 0.0`, sale con exit 2 si no
 - `--daemon`: Usar el daemon sin sondeo previo; si falla, el error se reporta (sin fallback a directo)
 - `--no-daemon`: Forzar modo directo, sin sondear el daemon
 
@@ -612,9 +642,12 @@ stderr: el T3 topa la generación en 500 tokens, así que un texto muy largo
 puede truncarse en el audio resultante — se recomienda fragmentar el texto en
 varias llamadas a `speech say`.
 
-No hay opción de modelo: TTS Sidecar está especializado en español
-latinoamericano y usa siempre el modelo `es-mx-latam` provisionado por `setup`.
-Tú solo gestionas las voces.
+**Síntesis cross-lingual:** por defecto (`--language es-latam`) usa el modelo
+en español latinoamericano provisionado por `setup`; con `--language en` usa en
+su lugar el modelo base en inglés, reutilizando el timbre de la voz clonada
+(`--voice`) para producir audio en inglés. Cada idioma se provisiona por
+separado (ver `setup --language`); si el modelo pedido no está en caché, falla
+de inmediato remitiendo a `tts-sidecar setup --language <idioma>`.
 
 **Ejemplos:**
 ```bash
@@ -623,6 +656,9 @@ tts-sidecar speech say --text "Hola mundo" --voice mi_voz
 
 # Forzar modo directo
 tts-sidecar speech say --text "Hola" --voice mi_voz --no-daemon
+
+# Síntesis cross-lingual: la voz clonada en español habla en inglés
+tts-sidecar speech say --text "Hello there" --voice mi_voz --language en
 ```
 
 #### `speech play`
@@ -920,18 +956,25 @@ tts-sidecar daemon stop
 
 # Auto-reinicio en caso de crash
 tts-sidecar daemon start --autorestart --max-retries 3
+
+# Precargar solo un idioma (default: all = ambos, es-latam y en)
+tts-sidecar daemon start --language es-latam
 ```
 
-**Qué esperar:** `daemon start` verifica que el modelo esté descargado, lanza el
-servidor en segundo plano y confirma con `Daemon iniciado correctamente`. Luego
-`daemon status` muestra:
+**Qué esperar:** `daemon start` verifica que el/los modelo(s) del `--language`
+pedido estén descargados, lanza el servidor en segundo plano y confirma con
+`Daemon iniciado correctamente`. Luego `daemon status` muestra:
 
 ```
 Daemon en ejecución:
   Estado: healthy
-  Modelo cargado: True
+  Modelos cargados: es-latam, en
   Tiempo activo: 42.3s
 ```
+
+«Modelos cargados» lista los idiomas calientes en RAM (los precargados al
+arrancar); un idioma no listado se cargaría perezosamente en la primera
+síntesis que lo pida.
 
 `daemon stop` responde `Daemon detenido` y `daemon restart`, `Daemon reiniciado`.
 
@@ -1100,13 +1143,14 @@ Las únicas diferencias son internas y no cambian la forma de usar la aplicació
 
 ## Solución de Problemas
 
-### "el modelo 'es-mx-latam' no está descargado"
+### "el modelo 'es-mx-latam' no está descargado" (o "en")
 
-`speech say` y `daemon start` requieren el modelo provisionado y nunca lo descargan
-por sí mismos. Ejecuta la provisión una vez:
+`speech say` y `daemon start` requieren el modelo del idioma pedido (`--language`,
+default `es-latam`) provisionado, y nunca lo descargan por sí mismos. El mensaje
+de error indica el idioma exacto que falta; provisiónalo con:
 
 ```bash
-tts-sidecar setup
+tts-sidecar setup --language es-latam   # o --language en, o sin flag (ambos)
 ```
 
 ### "GLIBC_2.35 not found" (o similar) al ejecutar el AppImage en Linux

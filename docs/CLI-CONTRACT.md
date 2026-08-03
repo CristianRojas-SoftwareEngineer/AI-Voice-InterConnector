@@ -162,8 +162,8 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 
 | Sub-acción | Parámetros |
 |---|---|
-| `speech synthesize` | `--text/-t` **requerido** · `--label/-l` **requerido** · `--voice/-v` · `--play/-p` · `--force/-f` · `--compute-backend/-cb` · `--json` · `--daemon`/`--no-daemon` |
-| `speech say` | `--text/-t` **requerido** · `--voice/-v` · `--compute-backend/-cb` · `--json` · `--daemon`/`--no-daemon` |
+| `speech synthesize` | `--text/-t` **requerido** · `--label/-l` **requerido** · `--voice/-v` · `--play/-p` · `--force/-f` · `--compute-backend/-cb` · `--language` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
+| `speech say` | `--text/-t` **requerido** · `--voice/-v` · `--compute-backend/-cb` · `--language` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
 | `speech play` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
 | `speech list` | `--voice/-v` (filtro) · `--json` |
 | `speech remove` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
@@ -468,7 +468,7 @@ El canal tiene **tres formatos**, y cada invocación emite **exactamente un obje
 El payload de error usa una clave de primer nivel `error`, emitida solo bajo `--json`, y deja intacto el stderr en castellano para el uso humano:
 
 ```json
-{"schema_version": "2", "error": {"code": 8, "reason": "disk_full", "message": "…"}}
+{"schema_version": "3", "error": {"code": 8, "reason": "disk_full", "message": "…"}}
 ```
 
 El único código con `reason` poblado es el **8**: la clasificación de por qué falló la provisión —dependencia del runtime ausente, credenciales, red, permisos y disco lleno— ya se calcula, y `reason` es el nombre estable de esa distinción. El 6 y el 7 agrupan subcausas sin nombrar; añadírselas más adelante es aditivo. El fallo de parseo lleva `reason: "usage_error"`.
@@ -515,12 +515,12 @@ Los payloads de `daemon start`, `stop` y `restart` no llevan clave booleana prop
 
 #### Las dos versiones de esquema
 
-Son **dos, independientes**, y ambas valen `"2"`:
+Son **dos, independientes**, y ambas valen `"3"`:
 
-- **`protocol.SCHEMA_VERSION`** — forma de los mensajes IPC del daemon. Vale `"2"` porque `/synthesize` identifica la voz por su nombre y no transporta rutas: una forma que no es aditiva y por tanto exige versión propia.
-- **`cli.SCHEMA_VERSION`** — forma de los payloads `--json` de la CLI. Vale `"2"` porque el payload de síntesis no lleva clave de ruta de salida.
+- **`protocol.SCHEMA_VERSION`** — forma de los mensajes IPC del daemon. Subió a `"2"` porque `/synthesize` identifica la voz por su nombre y no transporta rutas: una forma que no es aditiva y por tanto exige versión propia. Subió otra vez a `"3"` con el rediseño cross-lingual: `HealthResponse.model_loaded` pasó de `bool` a `dict[str, bool]` (un modelo cargado por idioma en vez de uno solo), un cambio incompatible de un campo existente.
+- **`cli.SCHEMA_VERSION`** — forma de los payloads `--json` de la CLI. Subió a `"2"` porque el payload de síntesis no lleva clave de ruta de salida. Subió otra vez a `"3"` por la misma razón que `protocol.SCHEMA_VERSION`: `daemon status --json` refleja el mismo cambio de `model_loaded` de booleano a objeto por idioma.
 
-Son dos causas independientes. Los payloads del grupo `speech` no influyen en ninguna: añadir subcomandos es aditivo, y añadir la clave `error` también lo es.
+Son dos causas independientes que coinciden en el mismo hecho generador. Los payloads del grupo `speech` no influyen en ninguna: añadir subcomandos es aditivo, y añadir la clave `error` también lo es.
 
 **La política de compatibilidad es la misma en ambas**: añadir claves no incrementa la versión; solo lo hace un cambio incompatible de las existentes.
 

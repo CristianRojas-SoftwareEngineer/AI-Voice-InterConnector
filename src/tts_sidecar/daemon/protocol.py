@@ -50,19 +50,26 @@ class ProtocolModel(BaseModel):
     """
     model_config = ConfigDict(extra="ignore")
 
-    schema_version: str = "2"
+    schema_version: str = "3"
 
 
 class SynthesizeRequest(BaseModel):
     """Request de síntesis de habla.
 
-    El daemon sirve un único modelo y compute backend fijados al arrancar; la
-    petición no lleva `model` ni `compute_backend` (el servidor los ignoraría).
-    La petición lleva el nombre de una voz ya registrada; el daemon resuelve
-    sus rutas de audio desde su propio registro (nunca una ruta del llamador).
+    El daemon sirve múltiples modelos (uno por idioma, rediseño cross-lingual);
+    la petición lleva `language` para elegir cuál usar, además de los tres
+    overrides opcionales de síntesis (`None` = default de la ruta del idioma,
+    ver `ChatterboxEngine.SYNTHESIS_DEFAULTS`). No lleva `compute_backend`
+    (fijado al arrancar el daemon). La petición lleva el nombre de una voz ya
+    registrada; el daemon resuelve sus rutas de audio desde su propio registro
+    (nunca una ruta del llamador).
     """
     text: str = Field(min_length=1, max_length=MAX_TEXT_LENGTH)
     voice: str = Field(min_length=1, max_length=MAX_VOICE_NAME_LENGTH)
+    language: str = "es-latam"
+    exaggeration: Optional[float] = None
+    cfg_weight: Optional[float] = None
+    temperature: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -108,8 +115,9 @@ class HealthResponse(ProtocolModel):
     """Respuesta del health check."""
     status: str
     """Estado del daemon: 'healthy', 'initializing' o 'error'."""
-    model_loaded: bool
-    """True cuando el modelo está completamente cargado en memoria."""
+    model_loaded: dict[str, bool] = Field(default_factory=dict)
+    """Qué modelos están calientes en RAM, por idioma (es-latam/en). Un idioma
+    ausente del dict no está precargado (se cargaría perezosamente al usarlo)."""
     uptime_seconds: float
     """Segundos transcurridos desde el inicio del daemon."""
     version: str = ""

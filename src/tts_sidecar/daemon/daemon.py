@@ -41,9 +41,14 @@ class DaemonManager:
         background: bool = True,
         auto_restart: bool = False,
         max_retries: int = 0,
+        language: str = "all",
     ) -> bool:
         """
         Inicia el daemon. Idempotente: si ya está corriendo, devuelve True.
+
+        `language` ("es-latam", "en" o "all", default "all") se reenvía tal
+        cual al subproceso del daemon (ver `run.serve`): qué modelo(s) se
+        precargan en caliente al arrancar.
 
         La ventana de carrera del doble arranque se cierra
         con un lock de arranque atómico: `_acquire_start_lock()` crea el pidfile
@@ -73,6 +78,7 @@ class DaemonManager:
             cmd.append("--auto-restart")
         if max_retries > 0:
             cmd.extend(["--max-retries", str(max_retries)])
+        cmd.extend(["--language", language])
 
         if background:
             # Lock de arranque atómico: serializa los `start` concurrentes

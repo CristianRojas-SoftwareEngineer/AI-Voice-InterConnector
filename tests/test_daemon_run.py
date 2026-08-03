@@ -179,10 +179,10 @@ class TestMain:
         with patch.object(sys, "argv", ["daemon-run", "--auto-restart", "--max-retries", "3"]), \
              patch("tts_sidecar.daemon.run.serve") as mock_serve:
             daemon_run.main()
-        mock_serve.assert_called_once_with(auto_restart=True, max_retries=3)
+        mock_serve.assert_called_once_with(auto_restart=True, max_retries=3, language="all")
 
     def test_main_defaults_no_auto_restart_and_zero_retries(self):
         with patch.object(sys, "argv", ["daemon-run"]), \
              patch("tts_sidecar.daemon.run.serve") as mock_serve:
             daemon_run.main()
-        mock_serve.assert_called_once_with(auto_restart=False, max_retries=0)
+        mock_serve.assert_called_once_with(auto_restart=False, max_retries=0, language="all")

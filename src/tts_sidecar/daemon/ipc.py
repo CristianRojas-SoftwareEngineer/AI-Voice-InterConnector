@@ -64,8 +64,14 @@ class DaemonIPCClient:
         diferencia del resto de consumidores IPC, esta sonda no eleva
         `DaemonIPCError`: discriminar deliberadamente un servicio ajeno del puerto
         es su contrato, no un fallo silenciado.
+
+        Además exige coincidencia EXACTA de `schema_version` entre el daemon y
+        este CLI: un daemon residente de una versión distinta (protocolo
+        incompatible, p. ej. tras una actualización del paquete) se trata como
+        «no utilizable» en vez de arriesgar una síntesis con un contrato desalineado.
         """
         from ..daemon.protocol import HealthResponse
+        from ..cli import SCHEMA_VERSION
 
         try:
             response = requests.get(
@@ -75,11 +81,11 @@ class DaemonIPCClient:
             if response.status_code != 200:
                 return False
             try:
-                HealthResponse.model_validate(response.json())
+                health = HealthResponse.model_validate(response.json())
             except (ValidationError, ValueError):
                 # Cuerpo ausente, no-JSON o que no valida el esquema: no es nuestro daemon.
                 return False
-            return True
+            return health.schema_version == SCHEMA_VERSION
         except (requests.ConnectionError, requests.Timeout):
             return False
 
@@ -87,6 +93,10 @@ class DaemonIPCClient:
         self,
         text: str,
         voice: str,
+        language: str = "es-latam",
+        exaggeration: Optional[float] = None,
+        cfg_weight: Optional[float] = None,
+        temperature: Optional[float] = None,
         on_progress: Optional[Callable[[dict], None]] = None,
     ) -> SynthesisResult:
         """
@@ -98,6 +108,9 @@ class DaemonIPCClient:
         `on_progress` (si se da) para alimentar el indicador de progreso del CLI.
 
         Args:
+            language: Idioma del modelo a usar ("es-latam" o "en").
+            exaggeration, cfg_weight, temperature: Overrides opcionales de
+                síntesis (`None` = default de la ruta del idioma en el daemon).
             on_progress: Callback opcional invocado con el dict de cada evento
                 `progress` del stream (mismo contrato que engine.synthesize).
 
@@ -114,6 +127,10 @@ class DaemonIPCClient:
                 json={
                     "text": text,
                     "voice": voice,
+                    "language": language,
+                    "exaggeration": exaggeration,
+                    "cfg_weight": cfg_weight,
+                    "temperature": temperature,
                 },
                 timeout=self.REQUEST_TIMEOUT,
                 stream=True,

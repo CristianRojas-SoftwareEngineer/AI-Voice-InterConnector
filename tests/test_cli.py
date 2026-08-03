@@ -49,6 +49,10 @@ class MockArgs:
         self.force_update = kwargs.get("force_update", False)
         self.uninstall = kwargs.get("uninstall", False)
         self.yes = kwargs.get("yes", False)
+        self.language = kwargs.get("language", "all")
+        self.exaggeration = kwargs.get("exaggeration", None)
+        self.cfg_weight = kwargs.get("cfg_weight", None)
+        self.temperature = kwargs.get("temperature", None)
         self.all = kwargs.get("all", False)
         # Campos del grupo speech (synthesize / play / list / remove) y del
         # arrastre de cleanup; con default inocuo para el resto de comandos.
@@ -1137,6 +1141,105 @@ class TestExitCodes:
         serve.assert_not_called()
 
 
+class TestSpeechLanguageCrossLingual:
+    """`--language` y los overrides de síntesis en `speech say`/`speech synthesize`
+    (Fase 3 del rediseño cross-lingual, §3.4/§3.5/§3.12 de cli-redesign.md)."""
+
+    def _args(self, **kw):
+        kw.setdefault("timbre_reference", _make_wav("v.wav"))
+        kw.setdefault("speech_reference", _make_wav("s.wav"))
+        kw.setdefault("no_daemon", True)
+        return MockArgs(**kw)
+
+    @patch("tts_sidecar.audio.AudioPlayer")
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.engine.ChatterboxEngine")
+    def test_say_language_en_dispatches_english_model(self, mock_engine_cls, _cached, _player):
+        """--language en resuelve get_instance(model="en", ...) y no revienta:
+        detrás del engine.synthesize real (no probado aquí) queda la ramificación
+        por idioma ya cubierta en test_synthesis_orchestrator.py."""
+        from tts_sidecar.cli import cmd_speech_say
+
+        engine = MagicMock()
+        engine.synthesize.return_value = _synth_result()
+        mock_engine_cls.get_instance.return_value = engine
+
+        cmd_speech_say(self._args(text="hello", language="en"))
+
+        _, kwargs = mock_engine_cls.get_instance.call_args
+        assert kwargs["model"] == "en"
+
+    @patch("tts_sidecar.audio.AudioPlayer")
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.engine.ChatterboxEngine")
+    def test_say_language_es_latam_unchanged(self, mock_engine_cls, _cached, _player):
+        """Sin --language (o con es-latam explícito) el modelo resuelto sigue
+        siendo es-mx-latam: retrocompatible con el comportamiento actual."""
+        from tts_sidecar.cli import cmd_speech_say
+
+        engine = MagicMock()
+        engine.synthesize.return_value = _synth_result()
+        mock_engine_cls.get_instance.return_value = engine
+
+        cmd_speech_say(self._args(text="hola", language="es-latam"))
+
+        _, kwargs = mock_engine_cls.get_instance.call_args
+        assert kwargs["model"] == "es-mx-latam"
+
+    def test_cfg_weight_zero_exits_2(self):
+        """--cfg-weight 0 es el crash conocido del inglés base: se rechaza
+        client-side con exit 2, antes de tocar el motor."""
+        from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
+
+        with pytest.raises(CliError) as exc:
+            cmd_speech_say(self._args(text="hola", cfg_weight=0.0))
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_negative_exaggeration_exits_2(self):
+        from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
+
+        with pytest.raises(CliError) as exc:
+            cmd_speech_say(self._args(text="hola", exaggeration=-0.1))
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_non_positive_temperature_exits_2(self):
+        from tts_sidecar.cli import cmd_speech_say, EXIT_INVALID_INPUT
+
+        with pytest.raises(CliError) as exc:
+            cmd_speech_say(self._args(text="hola", temperature=0.0))
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_missing_language_model_exits_4_points_to_setup_language(self):
+        """Idioma sin modelo instalado sale 4 remitiendo a 'setup --language <x>'."""
+        from tts_sidecar.cli import cmd_speech_say, EXIT_MODEL_MISSING
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
+            with pytest.raises(CliError) as exc:
+                cmd_speech_say(self._args(text="hello", language="en"))
+        assert exc.value.code == EXIT_MODEL_MISSING
+        assert "setup --language en" in exc.value.message
+
+    @patch("tts_sidecar.audio.AudioPlayer")
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.engine.ChatterboxEngine")
+    def test_overrides_threaded_to_engine_synthesize(self, mock_engine_cls, _cached, _player):
+        """exaggeration/cfg_weight/temperature llegan intactos a engine.synthesize."""
+        from tts_sidecar.cli import cmd_speech_say
+
+        engine = MagicMock()
+        engine.synthesize.return_value = _synth_result()
+        mock_engine_cls.get_instance.return_value = engine
+
+        cmd_speech_say(self._args(
+            text="hola", exaggeration=0.9, cfg_weight=0.2, temperature=0.6,
+        ))
+
+        _, kwargs = engine.synthesize.call_args
+        assert kwargs["exaggeration"] == 0.9
+        assert kwargs["cfg_weight"] == 0.2
+        assert kwargs["temperature"] == 0.6
+
+
 class TestCmdCleanup:
     """El comando cleanup borra solo las rutas del proyecto, con confirmación."""
 
@@ -1767,14 +1870,14 @@ class TestWriteCommandsJSON:
             lambda: [("PASS", "Chatterbox TTS", "0.1.7")],
         )
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True):
-            cli.cmd_setup(MockArgs(remove_path=False, json=True))
+            cli.cmd_setup(MockArgs(remove_path=False, json=True, language="es-latam"))
 
         out = capsys.readouterr().out
         payload = json.loads(out)
         assert payload["schema_version"] == cli.SCHEMA_VERSION
-        assert payload["model"] == "es-mx-latam"
-        assert payload["already_cached"] is True
-        assert payload["downloaded"] is False
+        assert payload["language"] == "es-latam"
+        assert payload["models"]["es-mx-latam"]["already_cached"] is True
+        assert payload["models"]["es-mx-latam"]["downloaded"] is False
         assert "cache_dir" in payload
 
     def test_setup_remove_path_json_payload(self, monkeypatch, tmp_path, capsys):
@@ -2489,7 +2592,7 @@ class TestSetupDiskAndForceUpdate:
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
                 patch("shutil.disk_usage", return_value=poco):
             with pytest.raises(CliError) as exc:
-                cli.cmd_setup(MockArgs(remove_path=False))
+                cli.cmd_setup(MockArgs(remove_path=False, language="es-latam"))
         assert exc.value.code == cli.EXIT_PRECONDITION_FAILED
         assert "Espacio en disco insuficiente" in exc.value.message
 
@@ -2523,7 +2626,7 @@ class TestSetupDiskAndForceUpdate:
                 patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
                 patch("shutil.disk_usage", return_value=poco):
             with pytest.raises(CliError):
-                cli.cmd_setup(MockArgs(remove_path=False, force_update=True))
+                cli.cmd_setup(MockArgs(remove_path=False, force_update=True, language="es-latam"))
 
         assert not model_dir.exists()
         assert "force-update" in capsys.readouterr().err
@@ -2552,14 +2655,110 @@ class TestSetupLightDownload:
                 patch("shutil.disk_usage", return_value=mucho), \
                 patch("huggingface_hub.snapshot_download", mock_snapshot_download), \
                 patch("tts_sidecar.engine.ChatterboxEngine.get_instance", mock_get_instance):
-            cli.cmd_setup(MockArgs(remove_path=False))
+            cli.cmd_setup(MockArgs(remove_path=False, language="es-latam"))
 
         mock_snapshot_download.assert_called_once()
         assert mock_snapshot_download.call_args.kwargs["repo_id"] == (
             "ResembleAI/Chatterbox-Multilingual-es-mx-latam"
         )
         mock_get_instance.assert_not_called()
-        assert "Modelo descargado correctamente" in capsys.readouterr().err
+        assert "descargado(s) correctamente" in capsys.readouterr().err
+
+
+class TestSetupMultiLanguage:
+    """setup --language {es-latam, en, all}: rediseño cross-lingual."""
+
+    def test_default_language_downloads_both_models(self, monkeypatch, tmp_path, capsys):
+        """Sin --language, el default 'all' descarga ambos modelos."""
+        import tts_sidecar.cli as cli
+
+        monkeypatch.setattr(
+            cli, "_environment_checks",
+            lambda: [("PASS", "Chatterbox TTS", "0.1.7")],
+        )
+        mucho = __import__("shutil")._ntuple_diskusage(
+            total=100 * 1024 ** 3, used=1 * 1024 ** 3, free=99 * 1024 ** 3
+        )
+        mock_snapshot_download = MagicMock(return_value=str(tmp_path))
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
+                patch("tts_sidecar.model_cache.is_ve_cached", return_value=True), \
+                patch("shutil.disk_usage", return_value=mucho), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False))
+
+        assert mock_snapshot_download.call_count == 2
+        repo_ids = {c.kwargs["repo_id"] for c in mock_snapshot_download.call_args_list}
+        assert repo_ids == {
+            "ResembleAI/Chatterbox-Multilingual-es-mx-latam",
+            "ResembleAI/chatterbox",
+        }
+
+    def test_language_en_downloads_only_english_base(self, monkeypatch, tmp_path, capsys):
+        import tts_sidecar.cli as cli
+
+        monkeypatch.setattr(
+            cli, "_environment_checks",
+            lambda: [("PASS", "Chatterbox TTS", "0.1.7")],
+        )
+        mucho = __import__("shutil")._ntuple_diskusage(
+            total=100 * 1024 ** 3, used=1 * 1024 ** 3, free=99 * 1024 ** 3
+        )
+        mock_snapshot_download = MagicMock(return_value=str(tmp_path))
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
+                patch("shutil.disk_usage", return_value=mucho), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False, language="en"))
+
+        mock_snapshot_download.assert_called_once()
+        assert mock_snapshot_download.call_args.kwargs["repo_id"] == "ResembleAI/chatterbox"
+
+    def test_disk_check_scales_with_pending_model_count(self, monkeypatch, capsys):
+        """Con 'all' pendiente (2 modelos), el umbral de disco se duplica."""
+        import shutil
+        import tts_sidecar.cli as cli
+
+        monkeypatch.setattr(
+            cli, "_environment_checks",
+            lambda: [("PASS", "Chatterbox TTS", "0.1.7")],
+        )
+        # Suficiente para un modelo pero no para dos.
+        justo = shutil._ntuple_diskusage(
+            total=10 * 1024 ** 3,
+            used=4 * 1024 ** 3,
+            free=cli.MIN_FREE_DISK_BYTES + 1,
+        )
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
+                patch("shutil.disk_usage", return_value=justo):
+            with pytest.raises(CliError) as exc:
+                cli.cmd_setup(MockArgs(remove_path=False))
+        assert exc.value.code == cli.EXIT_PRECONDITION_FAILED
+        assert "Espacio en disco insuficiente" in exc.value.message
+
+    def test_partial_cache_only_downloads_missing_model(self, monkeypatch, tmp_path, capsys):
+        """es-mx-latam ya cacheado + en ausente: solo se descarga en."""
+        import tts_sidecar.cli as cli
+
+        monkeypatch.setattr(
+            cli, "_environment_checks",
+            lambda: [("PASS", "Chatterbox TTS", "0.1.7")],
+        )
+        mucho = __import__("shutil")._ntuple_diskusage(
+            total=100 * 1024 ** 3, used=1 * 1024 ** 3, free=99 * 1024 ** 3
+        )
+        mock_snapshot_download = MagicMock(return_value=str(tmp_path))
+
+        def fake_cached(model):
+            return model == "es-mx-latam"
+
+        with patch("tts_sidecar.model_cache.is_model_cached", side_effect=fake_cached), \
+                patch("shutil.disk_usage", return_value=mucho), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False))
+
+        mock_snapshot_download.assert_called_once()
+        assert mock_snapshot_download.call_args.kwargs["repo_id"] == "ResembleAI/chatterbox"
 
 
 class TestBootstrap:

@@ -47,13 +47,25 @@ def _remove_own_pidfile():
         pass
 
 
-def serve(port: int = DEFAULT_PORT, auto_restart: bool = False, max_retries: int = 0):
+def serve(
+    port: int = DEFAULT_PORT,
+    auto_restart: bool = False,
+    max_retries: int = 0,
+    language: str = "all",
+):
     """
     Arranca el servidor del daemon en primer plano (bloqueante).
 
     Reutilizable tanto por `main()` (modo `python -m tts_sidecar.daemon.run`)
     como por el subcomando `daemon serve` del ejecutable congelado.
+
+    `language` ("es-latam", "en" o "all", default "all") fija qué modelo(s) se
+    precargan en caliente al arrancar (rediseño cross-lingual, §3.9); el resto
+    se carga perezosamente desde disco al primer uso vía `/synthesize`.
     """
+    # Idiomas a precargar en caliente.
+    languages_to_preload = ["es-latam", "en"] if language == "all" else [language]
+
     # Registrar intentos de reinicio
     retries = 0
 
@@ -82,10 +94,11 @@ def serve(port: int = DEFAULT_PORT, auto_restart: bool = False, max_retries: int
         app.state.daemon = DaemonState(start_time=time.time())
 
         with StageTimer("Startup", "Iniciando daemon..."):
-            # Etapa 1: cargar modelo
+            # Etapa 1: cargar modelo(s)
             with StageTimer("1-Daemon", "Etapa 1/3: Cargando modelo"):
                 from ..engine import ChatterboxEngine
                 from ..compute_backend import ComputeBackendResolver
+                from ..model_cache import model_for
 
                 # El daemon decide el compute backend una sola vez al
                 # arrancar y lo cachea en la instancia del motor: cualquier
@@ -95,17 +108,19 @@ def serve(port: int = DEFAULT_PORT, auto_restart: bool = False, max_retries: int
                 compute_backend = ComputeBackendResolver.resolve(
                     os.environ.get("TTS_SIDECAR_COMPUTE_BACKEND")
                 )
+                app.state.daemon.compute_backend = compute_backend
 
                 # El engine ya aplica los parámetros de síntesis optimizados,
                 # el timing por sub-etapa (_synthesis_metrics) y el bypass del
-                # watermark como comportamiento propio.
-                engine = ChatterboxEngine.get_instance(
-                    model="es-mx-latam",
-                    compute_backend=compute_backend,
-                )
+                # watermark como comportamiento propio. Se precarga en caliente
+                # cada idioma pedido (--language, default "all" = ambos).
+                for lang in languages_to_preload:
+                    app.state.daemon.engines[lang] = ChatterboxEngine.get_instance(
+                        model=model_for(lang),
+                        compute_backend=compute_backend,
+                    )
 
                 log(f"Daemon: compute_backend={compute_backend}")
-                app.state.daemon.engine = engine
 
             # Etapa 2: iniciar servidor
             with StageTimer("2-Daemon", "Etapa 2/3: Iniciando servidor"):
@@ -160,15 +175,17 @@ def serve(port: int = DEFAULT_PORT, auto_restart: bool = False, max_retries: int
         retries += 1
         log(f"Daemon: reiniciando (intento {retries})...")
 
-        # Invalida la instancia cacheada para forzar una recarga real del
-        # motor: si el crash se debió a un estado interno corrupto, revivir
-        # el mismo objeto anularía el propósito de --auto-restart.
+        # Invalida las instancias cacheadas para forzar una recarga real de
+        # cada motor precargado: si el crash se debió a un estado interno
+        # corrupto, revivir el mismo objeto anularía el propósito de --auto-restart.
         from ..engine import ChatterboxEngine
         from ..compute_backend import ComputeBackendResolver
-        ChatterboxEngine._cache.pop(
-            ComputeBackendResolver.cache_key(model="es-mx-latam", compute_backend=compute_backend),
-            None,
-        )
+        from ..model_cache import model_for
+        for lang in languages_to_preload:
+            ChatterboxEngine._cache.pop(
+                ComputeBackendResolver.cache_key(model=model_for(lang), compute_backend=compute_backend),
+                None,
+            )
 
         time.sleep(1)
 
@@ -180,7 +197,7 @@ def main():
     Punto de entrada CLI del daemon.
 
     Parsea argumentos y delega en serve(). Se invoca como:
-        python -m tts_sidecar.daemon.run [--auto-restart] [--max-retries N]
+        python -m tts_sidecar.daemon.run [--auto-restart] [--max-retries N] [--language {es-latam,en,all}]
 
     El puerto es fijo (DEFAULT_PORT = 8765 en loopback); no hay flag --port.
     """
@@ -196,11 +213,18 @@ def main():
         default=0,
         help="Máximo de intentos de reinicio (0 = infinito)"
     )
+    parser.add_argument(
+        "--language",
+        choices=["es-latam", "en", "all"],
+        default="all",
+        help="Idioma(s) a precargar en caliente (default: all = ambos)"
+    )
     args = parser.parse_args()
 
     serve(
         auto_restart=args.auto_restart,
         max_retries=args.max_retries,
+        language=args.language,
     )
 
 

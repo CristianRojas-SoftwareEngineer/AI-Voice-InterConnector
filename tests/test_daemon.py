@@ -322,7 +322,7 @@ class TestDaemonManager:
         # identidad, no solo el status code.
         mock_resp.json.return_value = {
             "status": "healthy",
-            "model_loaded": True,
+            "model_loaded": {"es-latam": True, "en": False},
             "uptime_seconds": 1.0,
         }
         mock_get.return_value = mock_resp
@@ -722,7 +722,8 @@ class TestDaemonStateInjection:
         try:
             with TestClient(server.app) as client:
                 body = client.get("/health").json()
-                assert body["model_loaded"] is True
+                # Ambas claves siempre presentes: False para el idioma no cargado.
+                assert body["model_loaded"] == {"es-latam": True, "en": False}
                 assert body["status"] == "healthy"
                 from tts_sidecar import __version__
                 assert body["version"] == __version__
@@ -730,17 +731,24 @@ class TestDaemonStateInjection:
             server.app.dependency_overrides.clear()
 
     def test_synthesize_503_when_injected_state_has_no_engine(self):
+        """Sin motor precargado para el idioma pedido, /synthesize intenta una
+        carga perezosa desde disco (§3.9); si esa carga falla (modelo no
+        instalado), responde 503 en vez de propagar la excepción."""
         from fastapi.testclient import TestClient
         from tts_sidecar.daemon import server
 
         override_state = server.DaemonState(engine=None)
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
-        try:
-            with TestClient(server.app) as client:
-                resp = client.post("/synthesize", json={"text": "hola", "voice": "crist"})
-                assert resp.status_code == 503
-        finally:
-            server.app.dependency_overrides.clear()
+        with patch(
+            "tts_sidecar.engine.ChatterboxEngine.get_instance",
+            side_effect=RuntimeError("modelo no instalado"),
+        ):
+            try:
+                with TestClient(server.app) as client:
+                    resp = client.post("/synthesize", json={"text": "hola", "voice": "crist"})
+                    assert resp.status_code == 503
+            finally:
+                server.app.dependency_overrides.clear()
 
     def test_precompute_voice_success(self):
         """El endpoint invoca engine.precompute_voice y devuelve precomputed=True."""
@@ -755,7 +763,7 @@ class TestDaemonStateInjection:
                 resp = client.post("/voices/precompute", json={"name": "crist"})
                 assert resp.status_code == 200
                 assert resp.json() == {
-                    "schema_version": "2",
+                    "schema_version": "3",
                     "name": "crist",
                     "precomputed": True,
                 }
@@ -844,7 +852,7 @@ class TestDaemonStateInjection:
                 resp = client.get("/voices")
                 assert resp.status_code == 200
                 assert resp.json() == {
-                    "schema_version": "2",
+                    "schema_version": "3",
                     "voices": ["crist", "otra"],
                 }
         finally:

@@ -36,6 +36,9 @@ class SynthesisOrchestrator:
         timbre_reference,
         speech_reference,
         progress_callback,
+        exaggeration=None,
+        cfg_weight=None,
+        temperature=None,
     ) -> SynthesisResult:
         """Ejecuta la síntesis completa y retorna el audio + las métricas.
 
@@ -43,15 +46,33 @@ class SynthesisOrchestrator:
         limpia en `finally` (lo leen el shim de tokens y los wrappers timed_t3/
         timed_s3gen). El llamador serializa la síntesis, así que un único slot
         basta y no cruza callbacks entre invocaciones.
+
+        `exaggeration`/`cfg_weight`/`temperature`: overrides opcionales; si son
+        None se usa el default de SYNTHESIS_DEFAULTS para el idioma del engine.
         """
         engine = self.engine
         engine._active_progress_cb = progress_callback
         try:
-            return self._synthesize_impl(text, timbre_reference, speech_reference)
+            return self._synthesize_impl(
+                text,
+                timbre_reference,
+                speech_reference,
+                exaggeration=exaggeration,
+                cfg_weight=cfg_weight,
+                temperature=temperature,
+            )
         finally:
             engine._active_progress_cb = None
 
-    def _synthesize_impl(self, text, timbre_reference, speech_reference) -> SynthesisResult:
+    def _synthesize_impl(
+        self,
+        text,
+        timbre_reference,
+        speech_reference,
+        exaggeration=None,
+        cfg_weight=None,
+        temperature=None,
+    ) -> SynthesisResult:
         engine = self.engine
 
         # Stage 1: Carga de conditionals
@@ -86,10 +107,29 @@ class SynthesisOrchestrator:
                 engine._conds_cache_key = None
                 self._compute_conditionals(timbre_reference, speech_reference)
 
-        # Stage 2: Generación TTS con los parámetros optimizados del engine.
+        # Stage 2: Generación TTS. Se ramifica por idioma: es-mx-latam exige
+        # language_id="es" (ChatterboxMultilingualTTS.generate), en no acepta
+        # ese parámetro (ChatterboxTTS.generate no lo declara). Los tres
+        # parámetros de síntesis se resuelven contra SYNTHESIS_DEFAULTS de la
+        # ruta activa, salvo override explícito (no None).
+        language = getattr(engine, "_language", "es-mx-latam")
+        defaults = engine.SYNTHESIS_DEFAULTS.get(
+            language, engine.SYNTHESIS_DEFAULTS["es-mx-latam"]
+        )
+        resolved_exaggeration = exaggeration if exaggeration is not None else defaults["exaggeration"]
+        resolved_cfg_weight = cfg_weight if cfg_weight is not None else defaults["cfg_weight"]
+        resolved_temperature = temperature if temperature is not None else defaults["temperature"]
+
         engine._emit_progress(stage="tts")
         with StageTimer("2-Speech", "Etapa 2/4: Generando audio (TTS)"):
-            wav = engine._tts.generate(text, language_id="es", exaggeration=engine.EXAGGERATION)
+            generate_kwargs = dict(
+                exaggeration=resolved_exaggeration,
+                cfg_weight=resolved_cfg_weight,
+                temperature=resolved_temperature,
+            )
+            if language != "en":
+                generate_kwargs["language_id"] = "es"
+            wav = engine._tts.generate(text, **generate_kwargs)
 
         # Stage 3: Conversión a WAV
         engine._emit_progress(stage="encoding")

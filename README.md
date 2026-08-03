@@ -40,6 +40,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 ## Características
 
 - **Clonación de voz**: ~10 segundos de audio de referencia
+- **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés (`--language`)
 - **100% offline**: Sin APIs externas ni conexiones a internet
 - **Instalador por plataforma**: Un instalador único por SO que despliega el bundle PyInstaller `--onedir` (carpeta de la aplicación)
 - **CLI universal**: `subprocess.run(["./tts-sidecar", "speech", "say", "--text", "..."])`
@@ -164,19 +165,22 @@ es **verificar su SHA-256** contra el `SHA256SUMS.txt` del Release (ver
 [SECURITY.md](SECURITY.md)). Detalle paso a paso en
 [USAGE.md](USAGE.md#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar).
 
-### Provisión del modelo (`setup`)
+### Provisión del/los modelo(s) (`setup`)
 
-El modelo de voz **`es-mx-latam`** (~4 GB) **no** viene incluido en
-el ejecutable: se descarga una sola vez a la caché de HuggingFace de tu usuario
-(`~/.cache/huggingface/hub`). Esto es homólogo en los 3 SO:
+TTS Sidecar sirve **dos modelos de voz**, uno por idioma: **`es-mx-latam`**
+(español latinoamericano, ~4 GB) y **`en`** (inglés base, ~4 GB, habilita la
+síntesis cross-lingual). Ninguno viene incluido en el ejecutable: se descargan
+a la caché de HuggingFace de tu usuario (`~/.cache/huggingface/hub`). Esto es
+homólogo en los 3 SO:
 
 - **Windows**: el instalador ofrece una casilla post-instalación que ejecuta
   `setup` por ti, en tu contexto de usuario.
 - **Linux / macOS**: ejecuta `tts-sidecar setup` manualmente tras instalar.
 
-`setup` corre los chequeos de entorno (igual que `doctor`) y descarga el modelo
-solo si falta; si ya está cacheado, termina al instante sin descargar. Hasta que
-el modelo esté provisionado, `speech synthesize` y `daemon start` **fallan de inmediato** y te
+`setup` corre los chequeos de entorno (igual que `doctor`) y descarga ambos
+modelos por defecto (o uno solo con `--language {es-latam,en}`), solo si
+faltan; si ya están cacheados, termina al instante sin descargar. Hasta que un
+modelo esté provisionado, `speech synthesize` y `daemon start` **fallan de inmediato** y te
 remiten a `tts-sidecar setup` (nunca disparan una descarga silenciosa).
 
 ### Opción 2: Instalar desde PyPI (uv / pipx)
@@ -187,7 +191,7 @@ Para audiencia técnica con Python 3.13+ ya instalado:
 uv tool install tts-sidecar
 # o: pipx install tts-sidecar
 
-tts-sidecar setup     # provisiona el modelo, idéntico al canal nativo
+tts-sidecar setup     # provisiona los modelos, idéntico al canal nativo
 tts-sidecar speech say --text "Hola mundo"
 ```
 
@@ -303,9 +307,9 @@ new ProcessBuilder("./tts-sidecar", "speech", "say", "--text", "Hola").start()
                        ▼
 ┌─────────────────────────────────────────────────────┐
 │           Chatterbox Multilingual V3                 │
-│   Modelo: es-mx-latam (caché de HuggingFace)        │
+│   Modelos: es-mx-latam + en (caché de HuggingFace)  │
 │   Licencia: MIT                                     │
-│   Idiomas: 23+ (incl. español es)                    │
+│   Idiomas: 23+ (incl. español es); en habilita cross-lingual │
 └─────────────────────────────────────────────────────┘
 ```
 

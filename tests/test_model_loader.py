@@ -7,6 +7,8 @@ los loaders internos y las dependencias de chatterbox/safetensors se sustituyen
 por dobles vía `monkeypatch` sobre el namespace del módulo.
 """
 
+from pathlib import Path
+
 import pytest
 
 from tts_sidecar.model_loader import ModelLoader
@@ -115,6 +117,26 @@ def test_es_latam_without_ve_triggers_download(tmp_path, monkeypatch):
     assert downloads, "sin ve.safetensors debe disparar hf_hub_download"
     assert downloads[0] == ("ResembleAI/chatterbox", "ve.safetensors")
     assert tts._require_voice_prompt is True
+
+
+def test_load_routes_en_cache_path_to_multilingual_loader(monkeypatch):
+    """Una ruta de caché del modelo inglés base (sin 'es-mx-latam') enruta a
+    _load_multilingual -> ChatterboxTTS.from_local (ruta de producción del
+    modelo 'en' desde el rediseño cross-lingual, no un path muerto)."""
+    loader = ModelLoader()
+    calls = {}
+
+    def fake_from_local(cache_dir, compute_backend):
+        calls["from_local"] = (cache_dir, compute_backend)
+        return "en_tts"
+
+    monkeypatch.setattr(
+        "tts_sidecar.model_loader.ChatterboxTTS.from_local", fake_from_local
+    )
+
+    en_cache = "/cache/models--ResembleAI--chatterbox/snapshots/abc"
+    assert loader.load(en_cache, "en", "cpu") == "en_tts"
+    assert calls["from_local"] == (Path(en_cache), "cpu")
 
 
 def test_es_latam_with_conds_sets_require_prompt_false(tmp_path, monkeypatch):

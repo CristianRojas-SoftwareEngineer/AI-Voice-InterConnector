@@ -14,6 +14,11 @@ from typing import Optional
 MODELS = {
     "multilingual": "ResembleAI/chatterbox-multilingual",
     "es-mx-latam": "ResembleAI/Chatterbox-Multilingual-es-mx-latam",
+    # Modelo inglés base, promovido a entrada de primer nivel (rediseño
+    # cross-lingual): mismo repo que BASE_MODEL_REPO, fuente también de
+    # ve.safetensors para es-mx-latam. No se reutiliza el alias "multilingual"
+    # (huérfano: apunta a otro repo, ResembleAI/chatterbox-multilingual).
+    "en": "ResembleAI/chatterbox",
 }
 
 # Repo base de Chatterbox: fuente de ve.safetensors (Voice Encoder), que el
@@ -33,6 +38,9 @@ MODEL_REVISIONS = {
     "es-mx-latam": "27e595bf2fe7be0533ca299d9afafcde08b7cca7",
 }
 BASE_MODEL_REVISION = "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
+# El inglés base pinea la misma revisión que BASE_MODEL_REVISION: es el mismo
+# repo (ResembleAI/chatterbox), así que comparten el mismo commit auditado.
+MODEL_REVISIONS["en"] = BASE_MODEL_REVISION
 
 # Mapa único de alias/repos al nombre de carpeta en la caché de HuggingFace
 CACHE_NAMES = {
@@ -59,6 +67,16 @@ def hub_cache_path() -> Path:
 def cache_folder_for(model_name: str) -> str:
     """Nombre de la carpeta de caché para un alias o repo de modelo."""
     return CACHE_NAMES.get(model_name, f"models--{model_name.replace('/', '--')}")
+
+
+def model_for(language: str) -> str:
+    """Traduce un idioma de la taxonomía compartida (es-latam/en/all) al alias
+    de modelo que consumen MODELS/MODEL_REVISIONS/is_model_cached.
+
+    "all" no es un idioma de síntesis válido (solo de provisión/precarga); se
+    devuelve tal cual para que el llamador lo maneje explícitamente.
+    """
+    return {"es-latam": "es-mx-latam", "en": "en"}.get(language, language)
 
 
 def _safetensors_header_ok(path: Path) -> bool:
@@ -187,6 +205,21 @@ def is_model_cached(model: str = "es-mx-latam") -> bool:
         for filename in ("t3_es_mx_latam.safetensors", "s3gen_v3.safetensors"):
             path = cached / filename
             if not path.exists() or not _safetensors_header_ok(path):
+                return False
+        return is_ve_cached(cached)
+
+    if model == "en" or model_name == BASE_MODEL_REPO:
+        # Espejo de la rama es-mx-latam: T3/S3Gen validados con header
+        # safetensors; tokenizer.json y conds.pt no son safetensors, solo
+        # existencia. El VE es el mismo repo, así que se delega en
+        # is_ve_cached(cached) en vez de re-validarlo aparte (evita doble
+        # descarga/validación).
+        for filename in ("t3_cfg.safetensors", "s3gen.safetensors"):
+            path = cached / filename
+            if not path.exists() or not _safetensors_header_ok(path):
+                return False
+        for filename in ("tokenizer.json", "conds.pt"):
+            if not (cached / filename).exists():
                 return False
         return is_ve_cached(cached)
 

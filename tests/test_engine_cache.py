@@ -475,3 +475,138 @@ class TestIsModelCached:
         p = tmp_path / "fake.safetensors"
         p.write_bytes(b"\xff\xff\xff\xff\xff\xff\xff\x7f" + b"x" * 4)  # ~9.2 EB
         assert _safetensors_header_ok(p) is False
+
+
+class TestIsModelCachedEn:
+    """Espejo de TestIsModelCached para el modelo inglés base ('en'), promovido
+    a entrada de primer nivel en el rediseño cross-lingual. Mismo repo que la
+    fuente de ve.safetensors (BASE_MODEL_REPO), así que la carpeta de caché
+    sintética es la misma que usa TestDownloadModelHonorsPin/is_ve_cached."""
+
+    EN_FOLDER = "models--ResembleAI--chatterbox"
+
+    def _fake_hub(self, tmp_path, monkeypatch):
+        hub = tmp_path / "hub"
+        hub.mkdir()
+        from huggingface_hub import constants
+        monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
+        return hub
+
+    def test_without_cache_returns_false(self, tmp_path, monkeypatch):
+        self._fake_hub(tmp_path, monkeypatch)
+        assert is_model_cached("en") is False
+
+    def test_full_snapshot_returns_true(self, tmp_path, monkeypatch):
+        hub = self._fake_hub(tmp_path, monkeypatch)
+        model_dir = hub / self.EN_FOLDER
+        snap = _make_snapshot(model_dir, BASE_PINNED_REV)
+        _set_ref_main(model_dir, BASE_PINNED_REV)
+        (snap / "t3_cfg.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "s3gen.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "ve.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "tokenizer.json").write_text("{}", encoding="utf-8")
+        (snap / "conds.pt").write_bytes(b"conds")
+        assert is_model_cached("en") is True
+
+    def test_truncated_t3_returns_false(self, tmp_path, monkeypatch):
+        hub = self._fake_hub(tmp_path, monkeypatch)
+        model_dir = hub / self.EN_FOLDER
+        snap = _make_snapshot(model_dir, BASE_PINNED_REV)
+        _set_ref_main(model_dir, BASE_PINNED_REV)
+        (snap / "t3_cfg.safetensors").write_bytes(b"\x00" * 8)  # header-length 0
+        (snap / "s3gen.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "ve.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "tokenizer.json").write_text("{}", encoding="utf-8")
+        (snap / "conds.pt").write_bytes(b"conds")
+        assert is_model_cached("en") is False
+
+    def test_missing_tokenizer_returns_false(self, tmp_path, monkeypatch):
+        """tokenizer.json no es safetensors: se valida solo por existencia,
+        pero su ausencia igualmente reporta 'no cacheado'."""
+        hub = self._fake_hub(tmp_path, monkeypatch)
+        model_dir = hub / self.EN_FOLDER
+        snap = _make_snapshot(model_dir, BASE_PINNED_REV)
+        _set_ref_main(model_dir, BASE_PINNED_REV)
+        (snap / "t3_cfg.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "s3gen.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "ve.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "conds.pt").write_bytes(b"conds")
+        assert is_model_cached("en") is False
+
+    def test_missing_conds_returns_false(self, tmp_path, monkeypatch):
+        hub = self._fake_hub(tmp_path, monkeypatch)
+        model_dir = hub / self.EN_FOLDER
+        snap = _make_snapshot(model_dir, BASE_PINNED_REV)
+        _set_ref_main(model_dir, BASE_PINNED_REV)
+        (snap / "t3_cfg.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "s3gen.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "ve.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "tokenizer.json").write_text("{}", encoding="utf-8")
+        assert is_model_cached("en") is False
+
+    def test_missing_ve_returns_false(self, tmp_path, monkeypatch):
+        """El VE vive en el mismo repo/snapshot que 'en': is_ve_cached(cached)
+        lo resuelve directamente sin necesitar un repo base aparte."""
+        hub = self._fake_hub(tmp_path, monkeypatch)
+        model_dir = hub / self.EN_FOLDER
+        snap = _make_snapshot(model_dir, BASE_PINNED_REV)
+        _set_ref_main(model_dir, BASE_PINNED_REV)
+        (snap / "t3_cfg.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "s3gen.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "tokenizer.json").write_text("{}", encoding="utf-8")
+        (snap / "conds.pt").write_bytes(b"conds")
+        assert is_model_cached("en") is False
+
+    def test_snapshot_of_other_revision_returns_false(self, tmp_path, monkeypatch):
+        hub = self._fake_hub(tmp_path, monkeypatch)
+        model_dir = hub / self.EN_FOLDER
+        snap = _make_snapshot(model_dir, "otra_revision")
+        _set_ref_main(model_dir, "otra_revision")
+        (snap / "t3_cfg.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "s3gen.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "ve.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "tokenizer.json").write_text("{}", encoding="utf-8")
+        (snap / "conds.pt").write_bytes(b"conds")
+        assert is_model_cached("en") is False
+
+
+class TestEsMxLatamRegressionAfterEn:
+    """Regresión: promover 'en' a entrada de primer nivel no altera el
+    comportamiento de detección de es-mx-latam (ramas independientes)."""
+
+    def _fake_hub(self, tmp_path, monkeypatch):
+        hub = tmp_path / "hub"
+        hub.mkdir()
+        from huggingface_hub import constants
+        monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
+        return hub
+
+    def test_es_mx_latam_still_validated_independently_of_en(self, tmp_path, monkeypatch):
+        hub = self._fake_hub(tmp_path, monkeypatch)
+        model_dir = hub / ES_MX_FOLDER
+        snap = _make_snapshot(model_dir, PINNED_REV)
+        _set_ref_main(model_dir, PINNED_REV)
+        (snap / "t3_es_mx_latam.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "s3gen_v3.safetensors").write_bytes(VALID_SAFETENSORS)
+        (snap / "ve.safetensors").write_bytes(VALID_SAFETENSORS)
+
+        # 'en' no está cacheado: no debe afectar el resultado de es-mx-latam.
+        assert is_model_cached("es-mx-latam") is True
+        assert is_model_cached("en") is False
+
+
+class TestModelFor:
+    """model_for(): traduce la taxonomía de idioma compartida al alias de
+    modelo que consumen MODELS/MODEL_REVISIONS/is_model_cached."""
+
+    def test_es_latam_maps_to_es_mx_latam(self):
+        from tts_sidecar.model_cache import model_for
+        assert model_for("es-latam") == "es-mx-latam"
+
+    def test_en_maps_to_en(self):
+        from tts_sidecar.model_cache import model_for
+        assert model_for("en") == "en"
+
+    def test_unknown_value_passes_through(self):
+        from tts_sidecar.model_cache import model_for
+        assert model_for("all") == "all"

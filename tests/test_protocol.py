@@ -67,15 +67,28 @@ class TestSynthesizeRequest:
 
 class TestHealthResponse:
     def test_healthy_response(self):
-        resp = HealthResponse(status="healthy", model_loaded=True, uptime_seconds=10.5)
+        resp = HealthResponse(
+            status="healthy", model_loaded={"es-latam": True}, uptime_seconds=10.5,
+        )
         assert resp.status == "healthy"
-        assert resp.model_loaded is True
+        assert resp.model_loaded == {"es-latam": True}
         assert resp.uptime_seconds == 10.5
 
     def test_initializing_response(self):
-        resp = HealthResponse(status="initializing", model_loaded=False, uptime_seconds=0.0)
+        resp = HealthResponse(status="initializing", model_loaded={}, uptime_seconds=0.0)
         assert resp.status == "initializing"
-        assert resp.model_loaded is False
+        assert resp.model_loaded == {}
+
+    def test_model_loaded_per_language(self):
+        """model_loaded es una estructura por idioma (§3.11): qué modelos
+        están calientes en RAM, no un booleano único."""
+        resp = HealthResponse(
+            status="healthy",
+            model_loaded={"es-latam": True, "en": False},
+            uptime_seconds=1.0,
+        )
+        assert resp.model_loaded["es-latam"] is True
+        assert resp.model_loaded["en"] is False
 
 
 class TestVoicesResponse:
@@ -208,16 +221,16 @@ class TestProtocolVersioning:
         ProgressEvent: {},
         ResultEvent: {"audio_b64": "QUJD"},
         ErrorEvent: {"detail": "x"},
-        HealthResponse: {"status": "healthy", "model_loaded": True, "uptime_seconds": 1.0},
+        HealthResponse: {"status": "healthy", "model_loaded": {"es-latam": True}, "uptime_seconds": 1.0},
         VoicesResponse: {"voices": []},
     }
 
-    def test_all_models_declare_schema_version_2(self):
+    def test_all_models_declare_schema_version_3(self):
         import json
 
         for model_cls, kwargs in self.MODELS_WITH_REQUIRED.items():
             payload = json.loads(model_cls(**kwargs).model_dump_json())
-            assert payload["schema_version"] == "2", model_cls.__name__
+            assert payload["schema_version"] == "3", model_cls.__name__
 
     def test_unknown_extra_fields_are_ignored_forward_skew(self):
         """Un daemon más nuevo que envía un campo desconocido no rompe un
@@ -230,13 +243,13 @@ class TestProtocolVersioning:
         """Un daemon viejo que no puebla schema_version/version no rompe un
         cliente nuevo: los defaults completan sin exigir el campo."""
         health = HealthResponse.model_validate({
-            "status": "healthy", "model_loaded": True, "uptime_seconds": 1.0,
+            "status": "healthy", "model_loaded": {"es-latam": True}, "uptime_seconds": 1.0,
         })
-        assert health.schema_version == "2"
+        assert health.schema_version == "3"
         assert health.version == ""
 
     def test_health_response_carries_version(self):
         resp = HealthResponse(
-            status="healthy", model_loaded=True, uptime_seconds=1.0, version="0.6.0",
+            status="healthy", model_loaded={"es-latam": True}, uptime_seconds=1.0, version="0.6.0",
         )
         assert resp.version == "0.6.0"

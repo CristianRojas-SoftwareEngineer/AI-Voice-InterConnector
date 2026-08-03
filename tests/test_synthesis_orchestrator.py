@@ -136,6 +136,99 @@ class TestOrchestratorConditionals:
         assert len(loads) == 2
 
 
+class TestOrchestratorLanguageRouting:
+    """Ramificación de generate() por idioma (rediseño cross-lingual)."""
+
+    def _engine_with_recording_tts(self, language):
+        eng = _engine_with_orchestrator()
+        eng._language = language
+        calls = []
+
+        class RecordingTTS:
+            conds = None
+            sr = 24000
+
+            def generate(self, text, **kwargs):
+                calls.append(kwargs)
+                return [0.0]
+
+        eng._tts = RecordingTTS()
+        eng._orchestrator = SynthesisOrchestrator(eng, eng._conditionals_prep, AudioWriter())
+        return eng, calls
+
+    def test_es_mx_latam_passes_language_id_and_route_defaults(self, tmp_path):
+        eng, calls = self._engine_with_recording_tts("es-mx-latam")
+        eng._conditionals_prep.compute = lambda *a, **kw: None
+        speech = tmp_path / "speech-reference.wav"
+        speech.write_bytes(b"RIFF")
+
+        eng._orchestrator.synthesize("hola", None, str(speech), None)
+
+        assert calls[0]["language_id"] == "es"
+        assert calls[0]["exaggeration"] == 0.75
+        assert calls[0]["cfg_weight"] == 0.5
+        assert calls[0]["temperature"] == 0.8
+
+    def test_en_omits_language_id_and_uses_route_defaults(self, tmp_path):
+        eng, calls = self._engine_with_recording_tts("en")
+        eng._conditionals_prep.compute = lambda *a, **kw: None
+        speech = tmp_path / "speech-reference.wav"
+        speech.write_bytes(b"RIFF")
+
+        eng._orchestrator.synthesize("hello", None, str(speech), None)
+
+        assert "language_id" not in calls[0]
+        assert calls[0]["exaggeration"] == 0.65
+        assert calls[0]["cfg_weight"] == 0.3
+        assert calls[0]["temperature"] == 0.7
+
+    def test_explicit_overrides_win_over_route_defaults(self, tmp_path):
+        eng, calls = self._engine_with_recording_tts("en")
+        eng._conditionals_prep.compute = lambda *a, **kw: None
+        speech = tmp_path / "speech-reference.wav"
+        speech.write_bytes(b"RIFF")
+
+        eng._orchestrator.synthesize(
+            "hello",
+            None,
+            str(speech),
+            None,
+            exaggeration=0.9,
+            cfg_weight=0.1,
+            temperature=0.6,
+        )
+
+        assert calls[0]["exaggeration"] == 0.9
+        assert calls[0]["cfg_weight"] == 0.1
+        assert calls[0]["temperature"] == 0.6
+
+    def test_missing_language_attribute_defaults_to_es_mx_latam(self, tmp_path):
+        """Un engine sin `_language` (dobles de tests preexistentes) conserva el
+        comportamiento legacy: language_id="es" y defaults de es-mx-latam."""
+        eng = _engine_with_orchestrator()
+        assert not hasattr(eng, "_language")
+        calls = []
+
+        class RecordingTTS:
+            conds = None
+            sr = 24000
+
+            def generate(self, text, **kwargs):
+                calls.append(kwargs)
+                return [0.0]
+
+        eng._tts = RecordingTTS()
+        eng._orchestrator = SynthesisOrchestrator(eng, eng._conditionals_prep, AudioWriter())
+        eng._conditionals_prep.compute = lambda *a, **kw: None
+        speech = tmp_path / "speech-reference.wav"
+        speech.write_bytes(b"RIFF")
+
+        eng._orchestrator.synthesize("hola", None, str(speech), None)
+
+        assert calls[0]["language_id"] == "es"
+        assert calls[0]["exaggeration"] == 0.75
+
+
 class TestOrchestratorExposesAudioWriter:
     def test_audio_writer_reachable_for_test_double(self):
         eng = _engine_with_orchestrator()

@@ -94,12 +94,22 @@ src/tts_sidecar/
 POST /synthesize
 {
   "text": "Hola mundo",
-  "voice": "nombre-de-voz-registrada"
+  "voice": "nombre-de-voz-registrada",
+  "language": "es-latam",
+  "exaggeration": null,
+  "cfg_weight": null,
+  "temperature": null
 }
 ```
 
-El protocolo no lleva `model` ni `compute_backend`: el daemon sirve un único modelo
-fijado al arrancar, con el backend de cómputo resuelto una sola vez (auto-detect o override vía variable de entorno). `text` está acotado a 5000 caracteres.
+El daemon sirve **varios modelos a la vez, uno por idioma** (`es-latam`/`en`,
+rediseño cross-lingual): `language` (default `"es-latam"`) elige cuál atiende la
+petición, reutilizando el timbre de una voz clonada en el idioma que sea. Los
+tres overrides de síntesis son opcionales (`null`/ausentes = default de
+`ChatterboxEngine.SYNTHESIS_DEFAULTS` para ese idioma). El protocolo no lleva
+`model` ni `compute_backend`: el backend de cómputo se resuelve una sola vez al
+arrancar el daemon (auto-detect o override vía variable de entorno) y aplica
+por igual a todos los modelos servidos. `text` está acotado a 5000 caracteres.
 
 **Response** (Daemon → CLI):
 
@@ -142,10 +152,13 @@ Los 5 modelos de `daemon/protocol.py` (`ProgressEvent`, `ResultEvent`,
 `ErrorEvent`, `HealthResponse`, `VoicesResponse`) heredan de una clase base
 común, `ProtocolModel`, que fija dos garantías en un solo lugar:
 
-- **`schema_version`** (string, `"1"` actualmente): presente en cada línea del
+- **`schema_version`** (string, `"3"` actualmente): presente en cada línea del
   stream y en `/health`. Igual que el `schema_version` del CLI (`cli.SCHEMA_VERSION`),
   es un campo aditivo — añadir claves nuevas con default no lo incrementa; solo
-  lo haría un cambio incompatible de una clave existente.
+  lo haría un cambio incompatible de una clave existente. La versión subió a
+  `"3"` justo por eso: `model_loaded` de `HealthResponse` dejó de ser un
+  booleano y pasó a ser un `dict[str, bool]` por idioma (rediseño
+  cross-lingual), un cambio incompatible de un campo ya existente.
 - **`extra="ignore"`**: un campo desconocido en el payload se descarta al
   parsear en vez de romper la validación. Esto es lo que hace tolerable el
   **rolling skew**: un daemon que sigue corriendo con la versión anterior
@@ -163,8 +176,9 @@ actualización, `tts-sidecar daemon restart` relanza el daemon con el binario
 nuevo.
 
 Estas garantías son deliberadamente aditivas: mientras los cambios al protocolo
-sean solo campos nuevos con default, `schema_version` permanece en `"1"`; un
-cambio incompatible de un campo existente sí ameritaría incrementarlo.
+sean solo campos nuevos con default, `schema_version` no se incrementa; solo un
+cambio incompatible de un campo existente lo amerita (como el de `model_loaded`
+arriba).
 
 ## Comandos del Daemon
 
@@ -174,6 +188,9 @@ tts-sidecar daemon start
 
 # Iniciar daemon con auto-restart
 tts-sidecar daemon start --autorestart --max-retries 3
+
+# Precargar solo un idioma (default "all" precarga es-latam y en)
+tts-sidecar daemon start --language es-latam
 
 # Detener daemon
 tts-sidecar daemon stop
@@ -322,9 +339,14 @@ del watermark PerthNet y el timing por sub-etapa:
 
 | Parámetro | Valor | Descripción |
 |-----------|-------|-------------|
-| `max_new_tokens` | 500 | Limita output del T3 (default: 1000) |
-| `n_cfm_timesteps` | 4 | Pasos de flow matching (default: 10) |
-| `exaggeration` | 0.75 | Expresividad emocional (default: 0.5) |
+| `max_new_tokens` | 500 | Limita output del T3 (default: 1000), fijo para ambos idiomas |
+| `n_cfm_timesteps` | 4 | Pasos de flow matching (default: 10), fijo para ambos idiomas |
+| `exaggeration` | 0.75 (`es-mx-latam`) / 0.65 (`en`) | Expresividad emocional (default de fábrica: 0.5), overrideable con `--exaggeration` |
+
+`cfg_weight` y `temperature` también tienen un default propio por idioma
+(`ChatterboxEngine.SYNTHESIS_DEFAULTS`) y son overrideables con `--cfg-weight`
+y `--temperature`; ver [USAGE.md](../USAGE.md) para el detalle completo de
+flags de síntesis.
 
 ## Métricas de Rendimiento
 

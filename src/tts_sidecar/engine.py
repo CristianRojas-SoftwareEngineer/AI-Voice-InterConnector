@@ -155,6 +155,19 @@ class ChatterboxEngine:
     # el valor neutro del modelo base; no es un default de Chatterbox a heredar.
     EMOTION_ADV = 0.5
 
+    # Defaults de síntesis por ruta (rediseño cross-lingual, §3.6 de
+    # docs/proposals/cli-redesign.md): NO se comparten entre rutas, la terna
+    # del inglés no está validada para español. Keyed por el alias de idioma
+    # recibido en `model` (self._language), no por el repo id resuelto: es la
+    # clave que ya tenemos en mano sin traducciones adicionales. La terna
+    # es-mx-latam es exactamente el comportamiento efectivo actual (EXAGGERATION
+    # cableado; cfg_weight/temperature heredados de fábrica) — cablearlos aquí
+    # no cambia el resultado, solo lo hace controlable vía overrides.
+    SYNTHESIS_DEFAULTS = {
+        "es-mx-latam": {"exaggeration": 0.75, "cfg_weight": 0.5, "temperature": 0.8},
+        "en": {"exaggeration": 0.65, "cfg_weight": 0.3, "temperature": 0.7},
+    }
+
     # Caché a nivel de clase para los modelos cargados (evita recargar en cada synthesize)
     _cache: dict[str, "ChatterboxEngine"] = {}
     _cache_lock = threading.Lock()
@@ -204,6 +217,10 @@ class ChatterboxEngine:
         """
         self.compute_backend = ComputeBackendResolver.resolve(compute_backend)
         self.model_name = self.MODELS.get(model, model)
+        # Alias original recibido (p. ej. "es-mx-latam" o "en"), distinto de
+        # model_name (repo id resuelto, usado para descarga/caché): permite
+        # elegir la ruta de generate() y los SYNTHESIS_DEFAULTS sin traducciones.
+        self._language = model
 
         # Colaboradores inyectables: por defecto se crean aquí para no alterar el
         # comportamiento en producción; en tests se sustituyen por dobles.
@@ -448,6 +465,9 @@ class ChatterboxEngine:
         speech_reference: Optional[str] = None,
         verbose: bool = True,
         progress_callback: Optional[Callable[[dict], None]] = None,
+        exaggeration: Optional[float] = None,
+        cfg_weight: Optional[float] = None,
+        temperature: Optional[float] = None,
     ) -> SynthesisResult:
         """
         Genera audio a partir de texto.
@@ -465,6 +485,10 @@ class ChatterboxEngine:
                 única de progreso, compartida por el modo directo (CLI) y el
                 daemon (que la reenvía por el stream NDJSON). Best-effort: una
                 excepción del callback no aborta la síntesis.
+            exaggeration: Override opcional; si es None, se usa el default de
+                SYNTHESIS_DEFAULTS para el idioma cargado en este engine.
+            cfg_weight: Override opcional; mismo criterio que exaggeration.
+            temperature: Override opcional; mismo criterio que exaggeration.
 
         Returns:
             `SynthesisResult` (audio_bytes + métricas t3/s3gen).
@@ -483,7 +507,13 @@ class ChatterboxEngine:
         # Façade delgado: el flujo de síntesis y el ciclo de vida de
         # _active_progress_cb viven en el orquestador, no en el engine.
         return self._orchestrator.synthesize(
-            text, timbre_reference, speech_reference, progress_callback
+            text,
+            timbre_reference,
+            speech_reference,
+            progress_callback,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            temperature=temperature,
         )
 
     def precompute_voice(self, name: str) -> None:
