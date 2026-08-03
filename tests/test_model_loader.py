@@ -77,7 +77,7 @@ def _make_es_latam_cache(tmp_path, has_conds=False):
     return cache
 
 
-def test_load_routes_es_latam_vs_multilingual(monkeypatch):
+def test_load_routes_es_latam_vs_english_base(monkeypatch):
     """El routing replica engine.py:440-443 (subcadena 'es-mx-latam' en cache_dir)."""
     loader = ModelLoader()
     calls = {}
@@ -86,20 +86,20 @@ def test_load_routes_es_latam_vs_multilingual(monkeypatch):
         calls["es"] = (cache_dir, compute_backend)
         return "es_tts"
 
-    def fake_ml(cache_dir, compute_backend):
-        calls["ml"] = (cache_dir, compute_backend)
-        return "ml_tts"
+    def fake_en(cache_dir, compute_backend):
+        calls["en"] = (cache_dir, compute_backend)
+        return "en_tts"
 
     monkeypatch.setattr(loader, "_load_es_latam", fake_es)
-    monkeypatch.setattr(loader, "_load_multilingual", fake_ml)
+    monkeypatch.setattr(loader, "_load_english_base", fake_en)
 
     es_cache = "/cache/models--ResembleAI--Chatterbox-Multilingual-es-mx-latam/snapshots/abc"
     assert loader.load(es_cache, "es-mx-latam", "cpu") == "es_tts"
-    assert "es" in calls and "ml" not in calls
+    assert "es" in calls and "en" not in calls
 
-    ml_cache = "/cache/models--ResembleAI--chatterbox/snapshots/xyz"
-    assert loader.load(ml_cache, "multilingual", "cpu") == "ml_tts"
-    assert "ml" in calls and "es" in calls  # el de es ya se había registrado
+    en_cache = "/cache/models--ResembleAI--chatterbox/snapshots/xyz"
+    assert loader.load(en_cache, "en", "cpu") == "en_tts"
+    assert "en" in calls and "es" in calls  # el de es ya se había registrado
 
 
 def test_es_latam_without_ve_triggers_download(tmp_path, monkeypatch):
@@ -119,9 +119,9 @@ def test_es_latam_without_ve_triggers_download(tmp_path, monkeypatch):
     assert tts._require_voice_prompt is True
 
 
-def test_load_routes_en_cache_path_to_multilingual_loader(monkeypatch):
+def test_load_routes_en_cache_path_to_english_base_loader(monkeypatch):
     """Una ruta de caché del modelo inglés base (sin 'es-mx-latam') enruta a
-    _load_multilingual -> ChatterboxTTS.from_local (ruta de producción del
+    _load_english_base -> ChatterboxTTS.from_local (ruta de producción del
     modelo 'en' desde el rediseño cross-lingual, no un path muerto)."""
     loader = ModelLoader()
     calls = {}

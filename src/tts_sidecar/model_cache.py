@@ -12,12 +12,10 @@ from typing import Optional
 
 # Alias de modelo expuestos por el CLI → repo de HuggingFace
 MODELS = {
-    "multilingual": "ResembleAI/chatterbox-multilingual",
     "es-mx-latam": "ResembleAI/Chatterbox-Multilingual-es-mx-latam",
     # Modelo inglés base, promovido a entrada de primer nivel (rediseño
     # cross-lingual): mismo repo que BASE_MODEL_REPO, fuente también de
-    # ve.safetensors para es-mx-latam. No se reutiliza el alias "multilingual"
-    # (huérfano: apunta a otro repo, ResembleAI/chatterbox-multilingual).
+    # ve.safetensors para es-mx-latam.
     "en": "ResembleAI/chatterbox",
 }
 
@@ -45,9 +43,7 @@ MODEL_REVISIONS["en"] = BASE_MODEL_REVISION
 # Mapa único de alias/repos al nombre de carpeta en la caché de HuggingFace
 CACHE_NAMES = {
     "es-mx-latam": "models--ResembleAI--Chatterbox-Multilingual-es-mx-latam",
-    "multilingual": "models--ResembleAI--chatterbox-multilingual",
     "ResembleAI/Chatterbox-Multilingual-es-mx-latam": "models--ResembleAI--Chatterbox-Multilingual-es-mx-latam",
-    "ResembleAI/chatterbox-multilingual": "models--ResembleAI--chatterbox-multilingual",
 }
 
 

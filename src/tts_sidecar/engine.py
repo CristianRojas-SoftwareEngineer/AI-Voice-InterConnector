@@ -180,7 +180,7 @@ class ChatterboxEngine:
         El modelo queda cargado en memoria para las llamadas siguientes.
 
         Args:
-            model: Modelo a usar. El CLI solo invoca con "es-mx-latam".
+            model: Modelo a usar. El CLI invoca con "es-mx-latam" o "en".
             compute_backend: Backend de cómputo para la inferencia
                 ("auto", "cpu", "cuda", "mps"). Con "auto" (default), se
                 detecta el mejor disponible.
@@ -205,8 +205,7 @@ class ChatterboxEngine:
         Inicializa el motor TTS de Chatterbox.
 
         Args:
-            model: Modelo a usar. El CLI solo invoca con "es-mx-latam";
-                   "multilingual" (modelo base) se conserva solo como path interno.
+            model: Modelo a usar. El CLI invoca con "es-mx-latam" o "en".
             compute_backend: Backend de cómputo ("auto", "cpu", "cuda", "mps").
                 Con "auto" (default) se detecta el mejor disponible.
             models_dir: Directorio donde cachear los modelos. Default: ~/.cache/huggingface/hub

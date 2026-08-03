@@ -54,7 +54,7 @@ class ModelLoader:
         if "es-mx-latam" in str(cache_dir):
             return self._load_es_latam(cache_dir, compute_backend)
         else:
-            return self._load_multilingual(cache_dir, compute_backend)
+            return self._load_english_base(cache_dir, compute_backend)
 
     def _load_es_latam(self, cache_dir: Path, compute_backend: str):
         """
@@ -142,7 +142,7 @@ class ModelLoader:
         log(f"Modelo cargado: es-MX-Latam (vocab=2454, compute_backend={compute_backend}, builtin_voice={'sí' if conds else 'no'})")
         return tts
 
-    def _load_multilingual(self, cache_dir: Path, compute_backend: str):
-        """Carga el inglés base (path de producción del modelo 'en'); también
-        recibe el alias legacy 'multilingual', sin invocación real del CLI."""
+    def _load_english_base(self, cache_dir: Path, compute_backend: str):
+        """Carga el inglés base (path de producción del modelo 'en'): la rama
+        else del routing, cualquier ruta de caché que no sea es-mx-latam."""
         return ChatterboxTTS.from_local(cache_dir, compute_backend)
