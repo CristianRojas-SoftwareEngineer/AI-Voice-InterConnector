@@ -223,10 +223,28 @@ class TestCmdVoiceClone:
         assert json.loads(capsys.readouterr().out) == {
             "schema_version": SCHEMA_VERSION,
             "name": "newvoice",
-            "reference": "/path/to/timbre-reference.wav",
+            "timbre": "/path/to/timbre-reference.wav",
             "speech": "/path/to/speech-reference.wav",
             "precomputed": True,
         }
+
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=False)
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.voices.clone_voice_files")
+    def test_cmd_voice_clone_text_output_without_timbre_has_no_none(
+        self, mock_register, _cached, _running, capsys
+    ):
+        """Sin timbre, la salida de texto no debe contener la subcadena 'None'."""
+        from tts_sidecar.cli import cmd_voice_clone
+
+        mock_register.return_value = (None, "/path/to/speech-reference.wav")
+
+        with patch("tts_sidecar.engine.ChatterboxEngine") as mock_engine_cls:
+            cmd_voice_clone(MockArgs(name="newvoice", timbre_reference=None, speech_reference="speech.wav"))
+            mock_engine_cls.get_instance.return_value.precompute_voice.assert_called_once_with("newvoice")
+
+        out = capsys.readouterr().out
+        assert "None" not in out
 
 
 class TestCmdVoiceRemove:
@@ -1842,10 +1860,29 @@ class TestWriteCommandsJSON:
         assert payload == {
             "schema_version": SCHEMA_VERSION,
             "name": "nueva",
-            "reference": "/voices/nueva/timbre-reference.wav",
+            "timbre": "/voices/nueva/timbre-reference.wav",
             "speech": "/voices/nueva/speech-reference.wav",
             "precomputed": True,
         }
+
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
+    @patch("tts_sidecar.daemon.DaemonIPCClient")
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.voices.clone_voice_files")
+    def test_voice_clone_json_payload_without_timbre(
+        self, mock_register, _cached, mock_client_cls, _running, capsys
+    ):
+        """Sin timbre, el payload JSON representa la ausencia como null (decisión 4)."""
+        import json
+        from tts_sidecar.cli import cmd_voice_clone
+
+        mock_register.return_value = (None, "/voices/nueva/speech-reference.wav")
+        mock_client_cls.return_value.precompute_voice.return_value = True
+
+        cmd_voice_clone(MockArgs(name="nueva", timbre_reference=None, json=True))
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["timbre"] is None
 
     @patch("tts_sidecar.voices.remove_voice", return_value=True)
     def test_voice_remove_json_payload(self, _removed, capsys):
@@ -2415,6 +2452,19 @@ class TestVoiceAddWithoutComputeBackend:
             main()
         assert exc.value.code == EXIT_INVALID_INPUT
         assert "unrecognized" in capsys.readouterr().err.lower()
+
+
+class TestVoiceCloneParserWithoutTimbre:
+    """voice clone acepta omitir --timbre-reference (timbre opcional, decisión 1)."""
+
+    def test_parser_accepts_missing_timbre_reference(self):
+        from tts_sidecar.cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args([
+            "voice", "clone", "--name", "X", "--speech-reference", "s.wav",
+        ])
+        assert args.timbre_reference is None
 
 
 class TestDescribeProvisionFailure:
@@ -3586,6 +3636,23 @@ class TestCmdSpeechDaemonDispatch:
         monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
 
         args = MockArgs(name="nueva", timbre_reference=str(tmp_path / "t.wav"),
+                        speech_reference=str(tmp_path / "s.wav"), daemon=True)
+        with pytest.raises(CliError) as exc:
+            cmd_voice_clone(args)
+        assert exc.value.code == EXIT_DAEMON_UNREACHABLE
+
+    def test_explicit_daemon_down_exits_5_clone_without_timbre(self, tmp_path, monkeypatch):
+        """--daemon sin daemon activo en voice clone sin timbre → exit 5 también
+        (el despacho no depende de si hay timbre)."""
+        from tts_sidecar.cli import cmd_voice_clone
+        from tts_sidecar.exit_codes import EXIT_DAEMON_UNREACHABLE
+
+        monkeypatch.setattr("tts_sidecar.daemon.is_daemon_running", MagicMock(return_value=False))
+        monkeypatch.setattr("tts_sidecar.voices.clone_voice_files",
+                            MagicMock(return_value=(None, tmp_path / "s.wav")))
+        monkeypatch.setattr("tts_sidecar.model_cache.is_model_cached", MagicMock(return_value=True))
+
+        args = MockArgs(name="nueva", timbre_reference=None,
                         speech_reference=str(tmp_path / "s.wav"), daemon=True)
         with pytest.raises(CliError) as exc:
             cmd_voice_clone(args)

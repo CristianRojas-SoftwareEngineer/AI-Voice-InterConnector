@@ -1,7 +1,7 @@
-"""Tests de la resolución y listado de voces (criterio dual-audio).
+"""Tests de la resolución y listado de voces (habla obligatoria, timbre opcional).
 
-Una voz solo es válida con sus dos archivos: timbre-reference.wav (timbre) y
-speech-reference.wav (conditioning). Cubre _resolve_voice_dir y list_voices con la
+Una voz es válida con solo speech-reference.wav (conditioning); timbre-reference.wav
+(timbre) es opcional. Cubre _resolve_voice_dir y list_voices con la
 precedencia usuario→fábrica sobre directorios temporales.
 """
 
@@ -64,7 +64,7 @@ class TestRegisterVoiceFiles:
         speech.write_bytes(b"RIFF-speech")
         return ref, speech
 
-    def _mock_librosa(self, monkeypatch, fail_on=None):
+    def _mock_librosa(self, monkeypatch, fail_on=None, duration=12.0):
         import types
 
         def fake_load(path, sr=None, duration=None):
@@ -72,8 +72,12 @@ class TestRegisterVoiceFiles:
                 raise RuntimeError("audio ilegible")
             return ([0.0], sr)
 
+        def fake_get_duration(path=None):
+            return duration
+
         monkeypatch.setitem(
-            __import__("sys").modules, "librosa", types.SimpleNamespace(load=fake_load)
+            __import__("sys").modules, "librosa",
+            types.SimpleNamespace(load=fake_load, get_duration=fake_get_duration)
         )
 
     def test_clones_without_engine(self, voice_roots, tmp_path, monkeypatch):
@@ -137,6 +141,43 @@ class TestRegisterVoiceFiles:
         with pytest.raises(ValueError):
             voices.clone_voice_files("v", str(ref), str(speech))
 
+    def test_clones_without_timbre(self, voice_roots, tmp_path, monkeypatch):
+        """Sin timbre, la voz queda registrada solo con el habla."""
+        user_root, _ = voice_roots
+        _, speech = self._audios(tmp_path)
+        self._mock_librosa(monkeypatch)
+
+        ref_path, speech_path = voices.clone_voice_files("solo_habla", None, str(speech))
+
+        assert ref_path is None
+        assert speech_path.endswith("speech-reference.wav")
+        assert not (user_root / "solo_habla" / "timbre-reference.wav").exists()
+
+    def test_reclone_without_timbre_removes_stale_one(self, voice_roots, tmp_path, monkeypatch):
+        """Re-clonar sin timbre sobre una voz que lo tenía elimina el viejo (incondicional a force)."""
+        user_root, _ = voice_roots
+        ref, speech = self._audios(tmp_path)
+        self._mock_librosa(monkeypatch)
+
+        voices.clone_voice_files("mia", str(ref), str(speech))
+        assert (user_root / "mia" / "timbre-reference.wav").exists()
+
+        ref_path, speech_path = voices.clone_voice_files("mia", None, str(speech), force=True)
+
+        assert ref_path is None
+        assert not (user_root / "mia" / "timbre-reference.wav").exists()
+
+    def test_short_speech_is_rejected(self, voice_roots, tmp_path, monkeypatch):
+        """Un habla de menos de 10s no debe copiarse al destino."""
+        user_root, _ = voice_roots
+        ref, speech = self._audios(tmp_path)
+        self._mock_librosa(monkeypatch, duration=5.0)
+
+        with pytest.raises(ValueError, match="10s"):
+            voices.clone_voice_files("corta", str(ref), str(speech))
+
+        assert not (user_root / "corta").exists()
+
 
 class TestResolveVoiceDir:
     def test_complete_voice_resolves(self, voice_roots):
@@ -149,10 +190,11 @@ class TestResolveVoiceDir:
         _make_voice(user_root, "mia", speech=False)
         assert voices._resolve_voice_dir("mia") is None
 
-    def test_speech_only_voice_does_not_resolve(self, voice_roots):
+    def test_speech_only_voice_resolves(self, voice_roots):
+        """Timbre opcional: solo speech-reference.wav basta para resolver la voz."""
         user_root, _ = voice_roots
-        _make_voice(user_root, "mia", reference=False)
-        assert voices._resolve_voice_dir("mia") is None
+        expected = _make_voice(user_root, "mia", reference=False)
+        assert voices._resolve_voice_dir("mia") == str(expected)
 
     def test_user_precedence_over_factory(self, voice_roots):
         user_root, factory_root = voice_roots
@@ -165,6 +207,13 @@ class TestResolveVoiceDir:
         _make_voice(user_root, "default", speech=False)
         expected = _make_voice(factory_root, "default")
         assert voices._resolve_voice_dir("default") == str(expected)
+
+    def test_is_valid_voice_dir_accepts_speech_only(self, voice_roots):
+        """_is_valid_voice_dir (y list_voices) aceptan un directorio sin timbre."""
+        user_root, _ = voice_roots
+        voice = _make_voice(user_root, "solo_habla", reference=False)
+        assert voices._is_valid_voice_dir(str(voice)) is True
+        assert "solo_habla" in voices.list_voices()
 
 
 class TestListVoices:
@@ -320,9 +369,10 @@ def test_voice_paths_of_listed_voice_never_fails(voice_roots):
     user_root, _ = voice_roots
     _make_voice(user_root, "completa")
     _make_voice(user_root, "sin_speech", speech=False)
+    _make_voice(user_root, "sin_timbre", reference=False)
     for name in voices.list_voices():
         ref, speech = voices.voice_paths(name)
-        assert ref.endswith("timbre-reference.wav")
+        assert ref is None or ref.endswith("timbre-reference.wav")
         assert speech.endswith("speech-reference.wav")
 
 

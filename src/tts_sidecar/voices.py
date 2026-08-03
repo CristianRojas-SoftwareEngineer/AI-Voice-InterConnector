@@ -88,11 +88,11 @@ def _is_symlink(path: str) -> bool:
 
 
 def _is_valid_voice_dir(candidate: str) -> bool:
-    """Una voz es válida solo con sus dos audios: timbre-reference.wav (timbre) y
-    speech-reference.wav (conditioning), igual que exige `voice clone`.
+    """Una voz es válida con speech-reference.wav (conditioning), obligatorio;
+    timbre-reference.wav (timbre) es opcional.
 
-    Cualquier componente symlink (el directorio de la voz o sus dos
-    `.wav`) la hace inválida, para que `list_voices` y `voice_paths` coincidan
+    Cualquier componente symlink (el directorio de la voz o los `.wav`
+    presentes) la hace inválida, para que `list_voices` y `voice_paths` coincidan
     en rechazarla — un symlink dentro del registro no puede cargar un `.wav`
     arbitrario del atacante. La defensa en profundidad de escape ya vive en
     `voice_dir` (realpath); aquí se cierra la ventana de symlink a la raíz.
@@ -101,9 +101,14 @@ def _is_valid_voice_dir(candidate: str) -> bool:
         return False
     ref = os.path.join(candidate, "timbre-reference.wav")
     speech = os.path.join(candidate, "speech-reference.wav")
-    if _is_symlink(ref) or _is_symlink(speech):
+    # El chequeo de symlink de `ref` solo importa si existe: un `ref` ausente
+    # no debe alterar el resultado (os.path.islink sobre ruta inexistente ya
+    # devuelve False, pero se deja explícito para no depender de ese detalle).
+    if os.path.exists(ref) and _is_symlink(ref):
         return False
-    return os.path.exists(ref) and os.path.exists(speech)
+    if _is_symlink(speech):
+        return False
+    return os.path.exists(speech)
 
 
 def _resolve_voice_dir(name: str) -> str | None:
@@ -152,30 +157,43 @@ def remove_voice(name: str) -> bool:
 
 def clone_voice_files(
     name: str,
-    timbre_reference: str,
+    timbre_reference: str | None,
     speech_reference: str,
     force: bool = False,
-) -> tuple[str, str]:
+) -> tuple[str | None, str]:
     """Valida y copia los audios de una voz como clon de usuario, SIN el modelo.
 
     Es el núcleo de `voice clone`: validación de carga con librosa (audio ilegible
-    no debe dejar una voz rota que falle recién en la síntesis), colisión de
-    nombres con precedencia usuario→fábrica, y copia de los dos WAV. No importa
+    no debe dejar una voz rota que falle recién en la síntesis), validación de
+    duración mínima del habla (10s), colisión de nombres con precedencia
+    usuario→fábrica, y copia de los WAV. El timbre es opcional: si se omite, el
+    habla cubre también el Voice Encoder y no se copia `timbre-reference.wav`
+    (limpiando el que hubiera quedado de un clonado previo). No importa
     torch ni instancia el motor: la precomputación de conditionals se difiere a la
     primera síntesis con la voz.
 
     Raises:
-        ValueError: si algún audio no es cargable.
+        ValueError: si algún audio no es cargable, o si el habla dura menos de 10s.
         VoiceExistsError: si la voz ya existe (usuario o fábrica) y no se pasó
                     force.
     """
     # Import local: librosa es pesada y solo la necesita este comando.
     import librosa
-    for label, path in (("reference", timbre_reference), ("speech", speech_reference)):
+    audios = [("speech", speech_reference)]
+    if timbre_reference is not None:
+        audios.insert(0, ("timbre", timbre_reference))
+    for label, path in audios:
         try:
             librosa.load(path, sr=24000, duration=1.0)
         except Exception as e:
             raise ValueError(f"El audio de {label} ({path}) no es cargable: {e}")
+
+    duration = librosa.get_duration(path=speech_reference)
+    if duration < 10:
+        raise ValueError(
+            f"El audio de habla ({speech_reference}) dura {duration:.2f}s; "
+            "se requieren al menos 10s."
+        )
 
     # La colisión con una voz existente (usuario o fábrica homónima) exige --force
     if not force and _resolve_voice_dir(name) is not None:
@@ -190,16 +208,22 @@ def clone_voice_files(
         raise ValueError(f"La voz '{name}' apunta a un symlink; no se puede clonar.")
     ref_path = os.path.join(target, "timbre-reference.wav")
     speech_path = os.path.join(target, "speech-reference.wav")
-    shutil.copy2(timbre_reference, ref_path)
+    if timbre_reference is not None:
+        shutil.copy2(timbre_reference, ref_path)
+    elif os.path.exists(ref_path) and not _is_symlink(ref_path):
+        # Limpieza del timbre fantasma: sin timbre nuevo, no debe quedar uno
+        # viejo de un clonado previo (incondicional respecto a force).
+        os.remove(ref_path)
     shutil.copy2(speech_reference, speech_path)
-    return (ref_path, speech_path)
+    return (ref_path if timbre_reference is not None else None, speech_path)
 
 
-def voice_paths(name: str) -> tuple[str, str]:
+def voice_paths(name: str) -> tuple[str | None, str]:
     """
-    Resolver el nombre de una voz a sus rutas de audio (reference, speech).
+    Resolver el nombre de una voz a sus rutas de audio (timbre, speech).
 
-    Busca con precedencia usuario→fábrica y valida la existencia de ambos archivos.
+    Busca con precedencia usuario→fábrica y valida la existencia del habla.
+    El timbre es opcional: si no está presente, se devuelve None en su lugar.
     """
     target = _resolve_voice_dir(name)
     if target is None:
@@ -209,8 +233,6 @@ def voice_paths(name: str) -> tuple[str, str]:
         )
     ref_path = os.path.join(target, "timbre-reference.wav")
     speech_path = os.path.join(target, "speech-reference.wav")
-    if not os.path.exists(ref_path):
-        raise FileNotFoundError(f"Voz '{name}': timbre-reference.wav no encontrado en {ref_path}")
     if not os.path.exists(speech_path):
         raise FileNotFoundError(f"Voz '{name}': speech-reference.wav no encontrado en {speech_path}")
-    return (ref_path, speech_path)
+    return (ref_path if os.path.exists(ref_path) else None, speech_path)

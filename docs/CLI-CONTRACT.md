@@ -105,8 +105,8 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | Capa | Elemento | Nombre |
 |---|---|---|
 | CLI | Grupo de síntesis y gestión de la salida | `speech synthesize/say/play/list/remove` |
-| CLI | Entrada de referencia de timbre de `voice clone` | `--timbre-reference` (`-t`) |
-| CLI | Entrada de referencia de habla de `voice clone` | `--speech-reference` (`-s`) |
+| CLI | Entrada de referencia de timbre de `voice clone` (opcional) | `--timbre-reference` (`-t`) |
+| CLI | Entrada de referencia de habla de `voice clone` (obligatoria, ≥10s) | `--speech-reference` (`-s`) |
 | CLI | Borrado masivo de la salida | `cleanup --synthetic-speech` |
 | Filesystem | Almacén de la salida generada | `data_root()/synthetic-speech/` |
 | Filesystem | Archivos de referencia de una voz | `timbre-reference.wav`, `speech-reference.wav` |
@@ -119,8 +119,8 @@ En disco los dos sentidos quedan separados por nombre y no por posición:
 
 ```
 data_root()/
-  voices/<voz>/timbre-reference.wav     ← entrada aportada
-  voices/<voz>/speech-reference.wav     ← entrada aportada
+  voices/<voz>/timbre-reference.wav     ← entrada aportada (opcional)
+  voices/<voz>/speech-reference.wav     ← entrada aportada (obligatoria)
   synthetic-speech/<voz>/<etiqueta>.wav ← salida generada
 ```
 
@@ -341,7 +341,7 @@ La única interacción entre `--json` y el comportamiento es la regla 2: `--json
 
 `data_root()/synthetic-speech/<voz>/<etiqueta>.wav`, **raíz hermana de `voices/`**.
 
-**Por qué no anidado en `voices/<voz>/synthetic-speech/`**, que sería la opción intuitiva y ahorraría código de borrado: `default` es una voz de **fábrica**, en un directorio empaquetado de solo lectura. Sus locuciones tendrían que ir a un espejo en el registro de usuario: un directorio con `synthetic-speech/` pero sin `timbre-reference.wav` ni `speech-reference.wav`. Ese directorio sería invisible para `list_voices` e indeleble por `voice remove`, porque `_is_valid_voice_dir` es el guard que protege el `rmtree` y exige ambos WAV.
+**Por qué no anidado en `voices/<voz>/synthetic-speech/`**, que sería la opción intuitiva y ahorraría código de borrado: `default` es una voz de **fábrica**, en un directorio empaquetado de solo lectura. Sus locuciones tendrían que ir a un espejo en el registro de usuario: un directorio con `synthetic-speech/` pero sin `timbre-reference.wav` ni `speech-reference.wav`. Ese directorio sería invisible para `list_voices` e indeleble por `voice remove`, porque `_is_valid_voice_dir` es el guard que protege el `rmtree` y exige `speech-reference.wav`.
 
 Coste aceptado de la raíz separada: el arrastre de las locuciones al borrar una voz no es gratis y exige código explícito.
 
@@ -547,10 +547,10 @@ El chequeo de audio degrada a WARN en vez de FAIL, **con la premisa que lo sosti
 
 #### `voice`
 
-- **`voice clone` toma `--timbre-reference/-t` y `--speech-reference/-s`**, y los archivos en disco se llaman `timbre-reference.wav` y `speech-reference.wav`. Internamente el timbre es un solo nombre: `timbre`.
+- **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime), y los archivos en disco se llaman `timbre-reference.wav` y `speech-reference.wav`. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
 - **`voice clone` recibe el despacho al daemon en sus tres modos**, porque precomputa los conditionals de la voz al clonarla y necesita el modelo cargado igual que las dos sub-acciones que sintetizan.
 - **`voice clone` sobre un nombre tomado sin `--force` sale con 6**, y sobre un nombre libre `--force` es un no-op declarado.
-- `_is_valid_voice_dir` reconoce una voz por sus dos WAV de referencia.
+- `_is_valid_voice_dir` reconoce una voz por `speech-reference.wav`; `timbre-reference.wav` es opcional.
 - En `voice list` y `voice remove`, `-n` es `--name`.
 
 ## 12. Contratos externos

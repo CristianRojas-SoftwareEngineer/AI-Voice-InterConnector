@@ -653,14 +653,17 @@ def cmd_voice_clone(args):
         if getattr(args, "json", False):
             emit_json({
                 "name": args.name,
-                "reference": str(ref_path),
+                "timbre": str(ref_path) if ref_path is not None else None,
                 "speech": str(speech_path),
                 "precomputed": precomputed,
             })
             return
 
         print(f"Voz '{args.name}' clonada:")
-        print(f"  timbre (reference): {ref_path}")
+        if ref_path is not None:
+            print(f"  timbre: {ref_path}")
+        else:
+            print("  timbre: (sin muestra propia; el habla cubre también el Voice Encoder)")
         print(f"  habla (conditioning): {speech_path}")
         if precomputed:
             print("  conditionals: precomputados")
@@ -785,7 +788,7 @@ def cmd_voice_list(args):
                 print(f"  - {voice}")
         else:
             print("No hay voces registradas. Ejecuta:")
-            print("  tts-sidecar voice clone --name mi_voz --timbre-reference timbre-reference.wav --speech-reference speech-reference.wav")
+            print("  tts-sidecar voice clone --name mi_voz --speech-reference speech-reference.wav")
 
     except FileNotFoundError as e:
         raise CliError(EXIT_NOT_FOUND, "not_found",
@@ -2109,10 +2112,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     voice_clone = voice_subparsers.add_parser("clone", help="Clona una voz desde dos archivos de audio")
     voice_clone.add_argument("--name", "-n", required=True, help="Nombre de la voz")
-    voice_clone.add_argument("--timbre-reference", "-t", required=True,
-                             help="Archivo de audio de referencia para el timbre (cualquier largo, se usa el audio completo)")
+    voice_clone.add_argument("--timbre-reference", "-t", required=False,
+                             help="Archivo de audio de referencia para el timbre (cualquier largo, se usa el audio completo). "
+                                  "Opcional: si se omite, el habla cubre también el Voice Encoder")
     voice_clone.add_argument("--speech-reference", "-s", required=True,
-                             help="Archivo de audio de habla para el conditioning del T3 (10+ segundos de habla limpia)")
+                             help="Archivo de audio de habla para el conditioning del T3 (10+ segundos de habla limpia; se valida la duración)")
     voice_clone.add_argument("--force", "-f", action="store_true",
                              help="Sobrescribir la voz si ya existe (usuario o fábrica homónima)")
     voice_clone_daemon = voice_clone.add_mutually_exclusive_group()

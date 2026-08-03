@@ -21,7 +21,7 @@ TTS Sidecar es un motor de síntesis de voz (TTS) **100% local** que usa **Chatt
 
 - **Licencia**: GPL-3.0-or-later (código del proyecto); el modelo y las dependencias conservan sus licencias permisivas (MIT/BSD/Apache)
 - **Idiomas**: 23+ incluyendo Español (es)
-- **Clonación**: diseño dual-audio (`timbre-reference.wav` + `speech-reference.wav`, ~10 segundos)
+- **Clonación**: `speech-reference.wav` obligatorio (≥10 segundos); `timbre-reference.wav` opcional para separar timbre y prosodia
 - **Parámetros del modelo**: 500M
 - **Hardware**: CPU, CUDA, MPS (Apple Silicon)
 
@@ -133,7 +133,7 @@ El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings
 | **Licencia** | MIT |
 | **Parámetros** | 500M |
 | **Idiomas** | 23+ (es, en, fr, de, pt, etc.) |
-| **Clonación de voz** | Diseño dual-audio (`timbre-reference.wav` + `speech-reference.wav`, ~10s) |
+| **Clonación de voz** | `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional (dual-audio como optimización de timbre y prosodia por separado) |
 | **Inferencia** | CPU, CUDA, MPS |
 
 ## Flujo de síntesis
@@ -146,8 +146,9 @@ El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings
                     │
                     ▼
 3. ChatterboxTTS.generate(text, language=es,
-       timbre-reference.wav → Voice Encoder (timbre),
-       speech-reference.wav    → T3 conditioning + S3Gen decoder)
+       timbre-reference.wav → Voice Encoder (timbre, opcional),
+       speech-reference.wav    → T3 conditioning + S3Gen decoder
+       (sin timbre-reference.wav, speech-reference.wav cubre también el Voice Encoder))
                     │
                     ▼
 4. El modelo produce audio WAV (24kHz, mono)

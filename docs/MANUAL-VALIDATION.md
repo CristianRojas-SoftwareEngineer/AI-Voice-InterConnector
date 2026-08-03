@@ -92,8 +92,13 @@ tts-sidecar speech say --text "Modo directo." --no-daemon
 tts-sidecar voice list
 tts-sidecar voice list --json
 
-# Registrar una voz de usuario (requiere dos archivos WAV propios)
-tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav
+# Registrar una voz de usuario con una sola muestra (caso base: --speech-reference,
+# ≥10s, es el único obligatorio; el habla cubre también el Voice Encoder)
+tts-sidecar voice clone --name mi_voz --speech-reference habla.wav
+
+# Registrar una voz de usuario con timbre y habla por separado (--timbre-reference
+# es opcional; útil para separar timbre y prosodia)
+tts-sidecar voice clone --name mi_voz_dual --timbre-reference timbre.wav --speech-reference habla.wav
 
 # Verificar que aparece la nueva voz
 tts-sidecar voice list
