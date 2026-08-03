@@ -1738,11 +1738,12 @@ class CleanupResult(NamedTuple):
 
 
 def cmd_cleanup(args):
-    """Desaprovisiona los datos del proyecto: modelo en caché y/o voces de usuario.
+    """Desaprovisiona los datos del proyecto: modelos en caché y/o voces de usuario.
 
     Borrado quirúrgico: solo las carpetas de los dos repos HF del proyecto
-    (model_cache_dirs) y el directorio de voces de usuario; nunca la caché de
-    HuggingFace completa ni datos de otros proyectos.
+    (model_cache_dirs + sus locks huérfanos en model_lock_dirs) y el
+    directorio de voces de usuario; nunca la caché de HuggingFace completa ni
+    datos de otros proyectos.
 
     Devuelve un `CleanupResult` (rutas eliminadas + bandera de cancelación) en
     todos sus caminos, para que el uninstall encadenado pueda distinguir un
@@ -1787,12 +1788,18 @@ def cmd_cleanup(args):
 
     targets = []
     if do_model:
-        from .model_cache import model_cache_dirs
+        from .model_cache import model_cache_dirs, model_lock_dirs
         for p in model_cache_dirs():
             # Defensa en profundidad: solo carpetas de modelos del proyecto.
             if not p.name.startswith("models--ResembleAI--"):
                 raise RuntimeError(f"Ruta inesperada fuera del proyecto: {p}")
             targets.append((p, "modelo"))
+        for p in model_lock_dirs():
+            # Mismo repo, misma defensa: lock huérfano que huggingface_hub
+            # deja en .locks/<repo>/ y no limpia solo tras la descarga.
+            if not p.name.startswith("models--ResembleAI--"):
+                raise RuntimeError(f"Ruta inesperada fuera del proyecto: {p}")
+            targets.append((p, "lock de modelo"))
     if do_voices:
         from . import voices
         targets.append((Path(voices.voices_root()), "voces de usuario"))

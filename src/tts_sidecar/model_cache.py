@@ -264,3 +264,13 @@ def model_cache_dirs() -> list[Path]:
         root / cache_folder_for("es-mx-latam"),
         root / cache_folder_for(BASE_MODEL_REPO),
     ]
+
+
+def model_lock_dirs() -> list[Path]:
+    """Carpetas de lock (existan o no) que huggingface_hub deja en
+    `hub/.locks/<repo>/` junto a cada carpeta de `model_cache_dirs()` durante
+    la descarga y no limpia solas tras completarla. Mismo alcance quirúrgico:
+    únicamente las de los dos repos del proyecto, nunca `.locks` completo.
+    """
+    root = hub_cache_path()
+    return [root / ".locks" / d.name for d in model_cache_dirs()]
