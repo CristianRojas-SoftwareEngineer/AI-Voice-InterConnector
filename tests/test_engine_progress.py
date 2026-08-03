@@ -43,7 +43,7 @@ def _engine_stub(tmp_path):
     return eng
 
 
-class TestSpeakProgressCallback:
+class TestSynthesizeProgressCallback:
     def test_emits_stage_events(self, tmp_path, monkeypatch):
         eng = _engine_stub(tmp_path)
         monkeypatch.setattr(

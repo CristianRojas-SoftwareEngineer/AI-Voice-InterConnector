@@ -89,7 +89,7 @@ def serve(port: int = DEFAULT_PORT, auto_restart: bool = False, max_retries: int
 
                 # El daemon decide el compute backend una sola vez al
                 # arrancar y lo cachea en la instancia del motor: cualquier
-                # speak posterior reutiliza esa decisión. TTS_SIDECAR_COMPUTE_BACKEND
+                # síntesis posterior reutiliza esa decisión. TTS_SIDECAR_COMPUTE_BACKEND
                 # es el override de bajo nivel; con "auto" (o sin la var),
                 # ComputeBackendResolver.resolve() detecta cuda → mps → cpu.
                 compute_backend = ComputeBackendResolver.resolve(

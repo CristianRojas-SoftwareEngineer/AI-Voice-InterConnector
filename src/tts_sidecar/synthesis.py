@@ -56,7 +56,7 @@ class SynthesisOrchestrator:
 
         # Stage 1: Carga de conditionals
         engine._emit_progress(stage="conditionals")
-        with StageTimer("1-Speak", "Etapa 1/4: Cargando conditionals"):
+        with StageTimer("1-Speech", "Etapa 1/4: Cargando conditionals"):
             voice_dir = None
             if speech_reference:
                 voice_dir = os.path.dirname(speech_reference)
@@ -88,12 +88,12 @@ class SynthesisOrchestrator:
 
         # Stage 2: Generación TTS con los parámetros optimizados del engine.
         engine._emit_progress(stage="tts")
-        with StageTimer("2-Speak", "Etapa 2/4: Generando audio (TTS)"):
+        with StageTimer("2-Speech", "Etapa 2/4: Generando audio (TTS)"):
             wav = engine._tts.generate(text, language_id="es", exaggeration=engine.EXAGGERATION)
 
         # Stage 3: Conversión a WAV
         engine._emit_progress(stage="encoding")
-        with StageTimer("3-Speak", "Etapa 3/4: Convirtiendo a WAV"):
+        with StageTimer("3-Speech", "Etapa 3/4: Convirtiendo a WAV"):
             sample_rate = getattr(engine._tts, 'sr', 24000)
             wav_bytes = self.audio_writer.write(wav, sample_rate)
 

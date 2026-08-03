@@ -105,7 +105,7 @@ class TestCorruptConditionals:
         (tmp_path / "conditionals.pt").write_bytes(b"no es un checkpoint")
         assert eng.load_precomputed_conditionals(str(tmp_path)) is False
 
-    def test_speak_recomputes_with_corrupt_conditionals(self, tmp_path, monkeypatch):
+    def test_synthesize_recomputes_with_corrupt_conditionals(self, tmp_path, monkeypatch):
         eng = self._engine_sin_modelo()
         voice = tmp_path / "voz"
         voice.mkdir()
@@ -333,8 +333,8 @@ class TestIsModelCached:
         assert is_model_cached("es-mx-latam") is True
 
     def test_t3_present_without_ve_returns_false(self, tmp_path, monkeypatch):
-        """El Voice Encoder es obligatorio: sin ve.safetensors resoluble, el
-        primer speak dispararía una descarga (fuga de la promesa offline)."""
+        """El Voice Encoder es obligatorio: sin ve.safetensors resoluble,
+        la primera síntesis dispararía una descarga (fuga de la promesa offline)."""
         hub = self._fake_hub(tmp_path, monkeypatch)
         model_dir = hub / ES_MX_FOLDER
         snap = _make_snapshot(model_dir, PINNED_REV)

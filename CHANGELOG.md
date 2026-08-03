@@ -248,7 +248,7 @@ Limpieza post-auditoría: eliminación de `docs/PRODUCTION-READINESS-AUDIT.md` (
 
 ### Corregido
 
-- **`speak --json`** acoplado a
+- **`--json` de la síntesis** acoplado a
   `--output` (el archivo es el canal de datos; `--json` solo emite metadatos a
   stdout), emite `{"schema_version","output","voice","t3_time","s3gen_time","daemon"}`
   a stdout, idéntico campo a campo en modo directo y vía daemon. `--json` sin
@@ -303,7 +303,7 @@ Limpieza post-auditoría: eliminación de `docs/PRODUCTION-READINESS-AUDIT.md` (
 
 - Todos los cambios de contrato anteriores son **aditivos**: `schema_version`
   del CLI y del protocolo NDJSON permanecen en `"1"`. Internamente,
-  `engine.speak()`, `SynthesisOrchestrator.synthesize()` y
+  el método de síntesis de la fachada, `SynthesisOrchestrator.synthesize()` y
   `DaemonIPCClient.synthesize()` ahora retornan un objeto de resultado
   `SynthesisResult` (audio + métricas `t3`/`s3gen`) en vez de `bytes` desnudos,
   unificando la fuente de métricas de ambas rutas de síntesis; y los emisores
@@ -667,14 +667,14 @@ de contrato son aditivos: los códigos de salida existentes no cambian y
   apunta al directorio de voces de usuario implicado en vez de remitir a
   `tts-sidecar setup` (que no resuelve un problema de filesystem); conserva
   exit 3.
-- **`speak --daemon --no-daemon`**: los flags contradictorios producen
+- **`--daemon --no-daemon` en la síntesis**: los flags contradictorios producen
   un error claro en stderr y exit 4 antes de cualquier trabajo, en vez de que
   `--daemon` gane en silencio.
 - **Validación de integridad de los tres checkpoints**: `is_model_cached`
   valida el header safetensors también de `s3gen_v3.safetensors` y
   `ve.safetensors` (antes solo del T3): una descarga truncada de cualquiera se
   reporta como «no cacheado» y `doctor` remite a `setup`, en vez de reventar
-  con un error críptico en el primer `speak`.
+  con un error críptico en la primera síntesis.
 - **Fixture `mock_daemon_client` alineada con el cliente real**: la
   firma de `synthesize` coincide con `DaemonIPCClient.synthesize`
   (`on_progress` en vez de los inexistentes `model`/`compute_backend`).
@@ -726,7 +726,7 @@ estado con el que nace el producto.
   `5` daemon inalcanzable, `130` interrupción (Ctrl+C, sin traceback) —;
   `--json` con `schema_version` en los comandos de lectura (`version`,
   `doctor`, `devices`, `voice list`, `daemon status`).
-- **Progreso real en vivo durante `speak`**: eventos de etapa (conditionals →
+- **Progreso real en vivo durante la síntesis**: eventos de etapa (conditionals →
   T3 → S3Gen → encoding → guardado) y conteo de tokens del T3 alimentan un
   indicador sobre stderr (solo en TTY), en modo directo y daemon.
 - **Modo daemon**: servidor HTTP persistente en loopback (puerto fijo 8765,
@@ -736,16 +736,16 @@ estado con el que nace el producto.
   sandbox de rutas de audio (solo directorios de voces) con degradación
   automática a modo directo o error accionable según el despacho; auto-reinicio
   opcional (`--autorestart`, `--max-retries`).
-- **Validación de entrada en `speak`**: `--text` acotado a 5000 caracteres
+- **Validación de entrada de la síntesis**: `--text` acotado a 5000 caracteres
   (exit 4 en ambas rutas, directa y daemon) con advertencia no bloqueante por
   encima de 2000; `--compute-backend` (`auto`/`cpu`/`cuda`/`mps`) con aviso
   cuando el daemon lo ignora; `--output` crea los directorios padres.
 - **Ciclo de vida de provisión completo**: `setup` idempotente (chequeos de
   entorno + descarga ligera vía `snapshot_download`, sin cargar el modelo en
-  RAM; incluye `ve.safetensors` para que ningún `speak` posterior necesite
+  RAM; incluye `ve.safetensors` para que ninguna síntesis posterior necesite
   red), pre-chequeo de espacio en disco, `--force-update` para re-descarga
   limpia, e integración de PATH en Linux/AppImage (`--remove-path` la
-  revierte); `speak`/`daemon start` fallan rápido remitiendo a `setup` sin
+  revierte); la síntesis/`daemon start` fallan rápido remitiendo a `setup` sin
   descargas silenciosas; `cleanup` desaprovisiona quirúrgicamente
   (`--model`/`--voices`/`--all`/`--dry-run`, confirmación interactiva, `--yes`
   y EOF tratado como cancelación limpia para uso programático).

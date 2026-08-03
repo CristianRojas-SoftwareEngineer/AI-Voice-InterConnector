@@ -2,7 +2,7 @@
 Detección de modelos en la caché de HuggingFace, libre de dependencias de ML.
 
 Este módulo NO importa torch ni chatterbox: los comandos que solo necesitan
-saber si el modelo está descargado (speak vía daemon, doctor, setup) lo usan
+saber si el modelo está descargado (síntesis vía daemon, doctor, setup) lo usan
 sin pagar los segundos de arranque en frío de engine.py.
 """
 
@@ -131,7 +131,7 @@ def is_ve_cached(lang_snapshot: Optional[Path] = None) -> bool:
     """
     # existencia + validación de header, igual que los otros checkpoints;
     # un ve.safetensors truncado por una descarga a medias pasaba el .exists()
-    # y reventaba con un error críptico en el primer speak.
+    # y reventaba con un error críptico en la primera síntesis.
     if lang_snapshot is not None:
         ve = lang_snapshot / "ve.safetensors"
         if ve.exists() and _safetensors_header_ok(ve):
@@ -174,7 +174,7 @@ def is_model_cached(model: str = "es-mx-latam") -> bool:
         return False
 
     # es-mx-latam exige el checkpoint del language-pack más el Voice Encoder
-    # (ve.safetensors, compartido con el modelo base): sin él, el primer speak
+    # (ve.safetensors, compartido con el modelo base): sin él, la primera síntesis
     # dispararía una descarga, rompiendo la promesa «100 % offline tras setup».
     # Además se valida la integridad del header safetensors: un .pt/.st
     # truncado por una descarga a medias pasa el .exists() pero revienta al

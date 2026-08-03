@@ -265,7 +265,7 @@ class TestVoiceMessages:
         assert "no encontrada" not in err
 
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
-    def test_speak_does_not_refer_to_setup_if_user_audio_missing(self, _cached):
+    def test_speech_say_does_not_refer_to_setup_if_user_audio_missing(self, _cached):
         from tts_sidecar.cli import cmd_speech_say
         from tts_sidecar.exit_codes import EXIT_NOT_FOUND
 
@@ -335,7 +335,7 @@ class TestCmdVersion:
         }
 
 
-class TestCmdSpeakDaemonDispatch:
+class TestCmdSpeechSayDaemonDispatch:
     """Las tres ramas del despacho daemon/auto/directo."""
 
     def _args(self, **kw):
@@ -426,7 +426,7 @@ class TestCmdSpeakDaemonDispatch:
         engine.synthesize.assert_called_once()
 
 
-class TestCmdSpeakLiveProgress:
+class TestCmdSpeechLiveProgress:
     """El progreso se cablea desde la fuente de eventos hasta el Spinner en
     ambos modos: on_progress (daemon) y progress_callback (directo)."""
 
@@ -478,11 +478,11 @@ class TestCmdSpeakLiveProgress:
         progress_callback({"event": "progress", "stage": "s3gen"})
 
 
-class TestCmdSpeak:
+class TestCmdSpeech:
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.audio.AudioPlayer")
     @patch("tts_sidecar.engine.ChatterboxEngine")
-    def test_cmd_speak_plays_without_output(self, mock_engine_cls, mock_player_cls, mock_cached):
+    def test_cmd_speech_plays_without_output(self, mock_engine_cls, mock_player_cls, mock_cached):
         from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
@@ -1647,7 +1647,7 @@ class TestSetupUninstall:
         popen.assert_not_called()
 
 
-class TestSpeakJSON:
+class TestSpeechJSON:
     """speech say --json emite solo la voz efectiva a stdout (§2.10), idéntico
     en ruta directa y vía daemon."""
 
@@ -2031,7 +2031,7 @@ class TestJsonChannelSingleObjectViaMain:
         assert "action" not in payload
 
 
-class TestCmdSpeakEmptyText:
+class TestCmdSpeechEmptyText:
     def test_empty_text_is_rejected(self, capsys):
         from tts_sidecar.cli import cmd_speech_say
 
@@ -2115,7 +2115,7 @@ class TestSchemaVersionJSON:
         assert payload["running"] is False
 
 
-# Comandos --json cubiertos por tests dedicados (TestSpeakJSON, TestDaemonVerbsJSON,
+# Comandos --json cubiertos por tests dedicados (TestSpeechJSON, TestDaemonVerbsJSON,
 # TestWriteCommandsJSON, TestSchemaVersionJSON). Es la única lista mantenida a mano
 # de este contrato: TestJSONContractStructure la compara contra lo que el propio
 # parser declara, así que un comando --json nuevo sin añadir aquí (o viceversa)
@@ -2216,7 +2216,7 @@ class TestJSONContractStructure:
             assert action in nested.choices
 
 
-class TestSpeakLongText:
+class TestSpeechLongText:
     """Un texto muy largo emite una advertencia (no bloqueante) a stderr."""
 
     def test_long_text_warns_and_continues(self, capsys):

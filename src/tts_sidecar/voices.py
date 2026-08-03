@@ -161,8 +161,8 @@ def clone_voice_files(
     Es el núcleo de `voice clone`: validación de carga con librosa (audio ilegible
     no debe dejar una voz rota que falle recién en la síntesis), colisión de
     nombres con precedencia usuario→fábrica, y copia de los dos WAV. No importa
-    torch ni instancia el motor: la precomputación de conditionals se difiere al
-    primer `speak` con la voz.
+    torch ni instancia el motor: la precomputación de conditionals se difiere a la
+    primera síntesis con la voz.
 
     Raises:
         ValueError: si algún audio no es cargable.
