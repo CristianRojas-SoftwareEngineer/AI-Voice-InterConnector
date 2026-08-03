@@ -1,10 +1,10 @@
 """
 Orquestación del flujo de síntesis.
 
-`SynthesisOrchestrator` es dueño del flujo `speak` y del ciclo de vida de
+`SynthesisOrchestrator` es dueño del flujo `synthesize` y del ciclo de vida de
 `engine._active_progress_cb`, sacando la orquestación stateful del God object
 `ChatterboxEngine` (que queda como façade / composition root). Replica el cuerpo
-de `ChatterboxEngine._speak_impl`, leyendo el estado del engine y delegando a los
+de `ChatterboxEngine.synthesize`, leyendo el estado del engine y delegando a los
 colaboradores `conditionals_prep` y `audio_writer`.
 """
 

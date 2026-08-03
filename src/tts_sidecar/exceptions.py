@@ -13,5 +13,5 @@ class SynthesisCancelled(Exception):
     ``/synthesize``) al detectar que el cliente se desconectó, y el engine la
     deja propagar desde ``_emit_progress`` / ``_token_counting_iter`` en vez de
     tragarla como las demás excepciones del callback (best-effort). Así el
-    worker puede abortar ``engine.speak()`` en el próximo punto cooperativo.
+    worker puede abortar ``engine.synthesize()`` en el próximo punto cooperativo.
     """

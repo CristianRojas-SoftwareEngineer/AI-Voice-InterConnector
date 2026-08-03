@@ -94,7 +94,7 @@ async def health_check(state: DaemonState = Depends(get_daemon_state)):
     )
 
 
-# Serializa la síntesis completa (preparación de conds + generate): engine.speak
+# Serializa la síntesis completa (preparación de conds + generate): engine.synthesize
 # muta estado global del modelo (tts.conds) y dos peticiones concurrentes
 # cruzarían voces.
 _synthesis_lock = threading.Lock()
@@ -150,12 +150,12 @@ def synthesize(
         SENTINEL = object()
         # Evento de cancelación cooperativa ligado al estado de la conexión del
         # cliente: el generador lo setea al detectar la desconexión y el
-        # push del worker lo consulta para abortar engine.speak().
+        # push del worker lo consulta para abortar engine.synthesize().
         cancel_event = threading.Event()
 
         def worker():
             try:
-                # La síntesis sigue serializada (una a la vez): engine.speak muta
+                # La síntesis sigue serializada (una a la vez): engine.synthesize muta
                 # estado global del modelo (tts.conds) y dos síntesis concurrentes
                 # cruzarían voces. /health responde igual (endpoint aparte).
                 with _synthesis_lock:
@@ -167,14 +167,14 @@ def synthesize(
                         q.put(("progress", ev))
 
                     ref_path, speech_path = voices.voice_paths(req.voice)
-                    result = engine.speak(
+                    result = engine.synthesize(
                         text=req.text,
                         timbre_reference=ref_path,
                         speech_reference=speech_path,
                         verbose=True,
                         progress_callback=push,
                     )
-                    # engine.speak devuelve un SynthesisResult (audio + métricas
+                    # engine.synthesize devuelve un SynthesisResult (audio + métricas
                     # tipadas), no un dict suelto leído por convención de claves.
                     q.put((
                         "result",

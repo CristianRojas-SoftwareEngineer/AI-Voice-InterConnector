@@ -1,6 +1,6 @@
 """Tests para SynthesisOrchestrator.
 
-Validan el flujo extraído de `ChatterboxEngine._speak_impl`: emisión de etapas,
+Validan el flujo extraído de `ChatterboxEngine.synthesize`: emisión de etapas,
 ciclo de vida de `_active_progress_cb` (limpieza en finally,
 un callback roto no aborta), memoización de conditionals por mtime y recomputo
 ante un `conditionals.pt` corrupto. Usan dobles ligeros del motor (sin cargar el

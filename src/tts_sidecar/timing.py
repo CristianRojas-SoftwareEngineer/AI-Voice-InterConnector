@@ -35,7 +35,7 @@ class SynthesisMetrics:
 class SynthesisResult:
     """Resultado de una síntesis: audio + métricas, en un único objeto.
 
-    Reemplaza el retorno `bytes` desnudo de `engine.speak()` /
+    Reemplaza el retorno `bytes` desnudo de `engine.synthesize()` /
     `SynthesisOrchestrator.synthesize()` / `DaemonIPCClient.synthesize()`: antes
     las métricas (`SynthesisMetrics`) solo existían como texto de log a stderr y
     el llamador no tenía forma programática de leerlas. Con este objeto, ambas

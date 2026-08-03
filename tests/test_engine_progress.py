@@ -1,7 +1,7 @@
 """Tests del progreso de síntesis del motor (Fase 2).
 
 Cubren:
-  - speak(progress_callback=...) emite los eventos de etapa esperados.
+  - synthesize(progress_callback=...) emite los eventos de etapa esperados.
   - El shim de conteo de tokens (_token_counting_iter) reporta iteraciones con
     throttle sobre un iterable falso, sin romper la iteración.
 """
@@ -35,7 +35,7 @@ def _engine_stub(tmp_path):
             return [0.0]
 
     eng._tts = FakeTTS()
-    # speak() delega en el orquestador; lo cableamos igual que __init__.
+    # synthesize() delega en el orquestador; lo cableamos igual que __init__.
     eng._audio_writer = AudioWriter()
     eng._orchestrator = SynthesisOrchestrator(
         eng, eng._conditionals_prep, eng._audio_writer
@@ -56,7 +56,7 @@ class TestSpeakProgressCallback:
         speech.write_bytes(b"RIFF")
 
         events = []
-        eng.speak(
+        eng.synthesize(
             "hola",
             speech_reference=str(speech),
             progress_callback=lambda ev: events.append(ev),
@@ -64,7 +64,7 @@ class TestSpeakProgressCallback:
 
         stages = [ev["stage"] for ev in events]
         # generate() de FakeTTS no pasa por los wrappers timed_t3/timed_s3gen,
-        # así que aquí verificamos las etapas emitidas directamente por speak().
+        # así que aquí verificamos las etapas emitidas directamente por synthesize().
         assert stages == ["conditionals", "tts", "encoding"]
         assert all(ev["event"] == "progress" for ev in events)
 
@@ -78,7 +78,7 @@ class TestSpeakProgressCallback:
         speech = tmp_path / "speech-reference.wav"
         speech.write_bytes(b"RIFF")
 
-        eng.speak("hola", speech_reference=str(speech), progress_callback=lambda ev: None)
+        eng.synthesize("hola", speech_reference=str(speech), progress_callback=lambda ev: None)
         assert eng._active_progress_cb is None
 
     def test_callback_exception_does_not_break_synthesis(self, tmp_path, monkeypatch):
@@ -94,7 +94,7 @@ class TestSpeakProgressCallback:
         def boom(ev):
             raise RuntimeError("callback roto")
 
-        assert eng.speak("hola", speech_reference=str(speech), progress_callback=boom).audio_bytes == b"RIFF"
+        assert eng.synthesize("hola", speech_reference=str(speech), progress_callback=boom).audio_bytes == b"RIFF"
 
 
 class TestTokenCountingIter:

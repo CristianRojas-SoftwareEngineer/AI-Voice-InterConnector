@@ -91,7 +91,7 @@ class TestCorruptConditionals:
         # Tras la extracción de ConditionalsPreparer, el engine delega la
         # carga de conditionals a este colaborador; lo inyectamos igual que __init__.
         eng._conditionals_prep = ConditionalsPreparer()
-        # El flujo de síntesis vive en el orquestador; el engine.speak es
+        # El flujo de síntesis vive en el orquestador; el engine.synthesize es
         # un façade que delega en él. Lo cableamos igual que __init__.
         eng._audio_writer = AudioWriter()
         eng._orchestrator = SynthesisOrchestrator(
@@ -129,8 +129,8 @@ class TestCorruptConditionals:
             lambda audio_data, sample_rate: b"RIFF",
         )
 
-        assert eng.speak("hola", speech_reference=str(speech)).audio_bytes == b"RIFF"
-        assert recomputos, "speak debe recomputar los conditionals cuando el .pt es corrupto"
+        assert eng.synthesize("hola", speech_reference=str(speech)).audio_bytes == b"RIFF"
+        assert recomputos, "synthesize debe recomputar los conditionals cuando el .pt es corrupto"
 
 
 class TestUnifiedParameters:
@@ -185,7 +185,7 @@ class TestUnifiedParameters:
         speech.write_bytes(b"RIFF")
         eng._conditionals_prep.compute = lambda *a, **kw: None
 
-        eng.speak("hola", speech_reference=str(speech))
+        eng.synthesize("hola", speech_reference=str(speech))
 
         assert eng._tts.last_generate_kwargs["exaggeration"] == ChatterboxEngine.EXAGGERATION
 
@@ -215,14 +215,14 @@ class TestUnifiedParameters:
 
         eng.load_precomputed_conditionals = fake_load
 
-        eng.speak("hola", speech_reference=str(speech))
-        eng.speak("hola otra vez", speech_reference=str(speech))
+        eng.synthesize("hola", speech_reference=str(speech))
+        eng.synthesize("hola otra vez", speech_reference=str(speech))
         assert len(loads) == 1, "la segunda síntesis de la misma voz no debe releer disco"
 
         # Un conditionals.pt regenerado (mtime nuevo) invalida la memoización
         mtime = os.path.getmtime(conds) + 10
         os.utime(conds, (mtime, mtime))
-        eng.speak("hola de nuevo", speech_reference=str(speech))
+        eng.synthesize("hola de nuevo", speech_reference=str(speech))
         assert len(loads) == 2
 
 

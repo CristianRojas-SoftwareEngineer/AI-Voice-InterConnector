@@ -155,7 +155,7 @@ class ChatterboxEngine:
     # el valor neutro del modelo base; no es un default de Chatterbox a heredar.
     EMOTION_ADV = 0.5
 
-    # Caché a nivel de clase para los modelos cargados (evita recargar en cada speak)
+    # Caché a nivel de clase para los modelos cargados (evita recargar en cada synthesize)
     _cache: dict[str, "ChatterboxEngine"] = {}
     _cache_lock = threading.Lock()
 
@@ -220,7 +220,7 @@ class ChatterboxEngine:
         # (voice_dir, mtime de conditionals.pt) de la última carga exitosa.
         self._conds_cache_key = None
 
-        # Callback de progreso activo por síntesis (Fase 2): speak() lo fija al
+        # Callback de progreso activo por síntesis (Fase 2): synthesize() lo fija al
         # entrar y lo limpia en finally. El shim de tokens del T3 y los wrappers
         # timed_t3/timed_s3gen lo consultan para emitir eventos de sub-etapa.
         # La síntesis está serializada (una a la vez) por el llamador —el daemon
@@ -232,7 +232,7 @@ class ChatterboxEngine:
         self._apply_synthesis_optimizations()
 
         # Colaboradores de síntesis: el orquestador es dueño del flujo
-        # speak y del ciclo de vida de _active_progress_cb; el engine queda como
+        # synthesize y del ciclo de vida de _active_progress_cb; el engine queda como
         # façade / composition root que posee el modelo y los colaboradores.
         self._audio_writer = AudioWriter()
         self._orchestrator = SynthesisOrchestrator(
@@ -441,7 +441,7 @@ class ChatterboxEngine:
         """
         return self._model_loader.load(cache_dir, model_name, compute_backend)
 
-    def speak(
+    def synthesize(
         self,
         text: str,
         timbre_reference: Optional[str] = None,

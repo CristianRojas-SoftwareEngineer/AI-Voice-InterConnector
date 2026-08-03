@@ -301,7 +301,7 @@ def _dispatch_synthesis(args, voice_name: str):
     with Spinner("Cargando modelo…") as _sp:
         engine = ChatterboxEngine.get_instance(compute_backend=args.compute_backend)
         _sp.update("Sintetizando voz…")
-        result = engine.speak(
+        result = engine.synthesize(
             text=args.text,
             timbre_reference=timbre_reference,
             speech_reference=speech_reference,

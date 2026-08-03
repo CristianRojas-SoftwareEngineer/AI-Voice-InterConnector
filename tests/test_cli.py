@@ -28,7 +28,7 @@ def _make_wav(name):
 
 
 def _synth_result(audio_bytes=b"RIFF", t3=0.0, s3gen=0.0):
-    """Fixture de `SynthesisResult`, el retorno real de engine.speak()/client.synthesize()."""
+    """Fixture de `SynthesisResult`, el retorno real de engine.synthesize()/client.synthesize()."""
     from tts_sidecar.timing import SynthesisMetrics, SynthesisResult
     return SynthesisResult(audio_bytes=audio_bytes, metrics=SynthesisMetrics(t3=t3, s3gen=s3gen))
 
@@ -367,13 +367,13 @@ class TestCmdSpeakDaemonDispatch:
         from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
-        engine.speak.return_value = _synth_result()
+        engine.synthesize.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
         cmd_speech_say(self._args())
 
         mock_running.assert_called_once()
-        engine.speak.assert_called_once()
+        engine.synthesize.assert_called_once()
 
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.daemon.DaemonIPCClient")
@@ -417,13 +417,13 @@ class TestCmdSpeakDaemonDispatch:
         from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
-        engine.speak.return_value = _synth_result()
+        engine.synthesize.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
         cmd_speech_say(self._args(no_daemon=True))
 
         mock_running.assert_not_called()
-        engine.speak.assert_called_once()
+        engine.synthesize.assert_called_once()
 
 
 class TestCmdSpeakLiveProgress:
@@ -467,12 +467,12 @@ class TestCmdSpeakLiveProgress:
         from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
-        engine.speak.return_value = _synth_result()
+        engine.synthesize.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
         cmd_speech_say(self._args(no_daemon=True))
 
-        _, kwargs = engine.speak.call_args
+        _, kwargs = engine.synthesize.call_args
         progress_callback = kwargs.get("progress_callback")
         assert callable(progress_callback), "el modo directo debe cablear progress_callback"
         progress_callback({"event": "progress", "stage": "s3gen"})
@@ -486,7 +486,7 @@ class TestCmdSpeak:
         from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
-        engine.speak.return_value = _synth_result()
+        engine.synthesize.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
         player = MagicMock()
         mock_player_cls.return_value = player
@@ -1667,7 +1667,7 @@ class TestSpeakJSON:
 
         mock_voice_paths.return_value = (_make_wav("v.wav"), _make_wav("s.wav"))
         engine = MagicMock()
-        engine.speak.return_value = _synth_result(t3=1.5, s3gen=2.5)
+        engine.synthesize.return_value = _synth_result(t3=1.5, s3gen=2.5)
         mock_engine_cls.get_instance.return_value = engine
 
         cmd_speech_say(self._args(
@@ -1708,7 +1708,7 @@ class TestSpeakJSON:
         from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
-        engine.speak.return_value = _synth_result()
+        engine.synthesize.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
         cmd_speech_say(self._args(no_daemon=True, json=False))

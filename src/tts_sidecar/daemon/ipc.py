@@ -99,10 +99,10 @@ class DaemonIPCClient:
 
         Args:
             on_progress: Callback opcional invocado con el dict de cada evento
-                `progress` del stream (mismo contrato que engine.speak).
+                `progress` del stream (mismo contrato que engine.synthesize).
 
         Devuelve un `SynthesisResult` (audio decodificado del frame `result` +
-        métricas t3/s3gen), la misma forma que devuelve `engine.speak()` en modo
+        métricas t3/s3gen), la misma forma que devuelve `engine.synthesize()` en modo
         directo.
 
         Raises:

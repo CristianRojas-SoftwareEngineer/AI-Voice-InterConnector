@@ -24,7 +24,7 @@ class TestServerConcurrency:
         release = threading.Event()
 
         class SlowEngine:
-            def speak(self, **kwargs):
+            def synthesize(self, **kwargs):
                 started.set()
                 assert release.wait(timeout=10), "la síntesis nunca fue liberada"
                 return SynthesisResult(
@@ -76,7 +76,7 @@ class TestServerAdmissionControl:
         release = threading.Event()
 
         class SlowEngine:
-            def speak(self, **kwargs):
+            def synthesize(self, **kwargs):
                 started.set()
                 assert release.wait(timeout=10), "la síntesis nunca fue liberada"
                 return SynthesisResult(
@@ -130,7 +130,7 @@ class TestServerAdmissionControl:
         monkeypatch.setattr(server, "_admission_semaphore", threading.BoundedSemaphore(1))
 
         class FakeEngine:
-            def speak(self, **kwargs):
+            def synthesize(self, **kwargs):
                 return SynthesisResult(
                     audio_bytes=b"RIFF" + b"\x00" * 40, metrics=SynthesisMetrics()
                 )
@@ -162,7 +162,7 @@ class TestServerAdmissionControl:
         release = threading.Event()
 
         class SlowEngine:
-            def speak(self, **kwargs):
+            def synthesize(self, **kwargs):
                 started.set()
                 assert release.wait(timeout=10), "la síntesis nunca fue liberada"
                 return SynthesisResult(
@@ -653,7 +653,7 @@ class TestSynthesizeStreaming:
         audio = b"RIFF" + b"\x00" * 40
 
         class FakeEngine:
-            def speak(self, progress_callback=None, **kwargs):
+            def synthesize(self, progress_callback=None, **kwargs):
                 progress_callback({"event": "progress", "stage": "conditionals"})
                 progress_callback({"event": "progress", "stage": "t3", "tokens": 10})
                 return SynthesisResult(
@@ -687,7 +687,7 @@ class TestSynthesizeStreaming:
         wav = self._allowed_wav(tmp_path, monkeypatch)
 
         class FakeEngine:
-            def speak(self, progress_callback=None, **kwargs):
+            def synthesize(self, progress_callback=None, **kwargs):
                 raise RuntimeError("boom interno con /ruta/secreta")
 
         old_engine = server.app.state.daemon.engine
@@ -1136,7 +1136,7 @@ class TestSynthesisCancellation:
         monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
 
         class FakeEngine:
-            def speak(self, progress_callback=None, **kwargs):
+            def synthesize(self, progress_callback=None, **kwargs):
                 progress_callback({"event": "progress", "stage": "conditionals"})
                 progress_callback({"event": "progress", "stage": "t3", "tokens": 5})
                 # El cliente se fue: señal cooperativa de cancelación.
@@ -1177,7 +1177,7 @@ class TestSynthesisCancellation:
         audio = b"RIFF" + b"\x00" * 40
 
         class FakeEngine:
-            def speak(self, progress_callback=None, **kwargs):
+            def synthesize(self, progress_callback=None, **kwargs):
                 progress_callback({"event": "progress", "stage": "conditionals"})
                 return SynthesisResult(
                     audio_bytes=audio, metrics=SynthesisMetrics(t3=1.0, s3gen=2.0)
@@ -1228,7 +1228,7 @@ class TestSynthesisCancellation:
         class FakeEngine:
             counter = 0
 
-            def speak(self, progress_callback=None, **kwargs):
+            def synthesize(self, progress_callback=None, **kwargs):
                 # Bucle largo: cada iteración notifica progreso (y cede) para dar
                 # al cliente tiempo de desconectarse. push aborta vía
                 # SynthesisCancelled cuando cancel_event se activa.
@@ -1297,7 +1297,7 @@ class TestDaemonMemoryClear:
         mock_clear = MagicMock()
 
         class FakeEngine:
-            def speak(self, **kwargs):
+            def synthesize(self, **kwargs):
                 return SynthesisResult(
                     audio_bytes=b"RIFF" + b"\x00" * 40, metrics=SynthesisMetrics()
                 )
