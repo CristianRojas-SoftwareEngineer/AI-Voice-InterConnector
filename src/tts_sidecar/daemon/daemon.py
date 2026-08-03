@@ -57,7 +57,8 @@ class DaemonManager:
         lock vigente y no arranca—. El mismo archivo persiste el PID del daemon
         (registro autoritativo que desambigua un proceso huérfano o zombie sin
         depender del escaneo por cmdline). Los locks obsoletos —PID muerto o
-        ajeno, o un arranque abortado— se reclaman al validarlos con psutil.
+        ajeno, un arranque abortado, o un daemon colgado cuyo arranque superó el
+        timeout sin abrir el puerto— se reclaman al validarlos con psutil.
         """
         # Si ya está corriendo no hay nada que hacer
         if self.is_running():
@@ -167,17 +168,21 @@ class DaemonManager:
             # puerto ven al daemon; reportar «no está corriendo» sería un éxito
             # falso.
             #
-            # El pidfile es la fuente autoritativa. Si registra un PID
-            # vivo del daemon, es un arranque en curso: se avisa y se devuelve
-            # False (exit 5) sin matar el proceso. Si el PID está muerto/ajeno,
-            # es un pidfile obsoleto (zombie): se limpia y se reporta que no
-            # está corriendo, en lugar de dejarlo en un exit 5 perpetuo. Solo si
-            # no hay pidfile se cae al escaneo por cmdline (comportamiento previo).
+            # El pidfile es la fuente autoritativa. Si registra un PID vivo del
+            # daemon dentro de la ventana de arranque, es un arranque en curso:
+            # se avisa y se devuelve False (exit 5) sin matar el proceso. Si esa
+            # ventana ya expiró, el proceso está colgado (nunca abrió el puerto):
+            # se termina y se limpia el pidfile, en vez de un exit 5 perpetuo. Si
+            # el PID está muerto/ajeno, es un pidfile obsoleto (zombie): se limpia
+            # igual. Solo si no hay pidfile se cae al escaneo por cmdline
+            # (comportamiento previo).
             pid = self._read_pid()
             if pid is not None:
                 if self._pid_alive_daemon(pid):
-                    self._print_starting_notice(pid)
-                    return False
+                    if self._within_start_window(self._pidfile()):
+                        self._print_starting_notice(pid)
+                        return False
+                    self._kill_pid(pid)
                 self._clear_pidfile()
                 print("Daemon no está corriendo", file=sys.stderr)
                 return True
@@ -413,10 +418,27 @@ class DaemonManager:
                 return False
         return False
 
+    def _within_start_window(self, path: str) -> bool:
+        """True si el intento de arranque registrado en `path` sigue dentro de
+        la ventana START_TIMEOUT: un arranque en curso legítimo, no un cuelgue.
+
+        Usa el mtime del pidfile como marca del inicio del intento (lo actualiza
+        `_write_pid` al persistir el PID del subproceso). Si el mtime no puede
+        leerse, se asume conservadoramente que el arranque sigue en curso, para
+        no terminar un proceso cuya antigüedad no se pudo determinar.
+        """
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except OSError:
+            return True
+        return age < self.START_TIMEOUT
+
     def _reclaim_if_stale(self, path: str) -> bool:
         """Elimina el pidfile si está obsoleto. True si lo reclamó.
 
-        Con un PID vivo del daemon, el lock está vigente y no se toca. Con un
+        Con un PID vivo del daemon, el lock está vigente mientras el arranque
+        siga dentro de la ventana START_TIMEOUT; superada, el proceso está
+        colgado (nunca abrió el puerto): se termina y se reclama el lock. Con un
         PID muerto/ajeno se reclama. Un archivo vacío/ilegible se considera un
         arranque en curso, salvo que su antigüedad supere el timeout de arranque
         (arranque abortado antes de escribir el PID).
@@ -424,14 +446,14 @@ class DaemonManager:
         pid = self._read_pid()
         if pid is not None:
             if self._pid_alive_daemon(pid):
-                return False
-        else:
-            try:
-                age = time.time() - os.path.getmtime(path)
-            except OSError:
-                return False
-            if age < self.START_TIMEOUT:
-                return False
+                if self._within_start_window(path):
+                    return False
+                # Daemon colgado: se termina antes de reclamar el lock para no
+                # dejarlo huérfano compitiendo por el puerto en un arranque
+                # futuro.
+                self._kill_pid(pid)
+        elif self._within_start_window(path):
+            return False
         try:
             os.unlink(path)
             return True

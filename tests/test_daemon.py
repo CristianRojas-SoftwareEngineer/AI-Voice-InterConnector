@@ -965,6 +965,23 @@ class TestDaemonStartLock:
 
         assert manager._acquire_start_lock() is False
 
+    def test_acquire_reclaims_hung_daemon(self, tmp_path):
+        """PID vivo del daemon pero con el arranque expirado (nunca abrió el
+        puerto): se termina el proceso colgado y se reclama el lock."""
+        manager, pidfile = self._manager(tmp_path)
+        pidfile.write_text("4321", encoding="utf-8")
+        old = time.time() - (manager.START_TIMEOUT + 60)
+        os.utime(str(pidfile), (old, old))
+        manager._pid_alive_daemon = staticmethod(lambda pid: True)
+        killed = []
+        manager._kill_pid = lambda pid: killed.append(pid)
+
+        assert manager._acquire_start_lock() is True
+        # El daemon colgado se terminó antes de reclamar el lock.
+        assert killed == [4321]
+        # Reclamado y recreado vacío por el segundo open.
+        assert pidfile.read_text(encoding="utf-8") == ""
+
     def test_start_does_not_launch_when_lock_held(self, tmp_path):
         manager, _ = self._manager(tmp_path)
         manager.is_running = lambda: False
@@ -1021,6 +1038,22 @@ class TestStopWithPidfile:
         assert manager.stop() is True
         assert "no está corriendo" in capsys.readouterr().err
         # El pidfile obsoleto (zombie) se limpia.
+        assert not pidfile.exists()
+
+    def test_hung_daemon_in_pidfile_is_killed_and_reports_not_running(self, tmp_path, capsys):
+        manager, pidfile = self._offline(tmp_path)
+        pidfile.write_text("4321", encoding="utf-8")
+        old = time.time() - (manager.START_TIMEOUT + 60)
+        os.utime(str(pidfile), (old, old))
+        manager._pid_alive_daemon = staticmethod(lambda pid: True)
+        killed = []
+        manager._kill_pid = lambda pid: killed.append(pid)
+
+        assert manager.stop() is True
+        # El daemon colgado (arranque expirado) se termina, no se deja en exit 5.
+        assert killed == [4321]
+        assert "no está corriendo" in capsys.readouterr().err
+        # El pidfile del daemon colgado se limpia.
         assert not pidfile.exists()
 
 
