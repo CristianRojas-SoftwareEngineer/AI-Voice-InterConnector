@@ -1908,6 +1908,12 @@ class TestWriteCommandsJSON:
         voices = tmp_path / "voices"
         (voices / "mi_voz").mkdir(parents=True)
         monkeypatch.setattr("tts_sidecar.voices.voices_root", lambda: str(voices))
+        # Aísla el almacén de habla sintética: sin este patch, `store_root()`
+        # resuelve a la ruta real del usuario (data_root()/synthetic-speech) y
+        # `cleanup --all --yes` borraría datos reales. Se deja inexistente para
+        # que quede fuera de `removed` (cleanup filtra por existencia).
+        store = tmp_path / "synthetic-speech"
+        monkeypatch.setattr("tts_sidecar.synthetic_speech.store_root", lambda: str(store))
         return propio1, propio2, voices
 
     def _cleanup_args(self, **kw):
