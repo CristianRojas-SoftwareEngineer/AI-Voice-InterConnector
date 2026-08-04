@@ -189,7 +189,7 @@ La implementación está completa únicamente cuando:
 - [x] **docs/DESIGN.md** corresponde al estado implementado
 - [x] El daemon mode está implementado y funciona correctamente
 - [x] Los logs están normalizados con estructura consistente
-- [x] Los tests pytest pasan (617/617)
+- [x] Los tests pytest pasan (666/666)
 
 ---
 

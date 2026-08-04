@@ -762,7 +762,7 @@ computarán en la primera síntesis.
 
 **Opciones:**
 - `--name, -n` (requerido): Nombre para la voz
-- `--timbre-reference, -t` (requerido): Audio para timbre (cualquier largo — el audio completo se usa para el embedding)
+- `--timbre-reference, -t` (opcional): Audio para timbre (cualquier largo — el audio completo se usa para el embedding)
 - `--speech-reference, -s` (requerido): Audio para conditioning (10+ segundos de habla limpia)
 - `--force, -f`: Sobrescribir la voz si ya existe (incluida una de fábrica homónima)
 - `--daemon` / `--no-daemon`: igual que en las sub-acciones de `speech`;
