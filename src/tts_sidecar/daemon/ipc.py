@@ -94,6 +94,7 @@ class DaemonIPCClient:
         text: str,
         voice: str,
         language: str = "es-latam",
+        source_language: Optional[str] = None,
         exaggeration: Optional[float] = None,
         cfg_weight: Optional[float] = None,
         temperature: Optional[float] = None,
@@ -109,6 +110,9 @@ class DaemonIPCClient:
 
         Args:
             language: Idioma del modelo a usar ("es-latam" o "en").
+            source_language: Idioma del texto de entrada; `None` se resuelve a
+                `language` en el propio daemon (mismo contrato que
+                `SynthesizeRequest`, sin traducir).
             exaggeration, cfg_weight, temperature: Overrides opcionales de
                 síntesis (`None` = default de la ruta del idioma en el daemon).
             on_progress: Callback opcional invocado con el dict de cada evento
@@ -128,6 +132,7 @@ class DaemonIPCClient:
                     "text": text,
                     "voice": voice,
                     "language": language,
+                    "source_language": source_language,
                     "exaggeration": exaggeration,
                     "cfg_weight": cfg_weight,
                     "temperature": temperature,

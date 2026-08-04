@@ -707,6 +707,228 @@ class TestSynthesizeStreaming:
             server.app.state.daemon.engine = old_engine
 
 
+class TestSynthesizeTranslationStage:
+    """Tarea 11: /synthesize traduce antes de sintetizar cuando `source_language`
+    difiere de `language` (normalizados, Desviación 5); passthrough si coinciden."""
+
+    def _allowed_wav(self, tmp_path, monkeypatch):
+        from tts_sidecar import voices
+
+        allowed_root = tmp_path / "voices_permitido"
+        allowed_root.mkdir()
+        wav = allowed_root / "voz.wav"
+        wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+        monkeypatch.setattr(voices, "voice_paths", lambda name: (str(wav), str(wav)))
+        return wav
+
+    def test_translates_when_source_differs_from_target(self, tmp_path, monkeypatch):
+        import json
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        self._allowed_wav(tmp_path, monkeypatch)
+        audio = b"RIFF" + b"\x00" * 40
+
+        class FakeEngine:
+            def synthesize(self, progress_callback=None, **kwargs):
+                assert kwargs["text"] == "hello"
+                return SynthesisResult(
+                    audio_bytes=audio, metrics=SynthesisMetrics(t3=1.0, s3gen=1.0)
+                )
+
+        fake_service = MagicMock()
+        fake_service.translate.return_value = "hello"
+
+        old_engine = server.app.state.daemon.engines.get("en")
+        server.app.state.daemon.engines["en"] = FakeEngine()
+        try:
+            with patch(
+                "tts_sidecar.daemon.server._get_translation_service",
+                return_value=fake_service,
+            ) as mock_get_service:
+                with TestClient(server.app) as client:
+                    resp = client.post(
+                        "/synthesize",
+                        json={
+                            "text": "hola", "voice": "crist",
+                            "language": "en", "source_language": "es-latam",
+                        },
+                    )
+            assert resp.status_code == 200
+            lines = [json.loads(l) for l in resp.text.splitlines() if l.strip()]
+            assert lines[-1]["event"] == "result"
+            fake_service.translate.assert_called_once_with("hola", "es", "en")
+            mock_get_service.assert_called_once()
+        finally:
+            if old_engine is None:
+                server.app.state.daemon.engines.pop("en", None)
+            else:
+                server.app.state.daemon.engines["en"] = old_engine
+
+    def test_no_translation_when_source_equals_target(self, tmp_path, monkeypatch):
+        import json
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        self._allowed_wav(tmp_path, monkeypatch)
+        audio = b"RIFF" + b"\x00" * 40
+
+        class FakeEngine:
+            def synthesize(self, progress_callback=None, **kwargs):
+                assert kwargs["text"] == "hola"
+                return SynthesisResult(
+                    audio_bytes=audio, metrics=SynthesisMetrics(t3=1.0, s3gen=1.0)
+                )
+
+        old_engine = server.app.state.daemon.engine
+        server.app.state.daemon.engine = FakeEngine()
+        try:
+            with patch(
+                "tts_sidecar.daemon.server._get_translation_service"
+            ) as mock_get_service:
+                with TestClient(server.app) as client:
+                    resp = client.post(
+                        "/synthesize",
+                        json={"text": "hola", "voice": "crist", "language": "es-latam"},
+                    )
+            assert resp.status_code == 200
+            lines = [json.loads(l) for l in resp.text.splitlines() if l.strip()]
+            assert lines[-1]["event"] == "result"
+            mock_get_service.assert_not_called()
+        finally:
+            server.app.state.daemon.engine = old_engine
+
+    def test_translation_model_missing_emits_error_frame(self, tmp_path, monkeypatch):
+        import json
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+        from tts_sidecar.exceptions import TranslationModelMissingError
+
+        self._allowed_wav(tmp_path, monkeypatch)
+
+        class FakeEngine:
+            def synthesize(self, progress_callback=None, **kwargs):
+                raise AssertionError("no debe sintetizar si la traducción falla")
+
+        fake_service = MagicMock()
+        fake_service.translate.side_effect = TranslationModelMissingError("no provisionado")
+
+        old_engine = server.app.state.daemon.engines.get("en")
+        server.app.state.daemon.engines["en"] = FakeEngine()
+        try:
+            with patch(
+                "tts_sidecar.daemon.server._get_translation_service",
+                return_value=fake_service,
+            ):
+                with TestClient(server.app) as client:
+                    resp = client.post(
+                        "/synthesize",
+                        json={
+                            "text": "hola", "voice": "crist",
+                            "language": "en", "source_language": "es-latam",
+                        },
+                    )
+            assert resp.status_code == 200
+            lines = [json.loads(l) for l in resp.text.splitlines() if l.strip()]
+            assert lines[-1]["event"] == "error"
+            assert "setup" in lines[-1]["detail"]
+        finally:
+            if old_engine is None:
+                server.app.state.daemon.engines.pop("en", None)
+            else:
+                server.app.state.daemon.engines["en"] = old_engine
+
+    def test_translation_failed_emits_error_frame(self, tmp_path, monkeypatch):
+        import json
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+        from tts_sidecar.exceptions import TranslationFailedError
+
+        self._allowed_wav(tmp_path, monkeypatch)
+
+        class FakeEngine:
+            def synthesize(self, progress_callback=None, **kwargs):
+                raise AssertionError("no debe sintetizar si la traducción falla")
+
+        fake_service = MagicMock()
+        fake_service.translate.side_effect = TranslationFailedError("boom")
+
+        old_engine = server.app.state.daemon.engines.get("en")
+        server.app.state.daemon.engines["en"] = FakeEngine()
+        try:
+            with patch(
+                "tts_sidecar.daemon.server._get_translation_service",
+                return_value=fake_service,
+            ):
+                with TestClient(server.app) as client:
+                    resp = client.post(
+                        "/synthesize",
+                        json={
+                            "text": "hola", "voice": "crist",
+                            "language": "en", "source_language": "es-latam",
+                        },
+                    )
+            assert resp.status_code == 200
+            lines = [json.loads(l) for l in resp.text.splitlines() if l.strip()]
+            assert lines[-1]["event"] == "error"
+            assert lines[-1]["detail"] == "Error de traducción"
+        finally:
+            if old_engine is None:
+                server.app.state.daemon.engines.pop("en", None)
+            else:
+                server.app.state.daemon.engines["en"] = old_engine
+
+
+class TestHealthTranslationReporting:
+    """Tarea 11: /health reporta `"translate:es-en"` cuando el par de traducción
+    está cargado (loader no-None), reflejando si alguna dirección está caliente."""
+
+    def test_health_omits_translate_key_when_loader_absent(self):
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                body = client.get("/health").json()
+                assert "translate:es-en" not in body["model_loaded"]
+        finally:
+            server.app.dependency_overrides.clear()
+
+    def test_health_reports_translate_key_hot_when_either_direction_loaded(self):
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
+        fake_loader = MagicMock()
+        fake_loader.is_loaded.side_effect = lambda cache_dir: "opus-mt-es-en" in str(cache_dir)
+        override_state.translation_loader = fake_loader
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                body = client.get("/health").json()
+                assert body["model_loaded"]["translate:es-en"] is True
+        finally:
+            server.app.dependency_overrides.clear()
+
+    def test_health_reports_translate_key_cold_when_neither_direction_loaded(self):
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
+        fake_loader = MagicMock()
+        fake_loader.is_loaded.return_value = False
+        override_state.translation_loader = fake_loader
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                body = client.get("/health").json()
+                assert body["model_loaded"]["translate:es-en"] is False
+        finally:
+            server.app.dependency_overrides.clear()
+
+
 class TestDaemonStateInjection:
     """Los endpoints reciben el estado del daemon por inyección de
     dependencias (Depends(get_daemon_state)), no de globals de módulo. Se puede
@@ -1096,12 +1318,16 @@ class TestServePortInUse:
         from tts_sidecar.daemon import run
         from tts_sidecar.cli import EXIT_ERROR
 
+        from tts_sidecar.translation import TranslationModelLoader
+
         with patch(
             "tts_sidecar.engine.ChatterboxEngine.get_instance",
             return_value=MagicMock(),
         ), patch(
             "tts_sidecar.compute_backend.ComputeBackendResolver.resolve",
             return_value="cpu",
+        ), patch.object(
+            TranslationModelLoader, "load", return_value=MagicMock(),
         ), patch(
             "uvicorn.Server.run",
             side_effect=OSError(errno_value, "No se pudo enlazar el puerto"),

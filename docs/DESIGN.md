@@ -7,6 +7,7 @@
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [El entry point `bin/tts-sidecar`](#el-entry-point-bintts-sidecar)
 - [Motor Chatterbox Multilingual V3](#motor-chatterbox-multilingual-v3)
+- [Traducción cross-lingual (opus-mt / CTranslate2)](#traducción-cross-lingual-opus-mt--ctranslate2)
 - [Flujo de síntesis](#flujo-de-síntesis)
 - [Modelo de voces de dos niveles](#modelo-de-voces-de-dos-niveles)
 - [Comandos CLI](#comandos-cli)
@@ -19,7 +20,7 @@
 
 TTS Sidecar es un motor de síntesis de voz (TTS) **100% local** que usa **Chatterbox Multilingual V3** para clonación de voz en español latinoamericano. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
 
-- **Licencia**: GPL-3.0-or-later (código del proyecto); el modelo y las dependencias conservan sus licencias permisivas (MIT/BSD/Apache)
+- **Licencia**: GPL-3.0-or-later (código del proyecto); el modelo y las dependencias conservan sus licencias permisivas (MIT/BSD/Apache), salvo el par de traducción `opus-mt` (CC-BY-4.0)
 - **Idiomas**: 23+ incluyendo Español (es)
 - **Clonación**: `speech-reference.wav` obligatorio (≥10 segundos); `timbre-reference.wav` opcional para separar timbre y prosodia
 - **Parámetros del modelo**: 500M
@@ -78,6 +79,12 @@ TTS-Sidecar/
 │       ├── synthetic_speech.py    # Almacén de habla sintética grabada por `speech` (WAV + sidecar JSON)
 │       ├── paths.py               # Rutas por SO (user-data-dir, modo congelado)
 │       ├── model_cache.py         # Detección de los modelos en la caché de HF
+│       ├── translation/           # Subsistema de traducción cross-lingual es<->en
+│       │   ├── service.py         # TranslationService: orquesta segmentar → traducir → ensamblar
+│       │   ├── segmenter.py       # SentenceSegmenter (pysbd)
+│       │   ├── translator.py      # MarianTranslator (runtime CT2)
+│       │   ├── model_loader.py    # TranslationModelLoader + resolve_language
+│       │   └── assembler.py       # SegmentAssembler
 │       ├── voices/                # Voces de FÁBRICA (commiteadas, empaquetadas, solo lectura)
 │       │   └── default/           # Voz por defecto (derivada de assets/audios/)
 │       │       ├── timbre-reference.wav # Timbre de voz (cualquier largo)
@@ -135,6 +142,24 @@ El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings
 | **Idiomas** | 23+ (es, en, fr, de, pt, etc.) |
 | **Clonación de voz** | `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional (dual-audio como optimización de timbre y prosodia por separado) |
 | **Inferencia** | CPU, CUDA, MPS |
+
+## Traducción cross-lingual (opus-mt / CTranslate2)
+
+Subsistema independiente de texto→texto (`src/tts_sidecar/translation/`) que
+traduce `es<->en` antes de la síntesis (flag opcional `--source-language` en
+`speech say`/`synthesize`) o de forma aislada (comando `translate`, sin voz ni
+motor TTS de por medio). No forma parte del motor Chatterbox: es una etapa
+previa y opcional.
+
+| Aspecto | Detalle |
+|---------|---------|
+| **Modelos** | `Helsinki-NLP/opus-mt-es-en` y `Helsinki-NLP/opus-mt-en-es` (proyecto OPUS-MT, Universidad de Helsinki) |
+| **Licencia** | CC-BY-4.0 (atribución en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)) |
+| **Runtime de inferencia** | CTranslate2 (CT2), embarcado; los pesos se convierten una sola vez con `ctranslate2.converters.TransformersConverter` (cuantización int8) durante `setup --language en/all` |
+| **Segmentación** | `pysbd` (puro Python, MIT) — segmenta el texto en oraciones antes de traducir, para no exceder la ventana del modelo |
+| **Ensamblado** | `SegmentAssembler` recompone las oraciones traducidas en un solo texto |
+| **Provisión** | Fuera del bundle, igual que los modelos de síntesis: se descarga y convierte en `setup`, se verifica en `doctor`, se limpia con `cleanup --model` |
+| **Passthrough** | `TranslationService.translate` devuelve el texto intacto sin cargar ningún modelo si origen == destino |
 
 ## Flujo de síntesis
 

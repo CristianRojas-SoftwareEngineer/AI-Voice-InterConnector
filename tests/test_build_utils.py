@@ -342,6 +342,19 @@ def test_common_pyinstaller_args_includes_noupx(tmp_path):
     assert "--noupx" in args
 
 
+def test_common_pyinstaller_args_includes_ctranslate2(tmp_path):
+    """--collect-all ctranslate2 debe estar presente: PyInstaller no recolecta
+    automáticamente la librería nativa del runtime de traducción (Tarea 1)."""
+    args = common_pyinstaller_args(
+        entry_point=tmp_path / "entry.py",
+        project_root=tmp_path,
+        dist_dir=tmp_path / "dist",
+        build_dir=tmp_path / "build",
+        data_sep=":",
+    )
+    assert "--collect-all" in args and "ctranslate2" in args
+
+
 def test_linux_cpu_lock_contains_no_nvidia_packages():
     """El AppImage x86_64 debe quedar libre del stack CUDA."""
     repo_root = Path(__file__).resolve().parent.parent

@@ -21,6 +21,7 @@
   - [`voice clone`](#voice-clone)
   - [`voice list`](#voice-list)
   - [`voice remove`](#voice-remove)
+  - [`translate`](#translate)
   - [`cleanup`](#cleanup)
 - [Desinstalación completa](#desinstalación-completa)
 - [Actualizar de versión](#actualizar-de-versión)
@@ -132,6 +133,12 @@ la caché de HuggingFace (`~/.cache/huggingface/hub` por defecto; si defines
 pedido; `all` descarga ambos, garantizando que la síntesis cross-lingual
 (reutilizar el timbre de una voz clonada para hablar en el otro idioma) funcione
 sin pasos adicionales.
+
+`setup --language en` (o `all`) además descarga y convierte a formato CT2 el
+par de modelos de traducción `opus-mt-es-en`/`opus-mt-en-es` (Helsinki-NLP,
+licencia CC-BY-4.0 — ver «Licencia»), necesario para el flag `--source-language`
+de `speech say`/`synthesize` y para el comando `translate`. Es idempotente por
+dirección, igual que los modelos de síntesis.
 
 ```bash
 tts-sidecar setup                     # ambos modelos (default: --language all)
@@ -339,7 +346,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 |-------|------|-------------|
 | `running` | boolean | Si el daemon responde al health check |
 | `status` | string | Solo con `running: true`: estado reportado (`"healthy"`, `"initializing"`, `"unknown"`) |
-| `model_loaded` | objeto | Solo con `running: true`: dict `{"es-latam": boolean, "en": boolean}` — qué modelo(s) están calientes en RAM (un idioma ausente/`false` se cargaría perezosamente al primer uso) |
+| `model_loaded` | objeto | Solo con `running: true`: dict `{"es-latam": boolean, "en": boolean, "translate:es-en": boolean}` — qué modelo(s) están calientes en RAM (un idioma ausente/`false` se cargaría perezosamente al primer uso); la clave `"translate:es-en"` solo aparece si el daemon arrancó con `--language en`/`all` |
 | `uptime_seconds` | number | Solo con `running: true`: segundos desde el arranque |
 
 **`voice clone --json`**
@@ -358,12 +365,20 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `name` | string | Nombre de la voz eliminada |
 | `removed` | boolean | `true` en la rama de éxito (los errores conservan su mensaje en stderr y su exit code, sin payload) |
 
+**`translate --json`**
+
+| Clave | Tipo | Significado |
+|-------|------|-------------|
+| `translated` | string | Texto traducido (igual al de entrada si `--from == --to`, passthrough) |
+| `source` | string | El `--from` pedido |
+| `target` | string | El `--to` pedido |
+
 **`setup --json`**
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `language` | string | El `--language` pedido (`"es-latam"`, `"en"` o `"all"`) |
-| `models` | objeto | Un objeto por modelo provisionado (`"es-mx-latam"` y/o `"en"`, según `language`), cada uno con `already_cached` (boolean, `true` si no hubo nada que descargar) y `downloaded` (boolean, `true` si esta ejecución lo descargó) |
+| `models` | objeto | Un objeto por modelo provisionado (`"es-mx-latam"` y/o `"en"`, según `language`; con `language` `en`/`all` se suman `"opus-mt-es-en"` y `"opus-mt-en-es"`, el par de traducción), cada uno con `already_cached` (boolean, `true` si no hubo nada que descargar) y `downloaded` (boolean, `true` si esta ejecución lo descargó) |
 | `cache_dir` | string | Raíz de la caché de HuggingFace usada |
 
 Con `--remove-path` (Linux), el payload es distinto: `remove_path` (boolean,
@@ -428,15 +443,19 @@ Plataforma: Windows 11 / Linux 6.x / Darwin 24.x
 [PASS] Audio library: pycaw (Windows) — 2 dispositivo(s)
 [PASS] Chatterbox model (es-latam): es-mx-latam presente en la caché
 [PASS] Chatterbox model (en): en presente en la caché
+[PASS] Translation model (es<->en): opus-mt presente en la caché
 [PASS] Voices directory: 1 voz(voces) disponible(s)
 [PASS] RAM: 16.0 GB
 
-Chequeos: 6 exitosos, 0 fallidos
+Chequeos: 7 exitosos, 0 fallidos
 ```
 
 Cada idioma (`es-latam`/`en`) se reporta como un chequeo `Chatterbox model
 (<idioma>)` independiente: si falta uno solo, ese chequeo falla y remite a
 `tts-sidecar setup --language <idioma>`, sin afectar al otro idioma ya provisionado.
+`Translation model (es<->en)` es un único chequeo lógico (ambas direcciones se
+provisionan juntas con `setup --language en`/`all`): falla si falta cualquiera
+de las dos, remitiendo a `tts-sidecar setup --language en`.
 
 Termina con código de salida 0 si todo pasa, y 1 si algún chequeo falla (cada
 `[FAIL]` indica cómo corregirlo, p. ej. `ejecuta: tts-sidecar setup`).
@@ -526,10 +545,11 @@ Locución 'saludo' guardada (voz 'default').
 - `--play, -p`: Reproduce la toma y pregunta antes de guardar (ver «El bucle de `--play`» más abajo); requiere terminal interactiva en la entrada estándar y es incompatible con `--json`
 - `--force, -f`: Sobrescribe la locución si la etiqueta ya existe para la voz
 - `--compute-backend, -cb`: igual que en `speech say`
-- `--language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); `en` reutiliza el timbre clonado para producir audio en inglés (síntesis cross-lingual)
-- `--exaggeration`: Override de expresividad emocional (default: el de la ruta de `--language`); no puede ser negativo, sale con exit 2 si lo es
-- `--cfg-weight`: Override de cfg_weight (default: el de la ruta de `--language`); `0.0` no está permitido (crash conocido en el inglés base), debe ser `> 0.0`, sale con exit 2 si no
-- `--temperature`: Override de temperature (default: el de la ruta de `--language`); debe ser `> 0.0`, sale con exit 2 si no
+- `--target-language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); `en` reutiliza el timbre clonado para producir audio en inglés (síntesis cross-lingual). Rename de `--language` (§ «Síntesis cross-lingual» abajo)
+- `--source-language`: Idioma del texto de entrada (`es-latam`/`en`, default: igual a `--target-language`, sin traducir); si difiere de `--target-language`, el texto se traduce antes de sintetizar
+- `--exaggeration`: Override de expresividad emocional (default: el de la ruta de `--target-language`); no puede ser negativo, sale con exit 2 si lo es
+- `--cfg-weight`: Override de cfg_weight (default: el de la ruta de `--target-language`); `0.0` no está permitido (crash conocido en el inglés base), debe ser `> 0.0`, sale con exit 2 si no
+- `--temperature`: Override de temperature (default: el de la ruta de `--target-language`); debe ser `> 0.0`, sale con exit 2 si no
 - `--daemon` / `--no-daemon`: igual que en `speech say`
 - `--json`: Emite `{"voice", "label", "t3_time", "s3gen_time", "daemon"}` (ver la referencia de esquemas)
 
@@ -612,10 +632,11 @@ Finalizado en 41.5s
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
 - `--voice, -v`: Nombre de la voz registrada a usar (auto-carga sus dos audios)
-- `--language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); `en` reutiliza el timbre clonado para producir audio en inglés (síntesis cross-lingual)
-- `--exaggeration`: Override de expresividad emocional (default: el de la ruta de `--language`); no puede ser negativo, sale con exit 2 si lo es
-- `--cfg-weight`: Override de cfg_weight (default: el de la ruta de `--language`); `0.0` no está permitido (crash conocido en el inglés base), debe ser `> 0.0`, sale con exit 2 si no
-- `--temperature`: Override de temperature (default: el de la ruta de `--language`); debe ser `> 0.0`, sale con exit 2 si no
+- `--target-language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); `en` reutiliza el timbre clonado para producir audio en inglés (síntesis cross-lingual). Rename de `--language` (§ «Síntesis cross-lingual» abajo)
+- `--source-language`: Idioma del texto de entrada (`es-latam`/`en`, default: igual a `--target-language`, sin traducir); si difiere de `--target-language`, el texto se traduce antes de sintetizar
+- `--exaggeration`: Override de expresividad emocional (default: el de la ruta de `--target-language`); no puede ser negativo, sale con exit 2 si lo es
+- `--cfg-weight`: Override de cfg_weight (default: el de la ruta de `--target-language`); `0.0` no está permitido (crash conocido en el inglés base), debe ser `> 0.0`, sale con exit 2 si no
+- `--temperature`: Override de temperature (default: el de la ruta de `--target-language`); debe ser `> 0.0`, sale con exit 2 si no
 - `--daemon`: Usar el daemon sin sondeo previo; si falla, el error se reporta (sin fallback a directo)
 - `--no-daemon`: Forzar modo directo, sin sondear el daemon
 
@@ -642,12 +663,24 @@ stderr: el T3 topa la generación en 500 tokens, así que un texto muy largo
 puede truncarse en el audio resultante — se recomienda fragmentar el texto en
 varias llamadas a `speech say`.
 
-**Síntesis cross-lingual:** por defecto (`--language es-latam`) usa el modelo
-en español latinoamericano provisionado por `setup`; con `--language en` usa en
-su lugar el modelo base en inglés, reutilizando el timbre de la voz clonada
-(`--voice`) para producir audio en inglés. Cada idioma se provisiona por
-separado (ver `setup --language`); si el modelo pedido no está en caché, falla
-de inmediato remitiendo a `tts-sidecar setup --language <idioma>`.
+**Síntesis cross-lingual:** por defecto (`--target-language es-latam`) usa el
+modelo en español latinoamericano provisionado por `setup`; con
+`--target-language en` usa en su lugar el modelo base en inglés, reutilizando
+el timbre de la voz clonada (`--voice`) para producir audio en inglés. Cada
+idioma se provisiona por separado (ver `setup --language`); si el modelo
+pedido no está en caché, falla de inmediato remitiendo a `tts-sidecar setup
+--language <idioma>`. `--target-language` es el rename de la antigua
+`--language` (sin alias de transición); `setup`, `daemon` y `doctor`
+conservan `--language` sin cambios.
+
+**Traducción opt-in antes de sintetizar:** si además declaras
+`--source-language` con un idioma distinto de `--target-language`, el texto
+se traduce (par `opus-mt` es↔en) **antes** de sintetizarlo — útil para
+escribir en tu idioma nativo y obtener audio en el otro, con la misma voz
+clonada. Si solo quieres el texto traducido, sin sintetizar audio, usa el
+comando `translate` (ver más abajo). El modelo de traducción ausente falla
+remitiendo a `setup --language en`; un fallo de la traducción en sí sale con
+exit 9.
 
 **Ejemplos:**
 ```bash
@@ -658,7 +691,11 @@ tts-sidecar speech say --text "Hola mundo" --voice mi_voz
 tts-sidecar speech say --text "Hola" --voice mi_voz --no-daemon
 
 # Síntesis cross-lingual: la voz clonada en español habla en inglés
-tts-sidecar speech say --text "Hello there" --voice mi_voz --language en
+tts-sidecar speech say --text "Hello there" --voice mi_voz --target-language en
+
+# Traducción + síntesis: escribes en español, sale en inglés
+tts-sidecar speech say --text "Hola, ¿cómo estás?" --voice mi_voz \
+  --source-language es-latam --target-language en
 ```
 
 #### `speech play`
@@ -826,6 +863,40 @@ eliminarse; el comando lo indica y termina con error si lo intentas.
 
 ---
 
+### `translate`
+
+Traduce texto `es↔en`, aislado de la síntesis: sin voz ni modelo TTS de por
+medio. A diferencia de `--source-language`/`--target-language` en `speech
+say`/`speech synthesize` (opcionales, opt-in), aquí `--from` y `--to` son
+**ambos requeridos** — traducir es la única función del comando.
+
+```bash
+tts-sidecar translate --text "Hola, ¿cómo estás?" --from es --to en
+tts-sidecar translate --text "Hello there" --from en --to es --json
+```
+
+**Qué esperar:**
+
+```
+Good morning.
+```
+
+Con `--json`, emite `{"translated", "source", "target"}` (ver la referencia
+de esquemas) y nada por stdout salvo ese objeto.
+
+**Opciones:**
+- `--text` (requerido, sin alias `-t`): Texto a traducir (mismo límite de 5000 caracteres que `speech say`/`synthesize`)
+- `--from` (requerido): Idioma de origen del texto (`es` o `en`, códigos ISO — no `es-latam`)
+- `--to` (requerido): Idioma destino de la traducción (`es` o `en`)
+- `--json`: Emite `{"translated", "source", "target"}`
+
+**Passthrough:** si `--from` y `--to` coinciden, devuelve el texto intacto sin
+cargar ningún modelo. Si el modelo de traducción no está provisionado, falla
+remitiendo a `tts-sidecar setup --language en`; si la traducción falla con el
+modelo ya cargado, sale con exit **9**.
+
+---
+
 ### `cleanup`
 
 Desaprovisiona los datos del proyecto: los modelos descargados y/o las voces de
@@ -857,6 +928,10 @@ eliminan las carpetas de los dos repos que usa el proyecto
 modelos de otros proyectos; `--voices` elimina únicamente el directorio de
 voces de usuario. Todo es recuperable: `setup` reprovisiona los modelos y
 `voice clone` vuelve a clonar voces.
+
+`--model` también barre el modelo de traducción `opus-mt` convertido (ambas
+direcciones es↔en en un solo target): no hay un flag `--language` propio en
+`cleanup`, comparte `--model` con los modelos de síntesis (Simplicity First).
 
 ---
 
@@ -975,6 +1050,12 @@ Daemon en ejecución:
 «Modelos cargados» lista los idiomas calientes en RAM (los precargados al
 arrancar); un idioma no listado se cargaría perezosamente en la primera
 síntesis que lo pida.
+
+Con `--language en`/`all` (default), `daemon start` además precarga en RAM el
+par de traducción `opus-mt` es↔en (ambas direcciones), calentándolo desde el
+arranque en vez de esperar a la primera síntesis con `--source-language`
+distinto de `--target-language`; `daemon status --json` lo expone como la
+clave `"translate:es-en"` de `model_loaded` (ver la referencia de esquemas).
 
 `daemon stop` responde `Daemon detenido` y `daemon restart`, `Daemon reiniciado`.
 
@@ -1113,6 +1194,7 @@ desde el binario como desde el código fuente. En concreto:
   | `6` | Conflicto de estado | Colisión en `voice clone` sin `--force`; voz ocupada; puerto del daemon en uso |
   | `7` | Operación no aplicable | Voz de fábrica de solo lectura; plataforma no soportada; `setup --uninstall` fuera del canal nativo |
   | `8` | Precondición de entorno incumplida | Credenciales, red, permisos o disco insuficientes al provisionar |
+  | `9` | Fallo del pipeline de traducción | `translate` con el modelo cargado pero la inferencia falla |
   | `130` | Interrupción del usuario | Ctrl+C (128 + SIGINT) durante cualquier comando |
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el
   audio generado para un mismo texto y voz es equivalente en cualquier SO.
@@ -1146,9 +1228,10 @@ Las únicas diferencias son internas y no cambian la forma de usar la aplicació
 
 ### "el modelo 'es-mx-latam' no está descargado" (o "en")
 
-`speech say` y `daemon start` requieren el modelo del idioma pedido (`--language`,
-default `es-latam`) provisionado, y nunca lo descargan por sí mismos. El mensaje
-de error indica el idioma exacto que falta; provisiónalo con:
+`speech say` (`--target-language`, default `es-latam`) y `daemon start`
+(`--language`, mismo default) requieren el modelo del idioma pedido
+provisionado, y nunca lo descargan por sí mismos. El mensaje de error indica
+el idioma exacto que falta; provisiónalo con:
 
 ```bash
 tts-sidecar setup --language es-latam   # o --language en, o sin flag (ambos)
@@ -1313,7 +1396,8 @@ la persona que ejecuta la herramienta.
 ## Licencia
 
 `tts-sidecar` se distribuye bajo **GPL-3.0-or-later** (ver [LICENSE](LICENSE)). El modelo
-Chatterbox se distribuye bajo MIT; las dependencias empaquetadas conservan sus propias
+Chatterbox se distribuye bajo MIT y el par de traducción `opus-mt` (Helsinki-NLP)
+bajo CC-BY-4.0; las dependencias empaquetadas conservan sus propias
 licencias, en su mayoría permisivas (MIT/BSD/Apache/ISC/PSF) y algunas de copyleft
 compatible con GPLv3 (LGPL-2.1+, MPL-2.0 y el GPLv3+ de pykakasi), detalladas en
 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).

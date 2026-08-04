@@ -14,7 +14,7 @@ Ver `server.py::synthesize` para el productor y `docs/DAEMON-MODE.md` para el
 protocolo completo.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Literal, Optional
 
 # Tope de texto por petición: acota el trabajo del T3 y evita el DoS local
@@ -63,13 +63,27 @@ class SynthesizeRequest(BaseModel):
     (fijado al arrancar el daemon). La petición lleva el nombre de una voz ya
     registrada; el daemon resuelve sus rutas de audio desde su propio registro
     (nunca una ruta del llamador).
+
+    `source_language` (aditivo, sin subir `schema_version`) es el idioma del
+    texto de entrada; `None` se resuelve a `language` (mismo idioma, sin
+    traducir) vía el `model_validator` de abajo, así la invariante "sin origen
+    explícito, el origen es el destino" se cumple sin importar si la petición
+    se construyó en el flujo directo o se deserializó del JSON entrante del
+    daemon.
     """
     text: str = Field(min_length=1, max_length=MAX_TEXT_LENGTH)
     voice: str = Field(min_length=1, max_length=MAX_VOICE_NAME_LENGTH)
     language: str = "es-latam"
+    source_language: Optional[str] = None
     exaggeration: Optional[float] = None
     cfg_weight: Optional[float] = None
     temperature: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _resolve_source_language(self) -> "SynthesizeRequest":
+        if self.source_language is None:
+            self.source_language = self.language
+        return self
 
 
 # ---------------------------------------------------------------------------

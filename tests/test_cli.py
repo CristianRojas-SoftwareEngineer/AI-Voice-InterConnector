@@ -50,6 +50,8 @@ class MockArgs:
         self.uninstall = kwargs.get("uninstall", False)
         self.yes = kwargs.get("yes", False)
         self.language = kwargs.get("language", "all")
+        self.target_language = kwargs.get("target_language", "es-latam")
+        self.source_language = kwargs.get("source_language", None)
         self.exaggeration = kwargs.get("exaggeration", None)
         self.cfg_weight = kwargs.get("cfg_weight", None)
         self.temperature = kwargs.get("temperature", None)
@@ -1137,6 +1139,7 @@ class TestExitCodes:
         manager.start.return_value = False
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("pathlib.Path.exists", return_value=True), \
                 patch("tts_sidecar.daemon.DaemonManager", return_value=manager):
             with pytest.raises(CliError) as exc:
                 cmd_daemon(args)
@@ -1173,7 +1176,7 @@ class TestSpeechLanguageCrossLingual:
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.engine.ChatterboxEngine")
     def test_say_language_en_dispatches_english_model(self, mock_engine_cls, _cached, _player):
-        """--language en resuelve get_instance(model="en", ...) y no revienta:
+        """--target-language en resuelve get_instance(model="en", ...) y no revienta:
         detrás del engine.synthesize real (no probado aquí) queda la ramificación
         por idioma ya cubierta en test_synthesis_orchestrator.py."""
         from tts_sidecar.cli import cmd_speech_say
@@ -1182,7 +1185,7 @@ class TestSpeechLanguageCrossLingual:
         engine.synthesize.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
-        cmd_speech_say(self._args(text="hello", language="en"))
+        cmd_speech_say(self._args(text="hello", target_language="en"))
 
         _, kwargs = mock_engine_cls.get_instance.call_args
         assert kwargs["model"] == "en"
@@ -1191,15 +1194,15 @@ class TestSpeechLanguageCrossLingual:
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
     @patch("tts_sidecar.engine.ChatterboxEngine")
     def test_say_language_es_latam_unchanged(self, mock_engine_cls, _cached, _player):
-        """Sin --language (o con es-latam explícito) el modelo resuelto sigue
-        siendo es-mx-latam: retrocompatible con el comportamiento actual."""
+        """Sin --target-language (o con es-latam explícito) el modelo resuelto
+        sigue siendo es-mx-latam: retrocompatible con el comportamiento actual."""
         from tts_sidecar.cli import cmd_speech_say
 
         engine = MagicMock()
         engine.synthesize.return_value = _synth_result()
         mock_engine_cls.get_instance.return_value = engine
 
-        cmd_speech_say(self._args(text="hola", language="es-latam"))
+        cmd_speech_say(self._args(text="hola", target_language="es-latam"))
 
         _, kwargs = mock_engine_cls.get_instance.call_args
         assert kwargs["model"] == "es-mx-latam"
@@ -1233,7 +1236,7 @@ class TestSpeechLanguageCrossLingual:
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False):
             with pytest.raises(CliError) as exc:
-                cmd_speech_say(self._args(text="hello", language="en"))
+                cmd_speech_say(self._args(text="hello", target_language="en"))
         assert exc.value.code == EXIT_MODEL_MISSING
         assert "setup --language en" in exc.value.message
 
@@ -1256,6 +1259,52 @@ class TestSpeechLanguageCrossLingual:
         assert kwargs["exaggeration"] == 0.9
         assert kwargs["cfg_weight"] == 0.2
         assert kwargs["temperature"] == 0.6
+
+    @patch("tts_sidecar.audio.AudioPlayer")
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.engine.ChatterboxEngine")
+    def test_source_language_differs_translates_before_synthesizing(
+        self, mock_engine_cls, _cached, _player,
+    ):
+        """--source-language distinto de --target-language traduce el texto
+        antes de sintetizar (Tarea 10): engine.synthesize recibe el texto
+        traducido, no el original."""
+        from tts_sidecar.cli import cmd_speech_say
+
+        engine = MagicMock()
+        engine.synthesize.return_value = _synth_result()
+        mock_engine_cls.get_instance.return_value = engine
+
+        with patch("tts_sidecar.cli._translate_stage", return_value="hello") as mock_translate:
+            cmd_speech_say(self._args(
+                text="hola", target_language="en", source_language="es-latam",
+            ))
+
+        mock_translate.assert_called_once_with("hola", "es-latam", "en")
+        _, kwargs = engine.synthesize.call_args
+        assert kwargs["text"] == "hello"
+
+    @patch("tts_sidecar.audio.AudioPlayer")
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.engine.ChatterboxEngine")
+    def test_source_language_same_as_target_no_translation(
+        self, mock_engine_cls, _cached, _player,
+    ):
+        """Sin --source-language (o igual a --target-language), el texto llega
+        intacto a engine.synthesize (passthrough, sin invocar el servicio de
+        traducción)."""
+        from tts_sidecar.cli import cmd_speech_say
+
+        engine = MagicMock()
+        engine.synthesize.return_value = _synth_result()
+        mock_engine_cls.get_instance.return_value = engine
+
+        with patch("tts_sidecar.translation.TranslationService") as mock_service_cls:
+            cmd_speech_say(self._args(text="hola", target_language="es-latam"))
+
+        mock_service_cls.assert_not_called()
+        _, kwargs = engine.synthesize.call_args
+        assert kwargs["text"] == "hola"
 
 
 class TestCmdCleanup:
@@ -1384,6 +1433,24 @@ class TestCmdCleanup:
 
         args.cleanup_parser.print_help.assert_called_once()
         assert propio1.exists() and voices.exists()
+
+    def test_model_sweep_includes_translation_model(self, tmp_path, monkeypatch, capsys):
+        """--model (Tarea 8) también barre translation-models/ (par opus-mt
+        convertido a CT2), sin necesidad de un flag --language nuevo."""
+        from tts_sidecar.cli import cmd_cleanup
+
+        propio1, propio2, ajeno, voices = self._fake_env(tmp_path, monkeypatch)
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+        translation_root = tmp_path / "translation-models"
+        (translation_root / "opus-mt-es-en").mkdir(parents=True)
+        (translation_root / "opus-mt-en-es").mkdir(parents=True)
+        monkeypatch.setattr("builtins.input", lambda _: "s")
+
+        cmd_cleanup(self._args(model=True))
+
+        assert not translation_root.exists()
+        assert not propio1.exists() and not propio2.exists()
+        assert ajeno.exists()
 
 
 class TestSetupUninstall:
@@ -2020,8 +2087,9 @@ class TestDaemonVerbsJSON:
                                    max_retries=kw.get("max_retries", None))
 
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("pathlib.Path.exists", return_value=True)
     @patch("tts_sidecar.daemon.DaemonManager")
-    def test_start_json_payload_success(self, mock_manager_cls, _cached, capsys):
+    def test_start_json_payload_success(self, mock_manager_cls, _translation_cached, _cached, capsys):
         import json
         from tts_sidecar.cli import cmd_daemon, SCHEMA_VERSION
 
@@ -2038,8 +2106,9 @@ class TestDaemonVerbsJSON:
         }
 
     @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("pathlib.Path.exists", return_value=True)
     @patch("tts_sidecar.daemon.DaemonManager")
-    def test_start_json_payload_failure_exits_5(self, mock_manager_cls, _cached, capsys):
+    def test_start_json_payload_failure_exits_5(self, mock_manager_cls, _translation_cached, _cached, capsys):
         from tts_sidecar.cli import cmd_daemon, EXIT_DAEMON_UNREACHABLE
 
         manager = MagicMock()
@@ -2129,6 +2198,7 @@ class TestJsonChannelSingleObjectViaMain:
 
         monkeypatch.setattr(sys, "argv", ["tts-sidecar", "daemon", action, "--json"])
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("pathlib.Path.exists", return_value=True), \
                 patch("tts_sidecar.daemon.DaemonManager", return_value=manager):
             with pytest.raises(SystemExit) as exc:
                 main()
@@ -2268,7 +2338,7 @@ class TestSchemaVersionJSON:
 # hace fallar el test, en vez de quedar fuera de la cobertura en silencio.
 _JSON_COVERED_COMMANDS = {
     "speech synthesize", "speech say", "speech play", "speech list", "speech remove",
-    "devices", "doctor", "setup", "cleanup", "version",
+    "devices", "doctor", "setup", "cleanup", "version", "translate",
     "voice list", "voice clone", "voice remove",
     "daemon start", "daemon stop", "daemon restart", "daemon status",
 }
@@ -2577,6 +2647,7 @@ class TestDoctorRAM:
         fake_mem.total = 4 * 1024 ** 3
         with patch.object(cli, "_environment_checks", return_value=[]), \
                 patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("pathlib.Path.exists", return_value=True), \
                 patch("psutil.virtual_memory", return_value=fake_mem):
             cli.cmd_doctor(MockArgs(json=True))
         payload = json.loads(capsys.readouterr().out)
@@ -2607,6 +2678,7 @@ class TestDoctorOnedrive:
         fake_mem.total = 16 * 1024 ** 3
         with patch.object(cli, "_environment_checks", return_value=[]), \
                 patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("pathlib.Path.exists", return_value=True), \
                 patch("psutil.virtual_memory", return_value=fake_mem):
             cli.cmd_doctor(MockArgs(json=True))
 
@@ -2630,6 +2702,60 @@ class TestDoctorOnedrive:
 
         out = capsys.readouterr().out
         assert "[WARN] OneDrive user-data-dir" in out
+
+
+class TestDoctorTranslationModel:
+    """doctor reporta PASS/FAIL de la presencia del modelo de traducción
+    opus-mt es<->en convertido a CT2 (Tarea 8)."""
+
+    def _mucho_ram(self):
+        fake_mem = MagicMock()
+        fake_mem.total = 16 * 1024 ** 3
+        return fake_mem
+
+    def test_pass_when_both_directions_converted(self, monkeypatch, tmp_path, capsys):
+        import tts_sidecar.cli as cli
+
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+        (tmp_path / "translation-models" / "opus-mt-es-en").mkdir(parents=True)
+        (tmp_path / "translation-models" / "opus-mt-en-es").mkdir(parents=True)
+
+        with patch.object(cli, "_environment_checks", return_value=[]), \
+                patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("psutil.virtual_memory", return_value=self._mucho_ram()):
+            cli.cmd_doctor(MockArgs(json=False))
+
+        out = capsys.readouterr().out
+        assert "[PASS] Translation model (es<->en)" in out
+
+    def test_fail_when_missing(self, monkeypatch, tmp_path, capsys):
+        import tts_sidecar.cli as cli
+
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+
+        with patch.object(cli, "_environment_checks", return_value=[]), \
+                patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("psutil.virtual_memory", return_value=self._mucho_ram()):
+            result = cli.cmd_doctor(MockArgs(json=False))
+
+        out = capsys.readouterr().out
+        assert "[FAIL] Translation model (es<->en)" in out
+        assert result == cli.EXIT_ERROR
+
+    def test_fail_when_only_one_direction_converted(self, monkeypatch, tmp_path, capsys):
+        import tts_sidecar.cli as cli
+
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+        (tmp_path / "translation-models" / "opus-mt-es-en").mkdir(parents=True)
+
+        with patch.object(cli, "_environment_checks", return_value=[]), \
+                patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("psutil.virtual_memory", return_value=self._mucho_ram()):
+            cli.cmd_doctor(MockArgs(json=False))
+
+        out = capsys.readouterr().out
+        assert "[FAIL] Translation model (es<->en)" in out
+        assert "en->es" in out
 
 
 class TestSetupDiskAndForceUpdate:
@@ -2815,6 +2941,87 @@ class TestSetupMultiLanguage:
 
         mock_snapshot_download.assert_called_once()
         assert mock_snapshot_download.call_args.kwargs["repo_id"] == "ResembleAI/chatterbox"
+
+
+class TestSetupTranslationProvisioning:
+    """setup --language en/all descarga+convierte a CT2 el par opus-mt
+    es<->en (Tarea 8); --language es-latam no lo toca. Idempotente: no
+    reconvierte una dirección cuyo artefacto CT2 ya exista."""
+
+    def _mucho_espacio(self):
+        import shutil
+        return shutil._ntuple_diskusage(
+            total=100 * 1024 ** 3, used=1 * 1024 ** 3, free=99 * 1024 ** 3,
+        )
+
+    def _mock_env(self, monkeypatch, tmp_path):
+        import tts_sidecar.cli as cli
+        monkeypatch.setattr(
+            cli, "_environment_checks",
+            lambda: [("PASS", "Chatterbox TTS", "0.1.7")],
+        )
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+        return cli
+
+    def test_language_en_downloads_and_converts_both_directions(self, monkeypatch, tmp_path):
+        # Modelos TTS ya cacheados: aísla el chequeo a la provisión de traducción.
+        cli = self._mock_env(monkeypatch, tmp_path)
+        mock_convert = MagicMock()
+        monkeypatch.setattr(cli, "_convert_translation_model", mock_convert)
+        mock_snapshot_download = MagicMock(return_value=str(tmp_path / "hf-snapshot"))
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False, language="en"))
+
+        repo_ids = {c.kwargs["repo_id"] for c in mock_snapshot_download.call_args_list}
+        assert repo_ids == {"Helsinki-NLP/opus-mt-es-en", "Helsinki-NLP/opus-mt-en-es"}
+        assert mock_convert.call_count == 2
+        output_dirs = {c.args[1] for c in mock_convert.call_args_list}
+        assert output_dirs == {
+            str(tmp_path / "translation-models" / "opus-mt-es-en"),
+            str(tmp_path / "translation-models" / "opus-mt-en-es"),
+        }
+
+    def test_language_all_provisions_translation_pair(self, monkeypatch, tmp_path):
+        cli = self._mock_env(monkeypatch, tmp_path)
+        mock_convert = MagicMock()
+        monkeypatch.setattr(cli, "_convert_translation_model", mock_convert)
+        mock_snapshot_download = MagicMock(return_value=str(tmp_path / "hf-snapshot"))
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False, language="all"))
+
+        assert mock_convert.call_count == 2
+
+    def test_language_es_latam_does_not_touch_translation_pair(self, monkeypatch, tmp_path):
+        cli = self._mock_env(monkeypatch, tmp_path)
+        mock_convert = MagicMock()
+        monkeypatch.setattr(cli, "_convert_translation_model", mock_convert)
+        mock_snapshot_download = MagicMock(return_value=str(tmp_path / "hf-snapshot"))
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False, language="es-latam"))
+
+        mock_convert.assert_not_called()
+        mock_snapshot_download.assert_not_called()
+
+    def test_already_converted_pair_is_not_reconverted(self, monkeypatch, tmp_path):
+        cli = self._mock_env(monkeypatch, tmp_path)
+        (tmp_path / "translation-models" / "opus-mt-es-en").mkdir(parents=True)
+        (tmp_path / "translation-models" / "opus-mt-en-es").mkdir(parents=True)
+        mock_convert = MagicMock()
+        monkeypatch.setattr(cli, "_convert_translation_model", mock_convert)
+        mock_snapshot_download = MagicMock()
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False, language="en"))
+
+        mock_convert.assert_not_called()
+        mock_snapshot_download.assert_not_called()
 
 
 class TestBootstrap:
@@ -3802,3 +4009,77 @@ class TestCmdCleanupSyntheticSpeech:
         cmd_cleanup(self._args(synthetic_speech=True, dry_run=True))
         assert store.exists(), "dry-run no borró nada"
         assert "dry-run" in capsys.readouterr().out
+
+
+class TestTranslateCommand:
+    """`translate --from/--to [--json]` (Tarea 7 del subsistema de traducción):
+    texto->texto vía `TranslationService`, sin tocar audio ni el motor TTS."""
+
+    class _Args:
+        def __init__(self, text="hola", from_lang="es", to_lang="en", json=False):
+            self.text = text
+            self.from_lang = from_lang
+            self.to_lang = to_lang
+            self.json = json
+
+    def test_translate_success_plain_text(self, capsys):
+        from tts_sidecar.cli import cmd_translate
+
+        with patch("tts_sidecar.translation.TranslationService") as mock_cls:
+            mock_cls.return_value.translate.return_value = "hello"
+            cmd_translate(self._Args(text="hola", from_lang="es", to_lang="en"))
+
+        mock_cls.return_value.translate.assert_called_once_with("hola", "es", "en")
+        assert capsys.readouterr().out.strip() == "hello"
+
+    def test_translate_json_output_exact_shape(self, capsys):
+        import json as json_mod
+        from tts_sidecar.cli import cmd_translate
+
+        with patch("tts_sidecar.translation.TranslationService") as mock_cls:
+            mock_cls.return_value.translate.return_value = "hello"
+            cmd_translate(self._Args(text="hola", from_lang="es", to_lang="en", json=True))
+
+        payload = json_mod.loads(capsys.readouterr().out)
+        assert payload["translated"] == "hello"
+        assert payload["source"] == "es"
+        assert payload["target"] == "en"
+
+    def test_translate_passthrough_same_language(self, capsys):
+        """`--from == --to`: el comando delega en `TranslationService`, que ya
+        implementa el atajo de passthrough sin cargar ningún modelo."""
+        from tts_sidecar.cli import cmd_translate
+
+        with patch("tts_sidecar.translation.TranslationService") as mock_cls:
+            mock_cls.return_value.translate.return_value = "hola"
+            cmd_translate(self._Args(text="hola", from_lang="es", to_lang="es"))
+
+        mock_cls.return_value.translate.assert_called_once_with("hola", "es", "es")
+        assert capsys.readouterr().out.strip() == "hola"
+
+    def test_translate_model_missing_exits_model_missing_points_to_setup(self):
+        """Modelo ausente reutiliza el fallo `model_missing` existente (exit 4),
+        remitiendo a `setup`, en vez de inventar un código nuevo."""
+        from tts_sidecar.cli import cmd_translate, EXIT_MODEL_MISSING
+        from tts_sidecar.exceptions import TranslationModelMissingError
+
+        with patch("tts_sidecar.translation.TranslationService") as mock_cls:
+            mock_cls.return_value.translate.side_effect = TranslationModelMissingError("missing")
+            with pytest.raises(CliError) as exc:
+                cmd_translate(self._Args(text="hola", from_lang="es", to_lang="en"))
+
+        assert exc.value.code == EXIT_MODEL_MISSING
+        assert "setup" in exc.value.message
+
+    def test_translate_failure_exits_translation_failed(self):
+        """Fallo del propio pipeline (modelo cargado, inferencia falló) sale con
+        `EXIT_TRANSLATION_FAILED`, distinto de `EXIT_MODEL_MISSING`."""
+        from tts_sidecar.cli import cmd_translate, EXIT_TRANSLATION_FAILED
+        from tts_sidecar.exceptions import TranslationFailedError
+
+        with patch("tts_sidecar.translation.TranslationService") as mock_cls:
+            mock_cls.return_value.translate.side_effect = TranslationFailedError("boom")
+            with pytest.raises(CliError) as exc:
+                cmd_translate(self._Args(text="hola", from_lang="es", to_lang="en"))
+
+        assert exc.value.code == EXIT_TRANSLATION_FAILED

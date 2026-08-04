@@ -37,6 +37,16 @@ dependencies = [
     "uvicorn[standard]>=0.29.0",
     "pydantic>=2.0.0",
     "pycaw>=20240210; sys_platform == 'win32'",
+    "pysbd>=0.3.4",
+    "ctranslate2>=4.8.1",
+    "sentencepiece>=0.2.0",
+    # Traducción: solo se usan en la conversión opus-mt->CT2 de 'setup'
+    # (ctranslate2.converters.TransformersConverter). chatterbox-tts ya trae
+    # transformers como dependencia transitiva (pin exacto ==5.2.0 en
+    # chatterbox-tts 0.1.7); se declara aquí explícitamente porque el
+    # subsistema de traducción también depende directamente de ella.
+    "transformers>=5.2.0",
+    "sacremoses>=0.1.1",  # MarianTokenizer la requiere para pre/post-procesado
 ]
 
 [project.urls]

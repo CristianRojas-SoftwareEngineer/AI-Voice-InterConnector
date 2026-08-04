@@ -15,3 +15,24 @@ class SynthesisCancelled(Exception):
     tragarla como las demás excepciones del callback (best-effort). Así el
     worker puede abortar ``engine.synthesize()`` en el próximo punto cooperativo.
     """
+
+
+class TranslationModelMissingError(Exception):
+    """El modelo de traducción convertido a CT2 no está en la ruta de caché
+    esperada. La eleva `TranslationModelLoader.load()` cuando la ruta no
+    existe; el llamador la mapea a `EXIT_MODEL_MISSING` con un mensaje que
+    remite a `setup`."""
+
+
+class UnsupportedLanguagePairError(Exception):
+    """El par (origen, destino) solicitado no está entre los pares soportados
+    por el subsistema de traducción (`es`/`en`). Identidad propia distinta de
+    `TranslationModelMissingError`: aquí el modelo simplemente no existe para
+    ese par, no es un problema de provisión."""
+
+
+class TranslationFailedError(Exception):
+    """El backend de traducción (runtime CT2 en producción, doble en tests)
+    falló al traducir un segmento. Identidad propia para no colapsarla con
+    `TranslationModelMissingError`: aquí el modelo sí cargó, pero la
+    inferencia falló. La eleva `MarianTranslator.translate()`."""

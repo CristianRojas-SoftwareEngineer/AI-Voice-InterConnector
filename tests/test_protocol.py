@@ -64,6 +64,27 @@ class TestSynthesizeRequest:
         req = SynthesizeRequest(text="hola", voice=name)
         assert len(req.voice) == MAX_VOICE_NAME_LENGTH
 
+    def test_source_language_defaults_to_none_then_resolves_to_language(self):
+        """Sin source_language explícito, el validator lo iguala a `language`
+        (default 'es-latam')."""
+        req = SynthesizeRequest(text="hola", voice="crist")
+        assert req.source_language == "es-latam"
+
+    def test_source_language_resolves_to_explicit_language(self):
+        """Con `language` distinto del default y sin source_language, el
+        validator lo iguala igual: sin origen explícito, origen == destino."""
+        req = SynthesizeRequest(text="hello", voice="crist", language="en")
+        assert req.source_language == "en"
+
+    def test_source_language_explicit_is_preserved(self):
+        """Con ambos explícitos y distintos, source_language se conserva
+        (dispara traducción aguas arriba)."""
+        req = SynthesizeRequest(
+            text="hola", voice="crist", language="en", source_language="es",
+        )
+        assert req.source_language == "es"
+        assert req.language == "en"
+
 
 class TestHealthResponse:
     def test_healthy_response(self):

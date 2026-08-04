@@ -25,12 +25,25 @@ HuggingFace del usuario mediante `tts-sidecar setup`. Se listan por completitud.
 |--------|--------------------------------------|--------|
 | `ResembleAI/Chatterbox-Multilingual-es-mx-latam` (language pack es-mx-latam) | **MIT** | <https://huggingface.co/ResembleAI/Chatterbox-Multilingual-es-mx-latam> |
 | `ResembleAI/chatterbox` (modelo base; fuente de `ve.safetensors`) | **MIT** | <https://huggingface.co/ResembleAI/chatterbox> |
+| `Helsinki-NLP/opus-mt-es-en` (traducción es→en, opt-in) | **CC-BY-4.0** | <https://huggingface.co/Helsinki-NLP/opus-mt-es-en> |
+| `Helsinki-NLP/opus-mt-en-es` (traducción en→es, opt-in) | **CC-BY-4.0** | <https://huggingface.co/Helsinki-NLP/opus-mt-en-es> |
 
-Ambos repositorios declaran licencia **MIT** en sus metadatos (verificado el 2026-07-03).
-El modelo base incluye además la nota de que su salida lleva un watermark neural
-(PerthNet) y un descargo de uso responsable («Don't use this model to do bad things»).
-TTS Sidecar **desactiva ese watermark** en el motor; ver la sección «Uso ético y
+Los repositorios de Chatterbox declaran licencia **MIT** en sus metadatos (verificado el
+2026-07-03). El modelo base incluye además la nota de que su salida lleva un watermark
+neural (PerthNet) y un descargo de uso responsable («Don't use this model to do bad
+things»). TTS Sidecar **desactiva ese watermark** en el motor; ver la sección «Uso ético y
 responsable» en `README.md`/`USAGE.md` para las obligaciones que ello traslada al usuario.
+
+### Atribución: opus-mt (`Helsinki-NLP/opus-mt-es-en` / `opus-mt-en-es`)
+
+El par de modelos de traducción **opus-mt** usado por el subsistema opcional de
+traducción cross-lingual (`translate`, y `speech say|synthesize --source-language`/
+`--target-language`) es obra del proyecto **OPUS-MT** del grupo **Language Technology
+Research Group de la Universidad de Helsinki** (Helsinki-NLP), distribuido bajo
+**CC-BY-4.0** (Creative Commons Attribution 4.0). Los pesos se descargan a demanda
+mediante `tts-sidecar setup --language en/all` y se convierten localmente a formato
+CTranslate2; no se empaquetan en el binario. Fichas del modelo: mismos enlaces que la
+tabla anterior. Texto de la licencia: <https://creativecommons.org/licenses/by/4.0/>.
 
 ### Atribución: PerthNet (`resemble-perth`)
 

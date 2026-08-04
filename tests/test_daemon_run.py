@@ -40,6 +40,17 @@ def _mock_engine_loading(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _mock_translation_loading(monkeypatch):
+    """Evita cargar los modelos de traducción reales en la precarga en caliente
+    (Tarea 11, language='en'/'all'): `TranslationModelLoader.load` mockeado para
+    no requerir el par opus-mt provisionado en disco durante estos tests."""
+    from tts_sidecar.translation import TranslationModelLoader
+
+    monkeypatch.setattr(TranslationModelLoader, "load", lambda self, cache_dir: MagicMock())
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch):
     """time.sleep(1) entre reintentos no debe ralentizar el suite."""
     monkeypatch.setattr(daemon_run.time, "sleep", MagicMock())
@@ -172,6 +183,44 @@ class TestServeAtexit:
             if call.args and call.args[0] is daemon_run._remove_own_pidfile
         ]
         assert len(pidfile_registrations) == 1
+
+
+class TestServeTranslationPreload:
+    """Tarea 11: `serve(language="en"/"all")` precarga en caliente el par de
+    traducción opus-mt es<->en antes de servir; `language="es-latam"` no lo toca."""
+
+    def test_language_en_preloads_both_translation_directions(self):
+        from tts_sidecar.translation import TranslationModelLoader
+
+        with patch.object(TranslationModelLoader, "load") as mock_load, \
+                patch("uvicorn.Server.run", return_value=None):
+            daemon_run.serve(auto_restart=False, language="en")
+
+        loaded_dirs = {call.args[0] for call in mock_load.call_args_list}
+        assert len(loaded_dirs) == 2
+        from tts_sidecar.daemon.run import app
+        assert app.state.daemon.translation_loader is not None
+        assert app.state.daemon.translation_service is not None
+
+    def test_language_all_preloads_translation_pair(self):
+        from tts_sidecar.translation import TranslationModelLoader
+
+        with patch.object(TranslationModelLoader, "load") as mock_load, \
+                patch("uvicorn.Server.run", return_value=None):
+            daemon_run.serve(auto_restart=False, language="all")
+
+        assert mock_load.call_count == 2
+
+    def test_language_es_latam_skips_translation_preload(self):
+        from tts_sidecar.translation import TranslationModelLoader
+        from tts_sidecar.daemon.run import app
+
+        with patch.object(TranslationModelLoader, "load") as mock_load, \
+                patch("uvicorn.Server.run", return_value=None):
+            daemon_run.serve(auto_restart=False, language="es-latam")
+
+        mock_load.assert_not_called()
+        assert app.state.daemon.translation_loader is None
 
 
 class TestMain:

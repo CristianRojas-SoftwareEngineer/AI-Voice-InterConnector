@@ -334,6 +334,7 @@ def common_pyinstaller_args(
         "--collect-all", "perth",
         "--collect-all", "librosa",
         "--collect-all", "torch",
+        "--collect-all", "ctranslate2",
         "--collect-all", "sklearn",
         "--collect-all", "pandas",
         "--collect-all", "onnx",

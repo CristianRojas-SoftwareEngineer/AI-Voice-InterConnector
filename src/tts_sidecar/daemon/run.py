@@ -122,6 +122,31 @@ def serve(
 
                 log(f"Daemon: compute_backend={compute_backend}")
 
+                # Precarga en caliente del par de traducción opus-mt es<->en
+                # (Tarea 11): con --language en/all, ambas direcciones quedan
+                # calientes desde el arranque en vez de esperar a la primera
+                # petición /synthesize que traduzca. `_require_models_cached_for_daemon`
+                # ya validó en el proceso padre (cmd_daemon) que el par está
+                # provisionado en disco antes de llegar aquí.
+                if language in ("en", "all"):
+                    from ..translation import (
+                        TranslationModelLoader,
+                        TranslationService,
+                        SentenceSegmenter,
+                        MarianTranslator,
+                        SegmentAssembler,
+                        default_cache_dir,
+                    )
+
+                    translation_loader = TranslationModelLoader()
+                    app.state.daemon.translation_loader = translation_loader
+                    app.state.daemon.translation_service = TranslationService(
+                        translation_loader, SentenceSegmenter(),
+                        MarianTranslator(translation_loader), SegmentAssembler(),
+                    )
+                    for source, target in (("es", "en"), ("en", "es")):
+                        translation_loader.load(default_cache_dir(source, target))
+
             # Etapa 2: iniciar servidor
             with StageTimer("2-Daemon", "Etapa 2/3: Iniciando servidor"):
                 log(f"Daemon listo en http://127.0.0.1:{port}")

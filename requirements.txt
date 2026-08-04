@@ -20,6 +20,10 @@ psutil>=5.9.0
 fastapi>=0.110.0          # Daemon: servidor HTTP
 uvicorn[standard]>=0.29.0 # Daemon: ASGI server
 pydantic>=2.0.0           # Daemon: modelos request/response
+pysbd>=0.3.4              # Traducción: segmentación de oraciones
+ctranslate2>=4.8.1        # Traducción: runtime de inferencia
+transformers>=5.2.0       # Traducción: conversión opus-mt->CT2 en 'setup' (chatterbox-tts ya la trae transitiva, pin ==5.2.0)
+sacremoses>=0.1.1         # Traducción: pre/post-procesado que requiere MarianTokenizer
 
 # Específicas de plataforma
 pycaw>=20240210; sys_platform == 'win32'

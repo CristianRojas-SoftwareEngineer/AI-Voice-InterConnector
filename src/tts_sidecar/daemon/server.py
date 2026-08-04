@@ -14,7 +14,9 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
 
 from .. import voices, __version__
-from ..exceptions import SynthesisCancelled
+from ..exceptions import (
+    SynthesisCancelled, TranslationModelMissingError, TranslationFailedError,
+)
 from .protocol import (
     SynthesizeRequest,
     HealthResponse,
@@ -58,6 +60,13 @@ class DaemonState:
         self.server = server
         self.start_time = start_time
         self.compute_backend = compute_backend
+        # Loader/servicio de traducción, construidos perezosamente en el
+        # primer /synthesize que traduce (ver `_get_translation_service`):
+        # un único `TranslationModelLoader` por proceso, igual que `engines`
+        # cachea un motor por idioma, así una segunda petición con el mismo
+        # par no vuelve a cargar el modelo CT2 desde disco.
+        self.translation_loader: Optional[object] = None
+        self.translation_service: Optional[object] = None
 
     @property
     def engine(self) -> Optional[object]:
@@ -75,6 +84,23 @@ class DaemonState:
 def get_daemon_state(request: Request) -> "DaemonState":
     """Provee a los endpoints el DaemonState alojado en app.state (DI de FastAPI)."""
     return request.app.state.daemon
+
+
+def _get_translation_service(state: "DaemonState"):
+    """Devuelve el `TranslationService` cacheado en `state`, construyéndolo la
+    primera vez que se necesita (imports diferidos: pysbd/ctranslate2/
+    sentencepiece no se cargan en un daemon que nunca traduce)."""
+    if state.translation_service is None:
+        from ..translation import (
+            TranslationModelLoader, TranslationService, SentenceSegmenter,
+            MarianTranslator, SegmentAssembler,
+        )
+        state.translation_loader = TranslationModelLoader()
+        state.translation_service = TranslationService(
+            state.translation_loader, SentenceSegmenter(),
+            MarianTranslator(state.translation_loader), SegmentAssembler(),
+        )
+    return state.translation_service
 
 
 def _clear_model_memory():
@@ -113,9 +139,18 @@ app.state.daemon = DaemonState()
 async def health_check(state: DaemonState = Depends(get_daemon_state)):
     """Endpoint de health check."""
     import time
+    model_loaded = {lang: lang in state.engines for lang in ("es-latam", "en")}
+    if state.translation_loader is not None:
+        from ..translation import default_cache_dir
+        # El par opus-mt es<->en se provisiona/reporta como un único recurso
+        # (Tarea 8): "caliente" si cualquiera de las dos direcciones ya se
+        # cargó en memoria (la primera traducción real de esa dirección).
+        model_loaded["translate:es-en"] = state.translation_loader.is_loaded(
+            default_cache_dir("es", "en")
+        ) or state.translation_loader.is_loaded(default_cache_dir("en", "es"))
     return HealthResponse(
         status="healthy" if state.engines else "initializing",
-        model_loaded={lang: lang in state.engines for lang in ("es-latam", "en")},
+        model_loaded=model_loaded,
         uptime_seconds=time.time() - state.start_time if state.start_time else 0,
         version=__version__,
     )
@@ -212,8 +247,19 @@ def synthesize(
                         q.put(("progress", ev))
 
                     ref_path, speech_path = voices.voice_paths(req.voice)
+
+                    # Traduce ANTES de sintetizar cuando el idioma de origen
+                    # difiere del destino (normalizados, Desviación 5),
+                    # passthrough intacto si coinciden.
+                    from ..translation import resolve_language
+                    source = resolve_language(req.source_language)
+                    target = resolve_language(req.language)
+                    text = req.text
+                    if source != target:
+                        text = _get_translation_service(state).translate(req.text, source, target)
+
                     result = engine.synthesize(
-                        text=req.text,
+                        text=text,
                         timbre_reference=ref_path,
                         speech_reference=speech_path,
                         verbose=True,
@@ -239,6 +285,18 @@ def synthesize(
                 logging.getLogger(__name__).debug(
                     "synthesize: cancelada por desconexión del cliente"
                 )
+            except TranslationModelMissingError:
+                logging.getLogger(__name__).warning(
+                    "synthesize: modelo de traducción no provisionado"
+                )
+                q.put((
+                    "error",
+                    {"detail": "Modelo de traducción no provisionado. Ejecuta "
+                               "'tts-sidecar setup --language en' primero."},
+                ))
+            except TranslationFailedError as e:
+                logging.getLogger(__name__).error("synthesize: fallo de traducción: %s", e)
+                q.put(("error", {"detail": "Error de traducción"}))
             except FileNotFoundError as e:
                 # El detalle real (con rutas) queda solo en el log del servidor.
                 logging.getLogger(__name__).warning("synthesize: recurso no encontrado: %s", e)

@@ -48,6 +48,7 @@ from .exit_codes import (  # noqa: F401
     EXIT_STATE_CONFLICT,
     EXIT_NOT_APPLICABLE,
     EXIT_PRECONDITION_FAILED,
+    EXIT_TRANSLATION_FAILED,
     EXIT_INTERRUPTED,
     CliError,
 )
@@ -170,10 +171,12 @@ def _synthesize_via_daemon(args, voice):
     # actualiza la etiqueta del spinner en vivo (etapa y tokens del T3). En
     # no-TTY el spinner es un no-op y la salida es idéntica a antes.
     with Spinner("Sintetizando vía daemon…") as sp:
+        target_language = getattr(args, "target_language", "es-latam")
         result = client.synthesize(
             text=args.text,
             voice=voice,
-            language=getattr(args, "language", "es-latam"),
+            language=target_language,
+            source_language=getattr(args, "source_language", None) or target_language,
             exaggeration=getattr(args, "exaggeration", None),
             cfg_weight=getattr(args, "cfg_weight", None),
             temperature=getattr(args, "temperature", None),
@@ -183,6 +186,40 @@ def _synthesize_via_daemon(args, voice):
     log(f"[Servidor] Síntesis completada ({elapsed:.1f}s)")
 
     return result
+
+
+def _translate_stage(text: str, source_language: str, target_language: str) -> str:
+    """Traduce `text` de `source_language` a `target_language` si difieren
+    (normalizados vía `resolve_language`, Desviación 5: la comparación se
+    hace ya normalizada, no con los valores crudos de la taxonomía de
+    síntesis); passthrough intacto si coinciden. Modelo de traducción ausente
+    remite a 'setup'; un fallo del backend sale con `EXIT_TRANSLATION_FAILED`.
+    """
+    from .translation import (
+        TranslationService, TranslationModelLoader, SentenceSegmenter,
+        MarianTranslator, SegmentAssembler, resolve_language,
+    )
+    from .exceptions import TranslationModelMissingError, TranslationFailedError
+
+    source = resolve_language(source_language)
+    target = resolve_language(target_language)
+    if source == target:
+        return text
+
+    model_loader = TranslationModelLoader()
+    service = TranslationService(
+        model_loader, SentenceSegmenter(), MarianTranslator(model_loader), SegmentAssembler(),
+    )
+    try:
+        return service.translate(text, source, target)
+    except TranslationModelMissingError:
+        raise CliError(
+            EXIT_MODEL_MISSING, "model_missing",
+            "Error: el modelo de traducción no está provisionado. Ejecuta "
+            "'tts-sidecar setup --language en' primero.",
+        )
+    except TranslationFailedError as e:
+        raise CliError(EXIT_TRANSLATION_FAILED, "translation_failed", f"Error: {e}")
 
 
 def _require_model_cached(model: str = "es-mx-latam", language: str = "es-latam"):
@@ -202,12 +239,26 @@ def _require_models_cached_for_daemon(language: str) -> None:
 
     `language` "all" precarga ambos (es-latam y en); un valor concreto solo
     exige el suyo. Reutiliza `_require_model_cached` (mismo mensaje remitiendo
-    a 'setup --language <x>') para cada idioma a precargar.
+    a 'setup --language <x>') para cada idioma a precargar. Con `en`/`all`
+    exige también el par de traducción opus-mt es<->en (Tarea 11): el daemon
+    lo precarga en caliente junto al modelo de síntesis inglés.
     """
     from .model_cache import model_for
     languages_to_preload = ["es-latam", "en"] if language == "all" else [language]
     for lang in languages_to_preload:
         _require_model_cached(model_for(lang), lang)
+
+    if language in ("en", "all"):
+        from pathlib import Path
+        from .translation import default_cache_dir
+        for source, target in (("es", "en"), ("en", "es")):
+            if not Path(default_cache_dir(source, target)).exists():
+                raise CliError(
+                    EXIT_MODEL_MISSING, "model_missing",
+                    f"Error: el modelo de traducción '{source}->{target}' no está "
+                    "descargado.\nEjecuta 'tts-sidecar setup --language en' para "
+                    "descargarlo antes de continuar.",
+                )
 
 
 def _emit_say_json(voice_name: str) -> None:
@@ -343,13 +394,19 @@ def _dispatch_synthesis(args, voice_name: str):
     # modelo (primer speech synthesize) y la síntesis. Las líneas [Stage N/4] del engine se
     # intercalan de forma coordinada (timing._active_spinner).
     from .model_cache import model_for
-    model = model_for(getattr(args, "language", "es-latam"))
+    target_language = getattr(args, "target_language", "es-latam")
+    source_language = getattr(args, "source_language", None) or target_language
+    model = model_for(target_language)
+
+    # Traduce ANTES de sintetizar cuando el idioma de origen difiere del
+    # destino (passthrough si coinciden, ya normalizados dentro de la función).
+    text = _translate_stage(args.text, source_language, target_language)
 
     with Spinner("Cargando modelo…") as _sp:
         engine = ChatterboxEngine.get_instance(model=model, compute_backend=args.compute_backend)
         _sp.update("Sintetizando voz…")
         result = engine.synthesize(
-            text=args.text,
+            text=text,
             timbre_reference=timbre_reference,
             speech_reference=speech_reference,
             progress_callback=lambda ev: _sp.update(format_progress_event(ev)),
@@ -371,9 +428,9 @@ def cmd_speech_say(args):
         voice_name = _validate_identifier(getattr(args, "voice", None) or "default", "voz")
 
         # Exige el modelo en caché antes de sintetizar (descargas → 'setup').
-        language = getattr(args, "language", "es-latam")
+        target_language = getattr(args, "target_language", "es-latam")
         from .model_cache import model_for
-        _require_model_cached(model_for(language), language)
+        _require_model_cached(model_for(target_language), target_language)
         _require_voice_exists(voice_name)
 
         result, _daemon_flag = _dispatch_synthesis(args, voice_name)
@@ -387,10 +444,10 @@ def cmd_speech_say(args):
         # Remitir a setup solo cuando el faltante es el modelo: un audio o una
         # voz ausentes no se resuelven descargando el modelo.
         from .model_cache import is_model_cached, model_for
-        language = getattr(args, "language", "es-latam")
-        if not is_model_cached(model_for(language)):
+        target_language = getattr(args, "target_language", "es-latam")
+        if not is_model_cached(model_for(target_language)):
             raise CliError(EXIT_MODEL_MISSING, "model_missing",
-                            f"Ejecuta 'tts-sidecar setup --language {language}' primero.")
+                            f"Ejecuta 'tts-sidecar setup --language {target_language}' primero.")
         raise CliError(EXIT_NOT_FOUND, "not_found",
                         "Voz no encontrada.")
     except Exception as e:
@@ -432,9 +489,9 @@ def cmd_speech_synthesize(args):
         voice_name = _validate_identifier(getattr(args, "voice", None) or "default", "voz")
         label = _validate_identifier(args.label, "etiqueta")
 
-        language = getattr(args, "language", "es-latam")
+        target_language = getattr(args, "target_language", "es-latam")
         from .model_cache import model_for
-        _require_model_cached(model_for(language), language)
+        _require_model_cached(model_for(target_language), target_language)
         _require_voice_exists(voice_name)
 
         force = getattr(args, "force", False)
@@ -471,10 +528,10 @@ def cmd_speech_synthesize(args):
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         from .model_cache import is_model_cached, model_for
-        language = getattr(args, "language", "es-latam")
-        if not is_model_cached(model_for(language)):
+        target_language = getattr(args, "target_language", "es-latam")
+        if not is_model_cached(model_for(target_language)):
             raise CliError(EXIT_MODEL_MISSING, "model_missing",
-                            f"Ejecuta 'tts-sidecar setup --language {language}' primero.")
+                            f"Ejecuta 'tts-sidecar setup --language {target_language}' primero.")
         raise CliError(EXIT_NOT_FOUND, "not_found", "Voz no encontrada.")
     except Exception as e:
         from .daemon import DaemonIPCError
@@ -825,6 +882,60 @@ def cmd_version(args):
         print(f"tts-sidecar {__version__}")
 
 
+def cmd_translate(args):
+    """Traduce texto `es<->en` vía `TranslationService` (texto->texto, sin
+    audio ni motor TTS). `--from == --to` es passthrough: `TranslationService`
+    ya implementa el atajo sin cargar ningún modelo."""
+    text = args.text
+    if not text or not text.strip():
+        raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                        "Error: --text no puede estar vacío.")
+
+    from .daemon.protocol import MAX_TEXT_LENGTH
+    if len(text) > MAX_TEXT_LENGTH:
+        raise CliError(
+            EXIT_INVALID_INPUT, "usage_error",
+            f"Error: el texto tiene {len(text)} caracteres; el máximo permitido es "
+            f"{MAX_TEXT_LENGTH}. Fragmenta el texto en varias llamadas.",
+        )
+
+    source = args.from_lang
+    target = args.to_lang
+
+    from .translation import (
+        TranslationService, TranslationModelLoader, SentenceSegmenter,
+        MarianTranslator, SegmentAssembler,
+    )
+    from .exceptions import (
+        TranslationModelMissingError, TranslationFailedError, UnsupportedLanguagePairError,
+    )
+
+    model_loader = TranslationModelLoader()
+    service = TranslationService(
+        model_loader, SentenceSegmenter(), MarianTranslator(model_loader), SegmentAssembler(),
+    )
+
+    try:
+        translated = service.translate(text, source, target)
+    except TranslationModelMissingError:
+        # Modelo ausente reutiliza el fallo 'model_missing' existente (§ exit 4),
+        # remitiendo a 'setup', en vez de un código nuevo (Tarea 7 del plan).
+        raise CliError(
+            EXIT_MODEL_MISSING, "model_missing",
+            "Error: el modelo de traducción no está provisionado. Ejecuta "
+            "'tts-sidecar setup --language en' primero.",
+        )
+    except UnsupportedLanguagePairError as e:
+        raise CliError(EXIT_INVALID_INPUT, "usage_error", f"Error: {e}")
+    except TranslationFailedError as e:
+        raise CliError(EXIT_TRANSLATION_FAILED, "translation_failed", f"Error: {e}")
+
+    if getattr(args, "json", False):
+        emit_json({"translated": translated, "source": source, "target": target})
+    else:
+        print(translated)
+
+
 def _environment_checks() -> list[tuple[str, str, str]]:
     """Chequeos de entorno compartidos por doctor y setup.
 
@@ -992,6 +1103,25 @@ def cmd_doctor(args):
                 ))
     except Exception as e:
         checks.append(("FAIL", "Chatterbox model", f"{e} (ejecuta: tts-sidecar setup)"))
+
+    # Chequea el modelo de traducción opus-mt es<->en convertido a CT2 (Tarea 8):
+    # un único chequeo lógico (ambas direcciones se provisionan juntas en
+    # 'setup --language en/all'), PASS solo si las dos están presentes.
+    try:
+        from .translation import default_cache_dir
+        missing = [
+            f"{source}->{target}" for source, target in (("es", "en"), ("en", "es"))
+            if not Path(default_cache_dir(source, target)).exists()
+        ]
+        if not missing:
+            checks.append(("PASS", "Translation model (es<->en)", "opus-mt presente en la caché"))
+        else:
+            checks.append((
+                "FAIL", "Translation model (es<->en)",
+                f"falta(n) {', '.join(missing)} (ejecuta: tts-sidecar setup --language en)",
+            ))
+    except Exception as e:
+        checks.append(("FAIL", "Translation model (es<->en)", f"{e} (ejecuta: tts-sidecar setup --language en)"))
 
     # Chequea el directorio de voces de usuario
     voices_path = voices.voices_root()
@@ -1520,6 +1650,22 @@ def _describe_provision_failure(e: Exception):
     return (EXIT_ERROR, "provision_failed", f"[FAIL] La provisión falló: {e}")
 
 
+def _convert_translation_model(source_dir: str, output_dir: str) -> None:
+    """Convierte un modelo `opus-mt` ya descargado (snapshot de HuggingFace) al
+    formato CT2 en `output_dir`.
+
+    Equivale en código al comando `ct2-transformers-converter --model
+    <source_dir> --output_dir <output_dir> --copy_files source.spm target.spm`:
+    usa la misma API Python que expone esa CLI. Función de módulo (en vez de
+    inline en `cmd_setup`) para poder inyectar un doble de prueba y no
+    requerir el runtime nativo CT2 en los tests (Tarea 8).
+    """
+    from ctranslate2.converters import TransformersConverter
+
+    converter = TransformersConverter(source_dir, copy_files=["source.spm", "target.spm"])
+    converter.convert(output_dir, quantization="int8", force=True)
+
+
 def cmd_setup(args):
     """Provisiona el runtime: corre los chequeos de entorno y descarga los modelos si faltan.
 
@@ -1639,6 +1785,39 @@ def cmd_setup(args):
                     file=sys.stderr,
                 )
 
+        def _provision_translation_pairs(results: dict):
+            """Descarga y convierte a CT2 el par `opus-mt` es<->en (Tarea 8).
+
+            Solo aplica con `--language en`/`all` (el bucle es<->en solo entra
+            en juego con inglés de por medio); `es-latam` no lo toca. Idempotente:
+            se salta la descarga/conversión de cada dirección cuyo artefacto CT2
+            ya exista en `default_cache_dir`.
+            """
+            if language not in ("en", "all"):
+                return
+            from .translation import default_cache_dir
+            from huggingface_hub import snapshot_download as _snapshot_download
+
+            for source, target in (("es", "en"), ("en", "es")):
+                pair_name = f"opus-mt-{source}-{target}"
+                output_dir = default_cache_dir(source, target)
+                if Path(output_dir).exists():
+                    print(
+                        f"\n[PASS] El modelo de traducción '{pair_name}' ya está "
+                        f"convertido en: {output_dir}", file=sys.stderr,
+                    )
+                    results[pair_name] = {"already_cached": True, "downloaded": False}
+                    continue
+
+                print(f"\nDescargando el modelo de traducción {pair_name}...", file=sys.stderr)
+                snapshot_dir = _snapshot_download(
+                    repo_id=f"Helsinki-NLP/{pair_name}", token=os.getenv("HF_TOKEN"),
+                )
+                print(f"Convirtiendo {pair_name} a formato CT2...", file=sys.stderr)
+                _convert_translation_model(snapshot_dir, output_dir)
+                results[pair_name] = {"already_cached": False, "downloaded": True}
+                print(f"[PASS] Modelo de traducción convertido en: {output_dir}", file=sys.stderr)
+
         results = {}
         pending = []
         for model in models_to_provision:
@@ -1651,6 +1830,7 @@ def cmd_setup(args):
 
         if not pending:
             print("Provisión completa. No hay nada que descargar.", file=sys.stderr)
+            _provision_translation_pairs(results)
             _purge_incomplete()
             _emit_setup_json(results)
             return
@@ -1714,6 +1894,7 @@ def cmd_setup(args):
 
         print("\n[PASS] ¡Modelo(s) descargado(s) correctamente!", file=sys.stderr)
         print(f"  Ubicación: {model_dir}", file=sys.stderr)
+        _provision_translation_pairs(results)
         _purge_incomplete()
         _emit_setup_json(results)
 
@@ -1803,6 +1984,13 @@ def cmd_cleanup(args):
             if not p.name.startswith("models--ResembleAI--"):
                 raise RuntimeError(f"Ruta inesperada fuera del proyecto: {p}")
             targets.append((p, "lock de modelo"))
+        # El modelo de traducción opus-mt convertido (Tarea 8) comparte el
+        # recurso --model: no se introduce un flag --language en cleanup
+        # (Simplicity First). Se barre la raíz completa de translation-models/
+        # (ambas direcciones es<->en) en un solo target.
+        from .translation import default_cache_dir
+        translation_root = Path(default_cache_dir("es", "en")).parent
+        targets.append((translation_root, "modelo de traducción"))
     if do_voices:
         from . import voices
         targets.append((Path(voices.voices_root()), "voces de usuario"))
@@ -2031,16 +2219,20 @@ def build_parser() -> argparse.ArgumentParser:
                               choices=["auto", "cpu", "cuda", "mps"],
                               help="Backend de cómputo para la inferencia (solo surte efecto en la ruta "
                                    "directa); 'auto' detecta el mejor disponible (default: auto)")
-    speech_synth.add_argument("--language", choices=["es-latam", "en"], default="es-latam",
+    speech_synth.add_argument("--target-language", choices=["es-latam", "en"], default="es-latam",
                               help="Idioma/modelo de síntesis (default: es-latam); 'en' reutiliza el "
                                    "timbre clonado para producir audio en inglés (síntesis cross-lingual)")
+    speech_synth.add_argument("--source-language", choices=["es-latam", "en"], default=None,
+                              help="Idioma del texto de entrada (default: igual a --target-language, "
+                                   "sin traducir); si difiere de --target-language, el texto se traduce "
+                                   "antes de sintetizar")
     speech_synth.add_argument("--exaggeration", type=float, default=None,
-                              help="Override de exaggeration (default: el de la ruta de --language)")
+                              help="Override de exaggeration (default: el de la ruta de --target-language)")
     speech_synth.add_argument("--cfg-weight", type=float, default=None,
-                              help="Override de cfg_weight (default: el de la ruta de --language); "
+                              help="Override de cfg_weight (default: el de la ruta de --target-language); "
                                    "0.0 no está permitido (crash conocido en el inglés base)")
     speech_synth.add_argument("--temperature", type=float, default=None,
-                              help="Override de temperature (default: el de la ruta de --language)")
+                              help="Override de temperature (default: el de la ruta de --target-language)")
     speech_synth_daemon = speech_synth.add_mutually_exclusive_group()
     speech_synth_daemon.add_argument("--daemon", action="store_true",
                               help="Exige el daemon; si no está activo, sale con 5 (sin flags se sondea "
@@ -2060,16 +2252,20 @@ def build_parser() -> argparse.ArgumentParser:
                               choices=["auto", "cpu", "cuda", "mps"],
                               help="Backend de cómputo para la inferencia; 'auto' detecta el mejor "
                                    "disponible (default: auto)")
-    speech_say.add_argument("--language", choices=["es-latam", "en"], default="es-latam",
+    speech_say.add_argument("--target-language", choices=["es-latam", "en"], default="es-latam",
                               help="Idioma/modelo de síntesis (default: es-latam); 'en' reutiliza el "
                                    "timbre clonado para producir audio en inglés (síntesis cross-lingual)")
+    speech_say.add_argument("--source-language", choices=["es-latam", "en"], default=None,
+                              help="Idioma del texto de entrada (default: igual a --target-language, "
+                                   "sin traducir); si difiere de --target-language, el texto se traduce "
+                                   "antes de sintetizar")
     speech_say.add_argument("--exaggeration", type=float, default=None,
-                              help="Override de exaggeration (default: el de la ruta de --language)")
+                              help="Override de exaggeration (default: el de la ruta de --target-language)")
     speech_say.add_argument("--cfg-weight", type=float, default=None,
-                              help="Override de cfg_weight (default: el de la ruta de --language); "
+                              help="Override de cfg_weight (default: el de la ruta de --target-language); "
                                    "0.0 no está permitido (crash conocido en el inglés base)")
     speech_say.add_argument("--temperature", type=float, default=None,
-                              help="Override de temperature (default: el de la ruta de --language)")
+                              help="Override de temperature (default: el de la ruta de --target-language)")
     speech_say_daemon = speech_say.add_mutually_exclusive_group()
     speech_say_daemon.add_argument("--daemon", action="store_true",
                               help="Usar el daemon sin sondeo previo; si falla, se reporta el error "
@@ -2226,6 +2422,18 @@ def build_parser() -> argparse.ArgumentParser:
     version_parser = subparsers.add_parser("version", help="Muestra la versión")
     version_parser.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
     version_parser.set_defaults(func=cmd_version)
+
+    # comando translate
+    translate_parser = subparsers.add_parser(
+        "translate", help="Traduce texto es<->en (sin síntesis de audio)",
+    )
+    translate_parser.add_argument("--text", required=True, help="Texto a traducir")
+    translate_parser.add_argument("--from", dest="from_lang", required=True, choices=["es", "en"],
+                                  help="Idioma de origen del texto")
+    translate_parser.add_argument("--to", dest="to_lang", required=True, choices=["es", "en"],
+                                  help="Idioma destino de la traducción")
+    translate_parser.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
+    translate_parser.set_defaults(func=cmd_translate)
 
     return parser
 

@@ -18,6 +18,7 @@ Este documento es la descripción normativa del contrato público de la CLI —c
 - [10. El canal de error y los payloads](#10-el-canal-de-error-y-los-payloads)
 - [11. `cleanup`, `setup` y `voice`](#11-cleanup-setup-y-voice)
 - [12. Contratos externos](#12-contratos-externos)
+- [13. El comando `translate` y la síntesis cross-lingual](#13-el-comando-translate-y-la-síntesis-cross-lingual)
 
 ---
 
@@ -81,12 +82,13 @@ El proyecto tiene dos canales legibles por máquina y usa los dos: el entero, qu
 
 ## 2. La superficie y el vocabulario
 
-#### Ocho comandos de nivel superior
+#### Nueve comandos de nivel superior
 
 | Comando | Sub-acciones | Propósito |
 |---|---|---|
 | `speech` | `synthesize`, `say`, `play`, `list`, `remove` | Síntesis de habla y gestión del almacén |
 | `voice` | `list`, `clone`, `remove` | Gestión del registro de voces |
+| `translate` | — | Traducción de texto `es↔en`, aislada de la síntesis |
 | `devices` | — | Lista dispositivos de audio |
 | `doctor` | — | Diagnósticos |
 | `setup` | — | Provisión del runtime |
@@ -162,8 +164,8 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 
 | Sub-acción | Parámetros |
 |---|---|
-| `speech synthesize` | `--text/-t` **requerido** · `--label/-l` **requerido** · `--voice/-v` · `--play/-p` · `--force/-f` · `--compute-backend/-cb` · `--language` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
-| `speech say` | `--text/-t` **requerido** · `--voice/-v` · `--compute-backend/-cb` · `--language` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
+| `speech synthesize` | `--text/-t` **requerido** · `--label/-l` **requerido** · `--voice/-v` · `--play/-p` · `--force/-f` · `--compute-backend/-cb` · `--source-language` · `--target-language` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
+| `speech say` | `--text/-t` **requerido** · `--voice/-v` · `--compute-backend/-cb` · `--source-language` · `--target-language` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
 | `speech play` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
 | `speech list` | `--voice/-v` (filtro) · `--json` |
 | `speech remove` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
@@ -175,6 +177,8 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 **`--label` requerido en `synthesize` es lo que sostiene el reparto.** Elimina de raíz la invocación con efecto cero sin escribir ninguna regla —la rechaza el parser— y elimina la trampa de «previsualizo con un comando y guardo con otro»: como `synthesize` siempre persiste, nadie pierde la toma que acaba de oír.
 
 **`--compute-backend/-cb` lo declaran las dos que sintetizan**, con valores `auto` (default), `cpu`, `cuda` y `mps`. Solo surte efecto en la ruta directa; su interacción con el despacho está en §5.
+
+**`--target-language` es el rename de `--language`, y `--source-language` es nuevo.** `--target-language {es-latam, en}` (default `es-latam`) elige el modelo y el idioma del audio, igual que antes hacía `--language`. `--source-language {es-latam, en}` (default: igual a `--target-language`) declara el idioma del texto de entrada; ambos son opcionales y la traducción es **opt-in**: si coinciden, el comportamiento es el de siempre. Detalle del rename y de la traducción previa a la síntesis en §13.
 
 **`speech play` no necesita modelo ni daemon**: lee el WAV del almacén y lo reproduce.
 
@@ -399,6 +403,7 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 | `6` | `EXIT_STATE_CONFLICT` | El recurso existe o está ocupado; la operación no procede sin liberarlo o forzarla |
 | `7` | `EXIT_NOT_APPLICABLE` | La operación no aplica a este objetivo o entorno, y no aplicará reintentando |
 | `8` | `EXIT_PRECONDITION_FAILED` | Una precondición del entorno no se cumple; el remedio está fuera del programa y la operación es reintentable una vez corregida |
+| `9` | `EXIT_TRANSLATION_FAILED` | El pipeline de traducción falló con el modelo ya cargado |
 | `130` | `EXIT_INTERRUPTED` | Interrupción del usuario |
 
 #### Cómo se reparten los enteros
@@ -415,6 +420,7 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 | **6** | Recurso ocupado | `--force`, otro nombre, `daemon stop`, o esperar a que se libere |
 | **7** | Imposibilidad permanente | **Ninguna** — no reintentar nunca |
 | **8** | Precondición de entorno: el resto | Ninguna propia: delegar y reintentar el mismo comando |
+| **9** | Imprevisto, pero en la etapa de traducción | Distinguirlo del fallo de síntesis (**1**) es lo que cambia la siguiente llamada: el modelo TTS puede seguir intentándose sin traducir |
 
 **Los dos casos límite son inversos, y esa simetría es lo que valida el criterio.** El 4, el 5 y el 8 son **una** clase por causa —modelo ausente, daemon caído, disco lleno y token vencido son el mismo tipo de hecho— repartida en **tres** enteros, porque lo único que un consumidor puede convertir en una llamada distinta es un comando de esta CLI: `setup` y `daemon start` se separan y el resto colapsa en el 8. El 6 es lo contrario: **tres** remedios de naturaleza distinta (`--force`, `daemon stop`, cerrar un proceso externo) plegados en **un** entero, porque ninguno cambia lo que el consumidor distingue —«ocupado» frente a «ausente» y «mal escrito»—. La resolución del entero es la de lo que este programa puede nombrar como paso ejecutable.
 
@@ -566,3 +572,25 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 `/synthesize` recibe `voice: str`. No hay lista de directorios de audio permitidos, ni validación de rutas de audio, ni directorio de sesión del daemon, porque no hay rutas que validar.
 
 **Riesgo conocido y declarado**: `data_root()` depende de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. Está atenuado porque `/voices` permite inspeccionar la vista del daemon.
+
+## 13. El comando `translate` y la síntesis cross-lingual
+
+#### `translate`: texto→texto, aislado de la síntesis
+
+`translate` no pertenece a ningún grupo nominal: es texto→texto, sin voz ni modelo TTS de por medio. `--from {es, en}` y `--to {es, en}` son **ambos requeridos** — a diferencia de los flags opcionales de `speech`, aquí traducir es la única función del comando, así que no hay default que lo excuse. `--from == --to` es *passthrough*: devuelve el texto sin cargar el modelo.
+
+| Parámetros | Payload `--json` |
+|---|---|
+| `--text` **requerido** (sin alias `-t`, a diferencia de `speech`) · `--from` **requerido** · `--to` **requerido** · `--json` | `{"translated", "source", "target"}` |
+
+#### Traducción opt-in en `speech say`/`speech synthesize`
+
+`--source-language`/`--target-language` (§3) insertan una etapa de traducción **antes** de la síntesis cuando declaran idiomas distintos; el motor de síntesis no cambia, solo recibe el texto ya traducido. El modelo de traducción ausente reutiliza el exit **4** (`EXIT_MODEL_MISSING`), remitiendo a `setup`, en vez de un código propio: es la misma precondición de entorno que el modelo TTS. Un fallo de la inferencia de traducción, con el modelo ya cargado, sale con **9** (`EXIT_TRANSLATION_FAILED`, §9) — código distinto del **1** genérico de síntesis, porque distingue en qué etapa falló la invocación.
+
+#### El rename `--language` → `--target-language`
+
+**Cambio incompatible y deliberado, sin alias de transición.** `speech say`/`speech synthesize` reemplazan `--language` por `--target-language`; `setup`, `daemon` y `doctor` **conservan** `--language`, porque ahí no hay ambigüedad origen/destino (la provisión no traduce). El integrador de narración (§12) no se ve afectado: sus invocaciones nunca pasan `--language` en `speech say`, así que el rename no le rompe ningún flag en uso, aunque sí es parte del mismo contrato versionado.
+
+#### Provisión y daemon
+
+`setup --language {en, all}` descarga y convierte a formato CT2 el par `opus-mt-{es,en}` junto al modelo TTS inglés; `doctor` reporta un chequeo único «Translation model (es<->en)» que exige **ambas** direcciones para pasar; `cleanup --model` incluye la caché de modelos de traducción en el barrido. `daemon start --language {en, all}` precarga también el modelo de traducción en RAM.

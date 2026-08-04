@@ -56,6 +56,8 @@ Obtener un sistema TTS **100% local** con audio nativo por sistema operativo, pa
 
 Motor TTS: **Chatterbox Multilingual V3** (ResembleAI) — 23+ idiomas, clonación de voz, licencia MIT.
 
+Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre CTranslate2, opt-in) cierra el bucle de la clonación de voz: el usuario escribe en su idioma nativo y obtiene audio en el idioma destino con su propia voz clonada, en un solo comando (`speech say`/`synthesize --source-language ... --target-language ...`) o vía el comando `translate` cuando solo necesita el texto traducido.
+
 **El sistema debe ser consumible via línea de comandos** para que cualquier aplicación en cualquier lenguaje de programación pueda invocarlo (Python, JavaScript/Node, Rust, Go, Java, C#, etc.)
 
 **La experiencia del usuario final debe ser equivalente en Windows, Linux y macOS**: instalar, usar, actualizar y desinstalar con la misma cantidad de fricción, privilegios y residuo en los tres SO. Las diferencias tecnológicas idiomáticas por SO (Inno Setup, AppImage, `.dmg`/Cask) son aceptables; las diferencias de experiencia no. El estado de esta equivalencia y las brechas pendientes se registran en [docs/PARITY.md](PARITY.md).
@@ -69,7 +71,7 @@ Implementar y validar la síntesis en español latinoamericano con voz propia de
 - **100% local**: Sin APIs externas ni conexiones a internet para síntesis
 - **Instalador único por SO (canal nativo)**: Un archivo ejecutable por plataforma; el canal PyPI complementario (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)) no está sujeto a esta restricción
 - **Sin dependencias externas (canal nativo)**: El usuario final no necesita instalar nada más; el canal PyPI requiere Python 3.13+ y, en Linux, `libportaudio2` del sistema
-- **Licencia**: El código propio se distribuye bajo GPL-3.0-or-later; todas las dependencias y el modelo usados deben tener licencias compatibles con GPLv3 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible, como LGPL-2.1+/MPL-2.0)
+- **Licencia**: El código propio se distribuye bajo GPL-3.0-or-later; todas las dependencias y los modelos usados deben tener licencias compatibles con GPLv3 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible, como LGPL-2.1+/MPL-2.0). El par de traducción `opus-mt` (opt-in) se distribuye bajo CC-BY-4.0, con atribución registrada en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)
 
 ## Especificación
 
@@ -124,6 +126,13 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 # 6. Síntesis a través del daemon (añade -v mi_voz para usar la voz clonada)
 ./tts-sidecar speech say --text "Hola mundo" [-v mi_voz]                    # Reproducir
 ./tts-sidecar speech synthesize --text "Hola mundo" [-v mi_voz] --label LOCUCION  # Sintetiza y guarda la locución en el almacén
+
+# 6b. Síntesis cross-lingual opcional (opt-in): el usuario escribe en su idioma y obtiene
+# audio en el idioma destino con su propia voz clonada, en un solo comando
+./tts-sidecar speech say --text "Hola mundo" -v mi_voz --source-language es-latam --target-language en
+
+# 6c. O solo el texto traducido, sin síntesis
+./tts-sidecar translate --text "Hola mundo" --from es --to en
 
 # 7. Eliminar voz clonada (limpieza)
 ./tts-sidecar voice remove --name mi_voz
@@ -189,7 +198,7 @@ La implementación está completa únicamente cuando:
 - [x] **docs/DESIGN.md** corresponde al estado implementado
 - [x] El daemon mode está implementado y funciona correctamente
 - [x] Los logs están normalizados con estructura consistente
-- [x] Los tests pytest pasan (666/666)
+- [x] Los tests pytest pasan (727/727)
 
 ---
 
