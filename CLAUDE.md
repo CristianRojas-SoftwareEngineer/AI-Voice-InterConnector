@@ -8,6 +8,7 @@
 - [3. Simplicity First](#3-simplicity-first)
 - [4. Surgical Changes](#4-surgical-changes)
 - [5. Version Control](#5-version-control)
+- [6. Structural Code Intelligence (Codebase Memory MCP)](#6-structural-code-intelligence-codebase-memory-mcp)
 
 <!-- <language_efficiency> -->
 
@@ -143,3 +144,35 @@ The test: Every changed line should trace directly to the user's request.
 
 - The `conventional-commits` skill is the authority on commit message format and structure. Follow it.
 <!-- </version_control> -->
+
+---
+
+<!-- <structural_code_intelligence> -->
+
+## 6. Structural Code Intelligence (Codebase Memory MCP)
+
+**For structural questions, query the graph before opening files.**
+
+This repository is indexed by the `codebase-memory-mcp` MCP server: a knowledge graph of the code (nodes = functions, classes, files, routes; edges = calls, usages, dependencies) built with tree-sitter + LSP resolution. One graph query replaces opening 10-15 files, saves context window, and returns exact answers (indirect callers 2-3 hops away that Grep cannot see).
+
+**Prefer the graph over Grep/Read when the question is structural.** Trigger cases:
+
+- **Impact analysis before changing code** — "who calls X?", "what breaks if I change this signature?" → `trace_path` (inbound/outbound, `mode=calls` or `data_flow`). Use this BEFORE modifying any shared function.
+- **Orientation and planning** — understanding module layout, layers, dependencies, or de-facto clusters before a refactor or when resuming work → `get_architecture`. Prefer it as the first step of any plan that touches more than one module.
+- **Finding definitions** — locating a function/class/route by natural language or partial name → `search_graph` (BM25 + structural ranking). More precise than guessing Grep patterns.
+- **Enriched text search** — when you do need text matching, `search_code` wraps grep and deduplicates matches into containing functions, ranked by structural importance.
+- **Reading a specific symbol** — `get_code_snippet` with the qualified name from `search_graph`, instead of reading whole files.
+- **Complexity / hot-path candidates** — nested loops, recursion, linear scans in loops → `query_graph` (Cypher over precomputed complexity metrics).
+- **Reviewing a change's blast radius** — what a range of commits touched and its impact → `detect_changes` with `--since <ref>`.
+
+**When NOT to use it:**
+
+- Searching for literal text content (strings, comments, config values) → Grep is correct.
+- Single-file edits where the file is already known and open.
+- Code written after the last reindex — the graph reflects the last sync; it does not see uncommitted new symbols until resynced.
+
+**Keeping the graph fresh:**
+
+- The index does NOT auto-update (`auto_index=false`). After a merge, refactor, or adding/removing files/functions, resync with the `/cbm-resync` user command (incremental, cheap, idempotent).
+- If graph results look stale or missing recently-added symbols, suggest running `/cbm-resync` instead of silently falling back to Grep.
+<!-- </structural_code_intelligence> -->
