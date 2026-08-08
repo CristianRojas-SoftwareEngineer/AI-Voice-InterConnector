@@ -307,6 +307,13 @@ class ChatterboxEngine:
             result = _orig_t3(*args, **kwargs)
             self._synthesis_metrics.t3 = time_mod.time() - t0
             log(f"   [Etapa 2a] T3 autoregresivo: {self._synthesis_metrics.t3:.1f}s")
+            # En el modelo multilingüe, el cuerpo de T3.inference reconstruye en
+            # CADA llamada un AlignmentStreamAnalyzer que registra un forward_hook
+            # por capa alineada sin removerlo nunca. Como el daemon cachea el
+            # motor entre peticiones, esos hooks (y las clausuras que retienen los
+            # tensores del analizador viejo) se acumularían sin cota. Los vaciamos
+            # aquí para acotar su footprint a la síntesis en curso.
+            self._clear_alignment_hooks()
             return result
 
         tts.t3.inference = timed_t3
@@ -339,6 +346,39 @@ class ChatterboxEngine:
 
         # Shim de progreso de tokens del T3 (Fase 2b), best-effort.
         self._install_token_progress_shim()
+
+    def _clear_alignment_hooks(self):
+        """Vacía los forward_hooks que el AlignmentStreamAnalyzer del T3 deja
+        registrados en las capas alineadas tras cada inferencia multilingüe.
+
+        Solo aplica cuando `t3.hp.is_multilingual` es True: la ruta english_only
+        nunca construye el analizador y por tanto nunca registra estos hooks. Las
+        capas objetivo se derivan de `LLAMA_ALIGNED_HEADS` (única fuente de verdad
+        del paquete), de modo que un cambio futuro del paquete no deje el fix
+        desincronizado en silencio.
+
+        Es **best-effort**, como `_install_token_progress_shim`: si el layout del
+        paquete difiere de lo esperado (símbolo ausente, atributos distintos tras
+        una actualización), degrada en silencio —la síntesis nunca se rompe por
+        la limpieza—.
+        """
+        try:
+            t3 = self._tts.t3
+            if not t3.hp.is_multilingual:
+                return
+            from chatterbox.models.t3.inference.alignment_stream_analyzer import (
+                LLAMA_ALIGNED_HEADS,
+            )
+
+            layers = {layer_idx for layer_idx, _head in LLAMA_ALIGNED_HEADS}
+            for idx in layers:
+                t3.tfmr.layers[idx].self_attn._forward_hooks.clear()
+        except Exception:
+            # Layout inesperado: no removemos hooks, pero la síntesis continúa.
+            logger.debug(
+                "No se pudieron limpiar los forward_hooks del analizador de alineación del T3",
+                exc_info=True,
+            )
 
     def _install_token_progress_shim(self):
         """Envuelve el símbolo `tqdm` de `chatterbox.models.t3.t3` para reportar

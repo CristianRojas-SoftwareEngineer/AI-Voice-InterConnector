@@ -211,6 +211,97 @@ class TestSynthesisCancelledPropagation:
         assert salida == list(range(100))
 
 
+class TestAlignmentHookCleanup:
+    """El wrapper timed_t3 vacía los forward_hooks que T3.inference deja tras
+    cada llamada, evitando la acumulación no acotada en el daemon de larga vida.
+
+    En el modelo multilingüe, el cuerpo de T3.inference reconstruye en CADA
+    llamada un AlignmentStreamAnalyzer cuyo constructor registra un forward_hook
+    por capa en LLAMA_ALIGNED_HEADS = [(12,15),(13,11),(9,2)] sin guardar el
+    handle ni removerlo nunca. Como el motor se cachea entre peticiones, esos
+    hooks crecen a 3·N con N síntesis. Aquí se dobla ese defecto con módulos
+    torch reales y se verifica que, tras el fix, el conteo queda acotado a 0.
+    """
+
+    _ALIGNED = {9, 12, 13}
+
+    @staticmethod
+    def _fake_tts():
+        import types
+
+        import torch
+
+        class _Attn(torch.nn.Module):
+            def forward(self, x):  # pragma: no cover - nunca se invoca
+                return x
+
+        class _Layer(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.self_attn = _Attn()
+
+        layers = [_Layer() for _ in range(16)]
+
+        class _HP:
+            is_multilingual = True
+
+        class _T3:
+            def __init__(self):
+                self.hp = _HP()
+                self.tfmr = types.SimpleNamespace(layers=layers)
+
+            def inference(self, *a, **kw):
+                # Imita el defecto: un forward_hook por capa alineada, sin remover.
+                for idx in TestAlignmentHookCleanup._ALIGNED:
+                    self.tfmr.layers[idx].self_attn.register_forward_hook(
+                        lambda *a, **kw: None
+                    )
+                return object()
+
+        tts = types.SimpleNamespace(
+            t3=_T3(),
+            s3gen=types.SimpleNamespace(inference=lambda *a, **kw: object()),
+            watermarker=types.SimpleNamespace(apply_watermark=lambda *a, **kw: None),
+        )
+        return tts, layers
+
+    def _engine(self, monkeypatch):
+        from tts_sidecar.engine import ChatterboxEngine
+        from chatterbox.models.t3 import t3 as t3_mod
+
+        # _apply_synthesis_optimizations instala el shim global de tqdm (símbolo
+        # de chatterbox.models.t3.t3). Tomamos snapshot para que monkeypatch lo
+        # restaure al terminar y no contamine a TestTokenShimInstall.
+        monkeypatch.setattr(t3_mod, "tqdm", t3_mod.tqdm, raising=False)
+
+        eng = ChatterboxEngine.__new__(ChatterboxEngine)
+        eng._active_progress_cb = None
+        tts, layers = self._fake_tts()
+        eng._tts = tts
+        eng._apply_synthesis_optimizations()
+        return eng, layers
+
+    def test_hooks_do_not_accumulate_across_calls(self, monkeypatch):
+        eng, layers = self._engine(monkeypatch)
+
+        # Dos síntesis a través del wrapper: sin el fix, los hooks crecerían a
+        # 3·N (3 tras la 1ª, 6 tras la 2ª); con el fix quedan en 0 tras cada una.
+        for _ in range(2):
+            eng._tts.t3.inference()
+            for idx in self._ALIGNED:
+                assert len(layers[idx].self_attn._forward_hooks) == 0
+
+    def test_english_only_path_is_untouched(self, monkeypatch):
+        eng, layers = self._engine(monkeypatch)
+        eng._tts.t3.hp.is_multilingual = False
+
+        # En la ruta english_only el analizador nunca registra estos hooks; el
+        # doble sí los registra, pero la limpieza no debe actuar (no es su ruta).
+        eng._tts.t3.inference()
+        total = sum(len(layers[idx].self_attn._forward_hooks) for idx in self._ALIGNED)
+        assert total == 3
+
+
 class TestTokenShimInstall:
     def test_shim_wraps_sampling_tqdm(self, monkeypatch):
         """Instalado el shim, un tqdm(desc='Sampling') con callback activo cuenta
