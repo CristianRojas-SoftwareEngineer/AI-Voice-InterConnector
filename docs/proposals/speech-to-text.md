@@ -13,7 +13,7 @@ propia voz clonada**, sin teclear ni una palabra.
 cross-lingual** existe (v0.7.0–v0.9.0: el modelo inglés reutiliza el timbre clonado)
 y la **traducción de texto** `es↔en` existe (subsistema `translation/`, `opus-mt`
 sobre CTranslate2, absorbido en v0.9.x). La cadena **texto→texto→voz** ya funciona en
-un solo comando: `speech say --source-language es --target-language en -v mi_voz`.
+un solo comando: `speech say --source-language es-latam --target-language en -v mi_voz`.
 Pero **la entrada sigue siendo texto**: para "hablar" hay que **escribir**. Este
 subsistema añade el eslabón **audio→texto** delante de esa cadena, de modo que la
 entrada pueda ser la **voz real** del usuario:
@@ -34,21 +34,18 @@ en `speech say|synthesize`, encadenando transcribir → traducir → sintetizar;
 ya usado por Chatterbox y `opus-mt`); y (f) los **cambios de contrato** que implica.
 Queda **fuera de alcance**: la traducción a idiomas distintos de `es`/`en` (la hereda
 el subsistema de traducción, sin cambios), la diarización o separación de hablantes,
-la detección de actividad de voz (VAD) como criterio de fin de grabación, y el
+la detección de actividad de voz (VAD) como criterio de fin de grabación, el
 *streaming* de transcripción en tiempo real (parcial mientras se habla) — la
-transcripción opera sobre una toma ya cerrada.
+transcripción opera sobre una toma ya cerrada — y los contenedores de audio
+comprimido (`mp3`/`m4a`/`ogg`) como entrada de archivo: `--audio` se limita a **WAV**,
+porque no se embarca PyAV (coste de empaquetado ya justificado en
+[3.3](#33-runtime-stt-motor-y-licencia)).
 
 **Restricciones heredadas del proyecto.** Todo el subsistema respeta las
 restricciones del [Goal](../GOAL.md): **100% local** (sin APIs externas), **motor y
 dependencias con licencia compatible con GPL-3.0-or-later**, **multiplataforma**
 (Windows/Linux/macOS), **consumible por CLI**, y **empaquetable con PyInstaller** sin
 fricción nueva más allá de la ya resuelta.
-
-**Estructura del documento.** La [sección 2](#2-estado-actual-as-is) especifica el
-estado actual (as-is); la [sección 3](#3-estado-objetivo-to-be) define el estado
-objetivo (to-be); la [sección 4](#4-proceso-de-implementación) describe el proceso de
-implementación por fases; la [sección 5](#5-clasificación-de-la-spec) clasifica la
-spec según el criterio del Goal.
 
 ## Tabla de contenidos
 
@@ -61,11 +58,11 @@ spec según el criterio del Goal.
   - [2.5 Provisión y daemon](#25-provisión-y-daemon)
 - [3. Estado objetivo (to-be)](#3-estado-objetivo-to-be)
   - [3.1 El pipeline de entrada por capas](#31-el-pipeline-de-entrada-por-capas)
-  - [3.2 Runtime STT, motor y licencia](#32-runtime-stt-motor-y-licencia)
-  - [3.3 Whisper transcribe, no traduce](#33-whisper-transcribe-no-traduce)
-  - [3.4 Captura de micrófono con miniaudio](#34-captura-de-micrófono-con-miniaudio)
-  - [3.5 Fin de grabación: push-to-talk y `--duration`](#35-fin-de-grabación-push-to-talk-y---duration)
-  - [3.6 Ubicación en la arquitectura](#36-ubicación-en-la-arquitectura)
+  - [3.2 Ubicación en la arquitectura](#32-ubicación-en-la-arquitectura)
+  - [3.3 Runtime STT, motor y licencia](#33-runtime-stt-motor-y-licencia)
+  - [3.4 Whisper transcribe, no traduce](#34-whisper-transcribe-no-traduce)
+  - [3.5 Captura de micrófono con miniaudio](#35-captura-de-micrófono-con-miniaudio)
+  - [3.6 Fin de grabación: push-to-talk y `--duration`](#36-fin-de-grabación-push-to-talk-y---duration)
   - [3.7 Comando `speech transcribe` (audio→texto)](#37-comando-speech-transcribe-audiotexto)
   - [3.8 Composición: la voz como entrada de síntesis](#38-composición-la-voz-como-entrada-de-síntesis)
   - [3.9 Provisión del modelo Whisper](#39-provisión-del-modelo-whisper)
@@ -73,6 +70,13 @@ spec según el criterio del Goal.
   - [3.11 Cambios de contrato](#311-cambios-de-contrato)
   - [3.12 Invariantes (lo que NO cambia)](#312-invariantes-lo-que-no-cambia)
 - [4. Proceso de implementación](#4-proceso-de-implementación)
+  - [Fase 0 — Fundaciones (runtime + empaquetado)](#fase-0--fundaciones-runtime--empaquetado)
+  - [Fase 1 — Transcripción (motor aislado)](#fase-1--transcripción-motor-aislado)
+  - [Fase 2 — Comando `speech transcribe` (solo `--audio`)](#fase-2--comando-speech-transcribe-solo---audio)
+  - [Fase 3 — Provisión (`setup`/`doctor`/`cleanup`)](#fase-3--provisión-setupdoctorcleanup)
+  - [Fase 4 — Captura de micrófono](#fase-4--captura-de-micrófono)
+  - [Fase 5 — Composición + daemon](#fase-5--composición--daemon)
+  - [Fase 6 — Cierre](#fase-6--cierre)
 - [5. Clasificación de la spec](#5-clasificación-de-la-spec)
 
 ---
@@ -187,7 +191,34 @@ costes son de naturaleza distinta:
 Mantenerlas separadas permite transcribir un archivo sin tocar hardware (la ruta
 `--audio`) y capturar sin acoplar el fin de grabación al transcriptor.
 
-### 3.2 Runtime STT, motor y licencia
+### 3.2 Ubicación en la arquitectura
+
+El subsistema vive en un subpaquete nuevo `src/tts_sidecar/transcription/`, espejando
+`translation/`, con **colaboradores inyectables** (el runtime STT subyacente
+—faster-whisper sobre el formato CT2— se detalla en
+[3.3](#33-runtime-stt-motor-y-licencia)):
+
+```text
+src/tts_sidecar/transcription/
+├── __init__.py          # Exportaciones públicas del paquete
+├── service.py           # TranscriptionService: orquesta captura/lectura → transcripción
+├── model_loader.py      # WhisperModelLoader: carga/caché del modelo CT2 (inyectable; espeja TranslationModelLoader)
+└── transcriber.py       # WhisperTranscriber: audio (numpy float32) → texto (runtime inyectable)
+```
+
+La **captura** vive junto a la capa de audio, no dentro de `transcription/`: es I/O de
+cliente simétrica al playback (`audio.py` gana un `AudioRecorder`, contraparte de
+`AudioPlayer`), según el reparto de [3.1](#31-el-pipeline-de-entrada-por-capas) y
+[3.10](#310-daemon-transcripción-en-caliente-captura-en-cliente). Así `transcription/`
+queda como **cómputo puro**.
+
+Las excepciones del subsistema se añaden a `exceptions.py` (compartido, sin imports
+pesados): `TranscriptionModelMissingError` (remite a `setup`) y
+`TranscriptionFailedError`. La resolución de idiomas reutiliza `resolve_language` de
+`translation/` (`es-latam → es`): Whisper opera sobre el idioma hablado en taxonomía
+ISO.
+
+### 3.3 Runtime STT, motor y licencia
 
 **Motor: Whisper (OpenAI), variante multilingüe.** Whisper es el estándar de facto de
 STT abierto, con cobertura sólida de **español** y del **español latino**. Los pesos
@@ -220,7 +251,7 @@ propiedades encajan con las restricciones del proyecto:
   Se **mitigan por diseño**: (i) alimentando a faster-whisper un `numpy.float32` ya
   decodificado —desde miniaudio en captura, desde el módulo `wave` de la stdlib en
   archivo— para **no ejercer la ruta de PyAV**; (ii) **sin usar el VAD** integrado
-  (el fin de grabación es push-to-talk/`--duration`, [3.5](#35-fin-de-grabación-push-to-talk-y---duration)),
+  (el fin de grabación es push-to-talk/`--duration`, [3.6](#36-fin-de-grabación-push-to-talk-y---duration)),
   evitando ejercer onnxruntime. Siguen siendo dependencias de instalación, pero no
   entran en la ruta caliente. La Fase 0 valida el bundle real por SO.
 
@@ -244,7 +275,7 @@ sistema es el idioma, y no se prolifera otro. La comparación `small` vs `large-
 decisión de usuario ni algo que reabra el diseño. Los **distil-whisper** quedan fuera:
 son **solo-inglés**, y aquí el idioma hablado de entrada es típicamente español.
 
-### 3.3 Whisper transcribe, no traduce
+### 3.4 Whisper transcribe, no traduce
 
 Whisper puede, por sí mismo, **traducir** audio a inglés (`task="translate"`). Esta
 propuesta **no lo usa**: Whisper se emplea **solo para transcribir**
@@ -263,7 +294,7 @@ propuesta **no lo usa**: Whisper se emplea **solo para transcribir**
 Whisper produce texto en el idioma de origen; **`opus-mt` (ya existente) lo traduce**
 si el destino difiere. Cada subsistema hace una sola cosa.
 
-### 3.4 Captura de micrófono con miniaudio
+### 3.5 Captura de micrófono con miniaudio
 
 **Librería: miniaudio (pyminiaudio, CFFI, MIT).** Es la única de las candidatas que
 cubre **limpiamente la matriz de release real del proyecto**. Los scripts de build
@@ -302,7 +333,7 @@ CaptureDevice(sample_rate=16000, input_format=SampleFormat.SIGNED16, nchannels=1
 degradación a "Default" en entornos headless. La captura, como el playback, es
 **siempre del lado del cliente**.
 
-### 3.5 Fin de grabación: push-to-talk y `--duration`
+### 3.6 Fin de grabación: push-to-talk y `--duration`
 
 La grabación no tiene final natural ([2.3](#23-la-entrada-no-es-simétrica-con-la-salida)),
 así que el criterio de parada es explícito, con **dos modos**:
@@ -327,46 +358,21 @@ falsos cortes en pausas) impropia de una primera iteración. push-to-talk +
 `--duration` cubre los dos casos reales —interactivo y automatizado— sin dependencias
 extra (Simplicity First). VAD sería una mejora posterior, no un requisito.
 
-### 3.6 Ubicación en la arquitectura
-
-El subsistema vive en un subpaquete nuevo `src/tts_sidecar/transcription/`, espejando
-`translation/`, con **colaboradores inyectables**:
-
-```text
-src/tts_sidecar/transcription/
-├── __init__.py          # Exportaciones públicas del paquete
-├── service.py           # TranscriptionService: orquesta captura/lectura → transcripción
-├── model_loader.py      # WhisperModelLoader: carga/caché del modelo CT2 (inyectable; espeja TranslationModelLoader)
-└── transcriber.py       # WhisperTranscriber: audio (numpy float32) → texto (runtime inyectable)
-```
-
-La **captura** vive junto a la capa de audio existente, no dentro de `transcription/`,
-porque es I/O de cliente simétrica al playback: `audio.py` gana un `AudioRecorder`
-(miniaudio) contraparte de `AudioPlayer`. Así `transcription/` permanece como
-**cómputo puro** (audio decodificado → texto), cacheable en el daemon, y la captura
-queda donde vive su gemela de salida.
-
-Las excepciones del subsistema se añaden a `exceptions.py` (compartido, sin imports
-pesados): `TranscriptionModelMissingError` (remite a `setup`) y
-`TranscriptionFailedError`. La resolución de idiomas reutiliza `resolve_language` de
-`translation/` (`es-latam → es`): Whisper opera sobre el idioma hablado en taxonomía
-ISO.
-
 ### 3.7 Comando `speech transcribe` (audio→texto)
 
 Subsistema autónomo, verificable sin traducir ni sintetizar:
 
 ```bash
 # Desde archivo
-tts-sidecar speech transcribe --audio nota.wav --source-language es
+tts-sidecar speech transcribe --audio nota.wav --source-language es-latam
 # → "Hola, buenos días"
 
 # Desde micrófono (push-to-talk: para con Enter)
-tts-sidecar speech transcribe --mic --source-language es --json
-# → {"text": "Hola, buenos días", "source": "es"}
+tts-sidecar speech transcribe --mic --source-language es-latam --json
+# → {"text": "Hola, buenos días", "source": "es-latam"}
 
 # Desde micrófono con tope fijo (no interactivo)
-tts-sidecar speech transcribe --mic --duration 5 --source-language es
+tts-sidecar speech transcribe --mic --duration 5 --source-language es-latam
 ```
 
 - **Fuente de audio (una, requerida, mutuamente excluyentes):** `--audio PATH`
@@ -378,7 +384,7 @@ tts-sidecar speech transcribe --mic --duration 5 --source-language es
   sabe autodetectar idioma, pero la autodetección queda fuera de alcance: declararlo
   es más fiable y encadena limpio con la traducción aguas abajo.)
 - **`--duration N`** solo aplica a `--mic` (tope de segundos; ver
-  [3.5](#35-fin-de-grabación-push-to-talk-y---duration)).
+  [3.6](#36-fin-de-grabación-push-to-talk-y---duration)).
 - **`--json`** emite `{text, source}`.
 - **Errores con identidad propia:** modelo Whisper ausente (`model_missing`, remite a
   `setup`), fuente inválida o falta de TTY sin `--duration` (`EXIT_INVALID_INPUT`), y
@@ -403,7 +409,7 @@ clonada. Un solo comando cierra el bucle **voz→voz**:
 
 ```bash
 tts-sidecar speech say \
-  --mic --source-language es --target-language en -v mi_voz
+  --mic --source-language es-latam --target-language en -v mi_voz
 # Hablas en español → transcribe → traduce ES→EN → sintetiza en inglés con TU voz
 ```
 
@@ -425,7 +431,7 @@ texto de entrada (antes el usuario tecleando, ahora la transcripción de su voz)
 El modelo Whisper **no se empaqueta en el bundle** (igual que Chatterbox y `opus-mt`):
 se descarga a la caché de HuggingFace en `setup`. A diferencia de `opus-mt`, **no
 requiere conversión**: los pesos `Systran/faster-whisper-{size}` ya están en formato
-CT2 ([3.2](#32-runtime-stt-motor-y-licencia)), así que `_provision_whisper_model`
+CT2 ([3.3](#33-runtime-stt-motor-y-licencia)), así que `_provision_whisper_model`
 (nuevo, espejo de `_provision_translation_pairs`, `cli.py:1788`) solo hace
 `snapshot_download`. `doctor` reporta su presencia; `cleanup` lo incluye en el barrido
 de caché. `miniaudio` (nativo compilado en el wheel/bundle, sin modelos descargables)
@@ -477,7 +483,15 @@ La asimetría [3.1](#31-el-pipeline-de-entrada-por-capas) determina el reparto:
    y devuelve el texto. El daemon **nunca recibe una ruta del cliente** (invariante
    sin-paths de `protocol.py`, igual que `SynthesizeRequest`/`PrecomputeVoiceRequest`):
    el audio viaja como base64 en el JSON, simétrico a `ResultEvent.audio_b64`
-   (`ipc.py:198`), con un tope propio (`MAX_AUDIO_BYTES`, análogo a `MAX_TEXT_LENGTH`).
+   (`ipc.py:198`), con un tope propio (`MAX_AUDIO_BYTES`, análogo a `MAX_TEXT_LENGTH`):
+   la validación estricta cae sobre la **longitud del campo base64 entrante** de
+   `TranscribeRequest`, igual que `MAX_TEXT_LENGTH` acota el campo `text`. El valor se
+   deriva del invariante temporal ya existente del IPC, `REQUEST_TIMEOUT = 300.0` s
+   (`ipc.py`): a 16 kHz / mono / int16 (formato de captura, [3.5](#35-captura-de-micrófono-con-miniaudio)),
+   una toma de 300 s pesa `300 × 32 000 B/s = 9 600 000 B` (~9,6 MB) de PCM crudo; en
+   base64 (factor ×4/3) son `9 600 000 × 4 / 3 = 12 800 000 B` (~12,8 MB). Se fija
+   `MAX_AUDIO_BYTES = 12_800_000` (bytes del campo base64), la misma cota anti-DoS
+   local trivial que ya justifica `MAX_TEXT_LENGTH`.
    Es **aditiva**: una operación nueva no obliga a subir `schema_version` (política de
    compatibilidad de `protocol.py:53`). La captura **no** entra en el IPC: es de cliente.
 5. **Ninguno de estos cambios es incompatible.** A diferencia del rename
@@ -505,41 +519,55 @@ La asimetría [3.1](#31-el-pipeline-de-entrada-por-capas) determina el reparto:
 
 Fases ordenadas por dependencia; cada una con su criterio de verificación.
 
-- **Fase 0 — Fundaciones (runtime + empaquetado).** Añadir `faster-whisper` y
-  `miniaudio` a dependencias, con los hooks de PyInstaller (recolección nativa de
-  faster-whisper: PyAV/onnxruntime; nativo de miniaudio) **validados por SO** en la
-  matriz real (win-x64, linux-x64, linux-arm64, macos-arm64); `WhisperModelLoader` con
-  caché sobre el formato CT2.
-  → *verify*: smoke test de bundle por SO (arranca e importa sin fallos de nativo) +
-  tests de carga/caché del loader (sin red, con modelo ya en caché).
-- **Fase 1 — Transcripción (motor aislado).** `WhisperTranscriber` (runtime CT2
-  embarcado, doble en tests), `TranscriptionService` sobre archivo (lectura WAV con
-  `wave`, sin ejercer PyAV). Calibrar tamaño de modelo por defecto con corpus de audio
-  `es` fijo.
-  → *verify*: tests con WAV fijo → texto esperado; passthrough de errores con
-  identidad; medición de latencia/exactitud por tamaño de modelo.
-- **Fase 2 — Comando `speech transcribe` (solo `--audio`).** Superficie CLI
-  audio→texto desde archivo, `--json`, exit codes.
-  → *verify*: tests de CLI (salida, `--json`, `model_missing`, `EXIT_TRANSCRIPTION_FAILED`).
-- **Fase 3 — Provisión (`setup`/`doctor`/`cleanup`).** `_provision_whisper_model`
-  (descarga sin conversión), enganche opt-in en la taxonomía de `setup`; `doctor` y
-  `cleanup` cubren el modelo Whisper.
-  → *verify*: tests de detección de caché y del barrido de `cleanup`.
-- **Fase 4 — Captura de micrófono.** `AudioRecorder` (miniaudio, 16 kHz/mono/int16),
-  enumeración de dispositivos de captura en `audio.py`, `--mic` y `--duration` en
-  `speech transcribe`, push-to-talk con guardia de TTY.
-  → *verify*: test de degradación headless (sin dispositivo → error claro), test de
-  `--duration` determinista; validación manual de push-to-talk por SO (permisos TCC en
-  macOS, toggle en Windows).
-- **Fase 5 — Composición + daemon.** `--audio`/`--mic` como fuentes en `speech
-  say|synthesize` (regla "una de tres"); `TranscribeRequest` en el IPC; precarga y
-  `model_loaded` del modelo Whisper en el daemon.
-  → *verify*: test extremo a extremo del bucle voz→voz (`--mic --source-language es
-  --target-language en` → audio en inglés con la voz), directo y vía daemon.
-- **Fase 6 — Cierre.** Actualizar `narrator` en lockstep; sincronizar `USAGE.md`,
-  `CLI-CONTRACT.md`, `DESIGN.md`, `GOAL.md`, `ROADMAP.md`; registrar la licencia MIT
-  del modelo Whisper.
-  → *verify*: suite verde + smoke test de bundle final.
+### Fase 0 — Fundaciones (runtime + empaquetado)
+
+Añadir `faster-whisper` y `miniaudio` a dependencias, con los hooks de PyInstaller
+(recolección nativa de faster-whisper: PyAV/onnxruntime; nativo de miniaudio)
+**validados por SO** en la matriz real (win-x64, linux-x64, linux-arm64, macos-arm64);
+`WhisperModelLoader` con caché sobre el formato CT2.
+→ *verify*: smoke test de bundle por SO (arranca e importa sin fallos de nativo) +
+tests de carga/caché del loader (sin red, con modelo ya en caché).
+
+### Fase 1 — Transcripción (motor aislado)
+
+`WhisperTranscriber` (runtime CT2 embarcado, doble en tests), `TranscriptionService`
+sobre archivo (lectura WAV con `wave`, sin ejercer PyAV). Calibrar tamaño de modelo por
+defecto con corpus de audio `es` fijo.
+→ *verify*: tests con WAV fijo → texto esperado; passthrough de errores con identidad;
+medición de latencia/exactitud por tamaño de modelo.
+
+### Fase 2 — Comando `speech transcribe` (solo `--audio`)
+
+Superficie CLI audio→texto desde archivo, `--json`, exit codes.
+→ *verify*: tests de CLI (salida, `--json`, `model_missing`, `EXIT_TRANSCRIPTION_FAILED`).
+
+### Fase 3 — Provisión (`setup`/`doctor`/`cleanup`)
+
+`_provision_whisper_model` (descarga sin conversión), enganche opt-in en la taxonomía de
+`setup`; `doctor` y `cleanup` cubren el modelo Whisper.
+→ *verify*: tests de detección de caché y del barrido de `cleanup`.
+
+### Fase 4 — Captura de micrófono
+
+`AudioRecorder` (miniaudio, 16 kHz/mono/int16), enumeración de dispositivos de captura en
+`audio.py`, `--mic` y `--duration` en `speech transcribe`, push-to-talk con guardia de
+TTY.
+→ *verify*: test de degradación headless (sin dispositivo → error claro), test de
+`--duration` determinista; validación manual de push-to-talk por SO (permisos TCC en
+macOS, toggle en Windows).
+
+### Fase 5 — Composición + daemon
+
+`--audio`/`--mic` como fuentes en `speech say|synthesize` (regla "una de tres");
+`TranscribeRequest` en el IPC; precarga y `model_loaded` del modelo Whisper en el daemon.
+→ *verify*: test extremo a extremo del bucle voz→voz (`--mic --source-language es-latam
+--target-language en` → audio en inglés con la voz), directo y vía daemon.
+
+### Fase 6 — Cierre
+
+Actualizar `narrator` en lockstep; sincronizar `USAGE.md`, `CLI-CONTRACT.md`,
+`DESIGN.md`, `GOAL.md`, `ROADMAP.md`; registrar la licencia MIT del modelo Whisper.
+→ *verify*: suite verde + smoke test de bundle final.
 
 ---
 
