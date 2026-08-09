@@ -106,7 +106,15 @@ TTS-Sidecar/
 ├── scripts/
 │   ├── build_windows.py          # Build PyInstaller para Windows
 │   ├── build_linux.py            # Build PyInstaller para Linux
-│   └── build_macos.py            # Build PyInstaller para macOS
+│   ├── build_macos.py            # Build PyInstaller para macOS
+│   ├── build_utils.py            # Utilidades compartidas de build
+│   ├── check_coverage.py         # Verificación de cobertura
+│   ├── check_third_party_licenses.py  # Verificación de licencias
+│   ├── clean_build.py            # Limpieza de artefactos de build
+│   ├── create_installer_windows.py    # Generador de instalador Inno Setup
+│   ├── pyinstaller_wrapper.py    # Wrapper de PyInstaller
+│   ├── render_cask.py            # Generador de Cask de Homebrew
+│   └── render_source_offer.py    # Generador de SOURCE-OFFER.md
 │                                  # (provisión del modelo: `tts-sidecar setup`)
 ├── assets/                       # Material fuente (audios, logo)
 │   ├── audios/                   # Audios fuente (voz default) y de prueba
@@ -120,7 +128,18 @@ TTS-Sidecar/
 └── docs/
     ├── DESIGN.md                 # Este documento
     ├── GOAL.md                   # Meta del proyecto
-    └── DAEMON-MODE.md            # Daemon mode
+    ├── ROADMAP.md                # Roadmap del proyecto
+    ├── DAEMON-MODE.md            # Daemon mode
+    ├── BUILD.md                  # Build y distribución
+    ├── DISTRIBUTION.md           # Estrategia de distribución
+    ├── PARITY.md                 # Paridad multiplataforma
+    ├── RELEASING.md              # Proceso de release
+    ├── SELF-HOSTED-INSTALL.md    # Instaladores auto-hospedados
+    ├── CLI/                      # Documentación de la CLI
+    │   ├── README.md             # Índice de la CLI
+    │   ├── CONTRACT.md           # Contrato normativo
+    │   └── commands/             # Investigación por comando
+    └── proposals/                # Propuestas de diseño
 ```
 
 > El modelo `es-mx-latam` no vive en el repo ni en el bundle: reside en la caché
@@ -233,7 +252,7 @@ Sin `--voice` ni audios explícitos, la CLI usa la voz `default`, de modo que
 
 La referencia de comandos y flags no vive aquí para evitar deriva: el manual de
 usuario ([USAGE.md](../USAGE.md)) documenta cada comando y su uso, y el contrato
-normativo ([CLI-CONTRACT.md](CLI-CONTRACT.md)) fija la superficie estable (exit
+normativo ([CONTRACT.md](CLI/CONTRACT.md)) fija la superficie estable (exit
 codes, esquema `--json`, payloads). La invocación desde otros lenguajes
 (`subprocess`, `child_process`, `std::process`) está en el
 [README](../README.md#invocación-desde-cualquier-lenguaje).

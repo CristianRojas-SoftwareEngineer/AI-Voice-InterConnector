@@ -650,7 +650,7 @@ de contrato son aditivos: los códigos de salida existentes no cambian y
   3.13.14; no altera el artefacto) y `create-dmg` (Homebrew no pinea).
   Implicaciones y procedimiento de bump en `docs/BUILD.md` §Reproducibilidad.
 - **Exactitud documental**: stack de reproducción real
-  (winsound/sounddevice/afplay) en `docs/DESIGN.md` y `docs/ARCHITECTURE.md`
+  (winsound/sounddevice/afplay) en `docs/DESIGN.md`
   (antes describían pycaw-WASAPI/pyalsaaudio/AVFoundation); árboles de
   estructura con `voices.py`, `paths.py` y `model_cache.py`; CI descrito como
   Linux/Windows/macOS en `CONTRIBUTING.md`; conteo de tests actualizado a
@@ -786,12 +786,14 @@ estado con el que nace el producto.
   de cada artefacto emitido en el log y `SHA256SUMS.txt` en el Release; runbook
   de publicación en `docs/RELEASING.md`.
 - **Documentación y gobernanza**: `USAGE.md` (guía por caso de uso),
-  `docs/DESIGN.md`, `docs/ARCHITECTURE.md`, `docs/DAEMON-MODE.md`,
+  `docs/DESIGN.md`, `docs/DAEMON-MODE.md`,
   `docs/BUILD.md`, `docs/RELEASING.md`, sección de uso ético y responsable
   (README/USAGE), `CONTRIBUTING.md`, `SECURITY.md`, este `CHANGELOG.md` y
   `THIRD-PARTY-LICENSES.md` (inventario de licencias generado del lockfile).
   Código propio bajo GPL-3.0-or-later; modelo MIT.
 
+[0.10.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.9.1...v0.10.0
+[0.9.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.8...v0.8.0
 [0.7.8]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.7...v0.7.8

@@ -356,7 +356,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `name` | string | Nombre de la voz registrada |
-| `reference` | string | Ruta absoluta del `timbre-reference.wav` copiado (timbre) |
+| `timbre` | string | Ruta absoluta del `timbre-reference.wav` copiado (timbre) |
 | `speech` | string | Ruta absoluta del `speech-reference.wav` copiado (conditioning) |
 | `precomputed` | boolean | `true` si los conditionals se precomputaron al clonar (voz lista sin recomputar en la primera síntesis) |
 

@@ -625,3 +625,21 @@ Exige **exactamente una** de `{--audio, --mic}` (grupo mutuamente excluyente `re
 | `--audio` **o** `--mic` (mutuamente excluyentes, uno requerido) · `--duration N` (solo con `--mic`) · `--source-language` **requerido** · `--target-language` (default `es-latam`) · `-v/--voice` · `--compute-backend/-cb` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--daemon`/`--no-daemon` | transcribe → traduce (si `source != target`) → sintetiza → reproduce |
 
 Códigos de salida aplicables en la cadena: **4** (`EXIT_MODEL_MISSING`, modelo de transcripción no provisionado, remite a `setup --with-stt`), **5** (`EXIT_DAEMON_UNREACHABLE`, daemon exigido pero inactivo o de versión antigua sin `/transcribe`), **9** (`EXIT_TRANSLATION_FAILED`, fallo del pipeline de traducción con el modelo cargado) y **10** (`EXIT_TRANSCRIPTION_FAILED`, fallo del pipeline de transcripción con el modelo cargado); más **2** (uso inválido: `--duration` sin `--mic`, `--mic` sin TTY y sin `--duration`) y **3** (`--audio` inexistente).
+
+---
+
+## Documentación complementaria por comando
+
+Cada comando principal de la CLI tiene un documento de investigación dedicado en [`commands/`](commands/) que cubre su diseño, implementación, flujo de ejecución y manejo de errores con citas a líneas del código fuente.
+
+| Comando | Documento | Subcomandos |
+|---|---|---|
+| `speech` | [`commands/SPEECH.md`](commands/SPEECH.md) | `synthesize`, `say`, `dub`, `play`, `list`, `remove`, `transcribe` |
+| `voice` | [`commands/VOICE.md`](commands/VOICE.md) | `list`, `clone`, `remove` |
+| `devices` | [`commands/DEVICES.md`](commands/DEVICES.md) | — |
+| `doctor` | [`commands/DOCTOR.md`](commands/DOCTOR.md) | — |
+| `setup` | [`commands/SETUP.md`](commands/SETUP.md) | — |
+| `cleanup` | [`commands/CLEANUP.md`](commands/CLEANUP.md) | — |
+| `daemon` | [`commands/DAEMON.md`](commands/DAEMON.md) | `start`, `stop`, `restart`, `status`, `serve` |
+| `version` | [`commands/VERSION.md`](commands/VERSION.md) | — |
+| `translate` | [`commands/TRANSLATE.md`](commands/TRANSLATE.md) | — |

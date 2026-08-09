@@ -17,6 +17,8 @@ Contrato de salida (estable entre SO y lenguajes):
       6   conflicto de estado (recurso ocupado, colisión de voz, puerto daemón en uso)
       7   operación no aplicable al contexto actual (sólo lectura, plataforma no soportada)
       8   precondición de entorno incumplida (credenciales, red, permisos, disco)
+      9   fallo del pipeline de traducción
+      10  fallo del pipeline de transcripción
       130 interrupción por el usuario (Ctrl+C)
   - stdout/stderr se fuerzan a UTF-8 para una codificación consistente en toda
     plataforma.

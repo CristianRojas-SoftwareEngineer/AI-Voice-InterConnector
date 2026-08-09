@@ -40,7 +40,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 ## Características
 
 - **Clonación de voz**: ~10 segundos de audio de referencia
-- **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés (`--language`)
+- **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés (`--target-language`)
 - **100% offline**: Sin APIs externas ni conexiones a internet
 - **Instalador por plataforma**: Un instalador único por SO que despliega el bundle PyInstaller `--onedir` (carpeta de la aplicación)
 - **CLI universal**: `subprocess.run(["./tts-sidecar", "speech", "say", "--text", "..."])`

@@ -485,7 +485,7 @@ La asimetría [3.1](#31-el-pipeline-de-entrada-por-capas) determina el reparto:
 ### 3.11 Cambios de contrato
 
 1. **Subcomando nuevo `speech transcribe`** — superficie aditiva; su contrato
-   `--json` (`{text, source}`) se documenta en `CLI-CONTRACT.md`. Enruta con
+   `--json` (`{text, source}`) se documenta en `CLI/CONTRACT.md`. Enruta con
    `--daemon`/`--no-daemon`/autodetección, el **mismo patrón de tres modos** que
    `speech say|synthesize` (`_dispatch_synthesis`): es, junto con `speech dub`, el
    consumidor de `/transcribe` que vuelve no-especulativo el `TranscribeRequest` del IPC.
@@ -493,7 +493,7 @@ La asimetría [3.1](#31-el-pipeline-de-entrada-por-capas) determina el reparto:
    `say`/`synthesize`**: ambos conservan `--text` requerido (sin cambio de contrato
    en el CLI existente). `speech dub` exige exactamente una de `{--audio, --mic}`
    (mutuamente excluyentes, espejo de `speech transcribe`) y se documenta en
-   `CLI-CONTRACT.md`.
+   `CLI/CONTRACT.md`.
 3. **Exit code nuevo `EXIT_TRANSCRIPTION_FAILED = 10`** en `exit_codes.py` — aditivo;
    distingue el fallo de transcripción del de traducción (`9`) y del de síntesis
    (errores distintos ⇒ identidad propia). El modelo Whisper ausente reutiliza
@@ -613,7 +613,7 @@ captura):
 
 ### Fase 6 — Cierre
 
-Sincronizar `USAGE.md`, `CLI-CONTRACT.md`, `DESIGN.md`, `GOAL.md`, `ROADMAP.md`;
+Sincronizar `USAGE.md`, `CLI/CONTRACT.md`, `DESIGN.md`, `GOAL.md`, `ROADMAP.md`;
 registrar la licencia MIT del modelo Whisper.
 → *verify*: suite verde + smoke test de bundle final.
 
@@ -633,5 +633,5 @@ Aplicando el [criterio de clasificación del Goal](../GOAL.md#clasificación-de-
 Como **no cumple ninguno** de los tres impedimentos, la spec pertenece al **Goal
 inmediato** y se trabaja ya —aunque su priorización relativa sea una decisión aparte
 (priorizar no expulsa la spec del Goal inmediato). Al absorberse en la documentación
-canónica (`GOAL.md`/`DESIGN.md`/`CLI-CONTRACT.md`), este documento se retira, como se
+canónica (`GOAL.md`/`DESIGN.md`/`CLI/CONTRACT.md`), este documento se retira, como se
 hizo con la propuesta de traducción.
