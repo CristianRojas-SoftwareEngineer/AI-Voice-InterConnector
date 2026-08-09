@@ -139,16 +139,16 @@ que el diseño debe absorber, y que la salida nunca enfrentó:
 
 - **Exit codes**: centralizados en `exit_codes.py` (contrato público congelado). El
   último asignado es `EXIT_TRANSLATION_FAILED = 9`; el siguiente libre es `10`.
-- **Esquema IPC**: `schema_version = "3"` (`protocol.py:53`), con `extra="ignore"`
-  para compatibilidad aditiva. `SynthesizeRequest` (`protocol.py:56`) lleva `text`
+- **Esquema IPC**: `schema_version = "3"` (`daemon/protocol.py:53`), con `extra="ignore"`
+  para compatibilidad aditiva. `SynthesizeRequest` (`daemon/protocol.py:56`) lleva `text`
   (≤ `MAX_TEXT_LENGTH`=5000), `voice`, `target_language`, `source_language`
-  (`protocol.py:77`, aditivo) y los overrides. **No** existe ninguna operación que
+  (`daemon/protocol.py:77`, aditivo) y los overrides. **No** existe ninguna operación que
   reciba audio.
 - **`--json`**: payloads legibles por máquina con clave `error`.
 
-El contrato lo consume el repo hermano **tts-sidecar-narrator** (plugin de Claude
-Code). Cualquier cambio incompatible obliga a actualizarlo en lockstep (ver
-[3.11](#311-cambios-de-contrato)).
+Estos contratos (exit codes, esquema IPC, `--json`) son **públicos y estables**:
+cualquier cambio se rige por la política de compatibilidad aditiva del esquema, sin
+renombrar ni retirar superficie existente (ver [3.11](#311-cambios-de-contrato)).
 
 ### 2.5 Provisión y daemon
 
@@ -160,7 +160,7 @@ Code). Cualquier cambio incompatible obliga a actualizarlo en lockstep (ver
   traducción (`cli.py:1111`); **`cleanup`** (`cli.py:1924`) los incluye en el barrido
   de caché (`cli.py:1991`).
 - **`daemon start --language {…}`** precarga los modelos en RAM;
-  `HealthResponse.model_loaded` (`protocol.py:132`) reporta qué está caliente.
+  `HealthResponse.model_loaded` (`daemon/protocol.py:132`) reporta qué está caliente.
 
 ---
 
@@ -460,15 +460,17 @@ La asimetría [3.1](#31-el-pipeline-de-entrada-por-capas) determina el reparto:
 
 - **Transcripción (cómputo) → daemon.** El daemon cachea el modelo Whisper en RAM
   igual que los modelos TTS y de traducción, para no pagar la carga en cada petición.
-  `HealthResponse.model_loaded` (`protocol.py:132`) añade la señal del modelo Whisper
+  `HealthResponse.model_loaded` (`daemon/protocol.py:132`) añade la señal del modelo Whisper
   con una **clave propia** (p. ej. `transcribe:small`), sin colisionar con las claves
-  de idioma TTS ni con las de par de traducción del mismo dict. Carga **perezosa** si
-  no se precargó.
+  de idioma TTS ni con las de par de traducción del mismo dict. Precarga en caliente
+  **opt-in** vía `daemon start --with-stt` (simétrico a `setup --with-stt`), con carga
+  **perezosa como fallback** si el flag no se pasó.
 - **Captura (I/O de hardware) → siempre cliente.** El micrófono, los permisos del SO
   y el push-to-talk viven **donde está el usuario**, nunca en el proceso daemon (que
-  puede correr headless). El cliente captura, y sobre el resultado decide: transcribir
-  local o —si el daemon está activo— enviarle las **muestras ya decodificadas** para
-  aprovechar el modelo caliente. Es exactamente el reparto de `audio.py`, cuya
+  puede correr headless). El cliente captura, y sobre el resultado enruta con el **mismo
+  dispatch de tres modos que la síntesis** (`--daemon`/`--no-daemon`/autodetección): en
+  modo directo transcribe local; si el daemon responde, le envía las **muestras ya
+  decodificadas** para aprovechar el modelo caliente. Es exactamente el reparto de `audio.py`, cuya
   reproducción también es siempre de cliente. Ese envío se apoya en
   `TranscriptionService.transcribe_samples(samples, source_language)`, el método
   nuevo que transcribe muestras ya decodificadas; `transcribe(path, …)` pasa a ser una
@@ -478,7 +480,10 @@ La asimetría [3.1](#31-el-pipeline-de-entrada-por-capas) determina el reparto:
 ### 3.11 Cambios de contrato
 
 1. **Subcomando nuevo `speech transcribe`** — superficie aditiva; su contrato
-   `--json` (`{text, source}`) se documenta en `CLI-CONTRACT.md`.
+   `--json` (`{text, source}`) se documenta en `CLI-CONTRACT.md`. Enruta con
+   `--daemon`/`--no-daemon`/autodetección, el **mismo patrón de tres modos** que
+   `speech say|synthesize` (`_dispatch_synthesis`): es, junto con la composición, el
+   consumidor de `/transcribe` que vuelve no-especulativo el `TranscribeRequest` del IPC.
 2. **Fuentes de entrada `--audio`/`--mic` en `speech say|synthesize`** — aditivo pero
    **con un matiz de contrato**: `--text` deja de ser incondicionalmente requerido y
    pasa a ser "exactamente una de `{--text, --audio, --mic}`". Un invocador existente
@@ -488,27 +493,27 @@ La asimetría [3.1](#31-el-pipeline-de-entrada-por-capas) determina el reparto:
    distingue el fallo de transcripción del de traducción (`9`) y del de síntesis
    (errores distintos ⇒ identidad propia). El modelo Whisper ausente reutiliza
    `model_missing` (código `4`) remitiendo a `setup`.
-4. **`TranscribeRequest` en el IPC** (`protocol.py`) — operación nueva del daemon que
-   recibe las **muestras de audio ya decodificadas, en base64** más `source_language`,
-   y devuelve el texto. El daemon **nunca recibe una ruta del cliente** (invariante
-   sin-paths de `protocol.py`, igual que `SynthesizeRequest`/`PrecomputeVoiceRequest`):
+4. **`TranscribeRequest` en el IPC** (`daemon/protocol.py`) — operación nueva del daemon que
+   recibe las **muestras de audio ya decodificadas —PCM int16 crudo a 16 kHz/mono, el
+   formato de captura— en base64** más `source_language`, y devuelve el texto. El daemon
+   deshace int16→float32 con el mismo `INT16_MAX_F` de la ruta de captura. El daemon **nunca recibe una ruta del cliente** (invariante
+   sin-paths de `daemon/protocol.py`, igual que `SynthesizeRequest`/`PrecomputeVoiceRequest`):
    el audio viaja como base64 en el JSON, simétrico a `ResultEvent.audio_b64`
-   (`ipc.py:198`), con un tope propio (`MAX_AUDIO_BYTES`, análogo a `MAX_TEXT_LENGTH`):
+   (`daemon/ipc.py:199`), con un tope propio (`MAX_AUDIO_BYTES`, análogo a `MAX_TEXT_LENGTH`):
    la validación estricta cae sobre la **longitud del campo base64 entrante** de
    `TranscribeRequest`, igual que `MAX_TEXT_LENGTH` acota el campo `text`. El valor se
    deriva del invariante temporal ya existente del IPC, `REQUEST_TIMEOUT = 300.0` s
-   (`ipc.py`): a 16 kHz / mono / int16 (formato de captura, [3.5](#35-captura-de-micrófono-con-miniaudio)),
+   (`daemon/ipc.py:40`): a 16 kHz / mono / int16 (formato de captura, [3.5](#35-captura-de-micrófono-con-miniaudio)),
    una toma de 300 s pesa `300 × 32 000 B/s = 9 600 000 B` (~9,6 MB) de PCM crudo; en
    base64 (factor ×4/3) son `9 600 000 × 4 / 3 = 12 800 000 B` (~12,8 MB). Se fija
    `MAX_AUDIO_BYTES = 12_800_000` (bytes del campo base64), la misma cota anti-DoS
    local trivial que ya justifica `MAX_TEXT_LENGTH`.
    Es **aditiva**: una operación nueva no obliga a subir `schema_version` (política de
-   compatibilidad de `protocol.py:53`). La captura **no** entra en el IPC: es de cliente.
+   compatibilidad de `daemon/protocol.py:53`). La captura **no** entra en el IPC: es de cliente.
 5. **Ninguno de estos cambios es incompatible.** A diferencia del rename
    `--language`→`--target-language` del subsistema de traducción, aquí no se renombra
-   ni se retira nada. Aun así, **tts-sidecar-narrator** debe conocer la superficie
-   nueva para exponerla (STT cubrirá toda la CLI del narrator), por lo que el cierre
-   incluye actualizarlo en lockstep.
+   ni se retira nada: toda la superficie nueva es **estrictamente aditiva**, así que
+   ningún invocador existente del CLI o del IPC se rompe.
 
 ### 3.12 Invariantes (lo que NO cambia)
 
@@ -573,10 +578,38 @@ macOS, toggle en Windows).
 → *verify*: test extremo a extremo del bucle voz→voz (`--mic --source-language es-latam
 --target-language en` → audio en inglés con la voz), directo y vía daemon.
 
+**Decisiones cerradas** (principio rector: el daemon es el locus de cómputo caliente de
+los tres modelos pesados —transcripción, traducción, síntesis—; el cliente orquesta y
+captura):
+
+1. **Formato de onda de `TranscribeRequest`: int16.** El campo base64 transporta PCM
+   int16 crudo a 16 kHz/mono (el formato de captura), no float32: coincide con el techo
+   de fidelidad real de ambas fuentes (micrófono y WAV nacen en int16), mantiene
+   auto-consistente la derivación de `MAX_AUDIO_BYTES` y halva el payload frente a
+   float32. El daemon deshace int16→float32 con el mismo `INT16_MAX_F`. Un
+   `sample_format` float32 futuro cabe de forma aditiva (`extra="ignore"`), sin subir
+   `schema_version`.
+2. **La composición usa `/transcribe` de forma oportunista.** `speech say|synthesize`
+   con `--audio`/`--mic` enruta con el **mismo dispatch de tres modos que la síntesis**
+   (`_dispatch_synthesis`): en modo directo transcribe local; si el daemon responde,
+   envía las muestras base64 a `/transcribe` para reutilizar el Whisper caliente. Los
+   tres modelos pesados comparten así una única historia de routing y el bucle voz→voz no
+   paga carga fría en el camino caliente. El invariante sin-paths se conserva (viajan
+   muestras, nunca rutas) y el fail-fast también (`transcribe_samples` carga el modelo
+   antes de transcribir).
+3. **Precarga de Whisper opt-in con `daemon start --with-stt`** (simétrico a
+   `setup --with-stt`), con carga perezosa como fallback si el flag no se pasa. Elimina
+   el acantilado de la primera petición en la sesión del daemon; los dos ejes —*provisión
+   en disco* (`setup --with-stt`) y *calidez en RAM* (`daemon start --with-stt`)— se
+   mantienen simétricos y separados. `model_loaded` reporta la señal con clave propia.
+4. **`speech transcribe` (standalone) gana `--daemon`/`--no-daemon`.** Reutiliza el
+   patrón de tres modos; es el segundo consumidor de `/transcribe` (junto con la
+   composición), lo que vuelve no-especulativo el `TranscribeRequest` del IPC.
+
 ### Fase 6 — Cierre
 
-Actualizar `narrator` en lockstep; sincronizar `USAGE.md`, `CLI-CONTRACT.md`,
-`DESIGN.md`, `GOAL.md`, `ROADMAP.md`; registrar la licencia MIT del modelo Whisper.
+Sincronizar `USAGE.md`, `CLI-CONTRACT.md`, `DESIGN.md`, `GOAL.md`, `ROADMAP.md`;
+registrar la licencia MIT del modelo Whisper.
 → *verify*: suite verde + smoke test de bundle final.
 
 ---
