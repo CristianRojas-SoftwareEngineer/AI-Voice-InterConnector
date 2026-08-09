@@ -36,3 +36,18 @@ class TranslationFailedError(Exception):
     falló al traducir un segmento. Identidad propia para no colapsarla con
     `TranslationModelMissingError`: aquí el modelo sí cargó, pero la
     inferencia falló. La eleva `MarianTranslator.translate()`."""
+
+
+class TranscriptionModelMissingError(Exception):
+    """El modelo de transcripción (faster-whisper) no está en la ruta de
+    caché esperada. La eleva `WhisperModelLoader.load()` cuando la ruta no
+    existe; el llamador la mapea a `EXIT_MODEL_MISSING` con un mensaje que
+    remite a `setup --with-stt`."""
+
+
+class TranscriptionFailedError(Exception):
+    """El backend de transcripción (faster-whisper en producción, doble en
+    tests) falló al transcribir el audio con el modelo ya cargado. Identidad
+    propia para no colapsarla con `TranscriptionModelMissingError`: aquí el
+    modelo sí cargó, pero la inferencia falló. La eleva
+    `WhisperTranscriber.transcribe()`."""

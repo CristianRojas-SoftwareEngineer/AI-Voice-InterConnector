@@ -50,6 +50,7 @@ class MockArgs:
         self.uninstall = kwargs.get("uninstall", False)
         self.yes = kwargs.get("yes", False)
         self.language = kwargs.get("language", "all")
+        self.with_stt = kwargs.get("with_stt", False)
         self.target_language = kwargs.get("target_language", "es-latam")
         self.source_language = kwargs.get("source_language", None)
         self.exaggeration = kwargs.get("exaggeration", None)
@@ -1452,6 +1453,23 @@ class TestCmdCleanup:
         assert not propio1.exists() and not propio2.exists()
         assert ajeno.exists()
 
+    def test_model_sweep_includes_transcription_model(self, tmp_path, monkeypatch, capsys):
+        """--model (Tarea 11) también barre transcription-models/ (modelo
+        faster-whisper-small), sin necesidad de un flag propio de desaprovisión."""
+        from tts_sidecar.cli import cmd_cleanup
+
+        propio1, propio2, ajeno, voices = self._fake_env(tmp_path, monkeypatch)
+        monkeypatch.setattr("tts_sidecar.transcription.service.data_root", lambda: str(tmp_path))
+        transcription_root = tmp_path / "transcription-models"
+        (transcription_root / "faster-whisper-small").mkdir(parents=True)
+        monkeypatch.setattr("builtins.input", lambda _: "s")
+
+        cmd_cleanup(self._args(model=True))
+
+        assert not transcription_root.exists()
+        assert not propio1.exists() and not propio2.exists()
+        assert ajeno.exists()
+
 
 class TestSetupUninstall:
     """setup --uninstall: desinstalación de un comando en los 3 SO (dispatch por
@@ -2338,6 +2356,7 @@ class TestSchemaVersionJSON:
 # hace fallar el test, en vez de quedar fuera de la cobertura en silencio.
 _JSON_COVERED_COMMANDS = {
     "speech synthesize", "speech say", "speech play", "speech list", "speech remove",
+    "speech transcribe",
     "devices", "doctor", "setup", "cleanup", "version", "translate",
     "voice list", "voice clone", "voice remove",
     "daemon start", "daemon stop", "daemon restart", "daemon status",
@@ -4083,3 +4102,189 @@ class TestTranslateCommand:
                 cmd_translate(self._Args(text="hola", from_lang="es", to_lang="en"))
 
         assert exc.value.code == EXIT_TRANSLATION_FAILED
+
+
+class TestTranscribeCommand:
+    """`speech transcribe --audio PATH --source-language {es-latam,en} [--json]`
+    (Tarea 9 del subsistema STT): audio->texto vía `TranscriptionService`,
+    con `--json` divergiendo deliberadamente de `translate --json` (D5):
+    `source` es el token CLI verbatim, no el ISO resuelto."""
+
+    class _Args:
+        def __init__(self, audio, source_language="es-latam", json=False):
+            self.audio = audio
+            self.source_language = source_language
+            self.json = json
+
+    def test_transcribe_success_plain_text(self, tmp_path, capsys):
+        from tts_sidecar.cli import cmd_speech_transcribe
+
+        audio = tmp_path / "nota.wav"
+        audio.write_bytes(b"")
+
+        with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
+            mock_cls.return_value.transcribe.return_value = "hola mundo"
+            cmd_speech_transcribe(self._Args(audio=str(audio)))
+
+        mock_cls.return_value.transcribe.assert_called_once_with(Path(str(audio)), "es-latam")
+        assert capsys.readouterr().out.strip() == "hola mundo"
+
+    def test_transcribe_json_output_exact_shape(self, tmp_path, capsys):
+        import json as json_mod
+        from tts_sidecar.cli import cmd_speech_transcribe
+
+        audio = tmp_path / "nota.wav"
+        audio.write_bytes(b"")
+
+        with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
+            mock_cls.return_value.transcribe.return_value = "hola mundo"
+            cmd_speech_transcribe(self._Args(audio=str(audio), source_language="es-latam", json=True))
+
+        payload = json_mod.loads(capsys.readouterr().out)
+        assert payload == {"text": "hola mundo", "source": "es-latam", "schema_version": "3"}
+        # El token CLI verbatim, NO el ISO resuelto ("es"): divergencia deliberada de `translate`.
+        assert payload["source"] == "es-latam"
+
+    def test_transcribe_model_missing_exits_model_missing_points_to_setup(self, tmp_path):
+        from tts_sidecar.cli import cmd_speech_transcribe, EXIT_MODEL_MISSING
+        from tts_sidecar.exceptions import TranscriptionModelMissingError
+
+        audio = tmp_path / "nota.wav"
+        audio.write_bytes(b"")
+
+        with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
+            mock_cls.return_value.transcribe.side_effect = TranscriptionModelMissingError("missing")
+            with pytest.raises(CliError) as exc:
+                cmd_speech_transcribe(self._Args(audio=str(audio)))
+
+        assert exc.value.code == EXIT_MODEL_MISSING
+        assert "setup" in exc.value.message
+
+    def test_transcribe_failure_exits_transcription_failed(self, tmp_path):
+        from tts_sidecar.cli import cmd_speech_transcribe, EXIT_TRANSCRIPTION_FAILED
+        from tts_sidecar.exceptions import TranscriptionFailedError
+
+        audio = tmp_path / "nota.wav"
+        audio.write_bytes(b"")
+
+        with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
+            mock_cls.return_value.transcribe.side_effect = TranscriptionFailedError("boom")
+            with pytest.raises(CliError) as exc:
+                cmd_speech_transcribe(self._Args(audio=str(audio)))
+
+        assert exc.value.code == EXIT_TRANSCRIPTION_FAILED
+
+    def test_transcribe_audio_not_found_exits_not_found(self, tmp_path):
+        from tts_sidecar.cli import cmd_speech_transcribe, EXIT_NOT_FOUND
+
+        audio = tmp_path / "no-existe.wav"
+
+        with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
+            with pytest.raises(CliError) as exc:
+                cmd_speech_transcribe(self._Args(audio=str(audio)))
+
+        mock_cls.assert_not_called()
+        assert exc.value.code == EXIT_NOT_FOUND
+
+
+class TestDoctorTranscriptionModel:
+    """doctor reporta PASS/FAIL de la presencia del modelo de transcripción
+    faster-whisper-small (Tarea 10)."""
+
+    def _mucho_ram(self):
+        fake_mem = MagicMock()
+        fake_mem.total = 16 * 1024 ** 3
+        return fake_mem
+
+    def test_pass_when_model_present(self, monkeypatch, tmp_path, capsys):
+        import tts_sidecar.cli as cli
+
+        monkeypatch.setattr("tts_sidecar.transcription.service.data_root", lambda: str(tmp_path))
+        (tmp_path / "transcription-models" / "faster-whisper-small").mkdir(parents=True)
+
+        with patch.object(cli, "_environment_checks", return_value=[]), \
+                patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("psutil.virtual_memory", return_value=self._mucho_ram()):
+            cli.cmd_doctor(MockArgs(json=False))
+
+        out = capsys.readouterr().out
+        assert "[PASS] Transcription model" in out
+
+    def test_fail_when_missing(self, monkeypatch, tmp_path, capsys):
+        import tts_sidecar.cli as cli
+
+        monkeypatch.setattr("tts_sidecar.transcription.service.data_root", lambda: str(tmp_path))
+
+        with patch.object(cli, "_environment_checks", return_value=[]), \
+                patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("psutil.virtual_memory", return_value=self._mucho_ram()):
+            result = cli.cmd_doctor(MockArgs(json=False))
+
+        out = capsys.readouterr().out
+        assert "[FAIL] Transcription model" in out
+        assert result == cli.EXIT_ERROR
+
+
+class TestSetupTranscriptionProvisioning:
+    """setup --with-stt descarga (sin conversión) Systran/faster-whisper-small
+    (Tarea 11); sin el flag no se toca, sea cual sea --language. Idempotente:
+    no redescarga si el directorio ya existe."""
+
+    def _mock_env(self, monkeypatch, tmp_path):
+        import tts_sidecar.cli as cli
+        monkeypatch.setattr(
+            cli, "_environment_checks",
+            lambda: [("PASS", "Chatterbox TTS", "0.1.7")],
+        )
+        monkeypatch.setattr("tts_sidecar.transcription.service.data_root", lambda: str(tmp_path))
+        # Aísla la provisión de traducción (compañera de setup con --language
+        # "all" por defecto en MockArgs) para que no dispare la conversión CT2
+        # real, igual que el molde de TestSetupTranslationProvisioning.
+        monkeypatch.setattr(cli, "_convert_translation_model", MagicMock())
+        return cli
+
+    def test_with_stt_downloads_whisper_model(self, monkeypatch, tmp_path):
+        cli = self._mock_env(monkeypatch, tmp_path)
+        mock_snapshot_download = MagicMock(return_value=str(tmp_path / "hf-snapshot"))
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False, language="all", with_stt=True))
+
+        whisper_calls = [
+            c for c in mock_snapshot_download.call_args_list
+            if c.kwargs.get("repo_id") == "Systran/faster-whisper-small"
+        ]
+        assert len(whisper_calls) == 1
+        assert whisper_calls[0].kwargs["local_dir"] == str(
+            tmp_path / "transcription-models" / "faster-whisper-small"
+        )
+
+    def test_without_with_stt_does_not_touch_whisper_model(self, monkeypatch, tmp_path):
+        cli = self._mock_env(monkeypatch, tmp_path)
+        mock_snapshot_download = MagicMock(return_value=str(tmp_path / "hf-snapshot"))
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False, language="all", with_stt=False))
+
+        whisper_calls = [
+            c for c in mock_snapshot_download.call_args_list
+            if c.kwargs.get("repo_id") == "Systran/faster-whisper-small"
+        ]
+        assert whisper_calls == []
+
+    def test_already_cached_whisper_model_is_not_redownloaded(self, monkeypatch, tmp_path):
+        cli = self._mock_env(monkeypatch, tmp_path)
+        (tmp_path / "transcription-models" / "faster-whisper-small").mkdir(parents=True)
+        mock_snapshot_download = MagicMock()
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False, language="all", with_stt=True))
+
+        whisper_calls = [
+            c for c in mock_snapshot_download.call_args_list
+            if c.kwargs.get("repo_id") == "Systran/faster-whisper-small"
+        ]
+        assert whisper_calls == []

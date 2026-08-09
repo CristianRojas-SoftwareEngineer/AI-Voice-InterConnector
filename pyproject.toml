@@ -40,6 +40,9 @@ dependencies = [
     "pysbd>=0.3.4",
     "ctranslate2>=4.8.1",
     "sentencepiece>=0.2.0",
+    # Transcripción: reutiliza el runtime CT2 ya embarcado, sin motor de
+    # inferencia nuevo.
+    "faster-whisper>=1.2.1",
     # Traducción: solo se usan en la conversión opus-mt->CT2 de 'setup'
     # (ctranslate2.converters.TransformersConverter). chatterbox-tts ya trae
     # transformers como dependencia transitiva (pin exacto ==5.2.0 en

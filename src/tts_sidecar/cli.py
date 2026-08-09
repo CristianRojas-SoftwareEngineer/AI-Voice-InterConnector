@@ -49,6 +49,7 @@ from .exit_codes import (  # noqa: F401
     EXIT_NOT_APPLICABLE,
     EXIT_PRECONDITION_FAILED,
     EXIT_TRANSLATION_FAILED,
+    EXIT_TRANSCRIPTION_FAILED,
     EXIT_INTERRUPTED,
     CliError,
 )
@@ -936,6 +937,38 @@ def cmd_translate(args):
         print(translated)
 
 
+def cmd_speech_transcribe(args):
+    """Transcribe un archivo WAV a texto vía `TranscriptionService`. Whisper
+    SOLO transcribe (`task="transcribe"`), nunca traduce."""
+    audio_path = Path(args.audio)
+    if not audio_path.exists():
+        raise CliError(EXIT_NOT_FOUND, "not_found", f"Error: no se encontró el archivo de audio '{args.audio}'.")
+
+    from .transcription import WhisperModelLoader, WhisperTranscriber, TranscriptionService
+    from .exceptions import TranscriptionModelMissingError, TranscriptionFailedError
+
+    model_loader = WhisperModelLoader()
+    service = TranscriptionService(model_loader, WhisperTranscriber(model_loader))
+
+    try:
+        text = service.transcribe(audio_path, args.source_language)
+    except TranscriptionModelMissingError:
+        raise CliError(
+            EXIT_MODEL_MISSING, "model_missing",
+            "Error: el modelo de transcripción no está provisionado. Ejecuta "
+            "'tts-sidecar setup --with-stt' primero.",
+        )
+    except TranscriptionFailedError as e:
+        raise CliError(EXIT_TRANSCRIPTION_FAILED, "transcription_failed", f"Error: {e}")
+
+    if getattr(args, "json", False):
+        # `source` es el token CLI verbatim (`es-latam`), no el ISO resuelto:
+        # divergencia deliberada de `translate --json` (D5, ratificada).
+        emit_json({"text": text, "source": args.source_language})
+    else:
+        print(text)
+
+
 def _environment_checks() -> list[tuple[str, str, str]]:
     """Chequeos de entorno compartidos por doctor y setup.
 
@@ -1122,6 +1155,20 @@ def cmd_doctor(args):
             ))
     except Exception as e:
         checks.append(("FAIL", "Translation model (es<->en)", f"{e} (ejecuta: tts-sidecar setup --language en)"))
+
+    # Chequea el modelo de transcripción faster-whisper (Tarea 10): un único
+    # modelo (no un par de direcciones), presencia en la ruta de caché.
+    try:
+        from .transcription import default_cache_dir as transcription_cache_dir
+        if Path(transcription_cache_dir()).exists():
+            checks.append(("PASS", "Transcription model (whisper-small)", "faster-whisper-small presente en la caché"))
+        else:
+            checks.append((
+                "FAIL", "Transcription model (whisper-small)",
+                "falta faster-whisper-small (ejecuta: tts-sidecar setup --with-stt)",
+            ))
+    except Exception as e:
+        checks.append(("FAIL", "Transcription model (whisper-small)", f"{e} (ejecuta: tts-sidecar setup --with-stt)"))
 
     # Chequea el directorio de voces de usuario
     voices_path = voices.voices_root()
@@ -1818,6 +1865,35 @@ def cmd_setup(args):
                 results[pair_name] = {"already_cached": False, "downloaded": True}
                 print(f"[PASS] Modelo de traducción convertido en: {output_dir}", file=sys.stderr)
 
+        def _provision_whisper_model(results: dict):
+            """Descarga (sin conversión) `Systran/faster-whisper-small` (Tarea 11).
+
+            Gateado por `--with-stt`, opt-in y ortogonal a `--language`: no se
+            invoca sea cual sea el idioma solicitado si el flag está apagado.
+            Idempotente: se salta la descarga si el directorio ya existe (los
+            pesos ya están en formato CT2, no requiere conversión).
+            """
+            if not getattr(args, "with_stt", False):
+                return
+            from .transcription import default_cache_dir as transcription_cache_dir
+            from huggingface_hub import snapshot_download as _snapshot_download
+
+            output_dir = transcription_cache_dir()
+            if Path(output_dir).exists():
+                print(
+                    f"\n[PASS] El modelo de transcripción 'faster-whisper-small' ya está "
+                    f"en: {output_dir}", file=sys.stderr,
+                )
+                results["faster-whisper-small"] = {"already_cached": True, "downloaded": False}
+                return
+
+            print("\nDescargando el modelo de transcripción faster-whisper-small...", file=sys.stderr)
+            _snapshot_download(
+                repo_id="Systran/faster-whisper-small", local_dir=output_dir, token=os.getenv("HF_TOKEN"),
+            )
+            results["faster-whisper-small"] = {"already_cached": False, "downloaded": True}
+            print(f"[PASS] Modelo de transcripción descargado en: {output_dir}", file=sys.stderr)
+
         results = {}
         pending = []
         for model in models_to_provision:
@@ -1831,6 +1907,7 @@ def cmd_setup(args):
         if not pending:
             print("Provisión completa. No hay nada que descargar.", file=sys.stderr)
             _provision_translation_pairs(results)
+            _provision_whisper_model(results)
             _purge_incomplete()
             _emit_setup_json(results)
             return
@@ -1895,6 +1972,7 @@ def cmd_setup(args):
         print("\n[PASS] ¡Modelo(s) descargado(s) correctamente!", file=sys.stderr)
         print(f"  Ubicación: {model_dir}", file=sys.stderr)
         _provision_translation_pairs(results)
+        _provision_whisper_model(results)
         _purge_incomplete()
         _emit_setup_json(results)
 
@@ -1991,6 +2069,11 @@ def cmd_cleanup(args):
         from .translation import default_cache_dir
         translation_root = Path(default_cache_dir("es", "en")).parent
         targets.append((translation_root, "modelo de traducción"))
+        # El modelo de transcripción faster-whisper (Tarea 11) comparte el
+        # mismo recurso --model, mismo criterio de simplicidad que arriba.
+        from .transcription import default_cache_dir as transcription_cache_dir
+        transcription_root = Path(transcription_cache_dir()).parent
+        targets.append((transcription_root, "modelo de transcripción"))
     if do_voices:
         from . import voices
         targets.append((Path(voices.voices_root()), "voces de usuario"))
@@ -2298,6 +2381,14 @@ def build_parser() -> argparse.ArgumentParser:
     speech_remove.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina (voz, etiqueta)")
     speech_remove.set_defaults(func=cmd_speech_remove)
 
+    # speech transcribe: transcribe un archivo WAV a texto (sin micrófono, sin daemon).
+    speech_transcribe = speech_subparsers.add_parser("transcribe", help="Transcribe un archivo de audio a texto")
+    speech_transcribe.add_argument("--audio", required=True, help="Ruta del archivo WAV a transcribir")
+    speech_transcribe.add_argument("--source-language", required=True, choices=["es-latam", "en"],
+                                   help="Idioma hablado en el audio")
+    speech_transcribe.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina ({text, source})")
+    speech_transcribe.set_defaults(func=cmd_speech_transcribe)
+
     # grupo de comandos voice (list / clone / remove)
     voice_parser = subparsers.add_parser("voice", help="Gestiona las voces registradas")
     voice_subparsers = voice_parser.add_subparsers(dest="action", help="Acciones de voz")
@@ -2360,6 +2451,9 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Omite la confirmación interactiva del cleanup encadenado por --uninstall")
     setup_parser.add_argument("--language", choices=["es-latam", "en", "all"], default="all",
                               help="Idioma(s) a provisionar (default: all, ambos modelos)")
+    setup_parser.add_argument("--with-stt", action="store_true",
+                              help="Provisiona también el modelo de transcripción faster-whisper-small "
+                                   "(opt-in, ortogonal a --language)")
     setup_parser.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
     setup_parser.set_defaults(func=cmd_setup)
 

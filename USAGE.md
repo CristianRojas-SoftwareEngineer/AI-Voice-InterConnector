@@ -18,6 +18,7 @@
     - [`speech play`](#speech-play)
     - [`speech list`](#speech-list)
     - [`speech remove`](#speech-remove)
+    - [`speech transcribe`](#speech-transcribe)
   - [`voice clone`](#voice-clone)
   - [`voice list`](#voice-list)
   - [`voice remove`](#voice-remove)
@@ -761,6 +762,50 @@ Una etiqueta inexistente sale con exit **3**. El borrado masivo es tarea de
 
 ---
 
+#### `speech transcribe`
+
+Transcribe un archivo WAV a texto (audio→texto), sin micrófono ni daemon.
+Es una sub-acción del grupo `speech`, aislada de la síntesis y de `translate`:
+Whisper solo transcribe (nunca traduce), así que si necesitas el texto en
+otro idioma, encadena `translate` por separado.
+
+```bash
+tts-sidecar speech transcribe --audio grabacion.wav --source-language es-latam
+tts-sidecar speech transcribe --audio recording.wav --source-language en --json
+```
+
+**Qué esperar:**
+
+```
+Hola, ¿cómo estás?
+```
+
+Con `--json`, emite `{"text", "source"}` y nada por stdout salvo ese objeto.
+`source` es el **token CLI verbatim** de `--source-language` (p. ej.
+`es-latam`, sin normalizar a ISO) — a diferencia de `translate --json`, que
+emite `source`/`target` como códigos ISO. La divergencia es deliberada: esta
+sub-acción pertenece al grupo `speech`, cuyo resto de comandos (`say`,
+`synthesize`) también expone `es-latam` en su propia taxonomía de idioma sin
+colapsarla a ISO; internamente el idioma sí se resuelve a ISO
+(`resolve_language`) antes de invocar el modelo, solo la salida `--json`
+preserva el token de entrada.
+
+**Opciones:**
+- `--audio` (requerido): Ruta del archivo WAV a transcribir
+- `--source-language` (requerido): Idioma hablado en el audio (`es-latam` o `en`)
+- `--json`: Emite `{"text", "source"}`
+
+El WAV se remuestrea internamente a los 16 kHz que el modelo asume
+(`faster_whisper.WhisperModel`), sin importar la frecuencia de origen del
+archivo — no requiere ninguna preparación previa del audio.
+
+Un archivo de audio inexistente sale con exit **3**. Si el modelo de
+transcripción no está provisionado, falla remitiendo a
+`tts-sidecar setup --with-stt` con exit **4**; si la transcripción falla con
+el modelo ya cargado, sale con exit **10**.
+
+---
+
 ### `voice clone`
 
 Clona una voz a partir de dos archivos de audio.
@@ -1195,6 +1240,7 @@ desde el binario como desde el código fuente. En concreto:
   | `7` | Operación no aplicable | Voz de fábrica de solo lectura; plataforma no soportada; `setup --uninstall` fuera del canal nativo |
   | `8` | Precondición de entorno incumplida | Credenciales, red, permisos o disco insuficientes al provisionar |
   | `9` | Fallo del pipeline de traducción | `translate` con el modelo cargado pero la inferencia falla |
+  | `10` | Fallo del pipeline de transcripción | `speech transcribe` con el modelo cargado pero la inferencia falla |
   | `130` | Interrupción del usuario | Ctrl+C (128 + SIGINT) durante cualquier comando |
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el
   audio generado para un mismo texto y voz es equivalente en cualquier SO.

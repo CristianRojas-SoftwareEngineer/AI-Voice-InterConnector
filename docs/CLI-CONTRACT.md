@@ -86,7 +86,7 @@ El proyecto tiene dos canales legibles por máquina y usa los dos: el entero, qu
 
 | Comando | Sub-acciones | Propósito |
 |---|---|---|
-| `speech` | `synthesize`, `say`, `play`, `list`, `remove` | Síntesis de habla y gestión del almacén |
+| `speech` | `synthesize`, `say`, `play`, `list`, `remove`, `transcribe` | Síntesis de habla, gestión del almacén y transcripción de audio a texto |
 | `voice` | `list`, `clone`, `remove` | Gestión del registro de voces |
 | `translate` | — | Traducción de texto `es↔en`, aislada de la síntesis |
 | `devices` | — | Lista dispositivos de audio |
@@ -404,6 +404,7 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 | `7` | `EXIT_NOT_APPLICABLE` | La operación no aplica a este objetivo o entorno, y no aplicará reintentando |
 | `8` | `EXIT_PRECONDITION_FAILED` | Una precondición del entorno no se cumple; el remedio está fuera del programa y la operación es reintentable una vez corregida |
 | `9` | `EXIT_TRANSLATION_FAILED` | El pipeline de traducción falló con el modelo ya cargado |
+| `10` | `EXIT_TRANSCRIPTION_FAILED` | El pipeline de transcripción falló con el modelo ya cargado |
 | `130` | `EXIT_INTERRUPTED` | Interrupción del usuario |
 
 #### Cómo se reparten los enteros
@@ -551,6 +552,8 @@ Con la raíz separada del registro de voces, el arrastre de `--voices` es códig
 
 El chequeo de audio degrada a WARN en vez de FAIL, **con la premisa que lo sostiene**: el sidecar es instalable en hosts headless, SSH y CI porque existe un sumidero que no necesita subsistema de sonido —`speech synthesize --text T --label L` sintetiza y persiste sin reproducir nada—. `setup` es provisión, no diagnóstico.
 
+**`--with-stt`** provisiona el modelo de transcripción (`faster-whisper-small`, runtime CT2 embarcado). Es **opt-in** (no se descarga por defecto) y **ortogonal a `--language`**: no cuelga de la taxonomía de idioma porque el modelo Whisper no está partido por par de idiomas — un solo modelo cubre `es`/`en`. `setup --with-stt` sin más flags provisiona únicamente el modelo de transcripción; se combina libremente con `--language` para provisionar ambos en la misma invocación.
+
 #### `voice`
 
 - **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime), y los archivos en disco se llaman `timbre-reference.wav` y `speech-reference.wav`. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
@@ -573,7 +576,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 **Riesgo conocido y declarado**: `data_root()` depende de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. Está atenuado porque `/voices` permite inspeccionar la vista del daemon.
 
-## 13. El comando `translate` y la síntesis cross-lingual
+## 13. El comando `translate`, `speech transcribe` y la síntesis cross-lingual
 
 #### `translate`: texto→texto, aislado de la síntesis
 
@@ -594,3 +597,15 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 #### Provisión y daemon
 
 `setup --language {en, all}` descarga y convierte a formato CT2 el par `opus-mt-{es,en}` junto al modelo TTS inglés; `doctor` reporta un chequeo único «Translation model (es<->en)» que exige **ambas** direcciones para pasar; `cleanup --model` incluye la caché de modelos de traducción en el barrido. `daemon start --language {en, all}` precarga también el modelo de traducción en RAM.
+
+#### `speech transcribe`: audio→texto, verificable sin traducir ni sintetizar
+
+`speech transcribe` es una **sub-acción del grupo `speech`** (no un comando aislado como `translate`): transcribe un archivo WAV a texto con `faster-whisper` sobre el runtime CT2 ya embarcado. Es una operación **de un solo idioma por invocación** — a diferencia del par `--from`/`--to` de `translate`, aquí `--source-language` (requerido, `es-latam`/`en`, misma taxonomía que `speech say`/`synthesize`) declara el único idioma hablado en el audio. Whisper **solo transcribe** (`task="transcribe"`), nunca traduce: si el usuario necesita el texto en otro idioma, encadena `translate` por separado. No hay síntesis de por medio: `speech transcribe` es verificable de forma aislada, con un WAV de entrada y texto de salida, sin depender del motor TTS ni del subsistema de traducción.
+
+| Parámetros | Payload `--json` |
+|---|---|
+| `--audio` **requerido** · `--source-language` **requerido** (`es-latam`\|`en`) · `--json` | `{"text", "source"}` |
+
+Si el modelo `faster-whisper-small` no está provisionado, sale con **4** (`EXIT_MODEL_MISSING`), remitiendo a `tts-sidecar setup --with-stt`; un fallo de la inferencia con el modelo ya cargado sale con **10** (`EXIT_TRANSCRIPTION_FAILED`, §9) — mismo criterio de asignación que distingue **4** de **9** en `translate`.
+
+**Divergencia deliberada del shape `--json` frente a `translate` (D5).** `translate --json` emite `source`/`target` como los códigos **ISO crudos** que recibieron `--from`/`--to` (`es`, `en`): ahí el ISO es exacto porque el parámetro mismo está restringido a `choices=["es","en"]`. `speech transcribe --json`, en cambio, emite `source` como el **token CLI verbatim** de `--source-language` (p. ej. `es-latam`, sin resolver a `es`) — no lo normaliza. La razón es de simetría con el resto de `speech`: `speech say`/`synthesize` aceptan y exponen `es-latam` en su propia taxonomía de idioma (nunca lo colapsan a ISO de cara al usuario), y `speech transcribe` es una sub-acción de ese mismo grupo, no un primo de `translate`. Colapsar `source` a ISO ahí introduciría una inconsistencia dentro del propio grupo `speech` a cambio de una consistencia superficial con un comando de otro grupo. La resolución a ISO (`resolve_language`) sigue ocurriendo internamente para seleccionar el idioma que Whisper recibe; solo la salida `--json` preserva el token de entrada.

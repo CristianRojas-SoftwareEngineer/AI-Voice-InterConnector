@@ -16,6 +16,7 @@ Criterio de asignación (clase de causa + siguiente llamada del consumidor):
   7  operación no aplicable al contexto actual (sólo lectura, plataforma no soportada)
   8  precondición de entorno incumplida (credenciales, red, permisos, disco)
   9  fallo del propio pipeline de traducción (modelo cargado, la inferencia falló)
+  10  fallo del propio pipeline de transcripción (modelo cargado, la inferencia falló)
   130 interrupción por el usuario (128 + SIGINT)
 """
 
@@ -29,6 +30,7 @@ EXIT_STATE_CONFLICT = 6
 EXIT_NOT_APPLICABLE = 7
 EXIT_PRECONDITION_FAILED = 8
 EXIT_TRANSLATION_FAILED = 9
+EXIT_TRANSCRIPTION_FAILED = 10
 EXIT_INTERRUPTED = 130
 
 

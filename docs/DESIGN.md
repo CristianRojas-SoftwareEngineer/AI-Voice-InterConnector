@@ -85,6 +85,10 @@ TTS-Sidecar/
 │       │   ├── translator.py      # MarianTranslator (runtime CT2)
 │       │   ├── model_loader.py    # TranslationModelLoader + resolve_language
 │       │   └── assembler.py       # SegmentAssembler
+│       ├── transcription/         # Subsistema de transcripción STT (audio→texto, faster-whisper)
+│       │   ├── service.py         # TranscriptionService: orquesta resolver idioma → cargar modelo → leer WAV → transcribir
+│       │   ├── model_loader.py    # WhisperModelLoader
+│       │   └── transcriber.py     # WhisperTranscriber
 │       ├── voices/                # Voces de FÁBRICA (commiteadas, empaquetadas, solo lectura)
 │       │   └── default/           # Voz por defecto (derivada de assets/audios/)
 │       │       ├── timbre-reference.wav # Timbre de voz (cualquier largo)
@@ -160,6 +164,28 @@ previa y opcional.
 | **Ensamblado** | `SegmentAssembler` recompone las oraciones traducidas en un solo texto |
 | **Provisión** | Fuera del bundle, igual que los modelos de síntesis: se descarga y convierte en `setup`, se verifica en `doctor`, se limpia con `cleanup --model` |
 | **Passthrough** | `TranslationService.translate` devuelve el texto intacto sin cargar ningún modelo si origen == destino |
+
+## Transcripción STT (faster-whisper / CTranslate2)
+
+Subsistema independiente de audio→texto (`src/tts_sidecar/transcription/`) que
+transcribe un archivo WAV vía la sub-acción `speech transcribe`, aislada del
+motor Chatterbox y del subsistema de traducción. Espeja el patrón de
+colaboradores inyectables de `translation/` (`ModelLoader` con factory
+inyectable + caché por ruta, orquestador `Service` con fail-fast al cargar el
+modelo antes de decodificar el audio). Whisper **solo transcribe**
+(`task="transcribe"`), nunca traduce: si el usuario necesita el texto en otro
+idioma, encadena `translate` por separado.
+
+| Aspecto | Detalle |
+|---------|---------|
+| **Modelo** | `Systran/faster-whisper-small` (conversión CTranslate2 de `openai/whisper-small`), ya en formato CT2 — sin paso de conversión propio, a diferencia de los modelos de traducción |
+| **Licencia** | MIT |
+| **Runtime de inferencia** | CTranslate2 (CT2), el mismo runtime embarcado que usa `translation/`; sin runtime nuevo |
+| **Resolución de idioma** | Reutiliza `resolve_language` de `translation/model_loader.py` (`es-latam`→`es`) — un solo idioma por invocación, no un par |
+| **Lectura de audio** | `_default_audio_reader` (`transcription/service.py`) decodifica el WAV con `wave` de la stdlib (sin PyAV), downmixea a mono si es estéreo y normaliza int16→float32 |
+| **Remuestreo a 16 kHz** | `faster_whisper.WhisperModel.transcribe` asume 16 kHz cuando recibe un `np.ndarray`; a otra frecuencia (44.1/48/8 kHz) la transcripción degrada a texto ininteligible — verificado empíricamente. `_default_audio_reader` remuestrea siempre a `WHISPER_SAMPLE_RATE = 16000` con `_resample_to_whisper_rate` (interpolación lineal vía `numpy.interp`, no-op si el WAV ya está a 16 kHz), sin añadir ninguna dependencia nueva |
+| **Provisión** | Fuera del bundle, igual que los demás modelos: se descarga con `setup --with-stt` (opt-in, ortogonal a `--language`), se verifica en `doctor`, se limpia con `cleanup --model` |
+| **Passthrough** | No aplica (N/A): a diferencia de la traducción, no existe un caso "origen == destino" que evite cargar el modelo — toda invocación transcribe |
 
 ## Flujo de síntesis
 

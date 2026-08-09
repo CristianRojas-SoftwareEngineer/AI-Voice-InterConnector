@@ -338,6 +338,9 @@ def common_pyinstaller_args(
         "--collect-all", "sklearn",
         "--collect-all", "pandas",
         "--collect-all", "onnx",
+        "--collect-all", "faster_whisper",
+        "--collect-all", "av",
+        "--collect-all", "onnxruntime",
         *[flag for pkg in extra_collect_all for flag in ("--collect-all", pkg)],
         # Bibliotecas compartidas del intérprete (macOS requiere python para libpython3.x.dylib)
         *[flag for pkg in extra_collect_binaries for flag in ("--collect-binaries", pkg)],
