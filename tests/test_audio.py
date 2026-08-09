@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import pytest
 
 from tts_sidecar.audio import (
+    INT16_MAX_F,
+    AudioRecorder,
     SoundDevicePlayer,
     get_audio_devices,
     get_audio_devices_with_status,
@@ -87,3 +89,104 @@ class TestGetAudioDevicesLinuxMacOS:
         assert any(
             "enumeración" in r.message.lower() and r.exc_info for r in caplog.records
         ), "el fallo de enumeración debe registrar un debug con traza"
+
+
+class _FakeCaptureDevice:
+    """Doble de `miniaudio.CaptureDevice`: al recibir `start(gen)`, empuja
+    `blocks` (bytes int16 crudos) al generador vía `.send(...)`, simulando el
+    callback nativo de miniaudio, y registra el ciclo de vida (prime/stop)."""
+
+    def __init__(self, blocks):
+        self._blocks = blocks
+        self.stop_calls = 0
+        self.gen = None
+
+    def start(self, gen):
+        self.gen = gen
+        for block in self._blocks:
+            gen.send(block)
+
+    def stop(self):
+        self.stop_calls += 1
+
+
+class TestAudioRecorder:
+    def test_record_fixed_returns_normalized_mono_float32(self):
+        """Bloques int16 conocidos, concatenados y normalizados por
+        INT16_MAX_F, en un ndarray float32 mono."""
+        samples = np.array([0, 16384, -16384, 32767], dtype=np.int16)
+        blocks = [samples[:2].tobytes(), samples[2:].tobytes()]
+        device = _FakeCaptureDevice(blocks)
+
+        result = AudioRecorder(capture_factory=lambda: device).record_fixed(seconds=0.01)
+
+        assert result.dtype == np.float32
+        assert result.ndim == 1
+        np.testing.assert_allclose(result, samples.astype(np.float32) / INT16_MAX_F, atol=1e-6)
+
+    def test_lifecycle_primes_generator_before_start_and_stops_once(self):
+        """`next(gen)` prima el generador antes de `device.start(gen)`, y
+        `device.stop()` se invoca exactamente una vez al terminar."""
+        import inspect
+
+        primed_before_start = []
+
+        class _TrackingDevice(_FakeCaptureDevice):
+            def start(self, gen):
+                # El generador ya debe estar primado (suspendido en su
+                # primer `yield`) antes de que el device reciba el control.
+                primed_before_start.append(inspect.getgeneratorstate(gen) == "GEN_SUSPENDED")
+                super().start(gen)
+
+        device = _TrackingDevice([np.array([1000], dtype=np.int16).tobytes()])
+
+        AudioRecorder(capture_factory=lambda: device).record_fixed(seconds=0.01)
+
+        assert primed_before_start == [True]
+        assert device.stop_calls == 1
+
+    def test_record_until_enter_stops_on_input_line(self):
+        """`record_until_enter()` graba hasta que `input()` retorna (Enter),
+        sin depender de una tecla real."""
+        blocks = [np.array([0, 32767], dtype=np.int16).tobytes()]
+        device = _FakeCaptureDevice(blocks)
+
+        with patch("builtins.input", return_value=""):
+            result = AudioRecorder(capture_factory=lambda: device).record_until_enter()
+
+        assert device.stop_calls == 1
+        np.testing.assert_allclose(
+            result, np.array([0, 32767], dtype=np.float32) / INT16_MAX_F, atol=1e-6
+        )
+
+
+class TestGetCaptureDevices:
+    def test_get_captures_translates_to_common_shape(self):
+        from tts_sidecar.audio import get_capture_devices_with_status
+
+        fake_miniaudio = MagicMock()
+        fake_miniaudio.Devices.return_value.get_captures.return_value = [
+            {"id": 3, "name": "Micrófono USB"},
+        ]
+        with patch.dict(sys.modules, {"miniaudio": fake_miniaudio}):
+            devices, degraded = get_capture_devices_with_status()
+
+        assert degraded is False
+        assert devices == [{"id": 3, "name": "Micrófono USB", "latency": 0.1}]
+
+    def test_get_captures_failure_degrades_to_fallback(self, caplog):
+        import logging
+
+        from tts_sidecar.audio import get_capture_devices_with_status
+
+        fake_miniaudio = MagicMock()
+        fake_miniaudio.Devices.return_value.get_captures.side_effect = OSError("sin backend")
+        with patch.dict(sys.modules, {"miniaudio": fake_miniaudio}):
+            with caplog.at_level(logging.DEBUG, logger="tts_sidecar.audio"):
+                devices, degraded = get_capture_devices_with_status()
+
+        assert degraded is True
+        assert devices == [{"id": 0, "name": "Default", "latency": 0.1}]
+        assert any(
+            "enumeración" in r.message.lower() and r.exc_info for r in caplog.records
+        ), "el fallo de enumeración de captura debe registrar un debug con traza"

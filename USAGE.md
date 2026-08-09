@@ -764,14 +764,22 @@ Una etiqueta inexistente sale con exit **3**. El borrado masivo es tarea de
 
 #### `speech transcribe`
 
-Transcribe un archivo WAV a texto (audio→texto), sin micrófono ni daemon.
-Es una sub-acción del grupo `speech`, aislada de la síntesis y de `translate`:
-Whisper solo transcribe (nunca traduce), así que si necesitas el texto en
-otro idioma, encadena `translate` por separado.
+Transcribe a texto desde un archivo WAV (`--audio`) o desde el micrófono
+(`--mic`), sin daemon de por medio (la captura y la inferencia corren siempre
+en el cliente). Es una sub-acción del grupo `speech`, aislada de la síntesis y
+de `translate`: Whisper solo transcribe (nunca traduce), así que si necesitas
+el texto en otro idioma, encadena `translate` por separado.
+
+`--audio` y `--mic` son **mutuamente excluyentes y uno de los dos es
+obligatorio**. Con `--mic`, la grabación es **push-to-talk** por defecto
+(termina al presionar Enter); `--duration N` fuerza una grabación de duración
+fija en segundos y solo es válido junto a `--mic`.
 
 ```bash
 tts-sidecar speech transcribe --audio grabacion.wav --source-language es-latam
 tts-sidecar speech transcribe --audio recording.wav --source-language en --json
+tts-sidecar speech transcribe --mic --source-language es-latam
+tts-sidecar speech transcribe --mic --duration 5 --source-language en
 ```
 
 **Qué esperar:**
@@ -779,6 +787,9 @@ tts-sidecar speech transcribe --audio recording.wav --source-language en --json
 ```
 Hola, ¿cómo estás?
 ```
+
+Con `--mic` y sin `--duration`, el comando espera en silencio a que el
+usuario presione Enter antes de transcribir.
 
 Con `--json`, emite `{"text", "source"}` y nada por stdout salvo ese objeto.
 `source` es el **token CLI verbatim** de `--source-language` (p. ej.
@@ -791,15 +802,22 @@ colapsarla a ISO; internamente el idioma sí se resuelve a ISO
 preserva el token de entrada.
 
 **Opciones:**
-- `--audio` (requerido): Ruta del archivo WAV a transcribir
+- `--audio`: Ruta del archivo WAV a transcribir (mutuamente excluyente con `--mic`; uno de los dos es requerido)
+- `--mic`: Transcribe desde el micrófono en vez de un archivo (mutuamente excluyente con `--audio`; uno de los dos es requerido)
+- `--duration N`: Duración fija de grabación en segundos; solo válido junto a `--mic`
 - `--source-language` (requerido): Idioma hablado en el audio (`es-latam` o `en`)
 - `--json`: Emite `{"text", "source"}`
 
-El WAV se remuestrea internamente a los 16 kHz que el modelo asume
-(`faster_whisper.WhisperModel`), sin importar la frecuencia de origen del
-archivo — no requiere ninguna preparación previa del audio.
+La captura de micrófono es directa a 16 kHz/mono/int16 (formato que Whisper
+asume), sin remuestreo posterior; el backend de captura es `miniaudio`
+(único, sin ramas por sistema operativo). El WAV pasado con `--audio`, en
+cambio, sí se remuestrea internamente a esos mismos 16 kHz sin importar la
+frecuencia de origen del archivo — no requiere ninguna preparación previa.
 
-Un archivo de audio inexistente sale con exit **3**. Si el modelo de
+`--duration` sin `--mic` sale con exit **2** (`EXIT_INVALID_INPUT`). Sin
+terminal interactiva (no TTY) y sin `--duration`, `--mic` también sale con
+exit **2**, porque no hay forma de detectar la pulsación de Enter. Un archivo
+de audio inexistente (ruta `--audio`) sale con exit **3**. Si el modelo de
 transcripción no está provisionado, falla remitiendo a
 `tts-sidecar setup --with-stt` con exit **4**; si la transcripción falla con
 el modelo ya cargado, sale con exit **10**.

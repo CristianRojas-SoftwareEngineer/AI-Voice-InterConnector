@@ -14,13 +14,20 @@ from tts_sidecar.transcription.service import TranscriptionService, _default_aud
 
 class _FakeLoader:
     """Doble de `WhisperModelLoader`: siempre "carga" con éxito y registra
-    orden de invocación en una lista compartida."""
+    orden de invocación en una lista compartida. Cachea por `cache_dir`
+    (espeja `WhisperModelLoader.load`, `model_loader.py:47-48`): la segunda
+    invocación con el mismo `cache_dir` (p. ej. la que hace
+    `transcribe_samples` al ser delegada desde `transcribe`) es barata y no
+    vuelve a registrar orden."""
 
     def __init__(self, order_log):
         self._order_log = order_log
+        self._loaded_dirs = set()
 
     def load(self, cache_dir):
-        self._order_log.append("load")
+        if cache_dir not in self._loaded_dirs:
+            self._order_log.append("load")
+            self._loaded_dirs.add(cache_dir)
         return "fake-model"
 
 
@@ -47,6 +54,34 @@ def test_transcribe_loads_model_before_reading_audio_fail_fast():
     service.transcribe("nota.wav", "es-latam")
 
     assert order_log == ["load", "read_audio"]
+
+
+def test_transcribe_samples_resolves_language_and_delegates():
+    """`transcribe_samples` hace fail-fast y delega en el transcriber, sin
+    tocar el `audio_reader` (las muestras ya vienen decodificadas)."""
+    order_log = []
+    loader = _FakeLoader(order_log)
+
+    def fake_audio_reader(path):
+        order_log.append("read_audio")
+        return "no-debe-invocarse"
+
+    class _FakeTranscriber:
+        def transcribe(self, audio, language, cache_dir):
+            order_log.append("transcribe")
+            return "texto"
+
+    service = TranscriptionService(
+        model_loader=loader,
+        transcriber=_FakeTranscriber(),
+        audio_reader=fake_audio_reader,
+        cache_dir_resolver=lambda: "/ruta/cache",
+    )
+
+    result = service.transcribe_samples("muestras", "es-latam")
+
+    assert result == "texto"
+    assert order_log == ["load", "transcribe"]
 
 
 class _RecordingTranscriber:

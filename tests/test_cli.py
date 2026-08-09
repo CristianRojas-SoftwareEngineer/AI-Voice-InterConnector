@@ -4111,10 +4111,12 @@ class TestTranscribeCommand:
     `source` es el token CLI verbatim, no el ISO resuelto."""
 
     class _Args:
-        def __init__(self, audio, source_language="es-latam", json=False):
+        def __init__(self, audio, source_language="es-latam", json=False, mic=None, duration=None):
             self.audio = audio
             self.source_language = source_language
             self.json = json
+            self.mic = mic
+            self.duration = duration
 
     def test_transcribe_success_plain_text(self, tmp_path, capsys):
         from tts_sidecar.cli import cmd_speech_transcribe
@@ -4185,6 +4187,102 @@ class TestTranscribeCommand:
 
         mock_cls.assert_not_called()
         assert exc.value.code == EXIT_NOT_FOUND
+
+    def test_transcribe_mic_success_delegates_to_transcribe_samples(self, capsys):
+        """`--mic` graba con `AudioRecorder` (interactivo, sin `--duration`) y
+        transcribe las muestras vía `transcribe_samples`, no `transcribe`."""
+        from tts_sidecar.cli import cmd_speech_transcribe
+        import numpy as np
+
+        fake_samples = np.array([0.1, 0.2], dtype=np.float32)
+
+        with patch("sys.stdin.isatty", return_value=True), \
+             patch("tts_sidecar.audio.AudioRecorder") as mock_recorder_cls, \
+             patch("tts_sidecar.transcription.TranscriptionService") as mock_service_cls:
+            mock_recorder_cls.return_value.record_until_enter.return_value = fake_samples
+            mock_service_cls.return_value.transcribe_samples.return_value = "hola desde el micro"
+
+            cmd_speech_transcribe(self._Args(audio=None, mic=True))
+
+        mock_recorder_cls.return_value.record_until_enter.assert_called_once()
+        mock_recorder_cls.return_value.record_fixed.assert_not_called()
+        (samples_arg, lang_arg), _ = mock_service_cls.return_value.transcribe_samples.call_args
+        assert samples_arg is fake_samples
+        assert lang_arg == "es-latam"
+        assert capsys.readouterr().out.strip() == "hola desde el micro"
+
+    def test_transcribe_mic_with_duration_uses_record_fixed(self):
+        """`--mic --duration N` graba una duración fija en vez de push-to-talk."""
+        from tts_sidecar.cli import cmd_speech_transcribe
+        import numpy as np
+
+        fake_samples = np.array([0.3], dtype=np.float32)
+
+        with patch("tts_sidecar.audio.AudioRecorder") as mock_recorder_cls, \
+             patch("tts_sidecar.transcription.TranscriptionService") as mock_service_cls:
+            mock_recorder_cls.return_value.record_fixed.return_value = fake_samples
+            mock_service_cls.return_value.transcribe_samples.return_value = "texto"
+
+            cmd_speech_transcribe(self._Args(audio=None, mic=True, duration=5))
+
+        mock_recorder_cls.return_value.record_fixed.assert_called_once_with(5)
+        mock_recorder_cls.return_value.record_until_enter.assert_not_called()
+
+    def test_transcribe_mic_without_tty_or_duration_exits_invalid_input(self):
+        """Sin TTY interactiva y sin `--duration`, sale con `EXIT_INVALID_INPUT`
+        antes de abrir ningún dispositivo de captura."""
+        from tts_sidecar.cli import cmd_speech_transcribe, EXIT_INVALID_INPUT
+
+        with patch("sys.stdin.isatty", return_value=False), \
+             patch("tts_sidecar.audio.AudioRecorder") as mock_recorder_cls:
+            with pytest.raises(CliError) as exc:
+                cmd_speech_transcribe(self._Args(audio=None, mic=True))
+
+        assert exc.value.code == EXIT_INVALID_INPUT
+        mock_recorder_cls.assert_not_called()
+
+    def test_transcribe_duration_without_mic_exits_invalid_input(self, tmp_path):
+        """`--duration` junto a `--audio` (o sin `--mic`) es un error de uso,
+        antes de tocar dispositivo o archivo."""
+        from tts_sidecar.cli import cmd_speech_transcribe, EXIT_INVALID_INPUT
+
+        audio = tmp_path / "nota.wav"
+        audio.write_bytes(b"")
+
+        with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
+            with pytest.raises(CliError) as exc:
+                cmd_speech_transcribe(self._Args(audio=str(audio), mic=False, duration=5))
+
+        mock_cls.assert_not_called()
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+
+class TestTranscribeParserSourceGroup:
+    """Cobertura de parser para el grupo excluyente `--audio`/`--mic`
+    (`add_mutually_exclusive_group(required=True)`, primero del archivo).
+
+    `build_parser()` usa `_CLIParser`, que traduce errores de argparse a
+    `CliError(EXIT_INVALID_INPUT, ...)` en vez de `sys.exit` (cli.py:2281-2287),
+    para que main() los capture como parte del canal de error único."""
+
+    def test_neither_audio_nor_mic_raises_cli_error(self):
+        from tts_sidecar.cli import build_parser, EXIT_INVALID_INPUT
+
+        parser = build_parser()
+        with pytest.raises(CliError) as exc:
+            parser.parse_args(["speech", "transcribe", "--source-language", "es-latam"])
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_both_audio_and_mic_raises_cli_error(self):
+        from tts_sidecar.cli import build_parser, EXIT_INVALID_INPUT
+
+        parser = build_parser()
+        with pytest.raises(CliError) as exc:
+            parser.parse_args([
+                "speech", "transcribe", "--audio", "x", "--mic",
+                "--source-language", "es-latam",
+            ])
+        assert exc.value.code == EXIT_INVALID_INPUT
 
 
 class TestDoctorTranscriptionModel:

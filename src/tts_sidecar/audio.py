@@ -238,3 +238,100 @@ def get_audio_devices() -> list[dict]:
     """
     devices, _degraded = get_audio_devices_with_status()
     return devices
+
+
+# Frecuencia y formato fijos de captura: Whisper asume 16 kHz para un
+# `np.ndarray` (ver `transcription/service.py`); sin remuestreo posterior.
+CAPTURE_SAMPLE_RATE = 16000
+
+
+def _default_capture_factory():
+    """Factory de producción: abre un `miniaudio.CaptureDevice` a
+    16 kHz/mono/int16. Import diferido (dentro de la función) para que
+    `audio.py` siga siendo importable sin miniaudio instalado (espeja
+    `_default_model_factory`, `transcription/model_loader.py:14-25`)."""
+    import miniaudio
+
+    return miniaudio.CaptureDevice(
+        input_format=miniaudio.SampleFormat.SIGNED16,
+        nchannels=1,
+        sample_rate=CAPTURE_SAMPLE_RATE,
+    )
+
+
+def _capture_collector(sink: list):
+    """Generador-callback: `miniaudio.CaptureDevice.start` empuja bloques
+    `bytes` int16 crudos vía `.send(...)`; debe primarse con `next()` antes
+    de pasarlo a `start()` (la propia API de miniaudio lo exige)."""
+    while True:
+        block = yield
+        sink.append(block)
+
+
+def _blocks_to_mono_float32(blocks: list) -> np.ndarray:
+    """Concatena bloques `bytes` int16 crudos y normaliza a float32 en
+    [-1, 1) con `INT16_MAX_F` (misma constante que la reproducción)."""
+    raw = b"".join(blocks)
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / INT16_MAX_F
+
+
+class AudioRecorder:
+    """
+    Captura de micrófono multiplataforma con backend único miniaudio (CFFI),
+    a 16 kHz/mono/int16 directo (sin remuestreo posterior).
+
+    `capture_factory` es inyectable solo por testabilidad: en producción abre
+    un `miniaudio.CaptureDevice` real; en tests, un doble que simula el ciclo
+    de vida start/stop sin hardware.
+    """
+
+    def __init__(self, capture_factory=None):
+        self._capture_factory = capture_factory or _default_capture_factory
+
+    def _record(self, wait) -> np.ndarray:
+        """Ejecuta el protocolo generador-callback: prima el generador,
+        arranca el device, espera vía `wait()` (bloqueante) y detiene el
+        device desde el hilo principal."""
+        device = self._capture_factory()
+        blocks: list = []
+        gen = _capture_collector(blocks)
+        next(gen)
+        device.start(gen)
+        wait()
+        device.stop()
+        return _blocks_to_mono_float32(blocks)
+
+    def record_until_enter(self) -> np.ndarray:
+        """Graba en modo push-to-talk: termina cuando el usuario presiona
+        Enter (`input()`)."""
+        return self._record(lambda: input())
+
+    def record_fixed(self, seconds: float) -> np.ndarray:
+        """Graba durante `seconds` segundos de duración fija."""
+        import time
+
+        return self._record(lambda: time.sleep(seconds))
+
+
+def get_capture_devices_with_status() -> tuple[list[dict], bool]:
+    """
+    Lista los dispositivos de captura (micrófonos) disponibles, simétrico a
+    `get_audio_devices_with_status` pero vía miniaudio (backend único de
+    captura, sin ramas por SO).
+
+    Returns:
+        Tupla (dispositivos, degraded): `degraded` es True cuando la
+        enumeración real falló (incluida ausencia de miniaudio) y se
+        devolvió el fallback genérico "Default".
+    """
+    try:
+        import miniaudio
+
+        captures = miniaudio.Devices().get_captures()
+        return [
+            {"id": dev["id"], "name": dev["name"], "latency": 0.1}
+            for dev in captures
+        ], False
+    except Exception:
+        logger.debug("Enumeración de dispositivos de captura (miniaudio) falló; se usa el fallback", exc_info=True)
+        return [{"id": 0, "name": "Default", "latency": 0.1}], True

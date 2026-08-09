@@ -72,15 +72,30 @@ class TranscriptionService:
         self._audio_reader = audio_reader or _default_audio_reader
         self._cache_dir_resolver = cache_dir_resolver or default_cache_dir
 
+    def transcribe_samples(self, samples, source_language: str) -> str:
+        """Transcribe `samples` (`np.ndarray` ya decodificado, p. ej. desde
+        captura de micrófono), hablado en `source_language` (taxonomía CLI,
+        normalizada internamente vía `resolve_language`)."""
+        language = resolve_language(source_language)
+        cache_dir = self._cache_dir_resolver()
+
+        # Fail-fast: valida que el modelo esté disponible antes de transcribir.
+        self._model_loader.load(cache_dir)
+
+        return self._transcriber.transcribe(samples, language, cache_dir)
+
     def transcribe(self, audio_path, source_language: str) -> str:
         """Transcribe el WAV en `audio_path`, hablado en `source_language`
         (taxonomía CLI, normalizada internamente vía `resolve_language`)."""
         language = resolve_language(source_language)
         cache_dir = self._cache_dir_resolver()
 
-        # Fail-fast: valida que el modelo esté disponible antes de decodificar
-        # el audio, para no leer el WAV sobre un modelo ausente.
+        # Fail-fast: valida que el modelo esté disponible ANTES de decodificar
+        # el WAV (self._audio_reader), para no leer el archivo sobre un
+        # modelo ausente. Debe evaluarse en este orden explícito: una
+        # envoltura `transcribe_samples(self._audio_reader(audio_path), ...)`
+        # invertiría el orden (Python evalúa argumentos antes de invocar).
         self._model_loader.load(cache_dir)
 
         audio = self._audio_reader(audio_path)
-        return self._transcriber.transcribe(audio, language, cache_dir)
+        return self.transcribe_samples(audio, source_language)

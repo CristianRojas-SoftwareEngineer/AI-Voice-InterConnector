@@ -253,7 +253,11 @@ propiedades encajan con las restricciones del proyecto:
   archivo— para **no ejercer la ruta de PyAV**; (ii) **sin usar el VAD** integrado
   (el fin de grabación es push-to-talk/`--duration`, [3.6](#36-fin-de-grabación-push-to-talk-y---duration)),
   evitando ejercer onnxruntime. Siguen siendo dependencias de instalación, pero no
-  entran en la ruta caliente. La Fase 0 valida el bundle real por SO.
+  entran en la ruta caliente. El empaquetado también recolecta el nativo de miniaudio
+  (`--collect-all miniaudio`, o la recolección de binarios equivalente de su extensión
+  CFFI), análogo a como ya se recolectan `faster_whisper`/`av`/`onnxruntime`. La Fase 0
+  valida el bundle real por SO, y esa recolección de miniaudio queda cubierta por su
+  smoke test de bundle.
 
 **Backend inyectable — por testabilidad, no por indecisión.** El colaborador que
 carga y ejecuta Whisper mantiene el runtime como dependencia inyectable, espejando
@@ -296,7 +300,7 @@ si el destino difiere. Cada subsistema hace una sola cosa.
 
 ### 3.5 Captura de micrófono con miniaudio
 
-**Librería: miniaudio (pyminiaudio, CFFI, MIT).** Es la única de las candidatas que
+**Librería: miniaudio (CFFI, MIT).** Es la única de las candidatas que
 cubre **limpiamente la matriz de release real del proyecto**. Los scripts de build
 publican cuatro targets: **Windows x86_64**, **Linux x86_64**, **Linux arm64
 genérico** (AppImage aarch64) y **macOS arm64**. miniaudio es **C de un solo archivo
@@ -377,7 +381,9 @@ tts-sidecar speech transcribe --mic --duration 5 --source-language es-latam
 
 - **Fuente de audio (una, requerida, mutuamente excluyentes):** `--audio PATH`
   (archivo WAV) o `--mic` (captura en vivo). Que sean explícitas y excluyentes evita
-  la ambigüedad de un `--audio` con valor opcional.
+  la ambigüedad de un `--audio` con valor opcional. La rama de fuente (`--mic` frente
+  a `--audio`) se resuelve **antes** de resolver o validar la ruta de archivo, para que
+  la ruta de captura no dependa de un valor de `--audio`.
 - **`--source-language {es-latam, en}` (requerido).** Es el idioma **hablado**. Se
   exige explícito por la misma razón que `translate` exige `--from`/`--to`: la
   transcripción es la única función del comando; no hay acción por defecto. (Whisper
@@ -463,7 +469,11 @@ La asimetría [3.1](#31-el-pipeline-de-entrada-por-capas) determina el reparto:
   puede correr headless). El cliente captura, y sobre el resultado decide: transcribir
   local o —si el daemon está activo— enviarle las **muestras ya decodificadas** para
   aprovechar el modelo caliente. Es exactamente el reparto de `audio.py`, cuya
-  reproducción también es siempre de cliente.
+  reproducción también es siempre de cliente. Ese envío se apoya en
+  `TranscriptionService.transcribe_samples(samples, source_language)`, el método
+  nuevo que transcribe muestras ya decodificadas; `transcribe(path, …)` pasa a ser una
+  envoltura que **primero carga y valida el modelo (fail-fast) y solo después
+  decodifica el WAV**, delegando en `transcribe_samples` sin invertir ese orden.
 
 ### 3.11 Cambios de contrato
 

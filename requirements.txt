@@ -23,6 +23,7 @@ pydantic>=2.0.0           # Daemon: modelos request/response
 pysbd>=0.3.4              # Traducción: segmentación de oraciones
 ctranslate2>=4.8.1        # Traducción: runtime de inferencia
 faster-whisper>=1.2.1     # Transcripción: runtime STT sobre CT2 ya embarcado
+miniaudio>=1.71           # Transcripción: captura de micrófono (backend único, CFFI)
 transformers>=5.2.0       # Traducción: conversión opus-mt->CT2 en 'setup' (chatterbox-tts ya la trae transitiva, pin ==5.2.0)
 sacremoses>=0.1.1         # Traducción: pre/post-procesado que requiere MarianTokenizer
 

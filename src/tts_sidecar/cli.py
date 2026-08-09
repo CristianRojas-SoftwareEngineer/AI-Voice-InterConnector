@@ -938,11 +938,21 @@ def cmd_translate(args):
 
 
 def cmd_speech_transcribe(args):
-    """Transcribe un archivo WAV a texto vía `TranscriptionService`. Whisper
+    """Transcribe a texto vía `TranscriptionService`, desde un WAV (`--audio`)
+    o desde micrófono (`--mic`, push-to-talk o `--duration` fija). Whisper
     SOLO transcribe (`task="transcribe"`), nunca traduce."""
-    audio_path = Path(args.audio)
-    if not audio_path.exists():
-        raise CliError(EXIT_NOT_FOUND, "not_found", f"Error: no se encontró el archivo de audio '{args.audio}'.")
+    if args.duration is not None and not args.mic:
+        raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                        "Error: --duration solo es válido con --mic.")
+
+    if args.mic:
+        if args.duration is None and not sys.stdin.isatty():
+            raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                            "Error: sin terminal interactiva, usa --duration N para grabar sin Enter.")
+    else:
+        audio_path = Path(args.audio)
+        if not audio_path.exists():
+            raise CliError(EXIT_NOT_FOUND, "not_found", f"Error: no se encontró el archivo de audio '{args.audio}'.")
 
     from .transcription import WhisperModelLoader, WhisperTranscriber, TranscriptionService
     from .exceptions import TranscriptionModelMissingError, TranscriptionFailedError
@@ -951,7 +961,17 @@ def cmd_speech_transcribe(args):
     service = TranscriptionService(model_loader, WhisperTranscriber(model_loader))
 
     try:
-        text = service.transcribe(audio_path, args.source_language)
+        if args.mic:
+            from .audio import AudioRecorder
+            recorder = AudioRecorder()
+            samples = (
+                recorder.record_fixed(args.duration)
+                if args.duration is not None
+                else recorder.record_until_enter()
+            )
+            text = service.transcribe_samples(samples, args.source_language)
+        else:
+            text = service.transcribe(audio_path, args.source_language)
     except TranscriptionModelMissingError:
         raise CliError(
             EXIT_MODEL_MISSING, "model_missing",
@@ -2383,7 +2403,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # speech transcribe: transcribe un archivo WAV a texto (sin micrófono, sin daemon).
     speech_transcribe = speech_subparsers.add_parser("transcribe", help="Transcribe un archivo de audio a texto")
-    speech_transcribe.add_argument("--audio", required=True, help="Ruta del archivo WAV a transcribir")
+    speech_transcribe_source = speech_transcribe.add_mutually_exclusive_group(required=True)
+    speech_transcribe_source.add_argument("--audio", help="Ruta del archivo WAV a transcribir")
+    speech_transcribe_source.add_argument("--mic", action="store_true",
+                                          help="Transcribe desde el micrófono en vez de un archivo "
+                                               "(push-to-talk por defecto: Enter para terminar; "
+                                               "usa --duration para grabación de duración fija)")
+    speech_transcribe.add_argument("--duration", type=int, default=None,
+                                   help="Duración fija de grabación en segundos; solo válido con --mic")
     speech_transcribe.add_argument("--source-language", required=True, choices=["es-latam", "en"],
                                    help="Idioma hablado en el audio")
     speech_transcribe.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina ({text, source})")

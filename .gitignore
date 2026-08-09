@@ -25,3 +25,6 @@ coverage.xml
 
 # Lockfile de uv (proyecto usa requirements-lock.txt)
 uv.lock
+
+# Bus de orquestación (artefactos de proceso, nunca se commitean)
+.claude/orchestration/
