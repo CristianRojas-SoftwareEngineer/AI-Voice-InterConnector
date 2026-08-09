@@ -8,6 +8,7 @@ import platform
 import sys
 import wave
 import io
+import base64
 from typing import Optional
 
 import numpy as np
@@ -19,6 +20,15 @@ logger = logging.getLogger(__name__)
 # 32767.0) es la convención estándar para que -32768 mapee exactamente a -1.0,
 # aceptando que +32767 quede a un ULP de +1.0 en vez de tocarlo.
 INT16_MAX_F = 32768.0
+
+
+def encode_pcm_int16_b64(samples: np.ndarray) -> str:
+    """Codifica muestras float32 mono a PCM int16 crudo (base64 ASCII).
+
+    La captura siempre ocurre en el cliente; el daemon nunca recibe rutas,
+    solo muestras ya codificadas con este helper para /transcribe."""
+    int16 = (samples * INT16_MAX_F).astype(np.int16)
+    return base64.b64encode(int16.tobytes()).decode("ascii")
 
 
 class AudioPlayer:

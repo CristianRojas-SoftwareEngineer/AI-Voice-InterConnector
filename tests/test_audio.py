@@ -1,5 +1,6 @@
 """Tests de la capa de reproducción y enumeración de audio."""
 
+import base64
 import io
 import sys
 import wave
@@ -16,6 +17,7 @@ from tts_sidecar.audio import (
     INT16_MAX_F,
     AudioRecorder,
     SoundDevicePlayer,
+    encode_pcm_int16_b64,
     get_audio_devices,
     get_audio_devices_with_status,
 )
@@ -158,6 +160,29 @@ class TestAudioRecorder:
         np.testing.assert_allclose(
             result, np.array([0, 32767], dtype=np.float32) / INT16_MAX_F, atol=1e-6
         )
+
+
+class TestEncodePcmInt16B64:
+    """`encode_pcm_int16_b64`: float32 mono → PCM int16 crudo en base64 ASCII,
+    el canal cliente→daemon de /transcribe (la captura es de cliente)."""
+
+    def test_roundtrip_float32_to_int16(self):
+        samples = np.array([0.0, 0.5, -0.5, 1.0, -1.0, 0.25], dtype=np.float32)
+        encoded = encode_pcm_int16_b64(samples)
+
+        decoded = np.frombuffer(base64.b64decode(encoded), dtype=np.int16)
+        np.testing.assert_array_equal(decoded, (samples * INT16_MAX_F).astype(np.int16))
+
+    def test_returns_ascii_base64(self):
+        encoded = encode_pcm_int16_b64(np.array([0.1, -0.2], dtype=np.float32))
+        assert isinstance(encoded, str)
+        base64.b64decode(encoded)
+
+    def test_size_scales_by_base64_factor(self):
+        """N muestras int16 (2 bytes) → 2N bytes → ceil(2N/3)*4 chars base64."""
+        n = 1000
+        encoded = encode_pcm_int16_b64(np.zeros(n, dtype=np.float32))
+        assert len(encoded) == ((2 * n + 2) // 3) * 4
 
 
 class TestGetCaptureDevices:

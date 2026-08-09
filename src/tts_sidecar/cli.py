@@ -418,6 +418,101 @@ def _dispatch_synthesis(args, voice_name: str):
     return result, False
 
 
+def _transcribe_via_daemon(args) -> str:
+    """Transcribe vía daemon y devuelve el texto.
+
+    La captura/lectura del audio es SIEMPRE de cliente (invariante sin-paths):
+    el daemon recibe las muestras PCM int16 ya codificadas en base64, nunca
+    rutas. Cualquier fallo de comunicación propaga `DaemonIPCError` al
+    llamador (sin fallback silencioso a modo directo).
+    """
+    from .audio import encode_pcm_int16_b64
+    from .daemon import DaemonIPCClient
+
+    if args.mic:
+        from .audio import AudioRecorder
+        recorder = AudioRecorder()
+        samples = (
+            recorder.record_fixed(args.duration)
+            if args.duration is not None
+            else recorder.record_until_enter()
+        )
+    else:
+        from .transcription.service import _default_audio_reader
+        samples = _default_audio_reader(Path(args.audio))
+
+    target_language = getattr(args, "target_language", "es-latam")
+    source_language = getattr(args, "source_language", None) or target_language
+    client = DaemonIPCClient()
+    log("[Servidor] Enviando audio a transcribir...")
+    return client.transcribe(encode_pcm_int16_b64(samples), source_language)
+
+
+def _transcribe_stage(args) -> str:
+    """Despacho de tres modos de la transcripción (espejo de `_dispatch_synthesis`).
+
+    Compartido por `speech transcribe` y `speech dub`:
+      --daemon:    exige el daemon; exit 5 si no está activo (no degrada).
+      --no-daemon: fuerza modo directo sin sondear.
+      sin flags:   autodetección: daemon si responde, directo si no.
+    La captura del audio siempre ocurre en el cliente, sea cual sea la rama.
+    """
+    from .daemon import DaemonIPCError, is_daemon_running
+
+    def _via_daemon() -> str:
+        try:
+            return _transcribe_via_daemon(args)
+        except DaemonIPCError as e:
+            detail = str(e)
+            if "versión antigua" in detail:
+                # Skew de versiones: el daemon activo no conoce /transcribe.
+                detail = f"{detail} — actualiza el daemon o usa --no-daemon"
+            raise CliError(
+                EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                f"Error: no se pudo transcribir vía daemon: {detail}",
+            )
+
+    if getattr(args, "daemon", False):
+        if not is_daemon_running():
+            raise CliError(
+                EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                "Error: se exigió el daemon (--daemon) pero no está activo. "
+                "Inícialo con 'tts-sidecar daemon start' o reintenta sin --daemon.",
+            )
+        return _via_daemon()
+
+    if not getattr(args, "no_daemon", False) and is_daemon_running():
+        return _via_daemon()
+
+    # Modo directo: los imports pesados solo se cargan cuando no se usa el daemon.
+    log("[Servidor] No disponible o desactivado; usando modo directo")
+    from .transcription import WhisperModelLoader, WhisperTranscriber, TranscriptionService
+    from .exceptions import TranscriptionModelMissingError, TranscriptionFailedError
+
+    model_loader = WhisperModelLoader()
+    service = TranscriptionService(model_loader, WhisperTranscriber(model_loader))
+
+    try:
+        if args.mic:
+            from .audio import AudioRecorder
+            recorder = AudioRecorder()
+            samples = (
+                recorder.record_fixed(args.duration)
+                if args.duration is not None
+                else recorder.record_until_enter()
+            )
+            return service.transcribe_samples(samples, args.source_language)
+        return service.transcribe(Path(args.audio), args.source_language)
+    except TranscriptionModelMissingError:
+        raise CliError(
+            EXIT_MODEL_MISSING, "model_missing",
+            "Error: el modelo de transcripción no está provisionado. Ejecuta "
+            "'tts-sidecar setup --with-stt' primero.",
+        )
+    except TranscriptionFailedError as e:
+        raise CliError(EXIT_TRANSCRIPTION_FAILED, "transcription_failed", f"Error: {e}")
+
+
 @timed_command
 def cmd_speech_say(args):
     """Sintetiza texto y reproduce el audio (no persiste)."""
@@ -439,6 +534,70 @@ def cmd_speech_say(args):
 
         if getattr(args, "json", False):
             _emit_say_json(voice_name)
+
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        # Remitir a setup solo cuando el faltante es el modelo: un audio o una
+        # voz ausentes no se resuelven descargando el modelo.
+        from .model_cache import is_model_cached, model_for
+        target_language = getattr(args, "target_language", "es-latam")
+        if not is_model_cached(model_for(target_language)):
+            raise CliError(EXIT_MODEL_MISSING, "model_missing",
+                            f"Ejecuta 'tts-sidecar setup --language {target_language}' primero.")
+        raise CliError(EXIT_NOT_FOUND, "not_found",
+                        "Voz no encontrada.")
+    except Exception as e:
+        # Un fallo del daemon (--daemon o sondeo automático) es inalcanzabilidad,
+        # no un error genérico de síntesis: se distingue con su propio código.
+        from .daemon import DaemonIPCError
+        if isinstance(e, DaemonIPCError):
+            raise CliError(EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
+                            f"Error: no se pudo sintetizar vía daemon: {e}")
+        raise CliError(EXIT_ERROR, "generic", f"Error: {e}")
+
+
+@timed_command
+def cmd_speech_dub(args):
+    """Composición voz→voz: transcribe (--audio/--mic), traduce si el idioma
+    hablado difiere del de síntesis y reproduce el resultado con la voz
+    (no persiste). Reutiliza las máquinas de transcribe/traducir/sintetizar."""
+    if args.duration is not None and not args.mic:
+        raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                        "Error: --duration solo es válido con --mic.")
+
+    if args.mic:
+        if args.duration is None and not sys.stdin.isatty():
+            raise CliError(EXIT_INVALID_INPUT, "usage_error",
+                            "Error: sin terminal interactiva, usa --duration N para grabar sin Enter.")
+    else:
+        audio_path = Path(args.audio)
+        if not audio_path.exists():
+            raise CliError(EXIT_NOT_FOUND, "not_found",
+                           f"Error: no se encontró el archivo de audio '{args.audio}'.")
+
+    try:
+        # El texto de entrada del bucle es la transcripción: despacho de tres
+        # modos (daemon explícito / autodetección / directo), la captura del
+        # audio siempre es de cliente.
+        text = _transcribe_stage(args)
+        _validate_synthesis_text(text)
+        _validate_synthesis_params(args)
+
+        # Nombre de voz efectivo: el de --voice, o "default" (voz de fábrica).
+        voice_name = _validate_identifier(getattr(args, "voice", None) or "default", "voz")
+
+        # Exige el modelo en caché antes de sintetizar (descargas → 'setup').
+        target_language = getattr(args, "target_language", "es-latam")
+        from .model_cache import model_for
+        _require_model_cached(model_for(target_language), target_language)
+        _require_voice_exists(voice_name)
+
+        # `_dispatch_synthesis` lee el texto de `args.text`: el bucle lo
+        # sustituye por la transcripción para reutilizar la maquinaria intacta
+        # (traducción si source != target incluida).
+        args.text = text
+        result, _daemon_flag = _dispatch_synthesis(args, voice_name)
+        _play_audio(result.audio_bytes)
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -938,9 +1097,10 @@ def cmd_translate(args):
 
 
 def cmd_speech_transcribe(args):
-    """Transcribe a texto vía `TranscriptionService`, desde un WAV (`--audio`)
-    o desde micrófono (`--mic`, push-to-talk o `--duration` fija). Whisper
-    SOLO transcribe (`task="transcribe"`), nunca traduce."""
+    """Transcribe a texto desde un WAV (`--audio`) o desde micrófono (`--mic`,
+    push-to-talk o `--duration` fija). Whisper SOLO transcribe
+    (`task="transcribe"`), nunca traduce. El despacho es de tres modos
+    (daemon explícito / autodetección / directo), espejo de la síntesis."""
     if args.duration is not None and not args.mic:
         raise CliError(EXIT_INVALID_INPUT, "usage_error",
                         "Error: --duration solo es válido con --mic.")
@@ -954,32 +1114,7 @@ def cmd_speech_transcribe(args):
         if not audio_path.exists():
             raise CliError(EXIT_NOT_FOUND, "not_found", f"Error: no se encontró el archivo de audio '{args.audio}'.")
 
-    from .transcription import WhisperModelLoader, WhisperTranscriber, TranscriptionService
-    from .exceptions import TranscriptionModelMissingError, TranscriptionFailedError
-
-    model_loader = WhisperModelLoader()
-    service = TranscriptionService(model_loader, WhisperTranscriber(model_loader))
-
-    try:
-        if args.mic:
-            from .audio import AudioRecorder
-            recorder = AudioRecorder()
-            samples = (
-                recorder.record_fixed(args.duration)
-                if args.duration is not None
-                else recorder.record_until_enter()
-            )
-            text = service.transcribe_samples(samples, args.source_language)
-        else:
-            text = service.transcribe(audio_path, args.source_language)
-    except TranscriptionModelMissingError:
-        raise CliError(
-            EXIT_MODEL_MISSING, "model_missing",
-            "Error: el modelo de transcripción no está provisionado. Ejecuta "
-            "'tts-sidecar setup --with-stt' primero.",
-        )
-    except TranscriptionFailedError as e:
-        raise CliError(EXIT_TRANSCRIPTION_FAILED, "transcription_failed", f"Error: {e}")
+    text = _transcribe_stage(args)
 
     if getattr(args, "json", False):
         # `source` es el token CLI verbatim (`es-latam`), no el ISO resuelto:
@@ -2174,6 +2309,7 @@ def cmd_daemon(args):
             auto_restart=getattr(args, "auto_restart", False),
             max_retries=getattr(args, "max_retries", 0) or 0,
             language=language,
+            with_stt=getattr(args, "with_stt", False),
         )
         return
 
@@ -2186,12 +2322,25 @@ def cmd_daemon(args):
         # lanzar el servidor. Las descargas son responsabilidad exclusiva de 'setup'.
         language = getattr(args, "language", "all") or "all"
         _require_models_cached_for_daemon(language)
+        with_stt = getattr(args, "with_stt", False)
+        if with_stt:
+            # Gate de provisión del modelo de transcripción: --with-stt solo
+            # precarga lo que 'setup --with-stt' ya provisionó en disco; sin
+            # ese modelo, el daemon arrancaría igual pero sin poder transcribir.
+            from .transcription import default_cache_dir
+            if not Path(default_cache_dir()).exists():
+                raise CliError(
+                    EXIT_MODEL_MISSING, "model_missing",
+                    "Error: el modelo de transcripción no está provisionado. "
+                    "Ejecuta 'tts-sidecar setup --with-stt' primero.",
+                )
         json_mode = getattr(args, "json", False)
         success = manager.start(
             background=True,
             auto_restart=args.autorestart,
             max_retries=args.max_retries or 0,
             language=language,
+            with_stt=with_stt,
         )
         # Levantar antes de emitir: en fallo, main() emite solo el objeto
         # 'error' bajo --json; el payload de acción se emite solo en éxito.
@@ -2381,6 +2530,45 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Emitir a stdout un payload JSON con la voz efectiva usada")
     speech_say.set_defaults(func=cmd_speech_say)
 
+    # speech dub: composición voz→voz (transcribe → traduce → sintetiza → reproduce).
+    speech_dub = speech_subparsers.add_parser(
+        "dub", help="Composición voz→voz: habla o aporta audio y obtén síntesis con la voz",
+    )
+    speech_dub_source = speech_dub.add_mutually_exclusive_group(required=True)
+    speech_dub_source.add_argument("--audio", help="Ruta del archivo WAV a transcribir")
+    speech_dub_source.add_argument("--mic", action="store_true",
+                                   help="Graba desde el micrófono (push-to-talk por defecto: Enter para "
+                                        "terminar; usa --duration para grabación de duración fija)")
+    speech_dub.add_argument("--duration", type=int, default=None,
+                            help="Duración fija de grabación en segundos; solo válido con --mic")
+    speech_dub.add_argument("--source-language", required=True, choices=["es-latam", "en"],
+                            help="Idioma hablado en el audio de entrada")
+    speech_dub.add_argument("--target-language", choices=["es-latam", "en"], default="es-latam",
+                            help="Idioma/modelo de síntesis (default: es-latam); si difiere de "
+                                 "--source-language, el texto transcrito se traduce antes de sintetizar")
+    speech_dub.add_argument("--voice", "-v",
+                            help="Nombre de la voz a usar (auto-carga timbre-reference.wav + speech-reference.wav)")
+    speech_dub.add_argument("--compute-backend", "-cb", default="auto",
+                            choices=["auto", "cpu", "cuda", "mps"],
+                            help="Backend de cómputo para la inferencia; 'auto' detecta el mejor "
+                                 "disponible (default: auto)")
+    speech_dub.add_argument("--exaggeration", type=float, default=None,
+                            help="Override de exaggeration (default: el de la ruta de --target-language)")
+    speech_dub.add_argument("--cfg-weight", type=float, default=None,
+                            help="Override de cfg_weight (default: el de la ruta de --target-language); "
+                                 "0.0 no está permitido (crash conocido en el inglés base)")
+    speech_dub.add_argument("--temperature", type=float, default=None,
+                            help="Override de temperature (default: el de la ruta de --target-language)")
+    speech_dub_daemon = speech_dub.add_mutually_exclusive_group()
+    speech_dub_daemon.add_argument("--daemon", action="store_true",
+                                   help="Exige el daemon para la transcripción y la síntesis; si no está "
+                                        "activo, sale con 5 (sin flags se sondea y se usa solo si responde). "
+                                        "Mutuamente excluyente con --no-daemon")
+    speech_dub_daemon.add_argument("--no-daemon", action="store_true",
+                                   help="Forzar modo directo, sin sondear el daemon. "
+                                        "Mutuamente excluyente con --daemon")
+    speech_dub.set_defaults(func=cmd_speech_dub)
+
     # speech play: reproduce una locución guardada (no toca modelo ni daemon).
     speech_play = speech_subparsers.add_parser("play", help="Reproduce una locución guardada")
     speech_play.add_argument("--label", "-l", required=True, help="Etiqueta de la locución (normalizada a minúsculas)")
@@ -2401,7 +2589,7 @@ def build_parser() -> argparse.ArgumentParser:
     speech_remove.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina (voz, etiqueta)")
     speech_remove.set_defaults(func=cmd_speech_remove)
 
-    # speech transcribe: transcribe un archivo WAV a texto (sin micrófono, sin daemon).
+    # speech transcribe: transcribe un archivo WAV o micrófono a texto, directo o vía daemon.
     speech_transcribe = speech_subparsers.add_parser("transcribe", help="Transcribe un archivo de audio a texto")
     speech_transcribe_source = speech_transcribe.add_mutually_exclusive_group(required=True)
     speech_transcribe_source.add_argument("--audio", help="Ruta del archivo WAV a transcribir")
@@ -2414,6 +2602,14 @@ def build_parser() -> argparse.ArgumentParser:
     speech_transcribe.add_argument("--source-language", required=True, choices=["es-latam", "en"],
                                    help="Idioma hablado en el audio")
     speech_transcribe.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina ({text, source})")
+    speech_transcribe_daemon = speech_transcribe.add_mutually_exclusive_group()
+    speech_transcribe_daemon.add_argument("--daemon", action="store_true",
+                                          help="Usar el daemon sin sondeo previo; si no está activo, sale con "
+                                               "5 (sin flags se sondea y se usa solo si responde). "
+                                               "Mutuamente excluyente con --no-daemon (exit 2 si se combinan)")
+    speech_transcribe_daemon.add_argument("--no-daemon", action="store_true",
+                                          help="Forzar modo directo, sin sondear el daemon. "
+                                               "Mutuamente excluyente con --daemon (exit 2 si se combinan)")
     speech_transcribe.set_defaults(func=cmd_speech_transcribe)
 
     # grupo de comandos voice (list / clone / remove)
@@ -2517,6 +2713,9 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_start.add_argument("--max-retries", type=int, help="Máximo de intentos de reinicio")
     daemon_start.add_argument("--language", choices=["es-latam", "en", "all"], default="all",
                               help="Idioma(s) a precargar en caliente (default: all, ambos modelos)")
+    daemon_start.add_argument("--with-stt", action="store_true",
+                              help="Precarga el modelo de transcripción faster-whisper-small "
+                                   "(requiere setup --with-stt; opt-in)")
     daemon_start.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
     daemon_start.set_defaults(func=cmd_daemon)
 
@@ -2537,6 +2736,9 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_serve.add_argument("--max-retries", type=int, default=0, help="Máximo de intentos de reinicio (0 = infinito)")
     daemon_serve.add_argument("--language", choices=["es-latam", "en", "all"], default="all",
                               help="Idioma(s) a precargar en caliente (default: all, ambos modelos)")
+    daemon_serve.add_argument("--with-stt", action="store_true",
+                              help="Precarga el modelo de transcripción faster-whisper-small "
+                                   "(requiere setup --with-stt; opt-in)")
     daemon_serve.set_defaults(func=cmd_daemon)
 
     # comando version

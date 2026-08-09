@@ -1117,6 +1117,29 @@ class TestExitCodes:
         assert exc.value.code == 2
         assert "not allowed with" in capsys.readouterr().err
 
+    def test_transcribe_parser_accepts_daemon_flags_and_rejects_conflict(self, monkeypatch, capsys):
+        """El parser de speech transcribe expone --daemon/--no-daemon (decisión
+        cerrada: tres modos de dispatch) y rechaza combinarlos con exit 2."""
+        from tts_sidecar.cli import main
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
+
+        monkeypatch.setattr(sys, "argv", [
+            "tts-sidecar", "speech", "transcribe", "--audio", "x.wav",
+            "--source-language", "es-latam", "--daemon", "--no-daemon",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 2
+        assert "not allowed with" in capsys.readouterr().err
+
+        monkeypatch.setattr(sys, "argv", [
+            "tts-sidecar", "speech", "transcribe", "--audio", "x.wav",
+            "--source-language", "es-latam", "--no-daemon",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == EXIT_NOT_FOUND
+
     def test_voice_list_filenotfound_points_to_voices_dir_not_setup(self, capsys):
         """El FileNotFoundError de voice list menciona el directorio de
         voices, no remite a 'setup' (la provisión del modelo no lo arregla)."""
@@ -2189,6 +2212,251 @@ class TestDaemonVerbsJSON:
         assert payload == {
             "schema_version": SCHEMA_VERSION, "action": "restart", "pid": 777,
         }
+
+
+class TestDaemonStartWithStt:
+    """`daemon start --with-stt` exige el modelo de transcripción provisionado
+    en disco (gate exit 4 sin lanzar el proceso) y reenvía el flag al manager."""
+
+    def _args(self, **kw):
+        import argparse
+        return argparse.Namespace(
+            action="start",
+            json=kw.get("json", False),
+            autorestart=kw.get("autorestart", False),
+            max_retries=kw.get("max_retries", None),
+            language=kw.get("language", "all"),
+            with_stt=kw.get("with_stt", True),
+        )
+
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.daemon.DaemonManager")
+    def test_without_model_exits_4_without_launching(
+        self, mock_manager_cls, _cached, tmp_path, monkeypatch
+    ):
+        from tts_sidecar.cli import cmd_daemon, EXIT_MODEL_MISSING
+
+        stt_dir = tmp_path / "no-existe-whisper"
+        monkeypatch.setattr(
+            "tts_sidecar.transcription.default_cache_dir", lambda: str(stt_dir)
+        )
+        # Los directorios de modelos de traducción sí existen (gate previo);
+        # solo el de transcripción falta.
+        def fake_exists(self):
+            if str(self) == str(stt_dir):
+                return False
+            return True
+
+        manager = MagicMock()
+        mock_manager_cls.return_value = manager
+        with patch("pathlib.Path.exists", fake_exists):
+            with pytest.raises(CliError) as exc:
+                cmd_daemon(self._args())
+
+        assert exc.value.code == EXIT_MODEL_MISSING
+        assert "setup --with-stt" in exc.value.message
+        manager.start.assert_not_called()
+
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("pathlib.Path.exists", return_value=True)
+    @patch("tts_sidecar.daemon.DaemonManager")
+    def test_with_model_forwards_with_stt_to_manager(
+        self, mock_manager_cls, _translation_cached, _cached, tmp_path, monkeypatch
+    ):
+        from tts_sidecar.cli import cmd_daemon
+
+        stt_dir = tmp_path / "whisper-model"
+        stt_dir.mkdir()
+        monkeypatch.setattr(
+            "tts_sidecar.transcription.default_cache_dir", lambda: str(stt_dir)
+        )
+
+        manager = MagicMock()
+        manager.start.return_value = True
+        mock_manager_cls.return_value = manager
+
+        cmd_daemon(self._args())
+
+        manager.start.assert_called_once_with(
+            background=True,
+            auto_restart=False,
+            max_retries=0,
+            language="all",
+            with_stt=True,
+        )
+
+
+class TestDubParser:
+    """Shape del parser `speech dub`: fuente requerida (mutex --audio/--mic),
+    --source-language requerido, ausencia de --json/--label, func cableado."""
+
+    def _parse(self, argv):
+        from tts_sidecar.cli import build_parser
+        return build_parser().parse_args(["speech", "dub", *argv])
+
+    def test_full_shape(self):
+        from tts_sidecar.cli import cmd_speech_dub
+
+        args = self._parse(["--audio", "x.wav", "--source-language", "es-latam",
+                            "--target-language", "en", "--voice", "crist", "--daemon"])
+        assert args.func is cmd_speech_dub
+        assert args.audio == "x.wav"
+        assert args.mic is False
+        assert args.duration is None
+        assert args.source_language == "es-latam"
+        assert args.target_language == "en"
+        assert args.voice == "crist"
+        assert args.daemon is True
+        assert args.no_daemon is False
+        assert not hasattr(args, "json"), "dub no debe tener --json"
+        assert not hasattr(args, "label"), "dub no debe tener --label"
+
+    def test_defaults_target_language_es_latam(self):
+        args = self._parse(["--mic", "--source-language", "en"])
+        assert args.target_language == "es-latam"
+        assert args.duration is None
+        assert args.daemon is False
+        assert args.no_daemon is False
+
+    def test_neither_audio_nor_mic_raises_cli_error(self):
+        from tts_sidecar.cli import build_parser, EXIT_INVALID_INPUT
+
+        parser = build_parser()
+        with pytest.raises(CliError) as exc:
+            parser.parse_args(["speech", "dub", "--source-language", "es-latam"])
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_both_audio_and_mic_raises_cli_error(self):
+        from tts_sidecar.cli import build_parser, EXIT_INVALID_INPUT
+
+        parser = build_parser()
+        with pytest.raises(CliError) as exc:
+            parser.parse_args(["speech", "dub", "--audio", "x", "--mic",
+                               "--source-language", "es-latam"])
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_source_language_required(self):
+        from tts_sidecar.cli import build_parser, EXIT_INVALID_INPUT
+
+        parser = build_parser()
+        with pytest.raises(CliError) as exc:
+            parser.parse_args(["speech", "dub", "--audio", "x"])
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_rejects_json_flag(self):
+        from tts_sidecar.cli import build_parser, EXIT_INVALID_INPUT
+
+        parser = build_parser()
+        with pytest.raises(CliError) as exc:
+            parser.parse_args(["speech", "dub", "--audio", "x",
+                               "--source-language", "es-latam", "--json"])
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+
+class TestCmdSpeechDub:
+    """El bucle voz→voz: transcribe → sintetiza (con traducción solo si
+    source != target) y reproduce; la transcripción muta args.text."""
+
+    class _Args:
+        def __init__(self, **kw):
+            self.text = kw.get("text", None)
+            self.audio = kw.get("audio", None)
+            self.mic = kw.get("mic", False)
+            self.duration = kw.get("duration", None)
+            self.source_language = kw.get("source_language", "es-latam")
+            self.target_language = kw.get("target_language", "es-latam")
+            self.voice = kw.get("voice", None)
+            self.daemon = kw.get("daemon", False)
+            self.no_daemon = kw.get("no_daemon", False)
+            self.compute_backend = kw.get("compute_backend", "auto")
+            self.exaggeration = kw.get("exaggeration", None)
+            self.cfg_weight = kw.get("cfg_weight", None)
+            self.temperature = kw.get("temperature", None)
+            self.timbre_reference = kw.get("timbre_reference", "timbre.wav")
+            self.speech_reference = kw.get("speech_reference", "speech.wav")
+
+    def _write_wav(self, path):
+        import wave as wave_mod
+        import numpy as np
+
+        with wave_mod.open(str(path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(np.array([0, 16384, -16384], dtype=np.int16).tobytes())
+
+    @patch("tts_sidecar.audio.AudioPlayer")
+    @patch("tts_sidecar.model_cache.is_model_cached", return_value=True)
+    @patch("tts_sidecar.engine.ChatterboxEngine")
+    @patch("tts_sidecar.transcription.TranscriptionService")
+    def test_success_with_audio_mutates_args_text_and_plays(
+        self, mock_service_cls, mock_engine_cls, _cached, mock_player_cls, tmp_path
+    ):
+        from tts_sidecar.cli import cmd_speech_dub
+
+        wav = tmp_path / "habla.wav"
+        self._write_wav(wav)
+
+        service = MagicMock()
+        service.transcribe.return_value = "texto transcrito"
+        mock_service_cls.return_value = service
+
+        engine = MagicMock()
+        engine.synthesize.return_value = _synth_result()
+        mock_engine_cls.get_instance.return_value = engine
+
+        player = MagicMock()
+        mock_player_cls.return_value = player
+
+        args = self._Args(audio=str(wav), no_daemon=True)
+        cmd_speech_dub(args)
+
+        # La transcripción alimenta la síntesis sin traducción (source == target).
+        service.transcribe.assert_called_once()
+        engine.synthesize.assert_called_once()
+        assert engine.synthesize.call_args.kwargs["text"] == "texto transcrito"
+        assert args.text == "texto transcrito", "la transcripción debe mutar args.text"
+        player.play.assert_called_once_with(b"RIFF")
+
+    def test_mic_without_duration_and_no_tty_exits_invalid_input(self, monkeypatch):
+        from tts_sidecar.cli import cmd_speech_dub
+        from tts_sidecar.exit_codes import EXIT_INVALID_INPUT
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        with pytest.raises(CliError) as exc:
+            cmd_speech_dub(self._Args(audio=None, mic=True, duration=None))
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_duration_without_mic_exits_invalid_input(self):
+        from tts_sidecar.cli import cmd_speech_dub
+        from tts_sidecar.exit_codes import EXIT_INVALID_INPUT
+
+        with pytest.raises(CliError) as exc:
+            cmd_speech_dub(self._Args(audio="x.wav", mic=False, duration=5))
+        assert exc.value.code == EXIT_INVALID_INPUT
+
+    def test_missing_audio_file_exits_not_found(self, tmp_path):
+        from tts_sidecar.cli import cmd_speech_dub
+        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
+
+        with pytest.raises(CliError) as exc:
+            cmd_speech_dub(self._Args(audio=str(tmp_path / "no.wav"), mic=False))
+        assert exc.value.code == EXIT_NOT_FOUND
+
+    @patch("tts_sidecar.daemon.DaemonIPCClient")
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=False)
+    def test_explicit_daemon_requires_running_and_exits_5(self, mock_running, mock_client_cls, tmp_path):
+        from tts_sidecar.cli import cmd_speech_dub
+        from tts_sidecar.exit_codes import EXIT_DAEMON_UNREACHABLE
+
+        wav = tmp_path / "habla.wav"
+        self._write_wav(wav)
+
+        with pytest.raises(CliError) as exc:
+            cmd_speech_dub(self._Args(audio=str(wav), daemon=True))
+        assert exc.value.code == EXIT_DAEMON_UNREACHABLE
+        mock_running.assert_called_once()
+        mock_client_cls.return_value.transcribe.assert_not_called()
 
 
 class TestJsonChannelSingleObjectViaMain:
@@ -4111,12 +4379,15 @@ class TestTranscribeCommand:
     `source` es el token CLI verbatim, no el ISO resuelto."""
 
     class _Args:
-        def __init__(self, audio, source_language="es-latam", json=False, mic=None, duration=None):
+        def __init__(self, audio, source_language="es-latam", json=False, mic=None,
+                     duration=None, daemon=False, no_daemon=False):
             self.audio = audio
             self.source_language = source_language
             self.json = json
             self.mic = mic
             self.duration = duration
+            self.daemon = daemon
+            self.no_daemon = no_daemon
 
     def test_transcribe_success_plain_text(self, tmp_path, capsys):
         from tts_sidecar.cli import cmd_speech_transcribe
@@ -4126,7 +4397,7 @@ class TestTranscribeCommand:
 
         with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
             mock_cls.return_value.transcribe.return_value = "hola mundo"
-            cmd_speech_transcribe(self._Args(audio=str(audio)))
+            cmd_speech_transcribe(self._Args(audio=str(audio), no_daemon=True))
 
         mock_cls.return_value.transcribe.assert_called_once_with(Path(str(audio)), "es-latam")
         assert capsys.readouterr().out.strip() == "hola mundo"
@@ -4140,7 +4411,8 @@ class TestTranscribeCommand:
 
         with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
             mock_cls.return_value.transcribe.return_value = "hola mundo"
-            cmd_speech_transcribe(self._Args(audio=str(audio), source_language="es-latam", json=True))
+            cmd_speech_transcribe(self._Args(audio=str(audio), source_language="es-latam",
+                                             json=True, no_daemon=True))
 
         payload = json_mod.loads(capsys.readouterr().out)
         assert payload == {"text": "hola mundo", "source": "es-latam", "schema_version": "3"}
@@ -4157,7 +4429,7 @@ class TestTranscribeCommand:
         with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
             mock_cls.return_value.transcribe.side_effect = TranscriptionModelMissingError("missing")
             with pytest.raises(CliError) as exc:
-                cmd_speech_transcribe(self._Args(audio=str(audio)))
+                cmd_speech_transcribe(self._Args(audio=str(audio), no_daemon=True))
 
         assert exc.value.code == EXIT_MODEL_MISSING
         assert "setup" in exc.value.message
@@ -4172,7 +4444,7 @@ class TestTranscribeCommand:
         with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
             mock_cls.return_value.transcribe.side_effect = TranscriptionFailedError("boom")
             with pytest.raises(CliError) as exc:
-                cmd_speech_transcribe(self._Args(audio=str(audio)))
+                cmd_speech_transcribe(self._Args(audio=str(audio), no_daemon=True))
 
         assert exc.value.code == EXIT_TRANSCRIPTION_FAILED
 
@@ -4183,7 +4455,7 @@ class TestTranscribeCommand:
 
         with patch("tts_sidecar.transcription.TranscriptionService") as mock_cls:
             with pytest.raises(CliError) as exc:
-                cmd_speech_transcribe(self._Args(audio=str(audio)))
+                cmd_speech_transcribe(self._Args(audio=str(audio), no_daemon=True))
 
         mock_cls.assert_not_called()
         assert exc.value.code == EXIT_NOT_FOUND
@@ -4202,7 +4474,7 @@ class TestTranscribeCommand:
             mock_recorder_cls.return_value.record_until_enter.return_value = fake_samples
             mock_service_cls.return_value.transcribe_samples.return_value = "hola desde el micro"
 
-            cmd_speech_transcribe(self._Args(audio=None, mic=True))
+            cmd_speech_transcribe(self._Args(audio=None, mic=True, no_daemon=True))
 
         mock_recorder_cls.return_value.record_until_enter.assert_called_once()
         mock_recorder_cls.return_value.record_fixed.assert_not_called()
@@ -4255,6 +4527,120 @@ class TestTranscribeCommand:
 
         mock_cls.assert_not_called()
         assert exc.value.code == EXIT_INVALID_INPUT
+
+
+class TestTranscribeDaemonDispatch:
+    """Las tres ramas del despacho de `speech transcribe` (daemon explícito /
+    autodetección / directo), espejo de `_dispatch_synthesis`."""
+
+    def _write_wav(self, path):
+        """WAV int16 16 kHz real (el lector del cliente lo decodifica de verdad)."""
+        import wave as wave_mod
+        import numpy as np
+
+        with wave_mod.open(str(path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(np.array([0, 16384, -16384], dtype=np.int16).tobytes())
+
+    @patch("tts_sidecar.daemon.DaemonIPCClient")
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
+    def test_explicit_daemon_sends_base64_and_language(self, mock_running, mock_client_cls, tmp_path, capsys):
+        """`--daemon` con daemon vivo transcribe vía el cliente IPC con las
+        muestras codificadas en base64 (la captura es de cliente)."""
+        from tts_sidecar.cli import cmd_speech_transcribe
+        from tts_sidecar.audio import encode_pcm_int16_b64
+        import numpy as np
+
+        audio = tmp_path / "nota.wav"
+        self._write_wav(audio)
+
+        client = MagicMock()
+        client.transcribe.return_value = "texto desde daemon"
+        mock_client_cls.return_value = client
+
+        cmd_speech_transcribe(TestTranscribeCommand._Args(
+            audio=str(audio), daemon=True,
+        ))
+
+        mock_running.assert_called_once()
+        (audio_b64_arg, lang_arg), _ = client.transcribe.call_args
+        assert lang_arg == "es-latam"
+        decoded = np.frombuffer(
+            __import__("base64").b64decode(audio_b64_arg), dtype=np.int16
+        )
+        assert decoded.size == 3
+        assert capsys.readouterr().out.strip() == "texto desde daemon"
+
+    @patch("tts_sidecar.daemon.DaemonIPCClient")
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=False)
+    def test_explicit_daemon_requires_running_and_exits_5(self, mock_running, mock_client_cls, tmp_path):
+        from tts_sidecar.cli import cmd_speech_transcribe, EXIT_DAEMON_UNREACHABLE
+
+        audio = tmp_path / "nota.wav"
+        self._write_wav(audio)
+
+        with pytest.raises(CliError) as exc:
+            cmd_speech_transcribe(TestTranscribeCommand._Args(audio=str(audio), daemon=True))
+
+        assert exc.value.code == EXIT_DAEMON_UNREACHABLE
+        mock_running.assert_called_once()
+        mock_client_cls.return_value.transcribe.assert_not_called()
+
+    @patch("tts_sidecar.daemon.DaemonIPCClient")
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=True)
+    def test_without_flags_uses_daemon_if_responsive(self, mock_running, mock_client_cls, tmp_path, capsys):
+        from tts_sidecar.cli import cmd_speech_transcribe
+
+        audio = tmp_path / "nota.wav"
+        self._write_wav(audio)
+
+        client = MagicMock()
+        client.transcribe.return_value = "texto"
+        mock_client_cls.return_value = client
+
+        cmd_speech_transcribe(TestTranscribeCommand._Args(audio=str(audio)))
+
+        mock_running.assert_called_once()
+        client.transcribe.assert_called_once()
+        assert capsys.readouterr().out.strip() == "texto"
+
+    @patch("tts_sidecar.transcription.TranscriptionService")
+    @patch("tts_sidecar.daemon.is_daemon_running", return_value=False)
+    def test_without_flags_falls_back_to_direct_with_path(self, mock_running, mock_service_cls, tmp_path, capsys):
+        """Autodetección sin daemon: la rama directa conserva la firma
+        `transcribe(Path, "es-latam")`."""
+        from tts_sidecar.cli import cmd_speech_transcribe
+
+        audio = tmp_path / "nota.wav"
+        audio.write_bytes(b"")
+
+        mock_service_cls.return_value.transcribe.return_value = "directo"
+        cmd_speech_transcribe(TestTranscribeCommand._Args(audio=str(audio)))
+
+        mock_running.assert_called_once()
+        mock_service_cls.return_value.transcribe.assert_called_once_with(
+            Path(str(audio)), "es-latam"
+        )
+        assert capsys.readouterr().out.strip() == "directo"
+
+    @patch("tts_sidecar.transcription.TranscriptionService")
+    @patch("tts_sidecar.daemon.is_daemon_running")
+    def test_no_daemon_does_not_probe(self, mock_running, mock_service_cls, tmp_path, capsys):
+        from tts_sidecar.cli import cmd_speech_transcribe
+
+        audio = tmp_path / "nota.wav"
+        audio.write_bytes(b"")
+
+        mock_service_cls.return_value.transcribe.return_value = "directo"
+        cmd_speech_transcribe(TestTranscribeCommand._Args(audio=str(audio), no_daemon=True))
+
+        mock_running.assert_not_called()
+        mock_service_cls.return_value.transcribe.assert_called_once_with(
+            Path(str(audio)), "es-latam"
+        )
+        assert capsys.readouterr().out.strip() == "directo"
 
 
 class TestTranscribeParserSourceGroup:
