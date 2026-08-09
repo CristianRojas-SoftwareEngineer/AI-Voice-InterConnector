@@ -62,14 +62,16 @@ JSON:
 | Superficie | Qué consume el plugin | Compromiso de estabilidad |
 |------------|-----------------------|----------------------------|
 | `speech say --text "<msg>" --daemon` | Síntesis y reproducción de cada locución. Usa el daemon y falla si no está levantado (no lo arranca solo). | Mantener el flag `--daemon` y su semántica (usar el daemon, no auto-arrancarlo). |
+| `speech transcribe --audio <wav> --source-language <lang> --daemon` | No lo consume el plugin (registro de impacto de la Fase 5): transcripción con despacho al daemon de tres modos, forma nueva. | Mantener los tres modos (`--daemon`/`--no-daemon`/autodetección) y el shape `--json` `{"text", "source"}`. |
+| `speech dub --mic --source-language <lang> --target-language <lang> -v <voz>` | No lo consume el plugin (registro de impacto de la Fase 5): composición voz→voz (transcribe → traduce → sintetiza → reproduce), forma nueva. | Mantener `--audio`/`--mic` mutuamente excluyentes (exactamente una) y `--source-language` requerido. |
 | `doctor --json` | Verifica el entorno; busca en `checks[]` los elementos cuyo `name` empieza con `"Chatterbox model"` (uno por idioma: `"Chatterbox model (es-latam)"` y `"Chatterbox model (en)"`) y lee su `status`. | Mantener el prefijo `checks[].name == "Chatterbox model"` (con sufijo ` (<idioma>)` por modelo) y los valores `PASS`/`FAIL`. |
 | `daemon status --json` | Lee `running` para saber si el daemon corre. | Mantener el campo booleano `running`. |
 | `daemon start` | Levanta el daemon para dejar los modelos en memoria. | Mantener el subcomando y su arranque desanclable. |
 
 Cambiar cualquiera de estos nombres, flags o campos **rompe la narración** sin
 que este repo tenga tests que lo detecten (el plugin vive fuera). Por eso esta
-tabla es el contrato a preservar; al tocar `cli.py` en `speech say`, `doctor` o
-`daemon`, revísala.
+tabla es el contrato a preservar; al tocar `cli.py` en `speech say`,
+`speech transcribe`, `speech dub`, `doctor` o `daemon`, revísala.
 
 ## Qué NO comparten los dos proyectos
 

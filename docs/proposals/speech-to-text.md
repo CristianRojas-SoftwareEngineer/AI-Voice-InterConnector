@@ -29,7 +29,8 @@ el CTranslate2 **ya embarcado**); (b) la **captura de micrófono** multiplatafor
 (miniaudio) con fin de grabación por **push-to-talk** y tope opcional `--duration`;
 (c) un **comando `speech transcribe`** (audio→texto) verificable de forma aislada;
 (d) la **composición** de la voz como entrada de síntesis mediante `--audio`/`--mic`
-en `speech say|synthesize`, encadenando transcribir → traducir → sintetizar; (e) la
+en un **comando nuevo `speech dub`** — `say`/`synthesize` permanecen texto→voz sin
+cambios —, encadenando transcribir → traducir → sintetizar; (e) la
 **provisión del modelo Whisper** por el canal de `setup`/`doctor`/`cleanup` (patrón
 ya usado por Chatterbox y `opus-mt`); y (f) los **cambios de contrato** que implica.
 Queda **fuera de alcance**: la traducción a idiomas distintos de `es`/`en` (la hereda
@@ -399,38 +400,42 @@ tts-sidecar speech transcribe --mic --duration 5 --source-language es-latam
 
 ### 3.8 Composición: la voz como entrada de síntesis
 
-`speech say|synthesize` ganan la voz como **fuente de entrada alternativa al texto**.
-Hoy `--text` es la única entrada y es requerida; pasa a ser **una de tres fuentes
-mutuamente excluyentes**, exactamente una requerida:
+La composición del bucle voz→voz es un **subcomando nuevo, `speech dub`**, que **no
+modifica `say`/`synthesize`**: ambos permanecen **texto→voz** con `--text` requerido
+como hoy. La composición es una responsabilidad propia —no una extensión de la síntesis
+de texto—, así que vive en un comando dedicado. `speech dub` exige **exactamente una**
+de dos fuentes mutuamente excluyentes:
 
 | Fuente | Entrada | Comportamiento |
 | --- | --- | --- |
-| `--text "…"` | texto tecleado (actual) | idéntico a hoy |
-| `--audio PATH` | archivo WAV hablado | se **transcribe** y sigue como si fuera `--text` |
-| `--mic` | micrófono en vivo | se **captura y transcribe**, luego sigue como `--text` |
+| `--audio PATH` | archivo WAV hablado | se **transcribe** y entra en la cadena de síntesis |
+| `--mic` | micrófono en vivo | se **captura y transcribe**, luego entra en la cadena |
 
-Cuando la entrada es voz, el texto transcrito **entra en la cadena ya existente**: si
-`--source-language != --target-language`, se traduce; luego se sintetiza con la voz
-clonada. Un solo comando cierra el bucle **voz→voz**:
+`--source-language {es-latam, en}` (requerido, idioma **hablado**) y
+`--target-language` marcan entrada y salida; si difieren, se traduce. `--duration N`
+solo aplica a `--mic` (tope de segundos, guardia de TTY como en `speech transcribe`).
+Un solo comando cierra el bucle **voz→voz**:
 
 ```bash
-tts-sidecar speech say \
+tts-sidecar speech dub \
   --mic --source-language es-latam --target-language en -v mi_voz
 # Hablas en español → transcribe → traduce ES→EN → sintetiza en inglés con TU voz
 ```
 
 `--source-language` conserva su significado (idioma de la **entrada**), solo que ahora
-la entrada puede ser audio en vez de texto. El eje `--target-language` no cambia. El
-flujo interno inserta la transcripción **antes** de `_translate_stage` (`cli.py:191`):
+la entrada es audio en vez de texto. El eje `--target-language` no cambia. El flujo
+interno inserta la transcripción **antes** de `_translate_stage` (`cli.py:191`):
 
 ```text
-CLI (cmd_speech_*) → [NUEVO] TranscriptionService (si --audio/--mic)
+CLI (cmd_speech_dub) → [NUEVO] TranscriptionService (si --audio/--mic)
   → _translate_stage (si source != target, YA EXISTE)
   → _dispatch_synthesis → SynthesisOrchestrator.synthesize (YA EXISTE)
 ```
 
 Ni la traducción ni el motor de síntesis cambian: solo cambia **quién** produjo el
-texto de entrada (antes el usuario tecleando, ahora la transcripción de su voz).
+texto de entrada (antes el usuario tecleando en `say`, ahora la transcripción de su voz
+en `dub`). La salida de `dub` reproduce el audio sintetizado (comportamiento de
+`say`, sin guardado en el almacén).
 
 ### 3.9 Provisión del modelo Whisper
 
@@ -482,13 +487,13 @@ La asimetría [3.1](#31-el-pipeline-de-entrada-por-capas) determina el reparto:
 1. **Subcomando nuevo `speech transcribe`** — superficie aditiva; su contrato
    `--json` (`{text, source}`) se documenta en `CLI-CONTRACT.md`. Enruta con
    `--daemon`/`--no-daemon`/autodetección, el **mismo patrón de tres modos** que
-   `speech say|synthesize` (`_dispatch_synthesis`): es, junto con la composición, el
+   `speech say|synthesize` (`_dispatch_synthesis`): es, junto con `speech dub`, el
    consumidor de `/transcribe` que vuelve no-especulativo el `TranscribeRequest` del IPC.
-2. **Fuentes de entrada `--audio`/`--mic` en `speech say|synthesize`** — aditivo pero
-   **con un matiz de contrato**: `--text` deja de ser incondicionalmente requerido y
-   pasa a ser "exactamente una de `{--text, --audio, --mic}`". Un invocador existente
-   que siempre pasa `--text` **no se ve afectado**; la regla nueva solo abre
-   alternativas. Se documenta en `CLI-CONTRACT.md`.
+2. **Subcomando nuevo `speech dub`** — la composición voz→voz **no modifica
+   `say`/`synthesize`**: ambos conservan `--text` requerido (sin cambio de contrato
+   en el CLI existente). `speech dub` exige exactamente una de `{--audio, --mic}`
+   (mutuamente excluyentes, espejo de `speech transcribe`) y se documenta en
+   `CLI-CONTRACT.md`.
 3. **Exit code nuevo `EXIT_TRANSCRIPTION_FAILED = 10`** en `exit_codes.py` — aditivo;
    distingue el fallo de transcripción del de traducción (`9`) y del de síntesis
    (errores distintos ⇒ identidad propia). El modelo Whisper ausente reutiliza
@@ -573,8 +578,8 @@ macOS, toggle en Windows).
 
 ### Fase 5 — Composición + daemon
 
-`--audio`/`--mic` como fuentes en `speech say|synthesize` (regla "una de tres");
-`TranscribeRequest` en el IPC; precarga y `model_loaded` del modelo Whisper en el daemon.
+`--audio`/`--mic` como fuentes de `speech dub` (comando nuevo; `say`/`synthesize`
+intactos); `TranscribeRequest` en el IPC; precarga y `model_loaded` del modelo Whisper en el daemon.
 → *verify*: test extremo a extremo del bucle voz→voz (`--mic --source-language es-latam
 --target-language en` → audio en inglés con la voz), directo y vía daemon.
 
@@ -589,8 +594,8 @@ captura):
    float32. El daemon deshace int16→float32 con el mismo `INT16_MAX_F`. Un
    `sample_format` float32 futuro cabe de forma aditiva (`extra="ignore"`), sin subir
    `schema_version`.
-2. **La composición usa `/transcribe` de forma oportunista.** `speech say|synthesize`
-   con `--audio`/`--mic` enruta con el **mismo dispatch de tres modos que la síntesis**
+2. **La composición usa `/transcribe` de forma oportunista.** `speech dub` con
+   `--audio`/`--mic` enruta con el **mismo dispatch de tres modos que la síntesis**
    (`_dispatch_synthesis`): en modo directo transcribe local; si el daemon responde,
    envía las muestras base64 a `/transcribe` para reutilizar el Whisper caliente. Los
    tres modelos pesados comparten así una única historia de routing y el bucle voz→voz no
@@ -603,8 +608,8 @@ captura):
    en disco* (`setup --with-stt`) y *calidez en RAM* (`daemon start --with-stt`)— se
    mantienen simétricos y separados. `model_loaded` reporta la señal con clave propia.
 4. **`speech transcribe` (standalone) gana `--daemon`/`--no-daemon`.** Reutiliza el
-   patrón de tres modos; es el segundo consumidor de `/transcribe` (junto con la
-   composición), lo que vuelve no-especulativo el `TranscribeRequest` del IPC.
+   patrón de tres modos; es el segundo consumidor de `/transcribe` (junto con
+   `speech dub`), lo que vuelve no-especulativo el `TranscribeRequest` del IPC.
 
 ### Fase 6 — Cierre
 

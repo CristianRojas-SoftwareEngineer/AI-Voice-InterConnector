@@ -19,6 +19,7 @@
     - [`speech list`](#speech-list)
     - [`speech remove`](#speech-remove)
     - [`speech transcribe`](#speech-transcribe)
+    - [`speech dub`](#speech-dub)
   - [`voice clone`](#voice-clone)
   - [`voice list`](#voice-list)
   - [`voice remove`](#voice-remove)
@@ -347,7 +348,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 |-------|------|-------------|
 | `running` | boolean | Si el daemon responde al health check |
 | `status` | string | Solo con `running: true`: estado reportado (`"healthy"`, `"initializing"`, `"unknown"`) |
-| `model_loaded` | objeto | Solo con `running: true`: dict `{"es-latam": boolean, "en": boolean, "translate:es-en": boolean}` — qué modelo(s) están calientes en RAM (un idioma ausente/`false` se cargaría perezosamente al primer uso); la clave `"translate:es-en"` solo aparece si el daemon arrancó con `--language en`/`all` |
+| `model_loaded` | objeto | Solo con `running: true`: dict `{"es-latam": boolean, "en": boolean, "translate:es-en": boolean, "transcribe:small": boolean}` — qué modelo(s) están calientes en RAM (un idioma ausente/`false` se cargaría perezosamente al primer uso); la clave `"translate:es-en"` solo aparece si el daemon arrancó con `--language en`/`all`, y `"transcribe:small"` solo tras la precarga con `--with-stt` o la primera transcripción vía daemon |
 | `uptime_seconds` | number | Solo con `running: true`: segundos desde el arranque |
 
 **`voice clone --json`**
@@ -489,28 +490,25 @@ Dispositivos de salida de audio:
 
 ### El grupo `speech`
 
-Cinco sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`) y
-tres que gestionan el almacén de locuciones guardadas (`play`, `list`,
-`remove`). Cada una tiene una sola responsabilidad, y el nombre declara su
-costo: sintetizar paga GPU y puede exigir el modelo provisionado; gestionar el
-almacén no.
+Seis sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`), tres que gestionan el almacén de locuciones guardadas (`play`, `list`, `remove`) y una que compone el bucle voz→voz (`dub`). Cada una tiene una sola responsabilidad, y el nombre declara su costo: sintetizar paga GPU y puede exigir el modelo provisionado; gestionar el almacén no.
 
 | Sub-acción | Qué hace | Persiste | Necesita el modelo |
 |---|---|---|---|
 | `speech synthesize` | Sintetiza y guarda una locución | sí | sí |
 | `speech say` | Sintetiza y reproduce, no guarda | no | sí |
+| `speech dub` | Composición voz→voz: transcribe, traduce si procede, sintetiza y reproduce | no | sí |
 | `speech play` | Reproduce una locución guardada | no | no |
 | `speech list` | Lista las locuciones guardadas | no | no |
 | `speech remove` | Borra una locución guardada | no | no |
 
-**En las cinco, `--voice/-v` es opcional**; si se omite, usa la voz de fábrica
+**En las seis, `--voice/-v` es opcional**; si se omite, usa la voz de fábrica
 `default`. **La voz y la etiqueta (`--label/-l`) se normalizan a minúsculas**
 antes de resolver rutas: `--label Saludo` y `--label saludo` son la misma
 locución (el archivo se llama `saludo.wav`), y lo mismo aplica al nombre de la
 voz.
 
-**Despacho al daemon (solo `synthesize` y `say`, que son las que necesitan el
-modelo):** tres modos, iguales a los de `voice clone`:
+**Despacho al daemon (`synthesize`, `say`, `transcribe` y `dub`, las que
+necesitan un modelo cargado):** tres modos, iguales a los de `voice clone`:
 - Sin flags: sondea el daemon y lo usa si responde; si no, sintetiza en modo
   directo (carga el modelo al vuelo).
 - `--daemon`: exige el daemon; si no está activo, sale con exit **5** en vez de
@@ -765,10 +763,13 @@ Una etiqueta inexistente sale con exit **3**. El borrado masivo es tarea de
 #### `speech transcribe`
 
 Transcribe a texto desde un archivo WAV (`--audio`) o desde el micrófono
-(`--mic`), sin daemon de por medio (la captura y la inferencia corren siempre
-en el cliente). Es una sub-acción del grupo `speech`, aislada de la síntesis y
-de `translate`: Whisper solo transcribe (nunca traduce), así que si necesitas
-el texto en otro idioma, encadena `translate` por separado.
+(`--mic`). La **captura corre siempre en el cliente** (al daemon viajan las
+muestras, nunca rutas); la transcripción en sí se despacha al daemon con el
+mismo patrón de tres modos que la síntesis: sin flags sondea el daemon y lo usa
+si responde, `--daemon` lo exige (exit 5 si no está activo) y `--no-daemon`
+fuerza el modo directo. Es una sub-acción del grupo `speech`, aislada de la
+síntesis y de `translate`: Whisper solo transcribe (nunca traduce), así que si
+necesitas el texto en otro idioma, encadena `translate` por separado.
 
 `--audio` y `--mic` son **mutuamente excluyentes y uno de los dos es
 obligatorio**. Con `--mic`, la grabación es **push-to-talk** por defecto
@@ -778,6 +779,7 @@ fija en segundos y solo es válido junto a `--mic`.
 ```bash
 tts-sidecar speech transcribe --audio grabacion.wav --source-language es-latam
 tts-sidecar speech transcribe --audio recording.wav --source-language en --json
+tts-sidecar speech transcribe --audio recording.wav --source-language en --daemon
 tts-sidecar speech transcribe --mic --source-language es-latam
 tts-sidecar speech transcribe --mic --duration 5 --source-language en
 ```
@@ -806,6 +808,7 @@ preserva el token de entrada.
 - `--mic`: Transcribe desde el micrófono en vez de un archivo (mutuamente excluyente con `--audio`; uno de los dos es requerido)
 - `--duration N`: Duración fija de grabación en segundos; solo válido junto a `--mic`
 - `--source-language` (requerido): Idioma hablado en el audio (`es-latam` o `en`)
+- `--daemon` / `--no-daemon`: igual que en `speech say` (despacho de tres modos; la captura del audio siempre ocurre en el cliente)
 - `--json`: Emite `{"text", "source"}`
 
 La captura de micrófono es directa a 16 kHz/mono/int16 (formato que Whisper
@@ -820,7 +823,52 @@ exit **2**, porque no hay forma de detectar la pulsación de Enter. Un archivo
 de audio inexistente (ruta `--audio`) sale con exit **3**. Si el modelo de
 transcripción no está provisionado, falla remitiendo a
 `tts-sidecar setup --with-stt` con exit **4**; si la transcripción falla con
-el modelo ya cargado, sale con exit **10**.
+el modelo ya cargado, sale con exit **10**. En la ruta daemon, un fallo de
+comunicación (daemon inactivo o de versión antigua sin `/transcribe`) sale con
+exit **5**.
+
+---
+
+#### `speech dub`
+
+Composición voz→voz: transcribe la entrada hablada (archivo o micrófono),
+traduce si `--source-language` difiere de `--target-language`, sintetiza con
+la voz elegida y reproduce el resultado. Reutiliza las etapas de
+`speech transcribe`, la traducción de `speech say`/`synthesize` y el despacho
+de síntesis; no guarda nada en el almacén (sin `--label` ni `--json`).
+
+`--audio` y `--mic` son **mutuamente excluyentes y exactamente una de las dos
+es requerida**. Con `--mic`, la grabación es **push-to-talk** por defecto
+(termina al presionar Enter); `--duration N` fuerza una grabación de duración
+fija en segundos y solo es válido junto a `--mic`.
+
+```bash
+tts-sidecar speech dub --mic --source-language es-latam --target-language en -v mi_voz
+tts-sidecar speech dub --audio grabacion.wav --source-language en --target-language es-latam
+```
+
+**Qué esperar:** transcribe tu habla al texto, lo traduce si procede y
+reproduce la síntesis con la voz (`default` si no pasas `-v`). Con `--mic` y
+sin `--duration`, el comando espera en silencio a que presiones Enter antes de
+transcribir.
+
+**Opciones:**
+- `--audio`: Ruta del archivo WAV hablado (mutuamente excluyente con `--mic`; exactamente una de las dos es requerida)
+- `--mic`: Graba desde el micrófono (mutuamente excluyente con `--audio`; exactamente una de las dos es requerida)
+- `--duration N`: Duración fija de grabación en segundos; solo válido con `--mic`
+- `--source-language` (requerido): Idioma hablado en el audio (`es-latam` o `en`)
+- `--target-language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); si difiere de `--source-language`, el texto transcrito se traduce antes de sintetizar
+- `--voice, -v`: Nombre de la voz (default: `default`)
+- `--compute-backend, -cb`, `--exaggeration`, `--cfg-weight`, `--temperature`: igual que en `speech say`
+- `--daemon` / `--no-daemon`: igual que en `speech transcribe`; aplican a la transcripción y a la síntesis
+
+`--duration` sin `--mic` sale con exit **2**, y `--mic` sin `--duration` en
+una terminal no interactiva (no TTY) también sale con exit **2**. Un `--audio`
+inexistente sale con exit **3**. Códigos de fallo de la cadena: exit **4**
+(modelo de transcripción no provisionado, remite a
+`tts-sidecar setup --with-stt`), **5** (daemon exigido pero inactivo o de
+versión antigua sin `/transcribe`), **9** (fallo de traducción con el modelo
+cargado) y **10** (fallo de transcripción con el modelo cargado).
 
 ---
 
@@ -1097,6 +1145,9 @@ tts-sidecar daemon start --autorestart --max-retries 3
 
 # Precargar solo un idioma (default: all = ambos, es-latam y en)
 tts-sidecar daemon start --language es-latam
+
+# Precargar también el modelo de transcripción (requiere setup --with-stt; opt-in)
+tts-sidecar daemon start --with-stt
 ```
 
 **Qué esperar:** `daemon start` verifica que el/los modelo(s) del `--language`
@@ -1119,6 +1170,14 @@ par de traducción `opus-mt` es↔en (ambas direcciones), calentándolo desde el
 arranque en vez de esperar a la primera síntesis con `--source-language`
 distinto de `--target-language`; `daemon status --json` lo expone como la
 clave `"translate:es-en"` de `model_loaded` (ver la referencia de esquemas).
+
+Con `--with-stt`, `daemon start` precarga en RAM el modelo de transcripción
+`faster-whisper-small` (opt-in y simétrico a `setup --with-stt`; sin el flag,
+la primera transcripción vía daemon paga la carga fría). Exige el modelo
+provisionado en disco: si falta, `daemon start --with-stt` sale con exit **4**
+remitiendo a `tts-sidecar setup --with-stt`, sin lanzar el proceso;
+`daemon status --json` lo expone como la clave `"transcribe:small"` de
+`model_loaded`.
 
 `daemon stop` responde `Daemon detenido` y `daemon restart`, `Daemon reiniciado`.
 
@@ -1258,7 +1317,7 @@ desde el binario como desde el código fuente. En concreto:
   | `7` | Operación no aplicable | Voz de fábrica de solo lectura; plataforma no soportada; `setup --uninstall` fuera del canal nativo |
   | `8` | Precondición de entorno incumplida | Credenciales, red, permisos o disco insuficientes al provisionar |
   | `9` | Fallo del pipeline de traducción | `translate` con el modelo cargado pero la inferencia falla |
-  | `10` | Fallo del pipeline de transcripción | `speech transcribe` con el modelo cargado pero la inferencia falla |
+  | `10` | Fallo del pipeline de transcripción | `speech transcribe`/`speech dub` con el modelo cargado pero la inferencia falla (directo o vía daemon) |
   | `130` | Interrupción del usuario | Ctrl+C (128 + SIGINT) durante cualquier comando |
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el
   audio generado para un mismo texto y voz es equivalente en cualquier SO.

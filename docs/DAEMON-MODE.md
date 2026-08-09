@@ -148,9 +148,10 @@ voz · 210 tokens»); ver más abajo.
 
 ### Versionado del protocolo
 
-Los 5 modelos de `daemon/protocol.py` (`ProgressEvent`, `ResultEvent`,
-`ErrorEvent`, `HealthResponse`, `VoicesResponse`) heredan de una clase base
-común, `ProtocolModel`, que fija dos garantías en un solo lugar:
+Los 6 modelos de `daemon/protocol.py` (`ProgressEvent`, `ResultEvent`,
+`ErrorEvent`, `HealthResponse`, `VoicesResponse`, `TranscribeRequest`) heredan
+de una clase base común, `ProtocolModel`, que fija dos garantías en un solo
+lugar:
 
 - **`schema_version`** (string, `"3"` actualmente): presente en cada línea del
   stream y en `/health`. Igual que el `schema_version` del CLI (`cli.SCHEMA_VERSION`),
@@ -158,7 +159,13 @@ común, `ProtocolModel`, que fija dos garantías en un solo lugar:
   lo haría un cambio incompatible de una clave existente. La versión subió a
   `"3"` justo por eso: `model_loaded` de `HealthResponse` dejó de ser un
   booleano y pasó a ser un `dict[str, bool]` por idioma (rediseño
-  cross-lingual), un cambio incompatible de un campo ya existente.
+  cross-lingual), un cambio incompatible de un campo ya existente. La Fase 5
+  añadió `TranscribeRequest`/`TranscribeResponse` **sin incrementar la
+  versión** (sigue `"3"`): son modelos nuevos con campos propios, sin cambiar
+  ninguna forma existente — el caso aditivo exacto de la regla. El skew se
+  detecta en el endpoint, no en el esquema: un daemon viejo responde `404` en
+  `/transcribe`, y el cliente lo traduce a exit **5** (daemon inalcanzable)
+  sugiriendo actualizar el daemon o usar `--no-daemon`.
 - **`extra="ignore"`**: un campo desconocido en el payload se descarta al
   parsear en vez de romper la validación. Esto es lo que hace tolerable el
   **rolling skew**: un daemon que sigue corriendo con la versión anterior
@@ -192,6 +199,9 @@ tts-sidecar daemon start --autorestart --max-retries 3
 # Precargar solo un idioma (default "all" precarga es-latam y en)
 tts-sidecar daemon start --language es-latam
 
+# Precargar también el modelo de transcripción (requiere setup --with-stt; opt-in)
+tts-sidecar daemon start --with-stt
+
 # Detener daemon
 tts-sidecar daemon stop
 
@@ -213,10 +223,24 @@ tts-sidecar speech synthesize --text "Hola" --label demo --no-daemon
 
 > **Código de salida para integradores**: `speech synthesize --daemon` (y
 > `speech say --daemon`) terminan con código **5** (daemon inalcanzable) si el
-> daemon no responde, en lugar del código de error genérico. Los comandos
+> daemon no responde, en lugar del código de error genérico. Desde la Fase 5
+> aplica lo mismo a `speech transcribe --daemon` y `speech dub --daemon` (y a
+> la autodetección de la transcripción cuando el daemon responde pero es de una
+> versión antigua sin `/transcribe`: 404 → exit **5**). Los comandos
 > `daemon start/stop/restart` también devuelven `5` cuando la operación de
 > ciclo de vida falla. Ver la tabla completa de códigos en `USAGE.md`
 > (sección «Experiencia unificada entre sistemas operativos»).
+
+> **Precarga STT opt-in (`--with-stt`)**: `daemon start --with-stt` calienta en
+> RAM el modelo de transcripción `faster-whisper-small`, simétrico de
+> `setup --with-stt` — separan *provisión en disco* y *calidez en RAM*. Sin el
+> flag, la primera petición `/transcribe` paga la carga fría (lazy-build). El
+> flag exige el modelo provisionado: si falta en disco, `daemon start --with-stt`
+> sale con exit **4** remitiendo a `setup --with-stt`, sin lanzar el proceso.
+> `/health` lo reporta como la clave **`"transcribe:small"`** de
+> `model_loaded` (ausente si el loader aún no existe; `true`/`false` según la
+> carga en RAM — la precarga la pone en `true`, la primera transcripción sin
+> precarga construye el loader y reporta `false` hasta cargar).
 
 > **Ventana de arranque (30-90 s)**: el puerto 8765 no abre hasta que los modelos
 > terminan de cargarse en memoria (default `all`, ambos), lo que puede tardar entre 30 y 90 segundos
@@ -373,8 +397,8 @@ flags de síntesis.
 
 - El **contrato del CLI** (comandos, flags, códigos de salida, stdout = datos /
   stderr = progreso) es estable: los comandos del grupo `speech` (`speech synthesize`,
-  `speech say`) aceptan `--daemon`, `--no-daemon` y las demás flags de manera
-  idéntica.
+  `speech say`, `speech transcribe`, `speech dub`) aceptan `--daemon`, `--no-daemon`
+  y las demás flags de manera idéntica.
 - El **protocolo interno daemon→cliente** de `/synthesize` es un stream NDJSON:
   N líneas `progress` (etapa y tokens en vivo), seguidas de una línea `result`
   con el audio en base64 y los tiempos por sub-etapa, o una línea `error` si la

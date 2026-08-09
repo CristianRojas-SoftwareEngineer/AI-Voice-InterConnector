@@ -86,7 +86,7 @@ El proyecto tiene dos canales legibles por máquina y usa los dos: el entero, qu
 
 | Comando | Sub-acciones | Propósito |
 |---|---|---|
-| `speech` | `synthesize`, `say`, `play`, `list`, `remove`, `transcribe` | Síntesis de habla, gestión del almacén y transcripción de audio a texto |
+| `speech` | `synthesize`, `say`, `play`, `list`, `remove`, `transcribe`, `dub` | Síntesis de habla, gestión del almacén, transcripción de audio a texto y composición voz→voz |
 | `voice` | `list`, `clone`, `remove` | Gestión del registro de voces |
 | `translate` | — | Traducción de texto `es↔en`, aislada de la síntesis |
 | `devices` | — | Lista dispositivos de audio |
@@ -236,7 +236,7 @@ La autodetección es el único camino por defecto: un comportamiento especificad
 
 #### Qué superficies lo reciben
 
-**Las tres que necesitan el modelo cargado: `speech synthesize`, `speech say` y `voice clone`.** `voice clone` precomputa los conditionals de la voz al clonarla, así que necesita el modelo igual que las dos que sintetizan, y recibe los tres modos por simetría: con `--daemon` lo exige y sale 5 si no está, y con `--no-daemon` fuerza la ruta directa.
+**Las cinco que necesitan un modelo cargado: `speech synthesize`, `speech say` y `voice clone` (el TTS) y `speech transcribe` y `speech dub` (el de transcripción).** `voice clone` precomputa los conditionals de la voz al clonarla, así que necesita el modelo igual que las dos que sintetizan, y recibe los tres modos por simetría: con `--daemon` lo exige y sale 5 si no está, y con `--no-daemon` fuerza la ruta directa.
 
 `speech play`, `speech list` y `speech remove` no lo reciben porque no tocan el modelo.
 
@@ -576,7 +576,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 **Riesgo conocido y declarado**: `data_root()` depende de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. Está atenuado porque `/voices` permite inspeccionar la vista del daemon.
 
-## 13. El comando `translate`, `speech transcribe` y la síntesis cross-lingual
+## 13. El comando `translate`, `speech transcribe`, `speech dub` y la síntesis cross-lingual
 
 #### `translate`: texto→texto, aislado de la síntesis
 
@@ -600,14 +600,28 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 #### `speech transcribe`: audio→texto, verificable sin traducir ni sintetizar
 
-`speech transcribe` es una **sub-acción del grupo `speech`** (no un comando aislado como `translate`): transcribe a texto con `faster-whisper` sobre el runtime CT2 ya embarcado, desde un archivo WAV (`--audio`) o desde el micrófono (`--mic`) — la captura y la inferencia corren siempre en el cliente, nunca en el daemon. Es una operación **de un solo idioma por invocación** — a diferencia del par `--from`/`--to` de `translate`, aquí `--source-language` (requerido, `es-latam`/`en`, misma taxonomía que `speech say`/`synthesize`) declara el único idioma hablado en el audio. Whisper **solo transcribe** (`task="transcribe"`), nunca traduce: si el usuario necesita el texto en otro idioma, encadena `translate` por separado. No hay síntesis de por medio: `speech transcribe` es verificable de forma aislada, con audio de entrada y texto de salida, sin depender del motor TTS ni del subsistema de traducción.
+`speech transcribe` es una **sub-acción del grupo `speech`** (no un comando aislado como `translate`): transcribe a texto con `faster-whisper` sobre el runtime CT2 ya embarcado, desde un archivo WAV (`--audio`) o desde el micrófono (`--mic`). La **captura corre siempre en el cliente** (al daemon viajan las muestras ya decodificadas en base64, nunca rutas); la transcripción en sí recibe el despacho al daemon en sus tres modos (§5): sin flags, transcribe por el daemon si está activo y en modo directo si no; `--daemon` exige el daemon y sale con **5** si no está; `--no-daemon` fuerza el modo directo. Es una operación **de un solo idioma por invocación** — a diferencia del par `--from`/`--to` de `translate`, aquí `--source-language` (requerido, `es-latam`/`en`, misma taxonomía que `speech say`/`synthesize`) declara el único idioma hablado en el audio. Whisper **solo transcribe** (`task="transcribe"`), nunca traduce: si el usuario necesita el texto en otro idioma, encadena `translate` por separado. No hay síntesis de por medio: `speech transcribe` es verificable de forma aislada, con audio de entrada y texto de salida, sin depender del motor TTS ni del subsistema de traducción.
 
-`--audio` y `--mic` forman el **primer grupo mutuamente excluyente `required=True`** del CLI (los demás grupos excluyentes del árbol de parsers — `--daemon`/`--no-daemon` en `speech synthesize`/`speech say`/`voice clone`, y el grupo de `setup`— son opcionales, sin exigir ninguno de los dos). Con `--mic`, la captura es **push-to-talk** por defecto (Enter para terminar); `--duration N` fuerza una grabación de duración fija en segundos y solo es válido junto a `--mic` — con `--audio`, o con `--mic` ausente, `--duration` sale con **2** (`EXIT_INVALID_INPUT`). Sin terminal interactiva (no TTY) y sin `--duration`, `--mic` también sale con **2**, porque no hay forma de detectar la pulsación de Enter que cierra el push-to-talk. La captura llega ya a 16 kHz/mono/int16 (formato que Whisper asume para un `np.ndarray`) y no pasa por remuestreo; el backend de captura es `miniaudio` (único, sin ramas por sistema operativo, análogo a `faster-whisper` para la inferencia).
+`--audio` y `--mic` forman un **grupo mutuamente excluyente `required=True`** (el mismo en `speech dub`), el único tipo de grupo excluyente del árbol de parsers que exige uno de sus flags: los demás — `--daemon`/`--no-daemon` en `speech synthesize`/`speech say`/`voice clone`/`speech transcribe`/`speech dub`, y el grupo de `setup` — son opcionales, sin exigir ninguno de los dos. Con `--mic`, la captura es **push-to-talk** por defecto (Enter para terminar); `--duration N` fuerza una grabación de duración fija en segundos y solo es válido junto a `--mic` — con `--audio`, o con `--mic` ausente, `--duration` sale con **2** (`EXIT_INVALID_INPUT`). Sin terminal interactiva (no TTY) y sin `--duration`, `--mic` también sale con **2**, porque no hay forma de detectar la pulsación de Enter que cierra el push-to-talk. La captura llega ya a 16 kHz/mono/int16 (formato que Whisper asume para un `np.ndarray`) y no pasa por remuestreo; el backend de captura es `miniaudio` (único, sin ramas por sistema operativo, análogo a `faster-whisper` para la inferencia).
 
 | Parámetros | Payload `--json` |
 |---|---|
-| `--audio` **o** `--mic` (mutuamente excluyentes, uno requerido) · `--duration N` (solo con `--mic`) · `--source-language` **requerido** (`es-latam`\|`en`) · `--json` | `{"text", "source"}` |
+| `--audio` **o** `--mic` (mutuamente excluyentes, uno requerido) · `--duration N` (solo con `--mic`) · `--source-language` **requerido** (`es-latam`\|`en`) · `--daemon`/`--no-daemon` · `--json` | `{"text", "source"}` |
 
-Si el modelo `faster-whisper-small` no está provisionado, sale con **4** (`EXIT_MODEL_MISSING`), remitiendo a `tts-sidecar setup --with-stt`; un fallo de la inferencia con el modelo ya cargado sale con **10** (`EXIT_TRANSCRIPTION_FAILED`, §9) — mismo criterio de asignación que distingue **4** de **9** en `translate`. Un `--audio` inexistente sale con **3** (`EXIT_NOT_FOUND`).
+El shape `--json` no cambia con el despacho: emite `{"text", "source"}` en los tres modos, sin campo `daemon`.
+
+Si el modelo `faster-whisper-small` no está provisionado, sale con **4** (`EXIT_MODEL_MISSING`), remitiendo a `tts-sidecar setup --with-stt`; un fallo de la inferencia con el modelo ya cargado sale con **10** (`EXIT_TRANSCRIPTION_FAILED`, §9) — mismo criterio de asignación que distingue **4** de **9** en `translate`. Un `--audio` inexistente sale con **3** (`EXIT_NOT_FOUND`); en la ruta daemon, un fallo de comunicación —daemon inactivo o de versión antigua sin `/transcribe` (404, skew de `schema_version` sin bump)— sale con **5** (`EXIT_DAEMON_UNREACHABLE`), sin degradación silenciosa a modo directo.
 
 **Divergencia deliberada del shape `--json` frente a `translate` (D5).** `translate --json` emite `source`/`target` como los códigos **ISO crudos** que recibieron `--from`/`--to` (`es`, `en`): ahí el ISO es exacto porque el parámetro mismo está restringido a `choices=["es","en"]`. `speech transcribe --json`, en cambio, emite `source` como el **token CLI verbatim** de `--source-language` (p. ej. `es-latam`, sin resolver a `es`) — no lo normaliza. La razón es de simetría con el resto de `speech`: `speech say`/`synthesize` aceptan y exponen `es-latam` en su propia taxonomía de idioma (nunca lo colapsan a ISO de cara al usuario), y `speech transcribe` es una sub-acción de ese mismo grupo, no un primo de `translate`. Colapsar `source` a ISO ahí introduciría una inconsistencia dentro del propio grupo `speech` a cambio de una consistencia superficial con un comando de otro grupo. La resolución a ISO (`resolve_language`) sigue ocurriendo internamente para seleccionar el idioma que Whisper recibe; solo la salida `--json` preserva el token de entrada.
+
+#### `speech dub`: el bucle voz→voz en un comando dedicado
+
+`speech dub` es la **composición voz→voz**: transcribe la entrada hablada (archivo o micrófono), traduce el texto si `--source-language` difiere de `--target-language`, sintetiza con la voz elegida y reproduce el resultado. Reutiliza las máquinas existentes —`_transcribe_stage` (los tres modos de `speech transcribe`), la traducción opt-in de `say`/`synthesize` y el despacho de síntesis (§5)— sin modificarlas. `say`/`synthesize` **no cambian**: siguen siendo texto→voz con `--text` requerido; la entrada de audio del bucle vive solo en `dub`. No persiste nada: no declara `--label` ni `--json`.
+
+Exige **exactamente una** de `{--audio, --mic}` (grupo mutuamente excluyente `required=True`, espejo de `speech transcribe`); `--duration N` solo es válido con `--mic` (con `--audio` sale con **2**); `--source-language` es **requerido** (`es-latam`/`en`); `--target-language` (default `es-latam`) elige el idioma/modelo de síntesis y dispara la traducción si difiere del hablado; `-v/--voice`, `--compute-backend/-cb`, `--exaggeration`, `--cfg-weight` y `--temperature` son los de `say`. `--daemon`/`--no-daemon` aplican a la transcripción y a la síntesis (los tres modos, §5); sin flags, ambas etapas usan el daemon solo si responde.
+
+| Parámetros | Comportamiento |
+|---|---|
+| `--audio` **o** `--mic` (mutuamente excluyentes, uno requerido) · `--duration N` (solo con `--mic`) · `--source-language` **requerido** · `--target-language` (default `es-latam`) · `-v/--voice` · `--compute-backend/-cb` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--daemon`/`--no-daemon` | transcribe → traduce (si `source != target`) → sintetiza → reproduce |
+
+Códigos de salida aplicables en la cadena: **4** (`EXIT_MODEL_MISSING`, modelo de transcripción no provisionado, remite a `setup --with-stt`), **5** (`EXIT_DAEMON_UNREACHABLE`, daemon exigido pero inactivo o de versión antigua sin `/transcribe`), **9** (`EXIT_TRANSLATION_FAILED`, fallo del pipeline de traducción con el modelo cargado) y **10** (`EXIT_TRANSCRIPTION_FAILED`, fallo del pipeline de transcripción con el modelo cargado); más **2** (uso inválido: `--duration` sin `--mic`, `--mic` sin TTY y sin `--duration`) y **3** (`--audio` inexistente).

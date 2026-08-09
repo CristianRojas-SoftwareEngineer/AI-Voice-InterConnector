@@ -263,6 +263,7 @@ Registrar una voz de usuario con el mismo nombre que una de fábrica la sobrescr
 ```bash
 tts-sidecar speech say --text "..."                    # Sintetizar y reproducir sin persistir
 tts-sidecar speech synthesize --text "..." --label L   # Sintetizar y persistir en el almacén
+tts-sidecar speech dub --mic --source-language es-latam --target-language en -v mi_voz  # Composición voz→voz: transcribe → traduce → sintetiza → reproduce
 tts-sidecar voice clone --name X --timbre-reference ref.wav --speech-reference speech.wav  # Clonar voz
 tts-sidecar voice remove --name X       # Eliminar voz
 tts-sidecar voice list                  # Listar voces (--json disponible)

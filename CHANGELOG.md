@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.10.0 — 2026-08-09](#0100--2026-08-09)
 - [0.9.1 — 2026-07-31](#091--2026-07-31)
 - [0.9.0 — 2026-07-31](#090--2026-07-31)
 - [0.8.0 — 2026-07-22](#080--2026-07-22)
@@ -26,6 +27,29 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.10.0] — 2026-08-09
+
+### Añadido
+
+- **`speech dub`, la composición voz→voz en un comando dedicado**: transcribe
+  la entrada hablada (`--audio`/`--mic`, mutuamente excluyentes y exactamente
+  una requerida), traduce si `--source-language` difiere de
+  `--target-language` y sintetiza y reproduce con la voz elegida.
+  `say`/`synthesize` no cambian: siguen siendo texto→voz con `--text`
+  requerido. `speech transcribe` gana `--daemon`/`--no-daemon` (despacho de
+  tres modos, como la síntesis); su `--json` conserva el shape `{text, source}`.
+- **`TranscribeRequest` en el IPC del daemon, aditivo sin bump de
+  `schema_version`**: `POST /transcribe` recibe las muestras PCM int16 en
+  base64 (nunca rutas) y devuelve el texto; `schema_version` permanece en
+  `"3"`. Un daemon de versión antigua (404 en `/transcribe`) se reporta como
+  daemon inalcanzable (exit 5), sugiriendo actualizar el daemon o usar
+  `--no-daemon`, sin degradación silenciosa.
+- **Precarga opt-in del modelo de transcripción en el daemon**:
+  `daemon start --with-stt` (simétrico a `setup --with-stt`) calienta
+  `faster-whisper-small` en RAM con gate de provisión en disco (exit 4 si falta
+  `setup --with-stt`), y `/health` lo reporta como `"transcribe:small"` en
+  `model_loaded`.
 
 ## [0.9.1] — 2026-07-31
 
