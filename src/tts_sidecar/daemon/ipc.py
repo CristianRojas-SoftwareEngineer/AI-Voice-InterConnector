@@ -254,6 +254,58 @@ class DaemonIPCClient:
         except (requests.ConnectionError, requests.Timeout):
             return []
 
+    def transcribe(self, audio_b64: str, source_language: str = "es-latam") -> str:
+        """Transcribe muestras PCM int16 base64 vía el daemon.
+
+        Envía las muestras ya codificadas (la captura siempre es de cliente;
+        el daemon nunca recibe rutas) con `REQUEST_TIMEOUT`, el mismo timeout
+        de una operación larga en CPU que /synthesize.
+
+        Raises:
+            DaemonIPCError: Si la comunicación falla, el daemon responde un
+            error HTTP, o el cuerpo no conforma `TranscribeResponse`. Un 404
+            identifica un daemon de versión antigua que no conoce /transcribe
+            (skew sin bump de schema_version): el CLI lo traduce a
+            `EXIT_DAEMON_UNREACHABLE` sin fallback directo silencioso.
+        """
+        try:
+            response = requests.post(
+                f"{self.base_url}/transcribe",
+                json={
+                    "audio_b64": audio_b64,
+                    "source_language": source_language,
+                },
+                timeout=self.REQUEST_TIMEOUT,
+            )
+
+            if response.status_code != 200:
+                try:
+                    error = response.json().get("detail", "Error desconocido")
+                except ValueError:
+                    # Cuerpo de error no-JSON: no romper la promesa de DaemonIPCError
+                    error = f"HTTP {response.status_code}"
+                if response.status_code == 404:
+                    error = (
+                        f"{error} — el daemon activo no soporta /transcribe "
+                        "(versión antigua del daemon)"
+                    )
+                raise DaemonIPCError(f"Error del daemon: {error}")
+
+            from ..daemon.protocol import TranscribeResponse
+            try:
+                body = TranscribeResponse.model_validate(response.json())
+            except (ValidationError, ValueError) as e:
+                raise DaemonIPCError(
+                    f"El daemon devolvió un cuerpo /transcribe no conforme: {e}"
+                )
+            return body.text
+        except requests.ConnectionError as e:
+            raise DaemonIPCError(f"No se puede conectar al daemon: {e}")
+        except requests.Timeout as e:
+            raise DaemonIPCError(f"Timeout del daemon: {e}")
+        except requests.RequestException as e:
+            raise DaemonIPCError(f"Error de comunicación con el daemon: {e}")
+
     def precompute_voice(self, name: str) -> bool:
         """Precomputa los conditionals de una voz registrada vía daemon.
 

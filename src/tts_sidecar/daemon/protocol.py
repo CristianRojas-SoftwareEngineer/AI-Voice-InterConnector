@@ -21,6 +21,12 @@ from typing import Literal, Optional
 # trivial de un payload ilimitado.
 MAX_TEXT_LENGTH = 5000
 
+# Tope de audio por petición de transcripción: derive de `REQUEST_TIMEOUT`
+# (ipc.py), el único timeout que gobierna /transcribe: 300.0 s de PCM int16
+# crudo a 16 kHz/mono (300 × 32 000 B/s = 9 600 000 B) expandido por el factor
+# base64 4/3. Autoconsistente con la decisión cerrada de wire format int16.
+MAX_AUDIO_BYTES = 12_800_000
+
 # Tope de longitud del nombre de voz: holgado sobre el límite de nombre de
 # archivo de los tres SO (255), suficiente para acotar el payload antes de que
 # la resolución en el registro (voices.voice_paths) lo valide de verdad.
@@ -86,6 +92,23 @@ class SynthesizeRequest(BaseModel):
         return self
 
 
+class TranscribeRequest(BaseModel):
+    """Request de transcripción de habla.
+
+    El daemon no recibe rutas (invariante sin-paths): la petición transporta
+    las muestras ya decodificadas como PCM int16 crudo a 16 kHz/mono (wire
+    format de la decisión cerrada de Fase 4/5) en base64 ASCII, más el idioma
+    hablado en el audio. `source_language` es la taxonomía CLI (`es-latam`/`en`),
+    normalizada internamente por `resolve_language` en el servidor.
+
+    Modelo aditivo: NO sube `schema_version` (un daemon viejo ignora el campo
+    desconocido vía `extra="ignore"` del lado del endpoint inexistente; la
+    ausencia de la ruta la detecta el cliente como daemon de versión antigua).
+    """
+    audio_b64: str = Field(min_length=1, max_length=MAX_AUDIO_BYTES)
+    source_language: str = "es-latam"
+
+
 # ---------------------------------------------------------------------------
 # Esquema del stream NDJSON de /synthesize (contrato daemon→cliente).
 #
@@ -143,6 +166,11 @@ class HealthResponse(ProtocolModel):
 class VoicesResponse(ProtocolModel):
     """Lista de voces registradas."""
     voices: list[str]
+
+
+class TranscribeResponse(ProtocolModel):
+    """Respuesta de transcripción: el texto transcrito del audio recibido."""
+    text: str
 
 
 class PrecomputeVoiceRequest(ProtocolModel):

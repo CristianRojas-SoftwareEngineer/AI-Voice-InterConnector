@@ -8,13 +8,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from tts_sidecar.daemon.protocol import (
     MAX_TEXT_LENGTH,
     MAX_VOICE_NAME_LENGTH,
+    MAX_AUDIO_BYTES,
+    ProtocolModel,
     SynthesizeRequest,
+    TranscribeRequest,
+    TranscribeResponse,
     HealthResponse,
     VoicesResponse,
     ProgressEvent,
     ResultEvent,
     ErrorEvent,
 )
+from tts_sidecar.cli import SCHEMA_VERSION
 
 
 class TestSynthesizeRequest:
@@ -84,6 +89,51 @@ class TestSynthesizeRequest:
         )
         assert req.source_language == "es"
         assert req.language == "en"
+
+
+class TestTranscribeRequest:
+    """Modelo aditivo del IPC de transcripción: transporta PCM int16 base64 +
+    source_language, sin rutas. Clave de Fase 5: NO sube `schema_version`."""
+
+    def test_default_source_language(self):
+        req = TranscribeRequest(audio_b64="QUJD")
+        assert req.audio_b64 == "QUJD"
+        assert req.source_language == "es-latam"
+
+    def test_explicit_source_language_preserved(self):
+        req = TranscribeRequest(audio_b64="QUJD", source_language="en")
+        assert req.source_language == "en"
+
+    def test_empty_audio_rejected(self):
+        with pytest.raises(ValueError):
+            TranscribeRequest(audio_b64="")
+
+    def test_missing_audio_rejected(self):
+        with pytest.raises(ValueError):
+            TranscribeRequest(source_language="es-latam")
+
+    def test_audio_at_limit_accepted(self):
+        req = TranscribeRequest(audio_b64="a" * MAX_AUDIO_BYTES)
+        assert len(req.audio_b64) == MAX_AUDIO_BYTES
+
+    def test_audio_over_limit_rejected(self):
+        with pytest.raises(ValueError):
+            TranscribeRequest(audio_b64="a" * (MAX_AUDIO_BYTES + 1))
+
+    def test_response_shape(self):
+        resp = TranscribeResponse(text="hola mundo")
+        assert resp.text == "hola mundo"
+
+    def test_schema_version_stays_3(self):
+        """La pieza IPC es aditiva: `schema_version` NO sube (sigue '3')."""
+        assert SCHEMA_VERSION == "3"
+        assert ProtocolModel().schema_version == "3"
+
+    def test_request_has_no_schema_version_field(self):
+        """TranscribeRequest no introduce `schema_version` propio: el campo
+        solo vive en los modelos que heredan de ProtocolModel."""
+        assert "schema_version" not in TranscribeRequest.model_fields
+        assert "schema_version" in TranscribeResponse.model_fields
 
 
 class TestHealthResponse:
