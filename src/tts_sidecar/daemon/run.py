@@ -52,6 +52,7 @@ def serve(
     auto_restart: bool = False,
     max_retries: int = 0,
     language: str = "all",
+    with_stt: bool = False,
 ):
     """
     Arranca el servidor del daemon en primer plano (bloqueante).
@@ -62,6 +63,10 @@ def serve(
     `language` ("es-latam", "en" o "all", default "all") fija qué modelo(s) se
     precargan en caliente al arrancar (rediseño cross-lingual, §3.9); el resto
     se carga perezosamente desde disco al primer uso vía `/synthesize`.
+
+    `with_stt` (opt-in) precarga también el modelo de transcripción
+    faster-whisper-small; el gate de provisión en disco corre en el proceso
+    padre (`cmd_daemon`), aquí solo se calienta lo ya provisionado.
     """
     # Idiomas a precargar en caliente.
     languages_to_preload = ["es-latam", "en"] if language == "all" else [language]
@@ -146,6 +151,19 @@ def serve(
                     )
                     for source, target in (("es", "en"), ("en", "es")):
                         translation_loader.load(default_cache_dir(source, target))
+
+                # Precarga en caliente del modelo de transcripción
+                # faster-whisper-small (Fase 5): con --with-stt el modelo
+                # queda caliente desde el arranque en vez de pagar la carga
+                # fría en la primera petición /transcribe. El proceso padre
+                # (cmd_daemon) ya validó la provisión en disco; aquí no hay
+                # lógica de descarga, solo se calienta lo provisionado.
+                if with_stt:
+                    from .server import _get_transcription_service
+                    from ..transcription import default_cache_dir
+
+                    _get_transcription_service(app.state.daemon)
+                    app.state.daemon.transcription_loader.load(default_cache_dir())
 
             # Etapa 2: iniciar servidor
             with StageTimer("2-Daemon", "Etapa 2/3: Iniciando servidor"):
@@ -244,12 +262,19 @@ def main():
         default="all",
         help="Idioma(s) a precargar en caliente (default: all = ambos)"
     )
+    parser.add_argument(
+        "--with-stt",
+        action="store_true",
+        help="Precarga el modelo de transcripción faster-whisper-small "
+             "(requiere setup --with-stt; opt-in)"
+    )
     args = parser.parse_args()
 
     serve(
         auto_restart=args.auto_restart,
         max_retries=args.max_retries,
         language=args.language,
+        with_stt=args.with_stt,
     )
 
 

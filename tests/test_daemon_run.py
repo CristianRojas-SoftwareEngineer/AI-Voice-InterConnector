@@ -223,15 +223,69 @@ class TestServeTranslationPreload:
         assert app.state.daemon.translation_loader is None
 
 
+class TestServeSttPreload:
+    """Fase 5: `serve(with_stt=True)` precarga el modelo de transcripción
+    faster-whisper-small en caliente; sin el flag no se toca, y es
+    independiente de `language`."""
+
+    def test_with_stt_preloads_transcription_model(self):
+        from tts_sidecar.transcription import WhisperModelLoader, default_cache_dir
+        from tts_sidecar.daemon.run import app
+
+        with patch.object(WhisperModelLoader, "load") as mock_load, \
+                patch("uvicorn.Server.run", return_value=None):
+            daemon_run.serve(auto_restart=False, with_stt=True)
+
+        mock_load.assert_called_once_with(default_cache_dir())
+        assert app.state.daemon.transcription_loader is not None
+        assert app.state.daemon.transcription_service is not None
+
+    def test_without_with_stt_skips_transcription_preload(self):
+        from tts_sidecar.transcription import WhisperModelLoader
+        from tts_sidecar.daemon.run import app
+
+        with patch.object(WhisperModelLoader, "load") as mock_load, \
+                patch("uvicorn.Server.run", return_value=None):
+            daemon_run.serve(auto_restart=False)
+
+        mock_load.assert_not_called()
+        assert app.state.daemon.transcription_loader is None
+        assert app.state.daemon.transcription_service is None
+
+    def test_with_stt_independent_of_language(self):
+        from tts_sidecar.transcription import WhisperModelLoader
+        from tts_sidecar.daemon.run import app
+
+        with patch.object(WhisperModelLoader, "load") as mock_load, \
+                patch("uvicorn.Server.run", return_value=None):
+            daemon_run.serve(auto_restart=False, language="es-latam", with_stt=True)
+
+        assert mock_load.call_count == 1
+        assert app.state.daemon.transcription_loader is not None
+        assert app.state.daemon.transcription_service is not None
+
+
 class TestMain:
     def test_main_delegates_to_serve_with_parsed_args(self):
         with patch.object(sys, "argv", ["daemon-run", "--auto-restart", "--max-retries", "3"]), \
              patch("tts_sidecar.daemon.run.serve") as mock_serve:
             daemon_run.main()
-        mock_serve.assert_called_once_with(auto_restart=True, max_retries=3, language="all")
+        mock_serve.assert_called_once_with(
+            auto_restart=True, max_retries=3, language="all", with_stt=False,
+        )
 
     def test_main_defaults_no_auto_restart_and_zero_retries(self):
         with patch.object(sys, "argv", ["daemon-run"]), \
              patch("tts_sidecar.daemon.run.serve") as mock_serve:
             daemon_run.main()
-        mock_serve.assert_called_once_with(auto_restart=False, max_retries=0, language="all")
+        mock_serve.assert_called_once_with(
+            auto_restart=False, max_retries=0, language="all", with_stt=False,
+        )
+
+    def test_main_forwards_with_stt_flag(self):
+        with patch.object(sys, "argv", ["daemon-run", "--with-stt"]), \
+             patch("tts_sidecar.daemon.run.serve") as mock_serve:
+            daemon_run.main()
+        mock_serve.assert_called_once_with(
+            auto_restart=False, max_retries=0, language="all", with_stt=True,
+        )

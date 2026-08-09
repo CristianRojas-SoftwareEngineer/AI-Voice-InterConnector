@@ -630,6 +630,91 @@ class TestDaemonManager:
             assert manager.status() == {"running": True, "status": "unknown"}
 
 
+class TestDaemonIPCClientTranscribe:
+    """Cliente `transcribe()`: éxito, payload enviado y errores con identidad
+    (skew de daemon viejo → 404 identificable, sin fallback silencioso)."""
+
+    @patch("requests.post")
+    def test_success_returns_text(self, mock_post):
+        from tts_sidecar.daemon import DaemonIPCClient
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"text": "hola"}
+        mock_post.return_value = mock_resp
+
+        client = DaemonIPCClient()
+        assert client.transcribe("QUJD") == "hola"
+
+    @patch("requests.post")
+    def test_sends_base64_and_source_language_with_request_timeout(self, mock_post):
+        from tts_sidecar.daemon import DaemonIPCClient
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"text": "hola"}
+        mock_post.return_value = mock_resp
+
+        client = DaemonIPCClient()
+        client.transcribe("QUJD", source_language="es-latam")
+
+        kwargs = mock_post.call_args.kwargs
+        assert kwargs["json"] == {"audio_b64": "QUJD", "source_language": "es-latam"}
+        assert kwargs["timeout"] == client.REQUEST_TIMEOUT
+
+    @patch("requests.post")
+    def test_404_identifies_old_daemon_version(self, mock_post):
+        """Un daemon viejo (sin /transcribe) responde 404: el mensaje debe
+        identificarlo como versión antigua para que el CLI sugiera --no-daemon."""
+        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.json.return_value = {"detail": "Not Found"}
+        mock_post.return_value = mock_resp
+
+        client = DaemonIPCClient()
+        with pytest.raises(DaemonIPCError) as exc:
+            client.transcribe("QUJD")
+
+        assert "versión antigua" in str(exc.value)
+        assert "/transcribe" in str(exc.value)
+
+    @patch("requests.post")
+    def test_503_carries_daemon_detail(self, mock_post):
+        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 503
+        mock_resp.json.return_value = {"detail": "Modelo de transcripción no provisionado"}
+        mock_post.return_value = mock_resp
+
+        client = DaemonIPCClient()
+        with pytest.raises(DaemonIPCError, match="Modelo de transcripción no provisionado"):
+            client.transcribe("QUJD")
+
+    @patch("requests.post")
+    def test_non_json_error_body_falls_back_to_http_code(self, mock_post):
+        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.json.side_effect = ValueError("no es JSON")
+        mock_post.return_value = mock_resp
+
+        client = DaemonIPCClient()
+        with pytest.raises(DaemonIPCError, match="HTTP 500"):
+            client.transcribe("QUJD")
+
+    @patch("requests.post")
+    def test_non_conforming_success_body_raises(self, mock_post):
+        """Cuerpo 200 sin la clave 'text' no valida el esquema → DaemonIPCError."""
+        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"message": "otro servicio"}
+        mock_post.return_value = mock_resp
+
+        client = DaemonIPCClient()
+        with pytest.raises(DaemonIPCError, match="no conforme"):
+            client.transcribe("QUJD")
+
+
 class TestSynthesizeStreaming:
     """El endpoint /synthesize emite NDJSON: N×progress → result, o error."""
 
@@ -928,6 +1013,218 @@ class TestHealthTranslationReporting:
         finally:
             server.app.dependency_overrides.clear()
 
+    def test_health_omits_transcribe_key_when_loader_absent(self):
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                body = client.get("/health").json()
+                assert "transcribe:small" not in body["model_loaded"]
+        finally:
+            server.app.dependency_overrides.clear()
+
+    def test_health_reports_transcribe_key_when_loader_present(self):
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
+        fake_loader = MagicMock()
+        fake_loader.is_loaded.return_value = True
+        override_state.transcription_loader = fake_loader
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                body = client.get("/health").json()
+                assert body["model_loaded"]["transcribe:small"] is True
+        finally:
+            server.app.dependency_overrides.clear()
+
+    def test_health_reports_transcribe_key_cold_when_loader_not_loaded(self):
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
+        fake_loader = MagicMock()
+        fake_loader.is_loaded.return_value = False
+        override_state.transcription_loader = fake_loader
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with TestClient(server.app) as client:
+                body = client.get("/health").json()
+                assert body["model_loaded"]["transcribe:small"] is False
+        finally:
+            server.app.dependency_overrides.clear()
+
+
+class TestTranscribeEndpoint:
+    """POST /transcribe: éxito con muestras int16 reales en base64, fail-fast
+    del modelo (503 sin decodificar), base64 inválido (400 sin tocar el
+    modelo) y lazy-build del servicio en la primera petición."""
+
+    def _state(self):
+        from tts_sidecar.daemon import server
+        return server.DaemonState(engine=MagicMock(), start_time=0.0)
+
+    def _int16_b64(self):
+        import base64
+        import numpy as np
+        samples = np.array([0, 16384, -16384, 32767], dtype=np.int16)
+        return samples, base64.b64encode(samples.tobytes()).decode("ascii")
+
+    def test_transcribe_success_with_real_int16_samples(self):
+        import numpy as np
+        from fastapi.testclient import TestClient
+        from tts_sidecar.audio import INT16_MAX_F
+        from tts_sidecar.daemon import server
+
+        samples, audio_b64 = self._int16_b64()
+        override_state = self._state()
+        fake_loader = MagicMock()
+        override_state.transcription_loader = fake_loader
+        fake_service = MagicMock()
+        fake_service.transcribe_samples.return_value = "hola"
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with patch(
+                "tts_sidecar.daemon.server._get_transcription_service",
+                return_value=fake_service,
+            ):
+                with TestClient(server.app) as client:
+                    resp = client.post(
+                        "/transcribe",
+                        json={"audio_b64": audio_b64, "source_language": "es-latam"},
+                    )
+        finally:
+            server.app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert resp.json() == {"text": "hola", "schema_version": "3"}
+        (samples_arg, lang_arg), _ = fake_service.transcribe_samples.call_args
+        assert lang_arg == "es-latam"
+        expected = samples.astype(np.float32) / INT16_MAX_F
+        assert samples_arg.dtype == np.float32
+        np.testing.assert_allclose(samples_arg, expected, atol=1e-6)
+
+    def test_503_when_model_not_provisioned_points_to_setup(self):
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+        from tts_sidecar.exceptions import TranscriptionModelMissingError
+
+        _, audio_b64 = self._int16_b64()
+        override_state = self._state()
+        fake_loader = MagicMock()
+        fake_loader.load.side_effect = TranscriptionModelMissingError("missing")
+        override_state.transcription_loader = fake_loader
+        fake_service = MagicMock()
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with patch(
+                "tts_sidecar.daemon.server._get_transcription_service",
+                return_value=fake_service,
+            ):
+                with TestClient(server.app) as client:
+                    resp = client.post(
+                        "/transcribe", json={"audio_b64": audio_b64}
+                    )
+        finally:
+            server.app.dependency_overrides.clear()
+
+        assert resp.status_code == 503
+        assert "setup --with-stt" in resp.json()["detail"]
+        fake_service.transcribe_samples.assert_not_called()
+
+    def test_fail_fast_model_load_before_base64_decode(self):
+        """Si el modelo falta, el 503 llega ANTES de decodificar el audio:
+        un base64 corrupto junto a un loader que falla devuelve 503 (no 400),
+        demostrando que el decode nunca se ejecutó."""
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+        from tts_sidecar.exceptions import TranscriptionModelMissingError
+
+        override_state = self._state()
+        fake_loader = MagicMock()
+        fake_loader.load.side_effect = TranscriptionModelMissingError("missing")
+        override_state.transcription_loader = fake_loader
+        fake_service = MagicMock()
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with patch(
+                "tts_sidecar.daemon.server._get_transcription_service",
+                return_value=fake_service,
+            ):
+                with TestClient(server.app) as client:
+                    resp = client.post(
+                        "/transcribe", json={"audio_b64": "!!!no-es-base64!!!"}
+                    )
+        finally:
+            server.app.dependency_overrides.clear()
+
+        assert resp.status_code == 503
+        fake_service.transcribe_samples.assert_not_called()
+
+    def test_400_invalid_base64_without_touching_model(self):
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        override_state = self._state()
+        fake_loader = MagicMock()
+        override_state.transcription_loader = fake_loader
+        fake_service = MagicMock()
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with patch(
+                "tts_sidecar.daemon.server._get_transcription_service",
+                return_value=fake_service,
+            ):
+                with TestClient(server.app) as client:
+                    resp = client.post(
+                        "/transcribe", json={"audio_b64": "!!!no-es-base64!!!"}
+                    )
+        finally:
+            server.app.dependency_overrides.clear()
+
+        assert resp.status_code == 400
+        assert "audio_b64" in resp.json()["detail"]
+        fake_service.transcribe_samples.assert_not_called()
+
+    def test_lazy_build_constructs_service_on_first_request(self):
+        """Sin loader ni servicio precargados, la primera petición los
+        construye (lazy-build) y el loader se usa para el fail-fast."""
+        from fastapi.testclient import TestClient
+        from tts_sidecar.daemon import server
+
+        _, audio_b64 = self._int16_b64()
+        override_state = self._state()
+        fake_loader = MagicMock()
+        fake_service = MagicMock()
+        fake_service.transcribe_samples.return_value = "hola"
+        server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
+        try:
+            with patch(
+                "tts_sidecar.transcription.WhisperModelLoader",
+                return_value=fake_loader,
+            ), patch(
+                "tts_sidecar.transcription.WhisperTranscriber",
+                return_value=MagicMock(),
+            ), patch(
+                "tts_sidecar.transcription.TranscriptionService",
+                return_value=fake_service,
+            ):
+                with TestClient(server.app) as client:
+                    resp = client.post(
+                        "/transcribe", json={"audio_b64": audio_b64}
+                    )
+        finally:
+            server.app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert override_state.transcription_loader is not None
+        assert override_state.transcription_service is not None
+        fake_loader.load.assert_called_once()
+
 
 class TestDaemonStateInjection:
     """Los endpoints reciben el estado del daemon por inyección de
@@ -1212,6 +1509,34 @@ class TestDaemonStartLock:
         with patch("tts_sidecar.daemon.daemon.subprocess.Popen") as popen:
             assert manager.start() is True
             popen.assert_not_called()
+
+    def test_start_forwards_with_stt_flag_to_child(self, tmp_path):
+        """`start(with_stt=True)` reenvía el flag al subproceso del daemon
+        (el flag muere en el padre sin este reenvío explícito)."""
+        manager, _ = self._manager(tmp_path)
+        manager.is_running = lambda: False
+        manager._wait_for_ready = lambda: True
+        fake_proc = MagicMock()
+        fake_proc.pid = 4321
+
+        with patch("tts_sidecar.daemon.daemon.subprocess.Popen", return_value=fake_proc) as popen:
+            assert manager.start(with_stt=True) is True
+
+        cmd = popen.call_args.args[0]
+        assert "--with-stt" in cmd
+
+    def test_start_without_with_stt_does_not_forward_flag(self, tmp_path):
+        manager, _ = self._manager(tmp_path)
+        manager.is_running = lambda: False
+        manager._wait_for_ready = lambda: True
+        fake_proc = MagicMock()
+        fake_proc.pid = 4321
+
+        with patch("tts_sidecar.daemon.daemon.subprocess.Popen", return_value=fake_proc) as popen:
+            assert manager.start() is True
+
+        cmd = popen.call_args.args[0]
+        assert "--with-stt" not in cmd
 
     def test_start_writes_child_pid_after_popen(self, tmp_path):
         manager, pidfile = self._manager(tmp_path)

@@ -4,6 +4,7 @@ Expone endpoints HTTP para síntesis TTS con el modelo persistente en memoria.
 """
 
 import base64
+import binascii
 import gc
 import logging
 import queue
@@ -16,9 +17,12 @@ from fastapi.responses import StreamingResponse
 from .. import voices, __version__
 from ..exceptions import (
     SynthesisCancelled, TranslationModelMissingError, TranslationFailedError,
+    TranscriptionModelMissingError, TranscriptionFailedError,
 )
 from .protocol import (
     SynthesizeRequest,
+    TranscribeRequest,
+    TranscribeResponse,
     HealthResponse,
     VoicesResponse,
     PrecomputeVoiceRequest,
@@ -67,6 +71,11 @@ class DaemonState:
         # par no vuelve a cargar el modelo CT2 desde disco.
         self.translation_loader: Optional[object] = None
         self.translation_service: Optional[object] = None
+        # Loader/servicio de transcripción, construidos perezosamente en el
+        # primer /transcribe (ver `_get_transcription_service`): espejo del
+        # par de traducción, un único `WhisperModelLoader` por proceso.
+        self.transcription_loader: Optional[object] = None
+        self.transcription_service: Optional[object] = None
 
     @property
     def engine(self) -> Optional[object]:
@@ -101,6 +110,22 @@ def _get_translation_service(state: "DaemonState"):
             MarianTranslator(state.translation_loader), SegmentAssembler(),
         )
     return state.translation_service
+
+
+def _get_transcription_service(state: "DaemonState"):
+    """Devuelve el `TranscriptionService` cacheado en `state`, construyéndolo
+    la primera vez que se necesita (imports diferidos: faster-whisper no se
+    carga en un daemon que nunca transcribe). El endpoint delega en
+    `WhisperTranscriber`; el motor de transcripción es agnóstico."""
+    if state.transcription_service is None:
+        from ..transcription import (
+            WhisperModelLoader, WhisperTranscriber, TranscriptionService,
+        )
+        state.transcription_loader = WhisperModelLoader()
+        state.transcription_service = TranscriptionService(
+            state.transcription_loader, WhisperTranscriber(state.transcription_loader),
+        )
+    return state.transcription_service
 
 
 def _clear_model_memory():
@@ -148,6 +173,11 @@ async def health_check(state: DaemonState = Depends(get_daemon_state)):
         model_loaded["translate:es-en"] = state.translation_loader.is_loaded(
             default_cache_dir("es", "en")
         ) or state.translation_loader.is_loaded(default_cache_dir("en", "es"))
+    if state.transcription_loader is not None:
+        from ..transcription import default_cache_dir
+        model_loaded["transcribe:small"] = state.transcription_loader.is_loaded(
+            default_cache_dir()
+        )
     return HealthResponse(
         status="healthy" if state.engines else "initializing",
         model_loaded=model_loaded,
@@ -334,6 +364,53 @@ def synthesize(
             cancel_event.set()
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@app.post("/transcribe", response_model=TranscribeResponse)
+def transcribe(
+    req: TranscribeRequest,
+    state: DaemonState = Depends(get_daemon_state),
+) -> TranscribeResponse:
+    """Transcribe muestras PCM int16 (base64) a texto usando el modelo Whisper.
+
+    Endpoint síncrono (def): FastAPI lo despacha a su threadpool, igual que
+    /synthesize, sin worker ni colas propios. La petición nunca lleva rutas
+    (invariante sin-paths): viaja el audio ya capturado por el cliente.
+
+    Fail-fast del modelo: se valida la provisión y se carga ANTES de decodificar
+    el base64 — si el modelo no está, se responde 503 sin tocar el audio.
+    """
+    from ..transcription import default_cache_dir
+    service = _get_transcription_service(state)
+
+    try:
+        state.transcription_loader.load(default_cache_dir())
+    except TranscriptionModelMissingError:
+        raise HTTPException(
+            status_code=503,
+            detail="Modelo de transcripción no provisionado. Ejecuta "
+                   "'tts-sidecar setup --with-stt' primero.",
+        )
+    except Exception as e:
+        logging.getLogger(__name__).error("transcribe: fallo de carga del modelo: %s", e)
+        raise HTTPException(status_code=500, detail="Error al cargar el modelo de transcripción")
+
+    try:
+        audio_bytes = base64.b64decode(req.audio_b64, validate=True)
+    except (ValueError, binascii.Error) as e:
+        raise HTTPException(status_code=400, detail=f"audio_b64 no decodificable: {e}")
+
+    import numpy as np
+    from ..audio import INT16_MAX_F
+    samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / INT16_MAX_F
+
+    try:
+        text = service.transcribe_samples(samples, req.source_language)
+    except TranscriptionFailedError as e:
+        logging.getLogger(__name__).error("transcribe: fallo de transcripción: %s", e)
+        raise HTTPException(status_code=500, detail="Error de transcripción")
+
+    return TranscribeResponse(text=text)
 
 
 def _any_engine(state: "DaemonState") -> Optional[object]:

@@ -42,13 +42,16 @@ class DaemonManager:
         auto_restart: bool = False,
         max_retries: int = 0,
         language: str = "all",
+        with_stt: bool = False,
     ) -> bool:
         """
         Inicia el daemon. Idempotente: si ya está corriendo, devuelve True.
 
         `language` ("es-latam", "en" o "all", default "all") se reenvía tal
         cual al subproceso del daemon (ver `run.serve`): qué modelo(s) se
-        precargan en caliente al arrancar.
+        precargan en caliente al arrancar. `with_stt` (opt-in) se reenvía
+        igual: el flag llega al hijo (daemon serve congelado o -m) para que
+        precargue también el modelo de transcripción.
 
         La ventana de carrera del doble arranque se cierra
         con un lock de arranque atómico: `_acquire_start_lock()` crea el pidfile
@@ -80,6 +83,8 @@ class DaemonManager:
         if max_retries > 0:
             cmd.extend(["--max-retries", str(max_retries)])
         cmd.extend(["--language", language])
+        if with_stt:
+            cmd.append("--with-stt")
 
         if background:
             # Lock de arranque atómico: serializa los `start` concurrentes
