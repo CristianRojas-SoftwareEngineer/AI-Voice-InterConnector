@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.10.1 — 2026-08-10](#0101--2026-08-10)
 - [0.10.0 — 2026-08-09](#0100--2026-08-09)
 - [0.9.1 — 2026-07-31](#091--2026-07-31)
 - [0.9.0 — 2026-07-31](#090--2026-07-31)
@@ -27,6 +28,22 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.10.1] — 2026-08-10
+
+### Corregido
+
+- **`speech transcribe --mic` roto por dependencia ausente**: `miniaudio`
+  (backend único de captura de micrófono, CFFI) se añadió en su día solo a
+  `requirements.txt` y a los hooks de PyInstaller, pero no a `pyproject.toml`
+  (fuente única de runtime), por lo que los lockfiles nunca lo incluyeron y el
+  comando fallaba con `ModuleNotFoundError` en producción (los tests usan
+  dobles). Se declara `miniaudio>=1.71` en `pyproject.toml` y se regeneran los
+  lockfiles: el venv vuelve a instalar `miniaudio==1.71` y la captura queda
+  verificada funcionalmente (enumeración de micrófonos y grabación real).
+  Bonus de la regeneración: `requirements-lock-linux-cpu.txt` ya no arrastra
+  entradas win32/darwin (se generaba con `--universal` en vez del comando
+  linux con `--python-platform`).
 
 ## [0.10.0] — 2026-08-09
 
@@ -792,6 +809,7 @@ estado con el que nace el producto.
   `THIRD-PARTY-LICENSES.md` (inventario de licencias generado del lockfile).
   Código propio bajo GPL-3.0-or-later; modelo MIT.
 
+[0.10.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.8.0...v0.9.0
