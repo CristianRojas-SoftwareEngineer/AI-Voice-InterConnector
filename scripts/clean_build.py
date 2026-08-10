@@ -2,11 +2,16 @@
 """
 Clean build script — removes PyInstaller artifacts (dist/, build/, *.spec),
 __pycache__ directories and the cached model.
-Usage: python scripts/clean_build.py
-       npm run clean-build
+
+Usage: python scripts/clean_build.py           # limpieza de build
+       python scripts/clean_build.py --dev     # + entorno de desarrollo (.venv, uv cache)
+       npm run clean-build                     # wrapper del primer caso
+       npm run clean-dev                       # wrapper del segundo caso
 """
 
+import argparse
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -43,6 +48,7 @@ PROJECT_ROOT = _find_project_root(Path(__file__).parent)
 DIST_DIR = PROJECT_ROOT / "dist"
 BUILD_DIR = PROJECT_ROOT / "build"          # PyInstaller --workpath
 SPEC_DIR = PROJECT_ROOT / "scripts"         # PyInstaller --specpath
+VENV_DIR = PROJECT_ROOT / ".venv"
 
 # HuggingFace default cache location
 HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
@@ -65,6 +71,11 @@ def delete_folder(dir_path: Path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Limpia artefactos de build y caché del proyecto.")
+    parser.add_argument("--dev", action="store_true",
+                        help="Amplía la limpieza al entorno de desarrollo (.venv y uv cache).")
+    args = parser.parse_args()
+
     start = time.time()
     print()
     log("=== CLEAN BUILD ===")
@@ -87,9 +98,26 @@ def main():
     for cache_dir in PROJECT_ROOT.rglob("__pycache__"):
         delete_folder(cache_dir)
 
+    log("Removing .pytest_cache...")
+    delete_folder(PROJECT_ROOT / ".pytest_cache")
+
     log("Removing HuggingFace model cache...")
     for name in MODEL_CACHE_NAMES:
         delete_folder(HF_CACHE / name)
+
+    if args.dev:
+        log("Removing .venv/ (dev)...")
+        delete_folder(VENV_DIR)
+
+        log("Removing uv cache (dev)...")
+        try:
+            subprocess.run(["uv", "cache", "clean"], check=True,
+                           capture_output=True, text=True)
+            log("uv cache cleaned.")
+        except FileNotFoundError:
+            log("uv not found (skip uv cache clean).")
+        except subprocess.CalledProcessError as e:
+            log(f"Error cleaning uv cache: {e.stderr.strip()}")
 
     log("=== CLEAN DONE ===", time.time() - start)
     print()

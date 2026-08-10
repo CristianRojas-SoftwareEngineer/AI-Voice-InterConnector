@@ -16,6 +16,7 @@
   "scripts": {
     "install-model": "python bin/tts-sidecar setup",
     "clean-build": "python scripts/clean_build.py",
+    "clean-dev": "python scripts/clean_build.py --dev",
     "build-windows": "python scripts/build_windows.py",
     "build-linux": "python scripts/build_linux.py",
     "build-macos": "python scripts/build_macos.py"

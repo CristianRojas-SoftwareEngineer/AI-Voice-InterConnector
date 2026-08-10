@@ -40,6 +40,22 @@ python bin/tts-sidecar doctor
 > Los **builds y el CI** no instalan desde `requirements.txt`, sino desde
 > `requirements-lock.txt` (lock universal con hashes) con `--require-hashes`, para
 > garantizar reproducibilidad. `requirements.txt` son los límites de desarrollo.
+>
+> **Entorno idéntico al de CI** (reproduceibilidad total): si quieres que tu
+> entorno local tenga exactamente las mismas versiones que en el pipeline,
+> instala desde el lock en vez de desde los límites:
+>
+> ```bash
+> python -m venv .venv
+> .venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
+> pip install -r requirements-lock.txt --require-hashes
+> pip install pytest
+> ```
+>
+> Esto verifica la integridad de cada paquete contra los hashes del lock. Si
+> editaste `pyproject.toml` y el lock está desactualizado, el comando fallará
+> con un error claro — regenera el lock primero (ver «Dependencias y lockfile»
+> más abajo).
 
 ## Tests
 
