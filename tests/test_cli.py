@@ -3130,6 +3130,12 @@ class TestSetupLightDownload:
         assert mock_snapshot_download.call_args.kwargs["repo_id"] == (
             "ResembleAI/Chatterbox-Multilingual-es-mx-latam"
         )
+        assert mock_snapshot_download.call_args.kwargs["allow_patterns"] == [
+            "t3_es_mx_latam.safetensors",
+            "s3gen_v3.safetensors",
+            "s3gen_v3.pt",
+            "grapheme_mtl_merged_expanded_v1.json",
+        ]
         mock_get_instance.assert_not_called()
         assert "descargado(s) correctamente" in capsys.readouterr().err
 
@@ -3162,6 +3168,10 @@ class TestSetupMultiLanguage:
             "ResembleAI/Chatterbox-Multilingual-es-mx-latam",
             "ResembleAI/chatterbox",
         }
+        # Cada llamada debe incluir allow_patterns filtrando archivos de inferencia
+        for call in mock_snapshot_download.call_args_list:
+            assert "allow_patterns" in call.kwargs
+            assert len(call.kwargs["allow_patterns"]) > 0
 
     def test_language_en_downloads_only_english_base(self, monkeypatch, tmp_path, capsys):
         import tts_sidecar.cli as cli
@@ -3182,6 +3192,14 @@ class TestSetupMultiLanguage:
 
         mock_snapshot_download.assert_called_once()
         assert mock_snapshot_download.call_args.kwargs["repo_id"] == "ResembleAI/chatterbox"
+        assert mock_snapshot_download.call_args.kwargs["allow_patterns"] == [
+            "t3_cfg.safetensors",
+            "s3gen.safetensors",
+            "ve.safetensors",
+            "ve.pt",
+            "tokenizer.json",
+            "conds.pt",
+        ]
 
     def test_disk_check_scales_with_pending_model_count(self, monkeypatch, capsys):
         """Con 'all' pendiente (2 modelos), el umbral de disco se duplica."""

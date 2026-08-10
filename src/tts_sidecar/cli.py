@@ -2016,6 +2016,12 @@ def cmd_setup(args):
                 print(f"\nDescargando el modelo de traducción {pair_name}...", file=sys.stderr)
                 snapshot_dir = _snapshot_download(
                     repo_id=f"Helsinki-NLP/{pair_name}", token=os.getenv("HF_TOKEN"),
+                    # Solo los archivos que consume TransformersConverter (config +
+                    # pesos PyTorch + spm copiados por copy_files); evita descargar
+                    # tf_model.h5 (~298 MB) y flax_model.msgpack (~296 MB).
+                    allow_patterns=[
+                        "config.json", "pytorch_model.bin", "source.spm", "target.spm",
+                    ],
                 )
                 print(f"Convirtiendo {pair_name} a formato CT2...", file=sys.stderr)
                 _convert_translation_model(snapshot_dir, output_dir)
@@ -2097,7 +2103,7 @@ def cmd_setup(args):
         # revision fijada: la descarga es determinista y un push
         # posterior al repo del modelo no se propaga a los usuarios.
         from huggingface_hub import snapshot_download
-        from .model_cache import MODELS, MODEL_REVISIONS
+        from .model_cache import MODELS, MODEL_REVISIONS, MODEL_ALLOW_PATTERNS
         for model in pending:
             print(f"\nDescargando el modelo {model}...", file=sys.stderr)
             print("(Puede tardar varios minutos en la primera ejecución)\n", file=sys.stderr)
@@ -2105,6 +2111,7 @@ def cmd_setup(args):
                 repo_id=MODELS[model],
                 revision=MODEL_REVISIONS[model],
                 token=os.getenv("HF_TOKEN"),
+                allow_patterns=MODEL_ALLOW_PATTERNS[model],
             )
             results[model]["downloaded"] = True
 

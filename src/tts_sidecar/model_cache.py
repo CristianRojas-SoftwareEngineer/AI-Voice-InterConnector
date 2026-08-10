@@ -40,6 +40,26 @@ BASE_MODEL_REVISION = "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
 # repo (ResembleAI/chatterbox), así que comparten el mismo commit auditado.
 MODEL_REVISIONS["en"] = BASE_MODEL_REVISION
 
+# Patrones de archivos descargados por snapshot_download por modelo.
+# Permite filtrar solo los checkpoints de inferencia, evitando descargar
+# variantes no usadas (p. ej. las 5 variantes T3 del repo base que pesan ~8 GB).
+MODEL_ALLOW_PATTERNS = {
+    "es-mx-latam": [
+        "t3_es_mx_latam.safetensors",
+        "s3gen_v3.safetensors",
+        "s3gen_v3.pt",
+        "grapheme_mtl_merged_expanded_v1.json",
+    ],
+    "en": [
+        "t3_cfg.safetensors",
+        "s3gen.safetensors",
+        "ve.safetensors",
+        "ve.pt",
+        "tokenizer.json",
+        "conds.pt",
+    ],
+}
+
 # Mapa único de alias/repos al nombre de carpeta en la caché de HuggingFace
 CACHE_NAMES = {
     "es-mx-latam": "models--ResembleAI--Chatterbox-Multilingual-es-mx-latam",

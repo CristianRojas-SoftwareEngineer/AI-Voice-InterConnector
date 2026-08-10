@@ -38,6 +38,7 @@ from . import voices
 from .model_cache import (
     BASE_MODEL_REVISION,
     MODEL_REVISIONS,
+    MODEL_ALLOW_PATTERNS,
     MODELS as _MODEL_ALIASES,
     _resolve_cached_snapshot,
     cache_folder_for,
@@ -478,12 +479,22 @@ class ChatterboxEngine:
         # Descarga desde HuggingFace
         log(f"Descargando {model_name} desde HuggingFace")
 
+        # Resuelve allow_patterns: si model_name es un alias, lo usa directamente;
+        # si es un repo_id, intenta resolverlo vía MODELS inverso.
+        allow = MODEL_ALLOW_PATTERNS.get(model_name)
+        if allow is None:
+            for alias, repo in _MODEL_ALIASES.items():
+                if repo == model_name:
+                    allow = MODEL_ALLOW_PATTERNS.get(alias)
+                    break
+
         cached_path = Path(
             snapshot_download(
                 repo_id=model_name,
                 repo_type="model",
                 revision=revision,
                 token=os.getenv("HF_TOKEN"),
+                **({"allow_patterns": allow} if allow else {}),
             )
         )
         log(f"Modelo descargado en: {cached_path}")

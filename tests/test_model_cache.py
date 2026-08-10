@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from tts_sidecar.model_cache import (
     BASE_MODEL_REPO,
+    MODELS,
+    MODEL_ALLOW_PATTERNS,
     cache_folder_for,
     model_cache_dirs,
     purge_incomplete_downloads,
@@ -155,3 +157,34 @@ class TestModelCacheDirs:
         dirs = model_cache_dirs()
         assert len(dirs) == 2
         assert all(not d.exists() for d in dirs)
+
+
+class TestModelAllowPatterns:
+    """MODEL_ALLOW_PATTERNS contiene los archivos correctos por modelo."""
+
+    def test_has_entries_for_all_models(self):
+        for alias in MODELS:
+            assert alias in MODEL_ALLOW_PATTERNS, (
+                f"Falta MODEL_ALLOW_PATTERNS para el modelo '{alias}'"
+            )
+
+    def test_patterns_are_lists_of_strings(self):
+        for alias, patterns in MODEL_ALLOW_PATTERNS.items():
+            assert isinstance(patterns, list), f"Patterns para '{alias}' no es lista"
+            assert len(patterns) > 0, f"Patterns para '{alias}' está vacío"
+            for p in patterns:
+                assert isinstance(p, str), f"Pattern para '{alias}' no es string: {p}"
+
+    def test_es_mx_latam_patterns_match_required_files(self):
+        patterns = MODEL_ALLOW_PATTERNS["es-mx-latam"]
+        assert "t3_es_mx_latam.safetensors" in patterns
+        assert "s3gen_v3.safetensors" in patterns
+        assert "grapheme_mtl_merged_expanded_v1.json" in patterns
+
+    def test_en_patterns_match_required_files(self):
+        patterns = MODEL_ALLOW_PATTERNS["en"]
+        assert "t3_cfg.safetensors" in patterns
+        assert "s3gen.safetensors" in patterns
+        assert "ve.safetensors" in patterns
+        assert "tokenizer.json" in patterns
+        assert "conds.pt" in patterns
