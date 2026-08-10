@@ -168,14 +168,14 @@ herramienta de build; no forma parte del contenido redistribuido más allá del 
 
 ## Inventario completo del lockfile
 
-Generado desde `requirements-lock.txt` (158 paquetes de runtime, directos y transitivos).
+Generado desde `requirements-lock.txt` (159 paquetes de runtime, directos y transitivos).
 Los paquetes `nvidia-*`/`cuda-*` (31) **no forman parte de ningún artefacto distribuido**:
 el build de Linux x64 usa el lock CPU-only (`requirements-lock-linux-cpu.txt`, sin
 `nvidia-*`) y en los demás builds esos paquetes están excluidos por marcador de
 plataforma. Solo aplican a una instalación desde código fuente con el lock universal
 en Linux x86_64.
 
-Resumen por familia: MIT 53 · BSD 37 · NVIDIA (propietaria) 31 · Apache-2.0 23 ·
+Resumen por familia: MIT 54 · BSD 37 · NVIDIA (propietaria) 31 · Apache-2.0 23 ·
 PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
@@ -279,6 +279,7 @@ PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 | `pooch` | 1.9.0 | BSD-3-Clause | BSD |
 | `pre-commit` | 4.6.0 | MIT | MIT |
 | `protobuf` | 7.35.1 | 3-Clause BSD License | BSD |
+| `pysbd` | 0.3.4 | MIT | MIT |
 | `psutil` | 7.2.2 | BSD-3-Clause | BSD |
 | `pycaw` | 20251023 | UNKNOWN (MIT según el repo del proyecto) | Sin metadato (ver nota) |
 | `pycparser` | 3.0 | BSD-3-Clause | BSD |
