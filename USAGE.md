@@ -128,7 +128,7 @@ comportamiento es el mismo.
 ## Primer uso: provisionar el/los modelo(s) (`setup`)
 
 TTS Sidecar sirve **dos modelos**, uno por idioma: `es-mx-latam` (español
-latinoamericano, ~4 GB) y `en` (inglés base, ~4 GB), ninguno incluido en el
+latinoamericano, ~3 GB) y `en` (inglés base, ~3 GB), ninguno incluido en el
 ejecutable. `setup --language {es-latam,en,all}` (default **`all`**) descarga a
 la caché de HuggingFace (`~/.cache/huggingface/hub` por defecto; si defines
 `HF_HOME` o `HF_HUB_CACHE`, se respeta esa ubicación) los modelos del idioma
@@ -1245,7 +1245,7 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
 - **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
   funciona pero puede paginar (ralentizarse) en textos largos. `doctor` emite un
   `[WARN]` de RAM por debajo de 8 GB (no bloquea nada).
-- **Disco**: ~8 GB para los modelos descargados (~4 GB c/u; el chequeo de `setup`
+- **Disco**: ~6 GB para los modelos descargados (~3 GB c/u; el chequeo de `setup`
   escala con los modelos pendientes: ~6 GB libres por modelo, ~12 GB con ambos).
   El bundle PyInstaller `--onedir` ocupa del orden de 1-2 GB adicionales
   sin comprimir (Windows/macOS y el AppImage `arm64` de Linux, que resuelven

@@ -113,13 +113,11 @@ class ModelLoader:
         t3.load_state_dict(t3_state)
         t3.to(device).eval()
 
-        # Carga S3Gen v3
+        # Carga S3Gen v3 (solo safetensors: el .pt duplicado no se descarga;
+        # safetensors incluye verificación de integridad en la carga).
         s3gen = S3Gen()
-        # Intenta safetensors primero, luego pt
         s3gen_path = cache_dir / "s3gen_v3.safetensors"
-        if not s3gen_path.exists():
-            s3gen_path = cache_dir / "s3gen_v3.pt"
-        s3gen_state = load_file(s3gen_path) if s3gen_path.suffix == ".safetensors" else torch.load(s3gen_path, map_location=map_location, weights_only=True)
+        s3gen_state = load_file(s3gen_path)
         s3gen.load_state_dict(s3gen_state, strict=False)
         s3gen.to(device).eval()
 

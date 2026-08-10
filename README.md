@@ -168,7 +168,7 @@ es **verificar su SHA-256** contra el `SHA256SUMS.txt` del Release (ver
 ### Provisión del/los modelo(s) (`setup`)
 
 TTS Sidecar sirve **dos modelos de voz**, uno por idioma: **`es-mx-latam`**
-(español latinoamericano, ~4 GB) y **`en`** (inglés base, ~4 GB, habilita la
+(español latinoamericano, ~3 GB) y **`en`** (inglés base, ~3 GB, habilita la
 síntesis cross-lingual). Ninguno viene incluido en el ejecutable: se descargan
 a la caché de HuggingFace de tu usuario (`~/.cache/huggingface/hub`). Esto es
 homólogo en los 3 SO:

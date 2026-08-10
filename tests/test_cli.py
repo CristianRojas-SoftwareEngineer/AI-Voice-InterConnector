@@ -3133,7 +3133,6 @@ class TestSetupLightDownload:
         assert mock_snapshot_download.call_args.kwargs["allow_patterns"] == [
             "t3_es_mx_latam.safetensors",
             "s3gen_v3.safetensors",
-            "s3gen_v3.pt",
             "grapheme_mtl_merged_expanded_v1.json",
         ]
         mock_get_instance.assert_not_called()

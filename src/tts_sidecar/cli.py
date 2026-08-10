@@ -95,7 +95,7 @@ def _translate_cli_error(e: CliError) -> None:
 
 
 # Umbral mínimo de espacio libre en disco para descargar el modelo en 'setup'.
-# El language pack + Voice Encoder ocupan ~4 GB medidos en caché; 6 GB deja
+# El language pack + Voice Encoder ocupan ~3 GB medidos en caché; 6 GB deja
 # margen para los .incomplete de la descarga y la caché temporal de HuggingFace.
 MIN_FREE_DISK_BYTES = 6 * 1024 * 1024 * 1024  # 6 GB
 
@@ -2076,7 +2076,7 @@ def cmd_setup(args):
             return
 
         # Pre-chequeo de espacio en disco antes de descargar: cada modelo pesa
-        # ~4 GB; por debajo del umbral (escalado por nº de modelos pendientes)
+        # ~3 GB; por debajo del umbral (escalado por nº de modelos pendientes)
         # la descarga puede fallar a medias y dejar una caché truncada. Se
         # aborta antes de empezar. disk_usage exige una ruta existente: en una
         # máquina limpia la caché aún no existe, así que se sube al primer
@@ -2094,7 +2094,7 @@ def cmd_setup(args):
             "disk_insufficient",
             f"[FAIL] Espacio en disco insuficiente: {free_gb:.1f} GB libres, "
             f"se requieren al menos {required // 1024 ** 3} GB para {len(pending)} "
-            "modelo(s) (~4 GB c/u). Libera espacio y reintenta 'tts-sidecar setup'.",
+            "modelo(s) (~3 GB c/u). Libera espacio y reintenta 'tts-sidecar setup'.",
         )
 
         # snapshot_download es solo red/disco, sin cargar el modelo en RAM
@@ -2309,7 +2309,7 @@ def cmd_daemon(args):
         # el daemon (el .exe no puede ejecutar `python -m ...`).
         # Exige el modelo en caché antes de cargar el engine, igual que 'start':
         # sin este gate, 'daemon serve' sin 'setup' dispararía la red de seguridad
-        # del engine (descarga de ~4 GB). Las descargas son responsabilidad
+        # del engine (descarga de ~3 GB). Las descargas son responsabilidad
         # exclusiva de 'setup'.
         language = getattr(args, "language", "all") or "all"
         _require_models_cached_for_daemon(language)

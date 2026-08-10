@@ -47,7 +47,6 @@ MODEL_ALLOW_PATTERNS = {
     "es-mx-latam": [
         "t3_es_mx_latam.safetensors",
         "s3gen_v3.safetensors",
-        "s3gen_v3.pt",
         "grapheme_mtl_merged_expanded_v1.json",
     ],
     "en": [

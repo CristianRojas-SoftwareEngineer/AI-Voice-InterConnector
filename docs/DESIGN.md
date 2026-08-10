@@ -159,7 +159,7 @@ El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings
 
 | Aspecto | Detalle |
 |---------|---------|
-| **Modelos** | `es-mx-latam` (`ResembleAI/Chatterbox-Multilingual-es-mx-latam`, ~4 GB) y `en` (`ResembleAI/chatterbox`, ~3.2 GB descargados vía `allow_patterns`) |
+| **Modelos** | `es-mx-latam` (`ResembleAI/Chatterbox-Multilingual-es-mx-latam`, ~3 GB descargados vía `allow_patterns`) y `en` (`ResembleAI/chatterbox`, ~3 GB descargados vía `allow_patterns`) |
 | **Licencia** | MIT |
 | **Parámetros** | 500M |
 | **Idiomas** | 23+ (es, en, fr, de, pt, etc.) |

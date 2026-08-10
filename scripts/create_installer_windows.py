@@ -182,7 +182,7 @@ def info_after_text() -> str:
         "Provisión del modelo de voz\r\n"
         "===========================\r\n\r\n"
         "tts-sidecar ya está instalado, pero los modelos de voz (es-mx-latam\r\n"
-        "y en, ~8 GB en total) NO vienen incluidos en el instalador: se\r\n"
+        "y en, ~6 GB en total) NO vienen incluidos en el instalador: se\r\n"
         "descargan aparte, una sola vez, a la caché de tu usuario.\r\n\r\n"
         "Marca la casilla \"Descargar ahora el modelo de voz (setup)\" para hacerlo\r\n"
         "al terminar, o ejecútalo más tarde desde una terminal con:\r\n\r\n"

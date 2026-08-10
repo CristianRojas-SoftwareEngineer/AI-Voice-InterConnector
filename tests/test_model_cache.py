@@ -181,6 +181,11 @@ class TestModelAllowPatterns:
         assert "s3gen_v3.safetensors" in patterns
         assert "grapheme_mtl_merged_expanded_v1.json" in patterns
 
+    def test_es_mx_latam_excludes_s3gen_pt_duplicate(self):
+        """s3gen_v3.pt es el mismo checkpoint en formato duplicado (~1 GB):
+        safetensors ya valida integridad en la carga, así que no se descarga."""
+        assert "s3gen_v3.pt" not in MODEL_ALLOW_PATTERNS["es-mx-latam"]
+
     def test_en_patterns_match_required_files(self):
         patterns = MODEL_ALLOW_PATTERNS["en"]
         assert "t3_cfg.safetensors" in patterns
