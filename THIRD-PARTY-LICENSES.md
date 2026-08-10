@@ -168,14 +168,14 @@ herramienta de build; no forma parte del contenido redistribuido más allá del 
 
 ## Inventario completo del lockfile
 
-Generado desde `requirements-lock.txt` (159 paquetes de runtime, directos y transitivos).
+Generado desde `requirements-lock.txt` (166 paquetes de runtime, directos y transitivos).
 Los paquetes `nvidia-*`/`cuda-*` (31) **no forman parte de ningún artefacto distribuido**:
 el build de Linux x64 usa el lock CPU-only (`requirements-lock-linux-cpu.txt`, sin
 `nvidia-*`) y en los demás builds esos paquetes están excluidos por marcador de
 plataforma. Solo aplican a una instalación desde código fuente con el lock universal
 en Linux x86_64.
 
-Resumen por familia: MIT 54 · BSD 37 · NVIDIA (propietaria) 31 · Apache-2.0 23 ·
+Resumen por familia: MIT 58 · BSD 38 · NVIDIA (propietaria) 31 · Apache-2.0 25 ·
 PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
@@ -186,6 +186,7 @@ PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 | `annotated-types` | 0.7.0 | MIT License | MIT |
 | `antlr4-python3-runtime` | 4.9.3 | BSD | BSD |
 | `anyio` | 4.14.1 | MIT | MIT |
+| `av` | 18.0.0 | BSD-3-Clause | BSD |
 | `audioop-lts` | 0.2.2 | PSF-2.0 | PSF-2.0 |
 | `audioread` | 3.1.0 | MIT | MIT |
 | `brotli` | 1.2.0 | MIT | MIT |
@@ -199,6 +200,7 @@ PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 | `colorama` | 0.4.6 | BSD License | BSD |
 | `comtypes` | 1.4.16 | MIT | MIT |
 | `conformer` | 0.3.2 | MIT License | MIT |
+| `ctranslate2` | 4.8.1 | MIT | MIT |
 | `cuda-bindings` | 13.3.1 | NVIDIA CUDA EULA | NVIDIA (propietaria, redistribuible) |
 | `cuda-pathfinder` | 1.5.6 | NVIDIA CUDA EULA | NVIDIA (propietaria, redistribuible) |
 | `cuda-toolkit` | 13.0.2 | NVIDIA CUDA EULA | NVIDIA (propietaria, redistribuible) |
@@ -208,8 +210,10 @@ PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 | `distlib` | 0.4.3 | Python Software Foundation License | PSF-2.0 |
 | `einops` | 0.8.2 | MIT License | MIT |
 | `fastapi` | 0.139.0 | MIT | MIT |
+| `faster-whisper` | 1.2.1 | MIT | MIT |
 | `ffmpy` | 1.0.0 | MIT | MIT |
 | `filelock` | 3.29.5 | MIT | MIT |
+| `flatbuffers` | 25.12.19 | Apache 2.0 | Apache-2.0 |
 | `fsspec` | 2026.6.0 | BSD-3-Clause | BSD |
 | `gradio` | 6.8.0 | Apache-2.0 | Apache-2.0 |
 | `gradio-client` | 2.2.0 | Apache-2.0 | Apache-2.0 |
@@ -270,6 +274,7 @@ PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 | `nvidia-nvtx-cu12` | 12.4.127 | NVIDIA CUDA EULA | NVIDIA (propietaria, redistribuible) |
 | `omegaconf` | 2.3.1 | BSD License | BSD |
 | `onnx` | 1.22.0 | Apache-2.0 | Apache-2.0 |
+| `onnxruntime` | 1.28.0 | MIT License | MIT |
 | `orjson` | 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) | MPL-2.0 |
 | `packaging` | 26.2 | Apache-2.0 OR BSD-2-Clause | Apache-2.0 |
 | `pandas` | 3.0.3 | BSD License | BSD |
@@ -300,11 +305,13 @@ PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 | `resemble-perth` | 1.0.1 | MIT License | MIT |
 | `rich` | 15.0.0 | MIT License | MIT |
 | `s3tokenizer` | 0.3.0 | Apache2.0 | Apache-2.0 |
+| `sacremoses` | 0.1.1 | MIT | MIT |
 | `safehttpx` | 0.1.7 | MIT License | MIT |
 | `safetensors` | 0.5.3 | Apache Software License | Apache-2.0 |
 | `scikit-learn` | 1.9.0 | BSD-3-Clause | BSD |
 | `scipy` | 1.18.0 | BSD License | BSD |
 | `semantic-version` | 2.10.0 | BSD License | BSD |
+| `sentencepiece` | 0.2.2 | Apache-2.0 | Apache-2.0 |
 | `setuptools` | 81.0.0 | MIT | MIT |
 | `shellingham` | 1.5.4 | ISC License (ISCL) | ISC |
 | `six` | 1.17.0 | MIT License | MIT |
