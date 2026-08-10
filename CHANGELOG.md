@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.10.3 — 2026-08-10](#0103--2026-08-10)
 - [0.10.2 — 2026-08-10](#0102--2026-08-10)
 - [0.10.1 — 2026-08-10](#0101--2026-08-10)
 - [0.10.0 — 2026-08-09](#0100--2026-08-09)
@@ -29,6 +30,21 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.10.3] — 2026-08-10
+
+### Optimizado
+
+- **Descarga del language pack es-mx-latam ~1 GB más liviana**: se elimina
+  `s3gen_v3.pt` de `MODEL_ALLOW_PATTERNS`. El `.pt` era el mismo checkpoint
+  del vocoder S3Gen que `s3gen_v3.safetensors` (~1.008 GB c/u) en formato
+  duplicado, y el loader (`model_loader.py`) siempre prefería el safetensors,
+  que ya incluye verificación de integridad en la carga. El fallback al `.pt`
+  solo se activaba si el safetensors no existía en caché (no ante un archivo
+  dañado), así que no aportaba robustez real. El modelo pasa de ~4 GB a ~3 GB;
+  con `en` (~3 GB), el total descargado baja de ~8 GB a ~6 GB. `en` mantiene
+  `ve.pt` + `ve.safetensors` (~5.4 MB c/u, tamaños menores): no se toca en
+  este cambio.
 
 ## [0.10.2] — 2026-08-10
 
@@ -822,6 +838,7 @@ estado con el que nace el producto.
   `THIRD-PARTY-LICENSES.md` (inventario de licencias generado del lockfile).
   Código propio bajo GPL-3.0-or-later; modelo MIT.
 
+[0.10.3]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.9.1...v0.10.0
