@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.10.2 — 2026-08-10](#0102--2026-08-10)
 - [0.10.1 — 2026-08-10](#0101--2026-08-10)
 - [0.10.0 — 2026-08-09](#0100--2026-08-09)
 - [0.9.1 — 2026-07-31](#091--2026-07-31)
@@ -28,6 +29,18 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.10.2] — 2026-08-10
+
+### Añadido
+
+- **Descarga ligera de modelos con `allow_patterns`**: `setup` y el engine
+  descargan solo los checkpoints de inferencia que el runtime consume, en vez
+  del snapshot completo. `MODEL_ALLOW_PATTERNS` (`model_cache.py`) fija los
+  archivos por modelo: `es-mx-latam` y `en` dejan de bajar las variantes T3
+  no usadas del repo base (varios GB de ahorro), y los modelos de traducción
+  opus-mt ya no descargan `tf_model.h5` (~298 MB) ni `flax_model.msgpack`
+  (~296 MB), que la conversión CT2 nunca consume.
 
 ## [0.10.1] — 2026-08-10
 
@@ -809,6 +822,7 @@ estado con el que nace el producto.
   `THIRD-PARTY-LICENSES.md` (inventario de licencias generado del lockfile).
   Código propio bajo GPL-3.0-or-later; modelo MIT.
 
+[0.10.2]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.9.0...v0.9.1
