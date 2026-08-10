@@ -43,6 +43,8 @@ dependencies = [
     # Transcripción: reutiliza el runtime CT2 ya embarcado, sin motor de
     # inferencia nuevo.
     "faster-whisper>=1.2.1",
+    # Transcripción: captura de micrófono (backend único, CFFI).
+    "miniaudio>=1.71",
     # Traducción: solo se usan en la conversión opus-mt->CT2 de 'setup'
     # (ctranslate2.converters.TransformersConverter). chatterbox-tts ya trae
     # transformers como dependencia transitiva (pin exacto ==5.2.0 en

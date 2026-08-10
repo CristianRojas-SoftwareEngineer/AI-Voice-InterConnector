@@ -168,14 +168,14 @@ herramienta de build; no forma parte del contenido redistribuido más allá del 
 
 ## Inventario completo del lockfile
 
-Generado desde `requirements-lock.txt` (166 paquetes de runtime, directos y transitivos).
+Generado desde `requirements-lock.txt` (167 paquetes de runtime, directos y transitivos).
 Los paquetes `nvidia-*`/`cuda-*` (31) **no forman parte de ningún artefacto distribuido**:
 el build de Linux x64 usa el lock CPU-only (`requirements-lock-linux-cpu.txt`, sin
 `nvidia-*`) y en los demás builds esos paquetes están excluidos por marcador de
 plataforma. Solo aplican a una instalación desde código fuente con el lock universal
 en Linux x86_64.
 
-Resumen por familia: MIT 58 · BSD 38 · NVIDIA (propietaria) 31 · Apache-2.0 25 ·
+Resumen por familia: MIT 59 · BSD 38 · NVIDIA (propietaria) 31 · Apache-2.0 25 ·
 PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
@@ -236,6 +236,7 @@ PSF-2.0 6 · MPL-2.0 3 · ISC 2 · LGPL-2.1+ 1 · GPLv3+ 1 · sin metadato 1.
 | `markdown-it-py` | 4.2.0 | MIT License | MIT |
 | `markupsafe` | 3.0.3 | BSD-3-Clause | BSD |
 | `mdurl` | 0.1.2 | MIT License | MIT |
+| `miniaudio` | 1.71 | MIT | MIT |
 | `ml-dtypes` | 0.5.4 | Apache-2.0 | Apache-2.0 |
 | `mpmath` | 1.3.0 | BSD License | BSD |
 | `msgpack` | 1.2.1 | Apache-2.0 | Apache-2.0 |
