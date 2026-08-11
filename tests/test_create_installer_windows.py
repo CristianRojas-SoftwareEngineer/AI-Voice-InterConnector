@@ -99,6 +99,17 @@ def test_without_key_manual_uninstall(iss):
     assert "CurrentVersion\\Uninstall\\tts-sidecar" not in iss
 
 
+def test_appid_roundtrips_to_single_brace_uninstall_key(iss):
+    # W-04: Inno Setup solo escapa '{' con '{{', de modo que el AppId debe
+    # desescapar al literal {E8A1B2C3-...} de una sola llave final para que la
+    # clave de desinstalación {AppId}_is1 coincida con la que busca
+    # 'setup --uninstall' en cli.py (regresión: AppId={{...}} generaba la clave
+    # {E8A1B2C3-...}}_is1 y rompía la desinstalación por CLI).
+    app_id_literal = "{E8A1B2C3-D4F5-6789-ABCD-EF0123456789}"
+    assert f"AppId={{{app_id_literal}" in iss
+    assert f"AppId={{{app_id_literal}}}" not in iss
+
+
 def test_info_after_offers_gplv3_source_code():
     """La página InfoAfter del instalador debe ofrecer el código fuente
     bajo GPLv3 y enlazar al repositorio (GPLv3 §6)."""
