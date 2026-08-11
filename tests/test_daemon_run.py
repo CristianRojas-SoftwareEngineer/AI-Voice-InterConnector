@@ -265,6 +265,73 @@ class TestServeSttPreload:
         assert app.state.daemon.transcription_service is not None
 
 
+class TestServeWarmup:
+    """El warmup ejecuta una síntesis descartable por idioma precargado en el
+    arranque, para pagar la init perezosa del runtime (contexto CUDA/autotune
+    cuDNN o pool oneDNN/MKL) en el startup en vez de en la primera petición
+    real del usuario. Es best-effort: ni la ausencia de la voz de fábrica ni
+    un fallo de síntesis deben abortar el arranque del daemon."""
+
+    def test_warmup_synthesizes_once_per_preloaded_language(self):
+        from tts_sidecar.daemon.run import app
+
+        with patch(
+            "tts_sidecar.voices.voice_paths",
+            return_value=("/fake/timbre.wav", "/fake/speech.wav"),
+        ), patch("uvicorn.Server.run", return_value=None):
+            daemon_run.serve(auto_restart=False, language="all")
+
+        for lang in ("es-latam", "en"):
+            engine = app.state.daemon.engines[lang]
+            engine.synthesize.assert_called_once()
+            _, kwargs = engine.synthesize.call_args
+            assert kwargs["speech_reference"] == "/fake/speech.wav"
+            assert kwargs["verbose"] is False
+
+    def test_warmup_single_language(self):
+        from tts_sidecar.daemon.run import app
+
+        with patch(
+            "tts_sidecar.voices.voice_paths",
+            return_value=("/fake/timbre.wav", "/fake/speech.wav"),
+        ), patch("uvicorn.Server.run", return_value=None):
+            daemon_run.serve(auto_restart=False, language="es-latam")
+
+        app.state.daemon.engines["es-latam"].synthesize.assert_called_once()
+        assert "en" not in app.state.daemon.engines
+
+    def test_warmup_tolerates_missing_factory_voice(self):
+        from tts_sidecar.daemon.run import app
+
+        with patch(
+            "tts_sidecar.voices.voice_paths",
+            side_effect=FileNotFoundError("voz de fábrica no encontrada"),
+        ), patch("uvicorn.Server.run", return_value=None) as mock_run:
+            daemon_run.serve(auto_restart=False, language="all")
+
+        mock_run.assert_called_once()
+        for lang in ("es-latam", "en"):
+            app.state.daemon.engines[lang].synthesize.assert_not_called()
+
+    def test_warmup_failure_does_not_abort_startup(self):
+        from tts_sidecar.engine import ChatterboxEngine
+
+        def _get_instance(**kw):
+            engine = MagicMock()
+            engine.synthesize.side_effect = RuntimeError("boom")
+            return engine
+
+        with patch(
+            "tts_sidecar.voices.voice_paths",
+            return_value=("/fake/timbre.wav", "/fake/speech.wav"),
+        ), patch.object(
+            ChatterboxEngine, "get_instance", staticmethod(_get_instance),
+        ), patch("uvicorn.Server.run", return_value=None) as mock_run:
+            daemon_run.serve(auto_restart=False, language="all")
+
+        mock_run.assert_called_once()
+
+
 class TestMain:
     def test_main_delegates_to_serve_with_parsed_args(self):
         with patch.object(sys, "argv", ["daemon-run", "--auto-restart", "--max-retries", "3"]), \

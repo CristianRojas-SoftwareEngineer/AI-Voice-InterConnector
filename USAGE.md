@@ -1165,6 +1165,15 @@ Daemon en ejecución:
 arrancar); un idioma no listado se cargaría perezosamente en la primera
 síntesis que lo pida.
 
+Tras precargar los pesos, `daemon start` ejecuta además una **síntesis
+descartable por idioma precargado** con la voz de fábrica. La precarga solo
+carga los pesos, nunca ejecuta un forward, así que la inicialización perezosa
+del runtime (contexto CUDA + autotune cuDNN en GPU; pool oneDNN/MKL en CPU) se
+dispararía recién en la primera síntesis real como latencia sorpresa; el warmup
+la paga en el arranque —que ya se asume lento—. Es best-effort: un warmup
+fallido (por ejemplo, la voz de fábrica ausente) se registra y no aborta el
+arranque.
+
 Con `--language en`/`all` (default), `daemon start` además precarga en RAM el
 par de traducción `opus-mt` es↔en (ambas direcciones), calentándolo desde el
 arranque en vez de esperar a la primera síntesis con `--source-language`

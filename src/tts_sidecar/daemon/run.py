@@ -127,6 +127,33 @@ def serve(
 
                 log(f"Daemon: compute_backend={compute_backend}")
 
+                # Warmup: la precarga de arriba solo hace load_state_dict().to(device).eval(),
+                # nunca ejecuta un forward. La init perezosa del runtime (contexto CUDA +
+                # autotune cuDNN en GPU; pool oneDNN/MKL en CPU) se dispara recién en el
+                # primer forward real. Se ejecuta aquí una síntesis mínima descartable por
+                # idioma precargado para pagar esa init en el arranque en vez de en la
+                # primera petición del usuario. Best-effort: la voz de fábrica se resuelve
+                # una sola vez y, si falla o falla alguna síntesis, se loguea y se continúa
+                # sin abortar el arranque del daemon.
+                from .. import voices
+
+                try:
+                    warmup_timbre, warmup_speech = voices.voice_paths("default")
+                except Exception as e:
+                    log(f"Daemon: warmup omitido, voz de fábrica no resuelta: {e}")
+                else:
+                    for lang in languages_to_preload:
+                        try:
+                            app.state.daemon.engines[lang].synthesize(
+                                "hola",
+                                timbre_reference=warmup_timbre,
+                                speech_reference=warmup_speech,
+                                verbose=False,
+                            )
+                        except Exception as e:
+                            log(f"Daemon: warmup falló para '{lang}': {e}")
+                            continue
+
                 # Precarga en caliente del par de traducción opus-mt es<->en
                 # (Tarea 11): con --language en/all, ambas direcciones quedan
                 # calientes desde el arranque en vez de esperar a la primera
