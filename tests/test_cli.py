@@ -845,7 +845,7 @@ class TestSetupAudioAdvisory:
     """A-01: setup es provisión, no diagnóstico — el FAIL de audio se degrada
     a WARN y la provisión continúa; doctor conserva el FAIL con salida 1."""
 
-    def test_audio_fail_does_not_abort_setup_and_reaches_provisioning(self, monkeypatch, capsys):
+    def test_audio_fail_does_not_abort_setup_and_reaches_provisioning(self, monkeypatch, tmp_path, capsys):
         import tts_sidecar.cli as cli
 
         monkeypatch.setattr(
@@ -853,6 +853,12 @@ class TestSetupAudioAdvisory:
             lambda: [("PASS", "Chatterbox TTS", "0.1.7"),
                      ("FAIL", "Audio library", "sin subsistema de sonido")],
         )
+        # Aísla la provisión de traducción (language="all" por defecto en
+        # MockArgs): data_root a un tmp con los artefactos CT2 pre-creados para
+        # cortocircuitar sin descargas ni conversión real.
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+        (tmp_path / "translation-models" / "opus-mt-es-en").mkdir(parents=True)
+        (tmp_path / "translation-models" / "opus-mt-en-es").mkdir(parents=True)
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True):
             cli.cmd_setup(MockArgs(remove_path=False))  # no debe lanzar SystemExit
 
@@ -3065,13 +3071,17 @@ class TestSetupDiskAndForceUpdate:
         assert exc.value.code == cli.EXIT_PRECONDITION_FAILED
         assert "Espacio en disco insuficiente" in exc.value.message
 
-    def test_disk_not_checked_if_already_cached(self, monkeypatch, capsys):
+    def test_disk_not_checked_if_already_cached(self, monkeypatch, tmp_path, capsys):
         import tts_sidecar.cli as cli
 
         monkeypatch.setattr(
             cli, "_environment_checks",
             lambda: [("PASS", "Chatterbox TTS", "0.1.7")],
         )
+        # Aísla la provisión de traducción (language="all" por defecto en MockArgs).
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+        (tmp_path / "translation-models" / "opus-mt-es-en").mkdir(parents=True)
+        (tmp_path / "translation-models" / "opus-mt-en-es").mkdir(parents=True)
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
                 patch("shutil.disk_usage", side_effect=AssertionError("no debe llamarse")):
             cli.cmd_setup(MockArgs(remove_path=False))
@@ -3154,6 +3164,10 @@ class TestSetupMultiLanguage:
             total=100 * 1024 ** 3, used=1 * 1024 ** 3, free=99 * 1024 ** 3
         )
         mock_snapshot_download = MagicMock(return_value=str(tmp_path))
+        # Aísla la provisión de traducción (language="all" por defecto en MockArgs).
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+        (tmp_path / "translation-models" / "opus-mt-es-en").mkdir(parents=True)
+        (tmp_path / "translation-models" / "opus-mt-en-es").mkdir(parents=True)
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
                 patch("tts_sidecar.model_cache.is_ve_cached", return_value=True), \
@@ -3183,6 +3197,10 @@ class TestSetupMultiLanguage:
             total=100 * 1024 ** 3, used=1 * 1024 ** 3, free=99 * 1024 ** 3
         )
         mock_snapshot_download = MagicMock(return_value=str(tmp_path))
+        # Aísla la provisión de traducción (language="en" activa el par opus-mt).
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+        (tmp_path / "translation-models" / "opus-mt-es-en").mkdir(parents=True)
+        (tmp_path / "translation-models" / "opus-mt-en-es").mkdir(parents=True)
 
         with patch("tts_sidecar.model_cache.is_model_cached", return_value=False), \
                 patch("shutil.disk_usage", return_value=mucho), \
@@ -3234,6 +3252,10 @@ class TestSetupMultiLanguage:
             total=100 * 1024 ** 3, used=1 * 1024 ** 3, free=99 * 1024 ** 3
         )
         mock_snapshot_download = MagicMock(return_value=str(tmp_path))
+        # Aísla la provisión de traducción (language="all" por defecto en MockArgs).
+        monkeypatch.setattr("tts_sidecar.translation.service.data_root", lambda: str(tmp_path))
+        (tmp_path / "translation-models" / "opus-mt-es-en").mkdir(parents=True)
+        (tmp_path / "translation-models" / "opus-mt-en-es").mkdir(parents=True)
 
         def fake_cached(model):
             return model == "es-mx-latam"
