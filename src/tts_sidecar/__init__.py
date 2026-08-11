@@ -11,7 +11,7 @@ versión posterior. Se distribuye SIN NINGUNA GARANTÍA. Consulta el archivo
 LICENSE para el texto completo, o <https://www.gnu.org/licenses/>.
 """
 
-__version__ = "0.10.3"
+__version__ = "0.10.4"
 __author__ = "Cristián Rojas Arredondo"
 __license__ = "GPL-3.0-or-later"
 

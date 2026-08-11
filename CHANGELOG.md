@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.10.4 — 2026-08-10](#0104--2026-08-10)
 - [0.10.3 — 2026-08-10](#0103--2026-08-10)
 - [0.10.2 — 2026-08-10](#0102--2026-08-10)
 - [0.10.1 — 2026-08-10](#0101--2026-08-10)
@@ -30,6 +31,27 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.10.4] — 2026-08-10
+
+### Corregido
+
+- **`setup --uninstall` roto en instalaciones nativas de Windows**: el
+  instalador Inno Setup se generaba con el `AppId={{E8A1B2C3-...}}` de doble
+  llave final, que Inno Setup no escapa: la clave de desinstalación quedaba
+  como `{E8A1B2C3-...}}_is1` y la búsqueda de `cli.py` no la encontraba,
+  abortando con exit 7 pese a una instalación legítima (había que ir a
+  Configuración → Aplicaciones). El `AppId` ahora cierra con una sola llave:
+  la clave `{AppId}_is1` coincide y `setup --uninstall --yes` vuelve a
+  desinstalar en un comando en las instalaciones futuras.
+- **Tests de Windows frágiles al orden de selección (numpy + `sys.platform`
+  parcheado)**: los tests que simulan Linux parcheando `sys.platform`
+  (p. ej. `TestSetupUninstall`) podían importar numpy por primera vez dentro
+  de esa ventana, y numpy 2.x llama `os.uname()` cuando `sys.platform` es
+  `"linux"`, atributo inexistente en Windows: 8 tests fallaban con
+  `AttributeError` al correr aislados (la suite completa lo enmascaraba por
+  el caché de `sys.modules`). `tests/conftest.py` fija
+  `NUMPY_MADVISE_HUGEPAGE=0` y la rama `os.uname` queda excluida de raíz.
 
 ## [0.10.3] — 2026-08-10
 
@@ -838,6 +860,7 @@ estado con el que nace el producto.
   `THIRD-PARTY-LICENSES.md` (inventario de licencias generado del lockfile).
   Código propio bajo GPL-3.0-or-later; modelo MIT.
 
+[0.10.4]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.0...v0.10.1
