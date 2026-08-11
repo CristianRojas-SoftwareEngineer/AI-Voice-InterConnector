@@ -2016,11 +2016,17 @@ def cmd_setup(args):
                 print(f"\nDescargando el modelo de traducción {pair_name}...", file=sys.stderr)
                 snapshot_dir = _snapshot_download(
                     repo_id=f"Helsinki-NLP/{pair_name}", token=os.getenv("HF_TOKEN"),
-                    # Solo los archivos que consume TransformersConverter (config +
-                    # pesos PyTorch + spm copiados por copy_files); evita descargar
-                    # tf_model.h5 (~298 MB) y flax_model.msgpack (~296 MB).
+                    # Los archivos que consume TransformersConverter: config + pesos
+                    # PyTorch + spm (copiados por copy_files). El conversor también
+                    # construye el MarianTokenizer, que exige vocab.json (si falta,
+                    # `load_json(None)` revienta con TypeError) y usa
+                    # tokenizer_config.json si existe (evita el fallback con warning
+                    # de AutoTokenizer). Se siguen excluyendo los pesos pesados de
+                    # inferencia que no se usan: tf_model.h5 (~298 MB) y
+                    # flax_model.msgpack (~296 MB).
                     allow_patterns=[
                         "config.json", "pytorch_model.bin", "source.spm", "target.spm",
+                        "vocab.json", "tokenizer_config.json",
                     ],
                 )
                 print(f"Convirtiendo {pair_name} a formato CT2...", file=sys.stderr)

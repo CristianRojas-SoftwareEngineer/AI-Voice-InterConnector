@@ -148,6 +148,15 @@ function Invoke-TtsSidecarSetup {
     }
     Write-Log "Ejecutando 'tts-sidecar setup' (chequeos + descarga del modelo si falta)..."
     & $exe setup
+    if ($LASTEXITCODE -ne 0) {
+        # El binario ya quedó instalado; solo falló la provisión de modelos.
+        # No se aborta la instalación (Fail): se advierte de forma visible y
+        # reintentable, evitando reportar éxito en falso.
+        Write-Log "AVISO: 'tts-sidecar setup' terminó con código $LASTEXITCODE; la provisión de modelos falló."
+        Write-Log "El binario quedó instalado igualmente. Para reintentar la provisión, abre una terminal nueva y ejecuta: tts-sidecar setup"
+        return $false
+    }
+    return $true
 }
 
 function Install-TtsSidecar {
@@ -171,10 +180,15 @@ function Install-TtsSidecar {
         Update-SessionPath
         Test-LegacyMachinePath
 
+        $setupOk = $true
         if (-not $NoSetup) {
-            Invoke-TtsSidecarSetup
+            $setupOk = Invoke-TtsSidecarSetup
         }
-        Write-Log "Instalación completa. Abre una terminal nueva para usar 'tts-sidecar'."
+        if ($setupOk) {
+            Write-Log "Instalación completa. Abre una terminal nueva para usar 'tts-sidecar'."
+        } else {
+            Write-Log "Instalación del binario completa, pero la provisión de modelos falló (ver aviso anterior)."
+        }
     } finally {
         Remove-Item -Path $workDir -Recurse -Force -ErrorAction SilentlyContinue
     }

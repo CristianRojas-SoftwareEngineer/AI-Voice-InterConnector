@@ -3349,6 +3349,25 @@ class TestSetupTranslationProvisioning:
         mock_convert.assert_not_called()
         mock_snapshot_download.assert_not_called()
 
+    def test_translation_snapshot_incluye_vocab_y_tokenizer_config(self, monkeypatch, tmp_path):
+        """El allow_patterns del snapshot debe incluir vocab.json y
+        tokenizer_config.json: TransformersConverter construye el
+        MarianTokenizer, que exige vocab.json (ver docs/reviews/REPORT.md)."""
+        cli = self._mock_env(monkeypatch, tmp_path)
+        mock_convert = MagicMock()
+        monkeypatch.setattr(cli, "_convert_translation_model", mock_convert)
+        mock_snapshot_download = MagicMock(return_value=str(tmp_path / "hf-snapshot"))
+
+        with patch("tts_sidecar.model_cache.is_model_cached", return_value=True), \
+                patch("huggingface_hub.snapshot_download", mock_snapshot_download):
+            cli.cmd_setup(MockArgs(remove_path=False, language="en"))
+
+        assert mock_snapshot_download.call_args_list, "se esperaba al menos una llamada"
+        for call in mock_snapshot_download.call_args_list:
+            allow_patterns = call.kwargs["allow_patterns"]
+            assert "vocab.json" in allow_patterns
+            assert "tokenizer_config.json" in allow_patterns
+
 
 class TestBootstrap:
     """El bootstrap pre-import (bootstrap.apply()) debe correr en cualquier vía
