@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.10.5 — 2026-08-11](#0105--2026-08-11)
 - [0.10.4 — 2026-08-10](#0104--2026-08-10)
 - [0.10.3 — 2026-08-10](#0103--2026-08-10)
 - [0.10.2 — 2026-08-10](#0102--2026-08-10)
@@ -31,6 +32,25 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.10.5] — 2026-08-11
+
+### Corregido
+
+- **Provisión del modelo de traducción es↔en fallaba siempre**: el snapshot
+  de HuggingFace se descargaba con un `allow_patterns` que omitía
+  `vocab.json`, archivo que `TransformersConverter` necesita para construir
+  el `MarianTokenizer` del par opus-mt. Sin él, la conversión CT2 abortaba
+  con `TypeError: expected str, bytes or os.PathLike object, not NoneType`.
+  `allow_patterns` ahora incluye `vocab.json` y `tokenizer_config.json`,
+  cubriendo ambas direcciones (es→en y en→es).
+- **El instalador de Windows reportaba "Instalación completa" pese a que la
+  provisión de modelos hubiera fallado**: `install-windows.ps1` invoca
+  `setup` como proceso nativo, y PowerShell no aborta automáticamente ante
+  un exit code distinto de cero de un `.exe` (a diferencia de los
+  instaladores Unix, que ya abortaban por `set -eu`). `Invoke-TtsSidecarSetup`
+  ahora comprueba `$LASTEXITCODE` y advierte de forma reintentable en vez de
+  reportar éxito, sin abortar la instalación del binario.
 
 ## [0.10.4] — 2026-08-10
 
@@ -860,6 +880,7 @@ estado con el que nace el producto.
   `THIRD-PARTY-LICENSES.md` (inventario de licencias generado del lockfile).
   Código propio bajo GPL-3.0-or-later; modelo MIT.
 
+[0.10.5]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.1...v0.10.2
