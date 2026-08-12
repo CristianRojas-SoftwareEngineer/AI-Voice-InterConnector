@@ -1,6 +1,6 @@
 # Smoke-test Pester (v5) de install-windows.ps1 (docs/SELF-HOSTED-INSTALL.md).
 #
-# Valida el orquestador Install-TtsSidecar sin red ni instalación reales:
+# Valida el orquestador Install-AIVoiceInterConnector sin red ni instalación reales:
 # el dot-source de install-windows.ps1 solo define funciones (guard de
 # entrypoint), y los mocks recaen sobre las funciones propias del script —
 # no sobre cmdlets nativos — igual que install-linux.bats mockea
@@ -41,12 +41,12 @@ BeforeAll {
     $stream.Dispose()
 }
 
-Describe "Install-TtsSidecar" {
+Describe "Install-AIVoiceInterConnector" {
     BeforeEach {
         Mock Install-SetupSilently {}
         Mock Update-SessionPath {}
         Mock Test-LegacyMachinePath {}
-        Mock Invoke-TtsSidecarSetup {}
+        Mock Invoke-AIVoiceInterConnectorSetup {}
     }
 
     Context "flujo exitoso" {
@@ -62,14 +62,14 @@ Describe "Install-TtsSidecar" {
         }
 
         It "descarga, verifica el checksum e instala en silencio" {
-            { Install-TtsSidecar } | Should -Not -Throw
+            { Install-AIVoiceInterConnector } | Should -Not -Throw
             Should -Invoke Get-RemoteFile -Times 2 -Exactly
             Should -Invoke Install-SetupSilently -Times 1 -Exactly
-            Should -Invoke Invoke-TtsSidecarSetup -Times 1 -Exactly
+            Should -Invoke Invoke-AIVoiceInterConnectorSetup -Times 1 -Exactly
         }
 
         It "revisa la migración per-machine tras instalar" {
-            { Install-TtsSidecar } | Should -Not -Throw
+            { Install-AIVoiceInterConnector } | Should -Not -Throw
             Should -Invoke Test-LegacyMachinePath -Times 1 -Exactly
         }
     }
@@ -88,7 +88,7 @@ Describe "Install-TtsSidecar" {
         }
 
         It "aborta sin instalar" {
-            { Install-TtsSidecar } | Should -Throw "*checksum*"
+            { Install-AIVoiceInterConnector } | Should -Throw "*checksum*"
             Should -Invoke Install-SetupSilently -Times 0 -Exactly
         }
     }
@@ -100,7 +100,7 @@ Describe "Install-TtsSidecar" {
         }
 
         It "aborta antes de descargar nada" {
-            { Install-TtsSidecar } | Should -Throw "*x86_64-setup.exe*"
+            { Install-AIVoiceInterConnector } | Should -Throw "*x86_64-setup.exe*"
             Should -Invoke Get-RemoteFile -Times 0 -Exactly
             Should -Invoke Install-SetupSilently -Times 0 -Exactly
         }

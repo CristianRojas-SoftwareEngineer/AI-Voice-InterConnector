@@ -48,7 +48,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   provisión de modelos hubiera fallado**: `install-windows.ps1` invoca
   `setup` como proceso nativo, y PowerShell no aborta automáticamente ante
   un exit code distinto de cero de un `.exe` (a diferencia de los
-  instaladores Unix, que ya abortaban por `set -eu`). `Invoke-TtsSidecarSetup`
+  instaladores Unix, que ya abortaban por `set -eu`). `Invoke-AIVoiceInterConnectorSetup`
   ahora comprueba `$LASTEXITCODE` y advierte de forma reintentable en vez de
   reportar éxito, sin abortar la instalación del binario.
 

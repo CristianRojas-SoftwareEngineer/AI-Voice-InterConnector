@@ -139,7 +139,7 @@ function Test-LegacyMachinePath {
     }
 }
 
-function Invoke-TtsSidecarSetup {
+function Invoke-AIVoiceInterConnectorSetup {
     # La instalación silenciosa omite el checkbox de setup (skipifsilent), así
     # que la provisión del modelo se ofrece aquí.
     $exe = Join-Path $env:LOCALAPPDATA "Programs\ai-voice-interconnector\ai-voice-interconnector.exe"
@@ -159,7 +159,7 @@ function Invoke-TtsSidecarSetup {
     return $true
 }
 
-function Install-TtsSidecar {
+function Install-AIVoiceInterConnector {
     $release = Resolve-LatestRelease -Url $ApiUrl
     $asset = Select-WindowsAsset -Release $release
     Write-Log "Asset seleccionado: $($asset.SetupName)"
@@ -182,7 +182,7 @@ function Install-TtsSidecar {
 
         $setupOk = $true
         if (-not $NoSetup) {
-            $setupOk = Invoke-TtsSidecarSetup
+            $setupOk = Invoke-AIVoiceInterConnectorSetup
         }
         if ($setupOk) {
             Write-Log "Instalación completa. Abre una terminal nueva para usar 'ai-voice-interconnector'."
@@ -198,7 +198,7 @@ function Install-TtsSidecar {
 # `irm | iex` o ejecución directa se corre la instalación.
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        Install-TtsSidecar
+        Install-AIVoiceInterConnector
     } catch {
         Write-Error $_
         exit 1
