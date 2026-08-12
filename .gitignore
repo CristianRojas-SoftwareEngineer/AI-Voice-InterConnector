@@ -30,3 +30,27 @@ uv.lock
 
 # Bus de orquestación (artefactos de proceso, nunca se commitean)
 .claude/orchestration/
+
+# --- Runtime nativo Rust/CT2 y motor Qwen (desbloqueo de Fase 0) ---
+# Pesos de modelos (CT2 + HF), multi-GB, nunca se versionan.
+models/
+# Muestras/artefactos de audio de pruebas locales (no son fuente).
+samples/
+# Motor Qwen3-TTS vendorizado: se versionan SOLO fuentes C/H/CU, shims,
+# Makefile, scripts y docs; se excluyen pesos, presets y media binaria.
+vendor/qwen3-tts/qwen3-tts-0.6b/
+vendor/qwen3-tts/presets/
+vendor/**/*.safetensors
+vendor/**/*.gguf
+vendor/**/*.qvoice
+vendor/**/*.bin
+vendor/**/*.wav
+vendor/**/*.mp3
+# El .gitignore vendorizado de qwen3-tts re-incluye `!tests/golden/*.wav`; excluir
+# el directorio padre invalida esa negación (git no re-incluye bajo un dir excluido).
+vendor/qwen3-tts/tests/golden/
+# Artefactos de compilación C (objetos, libs estáticas, deps, ejecutables).
+*.o
+*.a
+*.d
+*.exe

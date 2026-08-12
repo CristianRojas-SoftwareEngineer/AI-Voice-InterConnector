@@ -9,7 +9,7 @@
 
 | Fase | Descripción | Estado |
 |------|-------------|--------|
-| Fase 0 | Fundamentos y validación de integración | ⏳ Pendiente |
+| Fase 0 | Fundamentos y validación de integración | ✅ Desbloqueada |
 | Fase 1 | Host Rust — almacenes, CLI, config | ✅ Completada |
 | Fase 2 | Audio (CPAL) | ✅ Completada |
 | Fase 3 | STT nativo (`ct2rs::Whisper`) | ⏳ Pendiente |
@@ -34,17 +34,26 @@
 
 ## Fase 0 — Fundamentos y validación de integración
 
-**Estado:** ⏳ Pendiente
+**Estado:** ✅ Desbloqueada
 
-Fase de andamiaje. No se ha ejecutado formalmente; algunas tareas dependientes están siendo cubiertas de manera incremental en otras fases, pero la validación de integración formal no ha comenzado.
+Ejecutada mediante la orquestación `fase0-desbloqueo`. El árbol Rust es hoy un **cargo workspace** (paquete
+raíz `ai-voice-interconnector` = binario CLI en `src/main.rs`, más ocho crates bajo `crates/`:
+`avi-core`, `avi-audio`, `avi-tts`, `avi-store`, `avi-config`, `avi-daemon`, `avi-stt`, `avi-translation`).
+`ct2rs` está cableado en `avi-stt` y compila CTranslate2 desde fuente (backend CPU `ruy`). La verificación
+de terreno real (F5) dejó la suite del workspace en verde (18 tests) y ejercitó cada pieza externa contra
+pesos reales.
 
-| Ítem | Estado |
-|------|--------|
-| Validar integración subprocess del motor Qwen (HTTP / PCM stdout) | ⏳ |
-| Validar `ct2rs` (Whisper + Translator) contra modelos ya convertidos | ⏳ |
-| Build nativo del motor Qwen en Windows (MinGW-w64/UCRT64) | ⏳ |
-| Crear workspace Rust (cargo workspace, crates por subsistema) | ⏳ |
-| Harness de tests de contrato dorados (captura del oráculo Python) | ⏳ |
+| Ítem | Estado | Detalle |
+|------|--------|---------|
+| Validar integración subprocess del motor Qwen (texto → WAV) | ✅ | Smoke real de `qwen_tts.exe`: WAV PCM 16-bit mono 24000 Hz |
+| Validar `ct2rs` (Whisper + Translator) contra modelos ya convertidos | ✅ | Tests de carga en `avi-stt`: opus-mt es↔en + Whisper small, salida no vacía |
+| Build nativo del motor Qwen en Windows (MinGW-w64/UCRT64) | ✅ | `qwen_tts.exe` estático (MSYS2/UCRT64, gcc 16.1.0, shims POSIX) |
+| Crear workspace Rust (cargo workspace, crates por subsistema) | ✅ | Raíz + 8 crates `avi-*`; `default-members = [".", "crates/*"]` |
+| Harness de tests de contrato dorados (captura del oráculo Python) | ✅ | `crates/avi-daemon/tests/golden.rs` (5) + `tests/cli_golden.rs` (6), fixtures en `tests/golden/` |
+
+**Prerequisitos de build (F5):** CMake en el `PATH` + compilador C++ de MSVC (para el build de CTranslate2
+vía `ct2rs`); `.cargo/config.toml` fuerza `+crt-static` en `x86_64-pc-windows-msvc` para alinear el CRT del
+workspace con el de CTranslate2 (`/MT`).
 
 ---
 
@@ -87,11 +96,12 @@ La infraestructura de almacenes y configuración está implementada. La superfic
 
 **Estado:** ⏳ Pendiente
 
-Bloqueada por la necesidad de configurar el entorno de build de `ct2rs` (CMake + CTranslate2).
+El entorno de build de `ct2rs` (CMake + CTranslate2) quedó resuelto y verificado en la Fase 0 (F5); resta
+implementar el motor STT nativo.
 
 | Ítem | Estado |
 |------|--------|
-| Verificar disponibilidad de `ct2rs` / CMake / CTranslate2 en entorno build | ⏳ |
+| Verificar disponibilidad de `ct2rs` / CMake / CTranslate2 en entorno build | ✅ |
 | Implementar `Ct2SttEngine` sobre `ct2rs::Whisper` | ⏳ |
 | Integrar con `AudioConverter` (pipeline captura → transcripción) | ⏳ |
 | Validar contra oráculo Python (WER ≈ 0 sobre corpus de referencia) | ⏳ |
@@ -186,6 +196,7 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 | `tracing` / `tracing-subscriber` | Logging y diagnósticos estructurados |
 | `thiserror` / `anyhow` | Taxonomía de errores de dominio |
 | `clap` | Superficie CLI |
+| `ct2rs` | Bindings de CTranslate2 (STT/traducción, backend CPU `ruy`); compila desde fuente |
 
 ---
 
