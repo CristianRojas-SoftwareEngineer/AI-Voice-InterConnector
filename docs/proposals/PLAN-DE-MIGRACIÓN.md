@@ -116,7 +116,7 @@ reproduce el contrato que hoy cumple su equivalente Python, con la versión Pyth
 
 ### 1.2 Superficie funcional (CLI)
 
-La superficie es de **8 grupos de comandos** (verificada en el `argparse` de `cli.py`):
+La superficie es de **9 grupos de comandos** (verificada en el `argparse` de `cli.py`):
 
 | Comando | Sub-acciones | Función |
 |---|---|---|

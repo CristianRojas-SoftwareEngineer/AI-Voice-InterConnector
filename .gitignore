@@ -2,6 +2,8 @@ node_modules/
 build/
 dist/
 dist_test/
+# Artefactos de build de Cargo/Rust
+target/
 # Voces de usuario ignoradas, pero la voz de fábrica 'default' se versiona
 # (se empaqueta vía --add-data y sirve de voz por defecto).
 voices/*
