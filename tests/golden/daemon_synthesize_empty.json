@@ -1,0 +1,5 @@
+{
+  "schema_version": "3",
+  "error": "empty_text",
+  "message": "El texto a sintetizar está vacío."
+}

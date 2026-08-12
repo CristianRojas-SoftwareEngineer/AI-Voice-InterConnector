@@ -1,0 +1,21 @@
+[
+  {
+    "schema_version": "3",
+    "event": "start",
+    "voice": "default",
+    "text_length": 4
+  },
+  {
+    "schema_version": "3",
+    "event": "progress",
+    "stage": "synthesis",
+    "percent": 0,
+    "message": "Motor TTS no provisionado."
+  },
+  {
+    "schema_version": "3",
+    "event": "error",
+    "reason": "model_missing",
+    "message": "El modelo de síntesis TTS no está provisionado."
+  }
+]
