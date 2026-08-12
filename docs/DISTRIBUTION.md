@@ -1,6 +1,6 @@
 # Canales de distribución
 
-`tts-sidecar` se distribuye por **dos canales independientes**, publicados
+`ai-voice-interconnector` se distribuye por **dos canales independientes**, publicados
 simultáneamente en cada tag `v*`: el canal **nativo** (binarios PyInstaller
 por SO, ver [docs/BUILD.md](BUILD.md)) y el canal **PyPI** (`pip`/`uv
 tool`/`pipx`). Ambos instalan el mismo CLI con el mismo contrato programático
@@ -20,12 +20,12 @@ fricción del primer arranque.
 | | Canal nativo | Canal PyPI |
 |---|---|---|
 | **Audiencia** | Usuario final sin Python instalado | Usuario técnico con Python 3.13+ |
-| **Instalación** | Instalador `.exe`/AppImage/`.dmg` por SO | `uv tool install tts-sidecar` / `pipx install tts-sidecar` |
+| **Instalación** | Instalador `.exe`/AppImage/`.dmg` por SO | `uv tool install ai-voice-interconnector` / `pipx install ai-voice-interconnector` |
 | **Tamaño** | ~1-2 GB (bundle onedir autocontenido) | Descarga las dependencias desde PyPI (torch, etc.) al instalar |
 | **Dependencias del sistema** | Ninguna (autocontenido) | Linux: requiere `libportaudio2` del sistema (`sounddevice` no trae wheels con PortAudio embebido) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque (ver más abajo) | No aplica: el launcher lo genera `pip`/`uv` localmente, sin Mark-of-the-Web |
-| **Actualización** | Re-ejecutar el one-liner por SO (Linux/macOS `curl \| sh`, Windows `irm \| iex`; limpia la versión anterior) o `brew upgrade --cask` (ver `USAGE.md`) | `uv tool upgrade tts-sidecar` / `pipx upgrade tts-sidecar` |
-| **Desinstalación** | Linux: `setup --uninstall` (un paso); macOS: `.command` sin `sudo` + Papelera o `brew uninstall --cask --zap`; Windows: desinstalador Inno Setup — todos + `cleanup --all` (ver `USAGE.md`) | `uv tool uninstall tts-sidecar` / `pipx uninstall tts-sidecar` |
+| **Actualización** | Re-ejecutar el one-liner por SO (Linux/macOS `curl \| sh`, Windows `irm \| iex`; limpia la versión anterior) o `brew upgrade --cask` (ver `USAGE.md`) | `uv tool upgrade ai-voice-interconnector` / `pipx upgrade ai-voice-interconnector` |
+| **Desinstalación** | Linux: `setup --uninstall` (un paso); macOS: `.command` sin `sudo` + Papelera o `brew uninstall --cask --zap`; Windows: desinstalador Inno Setup — todos + `cleanup --all` (ver `USAGE.md`) | `uv tool uninstall ai-voice-interconnector` / `pipx uninstall ai-voice-interconnector` |
 | **Publicación en CI** | Job `publish-release` → GitHub Release directo | Job `publish-pypi` → publicación directa a PyPI |
 | **Reversibilidad de la publicación** | El Release es público al publicarse: revertir implica borrar un Release ya público | Irreversible: un paquete subido no se puede sobrescribir, solo yankear |
 
@@ -54,13 +54,13 @@ artefacto nativo (no un canal nuevo), con un script por SO:
   `sudo`, limpia la cuarentena de Gatekeeper, crea el symlink per-user en
   `~/.local/bin` y encadena `setup`. **Vía complementaria** para usuarios de
   Homebrew: el Cask del tap propio (`brew tap
-  CristianRojas-SoftwareEngineer/tts-sidecar && brew install --cask
-  tts-sidecar`), que resuelve PATH, desinstalación (`--zap`) y cuarentena sin
+  CristianRojas-SoftwareEngineer/ai-voice-interconnector && brew install --cask
+  ai-voice-interconnector`), que resuelve PATH, desinstalación (`--zap`) y cuarentena sin
   intervención manual, pero exige Homebrew y no provisiona los modelos.
 - **Windows** — `install-windows.ps1` (`irm | iex`) descarga el instalador Inno Setup
   del release, verifica su checksum y lo ejecuta en silencio (instalación
   per-user: `%LOCALAPPDATA%\Programs`, PATH de usuario en HKCU, sin UAC),
-  terminando con `tts-sidecar setup`.
+  terminando con `ai-voice-interconnector setup`.
 
 El `.dmg` descargado a mano (con sus scripts `.command` de
 instalación/desinstalación, ahora per-user sin `sudo`) sigue siendo un canal
@@ -73,13 +73,13 @@ tres instaladores en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
 
 ```bash
 # Con uv (recomendado: https://docs.astral.sh/uv/)
-uv tool install tts-sidecar
-tts-sidecar setup      # provisiona ambos modelos (default all), idéntico al canal nativo
-tts-sidecar speech say --text "Hola mundo"
+uv tool install ai-voice-interconnector
+ai-voice-interconnector setup      # provisiona ambos modelos (default all), idéntico al canal nativo
+ai-voice-interconnector speech say --text "Hola mundo"
 
 # Con pipx
-pipx install tts-sidecar
-tts-sidecar setup
+pipx install ai-voice-interconnector
+ai-voice-interconnector setup
 ```
 
 **Prerequisito en Linux**: `sounddevice` requiere la librería del sistema
@@ -101,18 +101,18 @@ Windows y macOS no requieren ningún paquete adicional del sistema (`pycaw` y
 **Actualización**:
 
 ```bash
-uv tool upgrade tts-sidecar
+uv tool upgrade ai-voice-interconnector
 # o
-pipx upgrade tts-sidecar
+pipx upgrade ai-voice-interconnector
 ```
 
 **Desinstalación**:
 
 ```bash
-tts-sidecar cleanup --all --yes   # elimina ambos modelos y voces de usuario (igual que en el canal nativo)
-uv tool uninstall tts-sidecar
+ai-voice-interconnector cleanup --all --yes   # elimina ambos modelos y voces de usuario (igual que en el canal nativo)
+uv tool uninstall ai-voice-interconnector
 # o
-pipx uninstall tts-sidecar
+pipx uninstall ai-voice-interconnector
 ```
 
 ## Por qué el canal pip evita SmartScreen/Gatekeeper
@@ -168,7 +168,7 @@ PyInstaller):
 
 1. Construye sdist y wheel (`python -m build`).
 2. Valida la metadata (`twine check`).
-3. Instala el wheel en un venv limpio y verifica que `tts-sidecar version`
+3. Instala el wheel en un venv limpio y verifica que `ai-voice-interconnector version`
    coincide con el tag y que la voz `default` está presente
    (`voices.list_voices()`).
 4. Publica a PyPI (`twine upload`) usando `PYPI_API_TOKEN` del context

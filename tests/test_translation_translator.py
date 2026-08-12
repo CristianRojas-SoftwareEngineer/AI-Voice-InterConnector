@@ -7,8 +7,8 @@ identidad propia (`TranslationFailedError`).
 
 import pytest
 
-from tts_sidecar.exceptions import TranslationFailedError
-from tts_sidecar.translation.translator import MarianTranslator
+from ai_voice_interconnector.exceptions import TranslationFailedError
+from ai_voice_interconnector.translation.translator import MarianTranslator
 
 
 class _FakeLoader:

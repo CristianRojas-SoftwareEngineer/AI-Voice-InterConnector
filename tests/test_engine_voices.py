@@ -8,10 +8,10 @@ instancia con `ChatterboxEngine.__new__` (patrón ya usado en test_engine_cache.
 
 import pytest
 
-import tts_sidecar.voices as voices_mod
-from tts_sidecar.conditionals import ConditionalsPreparer
-from tts_sidecar.engine import ChatterboxEngine
-from tts_sidecar.model_loader import ModelLoader
+import ai_voice_interconnector.voices as voices_mod
+from ai_voice_interconnector.conditionals import ConditionalsPreparer
+from ai_voice_interconnector.engine import ChatterboxEngine
+from ai_voice_interconnector.model_loader import ModelLoader
 
 
 class _FakePreparer:

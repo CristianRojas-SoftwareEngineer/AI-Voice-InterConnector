@@ -1,6 +1,6 @@
-# Documentación de la CLI de TTS-Sidecar
+# Documentación de la CLI de AI-Voice-InterConnector
 
-Referencia completa de la interfaz de línea de comandos de TTS-Sidecar. Este directorio contiene el contrato normativo de la CLI y documentación de investigación detallada por comando.
+Referencia completa de la interfaz de línea de comandos de AI-Voice-InterConnector. Este directorio contiene el contrato normativo de la CLI y documentación de investigación detallada por comando.
 
 ## Estructura
 
@@ -37,7 +37,7 @@ docs/CLI/
 
 ## Resumen de comandos
 
-La CLI expone **9 comandos** de nivel superior con **15 subcomandos** en total. Framework: `argparse` (stdlib). Punto de entrada: `tts-sidecar` (vía `pyproject.toml`), `bin/tts-sidecar` (launcher), o `python -m tts_sidecar`.
+La CLI expone **9 comandos** de nivel superior con **15 subcomandos** en total. Framework: `argparse` (stdlib). Punto de entrada: `ai-voice-interconnector` (vía `pyproject.toml`), `bin/ai-voice-interconnector` (launcher), o `python -m ai_voice_interconnector`.
 
 ### Grupos nominales (con subcomandos)
 

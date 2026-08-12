@@ -22,7 +22,7 @@ El parser de `setup` se define en `cli.py:2659-2681` como subcomando de nivel su
 
 | Parámetro | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--remove-path` | flag (exclusive) | False | Elimina el symlink `~/.local/bin/tts-sidecar` y termina sin correr chequeos |
+| `--remove-path` | flag (exclusive) | False | Elimina el symlink `~/.local/bin/ai-voice-interconnector` y termina sin correr chequeos |
 | `--force-update` | flag (exclusive) | False | Borra ambos modelos en caché y los vuelve a descargar |
 | `--uninstall` | flag (exclusive) | False | Desinstala en un paso: encadena `cleanup --all`, revierte PATH, borra binario |
 | `--yes, -y` | flag | False | Omite la confirmación interactiva del cleanup encadenado por `--uninstall` |
@@ -37,7 +37,7 @@ Los tres flags de modo (`--remove-path`, `--force-update`, `--uninstall`) están
 `cmd_setup` ejecuta este flujo cuando ninguno de los tres modos exclusivos está activo (`cli.py:1903-2132`):
 
 ```
-Banner "=== TTS Sidecar Setup ==="
+Banner "=== AI Voice InterConnector Setup ==="
     │
     ▼
 _integrate_linux_path()                    ← solo Linux con $APPIMAGE; no-op en otros SO
@@ -84,7 +84,7 @@ _emit_setup_json()                          ← si --json
 
 **Implementación:** `_remove_linux_path()` (`cli.py:1461-1477`).
 
-Este modo ejecuta una operación aislada: eliminar el symlink `~/.local/bin/tts-sidecar` que `setup` crea en Linux. No ejecuta chequeos de entorno, ni descargas, ni任何 otra lógica de provisión. El retorno de `cmd_setup` es inmediato tras la operación (`cli.py:1897-1901`).
+Este modo ejecuta una operación aislada: eliminar el symlink `~/.local/bin/ai-voice-interconnector` que `setup` crea en Linux. No ejecuta chequeos de entorno, ni descargas, ni任何 otra lógica de provisión. El retorno de `cmd_setup` es inmediato tras la operación (`cli.py:1897-1901`).
 
 **Comportamiento por caso:**
 
@@ -123,14 +123,14 @@ Este modo NO es mutuamente excluyente con el flujo normal — ejecuta primero el
 | Paso | Linux (`cli.py:1574-1631`) | macOS (`cli.py:1634-1718`) | Windows (`cli.py:1721-1793`) |
 |---|---|---|---|
 | 1. Datos | `_uninstall_cleanup_data` → cleanup --all + data_root vacío | Idéntico | Idéntico |
-| 2. PATH | unlink symlink `~/.local/bin/tts-sidecar` | Idéntico | — (delegado al desinstalador) |
-| 3. Binario | `shutil.rmtree(~/.local/opt/tts-sidecar)` | `shutil.rmtree(.app bundle)` | `subprocess.Popen(QuietUninstallString)` (desacoplado) |
+| 2. PATH | unlink symlink `~/.local/bin/ai-voice-interconnector` | Idéntico | — (delegado al desinstalador) |
+| 3. Binario | `shutil.rmtree(~/.local/opt/ai-voice-interconnector)` | `shutil.rmtree(.app bundle)` | `subprocess.Popen(QuietUninstallString)` (desacoplado) |
 
 **Cancelación atómica:** si el usuario responde negativamente al cleanup (`cancelled=True`), la desinstalación aborta sin tocar PATH ni binario (`cli.py:1596-1598, 1685-1687, 1771-1773`).
 
 **Seguridad del unlink en ejecución:** en Linux y macOS, borrar un archivo/bundle abierto es seguro — el inode sobrevive hasta que el proceso termina. En Windows, el SO mantiene un lock sobre `.exe`, así que se delega al desinstalador de Inno (`cli.py:1776-1779`).
 
-**Detección de Homebrew Cask (macOS):** si existe `~/.homebrew/Caskroom/tts-sidecar`, aborta sin tocar nada y remite a `brew uninstall --cask --zap` (`cli.py:1670-1679`).
+**Detección de Homebrew Cask (macOS):** si existe `~/.homebrew/Caskroom/ai-voice-interconnector`, aborta sin tocar nada y remite a `brew uninstall --cask --zap` (`cli.py:1670-1679`).
 
 ### Descarga de modelos (HuggingFace)
 
@@ -166,9 +166,9 @@ Solo actúa cuando:
 1. `sys.platform == "linux"` 
 2. La variable de entorno `APPIMAGE` existe y apunta a un archivo existente
 
-Crea `~/.local/bin/tts-sidecar` como symlink a `$APPIMAGE`. Si ya existe un symlink, lo reemplaza. Si existe un archivo regular homónimo, lo respeta (no sobrescribe). Si `~/.local/bin` no está en el PATH de la sesión, imprime instrucciones para añadirlo al shell profile.
+Crea `~/.local/bin/ai-voice-interconnector` como symlink a `$APPIMAGE`. Si ya existe un symlink, lo reemplaza. Si existe un archivo regular homónimo, lo respeta (no sobrescribe). Si `~/.local/bin` no está en el PATH de la sesión, imprime instrucciones para añadirlo al shell profile.
 
-**Ruta del symlink:** `_path_symlink()` (`cli.py:1402-1409`) → `~/.local/bin/tts-sidecar` (misma en Linux y macOS).
+**Ruta del symlink:** `_path_symlink()` (`cli.py:1402-1409`) → `~/.local/bin/ai-voice-interconnector` (misma en Linux y macOS).
 
 **Eliminación:** `_remove_linux_path()` (`cli.py:1461-1477`) — operación atómica, solo el symlink.
 

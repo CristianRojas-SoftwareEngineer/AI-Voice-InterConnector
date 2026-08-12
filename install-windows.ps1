@@ -1,14 +1,14 @@
-# Instalador auto-hospedado de tts-sidecar para Windows.
+# Instalador auto-hospedado de ai-voice-interconnector para Windows.
 #
 # Uso:
-#   irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/main/install-windows.ps1 | iex
+#   irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-windows.ps1 | iex
 #
 # Resuelve el último Release de GitHub, descarga el instalador Inno Setup
 # x86_64 y SHA256SUMS.txt, verifica el checksum (abortando si no coincide) y
 # ejecuta el instalador en modo silencioso. La instalación es per-user (sin
-# UAC): binarios en %LOCALAPPDATA%\Programs\tts-sidecar y PATH de usuario
+# UAC): binarios en %LOCALAPPDATA%\Programs\ai-voice-interconnector y PATH de usuario
 # (HKCU). Como la instalación silenciosa omite el checkbox de setup
-# (skipifsilent), este script ejecuta `tts-sidecar setup` al final para
+# (skipifsilent), este script ejecuta `ai-voice-interconnector setup` al final para
 # ofrecer la descarga del modelo de voz. Ver docs/SELF-HOSTED-INSTALL.md
 # para el diseño completo.
 #
@@ -17,12 +17,12 @@
 # (hallazgo verificado; solo la descarga por navegador marca ZoneId=3).
 #
 # Alternativa inspeccionable a `irm | iex`:
-#   iwr https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/main/install-windows.ps1 -OutFile install-windows.ps1
+#   iwr https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-windows.ps1 -OutFile install-windows.ps1
 #   .\install-windows.ps1
 
 param(
-    [string]$Repo = "CristianRojas-SoftwareEngineer/TTS-Sidecar",
-    [string]$ApiUrl = "https://api.github.com/repos/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases/latest",
+    [string]$Repo = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector",
+    [string]$ApiUrl = "https://api.github.com/repos/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest",
     [switch]$NoSetup
 )
 
@@ -45,7 +45,7 @@ function Resolve-LatestRelease {
     Write-Log "Resolviendo el último release de $Repo..."
     try {
         # GitHub API requiere User-Agent; UseBasicParsing por compatibilidad.
-        return Invoke-RestMethod -Uri $Url -Headers @{ "User-Agent" = "tts-sidecar-install" } -UseBasicParsing
+        return Invoke-RestMethod -Uri $Url -Headers @{ "User-Agent" = "ai-voice-interconnector-install" } -UseBasicParsing
     } catch {
         Fail "no se pudo consultar ${Url}: $_"
     }
@@ -56,7 +56,7 @@ function Select-WindowsAsset {
     # x86_64 para Windows, así que no hay selección de arquitectura (a
     # diferencia de install-linux.sh).
     param($Release)
-    $setupAsset = $Release.assets | Where-Object { $_.name -like "tts-sidecar-*-x86_64-setup.exe" } | Select-Object -First 1
+    $setupAsset = $Release.assets | Where-Object { $_.name -like "ai-voice-interconnector-*-x86_64-setup.exe" } | Select-Object -First 1
     $sumsAsset = $Release.assets | Where-Object { $_.name -eq "SHA256SUMS.txt" } | Select-Object -First 1
     if (-not $setupAsset) {
         Fail "no se encontró un instalador x86_64-setup.exe en el último release"
@@ -119,10 +119,10 @@ function Update-SessionPath {
 
 function Find-LegacyMachinePathEntry {
     # Lógica pura de detección (testeable en Pester sin tocar el registro):
-    # devuelve la primera entrada tts-sidecar del PATH de máquina, o $null.
+    # devuelve la primera entrada ai-voice-interconnector del PATH de máquina, o $null.
     param([string]$MachinePath)
     if (-not $MachinePath) { return $null }
-    return ($MachinePath -split ';' | Where-Object { $_ -match 'tts-sidecar' } | Select-Object -First 1)
+    return ($MachinePath -split ';' | Where-Object { $_ -match 'ai-voice-interconnector' } | Select-Object -First 1)
 }
 
 function Test-LegacyMachinePath {
@@ -135,25 +135,25 @@ function Test-LegacyMachinePath {
     if ($stale) {
         Write-Log "AVISO: quedó una entrada per-machine en el PATH de una instalación anterior (pre-0.4.0): $stale"
         Write-Log "La instalación actual es per-user y no la necesita. Para quitarla, en una PowerShell de administrador:"
-        Write-Log '  [Environment]::SetEnvironmentVariable("Path", (([Environment]::GetEnvironmentVariable("Path","Machine") -split ";") | Where-Object { $_ -notmatch "tts-sidecar" }) -join ";", "Machine")'
+        Write-Log '  [Environment]::SetEnvironmentVariable("Path", (([Environment]::GetEnvironmentVariable("Path","Machine") -split ";") | Where-Object { $_ -notmatch "ai-voice-interconnector" }) -join ";", "Machine")'
     }
 }
 
 function Invoke-TtsSidecarSetup {
     # La instalación silenciosa omite el checkbox de setup (skipifsilent), así
     # que la provisión del modelo se ofrece aquí.
-    $exe = Join-Path $env:LOCALAPPDATA "Programs\tts-sidecar\tts-sidecar.exe"
+    $exe = Join-Path $env:LOCALAPPDATA "Programs\ai-voice-interconnector\ai-voice-interconnector.exe"
     if (-not (Test-Path $exe)) {
         Fail "no se encontró $exe tras la instalación"
     }
-    Write-Log "Ejecutando 'tts-sidecar setup' (chequeos + descarga del modelo si falta)..."
+    Write-Log "Ejecutando 'ai-voice-interconnector setup' (chequeos + descarga del modelo si falta)..."
     & $exe setup
     if ($LASTEXITCODE -ne 0) {
         # El binario ya quedó instalado; solo falló la provisión de modelos.
         # No se aborta la instalación (Fail): se advierte de forma visible y
         # reintentable, evitando reportar éxito en falso.
-        Write-Log "AVISO: 'tts-sidecar setup' terminó con código $LASTEXITCODE; la provisión de modelos falló."
-        Write-Log "El binario quedó instalado igualmente. Para reintentar la provisión, abre una terminal nueva y ejecuta: tts-sidecar setup"
+        Write-Log "AVISO: 'ai-voice-interconnector setup' terminó con código $LASTEXITCODE; la provisión de modelos falló."
+        Write-Log "El binario quedó instalado igualmente. Para reintentar la provisión, abre una terminal nueva y ejecuta: ai-voice-interconnector setup"
         return $false
     }
     return $true
@@ -164,7 +164,7 @@ function Install-TtsSidecar {
     $asset = Select-WindowsAsset -Release $release
     Write-Log "Asset seleccionado: $($asset.SetupName)"
 
-    $workDir = Join-Path $env:TEMP ("tts-sidecar-install-" + [guid]::NewGuid().ToString())
+    $workDir = Join-Path $env:TEMP ("ai-voice-interconnector-install-" + [guid]::NewGuid().ToString())
     New-Item -ItemType Directory -Path $workDir | Out-Null
     try {
         $setupPath = Join-Path $workDir $asset.SetupName
@@ -185,7 +185,7 @@ function Install-TtsSidecar {
             $setupOk = Invoke-TtsSidecarSetup
         }
         if ($setupOk) {
-            Write-Log "Instalación completa. Abre una terminal nueva para usar 'tts-sidecar'."
+            Write-Log "Instalación completa. Abre una terminal nueva para usar 'ai-voice-interconnector'."
         } else {
             Write-Log "Instalación del binario completa, pero la provisión de modelos falló (ver aviso anterior)."
         }

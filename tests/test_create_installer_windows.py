@@ -24,7 +24,7 @@ def iss(tmp_path):
 def test_installer_name_includes_version_and_suffix(iss):
     # A-03: vocabulario de arquitectura unificado al estilo `uname -m` (x86_64),
     # en paridad con los AppImage de Linux.
-    assert "OutputBaseFilename=tts-sidecar-9.9.9-x86_64-setup" in iss
+    assert "OutputBaseFilename=ai-voice-interconnector-9.9.9-x86_64-setup" in iss
 
 
 def test_setup_uses_safe_compression(iss):
@@ -40,7 +40,7 @@ def test_setup_postinstall_persists_console(iss):
     # W-03: el setup post-instalación se lanza vía `cmd /k` para que la consola
     # quede abierta mostrando el resultado (éxito o fallo) hasta que el usuario
     # la cierre — paridad con la Terminal persistente del .command de macOS.
-    assert 'Filename: {cmd}; Parameters: "/k ""{app}\\tts-sidecar.exe"" setup"' in iss
+    assert 'Filename: {cmd}; Parameters: "/k ""{app}\\ai-voice-interconnector.exe"" setup"' in iss
     assert "postinstall skipifsilent runasoriginaluser nowait" in iss
 
 
@@ -77,7 +77,7 @@ def test_installer_is_per_user_no_admin(iss):
     # Instalación per-user: sin UAC (lowest) y bajo el perfil del usuario,
     # patrón {localappdata}\Programs convencional (p.ej. VS Code).
     assert "PrivilegesRequired=lowest" in iss
-    assert "DefaultDirName={localappdata}\\Programs\\tts-sidecar" in iss
+    assert "DefaultDirName={localappdata}\\Programs\\ai-voice-interconnector" in iss
     assert "PrivilegesRequired=admin" not in iss
 
 
@@ -96,7 +96,7 @@ def test_no_per_machine_registry_remnant(iss):
 def test_without_key_manual_uninstall(iss):
     # W-02: Inno Setup genera su propia entrada ({AppId}_is1); la clave manual
     # duplicaría el programa en «Aplicaciones y características».
-    assert "CurrentVersion\\Uninstall\\tts-sidecar" not in iss
+    assert "CurrentVersion\\Uninstall\\ai-voice-interconnector" not in iss
 
 
 def test_appid_roundtrips_to_single_brace_uninstall_key(iss):
@@ -117,9 +117,9 @@ def test_info_after_offers_gplv3_source_code():
 
     text = info_after_text()
     assert "GPLv3" in text or "GPL-3.0" in text
-    assert "github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar" in text
+    assert "github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector" in text
     # Debe seguir explicando la provisión del modelo (compatibilidad con W-03).
-    assert "tts-sidecar setup" in text
+    assert "ai-voice-interconnector setup" in text
     # El instalador NO incluye el código fuente junto al programa; la
     # oferta GPLv3 §6d correcta es la disponibilidad pública en el repositorio.
     assert "accompanido" not in text
@@ -136,7 +136,7 @@ def test_main_builds_installer_with_mocked_iscc(tmp_path, monkeypatch):
 
     onedir = tmp_path / "onedir"
     onedir.mkdir()
-    (onedir / "tts-sidecar.exe").write_bytes(b"MZ")
+    (onedir / "ai-voice-interconnector.exe").write_bytes(b"MZ")
     output_dir = tmp_path / "out"
 
     fake_iscc = str(tmp_path / "ISCC.exe")
@@ -156,7 +156,7 @@ def test_main_builds_installer_with_mocked_iscc(tmp_path, monkeypatch):
         # Simula el artefacto que ISCC dejaría en OutputDir.
         version = ciw.get_version()
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / f"tts-sidecar-{version}-x86_64-setup.exe").write_bytes(b"MZ")
+        (output_dir / f"ai-voice-interconnector-{version}-x86_64-setup.exe").write_bytes(b"MZ")
         return Result()
 
     monkeypatch.setattr(
@@ -175,7 +175,7 @@ def test_main_builds_installer_with_mocked_iscc(tmp_path, monkeypatch):
     cmd = invocations[0]
     assert cmd[0] == fake_iscc
     assert cmd[1].endswith(".iss")
-    assert "OutputBaseFilename=tts-sidecar-" in iss_contents[0]
+    assert "OutputBaseFilename=ai-voice-interconnector-" in iss_contents[0]
 
 
 def test_main_installer_timeout_is_fatal(tmp_path, monkeypatch):
@@ -184,7 +184,7 @@ def test_main_installer_timeout_is_fatal(tmp_path, monkeypatch):
 
     onedir = tmp_path / "onedir"
     onedir.mkdir()
-    (onedir / "tts-sidecar.exe").write_bytes(b"MZ")
+    (onedir / "ai-voice-interconnector.exe").write_bytes(b"MZ")
     output_dir = tmp_path / "out"
     fake_iscc = str(tmp_path / "ISCC.exe")
 
@@ -218,7 +218,7 @@ def test_main_inno_missing_is_fatal(tmp_path, monkeypatch):
 
     onedir = tmp_path / "onedir"
     onedir.mkdir()
-    (onedir / "tts-sidecar.exe").write_bytes(b"MZ")
+    (onedir / "ai-voice-interconnector.exe").write_bytes(b"MZ")
     output_dir = tmp_path / "out"
 
     monkeypatch.setattr(

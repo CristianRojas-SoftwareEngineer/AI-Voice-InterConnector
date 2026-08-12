@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
 
-from tts_sidecar.audio import (
+from ai_voice_interconnector.audio import (
     INT16_MAX_F,
     AudioRecorder,
     SoundDevicePlayer,
@@ -84,7 +84,7 @@ class TestGetAudioDevicesLinuxMacOS:
         sd_mock = MagicMock()
         sd_mock.query_devices.side_effect = OSError("PortAudio error")
         with patch.dict(sys.modules, {"sounddevice": sd_mock}):
-            with caplog.at_level(logging.DEBUG, logger="tts_sidecar.audio"):
+            with caplog.at_level(logging.DEBUG, logger="ai_voice_interconnector.audio"):
                 devices, degraded = get_audio_devices_with_status()
         assert degraded is True
         assert devices == [{"id": 0, "name": "Default", "latency": 0.1}]
@@ -187,7 +187,7 @@ class TestEncodePcmInt16B64:
 
 class TestGetCaptureDevices:
     def test_get_captures_translates_to_common_shape(self):
-        from tts_sidecar.audio import get_capture_devices_with_status
+        from ai_voice_interconnector.audio import get_capture_devices_with_status
 
         fake_miniaudio = MagicMock()
         fake_miniaudio.Devices.return_value.get_captures.return_value = [
@@ -202,12 +202,12 @@ class TestGetCaptureDevices:
     def test_get_captures_failure_degrades_to_fallback(self, caplog):
         import logging
 
-        from tts_sidecar.audio import get_capture_devices_with_status
+        from ai_voice_interconnector.audio import get_capture_devices_with_status
 
         fake_miniaudio = MagicMock()
         fake_miniaudio.Devices.return_value.get_captures.side_effect = OSError("sin backend")
         with patch.dict(sys.modules, {"miniaudio": fake_miniaudio}):
-            with caplog.at_level(logging.DEBUG, logger="tts_sidecar.audio"):
+            with caplog.at_level(logging.DEBUG, logger="ai_voice_interconnector.audio"):
                 devices, degraded = get_capture_devices_with_status()
 
         assert degraded is True

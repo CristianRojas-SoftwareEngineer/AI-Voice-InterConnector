@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tts_sidecar.audio import (
+from ai_voice_interconnector.audio import (
     AudioPlayer,
     MacOSAudioPlayer,
     SoundDevicePlayer,

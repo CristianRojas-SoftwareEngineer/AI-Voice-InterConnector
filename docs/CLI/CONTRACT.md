@@ -416,8 +416,8 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 | **1** | Imprevisto | Reintentar a ciegas, registrar o escalar |
 | **2** | Invocación mal formada | Corregir el comando y reintentar |
 | **3** | Recurso ausente | Crearlo, o nombrar otro |
-| **4** | Precondición de entorno: el modelo | `tts-sidecar setup`, luego el mismo comando |
-| **5** | Precondición de entorno: el daemon | `tts-sidecar daemon start`, luego el mismo comando |
+| **4** | Precondición de entorno: el modelo | `ai-voice-interconnector setup`, luego el mismo comando |
+| **5** | Precondición de entorno: el daemon | `ai-voice-interconnector daemon start`, luego el mismo comando |
 | **6** | Recurso ocupado | `--force`, otro nombre, `daemon stop`, o esperar a que se libere |
 | **7** | Imposibilidad permanente | **Ninguna** — no reintentar nunca |
 | **8** | Precondición de entorno: el resto | Ninguna propia: delegar y reintentar el mismo comando |
@@ -433,7 +433,7 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 
 El exit 2 es, en Unix y en argparse, el código del error de invocación, y aquí significa exactamente eso. Como consecuencia, **todas las rutas de fallo de parseo son correctas sin escribir una línea de validación**: flag requerido ausente, valor fuera de `choices`, grupo mutuamente excluyente violado, subcomando inválido en los tres niveles, y flag desconocido en cualquier comando.
 
-**Ausente = exploración (0), inválido = error (2).** `tts-sidecar` a secas y `tts-sidecar speech` a secas no son un error: imprimen la ayuda y salen con `EXIT_OK`, igual que `--help`, porque una invocación sin subcomando es exploratoria. La regla no es «ausente o inválido → 2».
+**Ausente = exploración (0), inválido = error (2).** `ai-voice-interconnector` a secas y `ai-voice-interconnector speech` a secas no son un error: imprimen la ayuda y salen con `EXIT_OK`, igual que `--help`, porque una invocación sin subcomando es exploratoria. La regla no es «ausente o inválido → 2».
 
 Dos pruebas de que la convención es la correcta:
 
@@ -610,7 +610,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 El shape `--json` no cambia con el despacho: emite `{"text", "source"}` en los tres modos, sin campo `daemon`.
 
-Si el modelo `faster-whisper-small` no está provisionado, sale con **4** (`EXIT_MODEL_MISSING`), remitiendo a `tts-sidecar setup --with-stt`; un fallo de la inferencia con el modelo ya cargado sale con **10** (`EXIT_TRANSCRIPTION_FAILED`, §9) — mismo criterio de asignación que distingue **4** de **9** en `translate`. Un `--audio` inexistente sale con **3** (`EXIT_NOT_FOUND`); en la ruta daemon, un fallo de comunicación —daemon inactivo o de versión antigua sin `/transcribe` (404, skew de `schema_version` sin bump)— sale con **5** (`EXIT_DAEMON_UNREACHABLE`), sin degradación silenciosa a modo directo.
+Si el modelo `faster-whisper-small` no está provisionado, sale con **4** (`EXIT_MODEL_MISSING`), remitiendo a `ai-voice-interconnector setup --with-stt`; un fallo de la inferencia con el modelo ya cargado sale con **10** (`EXIT_TRANSCRIPTION_FAILED`, §9) — mismo criterio de asignación que distingue **4** de **9** en `translate`. Un `--audio` inexistente sale con **3** (`EXIT_NOT_FOUND`); en la ruta daemon, un fallo de comunicación —daemon inactivo o de versión antigua sin `/transcribe` (404, skew de `schema_version` sin bump)— sale con **5** (`EXIT_DAEMON_UNREACHABLE`), sin degradación silenciosa a modo directo.
 
 **Divergencia deliberada del shape `--json` frente a `translate` (D5).** `translate --json` emite `source`/`target` como los códigos **ISO crudos** que recibieron `--from`/`--to` (`es`, `en`): ahí el ISO es exacto porque el parámetro mismo está restringido a `choices=["es","en"]`. `speech transcribe --json`, en cambio, emite `source` como el **token CLI verbatim** de `--source-language` (p. ej. `es-latam`, sin resolver a `es`) — no lo normaliza. La razón es de simetría con el resto de `speech`: `speech say`/`synthesize` aceptan y exponen `es-latam` en su propia taxonomía de idioma (nunca lo colapsan a ISO de cara al usuario), y `speech transcribe` es una sub-acción de ese mismo grupo, no un primo de `translate`. Colapsar `source` a ISO ahí introduciría una inconsistencia dentro del propio grupo `speech` a cambio de una consistencia superficial con un comando de otro grupo. La resolución a ISO (`resolve_language`) sigue ocurriendo internamente para seleccionar el idioma que Whisper recibe; solo la salida `--json` preserva el token de entrada.
 

@@ -40,7 +40,7 @@ def _find_project_root(start: Path) -> Path:
     raise SystemExit(
         f"clean_build.py: no se pudo ubicar la raíz del repo (se buscó "
         f"pyproject.toml o .git subiendo desde {start}). Ejecuta este script "
-        "dentro de un checkout de TTS Sidecar."
+        "dentro de un checkout de AI Voice InterConnector."
     )
 
 

@@ -2,7 +2,7 @@
 
 ## Introducción
 
-Este documento es la **especificación ideal** de `tts-sidecar`: describe el producto meta que guía todo el desarrollo — un sistema de síntesis de voz **100% local**, con clonación de voz en **español latinoamericano**, consumible por línea de comandos desde cualquier lenguaje, y con una experiencia de usuario **equivalente en Windows, Linux y macOS**.
+Este documento es la **especificación ideal** de `ai-voice-interconnector`: describe el producto meta que guía todo el desarrollo — un sistema de síntesis de voz **100% local**, con clonación de voz en **español latinoamericano**, consumible por línea de comandos desde cualquier lenguaje, y con una experiencia de usuario **equivalente en Windows, Linux y macOS**.
 
 Es la fuente de verdad contra la que se evalúa cualquier cambio: si una propuesta acerca el proyecto a lo aquí especificado, avanza el goal; si no, queda fuera de alcance. Para mantener esa función sin frenar el desarrollo, el documento se declara en **dos partes**:
 
@@ -85,7 +85,7 @@ Estos requisitos aplican al **canal nativo** (binarios PyInstaller por SO), que 
 - **Audio nativo**: playback usando APIs nativas de cada SO
 - **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero, en los tres sistemas operativos por igual (ver [docs/PARITY.md](PARITY.md))
 
-El proyecto distribuye además un **canal PyPI** complementario (`uv tool install tts-sidecar` / `pipx install tts-sidecar`) para audiencia técnica con Python 3.13+ ya instalado, que no está sujeto a estos requisitos (sí requiere Python, y en Linux la librería del sistema `libportaudio2`). Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md) para la matriz de trade-offs completa entre ambos canales.
+El proyecto distribuye además un **canal PyPI** complementario (`uv tool install ai-voice-interconnector` / `pipx install ai-voice-interconnector`) para audiencia técnica con Python 3.13+ ya instalado, que no está sujeto a estos requisitos (sí requiere Python, y en Linux la librería del sistema `libportaudio2`). Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md) para la matriz de trade-offs completa entre ambos canales.
 
 ### Paridad de experiencia
 
@@ -106,47 +106,47 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 
 ```bash
 # 1. Provisión (primera vez - chequeos + descarga el modelo si falta)
-./tts-sidecar setup
+./ai-voice-interconnector setup
 
 # 2. Diagnóstico del sistema (no depende de nada)
-./tts-sidecar version              # Versión instalada
-./tts-sidecar doctor               # Chequeo de entorno y modelo
-./tts-sidecar devices              # Dispositivos de audio disponibles
+./ai-voice-interconnector version              # Versión instalada
+./ai-voice-interconnector doctor               # Chequeo de entorno y modelo
+./ai-voice-interconnector devices              # Dispositivos de audio disponibles
 
 # 3. Arrancar el daemon (camino principal: carga el modelo en memoria una vez)
-./tts-sidecar daemon start         # Iniciar daemon
-./tts-sidecar daemon status        # Verificar que está activo
+./ai-voice-interconnector daemon start         # Iniciar daemon
+./ai-voice-interconnector daemon status        # Verificar que está activo
 
 # 4. Clonación de voz (requiere --speech-reference, ≥10s; --timbre-reference es opcional)
-./tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
+./ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
 
 # 5. Listar voces registradas (verifica que la voz quedó registrada)
-./tts-sidecar voice list
+./ai-voice-interconnector voice list
 
 # 6. Síntesis a través del daemon (añade -v mi_voz para usar la voz clonada)
-./tts-sidecar speech say --text "Hola mundo" [-v mi_voz]                    # Reproducir
-./tts-sidecar speech synthesize --text "Hola mundo" [-v mi_voz] --label LOCUCION  # Sintetiza y guarda la locución en el almacén
+./ai-voice-interconnector speech say --text "Hola mundo" [-v mi_voz]                    # Reproducir
+./ai-voice-interconnector speech synthesize --text "Hola mundo" [-v mi_voz] --label LOCUCION  # Sintetiza y guarda la locución en el almacén
 
 # 6b. Síntesis cross-lingual opcional (opt-in): el usuario escribe en su idioma y obtiene
 # audio en el idioma destino con su propia voz clonada, en un solo comando
-./tts-sidecar speech say --text "Hola mundo" -v mi_voz --source-language es-latam --target-language en
+./ai-voice-interconnector speech say --text "Hola mundo" -v mi_voz --source-language es-latam --target-language en
 
 # 6c. O solo el texto traducido, sin síntesis
-./tts-sidecar translate --text "Hola mundo" --from es --to en
+./ai-voice-interconnector translate --text "Hola mundo" --from es --to en
 
 # 7. Eliminar voz clonada (limpieza)
-./tts-sidecar voice remove --name mi_voz
+./ai-voice-interconnector voice remove --name mi_voz
 
 # 8. Detener el daemon (cierre de la sesión, libera el modelo de memoria)
-./tts-sidecar daemon stop
+./ai-voice-interconnector daemon stop
 ```
 
 ### Desinstalación en un comando
 
-La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina binario, PATH integrado y datos (modelo y voces), con residuo cero, en los tres SO. `tts-sidecar setup --uninstall` es multiplataforma y espeja la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación (ver el plan técnico en [docs/ROADMAP.md](ROADMAP.md)):
+La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina binario, PATH integrado y datos (modelo y voces), con residuo cero, en los tres SO. `ai-voice-interconnector setup --uninstall` es multiplataforma y espeja la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación (ver el plan técnico en [docs/ROADMAP.md](ROADMAP.md)):
 
-- **Linux**: el symlink `~/.local/bin/tts-sidecar`, el directorio de instalación `~/.local/opt/tts-sidecar/` y los datos (`cleanup --all`). Sin `sudo`.
-- **macOS**: los datos (`cleanup --all`), el symlink `~/.local/bin/tts-sidecar` y el `.app` (`rm -rf` seguro sobre el bundle en ejecución). Si la instalación proviene de Homebrew, la desinstalación completa se remite a `brew uninstall --cask --zap` (que cubre también los datos) en lugar de proceder. Sin `sudo`.
+- **Linux**: el symlink `~/.local/bin/ai-voice-interconnector`, el directorio de instalación `~/.local/opt/ai-voice-interconnector/` y los datos (`cleanup --all`). Sin `sudo`.
+- **macOS**: los datos (`cleanup --all`), el symlink `~/.local/bin/ai-voice-interconnector` y el `.app` (`rm -rf` seguro sobre el bundle en ejecución). Si la instalación proviene de Homebrew, la desinstalación completa se remite a `brew uninstall --cask --zap` (que cubre también los datos) en lugar de proceder. Sin `sudo`.
 - **Windows**: los datos (`cleanup --all`) en proceso; el binario y el PATH se delegan al desinstalador de Inno Setup (per-user, sin admin), leído desde `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{AppId}_is1`.
 
 Las vías idiomáticas por SO (desinstalador de Inno en Configuración → Aplicaciones, `brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `setup --uninstall` es la vía equivalente de un comando en las tres plataformas. El estado real de esta paridad vive en [docs/PARITY.md](PARITY.md).
@@ -157,13 +157,13 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 ## Criterios de aceptación
 
-<!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI + scripts/build_*.py) produce los instaladores y un smoke test automatizado del binario congelado (`tts-sidecar version`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
+<!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI + scripts/build_*.py) produce los instaladores y un smoke test automatizado del binario congelado (`ai-voice-interconnector version`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
 1. [ ] El instalador de Windows (.exe) funciona en Windows 10/11 sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo)
 2. [ ] El instalador de Linux funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
 3. [ ] El instalador de macOS funciona en el mínimo declarado por `LSMinimumSystemVersion` (Apple Silicon; Mac Intel no soportado) — derivado dinámicamente del `MACOSX_DEPLOYMENT_TARGET` del toolchain de build, no un número fijo (validación E2E por SO, ver "Validación E2E" más abajo)
-4. [x] `tts-sidecar speech say --text "Hola mundo"` reproduce audio en español
-5. [x] `tts-sidecar voice clone --name test --timbre-reference ref.wav --speech-reference speech.wav` clona la voz (`--timbre-reference` es opcional)
+4. [x] `ai-voice-interconnector speech say --text "Hola mundo"` reproduce audio en español
+5. [x] `ai-voice-interconnector voice clone --name test --timbre-reference ref.wav --speech-reference speech.wav` clona la voz (`--timbre-reference` es opcional)
 6. [x] El audio generado suena en español con las características de la voz de referencia
 7. [x] El español latinoamericano suena natural y con buena prosodia
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
@@ -172,7 +172,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 ### Validación E2E
 
-La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de los modelos Chatterbox + descarga de ~6 GB de pesos (ambos modelos) + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** del binario congelado (`tts-sidecar version`, exit 0) en los cuatro jobs de build, que detecta empaquetados rotos (metadata faltante, `--collect-all` incompleto) sin pagar el coste del modelo.
+La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de los modelos Chatterbox + descarga de ~6 GB de pesos (ambos modelos) + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** del binario congelado (`ai-voice-interconnector version`, exit 0) en los cuatro jobs de build, que detecta empaquetados rotos (metadata faltante, `--collect-all` incompleto) sin pagar el coste del modelo.
 
 Fuera del pipeline, la validación se reparte así:
 

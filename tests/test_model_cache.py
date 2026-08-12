@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tts_sidecar.model_cache import (
+from ai_voice_interconnector.model_cache import (
     BASE_MODEL_REPO,
     MODELS,
     MODEL_ALLOW_PATTERNS,

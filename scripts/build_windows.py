@@ -45,13 +45,13 @@ VSVersionInfo(
       [
         StringTable(
           u'040904B0',
-          [StringStruct(u'CompanyName', u'TTS Sidecar'),
-          StringStruct(u'FileDescription', u'TTS Sidecar - motor de sintesis de voz offline'),
+          [StringStruct(u'CompanyName', u'AI Voice InterConnector'),
+          StringStruct(u'FileDescription', u'AI Voice InterConnector - motor de sintesis de voz offline'),
           StringStruct(u'FileVersion', u'{version}'),
-          StringStruct(u'InternalName', u'tts-sidecar'),
+          StringStruct(u'InternalName', u'ai-voice-interconnector'),
           StringStruct(u'LegalCopyright', u'(C) 2026 Cristian Rojas Arredondo - GPL-3.0-or-later'),
-          StringStruct(u'OriginalFilename', u'tts-sidecar.exe'),
-          StringStruct(u'ProductName', u'TTS Sidecar'),
+          StringStruct(u'OriginalFilename', u'ai-voice-interconnector.exe'),
+          StringStruct(u'ProductName', u'AI Voice InterConnector'),
           StringStruct(u'ProductVersion', u'{version}')])
       ]),
     VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
@@ -99,13 +99,13 @@ def check_dependencies():
 
 
 def build_windows(target_arch="x86_64", no_installer=False):
-    """Compila tts-sidecar para Windows x64 con PyInstaller --onedir."""
+    """Compila ai-voice-interconnector para Windows x64 con PyInstaller --onedir."""
     with BuildTimer():
         with StageTimer("Setup", "Preparando entorno de build"):
             log("Plataforma: Windows x64")
             DIST_DIR.mkdir(parents=True, exist_ok=True)
             BUILD_DIR.mkdir(parents=True, exist_ok=True)
-            entry_point = PROJECT_ROOT / "bin" / "tts-sidecar"
+            entry_point = PROJECT_ROOT / "bin" / "ai-voice-interconnector"
             log(f"Entry point: {entry_point}")
 
         with StageTimer("PyInstaller", "Compiling with PyInstaller (9-15 min)"):
@@ -133,12 +133,12 @@ def build_windows(target_arch="x86_64", no_installer=False):
             sys.exit(1)
 
         with StageTimer("Size", "Verificando tamaño del bundle"):
-            onedir = DIST_DIR / "tts-sidecar"
+            onedir = DIST_DIR / "ai-voice-interconnector"
             if onedir.exists():
                 log(f"Tamaño del bundle: {bundle_size_mb(onedir):.1f} MB ({onedir})")
 
         with StageTimer("Licenses", "Empaquetando avisos de licencia"):
-            copy_license_files(DIST_DIR / "tts-sidecar")
+            copy_license_files(DIST_DIR / "ai-voice-interconnector")
 
         if no_installer:
             log("Etapa Installer omitida (--no-installer); el CI la corre como step separado")
@@ -147,7 +147,7 @@ def build_windows(target_arch="x86_64", no_installer=False):
                 installer_script = PROJECT_ROOT / "scripts" / "create_installer_windows.py"
                 try:
                     returncode = subprocess.run(
-                        [sys.executable, str(installer_script), str(DIST_DIR / "tts-sidecar")],
+                        [sys.executable, str(installer_script), str(DIST_DIR / "ai-voice-interconnector")],
                         check=False,
                         # Margen sobre el timeout interno de ISCC (create_installer_windows).
                         timeout=INSTALLER_TIMEOUT + 60,

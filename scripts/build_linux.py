@@ -72,7 +72,7 @@ def _apprun_script() -> str:
     return (
         '#!/bin/sh\n'
         'HERE="$(dirname "$(readlink -f "$0")")"\n'
-        'exec "$HERE/usr/bin/tts-sidecar" "$@"\n'
+        'exec "$HERE/usr/bin/ai-voice-interconnector" "$@"\n'
     )
 
 
@@ -86,9 +86,9 @@ def _desktop_entry() -> str:
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
-        "Name=tts-sidecar\n"
-        "Exec=tts-sidecar\n"
-        "Icon=tts-sidecar\n"
+        "Name=ai-voice-interconnector\n"
+        "Exec=ai-voice-interconnector\n"
+        "Icon=ai-voice-interconnector\n"
         "Categories=Utility;\n"
         "Terminal=true\n"
     )
@@ -190,7 +190,7 @@ def build_linux(target_arch="x86_64"):
             log(f"Plataforma: Linux {arch_suffix}")
             DIST_DIR.mkdir(parents=True, exist_ok=True)
             BUILD_DIR.mkdir(parents=True, exist_ok=True)
-            entry_point = PROJECT_ROOT / "bin" / "tts-sidecar"
+            entry_point = PROJECT_ROOT / "bin" / "ai-voice-interconnector"
 
         with StageTimer("PyInstaller", "Compilando con PyInstaller (9-15 min)"):
             pyinstaller_args = common_pyinstaller_args(
@@ -211,7 +211,7 @@ def build_linux(target_arch="x86_64"):
             log("PyInstaller falló", returncode)
             sys.exit(1)
 
-        onedir = DIST_DIR / "tts-sidecar"
+        onedir = DIST_DIR / "ai-voice-interconnector"
         with StageTimer("Size", "Verificando tamaño del bundle"):
             if onedir.exists():
                 log(f"Tamaño del bundle: {bundle_size_mb(onedir):.1f} MB ({onedir})")
@@ -251,21 +251,21 @@ def build_linux(target_arch="x86_64"):
             # .desktop e icono: appimagetool los exige en la raíz del AppDir;
             # se replican en usr/share/ (ubicación estándar freedesktop).
             desktop_content = _desktop_entry()
-            (appdir / "tts-sidecar.desktop").write_text(desktop_content, encoding="utf-8")
+            (appdir / "ai-voice-interconnector.desktop").write_text(desktop_content, encoding="utf-8")
             applications_dir = appdir / "usr" / "share" / "applications"
             applications_dir.mkdir(parents=True, exist_ok=True)
-            (applications_dir / "tts-sidecar.desktop").write_text(desktop_content, encoding="utf-8")
+            (applications_dir / "ai-voice-interconnector.desktop").write_text(desktop_content, encoding="utf-8")
 
             # Icono del AppImage: el logo oficial del proyecto (placeholder 1×1
             # solo si la fuente del logo faltara).
-            ensure_png_icon(appdir / "tts-sidecar.png")
+            ensure_png_icon(appdir / "ai-voice-interconnector.png")
             ensure_png_icon(appdir / "usr" / "share" / "icons" / "hicolor"
-                            / "256x256" / "apps" / "tts-sidecar.png")
+                            / "256x256" / "apps" / "ai-voice-interconnector.png")
 
             # appimagetool escribe la ruta de salida directamente; el propio
             # appimagetool es un AppImage, así que --appimage-extract-and-run
             # evita requerir FUSE también en los executors del CI.
-            generated = DIST_DIR / f"tts-sidecar-{version}-{arch_suffix}.AppImage"
+            generated = DIST_DIR / f"ai-voice-interconnector-{version}-{arch_suffix}.AppImage"
             env = os.environ.copy()
             env["ARCH"] = appimage_arch
             # Consola heredada (sin capture_output): el output de appimagetool es

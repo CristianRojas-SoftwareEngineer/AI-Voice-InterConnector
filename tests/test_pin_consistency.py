@@ -126,7 +126,7 @@ class TestGitHubRepoSlug:
     consumidor lo referencie, sin forzar imports entre shell/YAML/Python."""
 
     # Archivos que hardcodean el slug del repo principal (no el tap de Homebrew,
-    # que es CristianRojas-SoftwareEngineer/homebrew-tts-sidecar, otro repo).
+    # que es CristianRojas-SoftwareEngineer/homebrew-ai-voice-interconnector, otro repo).
     REPO_CONSUMERS = (
         "install-linux.sh",
         "install-macos.sh",

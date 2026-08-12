@@ -3,7 +3,7 @@ Carga y resolución del modelo de transcripción `faster-whisper`.
 
 Colaborador inyectable que carga y cachea en memoria un modelo de
 transcripción sobre el runtime CT2 ya embarcado por la traducción (espeja el
-patrón `TranslationModelLoader` de `tts_sidecar.translation.model_loader`).
+patrón `TranslationModelLoader` de `ai_voice_interconnector.translation.model_loader`).
 """
 
 from pathlib import Path
@@ -50,7 +50,7 @@ class WhisperModelLoader:
         if not cache_dir.exists():
             raise TranscriptionModelMissingError(
                 f"Modelo de transcripción no encontrado en {cache_dir}. "
-                "Ejecuta 'tts-sidecar setup --with-stt' para provisionarlo."
+                "Ejecuta 'ai-voice-interconnector setup --with-stt' para provisionarlo."
             )
 
         model = self._model_factory(key)

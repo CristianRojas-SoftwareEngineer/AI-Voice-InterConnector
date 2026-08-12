@@ -3,7 +3,7 @@ Carga y resolución del modelo de traducción `opus-mt`.
 
 Colaborador inyectable que carga y cachea en memoria un modelo de traducción
 convertido a formato CT2 desde una ruta de caché dada (espeja el patrón
-`ModelLoader` de `tts_sidecar.model_loader`, usado por el motor de síntesis).
+`ModelLoader` de `ai_voice_interconnector.model_loader`, usado por el motor de síntesis).
 
 Además define la normalización de la taxonomía de idiomas del proyecto
 (`es-latam` de síntesis vs. `es` ISO del traductor) y la derivación del
@@ -120,7 +120,7 @@ class TranslationModelLoader:
         if not cache_dir.exists():
             raise TranslationModelMissingError(
                 f"Modelo de traducción no encontrado en {cache_dir}. "
-                "Ejecuta 'tts-sidecar setup --language en' para provisionarlo."
+                "Ejecuta 'ai-voice-interconnector setup --language en' para provisionarlo."
             )
 
         model = self._translator_factory(key)

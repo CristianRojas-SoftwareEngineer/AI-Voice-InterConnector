@@ -7,7 +7,7 @@ uniforme en los tres modos de ejecución (fuente, pip/uv-installed, congelado):
 
 - **Usuario**: voces escribibles en `data_root()/voices` (user-data-dir por SO).
 - **Fábrica**: voces de solo lectura empaquetadas en `bundled_voices_dir()`
-  (subdirectorio `voices` del paquete `tts_sidecar`; `sys._MEIPASS` congelado).
+  (subdirectorio `voices` del paquete `ai_voice_interconnector`; `sys._MEIPASS` congelado).
 
 La resolución de un nombre busca primero en usuario y luego en fábrica, de modo
 que un usuario puede sobrescribir una voz de fábrica registrando una propia con
@@ -229,7 +229,7 @@ def voice_paths(name: str) -> tuple[str | None, str]:
     if target is None:
         raise FileNotFoundError(
             f"Voz '{name}' no encontrada (ni en las voces de usuario ni en las de fábrica). "
-            f"Clónala con 'tts-sidecar voice clone' o usa la voz 'default'."
+            f"Clónala con 'ai-voice-interconnector voice clone' o usa la voz 'default'."
         )
     ref_path = os.path.join(target, "timbre-reference.wav")
     speech_path = os.path.join(target, "speech-reference.wav")

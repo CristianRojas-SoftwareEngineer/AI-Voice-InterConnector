@@ -1,4 +1,4 @@
-"""Fixtures de pytest para los tests de tts-sidecar."""
+"""Fixtures de pytest para los tests de ai-voice-interconnector."""
 
 import os
 import sys
@@ -19,9 +19,9 @@ def pytest_configure(config):
     """Corre el bootstrap antes de la recolección.
 
     Asegura que la supresión de warnings (incl. `pkg_resources`) esté activa
-    antes de que los tests importen módulos como `tts_sidecar.audio` a nivel
+    antes de que los tests importen módulos como `ai_voice_interconnector.audio` a nivel
     de módulo, de modo que la supresión no dependa del filtro local de
     audio.py (eliminado). `bootstrap.apply()` es idempotente.
     """
-    import tts_sidecar.bootstrap
-    tts_sidecar.bootstrap.apply()
+    import ai_voice_interconnector.bootstrap
+    ai_voice_interconnector.bootstrap.apply()

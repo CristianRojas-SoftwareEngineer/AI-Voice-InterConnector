@@ -36,18 +36,18 @@ version_parser.set_defaults(func=cmd_version)
 
 ```python
 def cmd_version(args):
-    """Muestra la versión de tts-sidecar."""
+    """Muestra la versión de ai-voice-interconnector."""
     from . import __version__
 
     if getattr(args, "json", False):
-        emit_json({"name": "tts-sidecar", "version": __version__})
+        emit_json({"name": "ai-voice-interconnector", "version": __version__})
     else:
-        print(f"tts-sidecar {__version__}")
+        print(f"ai-voice-interconnector {__version__}")
 ```
 
 - Importa `__version__` localmente (no a nivel de módulo) — consistente con el patrón de imports perezosos del paquete.
 - Usa `getattr(args, "json", False)` en vez de `args.json`, tolerante a attrs faltantes.
-- Camino de texto plano: `tts-sidecar {__version__}` a stdout.
+- Camino de texto plano: `ai-voice-interconnector {__version__}` a stdout.
 - Camino JSON: payload de dos claves (`name`, `version`) pasado a `emit_json`.
 
 ### Fuente de la versión
@@ -59,7 +59,7 @@ __version__ = "0.10.0"
 ```
 
 - Literal de cadena, sin mecanismo dinámico (no usa `importlib.metadata` ni `setuptools-scm`).
-- `pyproject.toml:64` sincroniza la versión del paquete distribuible: `version = {attr = "tts_sidecar.__version__"}`.
+- `pyproject.toml:64` sincroniza la versión del paquete distribuible: `version = {attr = "ai_voice_interconnector.__version__"}`.
 - El autor es `Cristián Rojas Arredondo` (`__init__.py:15`), licencia `GPL-3.0-or-later` (`__init__.py:16`).
 
 ### Payload JSON
@@ -68,7 +68,7 @@ El helper `emit_json` (`cli.py:69-80`) serializa el dict y le inyecta `schema_ve
 
 ```json
 {
-  "name": "tts-sidecar",
+  "name": "ai-voice-interconnector",
   "version": "0.10.0",
   "schema_version": "3"
 }
@@ -95,9 +95,9 @@ No hay caminos de error posibles:
 
 | Test | Archivo:linea | Verificación |
 |---|---|---|
-| `test_cmd_version_human` | `test_cli.py:341-347` | Salida contiene `"tts-sidecar"` |
+| `test_cmd_version_human` | `test_cli.py:341-347` | Salida contiene `"ai-voice-interconnector"` |
 | `test_cmd_version_json` | `test_cli.py:349-360` | JSON exacto: `{schema_version, name, version}` |
-| `test_version_json_includes_schema_version` | `test_cli.py:2549-2557` | `schema_version == SCHEMA_VERSION` y `name == "tts-sidecar"` |
+| `test_version_json_includes_schema_version` | `test_cli.py:2549-2557` | `schema_version == SCHEMA_VERSION` y `name == "ai-voice-interconnector"` |
 
 Los tests usan `MockArgs(json=True)` y `capsys` de pytest para capturar stdout.
 

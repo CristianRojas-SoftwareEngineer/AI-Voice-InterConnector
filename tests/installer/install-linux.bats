@@ -21,7 +21,7 @@ setup() {
     # "$final_path" setup (última línea de install-linux.sh) se ejecute sin error
     # de formato ejecutable, en vez de un ELF real.
     FAKE_APPIMAGE_CONTENT='#!/bin/sh
-echo "fake tts-sidecar $*"
+echo "fake ai-voice-interconnector $*"
 '
     FAKE_SHA256="$(printf '%s' "$FAKE_APPIMAGE_CONTENT" | sha256sum | cut -d' ' -f1)"
 }
@@ -47,7 +47,7 @@ EOF
 mock_curl() {
     local arch="$1"
     local mode="${2:-ok}"
-    local asset_name="tts-sidecar-1.0.0-${arch}.AppImage"
+    local asset_name="ai-voice-interconnector-1.0.0-${arch}.AppImage"
     local published_sha="$FAKE_SHA256"
     if [ "$mode" = "corrupt" ]; then
         published_sha="0000000000000000000000000000000000000000000000000000000000ff"
@@ -92,8 +92,8 @@ EOF
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"tts-sidecar-1.0.0-x86_64.AppImage"* ]]
-    [ -f "$HOME/.local/opt/tts-sidecar/tts-sidecar-1.0.0-x86_64.AppImage" ]
+    [[ "$output" == *"ai-voice-interconnector-1.0.0-x86_64.AppImage"* ]]
+    [ -f "$HOME/.local/opt/ai-voice-interconnector/ai-voice-interconnector-1.0.0-x86_64.AppImage" ]
 }
 
 @test "selecciona el asset arm64 cuando uname -m devuelve aarch64" {
@@ -103,8 +103,8 @@ EOF
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"tts-sidecar-1.0.0-arm64.AppImage"* ]]
-    [ -f "$HOME/.local/opt/tts-sidecar/tts-sidecar-1.0.0-arm64.AppImage" ]
+    [[ "$output" == *"ai-voice-interconnector-1.0.0-arm64.AppImage"* ]]
+    [ -f "$HOME/.local/opt/ai-voice-interconnector/ai-voice-interconnector-1.0.0-arm64.AppImage" ]
 }
 
 # Instala un mock de `ldd` cuyo `--version` reporta la glibc $1.
@@ -127,7 +127,7 @@ EOF
     [ "$status" -ne 0 ]
     [[ "$output" == *"glibc"* ]]
     [[ "$output" == *"PyPI"* ]]
-    [ ! -d "$HOME/.local/opt/tts-sidecar" ]
+    [ ! -d "$HOME/.local/opt/ai-voice-interconnector" ]
 }
 
 @test "glibc >= 2.35 no bloquea la instalación" {
@@ -158,7 +158,7 @@ EOF
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"checksum"* ]]
-    [ ! -d "$HOME/.local/opt/tts-sidecar" ]
+    [ ! -d "$HOME/.local/opt/ai-voice-interconnector" ]
 }
 
 @test "al actualizar elimina el AppImage anterior y deja solo el nuevo" {
@@ -167,9 +167,9 @@ EOF
 
     # Pre-siembra un AppImage de una versión anterior en el directorio de
     # instalación, como si viniera de una instalación previa.
-    install_dir="$HOME/.local/opt/tts-sidecar"
+    install_dir="$HOME/.local/opt/ai-voice-interconnector"
     mkdir -p "$install_dir"
-    old_appimage="$install_dir/tts-sidecar-0.9.0-x86_64.AppImage"
+    old_appimage="$install_dir/ai-voice-interconnector-0.9.0-x86_64.AppImage"
     printf 'viejo' > "$old_appimage"
     chmod +x "$old_appimage"
 
@@ -178,10 +178,10 @@ EOF
     [ "$status" -eq 0 ]
     # El viejo fue eliminado y el nuevo existe y es ejecutable.
     [ ! -e "$old_appimage" ]
-    new_appimage="$install_dir/tts-sidecar-1.0.0-x86_64.AppImage"
+    new_appimage="$install_dir/ai-voice-interconnector-1.0.0-x86_64.AppImage"
     [ -f "$new_appimage" ]
     [ -x "$new_appimage" ]
     # Solo queda un AppImage en el directorio.
-    count="$(ls "$install_dir"/tts-sidecar-*.AppImage | wc -l)"
+    count="$(ls "$install_dir"/ai-voice-interconnector-*.AppImage | wc -l)"
     [ "$count" -eq 1 ]
 }

@@ -1,11 +1,11 @@
-# Diseño del Sistema TTS Sidecar con Chatterbox Multilingual V3
+# Diseño del Sistema AI Voice InterConnector con Chatterbox Multilingual V3
 
 ## Tabla de contenidos
 
 - [Resumen ejecutivo](#resumen-ejecutivo)
 - [Arquitectura](#arquitectura)
 - [Estructura del proyecto](#estructura-del-proyecto)
-- [El entry point `bin/tts-sidecar`](#el-entry-point-bintts-sidecar)
+- [El entry point `bin/ai-voice-interconnector`](#el-entry-point-binai-voice-interconnector)
 - [Motor Chatterbox Multilingual V3](#motor-chatterbox-multilingual-v3)
 - [Traducción cross-lingual (opus-mt / CTranslate2)](#traducción-cross-lingual-opus-mt--ctranslate2)
 - [Flujo de síntesis](#flujo-de-síntesis)
@@ -18,7 +18,7 @@
 
 ## Resumen ejecutivo
 
-TTS Sidecar es un motor de síntesis de voz (TTS) **100% local** que usa **Chatterbox Multilingual V3** para clonación de voz en español latinoamericano. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
+AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que usa **Chatterbox Multilingual V3** para clonación de voz en español latinoamericano. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
 
 - **Licencia**: GPL-3.0-or-later (código del proyecto); el modelo y las dependencias conservan sus licencias permisivas (MIT/BSD/Apache), salvo el par de traducción `opus-mt` (CC-BY-4.0)
 - **Idiomas**: 23+ incluyendo Español (es)
@@ -32,7 +32,7 @@ TTS Sidecar es un motor de síntesis de voz (TTS) **100% local** que usa **Chatt
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              tts-sidecar (binario CLI)                     │
+│              ai-voice-interconnector (binario CLI)                     │
 │   Instalador por SO (Windows, Linux, macOS)                │
 │   Bundle PyInstaller --onedir con intérprete embebido      │
 └──────────────────────┬──────────────────────────────────────┘
@@ -58,11 +58,11 @@ TTS Sidecar es un motor de síntesis de voz (TTS) **100% local** que usa **Chatt
 ## Estructura del proyecto
 
 ```
-TTS-Sidecar/
+AI-Voice-InterConnector/
 ├── src/
-│   └── tts_sidecar/           # Paquete Python
+│   └── ai_voice_interconnector/           # Paquete Python
 │       ├── __init__.py            # Imports perezosos (lazy)
-│       ├── __main__.py            # Entry point de `python -m tts_sidecar`
+│       ├── __main__.py            # Entry point de `python -m ai_voice_interconnector`
 │       ├── bootstrap.py           # apply() idempotente: warnings, env vars, logging, mock pkg_resources
 │       ├── engine.py              # Façade / composition root de síntesis
 │       ├── compute_backend.py     # ComputeBackendResolver: detección/resolución de backend (cuda/mps/cpu)
@@ -102,7 +102,7 @@ TTS-Sidecar/
 │           └── run.py             # Entry point
 │   # Las voces de USUARIO viven en el user-data-dir por SO, no en el repo
 ├── bin/
-│   └── tts-sidecar               # Script de entry point
+│   └── ai-voice-interconnector               # Script de entry point
 ├── scripts/
 │   ├── build_windows.py          # Build PyInstaller para Windows
 │   ├── build_linux.py            # Build PyInstaller para Linux
@@ -115,13 +115,13 @@ TTS-Sidecar/
 │   ├── pyinstaller_wrapper.py    # Wrapper de PyInstaller
 │   ├── render_cask.py            # Generador de Cask de Homebrew
 │   └── render_source_offer.py    # Generador de SOURCE-OFFER.md
-│                                  # (provisión del modelo: `tts-sidecar setup`)
+│                                  # (provisión del modelo: `ai-voice-interconnector setup`)
 ├── assets/                       # Material fuente (audios, logo)
 │   ├── audios/                   # Audios fuente (voz default) y de prueba
 │   │   ├── Voice Sampler.wav
 │   │   └── Speech Sampler.wav
 │   └── images/                   # Logo del proyecto (fuente de los iconos de build)
-│       └── TTS Sidecar - Logo.png
+│       └── AI Voice InterConnector - Logo.png
 ├── tests/                        # Pytest test suite
 ├── requirements.txt               # Python dependencies
 ├── pyproject.toml                # Python project config
@@ -143,17 +143,17 @@ TTS-Sidecar/
 ```
 
 > El modelo `es-mx-latam` no vive en el repo ni en el bundle: reside en la caché
-> de HuggingFace del usuario (`~/.cache/huggingface/hub`) tras `tts-sidecar setup`.
+> de HuggingFace del usuario (`~/.cache/huggingface/hub`) tras `ai-voice-interconnector setup`.
 
-## El entry point `bin/tts-sidecar`
+## El entry point `bin/ai-voice-interconnector`
 
-El archivo `bin/tts-sidecar` es el **punto de entrada único** de la aplicación. Está escrito en **Python 3**, pero deliberadamente **no lleva extensión `.py`**:
+El archivo `bin/ai-voice-interconnector` es el **punto de entrada único** de la aplicación. Está escrito en **Python 3**, pero deliberadamente **no lleva extensión `.py`**:
 
-- **Convención de comando CLI**: el objetivo del proyecto es exponer una herramienta invocable como `tts-sidecar speech say ...`, no como `tts-sidecar.py speak ...`. Los comandos de terminal no llevan extensión (igual que `git`, `node` o `pip`), de modo que el archivo se nombra como el comando final que representa.
-- **Shebang en vez de extensión**: la primera línea es `#!/usr/bin/env python3`. En Linux/macOS, con el bit de ejecución activo (`chmod +x`), el sistema operativo lee esa línea para saber con qué intérprete ejecutarlo; la extensión `.py` solo orienta a editores y humanos, el SO nunca la necesita. Por eso `./tts-sidecar speech say ...` funciona sin nombrar a Python.
-- **Invocación en desarrollo bajo Windows**: Windows ignora el shebang, así que en desarrollo el entry point se invoca explícitamente a través del intérprete: `python bin/tts-sidecar speech say --text "Hola"`.
+- **Convención de comando CLI**: el objetivo del proyecto es exponer una herramienta invocable como `ai-voice-interconnector speech say ...`, no como `ai-voice-interconnector.py speak ...`. Los comandos de terminal no llevan extensión (igual que `git`, `node` o `pip`), de modo que el archivo se nombra como el comando final que representa.
+- **Shebang en vez de extensión**: la primera línea es `#!/usr/bin/env python3`. En Linux/macOS, con el bit de ejecución activo (`chmod +x`), el sistema operativo lee esa línea para saber con qué intérprete ejecutarlo; la extensión `.py` solo orienta a editores y humanos, el SO nunca la necesita. Por eso `./ai-voice-interconnector speech say ...` funciona sin nombrar a Python.
+- **Invocación en desarrollo bajo Windows**: Windows ignora el shebang, así que en desarrollo el entry point se invoca explícitamente a través del intérprete: `python bin/ai-voice-interconnector speech say --text "Hola"`.
 
-El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings, ajusta `sys.path`, parchea `pkg_resources` para Python 3.13+) y delega en `tts_sidecar.cli.main`. Además es la **semilla de compilación** que reciben los scripts de `scripts/build_*.py`: PyInstaller lo toma como entrada y produce el bundle final. Véase `docs/BUILD.md`.
+El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings, ajusta `sys.path`, parchea `pkg_resources` para Python 3.13+) y delega en `ai_voice_interconnector.cli.main`. Además es la **semilla de compilación** que reciben los scripts de `scripts/build_*.py`: PyInstaller lo toma como entrada y produce el bundle final. Véase `docs/BUILD.md`.
 
 ## Motor Chatterbox Multilingual V3
 
@@ -168,7 +168,7 @@ El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings
 
 ## Traducción cross-lingual (opus-mt / CTranslate2)
 
-Subsistema independiente de texto→texto (`src/tts_sidecar/translation/`) que
+Subsistema independiente de texto→texto (`src/ai_voice_interconnector/translation/`) que
 traduce `es<->en` antes de la síntesis (flag opcional `--source-language` en
 `speech say`/`synthesize`) o de forma aislada (comando `translate`, sin voz ni
 motor TTS de por medio). No forma parte del motor Chatterbox: es una etapa
@@ -186,7 +186,7 @@ previa y opcional.
 
 ## Transcripción STT (faster-whisper / CTranslate2)
 
-Subsistema independiente de audio→texto (`src/tts_sidecar/transcription/`) que
+Subsistema independiente de audio→texto (`src/ai_voice_interconnector/transcription/`) que
 transcribe un archivo WAV vía la sub-acción `speech transcribe`, aislada del
 motor Chatterbox y del subsistema de traducción. Espeja el patrón de
 colaboradores inyectables de `translation/` (`ModelLoader` con factory
@@ -209,7 +209,7 @@ idioma, encadena `translate` por separado.
 ## Flujo de síntesis
 
 ```
-1. El usuario ejecuta: tts-sidecar speech say --text "Hola" -v mi_voz
+1. El usuario ejecuta: ai-voice-interconnector speech say --text "Hola" -v mi_voz
                     │
                     ▼
 2. La CLI parsea argumentos y carga ChatterboxEngine
@@ -235,10 +235,10 @@ idioma, encadena `translate` por separado.
 Las voces se separan en dos orígenes y se resuelven por nombre con precedencia
 **usuario→fábrica** (`voices.py`):
 
-- **Fábrica**: `src/tts_sidecar/voices/`, versionadas y empaquetadas en el
+- **Fábrica**: `src/ai_voice_interconnector/voices/`, versionadas y empaquetadas en el
   ejecutable vía `--add-data`; de solo lectura. Se resuelven en
   `paths.bundled_voices_dir()`, siempre relativa al paquete: en modo fuente y
-  pip/uv-installed es `tts_sidecar/voices/` dentro del árbol del paquete; en
+  pip/uv-installed es `ai_voice_interconnector/voices/` dentro del árbol del paquete; en
   modo congelado (PyInstaller) es el mismo subdirectorio dentro de
   `sys._MEIPASS`. Incluye la voz `default`, derivada de `assets/audios/`.
 - **Usuario**: `data_root()/voices` (user-data-dir por SO; escribible),
@@ -246,7 +246,7 @@ Las voces se separan en dos orígenes y se resuelven por nombre con precedencia
   fábrica.
 
 Sin `--voice` ni audios explícitos, la CLI usa la voz `default`, de modo que
-`tts-sidecar speech synthesize --text "Hola" --label NUEVA` funciona sin registrar nada.
+`ai-voice-interconnector speech synthesize --text "Hola" --label NUEVA` funciona sin registrar nada.
 
 ## Comandos CLI
 
@@ -275,13 +275,13 @@ python scripts/build_macos.py --arch arm64
 
 Para añadir un nuevo motor TTS:
 
-1. Crear nuevo módulo en `src/tts_sidecar/`
+1. Crear nuevo módulo en `src/ai_voice_interconnector/`
 2. Mantener la misma interfaz CLI en `cli.py`
 3. Re-empaquetar con PyInstaller para cada plataforma
 
 ## Warnings silenciados
 
-`src/tts_sidecar/bootstrap.py` (`apply()`) silencia mediante una **allow-list explícita**
+`src/ai_voice_interconnector/bootstrap.py` (`apply()`) silencia mediante una **allow-list explícita**
 (`_SILENCED_WARNINGS`), **no** un catch-all global `warnings.filterwarnings("ignore")`
 ni `PYTHONWARNINGS=ignore` (para no enmascarar deprecaciones propias
 ni de terceros). La allow-list acota solo dos warnings benignos del módulo `warnings`:

@@ -19,16 +19,16 @@ def test_apprun_shebang_and_delegation():
     script = _apprun_script()
     assert script.startswith("#!/bin/sh\n")
     assert 'HERE="$(dirname "$(readlink -f "$0")")"' in script
-    assert 'exec "$HERE/usr/bin/tts-sidecar" "$@"' in script
+    assert 'exec "$HERE/usr/bin/ai-voice-interconnector" "$@"' in script
 
 
 def test_desktop_entry_application_type_and_terminal():
     """El .desktop debe ser Type=Application y Terminal=true (salida CLI visible)."""
     desktop = _desktop_entry()
     assert "Type=Application" in desktop
-    assert "Name=tts-sidecar" in desktop
-    assert "Exec=tts-sidecar" in desktop
-    assert "Icon=tts-sidecar" in desktop
+    assert "Name=ai-voice-interconnector" in desktop
+    assert "Exec=ai-voice-interconnector" in desktop
+    assert "Icon=ai-voice-interconnector" in desktop
     assert "Terminal=true" in desktop
     assert desktop.count("\n") >= 6  # al menos 6 líneas (clave=valor)
 
@@ -86,9 +86,9 @@ def test_appimage_failure_is_fatal(tmp_path, monkeypatch):
     build = tmp_path / "build"
     dist.mkdir()
     build.mkdir()
-    onedir = dist / "tts-sidecar"
+    onedir = dist / "ai-voice-interconnector"
     onedir.mkdir()
-    (onedir / "tts-sidecar").write_text("bin", encoding="utf-8")
+    (onedir / "ai-voice-interconnector").write_text("bin", encoding="utf-8")
 
     monkeypatch.setattr(build_linux, "DIST_DIR", dist)
     monkeypatch.setattr(build_linux, "BUILD_DIR", build)
@@ -136,9 +136,9 @@ def test_appimage_tooling_missing_degrades_without_abort(tmp_path, monkeypatch):
     build = tmp_path / "build"
     dist.mkdir()
     build.mkdir()
-    onedir = dist / "tts-sidecar"
+    onedir = dist / "ai-voice-interconnector"
     onedir.mkdir()
-    (onedir / "tts-sidecar").write_text("bin", encoding="utf-8")
+    (onedir / "ai-voice-interconnector").write_text("bin", encoding="utf-8")
 
     monkeypatch.setattr(build_linux, "DIST_DIR", dist)
     monkeypatch.setattr(build_linux, "BUILD_DIR", build)

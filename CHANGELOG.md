@@ -1,6 +1,6 @@
 # Changelog
 
-Todos los cambios notables de TTS Sidecar se documentan en este archivo.
+Todos los cambios notables de AI Voice InterConnector se documentan en este archivo.
 
 El formato se basa en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
@@ -286,11 +286,11 @@ idénticos a 0.7.4 (las voces de fábrica ya viajaban por `--add-data`).
 ### Corregido
 
 - **Fuente única de las voces de fábrica en el bundle**: se elimina
-  `--collect-all tts_sidecar` de los args de PyInstaller y se documenta que
+  `--collect-all ai_voice_interconnector` de los args de PyInstaller y se documenta que
   `--add-data` es la única fuente real de las voces en CI. Como el proyecto no
   se instala editable en el venv del build (solo `requirements-lock*.txt`),
   PyInstaller emitía *"collect_data_files - skipping data collection for module
-  'tts_sidecar' as it is not a package"* y `--collect-all` no aportaba nada; la
+  'ai_voice_interconnector' as it is not a package"* y `--collect-all` no aportaba nada; la
   redundancia era falsa. `--add-data` falla ruidosamente si falta el dir fuente,
   en vez de enmascarar la ausencia de voces en silencio.
 
@@ -473,7 +473,7 @@ Limpieza post-auditoría: eliminación de `docs/PRODUCTION-READINESS-AUDIT.md` (
 
 Cierra la última brecha accionable de paridad de experiencia entre los 3 SO
 registrada en `docs/PARITY.md`: la de *desinstalación en un comando*. Con ella,
-`tts-sidecar setup --uninstall` deja de ser solo-Linux y pasa a ser un comando
+`ai-voice-interconnector setup --uninstall` deja de ser solo-Linux y pasa a ser un comando
 único en los tres SO (dispatch por SO sobre un contrato compartido: datos → PATH
 → binario, con cancelación atómica y guard de canal nativo). MINOR: capacidad
 nueva en macOS y Windows, más un cambio de comportamiento deliberado en Linux.
@@ -488,7 +488,7 @@ queda diferida al goal a largo plazo.
   `resolve()`; cubre `~/Applications`, `/Applications` y el Cask con una sola
   expresión, con guard de sufijo `.app`). Si la instalación proviene de Homebrew
   (metadata del Caskroom), aborta sin borrar nada y remite a `brew uninstall
-  --cask --zap tts-sidecar` para no dejar el Caskroom inconsistente.
+  --cask --zap ai-voice-interconnector` para no dejar el Caskroom inconsistente.
 - **`setup --uninstall` en Windows** (`_uninstall_windows`): valida primero el
   `QuietUninstallString` del registro (HKCU, clave `{AppId}_is1`) sin efectos,
   borra los datos en proceso con `cleanup --all` y **delega** el binario y la
@@ -498,7 +498,7 @@ queda diferida al goal a largo plazo.
   campo aditivo `delegated`.
 - **Guard de canal nativo** (`is_frozen`) en `setup --uninstall`, común a los
   tres SO: desde fuente o desde una instalación pip/uv, aborta remitiendo a `pip
-  uninstall tts-sidecar` en lugar de operar sobre rutas que no le pertenecen.
+  uninstall ai-voice-interconnector` en lugar de operar sobre rutas que no le pertenecen.
 
 ### Cambiado
 
@@ -534,8 +534,8 @@ binarios sin firmar) queda diferida al goal a largo plazo.
   per-user en `~/.local/bin` (con aviso de PATH) y encadena `setup`. Guard de
   arquitectura arm64 (Mac Intel no soportado). Smoke-test `bats` en el job CI
   `test-installer-macos` (executor macOS) como puerta de los 4 builds.
-- **Desinstalador Linux de un paso** (`tts-sidecar setup --uninstall`): quita
-  el symlink de PATH, borra `~/.local/opt/tts-sidecar/` y encadena `cleanup
+- **Desinstalador Linux de un paso** (`ai-voice-interconnector setup --uninstall`): quita
+  el symlink de PATH, borra `~/.local/opt/ai-voice-interconnector/` y encadena `cleanup
   --all` (con confirmación; `--yes` la omite). Mutuamente excluyente con
   `--remove-path`/`--force-update`, con guard de SO y contrato `--json`
   (requiere `--yes`). Reemplaza los tres pasos manuales anteriores.
@@ -548,10 +548,10 @@ binarios sin firmar) queda diferida al goal a largo plazo.
   instalación del proyecto pide ya la contraseña de administrador. **Nota de
   transición**: quien tenga un symlink legado en `/usr/local/bin` (de una
   versión anterior a 0.5.0) verá en el script de desinstalación la instrucción
-  para quitarlo (`sudo rm /usr/local/bin/tts-sidecar`).
+  para quitarlo (`sudo rm /usr/local/bin/ai-voice-interconnector`).
 - **`install.sh` limpia los AppImages anteriores**: tras instalar y dar
-  permisos al AppImage nuevo, elimina los `tts-sidecar-*.AppImage` previos de
-  `~/.local/opt/tts-sidecar/`, que antes se acumulaban (~1-2 GB por versión).
+  permisos al AppImage nuevo, elimina los `ai-voice-interconnector-*.AppImage` previos de
+  `~/.local/opt/ai-voice-interconnector/`, que antes se acumulaban (~1-2 GB por versión).
   Re-ejecutar el one-liner es ahora la vía de actualización limpia de Linux.
 
 ### Corregido
@@ -575,7 +575,7 @@ en Windows.
 - **Instalador Windows de una línea** (`install.ps1`, `irm | iex`): resuelve
   el release más reciente, descarga el instalador x86_64 y `SHA256SUMS.txt`,
   verifica el checksum SHA-256 antes de instalar (aborta si no coincide),
-  instala en silencio sin UAC y ejecuta `tts-sidecar setup`. La descarga por
+  instala en silencio sin UAC y ejecuta `ai-voice-interconnector setup`. La descarga por
   CLI no aplica el Mark-of-the-Web, así que no dispara SmartScreen (detalle
   en `docs/SELF-HOSTED-INSTALL.md` y `SECURITY.md`). Smoke-test Pester en CI
   (`test-installer-windows`) como puerta de los 4 builds.
@@ -584,7 +584,7 @@ en Windows.
 
 - **Instalador de Windows per-user**: Inno Setup pasa de per-machine a
   per-user — `PrivilegesRequired=lowest` (sin prompt de UAC), instalación en
-  `%LOCALAPPDATA%\Programs\tts-sidecar` (antes Program Files) y PATH de
+  `%LOCALAPPDATA%\Programs\ai-voice-interconnector` (antes Program Files) y PATH de
   usuario en `HKCU\Environment` (antes HKLM), incluida su reversión al
   desinstalar. **Nota de migración**: si tienes instalada una versión
   per-machine (anterior a 0.4.0), desinstálala primero desde el Panel de
@@ -605,8 +605,8 @@ existentes (nativo/PyPI).
   checksum SHA-256 contra `SHA256SUMS.txt` antes de instalar, integra el PATH
   vía la variable `APPIMAGE` y ejecuta `setup`. Documentado en `README.md` y
   `USAGE.md` con su desinstalación limpia de 3 pasos.
-- **Cask de Homebrew propio** (`homebrew-tts-sidecar`): `brew install --cask
-  tts-sidecar` instala desde el `.dmg` del release; `publish-metadata` en CI
+- **Cask de Homebrew propio** (`homebrew-ai-voice-interconnector`): `brew install --cask
+  ai-voice-interconnector` instala desde el `.dmg` del release; `publish-metadata` en CI
   reescribe el Cask con la versión y el `sha256` del `.dmg` en cada release
   (idempotente). Ver `docs/RELEASING.md` y `docs/DISTRIBUTION.md`.
 - **Runbook de reporte de falso positivo** a Windows Defender Security
@@ -621,13 +621,13 @@ existentes (nativo/PyPI).
 
 ## [0.2.1] — 2026-07-08
 
-Corrige la instalación vía `uv tool install tts-sidecar`: quedaba rota por un
+Corrige la instalación vía `uv tool install ai-voice-interconnector`: quedaba rota por un
 conflicto de resolución de dependencias entre `numpy` y `numba` (transitiva de
 `librosa`/`chatterbox-tts`).
 
 ### Corregido
 
-- **`uv tool install tts-sidecar` fallaba** al intentar compilar
+- **`uv tool install ai-voice-interconnector` fallaba** al intentar compilar
   `llvmlite==0.36.0` desde fuente en Python 3.13 (`RuntimeError: Cannot
   install on Python version 3.13.14; only versions >=3.6,<3.10 are
   supported`). Causa: `chatterbox-tts` declara `numpy>=2.0.0` sin tope
@@ -653,23 +653,23 @@ de roadmap en `docs/GOAL.md`.
 
 ### Añadido
 
-- **Canal de distribución PyPI**: `uv tool install tts-sidecar` / `pipx
-  install tts-sidecar` instala el CLI completo, incluida la voz `default`.
+- **Canal de distribución PyPI**: `uv tool install ai-voice-interconnector` / `pipx
+  install ai-voice-interconnector` instala el CLI completo, incluida la voz `default`.
   Publicación automática en cada tag `v*` vía el job `publish-pypi` de CI, en
   paralelo a los cuatro builds nativos. Documentado en el nuevo
   `docs/DISTRIBUTION.md`, con la matriz de trade-offs frente al canal nativo
   y el registro de la decisión de mantener ambos canales en paralelo.
-- **`src/tts_sidecar/bootstrap.py`**: consolida en una única función
+- **`src/ai_voice_interconnector/bootstrap.py`**: consolida en una única función
   idempotente (`apply()`) la supresión de warnings, las variables de entorno y
-  el mock de `pkg_resources` que antes solo vivían en `bin/tts-sidecar`,
+  el mock de `pkg_resources` que antes solo vivían en `bin/ai-voice-interconnector`,
   duplicados parcialmente en `daemon/run.py`. Corre igual desde el entry point
-  de pip, `bin/tts-sidecar`, `python -m tts_sidecar` y el daemon.
-- **`src/tts_sidecar/__main__.py`**: habilita `python -m tts_sidecar` como
+  de pip, `bin/ai-voice-interconnector`, `python -m ai_voice_interconnector` y el daemon.
+- **`src/ai_voice_interconnector/__main__.py`**: habilita `python -m ai_voice_interconnector` como
   vía de invocación adicional.
 
 ### Cambiado
 
-- **Voces de fábrica reubicadas** a `src/tts_sidecar/voices/` (antes `voices/`
+- **Voces de fábrica reubicadas** a `src/ai_voice_interconnector/voices/` (antes `voices/`
   en la raíz del repo), para que setuptools pueda empaquetarlas en el wheel
   (`package-data`); el bundle PyInstaller (`--add-data`) se actualizó al mismo
   origen.
@@ -677,9 +677,9 @@ de roadmap en `docs/GOAL.md`.
   siempre relativa al paquete (sin distinguir fuente/congelado) y `data_root()`
   devuelve siempre el user-data-dir por SO, incluso en modo fuente (antes
   caía dentro del propio checkout).
-- **`pyproject.toml` publicable**: entry point `tts-sidecar = "tts_sidecar.cli:main"`,
+- **`pyproject.toml` publicable**: entry point `ai-voice-interconnector = "ai_voice_interconnector.cli:main"`,
   versión dinámica (`dynamic = ["version"]`) resuelta desde
-  `tts_sidecar.__version__` como fuente única, metadata de PyPI completa
+  `ai_voice_interconnector.__version__` como fuente única, metadata de PyPI completa
   (`readme`, `urls`, `classifiers`, `keywords`) y `package-data` para las
   voces de fábrica.
 
@@ -760,7 +760,7 @@ de contrato son aditivos: los códigos de salida existentes no cambian y
   falla rápido remitiendo a `setup` (exit 2) sin cargar el engine ni disparar la
   descarga de su red de seguridad. Ningún subcomando descarga de forma implícita.
 - **Sandbox de audio del daemon acotado a un subdirectorio namespaced**: `/synthesize` acepta audio bajo los
-  directorios de voces (fábrica/usuario) y `<tempdir>/tts-sidecar/`, pero ya no
+  directorios de voces (fábrica/usuario) y `<tempdir>/ai-voice-interconnector/`, pero ya no
   bajo el tempdir compartido general (`%TEMP%`/`/tmp`), reduciendo la superficie
   de temp compartido preservando el staging IPC. `docs/DAEMON-MODE.md` y
   `USAGE.md` describen la superficie real.
@@ -777,7 +777,7 @@ de contrato son aditivos: los códigos de salida existentes no cambian y
 
 - **`voice list` ante un directorio de voces ilegible**: el mensaje
   apunta al directorio de voces de usuario implicado en vez de remitir a
-  `tts-sidecar setup` (que no resuelve un problema de filesystem); conserva
+  `ai-voice-interconnector setup` (que no resuelve un problema de filesystem); conserva
   exit 3.
 - **`--daemon --no-daemon` en la síntesis**: los flags contradictorios producen
   un error claro en stderr y exit 4 antes de cualquier trabajo, en vez de que
@@ -880,28 +880,28 @@ estado con el que nace el producto.
   `THIRD-PARTY-LICENSES.md` (inventario de licencias generado del lockfile).
   Código propio bajo GPL-3.0-or-later; modelo MIT.
 
-[0.10.5]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.4...v0.10.5
-[0.10.4]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.3...v0.10.4
-[0.10.3]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.2...v0.10.3
-[0.10.2]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.1...v0.10.2
-[0.10.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.10.0...v0.10.1
-[0.10.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.9.1...v0.10.0
-[0.9.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.9.0...v0.9.1
-[0.9.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.8...v0.8.0
-[0.7.8]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.7...v0.7.8
-[0.7.7]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.6...v0.7.7
-[0.7.6]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.5...v0.7.6
-[0.7.5]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.4...v0.7.5
-[0.7.4]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.3...v0.7.4
-[0.7.3]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.2...v0.7.3
-[0.7.2]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.7.0...v0.7.2
-[0.7.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases/tag/v0.4.0
-[0.3.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases/tag/v0.3.0
-[0.2.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases/tag/v0.2.1
-[0.2.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases/tag/v0.2.0
-[0.1.1]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases/tag/v0.1.0
+[0.10.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.10.4...v0.10.5
+[0.10.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.10.3...v0.10.4
+[0.10.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.10.2...v0.10.3
+[0.10.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.10.1...v0.10.2
+[0.10.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.9.1...v0.10.0
+[0.9.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.7.8...v0.8.0
+[0.7.8]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.7.7...v0.7.8
+[0.7.7]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.7.6...v0.7.7
+[0.7.6]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.7.5...v0.7.6
+[0.7.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.7.4...v0.7.5
+[0.7.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.7.0...v0.7.2
+[0.7.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.4.0
+[0.3.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.3.0
+[0.2.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.2.1
+[0.2.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.2.0
+[0.1.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.1.0

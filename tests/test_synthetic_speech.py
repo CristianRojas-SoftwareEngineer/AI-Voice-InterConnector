@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from tts_sidecar import synthetic_speech
+from ai_voice_interconnector import synthetic_speech
 
 
 @pytest.fixture

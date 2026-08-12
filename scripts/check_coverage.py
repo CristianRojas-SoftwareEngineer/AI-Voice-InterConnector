@@ -22,15 +22,15 @@ PROJECT_ROOT = Path(__file__).parent.parent
 # percent_covered observado al correr `pytest tests/ --cov-report=json`, para
 # que el gate arranque en verde con la suite actual y prevenga regresiones.
 MODULE_FLOORS = {
-    "tts_sidecar/cli.py": 83.0,
-    "tts_sidecar/daemon/server.py": 91.0,
-    "tts_sidecar/daemon/daemon.py": 63.0,
-    "tts_sidecar/daemon/ipc.py": 81.0,
-    "tts_sidecar/daemon/protocol.py": 100.0,
-    "tts_sidecar/daemon/run.py": 95.0,
-    "tts_sidecar/model_cache.py": 85.0,
-    "tts_sidecar/voices.py": 95.0,
-    "tts_sidecar/paths.py": 95.0,
+    "ai_voice_interconnector/cli.py": 83.0,
+    "ai_voice_interconnector/daemon/server.py": 91.0,
+    "ai_voice_interconnector/daemon/daemon.py": 63.0,
+    "ai_voice_interconnector/daemon/ipc.py": 81.0,
+    "ai_voice_interconnector/daemon/protocol.py": 100.0,
+    "ai_voice_interconnector/daemon/run.py": 95.0,
+    "ai_voice_interconnector/model_cache.py": 85.0,
+    "ai_voice_interconnector/voices.py": 95.0,
+    "ai_voice_interconnector/paths.py": 95.0,
 }
 
 
@@ -45,9 +45,9 @@ def load_module_coverage(json_path: Path) -> dict:
     result = {}
     for raw_path, file_data in data["files"].items():
         normalized = _normalize(raw_path)
-        # Recorta a partir de 'tts_sidecar/' para independizarse de la ruta
+        # Recorta a partir de 'ai_voice_interconnector/' para independizarse de la ruta
         # absoluta/relativa con la que coverage.py registró el archivo.
-        marker = "tts_sidecar/"
+        marker = "ai_voice_interconnector/"
         idx = normalized.rfind(marker)
         if idx != -1:
             normalized = normalized[idx:]

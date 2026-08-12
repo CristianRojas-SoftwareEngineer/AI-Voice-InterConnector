@@ -1,11 +1,11 @@
-# Plan de Migración — TTS-Sidecar: de runtime Python a runtime nativo Rust
+# Plan de Migración — AI-Voice-InterConnector: de runtime Python a runtime nativo Rust
 
 **Fecha:** 2026-08-12
 **Estado:** Especificación de diseño definitiva y plan de migración por fases.
 
 ## Introducción
 
-TTS-Sidecar es un componente de síntesis de voz (con clonación de voz), transcripción y
+AI-Voice-InterConnector es un componente de síntesis de voz (con clonación de voz), transcripción y
 traducción, consumible como CLI desde cualquier lenguaje y opcionalmente como daemon local.
 Hoy está implementado en Python y embarca motores nativos (Chatterbox para TTS, CTranslate2
 para STT/traducción), lo que arrastra un intérprete de Python —y, en Windows, una ruta WSL2
@@ -54,7 +54,7 @@ consumidores durante toda la transición.
 
 ## Propósito y encuadre
 
-Este documento define un plan **completo y accionable** para transformar TTS-Sidecar
+Este documento define un plan **completo y accionable** para transformar AI-Voice-InterConnector
 desde su implementación actual (aplicación Python que embarca motores nativos) hacia
 un **runtime nativo en Rust** que orquesta motores de inferencia nativos, sin
 intérprete de Python ni WSL en producción.
@@ -85,7 +85,7 @@ motor en Windows), y por eso el motor TTS es la última fase de la migración.
 
 ### Invariante rector: los contratos públicos se preservan
 
-TTS-Sidecar ya expone contratos congelados y estables entre lenguajes y SO. Son la
+AI-Voice-InterConnector ya expone contratos congelados y estables entre lenguajes y SO. Son la
 **red de seguridad** de toda la migración: cada componente Rust se acepta cuando
 reproduce el contrato que hoy cumple su equivalente Python, con la versión Python como
 **oráculo de comportamiento**. Los invariantes son:
@@ -111,7 +111,7 @@ reproduce el contrato que hoy cumple su equivalente Python, con la versión Pyth
 | Build | `setuptools` / `pyproject.toml`; distribución binaria vía **PyInstaller `--onedir`** |
 | Instalador | Windows vía Inno Setup (`scripts/create_installer_windows.py`) |
 | Plataformas | Windows x64, Linux x64/ARM64, macOS ARM64 |
-| Entry point | `tts-sidecar = tts_sidecar.cli:main` |
+| Entry point | `ai-voice-interconnector = ai_voice_interconnector.cli:main` |
 | Naturaleza | CLI consumible desde cualquier lenguaje vía `subprocess`; daemon opcional |
 
 ### 1.2 Superficie funcional (CLI)
@@ -161,7 +161,7 @@ UTF-8 en toda plataforma.
 ### 1.4 Arquitectura interna por subsistema
 
 ```
-src/tts_sidecar/
+src/ai_voice_interconnector/
 ├── cli.py            # superficie CLI, validación cliente, despacho de tres modos
 ├── engine.py         # ChatterboxEngine (façade + composition root)
 ├── synthesis.py      # SynthesisOrchestrator (flujo de síntesis, ciclo del progress_cb)
@@ -293,7 +293,7 @@ claro a simplificación.
 
 ```
                         ┌──────────────────────────────┐
-                        │        TTS-Sidecar (Rust)     │
+                        │        AI-Voice-InterConnector (Rust)     │
                         │  CLI (clap) · Daemon (Axum)   │
                         │  Config · Model/Voice manager │
                         │  Audio manager · Streaming    │

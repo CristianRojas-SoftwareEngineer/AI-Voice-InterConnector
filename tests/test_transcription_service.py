@@ -9,7 +9,7 @@ import wave
 
 import numpy as np
 
-from tts_sidecar.transcription.service import TranscriptionService, _default_audio_reader
+from ai_voice_interconnector.transcription.service import TranscriptionService, _default_audio_reader
 
 
 class _FakeLoader:

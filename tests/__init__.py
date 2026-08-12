@@ -1,1 +1,1 @@
-"""Tests for tts-sidecar."""
+"""Tests for ai-voice-interconnector."""

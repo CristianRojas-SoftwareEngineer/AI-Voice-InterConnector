@@ -8,7 +8,7 @@ voices/*
 !voices/default/
 # Artefactos de build del AppImage
 AppDir/
-tts-sidecar.png
+ai-voice-interconnector.png
 *.spec
 # Config de Claude Code: ignorar el contenido de .claude/ (skills, sesión, etc.),
 # pero versionar el prompt de continuidad.

@@ -124,7 +124,7 @@ Cuando `--json` está activo, `emit_json` (`cli.py:69-80`) emite un único objet
 |---|---|---|---|
 | Texto vacío | 2 | `usage_error` | "Error: --text no puede estar vacío." |
 | Texto > 5000 chars | 2 | `usage_error` | "Error: el texto tiene N caracteres; el máximo..." |
-| `TranslationModelMissingError` | 4 | `model_missing` | "Ejecuta 'tts-sidecar setup --language en' primero." |
+| `TranslationModelMissingError` | 4 | `model_missing` | "Ejecuta 'ai-voice-interconnector setup --language en' primero." |
 | `UnsupportedLanguagePairError` | 2 | `usage_error` | "Error: {e}" |
 | `TranslationFailedError` | 9 | `translation_failed` | "Error: {e}" |
 

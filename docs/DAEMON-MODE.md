@@ -19,7 +19,7 @@ El daemon mode mantiene los modelos de Chatterbox en memoria entre invocaciones 
 Sin daemon, cada ejecución del CLI funciona así:
 
 ```
-$ tts-sidecar speech synthesize --text "Hola" --label demo
+$ ai-voice-interconnector speech synthesize --text "Hola" --label demo
 → Nuevo proceso Python
 → Importa engine.py
 → ChatterboxEngine.__init__() carga modelo (~5-8s)
@@ -60,7 +60,7 @@ El daemon es un servidor HTTP persistente que mantiene el modelo cargado:
                                                   │
                                                   ▼
                                 ┌───────────────────────────────────┐
-                                │     tts-sidecar-daemon            │
+                                │     ai-voice-interconnector-daemon            │
                                 │                                   │
                                 │  - ChatterboxEngine (cacheado)    │
                                 │  - torch.compile (aplicado)      │
@@ -73,7 +73,7 @@ El daemon es un servidor HTTP persistente que mantiene el modelo cargado:
 ### Estructura de Archivos
 
 ```
-src/tts_sidecar/
+src/ai_voice_interconnector/
 ├── cli.py              # CLI con fallback a daemon
 ├── engine.py           # ChatterboxEngine
 ├── audio.py            # AudioPlayer
@@ -84,7 +84,7 @@ src/tts_sidecar/
     ├── daemon.py       # Gestor del ciclo de vida (start/stop/restart)
     ├── ipc.py          # Cliente HTTP para CLI → daemon
     ├── protocol.py     # Modelos Pydantic de request/response
-    └── run.py          # Entry point: python -m tts_sidecar.daemon.run
+    └── run.py          # Entry point: python -m ai_voice_interconnector.daemon.run
 ```
 
 ### Protocolo de Comunicación
@@ -175,11 +175,11 @@ lugar:
   que aún no los envía.
 
 `HealthResponse` expone además **`version`** (string, vacío por defecto): la
-versión del paquete `tts-sidecar` que sirve ese daemon (`__version__`), poblada
+versión del paquete `ai-voice-interconnector` que sirve ese daemon (`__version__`), poblada
 por el endpoint `/health`. Sirve para diagnosticar el skew real entre el CLI y
-un daemon residente: si `tts-sidecar version` y el `version` de
-`tts-sidecar daemon status --json` (o `/health` directamente) difieren tras una
-actualización, `tts-sidecar daemon restart` relanza el daemon con el binario
+un daemon residente: si `ai-voice-interconnector version` y el `version` de
+`ai-voice-interconnector daemon status --json` (o `/health` directamente) difieren tras una
+actualización, `ai-voice-interconnector daemon restart` relanza el daemon con el binario
 nuevo.
 
 Estas garantías son deliberadamente aditivas: mientras los cambios al protocolo
@@ -191,34 +191,34 @@ arriba).
 
 ```bash
 # Iniciar daemon (background)
-tts-sidecar daemon start
+ai-voice-interconnector daemon start
 
 # Iniciar daemon con auto-restart
-tts-sidecar daemon start --autorestart --max-retries 3
+ai-voice-interconnector daemon start --autorestart --max-retries 3
 
 # Precargar solo un idioma (default "all" precarga es-latam y en)
-tts-sidecar daemon start --language es-latam
+ai-voice-interconnector daemon start --language es-latam
 
 # Precargar también el modelo de transcripción (requiere setup --with-stt; opt-in)
-tts-sidecar daemon start --with-stt
+ai-voice-interconnector daemon start --with-stt
 
 # Detener daemon
-tts-sidecar daemon stop
+ai-voice-interconnector daemon stop
 
 # Reiniciar daemon
-tts-sidecar daemon restart
+ai-voice-interconnector daemon restart
 
 # Ver estado del daemon
-tts-sidecar daemon status
+ai-voice-interconnector daemon status
 
 # Sin flags: synthesis sondea el daemon y lo usa si responde (autodetect)
-tts-sidecar speech synthesize --text "Hola" --label demo
+ai-voice-interconnector speech synthesize --text "Hola" --label demo
 
 # Forzar daemon (sin sondear previo; falla si el daemon no responde)
-tts-sidecar speech synthesize --text "Hola" --label demo --daemon
+ai-voice-interconnector speech synthesize --text "Hola" --label demo --daemon
 
 # Forzar modo directo (sin sondear el daemon)
-tts-sidecar speech synthesize --text "Hola" --label demo --no-daemon
+ai-voice-interconnector speech synthesize --text "Hola" --label demo --no-daemon
 ```
 
 > **Código de salida para integradores**: `speech synthesize --daemon` (y
@@ -279,10 +279,10 @@ tts-sidecar speech synthesize --text "Hola" --label demo --no-daemon
 >
 > | Target de build | SO        | Ruta de `daemon.pid` |
 > | --------------- | --------- | -------------------- |
-> | `build-windows-x64` | Windows     | `%LOCALAPPDATA%\tts-sidecar\daemon.pid` (p. ej. `C:\Users\<user>\AppData\Local\tts-sidecar\daemon.pid`) |
-> | `build-linux-x64`   | Linux x64   | `$XDG_DATA_HOME/tts-sidecar/daemon.pid` o `~/.local/share/tts-sidecar/daemon.pid` |
-> | `build-linux-arm64` | Linux arm64 | `$XDG_DATA_HOME/tts-sidecar/daemon.pid` o `~/.local/share/tts-sidecar/daemon.pid` |
-> | `build-darwin-arm64`| macOS arm64 | `~/Library/Application Support/tts-sidecar/daemon.pid` |
+> | `build-windows-x64` | Windows     | `%LOCALAPPDATA%\ai-voice-interconnector\daemon.pid` (p. ej. `C:\Users\<user>\AppData\Local\ai-voice-interconnector\daemon.pid`) |
+> | `build-linux-x64`   | Linux x64   | `$XDG_DATA_HOME/ai-voice-interconnector/daemon.pid` o `~/.local/share/ai-voice-interconnector/daemon.pid` |
+> | `build-linux-arm64` | Linux arm64 | `$XDG_DATA_HOME/ai-voice-interconnector/daemon.pid` o `~/.local/share/ai-voice-interconnector/daemon.pid` |
+> | `build-darwin-arm64`| macOS arm64 | `~/Library/Application Support/ai-voice-interconnector/daemon.pid` |
 >
 > La arquitectura no cambia la plantilla de ruta (los dos targets Linux la
 > comparten), y los tres modos de ejecución (fuente, pip-install, congelado)
@@ -303,7 +303,7 @@ tts-sidecar speech synthesize --text "Hola" --label demo --no-daemon
 > **Timeout de síntesis del cliente**: el cliente IPC espera la respuesta de
 > `/synthesize` hasta **300 s** por defecto (audio largo en CPU lenta). Un
 > consumidor programático que prefiera fallar antes puede reducirlo con la
-> variable de entorno **`TTS_SIDECAR_REQUEST_TIMEOUT`** (segundos, admite
+> variable de entorno **`AI_VOICE_INTERCONNECTOR_REQUEST_TIMEOUT`** (segundos, admite
 > decimales; un valor inválido o no positivo se ignora y se conserva el
 > default). Al expirar, `speech synthesize --daemon` (o `speech say --daemon`)
 > falla con el error IPC estándar; no hay reintento automático.

@@ -1,4 +1,4 @@
-"""Excepciones compartidas del motor y del daemon de tts-sidecar.
+"""Excepciones compartidas del motor y del daemon de ai-voice-interconnector.
 
 Módulo deliberadamente libre de imports pesados (no importa torch ni
 chatterbox) para que el servidor del daemon pueda importar el tipo de

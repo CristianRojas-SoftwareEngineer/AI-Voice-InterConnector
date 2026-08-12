@@ -1,6 +1,6 @@
 # Guía de contribución
 
-Gracias por tu interés en contribuir a TTS Sidecar. Este documento describe el
+Gracias por tu interés en contribuir a AI Voice InterConnector. Este documento describe el
 flujo de desarrollo, los estándares del proyecto y cómo proponer cambios.
 
 ## Tabla de contenidos
@@ -25,16 +25,16 @@ flujo de desarrollo, los estándares del proyecto y cómo proponer cambios.
 ## Configuración del entorno de desarrollo
 
 ```bash
-git clone https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar.git
-cd TTS-Sidecar
+git clone https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector.git
+cd AI-Voice-InterConnector
 
 # Instalar dependencias de desarrollo (límites >=; ver nota más abajo)
 pip install -r requirements.txt
 pip install pytest
 
 # Ejecutar el CLI desde el código fuente
-python bin/tts-sidecar version
-python bin/tts-sidecar doctor
+python bin/ai-voice-interconnector version
+python bin/ai-voice-interconnector doctor
 ```
 
 > Los **builds y el CI** no instalan desde `requirements.txt`, sino desde
@@ -154,6 +154,6 @@ python scripts/build_macos.py --arch arm64
 ## Reporte de problemas
 
 - **Bugs y solicitudes de función**: abre un
-  [Issue](https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/issues).
+  [Issue](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/issues).
 - **Vulnerabilidades de seguridad**: sigue [SECURITY.md](SECURITY.md) (no las
   reportes en un Issue público).

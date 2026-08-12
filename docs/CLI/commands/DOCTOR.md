@@ -73,8 +73,8 @@ Itera sobre `(("es-latam", "es-mx-latam"), ("en", "en"))` y llama a `is_model_ca
 
 | Idioma | Modelo | Éxito | Fallo |
 |---|---|---|---|
-| `es-latam` | `es-mx-latam` | PASS: "{model} presente en la caché" | FAIL: "{model} no está en caché (ejecuta: tts-sidecar setup --language {lang})" |
-| `en` | `en` | PASS: "{model} presente en la caché" | FAIL: "{model} no está en caché (ejecuta: tts-sidecar setup --language {lang})" |
+| `es-latam` | `es-mx-latam` | PASS: "{model} presente en la caché" | FAIL: "{model} no está en caché (ejecuta: ai-voice-interconnector setup --language {lang})" |
+| `en` | `en` | PASS: "{model} presente en la caché" | FAIL: "{model} no está en caché (ejecuta: ai-voice-interconnector setup --language {lang})" |
 
 Genera **2 chequeos** (uno por idioma), no uno consolidado.
 
@@ -94,7 +94,7 @@ missing = [
 | Condición | Resultado |
 |---|---|
 | Ambas direcciones presentes (`es→en` y `en→es`) | PASS: "opus-mt presente en la caché" |
-| Falta una o ambas | FAIL: "falta(n) {lista} (ejecuta: tts-sidecar setup --language en)" |
+| Falta una o ambas | FAIL: "falta(n) {lista} (ejecuta: ai-voice-interconnector setup --language en)" |
 | Excepción | FAIL con mensaje de error |
 
 Es un **único chequeo lógico** — las dos direcciones se agrupan porque se provisionan juntas en `setup --language en/all` (`cli.py:1295-1297`).
@@ -114,7 +114,7 @@ if Path(transcription_cache_dir()).exists():
 | Condición | Resultado |
 |---|---|
 | Directorio existe | PASS: "faster-whisper-small presente en la caché" |
-| Directorio no existe | FAIL: "falta faster-whisper-small (ejecuta: tts-sidecar setup --with-stt)" |
+| Directorio no existe | FAIL: "falta faster-whisper-small (ejecuta: ai-voice-interconnector setup --with-stt)" |
 | Excepción | FAIL con mensaje de error |
 
 ### Chequeo de directorio de voces

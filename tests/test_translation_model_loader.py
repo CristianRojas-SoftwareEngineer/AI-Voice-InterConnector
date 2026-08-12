@@ -9,8 +9,8 @@ verifican la carga/caché en memoria y la resolución de idioma/par.
 
 import pytest
 
-from tts_sidecar.exceptions import TranslationModelMissingError, UnsupportedLanguagePairError
-from tts_sidecar.translation.model_loader import (
+from ai_voice_interconnector.exceptions import TranslationModelMissingError, UnsupportedLanguagePairError
+from ai_voice_interconnector.translation.model_loader import (
     TranslationModelLoader,
     resolve_language,
     model_pair_name,
@@ -129,7 +129,7 @@ def test_default_translator_factory_real_ct2_sentencepiece_contract(tmp_path, mo
     requeriría un modelo convertido real, inviable en un test unitario)."""
     import ctranslate2
 
-    from tts_sidecar.translation.model_loader import _default_translator_factory
+    from ai_voice_interconnector.translation.model_loader import _default_translator_factory
 
     _train_spm(tmp_path, "source.spm")
     _train_spm(tmp_path, "target.spm")
@@ -166,7 +166,7 @@ def test_translate_appends_source_eos_token(tmp_path, monkeypatch):
     `_MarianCT2Model.translate` debe añadirlo antes de `translate_batch`."""
     import ctranslate2
 
-    from tts_sidecar.translation.model_loader import _default_translator_factory
+    from ai_voice_interconnector.translation.model_loader import _default_translator_factory
 
     _train_spm(tmp_path, "source.spm")
     _train_spm(tmp_path, "target.spm")

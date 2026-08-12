@@ -1,5 +1,5 @@
 """
-TTS Sidecar — síntesis de voz con clonación de voz.
+AI Voice InterConnector — síntesis de voz con clonación de voz.
 100% local, licencia GPL-3.0-or-later, soporte para español latinoamericano.
 
 Copyright (C) 2026 Cristián Rojas Arredondo
@@ -34,5 +34,5 @@ def __getattr__(name):
 
 # API pública real: ambos símbolos son imports perezosos resueltos por
 # __getattr__ arriba; declararlos explícitamente evita que `__all__ = []`
-# contradiga lo que el paquete expone de facto (p. ej. `from tts_sidecar import *`).
+# contradiga lo que el paquete expone de facto (p. ej. `from ai_voice_interconnector import *`).
 __all__ = ["ChatterboxEngine", "AudioPlayer"]

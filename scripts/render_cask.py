@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generador puro del Cask de Homebrew `tts-sidecar.rb`.
+"""Generador puro del Cask de Homebrew `ai-voice-interconnector.rb`.
 
 Reescribe el contenido del Cask a partir de un tag de versión (`CIRCLE_TAG`,
 p. ej. "v1.2.3") y el contenido de `SHA256SUMS.txt` publicado junto al
@@ -15,19 +15,19 @@ import re
 import sys
 from pathlib import Path
 
-# Nombre del Cask en el tap `homebrew-tts-sidecar` (Casks/tts-sidecar.rb).
-CASK_NAME = "tts-sidecar"
+# Nombre del Cask en el tap `homebrew-ai-voice-interconnector` (Casks/ai-voice-interconnector.rb).
+CASK_NAME = "ai-voice-interconnector"
 
 # Owner/repo de GitHub, fuente de la URL de descarga del .dmg y de livecheck.
-GITHUB_REPO = "CristianRojas-SoftwareEngineer/TTS-Sidecar"
+GITHUB_REPO = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
 
 _CASK_TEMPLATE = """\
 cask "{cask_name}" do
   version "{version}"
   sha256 "{sha256}"
 
-  url "https://github.com/{repo}/releases/download/v#{{version}}/tts-sidecar-#{{version}}-arm64.dmg"
-  name "TTS Sidecar"
+  url "https://github.com/{repo}/releases/download/v#{{version}}/ai-voice-interconnector-#{{version}}-arm64.dmg"
+  name "AI Voice InterConnector"
   desc "Motor de sintesis de voz (TTS) offline con clonacion de voz en espanol latinoamericano"
   homepage "https://github.com/{repo}"
 
@@ -38,11 +38,11 @@ cask "{cask_name}" do
 
   depends_on macos: ">= :big_sur"
 
-  app "tts-sidecar-arm64.app"
-  binary "#{{appdir}}/tts-sidecar-arm64.app/Contents/MacOS/tts-sidecar"
+  app "ai-voice-interconnector-arm64.app"
+  binary "#{{appdir}}/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector"
 
   zap trash: [
-    "~/Library/Application Support/tts-sidecar",
+    "~/Library/Application Support/ai-voice-interconnector",
     "~/.cache/huggingface/hub/models--ResembleAI--Chatterbox-Multilingual-es-mx-latam",
     "~/.cache/huggingface/hub/models--ResembleAI--chatterbox",
   ]
@@ -50,12 +50,12 @@ cask "{cask_name}" do
   caveats <<~EOS
     Los modelos de voz (es-mx-latam + en, ~6 GB en total) no vienen incluidos:
     descargalos una sola vez con:
-      tts-sidecar setup
+      ai-voice-interconnector setup
 
     Licencia: GPL-3.0-or-later. La oferta de codigo fuente (GPLv3 seccion 6)
     y las atribuciones de terceros viajan dentro del bundle instalado:
-      #{{appdir}}/tts-sidecar-arm64.app/Contents/Resources/SOURCE-OFFER.md
-      #{{appdir}}/tts-sidecar-arm64.app/Contents/Resources/THIRD-PARTY-LICENSES.md
+      #{{appdir}}/ai-voice-interconnector-arm64.app/Contents/Resources/SOURCE-OFFER.md
+      #{{appdir}}/ai-voice-interconnector-arm64.app/Contents/Resources/THIRD-PARTY-LICENSES.md
   EOS
 end
 """
@@ -66,12 +66,12 @@ def parse_dmg_sha256(sums_text: str, version: str) -> str:
 
     `SHA256SUMS.txt` tiene una línea por artefacto: `<hash>  <nombre-archivo>`
     (formato de `sha256sum`). Busca la línea del .dmg versionado
-    (`tts-sidecar-<version>-arm64.dmg`, sin la `v` inicial del tag) y devuelve
+    (`ai-voice-interconnector-<version>-arm64.dmg`, sin la `v` inicial del tag) y devuelve
     su hash. Aborta con ValueError si no la encuentra o si el archivo tiene
     varias coincidencias (ambigüedad que nunca debería ocurrir).
     """
     pattern = re.compile(
-        r"^([0-9a-fA-F]{64})\s+\S*tts-sidecar-" + re.escape(version) + r"-arm64\.dmg\s*$",
+        r"^([0-9a-fA-F]{64})\s+\S*ai-voice-interconnector-" + re.escape(version) + r"-arm64\.dmg\s*$",
         re.MULTILINE,
     )
     matches = pattern.findall(sums_text)
@@ -115,7 +115,7 @@ def render_cask_from_tag(circle_tag: str, sums_text: str) -> str:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Genera Casks/tts-sidecar.rb")
+    parser = argparse.ArgumentParser(description="Genera Casks/ai-voice-interconnector.rb")
     parser.add_argument("--tag", required=True, help="Tag de release, p. ej. v1.2.3 (CIRCLE_TAG)")
     parser.add_argument("--sums-file", required=True, type=Path, help="Ruta a SHA256SUMS.txt")
     parser.add_argument("--out", required=True, type=Path, help="Ruta de salida del Cask .rb")

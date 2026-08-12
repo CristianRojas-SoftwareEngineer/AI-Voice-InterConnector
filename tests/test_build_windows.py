@@ -86,5 +86,5 @@ def test_version_file_passed_to_pyinstaller(monkeypatch):
     version_file = Path(args[args.index("--version-file") + 1])
     assert version_file.exists()
     contenido = version_file.read_text(encoding="utf-8")
-    assert "TTS Sidecar" in contenido
+    assert "AI Voice InterConnector" in contenido
     assert "GPL-3.0-or-later" in contenido

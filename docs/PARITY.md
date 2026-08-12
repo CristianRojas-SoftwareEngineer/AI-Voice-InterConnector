@@ -37,10 +37,10 @@ host) en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
 
 ### Estado
 
-- **Windows**: `install-windows.ps1` (`irm | iex`) resuelve el release, verifica el checksum, instala en silencio per-user (sin UAC, PATH en HKCU) y encadena `tts-sidecar setup`. Cero prerequisitos: PowerShell viene con el SO.
-- **Linux**: `install-linux.sh` (`curl | sh`) hace lo análogo: checksum, instala en `~/.local/opt/tts-sidecar/`, exporta `APPIMAGE` y encadena `setup` (que crea el symlink de PATH en `~/.local/bin`). Cero prerequisitos en la práctica (`curl` + coreutils).
+- **Windows**: `install-windows.ps1` (`irm | iex`) resuelve el release, verifica el checksum, instala en silencio per-user (sin UAC, PATH en HKCU) y encadena `ai-voice-interconnector setup`. Cero prerequisitos: PowerShell viene con el SO.
+- **Linux**: `install-linux.sh` (`curl | sh`) hace lo análogo: checksum, instala en `~/.local/opt/ai-voice-interconnector/`, exporta `APPIMAGE` y encadena `setup` (que crea el symlink de PATH en `~/.local/bin`). Cero prerequisitos en la práctica (`curl` + coreutils).
 - **macOS**: **no existe one-liner equivalente.** Las dos vías actuales:
-  - **Cask de Homebrew** (`brew tap … && brew install --cask tts-sidecar`): automatiza checksum, PATH y cuarentena, pero **exige tener Homebrew instalado** — un prerequisito de terceros que la audiencia declarada del canal nativo ("usuario final sin Python", `docs/DISTRIBUTION.md`) no necesariamente tiene. Además **no provisiona el modelo**: Homebrew no permite post-install arbitrario, así que el Cask solo imprime un *caveat* remitiendo a `tts-sidecar setup` (`scripts/render_cask.py`).
+  - **Cask de Homebrew** (`brew tap … && brew install --cask ai-voice-interconnector`): automatiza checksum, PATH y cuarentena, pero **exige tener Homebrew instalado** — un prerequisito de terceros que la audiencia declarada del canal nativo ("usuario final sin Python", `docs/DISTRIBUTION.md`) no necesariamente tiene. Además **no provisiona el modelo**: Homebrew no permite post-install arbitrario, así que el Cask solo imprime un *caveat* remitiendo a `ai-voice-interconnector setup` (`scripts/render_cask.py`).
   - **`.dmg` manual**: montar, arrastrar el `.app`, ejecutar `Instalar (PATH + modelo).command`, **teclear la contraseña de administrador** (`sudo` para el symlink en `/usr/local/bin`, `scripts/build_macos.py::_path_install_script`) y responder el prompt de descarga del modelo. Es la única vía de instalación del proyecto que pide privilegios elevados, y el checksum queda a cargo del usuario.
 
 Asimetría documental (cerrada en v0.5.0): el README ahora se titula «Instalación de una línea» y documenta los tres SO más el Cask como alternativa de macOS.
@@ -82,12 +82,12 @@ Nada pendiente en esta fase.
 ### Estado
 
 - **Windows**: repetir el one-liner (o el instalador nuevo); Inno reemplaza la instalación per-user en el mismo directorio y conserva el PATH. Limpio.
-- **macOS (Cask)**: `brew upgrade --cask tts-sidecar` con `livecheck` — la mejor experiencia de actualización de las tres plataformas.
+- **macOS (Cask)**: `brew upgrade --cask ai-voice-interconnector` con `livecheck` — la mejor experiencia de actualización de las tres plataformas.
 - **Linux**: re-ejecutar `install-linux.sh` con una versión nueva instala el AppImage nuevo, reapunta el symlink y **elimina los AppImages anteriores** del directorio de instalación (cerrado en v0.5.0). En la vía manual, reemplazar el archivo sin re-correr `setup` sigue dejando el symlink de PATH colgante (trampa documentada en `USAGE.md`), pero la vía recomendada (re-ejecutar el one-liner) ya no la tiene.
 
 ### Qué falta para la paridad
 
-- **Brecha de *acumulación de AppImages* [CERRADA]**: `install-linux.sh` elimina las versiones anteriores tras instalar y dar permisos al AppImage nuevo: un bucle POSIX borra los `tts-sidecar-*.AppImage` previos de `~/.local/opt/tts-sidecar/` (de su propiedad exclusiva), dejando exactamente un AppImage. Cubierto por un test `bats` de actualización.
+- **Brecha de *acumulación de AppImages* [CERRADA]**: `install-linux.sh` elimina las versiones anteriores tras instalar y dar permisos al AppImage nuevo: un bucle POSIX borra los `ai-voice-interconnector-*.AppImage` previos de `~/.local/opt/ai-voice-interconnector/` (de su propiedad exclusiva), dejando exactamente un AppImage. Cubierto por un test `bats` de actualización.
 
 ## Fase 5 — Desinstalación
 
@@ -96,13 +96,13 @@ Nada pendiente en esta fase.
 El contrato (`USAGE.md` §"Desinstalación completa") es: datos primero (`cleanup --all`), integración de PATH después, binario al final. `setup --uninstall` es un **comando único en los tres SO** (v0.6.0), un dispatch por SO sobre ese contrato compartido con cancelación atómica (cancelar el cleanup aborta sin borrar nada, salida 0) y guard de canal nativo (`is_frozen`; desde fuente o pip/uv remite a `pip uninstall`). Lo único que cambia por SO es el paso del binario:
 
 - **Windows**: `setup --uninstall` borra los datos en proceso y **delega** el binario y la reversión del PATH (HKCU) al desinstalador de Inno, lanzado desacoplado con el `QuietUninstallString` del registro (el SO mantiene el lock del `.exe`); el directorio de instalación se reporta en `delegated`, no en `removed`. **Un comando.** La vía idiomática (Configuración → Aplicaciones) sigue como alternativa.
-- **Linux**: `setup --uninstall` encadena `cleanup --all`, quita el symlink de PATH y borra `~/.local/opt/tts-sidecar/`. **Un comando.** (`setup --remove-path` se conserva como reversión fina del symlink.)
+- **Linux**: `setup --uninstall` encadena `cleanup --all`, quita el symlink de PATH y borra `~/.local/opt/ai-voice-interconnector/`. **Un comando.** (`setup --remove-path` se conserva como reversión fina del symlink.)
 - **macOS**: `setup --uninstall` encadena `cleanup --all`, quita el symlink per-user y borra el `.app` (localizado desde `sys.executable`, cubre `~/Applications`, `/Applications` y el Cask). **Un comando.** Con **Homebrew Cask** lo detecta por la metadata del Caskroom y **difiere a `brew uninstall --cask --zap`** sin borrar nada (para no dejar el Caskroom inconsistente).
 
 ### Qué falta para la paridad
 
 - **Brecha de *`zap` completo del Cask* [CERRADA]**: el `zap` del Cask incluye el repo base del modelo (`~/.cache/huggingface/hub/models--ResembleAI--chatterbox`) además del multilingüe — corrección en `_CASK_TEMPLATE` de `scripts/render_cask.py`, cubierta por test; se propaga al tap con el release v0.5.0 vía `publish-metadata`.
-- **Brecha de *desinstalador de Linux* [CERRADA]**: `tts-sidecar setup --uninstall` desinstala Linux en un paso: quita el symlink, borra `~/.local/opt/tts-sidecar/` y encadena `cleanup --all` (con confirmación o `--yes`), con contrato `--json` y tests pytest.
+- **Brecha de *desinstalador de Linux* [CERRADA]**: `ai-voice-interconnector setup --uninstall` desinstala Linux en un paso: quita el symlink, borra `~/.local/opt/ai-voice-interconnector/` y encadena `cleanup --all` (con confirmación o `--yes`), con contrato `--json` y tests pytest.
 - **Brecha de *desinstalación en un comando* [CERRADA a nivel de código en v0.6.0]**: `setup --uninstall` es ahora multiplataforma — un dispatch por SO (`_uninstall` en `cli.py`) sobre un contrato compartido: guard `is_frozen`, gate `--json`/`--yes`, orden unificado datos → PATH → binario y cancelación atómica. La rama Linux se reordenó a ese orden (el reorden habilita cancelar sin borrar nada); macOS resuelve el `.app` desde `sys.executable` con deferral a Homebrew por metadata del Caskroom; Windows valida el `QuietUninstallString` primero y delega el binario+PATH al desinstalador de Inno desacoplado, con el directorio de instalación en `delegated`. Cubierto por la suite `TestSetupUninstall` de los tres SO. La marca del criterio de aceptación 10 depende además de la validación por feedback de usuarios reales en Linux y macOS (frontera E2E externa al CI, ver [docs/GOAL.md](GOAL.md#validación-e2e)).
 
 ## Registro de brechas

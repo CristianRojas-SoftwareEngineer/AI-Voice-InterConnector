@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from tts_sidecar import voices
+from ai_voice_interconnector import voices
 
 
 @pytest.fixture
@@ -309,8 +309,8 @@ class TestCmdVoiceRemoveIOErrors:
 
     def test_permission_error_gives_different_message_and_exits_6(self, voice_roots, monkeypatch, capsys):
         import shutil as shutil_module
-        from tts_sidecar import cli
-        from tts_sidecar.exit_codes import EXIT_STATE_CONFLICT
+        from ai_voice_interconnector import cli
+        from ai_voice_interconnector.exit_codes import EXIT_STATE_CONFLICT
 
         user_root, _ = voice_roots
         _make_voice(user_root, "mia")
@@ -329,8 +329,8 @@ class TestCmdVoiceRemoveIOErrors:
         assert "no encontrada" not in err
 
     def test_nonexistent_voice_gives_different_message(self, voice_roots, capsys):
-        from tts_sidecar import cli
-        from tts_sidecar.exit_codes import EXIT_NOT_FOUND
+        from ai_voice_interconnector import cli
+        from ai_voice_interconnector.exit_codes import EXIT_NOT_FOUND
 
         with pytest.raises(cli.CliError) as exc_info:
             cli.cmd_voice_remove(self._args("no_existe"))

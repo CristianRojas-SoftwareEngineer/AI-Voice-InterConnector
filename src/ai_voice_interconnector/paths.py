@@ -11,10 +11,10 @@ PyInstaller): se distinguen dos raíces según su propósito.
 - **Raíz de fábrica** (`bundled_voices_dir`): de **solo lectura**, con las
   voces empaquetadas (p. ej. la voz de fábrica `default`). Es siempre el
   subdirectorio `voices/` relativo a este paquete: en modo fuente y
-  pip/uv-installed es `tts_sidecar/voices/` dentro del árbol del paquete; en
+  pip/uv-installed es `ai_voice_interconnector/voices/` dentro del árbol del paquete; en
   modo congelado (PyInstaller onedir) es el mismo subdirectorio dentro de
   `sys._MEIPASS`, donde el bundle extrae los datos incluidos vía
-  `--add-data ...:tts_sidecar/voices` (ver `scripts/build_utils.py`).
+  `--add-data ...:ai_voice_interconnector/voices` (ver `scripts/build_utils.py`).
 
 El build nativo es **onedir** (no onefile): el ejecutable convive con su
 directorio `_internal/`. Se usa el user-data-dir por SO para las voces de
@@ -48,7 +48,7 @@ def data_root() -> str:
     else:
         base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
 
-    root = os.path.join(base, "tts-sidecar")
+    root = os.path.join(base, "ai-voice-interconnector")
     Path(root).mkdir(parents=True, exist_ok=True)
     return root
 
@@ -71,12 +71,12 @@ def bundled_voices_dir() -> str:
     """
     Directorio de voces de fábrica empaquetadas (solo lectura).
 
-    Congelado: `sys._MEIPASS/tts_sidecar/voices`, donde PyInstaller extrae los
+    Congelado: `sys._MEIPASS/ai_voice_interconnector/voices`, donde PyInstaller extrae los
     datos empaquetados vía `--add-data`.
     Fuente y pip/uv-installed: el subdirectorio `voices` de este mismo paquete.
     """
     if is_frozen():
         meipass = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-        return os.path.join(meipass, "tts_sidecar", "voices")
+        return os.path.join(meipass, "ai_voice_interconnector", "voices")
 
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices")

@@ -8,8 +8,8 @@ real, solo verifican la carga/caché en memoria.
 
 import pytest
 
-from tts_sidecar.exceptions import TranscriptionModelMissingError
-from tts_sidecar.transcription.model_loader import WhisperModelLoader
+from ai_voice_interconnector.exceptions import TranscriptionModelMissingError
+from ai_voice_interconnector.transcription.model_loader import WhisperModelLoader
 
 
 def test_load_returns_model_from_injected_factory(tmp_path):

@@ -1,5 +1,5 @@
 """
-Servidor FastAPI del daemon de tts-sidecar.
+Servidor FastAPI del daemon de ai-voice-interconnector.
 Expone endpoints HTTP para síntesis TTS con el modelo persistente en memoria.
 """
 
@@ -151,7 +151,7 @@ def _clear_model_memory():
 
 # Aplicación FastAPI
 app = FastAPI(
-    title="tts-sidecar-daemon",
+    title="ai-voice-interconnector-daemon",
     description="Daemon TTS persistente con modelo cacheado en memoria",
 )
 # Estado inicial vacío alojado en el propio objeto app (no en globals de módulo):
@@ -322,7 +322,7 @@ def synthesize(
                 q.put((
                     "error",
                     {"detail": "Modelo de traducción no provisionado. Ejecuta "
-                               "'tts-sidecar setup --language en' primero."},
+                               "'ai-voice-interconnector setup --language en' primero."},
                 ))
             except TranslationFailedError as e:
                 logging.getLogger(__name__).error("synthesize: fallo de traducción: %s", e)
@@ -389,7 +389,7 @@ def transcribe(
         raise HTTPException(
             status_code=503,
             detail="Modelo de transcripción no provisionado. Ejecuta "
-                   "'tts-sidecar setup --with-stt' primero.",
+                   "'ai-voice-interconnector setup --with-stt' primero.",
         )
     except Exception as e:
         logging.getLogger(__name__).error("transcribe: fallo de carga del modelo: %s", e)

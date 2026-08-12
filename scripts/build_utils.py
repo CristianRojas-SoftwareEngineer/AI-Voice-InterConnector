@@ -22,7 +22,7 @@ LICENSE_FILES = ("LICENSE", "THIRD-PARTY-LICENSES.md", "SOURCE-OFFER.md")
 
 # Fuente única del logo del proyecto (PNG 256×256), del que los tres builds
 # derivan su icono nativo: PNG directo en Linux, .ico en Windows, .icns en macOS.
-LOGO_SOURCE = Path(__file__).parent.parent / "assets" / "images" / "TTS Sidecar - Logo.png"
+LOGO_SOURCE = Path(__file__).parent.parent / "assets" / "images" / "AI Voice InterConnector - Logo.png"
 
 # PNG 1×1 transparente (base64) usado como placeholder de icono cuando la fuente
 # del logo no existe. El AppImage exige un icono presente en el AppDir.
@@ -313,7 +313,7 @@ def common_pyinstaller_args(
         sys.executable, "-m", "PyInstaller",
         "--onedir",
         "--console",
-        "--name", "tts-sidecar",
+        "--name", "ai-voice-interconnector",
         "--paths", str(project_root / "src"),
         "--distpath", str(dist_dir),
         "--workpath", str(build_dir),
@@ -350,15 +350,15 @@ def common_pyinstaller_args(
         "--collect-data", "certifi",
         # Voces de fábrica (incluida la voz 'default'), empaquetadas dentro del
         # árbol del paquete y resueltas en runtime por paths.bundled_voices_dir()
-        # (sys._MEIPASS/tts_sidecar/voices).
+        # (sys._MEIPASS/ai_voice_interconnector/voices).
         # Fuente ÚNICA de las voces en CI: `--add-data`. A propósito NO se usa
-        # `--collect-all tts_sidecar` para datos, porque en el build de CI el
+        # `--collect-all ai_voice_interconnector` para datos, porque en el build de CI el
         # proyecto no se instala editable (solo requirements-lock*.txt), así que
         # durante la fase SPEC PyInstaller emite "collect_data_files - skipping
-        # data collection for module 'tts_sidecar' as it is not a package" y no
+        # data collection for module 'ai_voice_interconnector' as it is not a package" y no
         # aporta nada. `--add-data` es más robusto: falla ruidosamente si falta
         # el dir fuente, en vez de enmascarar la ausencia de voces en silencio.
-        "--add-data", f"{project_root / 'src' / 'tts_sidecar' / 'voices'}{data_sep}tts_sidecar/voices",
+        "--add-data", f"{project_root / 'src' / 'ai_voice_interconnector' / 'voices'}{data_sep}ai_voice_interconnector/voices",
         # Metadata requerida por importlib.metadata / pkg_resources
         "--recursive-copy-metadata", "chatterbox-tts",
         "--copy-metadata", "requests",
@@ -452,7 +452,7 @@ def ensure_ico(dest_dir) -> Path:
     (degradación con gracia: el build sigue sin icono nativo).
     """
     return _generate_pillow_icon(
-        dest_dir, "tts-sidecar.ico",
+        dest_dir, "ai-voice-interconnector.ico",
         {"format": "ICO", "sizes": [(16, 16), (32, 32), (48, 48), (256, 256)]},
         "ICO", "build sin icono nativo",
     )
@@ -467,21 +467,21 @@ def ensure_icns(dest_dir) -> Path:
     # Pillow escribe .icns a partir de la imagen fuente; los tamaños del
     # iconset se derivan internamente. El logo es 256×256, tamaño válido.
     return _generate_pillow_icon(
-        dest_dir, "tts-sidecar.icns",
+        dest_dir, "ai-voice-interconnector.icns",
         {"format": "ICNS"},
         "ICNS", ".app sin icono nativo",
     )
 
 
 def get_version(init_path: Path = None) -> str:
-    """Lee la versión de src/tts_sidecar/__init__.py.
+    """Lee la versión de src/ai_voice_interconnector/__init__.py.
 
     Fuente única de versión para los tres scripts de build (Windows, Linux,
     macOS) y el generador del instalador Inno Setup. `init_path` permite
     apuntar a otro __init__.py (tests).
     """
     if init_path is None:
-        init_path = Path(__file__).parent.parent / "src" / "tts_sidecar" / "__init__.py"
+        init_path = Path(__file__).parent.parent / "src" / "ai_voice_interconnector" / "__init__.py"
     for line in init_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line.startswith("__version__"):

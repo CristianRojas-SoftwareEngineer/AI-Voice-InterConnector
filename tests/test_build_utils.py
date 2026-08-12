@@ -35,7 +35,7 @@ def test_without_version_raises_runtime_error(tmp_path):
 
 
 def test_default_reads_real_repo_version():
-    from tts_sidecar import __version__
+    from ai_voice_interconnector import __version__
     assert get_version() == __version__
 
 
@@ -211,7 +211,7 @@ class TestRunPyinstaller:
     """Lanzador común de PyInstaller: reescritura al wrapper COM en Windows,
     paso directo fuera de Windows y kill de árbol en timeout."""
 
-    ARGS = ["/py", "-m", "PyInstaller", "--onedir", "--name", "tts-sidecar"]
+    ARGS = ["/py", "-m", "PyInstaller", "--onedir", "--name", "ai-voice-interconnector"]
 
     def test_non_win32_passes_args_intact(self, monkeypatch):
         captured = []
@@ -237,7 +237,7 @@ class TestRunPyinstaller:
         assert cmd[0] == build_utils.sys.executable
         assert cmd[1].endswith("pyinstaller_wrapper.py")
         # El prefijo de 3 ([py, -m, PyInstaller]) se omite: solo van los args de PyInstaller.
-        assert cmd[2:] == ["--onedir", "--name", "tts-sidecar"]
+        assert cmd[2:] == ["--onedir", "--name", "ai-voice-interconnector"]
         assert "PyInstaller" not in cmd[2:]
 
     def test_timeout_kills_tree_and_returns_1(self, monkeypatch):
@@ -306,7 +306,7 @@ class TestPyinstallerWrapper:
         def fake_unlink(path):
             unlinked.append(path)
 
-        monkeypatch.setattr(sys, "argv", ["pyinstaller_wrapper.py", "--onedir", "--name", "tts-sidecar"])
+        monkeypatch.setattr(sys, "argv", ["pyinstaller_wrapper.py", "--onedir", "--name", "ai-voice-interconnector"])
         monkeypatch.setattr(pyinstaller_wrapper.tempfile, "NamedTemporaryFile", FakeNamedTemporaryFile)
         monkeypatch.setattr(pyinstaller_wrapper.subprocess, "Popen", FakeProc)
         monkeypatch.setattr(pyinstaller_wrapper.os, "_exit", fake_os_exit)
@@ -319,7 +319,7 @@ class TestPyinstallerWrapper:
         # Pasa sys.argv[1:] (los args de PyInstaller) al bootstrap temporal.
         assert captured["cmd"][0] == sys.executable
         assert captured["cmd"][1] == "fake_bootstrap.py"
-        assert captured["cmd"][2:] == ["--onedir", "--name", "tts-sidecar"]
+        assert captured["cmd"][2:] == ["--onedir", "--name", "ai-voice-interconnector"]
         # Elimina el archivo temporal tras la ejecución.
         assert unlinked == written_paths == ["fake_bootstrap.py"]
 

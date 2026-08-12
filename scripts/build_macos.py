@@ -112,7 +112,7 @@ def build_macos(target_arch="arm64", create_dmg_path="create-dmg"):
             log(f"Plataforma: macOS {arch_flag}")
             DIST_DIR.mkdir(parents=True, exist_ok=True)
             BUILD_DIR.mkdir(parents=True, exist_ok=True)
-            entry_point = PROJECT_ROOT / "bin" / "tts-sidecar"
+            entry_point = PROJECT_ROOT / "bin" / "ai-voice-interconnector"
 
         with StageTimer("PyInstaller", "Compilando con PyInstaller (9-15 min)"):
             # afplay (built-in) es el player de macOS, pero la enumeración de
@@ -139,14 +139,14 @@ def build_macos(target_arch="arm64", create_dmg_path="create-dmg"):
             log("PyInstaller falló", returncode)
             sys.exit(1)
 
-        onedir = DIST_DIR / "tts-sidecar"
+        onedir = DIST_DIR / "ai-voice-interconnector"
         with StageTimer("Size", "Verificando tamaño del bundle"):
             if onedir.exists():
                 log(f"Tamaño del bundle: {bundle_size_mb(onedir):.1f} MB ({onedir})")
 
         with StageTimer("AppBundle", "Estructurando como bundle .app"):
-            # Convert: dist/tts-sidecar/ → dist/tts-sidecar.app/Contents/MacOS/
-            app_bundle = DIST_DIR / f"tts-sidecar-{arch_flag}.app"
+            # Convert: dist/ai-voice-interconnector/ → dist/ai-voice-interconnector.app/Contents/MacOS/
+            app_bundle = DIST_DIR / f"ai-voice-interconnector-{arch_flag}.app"
             macos_dir = app_bundle / "Contents" / "MacOS"
             macos_dir.mkdir(parents=True, exist_ok=True)
 
@@ -190,12 +190,12 @@ def build_macos(target_arch="arm64", create_dmg_path="create-dmg"):
             log(f".app bundle: {app_bundle}")
 
         with StageTimer("DMG", "Creando .dmg"):
-            dmg_path = DIST_DIR / f"tts-sidecar-{get_version()}-{arch_flag}.dmg"
+            dmg_path = DIST_DIR / f"ai-voice-interconnector-{get_version()}-{arch_flag}.dmg"
 
             # Staging del contenido del volumen: el .app + scripts de instalación y
             # desinstalación. Cada SO integra el PATH con un mecanismo distinto:
             # Windows lo hace automáticamente desde el instalador Inno Setup, Linux
-            # vía `tts-sidecar setup` (symlink de $APPIMAGE en ~/.local/bin), y en
+            # vía `ai-voice-interconnector setup` (symlink de $APPIMAGE en ~/.local/bin), y en
             # macOS estos scripts .command son el mecanismo opt-in (symlink en
             # /usr/local/bin con sudo, más la oferta de ejecutar `setup`).
             dmg_src = DIST_DIR / "dmg_src"
@@ -215,7 +215,7 @@ def build_macos(target_arch="arm64", create_dmg_path="create-dmg"):
 
             create_dmg_args = [
                 str(create_dmg_path),
-                "--volname", "tts-sidecar",
+                "--volname", "ai-voice-interconnector",
                 "--window-pos", "200", "120",
                 "--icon-size", "100",
                 "--icon", app_bundle.name, "150", "185",
@@ -253,9 +253,9 @@ def build_macos(target_arch="arm64", create_dmg_path="create-dmg"):
 def _path_install_script(app_name: str) -> str:
     """Genera el script de instalación del .dmg: PATH + oferta de provisión.
 
-    Se incluye en el volumen del .dmg con doble función: enlaza tts-sidecar en
+    Se incluye en el volumen del .dmg con doble función: enlaza ai-voice-interconnector en
     ~/.local/bin (per-user, SIN `sudo`) y a continuación ofrece ejecutar
-    `tts-sidecar setup` (descarga del modelo) como el usuario actual, replicando
+    `ai-voice-interconnector setup` (descarga del modelo) como el usuario actual, replicando
     el checkbox post-instalación del instalador de Windows.
 
     Instalación per-user, sin privilegios de admin: el symlink se crea en
@@ -268,13 +268,13 @@ def _path_install_script(app_name: str) -> str:
     perfil del usuario real.
     """
     return f"""#!/bin/bash
-# Expone tts-sidecar en el PATH creando un symlink per-user en ~/.local/bin
+# Expone ai-voice-interconnector en el PATH creando un symlink per-user en ~/.local/bin
 # (sin privilegios de administrador) y ofrece descargar el modelo (setup).
 set -e
 
 APP="/Applications/{app_name}"
-TARGET="$APP/Contents/MacOS/tts-sidecar"
-LINK="$HOME/.local/bin/tts-sidecar"
+TARGET="$APP/Contents/MacOS/ai-voice-interconnector"
+LINK="$HOME/.local/bin/ai-voice-interconnector"
 
 if [ ! -x "$TARGET" ]; then
     echo "No se encontró {app_name} en /Applications."
@@ -284,7 +284,7 @@ fi
 
 mkdir -p "$HOME/.local/bin"
 ln -sf "$TARGET" "$LINK"
-echo "Listo: 'tts-sidecar' está disponible en la terminal (via $LINK)."
+echo "Listo: 'ai-voice-interconnector' está disponible en la terminal (via $LINK)."
 
 case ":$PATH:" in
     *":$HOME/.local/bin:"*)
@@ -298,14 +298,14 @@ case ":$PATH:" in
 esac
 echo
 echo "Los modelos de voz (es-mx-latam y en, ~6 GB en total) no vienen incluidos:"
-echo "se descargan una sola vez con 'tts-sidecar setup'."
+echo "se descargan una sola vez con 'ai-voice-interconnector setup'."
 read -p "¿Descargar ahora el modelo de voz? (s/n): " RESPUESTA
 case "$RESPUESTA" in
     [sSyY]*)
         "$TARGET" setup
         ;;
     *)
-        echo "Puedes hacerlo más tarde con: tts-sidecar setup"
+        echo "Puedes hacerlo más tarde con: ai-voice-interconnector setup"
         ;;
 esac
 """
@@ -314,23 +314,23 @@ esac
 def _path_uninstall_script() -> str:
     """Genera el script de desinstalación del .dmg: revierte el symlink de PATH.
 
-    Elimina ~/.local/bin/tts-sidecar (per-user, SIN `sudo`) solo si es un symlink;
+    Elimina ~/.local/bin/ai-voice-interconnector (per-user, SIN `sudo`) solo si es un symlink;
     si no existe lo informa y termina sin error, y si es un archivo regular
     homónimo lo rechaza sin tocarlo. Además detecta un symlink legado en
     /usr/local/bin (de versiones anteriores, que sí usaban `sudo`) e instruye
     cómo quitarlo manualmente. El .app se elimina arrastrándolo a la Papelera.
     """
     return """#!/bin/bash
-# Quita el symlink per-user de tts-sidecar de ~/.local/bin (reversión de la
+# Quita el symlink per-user de ai-voice-interconnector de ~/.local/bin (reversión de la
 # instalación), sin sudo.
 set -e
 
-LINK="$HOME/.local/bin/tts-sidecar"
+LINK="$HOME/.local/bin/ai-voice-interconnector"
 
 if [ -L "$LINK" ]; then
     rm "$LINK"
     echo "Symlink eliminado: $LINK"
-    echo "Para completar la desinstalación, arrastra tts-sidecar.app a la Papelera."
+    echo "Para completar la desinstalación, arrastra ai-voice-interconnector.app a la Papelera."
 elif [ -e "$LINK" ]; then
     echo "$LINK existe pero no es un symlink; no se elimina."
     exit 1
@@ -340,7 +340,7 @@ fi
 
 # Transición desde versiones anteriores: aquellas creaban el symlink en
 # /usr/local/bin con sudo. Si existe, se informa cómo quitarlo (requiere sudo).
-LEGACY="/usr/local/bin/tts-sidecar"
+LEGACY="/usr/local/bin/ai-voice-interconnector"
 if [ -L "$LEGACY" ]; then
     echo
     echo "AVISO: se detectó un symlink legado en $LEGACY (de una versión anterior)."
@@ -388,13 +388,13 @@ def _info_plist_content(version, icon_name=None):
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>tts-sidecar</string>
+    <string>ai-voice-interconnector</string>
     <key>CFBundleIdentifier</key>
-    <string>com.tts-sidecar.app</string>
+    <string>com.ai-voice-interconnector.app</string>
     <key>CFBundleName</key>
-    <string>tts-sidecar</string>
+    <string>ai-voice-interconnector</string>
     <key>CFBundleDisplayName</key>
-    <string>tts-sidecar</string>
+    <string>ai-voice-interconnector</string>
     <key>CFBundleVersion</key>
     <string>{version}</string>
     <key>CFBundleShortVersionString</key>

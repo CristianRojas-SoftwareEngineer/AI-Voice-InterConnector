@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tts_sidecar.compute_backend import ComputeBackendResolver
+from ai_voice_interconnector.compute_backend import ComputeBackendResolver
 
 
 class TestDetect:

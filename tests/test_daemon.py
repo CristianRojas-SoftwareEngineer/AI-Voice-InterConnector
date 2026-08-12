@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tts_sidecar.timing import SynthesisMetrics, SynthesisResult
+from ai_voice_interconnector.timing import SynthesisMetrics, SynthesisResult
 
 
 class TestServerConcurrency:
@@ -17,8 +17,8 @@ class TestServerConcurrency:
         """Una síntesis bloqueada no debe congelar /health."""
         import threading
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector import voices
 
         started = threading.Event()
         release = threading.Event()
@@ -69,8 +69,8 @@ class TestServerAdmissionControl:
         """Con el cupo agotado, una petición concurrente recibe 503 de inmediato."""
         import threading
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector import voices
 
         started = threading.Event()
         release = threading.Event()
@@ -120,8 +120,8 @@ class TestServerAdmissionControl:
     def test_permit_released_after_synthesis_completes(self, tmp_path, monkeypatch):
         """Al terminar la síntesis, el permiso se reintegra y una petición posterior responde 200."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector import voices
         import threading
 
         wav = tmp_path / "voz.wav"
@@ -155,8 +155,8 @@ class TestServerAdmissionControl:
         """El 503 de saturación lleva un detail accionable y no filtra rutas del sistema."""
         import threading
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector import voices
 
         started = threading.Event()
         release = threading.Event()
@@ -211,7 +211,7 @@ class TestKillPidVerified:
 
     def test_does_not_kill_foreign_processes(self, capsys):
         """Si otro servicio ocupa el puerto, no se le hace terminate()."""
-        from tts_sidecar.daemon.daemon import DaemonManager
+        from ai_voice_interconnector.daemon.daemon import DaemonManager
 
         psutil_mock, proc = self._fake_psutil(["node", "otro-servidor.js"])
         with patch.dict(sys.modules, {"psutil": psutil_mock}):
@@ -221,10 +221,10 @@ class TestKillPidVerified:
         assert "no parece ser el daemon" in capsys.readouterr().err
 
     def test_kills_own_daemon(self):
-        from tts_sidecar.daemon.daemon import DaemonManager
+        from ai_voice_interconnector.daemon.daemon import DaemonManager
 
         psutil_mock, proc = self._fake_psutil(
-            ["python", "-m", "tts_sidecar.daemon.run"]
+            ["python", "-m", "ai_voice_interconnector.daemon.run"]
         )
         with patch.dict(sys.modules, {"psutil": psutil_mock}):
             DaemonManager()._kill_pid(1234)
@@ -242,7 +242,7 @@ class TestStopDuringStartupWindow:
         Sin pidfile (`_read_pid` → None) para ejercitar el fallback por cmdline
         de forma determinista, con independencia de cualquier daemon.pid real.
         """
-        from tts_sidecar.daemon.daemon import DaemonManager
+        from ai_voice_interconnector.daemon.daemon import DaemonManager
 
         manager = DaemonManager()
         manager.is_running = lambda: False
@@ -263,7 +263,7 @@ class TestStopDuringStartupWindow:
 
     def test_starting_daemon_detected_returns_false_with_notice(self, capsys):
         manager = self._manager_offline()
-        starting = self._proc(4321, ["python", "-m", "tts_sidecar.daemon.run"])
+        starting = self._proc(4321, ["python", "-m", "ai_voice_interconnector.daemon.run"])
         psutil_mock = self._psutil_with_processes([starting])
 
         with patch.dict(sys.modules, {"psutil": psutil_mock}):
@@ -291,7 +291,7 @@ class TestStopDuringStartupWindow:
         import os
 
         manager = self._manager_offline()
-        own = self._proc(os.getpid(), ["python", "-m", "tts_sidecar.daemon.run"])
+        own = self._proc(os.getpid(), ["python", "-m", "ai_voice_interconnector.daemon.run"])
         psutil_mock = self._psutil_with_processes([own])
 
         with patch.dict(sys.modules, {"psutil": psutil_mock}):
@@ -300,10 +300,10 @@ class TestStopDuringStartupWindow:
         assert "no está corriendo" in capsys.readouterr().err
 
     def test_generic_cli_cmdline_is_not_a_daemon_marker(self, capsys):
-        """Otro comando del CLI ('tts-sidecar speech say') no debe confundirse
+        """Otro comando del CLI ('ai-voice-interconnector speech say') no debe confundirse
         con el daemon en arranque: solo cuentan los markers específicos."""
         manager = self._manager_offline()
-        cli_proc = self._proc(555, ["tts-sidecar", "speech", "say", "--text", "hola"])
+        cli_proc = self._proc(555, ["ai-voice-interconnector", "speech", "say", "--text", "hola"])
         psutil_mock = self._psutil_with_processes([cli_proc])
 
         with patch.dict(sys.modules, {"psutil": psutil_mock}):
@@ -315,7 +315,7 @@ class TestStopDuringStartupWindow:
 class TestDaemonManager:
     @patch("requests.get")
     def test_is_running_true(self, mock_get):
-        from tts_sidecar.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon import DaemonIPCClient
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         # Cuerpo válido de HealthResponse: la detección de vida ahora valida
@@ -334,7 +334,7 @@ class TestDaemonManager:
     def test_is_running_false_foreign_service_on_port(self, mock_get):
         """Un 200 de otro servicio en el puerto 8765, cuyo cuerpo no valida
         como HealthResponse, se trata como «no es el daemon»."""
-        from tts_sidecar.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon import DaemonIPCClient
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"message": "soy otro servicio"}
@@ -346,7 +346,7 @@ class TestDaemonManager:
     @patch("requests.get")
     def test_is_running_false_non_json_body(self, mock_get):
         """Un 200 con cuerpo no-JSON tampoco cuenta como daemon vivo."""
-        from tts_sidecar.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon import DaemonIPCClient
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.side_effect = ValueError("no es JSON")
@@ -358,7 +358,7 @@ class TestDaemonManager:
     @patch("requests.get")
     def test_is_running_false_connection_error(self, mock_get):
         import requests
-        from tts_sidecar.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon import DaemonIPCClient
         mock_get.side_effect = requests.ConnectionError("refused")
 
         client = DaemonIPCClient()
@@ -366,7 +366,7 @@ class TestDaemonManager:
 
     @patch("requests.get")
     def test_list_voices(self, mock_get):
-        from tts_sidecar.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon import DaemonIPCClient
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"voices": ["crist", "testcli"]}
@@ -379,7 +379,7 @@ class TestDaemonManager:
     @patch("requests.get")
     def test_list_voices_on_error(self, mock_get):
         import requests
-        from tts_sidecar.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon import DaemonIPCClient
         mock_get.side_effect = requests.Timeout()
 
         client = DaemonIPCClient()
@@ -389,7 +389,7 @@ class TestDaemonManager:
     @patch("requests.get")
     def test_list_voices_on_invalid_json(self, mock_get):
         """Cuerpo de éxito no conforme a VoicesResponse eleva DaemonIPCError."""
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.side_effect = ValueError("invalid json")
@@ -402,7 +402,7 @@ class TestDaemonManager:
     @patch("requests.get")
     def test_list_voices_on_non_conforming_body(self, mock_get):
         """Cuerpo 200 sin la clave 'voices' no valida el esquema → DaemonIPCError."""
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"message": "otro servicio"}
@@ -414,7 +414,7 @@ class TestDaemonManager:
 
     @patch("requests.post")
     def test_precompute_voice_success(self, mock_post):
-        from tts_sidecar.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon import DaemonIPCClient
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"name": "crist", "precomputed": True}
@@ -426,7 +426,7 @@ class TestDaemonManager:
     @patch("requests.post")
     def test_precompute_voice_http_error(self, mock_post):
         """Un 404 del daemon (voz inexistente) eleva DaemonIPCError con el detail."""
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
         mock_resp = MagicMock()
         mock_resp.status_code = 404
         mock_resp.json.return_value = {"detail": "Voz no encontrada"}
@@ -439,7 +439,7 @@ class TestDaemonManager:
     @patch("requests.post")
     def test_precompute_voice_non_conforming_body(self, mock_post):
         """Cuerpo 200 sin las claves esperadas no valida → DaemonIPCError."""
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"message": "otro servicio"}
@@ -455,8 +455,8 @@ class TestDaemonManager:
         reenvía cada frame `progress` (model_dump) a on_progress."""
         import base64
         import json
-        from tts_sidecar.daemon import DaemonIPCClient
-        from tts_sidecar.daemon.protocol import ProgressEvent
+        from ai_voice_interconnector.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon.protocol import ProgressEvent
 
         audio = b"RIFF" + b"\x00" * 40
         lines = [
@@ -493,7 +493,7 @@ class TestDaemonManager:
     def test_synthesize_error_frame(self, mock_post):
         """Un frame `error` del stream se convierte en DaemonIPCError."""
         import json
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
 
         lines = [json.dumps({"event": "error", "detail": "internal error"}).encode()]
         mock_resp = MagicMock()
@@ -508,7 +508,7 @@ class TestDaemonManager:
     @patch("requests.post")
     def test_synthesize_http_error_immediate(self, mock_post):
         """Un 400/503 de validación (respuesta inmediata, no stream) → DaemonIPCError."""
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
 
         mock_resp = MagicMock()
         mock_resp.status_code = 400
@@ -523,7 +523,7 @@ class TestDaemonManager:
     def test_synthesize_without_result_frame_fails(self, mock_post):
         """Un stream que termina sin `result` ni `error` rompe el contrato → error."""
         import json
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
 
         lines = [json.dumps({"event": "progress", "stage": "t3", "tokens": 10}).encode()]
         mock_resp = MagicMock()
@@ -538,7 +538,7 @@ class TestDaemonManager:
     @patch("requests.post")
     def test_synthesize_non_json_line_raises(self, mock_post):
         """Una línea no-JSON en el stream eleva DaemonIPCError (sin tolerancia)."""
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
 
         lines = [b"esto no es json"]
         mock_resp = MagicMock()
@@ -554,7 +554,7 @@ class TestDaemonManager:
     def test_synthesize_unknown_event_raises(self, mock_post):
         """Un frame con `event` desconocido rompe el contrato → DaemonIPCError."""
         import json
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
 
         lines = [json.dumps({"event": "telemetry", "cpu": 99}).encode()]
         mock_resp = MagicMock()
@@ -570,7 +570,7 @@ class TestDaemonManager:
     def test_synthesize_result_without_audio_raises(self, mock_post):
         """Un frame `result` sin `audio_b64` no valida el esquema → DaemonIPCError."""
         import json
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
 
         lines = [json.dumps({"event": "result", "t3_time": 1.0, "s3gen_time": 2.0}).encode()]
         mock_resp = MagicMock()
@@ -586,7 +586,7 @@ class TestDaemonManager:
     def test_synthesize_result_invalid_base64_raises(self, mock_post):
         """Un `audio_b64` no base64 en el frame `result` eleva DaemonIPCError."""
         import json
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
 
         lines = [json.dumps({
             "event": "result",
@@ -608,7 +608,7 @@ class TestDaemonManager:
         """Un RequestException en el POST a /shutdown no revienta stop():
         se ignora y el resultado se decide por el estado real del proceso."""
         import requests
-        from tts_sidecar.daemon.daemon import DaemonManager
+        from ai_voice_interconnector.daemon.daemon import DaemonManager
 
         mock_post.side_effect = requests.RequestException("conexión rota")
         manager = DaemonManager()
@@ -622,7 +622,7 @@ class TestDaemonManager:
         """Si /health no responde pero el daemon parece vivo, status()
         devuelve el estado documentado "unknown" en lugar de propagar la excepción."""
         import requests
-        from tts_sidecar.daemon.daemon import DaemonManager
+        from ai_voice_interconnector.daemon.daemon import DaemonManager
 
         mock_get.side_effect = requests.RequestException("timeout")
         manager = DaemonManager()
@@ -636,7 +636,7 @@ class TestDaemonIPCClientTranscribe:
 
     @patch("requests.post")
     def test_success_returns_text(self, mock_post):
-        from tts_sidecar.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon import DaemonIPCClient
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"text": "hola"}
@@ -647,7 +647,7 @@ class TestDaemonIPCClientTranscribe:
 
     @patch("requests.post")
     def test_sends_base64_and_source_language_with_request_timeout(self, mock_post):
-        from tts_sidecar.daemon import DaemonIPCClient
+        from ai_voice_interconnector.daemon import DaemonIPCClient
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"text": "hola"}
@@ -664,7 +664,7 @@ class TestDaemonIPCClientTranscribe:
     def test_404_identifies_old_daemon_version(self, mock_post):
         """Un daemon viejo (sin /transcribe) responde 404: el mensaje debe
         identificarlo como versión antigua para que el CLI sugiera --no-daemon."""
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
         mock_resp = MagicMock()
         mock_resp.status_code = 404
         mock_resp.json.return_value = {"detail": "Not Found"}
@@ -679,7 +679,7 @@ class TestDaemonIPCClientTranscribe:
 
     @patch("requests.post")
     def test_503_carries_daemon_detail(self, mock_post):
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
         mock_resp = MagicMock()
         mock_resp.status_code = 503
         mock_resp.json.return_value = {"detail": "Modelo de transcripción no provisionado"}
@@ -691,7 +691,7 @@ class TestDaemonIPCClientTranscribe:
 
     @patch("requests.post")
     def test_non_json_error_body_falls_back_to_http_code(self, mock_post):
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
         mock_resp = MagicMock()
         mock_resp.status_code = 500
         mock_resp.json.side_effect = ValueError("no es JSON")
@@ -704,7 +704,7 @@ class TestDaemonIPCClientTranscribe:
     @patch("requests.post")
     def test_non_conforming_success_body_raises(self, mock_post):
         """Cuerpo 200 sin la clave 'text' no valida el esquema → DaemonIPCError."""
-        from tts_sidecar.daemon import DaemonIPCClient, DaemonIPCError
+        from ai_voice_interconnector.daemon import DaemonIPCClient, DaemonIPCError
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"message": "otro servicio"}
@@ -719,7 +719,7 @@ class TestSynthesizeStreaming:
     """El endpoint /synthesize emite NDJSON: N×progress → result, o error."""
 
     def _allowed_wav(self, tmp_path, monkeypatch):
-        from tts_sidecar import voices
+        from ai_voice_interconnector import voices
 
         allowed_root = tmp_path / "voices_permitido"
         allowed_root.mkdir()
@@ -732,7 +732,7 @@ class TestSynthesizeStreaming:
         import base64
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         wav = self._allowed_wav(tmp_path, monkeypatch)
         audio = b"RIFF" + b"\x00" * 40
@@ -767,7 +767,7 @@ class TestSynthesizeStreaming:
     def test_synthesis_error_emits_error_frame(self, tmp_path, monkeypatch):
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         wav = self._allowed_wav(tmp_path, monkeypatch)
 
@@ -797,7 +797,7 @@ class TestSynthesizeTranslationStage:
     difiere de `language` (normalizados, Desviación 5); passthrough si coinciden."""
 
     def _allowed_wav(self, tmp_path, monkeypatch):
-        from tts_sidecar import voices
+        from ai_voice_interconnector import voices
 
         allowed_root = tmp_path / "voices_permitido"
         allowed_root.mkdir()
@@ -809,7 +809,7 @@ class TestSynthesizeTranslationStage:
     def test_translates_when_source_differs_from_target(self, tmp_path, monkeypatch):
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         self._allowed_wav(tmp_path, monkeypatch)
         audio = b"RIFF" + b"\x00" * 40
@@ -828,7 +828,7 @@ class TestSynthesizeTranslationStage:
         server.app.state.daemon.engines["en"] = FakeEngine()
         try:
             with patch(
-                "tts_sidecar.daemon.server._get_translation_service",
+                "ai_voice_interconnector.daemon.server._get_translation_service",
                 return_value=fake_service,
             ) as mock_get_service:
                 with TestClient(server.app) as client:
@@ -853,7 +853,7 @@ class TestSynthesizeTranslationStage:
     def test_no_translation_when_source_equals_target(self, tmp_path, monkeypatch):
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         self._allowed_wav(tmp_path, monkeypatch)
         audio = b"RIFF" + b"\x00" * 40
@@ -869,7 +869,7 @@ class TestSynthesizeTranslationStage:
         server.app.state.daemon.engine = FakeEngine()
         try:
             with patch(
-                "tts_sidecar.daemon.server._get_translation_service"
+                "ai_voice_interconnector.daemon.server._get_translation_service"
             ) as mock_get_service:
                 with TestClient(server.app) as client:
                     resp = client.post(
@@ -886,8 +886,8 @@ class TestSynthesizeTranslationStage:
     def test_translation_model_missing_emits_error_frame(self, tmp_path, monkeypatch):
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar.exceptions import TranslationModelMissingError
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector.exceptions import TranslationModelMissingError
 
         self._allowed_wav(tmp_path, monkeypatch)
 
@@ -902,7 +902,7 @@ class TestSynthesizeTranslationStage:
         server.app.state.daemon.engines["en"] = FakeEngine()
         try:
             with patch(
-                "tts_sidecar.daemon.server._get_translation_service",
+                "ai_voice_interconnector.daemon.server._get_translation_service",
                 return_value=fake_service,
             ):
                 with TestClient(server.app) as client:
@@ -926,8 +926,8 @@ class TestSynthesizeTranslationStage:
     def test_translation_failed_emits_error_frame(self, tmp_path, monkeypatch):
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar.exceptions import TranslationFailedError
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector.exceptions import TranslationFailedError
 
         self._allowed_wav(tmp_path, monkeypatch)
 
@@ -942,7 +942,7 @@ class TestSynthesizeTranslationStage:
         server.app.state.daemon.engines["en"] = FakeEngine()
         try:
             with patch(
-                "tts_sidecar.daemon.server._get_translation_service",
+                "ai_voice_interconnector.daemon.server._get_translation_service",
                 return_value=fake_service,
             ):
                 with TestClient(server.app) as client:
@@ -970,7 +970,7 @@ class TestHealthTranslationReporting:
 
     def test_health_omits_translate_key_when_loader_absent(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
@@ -983,7 +983,7 @@ class TestHealthTranslationReporting:
 
     def test_health_reports_translate_key_hot_when_either_direction_loaded(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
         fake_loader = MagicMock()
@@ -999,7 +999,7 @@ class TestHealthTranslationReporting:
 
     def test_health_reports_translate_key_cold_when_neither_direction_loaded(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
         fake_loader = MagicMock()
@@ -1015,7 +1015,7 @@ class TestHealthTranslationReporting:
 
     def test_health_omits_transcribe_key_when_loader_absent(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
@@ -1028,7 +1028,7 @@ class TestHealthTranslationReporting:
 
     def test_health_reports_transcribe_key_when_loader_present(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
         fake_loader = MagicMock()
@@ -1044,7 +1044,7 @@ class TestHealthTranslationReporting:
 
     def test_health_reports_transcribe_key_cold_when_loader_not_loaded(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
         fake_loader = MagicMock()
@@ -1065,7 +1065,7 @@ class TestTranscribeEndpoint:
     modelo) y lazy-build del servicio en la primera petición."""
 
     def _state(self):
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
         return server.DaemonState(engine=MagicMock(), start_time=0.0)
 
     def _int16_b64(self):
@@ -1077,8 +1077,8 @@ class TestTranscribeEndpoint:
     def test_transcribe_success_with_real_int16_samples(self):
         import numpy as np
         from fastapi.testclient import TestClient
-        from tts_sidecar.audio import INT16_MAX_F
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.audio import INT16_MAX_F
+        from ai_voice_interconnector.daemon import server
 
         samples, audio_b64 = self._int16_b64()
         override_state = self._state()
@@ -1089,7 +1089,7 @@ class TestTranscribeEndpoint:
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
         try:
             with patch(
-                "tts_sidecar.daemon.server._get_transcription_service",
+                "ai_voice_interconnector.daemon.server._get_transcription_service",
                 return_value=fake_service,
             ):
                 with TestClient(server.app) as client:
@@ -1110,8 +1110,8 @@ class TestTranscribeEndpoint:
 
     def test_503_when_model_not_provisioned_points_to_setup(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar.exceptions import TranscriptionModelMissingError
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector.exceptions import TranscriptionModelMissingError
 
         _, audio_b64 = self._int16_b64()
         override_state = self._state()
@@ -1122,7 +1122,7 @@ class TestTranscribeEndpoint:
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
         try:
             with patch(
-                "tts_sidecar.daemon.server._get_transcription_service",
+                "ai_voice_interconnector.daemon.server._get_transcription_service",
                 return_value=fake_service,
             ):
                 with TestClient(server.app) as client:
@@ -1141,8 +1141,8 @@ class TestTranscribeEndpoint:
         un base64 corrupto junto a un loader que falla devuelve 503 (no 400),
         demostrando que el decode nunca se ejecutó."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar.exceptions import TranscriptionModelMissingError
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector.exceptions import TranscriptionModelMissingError
 
         override_state = self._state()
         fake_loader = MagicMock()
@@ -1152,7 +1152,7 @@ class TestTranscribeEndpoint:
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
         try:
             with patch(
-                "tts_sidecar.daemon.server._get_transcription_service",
+                "ai_voice_interconnector.daemon.server._get_transcription_service",
                 return_value=fake_service,
             ):
                 with TestClient(server.app) as client:
@@ -1167,7 +1167,7 @@ class TestTranscribeEndpoint:
 
     def test_400_invalid_base64_without_touching_model(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = self._state()
         fake_loader = MagicMock()
@@ -1176,7 +1176,7 @@ class TestTranscribeEndpoint:
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
         try:
             with patch(
-                "tts_sidecar.daemon.server._get_transcription_service",
+                "ai_voice_interconnector.daemon.server._get_transcription_service",
                 return_value=fake_service,
             ):
                 with TestClient(server.app) as client:
@@ -1194,7 +1194,7 @@ class TestTranscribeEndpoint:
         """Sin loader ni servicio precargados, la primera petición los
         construye (lazy-build) y el loader se usa para el fail-fast."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         _, audio_b64 = self._int16_b64()
         override_state = self._state()
@@ -1204,13 +1204,13 @@ class TestTranscribeEndpoint:
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
         try:
             with patch(
-                "tts_sidecar.transcription.WhisperModelLoader",
+                "ai_voice_interconnector.transcription.WhisperModelLoader",
                 return_value=fake_loader,
             ), patch(
-                "tts_sidecar.transcription.WhisperTranscriber",
+                "ai_voice_interconnector.transcription.WhisperTranscriber",
                 return_value=MagicMock(),
             ), patch(
-                "tts_sidecar.transcription.TranscriptionService",
+                "ai_voice_interconnector.transcription.TranscriptionService",
                 return_value=fake_service,
             ):
                 with TestClient(server.app) as client:
@@ -1234,7 +1234,7 @@ class TestDaemonStateInjection:
 
     def test_health_uses_injected_state_via_dependency_override(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=MagicMock(), start_time=0.0)
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
@@ -1244,7 +1244,7 @@ class TestDaemonStateInjection:
                 # Ambas claves siempre presentes: False para el idioma no cargado.
                 assert body["model_loaded"] == {"es-latam": True, "en": False}
                 assert body["status"] == "healthy"
-                from tts_sidecar import __version__
+                from ai_voice_interconnector import __version__
                 assert body["version"] == __version__
         finally:
             server.app.dependency_overrides.clear()
@@ -1254,12 +1254,12 @@ class TestDaemonStateInjection:
         carga perezosa desde disco (§3.9); si esa carga falla (modelo no
         instalado), responde 503 en vez de propagar la excepción."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=None)
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
         with patch(
-            "tts_sidecar.engine.ChatterboxEngine.get_instance",
+            "ai_voice_interconnector.engine.ChatterboxEngine.get_instance",
             side_effect=RuntimeError("modelo no instalado"),
         ):
             try:
@@ -1272,7 +1272,7 @@ class TestDaemonStateInjection:
     def test_precompute_voice_success(self):
         """El endpoint invoca engine.precompute_voice y devuelve precomputed=True."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         engine = MagicMock()
         override_state = server.DaemonState(engine=engine)
@@ -1292,7 +1292,7 @@ class TestDaemonStateInjection:
 
     def test_precompute_voice_503_when_no_engine(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=None)
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
@@ -1306,7 +1306,7 @@ class TestDaemonStateInjection:
     def test_precompute_voice_404_when_voice_missing(self):
         """FileNotFoundError del engine se mapea a 404 sin filtrar rutas."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         engine = MagicMock()
         engine.precompute_voice.side_effect = FileNotFoundError(
@@ -1327,7 +1327,7 @@ class TestDaemonStateInjection:
         """/shutdown libera el engine y señaliza el server sobre el estado
         inyectado, sin mutar ningún global de módulo."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         fake_server = MagicMock()
         fake_server.should_exit = False
@@ -1346,7 +1346,7 @@ class TestDaemonStateInjection:
         """Sin instancia de server registrada, /shutdown responde 503 (el kill
         por PID es la red de seguridad) en vez de intentar el apagado graceful."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=MagicMock(), server=None)
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
@@ -1360,7 +1360,7 @@ class TestDaemonStateInjection:
     def test_list_voices_success(self):
         """/voices devuelve la lista que reporta el engine inyectado."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         engine = MagicMock()
         engine.list_voices.return_value = ["crist", "otra"]
@@ -1379,7 +1379,7 @@ class TestDaemonStateInjection:
 
     def test_list_voices_503_when_no_engine(self):
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         override_state = server.DaemonState(engine=None)
         server.app.dependency_overrides[server.get_daemon_state] = lambda: override_state
@@ -1393,7 +1393,7 @@ class TestDaemonStateInjection:
     def test_precompute_voice_500_on_internal_error(self):
         """Un error genérico del engine se mapea a 500 sin filtrar el detalle."""
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         engine = MagicMock()
         engine.precompute_voice.side_effect = RuntimeError("fallo interno /ruta/secreta")
@@ -1413,7 +1413,7 @@ class TestDaemonStateInjection:
         error genérico sin filtrar la ruta interna real."""
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         engine = MagicMock()
         override_state = server.DaemonState(engine=engine)
@@ -1440,7 +1440,7 @@ class TestDaemonStartLock:
     `start` concurrentes y reclama locks obsoletos."""
 
     def _manager(self, tmp_path):
-        from tts_sidecar.daemon.daemon import DaemonManager
+        from ai_voice_interconnector.daemon.daemon import DaemonManager
 
         manager = DaemonManager()
         pidfile = tmp_path / "daemon.pid"
@@ -1506,7 +1506,7 @@ class TestDaemonStartLock:
         manager.is_running = lambda: False
         manager._acquire_start_lock = lambda: False
 
-        with patch("tts_sidecar.daemon.daemon.subprocess.Popen") as popen:
+        with patch("ai_voice_interconnector.daemon.daemon.subprocess.Popen") as popen:
             assert manager.start() is True
             popen.assert_not_called()
 
@@ -1519,7 +1519,7 @@ class TestDaemonStartLock:
         fake_proc = MagicMock()
         fake_proc.pid = 4321
 
-        with patch("tts_sidecar.daemon.daemon.subprocess.Popen", return_value=fake_proc) as popen:
+        with patch("ai_voice_interconnector.daemon.daemon.subprocess.Popen", return_value=fake_proc) as popen:
             assert manager.start(with_stt=True) is True
 
         cmd = popen.call_args.args[0]
@@ -1532,7 +1532,7 @@ class TestDaemonStartLock:
         fake_proc = MagicMock()
         fake_proc.pid = 4321
 
-        with patch("tts_sidecar.daemon.daemon.subprocess.Popen", return_value=fake_proc) as popen:
+        with patch("ai_voice_interconnector.daemon.daemon.subprocess.Popen", return_value=fake_proc) as popen:
             assert manager.start() is True
 
         cmd = popen.call_args.args[0]
@@ -1545,7 +1545,7 @@ class TestDaemonStartLock:
         fake_proc = MagicMock()
         fake_proc.pid = 4321
 
-        with patch("tts_sidecar.daemon.daemon.subprocess.Popen", return_value=fake_proc):
+        with patch("ai_voice_interconnector.daemon.daemon.subprocess.Popen", return_value=fake_proc):
             assert manager.start() is True
 
         assert pidfile.read_text(encoding="utf-8") == "4321"
@@ -1556,7 +1556,7 @@ class TestStopWithPidfile:
     desambigua un daemon vivo (arrancando) de un zombie (PID muerto)."""
 
     def _offline(self, tmp_path):
-        from tts_sidecar.daemon.daemon import DaemonManager
+        from ai_voice_interconnector.daemon.daemon import DaemonManager
 
         manager = DaemonManager()
         manager.is_running = lambda: False
@@ -1608,21 +1608,21 @@ class TestRemoveOwnPidfile:
     """run.py borra su propio pidfile al cerrar, con guarda por PID."""
 
     def test_removes_pidfile_when_pid_matches(self, tmp_path, monkeypatch):
-        from tts_sidecar.daemon import run
+        from ai_voice_interconnector.daemon import run
 
         pidfile = tmp_path / "daemon.pid"
         pidfile.write_text(str(os.getpid()), encoding="utf-8")
-        monkeypatch.setattr("tts_sidecar.paths.daemon_pidfile", lambda: str(pidfile))
+        monkeypatch.setattr("ai_voice_interconnector.paths.daemon_pidfile", lambda: str(pidfile))
 
         run._remove_own_pidfile()
         assert not pidfile.exists()
 
     def test_keeps_pidfile_of_another_process(self, tmp_path, monkeypatch):
-        from tts_sidecar.daemon import run
+        from ai_voice_interconnector.daemon import run
 
         pidfile = tmp_path / "daemon.pid"
         pidfile.write_text("999999", encoding="utf-8")
-        monkeypatch.setattr("tts_sidecar.paths.daemon_pidfile", lambda: str(pidfile))
+        monkeypatch.setattr("ai_voice_interconnector.paths.daemon_pidfile", lambda: str(pidfile))
 
         run._remove_own_pidfile()
         assert pidfile.exists()
@@ -1640,16 +1640,16 @@ class TestServePortInUse:
         """
         import errno
         from unittest.mock import MagicMock
-        from tts_sidecar.daemon import run
-        from tts_sidecar.cli import EXIT_ERROR
+        from ai_voice_interconnector.daemon import run
+        from ai_voice_interconnector.cli import EXIT_ERROR
 
-        from tts_sidecar.translation import TranslationModelLoader
+        from ai_voice_interconnector.translation import TranslationModelLoader
 
         with patch(
-            "tts_sidecar.engine.ChatterboxEngine.get_instance",
+            "ai_voice_interconnector.engine.ChatterboxEngine.get_instance",
             return_value=MagicMock(),
         ), patch(
-            "tts_sidecar.compute_backend.ComputeBackendResolver.resolve",
+            "ai_voice_interconnector.compute_backend.ComputeBackendResolver.resolve",
             return_value="cpu",
         ), patch.object(
             TranslationModelLoader, "load", return_value=MagicMock(),
@@ -1719,9 +1719,9 @@ class TestSynthesisCancellation:
         import base64
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
-        from tts_sidecar.exceptions import SynthesisCancelled
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector import voices
+        from ai_voice_interconnector.exceptions import SynthesisCancelled
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
@@ -1760,8 +1760,8 @@ class TestSynthesisCancellation:
         import base64
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector import voices
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
@@ -1807,9 +1807,9 @@ class TestSynthesisCancellation:
         import json
         import threading
         import time
-        from tts_sidecar.daemon import server
-        from tts_sidecar.daemon.protocol import SynthesizeRequest
-        from tts_sidecar import voices
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector.daemon.protocol import SynthesizeRequest
+        from ai_voice_interconnector import voices
 
         wav = tmp_path / "voz.wav"
         wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
@@ -1875,8 +1875,8 @@ class TestDaemonMemoryClear:
         """Tras un POST /synthesize exitoso, _clear_model_memory se invoca exactamente una vez."""
         import json
         from fastapi.testclient import TestClient
-        from tts_sidecar.daemon import server
-        from tts_sidecar import voices
+        from ai_voice_interconnector.daemon import server
+        from ai_voice_interconnector import voices
         from unittest.mock import patch, MagicMock
 
         allowed_root = tmp_path / "voices_permitido"
@@ -1897,7 +1897,7 @@ class TestDaemonMemoryClear:
         old_engine = server.app.state.daemon.engine
         server.app.state.daemon.engine = FakeEngine()
         try:
-            with patch("tts_sidecar.daemon.server._clear_model_memory", mock_clear):
+            with patch("ai_voice_interconnector.daemon.server._clear_model_memory", mock_clear):
                 with TestClient(server.app) as client:
                     resp = client.post(
                         "/synthesize", json={"text": "hola", "voice": "crist"}
@@ -1912,7 +1912,7 @@ class TestDaemonMemoryClear:
         """_clear_model_memory llama torch.cuda.empty_cache() y gc.collect()."""
         import sys
         from unittest.mock import MagicMock, patch
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         # Mock de torch y gc
         mock_torch = MagicMock()
@@ -1929,7 +1929,7 @@ class TestDaemonMemoryClear:
         """Si torch no está disponible, _clear_model_memory llama solo a gc.collect()."""
         import sys
         from unittest.mock import patch
-        from tts_sidecar.daemon import server
+        from ai_voice_interconnector.daemon import server
 
         # Simular ausencia de torch
         with patch.dict(sys.modules, {"torch": None}):

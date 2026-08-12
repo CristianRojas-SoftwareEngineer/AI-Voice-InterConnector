@@ -21,7 +21,7 @@ from build_macos import (
 
 def test_info_plist_version_and_lsminimum():
     """Info.plist debe llevar la versión y el LSMinimumSystemVersion derivado del toolchain ."""
-    plist = _info_plist_content("9.9.9", icon_name="tts-sidecar")
+    plist = _info_plist_content("9.9.9", icon_name="ai-voice-interconnector")
     assert "<key>CFBundleShortVersionString</key>" in plist
     assert "<string>9.9.9</string>" in plist
     assert "<key>LSMinimumSystemVersion</key>" in plist
@@ -51,20 +51,20 @@ def test_minimum_system_version_uses_deployment_target(monkeypatch):
 def test_install_script_per_user_symlink_no_sudo_and_setup_offer():
     """El .command de instalación: symlink per-user en ~/.local/bin, SIN sudo,
     aviso de PATH y oferta de setup."""
-    script = _path_install_script("tts-sidecar-arm64.app")
+    script = _path_install_script("ai-voice-interconnector-arm64.app")
     assert script.startswith("#!/bin/bash\n")
     assert "set -e" in script
     # Per-user, sin privilegios de admin: nada de sudo ni /usr/local/bin.
     assert "sudo" not in script
     assert "/usr/local/bin" not in script
-    assert '$HOME/.local/bin/tts-sidecar' in script
+    assert '$HOME/.local/bin/ai-voice-interconnector' in script
     assert 'mkdir -p "$HOME/.local/bin"' in script
     assert "ln -sf" in script
     # Aviso de PATH (~/.local/bin no está en el PATH por defecto de zsh en macOS).
     assert "no está en tu PATH" in script
     assert 'export PATH="$HOME/.local/bin:$PATH"' in script
-    # Oferta de descargar el modelo (tts-sidecar setup) en el contexto del usuario
-    assert "tts-sidecar setup" in script
+    # Oferta de descargar el modelo (ai-voice-interconnector setup) en el contexto del usuario
+    assert "ai-voice-interconnector setup" in script
     assert "Descargar ahora el modelo de voz" in script
     assert "s/n" in script  # prompt interactivo
 
@@ -75,7 +75,7 @@ def test_uninstall_script_per_user_no_sudo_and_legacy_note():
     script = _path_uninstall_script()
     assert script.startswith("#!/bin/bash\n")
     assert "set -e" in script
-    assert 'LINK="$HOME/.local/bin/tts-sidecar"' in script
+    assert 'LINK="$HOME/.local/bin/ai-voice-interconnector"' in script
     assert 'if [ -L "$LINK" ]; then' in script
     assert 'elif [ -e "$LINK" ]; then' in script
     assert "no es un symlink" in script
@@ -83,7 +83,7 @@ def test_uninstall_script_per_user_no_sudo_and_legacy_note():
     # La eliminación del symlink per-user no usa sudo.
     assert "rm \"$LINK\"" in script
     # Detección informativa del symlink legado en /usr/local/bin (transición).
-    assert 'LEGACY="/usr/local/bin/tts-sidecar"' in script
+    assert 'LEGACY="/usr/local/bin/ai-voice-interconnector"' in script
     assert "symlink legado" in script
     assert "sudo rm $LEGACY" in script
 
@@ -97,9 +97,9 @@ def test_create_dmg_failure_is_fatal(tmp_path, monkeypatch):
     build = tmp_path / "build"
     dist.mkdir()
     build.mkdir()
-    onedir = dist / "tts-sidecar"
+    onedir = dist / "ai-voice-interconnector"
     onedir.mkdir()
-    (onedir / "tts-sidecar").write_text("bin", encoding="utf-8")
+    (onedir / "ai-voice-interconnector").write_text("bin", encoding="utf-8")
 
     monkeypatch.setattr(build_macos, "DIST_DIR", dist)
     monkeypatch.setattr(build_macos, "BUILD_DIR", build)

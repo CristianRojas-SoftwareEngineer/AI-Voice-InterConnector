@@ -16,8 +16,8 @@ BeforeAll {
         param([switch]$WithoutWindowsAsset)
         $assets = @(
             [pscustomobject]@{
-                name                 = "tts-sidecar-9.9.9-x86_64.AppImage"
-                browser_download_url = "https://example.invalid/tts-sidecar-9.9.9-x86_64.AppImage"
+                name                 = "ai-voice-interconnector-9.9.9-x86_64.AppImage"
+                browser_download_url = "https://example.invalid/ai-voice-interconnector-9.9.9-x86_64.AppImage"
             }
             [pscustomobject]@{
                 name                 = "SHA256SUMS.txt"
@@ -26,8 +26,8 @@ BeforeAll {
         )
         if (-not $WithoutWindowsAsset) {
             $assets += [pscustomobject]@{
-                name                 = "tts-sidecar-9.9.9-x86_64-setup.exe"
-                browser_download_url = "https://example.invalid/tts-sidecar-9.9.9-x86_64-setup.exe"
+                name                 = "ai-voice-interconnector-9.9.9-x86_64-setup.exe"
+                browser_download_url = "https://example.invalid/ai-voice-interconnector-9.9.9-x86_64-setup.exe"
             }
         }
         [pscustomobject]@{ tag_name = "v9.9.9"; assets = $assets }
@@ -54,7 +54,7 @@ Describe "Install-TtsSidecar" {
             Mock Resolve-LatestRelease { New-FakeRelease }
             Mock Get-RemoteFile {
                 if ($OutFile -like "*SHA256SUMS.txt") {
-                    Set-Content -Path $OutFile -Value "$script:FakeSetupHash  tts-sidecar-9.9.9-x86_64-setup.exe"
+                    Set-Content -Path $OutFile -Value "$script:FakeSetupHash  ai-voice-interconnector-9.9.9-x86_64-setup.exe"
                 } else {
                     [System.IO.File]::WriteAllBytes($OutFile, $script:FakeSetupBytes)
                 }
@@ -80,7 +80,7 @@ Describe "Install-TtsSidecar" {
             Mock Get-RemoteFile {
                 if ($OutFile -like "*SHA256SUMS.txt") {
                     # Hash que no corresponde a los bytes descargados.
-                    Set-Content -Path $OutFile -Value ("0" * 64 + "  tts-sidecar-9.9.9-x86_64-setup.exe")
+                    Set-Content -Path $OutFile -Value ("0" * 64 + "  ai-voice-interconnector-9.9.9-x86_64-setup.exe")
                 } else {
                     [System.IO.File]::WriteAllBytes($OutFile, $script:FakeSetupBytes)
                 }
@@ -111,13 +111,13 @@ Describe "Find-LegacyMachinePathEntry" {
     # Detección pura de la entrada per-machine heredada (pre-0.4.0),
     # sin tocar el registro real.
 
-    It "detecta la entrada tts-sidecar al inicio, en medio y al final" {
-        Find-LegacyMachinePathEntry -MachinePath "C:\Program Files\tts-sidecar;C:\Windows" |
-            Should -Be "C:\Program Files\tts-sidecar"
-        Find-LegacyMachinePathEntry -MachinePath "C:\Windows;C:\Program Files\tts-sidecar;C:\Tools" |
-            Should -Be "C:\Program Files\tts-sidecar"
-        Find-LegacyMachinePathEntry -MachinePath "C:\Windows;C:\Program Files\tts-sidecar" |
-            Should -Be "C:\Program Files\tts-sidecar"
+    It "detecta la entrada ai-voice-interconnector al inicio, en medio y al final" {
+        Find-LegacyMachinePathEntry -MachinePath "C:\Program Files\ai-voice-interconnector;C:\Windows" |
+            Should -Be "C:\Program Files\ai-voice-interconnector"
+        Find-LegacyMachinePathEntry -MachinePath "C:\Windows;C:\Program Files\ai-voice-interconnector;C:\Tools" |
+            Should -Be "C:\Program Files\ai-voice-interconnector"
+        Find-LegacyMachinePathEntry -MachinePath "C:\Windows;C:\Program Files\ai-voice-interconnector" |
+            Should -Be "C:\Program Files\ai-voice-interconnector"
     }
 
     It "devuelve nulo cuando no hay entrada heredada" {

@@ -9,19 +9,19 @@ por SO.
 import os
 import sys
 
-from tts_sidecar import paths, voices
+from ai_voice_interconnector import paths, voices
 
 
 class TestDataRoot:
     def test_returns_os_user_data_dir_on_linux(self, monkeypatch, tmp_path):
         monkeypatch.setattr(paths.sys, "platform", "linux")
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        assert paths.data_root() == str(tmp_path / "tts-sidecar")
+        assert paths.data_root() == str(tmp_path / "ai-voice-interconnector")
 
     def test_returns_os_user_data_dir_on_windows(self, monkeypatch, tmp_path):
         monkeypatch.setattr(paths.sys, "platform", "win32")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        assert paths.data_root() == str(tmp_path / "tts-sidecar")
+        assert paths.data_root() == str(tmp_path / "ai-voice-interconnector")
 
     def test_creates_directory_if_missing(self, monkeypatch, tmp_path):
         monkeypatch.setattr(paths.sys, "platform", "linux")
@@ -63,7 +63,7 @@ class TestBundledVoicesDir:
         monkeypatch.setattr(paths.sys, "_MEIPASS", str(tmp_path), raising=False)
 
         assert paths.bundled_voices_dir() == os.path.join(
-            str(tmp_path), "tts_sidecar", "voices"
+            str(tmp_path), "ai_voice_interconnector", "voices"
         )
 
 

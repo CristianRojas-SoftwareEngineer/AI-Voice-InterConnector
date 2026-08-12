@@ -4,7 +4,7 @@ niveles (párrafo -> oración vía pysbd -> puntuación fuerte -> tokens) sin
 perder texto ni romper el orden original.
 """
 
-from tts_sidecar.translation.segmenter import SentenceSegmenter
+from ai_voice_interconnector.translation.segmenter import SentenceSegmenter
 
 
 def test_short_text_returns_single_segment():

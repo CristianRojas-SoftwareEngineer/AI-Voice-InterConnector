@@ -1,5 +1,5 @@
 """
-Gestor del ciclo de vida del daemon de tts-sidecar.
+Gestor del ciclo de vida del daemon de ai-voice-interconnector.
 Maneja los comandos start/stop/restart/status.
 """
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 class DaemonManager:
     """
-    Gestor del ciclo de vida del daemon de tts-sidecar.
+    Gestor del ciclo de vida del daemon de ai-voice-interconnector.
 
     Maneja start/stop/restart/status. Funciona en Windows, Linux y macOS.
     """
@@ -75,7 +75,7 @@ class DaemonManager:
         else:
             cmd = [
                 sys.executable,
-                "-m", "tts_sidecar.daemon.run",
+                "-m", "ai_voice_interconnector.daemon.run",
             ]
 
         if auto_restart:
@@ -96,12 +96,12 @@ class DaemonManager:
 
             env = os.environ.copy()
             # Modo fuente/pip-installed: fijar PYTHONPATH para que el subproceso
-            # encuentre tts_sidecar. En modo congelado el ejecutable ya es
+            # encuentre ai_voice_interconnector. En modo congelado el ejecutable ya es
             # autocontenido. La ruta calculada es el padre del paquete (`src/`
             # en modo fuente, `site-packages` en pip/uv): en ambos casos es
             # inocua y suficiente para que el import se resuelva.
             if not paths.is_frozen():
-                # __file__ es .../tts_sidecar/daemon/daemon.py → 3 dirname = padre del paquete
+                # __file__ es .../ai_voice_interconnector/daemon/daemon.py → 3 dirname = padre del paquete
                 src_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 if os.path.exists(src_path):
                     env["PYTHONPATH"] = src_path
@@ -304,15 +304,15 @@ class DaemonManager:
         """Busca un proceso del daemon en arranque (puerto aún cerrado) por cmdline.
 
         Escaneo sin estado (sin archivo PID): usa solo los markers específicos
-        del daemon ('tts_sidecar.daemon', 'daemon serve') — no el genérico
-        'tts-sidecar' de _is_own_daemon_process, que matchearía al propio
+        del daemon ('ai_voice_interconnector.daemon', 'daemon serve') — no el genérico
+        'ai-voice-interconnector' de _is_own_daemon_process, que matchearía al propio
         comando 'stop' — y excluye el PID propio. Devuelve el proceso o None.
         """
         try:
             import psutil
 
             own_pid = os.getpid()
-            markers = ("tts_sidecar.daemon", "daemon serve")
+            markers = ("ai_voice_interconnector.daemon", "daemon serve")
             for proc in psutil.process_iter():
                 if proc.pid == own_pid:
                     continue
@@ -342,7 +342,7 @@ class DaemonManager:
             # nuestro daemon (evita terminar un proceso ajeno).
             logger.debug("No se pudo leer el cmdline del proceso; se trata como ajeno", exc_info=True)
             return False
-        markers = ("tts_sidecar.daemon", "tts-sidecar", "daemon serve")
+        markers = ("ai_voice_interconnector.daemon", "ai-voice-interconnector", "daemon serve")
         return any(marker in cmdline for marker in markers)
 
     def _kill_pid(self, pid: int):
@@ -358,7 +358,7 @@ class DaemonManager:
             if not self._is_own_daemon_process(proc):
                 print(
                     f"El proceso {pid} en el puerto {self.port} no parece ser el daemon "
-                    "de tts-sidecar; no se termina.",
+                    "de ai-voice-interconnector; no se termina.",
                     file=sys.stderr,
                 )
                 return

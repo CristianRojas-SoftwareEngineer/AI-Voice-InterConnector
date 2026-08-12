@@ -53,7 +53,7 @@ no aplica el Mark-of-the-Web (mecanismo detallado en
 [SECURITY.md](../SECURITY.md#artefactos-sin-firmar)), así que un instalador bajado
 por script no dispara SmartScreen. El obstáculo restante era el UAC del instalador
 per-machine original, eliminado al migrar el Inno Setup a **per-user**
-(`PrivilegesRequired=lowest`, `%LOCALAPPDATA%\Programs\tts-sidecar`, PATH en
+(`PrivilegesRequired=lowest`, `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, PATH en
 `HKCU\Environment`). La reserva que persiste: Microsoft Defender **Antivirus** es
 independiente del MOTW y puede marcar el binario sin firma (runbook WDSI abajo);
 la solución de SmartScreen para la descarga por navegador sigue siendo la firma de
@@ -66,7 +66,7 @@ Términos externos usados en este documento:
 - **AppImage / `.dmg`**: los formatos de artefacto nativo de Linux y macOS que el
   canal nativo produce. El instalador Linux y el Cask de macOS se apoyan en ellos
   tal cual, sin rehornearlos.
-- **Cask**: la receta de Homebrew (`Casks/tts-sidecar.rb`) que describe cómo instalar
+- **Cask**: la receta de Homebrew (`Casks/ai-voice-interconnector.rb`) que describe cómo instalar
   una aplicación distribuida como binario. Vive en un **tap**: un repositorio Git que
   Homebrew añade como fuente de recetas (`brew tap`).
 - **Context de CircleCI**: un contenedor de variables de entorno secretas, visible
@@ -97,8 +97,8 @@ Términos externos usados en este documento:
 
 El Cask de macOS depende de dos recursos de una sola vez, ya creados:
 
-- El repositorio tap `homebrew-tts-sidecar` (público), que aloja
-  `Casks/tts-sidecar.rb`.
+- El repositorio tap `homebrew-ai-voice-interconnector` (público), que aloja
+  `Casks/ai-voice-interconnector.rb`.
 - El context de CircleCI `homebrew-tap`, con la variable `HOMEBREW_TAP_PAT` (un PAT
   fine-grained con permiso `Contents:RW` solo sobre el tap), que autoriza el push del
   Cask actualizado.
@@ -135,17 +135,17 @@ remediación:
 ## Instalador Linux (`curl | sh`)
 
 `install-linux.sh` vive en la raíz del repo, servido desde
-`raw.githubusercontent.com/<owner>/TTS-Sidecar/main/install-linux.sh`. Uso:
+`raw.githubusercontent.com/<owner>/AI-Voice-InterConnector/main/install-linux.sh`. Uso:
 `curl -fsSL <url> | sh`.
 
 **Flujo del script**: resolver `releases/latest` de la GitHub Releases API (no
 requiere autenticación en repos públicos) → leer `uname -m` → seleccionar el asset
 `.AppImage` de la arquitectura → descargar el AppImage y `SHA256SUMS.txt` →
-verificar el checksum → `chmod +x` → instalar en `~/.local/opt/tts-sidecar/` →
+verificar el checksum → `chmod +x` → instalar en `~/.local/opt/ai-voice-interconnector/` →
 `export APPIMAGE=<ruta>` e invocar `"$APPIMAGE" setup`, que integra el PATH y
 descarga el modelo.
 
-`_integrate_linux_path()` (`src/tts_sidecar/cli.py`) activa el symlink de PATH
+`_integrate_linux_path()` (`src/ai_voice_interconnector/cli.py`) activa el symlink de PATH
 cuando la variable de entorno `APPIMAGE` está presente: exportar `APPIMAGE` desde
 fuera es una entrada oficial y soportada, cubierta por `TestSetupLinuxPath` en
 `tests/test_cli.py`. `cmd_setup()` es no interactivo, lo que permite invocarlo
@@ -158,25 +158,25 @@ script no modifica `.bashrc`/`.zshrc` sin consentimiento).
 ## Instalador Windows (`irm | iex`)
 
 `install-windows.ps1` vive en la raíz del repo, servido desde
-`raw.githubusercontent.com/<owner>/TTS-Sidecar/main/install-windows.ps1`. Uso:
+`raw.githubusercontent.com/<owner>/AI-Voice-InterConnector/main/install-windows.ps1`. Uso:
 `irm <url> | iex`. Al no ser un `.ps1` en disco, `irm | iex` no pasa por la
 Execution Policy; la alternativa inspeccionable es
 `iwr <url> -OutFile install-windows.ps1; .\install-windows.ps1`.
 
 **Flujo del script**: resolver `releases/latest` de la GitHub Releases API →
-seleccionar el asset `tts-sidecar-*-x86_64-setup.exe` (solo hay build x86_64
+seleccionar el asset `ai-voice-interconnector-*-x86_64-setup.exe` (solo hay build x86_64
 para Windows: sin selección de arquitectura) → descargar el instalador y
 `SHA256SUMS.txt` con `Invoke-WebRequest` (sin MOTW: no dispara SmartScreen) →
 verificar el checksum (`Get-FileHash`; aborta si no coincide) → ejecutar el
 instalador en silencio (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, sin
 `-Verb RunAs`: la instalación es per-user, sin UAC) → recomponer el PATH de la
 sesión desde el registro (el `HKCU\Environment` nuevo no llega solo a la sesión
-en curso) → ejecutar `tts-sidecar setup` (necesario porque `skipifsilent` omite
+en curso) → ejecutar `ai-voice-interconnector setup` (necesario porque `skipifsilent` omite
 el checkbox de setup en instalación silenciosa; `-NoSetup` lo desactiva).
 
 El Inno Setup generado por `scripts/create_installer_windows.py` es **per-user**:
 `PrivilegesRequired=lowest`, instalación en
-`%LOCALAPPDATA%\Programs\tts-sidecar` (patrón convencional, p. ej. VS Code) y PATH
+`%LOCALAPPDATA%\Programs\ai-voice-interconnector` (patrón convencional, p. ej. VS Code) y PATH
 en `HKCU\Environment` en lugar de HKLM, con la reversión del PATH al desinstalar
 sobre la misma clave. Nota de migración: quien tenga una versión per-machine
 antigua debe desinstalarla primero (Panel de control, con admin); instalar la
@@ -189,11 +189,11 @@ este script).
 
 ## Cask de macOS
 
-- `Casks/tts-sidecar.rb` en el tap `homebrew-tts-sidecar`, con las stanzas:
+- `Casks/ai-voice-interconnector.rb` en el tap `homebrew-ai-voice-interconnector`, con las stanzas:
   `version`, `sha256`, `url` (al `.dmg` del release), `binary` apuntando a
-  `Contents/MacOS/tts-sidecar`, `livecheck` (`strategy :github_latest`),
+  `Contents/MacOS/ai-voice-interconnector`, `livecheck` (`strategy :github_latest`),
   `zap trash:` (caché del modelo y datos de usuario) y `caveats` que sugiere
-  `tts-sidecar setup`.
+  `ai-voice-interconnector setup`.
 - El job `publish-metadata` en `.circleci/config.yml`, con
   `requires: [publish-release]` y filtro de tag `only: /^v.*/`. Tras el Release
   público, lee la versión de `CIRCLE_TAG` y el `sha256` del `.dmg` desde
@@ -204,7 +204,7 @@ este script).
   momento.
 
 **Experiencia de usuario**:
-`brew tap <owner>/tts-sidecar && brew install --cask tts-sidecar`. Homebrew enlaza
+`brew tap <owner>/ai-voice-interconnector && brew install --cask ai-voice-interconnector`. Homebrew enlaza
 el binario en el prefix (`/opt/homebrew/bin`, ya en el PATH) sin sudo, y elimina el
 atributo de cuarentena, con lo que mitiga Gatekeeper. Toda la integración de PATH,
 la desinstalación y la limpieza de cuarentena las resuelve Homebrew: el CLI no
@@ -217,7 +217,7 @@ ahí el job lo mantiene.
 ## Instalador macOS (`curl | sh`)
 
 `install-macos.sh` vive en la raíz del repo, servido desde
-`raw.githubusercontent.com/<owner>/TTS-Sidecar/main/install-macos.sh`. Uso:
+`raw.githubusercontent.com/<owner>/AI-Voice-InterConnector/main/install-macos.sh`. Uso:
 `curl -fsSL <url> | sh`. Es la vía de una línea de macOS sin prerequisitos: ni
 Homebrew (a diferencia del Cask) ni `sudo` (a diferencia del `.dmg` manual).
 
@@ -228,14 +228,14 @@ con `xattr`.
 
 **Flujo del script**: resolver `releases/latest` de la GitHub Releases API →
 **guard de arquitectura** `uname -m` = `arm64` (Mac Intel no soportado; mensaje
-claro) → seleccionar el asset `tts-sidecar-*-arm64.dmg` → descargar el `.dmg` y
+claro) → seleccionar el asset `ai-voice-interconnector-*-arm64.dmg` → descargar el `.dmg` y
 `SHA256SUMS.txt` → verificar el checksum con `shasum` (aborta si no coincide) →
 `hdiutil attach -nobrowse -readonly -mountpoint <tmp>` → localizar el `.app` en
 el volumen → copiar a `~/Applications` con `ditto` (reemplazando la versión
 anterior si existe) → `hdiutil detach` → `xattr -dr com.apple.quarantine` sobre
 el `.app` copiado (legítimo: el usuario ya expresó intención ejecutando el
-script) → crear el symlink de PATH `~/.local/bin/tts-sidecar → <app>/Contents/
-MacOS/tts-sidecar` → invocar `"<app>/Contents/MacOS/tts-sidecar" setup`.
+script) → crear el symlink de PATH `~/.local/bin/ai-voice-interconnector → <app>/Contents/
+MacOS/ai-voice-interconnector` → invocar `"<app>/Contents/MacOS/ai-voice-interconnector" setup`.
 
 **Integración de PATH per-user**: `~/.local/bin` **no** está en el PATH por
 defecto de zsh en macOS; el script detecta esa ausencia y emite el aviso con la
@@ -249,7 +249,7 @@ cuarentena elimina la fricción de Gatekeeper para quien use el one-liner.
 
 ## Desinstalación
 
-`tts-sidecar setup --uninstall` deja el sistema idéntico a antes de instalar **en
+`ai-voice-interconnector setup --uninstall` deja el sistema idéntico a antes de instalar **en
 un comando en los tres SO**: encadena `cleanup --all` (caché del modelo + datos de
 usuario), revierte la integración de PATH y borra el binario, **en ese orden**
 (datos independientes primero, ancla al final). Es un dispatch por SO sobre un

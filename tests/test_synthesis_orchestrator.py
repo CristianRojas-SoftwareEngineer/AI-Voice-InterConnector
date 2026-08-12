@@ -13,10 +13,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tts_sidecar.audio_writer import AudioWriter
-from tts_sidecar.conditionals import ConditionalsPreparer
-from tts_sidecar.engine import ChatterboxEngine
-from tts_sidecar.synthesis import SynthesisOrchestrator
+from ai_voice_interconnector.audio_writer import AudioWriter
+from ai_voice_interconnector.conditionals import ConditionalsPreparer
+from ai_voice_interconnector.engine import ChatterboxEngine
+from ai_voice_interconnector.synthesis import SynthesisOrchestrator
 
 
 def _engine_with_orchestrator():

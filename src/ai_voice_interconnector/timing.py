@@ -1,5 +1,5 @@
 """
-Utilidades de temporización compartidas para tts-sidecar.
+Utilidades de temporización compartidas para ai-voice-interconnector.
 
 Todo el flujo de progreso e instrumentación (log, StageTimer, los banners de
 timed_command) se emite a **stderr**: stdout queda reservado para datos

@@ -11,8 +11,8 @@ from pathlib import Path
 from io import StringIO
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from tts_sidecar import timing
-from tts_sidecar.timing import (
+from ai_voice_interconnector import timing
+from ai_voice_interconnector.timing import (
     log, timed_command, timed, StageTimer, Spinner, format_progress_event,
 )
 

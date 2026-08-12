@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tts-sidecar"
+name = "ai-voice-interconnector"
 dynamic = ["version"]
-description = "TTS Sidecar - 100% local voice cloning TTS (Chatterbox Multilingual)"
+description = "AI Voice InterConnector - 100% local voice cloning TTS (Chatterbox Multilingual)"
 readme = "README.md"
 authors = [{ name = "Cristián Rojas Arredondo" }]
 requires-python = ">=3.13"
@@ -55,21 +55,21 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar"
-Repository = "https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar"
-Changelog = "https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
+Repository = "https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
+Changelog = "https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/blob/main/CHANGELOG.md"
 
 [project.scripts]
-tts-sidecar = "tts_sidecar.cli:main"
+ai-voice-interconnector = "ai_voice_interconnector.cli:main"
 
 [tool.setuptools.dynamic]
-version = {attr = "tts_sidecar.__version__"}
+version = {attr = "ai_voice_interconnector.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-tts_sidecar = ["voices/**/*.wav"]
+ai_voice_interconnector = ["voices/**/*.wav"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -83,7 +83,7 @@ addopts = "-v --tb=short"
 # módulo lo aplica scripts/check_coverage.py (coverage.py solo ofrece un
 # fail_under global, insuficiente para diferenciar módulos de contrato).
 [tool.coverage.run]
-source = ["tts_sidecar"]
+source = ["ai_voice_interconnector"]
 branch = true
 omit = ["tests/*", "scripts/*"]
 

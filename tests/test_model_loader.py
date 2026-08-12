@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tts_sidecar.model_loader import ModelLoader
+from ai_voice_interconnector.model_loader import ModelLoader
 
 
 class _FakeComp:
@@ -104,7 +104,7 @@ def test_load_routes_es_latam_vs_english_base(monkeypatch):
 
 def test_es_latam_without_ve_triggers_download(tmp_path, monkeypatch):
     """Sin ve.safetensors ni snapshot base, _load_es_latam descarga y exige voz."""
-    import tts_sidecar.model_loader as ml
+    import ai_voice_interconnector.model_loader as ml
 
     cache = _make_es_latam_cache(tmp_path, has_conds=False)
     _stub_components(monkeypatch, ml)
@@ -131,7 +131,7 @@ def test_load_routes_en_cache_path_to_english_base_loader(monkeypatch):
         return "en_tts"
 
     monkeypatch.setattr(
-        "tts_sidecar.model_loader.ChatterboxTTS.from_local", fake_from_local
+        "ai_voice_interconnector.model_loader.ChatterboxTTS.from_local", fake_from_local
     )
 
     en_cache = "/cache/models--ResembleAI--chatterbox/snapshots/abc"
@@ -141,7 +141,7 @@ def test_load_routes_en_cache_path_to_english_base_loader(monkeypatch):
 
 def test_es_latam_with_conds_sets_require_prompt_false(tmp_path, monkeypatch):
     """Con conds.pt presente, el modelo no exige audio_prompt_path."""
-    import tts_sidecar.model_loader as ml
+    import ai_voice_interconnector.model_loader as ml
     import chatterbox.mtl_tts as mtl
 
     cache = _make_es_latam_cache(tmp_path, has_conds=True)

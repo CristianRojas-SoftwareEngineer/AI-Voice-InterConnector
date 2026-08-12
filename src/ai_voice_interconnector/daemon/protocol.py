@@ -1,5 +1,5 @@
 """
-Definiciones del protocolo IPC del daemon de tts-sidecar.
+Definiciones del protocolo IPC del daemon de ai-voice-interconnector.
 
 `SynthesizeRequest` (el cuerpo del POST /synthesize) NO cambia respecto a la
 variante binaria previa. Lo que cambia es la RESPUESTA de `/synthesize`: ahora es
@@ -158,7 +158,7 @@ class HealthResponse(ProtocolModel):
     uptime_seconds: float
     """Segundos transcurridos desde el inicio del daemon."""
     version: str = ""
-    """Versión del paquete tts-sidecar que sirve este daemon (__version__).
+    """Versión del paquete ai-voice-interconnector que sirve este daemon (__version__).
     Cadena vacía por defecto: un daemon que aún no la puebla (skew hacia
     atrás) no rompe la validación de is_running()."""
 

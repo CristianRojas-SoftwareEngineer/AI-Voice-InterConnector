@@ -1,4 +1,4 @@
-# Guía de Uso de TTS Sidecar
+# Guía de Uso de AI Voice InterConnector
 
 ## Tabla de contenidos
 
@@ -48,7 +48,7 @@
 - [Uso ético y responsable](#uso-ético-y-responsable)
 - [Licencia](#licencia)
 
-TTS Sidecar es un sintetizador de voz (TTS) 100 % local con clonación de voz en
+AI Voice InterConnector es un sintetizador de voz (TTS) 100 % local con clonación de voz en
 español latinoamericano. Esta guía recorre cada caso de uso desde la perspectiva
 del usuario: qué comando ejecutar, qué ocurre y qué salida esperar.
 
@@ -72,25 +72,25 @@ PATH (en Windows el instalador lo agrega automáticamente al PATH de usuario,
 HKCU). Luego invoca:
 
 ```bash
-tts-sidecar <comando>
+ai-voice-interconnector <comando>
 ```
 
 En **Linux**, `install-linux.sh` automatiza toda la descarga/verificación/instalación
 con una sola línea (detalle en [README.md](README.md#instalación-de-una-línea)):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/main/install-linux.sh | sh
+curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-linux.sh | sh
 ```
 
 En **Windows**, `install-windows.ps1` hace lo análogo desde PowerShell (instalación
-per-user, sin UAC; termina ejecutando `tts-sidecar setup`):
+per-user, sin UAC; termina ejecutando `ai-voice-interconnector setup`):
 
 ```powershell
-irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/main/install-windows.ps1 | iex
+irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-windows.ps1 | iex
 ```
 
-**Desinstalación limpia**, en **un comando** en los tres SO: `tts-sidecar setup
---uninstall` encadena `tts-sidecar cleanup --all` (caché del modelo + datos de
+**Desinstalación limpia**, en **un comando** en los tres SO: `ai-voice-interconnector setup
+--uninstall` encadena `ai-voice-interconnector cleanup --all` (caché del modelo + datos de
 usuario), revierte la integración de PATH y borra el binario, en ese orden.
 Añade `--yes` para omitir la confirmación del cleanup. En Windows el binario y el
 PATH los borra el desinstalador de Inno; con Homebrew Cask el comando remite a
@@ -99,11 +99,11 @@ PATH los borra el desinstalador de Inno; con Homebrew Cask el comando remite a
 ### Usuario de PyPI (`uv tool install` / `pipx`)
 
 ```bash
-uv tool install tts-sidecar
-# o: pipx install tts-sidecar
+uv tool install ai-voice-interconnector
+# o: pipx install ai-voice-interconnector
 
-tts-sidecar setup
-tts-sidecar <comando>
+ai-voice-interconnector setup
+ai-voice-interconnector <comando>
 ```
 
 Linux requiere la librería del sistema `libportaudio2` para reproducir audio
@@ -118,16 +118,16 @@ SmartScreen/Gatekeeper (ver más abajo).
 pip install -r requirements.txt
 
 # 2. Ejecutar desde el código fuente
-python bin/tts-sidecar <comando>
+python bin/ai-voice-interconnector <comando>
 ```
 
-A partir de aquí, todos los ejemplos usan `tts-sidecar <comando>`; si trabajas
-desde el código fuente, sustituye por `python bin/tts-sidecar <comando>`. El
+A partir de aquí, todos los ejemplos usan `ai-voice-interconnector <comando>`; si trabajas
+desde el código fuente, sustituye por `python bin/ai-voice-interconnector <comando>`. El
 comportamiento es el mismo.
 
 ## Primer uso: provisionar el/los modelo(s) (`setup`)
 
-TTS Sidecar sirve **dos modelos**, uno por idioma: `es-mx-latam` (español
+AI Voice InterConnector sirve **dos modelos**, uno por idioma: `es-mx-latam` (español
 latinoamericano, ~3 GB) y `en` (inglés base, ~3 GB), ninguno incluido en el
 ejecutable. `setup --language {es-latam,en,all}` (default **`all`**) descarga a
 la caché de HuggingFace (`~/.cache/huggingface/hub` por defecto; si defines
@@ -143,9 +143,9 @@ de `speech say`/`synthesize` y para el comando `translate`. Es idempotente por
 dirección, igual que los modelos de síntesis.
 
 ```bash
-tts-sidecar setup                     # ambos modelos (default: --language all)
-tts-sidecar setup --language es-latam # solo el modelo en español
-tts-sidecar setup --language en       # solo el modelo en inglés
+ai-voice-interconnector setup                     # ambos modelos (default: --language all)
+ai-voice-interconnector setup --language es-latam # solo el modelo en español
+ai-voice-interconnector setup --language en       # solo el modelo en inglés
 ```
 
 **Qué esperar:** `setup` integra primero el comando en el PATH (solo en Linux,
@@ -160,7 +160,7 @@ diagnóstica. En la primera ejecución (con el default `--language all`) verás
 algo como:
 
 ```
-=== TTS Sidecar Setup ===
+=== AI Voice InterConnector Setup ===
 
 [PASS] Chatterbox TTS: 0.3.x
 [PASS] Audio library: ... — N dispositivo(s)
@@ -197,7 +197,7 @@ liberado. Si combinas `--force-update` con `--language <uno-solo>`, el modelo no
 pedido queda sin re-descargar hasta el siguiente `setup`:
 
 ```bash
-tts-sidecar setup --force-update
+ai-voice-interconnector setup --force-update
 # [force-update] Eliminando los modelos en caché para re-descargarlos...
 # [force-update] Espacio liberado total: ... MB
 # → a continuación, la descarga normal de setup
@@ -208,32 +208,32 @@ Es un modo mutuamente excluyente con `--remove-path` y `--uninstall`. Sin el fla
 
 **Provisión por SO** (experiencia homóloga):
 
-- **Windows**: el instalador agrega `tts-sidecar` al PATH de usuario (HKCU) y
+- **Windows**: el instalador agrega `ai-voice-interconnector` al PATH de usuario (HKCU) y
   ofrece una casilla post-instalación que ejecuta `setup` en tu contexto de
   usuario (con `install-windows.ps1`, el propio script ejecuta `setup` al terminar).
 - **Linux**: `setup` es el punto único de provisión. Ejecutado desde el AppImage,
-  además de descargar el modelo crea el symlink `~/.local/bin/tts-sidecar`
+  además de descargar el modelo crea el symlink `~/.local/bin/ai-voice-interconnector`
   apuntando al AppImage, dejando el comando invocable por nombre:
 
   ```bash
   # Primer uso con el AppImage descargado
-  chmod +x tts-sidecar-0.1.0-x86_64.AppImage
-  ./tts-sidecar-0.1.0-x86_64.AppImage setup
+  chmod +x ai-voice-interconnector-0.1.0-x86_64.AppImage
+  ./ai-voice-interconnector-0.1.0-x86_64.AppImage setup
   # → symlink en ~/.local/bin + chequeos + descarga del modelo
 
   # Desde entonces, en una terminal nueva:
-  tts-sidecar speech say --text "Hola"
+  ai-voice-interconnector speech say --text "Hola"
 
   # Desinstalación limpia en un comando (datos + symlink + AppImage):
-  tts-sidecar setup --uninstall
+  ai-voice-interconnector setup --uninstall
   # Reversión fina de solo el symlink de PATH (sin borrar nada más):
-  tts-sidecar setup --remove-path
+  ai-voice-interconnector setup --remove-path
   ```
 
   Si `~/.local/bin` no está en tu PATH, `setup` te lo advierte con la línea a
   añadir al shell profile.
 - **macOS**: el `.dmg` incluye `Instalar (PATH + modelo).command`, que enlaza
-  `tts-sidecar` en `~/.local/bin` (per-user, **sin sudo**), avisa si esa ruta no
+  `ai-voice-interconnector` en `~/.local/bin` (per-user, **sin sudo**), avisa si esa ruta no
   está en tu PATH y a continuación ofrece ejecutar `setup` como tu usuario. Para
   desinstalar, el mismo `.dmg` trae `Desinstalar (quitar del PATH).command`, que
   elimina el symlink (y detecta un symlink legado en `/usr/local/bin` de
@@ -241,7 +241,7 @@ Es un modo mutuamente excluyente con `--remove-path` y `--uninstall`. Sin el fla
   arrastrándolo a la Papelera.
 
 > **Importante**: hasta que el modelo esté provisionado, `speech say` y `daemon start`
-> **abortan de inmediato** con un mensaje que remite a `tts-sidecar setup`. Nunca
+> **abortan de inmediato** con un mensaje que remite a `ai-voice-interconnector setup`. Nunca
 > disparan una descarga silenciosa.
 
 ## Comandos
@@ -249,7 +249,7 @@ Es un modo mutuamente excluyente con `--remove-path` y `--uninstall`. Sin el fla
 Tanto los comandos de lectura (`version`, `doctor`, `devices`, `voice list`,
 `daemon status`) como los de escritura (`voice clone`, `voice remove`, `setup`,
 `cleanup`) aceptan `--json` para salida legible por máquina, útil al invocar
-`tts-sidecar` desde otro programa: ningún comando obliga a parsear texto.
+`ai-voice-interconnector` desde otro programa: ningún comando obliga a parsear texto.
 
 Todo payload `--json` incluye el campo **`"schema_version"`** (actualmente
 `"3"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
@@ -317,7 +317,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `name` | string | Siempre `"tts-sidecar"` |
+| `name` | string | Siempre `"ai-voice-interconnector"` |
 | `version` | string | Versión del programa (p. ej. `"0.1.0"`) |
 
 **`doctor --json`**
@@ -411,14 +411,14 @@ listados informativos van a stderr.
 Muestra la versión del programa.
 
 ```bash
-tts-sidecar version
-tts-sidecar version --json
+ai-voice-interconnector version
+ai-voice-interconnector version --json
 ```
 
 **Qué esperar:**
 
 ```
-tts-sidecar 0.1.0
+ai-voice-interconnector 0.1.0
 ```
 
 ---
@@ -429,14 +429,14 @@ Verifica que todos los componentes estén disponibles: la librería TTS, el
 subsistema de audio, los modelos descargados y las voces.
 
 ```bash
-tts-sidecar doctor
-tts-sidecar doctor --json
+ai-voice-interconnector doctor
+ai-voice-interconnector doctor --json
 ```
 
 **Qué esperar** (entorno sano):
 
 ```
-=== TTS Sidecar Doctor ===
+=== AI Voice InterConnector Doctor ===
 
 Python: 3.13.x ...
 Plataforma: Windows 11 / Linux 6.x / Darwin 24.x
@@ -454,13 +454,13 @@ Chequeos: 7 exitosos, 0 fallidos
 
 Cada idioma (`es-latam`/`en`) se reporta como un chequeo `Chatterbox model
 (<idioma>)` independiente: si falta uno solo, ese chequeo falla y remite a
-`tts-sidecar setup --language <idioma>`, sin afectar al otro idioma ya provisionado.
+`ai-voice-interconnector setup --language <idioma>`, sin afectar al otro idioma ya provisionado.
 `Translation model (es<->en)` es un único chequeo lógico (ambas direcciones se
 provisionan juntas con `setup --language en`/`all`): falla si falta cualquiera
-de las dos, remitiendo a `tts-sidecar setup --language en`.
+de las dos, remitiendo a `ai-voice-interconnector setup --language en`.
 
 Termina con código de salida 0 si todo pasa, y 1 si algún chequeo falla (cada
-`[FAIL]` indica cómo corregirlo, p. ej. `ejecuta: tts-sidecar setup`).
+`[FAIL]` indica cómo corregirlo, p. ej. `ejecuta: ai-voice-interconnector setup`).
 
 > El número y los nombres de chequeos varían según el SO: por ejemplo, Windows
 > añade el chequeo informativo `OneDrive user-data-dir` (ver solución de
@@ -474,8 +474,8 @@ Termina con código de salida 0 si todo pasa, y 1 si algún chequeo falla (cada
 Lista los dispositivos de salida de audio disponibles.
 
 ```bash
-tts-sidecar devices
-tts-sidecar devices --json
+ai-voice-interconnector devices
+ai-voice-interconnector devices --json
 ```
 
 **Qué esperar:**
@@ -526,8 +526,8 @@ Sintetiza texto y lo guarda en el almacén de habla sintética
 `speech say`, siempre persiste.
 
 ```bash
-tts-sidecar speech synthesize --text "Bienvenido" --label saludo
-tts-sidecar speech synthesize --text "Bienvenido" --label saludo --voice mi_voz
+ai-voice-interconnector speech synthesize --text "Bienvenido" --label saludo
+ai-voice-interconnector speech synthesize --text "Bienvenido" --label saludo --voice mi_voz
 ```
 
 **Qué esperar:** las mismas etapas de síntesis que `speech say` (ver más
@@ -591,10 +591,10 @@ clonar nada:
 
 ```bash
 # Reproducir con la voz de fábrica 'default'
-tts-sidecar speech say --text "Hola mundo"
+ai-voice-interconnector speech say --text "Hola mundo"
 
 # Usar una voz registrada
-tts-sidecar speech say --text "Hola mundo" --voice mi_voz
+ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
 ```
 
 **Qué esperar:** el comando reporta su progreso por etapas con timestamps. En
@@ -643,7 +643,7 @@ Finalizado en 41.5s
 un error en stderr y exit 2 (`INVALID_INPUT`), antes de cualquier trabajo.
 - `--compute-backend, -cb`: Backend de cómputo para la inferencia (`auto`, `cpu`, `cuda`, `mps`; default: `auto`)
 
-Sin valor, `tts-sidecar` detecta automáticamente el mejor backend disponible
+Sin valor, `ai-voice-interconnector` detecta automáticamente el mejor backend disponible
 (CUDA → MPS → CPU) y lo usa durante toda la sesión. El backend elegido se
 muestra en el log de arranque del motor (`Modelo cargado: …,
 compute_backend=…`). Si quieres forzar uno concreto (p. ej. CPU para
@@ -667,7 +667,7 @@ modelo en español latinoamericano provisionado por `setup`; con
 `--target-language en` usa en su lugar el modelo base en inglés, reutilizando
 el timbre de la voz clonada (`--voice`) para producir audio en inglés. Cada
 idioma se provisiona por separado (ver `setup --language`); si el modelo
-pedido no está en caché, falla de inmediato remitiendo a `tts-sidecar setup
+pedido no está en caché, falla de inmediato remitiendo a `ai-voice-interconnector setup
 --language <idioma>`. `--target-language` es el rename de la antigua
 `--language` (sin alias de transición); `setup`, `daemon` y `doctor`
 conservan `--language` sin cambios.
@@ -684,16 +684,16 @@ exit 9.
 **Ejemplos:**
 ```bash
 # Usando voz registrada
-tts-sidecar speech say --text "Hola mundo" --voice mi_voz
+ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
 
 # Forzar modo directo
-tts-sidecar speech say --text "Hola" --voice mi_voz --no-daemon
+ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 
 # Síntesis cross-lingual: la voz clonada en español habla en inglés
-tts-sidecar speech say --text "Hello there" --voice mi_voz --target-language en
+ai-voice-interconnector speech say --text "Hello there" --voice mi_voz --target-language en
 
 # Traducción + síntesis: escribes en español, sale en inglés
-tts-sidecar speech say --text "Hola, ¿cómo estás?" --voice mi_voz \
+ai-voice-interconnector speech say --text "Hola, ¿cómo estás?" --voice mi_voz \
   --source-language es-latam --target-language en
 ```
 
@@ -702,8 +702,8 @@ tts-sidecar speech say --text "Hola, ¿cómo estás?" --voice mi_voz \
 Reproduce una locución ya guardada; no toca el modelo ni el daemon.
 
 ```bash
-tts-sidecar speech play --label saludo
-tts-sidecar speech play --label saludo --voice mi_voz --json
+ai-voice-interconnector speech play --label saludo
+ai-voice-interconnector speech play --label saludo --voice mi_voz --json
 ```
 
 **Opciones:**
@@ -718,9 +718,9 @@ Una etiqueta inexistente para la voz sale con exit **3**.
 Lista las locuciones guardadas, opcionalmente filtradas por voz.
 
 ```bash
-tts-sidecar speech list
-tts-sidecar speech list --voice mi_voz
-tts-sidecar speech list --json
+ai-voice-interconnector speech list
+ai-voice-interconnector speech list --voice mi_voz
+ai-voice-interconnector speech list --json
 ```
 
 **Qué esperar:**
@@ -746,8 +746,8 @@ Con `--voice` apuntando a una voz inexistente, el comando sale con exit **3**
 Borra una locución guardada (el WAV y su sidecar de metadatos, si existen).
 
 ```bash
-tts-sidecar speech remove --label saludo
-tts-sidecar speech remove --label saludo --voice mi_voz
+ai-voice-interconnector speech remove --label saludo
+ai-voice-interconnector speech remove --label saludo --voice mi_voz
 ```
 
 **Opciones:**
@@ -777,11 +777,11 @@ obligatorio**. Con `--mic`, la grabación es **push-to-talk** por defecto
 fija en segundos y solo es válido junto a `--mic`.
 
 ```bash
-tts-sidecar speech transcribe --audio grabacion.wav --source-language es-latam
-tts-sidecar speech transcribe --audio recording.wav --source-language en --json
-tts-sidecar speech transcribe --audio recording.wav --source-language en --daemon
-tts-sidecar speech transcribe --mic --source-language es-latam
-tts-sidecar speech transcribe --mic --duration 5 --source-language en
+ai-voice-interconnector speech transcribe --audio grabacion.wav --source-language es-latam
+ai-voice-interconnector speech transcribe --audio recording.wav --source-language en --json
+ai-voice-interconnector speech transcribe --audio recording.wav --source-language en --daemon
+ai-voice-interconnector speech transcribe --mic --source-language es-latam
+ai-voice-interconnector speech transcribe --mic --duration 5 --source-language en
 ```
 
 **Qué esperar:**
@@ -822,7 +822,7 @@ terminal interactiva (no TTY) y sin `--duration`, `--mic` también sale con
 exit **2**, porque no hay forma de detectar la pulsación de Enter. Un archivo
 de audio inexistente (ruta `--audio`) sale con exit **3**. Si el modelo de
 transcripción no está provisionado, falla remitiendo a
-`tts-sidecar setup --with-stt` con exit **4**; si la transcripción falla con
+`ai-voice-interconnector setup --with-stt` con exit **4**; si la transcripción falla con
 el modelo ya cargado, sale con exit **10**. En la ruta daemon, un fallo de
 comunicación (daemon inactivo o de versión antigua sin `/transcribe`) sale con
 exit **5**.
@@ -843,8 +843,8 @@ es requerida**. Con `--mic`, la grabación es **push-to-talk** por defecto
 fija en segundos y solo es válido junto a `--mic`.
 
 ```bash
-tts-sidecar speech dub --mic --source-language es-latam --target-language en -v mi_voz
-tts-sidecar speech dub --audio grabacion.wav --source-language en --target-language es-latam
+ai-voice-interconnector speech dub --mic --source-language es-latam --target-language en -v mi_voz
+ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --target-language es-latam
 ```
 
 **Qué esperar:** transcribe tu habla al texto, lo traduce si procede y
@@ -866,7 +866,7 @@ transcribir.
 una terminal no interactiva (no TTY) también sale con exit **2**. Un `--audio`
 inexistente sale con exit **3**. Códigos de fallo de la cadena: exit **4**
 (modelo de transcripción no provisionado, remite a
-`tts-sidecar setup --with-stt`), **5** (daemon exigido pero inactivo o de
+`ai-voice-interconnector setup --with-stt`), **5** (daemon exigido pero inactivo o de
 versión antigua sin `/transcribe`), **9** (fallo de traducción con el modelo
 cargado) y **10** (fallo de transcripción con el modelo cargado).
 
@@ -877,7 +877,7 @@ cargado) y **10** (fallo de transcripción con el modelo cargado).
 Clona una voz a partir de dos archivos de audio.
 
 ```bash
-tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
+ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
 ```
 
 **Qué esperar:** el comando valida que ambos audios sean cargables, copia los
@@ -899,7 +899,7 @@ A partir de ese momento la voz aparece en `voice list` y puede usarse con
 El clonado **precomputa los conditionals** en el momento de clonar, de modo que
 toda síntesis posterior con `speech synthesize --voice mi_voz` (o `speech say --voice mi_voz`) los carga desde disco en vez
 de recomputarlos (latencia estable, sin sobrecosto en la primera reproducción).
-Por eso `voice clone` requiere el modelo provisionado (`tts-sidecar setup`): el
+Por eso `voice clone` requiere el modelo provisionado (`ai-voice-interconnector setup`): el
 precómputo ejecuta el modelo. Si hay un [daemon](#modo-daemon) activo, el
 precómputo aprovecha el modelo ya caliente y es casi inmediato; si no, el
 comando carga el modelo una vez (unos segundos) para precomputar.
@@ -939,8 +939,8 @@ mejores resultados.
 Lista las voces disponibles, tanto las de fábrica como las registradas por ti.
 
 ```bash
-tts-sidecar voice list
-tts-sidecar voice list --json
+ai-voice-interconnector voice list
+ai-voice-interconnector voice list --json
 ```
 
 **Qué esperar:**
@@ -960,7 +960,7 @@ La voz `default` siempre está presente (viene de fábrica).
 Elimina una voz registrada por el usuario.
 
 ```bash
-tts-sidecar voice remove --name mi_voz
+ai-voice-interconnector voice remove --name mi_voz
 ```
 
 **Qué esperar:**
@@ -982,8 +982,8 @@ say`/`speech synthesize` (opcionales, opt-in), aquí `--from` y `--to` son
 **ambos requeridos** — traducir es la única función del comando.
 
 ```bash
-tts-sidecar translate --text "Hola, ¿cómo estás?" --from es --to en
-tts-sidecar translate --text "Hello there" --from en --to es --json
+ai-voice-interconnector translate --text "Hola, ¿cómo estás?" --from es --to en
+ai-voice-interconnector translate --text "Hello there" --from en --to es --json
 ```
 
 **Qué esperar:**
@@ -1003,7 +1003,7 @@ de esquemas) y nada por stdout salvo ese objeto.
 
 **Passthrough:** si `--from` y `--to` coinciden, devuelve el texto intacto sin
 cargar ningún modelo. Si el modelo de traducción no está provisionado, falla
-remitiendo a `tts-sidecar setup --language en`; si la traducción falla con el
+remitiendo a `ai-voice-interconnector setup --language en`; si la traducción falla con el
 modelo ya cargado, sale con exit **9**.
 
 ---
@@ -1015,15 +1015,15 @@ usuario. Es la contraparte de `setup` y completa el ciclo de vida
 instalación→desinstalación.
 
 ```bash
-tts-sidecar cleanup --model              # elimina los modelos descargados
-tts-sidecar cleanup --voices             # elimina las voces de usuario y arrastra
+ai-voice-interconnector cleanup --model              # elimina los modelos descargados
+ai-voice-interconnector cleanup --voices             # elimina las voces de usuario y arrastra
                                             sus locuciones de habla sintética
                                             (salvo 'default')
-tts-sidecar cleanup --synthetic-speech   # elimina toda la raíz de habla sintética
-tts-sidecar cleanup --all                # los tres anteriores
-tts-sidecar cleanup --all --dry-run      # lista lo que se borraría, sin borrar
-tts-sidecar cleanup --all --yes          # borra sin pedir confirmación (uso programático)
-tts-sidecar cleanup --all --yes --json   # salida JSON (requiere --yes o --dry-run)
+ai-voice-interconnector cleanup --synthetic-speech   # elimina toda la raíz de habla sintética
+ai-voice-interconnector cleanup --all                # los tres anteriores
+ai-voice-interconnector cleanup --all --dry-run      # lista lo que se borraría, sin borrar
+ai-voice-interconnector cleanup --all --yes          # borra sin pedir confirmación (uso programático)
+ai-voice-interconnector cleanup --all --yes --json   # salida JSON (requiere --yes o --dry-run)
 ```
 
 **Qué esperar:** el comando lista las rutas exactas a eliminar y pide
@@ -1048,39 +1048,39 @@ direcciones es↔en en un solo target): no hay un flag `--language` propio en
 
 ## Desinstalación completa
 
-**Canal nativo (los tres SO), en un comando**: `tts-sidecar setup --uninstall`
+**Canal nativo (los tres SO), en un comando**: `ai-voice-interconnector setup --uninstall`
 encadena `cleanup --all` (modelo + voces), revierte la integración de PATH y
 borra el binario, **en ese orden** (datos independientes primero, ancla al
 final). Cancelar el cleanup aborta la desinstalación sin borrar nada (salida 0).
 Con `--yes` se omite la confirmación; con `--json` (que exige `--yes`) emite un
 payload con `schema_version`, `uninstall` y `removed`. Solo aplica a la
 instalación nativa (AppImage / `.app` / Inno); desde fuente o pip/uv aborta
-remitiendo a `pip uninstall tts-sidecar`.
+remitiendo a `pip uninstall ai-voice-interconnector`.
 
 - **Linux (AppImage)**: quita el symlink de PATH y borra
-  `~/.local/opt/tts-sidecar/`. (`setup --remove-path` se conserva como reversión
+  `~/.local/opt/ai-voice-interconnector/`. (`setup --remove-path` se conserva como reversión
   fina de solo el symlink, sin borrar nada más.)
 - **macOS (`.app`)**: quita el symlink de `~/.local/bin` y borra el `.app`
   (resuelto desde el ejecutable, cubre `~/Applications`, `/Applications` y el
   Cask). Si instalaste con **Homebrew Cask**, el comando lo detecta por la
-  metadata del Caskroom y **remite a `brew uninstall --cask --zap tts-sidecar`**
+  metadata del Caskroom y **remite a `brew uninstall --cask --zap ai-voice-interconnector`**
   sin borrar nada, para no dejar el Caskroom inconsistente (su `zap` ya cubre los
   datos). **Nota de transición**: si instalaste una versión anterior a 0.5.0, el
   symlink vivía en `/usr/local/bin`; el `.command` de desinstalación del `.dmg` lo
-  detecta e indica cómo quitarlo (`sudo rm /usr/local/bin/tts-sidecar`).
+  detecta e indica cómo quitarlo (`sudo rm /usr/local/bin/ai-voice-interconnector`).
 - **Windows (Inno)**: borra los datos en proceso y **delega** el binario y la
   reversión del PATH (HKCU) al desinstalador de Inno, lanzado desacoplado (el SO
   mantiene el lock del `.exe`). El directorio de instalación se reporta en el
   campo `delegated` del payload, no en `removed`. La vía idiomática (Configuración
   → Aplicaciones, sin admin) sigue disponible como alternativa.
-- **PyPI**: `uv tool uninstall tts-sidecar` / `pipx uninstall tts-sidecar` (más
+- **PyPI**: `uv tool uninstall ai-voice-interconnector` / `pipx uninstall ai-voice-interconnector` (más
   `cleanup --all` para los datos, que la desinstalación del paquete no toca).
 
 ---
 
 ## Actualizar de versión
 
-`tts-sidecar` no tiene auto-actualización: cada nueva versión se instala
+`ai-voice-interconnector` no tiene auto-actualización: cada nueva versión se instala
 manualmente sobre (o junto a) la anterior. El modelo y las voces en el
 directorio de datos de usuario no se ven afectados por la actualización del
 binario.
@@ -1092,22 +1092,22 @@ binario.
   Panel de control (con admin): instalar la per-user encima dejaría dos
   instalaciones y PATH duplicado.
 - **Linux**: repite el one-liner `curl -fsSL …/install-linux.sh | sh`. Instala el
-  `.AppImage` nuevo, reapunta el symlink `~/.local/bin/tts-sidecar` y **elimina
-  los AppImages anteriores** de `~/.local/opt/tts-sidecar/` (ya no acumulan
+  `.AppImage` nuevo, reapunta el symlink `~/.local/bin/ai-voice-interconnector` y **elimina
+  los AppImages anteriores** de `~/.local/opt/ai-voice-interconnector/` (ya no acumulan
   gigabytes). En la vía manual (descargar el `.AppImage` a mano), vuelve a
   correr `setup` **desde el archivo nuevo**:
-  `./tts-sidecar-<versión-nueva>-x86_64.AppImage setup`; esto reapunta el
+  `./ai-voice-interconnector-<versión-nueva>-x86_64.AppImage setup`; esto reapunta el
   symlink — si solo reemplazas el archivo sin volver a ejecutar `setup`, el
   symlink sigue apuntando a la ruta del AppImage viejo y el comando deja de
   funcionar. Borra el `.AppImage` anterior una vez confirmado que el nuevo
   funciona.
 - **macOS**: repite el one-liner `curl -fsSL …/install-macos.sh | sh` (opción
   primaria: descarga, verifica, reemplaza el `.app` en `~/Applications` y
-  reapunta el symlink); o `brew upgrade --cask tts-sidecar` si instalaste con
+  reapunta el symlink); o `brew upgrade --cask ai-voice-interconnector` si instalaste con
   Homebrew. En la vía manual, monta el `.dmg` nuevo, arrastra el `.app` a
   Aplicaciones (sobrescribiendo el anterior) y vuelve a ejecutar el script
   `Instalar (PATH + modelo).command` del volumen nuevo.
-- **PyPI**: `uv tool upgrade tts-sidecar` / `pipx upgrade tts-sidecar`.
+- **PyPI**: `uv tool upgrade ai-voice-interconnector` / `pipx upgrade ai-voice-interconnector`.
 
 En los cuatro casos, los modelos descargados (`~/.cache/huggingface/hub`) se
 reutilizan tal cual. Cada versión del binario fija las revisiones exactas de los
@@ -1128,26 +1128,26 @@ sintetizar varias veces seguidas.
 
 ```bash
 # Iniciar daemon (background; puerto fijo: 8765 en loopback, no configurable)
-tts-sidecar daemon start
+ai-voice-interconnector daemon start
 
 # Ver estado
-tts-sidecar daemon status
-tts-sidecar daemon status --json
+ai-voice-interconnector daemon status
+ai-voice-interconnector daemon status --json
 
 # Reiniciar
-tts-sidecar daemon restart
+ai-voice-interconnector daemon restart
 
 # Detener
-tts-sidecar daemon stop
+ai-voice-interconnector daemon stop
 
 # Auto-reinicio en caso de crash
-tts-sidecar daemon start --autorestart --max-retries 3
+ai-voice-interconnector daemon start --autorestart --max-retries 3
 
 # Precargar solo un idioma (default: all = ambos, es-latam y en)
-tts-sidecar daemon start --language es-latam
+ai-voice-interconnector daemon start --language es-latam
 
 # Precargar también el modelo de transcripción (requiere setup --with-stt; opt-in)
-tts-sidecar daemon start --with-stt
+ai-voice-interconnector daemon start --with-stt
 ```
 
 **Qué esperar:** `daemon start` verifica que el/los modelo(s) del `--language`
@@ -1184,7 +1184,7 @@ Con `--with-stt`, `daemon start` precarga en RAM el modelo de transcripción
 `faster-whisper-small` (opt-in y simétrico a `setup --with-stt`; sin el flag,
 la primera transcripción vía daemon paga la carga fría). Exige el modelo
 provisionado en disco: si falta, `daemon start --with-stt` sale con exit **4**
-remitiendo a `tts-sidecar setup --with-stt`, sin lanzar el proceso;
+remitiendo a `ai-voice-interconnector setup --with-stt`, sin lanzar el proceso;
 `daemon status --json` lo expone como la clave `"transcribe:small"` de
 `model_loaded`.
 
@@ -1202,13 +1202,13 @@ remitiendo a `tts-sidecar setup --with-stt`, sin lanzar el proceso;
 
 ```bash
 # El daemon se usa automáticamente si está disponible
-tts-sidecar speech say --text "Hola" --voice mi_voz
+ai-voice-interconnector speech say --text "Hola" --voice mi_voz
 
 # Forzar modo daemon (falla si el daemon no responde)
-tts-sidecar speech say --text "Hola" --voice mi_voz --daemon
+ai-voice-interconnector speech say --text "Hola" --voice mi_voz --daemon
 
 # Forzar modo directo (sin daemon)
-tts-sidecar speech say --text "Hola" --voice mi_voz --no-daemon
+ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 ```
 
 **Qué esperar** con el daemon activo: `speech say` omite la etapa de carga del modelo
@@ -1279,19 +1279,19 @@ De principio a fin, desde grabar tu voz hasta escucharla sintetizada:
 #    habla.wav   - 10+ segundos de habla limpia y continua
 
 # 2. Clona la voz
-tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav
+ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav
 # → Voz 'mi_voz' clonada: (rutas de los dos archivos copiados)
 
 # 3. Verifica que aparece
-tts-sidecar voice list
+ai-voice-interconnector voice list
 # → Voces registradas: default, mi_voz
 
 # 4. Escúchala
-tts-sidecar speech say --text "Hola, esto es una prueba" --voice mi_voz
+ai-voice-interconnector speech say --text "Hola, esto es una prueba" --voice mi_voz
 # → etapas de síntesis + reproducción por los altavoces
 
 # 5. O genera un archivo
-tts-sidecar speech synthesize --text "Hola, esto es una prueba" --label prueba --voice mi_voz
+ai-voice-interconnector speech synthesize --text "Hola, esto es una prueba" --label prueba --voice mi_voz
 # → Locución 'prueba' guardada (voz 'mi_voz').
 ```
 
@@ -1308,7 +1308,7 @@ desde el binario como desde el código fuente. En concreto:
 
 - **Sintaxis idéntica**: no hay flags ni subcomandos exclusivos de una plataforma.
 - **Contrato de salida estable**: los datos van a stdout y los diagnósticos y
-  errores a stderr, siempre en UTF-8. Esto hace a `tts-sidecar` consumible por
+  errores a stderr, siempre en UTF-8. Esto hace a `ai-voice-interconnector` consumible por
   scripts de forma idéntica en los tres SO.
 - **Códigos de salida (contrato público congelado)**: un orquestador distingue la
   causa del fallo sin parsear texto en español. Los valores son estables entre SO
@@ -1342,7 +1342,7 @@ Las únicas diferencias son internas y no cambian la forma de usar la aplicació
 |---------|---------|-------|-------|
 | Reproducción de audio | winsound (integrado) | sounddevice (PortAudio) | afplay (integrado) |
 | Enumeración de dispositivos | pycaw | sounddevice | sounddevice |
-| Voces de usuario (binario) | `%LOCALAPPDATA%\tts-sidecar\voices` | `~/.local/share/tts-sidecar/voices` | `~/Library/Application Support/tts-sidecar/voices` |
+| Voces de usuario (binario) | `%LOCALAPPDATA%\ai-voice-interconnector\voices` | `~/.local/share/ai-voice-interconnector/voices` | `~/Library/Application Support/ai-voice-interconnector/voices` |
 | Caché del modelo | `~/.cache/huggingface/hub` | `~/.cache/huggingface/hub` | `~/.cache/huggingface/hub` |
 
 > La caché del modelo respeta las variables de entorno `HF_HUB_CACHE` y `HF_HOME`
@@ -1366,7 +1366,7 @@ provisionado, y nunca lo descargan por sí mismos. El mensaje de error indica
 el idioma exacto que falta; provisiónalo con:
 
 ```bash
-tts-sidecar setup --language es-latam   # o --language en, o sin flag (ambos)
+ai-voice-interconnector setup --language es-latam   # o --language en, o sin flag (ambos)
 ```
 
 ### "GLIBC_2.35 not found" (o similar) al ejecutar el AppImage en Linux
@@ -1376,12 +1376,12 @@ equivalente): es la versión mínima que soportan los wheels manylinux de las
 dependencias empaquetadas (torch, onnxruntime). En una distro más antigua
 (p. ej. Ubuntu 20.04, Debian 11) el binario no arranca. No hay solución desde
 el AppImage mismo: actualiza la distro a una versión con glibc ≥ 2.35, o
-compila `tts-sidecar` desde código fuente en tu distro actual (ver
+compila `ai-voice-interconnector` desde código fuente en tu distro actual (ver
 [docs/BUILD.md](docs/BUILD.md)).
 
 ### "OneDrive user-data-dir" [WARN] en doctor (Windows)
 
-En perfiles corporativos, `LOCALAPPDATA` (donde `tts-sidecar` guarda las voces de
+En perfiles corporativos, `LOCALAPPDATA` (donde `ai-voice-interconnector` guarda las voces de
 usuario) puede caer bajo una jerarquía de **OneDrive**. Eso expone los archivos de
 voz a *file locks* y a *placeholders* «a petición» (Files On-Demand), que causan
 fallos de lectura esporádicos e inatribuibles al cargar una voz.
@@ -1391,7 +1391,7 @@ está bajo la sincronización de OneDrive (vía las variables de entorno
 `OneDrive`/`OneDriveCommercial`, o por patrón de ruta). Es un aviso informativo:
 no bloquea nada ni cambia dónde se guardan las voces. Para mitigarlo:
 
-- **Excluye** la carpeta de datos de `tts-sidecar` (`%LOCALAPPDATA%\tts-sidecar`)
+- **Excluye** la carpeta de datos de `ai-voice-interconnector` (`%LOCALAPPDATA%\ai-voice-interconnector`)
   de la sincronización de OneDrive, o
 - **Deshabilita Files On-Demand** para esa carpeta, de modo que sus archivos se
   descarguen siempre y no queden como marcadores bajo demanda.
@@ -1401,7 +1401,7 @@ no bloquea nada ni cambia dónde se guardan las voces. Para mitigarlo:
 Verifica que la voz existe:
 
 ```bash
-tts-sidecar voice list
+ai-voice-interconnector voice list
 ```
 
 ### "La voz 'x' ya existe"
@@ -1409,7 +1409,7 @@ tts-sidecar voice list
 `voice clone` no sobrescribe voces por accidente. Si quieres reemplazarla:
 
 ```bash
-tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav --force
+ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav --force
 ```
 
 ### "timbre-reference.wav/speech-reference.wav not found"
@@ -1418,7 +1418,7 @@ La voz no tiene los archivos necesarios. Puede que se registró con el formato
 antiguo. Vuelve a clonar:
 
 ```bash
-tts-sidecar voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav --force
+ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav --force
 ```
 
 ### "Voz 'x' es una voz de fábrica (solo lectura)"
@@ -1430,18 +1430,18 @@ usando `voice clone --force`: la tuya toma precedencia.
 ### Error al eliminar una voz: "uno de sus archivos parece estar en uso"
 
 Otro proceso (el daemon, un reproductor de audio) tiene abierto alguno de los
-archivos de la voz. Ciérralo (p. ej. `tts-sidecar daemon stop`) y reintenta.
+archivos de la voz. Ciérralo (p. ej. `ai-voice-interconnector daemon stop`) y reintenta.
 
 ### Sin audio de salida
 
-1. Verifica que `tts-sidecar devices` detecta tu dispositivo
+1. Verifica que `ai-voice-interconnector devices` detecta tu dispositivo
 2. Comprueba que el volumen del sistema no está en mute
 3. Verifica que el dispositivo de audio predeterminado es correcto
-4. Ejecuta `tts-sidecar doctor`: el chequeo "Audio library" falla si el host no
+4. Ejecuta `ai-voice-interconnector doctor`: el chequeo "Audio library" falla si el host no
    tiene un subsistema de audio funcional (p. ej. sesiones remotas o headless)
 
 En un host sin audio puedes seguir usando la síntesis a archivo
-(`tts-sidecar speech synthesize --text T --label L`); `setup` también funciona
+(`ai-voice-interconnector speech synthesize --text T --label L`); `setup` también funciona
 allí (degrada el chequeo de audio a `[WARN]` y provisiona igual).
 
 ### El sistema bloquea el primer arranque (binarios sin firmar)
@@ -1465,13 +1465,13 @@ Cómo proceder:
   terminal:
 
   ```bash
-  xattr -d com.apple.quarantine /Applications/tts-sidecar-arm64.app
+  xattr -d com.apple.quarantine /Applications/ai-voice-interconnector-arm64.app
   ```
 
 Esto solo ocurre en el primer arranque; las ejecuciones posteriores no vuelven a
 pedir confirmación.
 
-> El canal PyPI (`uv tool install tts-sidecar`) no dispara ninguno de los dos
+> El canal PyPI (`uv tool install ai-voice-interconnector`) no dispara ninguno de los dos
 > avisos: el launcher lo genera `uv`/`pipx` localmente, sin Mark-of-the-Web ni
 > cuarentena. Ver [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) si prefieres ese
 > canal.
@@ -1482,7 +1482,7 @@ Release (ver [SECURITY.md](SECURITY.md#artefactos-sin-firmar)):
 
 ```powershell
 # Windows (PowerShell)
-Get-FileHash .\tts-sidecar-X.Y.Z-x86_64-setup.exe -Algorithm SHA256
+Get-FileHash .\ai-voice-interconnector-X.Y.Z-x86_64-setup.exe -Algorithm SHA256
 ```
 
 ```bash
@@ -1498,7 +1498,7 @@ proyectos open source) en una versión futura.
 
 ## Uso ético y responsable
 
-`tts-sidecar` permite clonar voces arbitrarias a partir de unos segundos de audio.
+`ai-voice-interconnector` permite clonar voces arbitrarias a partir de unos segundos de audio.
 Por diseño, **el audio generado no contiene marca de agua**: el watermark de
 PerthNet está desactivado en el motor (tanto en modo directo como en el daemon),
 de modo que la salida no es distinguible por medios técnicos de una grabación
@@ -1517,17 +1517,17 @@ real. Esta capacidad exige diligencia por parte de quien la usa:
   identifique la salida como generada por IA.
 - **Canal de reporte**: si detectas un uso indebido de este proyecto o de
   material producido con él, abre un
-  [Issue](https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/issues)
+  [Issue](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/issues)
   describiendo la situación.
 
-TTS Sidecar es software libre y no impone barreras técnicas al uso (serían
+AI Voice InterConnector es software libre y no impone barreras técnicas al uso (serían
 triviales de sortear); establece, en cambio, la diligencia debida esperada en la
 comunidad de IA de código abierto. La responsabilidad del uso legítimo recae en
 la persona que ejecuta la herramienta.
 
 ## Licencia
 
-`tts-sidecar` se distribuye bajo **GPL-3.0-or-later** (ver [LICENSE](LICENSE)). El modelo
+`ai-voice-interconnector` se distribuye bajo **GPL-3.0-or-later** (ver [LICENSE](LICENSE)). El modelo
 Chatterbox se distribuye bajo MIT y el par de traducción `opus-mt` (Helsinki-NLP)
 bajo CC-BY-4.0; las dependencias empaquetadas conservan sus propias
 licencias, en su mayoría permisivas (MIT/BSD/Apache/ISC/PSF) y algunas de copyleft

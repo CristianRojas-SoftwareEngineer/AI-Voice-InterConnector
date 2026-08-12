@@ -1,4 +1,4 @@
-"""Tests para tts_sidecar.daemon.run: serve(), signal_handler, atexit y main().
+"""Tests para ai_voice_interconnector.daemon.run: serve(), signal_handler, atexit y main().
 
 El loop de arranque/reinicio del daemon (--auto-restart/--max-retries),
 el registro de manejadores de señal y el registro atexit del pidfile estaban
@@ -17,16 +17,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tts_sidecar.compute_backend import ComputeBackendResolver
-from tts_sidecar.daemon import run as daemon_run
-from tts_sidecar.exit_codes import EXIT_STATE_CONFLICT
+from ai_voice_interconnector.compute_backend import ComputeBackendResolver
+from ai_voice_interconnector.daemon import run as daemon_run
+from ai_voice_interconnector.exit_codes import EXIT_STATE_CONFLICT
 
 
 @pytest.fixture(autouse=True)
 def _mock_engine_loading(monkeypatch):
     """Evita cargar el motor real: get_instance/ComputeBackendResolver mockeados."""
-    from tts_sidecar.engine import ChatterboxEngine
-    from tts_sidecar.compute_backend import ComputeBackendResolver
+    from ai_voice_interconnector.engine import ChatterboxEngine
+    from ai_voice_interconnector.compute_backend import ComputeBackendResolver
 
     monkeypatch.setattr(
         ChatterboxEngine, "get_instance",
@@ -44,7 +44,7 @@ def _mock_translation_loading(monkeypatch):
     """Evita cargar los modelos de traducción reales en la precarga en caliente
     (Tarea 11, language='en'/'all'): `TranslationModelLoader.load` mockeado para
     no requerir el par opus-mt provisionado en disco durante estos tests."""
-    from tts_sidecar.translation import TranslationModelLoader
+    from ai_voice_interconnector.translation import TranslationModelLoader
 
     monkeypatch.setattr(TranslationModelLoader, "load", lambda self, cache_dir: MagicMock())
     yield
@@ -104,7 +104,7 @@ class TestServeAutoRestart:
     def test_engine_cache_invalidated_between_retries(self):
         """Tras un crash con auto_restart, se invalida la entrada cacheada del
         motor para forzar una recarga real en el siguiente intento."""
-        from tts_sidecar.engine import ChatterboxEngine
+        from ai_voice_interconnector.engine import ChatterboxEngine
 
         cache_key = ComputeBackendResolver.cache_key(model="es-mx-latam", compute_backend="cpu")
         ChatterboxEngine._cache[cache_key] = MagicMock()
@@ -190,7 +190,7 @@ class TestServeTranslationPreload:
     traducción opus-mt es<->en antes de servir; `language="es-latam"` no lo toca."""
 
     def test_language_en_preloads_both_translation_directions(self):
-        from tts_sidecar.translation import TranslationModelLoader
+        from ai_voice_interconnector.translation import TranslationModelLoader
 
         with patch.object(TranslationModelLoader, "load") as mock_load, \
                 patch("uvicorn.Server.run", return_value=None):
@@ -198,12 +198,12 @@ class TestServeTranslationPreload:
 
         loaded_dirs = {call.args[0] for call in mock_load.call_args_list}
         assert len(loaded_dirs) == 2
-        from tts_sidecar.daemon.run import app
+        from ai_voice_interconnector.daemon.run import app
         assert app.state.daemon.translation_loader is not None
         assert app.state.daemon.translation_service is not None
 
     def test_language_all_preloads_translation_pair(self):
-        from tts_sidecar.translation import TranslationModelLoader
+        from ai_voice_interconnector.translation import TranslationModelLoader
 
         with patch.object(TranslationModelLoader, "load") as mock_load, \
                 patch("uvicorn.Server.run", return_value=None):
@@ -212,8 +212,8 @@ class TestServeTranslationPreload:
         assert mock_load.call_count == 2
 
     def test_language_es_latam_skips_translation_preload(self):
-        from tts_sidecar.translation import TranslationModelLoader
-        from tts_sidecar.daemon.run import app
+        from ai_voice_interconnector.translation import TranslationModelLoader
+        from ai_voice_interconnector.daemon.run import app
 
         with patch.object(TranslationModelLoader, "load") as mock_load, \
                 patch("uvicorn.Server.run", return_value=None):
@@ -229,8 +229,8 @@ class TestServeSttPreload:
     independiente de `language`."""
 
     def test_with_stt_preloads_transcription_model(self):
-        from tts_sidecar.transcription import WhisperModelLoader, default_cache_dir
-        from tts_sidecar.daemon.run import app
+        from ai_voice_interconnector.transcription import WhisperModelLoader, default_cache_dir
+        from ai_voice_interconnector.daemon.run import app
 
         with patch.object(WhisperModelLoader, "load") as mock_load, \
                 patch("uvicorn.Server.run", return_value=None):
@@ -241,8 +241,8 @@ class TestServeSttPreload:
         assert app.state.daemon.transcription_service is not None
 
     def test_without_with_stt_skips_transcription_preload(self):
-        from tts_sidecar.transcription import WhisperModelLoader
-        from tts_sidecar.daemon.run import app
+        from ai_voice_interconnector.transcription import WhisperModelLoader
+        from ai_voice_interconnector.daemon.run import app
 
         with patch.object(WhisperModelLoader, "load") as mock_load, \
                 patch("uvicorn.Server.run", return_value=None):
@@ -253,8 +253,8 @@ class TestServeSttPreload:
         assert app.state.daemon.transcription_service is None
 
     def test_with_stt_independent_of_language(self):
-        from tts_sidecar.transcription import WhisperModelLoader
-        from tts_sidecar.daemon.run import app
+        from ai_voice_interconnector.transcription import WhisperModelLoader
+        from ai_voice_interconnector.daemon.run import app
 
         with patch.object(WhisperModelLoader, "load") as mock_load, \
                 patch("uvicorn.Server.run", return_value=None):
@@ -273,10 +273,10 @@ class TestServeWarmup:
     un fallo de síntesis deben abortar el arranque del daemon."""
 
     def test_warmup_synthesizes_once_per_preloaded_language(self):
-        from tts_sidecar.daemon.run import app
+        from ai_voice_interconnector.daemon.run import app
 
         with patch(
-            "tts_sidecar.voices.voice_paths",
+            "ai_voice_interconnector.voices.voice_paths",
             return_value=("/fake/timbre.wav", "/fake/speech.wav"),
         ), patch("uvicorn.Server.run", return_value=None):
             daemon_run.serve(auto_restart=False, language="all")
@@ -289,10 +289,10 @@ class TestServeWarmup:
             assert kwargs["verbose"] is False
 
     def test_warmup_single_language(self):
-        from tts_sidecar.daemon.run import app
+        from ai_voice_interconnector.daemon.run import app
 
         with patch(
-            "tts_sidecar.voices.voice_paths",
+            "ai_voice_interconnector.voices.voice_paths",
             return_value=("/fake/timbre.wav", "/fake/speech.wav"),
         ), patch("uvicorn.Server.run", return_value=None):
             daemon_run.serve(auto_restart=False, language="es-latam")
@@ -301,10 +301,10 @@ class TestServeWarmup:
         assert "en" not in app.state.daemon.engines
 
     def test_warmup_tolerates_missing_factory_voice(self):
-        from tts_sidecar.daemon.run import app
+        from ai_voice_interconnector.daemon.run import app
 
         with patch(
-            "tts_sidecar.voices.voice_paths",
+            "ai_voice_interconnector.voices.voice_paths",
             side_effect=FileNotFoundError("voz de fábrica no encontrada"),
         ), patch("uvicorn.Server.run", return_value=None) as mock_run:
             daemon_run.serve(auto_restart=False, language="all")
@@ -314,7 +314,7 @@ class TestServeWarmup:
             app.state.daemon.engines[lang].synthesize.assert_not_called()
 
     def test_warmup_failure_does_not_abort_startup(self):
-        from tts_sidecar.engine import ChatterboxEngine
+        from ai_voice_interconnector.engine import ChatterboxEngine
 
         def _get_instance(**kw):
             engine = MagicMock()
@@ -322,7 +322,7 @@ class TestServeWarmup:
             return engine
 
         with patch(
-            "tts_sidecar.voices.voice_paths",
+            "ai_voice_interconnector.voices.voice_paths",
             return_value=("/fake/timbre.wav", "/fake/speech.wav"),
         ), patch.object(
             ChatterboxEngine, "get_instance", staticmethod(_get_instance),
@@ -335,7 +335,7 @@ class TestServeWarmup:
 class TestMain:
     def test_main_delegates_to_serve_with_parsed_args(self):
         with patch.object(sys, "argv", ["daemon-run", "--auto-restart", "--max-retries", "3"]), \
-             patch("tts_sidecar.daemon.run.serve") as mock_serve:
+             patch("ai_voice_interconnector.daemon.run.serve") as mock_serve:
             daemon_run.main()
         mock_serve.assert_called_once_with(
             auto_restart=True, max_retries=3, language="all", with_stt=False,
@@ -343,7 +343,7 @@ class TestMain:
 
     def test_main_defaults_no_auto_restart_and_zero_retries(self):
         with patch.object(sys, "argv", ["daemon-run"]), \
-             patch("tts_sidecar.daemon.run.serve") as mock_serve:
+             patch("ai_voice_interconnector.daemon.run.serve") as mock_serve:
             daemon_run.main()
         mock_serve.assert_called_once_with(
             auto_restart=False, max_retries=0, language="all", with_stt=False,
@@ -351,7 +351,7 @@ class TestMain:
 
     def test_main_forwards_with_stt_flag(self):
         with patch.object(sys, "argv", ["daemon-run", "--with-stt"]), \
-             patch("tts_sidecar.daemon.run.serve") as mock_serve:
+             patch("ai_voice_interconnector.daemon.run.serve") as mock_serve:
             daemon_run.main()
         mock_serve.assert_called_once_with(
             auto_restart=False, max_retries=0, language="all", with_stt=True,

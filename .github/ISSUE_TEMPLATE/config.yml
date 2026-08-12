@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Vulnerabilidad de seguridad (canal privado)
-    url: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/security/advisories/new
+    url: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/security/advisories/new
     about: No reportes vulnerabilidades en Issues públicos; usa GitHub Security Advisories (ver SECURITY.md).

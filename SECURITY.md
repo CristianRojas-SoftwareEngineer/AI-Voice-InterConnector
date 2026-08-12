@@ -16,7 +16,7 @@
 
 ## Versiones soportadas
 
-TTS Sidecar está en desarrollo activo pre-1.0. Solo la última versión publicada
+AI Voice InterConnector está en desarrollo activo pre-1.0. Solo la última versión publicada
 recibe correcciones de seguridad.
 
 | Versión | Soportada |
@@ -29,7 +29,7 @@ recibe correcciones de seguridad.
 **No** reportes vulnerabilidades de seguridad en Issues públicos.
 
 Usa el canal privado de
-[**GitHub Security Advisories**](https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/security/advisories/new)
+[**GitHub Security Advisories**](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/security/advisories/new)
 para reportarlas de forma confidencial. Incluye:
 
 - Una descripción de la vulnerabilidad y su impacto.
@@ -41,7 +41,7 @@ públicamente el problema hasta que exista una corrección disponible.
 
 ## Modelo de amenaza
 
-TTS Sidecar es una herramienta **local y offline**. Su superficie de ataque es
+AI Voice InterConnector es una herramienta **local y offline**. Su superficie de ataque es
 limitada, pero conviene explicitar sus supuestos:
 
 ### Daemon local (modo daemon)
@@ -64,9 +64,9 @@ limitada, pero conviene explicitar sus supuestos:
 
 ### Modelo y provisión
 
-- El modelo se descarga desde HuggingFace con `tts-sidecar setup` a la caché local,
+- El modelo se descarga desde HuggingFace con `ai-voice-interconnector setup` a la caché local,
   con la **revisión fijada por release** (commit hash auditado, declarado en
-  `src/tts_sidecar/model_cache.py`): un push posterior al repo del modelo —
+  `src/ai_voice_interconnector/model_cache.py`): un push posterior al repo del modelo —
   malicioso o accidental — no se propaga a los usuarios, y la detección de caché
   solo valida el snapshot de esa revisión en ambos repos (language pack y repo
   base). El alcance del pin es ese: protege contra cambios posteriores a la
@@ -96,14 +96,14 @@ Release, ver «Artefactos sin firmar» abajo) **antes** de darle permisos de
 ejecución, montarlo o invocarlo; un checksum que no coincide aborta la
 instalación sin ejecutar nada. Ninguno requiere privilegios elevados:
 
-- **Linux** (`install-linux.sh`): instala en `~/.local/opt/tts-sidecar/`, sin `sudo`.
+- **Linux** (`install-linux.sh`): instala en `~/.local/opt/ai-voice-interconnector/`, sin `sudo`.
 - **macOS** (`install-macos.sh`): verifica con `shasum -a 256 -c`, copia el
   `.app` a `~/Applications` y crea el symlink en `~/.local/bin`, sin `sudo`.
   Limpia el atributo `com.apple.quarantine` del `.app` copiado (legítimo: el
   usuario ya expresó intención al ejecutar el script), lo que evita la
   advertencia de Gatekeeper en el primer arranque.
 - **Windows** (`install-windows.ps1`): instalación per-user
-  (`%LOCALAPPDATA%\Programs\tts-sidecar`, PATH en `HKCU\Environment`), sin UAC.
+  (`%LOCALAPPDATA%\Programs\ai-voice-interconnector`, PATH en `HKCU\Environment`), sin UAC.
   El navegador sella todo archivo descargado con el Mark-of-the-Web, la marca
   que dispara SmartScreen; la descarga por CLI (`Invoke-WebRequest`) no la
   aplica, por lo que el instalador descargado por el script no dispara
@@ -134,7 +134,7 @@ descarga.
 Sin firma de código, la única verificación de integridad disponible es cotejar
 el SHA-256 del artefacto descargado contra el archivo `SHA256SUMS.txt`
 publicado junto a cada
-[Release](https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases)
+[Release](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases)
 — esos hashes, a su vez, deben coincidir con los emitidos en el log del
 pipeline de CI que construyó el artefacto. Ver el flujo completo de
 publicación y verificación en [docs/RELEASING.md](docs/RELEASING.md), y la
@@ -166,7 +166,7 @@ al portal de Microsoft (*Windows Defender Security Intelligence*):
 1. Entra a [microsoft.com/wdsi](https://www.microsoft.com/en-us/wdsi/filesubmission)
    y elige **"Submit a file for malware analysis"**.
 2. Sube el artefacto marcado (el `.exe` o el instalador Inno Setup) tal cual se
-   descargó del [Release](https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases);
+   descargó del [Release](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases);
    el reporte funciona con el binario **sin firmar**, no hace falta esperar a
    tener firma de código.
 3. Clasifica la muestra como **"Incorrectly detected as malware / False
@@ -203,7 +203,7 @@ proyecto ClamAV:
 1. Confirma la detección con `clamscan --verbose <ruta-del-artefacto>` y anota
    la firma exacta que reportó (p. ej. `PUA.Win32.Packer.PyInstaller-*`).
 2. Verifica la integridad del archivo cotejando su SHA-256 contra
-   `SHA256SUMS.txt` del [Release](https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases)
+   `SHA256SUMS.txt` del [Release](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases)
    (ver [docs/RELEASING.md](docs/RELEASING.md)): un hash que coincide descarta
    que el archivo haya sido alterado en tránsito.
 3. Reporta la firma como falso positivo a ClamAV vía su rastreador de
@@ -228,11 +228,11 @@ usuario puede desbloquear el binario:
    binario aparece **«Permitir de todas formas»**; confírmalo y vuelve a abrir.
 2. O bien, desde Terminal, quita la marca de cuarentena del ejecutable (o del
    `.app`):
-   `xattr -dr com.apple.quarantine /ruta/a/tts-sidecar`
+   `xattr -dr com.apple.quarantine /ruta/a/ai-voice-interconnector`
    (o `xattr -c` sobre el `.app` completo).
 3. También funciona hacer clic derecho sobre el binario/`.app` y elegir
    **Abrir**: macOS pide confirmación una vez y luego recuerda la excepción.
 4. Verifica siempre la integridad cotejando el SHA-256 del artefacto contra
-   `SHA256SUMS.txt` del [Release](https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases)
+   `SHA256SUMS.txt` del [Release](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases)
    antes de desbloquear (ver [docs/RELEASING.md](docs/RELEASING.md) y la guía de
    usuario en [USAGE.md](USAGE.md#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar)).

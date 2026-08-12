@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Entry point de tts-sidecar.
+Entry point de ai-voice-interconnector.
 
 Modo compilado (PyInstaller --onedir): los paquetes están embebidos por
 PyInstaller y sys.path lo gestiona el intérprete embebido automáticamente.
@@ -8,8 +8,8 @@ Modo desarrollo: se añade el directorio src/ del proyecto a sys.path.
 
 El bootstrap pre-import (UTF-8, warnings, env vars, logging, mock de
 pkg_resources) es la capa única de `bootstrap.apply()`. Se invoca aquí de forma
-explícita —igual que en `python -m tts_sidecar` y en el daemon—, en vez de
-depender de un efecto colateral de importar `tts_sidecar.cli`.
+explícita —igual que en `python -m ai_voice_interconnector` y en el daemon—, en vez de
+depender de un efecto colateral de importar `ai_voice_interconnector.cli`.
 """
 
 import sys
@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Único ajuste de sys.path pre-import y exclusivo de este launcher: en modo
 # fuente el paquete vive en src/ y aún no es importable, así que hay que
-# insertarlo antes de poder importar nada de tts_sidecar. Es irreducible (no se
+# insertarlo antes de poder importar nada de ai_voice_interconnector. Es irreducible (no se
 # puede factorizar al paquete: alcanzarlo es justo lo que falta), por eso no
 # vive en bootstrap. En modo congelado se omite: PyInstaller ya gestiona el path.
 if not getattr(sys, 'frozen', False):
@@ -25,10 +25,10 @@ if not getattr(sys, 'frozen', False):
     if _src_path.is_dir():
         sys.path.insert(0, str(_src_path))
 
-from tts_sidecar import bootstrap
+from ai_voice_interconnector import bootstrap
 bootstrap.apply()
 
-from tts_sidecar.cli import main
+from ai_voice_interconnector.cli import main
 
 if __name__ == "__main__":
     main()

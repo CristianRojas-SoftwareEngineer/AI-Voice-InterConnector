@@ -1,5 +1,5 @@
 """
-Cliente IPC para comunicarse con el daemon de tts-sidecar.
+Cliente IPC para comunicarse con el daemon de ai-voice-interconnector.
 Usa HTTP sobre TCP (funciona en todas las plataformas).
 """
 
@@ -26,7 +26,7 @@ class DaemonIPCError(Exception):
 
 class DaemonIPCClient:
     """
-    Cliente IPC para comunicarse con el daemon de tts-sidecar.
+    Cliente IPC para comunicarse con el daemon de ai-voice-interconnector.
 
     Usa HTTP sobre TCP (127.0.0.1:8765), lo que garantiza compatibilidad
     con Windows, Linux y macOS sin depender de Unix sockets ni named pipes.
@@ -34,7 +34,7 @@ class DaemonIPCClient:
 
     TIMEOUT = 5.0          # Timeout de conexión
     # Timeout de síntesis: 5 min por defecto (audio largo en CPU lenta).
-    # Sobreescribible con TTS_SIDECAR_REQUEST_TIMEOUT (segundos, float) para
+    # Sobreescribible con AI_VOICE_INTERCONNECTOR_REQUEST_TIMEOUT (segundos, float) para
     # consumidores programáticos que prefieran fallar antes; un valor
     # inválido o no positivo se ignora y se conserva el default.
     REQUEST_TIMEOUT = 300.0
@@ -43,7 +43,7 @@ class DaemonIPCClient:
         self.port = DEFAULT_PORT
         self.base_url = f"http://127.0.0.1:{self.port}"
         import os
-        raw = os.environ.get("TTS_SIDECAR_REQUEST_TIMEOUT")
+        raw = os.environ.get("AI_VOICE_INTERCONNECTOR_REQUEST_TIMEOUT")
         if raw:
             try:
                 value = float(raw)

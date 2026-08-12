@@ -5,7 +5,7 @@ estructura que produce `SentenceSegmenter.segment`), preservando el orden y
 los saltos de párrafo originales.
 """
 
-from tts_sidecar.translation.assembler import SegmentAssembler
+from ai_voice_interconnector.translation.assembler import SegmentAssembler
 
 
 def test_assembles_single_segment_without_alteration():

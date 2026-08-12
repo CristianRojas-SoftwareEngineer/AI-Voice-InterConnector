@@ -1,7 +1,7 @@
 # Roadmap: estado actual y camino al Goal inmediato
 
 Este documento es el **registro vivo** del estado de implementación de
-`tts-sidecar` y del trabajo pendiente para alcanzar el **Goal inmediato**, cuya
+`ai-voice-interconnector` y del trabajo pendiente para alcanzar el **Goal inmediato**, cuya
 especificación, criterios de aceptación y condición de finalización viven en
 [docs/GOAL.md](GOAL.md). El **Goal a largo plazo** (firma de código /
 notarización) también se define en
@@ -32,7 +32,7 @@ validación E2E» en
 - Optimizaciones de síntesis (n_cfm=4, max_new_tokens=500)
 - Bypass del watermark PerthNet: el audio generado no lleva marca de agua (ver «Uso ético y responsable» en README/USAGE)
 - Scripts de build PyInstaller por SO (Windows/Linux/macOS)
-- **Canal PyPI** (`uv tool install tts-sidecar` / `pipx install tts-sidecar`), publicado automáticamente en cada tag `v*` junto al canal nativo (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md))
+- **Canal PyPI** (`uv tool install ai-voice-interconnector` / `pipx install ai-voice-interconnector`), publicado automáticamente en cada tag `v*` junto al canal nativo (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md))
 - Descarga automática del modelo Chatterbox desde HuggingFace
 - CLI completa con todos los comandos
 - **Rediseño del CLI cerrado** (v0.7.0–v0.9.0): `speak` se reemplazó por `speech say`/`speech synthesize`, los códigos de salida se centralizaron en `exit_codes.py` y los payloads `--json` incorporaron la clave `error`; el contrato normativo vive en [docs/CLI/CONTRACT.md](CLI/CONTRACT.md) y el detalle en el CHANGELOG
@@ -58,7 +58,7 @@ en Linux y macOS (la validación E2E automatizable ya corre en CI; ver
 La brecha de *desinstalación en un comando* (`setup --uninstall`
 multiplataforma en macOS/Windows) quedó **cerrada en v0.6.0**: el despachador
 `_uninstall` y las ramas `_uninstall_macos`/`_uninstall_windows` viven en
-`src/tts_sidecar/cli.py`, la suite `TestSetupUninstall` cubre los tres SO en
+`src/ai_voice_interconnector/cli.py`, la suite `TestSetupUninstall` cubre los tres SO en
 verde y la documentación relacionada quedó sincronizada. Solo queda pendiente
 la marca del criterio de aceptación 10 por validación E2E vía feedback de
 usuarios reales en Linux y macOS. El plan de implementación detallado que guio

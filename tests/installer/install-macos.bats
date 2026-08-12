@@ -25,7 +25,7 @@ setup() {
     # en el mountpoint: un script shell válido, para que "$target" setup (última
     # línea de install-macos.sh) se ejecute sin error de formato ejecutable.
     FAKE_BIN_CONTENT='#!/bin/sh
-echo "fake tts-sidecar $*"
+echo "fake ai-voice-interconnector $*"
 '
     # Contenido fijo del ".dmg" falso; su checksum se publica en SHA256SUMS.txt.
     FAKE_DMG_CONTENT='contenido binario simulado del dmg'
@@ -50,7 +50,7 @@ EOF
 # $1 opcional: si es "corrupt", el checksum publicado no coincide con el .dmg.
 mock_curl() {
     local mode="${1:-ok}"
-    local asset_name="tts-sidecar-1.0.0-arm64.dmg"
+    local asset_name="ai-voice-interconnector-1.0.0-arm64.dmg"
     local published_sha="$FAKE_DMG_SHA"
     if [ "$mode" = "corrupt" ]; then
         published_sha="0000000000000000000000000000000000000000000000000000000000ff"
@@ -103,10 +103,10 @@ if [ "\$action" = "attach" ]; then
             *) shift ;;
         esac
     done
-    app="\$mp/tts-sidecar-arm64.app"
+    app="\$mp/ai-voice-interconnector-arm64.app"
     mkdir -p "\$app/Contents/MacOS"
-    printf '%s' '$FAKE_BIN_CONTENT' > "\$app/Contents/MacOS/tts-sidecar"
-    chmod +x "\$app/Contents/MacOS/tts-sidecar"
+    printf '%s' '$FAKE_BIN_CONTENT' > "\$app/Contents/MacOS/ai-voice-interconnector"
+    chmod +x "\$app/Contents/MacOS/ai-voice-interconnector"
 fi
 exit 0
 EOF
@@ -160,7 +160,7 @@ mock_all() {
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"tts-sidecar-1.0.0-arm64.dmg"* ]]
+    [[ "$output" == *"ai-voice-interconnector-1.0.0-arm64.dmg"* ]]
 }
 
 @test "aborta si el checksum no coincide" {
@@ -170,7 +170,7 @@ mock_all() {
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"checksum"* ]]
-    [ ! -d "$HOME/Applications/tts-sidecar-arm64.app" ]
+    [ ! -d "$HOME/Applications/ai-voice-interconnector-arm64.app" ]
 }
 
 @test "instalación feliz: copia el .app, crea el symlink e invoca setup" {
@@ -180,26 +180,26 @@ mock_all() {
 
     [ "$status" -eq 0 ]
     # El .app quedó copiado a ~/Applications.
-    [ -x "$HOME/Applications/tts-sidecar-arm64.app/Contents/MacOS/tts-sidecar" ]
+    [ -x "$HOME/Applications/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector" ]
     # El symlink de PATH per-user apunta al binario del .app.
-    [ -L "$HOME/.local/bin/tts-sidecar" ]
+    [ -L "$HOME/.local/bin/ai-voice-interconnector" ]
     # setup fue invocado (el binario falso lo eco).
-    [[ "$output" == *"fake tts-sidecar setup"* ]]
+    [[ "$output" == *"fake ai-voice-interconnector setup"* ]]
 }
 
 @test "reemplaza una instalación anterior" {
     mock_all
 
     # Pre-siembra una instalación anterior con contenido distinguible.
-    old_app="$HOME/Applications/tts-sidecar-arm64.app/Contents/MacOS"
+    old_app="$HOME/Applications/ai-voice-interconnector-arm64.app/Contents/MacOS"
     mkdir -p "$old_app"
-    printf 'binario viejo' > "$old_app/tts-sidecar"
+    printf 'binario viejo' > "$old_app/ai-voice-interconnector"
 
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
     # El binario fue reemplazado por el nuevo (script, no "binario viejo").
-    new_bin="$HOME/Applications/tts-sidecar-arm64.app/Contents/MacOS/tts-sidecar"
+    new_bin="$HOME/Applications/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector"
     [ -x "$new_bin" ]
     ! grep -q "binario viejo" "$new_bin"
 }

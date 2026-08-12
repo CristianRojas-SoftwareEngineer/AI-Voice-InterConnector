@@ -1,6 +1,6 @@
 # Integración con Claude Code
 
-Este documento describe la integración de TTS-Sidecar con **tts-sidecar-narrator**,
+Este documento describe la integración de AI-Voice-InterConnector con **tts-sidecar-narrator**,
 un plugin de [Claude Code](https://code.claude.com) que narra por voz la actividad
 de la sesión, desde la perspectiva del **motor (el proveedor)**.
 
@@ -24,12 +24,12 @@ de vida independientes:
 
 | Componente | Repositorio | Rol |
 |------------|-------------|-----|
-| **TTS-Sidecar** (este) | `TTS-Sidecar` | **Motor**: sintetiza voz 100 % offline y expone una CLI pública estable. |
+| **AI-Voice-InterConnector** (este) | `AI-Voice-InterConnector` | **Motor**: sintetiza voz 100 % offline y expone una CLI pública estable. |
 | **tts-sidecar-narrator** | [`tts-sidecar-narrator`](https://github.com/CristianRojas-SoftwareEngineer/tts-sidecar-narrator) | **Cliente**: plugin de Claude Code que narra la actividad de la sesión pidiendo síntesis a este motor. |
 
-La dependencia es **unidireccional**: el plugin consume a TTS-Sidecar. Este repo
+La dependencia es **unidireccional**: el plugin consume a AI-Voice-InterConnector. Este repo
 **no** conoce, importa ni depende del plugin — no hay ningún código, test ni
-build de TTS-Sidecar que sepa de su existencia. El plugin es, a efectos del
+build de AI-Voice-InterConnector que sepa de su existencia. El plugin es, a efectos del
 motor, un consumidor externo más de la CLI, como un script de usuario.
 
 ## Qué es el plugin
@@ -39,15 +39,15 @@ Code. Al final de cada turno (y en avisos relevantes) el usuario escucha un
 mensaje conversacional corto en español —no el texto en bruto del asistente,
 sino una locución procesada.
 
-Es un **consumidor** del CLI público (`tts-sidecar` en PATH): no importa el
-paquete `tts_sidecar`, no comparte código ni requiere el árbol fuente. Sus
+Es un **consumidor** del CLI público (`ai-voice-interconnector` en PATH): no importa el
+paquete `ai_voice_interconnector`, no comparte código ni requiere el árbol fuente. Sus
 propiedades relevantes para esta integración:
 
 - **Automático**: disparado por hooks (`Stop`, `Notification`), sin intervención
   del modelo ni del usuario. `SessionStart` verifica el entorno y deja el daemon
   caliente.
 - **No intrusivo**: nunca bloquea ni retrasa el turno; falla en silencio si
-  TTS-Sidecar no está disponible.
+  AI-Voice-InterConnector no está disponible.
 
 El resto de sus propiedades de diseño (costo cero, sin runtime extra,
 multiplataforma, activación/desactivación) vive en el repositorio del plugin,
@@ -55,7 +55,7 @@ que es su fuente de verdad.
 
 ## El contrato de integración
 
-El único acoplamiento es la **CLI pública** (`tts-sidecar` en `PATH`). El plugin
+El único acoplamiento es la **CLI pública** (`ai-voice-interconnector` en `PATH`). El plugin
 depende de estas superficies y de la estabilidad de sus flags y de su esquema
 JSON:
 
@@ -79,8 +79,8 @@ El acoplamiento real es solo el contrato público del CLI; todo lo demás es
 disjunto, y por eso el plugin vive en su propio repositorio:
 
 - **Código**: el plugin es TypeScript sobre el Node.js que trae Claude Code; no
-  importa el paquete `tts_sidecar`.
-- **Versionado**: TTS-Sidecar versiona el motor (binarios por SO, PyPI); el
+  importa el paquete `ai_voice_interconnector`.
+- **Versionado**: AI-Voice-InterConnector versiona el motor (binarios por SO, PyPI); el
   plugin versiona con el campo `version` de `plugin.json`, al ritmo de Claude
   Code. Un fix en uno no obliga a un release del otro.
 - **CI e infraestructura**: PyInstaller + pytest + gates de cobertura aquí;
@@ -92,7 +92,7 @@ propio.
 ## Punto de entrada para el usuario
 
 Desde el lado del motor no hay nada que instalar para el plugin: basta con que
-`tts-sidecar` esté en el `PATH` y los modelos estén en caché (`tts-sidecar setup`).
+`ai-voice-interconnector` esté en el `PATH` y los modelos estén en caché (`ai-voice-interconnector setup`).
 
 El repositorio del plugin dobla como su propio marketplace:
 
@@ -103,6 +103,6 @@ El repositorio del plugin dobla como su propio marketplace:
 ```
 
 El comando `/tts-sidecar-narrator:install` guía la instalación del binario
-TTS-Sidecar, la descarga de los modelos y la activación de la narración. El detalle
+AI-Voice-InterConnector, la descarga de los modelos y la activación de la narración. El detalle
 de cómo el plugin orquesta hooks y degradación vive en su
 [documento de integración](https://github.com/CristianRojas-SoftwareEngineer/tts-sidecar-narrator/blob/main/docs/INTEGRATION.md).

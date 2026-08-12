@@ -21,9 +21,9 @@ La investigación examinó la implementación completa de `voice` (list, clone, 
 El parser se define en `cli.py:2616-2646`. `voice` es un subcomando de segundo nivel con tres sub-acciones:
 
 ```
-tts-sidecar voice list [--json]
-tts-sidecar voice clone --name NAME --speech-reference FILE [--timbre-reference FILE] [--force] [--daemon|--no-daemon] [--json]
-tts-sidecar voice remove --name NAME [--json]
+ai-voice-interconnector voice list [--json]
+ai-voice-interconnector voice clone --name NAME --speech-reference FILE [--timbre-reference FILE] [--force] [--daemon|--no-daemon] [--json]
+ai-voice-interconnector voice remove --name NAME [--json]
 ```
 
 **Parámetros de `voice clone`:**

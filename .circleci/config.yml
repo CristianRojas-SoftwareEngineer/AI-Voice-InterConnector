@@ -586,15 +586,15 @@ jobs:
           # Ejecuta el binario congelado recién construido para detectar
           # empaquetados rotos (metadata faltante, --collect-all incompleto)
           # antes de publicar. `version` no carga el modelo; exit 0 obligatorio.
-          name: Smoke test dist/tts-sidecar/tts-sidecar.exe (version + voces de fábrica)
+          name: Smoke test dist/ai-voice-interconnector/ai-voice-interconnector.exe (version + voces de fábrica)
           command: |
-            Write-Host "[STEP] Smoke test dist/tts-sidecar/tts-sidecar.exe - INICIO"
-            dist/tts-sidecar/tts-sidecar.exe version
+            Write-Host "[STEP] Smoke test dist/ai-voice-interconnector/ai-voice-interconnector.exe - INICIO"
+            dist/ai-voice-interconnector/ai-voice-interconnector.exe version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             # Valida que las voces de fábrica (en particular 'default')
             # quedaron empaquetadas en el bundle. `voice list` no carga el
             # modelo; falla el job si el bundle no trae la voz por defecto.
-            $voiceList = dist/tts-sidecar/tts-sidecar.exe voice list
+            $voiceList = dist/ai-voice-interconnector/ai-voice-interconnector.exe voice list
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             # -notcontains (no -notmatch): sobre un array, -notmatch FILTRA los
             # elementos que no coinciden en vez de dar un booleano, así que la
@@ -603,7 +603,7 @@ jobs:
             # prueba de membresía exacta, espejo del `grep -qx '  - default'`
             # que usan los smoke de Linux y macOS.
             if ($voiceList -notcontains '  - default') { throw "La voz de fábrica 'default' no está empaquetada en el bundle" }
-            Write-Host "[STEP] Smoke test dist/tts-sidecar/tts-sidecar.exe - FIN"
+            Write-Host "[STEP] Smoke test dist/ai-voice-interconnector/ai-voice-interconnector.exe - FIN"
       - run:
           # Etapa Installer como step separado: invoca directamente al generador,
           # que emite el .iss con compresión lzma/normal (progreso por archivo, no
@@ -615,7 +615,7 @@ jobs:
           no_output_timeout: 25m
           command: |
             Write-Host "[STEP] Generate Windows x64 installer via Inno Setup - INICIO"
-            .venv\Scripts\python.exe scripts/create_installer_windows.py dist/tts-sidecar
+            .venv\Scripts\python.exe scripts/create_installer_windows.py dist/ai-voice-interconnector
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Generate Windows x64 installer via Inno Setup - FIN"
       - run:
@@ -629,8 +629,8 @@ jobs:
             Write-Host "[STEP] Stage versioned Windows x64 installer into workspace dir - INICIO"
             $ErrorActionPreference = 'Stop'
             New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-            if (-not (Test-Path dist/tts-sidecar-*-x86_64-setup.exe)) { throw "Instalador versionado no encontrado en dist/" }
-            Copy-Item dist/tts-sidecar-*-x86_64-setup.exe artifacts/
+            if (-not (Test-Path dist/ai-voice-interconnector-*-x86_64-setup.exe)) { throw "Instalador versionado no encontrado en dist/" }
+            Copy-Item dist/ai-voice-interconnector-*-x86_64-setup.exe artifacts/
             Write-Host "[STEP] Stage versioned Windows x64 installer into workspace dir - FIN"
       - run:
           # N-04: SHA-256 del artefacto ya staged en artifacts/, en el log del CI;
@@ -638,13 +638,13 @@ jobs:
           name: Emit SHA-256 of staged Windows x64 installer
           command: |
             Write-Host "[STEP] Emit SHA-256 of staged Windows x64 installer - INICIO"
-            Get-FileHash artifacts/tts-sidecar-*-x86_64-setup.exe -Algorithm SHA256
+            Get-FileHash artifacts/ai-voice-interconnector-*-x86_64-setup.exe -Algorithm SHA256
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Emit SHA-256 of staged Windows x64 installer - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - tts-sidecar-*-x86_64-setup.exe
+            - ai-voice-interconnector-*-x86_64-setup.exe
 
   build-linux-x64:
     docker:
@@ -720,7 +720,7 @@ jobs:
             python scripts/build_linux.py --arch x86_64
             echo "[STEP] Build Linux x64 AppImage via PyInstaller - FIN"
       - smoke_test_frozen_bundle:
-          executable_path: dist/tts-sidecar/tts-sidecar
+          executable_path: dist/ai-voice-interconnector/ai-voice-interconnector
       - run:
           # Copia única del AppImage VERSIONADO (nombre de release, con arch) al
           # directorio de workspace para `publish-release`. Fail-fast: sin match,
@@ -729,7 +729,7 @@ jobs:
           command: |
             echo "[STEP] Stage versioned Linux x64 AppImage into workspace dir - INICIO"
             mkdir -p artifacts
-            cp dist/tts-sidecar-*-x86_64.AppImage artifacts/
+            cp dist/ai-voice-interconnector-*-x86_64.AppImage artifacts/
             echo "[STEP] Stage versioned Linux x64 AppImage into workspace dir - FIN"
       - run:
           # N-04: SHA-256 del artefacto ya staged en artifacts/, en el log del CI;
@@ -737,12 +737,12 @@ jobs:
           name: Emit SHA-256 of staged Linux x64 AppImage
           command: |
             echo "[STEP] Emit SHA-256 of staged Linux x64 AppImage - INICIO"
-            sha256sum artifacts/tts-sidecar-*-x86_64.AppImage
+            sha256sum artifacts/ai-voice-interconnector-*-x86_64.AppImage
             echo "[STEP] Emit SHA-256 of staged Linux x64 AppImage - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - tts-sidecar-*-x86_64.AppImage
+            - ai-voice-interconnector-*-x86_64.AppImage
 
   build-linux-arm64:
     # Espejo de build-linux-x64: Docker cimg/python:3.13 (variante arm64) con
@@ -820,7 +820,7 @@ jobs:
       # que ejercita el stack nativo aarch64 (wheels, extensiones). Decisión
       # documentada en docs/BUILD.md §4.
       - smoke_test_frozen_bundle:
-          executable_path: dist/tts-sidecar/tts-sidecar
+          executable_path: dist/ai-voice-interconnector/ai-voice-interconnector
       - run:
           # Copia única del AppImage VERSIONADO (nombre de release, con arch) al
           # directorio de workspace para `publish-release`. Fail-fast: sin match,
@@ -829,7 +829,7 @@ jobs:
           command: |
             echo "[STEP] Stage versioned Linux ARM64 AppImage into workspace dir - INICIO"
             mkdir -p artifacts
-            cp dist/tts-sidecar-*-arm64.AppImage artifacts/
+            cp dist/ai-voice-interconnector-*-arm64.AppImage artifacts/
             echo "[STEP] Stage versioned Linux ARM64 AppImage into workspace dir - FIN"
       - run:
           # N-04: SHA-256 del artefacto ya staged en artifacts/, en el log del CI;
@@ -837,12 +837,12 @@ jobs:
           name: Emit SHA-256 of staged Linux ARM64 AppImage
           command: |
             echo "[STEP] Emit SHA-256 of staged Linux ARM64 AppImage - INICIO"
-            sha256sum artifacts/tts-sidecar-*-arm64.AppImage
+            sha256sum artifacts/ai-voice-interconnector-*-arm64.AppImage
             echo "[STEP] Emit SHA-256 of staged Linux ARM64 AppImage - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - tts-sidecar-*-arm64.AppImage
+            - ai-voice-interconnector-*-arm64.AppImage
 
   build-darwin-arm64:
     macos:
@@ -952,15 +952,15 @@ jobs:
           # Ejecuta el binario congelado dentro del .app para detectar
           # empaquetados rotos antes de publicar. `version` no carga el modelo;
           # exit 0 obligatorio.
-          name: Smoke test dist/tts-sidecar-arm64.app/Contents/MacOS/tts-sidecar (version + voces de fábrica)
+          name: Smoke test dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector (version + voces de fábrica)
           command: |
-            echo "[STEP] Smoke test dist/tts-sidecar-arm64.app/Contents/MacOS/tts-sidecar - INICIO"
-            dist/tts-sidecar-arm64.app/Contents/MacOS/tts-sidecar version
+            echo "[STEP] Smoke test dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector - INICIO"
+            dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector version
             # Valida que las voces de fábrica (en particular 'default')
             # quedaron empaquetadas en el bundle. `voice list` no carga el
             # modelo; el grep -qx aborta el step si 'default' no viaja en el bundle.
-            dist/tts-sidecar-arm64.app/Contents/MacOS/tts-sidecar voice list | grep -qx '  - default'
-            echo "[STEP] Smoke test dist/tts-sidecar-arm64.app/Contents/MacOS/tts-sidecar - FIN"
+            dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector voice list | grep -qx '  - default'
+            echo "[STEP] Smoke test dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector - FIN"
       - run:
           # Copia única del .dmg VERSIONADO (nombre de release, con arch) al
           # directorio de workspace para `publish-release`. Fail-fast: sin match,
@@ -969,7 +969,7 @@ jobs:
           command: |
             echo "[STEP] Stage versioned macOS arm64 .dmg into workspace dir - INICIO"
             mkdir -p artifacts
-            cp dist/tts-sidecar-*-arm64.dmg artifacts/
+            cp dist/ai-voice-interconnector-*-arm64.dmg artifacts/
             echo "[STEP] Stage versioned macOS arm64 .dmg into workspace dir - FIN"
       - run:
           # N-04: SHA-256 del artefacto ya staged en artifacts/, en el log del CI;
@@ -977,12 +977,12 @@ jobs:
           name: Emit SHA-256 of staged macOS arm64 .dmg
           command: |
             echo "[STEP] Emit SHA-256 of staged macOS arm64 .dmg - INICIO"
-            shasum -a 256 artifacts/tts-sidecar-*-arm64.dmg
+            shasum -a 256 artifacts/ai-voice-interconnector-*-arm64.dmg
             echo "[STEP] Emit SHA-256 of staged macOS arm64 .dmg - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - tts-sidecar-*-arm64.dmg
+            - ai-voice-interconnector-*-arm64.dmg
 
   publish-release:
     # CD estrategia 1 (GitHub Releases). Solo corre en tags `v*` (ver el
@@ -1022,7 +1022,7 @@ jobs:
             echo "[STEP] Generate SHA256SUMS.txt over workspace artifacts - INICIO"
             set -euo pipefail
             cd artifacts
-            sha256sum tts-sidecar-* > SHA256SUMS.txt
+            sha256sum ai-voice-interconnector-* > SHA256SUMS.txt
             cat SHA256SUMS.txt
             echo "[STEP] Generate SHA256SUMS.txt over workspace artifacts - FIN"
       - run:
@@ -1068,8 +1068,8 @@ jobs:
               echo "Este release se distribuye bajo **GPL-3.0-or-later**. El código"
               echo "fuente correspondiente a este tag está disponible en:"
               echo ""
-              echo "- Tarball de fuente: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/archive/refs/tags/${CIRCLE_TAG}.tar.gz"
-              echo "- Etiqueta del release: https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/releases/tag/${CIRCLE_TAG}"
+              echo "- Tarball de fuente: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/archive/refs/tags/${CIRCLE_TAG}.tar.gz"
+              echo "- Etiqueta del release: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/${CIRCLE_TAG}"
             } >> notes.md
             echo "[STEP] Append GPL source-offer footer to release notes - FIN"
       - run:
@@ -1082,14 +1082,14 @@ jobs:
             echo "[STEP] Create GitHub Release (direct publish) with 4 artifacts + SHA256SUMS - INICIO"
             set -euo pipefail
             gh release create "$CIRCLE_TAG" \
-              artifacts/tts-sidecar-* artifacts/SHA256SUMS.txt \
+              artifacts/ai-voice-interconnector-* artifacts/SHA256SUMS.txt \
               --title "$CIRCLE_TAG" \
               --notes-file notes.md
             echo "[STEP] Create GitHub Release (direct publish) with 4 artifacts + SHA256SUMS - FIN"
 
   publish-metadata:
     # Cask de Homebrew (docs/SELF-HOSTED-INSTALL.md): tras cada Release público,
-    # reescribe Casks/tts-sidecar.rb en el tap propio `homebrew-tts-sidecar` con
+    # reescribe Casks/ai-voice-interconnector.rb en el tap propio `homebrew-ai-voice-interconnector` con
     # la versión del tag y el sha256 del .dmg arm64, leído del SHA256SUMS.txt ya
     # público (gh release download, sin depender del workspace del pipeline: es
     # durable e idempotente, el reintento en cualquier momento es seguro).
@@ -1128,15 +1128,15 @@ jobs:
               -p SHA256SUMS.txt --dir /tmp/release-metadata
             echo "[STEP] Download SHA256SUMS.txt from the just-published release - FIN"
       - run:
-          name: Render Casks/tts-sidecar.rb
+          name: Render Casks/ai-voice-interconnector.rb
           command: |
-            echo "[STEP] Render Casks/tts-sidecar.rb - INICIO"
+            echo "[STEP] Render Casks/ai-voice-interconnector.rb - INICIO"
             set -euo pipefail
             python3 scripts/render_cask.py \
               --tag "$CIRCLE_TAG" \
               --sums-file /tmp/release-metadata/SHA256SUMS.txt \
-              --out /tmp/tap-clone/Casks/tts-sidecar.rb
-            echo "[STEP] Render Casks/tts-sidecar.rb - FIN"
+              --out /tmp/tap-clone/Casks/ai-voice-interconnector.rb
+            echo "[STEP] Render Casks/ai-voice-interconnector.rb - FIN"
       - run:
           # Check estático viable sin un Mac: `brew audit`/`brew style` exigen
           # una instalación completa de Homebrew (costosa en un runner Linux
@@ -1145,7 +1145,7 @@ jobs:
           name: Syntax-check rendered Cask (ruby -c)
           command: |
             echo "[STEP] Syntax-check rendered Cask (ruby -c) - INICIO"
-            ruby -c /tmp/tap-clone/Casks/tts-sidecar.rb
+            ruby -c /tmp/tap-clone/Casks/ai-voice-interconnector.rb
             echo "[STEP] Syntax-check rendered Cask (ruby -c) - FIN"
       - run:
           # Clona el tap con el PAT del context (write-scoped solo al tap),
@@ -1156,14 +1156,14 @@ jobs:
           command: |
             echo "[STEP] Clone tap, commit rendered Cask, and push - INICIO"
             set -euo pipefail
-            RENDERED="/tmp/tap-clone/Casks/tts-sidecar.rb"
-            git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_PAT}@github.com/CristianRojas-SoftwareEngineer/homebrew-tts-sidecar.git" /tmp/tap-repo
+            RENDERED="/tmp/tap-clone/Casks/ai-voice-interconnector.rb"
+            git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_PAT}@github.com/CristianRojas-SoftwareEngineer/homebrew-ai-voice-interconnector.git" /tmp/tap-repo
             mkdir -p /tmp/tap-repo/Casks
-            cp "$RENDERED" /tmp/tap-repo/Casks/tts-sidecar.rb
+            cp "$RENDERED" /tmp/tap-repo/Casks/ai-voice-interconnector.rb
             cd /tmp/tap-repo
-            git config user.name "tts-sidecar-ci"
-            git config user.email "ci@tts-sidecar.invalid"
-            git add Casks/tts-sidecar.rb
+            git config user.name "ai-voice-interconnector-ci"
+            git config user.email "ci@ai-voice-interconnector.invalid"
+            git add Casks/ai-voice-interconnector.rb
             if git diff --cached --quiet; then
               echo "Cask sin cambios (regeneración idempotente); nada que empujar."
             else
@@ -1216,12 +1216,12 @@ jobs:
             source /tmp/smoke-venv/bin/activate
             pip install dist/*.whl
             EXPECTED_VERSION="${CIRCLE_TAG#v}"
-            ACTUAL_VERSION="$(tts-sidecar version --json | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
+            ACTUAL_VERSION="$(ai-voice-interconnector version --json | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
             if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
               echo "ERROR: version del wheel ($ACTUAL_VERSION) no coincide con el tag ($EXPECTED_VERSION)" >&2
               exit 1
             fi
-            python -c "from tts_sidecar import voices; assert 'default' in voices.list_voices(), 'voz default ausente del wheel'"
+            python -c "from ai_voice_interconnector import voices; assert 'default' in voices.list_voices(), 'voz default ausente del wheel'"
             deactivate
             echo "[STEP] Smoke test wheel in a clean venv - FIN"
       - run:

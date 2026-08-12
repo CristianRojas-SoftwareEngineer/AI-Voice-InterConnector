@@ -1,5 +1,5 @@
 """
-Interfaz CLI de TTS Sidecar.
+Interfaz CLI de AI Voice InterConnector.
 Consumible desde cualquier lenguaje de programación vía subprocess.
 
 Contrato de salida (estable entre SO y lenguajes):
@@ -28,7 +28,7 @@ import sys
 
 # La capa única de bootstrap (UTF-8, warnings, env vars, mock de pkg_resources)
 # ya NO corre como efecto colateral de importar este módulo: la invoca main()
-# como su primera acción. Así importar `tts_sidecar.cli` deja de imponer que
+# como su primera acción. Así importar `ai_voice_interconnector.cli` deja de imponer que
 # todo import posterior ocurra tras un apply() implícito. Los imports
 # de módulo de abajo son livianos (stdlib + timing) y no arrastran chatterbox;
 # las dependencias pesadas se importan de forma perezosa dentro de cada comando.
@@ -59,7 +59,7 @@ from .timing import timed_command, StageTimer, Spinner, log, format_progress_eve
 
 # Los códigos de salida y CliError viven en exit_codes.py y se
 # re-exportan aquí para que sea la única superficie que necesita
-# importar tts_sidecar.exit_codes desde la CLI.
+# importar ai_voice_interconnector.exit_codes desde la CLI.
 
 # Versión del esquema de la salida --json del CLI (contrato legible por máquina).
 # Se emite como "schema_version" en TODOS los payloads JSON. Es un campo aditivo:
@@ -219,7 +219,7 @@ def _translate_stage(text: str, source_language: str, target_language: str) -> s
         raise CliError(
             EXIT_MODEL_MISSING, "model_missing",
             "Error: el modelo de traducción no está provisionado. Ejecuta "
-            "'tts-sidecar setup --language en' primero.",
+            "'ai-voice-interconnector setup --language en' primero.",
         )
     except TranslationFailedError as e:
         raise CliError(EXIT_TRANSLATION_FAILED, "translation_failed", f"Error: {e}")
@@ -233,7 +233,7 @@ def _require_model_cached(model: str = "es-mx-latam", language: str = "es-latam"
             EXIT_MODEL_MISSING,
             "model_missing",
             f"Error: el modelo '{model}' no está descargado.\n"
-            f"Ejecuta 'tts-sidecar setup --language {language}' para descargarlo antes de continuar.",
+            f"Ejecuta 'ai-voice-interconnector setup --language {language}' para descargarlo antes de continuar.",
         )
 
 
@@ -259,7 +259,7 @@ def _require_models_cached_for_daemon(language: str) -> None:
                 raise CliError(
                     EXIT_MODEL_MISSING, "model_missing",
                     f"Error: el modelo de traducción '{source}->{target}' no está "
-                    "descargado.\nEjecuta 'tts-sidecar setup --language en' para "
+                    "descargado.\nEjecuta 'ai-voice-interconnector setup --language en' para "
                     "descargarlo antes de continuar.",
                 )
 
@@ -355,7 +355,7 @@ def _require_voice_exists(voice_name: str) -> None:
     if voices._resolve_voice_dir(voice_name) is None:
         raise CliError(
             EXIT_NOT_FOUND, "voice_not_found",
-            f"Error: la voz '{voice_name}' no existe. Clónala con 'tts-sidecar "
+            f"Error: la voz '{voice_name}' no existe. Clónala con 'ai-voice-interconnector "
             "voice clone' o usa la voz 'default'.",
         )
 
@@ -376,7 +376,7 @@ def _dispatch_synthesis(args, voice_name: str):
             raise CliError(
                 EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
                 "Error: se exigió el daemon (--daemon) pero no está activo. "
-                "Inícialo con 'tts-sidecar daemon start' o reintenta sin --daemon.",
+                "Inícialo con 'ai-voice-interconnector daemon start' o reintenta sin --daemon.",
             )
         _warn_compute_backend_ignored(args)
         return _synthesize_via_daemon(args, voice_name), True
@@ -479,7 +479,7 @@ def _transcribe_stage(args) -> str:
             raise CliError(
                 EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
                 "Error: se exigió el daemon (--daemon) pero no está activo. "
-                "Inícialo con 'tts-sidecar daemon start' o reintenta sin --daemon.",
+                "Inícialo con 'ai-voice-interconnector daemon start' o reintenta sin --daemon.",
             )
         return _via_daemon()
 
@@ -509,7 +509,7 @@ def _transcribe_stage(args) -> str:
         raise CliError(
             EXIT_MODEL_MISSING, "model_missing",
             "Error: el modelo de transcripción no está provisionado. Ejecuta "
-            "'tts-sidecar setup --with-stt' primero.",
+            "'ai-voice-interconnector setup --with-stt' primero.",
         )
     except TranscriptionFailedError as e:
         raise CliError(EXIT_TRANSCRIPTION_FAILED, "transcription_failed", f"Error: {e}")
@@ -545,7 +545,7 @@ def cmd_speech_say(args):
         target_language = getattr(args, "target_language", "es-latam")
         if not is_model_cached(model_for(target_language)):
             raise CliError(EXIT_MODEL_MISSING, "model_missing",
-                            f"Ejecuta 'tts-sidecar setup --language {target_language}' primero.")
+                            f"Ejecuta 'ai-voice-interconnector setup --language {target_language}' primero.")
         raise CliError(EXIT_NOT_FOUND, "not_found",
                         "Voz no encontrada.")
     except Exception as e:
@@ -609,7 +609,7 @@ def cmd_speech_dub(args):
         target_language = getattr(args, "target_language", "es-latam")
         if not is_model_cached(model_for(target_language)):
             raise CliError(EXIT_MODEL_MISSING, "model_missing",
-                            f"Ejecuta 'tts-sidecar setup --language {target_language}' primero.")
+                            f"Ejecuta 'ai-voice-interconnector setup --language {target_language}' primero.")
         raise CliError(EXIT_NOT_FOUND, "not_found",
                         "Voz no encontrada.")
     except Exception as e:
@@ -693,7 +693,7 @@ def cmd_speech_synthesize(args):
         target_language = getattr(args, "target_language", "es-latam")
         if not is_model_cached(model_for(target_language)):
             raise CliError(EXIT_MODEL_MISSING, "model_missing",
-                            f"Ejecuta 'tts-sidecar setup --language {target_language}' primero.")
+                            f"Ejecuta 'ai-voice-interconnector setup --language {target_language}' primero.")
         raise CliError(EXIT_NOT_FOUND, "not_found", "Voz no encontrada.")
     except Exception as e:
         from .daemon import DaemonIPCError
@@ -919,7 +919,7 @@ def _precompute_cloned_voice(args) -> bool:
             raise CliError(
                 EXIT_DAEMON_UNREACHABLE, "daemon_unreachable",
                 "Error: se exigió el daemon (--daemon) para precomputar la voz "
-                "pero no está activo. Inícialo con 'tts-sidecar daemon start'.",
+                "pero no está activo. Inícialo con 'ai-voice-interconnector daemon start'.",
             )
         return DaemonIPCClient().precompute_voice(args.name)
 
@@ -974,7 +974,7 @@ def cmd_voice_remove(args):
         print(
             f"Error al eliminar la voz '{args.name}': uno de sus archivos parece "
             "estar en uso. En Windows los bloqueos típicos son el daemon "
-            "('tts-sidecar daemon stop' lo cierra), un reproductor de audio con el "
+            "('ai-voice-interconnector daemon stop' lo cierra), un reproductor de audio con el "
             ".wav abierto, el panel de vista previa del Explorador de Windows sobre "
             "la carpeta de la voz, o un antivirus escaneando el archivo. Cierra el "
             f"proceso que lo retiene y vuelve a intentarlo. Detalle: {e}",
@@ -1007,7 +1007,7 @@ def cmd_voice_list(args):
                 print(f"  - {voice}")
         else:
             print("No hay voces registradas. Ejecuta:")
-            print("  tts-sidecar voice clone --name mi_voz --speech-reference speech-reference.wav")
+            print("  ai-voice-interconnector voice clone --name mi_voz --speech-reference speech-reference.wav")
 
     except FileNotFoundError as e:
         raise CliError(EXIT_NOT_FOUND, "not_found",
@@ -1035,13 +1035,13 @@ def cmd_devices(args):
 
 
 def cmd_version(args):
-    """Muestra la versión de tts-sidecar."""
+    """Muestra la versión de ai-voice-interconnector."""
     from . import __version__
 
     if getattr(args, "json", False):
-        emit_json({"name": "tts-sidecar", "version": __version__})
+        emit_json({"name": "ai-voice-interconnector", "version": __version__})
     else:
-        print(f"tts-sidecar {__version__}")
+        print(f"ai-voice-interconnector {__version__}")
 
 
 def cmd_translate(args):
@@ -1085,7 +1085,7 @@ def cmd_translate(args):
         raise CliError(
             EXIT_MODEL_MISSING, "model_missing",
             "Error: el modelo de traducción no está provisionado. Ejecuta "
-            "'tts-sidecar setup --language en' primero.",
+            "'ai-voice-interconnector setup --language en' primero.",
         )
     except UnsupportedLanguagePairError as e:
         raise CliError(EXIT_INVALID_INPUT, "usage_error", f"Error: {e}")
@@ -1289,10 +1289,10 @@ def cmd_doctor(args):
             else:
                 checks.append((
                     "FAIL", f"Chatterbox model ({language})",
-                    f"{model} no está en caché (ejecuta: tts-sidecar setup --language {language})",
+                    f"{model} no está en caché (ejecuta: ai-voice-interconnector setup --language {language})",
                 ))
     except Exception as e:
-        checks.append(("FAIL", "Chatterbox model", f"{e} (ejecuta: tts-sidecar setup)"))
+        checks.append(("FAIL", "Chatterbox model", f"{e} (ejecuta: ai-voice-interconnector setup)"))
 
     # Chequea el modelo de traducción opus-mt es<->en convertido a CT2 (Tarea 8):
     # un único chequeo lógico (ambas direcciones se provisionan juntas en
@@ -1308,10 +1308,10 @@ def cmd_doctor(args):
         else:
             checks.append((
                 "FAIL", "Translation model (es<->en)",
-                f"falta(n) {', '.join(missing)} (ejecuta: tts-sidecar setup --language en)",
+                f"falta(n) {', '.join(missing)} (ejecuta: ai-voice-interconnector setup --language en)",
             ))
     except Exception as e:
-        checks.append(("FAIL", "Translation model (es<->en)", f"{e} (ejecuta: tts-sidecar setup --language en)"))
+        checks.append(("FAIL", "Translation model (es<->en)", f"{e} (ejecuta: ai-voice-interconnector setup --language en)"))
 
     # Chequea el modelo de transcripción faster-whisper (Tarea 10): un único
     # modelo (no un par de direcciones), presencia en la ruta de caché.
@@ -1322,10 +1322,10 @@ def cmd_doctor(args):
         else:
             checks.append((
                 "FAIL", "Transcription model (whisper-small)",
-                "falta faster-whisper-small (ejecuta: tts-sidecar setup --with-stt)",
+                "falta faster-whisper-small (ejecuta: ai-voice-interconnector setup --with-stt)",
             ))
     except Exception as e:
-        checks.append(("FAIL", "Transcription model (whisper-small)", f"{e} (ejecuta: tts-sidecar setup --with-stt)"))
+        checks.append(("FAIL", "Transcription model (whisper-small)", f"{e} (ejecuta: ai-voice-interconnector setup --with-stt)"))
 
     # Chequea el directorio de voces de usuario
     voices_path = voices.voices_root()
@@ -1386,7 +1386,7 @@ def cmd_doctor(args):
             return EXIT_ERROR
         return
 
-    print("=== TTS Sidecar Doctor ===\n")
+    print("=== AI Voice InterConnector Doctor ===\n")
     print(f"Python: {sys.version}")
     print(f"Plataforma: {platform.system()} {platform.release()}")
     print()
@@ -1402,17 +1402,17 @@ def cmd_doctor(args):
 
 
 def _path_symlink() -> Path:
-    """Ruta del symlink de PATH que setup gestiona en Unix (~/.local/bin/tts-sidecar).
+    """Ruta del symlink de PATH que setup gestiona en Unix (~/.local/bin/ai-voice-interconnector).
 
     Es la misma ubicación en Linux (integración de $APPIMAGE) y en macOS
     (symlink del one-liner install-macos.sh), por lo que las ramas Linux y macOS
     del uninstall la comparten.
     """
-    return Path.home() / ".local" / "bin" / "tts-sidecar"
+    return Path.home() / ".local" / "bin" / "ai-voice-interconnector"
 
 
 def _integrate_linux_path():
-    """Crea/actualiza el symlink ~/.local/bin/tts-sidecar → $APPIMAGE.
+    """Crea/actualiza el symlink ~/.local/bin/ai-voice-interconnector → $APPIMAGE.
 
     Solo actúa en Linux cuando el proceso corre desde un AppImage (el runtime
     expone la ruta absoluta del archivo en la variable de entorno APPIMAGE).
@@ -1422,7 +1422,7 @@ def _integrate_linux_path():
 
     `APPIMAGE` es un contrato oficial soportado, no solo el mecanismo interno
     del runtime AppImage: `install-linux.sh` la exporta explícitamente tras instalar
-    el AppImage en `~/.local/opt/tts-sidecar/` y antes de invocar `setup`, así
+    el AppImage en `~/.local/opt/ai-voice-interconnector/` y antes de invocar `setup`, así
     que cualquier valor externo de `APPIMAGE` que apunte a un archivo existente
     es una entrada válida.
     """
@@ -1446,8 +1446,8 @@ def _integrate_linux_path():
         return
     link.symlink_to(appimage)
     print(f"\n[PASS] PATH: symlink creado {link} -> {appimage}", file=sys.stderr)
-    print("El comando 'tts-sidecar' queda disponible por nombre en la terminal.", file=sys.stderr)
-    print("Para revertirlo: tts-sidecar setup --remove-path", file=sys.stderr)
+    print("El comando 'ai-voice-interconnector' queda disponible por nombre en la terminal.", file=sys.stderr)
+    print("Para revertirlo: ai-voice-interconnector setup --remove-path", file=sys.stderr)
 
     if str(link.parent) not in os.environ.get("PATH", "").split(os.pathsep):
         print(f"[WARN] {link.parent} no está en el PATH de esta sesión.", file=sys.stderr)
@@ -1480,12 +1480,12 @@ def _remove_linux_path() -> bool:
 
 
 def _linux_install_dir() -> Path:
-    """Directorio de instalación del AppImage en Linux (~/.local/opt/tts-sidecar).
+    """Directorio de instalación del AppImage en Linux (~/.local/opt/ai-voice-interconnector).
 
     Es propiedad exclusiva del proyecto: lo crea install-linux.sh y solo contiene los
     AppImages versionados. --uninstall lo borra por completo.
     """
-    return Path.home() / ".local" / "opt" / "tts-sidecar"
+    return Path.home() / ".local" / "opt" / "ai-voice-interconnector"
 
 
 def _uninstall_cleanup_data(args, json_mode):
@@ -1553,7 +1553,7 @@ def _uninstall(args):
         raise CliError(EXIT_NOT_APPLICABLE, "not_applicable",
                          "Error: 'setup --uninstall' solo aplica al canal nativo "
                          "(AppImage de Linux, .app de macOS o instalador de Windows).\n"
-                         "  Si instalaste vía pip/uv, desinstala con: pip uninstall tts-sidecar")
+                         "  Si instalaste vía pip/uv, desinstala con: pip uninstall ai-voice-interconnector")
 
     # Gate --json/--yes: la confirmación interactiva del cleanup contaminaría
     # stdout, reservado para el único payload JSON.
@@ -1574,7 +1574,7 @@ def _uninstall(args):
 
 
 def _uninstall_linux(args):
-    """Desinstala tts-sidecar en Linux en un paso (rama setup --uninstall).
+    """Desinstala ai-voice-interconnector en Linux en un paso (rama setup --uninstall).
 
     Sigue el orden unificado del contrato compartido: datos independientes
     (cleanup --all + data_root vacío) → integración de PATH (symlink) →
@@ -1600,7 +1600,7 @@ def _uninstall_linux(args):
         return
     removed_paths.extend(data_removed)
 
-    # 2. Integración de PATH: symlink ~/.local/bin/tts-sidecar.
+    # 2. Integración de PATH: symlink ~/.local/bin/ai-voice-interconnector.
     link = _path_symlink()
     if link.is_symlink():
         link.unlink()
@@ -1614,7 +1614,7 @@ def _uninstall_linux(args):
     # 3. Componente ancla: directorio de instalación del AppImage (borrado
     # quirúrgico acotado a esa ruta exacta), al final del orden unificado.
     install_dir = _linux_install_dir()
-    expected = Path.home() / ".local" / "opt" / "tts-sidecar"
+    expected = Path.home() / ".local" / "opt" / "ai-voice-interconnector"
     if install_dir.exists():
         if install_dir != expected:
             raise RuntimeError(f"Ruta de instalación inesperada, no se borra: {install_dir}")
@@ -1634,13 +1634,13 @@ def _uninstall_linux(args):
 
 
 def _uninstall_macos(args):
-    """Desinstala tts-sidecar en macOS en un paso (rama setup --uninstall).
+    """Desinstala ai-voice-interconnector en macOS en un paso (rama setup --uninstall).
 
     Espeja install-macos.sh y los .command del .dmg, siguiendo el orden unificado
     (datos → PATH → binario). El `.app` se resuelve desde sys.executable, no se
     adivina: en modo congelado el binario corre en <app>/Contents/MacOS/, así que
     la raíz del bundle es parents[2]; el resolve() es obligatorio porque si el
-    proceso se invocó vía el symlink ~/.local/bin/tts-sidecar, la ruta del
+    proceso se invocó vía el symlink ~/.local/bin/ai-voice-interconnector, la ruta del
     ejecutable podría ser la del symlink y parents[2] apuntaría a $HOME. Un guard
     estructural (la ruta termina en .app) reemplaza al guard de ruta exacta de
     Linux, que aquí no aplica porque hay tres ubicaciones válidas (~/Applications
@@ -1672,11 +1672,11 @@ def _uninstall_macos(args):
     # 2. Detección de Homebrew Cask por metadata del Caskroom (no por ruta del
     # .app). Si existe, la desinstalación no aplica: se difiere a brew --zap.
     brew_prefix = os.environ.get("HOMEBREW_PREFIX", "/opt/homebrew")
-    caskroom_meta = Path(brew_prefix) / "Caskroom" / "tts-sidecar"
+    caskroom_meta = Path(brew_prefix) / "Caskroom" / "ai-voice-interconnector"
     if caskroom_meta.exists():
         raise CliError(EXIT_STATE_CONFLICT, "state_conflict",
-                         "Error: tts-sidecar está instalado vía Homebrew Cask.\n"
-                         "  Desinstálalo con: brew uninstall --cask --zap tts-sidecar\n"
+                         "Error: ai-voice-interconnector está instalado vía Homebrew Cask.\n"
+                         "  Desinstálalo con: brew uninstall --cask --zap ai-voice-interconnector\n"
                          "  (su 'zap' ya borra los datos; hacerlo a mano dejaría el Caskroom "
                          "inconsistente).")
 
@@ -1689,7 +1689,7 @@ def _uninstall_macos(args):
         return
     removed_paths.extend(data_removed)
 
-    # 4. Integración de PATH: symlink ~/.local/bin/tts-sidecar (misma ruta que Linux).
+    # 4. Integración de PATH: symlink ~/.local/bin/ai-voice-interconnector (misma ruta que Linux).
     link = _path_symlink()
     if link.is_symlink():
         link.unlink()
@@ -1721,10 +1721,10 @@ def _uninstall_macos(args):
 
 
 def _uninstall_windows(args):
-    """Desinstala tts-sidecar en Windows en un paso (rama setup --uninstall).
+    """Desinstala ai-voice-interconnector en Windows en un paso (rama setup --uninstall).
 
     Windows origina el orden unificado: el SO mantiene un lock sobre el
-    tts-sidecar.exe en ejecución, así que el propio proceso no puede borrar su
+    ai-voice-interconnector.exe en ejecución, así que el propio proceso no puede borrar su
     binario ni esperar a un desinstalador que necesita borrarlo. Por eso el
     componente ancla se borra al final y de forma delegada:
 
@@ -1815,7 +1815,7 @@ def _describe_provision_failure(e: Exception):
             return (EXIT_PRECONDITION_FAILED, "credentials", (
                 "[FAIL] La provisión falló por acceso: el repo del modelo requiere "
                 "autorización (gated). Acepta las condiciones en HuggingFace o define "
-                f"un HF_TOKEN con acceso y reintenta 'tts-sidecar setup'. Detalle: {e}"
+                f"un HF_TOKEN con acceso y reintenta 'ai-voice-interconnector setup'. Detalle: {e}"
             ))
         if isinstance(e, HfHubHTTPError):
             status = getattr(getattr(e, "response", None), "status_code", None)
@@ -1823,7 +1823,7 @@ def _describe_provision_failure(e: Exception):
                 return (EXIT_PRECONDITION_FAILED, "credentials", (
                     f"[FAIL] La provisión falló por credenciales (HTTP {status}): el "
                     "token HF_TOKEN falta, expiró o no tiene acceso al repo del modelo. "
-                    f"Revísalo y reintenta 'tts-sidecar setup'. Detalle: {e}"
+                    f"Revísalo y reintenta 'ai-voice-interconnector setup'. Detalle: {e}"
                 ))
     except ImportError:
         pass
@@ -1833,7 +1833,7 @@ def _describe_provision_failure(e: Exception):
         if isinstance(e, requests.exceptions.RequestException):
             return (EXIT_PRECONDITION_FAILED, "network", (
                 "[FAIL] La provisión falló por un problema de red: verifica tu conexión "
-                "(o el proxy/firewall) y reintenta 'tts-sidecar setup'. "
+                "(o el proxy/firewall) y reintenta 'ai-voice-interconnector setup'. "
                 f"Detalle: {e}"
             ))
     except ImportError:
@@ -1843,12 +1843,12 @@ def _describe_provision_failure(e: Exception):
         return (EXIT_PRECONDITION_FAILED, "permissions", (
             "[FAIL] La provisión falló por permisos de escritura en la caché del "
             "modelo (~/.cache/huggingface o HF_HOME). Corrige los permisos y "
-            f"reintenta 'tts-sidecar setup'. Detalle: {e}"
+            f"reintenta 'ai-voice-interconnector setup'. Detalle: {e}"
         ))
     if isinstance(e, OSError) and e.errno == errno.ENOSPC:
         return (EXIT_PRECONDITION_FAILED, "disk_full", (
             "[FAIL] La provisión falló por falta de espacio en disco. Libera espacio "
-            f"y reintenta 'tts-sidecar setup'. Detalle: {e}"
+            f"y reintenta 'ai-voice-interconnector setup'. Detalle: {e}"
         ))
 
     return (EXIT_ERROR, "provision_failed", f"[FAIL] La provisión falló: {e}")
@@ -1902,7 +1902,7 @@ def cmd_setup(args):
             emit_json({"remove_path": True, "removed": removed})
         return
 
-    print("=== TTS Sidecar Setup ===\n", file=sys.stderr)
+    print("=== AI Voice InterConnector Setup ===\n", file=sys.stderr)
 
     # 1. Integración de PATH (solo Linux desde AppImage; no-op en el resto).
     # Va antes de los chequeos para que un host degradado (p. ej. sin audio)
@@ -2100,7 +2100,7 @@ def cmd_setup(args):
             "disk_insufficient",
             f"[FAIL] Espacio en disco insuficiente: {free_gb:.1f} GB libres, "
             f"se requieren al menos {required // 1024 ** 3} GB para {len(pending)} "
-            "modelo(s) (~3 GB c/u). Libera espacio y reintenta 'tts-sidecar setup'.",
+            "modelo(s) (~3 GB c/u). Libera espacio y reintenta 'ai-voice-interconnector setup'.",
         )
 
         # snapshot_download es solo red/disco, sin cargar el modelo en RAM
@@ -2300,7 +2300,7 @@ def cmd_cleanup(args):
         shutil.rmtree(p)
         print(f"Eliminado: {p}", file=info_out)
     print(
-        "Limpieza completa. 'tts-sidecar setup' reprovisiona los modelos cuando los necesites.",
+        "Limpieza completa. 'ai-voice-interconnector setup' reprovisiona los modelos cuando los necesites.",
         file=info_out,
     )
     removed = [p for p, _kind in existing]
@@ -2309,7 +2309,7 @@ def cmd_cleanup(args):
 
 
 def cmd_daemon(args):
-    """Gestiona el daemon de tts-sidecar."""
+    """Gestiona el daemon de ai-voice-interconnector."""
     if args.action == "serve":
         # Servidor en primer plano. Lo usa el ejecutable congelado para autoinvocar
         # el daemon (el .exe no puede ejecutar `python -m ...`).
@@ -2347,7 +2347,7 @@ def cmd_daemon(args):
                 raise CliError(
                     EXIT_MODEL_MISSING, "model_missing",
                     "Error: el modelo de transcripción no está provisionado. "
-                    "Ejecuta 'tts-sidecar setup --with-stt' primero.",
+                    "Ejecuta 'ai-voice-interconnector setup --with-stt' primero.",
                 )
         json_mode = getattr(args, "json", False)
         success = manager.start(
@@ -2460,8 +2460,8 @@ def build_parser() -> argparse.ArgumentParser:
     mantener una lista aparte que puede desincronizarse del código real.
     """
     parser = _CLIParser(
-        prog="tts-sidecar",
-        description="TTS Sidecar - TTS 100% local con clonación de voz"
+        prog="ai-voice-interconnector",
+        description="AI Voice InterConnector - TTS 100% local con clonación de voz"
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Comandos disponibles")
@@ -2677,13 +2677,13 @@ def build_parser() -> argparse.ArgumentParser:
     # excluyentes de setup: cada uno corta el flujo normal de provisión.
     setup_mode = setup_parser.add_mutually_exclusive_group()
     setup_mode.add_argument("--remove-path", action="store_true",
-                            help="Elimina el symlink de PATH (~/.local/bin/tts-sidecar) creado por setup en Linux "
+                            help="Elimina el symlink de PATH (~/.local/bin/ai-voice-interconnector) creado por setup en Linux "
                                  "y termina sin correr chequeos ni descargas")
     setup_mode.add_argument("--force-update", action="store_true",
                             help="Elimina ambos modelos en caché y los vuelve a descargar (fuerza una "
                                  "re-descarga limpia, p. ej. para actualizarlos)")
     setup_mode.add_argument("--uninstall", action="store_true",
-                            help="Desinstala tts-sidecar en un paso (canal nativo, los 3 SO): encadena "
+                            help="Desinstala ai-voice-interconnector en un paso (canal nativo, los 3 SO): encadena "
                                  "'cleanup --all', revierte la integración de PATH y borra el binario")
     setup_parser.add_argument("--yes", "-y", action="store_true",
                               help="Omite la confirmación interactiva del cleanup encadenado por --uninstall")

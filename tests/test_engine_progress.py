@@ -16,10 +16,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 def _engine_stub(tmp_path):
     """ChatterboxEngine sin cargar el modelo real (bypass de __init__)."""
-    from tts_sidecar.engine import ChatterboxEngine
-    from tts_sidecar.conditionals import ConditionalsPreparer
-    from tts_sidecar.audio_writer import AudioWriter
-    from tts_sidecar.synthesis import SynthesisOrchestrator
+    from ai_voice_interconnector.engine import ChatterboxEngine
+    from ai_voice_interconnector.conditionals import ConditionalsPreparer
+    from ai_voice_interconnector.audio_writer import AudioWriter
+    from ai_voice_interconnector.synthesis import SynthesisOrchestrator
 
     eng = ChatterboxEngine.__new__(ChatterboxEngine)
     eng.compute_backend = "cpu"
@@ -99,7 +99,7 @@ class TestSynthesizeProgressCallback:
 
 class TestTokenCountingIter:
     def test_reports_iterations_with_throttle(self):
-        from tts_sidecar.engine import ChatterboxEngine
+        from ai_voice_interconnector.engine import ChatterboxEngine
 
         eventos = []
         # 100 iteraciones: con throttle de ~10 tokens el conteo reportado avanza
@@ -118,7 +118,7 @@ class TestTokenCountingIter:
         assert counts == sorted(counts)
 
     def test_empty_iterable_emits_nothing(self):
-        from tts_sidecar.engine import ChatterboxEngine
+        from ai_voice_interconnector.engine import ChatterboxEngine
 
         eventos = []
         salida = list(
@@ -145,7 +145,7 @@ class TestSilentExceptionLogging:
             raise RuntimeError("cb roto")
 
         eng._active_progress_cb = boom
-        with caplog.at_level(logging.DEBUG, logger="tts_sidecar.engine"):
+        with caplog.at_level(logging.DEBUG, logger="ai_voice_interconnector.engine"):
             eng._emit_progress(stage="tts")  # no debe lanzar
 
         matching = [r for r in caplog.records if "callback de progreso" in r.message.lower()]
@@ -154,12 +154,12 @@ class TestSilentExceptionLogging:
 
     def test_token_counting_raising_cb_swallowed_and_logged(self, caplog):
         import logging
-        from tts_sidecar.engine import ChatterboxEngine
+        from ai_voice_interconnector.engine import ChatterboxEngine
 
         def boom(ev):
             raise RuntimeError("cb roto")
 
-        with caplog.at_level(logging.DEBUG, logger="tts_sidecar.engine"):
+        with caplog.at_level(logging.DEBUG, logger="ai_voice_interconnector.engine"):
             salida = list(ChatterboxEngine._token_counting_iter(range(100), boom))
 
         # La iteración no se interrumpe pese al callback roto.
@@ -175,7 +175,7 @@ class TestSynthesisCancelledPropagation:
     callback (contrato best-effort)."""
 
     def test_emit_progress_propagates_cancellation_but_swallows_other_errors(self, tmp_path):
-        from tts_sidecar.exceptions import SynthesisCancelled
+        from ai_voice_interconnector.exceptions import SynthesisCancelled
 
         eng = _engine_stub(tmp_path)
 
@@ -194,8 +194,8 @@ class TestSynthesisCancelledPropagation:
         eng._emit_progress(stage="t3")
 
     def test_token_counting_iter_propagates_cancellation(self):
-        from tts_sidecar.engine import ChatterboxEngine
-        from tts_sidecar.exceptions import SynthesisCancelled
+        from ai_voice_interconnector.engine import ChatterboxEngine
+        from ai_voice_interconnector.exceptions import SynthesisCancelled
 
         def boom_cancel(ev):
             raise SynthesisCancelled()
@@ -266,7 +266,7 @@ class TestAlignmentHookCleanup:
         return tts, layers
 
     def _engine(self, monkeypatch):
-        from tts_sidecar.engine import ChatterboxEngine
+        from ai_voice_interconnector.engine import ChatterboxEngine
         from chatterbox.models.t3 import t3 as t3_mod
 
         # _apply_synthesis_optimizations instala el shim global de tqdm (símbolo
@@ -306,7 +306,7 @@ class TestTokenShimInstall:
     def test_shim_wraps_sampling_tqdm(self, monkeypatch):
         """Instalado el shim, un tqdm(desc='Sampling') con callback activo cuenta
         tokens; sin callback delega en el tqdm real."""
-        from tts_sidecar.engine import ChatterboxEngine
+        from ai_voice_interconnector.engine import ChatterboxEngine
         from chatterbox.models.t3 import t3 as t3_mod
 
         eng = ChatterboxEngine.__new__(ChatterboxEngine)
@@ -317,7 +317,7 @@ class TestTokenShimInstall:
         monkeypatch.setattr(t3_mod, "tqdm", real_tqdm, raising=False)
 
         eng._install_token_progress_shim()
-        assert getattr(t3_mod.tqdm, "_is_tts_sidecar_shim", False)
+        assert getattr(t3_mod.tqdm, "_is_ai_voice_interconnector_shim", False)
 
         eventos = []
         eng._active_progress_cb = lambda ev: eventos.append(ev)

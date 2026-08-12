@@ -1,12 +1,12 @@
 #!/bin/sh
-# Instalador auto-hospedado de tts-sidecar para Linux.
+# Instalador auto-hospedado de ai-voice-interconnector para Linux.
 #
 # Uso:
-#   curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/main/install-linux.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-linux.sh | sh
 #
 # Resuelve el último Release de GitHub, elige el .AppImage de la arquitectura
 # del host, descarga el AppImage y SHA256SUMS.txt, verifica el checksum
-# (abortando si no coincide), lo instala en ~/.local/opt/tts-sidecar/ y
+# (abortando si no coincide), lo instala en ~/.local/opt/ai-voice-interconnector/ y
 # exporta APPIMAGE antes de invocar `setup`, que integra el PATH (symlink en
 # ~/.local/bin) y ofrece descargar el modelo de voz. Ver
 # docs/SELF-HOSTED-INSTALL.md para el diseño completo.
@@ -16,8 +16,8 @@
 
 set -eu
 
-REPO="CristianRojas-SoftwareEngineer/TTS-Sidecar"
-INSTALL_DIR="${HOME}/.local/opt/tts-sidecar"
+REPO="CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
+INSTALL_DIR="${HOME}/.local/opt/ai-voice-interconnector"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
 log() {
@@ -51,7 +51,7 @@ case "$machine" in
         ASSET_ARCH="arm64"
         ;;
     *)
-        fail "arquitectura no soportada: $machine (tts-sidecar publica x86_64 y arm64 para Linux)"
+        fail "arquitectura no soportada: $machine (ai-voice-interconnector publica x86_64 y arm64 para Linux)"
         ;;
 esac
 log "Arquitectura detectada: $machine -> $ASSET_ARCH"
@@ -74,7 +74,7 @@ if command -v ldd >/dev/null 2>&1; then
         glibc_minor="$(printf '%s' "$glibc_version" | cut -d. -f2)"
         if [ "$glibc_major" -lt "$GLIBC_FLOOR_MAJOR" ] || { [ "$glibc_major" -eq "$GLIBC_FLOOR_MAJOR" ] && [ "$glibc_minor" -lt "$GLIBC_FLOOR_MINOR" ]; }; then
             log "glibc $glibc_version detectada: el AppImage requiere glibc >= ${GLIBC_FLOOR_MAJOR}.${GLIBC_FLOOR_MINOR} y no funcionaría en este sistema."
-            log "Alternativas: instala desde PyPI ('uv tool install tts-sidecar' o 'pipx install tts-sidecar') o compila desde la fuente (docs/BUILD.md)."
+            log "Alternativas: instala desde PyPI ('uv tool install ai-voice-interconnector' o 'pipx install ai-voice-interconnector') o compila desde la fuente (docs/BUILD.md)."
             fail "glibc insuficiente ($glibc_version < ${GLIBC_FLOOR_MAJOR}.${GLIBC_FLOOR_MINOR})"
         fi
     fi
@@ -127,8 +127,8 @@ log "Instalado en: $final_path"
 # instalar y dar permisos al AppImage nuevo (nunca antes: no puede quedar el
 # directorio sin ningún AppImage funcional), eliminar los AppImages previos
 # para no acumular ~1-2 GB por versión en silencio. Solo borra archivos
-# tts-sidecar-*.AppImage distintos del recién instalado.
-for old in "$INSTALL_DIR"/tts-sidecar-*.AppImage; do
+# ai-voice-interconnector-*.AppImage distintos del recién instalado.
+for old in "$INSTALL_DIR"/ai-voice-interconnector-*.AppImage; do
     [ -e "$old" ] || continue
     if [ "$old" != "$final_path" ]; then
         rm -f "$old" && log "Eliminada versión anterior: $old"
@@ -140,7 +140,7 @@ done
 # para crear el symlink en ~/.local/bin; exportarla aquí, fuera de un runtime
 # AppImage real, es la vía soportada (docs/SELF-HOSTED-INSTALL.md).
 export APPIMAGE="$final_path"
-log "Ejecutando 'tts-sidecar setup' (integra el PATH y ofrece descargar el modelo)..."
+log "Ejecutando 'ai-voice-interconnector setup' (integra el PATH y ofrece descargar el modelo)..."
 "$final_path" setup
 
 log "Instalación completa."

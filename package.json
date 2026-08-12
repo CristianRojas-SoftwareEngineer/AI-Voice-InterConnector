@@ -1,7 +1,7 @@
 {
-  "name": "tts-sidecar",
+  "name": "ai-voice-interconnector",
   "version": "0.1.0",
-  "description": "TTS Sidecar - 100% local TTS with voice cloning in Latin American Spanish (Chatterbox Multilingual V3)",
+  "description": "AI Voice InterConnector - 100% local TTS with voice cloning in Latin American Spanish (Chatterbox Multilingual V3)",
   "license": "GPL-3.0-or-later",
   "python": ">=3.13",
   "os": [
@@ -14,7 +14,7 @@
     "arm64"
   ],
   "scripts": {
-    "install-model": "python bin/tts-sidecar setup",
+    "install-model": "python bin/ai-voice-interconnector setup",
     "clean-build": "python scripts/clean_build.py",
     "clean-dev": "python scripts/clean_build.py --dev",
     "build-windows": "python scripts/build_windows.py",
@@ -33,6 +33,6 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/CristianRojas-SoftwareEngineer/TTS-Sidecar"
+    "url": "https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
   }
 }

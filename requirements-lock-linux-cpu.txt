@@ -319,7 +319,7 @@ charset-normalizer==2.1.1 \
 chatterbox-tts==0.1.7 \
     --hash=sha256:83782500e3ad4e7c919132e9d7eb8755f29f57c5bde5ec48c655ca23a4eb113c \
     --hash=sha256:ed8afae83819b40a25927c2ef3bcc67f928bdfcf434c1376c972e6039252a187
-    # via tts-sidecar (pyproject.toml)
+    # via ai-voice-interconnector (pyproject.toml)
 click==8.4.2 \
     --hash=sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6 \
     --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76
@@ -368,7 +368,7 @@ ctranslate2==4.8.1 \
     --hash=sha256:e42ce3affb03ffc661e8f35d6e7845f16e6463884b9ba7857396d649520da819 \
     --hash=sha256:f3172c29470c1280ebb9f4a53aa4a913650e091f95740c732cd13b4b910c734d
     # via
-    #   tts-sidecar (pyproject.toml)
+    #   ai-voice-interconnector (pyproject.toml)
     #   faster-whisper
 decorator==5.3.1 \
     --hash=sha256:4cbcdd55a6efadb9dbea26b858f4fb3264567b52d69ca0d25b721b553f60ea82 \
@@ -396,11 +396,11 @@ fastapi==0.139.0 \
     --hash=sha256:99ab7b2d92223c76d6cf10757ab3f89d45b38267fc20b2a136cf02f6beac3145 \
     --hash=sha256:cf15e1e9e667ddb0ad63811e60bd11390d1aac838ca4a7a23f421807b2308189
     # via
-    #   tts-sidecar (pyproject.toml)
+    #   ai-voice-interconnector (pyproject.toml)
     #   gradio
 faster-whisper==1.2.1 \
     --hash=sha256:79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7
-    # via tts-sidecar (pyproject.toml)
+    # via ai-voice-interconnector (pyproject.toml)
 ffmpy==1.0.0 \
     --hash=sha256:5640e5f0fd03fb6236d0e119b16ccf6522db1c826fdf35dcb87087b60fd7504f \
     --hash=sha256:b12932e95435c8820f1cd041024402765f821971e4bae753b327fc02a6e12f8b
@@ -654,7 +654,7 @@ miniaudio==1.71 \
     --hash=sha256:f4a44b70b66628b0c307e40ae0ae857695978cae18462179b806d8edc807d416 \
     --hash=sha256:f7042af3a4db5b90e5efaea257b6dfcff9389239ea643e6b0faa80169528e2e6 \
     --hash=sha256:ff51e2887bb673e2e757752b586b3dc924d59aa5fbcae9bbc45f4a111bd3262b
-    # via tts-sidecar (pyproject.toml)
+    # via ai-voice-interconnector (pyproject.toml)
 ml-dtypes==0.5.4 \
     --hash=sha256:0d2ffd05a2575b1519dc928c0b93c06339eb67173ff53acb00724502cda231cf \
     --hash=sha256:11942cbf2cf92157db91e5022633c0d9474d4dfd813a909383bd23ce828a4b7d \
@@ -881,7 +881,7 @@ numpy==2.4.4 \
     --hash=sha256:fbc356aae7adf9e6336d336b9c8111d390a05df88f1805573ebb0807bd06fd1d \
     --hash=sha256:fcfe2045fd2e8f3cb0ce9d4ba6dba6333b8fa05bb8a4939c908cd43322d14c7e
     # via
-    #   tts-sidecar (pyproject.toml)
+    #   ai-voice-interconnector (pyproject.toml)
     #   accelerate
     #   chatterbox-tts
     #   ctranslate2
@@ -1099,7 +1099,7 @@ pandas==3.0.3 \
 peft==0.20.0 \
     --hash=sha256:0fbba16ffebfad3de96e06f2da6860fd860292324b85b6141909fa1e26ea9233 \
     --hash=sha256:4769c8093a4ca145fd6fb3fd4dd50449675f5fe46434ad1e98b285a132d4b1d0
-    # via tts-sidecar (pyproject.toml)
+    # via ai-voice-interconnector (pyproject.toml)
 pillow==12.2.0 \
     --hash=sha256:00a2865911330191c0b818c59103b58a5e697cae67042366970a6b6f1b20b7f9 \
     --hash=sha256:01afa7cf67f74f09523699b4e88c73fb55c13346d212a59a2db1f86b0a63e8c5 \
@@ -1245,7 +1245,7 @@ psutil==7.2.2 \
     --hash=sha256:eed63d3b4d62449571547b60578c5b2c4bcccc5387148db46e0c2313dad0ee00 \
     --hash=sha256:fd04ef36b4a6d599bbdb225dd1d3f51e00105f6d48a28f006da7f9822f2606d8
     # via
-    #   tts-sidecar (pyproject.toml)
+    #   ai-voice-interconnector (pyproject.toml)
     #   accelerate
     #   peft
 pycparser==3.0 \
@@ -1256,7 +1256,7 @@ pydantic==2.13.4 \
     --hash=sha256:45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba \
     --hash=sha256:c40756b57adaa8b1efeeced5c196f3f3b7c435f90e84ea7f443901bec8099ef6
     # via
-    #   tts-sidecar (pyproject.toml)
+    #   ai-voice-interconnector (pyproject.toml)
     #   fastapi
     #   gradio
 pydantic-core==2.46.4 \
@@ -1399,7 +1399,7 @@ pyloudnorm==0.2.0 \
     # via chatterbox-tts
 pysbd==0.3.4 \
     --hash=sha256:cd838939b7b0b185fcf86b0baf6636667dfb6e474743beeff878e9f42e022953
-    # via tts-sidecar (pyproject.toml)
+    # via ai-voice-interconnector (pyproject.toml)
 python-dateutil==2.9.0.post0 \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
@@ -1626,7 +1626,7 @@ regex==2026.6.28 \
 requests==2.28.1 \
     --hash=sha256:8fefa2a1a1365bf5520aac41836fbee479da67864514bdb821f31ce07ce65349
     # via
-    #   tts-sidecar (pyproject.toml)
+    #   ai-voice-interconnector (pyproject.toml)
     #   diffusers
     #   pooch
 resemble-perth==1.0.1 \
@@ -1644,7 +1644,7 @@ s3tokenizer==0.3.0 \
 sacremoses==0.1.1 \
     --hash=sha256:31e04c98b169bfd902144824d191825cd69220cdb4ae4bcf1ec58a7db5587b1a \
     --hash=sha256:b6fd5d3a766b02154ed80b962ddca91e1fd25629c0978c7efba21ebccf663934
-    # via tts-sidecar (pyproject.toml)
+    # via ai-voice-interconnector (pyproject.toml)
 safehttpx==0.1.7 \
     --hash=sha256:c4f4a162db6993464d7ca3d7cc4af0ffc6515a606dfd220b9f82c6945d869cde \
     --hash=sha256:db201c0978c41eddb8bb480f3eee59dd67304fdd91646035e9d9a720049a9d23
@@ -1812,7 +1812,7 @@ sentencepiece==0.2.2 \
     --hash=sha256:f7c06c751c19d923435a54bff4f7e66e728fad160e8da28254f133abc9725820 \
     --hash=sha256:fa9f5ef0e2a82233dd0b8b32ea3f5710e0c44afbc07ed3620219f32601e56090 \
     --hash=sha256:fd523c4992041faa5c2b3cde62253d11a96c30d73a34afe48a486e8e2254cd1c
-    # via tts-sidecar (pyproject.toml)
+    # via ai-voice-interconnector (pyproject.toml)
 setuptools==78.1.0 \
     --hash=sha256:3e386e96793c8702ae83d17b853fb93d3e09ef82ec62722e61da5cd22376dcd8
     # via
@@ -1833,7 +1833,7 @@ sounddevice==0.5.5 \
     --hash=sha256:30ff99f6c107f49d25ad16a45cacd8d91c25a1bcdd3e81a206b921a3a6405b1f \
     --hash=sha256:3861901ddd8230d2e0e8ae62ac320cdd4c688d81df89da036dcb812f757bb3e6 \
     --hash=sha256:cfc6b2c49fb7f555591c78cb8ecf48d6a637fd5b6e1db5fec6ed9365d64b3519
-    # via tts-sidecar (pyproject.toml)
+    # via ai-voice-interconnector (pyproject.toml)
 soundfile==0.14.0 \
     --hash=sha256:0a6ae43c50c71b4e020cc55382925cb89451c1ed1a0c3d0f5d802da269226849 \
     --hash=sha256:19be05428da76ed61a4cad29b8e4bcf43a3e5c100089d2ec81dc961eed1b0dd4 \
@@ -2084,7 +2084,7 @@ transformers==5.2.0 \
     --hash=sha256:0088b8b46ccc9eff1a1dca72b5d618a5ee3b1befc3e418c9512b35dea9f9a650 \
     --hash=sha256:9ecaf243dc45bee11a7d93f8caf03746accc0cb069181bbf4ad8566c53e854b4
     # via
-    #   tts-sidecar (pyproject.toml)
+    #   ai-voice-interconnector (pyproject.toml)
     #   chatterbox-tts
     #   peft
 typer==0.26.8 \
@@ -2124,7 +2124,7 @@ uvicorn==0.49.0 \
     --hash=sha256:ba3d14c3ee7e41c6c654c46c9eb489d33213cdd30aa1696eab1374337c13f68f \
     --hash=sha256:ebf4271aa580d9de97f93192d4595176df6e91f9aae919ca73e4fc07df1e66a3
     # via
-    #   tts-sidecar (pyproject.toml)
+    #   ai-voice-interconnector (pyproject.toml)
     #   gradio
 uvloop==0.22.1 \
     --hash=sha256:017bd46f9e7b78e81606329d07141d3da446f8798c6baeec124260e22c262772 \

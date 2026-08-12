@@ -1,6 +1,6 @@
 # Publicación de una versión (RELEASING.md)
 
-`tts-sidecar` publica sus releases de forma **automática**: al pushear un
+`ai-voice-interconnector` publica sus releases de forma **automática**: al pushear un
 tag `v*`, CircleCI corre los tests, los 4 builds y el job `publish-release`, que
 recolecta los artefactos, genera `SHA256SUMS.txt` y **publica el GitHub Release
 directo** (sin borrador) sobre el tag. Sin firma de código, el cotejo de
@@ -58,7 +58,7 @@ humano.
   en el pipeline del tag, ni los builds ni `publish-pypi` llegan a ejecutarse. Correr la suite en local antes de
   taggear sigue siendo la única manera de anticipar ese resultado.
 - **Revisiones fijadas de los modelos auditadas**: las constantes
-  `MODEL_REVISIONS` y `BASE_MODEL_REVISION` de `src/tts_sidecar/model_cache.py`
+  `MODEL_REVISIONS` y `BASE_MODEL_REVISION` de `src/ai_voice_interconnector/model_cache.py`
   apuntan a los commit hashes de HuggingFace que este release distribuye. Si el
   release debe incorporar una versión nueva de alguno de los modelos: consultar el `sha`
   vigente (`https://huggingface.co/api/models/<repo>`), auditar el diff de esa
@@ -73,14 +73,14 @@ humano.
   en CircleCI con la variable `PYPI_API_TOKEN` = un token API de PyPI con scope
   al proyecto. Está aislado al job `publish-pypi`; ningún otro job lo ve.
 - **Prerequisitos del canal Cask de macOS (una sola vez):** existe el
-  repositorio tap `homebrew-tts-sidecar` (público), y el context de CircleCI
+  repositorio tap `homebrew-ai-voice-interconnector` (público), y el context de CircleCI
   `homebrew-tap` con la variable `HOMEBREW_TAP_PAT` (un PAT fine-grained con
   permiso `Contents:RW` solo sobre el tap). Está aislado al job
   `publish-metadata`. Además, **el primer Cask del tap es un bootstrap manual
-  único**: `publish-metadata` reescribe `Casks/tts-sidecar.rb`, pero asume que
+  único**: `publish-metadata` reescribe `Casks/ai-voice-interconnector.rb`, pero asume que
   el archivo ya existe en el tap la primera vez (crearlo a mano con el
   generador: `python scripts/render_cask.py --tag vX.Y.Z --sums-file
-  SHA256SUMS.txt --out Casks/tts-sidecar.rb` y commitear/pushear al tap antes
+  SHA256SUMS.txt --out Casks/ai-voice-interconnector.rb` y commitear/pushear al tap antes
   del primer release que dependa de este job). Detalle del diseño completo en
   [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
 - **La publicación a PyPI es irreversible**: al igual que el GitHub Release —que
@@ -114,9 +114,9 @@ Una vez pushado el tag, el pipeline ejecuta sin intervención:
    workspace compartido.
 2. **`publish-release`** (tras los 4 builds):
    - Recolecta los 4 artefactos del workspace (`attach_workspace`) — ya con su
-     nombre de release: `tts-sidecar-X.Y.Z-x86_64-setup.exe`,
-     `tts-sidecar-X.Y.Z-x86_64.AppImage`, `tts-sidecar-X.Y.Z-arm64.AppImage`,
-     `tts-sidecar-X.Y.Z-arm64.dmg`.
+     nombre de release: `ai-voice-interconnector-X.Y.Z-x86_64-setup.exe`,
+     `ai-voice-interconnector-X.Y.Z-x86_64.AppImage`, `ai-voice-interconnector-X.Y.Z-arm64.AppImage`,
+     `ai-voice-interconnector-X.Y.Z-arm64.dmg`.
    - Genera `SHA256SUMS.txt` con los checksums de los 4.
    - Extrae las notas de la sección `[X.Y.Z]` de `CHANGELOG.md`.
    - Inyecta en `notes.md` (tras el recorte del CHANGELOG) un pie con la oferta
@@ -129,7 +129,7 @@ Una vez pushado el tag, el pipeline ejecuta sin intervención:
 3. **`publish-pypi`** (en paralelo a los 4 builds, solo requiere la triple
    puerta de tests): construye el sdist y el wheel, valida la metadata
    (`twine check`), instala el wheel en un venv limpio para verificar que
-   `tts-sidecar version` coincide con el tag y que la voz `default` está
+   `ai-voice-interconnector version` coincide con el tag y que la voz `default` está
    presente, y publica a PyPI con `twine upload --skip-existing`. Detalle
    completo en [docs/DISTRIBUTION.md](DISTRIBUTION.md#flujo-de-publicación-ci).
    El `--skip-existing` hace idempotente el job ante un re-tag: si falla un
@@ -142,8 +142,8 @@ Una vez pushado el tag, el pipeline ejecuta sin intervención:
 4. **`publish-metadata`** (tras `publish-release`, solo en tags `v*`): recupera
    `SHA256SUMS.txt` del Release recién publicado (`gh release download`,
    idempotente y sin depender del workspace del pipeline), reescribe
-   `Casks/tts-sidecar.rb` con la versión del tag y el sha256 del `.dmg` arm64
-   (`scripts/render_cask.py`), y hace push al tap `homebrew-tts-sidecar`. Si el
+   `Casks/ai-voice-interconnector.rb` con la versión del tag y el sha256 del `.dmg` arm64
+   (`scripts/render_cask.py`), y hace push al tap `homebrew-ai-voice-interconnector`. Si el
    Cask no cambia (regeneración con los mismos inputs), el commit es un no-op y
    no se empuja nada; reintentar este job en cualquier momento es seguro.
 
@@ -182,7 +182,7 @@ El usuario final puede verificar la integridad de su descarga contra
 sha256sum -c SHA256SUMS.txt --ignore-missing
 
 # Windows (PowerShell)
-Get-FileHash tts-sidecar-X.Y.Z-x86_64-setup.exe -Algorithm SHA256
+Get-FileHash ai-voice-interconnector-X.Y.Z-x86_64-setup.exe -Algorithm SHA256
 # comparar manualmente contra la línea correspondiente de SHA256SUMS.txt
 ```
 

@@ -30,7 +30,7 @@ from render_cask import GITHUB_REPO
 _SOURCE_OFFER_TEMPLATE = """\
 # Oferta de código fuente (GPLv3 §6)
 
-**TTS Sidecar {version}** se distribuye bajo la licencia
+**AI Voice InterConnector {version}** se distribuye bajo la licencia
 **GPL-3.0-or-later** (ver `LICENSE`). Conforme a la sección 6 de la GPLv3,
 este binario va acompañado de una oferta de acceso al código fuente completo
 correspondiente a esta versión exacta:

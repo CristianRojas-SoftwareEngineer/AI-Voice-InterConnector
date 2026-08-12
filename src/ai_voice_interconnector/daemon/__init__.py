@@ -1,5 +1,5 @@
 """
-tts-sidecar daemon module.
+ai-voice-interconnector daemon module.
 
 Provides a persistent TTS server that keeps the model in memory
 between invocations, eliminating model load overhead on each call.

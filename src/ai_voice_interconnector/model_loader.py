@@ -90,7 +90,7 @@ class ModelLoader:
             # así que llegar aquí indica una caché podada tras la provisión.
             log(
                 "[Codificador de voz] ve.safetensors no está en la caché local; descargándolo ahora. "
-                "Ejecuta 'tts-sidecar setup' para reprovisionar la caché completa"
+                "Ejecuta 'ai-voice-interconnector setup' para reprovisionar la caché completa"
             )
             from huggingface_hub import hf_hub_download
             ve_path = Path(hf_hub_download(

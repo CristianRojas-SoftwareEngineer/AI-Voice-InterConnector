@@ -49,7 +49,7 @@ Los 4 primeros modos comparten `DaemonManager()` (`cli.py:2316-2318`). `serve` s
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  CLI (tts-sidecar)                                              │
+│  CLI (ai-voice-interconnector)                                              │
 │                                                                 │
 │  cmd_daemon ──► DaemonManager ──► subprocess.Popen ──► daemon   │
 │                   │  (IPC HTTP)                    │            │
@@ -107,7 +107,7 @@ Límites: `MAX_TEXT_LENGTH = 5000` (`protocol.py:22`), `MAX_AUDIO_BYTES = 12_800
 2. **Lock atómico**: `_acquire_start_lock()` crea el pidfile con `os.open(O_CREAT|O_EXCL)` para serializar `start` concurrentes (`daemon.py:93-95`).
 3. **Construcción del comando**:
    - Modo congelado: `[sys.executable, "daemon", "serve"]` (`daemon.py:73-74`)
-   - Modo fuente: `[sys.executable, "-m", "tts_sidecar.daemon.run"]` (`daemon.py:76-79`)
+   - Modo fuente: `[sys.executable, "-m", "ai_voice_interconnector.daemon.run"]` (`daemon.py:76-79`)
 4. **Lanzamiento del subproceso**:
    - Windows: `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` (`daemon.py:119-128`)
    - Unix: `start_new_session=True` (`daemon.py:130-136`)

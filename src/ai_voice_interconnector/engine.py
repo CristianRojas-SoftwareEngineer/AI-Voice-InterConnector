@@ -20,7 +20,7 @@ Optimizaciones multiplataforma para Windows, Linux y Mac.
 import os
 
 # Desactiva las barras tqdm internas de Chatterbox (T3 "Sampling", flow matching
-# del S3Gen) ANTES de importar chatterbox: tts-sidecar muestra su propio indicador
+# del S3Gen) ANTES de importar chatterbox: ai-voice-interconnector muestra su propio indicador
 # de liveness (timing.Spinner) en el proceso cliente, y dos indicadores sobre el
 # mismo stderr colisionarían. En el proceso daemon el tqdm ya era invisible (corre
 # detached), así que no se pierde nada. setdefault respeta un valor externo previo.
@@ -397,7 +397,7 @@ class ChatterboxEngine:
             real_tqdm = _t3_mod.tqdm
             # Idempotencia: si ya instalamos el shim (p. ej. un segundo engine en
             # otra cache key), no lo envolvemos de nuevo.
-            if getattr(real_tqdm, "_is_tts_sidecar_shim", False):
+            if getattr(real_tqdm, "_is_ai_voice_interconnector_shim", False):
                 return
 
             engine = self
@@ -411,7 +411,7 @@ class ChatterboxEngine:
                     return real_tqdm(iterable, *args, **kwargs)
                 return engine._token_counting_iter(iterable, cb)
 
-            progress_tqdm._is_tts_sidecar_shim = True
+            progress_tqdm._is_ai_voice_interconnector_shim = True
             _t3_mod.tqdm = progress_tqdm
         except Exception:
             # Layout inesperado: degradar a solo eventos de etapa.

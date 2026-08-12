@@ -1,6 +1,6 @@
 # Guía de Construcción
 
-`tts-sidecar` se compila con **PyInstaller** (empaquetado de Python bytecode) para obtener un ejecutable autocontenido multiplataforma, luego se envuelve en un instalador por SO.
+`ai-voice-interconnector` se compila con **PyInstaller** (empaquetado de Python bytecode) para obtener un ejecutable autocontenido multiplataforma, luego se envuelve en un instalador por SO.
 
 ## Tabla de contenidos
 
@@ -69,10 +69,10 @@ extrae en `build/create-dmg-tooling/` verificando el checksum.
 
 | Plataforma | Comando | Artefacto |
 |------------|---------|-----------|
-| Windows x64 | `python scripts/build_windows.py --arch x86_64` | `dist/tts-sidecar-0.1.0-x86_64-setup.exe` (instalador) |
-| Linux x64 | `python scripts/build_linux.py --arch x86_64` | `dist/tts-sidecar-0.1.0-x86_64.AppImage` |
-| Linux ARM64 | `python scripts/build_linux.py --arch arm64` | `dist/tts-sidecar-0.1.0-arm64.AppImage` |
-| macOS arm64 (Apple Silicon) | `python scripts/build_macos.py --arch arm64` | `dist/tts-sidecar-0.1.0-arm64.dmg` |
+| Windows x64 | `python scripts/build_windows.py --arch x86_64` | `dist/ai-voice-interconnector-0.1.0-x86_64-setup.exe` (instalador) |
+| Linux x64 | `python scripts/build_linux.py --arch x86_64` | `dist/ai-voice-interconnector-0.1.0-x86_64.AppImage` |
+| Linux ARM64 | `python scripts/build_linux.py --arch arm64` | `dist/ai-voice-interconnector-0.1.0-arm64.AppImage` |
+| macOS arm64 (Apple Silicon) | `python scripts/build_macos.py --arch arm64` | `dist/ai-voice-interconnector-0.1.0-arm64.dmg` |
 
 > **Por qué Linux publica 2 arquitecturas y Windows/macOS solo 1.** Cada
 > plataforma publica las arquitecturas que cumplen **a la vez** dos condiciones:
@@ -117,7 +117,7 @@ toolchain (torch, onnxruntime); ver el callout anterior.
 >   mapeo vive en `APPIMAGE_TOOLING_ARCH` (`scripts/build_linux.py`) y solo resuelve el tooling.
 > - **Tag de plataforma pip PEP 600** `aarch64` en `requirements-lock.txt` (p. ej.
 >   `platform_machine == 'aarch64'`): canónico; pip/uv lo esperan así en Linux ARM.
-> - **Salida nativa de `uname -m`** en runtime (`src/tts_sidecar/cli.py`,
+> - **Salida nativa de `uname -m`** en runtime (`src/ai_voice_interconnector/cli.py`,
 >   `install-linux.sh`): es lo que devuelve Linux ARM y no debe cambiarse; el instalador
 >   lo traduce a `arm64` (sufijo de asset) conservando la rama `aarch64|arm64)`.
 
@@ -153,8 +153,8 @@ disponibilidad de wheels upstream (PyTorch/onnxruntime). macOS Intel se acepta
 como limitación técnica; Windows ARM64 como decisión de alcance sumada a un bloqueo
 upstream.
 
-> Los scripts de build también generan la carpeta `--onedir` en `dist/tts-sidecar/` (o
-> `dist/tts-sidecar.app/` en macOS) con el ejecutable y todas las dependencias,
+> Los scripts de build también generan la carpeta `--onedir` en `dist/ai-voice-interconnector/` (o
+> `dist/ai-voice-interconnector.app/` en macOS) con el ejecutable y todas las dependencias,
 > útil para pruebas directas sin pasar por el instalador.
 
 ### Matriz de SO probados y mínimos declarados
@@ -184,11 +184,11 @@ una versión mínima real reabriría esta decisión.
 Antes de compilar, verificar que el código Python no tenga errores:
 
 ```bash
-python -m py_compile src/tts_sidecar/engine.py
-python -m py_compile src/tts_sidecar/cli.py
-python -m py_compile src/tts_sidecar/audio.py
-python -m py_compile src/tts_sidecar/timing.py
-python -m py_compile src/tts_sidecar/daemon/*.py
+python -m py_compile src/ai_voice_interconnector/engine.py
+python -m py_compile src/ai_voice_interconnector/cli.py
+python -m py_compile src/ai_voice_interconnector/audio.py
+python -m py_compile src/ai_voice_interconnector/timing.py
+python -m py_compile src/ai_voice_interconnector/daemon/*.py
 ```
 
 ### Scripts de build
@@ -226,15 +226,15 @@ reporta éxito, porque `publish-release` exige los cuatro artefactos versionados
 instalador de Windows además emite compresión `lzma/normal` (progreso por archivo, en
 lugar del `lzma2/max` silencioso que CircleCI mataba) y usa `INSTALLER_TIMEOUT` holgado.
 
-> El entry point `bin/tts-sidecar` es la semilla que PyInstaller empaqueta. El bundle
-> resultante hereda ese nombre en `dist/tts-sidecar/`. Véase `docs/DESIGN.md` para
+> El entry point `bin/ai-voice-interconnector` es la semilla que PyInstaller empaqueta. El bundle
+> resultante hereda ese nombre en `dist/ai-voice-interconnector/`. Véase `docs/DESIGN.md` para
 > el detalle del entry point.
 
 ### Opciones clave de PyInstaller
 
 ```bash
 python -m PyInstaller --onedir --console \
-  --name tts-sidecar \
+  --name ai-voice-interconnector \
   --paths src \
   --collect-all chatterbox --collect-all transformers \
   --collect-all diffusers --collect-all torch \
@@ -242,7 +242,7 @@ python -m PyInstaller --onedir --console \
   --recursive-copy-metadata chatterbox-tts \
   --copy-metadata requests \
   --exclude-module tensorflow --exclude-module gradio \
-  bin/tts-sidecar
+  bin/ai-voice-interconnector
 ```
 
 Los flags `--collect-all` aseguran que PyInstaller empaquete paquetes con extensiones
@@ -251,8 +251,8 @@ nativas o imports lazy que no siguen automáticamente. Los flags de metadata (`-
 ### Verificación post-build
 
 El **smoke test del binario congelado está automatizado en CI**: cada uno de los
-4 jobs de build ejecuta `tts-sidecar version` sobre el ejecutable recién
-construido (exit 0 obligatorio) **y luego `tts-sidecar voice list`** antes de
+4 jobs de build ejecuta `ai-voice-interconnector version` sobre el ejecutable recién
+construido (exit 0 obligatorio) **y luego `ai-voice-interconnector voice list`** antes de
 publicar el artefacto, de modo que un empaquetado roto (metadata faltante,
 `--collect-all` incompleto) **o la ausencia de las voces de fábrica en el bundle**
 hace fallar el job en lugar de publicarse «verde». `version` y `voice list` **no
@@ -276,28 +276,28 @@ validación E2E".
 pytest tests/ -v
 
 # Ejecutable directo (carpeta onedir) — 'version' es el que corre en CI
-dist/tts-sidecar/tts-sidecar.exe version
-dist/tts-sidecar/tts-sidecar.exe doctor
+dist/ai-voice-interconnector/ai-voice-interconnector.exe version
+dist/ai-voice-interconnector/ai-voice-interconnector.exe doctor
 
 # Provisionar los modelos es-mx-latam + en (chequeos + descarga si falta; idempotente)
-dist/tts-sidecar/tts-sidecar.exe setup
+dist/ai-voice-interconnector/ai-voice-interconnector.exe setup
 
 # Instalador (Windows)
-dist/tts-sidecar-0.1.0-x86_64-setup.exe
+dist/ai-voice-interconnector-0.1.0-x86_64-setup.exe
 ```
 
 ### Matriz de integración con el SO
 
-Cada plataforma integra `tts-sidecar` en el sistema con un mecanismo distinto,
+Cada plataforma integra `ai-voice-interconnector` en el sistema con un mecanismo distinto,
 pero la experiencia resultante es homóloga (comando en el PATH + provisión
 guiada + desinstalación limpia):
 
 | Aspecto | Windows | Linux | macOS |
 |---------|---------|-------|-------|
-| PATH | Automático: el instalador agrega `{app}` al PATH del usuario (HKCU, per-user, sin UAC) | `tts-sidecar setup` crea el symlink `~/.local/bin/tts-sidecar → $APPIMAGE` | Opt-in: `Instalar (PATH + modelos).command` del `.dmg` (symlink en `/usr/local/bin`, con sudo) |
+| PATH | Automático: el instalador agrega `{app}` al PATH del usuario (HKCU, per-user, sin UAC) | `ai-voice-interconnector setup` crea el symlink `~/.local/bin/ai-voice-interconnector → $APPIMAGE` | Opt-in: `Instalar (PATH + modelos).command` del `.dmg` (symlink en `/usr/local/bin`, con sudo) |
 | Guía hacia `setup` | Página informativa + casilla post-instalación que lo ejecuta en contexto de usuario | `setup` es el punto único de provisión (modelos + PATH) | El script de instalación ofrece ejecutar `setup` (sin sudo) tras enlazar |
-| Desinstalación | Desinstalador de Inno Setup, sin admin (revierte la entrada de PATH en HKCU) | `tts-sidecar setup --remove-path` + borrar el `.AppImage` | `Desinstalar (quitar del PATH).command` del `.dmg` + arrastrar el `.app` a la Papelera |
-| Datos provisionados | `tts-sidecar cleanup --all` (paso previo recomendado en los tres SO: elimina ambos modelos y voces de usuario antes de desinstalar el binario) | Ídem | Ídem |
+| Desinstalación | Desinstalador de Inno Setup, sin admin (revierte la entrada de PATH en HKCU) | `ai-voice-interconnector setup --remove-path` + borrar el `.AppImage` | `Desinstalar (quitar del PATH).command` del `.dmg` + arrastrar el `.app` a la Papelera |
+| Datos provisionados | `ai-voice-interconnector cleanup --all` (paso previo recomendado en los tres SO: elimina ambos modelos y voces de usuario antes de desinstalar el binario) | Ídem | Ídem |
 | Dependencias de build | Política interactiva común (`ensure_build_dependency`) | Ídem | Ídem |
 
 > `setup` sin `--language` descarga ambos modelos (`es-mx-latam` y `en`, el
@@ -309,7 +309,7 @@ La tabla describe los artefactos descargados a mano. Las tres plataformas
 tienen además una instalación auto-hospedada de una línea que resuelve PATH,
 `setup` y desinstalación sin los pasos manuales de arriba: `install-linux.sh`
 (`curl | sh`) en Linux, un Cask de Homebrew propio
-(`brew install --cask tts-sidecar`, con `brew uninstall --cask` + `zap` para
+(`brew install --cask ai-voice-interconnector`, con `brew uninstall --cask` + `zap` para
 la desinstalación limpia) en macOS, e `install-windows.ps1` (`irm | iex`) en Windows
 (descarga el instalador, verifica el checksum y lo ejecuta en silencio, sin
 UAC). Ninguno de los tres cambia el artefacto que los scripts de build
@@ -330,7 +330,7 @@ ruta prevista para Windows y macOS está registrada como goal a largo plazo en
 [docs/GOAL.md](GOAL.md#goal-a-largo-plazo).
 
 Como mitigación aditiva ya implementada (no sustituye a la firma), el proyecto
-publica en paralelo un **canal PyPI** (`uv tool install tts-sidecar`) que no
+publica en paralelo un **canal PyPI** (`uv tool install ai-voice-interconnector`) que no
 dispara ninguno de los dos avisos: el launcher lo genera `uv`/`pipx`
 localmente, sin Mark-of-the-Web ni cuarentena. Ver
 [docs/DISTRIBUTION.md](DISTRIBUTION.md) para el detalle de ambos canales y su
@@ -390,7 +390,7 @@ Los tests (3) y los builds (4) no están desalineados: responden a **ejes distin
 - **Hueco de cobertura de ARM64 (divergencia aceptada).** `build-linux-arm64` está
   *gated* por tests que solo corrieron en x86_64 → no hay una puerta `pytest` nativa en
   ARM. El riesgo arch-específico real (wheel `aarch64` faltante, segfault de una
-  extensión nativa) lo cubre el **smoke test** del propio build (`tts-sidecar version`,
+  extensión nativa) lo cubre el **smoke test** del propio build (`ai-voice-interconnector version`,
   que importa el stack nativo en ARM y exige exit 0), no la suite. Se documenta como
   **decisión consciente**: un `test-linux-arm64` re-correría la suite mockeada (señal
   marginal) a un coste recurrente en cada push, sin cerrar el riesgo que
@@ -560,7 +560,7 @@ por tests → builds → `publish-release`.
 
 El **deliverable** que se publica a usuarios es el artefacto **empaquetado**
 (instalador `.exe`, AppImage, `.dmg`), con su nombre de release **versionado
-y con arch** (p. ej. `tts-sidecar-0.1.0-x86_64-setup.exe`). Estos cuatro
+y con arch** (p. ej. `ai-voice-interconnector-0.1.0-x86_64-setup.exe`). Estos cuatro
 artefactos llegan al GitHub Release a través de `persist_to_workspace` /
 `attach_workspace` (handoff entre el job de build y `publish-release`): la
 publicación es **única** por el workspace, no por `store_artifacts` (el cual se
@@ -574,13 +574,13 @@ artefactos versionados:
 
 ```
 dist/
-├── tts-sidecar-0.1.0-x86_64-setup.exe   # Windows (instalador Inno Setup)
-├── tts-sidecar-0.1.0-x86_64.AppImage    # Linux x64
-├── tts-sidecar-0.1.0-arm64.AppImage   # Linux ARM64
-└── tts-sidecar-0.1.0-arm64.dmg          # macOS (Apple Silicon)
+├── ai-voice-interconnector-0.1.0-x86_64-setup.exe   # Windows (instalador Inno Setup)
+├── ai-voice-interconnector-0.1.0-x86_64.AppImage    # Linux x64
+├── ai-voice-interconnector-0.1.0-arm64.AppImage   # Linux ARM64
+└── ai-voice-interconnector-0.1.0-arm64.dmg          # macOS (Apple Silicon)
 ```
 
-El **onedir** de PyInstaller (`dist/tts-sidecar/` o `dist/tts-sidecar-arm64.app/`)
+El **onedir** de PyInstaller (`dist/ai-voice-interconnector/` o `dist/ai-voice-interconnector-arm64.app/`)
 se genera como input del empaquetado y del smoke test, pero **no** se sube a
 la pestaña Artifacts de CircleCI: ya está contenido en el instalador/AppImage
 correspondiente, y subirlo aparte duplica el almacenamiento sin agregar
@@ -745,7 +745,7 @@ Los paquetes que requieren `--collect-all` son: `chatterbox`, `transformers`,
 - **Windows**: el instalador Inno Setup es el artefacto que recibe el usuario final;
   ajusta el `PATH`, muestra la página informativa de los modelos y ofrece ejecutar `setup`.
 - **Linux**: el AppImage es un único archivo ejecutable, compatible con la mayoría de
-  distribuciones; `tts-sidecar setup` lo integra en el PATH (symlink en `~/.local/bin`).
+  distribuciones; `ai-voice-interconnector setup` lo integra en el PATH (symlink en `~/.local/bin`).
 - **macOS**: el `.dmg` es el instalador estándar de macOS; incluye el `.app` bundle más
   los scripts de instalación (PATH + oferta de `setup`) y desinstalación.
 - **Firma de código**: ver la limitación conocida en la sección 3 (artefactos sin

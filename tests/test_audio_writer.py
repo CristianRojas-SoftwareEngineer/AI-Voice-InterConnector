@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tts_sidecar.audio_writer import AudioWriter
+from ai_voice_interconnector.audio_writer import AudioWriter
 
 
 def _read_wav(wav_bytes: bytes):

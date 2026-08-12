@@ -1,6 +1,6 @@
 # Licencias de terceros (Third-Party Licenses)
 
-TTS Sidecar se distribuye bajo **GPL-3.0-or-later** (ver `LICENSE`). El binario
+AI Voice InterConnector se distribuye bajo **GPL-3.0-or-later** (ver `LICENSE`). El binario
 autocontenido generado con PyInstaller empaqueta software de terceros bajo sus propias
 licencias. Este documento reúne los avisos de copyright y las licencias correspondientes,
 cuya preservación exigen dichas licencias al redistribuir el software.
@@ -19,7 +19,7 @@ cada paquete y prevalece en caso de duda.
 ## Modelos de voz (no empaquetados)
 
 Los **pesos del modelo** no se empaquetan en el binario: se descargan a la caché de
-HuggingFace del usuario mediante `tts-sidecar setup`. Se listan por completitud.
+HuggingFace del usuario mediante `ai-voice-interconnector setup`. Se listan por completitud.
 
 | Modelo | Licencia (verificada en HuggingFace) | Fuente |
 |--------|--------------------------------------|--------|
@@ -34,7 +34,7 @@ Los repositorios de Chatterbox declaran licencia **MIT** en sus metadatos (verif
 CTranslate2 de `openai/whisper-small`) declara licencia **MIT** en sus metadatos
 (verificado el 2026-08-11). El modelo base incluye además la nota de que su salida lleva un watermark
 neural (PerthNet) y un descargo de uso responsable («Don't use this model to do bad
-things»). TTS Sidecar **desactiva ese watermark** en el motor; ver la sección «Uso ético y
+things»). AI Voice InterConnector **desactiva ese watermark** en el motor; ver la sección «Uso ético y
 responsable» en `README.md`/`USAGE.md` para las obligaciones que ello traslada al usuario.
 
 ### Atribución: opus-mt (`Helsinki-NLP/opus-mt-es-en` / `opus-mt-en-es`)
@@ -44,7 +44,7 @@ traducción cross-lingual (`translate`, y `speech say|synthesize --source-langua
 `--target-language`) es obra del proyecto **OPUS-MT** del grupo **Language Technology
 Research Group de la Universidad de Helsinki** (Helsinki-NLP), distribuido bajo
 **CC-BY-4.0** (Creative Commons Attribution 4.0). Los pesos se descargan a demanda
-mediante `tts-sidecar setup --language en/all` y se convierten localmente a formato
+mediante `ai-voice-interconnector setup --language en/all` y se convierten localmente a formato
 CTranslate2; no se empaquetan en el binario. Fichas del modelo: mismos enlaces que la
 tabla anterior. Texto de la licencia: <https://creativecommons.org/licenses/by/4.0/>.
 
@@ -53,7 +53,7 @@ tabla anterior. Texto de la licencia: <https://creativecommons.org/licenses/by/4
 El watermarker neural **PerthNet** es obra de **Resemble AI** y se distribuye como el
 paquete Python `resemble-perth` (licencia **MIT**, © Resemble AI;
 <https://pypi.org/project/resemble-perth/>), dependencia de `chatterbox-tts`. Aunque
-TTS Sidecar **no ejecuta** el watermarker (el engine lo bypasea en ambos modos), el
+AI Voice InterConnector **no ejecuta** el watermarker (el engine lo bypasea en ambos modos), el
 paquete **sí se redistribuye** dentro del binario autocontenido, por lo que su aviso de
 copyright y su licencia se conservan aquí y en la tabla de dependencias empaquetadas
 (fila `resemble-perth`).
@@ -161,9 +161,9 @@ lock universal como un problema de licencia del ejecutable.
 
 ## Herramienta de empaquetado: PyInstaller
 
-TTS Sidecar se compila con **PyInstaller**, distribuido bajo **GPL 2.0 con una excepción**
+AI Voice InterConnector se compila con **PyInstaller**, distribuido bajo **GPL 2.0 con una excepción**
 que permite redistribuir los ejecutables generados bajo cualquier licencia, siempre que no
-se modifique el *bootloader*. TTS Sidecar usa el bootloader estándar sin modificar.
+se modifique el *bootloader*. AI Voice InterConnector usa el bootloader estándar sin modificar.
 Texto y excepción: <https://pyinstaller.org/en/stable/license.html>. (PyInstaller es una
 herramienta de build; no forma parte del contenido redistribuido más allá del bootloader.)
 

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from tts_sidecar.daemon.protocol import (
+from ai_voice_interconnector.daemon.protocol import (
     MAX_TEXT_LENGTH,
     MAX_VOICE_NAME_LENGTH,
     MAX_AUDIO_BYTES,
@@ -19,7 +19,7 @@ from tts_sidecar.daemon.protocol import (
     ResultEvent,
     ErrorEvent,
 )
-from tts_sidecar.cli import SCHEMA_VERSION
+from ai_voice_interconnector.cli import SCHEMA_VERSION
 
 
 class TestSynthesizeRequest:

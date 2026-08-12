@@ -13,9 +13,9 @@ Dos invariantes tri-partitas que sostienen el estado canónico del contrato:
 import re
 from pathlib import Path
 
-from tts_sidecar import exit_codes
+from ai_voice_interconnector import exit_codes
 
-_SRC = Path(__file__).parent.parent / "src" / "tts_sidecar"
+_SRC = Path(__file__).parent.parent / "src" / "ai_voice_interconnector"
 _USAGE = Path(__file__).parent.parent / "USAGE.md"
 
 # Asignación de una constante EXIT_* a nivel de módulo: `EXIT_FOO = 3`.

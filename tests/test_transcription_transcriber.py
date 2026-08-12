@@ -6,8 +6,8 @@ backend en `TranscriptionFailedError`. Nunca toca faster-whisper real.
 
 import pytest
 
-from tts_sidecar.exceptions import TranscriptionFailedError
-from tts_sidecar.transcription.transcriber import WhisperTranscriber
+from ai_voice_interconnector.exceptions import TranscriptionFailedError
+from ai_voice_interconnector.transcription.transcriber import WhisperTranscriber
 
 
 class _FakeLoader:

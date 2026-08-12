@@ -1,5 +1,5 @@
 name: Reporte de bug
-description: Reporta un comportamiento incorrecto de tts-sidecar
+description: Reporta un comportamiento incorrecto de ai-voice-interconnector
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -16,7 +16,7 @@ body:
     id: version
     attributes:
       label: Versión
-      description: Pega la salida de `tts-sidecar version --json`.
+      description: Pega la salida de `ai-voice-interconnector version --json`.
       render: json
     validations:
       required: true
@@ -34,7 +34,7 @@ body:
       label: Comando reproducible
       description: El comando exacto (con sus flags) que reproduce el problema.
       render: shell
-      placeholder: tts-sidecar speech say --text "Hola" --voice mi_voz
+      placeholder: ai-voice-interconnector speech say --text "Hola" --voice mi_voz
     validations:
       required: true
   - type: textarea
@@ -56,7 +56,7 @@ body:
     id: doctor
     attributes:
       label: Diagnóstico (opcional)
-      description: Si puedes, pega la salida de `tts-sidecar doctor --json`.
+      description: Si puedes, pega la salida de `ai-voice-interconnector doctor --json`.
       render: json
     validations:
       required: false

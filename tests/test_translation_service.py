@@ -7,7 +7,7 @@ corpus fijo es<->en usando dobles de prueba (nunca CT2/transformers reales).
 
 import pytest
 
-from tts_sidecar.translation.service import TranslationService
+from ai_voice_interconnector.translation.service import TranslationService
 
 
 class _ExplodingLoader:

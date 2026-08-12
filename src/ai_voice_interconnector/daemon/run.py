@@ -1,8 +1,8 @@
 """
-Entry point del daemon de tts-sidecar.
+Entry point del daemon de ai-voice-interconnector.
 
 Uso:
-    python -m tts_sidecar.daemon.run
+    python -m ai_voice_interconnector.daemon.run
 """
 
 from .. import bootstrap
@@ -57,7 +57,7 @@ def serve(
     """
     Arranca el servidor del daemon en primer plano (bloqueante).
 
-    Reutilizable tanto por `main()` (modo `python -m tts_sidecar.daemon.run`)
+    Reutilizable tanto por `main()` (modo `python -m ai_voice_interconnector.daemon.run`)
     como por el subcomando `daemon serve` del ejecutable congelado.
 
     `language` ("es-latam", "en" o "all", default "all") fija qué modelo(s) se
@@ -107,11 +107,11 @@ def serve(
 
                 # El daemon decide el compute backend una sola vez al
                 # arrancar y lo cachea en la instancia del motor: cualquier
-                # síntesis posterior reutiliza esa decisión. TTS_SIDECAR_COMPUTE_BACKEND
+                # síntesis posterior reutiliza esa decisión. AI_VOICE_INTERCONNECTOR_COMPUTE_BACKEND
                 # es el override de bajo nivel; con "auto" (o sin la var),
                 # ComputeBackendResolver.resolve() detecta cuda → mps → cpu.
                 compute_backend = ComputeBackendResolver.resolve(
-                    os.environ.get("TTS_SIDECAR_COMPUTE_BACKEND")
+                    os.environ.get("AI_VOICE_INTERCONNECTOR_COMPUTE_BACKEND")
                 )
                 app.state.daemon.compute_backend = compute_backend
 
@@ -226,7 +226,7 @@ def serve(
             if e.errno in (errno.EADDRINUSE, 10048) or "address already in use" in str(e).lower():
                 log(
                     f"Daemon: el puerto {port} ya está en uso. Detén el daemon "
-                    f"en ejecución con 'tts-sidecar daemon stop' e intenta de nuevo."
+                    f"en ejecución con 'ai-voice-interconnector daemon stop' e intenta de nuevo."
                 )
                 sys.exit(EXIT_STATE_CONFLICT)
             log(f"Daemon: no se pudo enlazar el puerto {port}: {e}")
@@ -267,11 +267,11 @@ def main():
     Punto de entrada CLI del daemon.
 
     Parsea argumentos y delega en serve(). Se invoca como:
-        python -m tts_sidecar.daemon.run [--auto-restart] [--max-retries N] [--language {es-latam,en,all}]
+        python -m ai_voice_interconnector.daemon.run [--auto-restart] [--max-retries N] [--language {es-latam,en,all}]
 
     El puerto es fijo (DEFAULT_PORT = 8765 en loopback); no hay flag --port.
     """
-    parser = argparse.ArgumentParser(description="tts-sidecar daemon")
+    parser = argparse.ArgumentParser(description="ai-voice-interconnector daemon")
     parser.add_argument(
         "--auto-restart",
         action="store_true",

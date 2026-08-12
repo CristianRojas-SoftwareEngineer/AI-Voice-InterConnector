@@ -1,5 +1,5 @@
 """
-Bootstrap pre-import de tts-sidecar.
+Bootstrap pre-import de ai-voice-interconnector.
 
 Fuente única de la preparación que debe correr antes de importar cualquier
 dependencia pesada (chatterbox, perth, transformers): supresión de warnings,
@@ -8,7 +8,7 @@ Python 3.13 necesita porque el módulo fue eliminado de la stdlib pero `perth`
 (dependencia de chatterbox) lo importa en tiempo de import.
 
 `apply()` es idempotente y debe invocarse al principio de cada vía de entrada
-del proceso (entry point pip/uv, `bin/tts-sidecar`, `python -m tts_sidecar`,
+del proceso (entry point pip/uv, `bin/ai-voice-interconnector`, `python -m ai_voice_interconnector`,
 subcomando congelado `daemon serve`), antes de cualquier otro import del
 paquete que pueda arrastrar `chatterbox`/`perth` transitivamente.
 """
@@ -87,8 +87,8 @@ def apply() -> None:
     """Aplica el bootstrap pre-import. Idempotente: una segunda invocación es no-op.
 
     Es la **capa única** de preparación del proceso: todas las vías de entrada
-    (entry point pip/uv `tts_sidecar.cli:main`, `bin/tts-sidecar`,
-    `python -m tts_sidecar`, `python -m tts_sidecar.daemon.run` y el subcomando
+    (entry point pip/uv `ai_voice_interconnector.cli:main`, `bin/ai-voice-interconnector`,
+    `python -m ai_voice_interconnector`, `python -m ai_voice_interconnector.daemon.run` y el subcomando
     congelado `daemon serve`) la invocan explícitamente como su primera acción,
     en vez de depender de un efecto colateral de importación de `cli.py`.
     """

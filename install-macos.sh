@@ -1,8 +1,8 @@
 #!/bin/sh
-# Instalador auto-hospedado de tts-sidecar para macOS (Apple Silicon).
+# Instalador auto-hospedado de ai-voice-interconnector para macOS (Apple Silicon).
 #
 # Uso:
-#   curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/TTS-Sidecar/main/install-macos.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-macos.sh | sh
 #
 # Resuelve el último Release de GitHub, descarga el .dmg de arm64 y
 # SHA256SUMS.txt, verifica el checksum (abortando si no coincide), monta el
@@ -20,7 +20,7 @@
 
 set -eu
 
-REPO="CristianRojas-SoftwareEngineer/TTS-Sidecar"
+REPO="CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
 APPLICATIONS_DIR="${HOME}/Applications"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
@@ -46,12 +46,12 @@ require_cmd ditto
 require_cmd mkdir
 
 # --- Guard de arquitectura -------------------------------------------------
-# tts-sidecar publica solo el .dmg de Apple Silicon (arm64). Mac Intel no está
+# ai-voice-interconnector publica solo el .dmg de Apple Silicon (arm64). Mac Intel no está
 # soportado (limitación de toolchain documentada en el README).
 machine="$(uname -m)"
 if [ "$machine" != "arm64" ]; then
-    log "Alternativas para Mac Intel: instala desde PyPI ('uv tool install tts-sidecar' o 'pipx install tts-sidecar') o compila desde la fuente (docs/BUILD.md)."
-    fail "arquitectura no soportada: $machine (tts-sidecar solo publica .dmg para Apple Silicon / arm64 en macOS)"
+    log "Alternativas para Mac Intel: instala desde PyPI ('uv tool install ai-voice-interconnector' o 'pipx install ai-voice-interconnector') o compila desde la fuente (docs/BUILD.md)."
+    fail "arquitectura no soportada: $machine (ai-voice-interconnector solo publica .dmg para Apple Silicon / arm64 en macOS)"
 fi
 log "Arquitectura detectada: $machine"
 
@@ -131,11 +131,11 @@ log "Limpiando la cuarentena de Gatekeeper..."
 xattr -dr com.apple.quarantine "$app_dest" 2>/dev/null || true
 
 # --- Integración de PATH per-user -----------------------------------------
-target="$app_dest/Contents/MacOS/tts-sidecar"
+target="$app_dest/Contents/MacOS/ai-voice-interconnector"
 [ -x "$target" ] || fail "el binario esperado no existe o no es ejecutable: $target"
 
 link_dir="${HOME}/.local/bin"
-link="$link_dir/tts-sidecar"
+link="$link_dir/ai-voice-interconnector"
 mkdir -p "$link_dir"
 ln -sf "$target" "$link"
 log "Symlink creado: $link -> $target"
@@ -155,7 +155,7 @@ esac
 
 # --- Provisión del modelo -------------------------------------------------
 log ""
-log "Ejecutando 'tts-sidecar setup' (ofrece descargar el modelo de voz)..."
+log "Ejecutando 'ai-voice-interconnector setup' (ofrece descargar el modelo de voz)..."
 "$target" setup
 
 log "Instalación completa."

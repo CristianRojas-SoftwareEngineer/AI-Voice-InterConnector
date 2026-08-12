@@ -14,7 +14,7 @@ import types
 import numpy as np
 import pytest
 
-from tts_sidecar.conditionals import ConditionalsPreparer
+from ai_voice_interconnector.conditionals import ConditionalsPreparer
 
 
 # ---------------------------------------------------------------------------

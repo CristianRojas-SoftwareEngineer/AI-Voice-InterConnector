@@ -21,10 +21,10 @@ def _sha(label: str) -> str:
 DMG_SHA = _sha("dmg")
 
 SAMPLE_SUMS = f"""\
-{_sha("exe")}  tts-sidecar-1.2.3-x86_64-setup.exe
-{_sha("appimage-x86_64")}  tts-sidecar-1.2.3-x86_64.AppImage
-{_sha("appimage-arm64")}  tts-sidecar-1.2.3-arm64.AppImage
-{DMG_SHA}  tts-sidecar-1.2.3-arm64.dmg
+{_sha("exe")}  ai-voice-interconnector-1.2.3-x86_64-setup.exe
+{_sha("appimage-x86_64")}  ai-voice-interconnector-1.2.3-x86_64.AppImage
+{_sha("appimage-arm64")}  ai-voice-interconnector-1.2.3-arm64.AppImage
+{DMG_SHA}  ai-voice-interconnector-1.2.3-arm64.dmg
 """
 
 
@@ -48,8 +48,8 @@ class TestRenderCask:
         content = render_cask("1.2.3", DMG_SHA)
         assert 'version "1.2.3"' in content
         assert f'sha256 "{DMG_SHA}"' in content
-        assert "tts-sidecar-#{version}-arm64.dmg" in content
-        assert 'cask "tts-sidecar" do' in content
+        assert "ai-voice-interconnector-#{version}-arm64.dmg" in content
+        assert 'cask "ai-voice-interconnector" do' in content
 
     def test_url_points_to_versioned_tag(self):
         content = render_cask("1.2.3", DMG_SHA)
@@ -72,7 +72,7 @@ class TestRenderCask:
 
     def test_caveats_suggest_setup(self):
         content = render_cask("1.2.3", DMG_SHA)
-        assert "tts-sidecar setup" in content
+        assert "ai-voice-interconnector setup" in content
 
     def test_caveats_inform_license_and_source_offer(self):
         # La stanza `license` no existe en el DSL de Casks (deprecada sin
