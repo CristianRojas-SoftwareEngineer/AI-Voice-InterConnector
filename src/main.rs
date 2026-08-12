@@ -1,23 +1,15 @@
-mod audio;
-mod config;
-mod daemon;
-mod engine;
-mod exit_codes;
-mod json_emitter;
-mod store;
-#[cfg(test)]
-mod tests;
-mod tts;
-
+use avi_audio as audio;
+use avi_core::engine::{DummySttEngine, SttEngine};
+use avi_core::exit_codes::{CliError, ExitCode};
+use avi_core::json_emitter::emit_raw_json;
+use avi_daemon as daemon;
+use avi_store as store;
+use avi_store::{VoiceStore, SpeechStore, ModelStore};
+use avi_tts::{Qwen3TtsEngine, TtsEngine};
 use clap::{Parser, Subcommand};
-use engine::{DummySttEngine, SttEngine};
-use exit_codes::{CliError, ExitCode};
-use json_emitter::emit_raw_json;
 use serde_json::json;
 use std::net::SocketAddr;
 use std::process::exit;
-use store::{VoiceStore, SpeechStore, ModelStore};
-use tts::{Qwen3TtsEngine, TtsEngine};
 
 const VERSION: &str = "0.10.5";
 const APP_NAME: &str = "ai-voice-interconnector";

@@ -1,0 +1,19 @@
+[package]
+name = "avi-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+serde_json = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+tokio-stream = "0.1"
+axum = "0.7"
+avi-core = { path = "../avi-core" }
+avi-store = { path = "../avi-store" }
+
+[dev-dependencies]
+# Solo para el harness de tests dorados: permite ejercitar el Router de Axum
+# sin abrir un socket TCP real (tower::ServiceExt::oneshot).
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

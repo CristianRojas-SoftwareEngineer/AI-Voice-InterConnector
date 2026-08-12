@@ -144,7 +144,7 @@ impl AudioService {
         drop(stream);
 
         let raw_samples = recorded_samples.lock().unwrap().clone();
-        
+
         // Convertir a Mono + Resample a 16kHz + convertir a int16
         let mono_samples = to_mono(&raw_samples, channels);
         let resampled = resample_linear(&mono_samples, sample_rate, 16000);
@@ -210,4 +210,15 @@ pub fn get_devices_json() -> Result<Vec<Value>> {
         })
         .collect();
     Ok(json_devs)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_audio_resampling_linear() {
+        let input = vec![0.0, 0.5, 1.0, 0.5, 0.0];
+        let resampled = crate::resample_linear(&input, 44100, 16000);
+        assert!(!resampled.is_empty());
+        assert!(resampled.len() < input.len());
+    }
 }

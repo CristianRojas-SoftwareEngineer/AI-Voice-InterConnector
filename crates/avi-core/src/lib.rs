@@ -1,3 +1,7 @@
+pub mod engine;
+pub mod exit_codes;
+pub mod json_emitter;
+
 #[cfg(test)]
 mod tests {
     use crate::engine::{DeterministicSegmenter, Segmenter};
@@ -24,25 +28,5 @@ mod tests {
         let segmenter = DeterministicSegmenter;
         let sentences = segmenter.segment("Hola mundo. Esta es una prueba! Funciona bien?");
         assert_eq!(sentences, vec!["Hola mundo", "Esta es una prueba", "Funciona bien"]);
-    }
-
-    #[test]
-    fn test_audio_resampling_linear() {
-        let input = vec![0.0, 0.5, 1.0, 0.5, 0.0];
-        let resampled = crate::audio::resample_linear(&input, 44100, 16000);
-        assert!(!resampled.is_empty());
-        assert!(resampled.len() < input.len());
-    }
-
-    #[test]
-    fn test_toml_config_serialization() {
-        let config = crate::config::AppConfig::default();
-        let serialized = toml::to_string_pretty(&config).unwrap();
-        assert!(serialized.contains("default_language = \"es\""));
-        assert!(serialized.contains("daemon_port = 8765"));
-
-        let deserialized: crate::config::AppConfig = toml::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.default_language, "es");
-        assert_eq!(deserialized.daemon_port, 8765);
     }
 }

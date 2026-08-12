@@ -12,8 +12,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use crate::json_emitter;
-use crate::store::{VoiceStore, SpeechStore};
+use avi_core::json_emitter;
+use avi_store::{VoiceStore, SpeechStore};
 
 /// Estado compartido del daemon
 pub struct DaemonState {
@@ -174,17 +174,26 @@ async fn shutdown_handler() -> impl IntoResponse {
 
 // ─── Servidor ────────────────────────────────────────────────────────
 
-pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
+/// Construye el Router de Axum con todas las rutas del daemon.
+///
+/// Extraído de `run_daemon_server` (cambio mínimo para testeabilidad, Tarea 8
+/// del harness dorado): permite ejercitar las rutas en tests de integración
+/// vía `tower::ServiceExt::oneshot` sin levantar un listener TCP real.
+pub fn build_router() -> Router {
     let state = Arc::new(DaemonState::new());
 
-    let app = Router::new()
+    Router::new()
         .route("/health", get(health_handler))
         .route("/voices", get(voices_handler))
         .route("/voices/precompute", post(voices_precompute_handler))
         .route("/synthesize", post(synthesize_handler))
         .route("/transcribe", post(transcribe_handler))
         .route("/shutdown", post(shutdown_handler))
-        .with_state(state);
+        .with_state(state)
+}
+
+pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
+    let app = build_router();
 
     let listener = TcpListener::bind(addr).await?;
     println!("Daemon nativo escuchando en http://{}", addr);
