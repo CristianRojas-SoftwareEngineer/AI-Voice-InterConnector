@@ -27,9 +27,12 @@ HuggingFace del usuario mediante `tts-sidecar setup`. Se listan por completitud.
 | `ResembleAI/chatterbox` (modelo base; fuente de `ve.safetensors`) | **MIT** | <https://huggingface.co/ResembleAI/chatterbox> |
 | `Helsinki-NLP/opus-mt-es-en` (traducción es→en, opt-in) | **CC-BY-4.0** | <https://huggingface.co/Helsinki-NLP/opus-mt-es-en> |
 | `Helsinki-NLP/opus-mt-en-es` (traducción en→es, opt-in) | **CC-BY-4.0** | <https://huggingface.co/Helsinki-NLP/opus-mt-en-es> |
+| `Systran/faster-whisper-small` (transcripción STT, opt-in con `setup --with-stt`) | **MIT** | <https://huggingface.co/Systran/faster-whisper-small> |
 
 Los repositorios de Chatterbox declaran licencia **MIT** en sus metadatos (verificado el
-2026-07-03). El modelo base incluye además la nota de que su salida lleva un watermark
+2026-07-03). El modelo de transcripción `Systran/faster-whisper-small` (conversión a
+CTranslate2 de `openai/whisper-small`) declara licencia **MIT** en sus metadatos
+(verificado el 2026-08-11). El modelo base incluye además la nota de que su salida lleva un watermark
 neural (PerthNet) y un descargo de uso responsable («Don't use this model to do bad
 things»). TTS Sidecar **desactiva ese watermark** en el motor; ver la sección «Uso ético y
 responsable» en `README.md`/`USAGE.md` para las obligaciones que ello traslada al usuario.
