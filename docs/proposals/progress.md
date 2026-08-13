@@ -12,7 +12,7 @@
 | Fase 0 | Fundamentos y validación de integración | ✅ Desbloqueada |
 | Fase 1 | Host Rust — almacenes, CLI, config | ✅ Completada |
 | Fase 2 | Audio (CPAL) | ✅ Completada |
-| Fase 3 | STT nativo (`ct2rs::Whisper`) | ⏳ Pendiente |
+| Fase 3 | STT nativo (`ct2rs::Whisper`) | 🔶 Parcial |
 | Fase 4 | Traducción nativa (`ct2rs::Translator`) + segmentación | ⏳ Pendiente |
 | Fase 5 | TTS nativo (Qwen3-TTS subprocess) | 🔶 Parcial |
 | Fase 6 | Daemon (Axum) + streaming + warmup | 🔶 Parcial |
@@ -90,23 +90,29 @@ La infraestructura de almacenes y configuración está implementada. La superfic
 | Helpers de conversión (`to_mono`, `resample_linear`, `f32_to_i16`) | ✅ | `crates/avi-audio/src/lib.rs` |
 | Enumeración de dispositivos de salida con latencia (`list_output_devices`) | ✅ | `crates/avi-audio/src/lib.rs` |
 
-> **Pendiente de reality-check (depende de Fase 3):** `capture_16k_mono_pcm` aún no está cableada a ningún comando CLI; la captura real de micrófono y la paridad de transcripción de WAVs capturados quedan por verificar de extremo a extremo una vez exista el STT nativo. La cadena de conversión pura ya está validada por tests.
+> **Actualización (Fase 3):** `capture_16k_mono_pcm` ya está cableada a `speech transcribe --mic` (junto con `load_wav_16k_mono_pcm` para `--audio`); la captura real de micrófono se verificó de extremo a extremo contra el STT nativo. La paridad textual exacta de la transcripción contra el oráculo Python queda pendiente (ver Fase 3 más abajo).
 
 ---
 
 ## Fase 3 — STT nativo (`ct2rs::Whisper`)
 
-**Estado:** ⏳ Pendiente
+**Estado:** 🔶 Parcial
 
-El entorno de build de `ct2rs` (CMake + CTranslate2) quedó resuelto y verificado en la Fase 0 (F5); resta
-implementar el motor STT nativo.
+El entorno de build de `ct2rs` (CMake + CTranslate2) quedó resuelto y verificado en la Fase 0 (F5).
+`Ct2SttEngine` (sobre `ct2rs::Whisper`) está implementado y cableado a `speech transcribe`, con superficie
+CLI `--audio`/`--mic`/`--duration`/`--source-language`, contrato JSON `{text, source}` (envuelto en
+`schema_version = "3"`) y exit codes 2 (argumentos inválidos), 4 (modelo ausente) y 10 (fallo de
+transcripción). El reality-check del motor real quedó en verde: transcripción real contra
+`models/ct2/whisper-small`. Pendiente: la paridad textual exacta contra el oráculo Python no se pudo
+verificar en este entorno porque el modelo `faster-whisper` del lado Python no está provisionado (el test
+de paridad en `avi-stt` queda `#[ignore]` hasta que se disponga de esa línea base).
 
 | Ítem | Estado |
 |------|--------|
 | Verificar disponibilidad de `ct2rs` / CMake / CTranslate2 en entorno build | ✅ |
-| Implementar `Ct2SttEngine` sobre `ct2rs::Whisper` | ⏳ |
-| Integrar con `AudioConverter` (pipeline captura → transcripción) | ⏳ |
-| Validar contra oráculo Python (WER ≈ 0 sobre corpus de referencia) | ⏳ |
+| Implementar `Ct2SttEngine` sobre `ct2rs::Whisper` | ✅ |
+| Integrar con captura/carga de audio (pipeline `--mic`/`--audio` → transcripción) | ✅ |
+| Validar contra oráculo Python (WER ≈ 0 sobre corpus de referencia) | ⏳ (bloqueado: modelo `faster-whisper` no provisionado en este entorno) |
 
 ---
 
