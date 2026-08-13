@@ -1,0 +1,26 @@
+[
+  {
+    "input": "Optimize for clarity externally, efficiency internally.",
+    "expected": "Optimiza la claridad externa, la eficiencia interna."
+  },
+  {
+    "input": "State your assumptions explicitly.",
+    "expected": "Declare sus suposiciones explícitamente."
+  },
+  {
+    "input": "If something is unclear, stop and ask.",
+    "expected": "Si algo no está claro, deténgase y pregunte."
+  },
+  {
+    "input": "Touch only what you must.",
+    "expected": "Toca sólo lo que debas."
+  },
+  {
+    "input": "Write tests for invalid inputs, then make them pass.",
+    "expected": "Escribe pruebas para entradas inválidas y luego haz que pasen."
+  },
+  {
+    "input": "Preserve the existing layout on disk to allow mixed Python and Rust runs.",
+    "expected": "Preservar el diseño existente en el disco para permitir que se mezclen Python y Rust."
+  }
+]

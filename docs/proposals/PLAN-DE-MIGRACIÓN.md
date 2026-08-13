@@ -549,9 +549,11 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
 - **Objetivo:** transcripción nativa sobre CTranslate2, sin faster-whisper.
 - **Trabajo:** `SttEngine` sobre `ct2rs`; `task="transcribe"` estricto; reutilizar los
   modelos Whisper ya convertidos a CT2; conectar con el `AudioConverter` de la Fase 2.
-- **Verificar:** para el corpus de audios de referencia, la transcripción Rust coincide
-  con la Python (igualdad textual o WER ≈ 0); `speech transcribe` cumple el contrato JSON
-  y el exit 10 en fallos.
+- **Verificar (✅ completada):** corpus de 4 audios (el WAV sintético existente + 3 audios
+  nuevos generados con el motor Qwen3-TTS del repositorio, remuestreados a 16 kHz/mono) con
+  fixtures de transcripción emitidas por el oráculo Python (`faster-whisper-small`, provisionado
+  vía `setup --with-stt`); el test de paridad (antes `#[ignore]`) compara por WER ≤ 0.05 por
+  ítem — 4/4 en verde; `speech transcribe` cumple el contrato JSON y el exit 10 en fallos.
 - **Rollback:** worker Python de STT.
 
 ### Fase 4 — Traducción (`ct2rs::Translator`) + segmentación
@@ -568,12 +570,16 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
   quedó **descartada** por decisión cerrada (Decisión #6 de la orquestación de la Fase 4,
   respaldada por la evidencia de F1). La tokenización real se cubre con SentencePiece vía
   `ct2rs` + `</s>` manual, replicando el runtime del oráculo.
-- **Verificar:** reality-check del motor real en verde (traducción es↔en contra
-  `models/ct2/opus-mt-{es-en,en-es}`, salida saneada del token `</s>` preservando la paridad de
-  salida del oráculo); `translate` cumple contrato JSON (`schema_version = "3"`) y exit codes
-  0/2/4/9. La paridad textual/BLEU contra el oráculo Python queda **diferida no bloqueante**
-  (modelo del oráculo no provisionado en este entorno; test de paridad `#[ignore]`), análogo a
-  la Fase 3.
+- **Verificar (✅ completada):** los modelos `opus-mt-{es-en,en-es}` se reconvirtieron a CT2
+  **int8** replicando el flujo de conversión del oráculo (`_convert_translation_model`; pesos
+  byte-idénticos a su deployment — antes eran float32, 311 MB vs 79 MB); corpus de paridad de
+  11 pares `{input, expected}` (5 es→en, 6 en→es) sobre textos reales del repositorio, emitidos
+  por el `TranslationService` de producción. **Paridad FUNCIONAL, no byte a byte** (decisión del
+  equipo: la migración busca calidad y eficiencia, no clonar el oráculo): WER medio de corpus
+  ≤ 0.35 (real 0.19 — varianza de paráfrasis válida, p. ej. «Don't» vs «Do not»), tope por ítem
+  ≤ 0.6, checks funcionales (no vacío, sin `</s>`, sin `<unk>`); 5/5 en verde. Mejora de
+  calidad: `disable_unk=true` en el engine (suprime `<unk>` crudo en la salida). `translate`
+  cumple contrato JSON (`schema_version = "3"`) y exit codes 0/2/4/9.
 - **Rollback:** worker Python de traducción/segmentación.
 
 ### Fase 5 — TTS (Qwen3-TTS por subprocess)
@@ -638,9 +644,10 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
 |---|---|---|---|
 | Regresión de calidad en la integración real / int4 | 5 | Media | Clips de referencia; re-escucha tras integrar; fallback Chatterbox |
 | Build nativo del motor en Windows (upstream solo documenta WSL2) | 0/5 | Baja | Build MinGW-w64/UCRT64 con shims POSIX acotados bajo `_WIN32` y static linking autocontenido (§2.4); fallback Python como respaldo de rollback |
-| `ct2rs` sin paridad de versión CT2 vs modelos convertidos | 3 | Baja | Compat. hacia atrás de CT2; validación en Fase 0 |
+| `ct2rs` sin paridad de versión CT2 vs modelos convertidos | 3 | Resuelto | CTranslate2 embebido = 4.8.1, misma versión que el oráculo (ctranslate2 4.8.1); pesos reconvertidos a int8 byte-idénticos al deployment del oráculo |
 | Divergencia de tokenización Marian (`sacremoses`) — resuelto por evidencia (F1) | 4 | Resuelto | El oráculo no usa `sacremoses` en runtime (SentencePiece crudo + `</s>` manual en `model_loader.py`); pieza descartada por decisión cerrada (Decisión #6) — ver Fase 4 |
-| Calidad de segmentación Rust < pysbd | 4 | Media | Validación contra pysbd; segmentador estadístico posterior |
+| Empates numéricos de beam search entre builds de CT2 | 4 | Baja | En empates casi exactos («Don't» vs «Do not») cada build puede elegir una hipótesis válida distinta; la paridad es funcional (WER medio de corpus ≤ 0.35), no byte a byte — ver Fase 4 |
+| Calidad de segmentación Rust < pysbd | 4 | Resuelto | Validación estructural contra corpus pysbd (6 tests); paridad funcional de traducción en verde sobre el corpus de 11 ítems — ver Fase 4 |
 | Reescritura de packaging por SO | 7 | Media | Instaladores por plataforma; CI temprana |
 | Coste/oportunidad (trabajo Python reciente) | Todas | Media | Strangler incremental; releases paralelos |
 

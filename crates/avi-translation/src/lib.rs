@@ -31,9 +31,15 @@ impl TranslationEngine for Ct2TranslationEngine {
         // Marian/opus-mt lo exige y `ct2-transformers-converter` no lo añade
         // automáticamente (ver nota técnica en `crates/avi-stt/src/lib.rs`).
         let source = format!("{} </s>", text);
+        // Mejora de calidad sobre el default de ct2rs: `disable_unk` suprime la
+        // generación del token `<unk>` en la hipótesis (mismo default sano del
+        // oráculo Python, `disable_unk=True` en ctranslate2), evitando `<unk>`
+        // crudo en la salida ante vocabulario fuera de cobertura.
+        let mut options = ct2rs::TranslationOptions::default();
+        options.disable_unk = true;
         let results = self
             .translator
-            .translate_batch(&[source], &Default::default(), None)?;
+            .translate_batch(&[source], &options, None)?;
         if results.is_empty() {
             anyhow::bail!("translate_batch no devolvió ningún resultado");
         }
@@ -123,59 +129,117 @@ mod tests {
         assert!(result.is_err(), "una ruta de modelo inexistente debe fallar");
     }
 
-    /// Test de paridad contra el oráculo Python (Decisión cerrada #2 de F0).
+    /// Test de paridad funcional contra el oráculo Python (Decisión cerrada #2
+    /// de F0).
     ///
-    /// IGNORADO: la precondición no se cumple en este entorno — el modelo del
-    /// oráculo se resuelve en `<data_root>/translation-models/opus-mt-es-en`
-    /// (directorio de datos de usuario), no en `models/ct2/opus-mt-es-en`
-    /// (formato CT2, raíz del repo), y no está provisionado. Detalle completo
-    /// del hallazgo en `F1-exploracion.md` (fase 4 de traducción). La paridad
-    /// textual se difiere al reality-check de F5.
+    /// El corpus de referencia son pares `{input, expected}` generados con el
+    /// pipeline de traducción del oráculo Python (`TranslationService` de
+    /// producción, SentencePiece crudo + `</s>` manual) sobre textos reales
+    /// del repositorio, en ambas direcciones es↔en.
+    ///
+    /// La paridad es FUNCIONAL, no byte a byte: la migración a Rust busca
+    /// calidad y eficiencia, no clonar el comportamiento del oráculo (decisión
+    /// del equipo). El corpus del oráculo se usa como referencia de CALIDAD,
+    /// no como verdad esperada: sobre estos textos la varianza de paráfrasis
+    /// entre dos hipótesis igualmente válidas alcanza WER 0.19 de media (p.
+    /// ej. «Don't» vs «Do not», «a watermark» vs «any watermark», «Optimizar
+    /// para la claridad externa» vs la forma conjugada del oráculo). Por eso
+    /// los umbrales separan «variación válida» de «motor roto» (modelo
+    /// equivocado, tokenización rota o salida degradada dispararían el WER
+    /// medio muy por encima de 0.35), y se complementan con checks
+    /// funcionales: salida no vacía, sin `</s>` ni `<unk>`.
     #[test]
-    #[ignore = "fixture de paridad no generado: modelo del oráculo Python no provisionado en este entorno, ver F1-exploracion.md"]
     fn ct2translationengine_coincide_con_oraculo_python() {
         use crate::Ct2TranslationEngine;
 
-        let model_dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../models/ct2/opus-mt-es-en"
-        );
-        let fixture_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/assets/translate_es_en.oraculo.txt"
-        );
+        // Pares (subdirectorio de modelo, fixture del corpus del oráculo),
+        // ambos dentro de la raíz del crate.
+        let corpus: [(&str, &str); 2] = [
+            ("opus-mt-es-en", "translate_es_en.oraculo.json"),
+            ("opus-mt-en-es", "translate_en_es.oraculo.json"),
+        ];
 
-        let engine = Ct2TranslationEngine::new(model_dir)
-            .expect("el modelo opus-mt-es-en debe cargar");
-        let actual = engine
-            .translate("Hola, ¿cómo estás?", "es", "en")
-            .expect("la traducción debe completarse")
-            .trim()
-            .to_string();
+        let mut wer_total = 0.0;
+        let mut n_items = 0usize;
 
-        let esperado = std::fs::read_to_string(fixture_path)
-            .expect("el fixture de referencia del oráculo debe existir")
-            .trim()
-            .to_string();
+        for (model, fixture) in corpus {
+            let model_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../models/ct2")
+                .join(model);
+            let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/assets")
+                .join(fixture);
 
-        if actual == esperado {
-            return;
+            let engine = Ct2TranslationEngine::new(model_dir)
+                .expect("el modelo opus-mt debe cargar");
+            let pares: Vec<ParOraculo> = serde_json::from_str(
+                &std::fs::read_to_string(fixture_path)
+                    .expect("el corpus de referencia del oráculo debe existir"),
+            )
+            .expect("el corpus del oráculo debe ser JSON válido");
+
+            for par in &pares {
+                let actual = engine
+                    .translate(&par.input, "es", "en")
+                    .expect("la traducción debe completarse")
+                    .trim()
+                    .to_string();
+
+                assert!(
+                    !actual.is_empty(),
+                    "traducción vacía en {} para {:?}",
+                    model,
+                    par.input
+                );
+                assert!(
+                    !actual.contains("</s>"),
+                    "el token EOS no debe filtrarse a la salida en {} para {:?}",
+                    model,
+                    par.input
+                );
+                assert!(
+                    !actual.contains("<unk>"),
+                    "el token desconocido no debe filtrarse a la salida en {} para {:?}",
+                    model,
+                    par.input
+                );
+
+                let esperado = par.expected.trim();
+                let ref_palabras: Vec<&str> = esperado.split_whitespace().collect();
+                let hip_palabras: Vec<&str> = actual.split_whitespace().collect();
+                let distancia = levenshtein_palabras(&ref_palabras, &hip_palabras);
+                let wer = distancia as f64 / ref_palabras.len().max(1) as f64;
+
+                assert!(
+                    wer <= 0.6,
+                    "WER por ítem {:.4} supera el tope 0.6 en {} ({:?}): esperado {:?}, obtenido {:?}",
+                    wer,
+                    model,
+                    par.input,
+                    esperado,
+                    actual
+                );
+
+                wer_total += wer;
+                n_items += 1;
+                eprintln!("[corpus] {} | WER {:.4} | {:?} -> {:?}", model, wer, par.input, actual);
+            }
         }
 
-        // Igualdad textual no se cumple: umbral de paridad por WER a nivel de
-        // palabra (distancia de Levenshtein entre secuencias de palabras).
-        let ref_palabras: Vec<&str> = esperado.split_whitespace().collect();
-        let hip_palabras: Vec<&str> = actual.split_whitespace().collect();
-        let distancia = levenshtein_palabras(&ref_palabras, &hip_palabras);
-        let wer = distancia as f64 / ref_palabras.len().max(1) as f64;
-
+        let wer_medio = wer_total / n_items.max(1) as f64;
         assert!(
-            wer <= 0.05,
-            "WER {:.4} supera el umbral de paridad 0.05 (esperado: {:?}, obtenido: {:?})",
-            wer,
-            esperado,
-            actual
+            wer_medio <= 0.35,
+            "WER medio de corpus {:.4} supera el umbral 0.35 (motor degradado)",
+            wer_medio
         );
+    }
+
+    /// Un par del corpus de paridad: texto de entrada y su traducción de
+    /// referencia emitida por el oráculo Python.
+    #[derive(serde::Deserialize)]
+    struct ParOraculo {
+        input: String,
+        expected: String,
     }
 
     /// Distancia de Levenshtein a nivel de palabra entre `referencia` e

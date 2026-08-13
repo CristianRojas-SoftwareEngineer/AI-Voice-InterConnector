@@ -150,17 +150,14 @@ mod tests {
 
     /// Test de paridad contra el oráculo Python (Tarea 4 del plan F3).
     ///
-    /// IGNORADO: la precondición de la Tarea 4 (oráculo Python ejecutable de
-    /// extremo a extremo) NO se cumplió en F4 — el `WhisperModelLoader` del
-    /// oráculo resuelve el modelo en `<data_root>/transcription-models/
-    /// faster-whisper-small` (formato faster-whisper, directorio de datos de
-    /// usuario), no en `models/ct2/whisper-small` (formato CT2, raíz del
-    /// repo), y ese directorio no está provisionado en este entorno. Detalle
-    /// completo del bloqueo en `.claude/orchestration/fase3-stt-whisper/
-    /// F4-implementacion-notas.md`. La paridad se difiere al reality-check de
-    /// F5.
+    /// El corpus de referencia son 4 audios de voz sintética en español
+    /// generada por el motor Qwen3-TTS del proyecto (remuestreados a 16 kHz
+    /// mono, la tasa que exige Whisper), con su transcripción de referencia
+    /// obtenida del pipeline de transcripción del oráculo Python
+    /// (`faster-whisper-small` vía `WhisperModelLoader`). Se comparan por
+    /// igualdad textual o, en su defecto, por WER ≤ 0.05 (distancia de
+    /// Levenshtein a nivel de palabra).
     #[test]
-    #[ignore = "fixture de paridad no generado: ver F4-implementacion-notas.md"]
     fn ct2sttengine_coincide_con_oraculo_python() {
         use crate::Ct2SttEngine;
         use avi_core::engine::SttEngine;
@@ -169,46 +166,58 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../models/ct2/whisper-small"
         );
-        let wav_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/assets/whisper_sample_16k.wav"
-        );
-        let fixture_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/assets/whisper_sample_16k.oraculo.txt"
-        );
-
         let engine = Ct2SttEngine::new(model_dir).expect("el modelo whisper-small debe cargar");
-        let pcm = avi_audio::load_wav_16k_mono_pcm(wav_path).expect("el WAV fixture debe cargarse");
-        let actual = engine
-            .transcribe(&pcm, Some("es"))
-            .expect("la transcripción debe completarse")
-            .trim()
-            .to_string();
 
-        let esperado = std::fs::read_to_string(fixture_path)
-            .expect("el fixture de referencia del oráculo debe existir")
-            .trim()
-            .to_string();
+        // Pares (audio, fixture de transcripción del oráculo), mismo directorio
+        // `tests/assets/` de este crate.
+        let corpus: [(&str, &str); 4] = [
+            ("whisper_sample_16k.wav", "whisper_sample_16k.oraculo.txt"),
+            ("corpus_sintesis_16k.wav", "corpus_sintesis_16k.oraculo.txt"),
+            ("corpus_watermark_16k.wav", "corpus_watermark_16k.oraculo.txt"),
+            ("corpus_respuestas_16k.wav", "corpus_respuestas_16k.oraculo.txt"),
+        ];
 
-        if actual == esperado {
-            return;
+        for (wav, fixture) in corpus {
+            let wav_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/assets")
+                .join(wav);
+            let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/assets")
+                .join(fixture);
+
+            let pcm = avi_audio::load_wav_16k_mono_pcm(wav_path)
+                .expect("el WAV fixture debe cargarse");
+            let actual = engine
+                .transcribe(&pcm, Some("es"))
+                .expect("la transcripción debe completarse")
+                .trim()
+                .to_string();
+
+            let esperado = std::fs::read_to_string(fixture_path)
+                .expect("el fixture de referencia del oráculo debe existir")
+                .trim()
+                .to_string();
+
+            if actual == esperado {
+                continue;
+            }
+
+            // Igualdad textual no se cumple: umbral de paridad por WER a nivel de
+            // palabra (distancia de Levenshtein entre secuencias de palabras).
+            let ref_palabras: Vec<&str> = esperado.split_whitespace().collect();
+            let hip_palabras: Vec<&str> = actual.split_whitespace().collect();
+            let distancia = levenshtein_palabras(&ref_palabras, &hip_palabras);
+            let wer = distancia as f64 / ref_palabras.len().max(1) as f64;
+
+            assert!(
+                wer <= 0.05,
+                "WER {:.4} supera el umbral de paridad 0.05 en {} (esperado: {:?}, obtenido: {:?})",
+                wer,
+                wav,
+                esperado,
+                actual
+            );
         }
-
-        // Igualdad textual no se cumple: umbral de paridad por WER a nivel de
-        // palabra (distancia de Levenshtein entre secuencias de palabras).
-        let ref_palabras: Vec<&str> = esperado.split_whitespace().collect();
-        let hip_palabras: Vec<&str> = actual.split_whitespace().collect();
-        let distancia = levenshtein_palabras(&ref_palabras, &hip_palabras);
-        let wer = distancia as f64 / ref_palabras.len().max(1) as f64;
-
-        assert!(
-            wer <= 0.05,
-            "WER {:.4} supera el umbral de paridad 0.05 (esperado: {:?}, obtenido: {:?})",
-            wer,
-            esperado,
-            actual
-        );
     }
 
     /// Distancia de Levenshtein a nivel de palabra entre `referencia` e

@@ -1,0 +1,22 @@
+[
+  {
+    "input": "Sistema de síntesis de voz 100% local con clonación de voz en español latinoamericano.",
+    "expected": "100% local voice synthesis system with voice cloning in Latin American Spanish."
+  },
+  {
+    "input": "No clones la voz de nadie sin su autorización.",
+    "expected": "Don't clone anyone's voice without their permission."
+  },
+  {
+    "input": "Recuerda que el audio no contiene marca de agua que lo identifique.",
+    "expected": "Remember that the audio does not contain any watermark that identifies it."
+  },
+  {
+    "input": "Las respuestas dirigidas al usuario deben estar en español.",
+    "expected": "The responses addressed to the user should be in Spanish."
+  },
+  {
+    "input": "Los comentarios generados o modificados en el código fuente deben estar también en español.",
+    "expected": "Comments generated or modified in the source code must also be in Spanish."
+  }
+]

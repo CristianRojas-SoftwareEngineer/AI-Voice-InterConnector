@@ -244,6 +244,8 @@ dependencies = [
  "anyhow",
  "avi-core",
  "ct2rs",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
