@@ -50,10 +50,31 @@ fn version_coincide_con_fixture() {
 }
 
 #[test]
-fn speech_transcribe_usa_dummy_engine() {
-    let (code, actual) = run_json(&["--json", "speech", "transcribe"]);
+fn speech_transcribe_con_audio_cumple_contrato() {
+    let (code, actual) = run_json(&[
+        "--json",
+        "speech",
+        "transcribe",
+        "--audio",
+        "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+        "--source-language",
+        "es-latam",
+    ]);
     assert_eq!(code, 0);
-    assert_eq!(actual, fixture("cli_speech_transcribe.json"));
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["source"], Value::String("es-latam".to_string()));
+    let text = actual["text"].as_str().expect("`text` debe ser un string");
+    assert!(!text.is_empty(), "`text` no debe estar vacío");
+}
+
+#[test]
+fn speech_transcribe_sin_audio_ni_mic_sale_con_codigo_2() {
+    let output = Command::new(BIN)
+        .args(["--json", "speech", "transcribe", "--source-language", "es-latam"])
+        .output()
+        .expect("el binario debe ejecutarse");
+    let code = output.status.code().expect("el proceso debe terminar con un código");
+    assert_eq!(code, 2, "omitir --audio y --mic debe mapear a ExitCode::InvalidInput");
 }
 
 #[test]

@@ -9,7 +9,12 @@ edition = "2021"
 # `whisper` habilita el transcriptor `ct2rs::Whisper` (mel_spec + ndarray) usado por el
 # test de carga del modelo Whisper CT2 y, en la Fase 3, por el motor STT real.
 ct2rs = { version = "0.10.0", features = ["whisper"] }
+avi-core = { path = "../avi-core" }
+anyhow = "1.0"
 
 [dev-dependencies]
 # Lectura del WAV fixture (mono 16 kHz) que alimenta el test de carga de Whisper.
 hound = "3.5"
+# Normalización de WAV a PCM 16 kHz mono, reutilizada por el test de paridad
+# de Ct2SttEngine contra el oráculo Python.
+avi-audio = { path = "../avi-audio" }

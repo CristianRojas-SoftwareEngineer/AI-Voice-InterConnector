@@ -39,6 +39,7 @@ dependencies = [
  "avi-core",
  "avi-daemon",
  "avi-store",
+ "avi-stt",
  "avi-tts",
  "clap",
  "ctrlc",
@@ -228,6 +229,9 @@ dependencies = [
 name = "avi-stt"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "avi-audio",
+ "avi-core",
  "ct2rs",
  "hound",
 ]

@@ -1,10 +1,11 @@
 use avi_audio as audio;
-use avi_core::engine::{DummySttEngine, SttEngine};
+use avi_core::engine::SttEngine;
 use avi_core::exit_codes::{CliError, ExitCode};
 use avi_core::json_emitter::emit_raw_json;
 use avi_daemon as daemon;
 use avi_store as store;
 use avi_store::{VoiceStore, SpeechStore, ModelStore};
+use avi_stt::Ct2SttEngine;
 use avi_tts::{Qwen3TtsEngine, TtsEngine};
 use clap::{Parser, Subcommand};
 use serde_json::json;
@@ -13,6 +14,19 @@ use std::process::exit;
 
 const VERSION: &str = "0.10.5";
 const APP_NAME: &str = "ai-voice-interconnector";
+/// Ruta fija del modelo Whisper ya convertido a CT2, reutilizado por
+/// `speech transcribe` (no se gestiona vía `ModelStore`: layout incompatible).
+const DEFAULT_WHISPER_MODEL_DIR: &str = "models/ct2/whisper-small";
+
+/// Resuelve un token de idioma de la CLI (`es-latam`/`en`) al código ISO que
+/// exige el motor STT: `es-latam` -> `es`; cualquier otro valor pasa verbatim
+/// (espeja `resolve_language` del oráculo Python).
+fn resolve_stt_language(token: &str) -> &str {
+    match token {
+        "es-latam" => "es",
+        other => other,
+    }
+}
 
 #[derive(Parser)]
 #[command(name = APP_NAME, version = VERSION, about = "AI Voice Interconnector CLI")]
@@ -121,8 +135,18 @@ enum SpeechCommands {
     List,
     /// Transcribir audio
     Transcribe {
-        #[arg(short, long)]
-        file: Option<String>,
+        /// Ruta del archivo WAV a transcribir (mutuamente excluyente con --mic)
+        #[arg(long, conflicts_with = "mic")]
+        audio: Option<String>,
+        /// Transcribir desde el micrófono (mutuamente excluyente con --audio)
+        #[arg(long)]
+        mic: bool,
+        /// Duración fija de grabación en segundos; solo válido con --mic
+        #[arg(long)]
+        duration: Option<u64>,
+        /// Idioma hablado en el audio
+        #[arg(long, value_parser = ["es-latam", "en"])]
+        source_language: String,
     },
     /// Sintetizar texto a habla
     Synthesize {
@@ -396,13 +420,55 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             }
             Ok(())
         }
-        SpeechCommands::Transcribe { file: _ } => {
-            let engine = DummySttEngine;
-            let text = engine.transcribe(&[]).map_err(|e| {
+        SpeechCommands::Transcribe { audio, mic, duration, source_language } => {
+            // Validación de argumentos: --audio/--mic mutuamente excluyentes, uno
+            // requerido; --duration solo válido con --mic.
+            if audio.is_none() && !mic {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "usage_error",
+                    "Debe especificarse --audio o --mic.",
+                ));
+            }
+            if mic && duration.is_none() {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "usage_error",
+                    "--mic requiere --duration en este host.",
+                ));
+            }
+
+            // Modelo ausente -> exit 4, previo a construir el motor.
+            if !std::path::Path::new(DEFAULT_WHISPER_MODEL_DIR).exists() {
+                return Err(CliError::new(
+                    ExitCode::ModelMissing,
+                    "model_missing",
+                    "El modelo de transcripción no está provisionado en 'models/ct2/whisper-small'.",
+                ));
+            }
+
+            let pcm = if mic {
+                audio::AudioService::new()
+                    .capture_16k_mono_pcm(duration.expect("validado arriba"))
+                    .map_err(|e| {
+                        CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                    })?
+            } else {
+                avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
+                    CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                })?
+            };
+
+            let engine = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
                 CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
             })?;
+            let language = resolve_stt_language(&source_language);
+            let text = engine.transcribe(&pcm, Some(language)).map_err(|e| {
+                CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+            })?;
+
             if json_mode {
-                emit_raw_json(json!({ "text": text }));
+                emit_raw_json(json!({ "text": text, "source": source_language }));
             } else {
                 println!("{}", text);
             }

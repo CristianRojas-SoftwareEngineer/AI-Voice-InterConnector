@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 pub trait SttEngine: Send + Sync {
-    fn transcribe(&self, audio_pcm: &[i16]) -> anyhow::Result<String>;
+    fn transcribe(&self, audio_pcm: &[i16], language: Option<&str>) -> anyhow::Result<String>;
 }
 
 pub trait TranslationEngine: Send + Sync {
@@ -29,7 +29,7 @@ impl Segmenter for DeterministicSegmenter {
 pub struct DummySttEngine;
 
 impl SttEngine for DummySttEngine {
-    fn transcribe(&self, _audio_pcm: &[i16]) -> anyhow::Result<String> {
+    fn transcribe(&self, _audio_pcm: &[i16], _language: Option<&str>) -> anyhow::Result<String> {
         Ok("Transcripción de prueba".to_string())
     }
 }

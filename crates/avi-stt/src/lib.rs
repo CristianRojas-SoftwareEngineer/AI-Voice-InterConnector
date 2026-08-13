@@ -1,8 +1,36 @@
-//! Crate stub para el motor STT (speech-to-text) basado en `ct2rs`/Whisper.
+//! Motor STT (speech-to-text) real sobre `ct2rs::Whisper`.
 //!
-//! La implementación real llega en la Fase 3 del plan de migración
-//! (`docs/proposals/PLAN-DE-MIGRACIÓN.md`). Este crate solo reserva el nombre
-//! y la posición en el workspace.
+//! Expone `Ct2SttEngine`, implementación de `avi_core::engine::SttEngine` que
+//! carga un modelo Whisper convertido a CT2 y transcribe PCM `i16` mono a
+//! 16 kHz forzando el idioma indicado (Whisper solo transcribe, nunca traduce,
+//! por construcción del tipo `ct2rs::Whisper`).
+
+use avi_core::engine::SttEngine;
+use ct2rs::{Config, Whisper};
+
+/// Motor STT real sobre un modelo Whisper cargado en formato CT2.
+pub struct Ct2SttEngine {
+    whisper: Whisper,
+}
+
+impl Ct2SttEngine {
+    /// Carga el modelo Whisper CT2 ubicado en `model_dir`.
+    pub fn new(model_dir: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        let whisper = Whisper::new(model_dir, Config::default())?;
+        Ok(Self { whisper })
+    }
+}
+
+impl SttEngine for Ct2SttEngine {
+    fn transcribe(&self, audio_pcm: &[i16], language: Option<&str>) -> anyhow::Result<String> {
+        let samples: Vec<f32> = audio_pcm
+            .iter()
+            .map(|&s| s as f32 / i16::MAX as f32)
+            .collect();
+        let transcripts = self.whisper.generate(&samples, language, false, &Default::default())?;
+        Ok(transcripts.join(" "))
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -107,5 +135,104 @@ mod tests {
             !texto.trim().is_empty(),
             "la transcripción no debe estar vacía"
         );
+    }
+
+    /// `Ct2SttEngine::new` sobre una ruta de modelo inexistente debe devolver
+    /// `Err`, cubriendo la rama de "modelo no cargable" que el handler CLI
+    /// (Tarea 6) mapea a `ExitCode::TranscriptionFailed` (10).
+    #[test]
+    fn ct2sttengine_new_con_ruta_inexistente_devuelve_err() {
+        use crate::Ct2SttEngine;
+
+        let result = Ct2SttEngine::new("ruta/que/no/existe/whisper-small");
+        assert!(result.is_err(), "una ruta de modelo inexistente debe fallar");
+    }
+
+    /// Test de paridad contra el oráculo Python (Tarea 4 del plan F3).
+    ///
+    /// IGNORADO: la precondición de la Tarea 4 (oráculo Python ejecutable de
+    /// extremo a extremo) NO se cumplió en F4 — el `WhisperModelLoader` del
+    /// oráculo resuelve el modelo en `<data_root>/transcription-models/
+    /// faster-whisper-small` (formato faster-whisper, directorio de datos de
+    /// usuario), no en `models/ct2/whisper-small` (formato CT2, raíz del
+    /// repo), y ese directorio no está provisionado en este entorno. Detalle
+    /// completo del bloqueo en `.claude/orchestration/fase3-stt-whisper/
+    /// F4-implementacion-notas.md`. La paridad se difiere al reality-check de
+    /// F5.
+    #[test]
+    #[ignore = "fixture de paridad no generado: ver F4-implementacion-notas.md"]
+    fn ct2sttengine_coincide_con_oraculo_python() {
+        use crate::Ct2SttEngine;
+        use avi_core::engine::SttEngine;
+
+        let model_dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../models/ct2/whisper-small"
+        );
+        let wav_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/assets/whisper_sample_16k.wav"
+        );
+        let fixture_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/assets/whisper_sample_16k.oraculo.txt"
+        );
+
+        let engine = Ct2SttEngine::new(model_dir).expect("el modelo whisper-small debe cargar");
+        let pcm = avi_audio::load_wav_16k_mono_pcm(wav_path).expect("el WAV fixture debe cargarse");
+        let actual = engine
+            .transcribe(&pcm, Some("es"))
+            .expect("la transcripción debe completarse")
+            .trim()
+            .to_string();
+
+        let esperado = std::fs::read_to_string(fixture_path)
+            .expect("el fixture de referencia del oráculo debe existir")
+            .trim()
+            .to_string();
+
+        if actual == esperado {
+            return;
+        }
+
+        // Igualdad textual no se cumple: umbral de paridad por WER a nivel de
+        // palabra (distancia de Levenshtein entre secuencias de palabras).
+        let ref_palabras: Vec<&str> = esperado.split_whitespace().collect();
+        let hip_palabras: Vec<&str> = actual.split_whitespace().collect();
+        let distancia = levenshtein_palabras(&ref_palabras, &hip_palabras);
+        let wer = distancia as f64 / ref_palabras.len().max(1) as f64;
+
+        assert!(
+            wer <= 0.05,
+            "WER {:.4} supera el umbral de paridad 0.05 (esperado: {:?}, obtenido: {:?})",
+            wer,
+            esperado,
+            actual
+        );
+    }
+
+    /// Distancia de Levenshtein a nivel de palabra entre `referencia` e
+    /// `hipotesis`, usada para calcular el WER de la prueba de paridad.
+    fn levenshtein_palabras(referencia: &[&str], hipotesis: &[&str]) -> usize {
+        let n = referencia.len();
+        let m = hipotesis.len();
+        let mut dp = vec![vec![0usize; m + 1]; n + 1];
+
+        for i in 0..=n {
+            dp[i][0] = i;
+        }
+        for j in 0..=m {
+            dp[0][j] = j;
+        }
+        for i in 1..=n {
+            for j in 1..=m {
+                if referencia[i - 1] == hipotesis[j - 1] {
+                    dp[i][j] = dp[i - 1][j - 1];
+                } else {
+                    dp[i][j] = 1 + dp[i - 1][j - 1].min(dp[i - 1][j]).min(dp[i][j - 1]);
+                }
+            }
+        }
+        dp[n][m]
     }
 }

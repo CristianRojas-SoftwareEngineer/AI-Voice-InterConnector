@@ -19,6 +19,7 @@ avi-audio = { path = "crates/avi-audio" }
 avi-tts = { path = "crates/avi-tts" }
 avi-store = { path = "crates/avi-store" }
 avi-daemon = { path = "crates/avi-daemon" }
+avi-stt = { path = "crates/avi-stt" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_System_Console"] }
