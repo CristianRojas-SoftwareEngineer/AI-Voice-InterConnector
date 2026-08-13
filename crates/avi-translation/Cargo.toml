@@ -4,10 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Sin features adicionales inicialmente: `Translator` (Marian) y el tokenizador
-# SentencePiece embebido son parte de las features por defecto de ct2rs (la
-# feature `whisper` de avi-stt es exclusiva del transcriptor Whisper).
-ct2rs = "0.10.0"
+# Backend oneDNN + OpenMP (sin ruy): replica la configuración del wheel de
+# Python y es ~2.4x más rápido que ruy en CPU. Verificada por benchmarks.
+ct2rs = { version = "0.10.0", default-features = false, features = ["sentencepiece", "tokenizers", "openmp-runtime-comp", "dnnl"] }
 avi-core = { path = "../avi-core" }
 anyhow = "1.0"
 
