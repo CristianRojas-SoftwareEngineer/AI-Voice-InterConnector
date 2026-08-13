@@ -7,6 +7,7 @@ use avi_store as store;
 use avi_store::{VoiceStore, SpeechStore, ModelStore};
 use avi_stt::Ct2SttEngine;
 use avi_tts::{Qwen3TtsEngine, TtsEngine};
+use avi_translation as translation;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::net::SocketAddr;
@@ -17,6 +18,11 @@ const APP_NAME: &str = "ai-voice-interconnector";
 /// Ruta fija del modelo Whisper ya convertido a CT2, reutilizado por
 /// `speech transcribe` (no se gestiona vía `ModelStore`: layout incompatible).
 const DEFAULT_WHISPER_MODEL_DIR: &str = "models/ct2/whisper-small";
+/// Ruta fija del modelo Marian/opus-mt es→en ya convertido a CT2, reutilizado
+/// por `translate` (no se gestiona vía `ModelStore`: layout incompatible).
+const DEFAULT_TRANSLATION_MODEL_ES_EN: &str = "models/ct2/opus-mt-es-en";
+/// Ruta fija del modelo Marian/opus-mt en→es ya convertido a CT2 (ídem).
+const DEFAULT_TRANSLATION_MODEL_EN_ES: &str = "models/ct2/opus-mt-en-es";
 
 /// Resuelve un token de idioma de la CLI (`es-latam`/`en`) al código ISO que
 /// exige el motor STT: `es-latam` -> `es`; cualquier otro valor pasa verbatim
@@ -301,7 +307,7 @@ fn handle_devices(json_mode: bool) -> Result<(), CliError> {
     Ok(())
 }
 
-fn handle_translate(_json_mode: bool, daemon_mode: DaemonMode, text: &str, _from: &str, _to: &str) -> Result<(), CliError> {
+fn handle_translate(json_mode: bool, daemon_mode: DaemonMode, text: &str, from: &str, to: &str) -> Result<(), CliError> {
     if daemon_mode == DaemonMode::ForceDaemon {
         return Err(CliError::new(
             ExitCode::DaemonUnreachable,
@@ -316,16 +322,47 @@ fn handle_translate(_json_mode: bool, daemon_mode: DaemonMode, text: &str, _from
             "El texto a traducir está vacío",
         ));
     }
-    // Sin modelo provisionado → exit 4
-    let model_store = ModelStore::new();
-    if !model_store.is_provisioned("marian-es-en") {
+    let source = resolve_stt_language(from);
+    let target = resolve_stt_language(to);
+    // Passthrough: origen == destino tras normalizar → texto intacto, sin
+    // construir ningún motor de traducción (replica `TranslationService`).
+    if source == target {
+        if json_mode {
+            emit_raw_json(json!({ "translated": text, "source": from, "target": to }));
+        } else {
+            println!("{}", text);
+        }
+        return Ok(());
+    }
+    // Par no soportado → exit 2 (validación pura, sin tocar el modelo).
+    let model_dir = match (source, target) {
+        ("es", "en") => DEFAULT_TRANSLATION_MODEL_ES_EN,
+        ("en", "es") => DEFAULT_TRANSLATION_MODEL_EN_ES,
+        _ => {
+            return Err(CliError::new(
+                ExitCode::InvalidInput,
+                "unsupported_language_pair",
+                format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source, target),
+            ));
+        }
+    };
+    // Modelo ausente -> exit 4, previo a construir el motor (patrón de STT).
+    if !std::path::Path::new(model_dir).exists() {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
-            "El modelo de traducción no está provisionado. Ejecuta 'setup' primero.",
+            format!("El modelo de traducción no está provisionado en '{}'.", model_dir),
         ));
     }
-    unreachable!("La traducción real se implementa tras integrar ct2rs")
+    let translated = translation::translate(text, source, target, model_dir).map_err(|e| {
+        CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
+    })?;
+    if json_mode {
+        emit_raw_json(json!({ "translated": translated, "source": from, "target": to }));
+    } else {
+        println!("{}", translated);
+    }
+    Ok(())
 }
 
 // ─── Voice ───────────────────────────────────────────────────────────

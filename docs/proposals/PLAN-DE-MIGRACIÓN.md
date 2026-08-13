@@ -211,7 +211,9 @@ src/ai_voice_interconnector/
 - Cadena: **Marian / OPUS-MT → CTranslate2** (no usa un LLM). Par `es<->en`.
 - Pipeline: valida → **segmenta (pysbd)** → traduce por segmento → ensambla; con
   **passthrough** cuando origen == destino (sin cargar modelo).
-- Tokenización vía `transformers` + `sentencepiece` + `sacremoses` (`MarianTokenizer`).
+- Tokenización: SentencePiece crudo (`sentencepiece.SentencePieceProcessor` con el `.spm` del
+  par) + token `</s>` anexado manualmente; `transformers`/`sacremoses` son dependencias
+  declaradas, no parte del camino de ejecución (no se invoca `MarianTokenizer`).
 - Modelos convertidos opus-mt→CT2 durante `setup` (`ctranslate2.converters.TransformersConverter`).
 
 #### Segmentación
@@ -421,10 +423,13 @@ una ruta WSL2; **WSL2 no se usa en producción**. La distribución en Windows se
   (Marian) **comparten el mismo runtime CT2** en el proceso Rust.
 - STT mantiene `task="transcribe"` estricto. Traducción mantiene el par `es<->en` y el
   passthrough.
-- **Tokenización:** `ct2rs` cubre **SentencePiece** de fábrica
-  (`Translator::with_tokenizer`); el pre/post-procesado de **`sacremoses`**
-  (normalización/`truecase`) se **reimplementa en Rust**, validado contra un corpus de
-  paridad. No queda dependencia Python en la ruta de traducción en runtime.
+- **Tokenización:** `ct2rs` cubre **SentencePiece** de fábrica; el token `</s>` se anexa
+  manualmente al texto de origen, replicando el runtime del oráculo (SentencePiece crudo +
+  `</s>` manual en `model_loader.py`; el `.spm` embebido ya aplica la normalización
+  `nmt_nfkc`, idéntica en Python y en Rust vía `ct2rs`). El pre/post-procesado de
+  `sacremoses` NO se reimplementa: el oráculo no lo usa en su camino de ejecución, pieza
+  descartada por decisión cerrada (ver Fase 4). No queda dependencia Python en la ruta de
+  traducción en runtime.
 
 #### Segmentación (objetivo)
 
@@ -552,11 +557,23 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
 ### Fase 4 — Traducción (`ct2rs::Translator`) + segmentación
 
 - **Objetivo:** traducción `es<->en` nativa compartiendo el runtime CT2 de la Fase 3.
-- **Trabajo:** `TranslationEngine` sobre `ct2rs`; **segmentador Rust** (reemplaza pysbd);
-  tokenización: SentencePiece vía `ct2rs` + **`sacremoses` reimplementado en Rust**; passthrough intacto.
-- **Verificar:** traducción Rust == Python (igualdad exacta o BLEU dentro de tolerancia
-  acordada) sobre un corpus fijo; segmentación Rust == pysbd sobre el mismo corpus;
-  `translate` cumple contrato JSON y exit 9.
+- **Trabajo:** motor `Ct2TranslationEngine` sobre `ct2rs::Translator` (Marian, ambas direcciones
+  es↔en); **segmentador jerárquico `HierarchicalSegmenter`** en `avi-core` (reemplaza pysbd:
+  párrafo → oración → puntuación fuerte → tokens, con `max_length`); pipeline
+  `segmentar → traducir → ensamblar` con passthrough intacto; cableado al comando `translate`
+  con contrato JSON (`schema_version = "3"`) y exit codes 0/2/4/9.
+- **Tokenización (premisa corregida):** el oráculo Python NO usa `sacremoses` en su camino de
+  ejecución — tokeniza con SentencePiece crudo y añade el token `</s>` manualmente (verificado
+  en `model_loader.py`); la pieza «`sacremoses` reimplementado en Rust» del alcance original
+  quedó **descartada** por decisión cerrada (Decisión #6 de la orquestación de la Fase 4,
+  respaldada por la evidencia de F1). La tokenización real se cubre con SentencePiece vía
+  `ct2rs` + `</s>` manual, replicando el runtime del oráculo.
+- **Verificar:** reality-check del motor real en verde (traducción es↔en contra
+  `models/ct2/opus-mt-{es-en,en-es}`, salida saneada del token `</s>` preservando la paridad de
+  salida del oráculo); `translate` cumple contrato JSON (`schema_version = "3"`) y exit codes
+  0/2/4/9. La paridad textual/BLEU contra el oráculo Python queda **diferida no bloqueante**
+  (modelo del oráculo no provisionado en este entorno; test de paridad `#[ignore]`), análogo a
+  la Fase 3.
 - **Rollback:** worker Python de traducción/segmentación.
 
 ### Fase 5 — TTS (Qwen3-TTS por subprocess)
@@ -622,7 +639,7 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
 | Regresión de calidad en la integración real / int4 | 5 | Media | Clips de referencia; re-escucha tras integrar; fallback Chatterbox |
 | Build nativo del motor en Windows (upstream solo documenta WSL2) | 0/5 | Baja | Build MinGW-w64/UCRT64 con shims POSIX acotados bajo `_WIN32` y static linking autocontenido (§2.4); fallback Python como respaldo de rollback |
 | `ct2rs` sin paridad de versión CT2 vs modelos convertidos | 3 | Baja | Compat. hacia atrás de CT2; validación en Fase 0 |
-| Divergencia de tokenización Marian (`sacremoses`) | 4 | Media-Baja | SentencePiece cubierto por ct2rs; corpus de paridad para el resto |
+| Divergencia de tokenización Marian (`sacremoses`) — resuelto por evidencia (F1) | 4 | Resuelto | El oráculo no usa `sacremoses` en runtime (SentencePiece crudo + `</s>` manual en `model_loader.py`); pieza descartada por decisión cerrada (Decisión #6) — ver Fase 4 |
 | Calidad de segmentación Rust < pysbd | 4 | Media | Validación contra pysbd; segmentador estadístico posterior |
 | Reescritura de packaging por SO | 7 | Media | Instaladores por plataforma; CI temprana |
 | Coste/oportunidad (trabajo Python reciente) | Todas | Media | Strangler incremental; releases paralelos |

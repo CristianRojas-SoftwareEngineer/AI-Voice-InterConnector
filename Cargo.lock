@@ -40,6 +40,7 @@ dependencies = [
  "avi-daemon",
  "avi-store",
  "avi-stt",
+ "avi-translation",
  "avi-tts",
  "clap",
  "ctrlc",
@@ -239,6 +240,11 @@ dependencies = [
 [[package]]
 name = "avi-translation"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "avi-core",
+ "ct2rs",
+]
 
 [[package]]
 name = "avi-tts"

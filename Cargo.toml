@@ -20,6 +20,7 @@ avi-tts = { path = "crates/avi-tts" }
 avi-store = { path = "crates/avi-store" }
 avi-daemon = { path = "crates/avi-daemon" }
 avi-stt = { path = "crates/avi-stt" }
+avi-translation = { path = "crates/avi-translation" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_System_Console"] }

@@ -112,3 +112,61 @@ fn translate_texto_vacio_sale_con_codigo_2() {
     assert_eq!(code, 2, "texto vacío debe mapear a ExitCode::InvalidInput");
     assert_eq!(actual, fixture("cli_translate_empty.json"));
 }
+
+#[test]
+fn translate_es_a_en_produce_traduccion() {
+    // El texto traducido depende del motor real; se verifican invariantes de
+    // contrato (mismo patrón que `speech_transcribe_con_audio_cumple_contrato`).
+    let (code, actual) = run_json(&[
+        "--json",
+        "translate",
+        "--text",
+        "Hola, ¿cómo estás?",
+        "--from",
+        "es",
+        "--to",
+        "en",
+    ]);
+    assert_eq!(code, 0);
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["source"], Value::String("es".to_string()));
+    assert_eq!(actual["target"], Value::String("en".to_string()));
+    let translated = actual["translated"].as_str().expect("`translated` debe ser un string");
+    assert!(!translated.is_empty(), "`translated` no debe estar vacío");
+}
+
+#[test]
+fn translate_passthrough_mismo_idioma_devuelve_texto_intacto() {
+    // Passthrough: origen == destino tras normalizar → texto intacto.
+    let (code, actual) = run_json(&[
+        "--json",
+        "translate",
+        "--text",
+        "Hola",
+        "--from",
+        "es",
+        "--to",
+        "es",
+    ]);
+    assert_eq!(code, 0);
+    assert_eq!(actual["translated"], Value::String("Hola".to_string()));
+}
+
+#[test]
+fn translate_par_no_soportado_sale_con_codigo_2() {
+    // Par no soportado → ExitCode::InvalidInput (2), ruta de validación pura
+    // sin depender de ningún modelo.
+    let (code, actual) = run_json(&[
+        "--json",
+        "translate",
+        "--text",
+        "Bonjour",
+        "--from",
+        "fr",
+        "--to",
+        "de",
+    ]);
+    assert_eq!(code, 2, "par no soportado debe mapear a ExitCode::InvalidInput");
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["reason"], Value::String("unsupported_language_pair".to_string()));
+}

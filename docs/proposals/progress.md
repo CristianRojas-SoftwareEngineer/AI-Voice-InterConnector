@@ -13,7 +13,7 @@
 | Fase 1 | Host Rust — almacenes, CLI, config | ✅ Completada |
 | Fase 2 | Audio (CPAL) | ✅ Completada |
 | Fase 3 | STT nativo (`ct2rs::Whisper`) | 🔶 Parcial |
-| Fase 4 | Traducción nativa (`ct2rs::Translator`) + segmentación | ⏳ Pendiente |
+| Fase 4 | Traducción nativa (`ct2rs::Translator`) + segmentación | 🔶 Parcial |
 | Fase 5 | TTS nativo (Qwen3-TTS subprocess) | 🔶 Parcial |
 | Fase 6 | Daemon (Axum) + streaming + warmup | 🔶 Parcial |
 | Fase 7 | Empaquetado, cutover y retiro de Python | 🔶 Parcial |
@@ -118,17 +118,29 @@ de paridad en `avi-stt` queda `#[ignore]` hasta que se disponga de esa línea ba
 
 ## Fase 4 — Traducción nativa (`ct2rs::Translator`) + segmentación
 
-**Estado:** ⏳ Pendiente
+**Estado:** 🔶 Parcial
 
-Depende del entorno CT2 establecido en la Fase 3.
+`Ct2TranslationEngine` (sobre `ct2rs::Translator`) está implementado y cableado a `translate`, con
+segmentación jerárquica `HierarchicalSegmenter` en `avi-core` (4 niveles: párrafo → oración →
+puntuación fuerte → tokens, con `max_length`; validada estructuralmente con 6 tests derivados de
+los tests pysbd del oráculo), pipeline `segmentar → traducir → ensamblar` con passthrough intacto,
+contrato JSON (envuelto en `schema_version = "3"`) y exit codes 2 (entrada inválida / par no
+soportado), 4 (modelo ausente) y 9 (fallo del pipeline de traducción). El reality-check del motor
+real quedó en verde: traducción es↔en real contra `models/ct2/opus-mt-{es-en,en-es}`, con la
+salida saneada del token `</s>` para replicar la paridad de salida del oráculo. La pieza original
+«reimplementar `sacremoses` en Rust» quedó descartada: el oráculo Python no la usa en su camino de
+ejecución (SentencePiece crudo + token `</s>` manual, verificado en `model_loader.py`). Pendiente:
+la paridad textual/BLEU contra el oráculo Python no se pudo verificar en este entorno porque el
+modelo del oráculo no está provisionado (el test de paridad en `avi-translation` queda
+`#[ignore]`, no bloqueante, análogo a la Fase 3).
 
 | Ítem | Estado |
 |------|--------|
-| Implementar `Ct2TranslationEngine` sobre `ct2rs::Translator` (Marian) | ⏳ |
-| Reimplementar `sacremoses` en Rust (normalización / truecase) | ⏳ |
-| Implementar segmentador determinista Rust (reemplaza pysbd) | ⏳ |
-| Validar segmentador contra corpus pysbd | ⏳ |
-| Pipeline completo: segmentar → traducir → ensamblar con passthrough | ⏳ |
+| Implementar `Ct2TranslationEngine` sobre `ct2rs::Translator` (Marian, es↔en) | ✅ |
+| Implementar segmentador jerárquico Rust (`HierarchicalSegmenter`, reemplaza pysbd) | ✅ |
+| Validar segmentador contra corpus pysbd (estructural, 6 tests) | ✅ |
+| Pipeline completo: segmentar → traducir → ensamblar con passthrough | ✅ |
+| Paridad textual/BLEU contra oráculo Python sobre corpus de referencia | ⏳ (no bloqueante: modelo del oráculo Python no provisionado en este entorno; test `#[ignore]`) |
 
 ---
 
