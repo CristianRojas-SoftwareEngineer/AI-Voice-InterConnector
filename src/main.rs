@@ -270,7 +270,7 @@ fn handle_devices(json_mode: bool) -> Result<(), CliError> {
                 "  [{}] {} (latencia: {:.1}ms)",
                 dev["id"],
                 dev["name"].as_str().unwrap_or(""),
-                dev["latency"].as_f64().unwrap_or(0.0)
+                dev["latency"].as_f64().unwrap_or(0.0) * 1000.0
             );
         }
     }

@@ -83,25 +83,66 @@ impl AudioService {
 
         let total_samples = samples.len();
         let sample_idx = Arc::new(Mutex::new(0usize));
-        let sample_idx_clone = sample_idx.clone();
 
         let stream = match device.default_output_config()?.sample_format() {
-            SampleFormat::F32 => device.build_output_stream(
-                &config,
-                move |data: &mut [f32], _| {
-                    let mut idx = sample_idx_clone.lock().unwrap();
-                    for sample in data.iter_mut() {
-                        if *idx < samples.len() {
-                            *sample = samples[*idx];
-                            *idx += 1;
-                        } else {
-                            *sample = 0.0;
+            SampleFormat::F32 => {
+                let idx_arc = sample_idx.clone();
+                device.build_output_stream(
+                    &config,
+                    move |data: &mut [f32], _| {
+                        let mut idx = idx_arc.lock().unwrap();
+                        for sample in data.iter_mut() {
+                            if *idx < samples.len() {
+                                *sample = samples[*idx];
+                                *idx += 1;
+                            } else {
+                                *sample = 0.0;
+                            }
                         }
-                    }
-                },
-                |err| eprintln!("Error en stream de audio: {}", err),
-                None,
-            )?,
+                    },
+                    |err| eprintln!("Error en stream de audio: {}", err),
+                    None,
+                )?
+            }
+            SampleFormat::I16 => {
+                let idx_arc = sample_idx.clone();
+                device.build_output_stream(
+                    &config,
+                    move |data: &mut [i16], _| {
+                        let mut idx = idx_arc.lock().unwrap();
+                        for sample in data.iter_mut() {
+                            if *idx < samples.len() {
+                                *sample = (samples[*idx].clamp(-1.0, 1.0) * 32767.0) as i16;
+                                *idx += 1;
+                            } else {
+                                *sample = 0;
+                            }
+                        }
+                    },
+                    |err| eprintln!("Error en stream de audio: {}", err),
+                    None,
+                )?
+            }
+            SampleFormat::U16 => {
+                let idx_arc = sample_idx.clone();
+                device.build_output_stream(
+                    &config,
+                    move |data: &mut [u16], _| {
+                        let mut idx = idx_arc.lock().unwrap();
+                        for sample in data.iter_mut() {
+                            if *idx < samples.len() {
+                                *sample = (((samples[*idx].clamp(-1.0, 1.0) + 1.0) * 0.5)
+                                    * u16::MAX as f32) as u16;
+                                *idx += 1;
+                            } else {
+                                *sample = u16::MAX / 2;
+                            }
+                        }
+                    },
+                    |err| eprintln!("Error en stream de audio: {}", err),
+                    None,
+                )?
+            }
             _ => return Err(anyhow!("Formato de muestra no soportado para reproducción")),
         };
 
@@ -127,17 +168,49 @@ impl AudioService {
         let channels = config.channels() as usize;
 
         let recorded_samples = Arc::new(Mutex::new(Vec::<f32>::new()));
-        let recorded_clone = recorded_samples.clone();
 
-        let stream = device.build_input_stream(
-            &config.config(),
-            move |data: &[f32], _| {
-                let mut buffer = recorded_clone.lock().unwrap();
-                buffer.extend_from_slice(data);
-            },
-            |err| eprintln!("Error en captura de micrófono: {}", err),
-            None,
-        )?;
+        let stream = match config.sample_format() {
+            SampleFormat::F32 => {
+                let rec = recorded_samples.clone();
+                device.build_input_stream(
+                    &config.config(),
+                    move |data: &[f32], _| {
+                        let mut buffer = rec.lock().unwrap();
+                        buffer.extend_from_slice(data);
+                    },
+                    |err| eprintln!("Error en captura de micrófono: {}", err),
+                    None,
+                )?
+            }
+            SampleFormat::I16 => {
+                let rec = recorded_samples.clone();
+                device.build_input_stream(
+                    &config.config(),
+                    move |data: &[i16], _| {
+                        let mut buffer = rec.lock().unwrap();
+                        buffer.extend(data.iter().map(|&s| s as f32 / 32768.0));
+                    },
+                    |err| eprintln!("Error en captura de micrófono: {}", err),
+                    None,
+                )?
+            }
+            SampleFormat::U16 => {
+                let rec = recorded_samples.clone();
+                device.build_input_stream(
+                    &config.config(),
+                    move |data: &[u16], _| {
+                        let mut buffer = rec.lock().unwrap();
+                        buffer.extend(
+                            data.iter()
+                                .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
+                        );
+                    },
+                    |err| eprintln!("Error en captura de micrófono: {}", err),
+                    None,
+                )?
+            }
+            _ => return Err(anyhow!("Formato de muestra no soportado para captura")),
+        };
 
         stream.play()?;
         std::thread::sleep(std::time::Duration::from_secs(duration_secs));
@@ -205,7 +278,7 @@ pub fn get_devices_json() -> Result<Vec<Value>> {
             json!({
                 "id": d.id,
                 "name": d.name,
-                "latency": d.latency_ms
+                "latency": d.latency_ms / 1000.0
             })
         })
         .collect();
@@ -220,5 +293,47 @@ mod tests {
         let resampled = crate::resample_linear(&input, 44100, 16000);
         assert!(!resampled.is_empty());
         assert!(resampled.len() < input.len());
+    }
+
+    #[test]
+    fn test_to_mono_downmix_estereo() {
+        let input = vec![1.0, 0.0, 0.5, 0.5, 0.0, 1.0];
+        let mono = crate::to_mono(&input, 2);
+        assert_eq!(mono, vec![0.5, 0.5, 0.5]);
+
+        let mono_directo = vec![0.1, 0.2, 0.3];
+        let resultado = crate::to_mono(&mono_directo, 1);
+        assert_eq!(resultado, mono_directo);
+    }
+
+    #[test]
+    fn test_f32_to_i16_escala_y_clamp() {
+        let input = vec![0.0, 0.5, -0.5, 1.5, -2.0];
+        let output = crate::f32_to_i16(&input);
+        assert_eq!(output[0], (0.0f32 * 32767.0) as i16);
+        assert_eq!(output[1], (0.5f32 * 32767.0) as i16);
+        assert_eq!(output[2], (-0.5f32 * 32767.0) as i16);
+        assert_eq!(output[3], 32767);
+        assert_eq!(output[4], -32767);
+    }
+
+    #[test]
+    fn test_round_trip_conversion_48k_estereo_a_16k_mono_i16() {
+        // Onda de rampa determinista intercalada en 2 canales @ 48kHz
+        let input: Vec<f32> = (0..300)
+            .map(|i| ((i % 100) as f32 / 100.0) * 2.0 - 1.0)
+            .collect();
+
+        let mono = crate::to_mono(&input, 2);
+        let resampled = crate::resample_linear(&mono, 48000, 16000);
+        let pcm = crate::f32_to_i16(&resampled);
+
+        let esperado = mono.len() / 3;
+        assert!(
+            (pcm.len() as i64 - esperado as i64).abs() <= 1,
+            "longitud inesperada: {} vs ~{}",
+            pcm.len(),
+            esperado
+        );
     }
 }
