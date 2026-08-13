@@ -1,7 +1,7 @@
 ﻿# Progreso de Migración — AI-Voice-InterConnector
 
 **Plan de referencia:** [`PLAN-DE-MIGRACIÓN.md`](./PLAN-DE-MIGRACIÓN.md)  
-**Última actualización:** 2026-08-12
+**Última actualización:** 2026-08-13
 
 ---
 
@@ -73,7 +73,7 @@ La infraestructura de almacenes y configuración está implementada. La superfic
 | Superficie CLI completa con `clap` (9 grupos de comandos) | ✅ | `src/main.rs` |
 | Taxonomía de errores → exit codes (`thiserror`) | ✅ | `src/exit_codes.rs` |
 | Emisor JSON único (`schema_version = "3"`) | ✅ | `src/json_emitter.rs`, `src/daemon.rs` |
-| Comandos sin inferencia nativos (`voice list/remove`, `speech list/play`, `devices`, `version`) | ✅ | `src/main.rs`, `src/audio.rs` |
+| Comandos sin inferencia nativos (`voice list/remove`, `speech list/play`, `devices`, `version`) | ✅ | `src/main.rs`, `crates/avi-audio/src/lib.rs` |
 
 ---
 
@@ -81,14 +81,16 @@ La infraestructura de almacenes y configuración está implementada. La superfic
 
 **Estado:** ✅ Completada
 
-`AudioService` unifica playback, captura y conversión en un único backend CPAL, eliminando la fragmentación por SO del stack Python.
+`AudioService` unifica playback, captura y conversión en un único backend CPAL, eliminando la fragmentación por SO del stack Python. Playback y enumeración se validaron de primera mano contra el oráculo Python (paridad exacta del contrato `devices`: mismos id/name/latency/schema_version). El playback y la captura ramifican por `SampleFormat` (F32/I16/U16). La cadena de conversión (`to_mono`/`resample_linear`/`f32_to_i16`) está cubierta por tests unitarios deterministas (4/4 en verde).
 
 | Ítem | Estado | Archivo |
 |------|--------|---------|
-| `AudioService::Playback` — reproducción WAV vía CPAL + hound | ✅ | `src/audio.rs` |
-| `AudioService::Capture` — captura micrófono vía CPAL (16kHz/mono/int16) | ✅ | `src/audio.rs` |
-| `AudioConverter` — conversión a mono, resample lineal, f32_to_i16 | ✅ | `src/audio.rs` |
-| Latencia real de dispositivos en `list_output_devices` | ✅ | `src/audio.rs` |
+| `AudioService::play_wav` — reproducción WAV vía CPAL + hound (F32/I16/U16) | ✅ | `crates/avi-audio/src/lib.rs` |
+| `AudioService::capture_16k_mono_pcm` — captura micrófono vía CPAL (16kHz/mono/int16) | ✅ | `crates/avi-audio/src/lib.rs` |
+| Helpers de conversión (`to_mono`, `resample_linear`, `f32_to_i16`) | ✅ | `crates/avi-audio/src/lib.rs` |
+| Enumeración de dispositivos de salida con latencia (`list_output_devices`) | ✅ | `crates/avi-audio/src/lib.rs` |
+
+> **Pendiente de reality-check (depende de Fase 3):** `capture_16k_mono_pcm` aún no está cableada a ningún comando CLI; la captura real de micrófono y la paridad de transcripción de WAVs capturados quedan por verificar de extremo a extremo una vez exista el STT nativo. La cadena de conversión pura ya está validada por tests.
 
 ---
 
