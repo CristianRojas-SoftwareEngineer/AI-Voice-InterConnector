@@ -39,7 +39,7 @@
 Ejecutada mediante la orquestación `fase0-desbloqueo`. El árbol Rust es hoy un **cargo workspace** (paquete
 raíz `ai-voice-interconnector` = binario CLI en `src/main.rs`, más ocho crates bajo `crates/`:
 `avi-core`, `avi-audio`, `avi-tts`, `avi-store`, `avi-config`, `avi-daemon`, `avi-stt`, `avi-translation`).
-`ct2rs` está cableado en `avi-stt` y compila CTranslate2 desde fuente (backend CPU `ruy`). La verificación
+`ct2rs` está cableado en `avi-stt` y compila CTranslate2 desde fuente (backend oneDNN + OpenMP). La verificación
 de terreno real (F5) dejó la suite del workspace en verde (18 tests) y ejercitó cada pieza externa contra
 pesos reales.
 
@@ -228,7 +228,7 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 | `tracing` / `tracing-subscriber` | Logging y diagnósticos estructurados |
 | `thiserror` / `anyhow` | Taxonomía de errores de dominio |
 | `clap` | Superficie CLI |
-| `ct2rs` | Bindings de CTranslate2 (STT/traducción, backend CPU `ruy`); compila desde fuente |
+| `ct2rs` | Bindings de CTranslate2 (STT/traducción, backend oneDNN + OpenMP); compila desde fuente |
 
 ---
 

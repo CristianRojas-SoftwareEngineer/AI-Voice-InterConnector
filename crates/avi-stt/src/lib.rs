@@ -6,7 +6,7 @@
 //! por construcción del tipo `ct2rs::Whisper`).
 
 use avi_core::engine::SttEngine;
-use ct2rs::{Config, Whisper};
+use ct2rs::{ComputeType, Config, Whisper};
 
 /// Motor STT real sobre un modelo Whisper cargado en formato CT2.
 pub struct Ct2SttEngine {
@@ -16,7 +16,18 @@ pub struct Ct2SttEngine {
 impl Ct2SttEngine {
     /// Carga el modelo Whisper CT2 ubicado en `model_dir`.
     pub fn new(model_dir: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
-        let whisper = Whisper::new(model_dir, Config::default())?;
+        let whisper = Whisper::new(
+            model_dir,
+            Config {
+                // Cuantización int8: espejo del oráculo Python (faster-whisper) y
+                // ~1.37x más rápido que fp32 en CPU (medido en benchmarks).
+                compute_type: ComputeType::INT8,
+                // 8 = núcleos físicos de la máquina de desarrollo; el default de
+                // CT2 (0) rendía ~4-8% menos en el workload medido.
+                num_threads_per_replica: 8,
+                ..Default::default()
+            },
+        )?;
         Ok(Self { whisper })
     }
 }
