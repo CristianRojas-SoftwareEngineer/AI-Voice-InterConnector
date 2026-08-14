@@ -61,13 +61,18 @@ impl AudioService {
             .default_output_device()
             .ok_or_else(|| anyhow!("No hay dispositivo de salida predeterminado"))?;
 
+        // El dispositivo puede no soportar la tasa del WAV (p. ej. 24 kHz del
+        // TTS); se remuestrea a la tasa nativa del dispositivo por defecto.
+        let dev_config = device.default_output_config()?;
+        let device_rate = dev_config.sample_rate().0;
+
         let config = StreamConfig {
             channels: spec.channels,
-            sample_rate: cpal::SampleRate(spec.sample_rate),
+            sample_rate: cpal::SampleRate(device_rate),
             buffer_size: cpal::BufferSize::Default,
         };
 
-        let samples: Vec<f32> = match spec.sample_format {
+        let mut samples: Vec<f32> = match spec.sample_format {
             hound::SampleFormat::Int => {
                 let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
                 reader
@@ -81,10 +86,14 @@ impl AudioService {
             }
         };
 
+        if spec.sample_rate != device_rate {
+            samples = resample_linear(&samples, spec.sample_rate, device_rate);
+        }
+
         let total_samples = samples.len();
         let sample_idx = Arc::new(Mutex::new(0usize));
 
-        let stream = match device.default_output_config()?.sample_format() {
+        let stream = match dev_config.sample_format() {
             SampleFormat::F32 => {
                 let idx_arc = sample_idx.clone();
                 device.build_output_stream(

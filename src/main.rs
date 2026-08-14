@@ -10,6 +10,7 @@ use avi_tts::{Qwen3TtsEngine, TtsEngine};
 use avi_translation as translation;
 use clap::{Parser, Subcommand};
 use serde_json::json;
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::process::exit;
 
@@ -125,8 +126,15 @@ enum VoiceCommands {
     Clone {
         #[arg(short, long)]
         name: String,
+        /// Audio de referencia de habla (obligatorio; paridad con el oráculo)
+        #[arg(short = 's', long)]
+        speech_reference: String,
+        /// Audio de referencia de timbre (opcional)
+        #[arg(short = 't', long)]
+        timbre_reference: Option<String>,
+        /// Sobrescribir una voz existente con el mismo nombre
         #[arg(short, long)]
-        audio: String,
+        force: bool,
     },
     /// Eliminar una voz clonada
     Remove {
@@ -154,7 +162,7 @@ enum SpeechCommands {
         #[arg(long, value_parser = ["es-latam", "en"])]
         source_language: String,
     },
-    /// Sintetizar texto a habla
+    /// Sintetizar texto a habla y persistir la locución
     Synthesize {
         #[arg(short, long)]
         text: String,
@@ -162,6 +170,12 @@ enum SpeechCommands {
         voice: String,
         #[arg(short, long)]
         output: Option<String>,
+        /// Etiqueta de la locución persistida (obligatorio; paridad con el oráculo)
+        #[arg(short, long)]
+        label: String,
+        /// Sobrescribir una locución existente con la misma etiqueta
+        #[arg(short, long)]
+        force: bool,
         #[arg(long)]
         play: bool,
     },
@@ -172,16 +186,23 @@ enum SpeechCommands {
         #[arg(short, long, default_value = "default")]
         voice: String,
     },
-    /// Doblaje voz→voz: transcribe, traduce, sintetiza
+    /// Doblaje voz→voz: transcribe, traduce, sintetiza y reproduce
     Dub {
-        #[arg(short, long)]
-        file: Option<String>,
+        /// Archivo de audio a doblar (alias del oráculo: --file)
+        #[arg(short = 'a', long, alias = "file")]
+        audio: Option<String>,
         #[arg(short, long, default_value = "default")]
         voice: String,
         #[arg(long, default_value = "es")]
         from: String,
         #[arg(long, default_value = "en")]
         to: String,
+        /// Capturar desde el micrófono (mutuamente excluyente con --audio)
+        #[arg(long, conflicts_with = "audio")]
+        mic: bool,
+        /// Duración fija de grabación en segundos; solo válido con --mic
+        #[arg(long)]
+        duration: Option<u64>,
     },
     /// Reproducir una locución guardada
     Play {
@@ -239,7 +260,11 @@ fn install_sigint_handler() {
 async fn main() {
     // Bootstrap: UTF-8, tracing, SIGINT
     force_utf8();
-    tracing_subscriber::fmt::init();
+    // Los logs van a stderr: stdout queda reservado para el contrato JSON
+    // (envelope schema_version="3"), igual que el oráculo Python.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
     install_sigint_handler();
 
     let cli = Cli::parse();
@@ -387,12 +412,83 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
             }
             Ok(())
         }
-        VoiceCommands::Clone { name: _, audio: _ } => {
-            Err(CliError::new(
-                ExitCode::ModelMissing,
-                "model_missing",
-                "El motor de clonado no está provisionado. Ejecuta 'setup' primero.",
-            ))
+        VoiceCommands::Clone {
+            name,
+            speech_reference,
+            timbre_reference,
+            force,
+        } => {
+            // Orden de validaciones del oráculo (cli.py:841-899).
+            require_model_provisioned()?;
+            let name = name.to_lowercase();
+            VoiceStore::validate_name(&name).map_err(|e| {
+                CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e)
+            })?;
+            let speech_path = std::path::Path::new(&speech_reference);
+            if !speech_path.is_file() {
+                return Err(CliError::new(
+                    ExitCode::NotFound,
+                    "audio_not_found",
+                    format!("El audio de referencia '{}' no existe.", speech_reference),
+                ));
+            }
+            if let Some(t) = &timbre_reference {
+                if !std::path::Path::new(t).is_file() {
+                    return Err(CliError::new(
+                        ExitCode::NotFound,
+                        "audio_not_found",
+                        format!("El audio de timbre '{}' no existe.", t),
+                    ));
+                }
+            }
+            if !force && voice_store.exists(&name) {
+                return Err(CliError::new(
+                    ExitCode::StateConflict,
+                    "voice_exists",
+                    format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name),
+                ));
+            }
+
+            let engine = Qwen3TtsEngine::new(None);
+            let model_dir = engine.model_dir.as_ref().ok_or_else(|| {
+                CliError::new(
+                    ExitCode::ModelMissing,
+                    "model_missing",
+                    "El modelo de clonado TTS no está provisionado. Ejecuta 'setup' primero.",
+                )
+            })?;
+            let tmp_qvoice = std::env::temp_dir().join(format!("{}.qvoice", name));
+            avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name, "es").map_err(|e| {
+                CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string())
+            })?;
+            let saved_qvoice = voice_store
+                .save_reference(&name, &tmp_qvoice)
+                .map_err(|e| CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()))?;
+            // Copias con los nombres del oráculo para compatibilidad de lecturas.
+            let speech_copy = voice_store.voice_dir(&name).join("speech-reference.wav");
+            std::fs::copy(speech_path, &speech_copy)
+                .map_err(|e| CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()))?;
+            let timbre_saved = match &timbre_reference {
+                Some(t) => {
+                    let dest = voice_store.voice_dir(&name).join("timbre-reference.wav");
+                    std::fs::copy(t, &dest).map_err(|e| {
+                        CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string())
+                    })?;
+                    Some(dest)
+                }
+                None => None,
+            };
+            if json_mode {
+                emit_raw_json(json!({
+                    "name": name,
+                    "timbre": timbre_saved.map(|p| p.to_string_lossy().to_string()),
+                    "speech": saved_qvoice.to_string_lossy().to_string(),
+                    "precomputed": false,
+                }));
+            } else {
+                println!("Voz '{}' clonada.", name);
+            }
+            Ok(())
         }
         VoiceCommands::Remove { name } => {
             VoiceStore::validate_name(&name).map_err(|e| {
@@ -511,50 +607,233 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             }
             Ok(())
         }
-        SpeechCommands::Synthesize { text, voice, output, play: _ } => {
+        SpeechCommands::Synthesize { text, voice, output, label, force, play } => {
+            // Orden de validaciones del oráculo (cli.py:659-667).
+            if text.trim().is_empty() {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "empty_text",
+                    "El texto a sintetizar está vacío",
+                ));
+            }
             require_model_provisioned()?;
+            let voice_store = VoiceStore::new();
+            if !voice_store.exists(&voice) {
+                return Err(CliError::new(
+                    ExitCode::NotFound,
+                    "voice_not_found",
+                    format!("La voz '{}' no existe.", voice),
+                ));
+            }
+            let label = label.to_lowercase();
+            es_identificador_valido(Some(&label), None)?;
+            let speech_store = SpeechStore::new();
+            if !force && speech_store.find(&voice, &label).is_some() {
+                return Err(CliError::new(
+                    ExitCode::StateConflict,
+                    "label_exists",
+                    format!("Ya existe una locución con la etiqueta '{}' (usa --force).", label),
+                ));
+            }
+
+            let tmp_wav = std::env::temp_dir().join(format!("avi_tts_{}.wav", label));
             let engine = Qwen3TtsEngine::new(None);
-            let path_buf = output.map(std::path::PathBuf::from);
-            let res = engine.synthesize(&text, &voice, path_buf.as_ref()).map_err(|e| {
+            engine.synthesize(&text, &voice, Some(&tmp_wav)).map_err(|e| {
                 CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
             })?;
+            if play {
+                audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "playback_failed",
+                        format!("Fallo al reproducir la locución '{}': {}", label, e),
+                    )
+                })?;
+            }
+            let saved = speech_store
+                .save(&voice, &label, &text, &tmp_wav)
+                .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
+            if let Some(out) = &output {
+                std::fs::copy(&saved, out).map_err(|e| {
+                    CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
+                })?;
+            }
             if json_mode {
                 emit_raw_json(json!({
                     "status": "success",
-                    "audio_path": res.to_string_lossy(),
+                    "audio_path": saved.to_string_lossy(),
                     "voice": voice,
                 }));
             } else {
-                println!("Síntesis completada: {}", res.display());
+                println!("Síntesis completada: {}", saved.display());
             }
             Ok(())
         }
         SpeechCommands::Say { text, voice } => {
+            if text.trim().is_empty() {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "empty_text",
+                    "El texto a sintetizar está vacío",
+                ));
+            }
             require_model_provisioned()?;
+            let voice_store = VoiceStore::new();
+            if !voice_store.exists(&voice) {
+                return Err(CliError::new(
+                    ExitCode::NotFound,
+                    "voice_not_found",
+                    format!("La voz '{}' no existe.", voice),
+                ));
+            }
+            let tmp_wav = std::env::temp_dir().join(format!("avi_say_{}.wav", std::process::id()));
             let engine = Qwen3TtsEngine::new(None);
-            let res = engine.synthesize(&text, &voice, None).map_err(|e| {
+            engine.synthesize(&text, &voice, Some(&tmp_wav)).map_err(|e| {
                 CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
+            })?;
+            // Divergencia 5 corregida: `say` reproduce de verdad.
+            audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
+                CliError::new(
+                    ExitCode::Error,
+                    "playback_failed",
+                    format!("Fallo al reproducir la locución: {}", e),
+                )
             })?;
             if json_mode {
                 emit_raw_json(json!({
                     "status": "reproduced",
-                    "audio_path": res.to_string_lossy(),
+                    "audio_path": tmp_wav.to_string_lossy(),
                     "voice": voice,
                 }));
             } else {
-                println!("Reproduciendo: {}", res.display());
+                println!("Reproduciendo: {}", tmp_wav.display());
             }
             Ok(())
         }
-        SpeechCommands::Dub { file: _, voice: _, from: _, to: _ } => {
+        SpeechCommands::Dub { audio, mic, duration, voice, from, to } => {
+            // Validaciones del oráculo (cli.py:562-624).
+            if duration.is_some() && !mic {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "usage_error",
+                    "--duration solo es válido con --mic.",
+                ));
+            }
+            if mic && duration.is_none() && std::io::stdin().is_terminal() {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "usage_error",
+                    "--mic requiere --duration en este host.",
+                ));
+            }
+            if let Some(a) = &audio {
+                if !std::path::Path::new(a).is_file() {
+                    return Err(CliError::new(
+                        ExitCode::NotFound,
+                        "audio_not_found",
+                        format!("El archivo de audio '{}' no existe.", a),
+                    ));
+                }
+            }
+            // Modelos ausentes → exit 4 antes de tocar audio (patrón main.rs:479-485).
+            if !std::path::Path::new(DEFAULT_WHISPER_MODEL_DIR).exists() {
+                return Err(CliError::new(
+                    ExitCode::ModelMissing,
+                    "model_missing",
+                    "El modelo de transcripción no está provisionado en 'models/ct2/whisper-small'.",
+                ));
+            }
             require_model_provisioned()?;
-            Err(CliError::new(
-                ExitCode::ModelMissing,
-                "model_missing",
-                "El motor de doblaje no está provisionado. Ejecuta 'setup' primero.",
-            ))
+
+            let pcm = if mic {
+                audio::AudioService::new()
+                    .capture_16k_mono_pcm(duration.expect("validado arriba"))
+                    .map_err(|e| {
+                        CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                    })?
+            } else {
+                avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
+                    CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                })?
+            };
+            let stt = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
+                CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+            })?;
+            let transcribed = stt
+                .transcribe(&pcm, Some(resolve_stt_language(&from)))
+                .map_err(|e| {
+                    CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                })?;
+            if transcribed.trim().is_empty() {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "empty_text",
+                    "El texto transcrito está vacío",
+                ));
+            }
+
+            // Traducción solo si from != to tras normalizar (passthrough si coinciden).
+            let source = resolve_stt_language(&from);
+            let target = resolve_stt_language(&to);
+            let final_text = if source == target {
+                transcribed.clone()
+            } else {
+                let model_dir = match (source, target) {
+                    ("es", "en") => DEFAULT_TRANSLATION_MODEL_ES_EN,
+                    ("en", "es") => DEFAULT_TRANSLATION_MODEL_EN_ES,
+                    _ => {
+                        return Err(CliError::new(
+                            ExitCode::InvalidInput,
+                            "unsupported_language_pair",
+                            format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source, target),
+                        ));
+                    }
+                };
+                if !std::path::Path::new(model_dir).exists() {
+                    return Err(CliError::new(
+                        ExitCode::ModelMissing,
+                        "model_missing",
+                        format!("El modelo de traducción no está provisionado en '{}'.", model_dir),
+                    ));
+                }
+                translation::translate(&transcribed, source, target, model_dir).map_err(|e| {
+                    CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
+                })?
+            };
+
+            let voice_store = VoiceStore::new();
+            if !voice_store.exists(&voice) {
+                return Err(CliError::new(
+                    ExitCode::NotFound,
+                    "voice_not_found",
+                    format!("La voz '{}' no existe.", voice),
+                ));
+            }
+            let tmp_wav = std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
+            let engine = Qwen3TtsEngine::new(None);
+            engine.synthesize(&final_text, &voice, Some(&tmp_wav)).map_err(|e| {
+                CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
+            })?;
+            audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
+                CliError::new(
+                    ExitCode::Error,
+                    "playback_failed",
+                    format!("Fallo al reproducir el doblaje: {}", e),
+                )
+            })?;
+            if json_mode {
+                emit_raw_json(json!({
+                    "status": "dubbed",
+                    "text": final_text,
+                    "audio_path": tmp_wav.to_string_lossy(),
+                }));
+            } else {
+                println!("Doblaje reproducido: {}", tmp_wav.display());
+            }
+            Ok(())
         }
         SpeechCommands::Play { label, voice } => {
+            es_identificador_valido(Some(&voice), Some(&label))?;
             match speech_store.find(&voice, &label) {
                 Some(entry) => {
                     audio::AudioService::new().play_wav(&entry.audio_path).map_err(|e| {
@@ -579,6 +858,7 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             }
         }
         SpeechCommands::Remove { label, voice } => {
+            es_identificador_valido(Some(&voice), Some(&label))?;
             speech_store.remove(&voice, &label).map_err(|e| {
                 CliError::new(ExitCode::NotFound, "speech_not_found", e)
             })?;
@@ -746,6 +1026,25 @@ fn require_model_provisioned() -> Result<(), CliError> {
             "model_missing",
             "El modelo de síntesis TTS no está provisionado. Ejecuta 'setup' primero.",
         ));
+    }
+    Ok(())
+}
+
+/// Valida identificadores de voz/etiqueta contra el regex del oráculo
+/// (`^[A-Za-z0-9._-]+$`; paridad, divergencia 3 de F1) → exit 2.
+fn es_identificador_valido(ids: Option<&str>, mas: Option<&str>) -> Result<(), CliError> {
+    for id in ids.into_iter().chain(mas) {
+        if id.is_empty()
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        {
+            return Err(CliError::new(
+                ExitCode::InvalidInput,
+                "invalid_identifier",
+                format!("Identificador inválido: '{}'.", id),
+            ));
+        }
     }
     Ok(())
 }

@@ -25,5 +25,9 @@ avi-translation = { path = "crates/avi-translation" }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_System_Console"] }
 
+[dev-dependencies]
+hound = "3"
+avi-stt = { path = "crates/avi-stt" }
+
 [patch.crates-io]
 cmake = { path = "vendor/cmake-0.1.58" }

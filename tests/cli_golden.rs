@@ -170,3 +170,459 @@ fn translate_par_no_soportado_sale_con_codigo_2() {
     assert_eq!(actual["schema_version"], Value::String("3".to_string()));
     assert_eq!(actual["reason"], Value::String("unsupported_language_pair".to_string()));
 }
+
+// ─── Golden TTS (Fase 5, Tarea 11) ───────────────────────────────────
+
+mod tts {
+    use super::*;
+    use avi_core::engine::SttEngine;
+    use std::path::Path;
+    use std::sync::{Mutex, Once};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Ruta del binario del motor Qwen3-TTS (override o vendored).
+    fn tts_binario() -> Option<PathBuf> {
+        if let Ok(b) = std::env::var("QWEN3_TTS_BIN") {
+            let p = PathBuf::from(b);
+            if !p.as_os_str().is_empty() {
+                return Some(p);
+            }
+        }
+        let vendored = PathBuf::from("vendor/qwen3-tts/qwen_tts.exe");
+        if vendored.is_file() {
+            return Some(vendored);
+        }
+        None
+    }
+
+    /// Pesos del modelo Qwen3-TTS 0.6B presentes.
+    fn tts_pesos() -> bool {
+        Path::new("vendor/qwen3-tts/qwen3-tts-0.6b").is_dir()
+    }
+
+    /// Registra el modelo TTS en el `ModelStore` vía `setup` (idempotente) y
+    /// devuelve si quedó provisionado. Los casos de error 3/6 dependen solo de
+    /// este registro, no de los pesos (Tarea 11.4: siempre verdes).
+    fn tts_modelo_registrado() -> bool {
+        static ONCE: Once = Once::new();
+        static OK: Mutex<Option<bool>> = Mutex::new(None);
+        ONCE.call_once(|| {
+            let out = Command::new(BIN).args(["setup"]).output();
+            let ok = match out {
+                Ok(o) => o.status.success(),
+                Err(_) => false,
+            };
+            *OK.lock().unwrap() = Some(ok);
+        });
+        *OK.lock().unwrap() == Some(true)
+    }
+
+    /// Provisto = modelo registrado + binario + pesos.
+    fn tts_provisioned() -> bool {
+        tts_modelo_registrado() && tts_binario().is_some() && tts_pesos()
+    }
+
+    /// El clonado de voz exige el modelo Base del motor (graft ICL); el modelo
+    /// vendored es CustomVoice (`config.json: "tts_model_type"`), por lo que los
+    /// casos que requieren clonado real se saltan con aviso (pendiente F6/F7).
+    fn tts_clone_provisioned() -> bool {
+        if !tts_provisioned() {
+            return false;
+        }
+        let config = Path::new("vendor/qwen3-tts/qwen3-tts-0.6b/config.json");
+        match std::fs::read_to_string(config) {
+            Ok(c) => c.contains("\"tts_model_type\": \"base\""),
+            Err(_) => false,
+        }
+    }
+
+    /// Mutex global para serializar los tests TTS pesados (el motor residente
+    /// ocupa el puerto 8766 y cada corrida consume ~2.7 GB de RAM). Un fallo de
+    /// un test no debe envenenar el lock de los demás.
+    static TTS_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_tts() -> std::sync::MutexGuard<'static, ()> {
+        TTS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Etiqueta/voz única por corrida (el oráculo normaliza a minúsculas).
+    fn etiqueta_unica(prefix: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("reloj del sistema")
+            .as_nanos();
+        format!("{}{}_{}", prefix, nanos, std::process::id())
+    }
+
+    /// El WAV producido debe ser PCM s16le mono 24 kHz con muestras (spec del motor).
+    fn wav_valido_24k(path: &Path) {
+        let reader = hound::WavReader::open(path)
+            .unwrap_or_else(|e| panic!("WAV ilegible en {}: {}", path.display(), e));
+        let spec = reader.spec();
+        assert_eq!(spec.sample_rate, 24_000, "muestreo del motor: 24 kHz");
+        assert_eq!(spec.channels, 1, "mono");
+        assert_eq!(spec.bits_per_sample, 16, "16-bit PCM");
+        assert!(reader.duration() > 0, "no puede estar vacío");
+    }
+
+    /// WER (por palabras normalizadas, Levenshtein) del WAV frente al texto
+    /// fuente, vía Whisper CT2 (patrón de `crates/avi-translation/src/lib.rs:313-334`).
+    fn wer_vs_texto(path: &Path, texto: &str) -> f64 {
+        let pcm = avi_audio::load_wav_16k_mono_pcm(path.to_string_lossy().as_ref())
+            .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
+        let engine = avi_stt::Ct2SttEngine::new("models/ct2/whisper-small")
+            .expect("el modelo Whisper CT2 debe existir");
+        let transcrito = engine
+            .transcribe(&pcm, Some("es"))
+            .expect("la transcripción no debe fallar");
+        let a = normalizar(&transcrito);
+        let b = normalizar(texto);
+        if b.is_empty() {
+            return 1.0;
+        }
+        let d = levenshtein(&a, &b);
+        d as f64 / b.len() as f64
+    }
+
+    /// Palabras minúsculas alfabéticas (señal de habla limpia).
+    fn normalizar(s: &str) -> Vec<String> {
+        s.split_whitespace()
+            .map(|w| {
+                w.chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_lowercase()
+            })
+            .filter(|w| !w.is_empty())
+            .collect()
+    }
+
+    /// Distancia de Levenshtein entre secuencias de palabras.
+    fn levenshtein(a: &[String], b: &[String]) -> usize {
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for (i, x) in a.iter().enumerate() {
+            let mut cur = vec![i + 1; b.len() + 1];
+            for (j, y) in b.iter().enumerate() {
+                cur[j + 1] = if x == y {
+                    prev[j]
+                } else {
+                    1 + prev[j].min(cur[j]).min(prev[j + 1])
+                };
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+
+    fn hay_dispositivo_audio() -> bool {
+        match avi_audio::get_devices_json() {
+            Ok(devs) => !devs.is_empty(),
+            Err(_) => false,
+        }
+    }
+
+    // ─── synthesize ─────────────────────────────────────────────────────
+
+    /// Éxito con `--label`: exit 0, WAV persistido en `speech/`, envelope y
+    /// WER ≤ 0.25 frente al texto fuente.
+    #[test]
+    fn synthesize_exito_con_label() {
+        if !tts_provisioned() {
+            eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
+            return;
+        }
+        let _guard = lock_tts();
+        let label = etiqueta_unica("golden");
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "synthesize",
+            "--text",
+            "Hola, este es un mensaje de prueba para la verificacion.",
+            "--voice",
+            "default",
+            "--label",
+            &label,
+        ]);
+        assert_eq!(code, 0);
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["status"], Value::String("success".to_string()));
+        let audio = actual["audio_path"].as_str().expect("audio_path debe existir");
+        let audio_path = Path::new(audio);
+        assert!(audio_path.is_file(), "el WAV debe estar persistido en el almacén");
+        wav_valido_24k(audio_path);
+        let wer = wer_vs_texto(audio_path, "Hola, este es un mensaje de prueba para la verificacion.");
+        assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
+        let _ = avi_store::SpeechStore::new().remove("default", &label);
+    }
+
+    #[test]
+    fn synthesize_texto_vacio_sale_con_2() {
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "synthesize",
+            "--text",
+            "",
+            "--label",
+            "x",
+        ]);
+        assert_eq!(code, 2, "texto vacío → ExitCode::InvalidInput");
+        assert_eq!(actual["reason"], Value::String("empty_text".to_string()));
+    }
+
+    #[test]
+    fn synthesize_voz_inexistente_sale_con_3() {
+        if !tts_modelo_registrado() {
+            eprintln!("[tts] skip: sin ModelStore escribible");
+            return;
+        }
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "synthesize",
+            "--text",
+            "Hola",
+            "--voice",
+            "voz_inexistente_xyz",
+            "--label",
+            "x",
+        ]);
+        assert_eq!(code, 3, "voz inexistente → ExitCode::NotFound");
+        assert_eq!(actual["reason"], Value::String("voice_not_found".to_string()));
+    }
+
+    /// Colisión de `--label` sin `--force` → 6. El almacén se fabrica con un
+    /// sidecar + WAV mínimo (sin síntesis real).
+    #[test]
+    fn synthesize_colision_label_sale_con_6() {
+        if !tts_modelo_registrado() {
+            eprintln!("[tts] skip: sin ModelStore escribible");
+            return;
+        }
+        let label = etiqueta_unica("colision");
+        let wav_min = {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 24_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            {
+                let mut w = hound::WavWriter::new(&mut cursor, spec).unwrap();
+                w.write_sample(0i16).unwrap();
+                w.finalize().unwrap();
+            }
+            cursor.into_inner()
+        };
+        let src = std::env::temp_dir().join(format!("{}_min.wav", label));
+        std::fs::write(&src, &wav_min).unwrap();
+        let store = avi_store::SpeechStore::new();
+        store
+            .save("default", &label, "fabricado", &src)
+            .expect("el sidecar fabricado debe guardarse");
+        let _ = std::fs::remove_file(&src);
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "synthesize",
+            "--text",
+            "Hola",
+            "--label",
+            &label,
+        ]);
+        assert_eq!(code, 6, "colisión de etiqueta → ExitCode::StateConflict");
+        assert_eq!(actual["reason"], Value::String("label_exists".to_string()));
+        let _ = store.remove("default", &label);
+    }
+
+    // ─── say ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn say_exito_reproduce() {
+        if !tts_provisioned() {
+            eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
+            return;
+        }
+        if !hay_dispositivo_audio() {
+            eprintln!("[tts] skip: sin dispositivo de salida de audio");
+            return;
+        }
+        let _guard = lock_tts();
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "say",
+            "--text",
+            "Hola, esto es una prueba de reproduccion.",
+            "--voice",
+            "default",
+        ]);
+        assert_eq!(code, 0);
+        assert_eq!(actual["status"], Value::String("reproduced".to_string()));
+        let audio = actual["audio_path"].as_str().expect("audio_path debe existir");
+        let audio_path = Path::new(audio);
+        wav_valido_24k(audio_path);
+        let wer = wer_vs_texto(audio_path, "Hola, esto es una prueba de reproduccion.");
+        assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
+    }
+
+    #[test]
+    fn say_texto_vacio_sale_con_2() {
+        let (code, actual) = run_json(&["--json", "speech", "say", "--text", ""]);
+        assert_eq!(code, 2, "texto vacío → ExitCode::InvalidInput");
+        assert_eq!(actual["reason"], Value::String("empty_text".to_string()));
+    }
+
+    // ─── dub ───────────────────────────────────────────────────────────
+
+    /// Passthrough es→es con `--audio`: exit 0, WAV válido y WER ≤ 0.25 frente
+    /// al texto transcrito (el pipeline devuelve `text`).
+    #[test]
+    fn dub_audio_passthrough_es_es() {
+        if !tts_provisioned() {
+            eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
+            return;
+        }
+        if !Path::new("models/ct2/whisper-small").is_dir() {
+            eprintln!("[tts] skip: sin modelo Whisper CT2");
+            return;
+        }
+        if !hay_dispositivo_audio() {
+            eprintln!("[tts] skip: sin dispositivo de salida de audio");
+            return;
+        }
+        let _guard = lock_tts();
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "dub",
+            "--audio",
+            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "--from",
+            "es",
+            "--to",
+            "es",
+        ]);
+        assert_eq!(code, 0);
+        assert_eq!(actual["status"], Value::String("dubbed".to_string()));
+        let audio = actual["audio_path"].as_str().expect("audio_path debe existir");
+        let audio_path = Path::new(audio);
+        wav_valido_24k(audio_path);
+        let texto = actual["text"].as_str().expect("text debe existir");
+        let wer = wer_vs_texto(audio_path, texto);
+        assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
+    }
+
+    #[test]
+    fn dub_archivo_inexistente_sale_con_3() {
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "dub",
+            "--audio",
+            "no-existe.wav",
+        ]);
+        assert_eq!(code, 3, "archivo inexistente → ExitCode::NotFound");
+        assert_eq!(actual["reason"], Value::String("audio_not_found".to_string()));
+    }
+
+    // ─── voice clone ───────────────────────────────────────────────────
+
+    #[test]
+    fn voice_clone_exito() {
+        if !tts_clone_provisioned() {
+            eprintln!(
+                "[tts] skip: el clonado exige el modelo Base del motor Qwen3-TTS \
+                 (el vendored es CustomVoice); pendiente de F6/F7"
+            );
+            return;
+        }
+        let _guard = lock_tts();
+        let name = etiqueta_unica("clon");
+        let (code, actual) = run_json(&[
+            "--json",
+            "voice",
+            "clone",
+            "--name",
+            &name,
+            "--speech-reference",
+            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+        ]);
+        assert_eq!(code, 0);
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["name"], Value::String(name.clone()));
+        assert_eq!(actual["precomputed"], Value::Bool(false));
+        let speech = actual["speech"].as_str().expect("speech debe existir");
+        let qvoice = Path::new(speech);
+        assert!(qvoice.is_file(), "reference.qvoice debe existir");
+        let size = std::fs::metadata(qvoice).expect("metadata").len();
+        assert!(size > 1_000_000, "el .qvoice debe pesar > 1 MB (era {})", size);
+        let _ = avi_store::VoiceStore::new().remove(&name);
+    }
+
+    /// Clonado repetido → 6. La voz existente se fabrica con un `.qvoice` mínimo.
+    #[test]
+    fn voice_clone_repetido_sale_con_6() {
+        if !tts_modelo_registrado() {
+            eprintln!("[tts] skip: sin ModelStore escribible");
+            return;
+        }
+        let name = etiqueta_unica("clon");
+        let voices = avi_store::VoiceStore::new();
+        let dir = voices.voice_dir(&name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("reference.qvoice"), b"QVCE").unwrap();
+        let (code, actual) = run_json(&[
+            "--json",
+            "voice",
+            "clone",
+            "--name",
+            &name,
+            "--speech-reference",
+            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+        ]);
+        assert_eq!(code, 6, "voz existente → ExitCode::StateConflict");
+        assert_eq!(actual["reason"], Value::String("voice_exists".to_string()));
+        let _ = voices.remove(&name);
+    }
+
+    #[test]
+    fn voice_clone_nombre_invalido_sale_con_2() {
+        if !tts_modelo_registrado() {
+            eprintln!("[tts] skip: sin ModelStore escribible");
+            return;
+        }
+        let (code, actual) = run_json(&[
+            "--json",
+            "voice",
+            "clone",
+            "--name",
+            "voz invalida",
+            "--speech-reference",
+            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+        ]);
+        assert_eq!(code, 2, "nombre inválido → ExitCode::InvalidInput");
+        assert_eq!(actual["reason"], Value::String("invalid_voice_name".to_string()));
+    }
+
+    #[test]
+    fn voice_clone_audio_inexistente_sale_con_3() {
+        if !tts_modelo_registrado() {
+            eprintln!("[tts] skip: sin ModelStore escribible");
+            return;
+        }
+        let (code, actual) = run_json(&[
+            "--json",
+            "voice",
+            "clone",
+            "--name",
+            "clon_ok",
+            "--speech-reference",
+            "no-existe.wav",
+        ]);
+        assert_eq!(code, 3, "audio inexistente → ExitCode::NotFound");
+        assert_eq!(actual["reason"], Value::String("audio_not_found".to_string()));
+    }
+}

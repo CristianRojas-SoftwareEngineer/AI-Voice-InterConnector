@@ -22,7 +22,7 @@ Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **espa
 ## Uso ético y responsable
 
 AI Voice InterConnector clona voces arbitrarias y **el audio que genera no lleva marca de
-agua** (el watermark de PerthNet está desactivado), por lo que no es distinguible
+agua** (el motor de síntesis Qwen3-TTS no incorpora watermarker), por lo que no es distinguible
 por medios técnicos de una grabación real. Esto exige un uso responsable:
 
 - **Consentimiento**: clona únicamente voces para las que tengas permiso explícito

@@ -907,6 +907,17 @@ static int apply_expr_file(qwen_tts_ctx_t *ctx, const char *path, float expr_wei
 }
 
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+    /* Inicializa winsock antes de cualquier llamada socket()/bind() del servidor.
+     * El shim MinGW ya inyecta <winsock2.h> (via -include unistd.h), asi que no se
+     * anade include aqui. Sin WSAStartup la primera llamada winsock devuelve
+     * WSANOTINITIALISED (10093) y el servidor aborta con "socket: No such file". */
+    WSADATA wsadata;
+    int ws_res = WSAStartup(MAKEWORD(2, 2), &wsadata);
+    if (ws_res != 0 && ws_res != WSAEALREADY) {
+        fprintf(stderr, "WSAStartup failed: %d (continuing)\n", ws_res);
+    }
+#endif
     const char *model_dir = NULL;
     const char *text = NULL;
     const char *output = "output.wav";

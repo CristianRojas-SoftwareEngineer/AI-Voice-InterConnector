@@ -354,7 +354,8 @@ claro a simplificación.
   pipeline completo. Modelo base: `Qwen/Qwen3-TTS-12Hz-0.6B-Base`.
 - **GPU:** el motor incorpora backends **Metal y CUDA** (opt-in, `make metal` / `make cuda`);
   salir de PyTorch **no** implica quedarse solo en CPU. El objetivo CPU sigue siendo el caso
-  base (donde Qwen ya domina el benchmark); cada ruta GPU se valida en la Fase 5.
+  base (donde Qwen ya domina el benchmark); cada ruta GPU queda pendiente de validación (la Fase 5
+  cubrió solo el caso base CPU).
 - **Integración: subprocess.** El `Makefile` del upstream **no produce ninguna librería
   propia** (`.so`/`.dll`/`.a`): todos los targets compilan ejecutables. Al no existir
   `libqwen`, FFI exigiría mantener aguas arriba un target de librería y una API C. En cambio
@@ -590,9 +591,17 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
   de Qwen (reference audio, ICL/x-vector, temperature, top-k/p, seed, rate); motor residente
   + warmup; **migrar el clonado** (timbre → `.qvoice`); portar el bypass de watermark y su
   documentación ética. En Windows usa el build nativo MinGW-w64/UCRT64 del motor (§2.4).
-- **Verificar:** la calidad de las locuciones se sostiene con la integración real; RTF/RAM en el rango
-  del benchmark; `speech say/synthesize/dub` cumplen contrato (exit codes, JSON, streaming de
-  progreso); el almacén de voces migra o coexiste.
+- **Verificar (⚠️ pendiente de calidad — Fase 5 NO cerrada, gate F7 falló):** `speech synthesize/say/dub` integrados contra el motor real por
+  **servidor residente** (`127.0.0.1:8766`, `--int8`, healthcheck y shutdown limpio; fallback
+  subprocess `--stdout`), con golden TTS de inferencia real en el harness dorado (suite
+  `cargo test --all` 80/80). El parche A1 (`WSAStartup`, enmienda de la orquestación de la Fase 5)
+  arregló `--serve` en Windows. RTF real en este equipo: ~3 con 1 hilo (benchmark de referencia
+  1.31-1.73, otra máquina). Watermark verificado ausente y documentado. **Clonado parcial:**
+  implementado con contrato `{name, timbre, speech, precomputed}` (`precomputed: false`) y
+  validaciones exit 2/3/6, pero la **inferencia queda pendiente de pesos Base** (`--ref-audio`
+  exige Base, `main.c:1848-1854`; el runtime solo tiene 0.6B CustomVoice). Almacén: layout Rust
+  `speech/` conservado por decisión de gate (e6) — los datos no son intercambiables con el
+  `synthetic-speech/` del oráculo (divergencia documentada en el contrato CLI).
 - **Rollback:** conservar Chatterbox tras worker Python como motor alternativo hasta estabilizar.
 
 ### Fase 6 — Daemon (Axum) + streaming + warmup
@@ -633,7 +642,8 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
   transición.
 - **GPU (resuelto en lo esencial).** Salir de PyTorch no implica perder GPU: el motor C de
   Qwen ya trae backends **Metal y CUDA**, y `ct2rs` expone la feature `cuda`. Queda como
-  trabajo de integración validar cada ruta en Fase 5; el objetivo CPU sigue siendo el caso
+  trabajo de integración validar cada ruta (la Fase 5 cubrió solo el caso base CPU); el objetivo
+  CPU sigue siendo el caso
   base (donde Qwen ya domina el benchmark).
 - **Coexistencia.** Preservar el layout en disco permite corridas mixtas Python/Rust por
   fase, imprescindible para el rollback por componente.

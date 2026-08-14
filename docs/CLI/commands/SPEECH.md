@@ -129,7 +129,9 @@ La traducción NO es una etapa separada en `cmd_speech_dub`. Está incrustada en
 - `tts.s3gen.inference` → inyecta `n_cfm_timesteps=4` (vs default 10), mide timing S3Gen
 - `tts.tqdm` → wrapper con throttling (~10 eventos/s, cada 10 tokens) para progress callback
 
-**Watermark (PerthNet):** deshabilitado completamente — `tts.watermarker.apply_watermark` reemplazado por noop.
+**Watermark (PerthNet):** el motor Qwen3-TTS no incorpora watermarker (verificado por búsqueda
+`watermark|perthnet|perth` en `vendor/qwen3-tts/`; sin coincidencias más allá de identificadores
+de API CUDA/Metal). El audio sintetizado no es distinguible por medios técnicos de una grabación real.
 
 ### Etapa 5: Reproducción
 

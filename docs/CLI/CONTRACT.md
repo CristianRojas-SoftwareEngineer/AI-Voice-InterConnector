@@ -345,6 +345,13 @@ La única interacción entre `--json` y el comportamiento es la regla 2: `--json
 
 `data_root()/synthetic-speech/<voz>/<etiqueta>.wav`, **raíz hermana de `voices/`**.
 
+**Divergencia de layout con el runtime nativo (Fase 5).** La ruta `synthetic-speech/` describe el
+runtime Python legado. El host Rust conserva su layout propio, `<data_dir>/speech/<voz>/<etiqueta>.wav`
+(decisión de gate e6: preservar `SpeechStore`), y su sidecar incluye `duration_secs`. Consecuencia
+declarada: **los datos de un runtime no son intercambiables con los del otro** — locuciones y sidecars
+escritos por uno no los lee el otro. La normalización de identificadores a minúsculas y la colisión
+exit 6 sí son comunes a ambos.
+
 **Por qué no anidado en `voices/<voz>/synthetic-speech/`**, que sería la opción intuitiva y ahorraría código de borrado: `default` es una voz de **fábrica**, en un directorio empaquetado de solo lectura. Sus locuciones tendrían que ir a un espejo en el registro de usuario: un directorio con `synthetic-speech/` pero sin `timbre-reference.wav` ni `speech-reference.wav`. Ese directorio sería invisible para `list_voices` e indeleble por `voice remove`, porque `_is_valid_voice_dir` es el guard que protege el `rmtree` y exige `speech-reference.wav`.
 
 Coste aceptado de la raíz separada: el arrastre de las locuciones al borrar una voz no es gratis y exige código explícito.

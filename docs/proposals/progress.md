@@ -14,7 +14,7 @@
 | Fase 2 | Audio (CPAL) | ✅ Completada |
 | Fase 3 | STT nativo (`ct2rs::Whisper`) | ✅ Completada |
 | Fase 4 | Traducción nativa (`ct2rs::Translator`) + segmentación | ✅ Completada |
-| Fase 5 | TTS nativo (Qwen3-TTS subprocess) | 🔶 Parcial |
+| Fase 5 | TTS nativo (Qwen3-TTS subprocess) | ⚠️ Implementada — calidad pendiente, NO cerrada |
 | Fase 6 | Daemon (Axum) + streaming + warmup | 🔶 Parcial |
 | Fase 7 | Empaquetado, cutover y retiro de Python | 🔶 Parcial |
 | Transversales | Tracing, UTF-8, SIGINT, despacho de modos | ✅ Completadas |
@@ -176,22 +176,39 @@ paridad intactas.
 
 ## Fase 5 — TTS nativo (Qwen3-TTS subprocess)
 
-**Estado:** 🔶 Parcial
+**Estado:** ⚠️ **NO cerrada** — implementada y verificada funcionalmente, pero el gate de calidad
+(F7) **falló**: el build Windows del motor produce audio degradado (no conserva el timbre, robótico)
+frente al stack validado del benchmark (WSL gcc 15.2.0). Investigación abierta:
+`docs/reviews/2026-08-14-tts-calidad-fase5.md`.
 
-El trait `TtsEngine` y los tipos `VoiceProfile`/`GenerationOptions` están definidos en `avi-tts`, con la
-estructura de IPC ya implementada (fallback subprocess + cliente HTTP local). Pendientes: la integración
-real contra los weights de inferencia, los tipos `ProsodyOptions`/`EmotionOptions` de la API de dominio,
-la migración del clonado de voz y el port del bypass de watermark.
+`speech synthesize`, `say` y `dub` están integrados contra el motor Qwen3-TTS real por **servidor
+residente gestionado por el host** (`127.0.0.1:8766`, cuantización `--int8`, healthcheck y shutdown
+limpio; fallback subprocess `--stdout`), con `GenerationOptions`/`ProsodyOptions`/`EmotionOptions`
+cableados a la semántica del motor, `--label` obligatorio con persistencia en el almacén y colisión
+exit 6, `--play`/`say` reproduciendo de verdad (remuestreo al sample rate nativo del dispositivo en
+`avi-audio`) y `voice clone` completo con el contrato JSON del oráculo `{name, timbre, speech,
+precomputed}` (`precomputed: false`). El parche A1 (`WSAStartup` en `vendor/qwen3-tts/main.c`)
+arregló `--serve` en Windows y el motor se recompiló con la cadena UCRT64. RTF real medido en este
+equipo: **~3 con 1 hilo** (`--int8`), carga del modelo ~0.9 s. Watermark verificado ausente en el
+motor y documentado en `README.md` y `docs/CLI/commands/SPEECH.md`. Suite `cargo test --all` 80/80
+en verde, con golden de `synthesize/say/dub` usando inferencia real.
+
+**Limitación declarada:** el runtime solo tiene el modelo `Qwen3-TTS-12Hz-0.6B-CustomVoice` y el
+motor aborta `--ref-audio` sin modelo Base (`vendor/qwen3-tts/main.c:1848-1854`); la **inferencia
+del clonado** queda pendiente de pesos Base. Las validaciones (exit 2/3/6) y el contrato JSON
+funcionan; los golden de clonado con inferencia se saltan con aviso.
 
 | Ítem | Estado | Archivo |
 |------|--------|---------|
-| `TtsEngine` trait y tipos públicos (`VoiceProfile`, `GenerationOptions`) | ✅ | `crates/avi-tts/src/lib.rs` |
-| Estructura e IPC: subprocess PCM por stdout con fallback a cliente HTTP local | ✅ | `crates/avi-tts/src/lib.rs` |
-| `ProsodyOptions` / `EmotionOptions` (opciones de prosodia/emoción de la API de dominio) | ⏳ | |
-| Integración real con subproceso de inferencia Qwen3-TTS (weights) | ⏳ | |
-| Build nativo Windows del motor (MinGW-w64/UCRT64, shims POSIX) | ✅ | `vendor/qwen3-tts/qwen_tts.exe` (validado en Fase 0: smoke real texto → WAV PCM 16-bit mono 24 kHz) |
-| Migrar clonado de voz (timbre → `.qvoice`) | ⏳ | |
-| Portar bypass de watermark y su documentación ética | ⏳ | |
+| Motor residente HTTP (`127.0.0.1:8766`, `--int8`, healthcheck, shutdown, fallback `--stdout`) | ✅ | `crates/avi-tts/src/lib.rs` |
+| `speech synthesize`/`say` con `--label` obligatorio, persistencia y colisión exit 6 | ✅ | `src/main.rs` |
+| `speech dub` con `--audio` (alias `--file`) y `--mic`/`--duration` | ✅ | `src/main.rs` |
+| `voice clone` con contrato JSON del oráculo y validaciones exit 2/3/6 | ✅ | `src/main.rs` |
+| `ProsodyOptions` / `EmotionOptions` + `GenerationOptions` con defaults del motor | ✅ | `crates/avi-tts/src/lib.rs` |
+| Parche A1: `WSAStartup` en `main.c` + recompilación UCRT64 (`--serve` en Windows) | ✅ | `vendor/qwen3-tts/main.c` |
+| Golden TTS (`synthesize/say/dub/voice clone`) en el harness dorado | ✅ | `tests/cli_golden.rs` |
+| Watermark: verificado ausente + documentación ética | ✅ | `README.md`, `docs/CLI/commands/SPEECH.md` |
+| Inferencia del clonado (`.qvoice` real) — requiere modelo Base del motor | ⏳ | `vendor/qwen3-tts/` (runtime: 0.6B CustomVoice) |
 
 ---
 
@@ -257,6 +274,6 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 
 ## Próximos pasos
 
-1. **Fase 5:** integración real del motor Qwen3-TTS contra weights; definir `ProsodyOptions`/`EmotionOptions`; migrar clonado de voz y portar bypass de watermark.
+1. **Fase 5:** resta solo la inferencia del clonado de voz, pendiente de pesos Base del motor Qwen3-TTS (validaciones y contrato ya funcionan).
 2. **Fase 6:** precarga + warmup al arranque y cablear el motor STT real en `/transcribe` (hoy stub).
 3. **Fase 7:** CI multi-SO y retiro del código Python.
