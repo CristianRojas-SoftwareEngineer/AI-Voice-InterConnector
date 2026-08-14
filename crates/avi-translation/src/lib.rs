@@ -7,7 +7,7 @@
 //! sin `sacremoses` ni `MarianTokenizer`.
 
 use avi_core::engine::{HierarchicalSegmenter, Segmenter, TranslationEngine};
-use ct2rs::{Config, Translator};
+use ct2rs::{ComputeType, Config, Translator};
 
 /// Motor de traducción real sobre un modelo Marian/opus-mt en formato CT2.
 pub struct Ct2TranslationEngine {
@@ -17,7 +17,14 @@ pub struct Ct2TranslationEngine {
 impl Ct2TranslationEngine {
     /// Carga el modelo CT2 ubicado en `model_dir`.
     pub fn new(model_dir: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
-        let translator = Translator::new(model_dir, &Config::default())?;
+        let translator = Translator::new(
+            model_dir,
+            &Config {
+                compute_type: ComputeType::INT8,
+                num_threads_per_replica: 8,
+                ..Default::default()
+            },
+        )?;
         Ok(Self { translator })
     }
 
