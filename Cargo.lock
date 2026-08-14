@@ -255,6 +255,7 @@ name = "avi-tts"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "avi-audio",
  "avi-store",
  "hound",
  "serde",

@@ -262,6 +262,32 @@ pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>> {
     Ok(f32_to_i16(&resampled))
 }
 
+/// Carga un WAV arbitrario y lo normaliza a PCM `i16` mono a 24 kHz, el formato
+/// que exige el clonado del motor Qwen3-TTS en `--ref-audio`. Simétrica a
+/// `load_wav_16k_mono_pcm` (que sirve a Whisper), pero a 24 kHz.
+pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>> {
+    let reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .into_samples::<i32>()
+                .filter_map(Result::ok)
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+        hound::SampleFormat::Float => {
+            reader.into_samples::<f32>().filter_map(Result::ok).collect()
+        }
+    };
+
+    let mono = to_mono(&samples, spec.channels as usize);
+    let resampled = resample_linear(&mono, spec.sample_rate, 24_000);
+    Ok(f32_to_i16(&resampled))
+}
+
 // ─── Helpers de AudioConverter ───────────────────────────────────────
 
 pub(crate) fn to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
@@ -381,6 +407,37 @@ mod tests {
         // 300 muestras estéreo -> 150 muestras mono @48kHz -> ~50 muestras @16kHz.
         assert!(!pcm.is_empty());
         assert!(pcm.len() < 150, "debe quedar remuestreado a una tasa menor");
+    }
+
+    #[test]
+    fn test_load_wav_24k_mono_pcm_sobremuestrea_referencia_16k() {
+        // WAV sintético en memoria: 16 kHz mono (el caso real de la referencia de
+        // clonado), para verificar que `load_wav_24k_mono_pcm` lo sube a 24 kHz.
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+        {
+            let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for i in 0..160 {
+                let sample = (((i % 100) as f32 / 100.0) * 2.0 - 1.0) * 32767.0;
+                writer.write_sample(sample as i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+
+        let tmp_path = std::env::temp_dir().join("avi_audio_test_load_wav_24k_mono_pcm.wav");
+        std::fs::write(&tmp_path, cursor.into_inner()).unwrap();
+
+        let pcm = crate::load_wav_24k_mono_pcm(&tmp_path).expect("debe cargar y normalizar el WAV");
+        std::fs::remove_file(&tmp_path).ok();
+
+        // 160 muestras mono @16kHz -> ~240 muestras @24kHz (factor 1.5).
+        assert!(!pcm.is_empty());
+        assert!(pcm.len() > 160, "debe quedar sobremuestreado a una tasa mayor");
     }
 
     #[test]

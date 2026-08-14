@@ -223,13 +223,14 @@ mod tts {
     }
 
     /// El clonado de voz exige el modelo Base del motor (graft ICL); el modelo
-    /// vendored es CustomVoice (`config.json: "tts_model_type"`), por lo que los
-    /// casos que requieren clonado real se saltan con aviso (pendiente F6/F7).
+    /// CustomVoice vendorizado (`qwen3-tts-0.6b/`) no sirve para clonado. El
+    /// modelo Base se provisiona en un directorio separado
+    /// (`qwen3-tts-0.6b-base/`, `config.json: "tts_model_type"`).
     fn tts_clone_provisioned() -> bool {
         if !tts_provisioned() {
             return false;
         }
-        let config = Path::new("vendor/qwen3-tts/qwen3-tts-0.6b/config.json");
+        let config = Path::new("vendor/qwen3-tts/qwen3-tts-0.6b-base/config.json");
         match std::fs::read_to_string(config) {
             Ok(c) => c.contains("\"tts_model_type\": \"base\""),
             Err(_) => false,
@@ -338,7 +339,7 @@ mod tts {
             "speech",
             "synthesize",
             "--text",
-            "Hola, este es un mensaje de prueba para la verificacion.",
+            "Hola, este es un mensaje de prueba para la verificación.",
             "--voice",
             "default",
             "--label",
@@ -351,7 +352,7 @@ mod tts {
         let audio_path = Path::new(audio);
         assert!(audio_path.is_file(), "el WAV debe estar persistido en el almacén");
         wav_valido_24k(audio_path);
-        let wer = wer_vs_texto(audio_path, "Hola, este es un mensaje de prueba para la verificacion.");
+        let wer = wer_vs_texto(audio_path, "Hola, este es un mensaje de prueba para la verificación.");
         assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
         let _ = avi_store::SpeechStore::new().remove("default", &label);
     }

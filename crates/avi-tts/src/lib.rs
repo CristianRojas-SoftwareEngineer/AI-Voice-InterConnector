@@ -51,6 +51,21 @@ impl Default for GenerationOptions {
     }
 }
 
+impl GenerationOptions {
+    /// Config de producción validada por oído contra el clip oficial (benchmark
+    /// WSL, F0): `temperature=0` (determinista) y `seed=42` fijo, resto de
+    /// campos igual a `Default`. No sustituye a `Default` (que debe seguir
+    /// coincidiendo con los defaults del motor) sino que es la superficie que
+    /// cablea la síntesis de producción (`Qwen3TtsEngine::synthesize`).
+    pub fn produccion() -> Self {
+        Self {
+            temperature: 0.0,
+            seed: Some(42),
+            ..Self::default()
+        }
+    }
+}
+
 /// Opciones de prosodia (ganancia y tempo), serializables al body HTTP.
 /// `EmotionOptions` es no-op en el modelo 0.6B: se serializa si se usa, sin
 /// prometer control emocional (restricción del plan de migración §2.4).
@@ -176,12 +191,41 @@ fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     None
 }
 
+/// Resolución del directorio del modelo Base por capas, deliberadamente
+/// separada de `resolve_model_dir`: solo la usa el clonado (`--ref-audio`),
+/// que exige el modelo Base (`vendor/qwen3-tts/main.c:1848`), distinto del
+/// CustomVoice usado por la síntesis general.
+/// 1. `QWEN3_TTS_BASE_MODEL_DIR`; 2. directorio hermano del binario
+/// (`<dir del bin>/qwen3-tts-0.6b-base`); 3. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b-base`.
+pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("QWEN3_TTS_BASE_MODEL_DIR") {
+        let p = PathBuf::from(d);
+        if !p.as_os_str().is_empty() {
+            return Some(p);
+        }
+    }
+    if let Some(b) = bin {
+        if let Some(parent) = b.parent() {
+            let hermano = parent.join("qwen3-tts-0.6b-base");
+            if hermano.is_dir() {
+                return Some(hermano);
+            }
+        }
+    }
+    let vendored = PathBuf::from("vendor/qwen3-tts/qwen3-tts-0.6b-base");
+    if vendored.is_dir() {
+        return Some(vendored);
+    }
+    None
+}
+
 /// Motor Qwen3-TTS con servidor HTTP residente gestionado por el host y
 /// fallback a subprocess con PCM por stdout.
 pub struct Qwen3TtsEngine {
     pub server_url: Option<String>,
     pub binary_path: Option<PathBuf>,
     pub model_dir: Option<PathBuf>,
+    pub base_model_dir: Option<PathBuf>,
     resident: Mutex<Option<ResidentState>>,
 }
 
@@ -196,10 +240,12 @@ impl Qwen3TtsEngine {
     pub fn new(server_url: Option<String>) -> Self {
         let binary_path = resolve_binary();
         let model_dir = resolve_model_dir(binary_path.as_deref());
+        let base_model_dir = resolve_base_model_dir(binary_path.as_deref());
         Self {
             server_url,
             binary_path,
             model_dir,
+            base_model_dir,
             resident: Mutex::new(None),
         }
     }
@@ -309,7 +355,7 @@ impl TtsEngine for Qwen3TtsEngine {
         voice: &str,
         output_path: Option<&PathBuf>,
     ) -> Result<PathBuf> {
-        let default_options = GenerationOptions::default();
+        let default_options = GenerationOptions::produccion();
         let qvoice_path = avi_store::VoiceStore::new().find_reference(voice);
         let profile = VoiceProfile {
             name: voice.to_string(),
@@ -340,8 +386,8 @@ impl TtsEngine for Qwen3TtsEngine {
                 if dest.is_file() {
                     Some(dest)
                 } else {
-                    let model_dir = self.model_dir.as_ref().ok_or_else(|| {
-                        anyhow!("El modelo de síntesis Qwen3-TTS no está provisionado.")
+                    let model_dir = self.base_model_dir.as_ref().ok_or_else(|| {
+                        anyhow!("El modelo Base de clonado Qwen3-TTS no está provisionado.")
                     })?;
                     clone_voice(model_dir, r, &dest, &profile.name, &options.language)?;
                     Some(dest)
@@ -364,7 +410,12 @@ impl TtsEngine for Qwen3TtsEngine {
             }
         }
 
-        // 2. Servidor residente gestionado por el host (decisión F0).
+        // 2. Servidor residente gestionado por el host (decisión F0). Este orden
+        //    (residente antes que subprocess) es OBLIGATORIO, no solo preferido:
+        //    el subprocess recibe el texto por argv y el `.exe` MinGW mal-tokeniza
+        //    UTF-8 acentuado en Windows, mientras que el residente lo transporta
+        //    por body HTTP JSON (ruta segura). Invertir el orden reintroduciría el
+        //    bug de calidad en español con tildes/eñes.
         match self.synthesize_via_residente(text, &voz, options, &path) {
             Ok(()) => return Ok(path),
             Err(e) => eprintln!(
@@ -409,6 +460,8 @@ pub(crate) fn build_synthesis_command(
             cmd.arg("--load-voice").arg(qvoice).arg("--icl-only");
         }
     }
+    cmd.arg("--int4");
+    cmd.arg("-j").arg("4");
     if options.temperature != DEFAULT_TEMPERATURE {
         cmd.arg("-T").arg(options.temperature.to_string());
     }
@@ -424,6 +477,7 @@ pub(crate) fn build_synthesis_command(
     if let Some(seed) = options.seed {
         cmd.arg("--seed").arg(seed.to_string());
     }
+    cmd.arg("--stream");
     cmd.arg("--stdout");
     cmd
 }
@@ -559,10 +613,40 @@ pub(crate) fn pcm_a_wav(pcm: &[u8], out_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Clona una voz desde `ref_audio` (WAV 24 kHz mono) a `out_qvoice`
+/// Normaliza `ref_audio` (WAV de cualquier tasa/canales) al formato que exige el
+/// clonado del motor —24 kHz / 16-bit / mono— escribiéndolo en un WAV temporal
+/// único y devolviendo su ruta. El motor rechaza referencias que no sean 24 kHz;
+/// el benchmark preprocesaba la referencia de la misma forma.
+fn referencia_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
+    let pcm = avi_audio::load_wav_24k_mono_pcm(ref_audio)?;
+    let unico = format!(
+        "avi_tts_ref24k_{}_{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let out_path = std::env::temp_dir().join(unico);
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 24_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(&out_path, spec)?;
+    for sample in &pcm {
+        writer.write_sample(*sample)?;
+    }
+    writer.finalize()?;
+    Ok(out_path)
+}
+
+/// Clona una voz desde `ref_audio` (WAV de cualquier tasa/canales) a `out_qvoice`
 /// (`.qvoice` graft ICL) vía subprocess: `<bin> -d <model_dir> --ref-audio
-/// <ref> --save-voice <out> --voice-name <name> -l <language>`. Propaga el
-/// error con el exit code del proceso.
+/// <ref> --save-voice <out> --voice-name <name> -l <language>`. La referencia se
+/// normaliza antes a 24 kHz mono (requisito del motor). Propaga el error con el
+/// exit code del proceso.
 pub fn clone_voice(
     model_dir: impl AsRef<Path>,
     ref_audio: &Path,
@@ -572,18 +656,21 @@ pub fn clone_voice(
 ) -> Result<()> {
     let bin = resolve_binary()
         .ok_or_else(|| anyhow!("El binario de clonado Qwen3-TTS no está provisionado."))?;
+    let ref_wav = referencia_24k_mono(ref_audio)?;
     let status = Command::new(&bin)
         .arg("-d")
         .arg(model_dir.as_ref())
         .arg("--ref-audio")
-        .arg(ref_audio)
+        .arg(&ref_wav)
         .arg("--save-voice")
         .arg(out_qvoice)
         .arg("--voice-name")
         .arg(name)
         .arg("-l")
         .arg(language)
-        .status()?;
+        .status();
+    let _ = std::fs::remove_file(&ref_wav);
+    let status = status?;
     if status.success() {
         Ok(())
     } else {
@@ -595,7 +682,7 @@ pub fn clone_voice(
 }
 
 /// Servidor residente del motor Qwen3-TTS (decisión e2): spawn perezoso con
-/// `--serve <puerto> --int8 [--load-voice <qvoice> --icl-only]`, healthcheck
+/// `--serve <puerto> --int4 -j 4 --stream [--load-voice <qvoice> --icl-only]`, healthcheck
 /// `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
 pub mod resident {
     use super::*;
@@ -615,6 +702,30 @@ pub mod resident {
         pub port: u16,
     }
 
+    /// Construye el `Command` de arranque del residente (Tareas 2 y 3), sin
+    /// I/O real: `-d <model_dir> --serve <port> --int4 -j 4 --stream
+    /// [--load-voice <qvoice> --icl-only]`.
+    pub(crate) fn build_resident_command(
+        bin: &Path,
+        model_dir: &Path,
+        port: u16,
+        load_voice: Option<&Path>,
+    ) -> Command {
+        let mut cmd = Command::new(bin);
+        cmd.arg("-d")
+            .arg(model_dir)
+            .arg("--serve")
+            .arg(port.to_string())
+            .arg("--int4")
+            .arg("-j")
+            .arg("4")
+            .arg("--stream");
+        if let Some(lv) = load_voice {
+            cmd.arg("--load-voice").arg(lv).arg("--icl-only");
+        }
+        cmd
+    }
+
     impl Qwen3TtsResident {
         /// Arranca el motor con `--serve` en `port` y espera a que `/v1/health`
         /// responda (hasta 60 × 500 ms). Con `load_voice` (voz clonada) añade
@@ -626,15 +737,7 @@ pub mod resident {
         ) -> Result<Self> {
             let bin = resolve_binary()
                 .ok_or_else(|| anyhow!("El binario Qwen3-TTS no está provisionado."))?;
-            let mut cmd = Command::new(&bin);
-            cmd.arg("-d")
-                .arg(model_dir.as_ref())
-                .arg("--serve")
-                .arg(port.to_string())
-                .arg("--int8");
-            if let Some(lv) = load_voice {
-                cmd.arg("--load-voice").arg(lv).arg("--icl-only");
-            }
+            let mut cmd = build_resident_command(&bin, model_dir.as_ref(), port, load_voice);
             cmd.stdout(Stdio::null()).stderr(Stdio::null());
             // Riesgo R2 documentado: el motor enlaza en INADDR_ANY, no en loopback.
             eprintln!(
@@ -784,7 +887,9 @@ mod tests {
     use std::time::Duration;
 
     /// T1: los defaults del host deben coincidir con los defaults del motor
-    /// (`docs/server.md:140-141`).
+    /// (`docs/server.md:140-141`). Afirma los defaults del `struct`/motor sin
+    /// cambios, no los valores de producción de `GenerationOptions::produccion()`
+    /// (Tarea 1) — este test queda intacto a propósito.
     #[test]
     fn default_generation_options_coinciden_con_motor() {
         let d = GenerationOptions::default();
@@ -794,6 +899,19 @@ mod tests {
         assert_eq!(d.rep_penalty, 1.05);
         assert_eq!(d.language, "es");
         assert_eq!(d.seed, None);
+    }
+
+    /// T1: `produccion()` fija temperatura y seed a la config validada por oído
+    /// (WSL, F0), sin alterar el resto de campos respecto a `Default`.
+    #[test]
+    fn generation_options_produccion_fija_temperatura_y_seed() {
+        let p = GenerationOptions::produccion();
+        assert_eq!(p.temperature, 0.0);
+        assert_eq!(p.seed, Some(42));
+        assert_eq!(p.top_k, DEFAULT_TOP_K);
+        assert_eq!(p.top_p, DEFAULT_TOP_P);
+        assert_eq!(p.rep_penalty, DEFAULT_REP_PENALTY);
+        assert_eq!(p.language, "es");
     }
 
     /// T2: args del subprocess para preset (con y sin overrides) y voz clonada.
@@ -820,6 +938,10 @@ mod tests {
                 "ryan",
                 "-l",
                 "es",
+                "--int4",
+                "-j",
+                "4",
+                "--stream",
                 "--stdout",
             ]
         );
@@ -842,7 +964,9 @@ mod tests {
             args,
             vec![
                 "-d", "md", "-t", "Hola", "-s", "ryan", "-l", "es",
-                "-T", "0.9", "-k", "20", "-p", "0.8", "-r", "1.2", "--seed", "42", "--stdout",
+                "--int4", "-j", "4",
+                "-T", "0.9", "-k", "20", "-p", "0.8", "-r", "1.2", "--seed", "42",
+                "--stream", "--stdout",
             ]
         );
     }
@@ -861,11 +985,52 @@ mod tests {
         let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(
             args,
-            vec!["-d", "md", "-t", "Hola", "--load-voice", "voz.qvoice", "--icl-only", "--stdout"]
+            vec![
+                "-d", "md", "-t", "Hola", "--load-voice", "voz.qvoice", "--icl-only",
+                "--int4", "-j", "4", "--stream", "--stdout",
+            ]
+        );
+    }
+
+    /// T6: argv exacto de arranque del residente (preset y voz clonada), sin
+    /// I/O real de proceso — cierra el hueco de cobertura señalado por F1.
+    #[test]
+    fn build_resident_command_incluye_int4_hilos_stream() {
+        let cmd = resident::build_resident_command(
+            Path::new("qwen_tts.exe"),
+            Path::new("vendor/qwen3-tts/qwen3-tts-0.6b"),
+            8766,
+            None,
+        );
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            args,
+            vec![
+                "-d", "vendor/qwen3-tts/qwen3-tts-0.6b", "--serve", "8766",
+                "--int4", "-j", "4", "--stream",
+            ]
+        );
+
+        let cmd = resident::build_resident_command(
+            Path::new("qwen_tts.exe"),
+            Path::new("md"),
+            8766,
+            Some(Path::new("voz.qvoice")),
+        );
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            args,
+            vec![
+                "-d", "md", "--serve", "8766", "--int4", "-j", "4", "--stream",
+                "--load-voice", "voz.qvoice", "--icl-only",
+            ]
         );
     }
 
     /// T3: body HTTP con defaults → claves exactas; voz clonada → sin speaker/language.
+    /// Afirma los defaults del `struct`/motor sin cambios, no los valores de
+    /// producción de `GenerationOptions::produccion()` (Tarea 1) — el body HTTP
+    /// no transporta `int4`/`-j`/`--stream` (son flags de arranque de proceso).
     #[test]
     fn construir_body_tts_defaults_y_voz_clonada() {
         let voz = VozMotor::Preset("ryan".to_string());
@@ -1003,7 +1168,10 @@ mod tests {
     }
 
     /// T7: el body del POST contra un servidor simulado transporta los defaults
-    /// del motor (e9) y sus overrides.
+    /// del motor (e9) y sus overrides. Afirma los defaults del `struct`/motor sin
+    /// cambios, no los valores de producción de `GenerationOptions::produccion()`
+    /// (Tarea 1) — este test invoca `synthesize_with_options` directamente con
+    /// `GenerationOptions::default()`, no `Qwen3TtsEngine::synthesize`.
     #[test]
     fn synthesize_http_envia_defaults_del_motor() {
         let body = Arc::new(Mutex::new(String::new()));

@@ -91,7 +91,10 @@ Todos los renders usan el texto corto del benchmark
 - `vendor/qwen3-tts/Makefile` — rama MinGW (líneas 56-77: shims, OpenBLAS estático, `-lws2_32`).
 - `vendor/qwen3-tts/third_party/ingot/mingw_shim/` — shims POSIX (socket/mmap/unistd).
 - `vendor/qwen3-tts/main.c:1848-1854` — `--ref-audio` exige modelo Base; el runtime Windows
-  **no tiene** el Base → `voice clone` e2e bloqueado en Windows.
+  **no tenía** el Base en el momento del gate F7 → `voice clone` e2e bloqueado en Windows. El Base
+  se provisionó posteriormente (`vendor/qwen3-tts/qwen3-tts-0.6b-base/`) y el driver normaliza la
+  referencia a 24 kHz mono antes de clonar, desbloqueando `voice clone` e2e y el golden
+  `voice_clone_exito` (véase `docs/proposals/progress.md`, Fase 5).
 - `target/` (gitignored): solo insumos de producción conservados — `bench.qvoice` (voz clonada
   validada del benchmark) y `ref24k.wav` (audio de referencia del clonado); los renders y clips
   del gate fueron eliminados (ver nota de conservación).
@@ -119,6 +122,22 @@ Todos los renders usan el texto corto del benchmark
 - Implementación cristalizada en el commit actual (código + parche A1 + docs + este reporte).
 - Pendiente: calidad de síntesis equivalente al stack del benchmark en el runtime Windows,
   y verificación e2e del clonado con el modelo Base provisionado.
+
+## Reconciliación con el fix posterior (2026-08-14)
+
+> **Acta histórica preservada:** este documento registra el veredicto del gate F7 y su diagństico
+> de build. El fix que siguió **no invalida** ese diagństico empírico (las renders A/B/C efectivamente
+> divergen entre builds, mel-corr 0.25-0.66), pero **lo replantea de causa**: la degradación que el
+> gate F7 oyó no era de build, era del **contrato de invocación del driver Rust**. El driver llamaba
+> al motor con `--int8` 1 hilo, `temperature 0.5`, voz preset y sin modelo Base —ninguna de las
+> condiciones del benchmark validado (`--int4 -j4 --temperature 0 --seed 42`, voz clonada, Base).
+>
+> Al alinear el driver a ese contrato (ver `F3-plan-refinado.md`), la inferencia reproduce la calidad
+> aprobada por oído y el WER de los golden vuelve verde —sin recompilar el motor—, demostrando que la
+> causa de la degradación escuchada era invocación/voz/muestreo, no divergencia numérica entre builds.
+> La comparación **bit-a-bit / mel-corr (≥ 0.98) Windows-vs-WSL** sigue abierta como eje de
+> investigación (H1-H3): el fix no midió paridad de redondeo entre builds, y no impide que coexistan
+> ambas hipótesis sobre la naturaleza de la divergencia de build documentada arriba.
 
 ## Investigación preparada (siguiente paso)
 

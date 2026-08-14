@@ -450,11 +450,11 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
             }
 
             let engine = Qwen3TtsEngine::new(None);
-            let model_dir = engine.model_dir.as_ref().ok_or_else(|| {
+            let model_dir = engine.base_model_dir.as_ref().ok_or_else(|| {
                 CliError::new(
                     ExitCode::ModelMissing,
                     "model_missing",
-                    "El modelo de clonado TTS no está provisionado. Ejecuta 'setup' primero.",
+                    "El modelo Base de clonado TTS no está provisionado. Ejecuta 'setup' primero.",
                 )
             })?;
             let tmp_qvoice = std::env::temp_dir().join(format!("{}.qvoice", name));

@@ -182,25 +182,33 @@ frente al stack validado del benchmark (WSL gcc 15.2.0). Investigación abierta:
 `docs/reviews/2026-08-14-tts-calidad-fase5.md`.
 
 `speech synthesize`, `say` y `dub` están integrados contra el motor Qwen3-TTS real por **servidor
-residente gestionado por el host** (`127.0.0.1:8766`, cuantización `--int8`, healthcheck y shutdown
-limpio; fallback subprocess `--stdout`), con `GenerationOptions`/`ProsodyOptions`/`EmotionOptions`
-cableados a la semántica del motor, `--label` obligatorio con persistencia en el almacén y colisión
-exit 6, `--play`/`say` reproduciendo de verdad (remuestreo al sample rate nativo del dispositivo en
-`avi-audio`) y `voice clone` completo con el contrato JSON del oráculo `{name, timbre, speech,
-precomputed}` (`precomputed: false`). El parche A1 (`WSAStartup` en `vendor/qwen3-tts/main.c`)
-arregló `--serve` en Windows y el motor se recompiló con la cadena UCRT64. RTF real medido en este
-equipo: **~3 con 1 hilo** (`--int8`), carga del modelo ~0.9 s. Watermark verificado ausente en el
-motor y documentado en `README.md` y `docs/CLI/commands/SPEECH.md`. Suite `cargo test --all` 80/80
-en verde, con golden de `synthesize/say/dub` usando inferencia real.
+residente gestionado por el host** (`127.0.0.1:8766`, cuantización `--int4 -j 4`, healthcheck y
+shutdown limpio; fallback subprocess `--stdout`), con `GenerationOptions`/`ProsodyOptions`/`EmotionOptions`
+cableados a la semántica del motor (`GenerationOptions::produccion()` fija `temperature 0` y `seed
+42`), `--label` obligatorio con persistencia en el almacén y colisión exit 6, `--play`/`say`
+reproduciendo de verdad (remuestreo al sample rate nativo del dispositivo en `avi-audio`) y `voice
+clone` completo con el contrato JSON del oráculo `{name, timbre, speech, precomputed}`
+(`precomputed: false`). El parche A1 (`WSAStartup` en `vendor/qwen3-tts/main.c`) arregló `--serve`
+en Windows y el motor se recompiló con la cadena UCRT64. El modelo **Base** quedó provisionado en
+Windows (`vendor/qwen3-tts/qwen3-tts-0.6b-base/`), lo que habilitó el clonado e2e: `voice clone`
+normaliza la referencia a 24 kHz mono (requisito del motor) antes de invocar el subprocess, y el
+golden `voice_clone_exito` reproduce un `.qvoice` real desde WAV de referencia a 16 kHz. RTF real
+medido en este equipo: **~3 con 4 hilos** (`--int4 -j 4`), carga del modelo ~0.9 s. Watermark
+verificado ausente en el motor y documentado en `README.md` y `docs/CLI/commands/SPEECH.md`. Suite
+`cargo test --all` **78/78** en verde, con golden de `synthesize/say/dub/voice clone` usando inferencia
+real y WER en verde tanto en synthesize como en say.
 
-**Limitación declarada:** el runtime solo tiene el modelo `Qwen3-TTS-12Hz-0.6B-CustomVoice` y el
-motor aborta `--ref-audio` sin modelo Base (`vendor/qwen3-tts/main.c:1848-1854`); la **inferencia
-del clonado** queda pendiente de pesos Base. Las validaciones (exit 2/3/6) y el contrato JSON
-funcionan; los golden de clonado con inferencia se saltan con aviso.
+**Nota de calidad:** el fix reabrió Fase 5 corrigiendo el **contrato de invocación del driver**
+(flags `--int4 -j 4 --stream`, `temperature 0`/`seed 42`, voz clonada + modelo Base, preprocesado
+24 kHz de la referencia). Con ese contrato, la inferencia reproduce la calidad aprobada por oído y el
+WER de los golden vuelve verde (la degradación del gate F7 era del contrato de invocación del
+driver, no del build). La comparación **bit-a-bit / mel-corr (≥ 0.98)** del build Windows frente al
+WSL del benchmark sigue siendo un eje abierto documentado en el review — el fix no la midió — y no
+se reclama paridad de redondeo entre builds.
 
 | Ítem | Estado | Archivo |
 |------|--------|---------|
-| Motor residente HTTP (`127.0.0.1:8766`, `--int8`, healthcheck, shutdown, fallback `--stdout`) | ✅ | `crates/avi-tts/src/lib.rs` |
+| Motor residente HTTP (`127.0.0.1:8766`, `--int4 -j 4`, healthcheck, shutdown, fallback `--stdout`) | ✅ | `crates/avi-tts/src/lib.rs` |
 | `speech synthesize`/`say` con `--label` obligatorio, persistencia y colisión exit 6 | ✅ | `src/main.rs` |
 | `speech dub` con `--audio` (alias `--file`) y `--mic`/`--duration` | ✅ | `src/main.rs` |
 | `voice clone` con contrato JSON del oráculo y validaciones exit 2/3/6 | ✅ | `src/main.rs` |
@@ -208,7 +216,7 @@ funcionan; los golden de clonado con inferencia se saltan con aviso.
 | Parche A1: `WSAStartup` en `main.c` + recompilación UCRT64 (`--serve` en Windows) | ✅ | `vendor/qwen3-tts/main.c` |
 | Golden TTS (`synthesize/say/dub/voice clone`) en el harness dorado | ✅ | `tests/cli_golden.rs` |
 | Watermark: verificado ausente + documentación ética | ✅ | `README.md`, `docs/CLI/commands/SPEECH.md` |
-| Inferencia del clonado (`.qvoice` real) — requiere modelo Base del motor | ⏳ | `vendor/qwen3-tts/` (runtime: 0.6B CustomVoice) |
+| Inferencia del clonado (`.qvoice` real, e2e, Base provisionado en Windows) | ✅ | `crates/avi-tts/src/lib.rs`, `vendor/qwen3-tts/qwen3-tts-0.6b-base/` |
 
 ---
 
