@@ -122,9 +122,9 @@ por ítem, 4/4 en verde.
 **Estado:** ✅ Completada
 
 `Ct2TranslationEngine` (sobre `ct2rs::Translator`) está implementado y cableado a `translate`, con
-segmentación jerárquica `HierarchicalSegmenter` en `avi-core`, pipeline `segmentar → traducir →
-ensamblar` con passthrough intacto, contrato JSON (envuelto en `schema_version = "3"`) y exit codes 2, 4
-y 9. La paridad funcional contra el oráculo Python quedó cerrada: los modelos `opus-mt-{es-en,en-es}` se
+segmentación jerárquica `HierarchicalSegmenter` en `avi-core`, pipeline `segmentar → traducir
+por lotes por párrafo (tope 10) → ensamblar` con passthrough intacto, contrato JSON (envuelto
+en `schema_version = "3"`) y exit codes 2, 4 y 9. La paridad funcional contra el oráculo Python quedó cerrada: los modelos `opus-mt-{es-en,en-es}` se
 reconvirtieron a CT2 int8 replicando el flujo de conversión del oráculo (`_convert_translation_model`,
 pesos byte-idénticos a su deployment; no commiteados, regenerables vía `setup`), y se construyó un corpus
 de 11 pares `{input, expected}` (5 es→en, 6 en→es) sobre textos reales del repositorio, emitidos por el
@@ -137,13 +137,22 @@ sobre el default de ct2rs: `disable_unk=true` suprime `<unk>` crudo en la salida
 oráculo). La pieza original «reimplementar `sacremoses` en Rust» quedó descartada: el oráculo Python no
 la usa en su camino de ejecución (SentencePiece crudo + token `</s>` manual).
 
+Optimización de rendimiento (lote por párrafo): cada párrafo se traduce en una sola llamada
+`translate_batch` (constante `MAX_ORACIONES_POR_LOTE = 10`; los párrafos de más de 10 oraciones se
+parten en grupos de 10), con el mismo segmentador, el mismo reensamblado y la misma API pública —
+salida idéntica a la anterior. Speedup medido a nivel motor (release, modelo cargado una vez,
+mediana de 5): **2.71x** en 5 oraciones y **~3.6x** en 10. El speedup no es de nivel pipeline:
+`translate` construye un `Ct2TranslationEngine` nuevo por llamada (recarga del modelo ~200 ms,
+preexistente, fuera de alcance).
+
 | Ítem | Estado |
 |------|--------|
 | Implementar `Ct2TranslationEngine` sobre `ct2rs::Translator` (Marian, es↔en) | ✅ |
 | Implementar segmentador jerárquico Rust (`HierarchicalSegmenter`, reemplaza pysbd) | ✅ |
 | Validar segmentador contra corpus pysbd (estructural, 6 tests) | ✅ |
-| Pipeline completo: segmentar → traducir → ensamblar con passthrough | ✅ |
+| Pipeline completo: segmentar → traducir por lotes por párrafo (tope 10) → ensamblar con passthrough | ✅ |
 | Paridad funcional contra oráculo Python (WER medio corpus 0.19 ≤ 0.35, 11 ítems) | ✅ |
+| Optimización de traducción por lotes por párrafo (tope 10): speedup a nivel motor 2.71x (5 oraciones) y ~3.6x (10) | ✅ |
 
 ---
 

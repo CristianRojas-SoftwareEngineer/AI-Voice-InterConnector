@@ -562,8 +562,8 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
 - **Trabajo:** motor `Ct2TranslationEngine` sobre `ct2rs::Translator` (Marian, ambas direcciones
   es↔en); **segmentador jerárquico `HierarchicalSegmenter`** en `avi-core` (reemplaza pysbd:
   párrafo → oración → puntuación fuerte → tokens, con `max_length`); pipeline
-  `segmentar → traducir → ensamblar` con passthrough intacto; cableado al comando `translate`
-  con contrato JSON (`schema_version = "3"`) y exit codes 0/2/4/9.
+  `segmentar → traducir por lotes por párrafo (tope 10) → ensamblar` con passthrough intacto;
+  cableado al comando `translate` con contrato JSON (`schema_version = "3"`) y exit codes 0/2/4/9.
 - **Tokenización (premisa corregida):** el oráculo Python NO usa `sacremoses` en su camino de
   ejecución — tokeniza con SentencePiece crudo y añade el token `</s>` manualmente (verificado
   en `model_loader.py`); la pieza «`sacremoses` reimplementado en Rust» del alcance original

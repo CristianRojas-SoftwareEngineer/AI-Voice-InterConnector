@@ -20,38 +20,93 @@ impl Ct2TranslationEngine {
         let translator = Translator::new(model_dir, &Config::default())?;
         Ok(Self { translator })
     }
-}
 
-impl TranslationEngine for Ct2TranslationEngine {
-    fn translate(&self, text: &str, _source_lang: &str, _target_lang: &str) -> anyhow::Result<String> {
+    /// Traduce un lote de oraciones en una única llamada a `translate_batch`,
+    /// replicando el pre/post procesamiento por ítem de `translate`: anexa
+    /// `" </s>"` al origen de cada oración, construye las opciones una sola
+    /// vez y sanea cada hipótesis (token EOS final + espacios).
+    fn translate_lote(
+        &self,
+        oraciones: &[String],
+        _source_lang: &str,
+        _target_lang: &str,
+    ) -> anyhow::Result<Vec<String>> {
         // El motor se instancia para una dirección fija según el `model_dir`
         // con el que se construyó; `source_lang`/`target_lang` no se usan aquí
         // (mismo patrón que `DummyTranslationEngine` ignorando parámetros no
         // aplicables). Se anexa `</s>` manualmente al origen: el encoder
         // Marian/opus-mt lo exige y `ct2-transformers-converter` no lo añade
         // automáticamente (ver nota técnica en `crates/avi-stt/src/lib.rs`).
-        let source = format!("{} </s>", text);
+        let sources: Vec<String> = oraciones
+            .iter()
+            .map(|oracion| format!("{} </s>", oracion))
+            .collect();
         // Mejora de calidad sobre el default de ct2rs: `disable_unk` suprime la
         // generación del token `<unk>` en la hipótesis (mismo default sano del
         // oráculo Python, `disable_unk=True` en ctranslate2), evitando `<unk>`
         // crudo en la salida ante vocabulario fuera de cobertura.
         let mut options = ct2rs::TranslationOptions::default();
         options.disable_unk = true;
-        let results = self
-            .translator
-            .translate_batch(&[source], &options, None)?;
-        if results.is_empty() {
-            anyhow::bail!("translate_batch no devolvió ningún resultado");
+        let results = self.translator.translate_batch(&sources, &options, None)?;
+        if results.len() != oraciones.len() {
+            anyhow::bail!(
+                "translate_batch devolvió {} resultados para {} oraciones",
+                results.len(),
+                oraciones.len()
+            );
         }
-        let (translated, _) = &results[0];
-        // La hipótesis del decoder termina con el token `</s>` (EOS), que el
-        // detokenizador de ct2rs reconstruye como texto literal; el oráculo lo
-        // elimina al decodificar con el SentencePiece destino (los símbolos de
-        // control decodifican a cadena vacía, `model_loader.py`). Se sanea aquí
-        // para preservar la paridad de salida (hallazgo del reality-check de F5).
-        let translated = translated.trim_end_matches("</s>").trim_end().to_string();
-        Ok(translated)
+        Ok(results
+            .into_iter()
+            .map(|(translated, _)| {
+                // La hipótesis del decoder termina con el token `</s>` (EOS),
+                // que el detokenizador de ct2rs reconstruye como texto literal;
+                // el oráculo lo elimina al decodificar con el SentencePiece
+                // destino (los símbolos de control decodifican a cadena vacía,
+                // `model_loader.py`). Se sanea aquí para preservar la paridad
+                // de salida (hallazgo del reality-check de F5).
+                translated.trim_end_matches("</s>").trim_end().to_string()
+            })
+            .collect())
     }
+}
+
+impl TranslationEngine for Ct2TranslationEngine {
+    fn translate(&self, text: &str, _source_lang: &str, _target_lang: &str) -> anyhow::Result<String> {
+        // El texto único se traduce como lote de una sola oración: `translate_lote`
+        // aplica el mismo pre/post procesamiento por ítem que el pipeline antiguo
+        // (anexar `</s>`, opciones idénticas y saneo de la hipótesis).
+        let mut hipotesis = self.translate_lote(&[text.to_string()], _source_lang, _target_lang)?;
+        Ok(hipotesis.remove(0))
+    }
+}
+
+/// Tope de oraciones por lote de traducción: un párrafo con más oraciones se
+/// parte en grupos de `MAX_ORACIONES_POR_LOTE` para acotar la memoria y la
+/// latencia de cada llamada a `translate_batch` (decisión cerrada de F0 §2.2).
+const MAX_ORACIONES_POR_LOTE: usize = 10;
+
+/// Traduce los párrafos agrupando sus oraciones en lotes de a lo sumo
+/// `MAX_ORACIONES_POR_LOTE`, una llamada a `traductor` por lote, y devuelve el
+/// mismo anidamiento de párrafos que la entrada. Las oraciones vacías (p. ej.
+/// los párrafos generados por `"\n\n"` consecutivos) no se traducen pero el
+/// párrafo conserva su posición como lista vacía para no alterar el
+/// reensamblado posterior.
+fn traducir_lotes_por_parrafo(
+    paragraphs: Vec<Vec<String>>,
+    source: &str,
+    target: &str,
+    traductor: &dyn Fn(&[String], &str, &str) -> anyhow::Result<Vec<String>>,
+) -> anyhow::Result<Vec<Vec<String>>> {
+    let mut resultado = Vec::with_capacity(paragraphs.len());
+    for paragraph in paragraphs {
+        let oraciones: Vec<String> = paragraph.into_iter().filter(|s| !s.is_empty()).collect();
+        let mut traducidas = Vec::with_capacity(oraciones.len());
+        for lote in oraciones.chunks(MAX_ORACIONES_POR_LOTE) {
+            traducidas.extend(traductor(lote, source, target)?);
+        }
+        resultado.push(traducidas);
+    }
+    Ok(resultado)
 }
 
 /// Traduce `text` de `source` a `target` segmentando jerárquicamente y
@@ -69,15 +124,17 @@ pub fn translate(
     let segmenter = HierarchicalSegmenter::default();
     let paragraphs = segmenter.segment(text);
 
-    let translated: Vec<Vec<String>> = paragraphs
-        .into_iter()
-        .map(|segments| {
-            segments
-                .iter()
-                .map(|segment| engine.translate(segment, source, target))
-                .collect::<anyhow::Result<Vec<_>>>()
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    // Cada párrafo se traduce en una sola llamada al motor (partida en grupos
+    // de `MAX_ORACIONES_POR_LOTE` cuando excede el tope), en vez de una llamada
+    // por oración: el reensamblado posterior es idéntico al anterior.
+    let translated: Vec<Vec<String>> = traducir_lotes_por_parrafo(
+        paragraphs,
+        source,
+        target,
+        &|oraciones: &[String], src: &str, dst: &str| {
+            engine.translate_lote(oraciones, src, dst)
+        },
+    )?;
 
     Ok(translated
         .into_iter()
@@ -88,7 +145,9 @@ pub fn translate(
 
 #[cfg(test)]
 mod tests {
-    use avi_core::engine::TranslationEngine;
+    use std::cell::{Cell, RefCell};
+
+    use avi_core::engine::{HierarchicalSegmenter, Segmenter, TranslationEngine};
 
     /// Carga el modelo opus-mt es→en real (ya convertido a CT2 y provisionado)
     /// vía `Ct2TranslationEngine` y traduce un texto corto, verificando que el
@@ -303,5 +362,372 @@ mod tests {
             "ruta/que/no/existe/opus-mt-es-en",
         );
         assert!(result.is_err(), "un model_dir inexistente debe fallar");
+    }
+
+    /// Doble de traducción por lotes: `llamadas` cuenta las invocaciones y
+    /// `tamanos` acumula el número de oraciones de cada lote; las hipótesis se
+    /// derivan como `"T:<oración>"`, lo que permite verificar partición, orden
+    /// y reensamblado sin depender de ningún modelo.
+    fn doble_traduccion<'a>(
+        llamadas: &'a Cell<usize>,
+        tamanos: &'a RefCell<Vec<usize>>,
+    ) -> impl for<'x, 'y, 'z> Fn(&'x [String], &'y str, &'z str) -> anyhow::Result<Vec<String>> + 'a {
+        move |lote: &[String], _source: &str, _target: &str| {
+            llamadas.set(llamadas.get() + 1);
+            tamanos.borrow_mut().push(lote.len());
+            Ok(lote
+                .iter()
+                .map(|oracion| format!("T:{}", oracion))
+                .collect())
+        }
+    }
+
+    /// Párrafo artificial de `n` oraciones distintas para las pruebas del lote.
+    fn parrafo_de_n_oraciones(n: usize) -> Vec<String> {
+        (1..=n)
+            .map(|i| format!("Oración número {} de la prueba.", i))
+            .collect()
+    }
+
+    #[test]
+    fn lote_traduce_parrafo_de_5_oraciones_en_una_llamada() {
+        let llamadas = Cell::new(0usize);
+        let tamanos = RefCell::new(Vec::new());
+        let doble = doble_traduccion(&llamadas, &tamanos);
+
+        let resultado =
+            super::traducir_lotes_por_parrafo(vec![parrafo_de_n_oraciones(5)], "es", "en", &doble)
+                .expect("un párrafo de 5 oraciones no debe fallar");
+
+        assert_eq!(
+            llamadas.get(),
+            1,
+            "5 oraciones deben traducirse en una sola llamada"
+        );
+        assert_eq!(*tamanos.borrow(), vec![5], "el lote debe tener 5 oraciones");
+        assert_eq!(
+            resultado,
+            vec![(1..=5)
+                .map(|i| format!("T:Oración número {} de la prueba.", i))
+                .collect::<Vec<_>>()],
+            "el orden de las oraciones debe preservarse"
+        );
+    }
+
+    #[test]
+    fn lote_particiona_parrafo_de_11_oraciones_en_2_llamadas() {
+        let llamadas = Cell::new(0usize);
+        let tamanos = RefCell::new(Vec::new());
+        let doble = doble_traduccion(&llamadas, &tamanos);
+
+        let resultado =
+            super::traducir_lotes_por_parrafo(vec![parrafo_de_n_oraciones(11)], "es", "en", &doble)
+                .expect("un párrafo de 11 oraciones no debe fallar");
+
+        assert_eq!(
+            llamadas.get(),
+            2,
+            "11 oraciones deben partirse en 2 lotes por el tope de 10"
+        );
+        assert_eq!(*tamanos.borrow(), vec![10, 1], "los lotes deben ser de 10 y 1");
+        assert_eq!(
+            resultado,
+            vec![(1..=11)
+                .map(|i| format!("T:Oración número {} de la prueba.", i))
+                .collect::<Vec<_>>()],
+            "el orden global debe preservarse tras la partición"
+        );
+    }
+
+    #[test]
+    fn lote_particiona_parrafo_de_20_oraciones_en_2_llamadas() {
+        let llamadas = Cell::new(0usize);
+        let tamanos = RefCell::new(Vec::new());
+        let doble = doble_traduccion(&llamadas, &tamanos);
+
+        let resultado =
+            super::traducir_lotes_por_parrafo(vec![parrafo_de_n_oraciones(20)], "es", "en", &doble)
+                .expect("un párrafo de 20 oraciones no debe fallar");
+
+        assert_eq!(
+            llamadas.get(),
+            2,
+            "20 oraciones deben partirse en 2 lotes exactos de 10"
+        );
+        assert_eq!(*tamanos.borrow(), vec![10, 10]);
+        assert_eq!(
+            resultado,
+            vec![(1..=20)
+                .map(|i| format!("T:Oración número {} de la prueba.", i))
+                .collect::<Vec<_>>()],
+            "el orden global debe preservarse tras la partición"
+        );
+    }
+
+    #[test]
+    fn lote_texto_de_una_oracion_hace_una_llamada() {
+        let llamadas = Cell::new(0usize);
+        let tamanos = RefCell::new(Vec::new());
+        let doble = doble_traduccion(&llamadas, &tamanos);
+
+        let resultado =
+            super::traducir_lotes_por_parrafo(vec![parrafo_de_n_oraciones(1)], "es", "en", &doble)
+                .expect("un párrafo de 1 oración no debe fallar");
+
+        assert_eq!(llamadas.get(), 1, "1 oración debe suponer 1 llamada");
+        assert_eq!(*tamanos.borrow(), vec![1]);
+        assert_eq!(
+            resultado,
+            vec![vec!["T:Oración número 1 de la prueba.".to_string()]]
+        );
+    }
+
+    #[test]
+    fn lote_texto_vacio_no_invoca_al_traductor() {
+        let llamadas = Cell::new(0usize);
+        let tamanos = RefCell::new(Vec::new());
+        let doble = doble_traduccion(&llamadas, &tamanos);
+
+        // `HierarchicalSegmenter` con `""` devuelve un párrafo con una única
+        // oración vacía (comportamiento real observado del segmentador); la
+        // oración vacía no debe invocar al traductor y el párrafo conserva su
+        // posición para no alterar el reensamblado.
+        let parrafos = HierarchicalSegmenter::default().segment("");
+        let resultado =
+            super::traducir_lotes_por_parrafo(parrafos, "es", "en", &doble)
+                .expect("un texto vacío no debe fallar");
+
+        assert_eq!(
+            llamadas.get(),
+            0,
+            "un texto vacío no debe invocar al traductor"
+        );
+        assert!(tamanos.borrow().is_empty(), "no debe registrarse ningún lote");
+        assert_eq!(
+            resultado,
+            vec![Vec::<String>::new()],
+            "el párrafo vacío debe conservar su posición"
+        );
+    }
+
+    #[test]
+    fn lote_parrafo_vacio_preserva_su_posicion_sin_invocar() {
+        let llamadas = Cell::new(0usize);
+        let tamanos = RefCell::new(Vec::new());
+        let doble = doble_traduccion(&llamadas, &tamanos);
+
+        // Los `"\n\n"` consecutivos producen párrafos vacíos intermedios
+        // (comportamiento real de `HierarchicalSegmenter`); no deben invocar al
+        // traductor ni alterar el reensamblado posterior.
+        let parrafos = HierarchicalSegmenter::default().segment("Hola.\n\n\n\nAdiós.");
+        let resultado =
+            super::traducir_lotes_por_parrafo(parrafos, "es", "en", &doble)
+                .expect("párrafos con huecos vacíos no deben fallar");
+
+        assert_eq!(llamadas.get(), 2, "solo los párrafos no vacíos deben invocar");
+        assert_eq!(
+            resultado.len(),
+            3,
+            "los 3 párrafos deben conservar su posición"
+        );
+        assert!(
+            resultado[1].is_empty(),
+            "el párrafo vacío no debe traducirse"
+        );
+    }
+
+    #[test]
+    fn lote_preserva_orden_de_parrafos_y_oraciones_en_multiparrafo() {
+        let llamadas = Cell::new(0usize);
+        let tamanos = RefCell::new(Vec::new());
+        let doble = doble_traduccion(&llamadas, &tamanos);
+
+        let resultado = super::traducir_lotes_por_parrafo(
+            vec![parrafo_de_n_oraciones(5), parrafo_de_n_oraciones(11)],
+            "es",
+            "en",
+            &doble,
+        )
+        .expect("el multipárrafo no debe fallar");
+
+        assert_eq!(
+            llamadas.get(),
+            3,
+            "5 + 11 oraciones deben suponer 3 lotes"
+        );
+        assert_eq!(*tamanos.borrow(), vec![5, 10, 1], "lotes de 5, 10 y 1");
+        assert_eq!(
+            resultado,
+            vec![
+                (1..=5)
+                    .map(|i| format!("T:Oración número {} de la prueba.", i))
+                    .collect::<Vec<_>>(),
+                (1..=11)
+                    .map(|i| format!("T:Oración número {} de la prueba.", i))
+                    .collect::<Vec<_>>(),
+            ],
+            "el orden global y por párrafo debe preservarse"
+        );
+
+        // Reensamblado equivalente al del pipeline: oraciones con `" "` y
+        // párrafos con `"\n\n"`.
+        let ensamblado: Vec<String> = resultado.iter().map(|p| p.join(" ")).collect();
+        let texto = ensamblado.join("\n\n");
+        assert_eq!(texto.matches("\n\n").count(), 1, "debe haber un separador de párrafos");
+        assert!(
+            texto.starts_with("T:Oración número 1 de la prueba. T:Oración número 2"),
+            "el primer párrafo debe encabezar el texto"
+        );
+        assert!(
+            texto.ends_with("T:Oración número 11 de la prueba."),
+            "el último párrafo debe cerrar el texto"
+        );
+    }
+
+    #[test]
+    fn lote_propaga_errores_del_traductor() {
+        let llamadas = Cell::new(0usize);
+        let tamanos = RefCell::new(Vec::new());
+
+        // Doble que falla en la segunda llamada: el error debe propagarse sin
+        // pánico ni resultado parcial.
+        let doble = |lote: &[String], _source: &str, _target: &str| {
+            llamadas.set(llamadas.get() + 1);
+            tamanos.borrow_mut().push(lote.len());
+            if llamadas.get() == 2 {
+                Err(anyhow::anyhow!("fallo deliberado de la segunda llamada"))
+            } else {
+                Ok(lote
+                    .iter()
+                    .map(|oracion| format!("T:{}", oracion))
+                    .collect())
+            }
+        };
+
+        let resultado = super::traducir_lotes_por_parrafo(
+            vec![parrafo_de_n_oraciones(5), parrafo_de_n_oraciones(11)],
+            "es",
+            "en",
+            &doble,
+        );
+
+        assert!(
+            resultado.is_err(),
+            "el error del traductor debe propagarse"
+        );
+        assert_eq!(
+            llamadas.get(),
+            2,
+            "debe detenerse en la llamada que falla sin continuar"
+        );
+    }
+
+    /// End-to-end con el modelo real (es→en): un párrafo de 11 oraciones
+    /// (supera los 512 caracteres del segmentador, forzando la partición a
+    /// oraciones) se traduce completo en dos lotes (10 + 1) sin perder
+    /// contenido: salida no vacía, sin `</s>`/`<unk>` y con longitud acorde a
+    /// la entrada (el corpus del oráculo solo cubre una oración por ítem, por
+    /// eso esta cobertura del lote se añade aquí).
+    #[test]
+    fn translate_parrafo_de_11_oraciones_particiona_sin_perder_texto() {
+        let oraciones: Vec<String> = (1..=11)
+            .map(|i| {
+                format!(
+                    "La reunión del día {} de la semana quedó programada para las diez \
+                     de la mañana en la oficina central de la empresa.",
+                    i
+                )
+            })
+            .collect();
+        let texto = oraciones.join(" ");
+
+        let translated = crate::translate(
+            &texto,
+            "es",
+            "en",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../models/ct2/opus-mt-es-en"
+            ),
+        )
+        .expect("el párrafo de 11 oraciones debe traducirse");
+
+        assert!(!translated.trim().is_empty(), "la traducción no debe estar vacía");
+        assert!(
+            !translated.contains("</s>"),
+            "el token EOS no debe filtrarse a la salida"
+        );
+        assert!(
+            !translated.contains("<unk>"),
+            "el token desconocido no debe filtrarse a la salida"
+        );
+        // Sin pérdida de contenido: la salida conserva al menos la mitad de las
+        // palabras de la entrada (umbral laxo que tolera la paráfrasis del
+        // modelo pero dispararía ante la pérdida de oraciones completas).
+        let palabras_entrada = texto.split_whitespace().count();
+        let palabras_salida = translated.split_whitespace().count();
+        assert!(
+            palabras_salida * 2 >= palabras_entrada,
+            "la salida perdió contenido: {} palabras de entrada frente a {} de salida",
+            palabras_entrada,
+            palabras_salida
+        );
+        // Y conserva la mayoría de las frases de la entrada (11 oraciones →
+        // al menos 9 frases en la salida, tolerando fusiones del modelo).
+        let frases_salida = translated
+            .split(['.', '!', '?'])
+            .filter(|f| !f.trim().is_empty())
+            .count();
+        assert!(
+            frases_salida >= 9,
+            "la salida debe conservar la mayoría de las 11 oraciones, obtuvo {} frases",
+            frases_salida
+        );
+    }
+
+    /// End-to-end con el modelo real (es→en): 3 párrafos (el central de 12
+    /// oraciones, por encima de los 512 caracteres) se traducen preservando
+    /// los dos separadores `"\n\n"` y sin filtrar `</s>`/`<unk>`.
+    #[test]
+    fn translate_multiparrafo_largo_preserva_parrafos() {
+        let oraciones: Vec<String> = (1..=12)
+            .map(|i| {
+                format!(
+                    "El equipo técnico del proyecto {} revisó los resultados \
+                     de la última prueba durante toda la mañana.",
+                    i
+                )
+            })
+            .collect();
+        let texto = format!(
+            "Hola, buenos días.\n\n{}\n\nHasta luego.",
+            oraciones.join(" ")
+        );
+
+        let translated = crate::translate(
+            &texto,
+            "es",
+            "en",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../models/ct2/opus-mt-es-en"
+            ),
+        )
+        .expect("el multipárrafo largo debe traducirse");
+
+        assert!(!translated.trim().is_empty(), "la traducción no debe estar vacía");
+        assert!(
+            !translated.contains("</s>"),
+            "el token EOS no debe filtrarse a la salida"
+        );
+        assert!(
+            !translated.contains("<unk>"),
+            "el token desconocido no debe filtrarse a la salida"
+        );
+        assert_eq!(
+            translated.matches("\n\n").count(),
+            2,
+            "los dos separadores de párrafo deben preservarse"
+        );
     }
 }
