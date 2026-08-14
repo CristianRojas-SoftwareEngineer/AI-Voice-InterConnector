@@ -48,6 +48,12 @@ Todos los renders usan el texto corto del benchmark
 (`TTS-CPU-BENCHMARK\shared\texts\corto_es.txt`, ASCII-izado) y la voz clonada del benchmark
 (`bench.qvoice`), `-l Spanish -j4 -T 0 --seed 42 --stream` salvo indicación.
 
+> **Nota de conservación (2026-08-14, decisión del usuario):** todos los WAV citados en este
+> documento como resultados (clips del gate F7 en `target/tts-verification-clips/`, A/B/C y
+> renders de los experimentos en `target/`) fueron **eliminados**. Este documento conserva el
+> análisis y sus métricas; los archivos son regenerables repitiendo los comandos documentados.
+> Se conservan solo los insumos de producción: `target/bench.qvoice` y `target/ref24k.wav`.
+
 | Comparación (archivo1 vs archivo2) | mel-corr | Duración (s) | Veredicto |
 |---|---|---|---|
 | `win_bf16.wav` vs `wsl_bf16.wav` (bf16) | 0.38181 | 7.20 vs 6.80 | Divergencia total, sin cuantización |
@@ -86,8 +92,9 @@ Todos los renders usan el texto corto del benchmark
 - `vendor/qwen3-tts/third_party/ingot/mingw_shim/` — shims POSIX (socket/mmap/unistd).
 - `vendor/qwen3-tts/main.c:1848-1854` — `--ref-audio` exige modelo Base; el runtime Windows
   **no tiene** el Base → `voice clone` e2e bloqueado en Windows.
-- `target/` (gitignored): clips del gate F7, renders A/B/C y de los experimentos, `bench.qvoice`,
-  `ref24k.wav`.
+- `target/` (gitignored): solo insumos de producción conservados — `bench.qvoice` (voz clonada
+  validada del benchmark) y `ref24k.wav` (audio de referencia del clonado); los renders y clips
+  del gate fueron eliminados (ver nota de conservación).
 
 **Artefactos de la orquestación:** `.claude/orchestration/fase5-tts-nativo/` (F0-F6, gitignored).
 
