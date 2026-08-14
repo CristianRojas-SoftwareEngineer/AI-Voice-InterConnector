@@ -1,7 +1,7 @@
 ﻿# Progreso de Migración — AI-Voice-InterConnector
 
 **Plan de referencia:** [`PLAN-DE-MIGRACIÓN.md`](./PLAN-DE-MIGRACIÓN.md)  
-**Última actualización:** 2026-08-13
+**Última actualización:** 2026-08-14
 
 ---
 
@@ -51,9 +51,10 @@ pesos reales.
 | Crear workspace Rust (cargo workspace, crates por subsistema) | ✅ | Raíz + 8 crates `avi-*`; `default-members = [".", "crates/*"]` |
 | Harness de tests de contrato dorados (captura del oráculo Python) | ✅ | `crates/avi-daemon/tests/golden.rs` (5) + `tests/cli_golden.rs` (6), fixtures en `tests/golden/` |
 
-**Prerequisitos de build (F5):** CMake en el `PATH` + compilador C++ de MSVC (para el build de CTranslate2
-vía `ct2rs`); `.cargo/config.toml` fuerza `+crt-static` en `x86_64-pc-windows-msvc` para alinear el CRT del
-workspace con el de CTranslate2 (`/MT`).
+**Prerequisitos de build (F5):** CMake instalado (en este entorno no está en el `PATH`; los builds/benchmarks
+lo resuelven con `$env:CMAKE = "C:\Program Files\CMake\bin\cmake.exe"`) + compilador C++ de MSVC (para el build
+de CTranslate2 vía `ct2rs`); `.cargo/config.toml` fuerza `+crt-static` en `x86_64-pc-windows-msvc` para alinear
+el CRT del workspace con el de CTranslate2 (`/MT`).
 
 ---
 
@@ -65,14 +66,14 @@ La infraestructura de almacenes y configuración está implementada. La superfic
 
 | Ítem | Estado | Archivo |
 |------|--------|---------|
-| `VoiceStore` — registro de voces usuario/fábrica, layout en disco | ✅ | `src/store.rs` |
-| `SpeechStore` — WAV + sidecar de metadatos por (voz, etiqueta) | ✅ | `src/store.rs` |
-| `ModelStore` — gestión de modelos, revisiones pinneadas | ✅ | `src/store.rs` |
-| `ModelStore::register_provisioned` | ✅ | `src/store.rs` |
-| `AppConfig` — configuración TOML (`serde` + `toml`) | ✅ | `src/config.rs` |
+| `VoiceStore` — registro de voces usuario/fábrica, layout en disco | ✅ | `crates/avi-store/src/lib.rs` |
+| `SpeechStore` — WAV + sidecar de metadatos por (voz, etiqueta) | ✅ | `crates/avi-store/src/lib.rs` |
+| `ModelStore` — gestión de modelos, revisiones pinneadas | ✅ | `crates/avi-store/src/lib.rs` |
+| `ModelStore::register_provisioned` | ✅ | `crates/avi-store/src/lib.rs` |
+| `AppConfig` — configuración TOML (`serde` + `toml`) | ✅ | `crates/avi-config/src/lib.rs` |
 | Superficie CLI completa con `clap` (9 grupos de comandos) | ✅ | `src/main.rs` |
-| Taxonomía de errores → exit codes (`thiserror`) | ✅ | `src/exit_codes.rs` |
-| Emisor JSON único (`schema_version = "3"`) | ✅ | `src/json_emitter.rs`, `src/daemon.rs` |
+| Taxonomía de errores → exit codes (`thiserror`) | ✅ | `crates/avi-core/src/exit_codes.rs` |
+| Emisor JSON único (`schema_version = "3"`) | ✅ | `crates/avi-core/src/json_emitter.rs` |
 | Comandos sin inferencia nativos (`voice list/remove`, `speech list/play`, `devices`, `version`) | ✅ | `src/main.rs`, `crates/avi-audio/src/lib.rs` |
 
 ---
@@ -108,12 +109,21 @@ propio repositorio (remuestreados a 16 kHz mono int16) — y transcripciones emi
 (`TranscriptionService` de producción). El test de paridad (antes `#[ignore]`) quedó activo: WER ≤ 0.05
 por ítem, 4/4 en verde.
 
+Optimización de rendimiento (backend + cuantización + hilos): se reemplazó el backend ruy por
+**oneDNN + OpenMP** en el build de CTranslate2 y se fijó **cuantización int8** con
+`num_threads_per_replica = 8` (núcleos físicos). Speedup medido a nivel motor (release, mediana de 3):
+**1.98x** (14 436.72 ms ruy/fp32 → 7 275.53 ms oneDNN/int8+8 hilos), con **paridad contra el oráculo
+Python mantenida** (1.0047x; dorada 4/4 WER ≤ 0.05) y suite workspace 48/48 en verde. Caveat igual que
+en traducción: el CLI construye el motor por invocación (recarga del modelo ~1 s, preexistente, fuera de
+alcance; el daemon Fase 6 lo resolverá con motor residente).
+
 | Ítem | Estado |
 |------|--------|
 | Verificar disponibilidad de `ct2rs` / CMake / CTranslate2 en entorno build | ✅ |
 | Implementar `Ct2SttEngine` sobre `ct2rs::Whisper` | ✅ |
 | Integrar con captura/carga de audio (pipeline `--mic`/`--audio` → transcripción) | ✅ |
 | Validar contra oráculo Python (WER ≤ 0.05, corpus de 4 audios) | ✅ |
+| Optimización STT (backend oneDNN+OpenMP, cuantización int8 + 8 hilos): speedup a nivel motor 1.98x, paridad con oráculo 1.0047x | ✅ |
 
 ---
 
@@ -145,6 +155,13 @@ mediana de 5): **2.71x** en 5 oraciones y **~3.6x** en 10. El speedup no es de n
 `translate` construye un `Ct2TranslationEngine` nuevo por llamada (recarga del modelo ~200 ms,
 preexistente, fuera de alcance).
 
+Optimización de runtime (compute int8 explícito + 8 hilos): la cuantización **ya estaba activa** desde la
+reconversión int8 — `Config::default()` de CT2 resuelve al tipo del modelo (`int8_float32`: pesos int8,
+acumulación fp32), a diferencia de STT. El experimento lo confirmó (variantes default e INT8 explícito,
+tiempos idénticos; control FP32 1.5-2.1x más lento) y dejó fijado `compute_type: INT8` (endurecimiento
+frente a la resolución por defecto) + `num_threads_per_replica: 8` (~1-10% adicional). Suite 48/48 y
+paridad intactas.
+
 | Ítem | Estado |
 |------|--------|
 | Implementar `Ct2TranslationEngine` sobre `ct2rs::Translator` (Marian, es↔en) | ✅ |
@@ -153,6 +170,7 @@ preexistente, fuera de alcance).
 | Pipeline completo: segmentar → traducir por lotes por párrafo (tope 10) → ensamblar con passthrough | ✅ |
 | Paridad funcional contra oráculo Python (WER medio corpus 0.19 ≤ 0.35, 11 ítems) | ✅ |
 | Optimización de traducción por lotes por párrafo (tope 10): speedup a nivel motor 2.71x (5 oraciones) y ~3.6x (10) | ✅ |
+| Fijar compute int8 explícito + 8 hilos (cuantización ya activa; lever de hilos ~1-10%): sin regresión de paridad | ✅ |
 
 ---
 
@@ -160,15 +178,18 @@ preexistente, fuera de alcance).
 
 **Estado:** 🔶 Parcial
 
-Las abstracciones de dominio (traits, tipos) están definidas. La integración real con el subproceso de inferencia y el build nativo Windows están pendientes.
+El trait `TtsEngine` y los tipos `VoiceProfile`/`GenerationOptions` están definidos en `avi-tts`, con la
+estructura de IPC ya implementada (fallback subprocess + cliente HTTP local). Pendientes: la integración
+real contra los weights de inferencia, los tipos `ProsodyOptions`/`EmotionOptions` de la API de dominio,
+la migración del clonado de voz y el port del bypass de watermark.
 
 | Ítem | Estado | Archivo |
 |------|--------|---------|
-| `TtsEngine` trait y tipos públicos (`VoiceProfile`, `GenerationOptions`, `ProsodyOptions`) | ✅ | `src/tts.rs` |
-| Estructura e IPC: cliente HTTP local + subprocess PCM por stdout | ✅ | `src/tts.rs` |
-| `EmotionOptions` (API por extensibilidad, no-op en modelo 0.6B) | ✅ | `src/tts.rs` |
+| `TtsEngine` trait y tipos públicos (`VoiceProfile`, `GenerationOptions`) | ✅ | `crates/avi-tts/src/lib.rs` |
+| Estructura e IPC: subprocess PCM por stdout con fallback a cliente HTTP local | ✅ | `crates/avi-tts/src/lib.rs` |
+| `ProsodyOptions` / `EmotionOptions` (opciones de prosodia/emoción de la API de dominio) | ⏳ | |
 | Integración real con subproceso de inferencia Qwen3-TTS (weights) | ⏳ | |
-| Build nativo Windows del motor (MinGW-w64/UCRT64, shims POSIX) | ⏳ | |
+| Build nativo Windows del motor (MinGW-w64/UCRT64, shims POSIX) | ✅ | `vendor/qwen3-tts/qwen_tts.exe` (validado en Fase 0: smoke real texto → WAV PCM 16-bit mono 24 kHz) |
 | Migrar clonado de voz (timbre → `.qvoice`) | ⏳ | |
 | Portar bypass de watermark y su documentación ética | ⏳ | |
 
@@ -178,19 +199,21 @@ Las abstracciones de dominio (traits, tipos) están definidas. La integración r
 
 **Estado:** 🔶 Parcial
 
-El servidor Axum con las rutas principales está operativo. La precarga + warmup al arranque es la pieza faltante.
+El servidor Axum con las rutas principales está operativo en `crates/avi-daemon`. Piezas faltantes: la
+precarga + warmup al arranque y la integración del motor STT real en `/transcribe` (hoy responde el stub
+`transcription_pending`).
 
 | Ítem | Estado | Archivo |
 |------|--------|---------|
-| Servidor HTTP Axum en `127.0.0.1:8765` | ✅ | `src/daemon.rs` |
-| `GET /voices` | ✅ | `src/daemon.rs` |
-| `POST /voices/precompute` | ✅ | `src/daemon.rs` |
-| `POST /shutdown` | ✅ | `src/daemon.rs` |
-| `POST /transcribe` | ✅ | `src/daemon.rs` |
-| `POST /synthesize` con streaming NDJSON de progreso | ✅ | `src/daemon.rs` |
-| Handshake de `schema_version` estricto | ✅ | `src/daemon.rs` |
-| Serialización de síntesis (`synthesis_lock`) | ✅ | `src/daemon.rs` |
-| Recepción de PCM int16 en base64 del cliente | ✅ | `src/daemon.rs` |
+| Servidor HTTP Axum en `127.0.0.1:8765` | ✅ | `crates/avi-daemon/src/lib.rs` |
+| `GET /voices` | ✅ | `crates/avi-daemon/src/lib.rs` |
+| `POST /voices/precompute` | ✅ | `crates/avi-daemon/src/lib.rs` |
+| `POST /shutdown` | ✅ | `crates/avi-daemon/src/lib.rs` |
+| `POST /transcribe` (ruta operativa; motor STT real pendiente — hoy stub `transcription_pending`) | ⏳ | `crates/avi-daemon/src/lib.rs` |
+| `POST /synthesize` con streaming NDJSON de progreso | ✅ | `crates/avi-daemon/src/lib.rs` |
+| Handshake de `schema_version` estricto | ✅ | `crates/avi-daemon/src/lib.rs` |
+| Serialización de síntesis (`synthesis_lock`) | ✅ | `crates/avi-daemon/src/lib.rs` |
+| Recepción de PCM int16 en base64 del cliente | ✅ | `crates/avi-daemon/src/lib.rs` |
 | Precarga de pesos + warmup de inferencia al arranque | ⏳ | |
 
 ---
@@ -204,7 +227,7 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 | Ítem | Estado | Archivo |
 |------|--------|---------|
 | Pipeline de empaquetado nativo (binarios release + dist/) | ✅ | `scripts/build_release_native.py` |
-| Provisión de modelos nativa en `setup` (manifiestos `manifest.json`) | ✅ | `src/main.rs`, `src/store.rs` |
+| Provisión de modelos nativa en `setup` (manifiestos `manifest.json`) | ✅ | `src/main.rs`, `crates/avi-store/src/lib.rs` |
 | Preservar GPLv3, `THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md` | ✅ | |
 | CI para 3 SO Tier 1 (Windows, Linux, macOS) | ⏳ | |
 | Retiro formal del código Python | ⏳ | |
@@ -234,6 +257,6 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 
 ## Próximos pasos
 
-1. **Fase 5:** integración real del motor Qwen3-TTS y build nativo Windows.
-2. **Fase 6:** implementar precarga + warmup al arranque del daemon.
+1. **Fase 5:** integración real del motor Qwen3-TTS contra weights; definir `ProsodyOptions`/`EmotionOptions`; migrar clonado de voz y portar bypass de watermark.
+2. **Fase 6:** precarga + warmup al arranque y cablear el motor STT real en `/transcribe` (hoy stub).
 3. **Fase 7:** CI multi-SO y retiro del código Python.
