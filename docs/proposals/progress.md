@@ -1,7 +1,7 @@
 ﻿# Progreso de Migración — AI-Voice-InterConnector
 
 **Plan de referencia:** [`PLAN-DE-MIGRACIÓN.md`](./PLAN-DE-MIGRACIÓN.md)  
-**Última actualización:** 2026-08-14
+**Última actualización:** 2026-08-15
 
 ---
 
@@ -184,7 +184,7 @@ frente al stack validado del benchmark (WSL gcc 15.2.0). Investigación abierta:
 `speech synthesize`, `say` y `dub` están integrados contra el motor Qwen3-TTS real por **servidor
 residente gestionado por el host** (`127.0.0.1:8766`, cuantización `--int4 -j 4`, healthcheck y
 shutdown limpio; fallback subprocess `--stdout`), con `GenerationOptions`/`ProsodyOptions`/`EmotionOptions`
-cableados a la semántica del motor (`GenerationOptions::produccion()` fija `temperature 0` y `seed
+cableados a la semántica del motor (`GenerationOptions::produccion()` fija `temperature 0.35` y `seed
 42`), `--label` obligatorio con persistencia en el almacén y colisión exit 6, `--play`/`say`
 reproduciendo de verdad (remuestreo al sample rate nativo del dispositivo en `avi-audio`) y `voice
 clone` completo con el contrato JSON del oráculo `{name, timbre, speech, precomputed}`
@@ -199,7 +199,7 @@ verificado ausente en el motor y documentado en `README.md` y `docs/CLI/commands
 real y WER en verde tanto en synthesize como en say.
 
 **Nota de calidad:** el fix reabrió Fase 5 corrigiendo el **contrato de invocación del driver**
-(flags `--int4 -j 4 --stream`, `temperature 0`/`seed 42`, voz clonada + modelo Base, preprocesado
+(flags `--int4 -j 4 --stream`, `temperature 0.35`/`seed 42`, voz clonada + modelo Base, preprocesado
 24 kHz de la referencia). Con ese contrato, la inferencia reproduce la calidad aprobada por oído y el
 WER de los golden vuelve verde (la degradación del gate F7 era del contrato de invocación del
 driver, no del build). La comparación **bit-a-bit / mel-corr (≥ 0.98)** del build Windows frente al
@@ -300,6 +300,6 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 
 ## Próximos pasos
 
-1. **Fase 5:** resta solo la inferencia del clonado de voz, pendiente de pesos Base del motor Qwen3-TTS (validaciones y contrato ya funcionan).
+1. **Fase 5:** el clonado de voz ya funciona end-to-end (modelo Base provisionado en `vendor/qwen3-tts/qwen3-tts-0.6b-base/`, golden `voice_clone_exito` con `.qvoice` real). Lo pendiente para **cerrar** la fase es el gate de calidad de audio del build Windows: la comparación mel-corr / bit-a-bit del build UCRT64 frente al WSL del benchmark sigue sin medirse (investigación abierta en `docs/reviews/2026-08-14-tts-calidad-fase5.md`). El ajuste `temperature 0.35` (commit `fe54b10`) es parte de este trabajo de estabilización de calidad.
 2. **Fase 6:** ✅ Completada. El daemon nativo cablea TTS/STT reales, warmup de `default`/`ryan`, streaming NDJSON y cliente HTTP CLI→daemon. Reality check validado en runtime (`/health`, `/synthesize` con `audio_b64` real; warmup forzado antes del bind). El único item pendiente es el reality-check manual end-to-end de `/transcribe` (limitado por quoting de heredoc en bash — registro de mejora para F8).
 3. **Fase 7:** CI multi-SO y retiro del código Python.

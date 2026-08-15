@@ -592,14 +592,15 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
   + warmup; **migrar el clonado** (timbre → `.qvoice`); portar el bypass de watermark y su
   documentación ética. En Windows usa el build nativo MinGW-w64/UCRT64 del motor (§2.4).
 - **Verificar (⚠️ pendiente de calidad — Fase 5 NO cerrada, gate F7 falló):** `speech synthesize/say/dub` integrados contra el motor real por
-  **servidor residente** (`127.0.0.1:8766`, `--int8`, healthcheck y shutdown limpio; fallback
-  subprocess `--stdout`), con golden TTS de inferencia real en el harness dorado (suite
-  `cargo test --all` 80/80). El parche A1 (`WSAStartup`, enmienda de la orquestación de la Fase 5)
+  **servidor residente** (`127.0.0.1:8766`, `--int4 -j 4 --stream`, healthcheck y shutdown limpio;
+  fallback subprocess `--stdout`), con golden TTS de inferencia real en el harness dorado (suite
+  `cargo test --all` 78/78). El parche A1 (`WSAStartup`, enmienda de la orquestación de la Fase 5)
   arregló `--serve` en Windows. RTF real en este equipo: ~3 con 1 hilo (benchmark de referencia
-  1.31-1.73, otra máquina). Watermark verificado ausente y documentado. **Clonado parcial:**
+  1.31-1.73, otra máquina). Watermark verificado ausente y documentado. **Clonado end-to-end:**
   implementado con contrato `{name, timbre, speech, precomputed}` (`precomputed: false`) y
-  validaciones exit 2/3/6, pero la **inferencia queda pendiente de pesos Base** (`--ref-audio`
-  exige Base, `main.c:1848-1854`; el runtime solo tiene 0.6B CustomVoice). Almacén: layout Rust
+  validaciones exit 2/3/6; el **modelo Base quedó provisionado** en Windows
+  (`vendor/qwen3-tts/qwen3-tts-0.6b-base/`, requerido por `--ref-audio`, `main.c:1848-1854`) y la
+  inferencia del clonado ya corre e2e (golden `voice_clone_exito` con `.qvoice` real). Almacén: layout Rust
   `speech/` conservado por decisión de gate (e6) — los datos no son intercambiables con el
   `synthetic-speech/` del oráculo (divergencia documentada en el contrato CLI).
 - **Rollback:** conservar Chatterbox tras worker Python como motor alternativo hasta estabilizar.
