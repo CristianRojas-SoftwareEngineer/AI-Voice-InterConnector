@@ -34,6 +34,12 @@ impl SttEngine for Ct2SttEngine {
         params.set_translate(false);
         // 8 = núcleos físicos de la máquina de desarrollo.
         params.set_n_threads(8);
+        // Contexto del encoder acotado a 448 frames (~4.5 s): el default de
+        // whisper.cpp (1500 frames = 15 s) impone un piso de ~9 s por llamada
+        // en clips cortos (un solo forward del encoder con padding). Medido:
+        // 448 conserva el WER del default y reduce la latencia ~4x; bajar a
+        // 300 degrada la transcripción en audio >4.5 s (texto duplicado).
+        params.set_audio_ctx(448);
         params.set_language(language);
         state.full(params, &buffer)?;
 
