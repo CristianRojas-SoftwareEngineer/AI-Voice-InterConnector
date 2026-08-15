@@ -52,14 +52,17 @@ impl Default for GenerationOptions {
 }
 
 impl GenerationOptions {
-    /// Config de producción validada por oído contra el clip oficial (benchmark
-    /// WSL, F0): `temperature=0` (determinista) y `seed=42` fijo, resto de
-    /// campos igual a `Default`. No sustituye a `Default` (que debe seguir
-    /// coincidiendo con los defaults del motor) sino que es la superficie que
-    /// cablea la síntesis de producción (`Qwen3TtsEngine::synthesize`).
+    /// Config de producción validada por oído: `temperature=0.35` y `seed=42`
+    /// fijo, resto de campos igual a `Default`. El `temperature=0` previo corría
+    /// el Talker en greedy argmax sobre un clon x-vector-only sin plantilla de
+    /// prosodia, produciendo prosodia plana/extraña; 0.35 reactiva el muestreo
+    /// estocástico (y vuelve efectivo el `seed`) preservando la naturalidad sin
+    /// soltarse como el default del motor (0.9). No sustituye a `Default` (que
+    /// debe seguir coincidiendo con los defaults del motor) sino que es la
+    /// superficie que cablea la síntesis de producción (`Qwen3TtsEngine::synthesize`).
     pub fn produccion() -> Self {
         Self {
-            temperature: 0.0,
+            temperature: 0.35,
             seed: Some(42),
             ..Self::default()
         }
@@ -901,12 +904,12 @@ mod tests {
         assert_eq!(d.seed, None);
     }
 
-    /// T1: `produccion()` fija temperatura y seed a la config validada por oído
-    /// (WSL, F0), sin alterar el resto de campos respecto a `Default`.
+    /// T1: `produccion()` fija temperatura y seed a la config validada por oído,
+    /// sin alterar el resto de campos respecto a `Default`.
     #[test]
     fn generation_options_produccion_fija_temperatura_y_seed() {
         let p = GenerationOptions::produccion();
-        assert_eq!(p.temperature, 0.0);
+        assert_eq!(p.temperature, 0.35);
         assert_eq!(p.seed, Some(42));
         assert_eq!(p.top_k, DEFAULT_TOP_K);
         assert_eq!(p.top_p, DEFAULT_TOP_P);
