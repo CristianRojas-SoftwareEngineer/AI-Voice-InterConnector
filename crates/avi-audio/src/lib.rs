@@ -284,8 +284,43 @@ pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>> {
     };
 
     let mono = to_mono(&samples, spec.channels as usize);
-    let resampled = resample_linear(&mono, spec.sample_rate, 24_000);
+    let resampled = resample_24k_antialias(&mono, spec.sample_rate);
     Ok(f32_to_i16(&resampled))
+}
+
+/// Resamplea `mono` a 24 kHz con `rubato::FftFixedIn` (FFT polyphase con filtro
+/// anti-alias). Reemplaza a `resample_linear` SOLO en la ruta de clonado: la
+/// interpolación lineal no filtra al decimar (p. ej. 48→24 kHz), contamina el
+/// espectro y degrada el x-vector (timbre). Elegido por escucha A/B contra el
+/// gold de scipy `resample_poly`: FFT polyphase fue el que mejor preservó el
+/// timbre entre las opciones nativas evaluadas.
+/// No-op cuando ya está a 24 kHz (preserva el paso intacto de una referencia ya
+/// normalizada). Procesa en chunks fijos y vacía el remanente con `process_partial`.
+fn resample_24k_antialias(mono: &[f32], from_rate: u32) -> Vec<f32> {
+    use rubato::{FftFixedIn, Resampler};
+    if from_rate == 24_000 || mono.is_empty() {
+        return mono.to_vec();
+    }
+    const CHUNK: usize = 1024;
+    let mut resampler = match FftFixedIn::<f32>::new(from_rate as usize, 24_000, CHUNK, 2, 1) {
+        Ok(r) => r,
+        // Ante un ratio no construible, degradar a lineal antes que romper la carga.
+        Err(_) => return resample_linear(mono, from_rate, 24_000),
+    };
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos + CHUNK <= mono.len() {
+        match resampler.process(&[&mono[pos..pos + CHUNK]], None) {
+            Ok(w) => out.extend_from_slice(&w[0]),
+            Err(_) => return resample_linear(mono, from_rate, 24_000),
+        }
+        pos += CHUNK;
+    }
+    // Remanente final + frames retenidos por el filtro.
+    if let Ok(w) = resampler.process_partial(Some(&[&mono[pos..]]), None) {
+        out.extend_from_slice(&w[0]);
+    }
+    out
 }
 
 // ─── Helpers de AudioConverter ───────────────────────────────────────
