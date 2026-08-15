@@ -9,6 +9,7 @@ use axum::{
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
@@ -21,9 +22,19 @@ use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
 // (el motor interno del daemon usa el alfabeto STANDARD, idéntito al `encode`/`decode`
 // libres, por compatibilidad con el cliente raíz del CLI).
 use base64::Engine;
+use whisper_rs::{
+    convert_integer_to_float_audio, WhisperVadContext, WhisperVadContextParams, WhisperVadParams,
+};
 
 /// Ruta relativa (al cwd del workspace) del modelo Whisper STT en formato GGUF.
 const STT_MODEL_DIR: &str = "models/whisper/ggml-medium-q8_0.bin";
+/// Ruta relativa (al cwd del workspace) del modelo VAD Silero (GGML), usado
+/// para segmentar audio largo (>15 s) antes de transcribir.
+const VAD_MODEL_DIR: &str = "models/whisper/ggml-silero-v5.1.2.bin";
+/// Umbral de una sola pasada: audio <=15 s (240 000 muestras a 16 kHz) se
+/// transcribe de una vez con `audio_ctx` dinámico del motor (<=960, capacidad
+/// 19.2 s con margen 25%); más allá, el VAD divide en segmentos de <=15 s.
+const SINGLE_PASS_MAX_SAMPLES: usize = 240_000;
 /// Idioma por defecto para `clone_voice` cuando la petición no lo transporta
 /// (el contrato de /voices/precompute no carriya idioma).
 const DEFAULT_CLONE_LANGUAGE: &str = "es";
@@ -38,20 +49,30 @@ pub struct DaemonState {
     pub tts_engine: Qwen3TtsEngine,
     /// Motor STT nativo (whisper-rs sobre whisper.cpp, modelo GGUF medium-q8).
     pub stt_engine: Ct2SttEngine,
+    /// VAD Silero para segmentar audio largo (>15 s). El contexto vive entre
+    /// peticiones (modelo cargado una sola vez); `StdMutex` porque el runtime
+    /// ya bloquea en el motor STT y el VAD es rápido en comparación.
+    pub vad_engine: StdMutex<WhisperVadContext>,
 }
 
 impl DaemonState {
     /// Constructor de producción. Las rutas de modelo son relativas al cwd del
     /// workspace, correcto cuando `daemon serve` se lanza desde la raíz del repo.
-    /// Devuelve error si el motor STT no puede inicializarse (modelo inexistente).
+    /// Devuelve error si el motor STT o el VAD no pueden inicializarse (modelo
+    /// inexistente).
     pub fn new() -> anyhow::Result<Self> {
         let stt_engine = Ct2SttEngine::new(STT_MODEL_DIR)?;
+        let vad_engine = WhisperVadContext::new(VAD_MODEL_DIR, WhisperVadContextParams::default())
+            .map_err(|e| {
+                anyhow::anyhow!("fallo al cargar el modelo VAD {}: {:?}", VAD_MODEL_DIR, e)
+            })?;
         Ok(Self {
             synthesis_lock: Mutex::new(()),
             voice_store: VoiceStore::new(),
             speech_store: SpeechStore::new(),
             tts_engine: Qwen3TtsEngine::new(None),
             stt_engine,
+            vad_engine: StdMutex::new(vad_engine),
         })
     }
 }
@@ -386,7 +407,11 @@ async fn transcribe_handler(
         .unwrap_or("es-latam");
     let language = resolve_stt_language(source_language);
 
-    let result = state.stt_engine.transcribe(&pcm, Some(language));
+    let result = if pcm.len() > SINGLE_PASS_MAX_SAMPLES {
+        transcribir_con_vad(&state, &pcm, language)
+    } else {
+        state.stt_engine.transcribe(&pcm, Some(language))
+    };
     match result {
         Ok(text) => {
             let body = with_sv(json!({ "text": text }));
@@ -401,6 +426,41 @@ async fn transcribe_handler(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
         }
     }
+}
+
+/// Transcripción de audio largo (>15 s): el VAD Silero divide el audio en
+/// segmentos de voz (<=15 s, con padding de 30 ms y solape de 0.1 s para no
+/// cortar palabras), cada segmento se transcribe con el `audio_ctx` dinámico
+/// del motor y los textos se unen con espacios.
+fn transcribir_con_vad(
+    state: &DaemonState,
+    pcm: &[i16],
+    language: &str,
+) -> anyhow::Result<String> {
+    let mut buffer = vec![0f32; pcm.len()];
+    convert_integer_to_float_audio(pcm, &mut buffer)?;
+
+    let mut vad = state.vad_engine.lock().expect("lock VAD no envenenado");
+    let mut params = WhisperVadParams::new();
+    params.set_min_speech_duration(250);
+    params.set_min_silence_duration(400);
+    params.set_max_speech_duration(15.0);
+    params.set_speech_pad(30);
+    params.set_samples_overlap(0.1);
+
+    let segments = vad.segments_from_samples(params, &buffer)?;
+    let mut textos = Vec::new();
+    for seg in segments {
+        // Timestamps en centisegundos (10 ms) → muestras a 16 kHz.
+        let inicio = (seg.start / 100.0 * 16000.0) as usize;
+        let fin = (seg.end / 100.0 * 16000.0) as usize;
+        if fin <= inicio {
+            continue;
+        }
+        let texto = state.stt_engine.transcribe(&pcm[inicio..fin], Some(language))?;
+        textos.push(texto);
+    }
+    Ok(textos.join(" "))
 }
 
 /// Mapea el token de idioma del cliente (`es-latam`/`en`) al código ISO que

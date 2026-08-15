@@ -194,6 +194,7 @@ name = "avi-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "avi-audio",
  "avi-core",
  "avi-store",
  "avi-stt",
@@ -205,6 +206,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+ "whisper-rs",
 ]
 
 [[package]]

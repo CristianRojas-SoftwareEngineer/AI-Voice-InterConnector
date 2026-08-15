@@ -14,9 +14,14 @@ avi-store = { path = "../avi-store" }
 avi-stt = { path = "../avi-stt" }
 avi-tts = { path = "../avi-tts" }
 base64 = "0.22"
+# VAD Silero para segmentar audio largo (mismo crate que usa avi-stt, sin
+# dependencias nuevas en el árbol).
+whisper-rs = "0.16"
 
 [dev-dependencies]
 # Solo para el harness de tests dorados: permite ejercitar el Router de Axum
 # sin abrir un socket TCP real (tower::ServiceExt::oneshot).
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Normalización de WAV a PCM 16 kHz mono para el test dorado de audio largo.
+avi-audio = { path = "../avi-audio" }

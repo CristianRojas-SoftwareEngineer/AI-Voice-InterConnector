@@ -34,12 +34,13 @@ impl SttEngine for Ct2SttEngine {
         params.set_translate(false);
         // 8 = núcleos físicos de la máquina de desarrollo.
         params.set_n_threads(8);
-        // Contexto del encoder acotado a 448 frames (~4.5 s): el default de
-        // whisper.cpp (1500 frames = 15 s) impone un piso de ~9 s por llamada
-        // en clips cortos (un solo forward del encoder con padding). Medido:
-        // 448 conserva el WER del default y reduce la latencia ~4x; bajar a
-        // 300 degrada la transcripción en audio >4.5 s (texto duplicado).
-        params.set_audio_ctx(448);
+        // Ventana del encoder (audio_ctx) dinámica según la duración del audio:
+        // capacidad = ctx×20 ms con margen >=25% (múltiplo de 64, piso 256
+        // verificado, tope 1500 del modelo). El default de whisper.cpp (1500
+        // fijo) imponía un piso de ~9 s por llamada en clips cortos; 448 fijo
+        // degradaba audio >8.96 s (recorte de cola → repetición). Ver
+        // `audio_ctx_para_duracion`.
+        params.set_audio_ctx(audio_ctx_para_duracion(audio_pcm.len()));
         params.set_language(language);
         state.full(params, &buffer)?;
 
@@ -49,6 +50,22 @@ impl SttEngine for Ct2SttEngine {
             .collect::<Result<_, _>>()?;
         Ok(transcripts.join(" "))
     }
+}
+
+/// Calcula el `audio_ctx` (ventana de atención del encoder) para una duración
+/// de audio dada.
+///
+/// Cada frame del encoder cubre 20 ms de audio, luego la capacidad es
+/// `n_ctx × 20 ms`; si el audio excede la ventana, whisper.cpp recorta la cola
+/// por pasada y el modelo repite palabras. Se exige margen >=25% de capacidad
+/// sobre la duración (→ `n_ctx >= 62.5 × duración_s`), redondeando al múltiplo
+/// de 64 más cercano (invariante de whisper.cpp), y se acota al rango
+/// [256, 1500]: piso 256 verificado experimentalmente (conserva el texto de
+/// 448 en clips <=4 s) y tope 1500 = `n_audio_ctx` del modelo.
+fn audio_ctx_para_duracion(samples: usize) -> i32 {
+    let dur_s = samples as f64 / 16000.0;
+    let ctx = (((dur_s * 62.5 / 64.0).ceil()) as i32) * 64;
+    ctx.clamp(256, 1500)
 }
 
 #[cfg(test)]
@@ -121,6 +138,55 @@ mod tests {
 
         let result = Ct2SttEngine::new("ruta/que/no/existe/whisper-small");
         assert!(result.is_err(), "una ruta de modelo inexistente debe fallar");
+    }
+
+    /// `audio_ctx_para_duracion` debe escalonar por duración (capacidad
+    /// `n_ctx×20 ms` >= 1.25×duración), respetar múltiplos de 64 y acotarse al
+    /// rango [256, 1500] (piso verificado experimentalmente; tope del modelo).
+    #[test]
+    fn audio_ctx_para_duracion_respeta_escalon_margen_y_limites() {
+        use crate::audio_ctx_para_duracion;
+
+        // (duración en segundos, contexto esperado)
+        let casos: [(usize, i32); 9] = [
+            (0, 256),
+            (2, 256),   // 62.5×2=125 → 128 < piso → 256 (capacidad 5.12 s)
+            (4, 256),   // 250 → 256 (capacidad 5.12 s >= 1.25×4 s)
+            (5, 320),   // 312.5 → 320
+            (7, 448),   // 437.5 → 448
+            (8, 512),
+            (10, 640),  // 625 → 640 (capacidad 12.8 s >= 12.5 s)
+            (15, 960),  // 937.5 → 960
+            (30, 1500), // 1875 → 1920 > tope → 1500
+        ];
+        for (segundos, esperado) in casos {
+            let ctx = audio_ctx_para_duracion(segundos * 16000);
+            assert_eq!(
+                ctx, esperado,
+                "audio de {} s debe mapear a audio_ctx {} (obtenido {})",
+                segundos, esperado, ctx
+            );
+            assert!(
+                (ctx == 1500 || ctx % 64 == 0) && (256..=1500).contains(&ctx),
+                "ctx {} debe ser múltiplo de 64 (o el tope 1500 del modelo) dentro de [256, 1500]",
+                ctx
+            );
+        }
+
+        // Capacidad >= 1.25×duración para todo audio hasta el límite del modelo
+        // (24 s); por encima, el tope 1500 (30 s de capacidad) cubre hasta 24 s.
+        for segundos in 1..=60 {
+            let ctx = audio_ctx_para_duracion(segundos * 16000);
+            let capacidad_s = ctx as f64 * 0.020;
+            if segundos <= 24 {
+                assert!(
+                    capacidad_s >= 1.25 * segundos as f64,
+                    "{} s: capacidad {:.2} s insuficiente para el margen 25%",
+                    segundos,
+                    capacidad_s
+                );
+            }
+        }
     }
 
     /// Test de paridad contra texto verificado.

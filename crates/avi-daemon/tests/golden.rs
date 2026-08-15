@@ -23,6 +23,7 @@ use std::sync::OnceLock;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -44,12 +45,20 @@ fn test_state() -> Arc<DaemonState> {
                 .join("../../models/whisper/ggml-medium-q8_0.bin");
             let stt_engine = avi_stt::Ct2SttEngine::new(&stt_model_dir)
                 .expect("el modelo STT de test debe cargarse");
+            let vad_model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../models/whisper/ggml-silero-v5.1.2.bin");
+            let vad_engine = whisper_rs::WhisperVadContext::new(
+                &vad_model_dir.to_string_lossy(),
+                whisper_rs::WhisperVadContextParams::default(),
+            )
+            .expect("el modelo VAD de test debe cargarse");
             Arc::new(DaemonState {
                 synthesis_lock: tokio::sync::Mutex::new(()),
                 voice_store: VoiceStore::new(),
                 speech_store: SpeechStore::new(),
                 tts_engine: avi_tts::Qwen3TtsEngine::new(None),
                 stt_engine,
+                vad_engine: std::sync::Mutex::new(vad_engine),
             })
         })
         .clone()
@@ -204,6 +213,53 @@ async fn voices_respeta_el_contrato_de_envelope() {
         .expect("debe existir la voz de fábrica `default`");
     assert_eq!(default["is_factory"], Value::Bool(true));
     assert!(default.get("has_reference").is_some(), "contrato: `has_reference` presente");
+}
+
+/// Audio largo (>15 s): el daemon debe segmentar con VAD, transcribir cada
+/// segmento con el `audio_ctx` dinámico del motor y devolver el texto unido.
+/// Se concatenan los 4 corpus (~22 s) en memoria — sin fixtures nuevas.
+#[tokio::test]
+async fn transcribe_audio_largo_vad_une_segmentos() {
+    let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
+    let corpus = [
+        "corpus_sintesis_16k.wav",
+        "corpus_watermark_16k.wav",
+        "corpus_respuestas_16k.wav",
+        "whisper_sample_16k.wav",
+    ];
+    let mut pcm: Vec<i16> = Vec::new();
+    for wav in corpus {
+        let seg = avi_audio::load_wav_16k_mono_pcm(&assets.join(wav))
+            .expect("el WAV corpus debe cargarse");
+        pcm.extend_from_slice(&seg);
+    }
+    assert!(
+        pcm.len() > 240_000,
+        "el audio concatenado debe superar el umbral de una sola pasada (15 s)"
+    );
+
+    let audio_bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let (status, bytes) = send(post_json(
+        "/transcribe",
+        serde_json::json!({
+            "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
+            "source_language": "es-latam",
+        }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    let text = actual["text"].as_str().unwrap_or("");
+    let norm = text.to_lowercase();
+    // Frases de cada corpus que el modelo transcribe bien (el sintético
+    // `sintesis` tiene pronunciación defectuosa → se usan palabras estables;
+    // "espejo" se transcribe como "espajo" y no se exige).
+    for frase in ["marca de agua", "usuario", "hola", "voz"] {
+        assert!(
+            norm.contains(frase),
+            "el texto unido debe contener {frase:?}: {text:?}"
+        );
+    }
 }
 
 /// Content-type del response (cabecera `content-type`), para validar el
