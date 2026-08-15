@@ -56,7 +56,7 @@ Obtener un sistema TTS **100% local** con audio nativo por sistema operativo, pa
 
 Motor TTS: **Chatterbox Multilingual V3** (ResembleAI) — 23+ idiomas, clonación de voz, licencia MIT.
 
-Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre CTranslate2, opt-in) cierra el bucle de la clonación de voz: el usuario escribe en su idioma nativo y obtiene audio en el idioma destino con su propia voz clonada, en un solo comando (`speech say`/`synthesize --source-language ... --target-language ...`) o vía el comando `translate` cuando solo necesita el texto traducido. El eslabón de entrada de ese bucle (audio→texto) lo cubre `speech transcribe` (`faster-whisper` sobre el mismo runtime CT2, opt-in vía `setup --with-stt`).
+Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre CTranslate2, opt-in) cierra el bucle de la clonación de voz: el usuario escribe en su idioma nativo y obtiene audio en el idioma destino con su propia voz clonada, en un solo comando (`speech say`/`synthesize --source-language ... --target-language ...`) o vía el comando `translate` cuando solo necesita el texto traducido. El eslabón de entrada de ese bucle (audio→texto) lo cubre `speech transcribe` (`whisper-rs` sobre whisper.cpp, opt-in vía `setup --with-stt`).
 
 **El sistema debe ser consumible via línea de comandos** para que cualquier aplicación en cualquier lenguaje de programación pueda invocarlo (Python, JavaScript/Node, Rust, Go, Java, C#, etc.)
 

@@ -19,9 +19,9 @@ const VERSION: &str = "0.10.5";
 const APP_NAME: &str = "ai-voice-interconnector";
 /// Dirección del daemon nativo (T7: cliente HTTP async contra este address).
 const DAEMON_ADDR: &str = "127.0.0.1:8765";
-/// Ruta fija del modelo Whisper ya convertido a CT2, reutilizado por
-/// `speech transcribe` (no se gestiona vía `ModelStore`: layout incompatible).
-const DEFAULT_WHISPER_MODEL_DIR: &str = "models/ct2/whisper-small";
+/// Ruta fija del modelo Whisper ya convertido a GGUF (whisper.cpp), reutilizado
+/// por `speech transcribe` (no se gestiona vía `ModelStore`: layout incompatible).
+const DEFAULT_WHISPER_MODEL_DIR: &str = "models/whisper/ggml-medium-q8_0.bin";
 /// Ruta fija del modelo Marian/opus-mt es→en ya convertido a CT2, reutilizado
 /// por `translate` (no se gestiona vía `ModelStore`: layout incompatible).
 const DEFAULT_TRANSLATION_MODEL_ES_EN: &str = "models/ct2/opus-mt-es-en";
@@ -592,7 +592,7 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                 return Err(CliError::new(
                     ExitCode::ModelMissing,
                     "model_missing",
-                    "El modelo de transcripción no está provisionado en 'models/ct2/whisper-small'.",
+                    "El modelo de transcripción no está provisionado en 'models/whisper/ggml-medium-q8_0.bin'.",
                 ));
             }
 
@@ -787,7 +787,7 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                 return Err(CliError::new(
                     ExitCode::ModelMissing,
                     "model_missing",
-                    "El modelo de transcripción no está provisionado en 'models/ct2/whisper-small'.",
+                    "El modelo de transcripción no está provisionado en 'models/whisper/ggml-medium-q8_0.bin'.",
                 ));
             }
             require_model_provisioned()?;
@@ -1068,7 +1068,7 @@ fn handle_setup(json_mode: bool, language: &str, with_stt: bool) -> Result<(), C
 
     // 4. Registrar modelo STT si se solicita --with-stt
     if with_stt {
-        model_store.register_provisioned("whisper-ct2", "v1.0").map_err(|e| {
+        model_store.register_provisioned("whisper-gguf", "v1.0").map_err(|e| {
             CliError::new(ExitCode::Error, "model_provision_failed", e.to_string())
         })?;
     }
@@ -1116,8 +1116,8 @@ fn handle_doctor(_json_mode: bool) -> Result<(), CliError> {
     if !model_store.is_provisioned("qwen3-tts-0.6b") {
         issues.push("Modelo TTS (Qwen3-TTS 0.6B) no provisionado");
     }
-    if !model_store.is_provisioned("whisper-ct2") {
-        issues.push("Modelo STT (Whisper CT2) no provisionado");
+    if !model_store.is_provisioned("whisper-gguf") {
+        issues.push("Modelo STT (Whisper GGUF) no provisionado");
     }
     if !model_store.is_provisioned("marian-es-en") {
         issues.push("Modelo traducción (Marian es→en) no provisionado");

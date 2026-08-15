@@ -12,10 +12,11 @@
 | Fase 0 | Fundamentos y validación de integración | ✅ Desbloqueada |
 | Fase 1 | Host Rust — almacenes, CLI, config | ✅ Completada |
 | Fase 2 | Audio (CPAL) | ✅ Completada |
-| Fase 3 | STT nativo (`ct2rs::Whisper`) | ✅ Completada |
+| Fase 3 | STT nativo (`whisper-rs` / whisper.cpp) | ✅ Completada |
 | Fase 4 | Traducción nativa (`ct2rs::Translator`) + segmentación | ✅ Completada |
 | Fase 5 | TTS nativo (Qwen3-TTS subprocess) | ⚠️ Implementada — calidad pendiente, NO cerrada |
 | Fase 6 | Daemon (Axum) + streaming + warmup | ✅ Implementada |
+| Migración STT whisper-rs (post-F5) | ✅ Aplicada |
 | Fase 7 | Empaquetado, cutover y retiro de Python | 🔶 Parcial |
 | Transversales | Tracing, UTF-8, SIGINT, despacho de modos | ✅ Completadas |
 
@@ -39,14 +40,15 @@
 Ejecutada mediante la orquestación `fase0-desbloqueo`. El árbol Rust es hoy un **cargo workspace** (paquete
 raíz `ai-voice-interconnector` = binario CLI en `src/main.rs`, más ocho crates bajo `crates/`:
 `avi-core`, `avi-audio`, `avi-tts`, `avi-store`, `avi-config`, `avi-daemon`, `avi-stt`, `avi-translation`).
-`ct2rs` está cableado en `avi-stt` y compila CTranslate2 desde fuente (backend oneDNN + OpenMP). La verificación
+`whisper-rs` está cableado en `avi-stt` (whisper.cpp desde fuente vía CMake+MSVC) y `ct2rs` en
+`avi-translation`, compilando CTranslate2 desde fuente (backend oneDNN + OpenMP). La verificación
 de terreno real (F5) dejó la suite del workspace en verde (18 tests) y ejercitó cada pieza externa contra
 pesos reales.
 
 | Ítem | Estado | Detalle |
 |------|--------|---------|
 | Validar integración subprocess del motor Qwen (texto → WAV) | ✅ | Smoke real de `qwen_tts.exe`: WAV PCM 16-bit mono 24000 Hz |
-| Validar `ct2rs` (Whisper + Translator) contra modelos ya convertidos | ✅ | Tests de carga en `avi-stt`: opus-mt es↔en + Whisper small, salida no vacía |
+| Validar `ct2rs` (Whisper + Translator) contra modelos ya convertidos | ✅ | Tests de carga: `avi-stt` (Whisper GGUF medium-q8 tras la migración a whisper-rs) + `avi-translation` (opus-mt es↔en), salida no vacía |
 | Build nativo del motor Qwen en Windows (MinGW-w64/UCRT64) | ✅ | `qwen_tts.exe` estático (MSYS2/UCRT64, gcc 16.1.0, shims POSIX) |
 | Crear workspace Rust (cargo workspace, crates por subsistema) | ✅ | Raíz + 8 crates `avi-*`; `default-members = [".", "crates/*"]` |
 | Harness de tests de contrato dorados (captura del oráculo Python) | ✅ | `crates/avi-daemon/tests/golden.rs` (5) + `tests/cli_golden.rs` (6), fixtures en `tests/golden/` |
@@ -95,19 +97,23 @@ La infraestructura de almacenes y configuración está implementada. La superfic
 
 ---
 
-## Fase 3 — STT nativo (`ct2rs::Whisper`)
+## Fase 3 — STT nativo (`whisper-rs` / whisper.cpp)
 
 **Estado:** ✅ Completada
 
-`Ct2SttEngine` (sobre `ct2rs::Whisper`) está implementado y cableado a `speech transcribe`, con superficie
+`Ct2SttEngine` (sobre `whisper-rs` 0.16 / whisper.cpp, modelo GGUF
+`ggml-medium-q8_0.bin`) está implementado y cableado a `speech transcribe`, con superficie
 CLI `--audio`/`--mic`/`--duration`/`--source-language`, contrato JSON `{text, source}` (envuelto en
 `schema_version = "3"`) y exit codes 2 (argumentos inválidos), 4 (modelo ausente) y 10 (fallo de
-transcripción). La paridad contra el oráculo Python quedó cerrada: se provisionó el modelo del oráculo
-(`setup --with-stt` → `faster-whisper-small`) y se construyó un corpus de 4 pares `(WAV, fixture)` con
-audios reales — el WAV sintético existente más 3 audios nuevos generados con el motor Qwen3-TTS del
-propio repositorio (remuestreados a 16 kHz mono int16) — y transcripciones emitidas por el oráculo
-(`TranscriptionService` de producción). El test de paridad (antes `#[ignore]`) quedó activo: WER ≤ 0.05
-por ítem, 4/4 en verde.
+transcripción). La paridad quedó cerrada contra **ground truth verificado manualmente**: 2 pares
+`(WAV, fixture)` de voz sintética Qwen3-TTS (remuestreados a 16 kHz mono int16) — el oráculo Python
+`faster-whisper-medium` resultó defectuoso en español (CT2 issue #654) y se descartó, y el oráculo
+`faster-whisper-small` se mantiene solo como snapshot de producción del oráculo, no como referencia
+del test. El test de paridad (antes `#[ignore]`) quedó activo: WER ≤ 0.05 por ítem sobre texto
+normalizado (minúsculas, sin diacríticos ni puntuación), 2/2 en verde. El modelo STT se provisiona con
+`setup --with-stt` bajo el registro `whisper-gguf` (antes `whisper-ct2`, obsoleto); `doctor` verifica
+`is_provisioned("whisper-gguf")` y reporta «Modelo STT (Whisper GGUF) no provisionado» cuando falta.
+`models/ct2/whisper-small/` quedó deprecado (no borrado).
 
 Optimización de rendimiento (backend + cuantización + hilos): se reemplazó el backend ruy por
 **oneDNN + OpenMP** en el build de CTranslate2 y se fijó **cuantización int8** con
@@ -117,10 +123,14 @@ Python mantenida** (1.0047x; dorada 4/4 WER ≤ 0.05) y suite workspace 48/48 en
 en traducción: el CLI construye el motor por invocación (recarga del modelo ~1 s, preexistente, fuera de
 alcance; el daemon Fase 6 lo resolverá con motor residente).
 
+> **Nota histórica (migración STT whisper-rs, post-F5):** esta optimización correspondía al motor
+> CT2 y quedó superada por la migración a whisper-rs (el motor actual usa GGUF q8 de whisper.cpp
+> y no pasa por CT2).
+
 | Ítem | Estado |
 |------|--------|
 | Verificar disponibilidad de `ct2rs` / CMake / CTranslate2 en entorno build | ✅ |
-| Implementar `Ct2SttEngine` sobre `ct2rs::Whisper` | ✅ |
+| Implementar `Ct2SttEngine` sobre `whisper-rs` (whisper.cpp, modelo GGUF) | ✅ |
 | Integrar con captura/carga de audio (pipeline `--mic`/`--audio` → transcripción) | ✅ |
 | Validar contra oráculo Python (WER ≤ 0.05, corpus de 4 audios) | ✅ |
 | Optimización STT (backend oneDNN+OpenMP, cuantización int8 + 8 hilos): speedup a nivel motor 1.98x, paridad con oráculo 1.0047x | ✅ |
@@ -261,6 +271,23 @@ fue limitada por quoting de heredoc en bash (registro de mejora en F8).
 
 ---
 
+## Migración STT whisper-rs (post-F5)
+
+**Estado:** ✅ Aplicada
+
+El motor STT (`Ct2SttEngine`, el nombre del struct no cambió) dejó CTranslate2 y corre sobre
+**`whisper-rs` 0.16 (whisper.cpp)** con el modelo GGUF `models/whisper/ggml-medium-q8_0.bin`
+(~823 MB, repo `ggerganov/whisper.cpp` en HF). `models/ct2/whisper-small/` quedó deprecado (no
+borrado) y `ct2rs` permanece solo en `avi-translation` (traducción opus-mt). La provisión del
+modelo STT sigue por `setup --with-stt`, ahora bajo el registro **`whisper-gguf`** (`whisper-ct2`
+obsoleto); `doctor` verifica `is_provisioned("whisper-gguf")` y reporta «Modelo STT (Whisper
+GGUF) no provisionado» cuando falta. La paridad quedó cerrada contra **ground truth verificado**
+(2 pares `(WAV, fixture)`, WER ≤ 0.05 por ítem sobre texto normalizado): el oráculo Python
+`faster-whisper-medium` se descartó (defecto CT2 issue #654); `faster-whisper-small` queda solo
+como snapshot de producción del oráculo.
+
+---
+
 ## Fase 7 — Empaquetado, cutover y retiro de Python
 
 **Estado:** 🔶 Parcial
@@ -294,7 +321,8 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 | `tracing` / `tracing-subscriber` | Logging y diagnósticos estructurados |
 | `thiserror` / `anyhow` | Taxonomía de errores de dominio |
 | `clap` | Superficie CLI |
-| `ct2rs` | Bindings de CTranslate2 (STT/traducción, backend oneDNN + OpenMP); compila desde fuente |
+| `ct2rs` | Bindings de CTranslate2 (traducción opus-mt, backend oneDNN + OpenMP); compila desde fuente |
+| `whisper-rs` | Bindings de whisper.cpp (motor STT, modelo GGUF `ggml-medium-q8_0.bin`) |
 
 ---
 

@@ -267,12 +267,12 @@ mod tts {
     }
 
     /// WER (por palabras normalizadas, Levenshtein) del WAV frente al texto
-    /// fuente, vía Whisper CT2 (patrón de `crates/avi-translation/src/lib.rs:313-334`).
+    /// fuente, vía Whisper GGUF (whisper-rs; patrón de `crates/avi-translation/src/lib.rs:313-334`).
     fn wer_vs_texto(path: &Path, texto: &str) -> f64 {
         let pcm = avi_audio::load_wav_16k_mono_pcm(path.to_string_lossy().as_ref())
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
-        let engine = avi_stt::Ct2SttEngine::new("models/ct2/whisper-small")
-            .expect("el modelo Whisper CT2 debe existir");
+        let engine = avi_stt::Ct2SttEngine::new("models/whisper/ggml-medium-q8_0.bin")
+            .expect("el modelo Whisper GGUF debe existir");
         let transcrito = engine
             .transcribe(&pcm, Some("es"))
             .expect("la transcripción no debe fallar");
@@ -285,15 +285,25 @@ mod tts {
         d as f64 / b.len() as f64
     }
 
-    /// Palabras minúsculas alfabéticas (señal de habla limpia).
+    /// Palabras minúsculas sin diacríticos ni puntuación (señal de habla
+    /// limpia). El plegado de diacríticos es manual para no depender de
+    /// `unicode-normalization`.
     fn normalizar(s: &str) -> Vec<String> {
-        s.split_whitespace()
-            .map(|w| {
-                w.chars()
-                    .filter(|c| c.is_ascii_alphanumeric())
-                    .collect::<String>()
-                    .to_lowercase()
+        s.to_lowercase()
+            .chars()
+            .map(|c| match c {
+                'á' | 'ä' => 'a',
+                'é' | 'ë' => 'e',
+                'í' | 'ï' => 'i',
+                'ó' | 'ö' => 'o',
+                'ú' | 'ü' => 'u',
+                'ñ' => 'n',
+                c if c.is_ascii_alphanumeric() => c,
+                _ => ' ',
             })
+            .collect::<String>()
+            .split_whitespace()
+            .map(|w| w.to_string())
             .filter(|w| !w.is_empty())
             .collect()
     }
@@ -486,8 +496,8 @@ mod tts {
             eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
             return;
         }
-        if !Path::new("models/ct2/whisper-small").is_dir() {
-            eprintln!("[tts] skip: sin modelo Whisper CT2");
+        if !Path::new("models/whisper/ggml-medium-q8_0.bin").exists() {
+            eprintln!("[tts] skip: sin modelo Whisper GGUF");
             return;
         }
         if !hay_dispositivo_audio() {

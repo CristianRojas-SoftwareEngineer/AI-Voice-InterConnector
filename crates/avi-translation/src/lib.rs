@@ -43,7 +43,8 @@ impl Ct2TranslationEngine {
         // (mismo patrón que `DummyTranslationEngine` ignorando parámetros no
         // aplicables). Se anexa `</s>` manualmente al origen: el encoder
         // Marian/opus-mt lo exige y `ct2-transformers-converter` no lo añade
-        // automáticamente (ver nota técnica en `crates/avi-stt/src/lib.rs`).
+        // automáticamente (ver nota técnica en el test
+        // `ct2rs_carga_modelo_opus_mt_y_traduce` de este mismo archivo).
         let sources: Vec<String> = oraciones
             .iter()
             .map(|oracion| format!("{} </s>", oracion))
@@ -181,6 +182,47 @@ mod tests {
         assert!(
             !translated.contains("</s>"),
             "el token EOS de origen no debe filtrarse a la salida"
+        );
+    }
+
+    /// Carga un modelo CT2 real (opus-mt es→en, ya convertido y validado en
+    /// disco) vía `Translator::new` y ejecuta una traducción corta, verificando
+    /// que la salida no esté vacía. Reside aquí (y no en `avi-stt`) porque usa
+    /// `ct2rs::Translator`, el runtime CT2 que este crate conserva.
+    ///
+    /// NOTA TÉCNICA: el encoder Marian/opus-mt exige el token `</s>` al final de
+    /// la secuencia de origen. `ct2-transformers-converter` NO lo añade
+    /// automáticamente (`config.json` del modelo trae `"add_source_eos": false`);
+    /// sin ese token el decoder nunca converge a una traducción coherente. El
+    /// motor real debe anexar `</s>` explícitamente al texto/tokens de origen
+    /// antes de invocar `translate_batch` (o el tokenizador SentencePiece
+    /// equivalente debe insertarlo).
+    #[test]
+    fn ct2rs_carga_modelo_opus_mt_y_traduce() {
+        use ct2rs::{Config, Translator};
+
+        let model_dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../models/ct2/opus-mt-es-en"
+        );
+
+        let translator = Translator::new(model_dir, &Config::default())
+            .expect("el modelo opus-mt-es-en debe cargar pesos CT2 reales desde disco");
+
+        // Se anexa `</s>` manualmente al origen: ver nota técnica arriba. El
+        // tokenizador SentencePiece embebido (feature `sentencepiece`, activada
+        // por defecto en ct2rs) reconoce `</s>` como símbolo de vocabulario
+        // (confirmado en `shared_vocabulary.json`), no como texto literal.
+        let sources = vec!["Hola, ¿cómo estás? </s>"];
+        let results = translator
+            .translate_batch(&sources, &Default::default(), None)
+            .expect("translate_batch debe ejecutar sobre el modelo cargado");
+
+        assert!(!results.is_empty(), "debe producirse al menos un resultado");
+        let (translated, _) = &results[0];
+        assert!(
+            !translated.trim().is_empty(),
+            "la traducción no debe estar vacía"
         );
     }
 

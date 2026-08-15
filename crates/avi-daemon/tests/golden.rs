@@ -41,7 +41,7 @@ fn test_state() -> Arc<DaemonState> {
             // `cargo test -p avi-daemon` ejecuta con CWD=crates/avi-daemon; los
             // modelos están bajo la raíz del workspace (CARGO_MANIFEST_DIR/..).
             let stt_model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../models/ct2/whisper-small");
+                .join("../../models/whisper/ggml-medium-q8_0.bin");
             let stt_engine = avi_stt::Ct2SttEngine::new(&stt_model_dir)
                 .expect("el modelo STT de test debe cargarse");
             Arc::new(DaemonState {

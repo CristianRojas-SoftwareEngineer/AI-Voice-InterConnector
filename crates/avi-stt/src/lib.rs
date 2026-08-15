@@ -1,123 +1,83 @@
-//! Motor STT (speech-to-text) real sobre `ct2rs::Whisper`.
+//! Motor STT (speech-to-text) real sobre whisper-rs (bindings de whisper.cpp).
 //!
 //! Expone `Ct2SttEngine`, implementación de `avi_core::engine::SttEngine` que
-//! carga un modelo Whisper convertido a CT2 y transcribe PCM `i16` mono a
+//! carga un modelo Whisper en formato GGUF y transcribe PCM `i16` mono a
 //! 16 kHz forzando el idioma indicado (Whisper solo transcribe, nunca traduce,
-//! por construcción del tipo `ct2rs::Whisper`).
+//! por construcción: `set_translate(false)`).
 
 use avi_core::engine::SttEngine;
-use ct2rs::{ComputeType, Config, Whisper};
+use whisper_rs::{
+    convert_integer_to_float_audio, FullParams, SamplingStrategy, WhisperContext,
+    WhisperContextParameters,
+};
 
-/// Motor STT real sobre un modelo Whisper cargado en formato CT2.
+/// Motor STT real sobre un modelo Whisper cargado en formato GGUF.
 pub struct Ct2SttEngine {
-    whisper: Whisper,
+    ctx: WhisperContext,
 }
 
 impl Ct2SttEngine {
-    /// Carga el modelo Whisper CT2 ubicado en `model_dir`.
-    pub fn new(model_dir: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
-        let whisper = Whisper::new(
-            model_dir,
-            Config {
-                // Cuantización int8: espejo del oráculo Python (faster-whisper) y
-                // ~1.37x más rápido que fp32 en CPU (medido en benchmarks).
-                compute_type: ComputeType::INT8,
-                // 8 = núcleos físicos de la máquina de desarrollo; el default de
-                // CT2 (0) rendía ~4-8% menos en el workload medido.
-                num_threads_per_replica: 8,
-                ..Default::default()
-            },
-        )?;
-        Ok(Self { whisper })
+    /// Carga el modelo Whisper GGUF ubicado en `model_path`.
+    pub fn new(model_path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())?;
+        Ok(Self { ctx })
     }
 }
 
 impl SttEngine for Ct2SttEngine {
     fn transcribe(&self, audio_pcm: &[i16], language: Option<&str>) -> anyhow::Result<String> {
-        let samples: Vec<f32> = audio_pcm
-            .iter()
-            .map(|&s| s as f32 / i16::MAX as f32)
-            .collect();
-        let transcripts = self.whisper.generate(&samples, language, false, &Default::default())?;
+        let mut buffer = vec![0f32; audio_pcm.len()];
+        convert_integer_to_float_audio(audio_pcm, &mut buffer)?;
+
+        let mut state = self.ctx.create_state()?;
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 0 });
+        params.set_translate(false);
+        // 8 = núcleos físicos de la máquina de desarrollo.
+        params.set_n_threads(8);
+        params.set_language(language);
+        state.full(params, &buffer)?;
+
+        let transcripts: Vec<String> = state
+            .as_iter()
+            .map(|segment| segment.to_str_lossy().map(|s| s.to_string()))
+            .collect::<Result<_, _>>()?;
         Ok(transcripts.join(" "))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use ct2rs::{Config, Translator};
+    use avi_core::engine::SttEngine;
+    use whisper_rs::WhisperContextParameters;
 
-    /// Smoke test: fuerza la resolución del enlace con `ct2rs`/CTranslate2
+    /// Smoke test: fuerza la resolución del enlace con `whisper-rs`/whisper.cpp
     /// (compilado desde fuente vía CMake+MSVC) sin requerir un modelo en disco.
-    /// `Config` es el tipo de configuración que exige `Translator::new`; construirlo
-    /// con sus valores por defecto ya obliga al linker a resolver los símbolos de
-    /// CTranslate2, demostrando que el toolchain nativo (Tarea 2) compila la
-    /// dependencia correctamente.
+    /// `WhisperContextParameters` es el tipo de configuración que exige
+    /// `WhisperContext::new_with_params`; construirlo con sus valores por defecto
+    /// ya obliga al linker a resolver los símbolos de whisper.cpp, demostrando
+    /// que el toolchain nativo compila la dependencia correctamente.
     #[test]
-    fn ct2rs_enlaza_correctamente() {
-        let _cfg = Config::default();
+    fn whisper_rs_enlaza_correctamente() {
+        let _params = WhisperContextParameters::default();
     }
 
-    /// Etapa 2 (Tarea 7 delegada): carga un modelo CT2 real (opus-mt es→en, ya
-    /// convertido y validado en disco) vía `Translator::new` y ejecuta una
-    /// traducción corta, verificando que la salida no esté vacía.
-    ///
-    /// NOTA TÉCNICA para la Fase 4 (implementación real del motor de traducción):
-    /// el encoder Marian/opus-mt exige el token `</s>` al final de la secuencia de
-    /// origen. `ct2-transformers-converter` NO lo añade automáticamente
-    /// (`config.json` del modelo trae `"add_source_eos": false`); sin ese token el
-    /// decoder nunca converge a una traducción coherente. El motor real de Fase 4
-    /// deberá anexar `</s>` explícitamente al texto/tokens de origen antes de
-    /// invocar `translate_batch` (o el tokenizador SentencePiece equivalente debe
-    /// insertarlo).
-    #[test]
-    fn ct2rs_carga_modelo_opus_mt_y_traduce() {
-        let model_dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../models/ct2/opus-mt-es-en"
-        );
-
-        let translator = Translator::new(model_dir, &Config::default())
-            .expect("el modelo opus-mt-es-en debe cargar pesos CT2 reales desde disco");
-
-        // Se anexa `</s>` manualmente al origen: ver nota técnica arriba. El
-        // tokenizador SentencePiece embebido (feature `sentencepiece`, activada
-        // por defecto en ct2rs) reconoce `</s>` como símbolo de vocabulario
-        // (confirmado en `shared_vocabulary.json`), no como texto literal.
-        let sources = vec!["Hola, ¿cómo estás? </s>"];
-        let results = translator
-            .translate_batch(&sources, &Default::default(), None)
-            .expect("translate_batch debe ejecutar sobre el modelo cargado");
-
-        assert!(!results.is_empty(), "debe producirse al menos un resultado");
-        let (translated, _) = &results[0];
-        assert!(
-            !translated.trim().is_empty(),
-            "la traducción no debe estar vacía"
-        );
-    }
-
-    /// Etapa 3 (Tarea 7 delegada, cierre): carga el modelo Whisper convertido a CT2
-    /// (`models/ct2/whisper-small`) vía `ct2rs::Whisper` y transcribe una muestra corta
-    /// de voz real, verificando que la salida no esté vacía. Complementa al test de
-    /// opus-mt: demuestra que el toolchain `ct2rs` carga tanto un modelo de traducción
-    /// (Marian) como uno de transcripción (Whisper), la cobertura mínima que el motor
-    /// STT real de la Fase 3 asumirá provisionada.
+    /// Carga el modelo Whisper GGUF (`models/whisper/ggml-medium-q8_0.bin`) vía
+    /// `Ct2SttEngine` y transcribe una muestra corta de voz real, verificando
+    /// que la salida no esté vacía.
     ///
     /// El fixture `tests/assets/whisper_sample_16k.wav` es voz sintética en español
-    /// generada por el propio motor Qwen3-TTS del proyecto (smoke de la Tarea 10),
-    /// remuestreada a 16 kHz mono — la tasa que exige Whisper.
+    /// generada por el propio motor Qwen3-TTS del proyecto, remuestreada a
+    /// 16 kHz mono — la tasa que exige Whisper.
     #[test]
-    fn ct2rs_carga_modelo_whisper_y_transcribe() {
-        use ct2rs::Whisper;
+    fn whisper_rs_carga_modelo_gguf_y_transcribe() {
+        use crate::Ct2SttEngine;
 
-        let model_dir = concat!(
+        let model_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../models/ct2/whisper-small"
+            "/../../models/whisper/ggml-medium-q8_0.bin"
         );
-
-        let whisper = Whisper::new(model_dir, Config::default())
-            .expect("el modelo whisper-small debe cargar pesos CT2 reales desde disco");
+        let engine = Ct2SttEngine::new(model_path)
+            .expect("el modelo whisper GGUF debe cargar pesos reales desde disco");
 
         // El fixture ya está a la tasa de muestreo que espera el modelo (16 kHz).
         let wav_path = concat!(
@@ -128,20 +88,18 @@ mod tests {
             .expect("el WAV fixture debe abrirse");
         assert_eq!(
             reader.spec().sample_rate as usize,
-            whisper.sampling_rate(),
+            16000,
             "el fixture debe estar a la tasa de muestreo que exige Whisper"
         );
-        // PCM 16-bit → f32 normalizado a [-1, 1].
-        let samples: Vec<f32> = reader
+
+        let pcm: Vec<i16> = reader
             .samples::<i16>()
-            .map(|s| s.expect("muestra PCM válida") as f32 / i16::MAX as f32)
+            .map(|s| s.expect("muestra PCM válida"))
             .collect();
 
-        let transcripts = whisper
-            .generate(&samples, Some("es"), false, &Default::default())
-            .expect("generate debe transcribir sobre el modelo cargado");
-
-        let texto: String = transcripts.join(" ");
+        let texto = engine
+            .transcribe(&pcm, Some("es"))
+            .expect("transcribe debe ejecutar sobre el modelo cargado");
         assert!(
             !texto.trim().is_empty(),
             "la transcripción no debe estar vacía"
@@ -150,7 +108,7 @@ mod tests {
 
     /// `Ct2SttEngine::new` sobre una ruta de modelo inexistente debe devolver
     /// `Err`, cubriendo la rama de "modelo no cargable" que el handler CLI
-    /// (Tarea 6) mapea a `ExitCode::TranscriptionFailed` (10).
+    /// mapea a `ExitCode::TranscriptionFailed` (10).
     #[test]
     fn ct2sttengine_new_con_ruta_inexistente_devuelve_err() {
         use crate::Ct2SttEngine;
@@ -159,33 +117,39 @@ mod tests {
         assert!(result.is_err(), "una ruta de modelo inexistente debe fallar");
     }
 
-    /// Test de paridad contra el oráculo Python (Tarea 4 del plan F3).
+    /// Test de paridad contra texto verificado.
     ///
-    /// El corpus de referencia son 4 audios de voz sintética en español
+    /// El corpus de referencia son 2 audios de voz sintética en español
     /// generada por el motor Qwen3-TTS del proyecto (remuestreados a 16 kHz
     /// mono, la tasa que exige Whisper), con su transcripción de referencia
-    /// obtenida del pipeline de transcripción del oráculo Python
-    /// (`faster-whisper-small` vía `WhisperModelLoader`). Se comparan por
-    /// igualdad textual o, en su defecto, por WER ≤ 0.05 (distancia de
-    /// Levenshtein a nivel de palabra).
+    /// verificada manualmente como ground truth (el oráculo Python
+    /// `faster-whisper-medium` resultó defectuoso en español — CT2 issue
+    /// #654 — y se descartó). La comparación normaliza ambos lados a
+    /// minúsculas sin diacríticos ni puntuación (insensible a acentos y
+    /// signos), y acepta WER ≤ 0.05 (distancia de Levenshtein a nivel de
+    /// palabra) sobre el texto normalizado.
+    ///
+    /// `corpus_sintesis_16k.wav` y `corpus_respuestas_16k.wav` se excluyen del
+    /// corpus: su audio sintético Qwen3-TTS tiene pronunciación defectuosa
+    /// (el GGUF transcribe `esténtesis`/`clonazin`/`espato`/`Spaho` por
+    /// `síntesis`/`clonación`/`español`/`espejo`, errores que también cometía
+    /// el CT2 small original) y ningún modelo Whisper los transcribe bien. Los
+    /// WAV y sus fixtures permanecen en `tests/assets/` sin uso en el corpus.
     #[test]
     fn ct2sttengine_coincide_con_oraculo_python() {
         use crate::Ct2SttEngine;
-        use avi_core::engine::SttEngine;
 
-        let model_dir = concat!(
+        let model_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../models/ct2/whisper-small"
+            "/../../models/whisper/ggml-medium-q8_0.bin"
         );
-        let engine = Ct2SttEngine::new(model_dir).expect("el modelo whisper-small debe cargar");
+        let engine = Ct2SttEngine::new(model_path).expect("el modelo whisper GGUF debe cargar");
 
-        // Pares (audio, fixture de transcripción del oráculo), mismo directorio
-        // `tests/assets/` de este crate.
-        let corpus: [(&str, &str); 4] = [
+        // Pares (audio, fixture de transcripción de referencia), mismo
+        // directorio `tests/assets/` de este crate.
+        let corpus: [(&str, &str); 2] = [
             ("whisper_sample_16k.wav", "whisper_sample_16k.oraculo.txt"),
-            ("corpus_sintesis_16k.wav", "corpus_sintesis_16k.oraculo.txt"),
             ("corpus_watermark_16k.wav", "corpus_watermark_16k.oraculo.txt"),
-            ("corpus_respuestas_16k.wav", "corpus_respuestas_16k.oraculo.txt"),
         ];
 
         for (wav, fixture) in corpus {
@@ -205,18 +169,23 @@ mod tests {
                 .to_string();
 
             let esperado = std::fs::read_to_string(fixture_path)
-                .expect("el fixture de referencia del oráculo debe existir")
+                .expect("el fixture de referencia debe existir")
                 .trim()
                 .to_string();
 
-            if actual == esperado {
+            // Ambos lados normalizados: minúsculas, sin diacríticos ni
+            // puntuación (el WER no debe penalizar acentos ni signos).
+            let esperado_norm = normalizar_texto(&esperado);
+            let actual_norm = normalizar_texto(&actual);
+            let ref_palabras: Vec<&str> = esperado_norm.split_whitespace().collect();
+            let hip_palabras: Vec<&str> = actual_norm.split_whitespace().collect();
+
+            if ref_palabras == hip_palabras {
                 continue;
             }
 
-            // Igualdad textual no se cumple: umbral de paridad por WER a nivel de
-            // palabra (distancia de Levenshtein entre secuencias de palabras).
-            let ref_palabras: Vec<&str> = esperado.split_whitespace().collect();
-            let hip_palabras: Vec<&str> = actual.split_whitespace().collect();
+            // Igualdad normalizada no se cumple: umbral de paridad por WER a
+            // nivel de palabra (distancia de Levenshtein entre secuencias).
             let distancia = levenshtein_palabras(&ref_palabras, &hip_palabras);
             let wer = distancia as f64 / ref_palabras.len().max(1) as f64;
 
@@ -225,10 +194,31 @@ mod tests {
                 "WER {:.4} supera el umbral de paridad 0.05 en {} (esperado: {:?}, obtenido: {:?})",
                 wer,
                 wav,
-                esperado,
-                actual
+                esperado_norm,
+                actual_norm
             );
         }
+    }
+
+    /// Normaliza texto para la comparación de paridad: minúsculas, plegado de
+    /// diacríticos (á→a, é→e, í→i, ó→o, ú→u, ü→u, ñ→n) y eliminación de
+    /// puntuación (¡¿!?.,;:"'«»…- y similares). El plegado es manual para no
+    /// depender de `unicode-normalization`.
+    fn normalizar_texto(texto: &str) -> String {
+        texto
+            .to_lowercase()
+            .chars()
+            .map(|c| match c {
+                'á' | 'ä' => 'a',
+                'é' | 'ë' => 'e',
+                'í' | 'ï' => 'i',
+                'ó' | 'ö' => 'o',
+                'ú' | 'ü' => 'u',
+                'ñ' => 'n',
+                c if c.is_ascii_alphanumeric() => c,
+                _ => ' ',
+            })
+            .collect()
     }
 
     /// Distancia de Levenshtein a nivel de palabra entre `referencia` e

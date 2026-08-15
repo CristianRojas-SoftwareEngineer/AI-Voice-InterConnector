@@ -22,8 +22,8 @@ use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
 // libres, por compatibilidad con el cliente raíz del CLI).
 use base64::Engine;
 
-/// Directorio relativo (al cwd del workspace) del modelo Whisper STT.
-const STT_MODEL_DIR: &str = "models/ct2/whisper-small";
+/// Ruta relativa (al cwd del workspace) del modelo Whisper STT en formato GGUF.
+const STT_MODEL_DIR: &str = "models/whisper/ggml-medium-q8_0.bin";
 /// Idioma por defecto para `clone_voice` cuando la petición no lo transporta
 /// (el contrato de /voices/precompute no carriya idioma).
 const DEFAULT_CLONE_LANGUAGE: &str = "es";
@@ -36,7 +36,7 @@ pub struct DaemonState {
     pub speech_store: SpeechStore,
     /// Motor TTS nativo (Qwen3-TTS), con ciclo de vida persistente entre peticiones.
     pub tts_engine: Qwen3TtsEngine,
-    /// Motor STT nativo (Whisper CT2, int8 / 8 hilos).
+    /// Motor STT nativo (whisper-rs sobre whisper.cpp, modelo GGUF medium-q8).
     pub stt_engine: Ct2SttEngine,
 }
 

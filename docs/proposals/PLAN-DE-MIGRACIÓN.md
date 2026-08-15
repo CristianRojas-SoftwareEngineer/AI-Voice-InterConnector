@@ -43,7 +43,7 @@ consumidores durante toda la transición.
   - [Fase 0 — Fundamentos y validación de integración](#fase-0--fundamentos-y-validación-de-integración)
   - [Fase 1 — Host Rust (paridad de superficie, motores aún delegados)](#fase-1--host-rust-paridad-de-superficie-motores-aún-delegados)
   - [Fase 2 — Audio (CPAL)](#fase-2--audio-cpal)
-  - [Fase 3 — STT (`ct2rs::Whisper`)](#fase-3--stt-ct2rswhisper)
+  - [Fase 3 — STT (`whisper-rs`)](#fase-3--stt-whisper-rs)
   - [Fase 4 — Traducción (`ct2rs::Translator`) + segmentación](#fase-4--traducción-ct2rstranslator--segmentación)
   - [Fase 5 — TTS (Qwen3-TTS por subprocess)](#fase-5--tts-qwen3-tts-por-subprocess)
   - [Fase 6 — Daemon (Axum) + streaming + warmup](#fase-6--daemon-axum--streaming--warmup)
@@ -305,10 +305,11 @@ claro a simplificación.
         ┌───────────────────────────────┼───────────────────────────────┐
         ▼                               ▼                               ▼
      AUDIO                             STT / Traducción                TTS
-     CPAL                              ct2rs → CTranslate2         subprocess (HTTP/PCM)
-        │                               │         │                    │
-   WASAPI/CoreAudio/                 Whisper    Marian            Qwen3-TTS 0.6B
-   ALSA/PipeWire                      (STT)   (es<->en)          (motor C, binario)
+     CPAL                          whisper-rs / ct2rs            subprocess (HTTP/PCM)
+        │                              │           │                   │
+   WASAPI/CoreAudio/               Whisper      Marian            Qwen3-TTS 0.6B
+   ALSA/PipeWire                   (whisper.cpp, (es<->en,        (motor C, binario)
+                                     GGUF)       CT2)
 ```
 
 ### 2.3 Stack tecnológico Rust
@@ -321,7 +322,7 @@ claro a simplificación.
 | Audio I/O (captura/playback/enum) | **CPAL** | miniaudio + winsound + afplay + sounddevice + pycaw |
 | Decodificación/escritura audio | `hound` (WAV) / `symphonia` (si hiciera falta) | `wave` + numpy |
 | Resampling / conversión | `rubato` o convertidor propio | remuestreo numpy |
-| STT | `ct2rs::Whisper` → CTranslate2 | faster-whisper |
+| STT | `whisper-rs` → whisper.cpp (GGUF `ggml-medium-q8_0.bin`) | faster-whisper |
 | Traducción | `ct2rs::Translator` → CTranslate2 (Marian) | transformers + CT2 |
 | Segmentación | Segmentador determinista en Rust | pysbd |
 | TTS | Qwen3-TTS 0.6B (motor C) + **subprocess** (HTTP / PCM por stdout) | ChatterboxEngine (PyTorch) |
@@ -417,11 +418,14 @@ una ruta WSL2; **WSL2 no se usa en producción**. La distribución en Windows se
   (MIT), `ingot` (MIT), OpenBLAS (BSD-3-Clause), LZ4 (BSD-2-Clause) y el par LGPL
   (`libgfortran`/`libquadmath`)— se registran en `THIRD-PARTY-LICENSES.md` en la Fase 7.
 
-#### STT y Traducción — runtime CTranslate2 compartido
+#### STT y Traducción — runtimes separados
 
-- `ct2rs` (MIT, requiere CMake en el build) expone `Translator`, `Generator` y `Whisper`
-  sobre CTranslate2, con streaming y backends `mkl`/`dnnl`/`cuda`. STT (Whisper) y traducción
-  (Marian) **comparten el mismo runtime CT2** en el proceso Rust.
+- El motor STT corre sobre `whisper-rs` (bindings de whisper.cpp; MIT, requiere CMake +
+  compilador C++ en el build) con el modelo GGUF `ggml-medium-q8_0.bin` (~823 MB, repo
+  `ggerganov/whisper.cpp` en HF). `ct2rs` (MIT, requiere CMake en el build) expone
+  `Translator`, `Generator` y `Whisper` sobre CTranslate2, con streaming y backends
+  `mkl`/`dnnl`/`cuda`, y queda **exclusivo de traducción** (Marian): STT y traducción ya
+  **no comparten runtime**.
 - STT mantiene `task="transcribe"` estricto. Traducción mantiene el par `es<->en` y el
   passthrough.
 - **Tokenización:** `ct2rs` cubre **SentencePiece** de fábrica; el token `</s>` se anexa
@@ -478,7 +482,7 @@ una ruta WSL2; **WSL2 no se usa en producción**. La distribución en Windows se
 |---|---|
 | Superficie CLI y semántica de comandos | Lenguaje del host (Python → Rust) |
 | Exit codes `0–10/130` | Motor TTS (Chatterbox → Qwen3-TTS) |
-| Esquema JSON `schema_version=3` | Runtime STT/traducción (faster-whisper → ct2rs) |
+| Esquema JSON `schema_version=3` | Runtime STT/traducción (faster-whisper → whisper-rs/ct2rs) |
 | Contrato HTTP del daemon (puerto, rutas, NDJSON) | Stack de audio (5–6 libs → CPAL) |
 | Contrato stdout/stderr + UTF-8 | Segmentación (pysbd → Rust) |
 | Layout en disco de voces/locuciones | Empaquetado (PyInstaller → nativo) |
@@ -498,7 +502,8 @@ bytes de audio dentro de tolerancia).
 
 Cada fase declara: **objetivo**, **trabajo**, **criterio de verificación ejecutable** y
 **rollback**. El orden minimiza riesgo: primero lo de bajo riesgo y alto valor
-estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al final** el TTS
+estructural (host, audio), luego los runtimes de inferencia (whisper-rs para STT, CT2 para
+traducción), y **al final** el TTS
 (máximo riesgo, gated).
 
 ### Fase 0 — Fundamentos y validación de integración
@@ -508,16 +513,16 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
 - **Trabajo:**
   - Validar la **integración por subprocess** del motor Qwen (HTTP local y/o PCM por
     `--stdout`) produciendo audio válido.
-  - Validar **`ct2rs`** (Whisper + Translator) contra los modelos ya convertidos; confirmar
-    la versión de CTranslate2 embebida frente a la de los artefactos.
+  - Validar **`whisper-rs`** (Whisper GGUF) y **`ct2rs`** (Translator) contra los modelos ya
+    convertidos; confirmar la versión de CTranslate2 embebida frente a la de los artefactos.
   - Producir el **build nativo del motor en Windows** (MinGW-w64/UCRT64, §2.4 «Build nativo
     por plataforma») e integrarlo al pipeline de empaquetado.
   - Crear el **workspace Rust** (cargo workspace, crates por subsistema).
   - Construir el **harness de tests de contrato dorados**: capturar de la versión Python
     actual, para un corpus fijo de invocaciones, los `(exit_code, stdout_json, stderr,
     audio_hash)` que servirán de oráculo.
-- **Verificar:** la integración por subprocess produce audio válido; `ct2rs` compila y
-  produce salida plausible; el `.exe` nativo de Windows es autocontenido; el harness
+- **Verificar:** la integración por subprocess produce audio válido; `whisper-rs`/`ct2rs`
+  compilan y producen salida plausible; el `.exe` nativo de Windows es autocontenido; el harness
   reproduce contra Python un baseline verde.
 - **Rollback:** los runtimes CT2/subprocess conservan el worker Python como respaldo por
   componente; el runtime Python en Windows es el respaldo de rollback del motor TTS.
@@ -545,21 +550,26 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
   SO; los WAV capturados dan la **misma transcripción** que hoy.
 - **Rollback:** conmutar la ruta de audio al worker Python.
 
-### Fase 3 — STT (`ct2rs::Whisper`)
+### Fase 3 — STT (`whisper-rs`)
 
-- **Objetivo:** transcripción nativa sobre CTranslate2, sin faster-whisper.
-- **Trabajo:** `SttEngine` sobre `ct2rs`; `task="transcribe"` estricto; reutilizar los
-  modelos Whisper ya convertidos a CT2; conectar con el `AudioConverter` de la Fase 2.
-- **Verificar (✅ completada):** corpus de 4 audios (el WAV sintético existente + 3 audios
-  nuevos generados con el motor Qwen3-TTS del repositorio, remuestreados a 16 kHz/mono) con
-  fixtures de transcripción emitidas por el oráculo Python (`faster-whisper-small`, provisionado
-  vía `setup --with-stt`); el test de paridad (antes `#[ignore]`) compara por WER ≤ 0.05 por
-  ítem — 4/4 en verde; `speech transcribe` cumple el contrato JSON y el exit 10 en fallos.
-- **Rollback:** worker Python de STT.
+> **Nota de migración ejecutada (post-F5, orquestación `migracion-stt-whisper-rs`):** el motor STT
+> (`Ct2SttEngine`, el nombre del struct no cambió) dejó CTranslate2 y corre sobre **`whisper-rs`
+> 0.16 (whisper.cpp)** con el modelo GGUF `models/whisper/ggml-medium-q8_0.bin` (~823 MB, repo
+> `ggerganov/whisper.cpp` en HF). `models/ct2/whisper-small/` quedó **deprecado (no borrado)**;
+> `ct2rs` permanece solo en traducción. La provisión sigue por `setup --with-stt`, ahora bajo el
+> registro **`whisper-gguf`** (`whisper-ct2` obsoleto); `doctor` verifica
+> `is_provisioned("whisper-gguf")` y reporta «Modelo STT (Whisper GGUF) no provisionado» cuando
+> falta. La paridad se cerró contra **ground truth verificado** (2 pares `(WAV, fixture)`, WER ≤
+> 0.05 por ítem sobre texto normalizado, sin diacríticos ni puntuación): el oráculo Python
+> `faster-whisper-medium` se descartó (defecto CT2 issue #654) y `faster-whisper-small` queda solo
+> como snapshot de producción del oráculo, no como referencia del test. `task="transcribe"`
+> estricto se conserva (Whisper solo transcribe, nunca traduce). Rollback: worker Python de STT
+> (se conserva).
 
 ### Fase 4 — Traducción (`ct2rs::Translator`) + segmentación
 
-- **Objetivo:** traducción `es<->en` nativa compartiendo el runtime CT2 de la Fase 3.
+- **Objetivo:** traducción `es<->en` nativa sobre CTranslate2 (`ct2rs`, runtime CT2 exclusivo de
+  traducción tras la migración de STT a whisper-rs).
 - **Trabajo:** motor `Ct2TranslationEngine` sobre `ct2rs::Translator` (Marian, ambas direcciones
   es↔en); **segmentador jerárquico `HierarchicalSegmenter`** en `avi-core` (reemplaza pysbd:
   párrafo → oración → puntuación fuerte → tokens, con `max_length`); pipeline
@@ -655,7 +665,7 @@ estructural (host, audio), luego los runtimes CT2 (STT/traducción), y **al fina
 |---|---|---|---|
 | Regresión de calidad en la integración real / int4 | 5 | Media | Clips de referencia; re-escucha tras integrar; fallback Chatterbox |
 | Build nativo del motor en Windows (upstream solo documenta WSL2) | 0/5 | Baja | Build MinGW-w64/UCRT64 con shims POSIX acotados bajo `_WIN32` y static linking autocontenido (§2.4); fallback Python como respaldo de rollback |
-| `ct2rs` sin paridad de versión CT2 vs modelos convertidos | 3 | Resuelto | CTranslate2 embebido = 4.8.1, misma versión que el oráculo (ctranslate2 4.8.1); pesos reconvertidos a int8 byte-idénticos al deployment del oráculo |
+| `ct2rs` sin paridad de versión CT2 vs modelos convertidos | 4 | Resuelto | Riesgo obsoleto para STT tras la migración a whisper-rs (el modelo GGUF ya viene convertido; sin paridad de versión CT2 que verificar). Aplica a traducción: CTranslate2 embebido = 4.8.1, misma versión que el oráculo (ctranslate2 4.8.1); pesos reconvertidos a int8 byte-idénticos al deployment del oráculo |
 | Divergencia de tokenización Marian (`sacremoses`) — resuelto por evidencia (F1) | 4 | Resuelto | El oráculo no usa `sacremoses` en runtime (SentencePiece crudo + `</s>` manual en `model_loader.py`); pieza descartada por decisión cerrada (Decisión #6) — ver Fase 4 |
 | Empates numéricos de beam search entre builds de CT2 | 4 | Baja | En empates casi exactos («Don't» vs «Do not») cada build puede elegir una hipótesis válida distinta; la paridad es funcional (WER medio de corpus ≤ 0.35), no byte a byte — ver Fase 4 |
 | Calidad de segmentación Rust < pysbd | 4 | Resuelto | Validación estructural contra corpus pysbd (6 tests); paridad funcional de traducción en verde sobre el corpus de 11 ítems — ver Fase 4 |

@@ -1,1 +1,1 @@
- Sistema de esténtesis de voz completamente local con clonacin de voz en espato latinoamericano.
+ Sistema de síntesis de voz completamente local con clonación de voz en español latinoamericano.

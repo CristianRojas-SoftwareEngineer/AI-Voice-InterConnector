@@ -28,11 +28,16 @@ HuggingFace del usuario mediante `ai-voice-interconnector setup`. Se listan por 
 | `Helsinki-NLP/opus-mt-es-en` (traducción es→en, opt-in) | **CC-BY-4.0** | <https://huggingface.co/Helsinki-NLP/opus-mt-es-en> |
 | `Helsinki-NLP/opus-mt-en-es` (traducción en→es, opt-in) | **CC-BY-4.0** | <https://huggingface.co/Helsinki-NLP/opus-mt-en-es> |
 | `Systran/faster-whisper-small` (transcripción STT, opt-in con `setup --with-stt`) | **MIT** | <https://huggingface.co/Systran/faster-whisper-small> |
+| `ggml-medium-q8_0.bin` (transcripción STT del motor Rust whisper-rs, opt-in con `setup --with-stt`) | **MIT** | <https://huggingface.co/ggerganov/whisper.cpp> |
 
 Los repositorios de Chatterbox declaran licencia **MIT** en sus metadatos (verificado el
 2026-07-03). El modelo de transcripción `Systran/faster-whisper-small` (conversión a
 CTranslate2 de `openai/whisper-small`) declara licencia **MIT** en sus metadatos
-(verificado el 2026-08-11). El modelo base incluye además la nota de que su salida lleva un watermark
+(verificado el 2026-08-11). Se conserva como **snapshot del oráculo Python** (vigente hasta el
+retiro de Python, Fase 7): el motor STT nativo Rust ya no lo usa. El motor STT del binario Rust
+(`Ct2SttEngine`) corre sobre **`whisper-rs`** (bindings, MIT) / **whisper.cpp** (MIT) con el
+modelo GGUF `ggml-medium-q8_0.bin` del repo `ggerganov/whisper.cpp` (MIT) — dependencias STT del
+motor nativo, opt-in con `setup --with-stt` (registro `whisper-gguf`). El modelo base incluye además la nota de que su salida lleva un watermark
 neural (PerthNet) y un descargo de uso responsable («Don't use this model to do bad
 things»). AI Voice InterConnector **desactiva ese watermark** en el motor; ver la sección «Uso ético y
 responsable» en `README.md`/`USAGE.md` para las obligaciones que ello traslada al usuario.

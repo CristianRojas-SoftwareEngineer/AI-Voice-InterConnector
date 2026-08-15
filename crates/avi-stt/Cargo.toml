@@ -4,13 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Backend oneDNN + OpenMP (sin ruy): replica la configuración del wheel de
-# Python y es ~2.4x más rápido que ruy en CPU. Verificada por benchmarks.
-# `whisper` re-sube los tokenizadores (`all-tokenizers`), por eso
-# `default-features = false` no los priva.
-# `whisper` habilita el transcriptor `ct2rs::Whisper` (mel_spec + ndarray) usado por el
-# test de carga del modelo Whisper CT2 y, en la Fase 3, por el motor STT real.
-ct2rs = { version = "0.10.0", default-features = false, features = ["whisper", "openmp-runtime-comp", "dnnl"] }
+# Bindings de whisper.cpp (sin features GPU: CPU-only por default). Reemplaza a
+# ct2rs::Whisper como motor STT; CT2 permanece solo en avi-translation.
+whisper-rs = "0.16"
 avi-core = { path = "../avi-core" }
 anyhow = "1.0"
 
