@@ -11,6 +11,9 @@ tokio-stream = "0.1"
 axum = "0.7"
 avi-core = { path = "../avi-core" }
 avi-store = { path = "../avi-store" }
+avi-stt = { path = "../avi-stt" }
+avi-tts = { path = "../avi-tts" }
+base64 = "0.22"
 
 [dev-dependencies]
 # Solo para el harness de tests dorados: permite ejercitar el Router de Axum

@@ -21,6 +21,11 @@ avi-store = { path = "crates/avi-store" }
 avi-daemon = { path = "crates/avi-daemon" }
 avi-stt = { path = "crates/avi-stt" }
 avi-translation = { path = "crates/avi-translation" }
+# Cliente HTTP async del CLI para el dispatch 3-modos contra el daemon (T7).
+# `default-features = false` preserva el cliente ligero (HTTP sin TLS, suficiente
+# para localhost); el daemon expone solo rutas HTTP en 127.0.0.1:8765.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_System_Console"] }

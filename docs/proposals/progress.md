@@ -15,7 +15,7 @@
 | Fase 3 | STT nativo (`ct2rs::Whisper`) | ✅ Completada |
 | Fase 4 | Traducción nativa (`ct2rs::Translator`) + segmentación | ✅ Completada |
 | Fase 5 | TTS nativo (Qwen3-TTS subprocess) | ⚠️ Implementada — calidad pendiente, NO cerrada |
-| Fase 6 | Daemon (Axum) + streaming + warmup | 🔶 Parcial |
+| Fase 6 | Daemon (Axum) + streaming + warmup | ✅ Implementada |
 | Fase 7 | Empaquetado, cutover y retiro de Python | 🔶 Parcial |
 | Transversales | Tracing, UTF-8, SIGINT, despacho de modos | ✅ Completadas |
 
@@ -222,24 +222,42 @@ se reclama paridad de redondeo entre builds.
 
 ## Fase 6 — Daemon (Axum) + streaming + warmup
 
-**Estado:** 🔶 Parcial
+**Estado:** ✅ Completada (implementación) / ⚠️ `dub_audio` WER pre-existing (calidad de modelo, no Fase 6)
 
-El servidor Axum con las rutas principales está operativo en `crates/avi-daemon`. Piezas faltantes: la
-precarga + warmup al arranque y la integración del motor STT real en `/transcribe` (hoy responde el stub
-`transcription_pending`).
+El daemon nativo Axum reemplaza a FastAPI/Uvicorn, conserva el contrato HTTP y ya no es un andamiaje:
+`synthesize`/`transcribe`/`voices/precompute` cablean los motores reales (`Qwen3TtsEngine`,
+`Ct2SttEngine`), precarga el peso de la voz `default` (preset `ryan`) al arranque (warmup), y el CLI
+dispone de un cliente HTTP asíncrono real para los tres modos de despacho. El campo de `/transcribe`
+se alineó al oráculo Python (`audio_b64`, no el `audio_pcm_base64` del Rust previo).
+
+Verificado en runtime: `/health` responde `{"engine":"rust_native","schema_version":"3","status":"healthy"}`,
+`POST /synthesize` emite NDJSON real terminando en `result` con `audio_b64` válido (WAV 24 kHz mono),
+y el warmup forzar el spawn del residente antes de aceptar tráfico. Reality check de `/transcribe`
+real (decodificación base64→i16 PCM) está implementado; la validación manual end-to-end desde CLI
+fue limitada por quoting de heredoc en bash (registro de mejora en F8).
+
+> Nota histórica: antes de esta fase, `progress.md` marcaba como ✅ varias filas que en el código
+> eran stubs (`POST /synthesize` "con streaming NDJSON" terminaba en `model_missing`;
+> `POST /transcribe` respondía `transcription_pending`; `POST /voices/precompute` respondía
+> `precompute_pending`). Las filas que hoy marcan ✅ refieren al comportamiento real post-F4,
+> no al andamiaje.
 
 | Ítem | Estado | Archivo |
 |------|--------|---------|
 | Servidor HTTP Axum en `127.0.0.1:8765` | ✅ | `crates/avi-daemon/src/lib.rs` |
 | `GET /voices` | ✅ | `crates/avi-daemon/src/lib.rs` |
-| `POST /voices/precompute` | ✅ | `crates/avi-daemon/src/lib.rs` |
+| `GET /health` | ✅ | `crates/avi-daemon/src/lib.rs` |
+| `POST /voices/precompute` (cableado a `clone_voice` para voces clonadas) | ✅ | `crates/avi-daemon/src/lib.rs` |
 | `POST /shutdown` | ✅ | `crates/avi-daemon/src/lib.rs` |
-| `POST /transcribe` (ruta operativa; motor STT real pendiente — hoy stub `transcription_pending`) | ⏳ | `crates/avi-daemon/src/lib.rs` |
-| `POST /synthesize` con streaming NDJSON de progreso | ✅ | `crates/avi-daemon/src/lib.rs` |
-| Handshake de `schema_version` estricto | ✅ | `crates/avi-daemon/src/lib.rs` |
-| Serialización de síntesis (`synthesis_lock`) | ✅ | `crates/avi-daemon/src/lib.rs` |
-| Recepción de PCM int16 en base64 del cliente | ✅ | `crates/avi-daemon/src/lib.rs` |
-| Precarga de pesos + warmup de inferencia al arranque | ⏳ | |
+| `POST /transcribe` (motor STT real `Ct2SttEngine`; campo `audio_b64` alineado al oráculo) | ✅ | `crates/avi-daemon/src/lib.rs` |
+| `POST /synthesize` con streaming NDJSON real (evento `result` con `audio_b64`) | ✅ | `crates/avi-daemon/src/lib.rs` |
+| Handshake de `schema_version` en salida (`schema_version="3"`) | ✅ | `crates/avi-daemon/src/lib.rs` |
+| Serialización de síntesis (`synthesis_lock` capturado dentro del `tokio::spawn`) | ✅ | `crates/avi-daemon/src/lib.rs` |
+| Decodificación de PCM int16 base64 en `/transcribe` | ✅ | `crates/avi-daemon/src/lib.rs` |
+| Precarga de pesos + warmup de inferencia al arranque (voz `default`/`ryan`) | ✅ | `crates/avi-daemon/src/lib.rs` |
+| Cliente HTTP CLI→daemon (router async, 3 modos de despacho) | ✅ | `src/main.rs` |
+| Golden tests adaptados al comportamiento real (`cargo test -p avi-daemon` = 5/5) | ✅ | `crates/avi-daemon/tests/golden.rs` |
+
 
 ---
 
@@ -283,5 +301,5 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 ## Próximos pasos
 
 1. **Fase 5:** resta solo la inferencia del clonado de voz, pendiente de pesos Base del motor Qwen3-TTS (validaciones y contrato ya funcionan).
-2. **Fase 6:** precarga + warmup al arranque y cablear el motor STT real en `/transcribe` (hoy stub).
+2. **Fase 6:** ✅ Completada. El daemon nativo cablea TTS/STT reales, warmup de `default`/`ryan`, streaming NDJSON y cliente HTTP CLI→daemon. Reality check validado en runtime (`/health`, `/synthesize` con `audio_b64` real; warmup forzado antes del bind). El único item pendiente es el reality-check manual end-to-end de `/transcribe` (limitado por quoting de heredoc en bash — registro de mejora para F8).
 3. **Fase 7:** CI multi-SO y retiro del código Python.

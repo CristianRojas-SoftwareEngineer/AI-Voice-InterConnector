@@ -1,5 +1,6 @@
 {
   "schema_version": "3",
-  "status": "transcription_pending",
-  "message": "El motor STT nativo no está provisionado."
+  "status": "error",
+  "reason": "audio_missing",
+  "message": "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono)."
 }

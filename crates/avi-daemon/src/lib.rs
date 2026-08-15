@@ -12,8 +12,21 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+use avi_core::engine::SttEngine;
 use avi_core::json_emitter;
-use avi_store::{VoiceStore, SpeechStore};
+use avi_store::{SpeechStore, VoiceStore};
+use avi_stt::Ct2SttEngine;
+use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
+// `Engine` trait requerido por el API no-deprecation de base64 0.22
+// (el motor interno del daemon usa el alfabeto STANDARD, idéntito al `encode`/`decode`
+// libres, por compatibilidad con el cliente raíz del CLI).
+use base64::Engine;
+
+/// Directorio relativo (al cwd del workspace) del modelo Whisper STT.
+const STT_MODEL_DIR: &str = "models/ct2/whisper-small";
+/// Idioma por defecto para `clone_voice` cuando la petición no lo transporta
+/// (el contrato de /voices/precompute no carriya idioma).
+const DEFAULT_CLONE_LANGUAGE: &str = "es";
 
 /// Estado compartido del daemon
 pub struct DaemonState {
@@ -21,25 +34,50 @@ pub struct DaemonState {
     pub synthesis_lock: Mutex<()>,
     pub voice_store: VoiceStore,
     pub speech_store: SpeechStore,
+    /// Motor TTS nativo (Qwen3-TTS), con ciclo de vida persistente entre peticiones.
+    pub tts_engine: Qwen3TtsEngine,
+    /// Motor STT nativo (Whisper CT2, int8 / 8 hilos).
+    pub stt_engine: Ct2SttEngine,
 }
 
 impl DaemonState {
-    pub fn new() -> Self {
-        Self {
+    /// Constructor de producción. Las rutas de modelo son relativas al cwd del
+    /// workspace, correcto cuando `daemon serve` se lanza desde la raíz del repo.
+    /// Devuelve error si el motor STT no puede inicializarse (modelo inexistente).
+    pub fn new() -> anyhow::Result<Self> {
+        let stt_engine = Ct2SttEngine::new(STT_MODEL_DIR)?;
+        Ok(Self {
             synthesis_lock: Mutex::new(()),
             voice_store: VoiceStore::new(),
             speech_store: SpeechStore::new(),
-        }
+            tts_engine: Qwen3TtsEngine::new(None),
+            stt_engine,
+        })
     }
 }
 
 type SharedState = Arc<DaemonState>;
 
-// ─── Handlers ────────────────────────────────────────────────────────
+// ─── Helpers internos ───────────────────────────────────────────────────
+
+/// Inserta `schema_version` en un `Value`, reutilizado por handlers que devuelven
+/// JSON directamente (coherencia con `emit_raw_json`).
+fn with_sv(val: Value) -> Value {
+    json_emitter::with_schema_version(val)
+}
+
+/// Serializa un evento NDJSON con envelope de schema_version al canal de salida.
+async fn emit_ndjson(tx: &tokio::sync::mpsc::Sender<String>, event: Value) {
+    let _ = tx
+        .send(serde_json::to_string(&with_sv(event)).unwrap_or_default())
+        .await;
+}
+
+// ─── Handlers ────────────────────────────────────────────────────────────
 
 /// GET /health — handshake con schema_version estricto
 async fn health_handler() -> Json<Value> {
-    Json(json_emitter::with_schema_version(json!({
+    Json(with_sv(json!({
         "status": "healthy",
         "engine": "rust_native"
     })))
@@ -56,87 +94,243 @@ async fn voices_handler(State(state): State<SharedState>) -> impl IntoResponse {
                     "has_reference": v.reference_path.is_some(),
                 })
             }).collect();
-            Json(json_emitter::with_schema_version(json!({
-                "voices": voice_list,
-            }))).into_response()
+            Json(with_sv(json!({ "voices": voice_list }))).into_response()
         }
         Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json_emitter::with_schema_version(json!({
-                "error": e.to_string(),
-            })))).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(with_sv(json!({ "error": e.to_string() })))).into_response()
         }
     }
 }
 
-/// POST /voices/precompute — precomputar conditionals de una voz
+/// POST /voices/precompute — precomputar conditionals de una voz clonada
+///
+/// Caso significativo: una voz clonada con `reference.wav` (legado, aún sin
+/// `.qvoice`) se vuelve a clonar vía el motor real (`avi_tts::clone_voice`,
+/// precedente en `src/main.rs`). Una voz ya con `reference.qvoice` ya está
+/// precomputada; una voz de fábrica (preset/default, sin referencia) no tiene
+/// conditionals que precomputar → "no aplica".
 async fn voices_precompute_handler(
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
     Json(payload): Json<Value>,
-) -> impl IntoResponse {
-    let voice = payload.get("voice").and_then(|v| v.as_str()).unwrap_or("default");
-    // Cuando el motor TTS esté integrado, aquí se precomputan los conditionals
-    Json(json_emitter::with_schema_version(json!({
-        "status": "precompute_pending",
-        "voice": voice,
-        "message": "La precomputación de conditionals requiere el motor TTS nativo.",
-    })))
+) -> Response {
+    let voice = payload
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default")
+        .to_string();
+
+    match state.voice_store.find_reference(&voice) {
+        // Sin referencia: voz de fábrica (preset/default). No hay conditionals.
+        None => Json(with_sv(json!({
+            "name": voice,
+            "precomputed": false,
+            "message": "La precomputación de conditionals no aplica a voces de fábrica.",
+        })))
+        .into_response(),
+        // `reference.qvoice` ya existe → ya precomputado; no hay WAV fuente con
+        // el que relanzar `clone_voice` (no se regenera de un .qvoice).
+        Some(path) if path.extension().map_or(false, |e| e == "qvoice") => {
+            Json(with_sv(json!({
+                "name": voice,
+                "precomputed": true,
+                "message": "Voz ya precomputada (reference.qvoice presente).",
+            })))
+            .into_response()
+        }
+        // `reference.wav` legado: relanzar clone_voice contra el motor real.
+        Some(wav) => {
+            let base_model_dir = match state.tts_engine.base_model_dir.as_ref() {
+                Some(d) => d.clone(),
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(with_sv(json!({
+                            "name": voice,
+                            "precomputed": false,
+                            "reason": "model_missing",
+                            "message": "El modelo base TTS no está provisionado.",
+                        }))),
+                    )
+                        .into_response();
+                }
+            };
+            let qvoice_out = wav.with_file_name("reference.qvoice");
+            match avi_tts::clone_voice(
+                &base_model_dir,
+                &wav,
+                &qvoice_out,
+                &voice,
+                DEFAULT_CLONE_LANGUAGE,
+            ) {
+                Ok(()) => Json(with_sv(json!({
+                    "name": voice,
+                    "precomputed": true,
+                })))
+                .into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(with_sv(json!({
+                        "name": voice,
+                        "precomputed": false,
+                        "reason": "precompute_failed",
+                        "message": e.to_string(),
+                    }))),
+                )
+                    .into_response(),
+            }
+        }
+    }
 }
 
 /// POST /synthesize — síntesis con streaming NDJSON de progreso
+///
+/// Contrato NDJSON (fuente de verdad: `protocol.py`): `start` → `progress`(N)
+/// → `result`{`audio_b64`,`t3_time`,`s3gen_time`} OR `error`{`reason`,`message`}.
+/// El motor `TtsEngine` no expone callback de progreso, por lo que se emite un
+/// único marcador `progress` genérico antes de sintetizar.
 async fn synthesize_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
 ) -> Response {
-    // Adquirir lock de serialización (una síntesis a la vez)
-    let _lock = state.synthesis_lock.lock().await;
+    let text = payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let voice = payload
+        .get("voice")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default")
+        .to_string();
 
-    let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    let voice = payload.get("voice").and_then(|v| v.as_str()).unwrap_or("default");
-
+    // Validación de texto vacío: se evalúa antes del motor y devuelve un cuerpo
+    // JSON plano (no stream), para que el test de contrato de texto vacío siga
+    // pasando sin modificación.
     if text.is_empty() {
-        return Json(json_emitter::with_schema_version(json!({
+        return Json(with_sv(json!({
             "error": "empty_text",
             "message": "El texto a sintetizar está vacío.",
-        }))).into_response();
+        })))
+        .into_response();
     }
 
-    // Streaming NDJSON: progreso línea por línea
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
+    let state = state.clone();
+    let text_owned = text.clone();
+    let voice_owned = voice.clone();
 
-    // Emitir eventos de progreso en un task separado
-    let text_owned = text.to_string();
-    let voice_owned = voice.to_string();
     tokio::spawn(async move {
-        // Evento: inicio
-        let _ = tx.send(serde_json::to_string(&json_emitter::with_schema_version(json!({
-            "event": "start",
-            "voice": voice_owned,
-            "text_length": text_owned.len(),
-        }))).unwrap_or_default()).await;
+        // T4: el lock envuelve TODO el trabajo de síntesis —incluido dentro del
+        // spawn—, serializando síntesis concurrentes. No se añade semáforo de
+        // admisión (fuera de alcance de esta rutina).
+        let _lock = state.synthesis_lock.lock().await;
 
-        // Evento: progreso (el motor TTS emitirá eventos reales cuando esté integrado)
-        let _ = tx.send(serde_json::to_string(&json_emitter::with_schema_version(json!({
-            "event": "progress",
-            "stage": "synthesis",
-            "percent": 0,
-            "message": "Motor TTS no provisionado.",
-        }))).unwrap_or_default()).await;
+        emit_ndjson(
+            &tx,
+            json!({
+                "event": "start",
+                "voice": voice_owned,
+                "text_length": text_owned.len(),
+            }),
+        )
+        .await;
 
-        // Evento: completado (o error)
-        let _ = tx.send(serde_json::to_string(&json_emitter::with_schema_version(json!({
-            "event": "error",
-            "reason": "model_missing",
-            "message": "El modelo de síntesis TTS no está provisionado.",
-        }))).unwrap_or_default()).await;
+        // Provisionamiento del motor: si binario/modelo no se resolvieron, la rama
+        // `model_missing` es el contrato aceptado por el plan T8 en entornos sin
+        // motor (en el daemon real corre desde la raíz del repo, donde sí resuelve).
+        if state.tts_engine.binary_path.is_none() || state.tts_engine.model_dir.is_none() {
+            emit_ndjson(
+                &tx,
+                json!({
+                    "event": "error",
+                    "reason": "model_missing",
+                    "message": "El modelo de síntesis TTS no está provisionado.",
+                }),
+            )
+            .await;
+            return;
+        }
+
+        // Marcador genérico de fase (el motor no reporta progreso interno).
+        emit_ndjson(
+            &tx,
+            json!({
+                "event": "progress",
+                "stage": "synthesis",
+                "percent": 0,
+                "message": "Síntesis en curso.",
+            }),
+        )
+        .await;
+
+        // Perfil de voz: .qvoice si la voz está clonada; el motor resuelve el
+        // preset vía `resolve_voice_motor` a partir del nombre.
+        let profile = VoiceProfile {
+            name: voice_owned.clone(),
+            reference_audio: None,
+            qvoice_path: state.voice_store.find_reference(&voice_owned),
+        };
+        // `GenerationOptions::produccion()` fija temperature=0.35 / seed=42; no se
+        // alteran temperatura ni seed (prohibido por el brief).
+        let tmp = std::env::temp_dir().join(format!(
+            "avi_daemon_synth_{}.wav",
+            std::process::id()
+        ));
+        match state.tts_engine.synthesize_with_options(
+            &text_owned,
+            &profile,
+            &GenerationOptions::produccion(),
+            Some(&tmp),
+        ) {
+            Ok(path) => {
+                match std::fs::read(&path) {
+                    Ok(wav_bytes) => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "result",
+                                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&wav_bytes),
+                                // El motor no expone tiempos; por contrato el campo
+                                // existe y se reporta como 0.0 (verdad en F5).
+                                "t3_time": 0.0,
+                                "s3gen_time": 0.0,
+                            }),
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": "io_error",
+                                "message": format!("Error leyendo el WAV de síntesis: {}", e),
+                            }),
+                        )
+                        .await;
+                    }
+                }
+                let _ = std::fs::remove_file(&path);
+            }
+            Err(e) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "synthesis_failed",
+                        "message": e.to_string(),
+                    }),
+                )
+                .await;
+            }
+        }
     });
 
-    // Convertir el receptor en un stream NDJSON
+    // Convertir el receptor en un stream NDJSON.
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let body = Body::from_stream(
-        tokio_stream::StreamExt::map(stream, |line| {
-            Ok::<_, std::convert::Infallible>(format!("{}\n", line))
-        })
-    );
+    let body = Body::from_stream(tokio_stream::StreamExt::map(stream, |line| {
+        Ok::<_, std::convert::Infallible>(format!("{}\n", line))
+    }));
 
     Response::builder()
         .header("content-type", "application/x-ndjson")
@@ -146,17 +340,76 @@ async fn synthesize_handler(
 }
 
 /// POST /transcribe — transcripción de audio (PCM int16 base64)
+///
+/// Contrato (fuente de verdad: `protocol.py`): el campo es `audio_b64` (no
+/// `audio_pcm_base64`); el audio es PCM i16 little-endian 16 kHz mono; la
+/// respuesta exitosa es `TranscribeResponse{text}`.
 async fn transcribe_handler(
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
     Json(payload): Json<Value>,
-) -> impl IntoResponse {
-    let _audio_b64 = payload.get("audio_pcm_base64").and_then(|v| v.as_str());
+) -> Response {
+    let audio_b64 = payload.get("audio_b64").and_then(|v| v.as_str());
 
-    // Cuando el motor STT esté integrado, aquí se decodifica el PCM y se transcribe
-    Json(json_emitter::with_schema_version(json!({
-        "status": "transcription_pending",
-        "message": "El motor STT nativo no está provisionado.",
-    })))
+    let audio_b64 = match audio_b64 {
+        Some(s) => s,
+        None => {
+            return Json(with_sv(json!({
+                "status": "error",
+                "reason": "audio_missing",
+                "message": "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono).",
+            })))
+            .into_response();
+        }
+    };
+
+    let audio_bytes = match base64::engine::general_purpose::STANDARD.decode(audio_b64) {
+        Ok(b) => b,
+        Err(e) => {
+            return Json(with_sv(json!({
+                "status": "error",
+                "reason": "audio_decode_error",
+                "message": format!("audio_b64 no decodificable como base64: {}", e),
+            })))
+            .into_response();
+        }
+    };
+
+    // PCM i16 little-endian → Vec<i16> mono 16 kHz (el motor normaliza a i16::MAX).
+    let pcm: Vec<i16> = audio_bytes
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect();
+
+    let source_language = payload
+        .get("source_language")
+        .and_then(|v| v.as_str())
+        .unwrap_or("es-latam");
+    let language = resolve_stt_language(source_language);
+
+    let result = state.stt_engine.transcribe(&pcm, Some(language));
+    match result {
+        Ok(text) => {
+            let body = with_sv(json!({ "text": text }));
+            Json(body).into_response()
+        }
+        Err(e) => {
+            let body = with_sv(json!({
+                "status": "error",
+                "reason": "transcription_failed",
+                "message": e.to_string(),
+            }));
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+        }
+    }
+}
+
+/// Mapea el token de idioma del cliente (`es-latam`/`en`) al código ISO que
+/// exige Whisper (paridad con `resolve_stt_language` en `src/main.rs`).
+fn resolve_stt_language(token: &str) -> &str {
+    match token {
+        "es-latam" => "es",
+        other => other,
+    }
 }
 
 /// POST /shutdown — apagar el daemon gracefully
@@ -167,21 +420,16 @@ async fn shutdown_handler() -> impl IntoResponse {
         std::process::exit(0);
     });
 
-    Json(json_emitter::with_schema_version(json!({
-        "status": "shutting_down",
-    })))
+    Json(with_sv(json!({ "status": "shutting_down" })))
 }
 
-// ─── Servidor ────────────────────────────────────────────────────────
+// ─── Servidor ────────────────────────────────────────────────────────────
 
-/// Construye el Router de Axum con todas las rutas del daemon.
-///
-/// Extraído de `run_daemon_server` (cambio mínimo para testeabilidad, Tarea 8
-/// del harness dorado): permite ejercitar las rutas en tests de integración
-/// vía `tower::ServiceExt::oneshot` sin levantar un listener TCP real.
-pub fn build_router() -> Router {
-    let state = Arc::new(DaemonState::new());
-
+/// Construye el `Router` de Axum a partir de un `Arc<DaemonState>` ya construido
+/// externamente. Extraído de `build_router()` para testeabilidad (T8): permite
+/// ejercer las rutas en tests de integración inyectando un estado con rutas de
+/// modelo apuntando a `CARGO_MANIFEST_DIR`.
+pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/voices", get(voices_handler))
@@ -192,9 +440,58 @@ pub fn build_router() -> Router {
         .with_state(state)
 }
 
-pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
-    let app = build_router();
+/// Punto de entrada de producción. Construye el estado con las rutas de modelo de
+/// producción (relativas al cwd del workspace) y delega a `build_router_with_state`.
+pub fn build_router() -> Router {
+    let state = Arc::new(DaemonState::new().expect("fallo al inicializar los motores del daemon"));
+    build_router_with_state(state)
+}
 
+/// Warmup del motor TTS de arranque (Tarea 3).
+///
+/// Precarga la voz `default`→preset `ryan` en el motor residente, para que el
+/// daemon ya tenga el modelo caliente antes de aceptar peticiones.
+///
+/// Riesgo heredado (R2): el residente enlaza en `INADDR_ANY`
+/// (`avi-tts/src/lib.rs:746-750`); el warmup lo mantiene vivo, extendiendo esa
+/// superficie de red. Documentado, NO corregido (fuera de alcance).
+///
+/// Limitación estructural: solo la voz `default` queda precargada; el resto paga
+/// el cold-start de reemplazo de residente en su primera síntesis.
+pub fn warmup_tts(state: &DaemonState) -> anyhow::Result<()> {
+    let profile = VoiceProfile {
+        name: "default".to_string(),
+        reference_audio: None,
+        qvoice_path: state.voice_store.find_reference("default"),
+    };
+    let tmp = std::env::temp_dir().join(format!(
+        "avi_daemon_warmup_{}.wav",
+        std::process::id()
+    ));
+    state
+        .tts_engine
+        .synthesize_with_options(
+            "Calentamiento del daemon.",
+            &profile,
+            &GenerationOptions::produccion(),
+            Some(&tmp),
+        )
+        .map_err(|e| anyhow::anyhow!("Warmup TTS falló; abortando arranque del daemon: {}", e))?;
+    let _ = std::fs::remove_file(&tmp);
+    Ok(())
+}
+
+/// Inicia el daemon nativo escuchando en `addr`. Construye el estado (propagando
+/// errores de inicialización de motores), ejecuta el warmup TTS, y luego enlaza
+/// el listener y sirve. El warmup ocurre ANTES del bind para que el modelo ya
+/// esté caliente cuando se empiecen a aceptar peticiones.
+pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
+    let state = Arc::new(DaemonState::new()?);
+
+    // T3: warmup TTS antes del bind.
+    warmup_tts(&state)?;
+
+    let app = build_router_with_state(state);
     let listener = TcpListener::bind(addr).await?;
     println!("Daemon nativo escuchando en http://{}", addr);
     axum::serve(listener, app).await?;

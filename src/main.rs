@@ -8,14 +8,17 @@ use avi_store::{VoiceStore, SpeechStore, ModelStore};
 use avi_stt::Ct2SttEngine;
 use avi_tts::{Qwen3TtsEngine, TtsEngine};
 use avi_translation as translation;
+use base64::Engine;
 use clap::{Parser, Subcommand};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::process::exit;
 
 const VERSION: &str = "0.10.5";
 const APP_NAME: &str = "ai-voice-interconnector";
+/// Dirección del daemon nativo (T7: cliente HTTP async contra este address).
+const DAEMON_ADDR: &str = "127.0.0.1:8765";
 /// Ruta fija del modelo Whisper ya convertido a CT2, reutilizado por
 /// `speech transcribe` (no se gestiona vía `ModelStore`: layout incompatible).
 const DEFAULT_WHISPER_MODEL_DIR: &str = "models/ct2/whisper-small";
@@ -333,6 +336,11 @@ fn handle_devices(json_mode: bool) -> Result<(), CliError> {
 }
 
 fn handle_translate(json_mode: bool, daemon_mode: DaemonMode, text: &str, from: &str, to: &str) -> Result<(), CliError> {
+    // T7: el daemon nativo aún no expone /translate (el contrato NDJSON de esta
+    // fase cubre solo synthesize/transcribe). En ForceDaemon se rechaza con
+    // DaemonUnreachable; en Auto/ForceDirect se ejecuta local, preservando el
+    // fallback intacto. La ruta daemon se habilitará cuando el daemon sirva
+    // /translate.
     if daemon_mode == DaemonMode::ForceDaemon {
         return Err(CliError::new(
             ExitCode::DaemonUnreachable,
@@ -514,17 +522,12 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
 // ─── Speech ──────────────────────────────────────────────────────────
 
 async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechCommands) -> Result<(), CliError> {
-    if daemon_mode == DaemonMode::ForceDaemon {
-        return Err(CliError::new(
-            ExitCode::DaemonUnreachable,
-            "daemon_unreachable",
-            "Daemon inalcanzable en 127.0.0.1:8765",
-        ));
-    }
     let speech_store = SpeechStore::new();
 
     match action {
         SpeechCommands::List => {
+            // Listado de locuciones: local-only; el daemon no expone GET /speech.
+            require_local(daemon_mode)?;
             let items = speech_store.list().map_err(|e| {
                 CliError::new(ExitCode::Error, "speech_list_failed", e.to_string())
             })?;
@@ -569,6 +572,19 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                     "usage_error",
                     "--mic requiere --duration en este host.",
                 ));
+            }
+
+            // T7 — dispatch 3 modos (Transcribe es delegable al daemon):
+            // ForceDaemon → daemon (error si no responde); Auto → daemon si
+            // responde, si no cae a directo; ForceDirect → local. El probe de
+            // vida usa un deadline corto para que el fallback Auto→directo sea
+            // prácticamente instantáneo cuando el daemon no está en ejecución.
+            let client = daemon_client();
+            if route_to_daemon(daemon_mode, &client).await {
+                return transcribe_via_daemon(
+                    json_mode, &client, audio.as_deref(), mic, duration, &source_language,
+                )
+                .await;
             }
 
             // Modelo ausente -> exit 4, previo a construir el motor.
@@ -616,6 +632,26 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                     "El texto a sintetizar está vacío",
                 ));
             }
+
+            // T7 — dispatch 3 modos (Synthesize es delegable al daemon).
+            let client = daemon_client();
+            if route_to_daemon(daemon_mode, &client).await {
+                let saved = synthesize_via_daemon(
+                    &client, &text, &voice, &label, force, play, &output,
+                )
+                .await?;
+                if json_mode {
+                    emit_raw_json(json!({
+                        "status": "success",
+                        "audio_path": saved,
+                        "voice": voice,
+                    }));
+                } else {
+                    println!("Síntesis completada: {}", saved);
+                }
+                return Ok(());
+            }
+
             require_model_provisioned()?;
             let voice_store = VoiceStore::new();
             if !voice_store.exists(&voice) {
@@ -677,6 +713,13 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                     "El texto a sintetizar está vacío",
                 ));
             }
+
+            // T7 — dispatch 3 modos (Say es delegable al daemon).
+            let client = daemon_client();
+            if route_to_daemon(daemon_mode, &client).await {
+                return say_via_daemon(json_mode, &client, &text, &voice).await;
+            }
+
             require_model_provisioned()?;
             let voice_store = VoiceStore::new();
             if !voice_store.exists(&voice) {
@@ -711,6 +754,10 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             Ok(())
         }
         SpeechCommands::Dub { audio, mic, duration, voice, from, to } => {
+            // Doblaje es un pipeline compuesto (transcribe→traduce→sintetiza) que
+            // el daemon no expone como ruta única; se mantiene local-only.
+            // T7: ForceDaemon → DaemonUnreachable (ruta no delegable).
+            require_local(daemon_mode)?;
             // Validaciones del oráculo (cli.py:562-624).
             if duration.is_some() && !mic {
                 return Err(CliError::new(
@@ -833,6 +880,8 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             Ok(())
         }
         SpeechCommands::Play { label, voice } => {
+            // Reproducción de locución persistida: local-only.
+            require_local(daemon_mode)?;
             es_identificador_valido(Some(&voice), Some(&label))?;
             match speech_store.find(&voice, &label) {
                 Some(entry) => {
@@ -858,6 +907,8 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             }
         }
         SpeechCommands::Remove { label, voice } => {
+            // Borrado de locución: local-only.
+            require_local(daemon_mode)?;
             es_identificador_valido(Some(&voice), Some(&label))?;
             speech_store.remove(&voice, &label).map_err(|e| {
                 CliError::new(ExitCode::NotFound, "speech_not_found", e)
@@ -893,27 +944,103 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             ))
         }
         DaemonCommands::Stop => {
-            // Intenta POST /shutdown al daemon
-            Err(CliError::new(
-                ExitCode::DaemonUnreachable,
-                "daemon_not_running",
-                "No se pudo contactar al daemon en 127.0.0.1:8765.",
-            ))
-        }
-        DaemonCommands::Restart => {
-            Err(CliError::new(
-                ExitCode::DaemonUnreachable,
-                "daemon_not_running",
-                "No se pudo contactar al daemon para reiniciarlo.",
-            ))
-        }
-        DaemonCommands::Status => {
+            // T7: POST /shutdown al daemon nativo; si no responde, DaemonUnreachable.
+            let client = daemon_client();
+            let resp = client
+                .post(format!("http://{}/shutdown", DAEMON_ADDR))
+                .send()
+                .await
+                .map_err(|e| {
+                    CliError::new(
+                        ExitCode::DaemonUnreachable,
+                        "daemon_unreachable",
+                        format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+                    )
+                })?;
+            if !resp.status().is_success() {
+                return Err(CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("El daemon devolvió el código {}", resp.status()),
+                ));
+            }
             if json_mode {
-                emit_raw_json(json!({ "daemon": "stopped" }));
+                emit_raw_json(json!({ "status": "shutdown_sent" }));
             } else {
-                println!("Daemon: no está en ejecución.");
+                println!("Señal de apagado enviada al daemon en {}.", DAEMON_ADDR);
             }
             Ok(())
+        }
+        DaemonCommands::Restart => {
+            // El daemon nativo no expone /restart; se emite Stop (shutdown) y se
+            // reporta el rearme como pendiente (Start no implementado en background).
+            let client = daemon_client();
+            let resp = client
+                .post(format!("http://{}/shutdown", DAEMON_ADDR))
+                .send()
+                .await
+                .map_err(|e| {
+                    CliError::new(
+                        ExitCode::DaemonUnreachable,
+                        "daemon_unreachable",
+                        format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+                    )
+                })?;
+            if !resp.status().is_success() {
+                return Err(CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("El daemon devolvió el código {}", resp.status()),
+                ));
+            }
+            if json_mode {
+                emit_raw_json(json!({ "status": "restart_requested", "daemon": "stopped" }));
+            } else {
+                println!("Daemon reiniciado (rearmado en background: pendiente).");
+            }
+            Ok(())
+        }
+        DaemonCommands::Status => {
+            // T7: GET /health → running; sin respuesta (timeout/conexión) → stopped
+            // (exit 0), conservando el contrato de la fixture `cli_daemon_status.json`.
+            let client = daemon_client();
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                client.get(format!("http://{}/health", DAEMON_ADDR)).send(),
+            )
+            .await
+            {
+                Ok(Ok(resp)) if resp.status().is_success() => {
+                    let val: Value = resp.json().await.map_err(|e| {
+                        CliError::new(
+                            ExitCode::Error,
+                            "daemon_error",
+                            format!("Respuesta de /health no es JSON: {}", e),
+                        )
+                    })?;
+                    if json_mode {
+                        emit_raw_json(json!({
+                            "daemon": "running",
+                            "engine": val.get("engine").unwrap_or(&Value::Null),
+                        }));
+                    } else {
+                        let engine = val
+                            .get("engine")
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("desconocido");
+                        println!("Daemon: en ejecución (motor: {}).", engine);
+                    }
+                    Ok(())
+                }
+                _ => {
+                    if json_mode {
+                        emit_raw_json(json!({ "daemon": "stopped" }));
+                    } else {
+                        println!("Daemon: no está en ejecución.");
+                    }
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -1046,5 +1173,276 @@ fn es_identificador_valido(ids: Option<&str>, mas: Option<&str>) -> Result<(), C
             ));
         }
     }
+    Ok(())
+}
+
+// ─── Cliente HTTP async del daemon (T7) ────────────────────────────────
+
+/// Cliente `reqwest` hacia el daemon en `DAEMON_ADDR` (HTTP, sin TLS: basta para
+/// localhost). Timeout de conexión breve para que el probe Auto→local sea rápido
+/// cuando el daemon no está en ejecución.
+fn daemon_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .expect("construir el cliente HTTP del daemon")
+}
+
+/// Probe de vida (GET /health) con deadline corto; `false` en cualquier Fallo
+/// (connection-refused incluido), habilitando el fallback Auto→local.
+async fn daemon_activo(client: &reqwest::Client) -> bool {
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        client.get(format!("http://{}/health", DAEMON_ADDR)).send(),
+    )
+    .await
+    {
+        Ok(Ok(resp)) => resp.status().is_success(),
+        _ => false,
+    }
+}
+
+/// Decide si una acción delegable se despacha al daemon:
+/// ForceDaemon → siempre (el POST fallará con DaemonUnreachable si no corre);
+/// Auto → solo si el daemon responde; ForceDirect → nunca.
+async fn route_to_daemon(mode: DaemonMode, client: &reqwest::Client) -> bool {
+    match mode {
+        DaemonMode::ForceDaemon => true,
+        DaemonMode::ForceDirect => false,
+        DaemonMode::Auto => daemon_activo(client).await,
+    }
+}
+
+/// Acciones local-only rechazan ForceDaemon con DaemonUnreachable.
+fn require_local(daemon_mode: DaemonMode) -> Result<(), CliError> {
+    if daemon_mode == DaemonMode::ForceDaemon {
+        Err(CliError::new(
+            ExitCode::DaemonUnreachable,
+            "daemon_unreachable",
+            "Daemon inalcanzable en 127.0.0.1:8765",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// POST /transcribe al daemon: codifica PCM i16 LE 16 kHz mono a base64 y devuelve
+/// el texto transcrito, emitiendo el mismo envelope local ({text, source}).
+async fn transcribe_via_daemon(
+    json_mode: bool,
+    client: &reqwest::Client,
+    audio: Option<&str>,
+    mic: bool,
+    duration: Option<u64>,
+    source_language: &str,
+) -> Result<(), CliError> {
+    let pcm: Vec<i16> = if mic {
+        audio::AudioService::new()
+            .capture_16k_mono_pcm(duration.expect("validado arriba"))
+            .map_err(|e| {
+                CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+            })?
+    } else {
+        avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba"))
+            .map_err(|e| {
+                CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+            })?
+    };
+    let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let resp = client
+        .post(format!("http://{}/transcribe", DAEMON_ADDR))
+        .json(&serde_json::json!({ "audio_b64": audio_b64, "source_language": source_language }))
+        .send()
+        .await
+        .map_err(|e| {
+            CliError::new(
+                ExitCode::DaemonUnreachable,
+                "daemon_unreachable",
+                format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+            )
+        })?;
+    if !resp.status().is_success() {
+        return Err(CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            format!("El daemon devolvió {}", resp.status()),
+        ));
+    }
+    let val: Value = resp.json().await.map_err(|e| {
+        CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            format!("Respuesta del daemon no es JSON: {}", e),
+        )
+    })?;
+    let text = val["text"].as_str().ok_or_else(|| {
+        CliError::new(
+            ExitCode::TranscriptionFailed,
+            "transcription_failed",
+            "El daemon no devolvió 'text'.",
+        )
+    })?;
+    if json_mode {
+        emit_raw_json(json!({ "text": text, "source": source_language }));
+    } else {
+        println!("{}", text);
+    }
+    Ok(())
+}
+
+/// POST /synthesize al daemon, consume el stream NDJSON y decodifica `audio_b64`
+/// del evento `result`, devolviendo los bytes WAV del motor (24 kHz s16le mono).
+async fn daemon_synthesize_wav(client: &reqwest::Client, text: &str, voice: &str) -> Result<Vec<u8>, CliError> {
+    let resp = client
+        .post(format!("http://{}/synthesize", DAEMON_ADDR))
+        .json(&serde_json::json!({ "text": text, "voice": voice }))
+        .send()
+        .await
+        .map_err(|e| {
+            CliError::new(
+                ExitCode::DaemonUnreachable,
+                "daemon_unreachable",
+                format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+            )
+        })?;
+    if !resp.status().is_success() {
+        return Err(CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            format!("El daemon devolvió {}", resp.status()),
+        ));
+    }
+    let bytes = resp.bytes().await.map_err(|e| {
+        CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            format!("Error leyendo la respuesta del daemon: {}", e),
+        )
+    })?;
+    let body = String::from_utf8_lossy(&bytes);
+    let mut wav: Option<Vec<u8>> = None;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let ev: Value = serde_json::from_str(line).map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "daemon_error",
+                format!("NDJSON inválido del daemon: {}", e),
+            )
+        })?;
+        match ev["event"].as_str() {
+            Some("result") => {
+                let b64 = ev["audio_b64"].as_str().ok_or_else(|| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "synthesis_error",
+                        "El daemon devolvió result sin audio_b64.",
+                    )
+                })?;
+                wav = Some(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(b64)
+                        .map_err(|e| {
+                            CliError::new(
+                                ExitCode::Error,
+                                "synthesis_error",
+                                format!("audio_b64 del daemon no decodable: {}", e),
+                            )
+                        })?,
+                );
+            }
+            Some("error") => {
+                let reason = ev["reason"].as_str().unwrap_or("daemon_error").to_string();
+                let msg = ev["message"].as_str().unwrap_or("").to_string();
+                return Err(CliError::new(ExitCode::Error, reason, msg));
+            }
+            _ => {}
+        }
+    }
+    wav.ok_or_else(|| {
+        CliError::new(
+            ExitCode::Error,
+            "synthesis_error",
+            "El daemon no devolvió audio_b64.".to_string(),
+        )
+    })
+}
+
+/// `synthesize` vía daemon: persiste el WAV en `SpeechStore` y respeta
+/// --label/--output/--play, devolviendo la ruta del WAV persistido (paralelo al
+/// handler local para que el envelope JSON de salida coincida).
+async fn synthesize_via_daemon(
+    client: &reqwest::Client,
+    text: &str,
+    voice: &str,
+    label: &str,
+    force: bool,
+    play: bool,
+    output: &Option<String>,
+) -> Result<String, CliError> {
+    let speech_store = SpeechStore::new();
+    let label_l = label.to_lowercase();
+    es_identificador_valido(Some(&label_l), None)?;
+    if !force && speech_store.find(voice, &label_l).is_some() {
+        return Err(CliError::new(
+            ExitCode::StateConflict,
+            "label_exists",
+            format!("Ya existe una locución con la etiqueta '{}' (usa --force).", label_l),
+        ));
+    }
+    let wav = daemon_synthesize_wav(client, text, voice).await?;
+    let tmp = std::env::temp_dir().join(format!("avi_tts_{}.wav", label_l));
+    std::fs::write(&tmp, &wav).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    if play {
+        audio::AudioService::new().play_wav(&tmp).map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "playback_failed",
+                format!("Fallo al reproducir la locución '{}': {}", label_l, e),
+            )
+        })?;
+    }
+    let saved = speech_store
+        .save(voice, &label_l, text, &tmp)
+        .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
+    let _ = std::fs::remove_file(&tmp);
+    if let Some(out) = output {
+        std::fs::copy(&saved, out).map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
+    }
+    Ok(saved.to_string_lossy().to_string())
+}
+
+/// `say` vía daemon: reproduce el WAV decodificado y expone una copia efímera.
+async fn say_via_daemon(
+    json_mode: bool,
+    client: &reqwest::Client,
+    text: &str,
+    voice: &str,
+) -> Result<(), CliError> {
+    let wav = daemon_synthesize_wav(client, text, voice).await?;
+    let tmp = std::env::temp_dir().join(format!("avi_say_{}.wav", std::process::id()));
+    std::fs::write(&tmp, &wav).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    audio::AudioService::new().play_wav(&tmp).map_err(|e| {
+        CliError::new(
+            ExitCode::Error,
+            "playback_failed",
+            format!("Fallo al reproducir la locución: {}", e),
+        )
+    })?;
+    if json_mode {
+        emit_raw_json(json!({
+            "status": "reproduced",
+            "audio_path": tmp.to_string_lossy(),
+            "voice": voice,
+        }));
+    } else {
+        println!("Reproduciendo: {}", tmp.display());
+    }
+    let _ = std::fs::remove_file(&tmp);
     Ok(())
 }
