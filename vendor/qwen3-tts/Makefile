@@ -39,6 +39,14 @@ else
     ARCH_FLAGS = -march=native
 endif
 
+# F4 TTS-build-portable: variante determinista evaluada 2026-08-24.
+# Se probaron: (a) -ffp-contract=off -fno-fast-math y (b) -ffast-math -ffp-contract=off.
+# Ambas degradan WER de `dub` corto ("Hola, ¿cómo estás?") de ≤0.25 a 1.0–1.33
+# (18s audio garble vs 2–3s normal, whisper transcribe "sonido de la máquina").
+# `synthesize` largo sigue verde, pero `dub` corto es gate C1. Self-test sigue PASS.
+# Veredicto: se mantiene -ffast-math (contrato validado) y se documenta la variante
+# medida como no adoptada; no se cambia H1 por evidencia. Re-evaluar en F5 con
+# corpus 3 frases ES y medición RTF para confirmar no-regresión.
 CFLAGS_BASE = -Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math
 LDLIBS = -lm -lpthread
 

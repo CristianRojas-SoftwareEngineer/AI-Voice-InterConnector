@@ -203,3 +203,15 @@ banco se ASCII-izó para esquivarlo, lo que además eliminó la `ñ` (fonema dis
 manana). El **camino de producción no usa argv**: el driver envía el texto en el cuerpo JSON
 UTF-8 al residente HTTP, donde `ñ`/acentos sobreviven (los golden de WER pasan sobre español
 acentuado). El motor tokeniza `"Mañana"` (6 tokens de contenido) distinto de `"Manana"` (7).
+
+---
+
+## Actualización 2026-08-24 — Variante determinista evaluada (F4 `tts-build-portable`) — toolchain vigente preservado
+
+> **Acta histórica preservada:** esta sección se añade sin borrar ni reescribir el acta F7 ni el gate híbrido 2026-08-24 anterior. La tabla mel-corr 0.202–0.526 y el veredicto D 🔴 / C3 ⚠️ 3/3 WSL siguen vigentes como histórico hasta nueva medición completa en F5.
+
+**Contexto F4:** la orquestación `tts-build-portable` evaluó H1 (codegen AVX2/FMA y `-ffast-math`) con dos variantes deterministas sobre UCRT64 gcc 16.1.0: (a) `-ffp-contract=off -fno-fast-math` y (b) `-ffast-math -ffp-contract=off` (`vendor/qwen3-tts/Makefile:42-50`, `qwen_tts_kernels.c:349-375,758-840,1003-1063`). La toolchain cross `x86_64-w64-mingw32-gcc` 15.2 (Opción A) resultó **no evaluable** en este host (WSL `Stopped`, `apt` sin `mingw-w64`; ver `F4-implementacion-notas.md:T2`).
+
+**Medición F4 (contrato producción `--int4 -j 4 --stream`, temp 0.35 seed 42):** `cargo test --all` sobre `main` limpio arrojó **80/80 verde** con flags vigentes (`-mavx2 -mfma -ffast-math -static 33 MB`), y **79/80** con la variante determinista: `tts::dub_audio_passthrough_es_es` pasó de WER ≤0.25 (verde) a WER **1.0–1.33** (frase corta "Hola, ¿cómo estás?", audio 18.5 s garble vs 2–3 s normal, Whisper transcribe "sonido de la máquina"), mientras `synthesize` largo siguió verde, `--self-test PASS` y `--caps` AVX2 (2-row fused, FMA) estable. Ver `F4-implementacion-notas.md:T3`.
+
+**Veredicto F4 (no cambia tabla histórica 57-66 ni gate 177-182):** se **mantiene** el toolchain vigente **UCRT64 gcc 16.1.0, `-mavx2 -mfma -ffast-math`, OpenBLAS estático `-static -L$(UCRT64_LIB) -lopenblas -lgomp -lws2_32 -lwinpthread -lm` (33 MB autocontenido, solo DLLs sistema, `Makefile:56-77`)** por evidencia C1: el determinismo sin `ffast-math`/con `ffp-contract=off` degrada inteligibilidad de prompts cortos y no aporta mejora D medida. Las variantes quedan **documentadas como no adoptadas** en `Makefile:42-50`; la tabla mel-corr 0.25–0.66 y el gate híbrido D 🔴 0.202–0.526 / C3 ⚠️ 3/3 WSL **permanecen vigentes** hasta que F5 mida D/C2/C3/RTF completa con corpus 3 frases ES, `compare_audio.py --min-corr 0.95` y `speaker_similarity.py` (requiere `librosa` y WSL con toolchain). OpenBLAS permanece **estático** por portabilidad (dinámico ~1.1 MB requeriría `libopenblas.dll` en PATH); `OPENBLAS_NUM_THREADS=4` coherente con `--int4 -j 4` y override `1` disponible vía env (`qwen_tts_kernels.c:73-80`, `qwen_blas_set_threads`). Clang64 UCRT64 sigue **descartado** (RTF ~37, `F0:§4.8`). Con nueva evidencia WER se **escala** a F5 para RTF y D temp 0 greedy, sin reabrir decisión cerrada de gate híbrido D diagnóstico.

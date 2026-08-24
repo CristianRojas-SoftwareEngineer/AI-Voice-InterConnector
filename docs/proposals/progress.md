@@ -211,10 +211,10 @@ en Windows y el motor se recompiló con la cadena UCRT64. El modelo **Base** que
 Windows (`vendor/qwen3-tts/qwen3-tts-0.6b-base/`), lo que habilitó el clonado e2e: `voice clone`
 normaliza la referencia a 24 kHz mono (requisito del motor) antes de invocar el subprocess, y el
 golden `voice_clone_exito` reproduce un `.qvoice` real desde WAV de referencia a 16 kHz. RTF real
-medido en este equipo: **~3 con 4 hilos** (`--int4 -j 4`), carga del modelo ~0.9 s. Watermark
+medido en este equipo: **~3 con 4 hilos** (`--int4 -j 4`), carga del modelo ~0.9 s (F4 no re-midió RTF, mantiene ~3). Watermark
 verificado ausente en el motor y documentado en `README.md` y `docs/CLI/commands/SPEECH.md`. Suite
-`cargo test --all` **78/78** en verde, con golden de `synthesize/say/dub/voice clone` usando inferencia
-real y WER en verde tanto en synthesize como en say.
+`cargo test --all` **80/80** en verde (baseline descubierto F4, ver `F4-implementacion-notas.md`), con golden de `synthesize/say/dub/voice clone` usando inferencia
+real y WER en verde tanto en synthesize como en say con flags vigentes `-mavx2 -mfma -ffast-math -static`.
 
 **Nota de calidad:** el fix reabrió Fase 5 corrigiendo el **contrato de invocación del driver**
 (flags `--int4 -j 4 --stream`, `temperature 0.35`/`seed 42`, voz clonada + modelo Base, preprocesado
@@ -223,6 +223,8 @@ WER de los golden vuelve verde (la degradación del gate F7 era del contrato de 
 driver, no del build). La comparación **bit-a-bit / mel-corr (≥ 0.98)** del build Windows frente al
 WSL del benchmark sigue siendo un eje abierto documentado en el review — el fix no la midió — y no
 se reclama paridad de redondeo entre builds.
+
+> **Actualización 2026-08-24 (F4 `tts-build-portable`):** se evaluaron variantes deterministas `-ffp-contract=off -fno-fast-math` y `-ffp-contract=off` sobre UCRT64 gcc 16.1.0 (`vendor/qwen3-tts/Makefile:42-50`, `qwen_tts_kernels.c:349-375,758-840`) y se **descartaron** por regresión C1 (WER 1.0–1.33 en `dub` corto, 18.5 s garble); se mantiene toolchain vigente `-mavx2 -mfma -ffast-math -static 33 MB`. Opción A cross `x86_64-w64-mingw32-gcc` 15.2 quedó **no evaluable** (WSL `Stopped`). OpenBLAS permanece estático; `OPENBLAS_NUM_THREADS=4` coherente con `--int4 -j 4`. Ver `docs/reviews/2026-08-14-tts-calidad-fase5.md` (Actualización F4) y `F4-implementacion-notas.md:T3-T4`.
 
 | Ítem | Estado | Archivo |
 |------|--------|---------|

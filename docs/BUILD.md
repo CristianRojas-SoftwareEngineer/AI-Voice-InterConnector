@@ -12,6 +12,7 @@
 - [6. Paquetes excluidos (bloat)](#6-paquetes-excluidos-bloat)
 - [7. Notas de dependencias](#7-notas-de-dependencias)
 - [8. Notas importantes](#8-notas-importantes)
+- [9. Build nativo del motor TTS (Rust/qwen_tts)](#9-build-nativo-del-motor-tts-rustqwen_tts)
 
 ---
 
@@ -749,4 +750,35 @@ Los paquetes que requieren `--collect-all` son: `chatterbox`, `transformers`,
 - **macOS**: el `.dmg` es el instalador estándar de macOS; incluye el `.app` bundle más
   los scripts de instalación (PATH + oferta de `setup`) y desinstalación.
 - **Firma de código**: ver la limitación conocida en la sección 3 (artefactos sin
-  firmar/notarizar: Gatekeeper y SmartScreen advierten en el primer arranque).
+   firmar/notarizar: Gatekeeper y SmartScreen advierten en el primer arranque).
+
+---
+
+## 9. Build nativo del motor TTS (Rust/qwen_tts)
+
+> **Actualización 2026-08-24 (F4 `tts-build-portable`, toolchain vigente preservado):** esta sección documenta el toolchain C del motor Qwen3-TTS que F4 evaluó y **mantuvo**; no invalida la matriz PyInstaller (§1–§8), que sigue vigente para el canal Python.
+
+**Toolchain vigente (Windows):** MSYS2 UCRT64 **gcc 16.1.0** (Rev5, 2026-05-09), `mingw-w64-ucrt-x86_64-openblas 0.3.33-3`, `mingw32-make 4.4.1` (`vendor/qwen3-tts/Makefile:3-5,17-77`). WSL oráculo: Ubuntu gcc **15.2.0-16ubuntu1**, `libopenblas-dev 0.3.32+ds-5`.
+
+| Plataforma | `ARCH_FLAGS` | `CFLAGS_BASE` | `LDLIBS` / BLAS | Shims |
+|---|---|---|---|---|
+| Windows UCRT64 | `-mavx2 -mfma` (Haswell 2013+, `SIMD=auto`; `SIMD=scalar` vacía) | `-Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math` | `-static -L$(UCRT64_LIB) -lopenblas -lgomp -lws2_32 -lwinpthread -lm` (33 MB autocontenido, solo DLLs sistema) | `third_party/ingot/mingw_shim/unistd.h`, `sys/mman.h` vía `-include` (`Makefile:56-77,118-128`) |
+| Linux x86_64 | `-mavx2 -mfma` | `-Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math` | `-lopenblas` (`-DUSE_OPENBLAS`, `-I/usr/include/openblas`) | — |
+| macOS / Linux ARM | `-march=native` | idem | `-framework Accelerate` (macOS) | — |
+
+- **Determinismo:** `qwen_tts_speech_encoder.o` se compila sin `-ffast-math` (`Makefile:301-302`, `filter-out`) por SIGSEGV RVQ int8 1.7B; el resto mantiene `-ffast-math` como **requisito de corrección** para prompts cortos (ver abajo). `qwen_tts_kernels.c:26-28,349-375,758-840,1003-1063` sí contiene **AVX2** (`_mm256_fmadd_ps`, `__AVX512BF16__`/`_mm512_dpbf16_ps`) en `rms_norm` y `bf16_matvec_fused`; ver `vendor/qwen3-tts/CLAUDE.md`.
+- **OpenBLAS / hilos:** `OPENBLAS_NUM_THREADS=4` coherente con `--int4 -j 4` del contrato producción (`crates/avi-tts/src/lib.rs:449-486`); `qwen_tts_kernels.c:73-80` `qwen_blas_set_threads` respeta `OPENBLAS_NUM_THREADS` en env y fija `openblas_set_num_threads(1)` vía weak symbol si no hay env. F4 evaluó `openblas_set_num_threads(1)` y OpenBLAS dinámico (~1.1 MB + `libopenblas.dll`) y los **descartó** por portabilidad y RTF (ver `F4-implementacion-notas.md:T4`).
+- **Variantes evaluadas y no adoptadas (F4):** (a) `-ffp-contract=off -fno-fast-math` y (b) `-ffast-math -ffp-contract=off` (`Makefile:42-50`) degradan WER de `dub` corto de ≤0.25 a **1.0–1.33** (18.5 s garble vs 2–3 s normal, Whisper transcribe "sonido de la máquina"), `synthesize` largo sigue verde, `--self-test PASS`. Opción A cross `x86_64-w64-mingw32-gcc` 15.2 desde WSL quedó **no evaluable** (`command not found`, WSL `Stopped`). Clang64 UCRT64 **descartado** (RTF ~37, `F0:§4.8`).
+- **Comandos:**
+
+```bash
+# Windows (MSYS2 UCRT64, desde PowerShell con bash.exe en PATH)
+C:\msys64\usr\bin\bash.exe -lc "cd /c/path/a/vendor/qwen3-tts && mingw32-make clean && mingw32-make blas -j4 && ./qwen_tts --self-test && ./qwen_tts --caps"
+# WSL Ubuntu (oráculo)
+make -C vendor/qwen3-tts clean && make -C vendor/qwen3-tts blas -j4
+# macOS / Linux ARM
+make -C vendor/qwen3-tts blas
+```
+
+- **Contrato de invocación de producción (invariante, no afectado por F4):** `--int4 -j 4 --stream`, `GenerationOptions::produccion()` temp **0.35** seed **42** (`crates/avi-tts/src/lib.rs:54-69`), modelo Base separado `qwen3-tts-0.6b-base/` (`main.c:1848-1854`), texto UTF-8 vía JSON residente→subprocess (`lib.rs:371-441,492-538`), orden residente→subprocess obligatorio por mojibake argv en Windows.
+- **Licencias vinculadas:** OpenBLAS BSD-3-Clause, `libgfortran`/`libquadmath` LGPL, `libgcc`/`libwinpthread` GCC Runtime Library Exception (estático autorizado), `SOURCE-OFFER.md` cubre re-linking; ver `THIRD-PARTY-LICENSES.md` y `docs/proposals/PLAN-DE-MIGRACIÓN.md:§2.4`.

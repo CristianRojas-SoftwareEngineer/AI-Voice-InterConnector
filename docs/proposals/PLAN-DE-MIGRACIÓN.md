@@ -416,7 +416,9 @@ una ruta WSL2; **WSL2 no se usa en producción**. La distribución en Windows se
   LGPL sin esa excepción, pero su exigencia de re-linking queda cubierta por la oferta de
   fuente que GPLv3 ya obliga a proveer (`SOURCE-OFFER.md`). Las nuevas piezas —Qwen3-TTS
   (MIT), `ingot` (MIT), OpenBLAS (BSD-3-Clause), LZ4 (BSD-2-Clause) y el par LGPL
-  (`libgfortran`/`libquadmath`)— se registran en `THIRD-PARTY-LICENSES.md` en la Fase 7.
+   (`libgfortran`/`libquadmath`)— se registran en `THIRD-PARTY-LICENSES.md` en la Fase 7.
+
+> **Actualización 2026-08-24 (F4 `tts-build-portable`, toolchain vigente):** se evaluaron variantes deterministas `-ffp-contract=off -fno-fast-math` y `-ffp-contract=off` sobre UCRT64 gcc 16.1.0 (`vendor/qwen3-tts/Makefile:42-50`, `qwen_tts_kernels.c:349-375,758-840`) y se **descartaron** por regresión C1 (WER 1.0–1.33 en `dub` corto); se mantiene `-mavx2 -mfma -ffast-math -static 33 MB` (`Makefile:17-40,56-77`). La opción cross `x86_64-w64-mingw32-gcc` 15.2 (Opción A) quedó **no evaluable** (WSL `Stopped`, sin `mingw-w64`). OpenBLAS permanece **estático** por portabilidad; la variante dinámica (~1.1 MB + `libopenblas.dll`) no se adopta. `OPENBLAS_NUM_THREADS=4` coherente con `--int4 -j 4` (`qwen_tts_kernels.c:73-80`); `openblas_set_num_threads(1)` disponible vía env para debug. Ver `F4-implementacion-notas.md:T3-T4` y `docs/reviews/2026-08-14-tts-calidad-fase5.md` (Actualización F4).
 
 #### STT y Traducción — runtimes separados
 
@@ -610,17 +612,17 @@ traducción), y **al final** el TTS
   + warmup; **migrar el clonado** (timbre → `.qvoice`); portar el bypass de watermark y su
   documentación ética. En Windows usa el build nativo MinGW-w64/UCRT64 del motor (§2.4).
 - **Verificar (⚠️ pendiente de calidad — Fase 5 NO cerrada):** gate de cierre formalizado como
-  criterio híbrido y medido (2026-08-24): **C1** (WER ≤ 0.25) y **C2** (speaker-similarity Windows
-  ≈ WSL) verdes; **D** (mel-corr temp 0) rojo pero diagnóstico no bloqueante; **C3** (A/B ciega)
-  sin degradación pero con preferencia consistente por WSL en prosodia. Decisión del usuario: no
-  cerrar; **atacar la divergencia de build (H1-H3)** antes de cerrar (ver
-  `docs/reviews/2026-08-14-tts-calidad-fase5.md`). El fondo funcional ya está: `speech
-  synthesize/say/dub` integrados contra el motor real por
-  **servidor residente** (`127.0.0.1:8766`, `--int4 -j 4 --stream`, healthcheck y shutdown limpio;
-  fallback subprocess `--stdout`), con golden TTS de inferencia real en el harness dorado (suite
-  `cargo test --all` 78/78). El parche A1 (`WSAStartup`, enmienda de la orquestación de la Fase 5)
-  arregló `--serve` en Windows. RTF real en este equipo: ~3 con 1 hilo (benchmark de referencia
-  1.31-1.73, otra máquina). Watermark verificado ausente y documentado. **Clonado end-to-end:**
+   criterio híbrido y medido (2026-08-24): **C1** (WER ≤ 0.25) y **C2** (speaker-similarity Windows
+   ≈ WSL) verdes; **D** (mel-corr temp 0) rojo pero diagnóstico no bloqueante; **C3** (A/B ciega)
+   sin degradación pero con preferencia consistente por WSL en prosodia. Decisión del usuario: no
+   cerrar; **atacar la divergencia de build (H1-H3)** antes de cerrar (ver
+   `docs/reviews/2026-08-14-tts-calidad-fase5.md`). El fondo funcional ya está: `speech
+   synthesize/say/dub` integrados contra el motor real por
+   **servidor residente** (`127.0.0.1:8766`, `--int4 -j 4 --stream`, healthcheck y shutdown limpio;
+   fallback subprocess `--stdout`), con golden TTS de inferencia real en el harness dorado (suite
+   `cargo test --all` 80/80, baseline descubierto F4, ver `F4-implementacion-notas.md`). El parche A1 (`WSAStartup`, enmienda de la orquestación de la Fase 5)
+   arregló `--serve` en Windows. RTF real en este equipo: ~3 con 1 hilo (benchmark de referencia
+   1.31-1.73, otra máquina; F4 no re-midió RTF, mantiene ~3). Watermark verificado ausente y documentado. **Actualización F4 2026-08-24:** variante determinista `-ffp-contract=off -fno-fast-math` evaluada y **no adoptada** por regresión WER (ver `Makefile:42-50` y `docs/reviews/...` Actualización F4). **Clonado end-to-end:**
   implementado con contrato `{name, timbre, speech, precomputed}` (`precomputed: false`) y
   validaciones exit 2/3/6; el **modelo Base quedó provisionado** en Windows
   (`vendor/qwen3-tts/qwen3-tts-0.6b-base/`, requerido por `--ref-audio`, `main.c:1848-1854`) y la

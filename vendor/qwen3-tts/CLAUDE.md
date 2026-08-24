@@ -133,8 +133,7 @@ From `qwen_tts_load()` and CLI:
 - `qwen_tts_kernels.c`
   - ALL actual kernels live here (inline `#ifdef __ARM_NEON / __AVX2__ / else-scalar`),
     plus common math, threading (GCD, macOS-only), BLAS paths
-  - reality (verified 2026-06-03): hot matvecs/attention are NEON-or-scalar — **no AVX2**;
-    only rms_norm + bf16 conversion have an AVX2 path. SDOT int8 is ARM-only. See PLAN.md 21.3.
+  - realidad (verificada 2026-08-24, `qwen_tts_kernels.c:26-28,349-375,758-840,1003-1063`): hot loops **sí contienen AVX2** (`_mm256_fmadd_ps`, `__AVX512BF16__`/`_mm512_dpbf16_ps`) en `qwen_rms_norm` (AVX2 16-wide), `bf16_matvec_fused` (AVX2 2-row fused con FMA) y `qwen_dot_f32_*` (AVX2/FMA 4 accumulators), además de `rms/bf16-conv` y `matvec+attn` vía `qwen_caps_report:130-152`. SDOT int8 nativo es ARM-only; en x86 es `widen->FMA` (AVX2) o VNNI (`__AVX512VNNI__`). Ver `qwen_tts_kernels.c` y `Makefile:17-40`.
 - `qwen_tts_kernels_generic.c`, `qwen_tts_kernels_neon.c`, `qwen_tts_kernels_avx.c`
   - **EMPTY placeholder TUs** (reserved for future split). NOT where kernels live today —
     everything is inline in `qwen_tts_kernels.c`. `_avx.c` in particular has 0 AVX code.
