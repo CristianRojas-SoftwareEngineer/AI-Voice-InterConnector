@@ -4,11 +4,25 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Backend oneDNN + OpenMP (sin ruy): replica la configuración del wheel de
-# Python y es ~2.4x más rápido que ruy en CPU. Verificada por benchmarks.
-ct2rs = { version = "0.10.0", default-features = false, features = ["sentencepiece", "tokenizers", "openmp-runtime-comp", "dnnl"] }
 avi-core = { path = "../avi-core" }
 anyhow = "1.0"
+
+# Backend oneDNN + OpenMP COMP (sin ruy): replica la configuración del wheel
+# de Python y es ~2.4x más rápido que ruy en CPU. Verificada por benchmarks.
+# En Linux, ct2rs fuerza COMP igualmente cuando dnnl está activo (build.rs);
+# en Windows, COMP usa el runtime de MSVC (vcomp) sin link explícito.
+# Declarado en secciones por-target porque una misma dependencia en
+# [dependencies] + [target...] UNIFICA features y macOS heredaría COMP.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+ct2rs = { version = "0.10.0", default-features = false, features = ["sentencepiece", "tokenizers", "openmp-runtime-comp", "dnnl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS SIN openmp-runtime-comp → OPENMP_RUNTIME=NONE: los runners CI con
+# Apple clang no traen libomp y find_package(OpenMP REQUIRED) de CTranslate2
+# falla (pipeline #2/#4). Compilar sin OpenMP solo desactiva el paralelismo
+# intra-operador (resultados idénticos); re-evaluar con brew libomp si el
+# rendimiento en macOS lo exige.
+ct2rs = { version = "0.10.0", default-features = false, features = ["sentencepiece", "tokenizers", "dnnl"] }
 
 [dev-dependencies]
 # Lectura del corpus de paridad contra el oráculo Python (pares {input, expected}

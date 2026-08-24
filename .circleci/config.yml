@@ -177,7 +177,7 @@ jobs:
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - cargo_restore_caches
       - run:
-          name: Instalar dependencias de sistema (cmake, pkg-config, libomp)
+          name: Instalar dependencias de sistema (cmake, pkg-config)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             # cmake y pkg-config pueden no estar en la imagen base de Xcode
@@ -185,27 +185,9 @@ jobs:
             if ! command -v pkg-config >/dev/null 2>&1; then brew install pkg-config; fi
             cmake --version
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - run:
-          # CTranslate2 (vía ct2rs) compila con OpenMP del compilador
-          # (-DOPENMP_RUNTIME=COMP): Apple clang no trae libomp y CMake moría
-          # con «OpenMP not found» (pipeline #2). Se instala vía Homebrew y se
-          # exportan a $BASH_ENV las variables que consume FindOpenMP de CMake
-          # en los steps posteriores (cargo test/build invocan cmake).
-          name: Instalar libomp y exportar flags OpenMP para CMake
-          command: |
-            echo "[STEP] Instalar libomp y exportar flags OpenMP - INICIO"
-            brew install libomp
-            LIBOMP_PREFIX="$(brew --prefix libomp)"
-            {
-              echo "export OpenMP_C_FLAGS=\"-Xpreprocessor -fopenmp -I${LIBOMP_PREFIX}/include\""
-              echo "export OpenMP_CXX_FLAGS=\"-Xpreprocessor -fopenmp -I${LIBOMP_PREFIX}/include\""
-              echo "export OpenMP_C_LIB_NAMES=\"omp\""
-              echo "export OpenMP_CXX_LIB_NAMES=\"omp\""
-              echo "export OpenMP_omp_LIBRARY=\"${LIBOMP_PREFIX}/lib/libomp.dylib\""
-            } >> $BASH_ENV
-            source $BASH_ENV
-            brew list --versions libomp
-            echo "[STEP] Instalar libomp y exportar flags OpenMP - FIN"
+      # NOTA: sin libomp — avi-translation compila ct2rs con OPENMP_RUNTIME=NONE
+      # en macOS (features por target en su Cargo.toml): los runners con Apple
+      # clang no traen libomp y find_package(OpenMP REQUIRED) fallaba (#2/#4).
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -623,32 +605,15 @@ jobs:
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - run:
-          name: Instalar dependencias de sistema (cmake, pkg-config, libomp)
+          name: Instalar dependencias de sistema (cmake, pkg-config)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
             if ! command -v pkg-config >/dev/null 2>&1; then brew install pkg-config; fi
             cmake --version
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - run:
-          # CTranslate2 (vía ct2rs) compila con OpenMP del compilador: Apple
-          # clang no trae libomp y CMake moría con «OpenMP not found»
-          # (pipeline #2). Mismo fix que en test-macos — ver comentario allí.
-          name: Instalar libomp y exportar flags OpenMP para CMake
-          command: |
-            echo "[STEP] Instalar libomp y exportar flags OpenMP - INICIO"
-            brew install libomp
-            LIBOMP_PREFIX="$(brew --prefix libomp)"
-            {
-              echo "export OpenMP_C_FLAGS=\"-Xpreprocessor -fopenmp -I${LIBOMP_PREFIX}/include\""
-              echo "export OpenMP_CXX_FLAGS=\"-Xpreprocessor -fopenmp -I${LIBOMP_PREFIX}/include\""
-              echo "export OpenMP_C_LIB_NAMES=\"omp\""
-              echo "export OpenMP_CXX_LIB_NAMES=\"omp\""
-              echo "export OpenMP_omp_LIBRARY=\"${LIBOMP_PREFIX}/lib/libomp.dylib\""
-            } >> $BASH_ENV
-            source $BASH_ENV
-            brew list --versions libomp
-            echo "[STEP] Instalar libomp y exportar flags OpenMP - FIN"
+      # NOTA: sin libomp — ct2rs compila con OPENMP_RUNTIME=NONE en macOS
+      # (mismo fix por features que test-macos, pipelines #2/#4).
       - cargo_restore_caches
       - run:
           name: Precargar dependencias (cargo fetch)
