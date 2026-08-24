@@ -1,1008 +1,651 @@
+# Pipeline CircleCI Tier 1 — Rust nativo 3 SO (Linux/Windows/macOS)
+# Triple puerta `cargo test --all` + `coverage` como gate de los 4 builds nativos.
+# Artefactos: binarios Rust versionados vía `persist_to_workspace` → `publish-release`.
+# Pines reproducibles: `rust_version` + digest de `cimg/rust` (ver §Reproducibilidad).
+# Ver docs/BUILD.md §4 para arquitectura completa y docs/proposals/progress.md:340-346 para Fase 7.
+
 version: 2.1
 
 orbs:
   win: circleci/windows@5.0
 
-# Fuente única de los pines de entorno-CI. Estas versiones se
-# interpolan con << pipeline.parameters.NAME >> en cada job en vez de
-# repetirse literalmente (antes: Python x10, pytest x3). Actualizar una
-# versión = editar solo aquí. Los pines de *build* (Inno, repo) NO viven aquí:
-# su fuente es Python (scripts/build_utils.py, scripts/render_cask.py) y se
-# vigilan contra deriva con tests/test_pin_consistency.py.
+# Fuente única de pines de toolchain Rust. Esta versión se interpola con
+# << pipeline.parameters.rust_version >> en cada job Rust (no repetir literal).
+# Bump de versión = editar solo aquí + actualizar digest de `cimg/rust` en las
+# 4 referencias `image:` (obtenido vía `docker buildx imagetools inspect
+# cimg/rust:<< pipeline.parameters.rust_version >>` o hub.docker.com, ver
+# docs/BUILD.md §Reproducibilidad). Sin digest, el tag es flotante y pierde
+# reproducibilidad; el digest congela el SO base + toolchain.
 parameters:
-  python_version:
+  rust_version:
     type: string
-    default: "3.13.14"
+    default: "1.96.0"
     description: >
-      CPython exacto usado en todos los jobs (choco en Windows, pyenv en macOS,
-      claves de caché de pyenv). Espejo entre plataformas.
-  pytest_version:
-    type: string
-    default: "9.1.1"
-    description: Versión de pytest instalada en los jobs de test.
-  pytest_cov_version:
-    type: string
-    default: "7.1.0"
-    description: >
-      Versión de pytest-cov instalada SOLO en el job `coverage`; los
-      tres jobs de test (Linux/Windows/macOS) siguen corriendo pytest plano,
-      sin plugins.
-  pyenv_version:
-    type: string
-    default: "v2.8.1"
-    description: >
-      Versión fija de pyenv (tag git) instalada en los jobs macOS. Se clona
-      desde el tag en ~/.pyenv en vez de vía Homebrew, para un pin
-      determinista e independiente de la imagen de CI. Debe ser una tag que
-      incluya la definición de python-build para << pipeline.parameters.python_version >>:
-      v2.5.3 no la traía y python-build fallaba con «definition not found».
-
-commands:
-  smoke_test_frozen_bundle:
-    # Ejecuta el binario congelado onedir para detectar empaquetados rotos
-    # antes de publicar. `version` no carga el modelo; exit 0 obligatorio.
-    # Valida además que las voces de fábrica (en particular 'default')
-    # quedaron empaquetadas en el bundle: `voice list` no carga el modelo;
-    # el grep -qx aborta el step si 'default' no viaja en el bundle.
-    # Parametrizado por executable_path para reusarse entre build-linux-x64
-    # y build-linux-arm64, que solo difieren en esa ruta.
-    description: >
-      Smoke test del binario congelado onedir (version + voces de fábrica).
-    parameters:
-      executable_path:
-        type: string
-        description: Ruta al ejecutable congelado dentro del onedir/AppDir.
-    steps:
-      - run:
-          name: Smoke test << parameters.executable_path >> (version + voces de fábrica)
-          command: |
-            echo "[STEP] Smoke test << parameters.executable_path >> - INICIO"
-            << parameters.executable_path >> version
-            << parameters.executable_path >> voice list | grep -qx '  - default'
-            echo "[STEP] Smoke test << parameters.executable_path >> - FIN"
+      Versión exacta de Rust (toolchain) usada en todos los jobs Rust
+      (cargo test/build). Espejo entre plataformas (Linux/Windows/macOS).
 
 jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Gate Rust — triple puerta simétrica (cargo test --all)
+  # ──────────────────────────────────────────────────────────────
   test-linux:
-    # El executor es x86_64 (Docker, el más barato/rápido disponible): la suite
-    # es arch-independiente y mockea el engine (torch/onnxruntime no se ejercitan),
-    # así que no hay señal adicional en re-correrla en ARM64. Justificación
-    # completa (simetría 3 tests / 4 builds) en docs/BUILD.md §4.
+    # Executor x86_64 Docker con Rust preinstalado. La suite es
+    # arch-independiente y mockea el engine (whisper/Qwen no se ejercitan),
+    # así que re-correrla en ARM64 no aportaría señal (ver docs/BUILD.md §4).
+    # Es la arquitectura más barata/rápida disponible.
     docker:
-      # Imagen fijada por digest (R-14): el digest es el del manifest list del
-      # tag 3.13 (multi-arch, válido para amd64 y arm64), así que los tres jobs
-      # Docker comparten el mismo pin. Bump manual: tomar el digest vigente de
-      # https://hub.docker.com/v2/repositories/cimg/python/tags/3.13 y
-      # reemplazarlo en las TRES referencias de este archivo (procedimiento
-      # completo en docs/BUILD.md §Reproducibilidad).
-      - image: cimg/python:3.13@sha256:9d189f873178a2bea234b7d51e31e1ae01a73646e962cf697f757b588f8d77b6
+      - image: cimg/rust:1.96.0 # TODO: pinnear por digest (ver parameters.rust_version)
+    resource_class: medium
     steps:
       - checkout
       - run:
-          name: Install apt build deps (libasound2-dev)
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config)
           command: |
-            echo "[STEP] Install apt build deps (libasound2-dev) - INICIO"
+            echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev
-            echo "[STEP] Install apt build deps (libasound2-dev) - FIN"
-      - run:
-          # Material de la clave de cache del venv: versión exacta de Python del
-          # runner (sin pins de herramientas). Al no incluir el pin, la caché de
-          # venv es compartida entre este job de test y el build de la misma
-          # plataforma+lockfile (build-linux-x64): el test la puebla, el build
-          # acierta HIT. Un cambio de Python o del lockfile la invalida.
-          name: Compute venv cache key (python --version)
-          command: |
-            echo "[STEP] Compute venv cache key (python --version) - INICIO"
-            python --version > cache-key.txt
-            cat cache-key.txt
-            echo "[STEP] Compute venv cache key (python --version) - FIN"
+            sudo apt-get install -y libasound2-dev cmake pkg-config
+            echo "[STEP] Instalar dependencias de sistema - FIN"
       - restore_cache:
+          # Clave de caché cargo: arch + hash de Cargo.lock. Sin rust_version en
+          # la clave: un bump de toolchain invalida manualmente vía prefijo v1→v2
+          # (evita fragmentación de caché por patch). Cargo.lock ya captura todo
+          # el grafo de deps; arch separa x86_64/arm64.
           keys:
-            - venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock-linux-cpu.txt" }}
+            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-
       - run:
-          # Instalación reproducible desde el lock CPU-only con hashes
-          # (--require-hashes rechaza cualquier paquete sin hash o no fijado).
-          # Se usa el lock CPU (no el universal): la suite mockea el engine
-          # (torch no se ejercita) y el build de esta misma plataforma
-          # (build-linux-x64) ya instala exactamente este lock, así que el
-          # stack nvidia-*-cu12 del lock universal solo agregaría varios GB
-          # sin señal adicional. Las dependencias viven en un venv cacheado:
-          # en cache hit, pip re-verifica el lock como no-op rápido.
-          name: Install runtime deps from CPU-only lock (require-hashes)
+          name: Verificar toolchain Rust
           command: |
-            echo "[STEP] Install runtime deps from CPU-only lock (require-hashes) - INICIO"
-            python -m venv ~/.venv
-            echo "source ~/.venv/bin/activate" >> $BASH_ENV
-            source ~/.venv/bin/activate
-            pip install pip==26.1.2
-            pip install -r requirements-lock-linux-cpu.txt --require-hashes --extra-index-url https://download.pytorch.org/whl/cpu
-            echo "[STEP] Install runtime deps from CPU-only lock (require-hashes) - FIN"
+            echo "[STEP] Verificar toolchain Rust - INICIO"
+            rustc --version
+            cargo --version
+            echo "rust_version parámetro: << pipeline.parameters.rust_version >>"
+            echo "[STEP] Verificar toolchain Rust - FIN"
+      - run:
+          name: Ejecutar suite Rust (cargo test --all)
+          command: |
+            echo "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
+            cargo test --all --verbose
+            echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
       - save_cache:
-          key: venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock-linux-cpu.txt" }}
+          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
           paths:
-            - ~/.venv
-      - run:
-          # La herramienta de test (pytest) se instala DESPUÉS del save_cache, sobre
-          # el venv ya poblado: así queda fuera del material cacheado y la caché de
-          # venv la comparten test y build de esta plataforma. Reinstalarla cuesta
-          # segundos (sin dependencias pesadas).
-          # Política de pins: pytest va pineado a versión exacta. El único
-          # plugin de pytest del proyecto (pytest-cov) va pineado vía
-          # el pipeline parameter `pytest_cov_version` y se instala SOLO en el
-          # job `coverage` (mide y gatea la suite por módulo); este job de
-          # test sigue corriendo pytest plano, sin plugins. Un guard de
-          # plugins pytest-* no declarados sigue diferido (sobreingeniería
-          # para un único plugin, ya vigilado por test_pin_consistency.py).
-          # Mantener los TRES jobs de test (Linux/Windows/macOS) alineados
-          # para evitar drift.
-          name: Install pytest into venv (post-cache)
-          command: |
-            echo "[STEP] Install pytest into venv (post-cache) - INICIO"
-            pip install pytest==<< pipeline.parameters.pytest_version >>
-            echo "[STEP] Install pytest into venv (post-cache) - FIN"
-      - run:
-          # WARNING-04: CLAUDE.md documenta py_compile como chequeo de verificación,
-          # pero no corría en CI; compileall detecta errores de sintaxis en módulos
-          # sin tests propios o importados condicionalmente, antes del build.
-          name: Check src/ syntax (compileall)
-          command: |
-            echo "[STEP] Check src/ syntax (compileall) - INICIO"
-            python -m compileall src/
-            echo "[STEP] Check src/ syntax (compileall) - FIN"
-      - run:
-          name: Run pytest suite over tests/
-          command: |
-            echo "[STEP] Run pytest suite over tests/ - INICIO"
-            pytest tests/ -v
-            echo "[STEP] Run pytest suite over tests/ - FIN"
+            - ~/.cargo/registry
+            - ~/.cargo/git
 
   test-windows:
-    # R-22: la suite corría solo en Linux; todo el código específico de Windows
-    # (pycaw/COM, winsound, generación del .iss) se ejercitaba solo con mocks.
-    # Este job corre la suite completa en Windows nativo y actúa como puerta de
-    # los builds junto a `test-linux` y `test-macos` (triple puerta simétrica).
+    # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
+    # test-linux/macos: valida código específico de Windows (winsound, tray)
+    # antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
     executor: win/server-2022
     steps:
       - checkout
       - run:
-          # Pin de Chocolatey (espejo de build-windows-x64): un release nuevo no debe
-          # romper el job sin cambios en el repo.
-          name: Set up Python 3.13 via choco (pinned << pipeline.parameters.python_version >>)
+          name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
           command: |
-            Write-Host "[STEP] Set up Python 3.13 via choco (pinned << pipeline.parameters.python_version >>) - INICIO"
-            choco install python313 -y --version=<< pipeline.parameters.python_version >>
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
+            $ErrorActionPreference = "Stop"
+            $RustVersion = "<< pipeline.parameters.rust_version >>"
+            # rustup-init estático oficial (pin exacto, no choco): reproducible
+            # e independiente del repo de Chocolatey; choco podría servir una
+            # versión distinta sin cambio en el repo. Invoke-WebRequest no
+            # setea $LASTEXITCODE: con ErrorActionPreference=Stop un fallo de
+            # descarga lanza y aborta el step.
+            Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+            .\rustup-init.exe -y --default-toolchain $RustVersion --profile minimal --no-modify-path
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Set up Python 3.13 via choco (pinned << pipeline.parameters.python_version >>) - FIN"
-      - run:
-          # Material de la clave de cache del venv: versión exacta de Python del
-          # runner (sin pins de herramientas). Al no incluir el pin, la caché de
-          # venv es compartida entre este job de test y build-windows-x64: el test
-          # la puebla, el build acierta HIT.
-          name: Compute venv cache key (python --version)
-          command: |
-            Write-Host "[STEP] Compute venv cache key (python --version) - INICIO"
-            python --version | Out-File -Encoding ascii cache-key.txt
+            # Prefijo de PATH SOLO para este step: los steps posteriores que
+            # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
+            # equivalente de $BASH_ENV).
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            cargo --version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Get-Content cache-key.txt
-            Write-Host "[STEP] Compute venv cache key (python --version) - FIN"
+            rustc --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - restore_cache:
           keys:
-            - venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
+            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-
       - run:
-          # Dependencias en un venv del proyecto (.venv) cacheado. PowerShell no
-          # tiene el equivalente de $BASH_ENV para activar el venv entre steps:
-          # los steps posteriores invocan .venv\Scripts\python.exe por ruta
-          # explícita. En cache hit, pip re-verifica el lock como no-op rápido.
-          name: Install runtime deps from universal lock (require-hashes)
+          name: Ejecutar suite Rust (cargo test --all)
           command: |
-            Write-Host "[STEP] Install runtime deps from universal lock (require-hashes) - INICIO"
-            python --version
+            Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            cargo test --all --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            if (-not (Test-Path .venv)) { python -m venv .venv }
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            .venv\Scripts\python.exe -m pip install pip==26.1.2
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            .venv\Scripts\python.exe -m pip install -r requirements-lock.txt --require-hashes
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Install runtime deps from universal lock (require-hashes) - FIN"
+            Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
       - save_cache:
-          key: venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
+          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
           paths:
-            - .venv
-      - run:
-          # La herramienta de test (pytest) se instala DESPUÉS del save_cache, sobre
-          # el venv ya poblado: así queda fuera del material cacheado y la caché de
-          # venv la comparten test y build de esta plataforma.
-          # Política de pins: pytest va pineado a versión exacta. El único
-          # plugin de pytest del proyecto (pytest-cov) va pineado vía
-          # el pipeline parameter `pytest_cov_version` y se instala SOLO en el
-          # job `coverage` (mide y gatea la suite por módulo); este job de
-          # test sigue corriendo pytest plano, sin plugins. Un guard de
-          # plugins pytest-* no declarados sigue diferido (sobreingeniería
-          # para un único plugin, ya vigilado por test_pin_consistency.py).
-          # Mantener los TRES jobs de test (Linux/Windows/macOS) alineados
-          # para evitar drift.
-          name: Install pytest into venv (post-cache)
-          command: |
-            Write-Host "[STEP] Install pytest into venv (post-cache) - INICIO"
-            .venv\Scripts\python.exe -m pip install pytest==<< pipeline.parameters.pytest_version >>
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Install pytest into venv (post-cache) - FIN"
-      - run:
-          name: Run pytest suite over tests/
-          command: |
-            Write-Host "[STEP] Run pytest suite over tests/ - INICIO"
-            .venv\Scripts\python.exe -m pytest tests/ -v
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Run pytest suite over tests/ - FIN"
+            - ~/.cargo/registry
+            - ~/.cargo/git
 
   test-macos:
-    # Equivalencia de cobertura con test-linux/test-windows: sin un Mac físico
-    # disponible, el gate en CI es la única validación de la plataforma macOS
-    # (playback vía afplay/sounddevice, rutas y señales POSIX del user-data-dir)
-    # antes de que un usuario real la pruebe. Corre la suite completa en macOS
-    # nativo y actúa como puerta de los builds (triple puerta simétrica).
+    # Suite Rust en macOS nativo (Apple Silicon, Xcode 26.4.0). Valida código
+    # específico de macOS (afplay/CoreAudio, rutas POSIX, señales) — sin Mac
+    # físico, este gate en CI es la única validación antes del usuario real.
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
     steps:
       - checkout
+      - run:
+          name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
+          command: |
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
+            echo 'source "$HOME/.cargo/env"' >> $BASH_ENV
+            source "$HOME/.cargo/env"
+            cargo --version
+            rustc --version
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - restore_cache:
           keys:
-            - pyenv-v1-{{ arch }}-<< pipeline.parameters.python_version >>-xcode26.4
+            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-
       - run:
-          # Pin EXACTO de Python << pipeline.parameters.python_version >> vía pyenv (espejo del pin de Chocolatey
-          # en los jobs Windows): no usar el python3 del sistema sin fijar, para
-          # testear sobre la misma versión que empaqueta el build, y con patch
-          # fijo para que la clave de cache del CPython compilado sea estable.
-          # no_output_timeout holgado: pyenv compila CPython desde fuente con
-          # output escaso (~10 min) en el primer miss; con cache restaurado,
-          # `pyenv install -s` salta la compilación en segundos. La clave del
-          # cache incluye la versión de Xcode: el CPython compilado depende del
-          # SDK del runner. pyenv se instala desde un TAG GIT FIJO
-          # (<< pipeline.parameters.pyenv_version >>) clonado en ~/.pyenv, en
-          # vez de vía Homebrew: pin determinista e independiente de la imagen
-          # . La caché ~/.pyenv/versions se conserva entre runs (solo se
-          # re-clona la herramienta pyenv, no los CPython instalados). El
-          # CPython resultante ya está pineado (<< pipeline.parameters.python_version >>),
-          # así que el artefacto es reproducible con independencia de la versión de pyenv.
-          name: Set up Python 3.13 via pyenv (pinned << pipeline.parameters.python_version >>)
-          no_output_timeout: 20m
+          name: Instalar dependencias de sistema (cmake, pkg-config)
           command: |
-            echo "[STEP] Set up Python 3.13 via pyenv (pinned << pipeline.parameters.python_version >>) - INICIO"
-            export PYENV_ROOT="$HOME/.pyenv"
-            # La imagen del executor macOS ahora incluye ~/.pyenv y restore_cache
-            # puede repoblar ~/.pyenv/versions: en ambos casos `git clone` fallaría
-            # por destino no vacío. Instalamos pyenv de forma idempotente al TAG GIT
-            # FIJO preservando los CPython ya compilados (versions), para conservar
-            # el pin reproducible sin perder el cache ni chocar con un pyenv preexistente.
-            if [ -d "$PYENV_ROOT/.git" ]; then
-              git -C "$PYENV_ROOT" fetch --tags --force origin
-            else
-              [ -d "$PYENV_ROOT/versions" ] && mv "$PYENV_ROOT/versions" "$HOME/.pyenv-versions.bak"
-              rm -rf "$PYENV_ROOT"
-              git clone https://github.com/pyenv/pyenv.git "$PYENV_ROOT"
-              [ -d "$HOME/.pyenv-versions.bak" ] && rm -rf "$PYENV_ROOT/versions" && mv "$HOME/.pyenv-versions.bak" "$PYENV_ROOT/versions"
-            fi
-            git -C "$PYENV_ROOT" checkout << pipeline.parameters.pyenv_version >>
-            export PATH="$PYENV_ROOT/bin:$PATH"
-            pyenv install -s << pipeline.parameters.python_version >>
-            pyenv global << pipeline.parameters.python_version >>
-            pyenv rehash
-            python --version
-            echo "[STEP] Set up Python 3.13 via pyenv (pinned << pipeline.parameters.python_version >>) - FIN"
+            echo "[STEP] Instalar dependencias de sistema - INICIO"
+            # cmake y pkg-config pueden no estar en la imagen base de Xcode
+            if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
+            if ! command -v pkg-config >/dev/null 2>&1; then brew install pkg-config; fi
+            cmake --version
+            echo "[STEP] Instalar dependencias de sistema - FIN"
+      - run:
+          name: Ejecutar suite Rust (cargo test --all)
+          command: |
+            echo "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
+            source "$HOME/.cargo/env"
+            cargo test --all --verbose
+            echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
       - save_cache:
-          key: pyenv-v1-{{ arch }}-<< pipeline.parameters.python_version >>-xcode26.4
+          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
           paths:
-            - ~/.pyenv/versions
-      - run:
-          # Material de la clave de cache del venv: versión exacta de Python (sin
-          # pins de herramientas). Al no incluir el pin, la caché de venv es
-          # compartida entre este job de test y build-darwin-arm64: el test la
-          # puebla, el build acierta HIT.
-          name: Compute venv cache key (python --version)
-          command: |
-            echo "[STEP] Compute venv cache key (python --version) - INICIO"
-            python --version > cache-key.txt
-            cat cache-key.txt
-            echo "[STEP] Compute venv cache key (python --version) - FIN"
-      - restore_cache:
-          keys:
-            - venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
-      - run:
-          # Instalación reproducible desde el lock universal con hashes, en un
-          # venv cacheado: en cache hit, pip re-verifica el lock como no-op.
-          name: Install runtime deps from universal lock (require-hashes)
-          command: |
-            echo "[STEP] Install runtime deps from universal lock (require-hashes) - INICIO"
-            python -m venv ~/.venv
-            echo "source ~/.venv/bin/activate" >> $BASH_ENV
-            source ~/.venv/bin/activate
-            python -m pip install pip==26.1.2
-            python -m pip install -r requirements-lock.txt --require-hashes
-            echo "[STEP] Install runtime deps from universal lock (require-hashes) - FIN"
-      - save_cache:
-          key: venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
-          paths:
-            - ~/.venv
-      - run:
-          # La herramienta de test (pytest) se instala DESPUÉS del save_cache, sobre
-          # el venv ya poblado: así queda fuera del material cacheado y la caché de
-          # venv la comparten test y build de esta plataforma.
-          # Política de pins: pytest va pineado a versión exacta. El único
-          # plugin de pytest del proyecto (pytest-cov) va pineado vía
-          # el pipeline parameter `pytest_cov_version` y se instala SOLO en el
-          # job `coverage` (mide y gatea la suite por módulo); este job de
-          # test sigue corriendo pytest plano, sin plugins. Un guard de
-          # plugins pytest-* no declarados sigue diferido (sobreingeniería
-          # para un único plugin, ya vigilado por test_pin_consistency.py).
-          # Mantener los TRES jobs de test (Linux/Windows/macOS) alineados
-          # para evitar drift.
-          name: Install pytest into venv (post-cache)
-          command: |
-            echo "[STEP] Install pytest into venv (post-cache) - INICIO"
-            python -m pip install pytest==<< pipeline.parameters.pytest_version >>
-            echo "[STEP] Install pytest into venv (post-cache) - FIN"
-      - run:
-          name: Run pytest suite over tests/
-          command: |
-            echo "[STEP] Run pytest suite over tests/ - INICIO"
-            python -m pytest tests/ -v
-            echo "[STEP] Run pytest suite over tests/ - FIN"
+            - ~/.cargo/registry
+            - ~/.cargo/git
 
   coverage:
-    # Job independiente: medir en un solo job de test sería asimétrico
-    # (¿por qué Linux y no Windows/macOS?) y medir en los tres, redundante sin
-    # señal adicional (misma suite mockeada, coverage.py es agnóstico de SO).
-    # Docker Linux, mismo pin que test-linux; reusa su caché de venv (misma
-    # clave: plataforma + lockfile CPU-only). pytest-cov se instala SOLO aquí
-    # (pin propio << pipeline.parameters.pytest_cov_version >>), los tres jobs
-    # de test siguen sin plugins.
+    # Job de cobertura Rust (cargo-llvm-cov, LLVM instrumentation). Corre solo
+    # en Linux x86_64: coverage es agnóstico de SO, duplicarlo triplicaría coste
+    # sin señal nueva (ver docs/BUILD.md §4). Reemplaza a pytest-cov; genera
+    # lcov.info y resumen por líneas. Sin gate de % aún — solo valida que la
+    # instrumentación no rompa la suite; el gate por módulo se añadirá con
+    # `cargo llvm-cov --fail-under-lines` cuando se defina el umbral.
     docker:
-      - image: cimg/python:3.13@sha256:9d189f873178a2bea234b7d51e31e1ae01a73646e962cf697f757b588f8d77b6
+      - image: cimg/rust:1.96.0 # TODO: pinnear por digest
+    resource_class: medium
     steps:
       - checkout
       - run:
-          name: Install apt build deps (libasound2-dev)
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config)
           command: |
-            echo "[STEP] Install apt build deps (libasound2-dev) - INICIO"
+            echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev
-            echo "[STEP] Install apt build deps (libasound2-dev) - FIN"
-      - run:
-          name: Compute venv cache key (python --version)
-          command: |
-            echo "[STEP] Compute venv cache key (python --version) - INICIO"
-            python --version > cache-key.txt
-            cat cache-key.txt
-            echo "[STEP] Compute venv cache key (python --version) - FIN"
+            sudo apt-get install -y libasound2-dev cmake pkg-config
+            echo "[STEP] Instalar dependencias de sistema - FIN"
       - restore_cache:
           keys:
-            - venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock-linux-cpu.txt" }}
+            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-
       - run:
-          name: Install runtime deps from CPU-only lock (require-hashes)
+          name: Instalar cargo-llvm-cov
           command: |
-            echo "[STEP] Install runtime deps from CPU-only lock (require-hashes) - INICIO"
-            python -m venv ~/.venv
-            echo "source ~/.venv/bin/activate" >> $BASH_ENV
-            source ~/.venv/bin/activate
-            pip install pip==26.1.2
-            pip install -r requirements-lock-linux-cpu.txt --require-hashes --extra-index-url https://download.pytorch.org/whl/cpu
-            echo "[STEP] Install runtime deps from CPU-only lock (require-hashes) - FIN"
-      - save_cache:
-          key: venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock-linux-cpu.txt" }}
-          paths:
-            - ~/.venv
+            echo "[STEP] Instalar cargo-llvm-cov - INICIO"
+            rustup component add llvm-tools-preview
+            cargo install cargo-llvm-cov --locked
+            cargo llvm-cov --version
+            echo "[STEP] Instalar cargo-llvm-cov - FIN"
       - run:
-          # pytest + pytest-cov se instalan DESPUÉS del save_cache, igual que
-          # en test-linux: quedan fuera del material cacheado y la caché de
-          # venv la comparten test-linux y este job.
-          name: Install pytest + pytest-cov into venv (post-cache)
+          name: Ejecutar suite con cobertura (cargo llvm-cov)
           command: |
-            echo "[STEP] Install pytest + pytest-cov into venv (post-cache) - INICIO"
-            pip install pytest==<< pipeline.parameters.pytest_version >> pytest-cov==<< pipeline.parameters.pytest_cov_version >>
-            echo "[STEP] Install pytest + pytest-cov into venv (post-cache) - FIN"
-      - run:
-          name: Run pytest suite over tests/ with coverage
-          command: |
-            echo "[STEP] Run pytest suite over tests/ with coverage - INICIO"
-            pytest tests/ --cov --cov-report=xml --cov-report=json --cov-report=term-missing
-            echo "[STEP] Run pytest suite over tests/ with coverage - FIN"
-      - run:
-          # Gate por módulo: coverage.py solo ofrece un fail_under
-          # global; scripts/check_coverage.py diferencia los módulos de
-          # contrato (ver MODULE_FLOORS) del resto, que se reporta sin gatear.
-          name: Check per-module coverage floors (scripts/check_coverage.py)
-          command: |
-            echo "[STEP] Check per-module coverage floors (scripts/check_coverage.py) - INICIO"
-            python scripts/check_coverage.py coverage.json
-            echo "[STEP] Check per-module coverage floors (scripts/check_coverage.py) - FIN"
+            echo "[STEP] Ejecutar suite con cobertura - INICIO"
+            # Genera lcov.info y resumen por líneas; falla si no hay tests
+            cargo llvm-cov --workspace --lcov --output-path lcov.info --verbose
+            cargo llvm-cov --workspace --summary-only
+            echo "[STEP] Ejecutar suite con cobertura - FIN"
       - store_artifacts:
-          path: coverage.xml
+          path: lcov.info
+          destination: coverage-lcov
+      - save_cache:
+          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
 
+  # ──────────────────────────────────────────────────────────────
+  # Smoke tests de instaladores de una línea (mock por PATH, sin red)
+  # Valida lógica de parsing de release, checksums y guards sin descargar.
+  # ──────────────────────────────────────────────────────────────
   test-installer-linux:
-    # Smoke-test de install-linux.sh (docs/SELF-HOSTED-INSTALL.md): valida el
-    # script sin red real, mockeando curl/uname/sha256sum por PATH
-    # (tests/installer/). cimg/base es una imagen liviana (Ubuntu), suficiente
-    # porque el job no compila nada: solo instala bats-core y corre el
-    # smoke-test de shell.
+    # Valida install-linux.sh sin red real, mockeando curl/uname/sha256sum
+    # por PATH (tests/installer/). Decisión consciente: el flujo real se
+    # valida en el proceso de release y en los smoke tests de los builds.
     docker:
       - image: cimg/base:current
     steps:
       - checkout
       - run:
-          name: Install bats-core
+          name: Instalar bats-core
           command: |
-            echo "[STEP] Install bats-core - INICIO"
+            echo "[STEP] Instalar bats-core - INICIO"
             sudo apt-get update
             sudo apt-get install -y bats
-            echo "[STEP] Install bats-core - FIN"
+            echo "[STEP] Instalar bats-core - FIN"
       - run:
-          name: Run install-linux.sh smoke-test (bats)
+          name: Ejecutar smoke-test install-linux.sh (bats)
           command: |
-            echo "[STEP] Run install-linux.sh smoke-test (bats) - INICIO"
-            # Acotado a install-linux.bats: install-macos.bats corre en el
-            # executor macOS (job test-installer-macos), no en este runner
-            # Linux.
+            echo "[STEP] Ejecutar smoke-test install-linux.sh (bats) - INICIO"
             bats tests/installer/install-linux.bats
-            echo "[STEP] Run install-linux.sh smoke-test (bats) - FIN"
+            echo "[STEP] Ejecutar smoke-test install-linux.sh (bats) - FIN"
 
   test-installer-windows:
-    # Smoke-test de install-windows.ps1 (docs/SELF-HOSTED-INSTALL.md): valida
-    # el script sin red ni instalación reales, mockeando las funciones propias
-    # del script con Pester v5 (tests/installer/install-windows.tests.ps1) —
-    # espejo de test-installer-linux. Mismo executor Windows que test-windows;
-    # Pester pineado (el server-2022 trae Pester 3.x, y un release nuevo de
-    # Pester no debe romper el job sin cambios en el repo).
+    # Smoke-test de install-windows.ps1 con Pester v5 pineado (el executor
+    # trae Pester 3.x; un release nuevo no debe romper el job sin cambios).
     executor: win/server-2022
     steps:
       - checkout
       - run:
-          name: Install Pester (pinned 5.8.0)
+          name: Instalar Pester (pineado 5.8.0)
           command: |
-            Write-Host "[STEP] Install Pester (pinned 5.8.0) - INICIO"
+            Write-Host "[STEP] Instalar Pester (pineado 5.8.0) - INICIO"
             Install-Module Pester -RequiredVersion 5.8.0 -Force -SkipPublisherCheck -Scope CurrentUser
             if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Install Pester (pinned 5.8.0) - FIN"
+            Write-Host "[STEP] Instalar Pester (pineado 5.8.0) - FIN"
       - run:
-          name: Run install-windows.ps1 smoke-test (Pester)
+          name: Ejecutar smoke-test install-windows.ps1 (Pester)
           command: |
-            Write-Host "[STEP] Run install-windows.ps1 smoke-test (Pester) - INICIO"
+            Write-Host "[STEP] Ejecutar smoke-test install-windows.ps1 (Pester) - INICIO"
             Import-Module Pester -RequiredVersion 5.8.0
             Invoke-Pester tests/installer/install-windows.tests.ps1 -CI
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Run install-windows.ps1 smoke-test (Pester) - FIN"
+            Write-Host "[STEP] Ejecutar smoke-test install-windows.ps1 (Pester) - FIN"
 
   test-installer-macos:
-    # Smoke-test de install-macos.sh (docs/SELF-HOSTED-INSTALL.md): valida el
-    # script sin red ni .dmg reales, mockeando curl/uname/hdiutil/xattr/ditto
-    # por PATH (tests/installer/install-macos.bats) — espejo de
-    # test-installer-linux/-windows. Corre en el executor macOS real (mismo que
-    # test-macos) para validar sobre el shell nativo de la plataforma, la única
-    # validación posible sin un Mac físico del propietario.
+    # Smoke-test de install-macos.sh en el executor macOS real (bats): única
+    # validación del shell nativo de la plataforma sin un Mac físico.
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
     steps:
       - checkout
       - run:
-          name: Install bats-core
+          name: Instalar bats-core
           command: |
-            echo "[STEP] Install bats-core - INICIO"
+            echo "[STEP] Instalar bats-core - INICIO"
             brew install bats-core
-            echo "[STEP] Install bats-core - FIN"
+            echo "[STEP] Instalar bats-core - FIN"
       - run:
-          name: Run install-macos.sh smoke-test (bats)
+          name: Ejecutar smoke-test install-macos.sh (bats)
           command: |
-            echo "[STEP] Run install-macos.sh smoke-test (bats) - INICIO"
+            echo "[STEP] Ejecutar smoke-test install-macos.sh (bats) - INICIO"
             bats tests/installer/install-macos.bats
-            echo "[STEP] Run install-macos.sh smoke-test (bats) - FIN"
+            echo "[STEP] Ejecutar smoke-test install-macos.sh (bats) - FIN"
 
+  # ──────────────────────────────────────────────────────────────
+  # Builds nativos Rust — 4 targets de distribución (cargo build --release)
+  # Cada build hace smoke test (version + voice list) y stagea el binario
+  # versionado al workspace para publish-release. Requieren triple puerta +
+  # coverage + instaladores (ver workflow build-all).
+  # ──────────────────────────────────────────────────────────────
   build-windows-x64:
+    # Windows x64: binario + smoke test nativo. No usa Inno Setup aún (el
+    # bundle nativo scripts/build_release_native.py se invocará en Fase 7.2).
     executor: win/server-2022
     steps:
       - checkout
       - run:
-          # SUGGESTION-06: sin pin, un release nuevo de Chocolatey puede romper
-          # el build sin cambios en el repo. Versión fijada al momento de escribir
-          # este pin; actualizar deliberadamente cuando se quiera adoptar una nueva.
-          name: Set up Python 3.13 via choco (pinned << pipeline.parameters.python_version >>)
+          name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
           command: |
-            Write-Host "[STEP] Set up Python 3.13 via choco (pinned << pipeline.parameters.python_version >>) - INICIO"
-            choco install python313 -y --version=<< pipeline.parameters.python_version >>
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
+            $ErrorActionPreference = "Stop"
+            $RustVersion = "<< pipeline.parameters.rust_version >>"
+            Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+            .\rustup-init.exe -y --default-toolchain $RustVersion --profile minimal --no-modify-path
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Set up Python 3.13 via choco (pinned << pipeline.parameters.python_version >>) - FIN"
-      - run:
-          # Material de la clave de cache del venv: versión exacta de Python del
-          # runner (sin pins de herramientas). Al no incluir el pin, la caché de
-          # venv es compartida con test-windows: el test la puebla, este build
-          # acierta HIT.
-          name: Compute venv cache key (python --version)
-          command: |
-            Write-Host "[STEP] Compute venv cache key (python --version) - INICIO"
-            python --version | Out-File -Encoding ascii cache-key.txt
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Get-Content cache-key.txt
-            Write-Host "[STEP] Compute venv cache key (python --version) - FIN"
+            # Prefijo de PATH SOLO para este step: los steps posteriores que
+            # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
+            # equivalente de $BASH_ENV).
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            cargo --version
+            rustc --version
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - restore_cache:
           keys:
-            - venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
+            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-
       - run:
-          # Dependencias Python en un venv del proyecto (.venv) cacheado; los
-          # steps posteriores invocan .venv\Scripts\python.exe por ruta explícita
-          # (PowerShell no tiene el equivalente de $BASH_ENV). En cache hit, pip
-          # re-verifica el lock como no-op rápido.
-          name: Install runtime deps from universal lock (require-hashes)
-          command: |
-            Write-Host "[STEP] Install runtime deps from universal lock (require-hashes) - INICIO"
-            python --version
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            if (-not (Test-Path .venv)) { python -m venv .venv }
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            .venv\Scripts\python.exe -m pip install pip==26.1.2
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            .venv\Scripts\python.exe -m pip install -r requirements-lock.txt --require-hashes
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Install runtime deps from universal lock (require-hashes) - FIN"
-      - save_cache:
-          key: venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
-          paths:
-            - .venv
-      - run:
-          # La herramienta de build (PyInstaller) se instala DESPUÉS del save_cache,
-          # sobre el venv ya poblado: así queda fuera del material cacheado y la
-          # caché de venv la comparten test-windows y este build.
-          name: Install PyInstaller into venv (post-cache)
-          command: |
-            Write-Host "[STEP] Install PyInstaller into venv (post-cache) - INICIO"
-            .venv\Scripts\python.exe -m pip install -r requirements-lock-build.txt --require-hashes
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Install PyInstaller into venv (post-cache) - FIN"
-      - run:
-          # Inno Setup es una herramienta de sistema (no un paquete Python): vive en
-          # su propio step, separado de las dependencias Python. Queda fuera del
-          # cache: el install de Chocolatey no se cachea de forma confiable en
-          # CircleCI.
-          name: Install Inno Setup via choco (pinned 6.3.3)
-          command: |
-            Write-Host "[STEP] Install Inno Setup via choco (pinned 6.3.3) - INICIO"
-            choco install innosetup -y --version=6.3.3
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Install Inno Setup via choco (pinned 6.3.3) - FIN"
-      - run:
-          # PyInstaller solo (--no-installer): la etapa Installer corre como step
-          # separado (abajo). PyInstaller se lanza vía scripts/pyinstaller_wrapper.py
-          # (COINIT_MULTITHREADED + os._exit) para evitar el cuelgue COM del análisis
-          # de pycaw/comtypes en el runner headless. no_output_timeout holgado: la
-          # compilación tarda 9-15 min con output continuo.
-          name: Build Windows x64 onedir via PyInstaller
-          no_output_timeout: 20m
-          command: |
-            Write-Host "[STEP] Build Windows x64 onedir via PyInstaller - INICIO"
-            .venv\Scripts\python.exe scripts/build_windows.py --arch x86_64 --no-installer
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Build Windows x64 onedir via PyInstaller - FIN"
-      - run:
-          # Ejecuta el binario congelado recién construido para detectar
-          # empaquetados rotos (metadata faltante, --collect-all incompleto)
-          # antes de publicar. `version` no carga el modelo; exit 0 obligatorio.
-          name: Smoke test dist/ai-voice-interconnector/ai-voice-interconnector.exe (version + voces de fábrica)
-          command: |
-            Write-Host "[STEP] Smoke test dist/ai-voice-interconnector/ai-voice-interconnector.exe - INICIO"
-            dist/ai-voice-interconnector/ai-voice-interconnector.exe version
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            # Valida que las voces de fábrica (en particular 'default')
-            # quedaron empaquetadas en el bundle. `voice list` no carga el
-            # modelo; falla el job si el bundle no trae la voz por defecto.
-            $voiceList = dist/ai-voice-interconnector/ai-voice-interconnector.exe voice list
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            # -notcontains (no -notmatch): sobre un array, -notmatch FILTRA los
-            # elementos que no coinciden en vez de dar un booleano, así que la
-            # línea de encabezado ("Voces registradas:") disparaba un falso
-            # negativo aunque 'default' estuviera listada. -notcontains hace la
-            # prueba de membresía exacta, espejo del `grep -qx '  - default'`
-            # que usan los smoke de Linux y macOS.
-            if ($voiceList -notcontains '  - default') { throw "La voz de fábrica 'default' no está empaquetada en el bundle" }
-            Write-Host "[STEP] Smoke test dist/ai-voice-interconnector/ai-voice-interconnector.exe - FIN"
-      - run:
-          # Etapa Installer como step separado: invoca directamente al generador,
-          # que emite el .iss con compresión lzma/normal (progreso por archivo, no
-          # el lzma2/max silencioso >10 min que CircleCI mataba) y hereda la consola
-          # para que ese progreso sea el heartbeat. no_output_timeout amplio y
-          # chequeo de $LASTEXITCODE: el fallo del installer aborta el job (el
-          # instalador es artefacto obligatorio de publish-release; pipelines #29-#30).
-          name: Generate Windows x64 installer via Inno Setup
+          name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
-            Write-Host "[STEP] Generate Windows x64 installer via Inno Setup - INICIO"
-            .venv\Scripts\python.exe scripts/create_installer_windows.py dist/ai-voice-interconnector
+            Write-Host "[STEP] Compilar binario release (cargo build --release) - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            cargo build --release --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Generate Windows x64 installer via Inno Setup - FIN"
+            Write-Host "[STEP] Compilar binario release (cargo build --release) - FIN"
       - run:
-          # Copia única del instalador VERSIONADO (nombre de release, con arch) al
-          # directorio de workspace para que `publish-release` lo recolecte sin
-          # token de API de CircleCI. Fail-fast (N-01): Copy-Item con wildcard sin
-          # match no aborta en PowerShell por defecto — se fuerza el error para que
-          # el CI no reporte éxito falso cuando el instalador no se generó.
-          name: Stage versioned Windows x64 installer into workspace dir
+          name: Smoke test del binario (version + voces de fábrica)
           command: |
-            Write-Host "[STEP] Stage versioned Windows x64 installer into workspace dir - INICIO"
-            $ErrorActionPreference = 'Stop'
+            Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            $Exe = "target\release\ai-voice-interconnector.exe"
+            if (-not (Test-Path $Exe)) { throw "Binario no encontrado: $Exe" }
+            & $Exe version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # Valida que la voz de fábrica 'default' quede registrada en un
+            # runner limpio (voice list no carga el modelo y auto-inicializa
+            # el store). El CLI imprime '  - default (fábrica)': se compara por
+            # prefijo con -like (nunca -notmatch sobre array: filtra en vez de
+            # dar booleano).
+            $voiceList = & $Exe voice list
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if (-not ($voiceList | Where-Object { $_ -like '  - default*' })) { throw "La voz de fábrica 'default' no está registrada" }
+            Write-Host "Binario Windows OK: version + voice list"
+            Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - FIN"
+      - save_cache:
+          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+      - run:
+          # Nombre del artefacto con la versión REAL del CLI: la fuente de
+          # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
+          # que quedó en 0.1.0 tras la migración). Fail-fast: si difiere del tag
+          # v*, el release saldría con nombre inconsistente → abortar.
+          name: Preparar artefacto versionado (staging)
+          command: |
+            Write-Host "[STEP] Preparar artefacto versionado - INICIO"
+            $ErrorActionPreference = "Stop"
             New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-            if (-not (Test-Path dist/ai-voice-interconnector-*-x86_64-setup.exe)) { throw "Instalador versionado no encontrado en dist/" }
-            Copy-Item dist/ai-voice-interconnector-*-x86_64-setup.exe artifacts/
-            Write-Host "[STEP] Stage versioned Windows x64 installer into workspace dir - FIN"
+            $Version = [regex]::Match((Get-Content src\main.rs -Raw), 'const VERSION: &str = "([^"]+)"').Groups[1].Value
+            if (-not $Version) { throw "No se pudo extraer const VERSION de src/main.rs" }
+            $TagVersion = $env:CIRCLE_TAG -replace '^v',''
+            if ($Version -ne $TagVersion) { throw "VERSION en main.rs ($Version) != tag ($TagVersion)" }
+            $Src = "target\release\ai-voice-interconnector.exe"
+            $Dst = "artifacts\ai-voice-interconnector-$Version-x86_64-windows.exe"
+            if (-not (Test-Path $Src)) { throw "Binario no encontrado: $Src" }
+            Copy-Item $Src $Dst
+            Write-Host "Artefacto: $Dst"
+            Write-Host "[STEP] Preparar artefacto versionado - FIN"
       - run:
-          # N-04: SHA-256 del artefacto ya staged en artifacts/, en el log del CI;
-          # única verificación de integridad posible sin firma de código (R-38).
-          name: Emit SHA-256 of staged Windows x64 installer
+          name: Emitir SHA-256 del artefacto
           command: |
-            Write-Host "[STEP] Emit SHA-256 of staged Windows x64 installer - INICIO"
-            Get-FileHash artifacts/ai-voice-interconnector-*-x86_64-setup.exe -Algorithm SHA256
+            Write-Host "[STEP] Emitir SHA-256 del artefacto - INICIO"
+            Get-FileHash artifacts\ai-voice-interconnector-*-x86_64-windows.exe -Algorithm SHA256
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Emit SHA-256 of staged Windows x64 installer - FIN"
+            Write-Host "[STEP] Emitir SHA-256 del artefacto - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - ai-voice-interconnector-*-x86_64-setup.exe
+            - ai-voice-interconnector-*-x86_64-windows.exe
 
   build-linux-x64:
+    # Linux x64: el más barato/rápido para la suite, pero el build necesita
+    # `large` (8 GB RAM): el linking de whisper-rs + tokio + cpal +
+    # ct2rs supera los 4 GB de `medium` (OOM silencioso). Simetría con
+    # docs/BUILD.md §4 — `large` trae 4 vCPU de regalo no aprovechados.
     docker:
-      # Imagen fijada por digest (R-14): mismo pin que test-linux (ver el
-      # comentario de bump allí y docs/BUILD.md §Reproducibilidad).
-      - image: cimg/python:3.13@sha256:9d189f873178a2bea234b7d51e31e1ae01a73646e962cf697f757b588f8d77b6
-    # resource_class explícito: el bundling de PyInstaller con torch necesita
-    # ~8 GB de RAM. En Docker x86 el tier `medium` da solo 4 GB (riesgo de OOM);
-    # `large` es el tier más chico que alcanza 8 GB (sus 4 vCPU vienen de regalo,
-    # aunque PyInstaller es mayormente single-thread y no los aprovecha). Se
-    # declara para no depender del default de cuenta, que podría cambiar a
-    # `medium` y romper el build de forma silenciosa. Simetría de RAM con
-    # build-linux-arm64, donde `arm.medium` ya trae 8 GB con 2 vCPU.
+      - image: cimg/rust:1.96.0 # TODO: pinnear por digest
     resource_class: large
     steps:
       - checkout
       - run:
-          name: Install apt build deps (patchelf, libasound2-dev)
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, patchelf)
           command: |
-            echo "[STEP] Install apt build deps (patchelf, libasound2-dev) - INICIO"
+            echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y patchelf libasound2-dev
-            echo "[STEP] Install apt build deps (patchelf, libasound2-dev) - FIN"
-      - run:
-          # Material de la clave de cache del venv: versión exacta de Python del
-          # runner (sin pins de herramientas). Al no incluir el pin, la caché de
-          # venv es compartida con test-linux (misma plataforma+lockfile CPU-only):
-          # el test la puebla, este build acierta HIT.
-          name: Compute venv cache key (python --version)
-          command: |
-            echo "[STEP] Compute venv cache key (python --version) - INICIO"
-            python --version > cache-key.txt
-            cat cache-key.txt
-            echo "[STEP] Compute venv cache key (python --version) - FIN"
+            sudo apt-get install -y libasound2-dev cmake pkg-config patchelf
+            echo "[STEP] Instalar dependencias de sistema - FIN"
       - restore_cache:
           keys:
-            - venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock-linux-cpu.txt" }}
+            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-
       - run:
-          # N-05: lock específico con torch/torchaudio CPU-only (wheels +cpu del
-          # índice oficial de PyTorch), sin el stack nvidia-*-cu12 que el índice
-          # de PyPI resuelve por defecto en x86_64/linux (~varios GB extra).
-          # Solo x86_64 lo necesita: los paquetes nvidia-*-cu12 del lock universal
-          # están marcados platform_machine == 'x86_64', por lo que arm64 ya
-          # instala sin CUDA desde el lock universal. Las dependencias viven en
-          # un venv cacheado: en cache hit, pip re-verifica el lock como no-op.
-          name: Install runtime deps from CPU-only lock (require-hashes)
+          name: Compilar binario release (cargo build --release)
+          no_output_timeout: 25m
           command: |
-            echo "[STEP] Install runtime deps from CPU-only lock (require-hashes) - INICIO"
-            python -m venv ~/.venv
-            echo "source ~/.venv/bin/activate" >> $BASH_ENV
-            source ~/.venv/bin/activate
-            pip install pip==26.1.2
-            pip install -r requirements-lock-linux-cpu.txt --require-hashes --extra-index-url https://download.pytorch.org/whl/cpu
-            echo "[STEP] Install runtime deps from CPU-only lock (require-hashes) - FIN"
+            echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
+            cargo build --release --verbose
+            echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - run:
+          name: Smoke test del binario (version + voces de fábrica)
+          command: |
+            echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
+            test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
+            target/release/ai-voice-interconnector version
+            # Valida la voz de fábrica 'default' (runner limpio: voice list
+            # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
+            # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
+            target/release/ai-voice-interconnector voice list | grep -q '^  - default'
+            echo "Binario Linux x64 OK: version + voice list"
+            echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
       - save_cache:
-          key: venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock-linux-cpu.txt" }}
+          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
           paths:
-            - ~/.venv
+            - ~/.cargo/registry
+            - ~/.cargo/git
       - run:
-          # La herramienta de build (PyInstaller) se instala DESPUÉS del save_cache,
-          # sobre el venv ya poblado: así queda fuera del material cacheado y la
-          # caché de venv la comparten test-linux y este build.
-          name: Install PyInstaller into venv (post-cache)
+          # Nombre del artefacto con la versión REAL del CLI: la fuente de
+          # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
+          # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
+          name: Preparar artefacto versionado (staging)
           command: |
-            echo "[STEP] Install PyInstaller into venv (post-cache) - INICIO"
-            pip install -r requirements-lock-build.txt --require-hashes
-            echo "[STEP] Install PyInstaller into venv (post-cache) - FIN"
-      - run:
-          name: Build Linux x64 AppImage via PyInstaller
-          no_output_timeout: 20m
-          command: |
-            echo "[STEP] Build Linux x64 AppImage via PyInstaller - INICIO"
-            python scripts/build_linux.py --arch x86_64
-            echo "[STEP] Build Linux x64 AppImage via PyInstaller - FIN"
-      - smoke_test_frozen_bundle:
-          executable_path: dist/ai-voice-interconnector/ai-voice-interconnector
-      - run:
-          # Copia única del AppImage VERSIONADO (nombre de release, con arch) al
-          # directorio de workspace para `publish-release`. Fail-fast: sin match,
-          # el glob se pasa literal a cp → error → el step aborta (bash -eo pipefail).
-          name: Stage versioned Linux x64 AppImage into workspace dir
-          command: |
-            echo "[STEP] Stage versioned Linux x64 AppImage into workspace dir - INICIO"
+            echo "[STEP] Preparar artefacto versionado - INICIO"
+            set -euo pipefail
             mkdir -p artifacts
-            cp dist/ai-voice-interconnector-*-x86_64.AppImage artifacts/
-            echo "[STEP] Stage versioned Linux x64 AppImage into workspace dir - FIN"
+            VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
+            if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
+            if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
+              echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
+              exit 1
+            fi
+            SRC="target/release/ai-voice-interconnector"
+            DST="artifacts/ai-voice-interconnector-${VERSION}-x86_64-linux"
+            test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
+            cp "$SRC" "$DST"
+            chmod +x "$DST"
+            echo "Artefacto: $DST"
+            echo "[STEP] Preparar artefacto versionado - FIN"
       - run:
-          # N-04: SHA-256 del artefacto ya staged en artifacts/, en el log del CI;
-          # única verificación de integridad posible sin firma de código (R-38).
-          name: Emit SHA-256 of staged Linux x64 AppImage
+          name: Emitir SHA-256 del artefacto
           command: |
-            echo "[STEP] Emit SHA-256 of staged Linux x64 AppImage - INICIO"
-            sha256sum artifacts/ai-voice-interconnector-*-x86_64.AppImage
-            echo "[STEP] Emit SHA-256 of staged Linux x64 AppImage - FIN"
+            echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
+            sha256sum artifacts/ai-voice-interconnector-*-x86_64-linux
+            echo "[STEP] Emitir SHA-256 del artefacto - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - ai-voice-interconnector-*-x86_64.AppImage
+            - ai-voice-interconnector-*-x86_64-linux
 
   build-linux-arm64:
-    # Espejo de build-linux-x64: Docker cimg/python:3.13 (variante arm64) con
-    # Python preinstalado, en lugar del `machine` executor + pyenv. Compilar
-    # CPython desde fuente con pyenv (~10 min/corrida) era, además de lento,
-    # inviable de cachear aquí: el pyenv del `machine` executor vive en
-    # /opt/circleci/.pyenv (propiedad del usuario `circleci`), por lo que el job
-    # —que corre como otro usuario— no puede escribir ahí (git pull fallaba con
-    # "Permission denied") y la ruta de cache ~/.pyenv/versions ni siquiera
-    # coincidía con la de instalación (el cache guardaba un directorio vacío).
-    # El build de AppImage no requiere FUSE (build_linux.py usa
-    # --appimage-extract-and-run), así que el executor Docker es suficiente,
-    # igual que en build-linux-x64.
+    # Linux ARM64 nativo (no cross-compile): Docker arm.medium ejecuta
+    # aarch64 real, evitando toolchain de cross-compilación y sysroot.
+    # Sin test-linux-arm64 (suite mockeada arch-independiente), el smoke
+    # test de este build es el único gate del stack aarch64 (wheels nativas).
     docker:
-      # Imagen fijada por digest (R-14): el digest del manifest list resuelve
-      # también la variante arm64 (ver test-linux y docs/BUILD.md).
-      - image: cimg/python:3.13@sha256:9d189f873178a2bea234b7d51e31e1ae01a73646e962cf697f757b588f8d77b6
+      - image: cimg/rust:1.96.0 # TODO: pinnear por digest
     resource_class: arm.medium
     steps:
       - checkout
       - run:
-          name: Install apt build deps (patchelf, libasound2-dev)
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, patchelf)
           command: |
-            echo "[STEP] Install apt build deps (patchelf, libasound2-dev) - INICIO"
+            echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y patchelf libasound2-dev
-            echo "[STEP] Install apt build deps (patchelf, libasound2-dev) - FIN"
-      - run:
-          # Material de la clave de cache del venv: versión exacta de Python (sin
-          # pins de herramientas). Al no incluir el pin, la caché de venv es
-          # compartida por plataforma+lockfile: aquí no hay un test-linux-arm64,
-          # pero la clave queda homogénea con el resto de jobs.
-          name: Compute venv cache key (python --version)
-          command: |
-            echo "[STEP] Compute venv cache key (python --version) - INICIO"
-            python --version > cache-key.txt
-            cat cache-key.txt
-            echo "[STEP] Compute venv cache key (python --version) - FIN"
+            sudo apt-get install -y libasound2-dev cmake pkg-config patchelf
+            echo "[STEP] Instalar dependencias de sistema - FIN"
       - restore_cache:
           keys:
-            - venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
+            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-
       - run:
-          # Lock universal en venv cacheado: en cache hit, pip re-verifica el
-          # lock como no-op rápido.
-          name: Install runtime deps from universal lock (require-hashes)
+          name: Compilar binario release (cargo build --release)
+          no_output_timeout: 25m
           command: |
-            echo "[STEP] Install runtime deps from universal lock (require-hashes) - INICIO"
-            python -m venv ~/.venv
-            echo "source ~/.venv/bin/activate" >> $BASH_ENV
-            source ~/.venv/bin/activate
-            python -m pip install pip==26.1.2
-            python -m pip install -r requirements-lock.txt --require-hashes
-            echo "[STEP] Install runtime deps from universal lock (require-hashes) - FIN"
+            echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
+            cargo build --release --verbose
+            echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - run:
+          # Gate de facto ARM64: no hay test-linux-arm64 (suite mockeada),
+          # así que este smoke test es la única validación del stack aarch64.
+          name: Smoke test del binario (version + voces de fábrica)
+          command: |
+            echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
+            test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
+            target/release/ai-voice-interconnector version
+            # Valida la voz de fábrica 'default' (runner limpio: voice list
+            # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
+            # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
+            target/release/ai-voice-interconnector voice list | grep -q '^  - default'
+            echo "Binario Linux ARM64 OK: version + voice list"
+            echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
       - save_cache:
-          key: venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
+          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
           paths:
-            - ~/.venv
+            - ~/.cargo/registry
+            - ~/.cargo/git
       - run:
-          # La herramienta de build (PyInstaller) se instala DESPUÉS del save_cache,
-          # sobre el venv ya poblado: así queda fuera del material cacheado.
-          name: Install PyInstaller into venv (post-cache)
+          # Nombre del artefacto con la versión REAL del CLI: la fuente de
+          # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
+          # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
+          name: Preparar artefacto versionado (staging)
           command: |
-            echo "[STEP] Install PyInstaller into venv (post-cache) - INICIO"
-            python -m pip install -r requirements-lock-build.txt --require-hashes
-            echo "[STEP] Install PyInstaller into venv (post-cache) - FIN"
-      - run:
-          name: Build Linux ARM64 AppImage via PyInstaller
-          no_output_timeout: 20m
-          command: |
-            echo "[STEP] Build Linux ARM64 AppImage via PyInstaller - INICIO"
-            python scripts/build_linux.py --arch arm64
-            echo "[STEP] Build Linux ARM64 AppImage via PyInstaller - FIN"
-      # Gate de facto de ARM64: no hay un `test-linux-arm64` (la suite mockea
-      # el engine, ver test-linux), así que este smoke test es la única puerta
-      # que ejercita el stack nativo aarch64 (wheels, extensiones). Decisión
-      # documentada en docs/BUILD.md §4.
-      - smoke_test_frozen_bundle:
-          executable_path: dist/ai-voice-interconnector/ai-voice-interconnector
-      - run:
-          # Copia única del AppImage VERSIONADO (nombre de release, con arch) al
-          # directorio de workspace para `publish-release`. Fail-fast: sin match,
-          # el glob se pasa literal a cp → error → el step aborta (bash -eo pipefail).
-          name: Stage versioned Linux ARM64 AppImage into workspace dir
-          command: |
-            echo "[STEP] Stage versioned Linux ARM64 AppImage into workspace dir - INICIO"
+            echo "[STEP] Preparar artefacto versionado - INICIO"
+            set -euo pipefail
             mkdir -p artifacts
-            cp dist/ai-voice-interconnector-*-arm64.AppImage artifacts/
-            echo "[STEP] Stage versioned Linux ARM64 AppImage into workspace dir - FIN"
+            VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
+            if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
+            if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
+              echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
+              exit 1
+            fi
+            SRC="target/release/ai-voice-interconnector"
+            DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-linux"
+            test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
+            cp "$SRC" "$DST"
+            chmod +x "$DST"
+            echo "Artefacto: $DST"
+            echo "[STEP] Preparar artefacto versionado - FIN"
       - run:
-          # N-04: SHA-256 del artefacto ya staged en artifacts/, en el log del CI;
-          # única verificación de integridad posible sin firma de código (R-38).
-          name: Emit SHA-256 of staged Linux ARM64 AppImage
+          name: Emitir SHA-256 del artefacto
           command: |
-            echo "[STEP] Emit SHA-256 of staged Linux ARM64 AppImage - INICIO"
-            sha256sum artifacts/ai-voice-interconnector-*-arm64.AppImage
-            echo "[STEP] Emit SHA-256 of staged Linux ARM64 AppImage - FIN"
+            echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
+            sha256sum artifacts/ai-voice-interconnector-*-arm64-linux
+            echo "[STEP] Emitir SHA-256 del artefacto - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - ai-voice-interconnector-*-arm64.AppImage
+            - ai-voice-interconnector-*-arm64-linux
 
   build-darwin-arm64:
+    # macOS ARM64 (Apple Silicon, Xcode 26.4.0): clang nativo, sin cross.
+    # El binario se valida con smoke test version + voice list (no carga modelo).
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
     steps:
       - checkout
+      - run:
+          name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
+          no_output_timeout: 10m
+          command: |
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
+            echo 'source "$HOME/.cargo/env"' >> $BASH_ENV
+            source "$HOME/.cargo/env"
+            cargo --version
+            rustc --version
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
+      - run:
+          name: Instalar dependencias de sistema (cmake, pkg-config)
+          command: |
+            echo "[STEP] Instalar dependencias de sistema - INICIO"
+            if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
+            if ! command -v pkg-config >/dev/null 2>&1; then brew install pkg-config; fi
+            cmake --version
+            echo "[STEP] Instalar dependencias de sistema - FIN"
       - restore_cache:
           keys:
-            - pyenv-v1-{{ arch }}-<< pipeline.parameters.python_version >>-xcode26.4
+            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-
       - run:
-          # Pin EXACTO de Python << pipeline.parameters.python_version >> vía pyenv (espejo del job
-          # build-linux-arm64 y del pin de Chocolatey): el runner de macOS no
-          # debe usar su python3 del sistema sin fijar, o el build empaquetaría
-          # una versión no controlada; patch fijo para que la clave de cache del
-          # CPython compilado sea estable. no_output_timeout holgado: pyenv
-          # compila CPython desde fuente con output escaso (~10 min) en el
-          # primer miss; con cache restaurado, `pyenv install -s` salta la
-          # compilación. La clave del cache incluye la versión de Xcode: el
-          # CPython compilado depende del SDK del runner. pyenv se instala
-          # desde un TAG GIT FIJO (<< pipeline.parameters.pyenv_version >>)
-          # clonado en ~/.pyenv, en vez de vía Homebrew: pin determinista e
-          # independiente de la imagen. La caché ~/.pyenv/versions se
-          # conserva entre runs. El CPython resultante ya está pineado
-          # (<< pipeline.parameters.python_version >>), así que el artefacto
-          # es reproducible con independencia de la versión de pyenv.
-          name: Set up Python 3.13 via pyenv (pinned << pipeline.parameters.python_version >>)
-          no_output_timeout: 20m
+          name: Compilar binario release (cargo build --release)
+          no_output_timeout: 25m
           command: |
-            echo "[STEP] Set up Python 3.13 via pyenv (pinned << pipeline.parameters.python_version >>) - INICIO"
-            export PYENV_ROOT="$HOME/.pyenv"
-            # La imagen del executor macOS ahora incluye ~/.pyenv y restore_cache
-            # puede repoblar ~/.pyenv/versions: en ambos casos `git clone` fallaría
-            # por destino no vacío. Instalamos pyenv de forma idempotente al TAG GIT
-            # FIJO preservando los CPython ya compilados (versions), para conservar
-            # el pin reproducible sin perder el cache ni chocar con un pyenv preexistente.
-            if [ -d "$PYENV_ROOT/.git" ]; then
-              git -C "$PYENV_ROOT" fetch --tags --force origin
-            else
-              [ -d "$PYENV_ROOT/versions" ] && mv "$PYENV_ROOT/versions" "$HOME/.pyenv-versions.bak"
-              rm -rf "$PYENV_ROOT"
-              git clone https://github.com/pyenv/pyenv.git "$PYENV_ROOT"
-              [ -d "$HOME/.pyenv-versions.bak" ] && rm -rf "$PYENV_ROOT/versions" && mv "$HOME/.pyenv-versions.bak" "$PYENV_ROOT/versions"
-            fi
-            git -C "$PYENV_ROOT" checkout << pipeline.parameters.pyenv_version >>
-            export PATH="$PYENV_ROOT/bin:$PATH"
-            pyenv install -s << pipeline.parameters.python_version >>
-            pyenv global << pipeline.parameters.python_version >>
-            pyenv rehash
-            python --version
-            echo "[STEP] Set up Python 3.13 via pyenv (pinned << pipeline.parameters.python_version >>) - FIN"
+            echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
+            source "$HOME/.cargo/env"
+            cargo build --release --verbose
+            echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - run:
+          name: Smoke test del binario (version + voces de fábrica)
+          command: |
+            echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
+            source "$HOME/.cargo/env"
+            test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
+            target/release/ai-voice-interconnector version
+            # Valida la voz de fábrica 'default' (runner limpio: voice list
+            # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
+            # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
+            target/release/ai-voice-interconnector voice list | grep -q '^  - default'
+            echo "Binario macOS ARM64 OK: version + voice list"
+            echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
       - save_cache:
-          key: pyenv-v1-{{ arch }}-<< pipeline.parameters.python_version >>-xcode26.4
+          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
           paths:
-            - ~/.pyenv/versions
+            - ~/.cargo/registry
+            - ~/.cargo/git
       - run:
-          # Material de la clave de cache del venv: versión exacta de Python (sin
-          # pins de herramientas). Al no incluir el pin, la caché de venv es
-          # compartida con test-macos: el test la puebla, este build acierta HIT.
-          name: Compute venv cache key (python --version)
+          # Nombre del artefacto con la versión REAL del CLI: la fuente de
+          # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
+          # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
+          name: Preparar artefacto versionado (staging)
           command: |
-            echo "[STEP] Compute venv cache key (python --version) - INICIO"
-            python --version > cache-key.txt
-            cat cache-key.txt
-            echo "[STEP] Compute venv cache key (python --version) - FIN"
-      - restore_cache:
-          keys:
-            - venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
-      - run:
-          # Lock universal en venv cacheado: en cache hit, pip re-verifica el
-          # lock como no-op rápido.
-          name: Install runtime deps from universal lock (require-hashes)
-          command: |
-            echo "[STEP] Install runtime deps from universal lock (require-hashes) - INICIO"
-            python -m venv ~/.venv
-            echo "source ~/.venv/bin/activate" >> $BASH_ENV
-            source ~/.venv/bin/activate
-            python -m pip install pip==26.1.2
-            python -m pip install -r requirements-lock.txt --require-hashes
-            echo "[STEP] Install runtime deps from universal lock (require-hashes) - FIN"
-      - save_cache:
-          key: venv-v1-{{ arch }}-{{ checksum "cache-key.txt" }}-{{ checksum "requirements-lock.txt" }}
-          paths:
-            - ~/.venv
-      - run:
-          # La herramienta de build (PyInstaller) se instala DESPUÉS del save_cache,
-          # sobre el venv ya poblado: así queda fuera del material cacheado y la
-          # caché de venv la comparten test-macos y este build.
-          name: Install PyInstaller into venv (post-cache)
-          command: |
-            echo "[STEP] Install PyInstaller into venv (post-cache) - INICIO"
-            python -m pip install -r requirements-lock-build.txt --require-hashes
-            echo "[STEP] Install PyInstaller into venv (post-cache) - FIN"
-      - run:
-          # create-dmg lo provisiona el propio build (scripts/build_macos.py::
-          # provision_create_dmg): tarball del release en GitHub pineado por
-          # SHA-256 vía fetch_pinned_asset (CREATE_DMG_PIN/CREATE_DMG_TOOLING
-          # en build_utils.py), sin Homebrew — misma política de supply chain
-          # que appimagetool en el build de Linux.
-          name: Build macOS arm64 .app via PyInstaller
-          no_output_timeout: 20m
-          command: |
-            echo "[STEP] Build macOS arm64 .app via PyInstaller - INICIO"
-            python3 scripts/build_macos.py --arch arm64
-            echo "[STEP] Build macOS arm64 .app via PyInstaller - FIN"
-      - run:
-          # Ejecuta el binario congelado dentro del .app para detectar
-          # empaquetados rotos antes de publicar. `version` no carga el modelo;
-          # exit 0 obligatorio.
-          name: Smoke test dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector (version + voces de fábrica)
-          command: |
-            echo "[STEP] Smoke test dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector - INICIO"
-            dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector version
-            # Valida que las voces de fábrica (en particular 'default')
-            # quedaron empaquetadas en el bundle. `voice list` no carga el
-            # modelo; el grep -qx aborta el step si 'default' no viaja en el bundle.
-            dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector voice list | grep -qx '  - default'
-            echo "[STEP] Smoke test dist/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector - FIN"
-      - run:
-          # Copia única del .dmg VERSIONADO (nombre de release, con arch) al
-          # directorio de workspace para `publish-release`. Fail-fast: sin match,
-          # el glob se pasa literal a cp → error → el step aborta (bash -eo pipefail).
-          name: Stage versioned macOS arm64 .dmg into workspace dir
-          command: |
-            echo "[STEP] Stage versioned macOS arm64 .dmg into workspace dir - INICIO"
+            echo "[STEP] Preparar artefacto versionado - INICIO"
+            set -euo pipefail
             mkdir -p artifacts
-            cp dist/ai-voice-interconnector-*-arm64.dmg artifacts/
-            echo "[STEP] Stage versioned macOS arm64 .dmg into workspace dir - FIN"
+            VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
+            if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
+            if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
+              echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
+              exit 1
+            fi
+            SRC="target/release/ai-voice-interconnector"
+            DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-macos"
+            test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
+            cp "$SRC" "$DST"
+            chmod +x "$DST"
+            echo "Artefacto: $DST"
+            echo "[STEP] Preparar artefacto versionado - FIN"
       - run:
-          # N-04: SHA-256 del artefacto ya staged en artifacts/, en el log del CI;
-          # única verificación de integridad posible sin firma de código (R-38).
-          name: Emit SHA-256 of staged macOS arm64 .dmg
+          name: Emitir SHA-256 del artefacto
           command: |
-            echo "[STEP] Emit SHA-256 of staged macOS arm64 .dmg - INICIO"
-            shasum -a 256 artifacts/ai-voice-interconnector-*-arm64.dmg
-            echo "[STEP] Emit SHA-256 of staged macOS arm64 .dmg - FIN"
+            echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
+            shasum -a 256 artifacts/ai-voice-interconnector-*-arm64-macos
+            echo "[STEP] Emitir SHA-256 del artefacto - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - ai-voice-interconnector-*-arm64.dmg
+            - ai-voice-interconnector-*-arm64-macos
 
+  # ──────────────────────────────────────────────────────────────
+  # CD — publicación del GitHub Release (Rust nativo, 4 binarios)
+  # ──────────────────────────────────────────────────────────────
   publish-release:
-    # CD estrategia 1 (GitHub Releases). Solo corre en tags `v*` (ver el
-    # workflow). Recolecta los 4 artefactos VERSIONADOS por workspace (no
-    # `gh run download`: determinista, sin token de API de CircleCI), genera
-    # SHA256SUMS.txt y publica el GitHub Release directo (sin draft) con notas
-    # del CHANGELOG; el tag es el punto de no retorno. Requiere el context
-    # `github-release` con GH_TOKEN (fine-grained PAT, contents:write).
+    # Recolecta los 4 binarios Rust versionados por workspace (no `gh run
+    # download`: determinista, sin token API CircleCI), genera SHA256SUMS.txt
+    # y publica el GitHub Release directo (sin borrador). Solo en tags v*.
+    # Requiere context `github-release` con GH_TOKEN (contents:write).
     docker:
       - image: cimg/base:current
     steps:
-      - checkout                       # para CHANGELOG.md y el cotejo de notas
+      - checkout
       - attach_workspace:
           at: artifacts
       - run:
-          # gh CLI desde el repo apt oficial de GitHub (pineado por su propia
-          # firma GPG); no viene preinstalado en cimg/base.
-          name: Install gh CLI from official apt repo (signed)
+          name: Instalar gh CLI (repo apt oficial, firmado)
           command: |
-            echo "[STEP] Install gh CLI from official apt repo (signed) - INICIO"
+            echo "[STEP] Instalar gh CLI - INICIO"
             set -euo pipefail
             sudo mkdir -p -m 755 /etc/apt/keyrings
             wget -nv -O- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -1012,31 +655,24 @@ jobs:
               | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
             sudo apt-get update
             sudo apt-get install -y gh
-            echo "[STEP] Install gh CLI from official apt repo (signed) - FIN"
+            echo "[STEP] Instalar gh CLI - FIN"
       - run:
-          # Los 4 artefactos ya llegan con su nombre de release (versionado, con
-          # arch); solo falta el manifiesto de checksums. Fail-fast: sin los 4
-          # artefactos en el workspace, sha256sum falla y el step aborta.
-          name: Generate SHA256SUMS.txt over workspace artifacts
+          name: Generar SHA256SUMS.txt sobre artefactos del workspace
           command: |
-            echo "[STEP] Generate SHA256SUMS.txt over workspace artifacts - INICIO"
+            echo "[STEP] Generar SHA256SUMS.txt - INICIO"
             set -euo pipefail
             cd artifacts
             sha256sum ai-voice-interconnector-* > SHA256SUMS.txt
             cat SHA256SUMS.txt
-            echo "[STEP] Generate SHA256SUMS.txt over workspace artifacts - FIN"
+            echo "Artefactos recolectados:"
+            ls -lh ai-voice-interconnector-*
+            echo "[STEP] Generar SHA256SUMS.txt - FIN"
       - run:
-          # Extrae la sección `## [X.Y.Z]` del CHANGELOG (X.Y.Z = tag sin la `v`)
-          # hasta el siguiente `## [`. Fail-fast si la sección no existe: evita
-          # publicar un Release con notas vacías.
-          name: Extract release notes from CHANGELOG section
+          name: Extraer notas de release desde CHANGELOG
           command: |
-            echo "[STEP] Extract release notes from CHANGELOG section - INICIO"
+            echo "[STEP] Extraer notas de release desde CHANGELOG - INICIO"
             set -euo pipefail
             VERSION="${CIRCLE_TAG#v}"
-            # Corta en el siguiente `## [` (próxima versión) o en el bloque de
-            # referencias de enlaces del pie (`[label]: url`), que sigue a la
-            # última sección y no debe filtrarse a las notas.
             awk -v ver="## [$VERSION]" '
               index($0, ver) == 1 { grab=1; print; next }
               grab && /^## \[/ { exit }
@@ -1048,16 +684,11 @@ jobs:
               exit 1
             fi
             cat notes.md
-            echo "[STEP] Extract release notes from CHANGELOG section - FIN"
+            echo "[STEP] Extraer notas de release desde CHANGELOG - FIN"
       - run:
-          # GPLv3 §6: inyecta en las notas del release la oferta de
-          # código fuente canónica — tarball del tag y enlace al tag — para que
-          # TODO release futuro cumpla el compliance de fuente sin depender de
-          # que el humano la añada a mano. El pie se anexa a notes.md (ya
-          # recortado del CHANGELOG por el paso anterior).
-          name: Append GPL source-offer footer to release notes
+          name: Anexar pie de oferta GPLv3 a notas
           command: |
-            echo "[STEP] Append GPL source-offer footer to release notes - INICIO"
+            echo "[STEP] Anexar pie de oferta GPLv3 - INICIO"
             set -euo pipefail
             {
               echo ""
@@ -1071,41 +702,33 @@ jobs:
               echo "- Tarball de fuente: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/archive/refs/tags/${CIRCLE_TAG}.tar.gz"
               echo "- Etiqueta del release: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/${CIRCLE_TAG}"
             } >> notes.md
-            echo "[STEP] Append GPL source-offer footer to release notes - FIN"
+            echo "[STEP] Anexar pie de oferta GPLv3 - FIN"
       - run:
-          # Publica el Release directo (sin draft) con los 5 assets (4
-          # artefactos + SHA256SUMS.txt). Si el tag ya tiene Release, `gh
-          # release create` falla ruidosamente (correcto: no re-publica en
-          # silencio).
-          name: Create GitHub Release (direct publish) with 4 artifacts + SHA256SUMS
+          name: Publicar GitHub Release con 4 binarios + SHA256SUMS
           command: |
-            echo "[STEP] Create GitHub Release (direct publish) with 4 artifacts + SHA256SUMS - INICIO"
+            echo "[STEP] Publicar GitHub Release - INICIO"
             set -euo pipefail
             gh release create "$CIRCLE_TAG" \
               artifacts/ai-voice-interconnector-* artifacts/SHA256SUMS.txt \
               --title "$CIRCLE_TAG" \
               --notes-file notes.md
-            echo "[STEP] Create GitHub Release (direct publish) with 4 artifacts + SHA256SUMS - FIN"
+            echo "[STEP] Publicar GitHub Release - FIN"
 
   publish-metadata:
-    # Cask de Homebrew (docs/SELF-HOSTED-INSTALL.md): tras cada Release público,
-    # reescribe Casks/ai-voice-interconnector.rb en el tap propio `homebrew-ai-voice-interconnector` con
-    # la versión del tag y el sha256 del .dmg arm64, leído del SHA256SUMS.txt ya
-    # público (gh release download, sin depender del workspace del pipeline: es
-    # durable e idempotente, el reintento en cualquier momento es seguro).
-    # Requiere el context `homebrew-tap` (HOMEBREW_TAP_PAT, permiso Contents:RW
-    # solo sobre el tap). El PRIMER Cask del tap es un bootstrap manual único
-    # (docs/RELEASING.md): este job actualiza un Cask que ya debe existir.
+    # Actualiza el Cask de Homebrew tras cada Release (solo macOS). Requiere
+    # contexts `github-release` y `homebrew-tap`. El Cask inicial es bootstrap
+    # manual. NOTA Fase 7.1: `render_cask.py` aún espera `*.dmg` (legado
+    # PyInstaller); con binario Rust crudo `*-arm64-macos` el SHA del Cask debe
+    # adaptarse en la siguiente entrega (generar .dmg o tar.gz, o cambiar Cask
+    # a `binary` stanza). Hasta entonces, este job fallará si el .dmg no existe.
     docker:
       - image: cimg/base:current
     steps:
-      - checkout                       # para scripts/render_cask.py
+      - checkout
       - run:
-          # gh CLI desde el repo apt oficial de GitHub (mismo patrón que
-          # publish-release, pineado por su propia firma GPG).
-          name: Install gh CLI from official apt repo (signed)
+          name: Instalar gh CLI (repo apt oficial, firmado)
           command: |
-            echo "[STEP] Install gh CLI from official apt repo (signed) - INICIO"
+            echo "[STEP] Instalar gh CLI - INICIO"
             set -euo pipefail
             sudo mkdir -p -m 755 /etc/apt/keyrings
             wget -nv -O- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -1115,46 +738,37 @@ jobs:
               | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
             sudo apt-get update
             sudo apt-get install -y gh git python3 ruby
-            echo "[STEP] Install gh CLI from official apt repo (signed) - FIN"
+            echo "[STEP] Instalar gh CLI - FIN"
       - run:
-          # SHA256SUMS.txt ya es público (publicado por publish-release);
-          # se recupera con gh (necesita GH_TOKEN del context `github-release`
-          # para no toparse con el rate-limit anónimo de la API).
-          name: Download SHA256SUMS.txt from the just-published release
+          name: Descargar SHA256SUMS.txt del release recién publicado
           command: |
-            echo "[STEP] Download SHA256SUMS.txt from the just-published release - INICIO"
+            echo "[STEP] Descargar SHA256SUMS.txt del release - INICIO"
             set -euo pipefail
             gh release download "$CIRCLE_TAG" -R "$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME" \
               -p SHA256SUMS.txt --dir /tmp/release-metadata
-            echo "[STEP] Download SHA256SUMS.txt from the just-published release - FIN"
+            cat /tmp/release-metadata/SHA256SUMS.txt
+            echo "[STEP] Descargar SHA256SUMS.txt del release - FIN"
       - run:
-          name: Render Casks/ai-voice-interconnector.rb
+          name: Renderizar Casks/ai-voice-interconnector.rb
           command: |
-            echo "[STEP] Render Casks/ai-voice-interconnector.rb - INICIO"
+            echo "[STEP] Renderizar Cask - INICIO"
             set -euo pipefail
             python3 scripts/render_cask.py \
               --tag "$CIRCLE_TAG" \
               --sums-file /tmp/release-metadata/SHA256SUMS.txt \
               --out /tmp/tap-clone/Casks/ai-voice-interconnector.rb
-            echo "[STEP] Render Casks/ai-voice-interconnector.rb - FIN"
+            cat /tmp/tap-clone/Casks/ai-voice-interconnector.rb
+            echo "[STEP] Renderizar Cask - FIN"
       - run:
-          # Check estático viable sin un Mac: `brew audit`/`brew style` exigen
-          # una instalación completa de Homebrew (costosa en un runner Linux
-          # solo para este generador); `ruby -c` verifica al menos que el Cask
-          # generado es Ruby sintácticamente válido antes de empujarlo al tap.
-          name: Syntax-check rendered Cask (ruby -c)
+          name: Verificar sintaxis del Cask (ruby -c)
           command: |
-            echo "[STEP] Syntax-check rendered Cask (ruby -c) - INICIO"
+            echo "[STEP] Verificar sintaxis del Cask - INICIO"
             ruby -c /tmp/tap-clone/Casks/ai-voice-interconnector.rb
-            echo "[STEP] Syntax-check rendered Cask (ruby -c) - FIN"
+            echo "[STEP] Verificar sintaxis del Cask - FIN"
       - run:
-          # Clona el tap con el PAT del context (write-scoped solo al tap),
-          # sobrescribe el Cask ya renderizado en /tmp/tap-clone y hace push.
-          # Sin cambios reales (regenerar y re-empujar con los mismos inputs),
-          # el commit es un no-op detectado por `git diff --quiet`.
-          name: Clone tap, commit rendered Cask, and push
+          name: Clonar tap, commitear Cask y empujar
           command: |
-            echo "[STEP] Clone tap, commit rendered Cask, and push - INICIO"
+            echo "[STEP] Clonar tap, commitear Cask y empujar - INICIO"
             set -euo pipefail
             RENDERED="/tmp/tap-clone/Casks/ai-voice-interconnector.rb"
             git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_PAT}@github.com/CristianRojas-SoftwareEngineer/homebrew-ai-voice-interconnector.git" /tmp/tap-repo
@@ -1170,47 +784,41 @@ jobs:
               git commit -m "Cask: actualizar a ${CIRCLE_TAG}"
               git push origin HEAD:main
             fi
-            echo "[STEP] Clone tap, commit rendered Cask, and push - FIN"
+            echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
 
+  # ──────────────────────────────────────────────────────────────
+  # Canal Python (legado) — se retirará en Fase 7 paso 4
+  # Mantiene compatibilidad hasta que `publish-pypi` sea eliminado y el
+  # repo quede 100% Rust. Requiere jobs Rust como gate para evitar
+  # publicar Python si Rust está roto.
+  # ──────────────────────────────────────────────────────────────
   publish-pypi:
-    # Canal de distribución A (docs/DISTRIBUTION.md): publica el sdist+wheel a
-    # PyPI en el mismo tag `v*` que dispara los 4 builds nativos, en paralelo a
-    # ellos (el paquete no depende de PyInstaller). PyPI no soporta trusted
-    # publishing desde CircleCI, así que la autenticación usa un token API
-    # (PYPI_API_TOKEN) en el context aislado `pypi-publish`, que ningún otro
-    # job ve. La publicación es irreversible (un paquete subido no se puede
-    # sobrescribir, solo yankear): el smoke test en un venv limpio corre antes
-    # del upload para no publicar un wheel roto.
     docker:
       - image: cimg/python:3.13@sha256:9d189f873178a2bea234b7d51e31e1ae01a73646e962cf697f757b588f8d77b6
     steps:
       - checkout
       - run:
-          name: Install build tooling (build, twine)
+          name: Instalar tooling de build (build, twine)
           command: |
-            echo "[STEP] Install build tooling (build, twine) - INICIO"
+            echo "[STEP] Instalar tooling de build (build, twine) - INICIO"
             pip install build==1.2.2.post1 twine==6.1.0
-            echo "[STEP] Install build tooling (build, twine) - FIN"
+            echo "[STEP] Instalar tooling de build (build, twine) - FIN"
       - run:
-          name: Build sdist and wheel
+          name: Compilar sdist y wheel
           command: |
-            echo "[STEP] Build sdist and wheel - INICIO"
+            echo "[STEP] Compilar sdist y wheel - INICIO"
             python -m build
-            echo "[STEP] Build sdist and wheel - FIN"
+            echo "[STEP] Compilar sdist y wheel - FIN"
       - run:
-          name: Validate package metadata (twine check)
+          name: Validar metadata del paquete (twine check)
           command: |
-            echo "[STEP] Validate package metadata (twine check) - INICIO"
+            echo "[STEP] Validar metadata del paquete (twine check) - INICIO"
             twine check dist/*
-            echo "[STEP] Validate package metadata (twine check) - FIN"
+            echo "[STEP] Validar metadata del paquete (twine check) - FIN"
       - run:
-          # Instala el wheel recién construido en un venv limpio (sin las
-          # dependencias pesadas del repo) y verifica que el entry point
-          # funciona y que la voz 'default' viaja dentro del wheel, antes de
-          # publicar en un canal donde la publicación es irreversible.
-          name: Smoke test wheel in a clean venv
+          name: Smoke test del wheel en venv limpio
           command: |
-            echo "[STEP] Smoke test wheel in a clean venv - INICIO"
+            echo "[STEP] Smoke test del wheel en venv limpio - INICIO"
             set -euo pipefail
             python -m venv /tmp/smoke-venv
             source /tmp/smoke-venv/bin/activate
@@ -1218,29 +826,31 @@ jobs:
             EXPECTED_VERSION="${CIRCLE_TAG#v}"
             ACTUAL_VERSION="$(ai-voice-interconnector version --json | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
             if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
-              echo "ERROR: version del wheel ($ACTUAL_VERSION) no coincide con el tag ($EXPECTED_VERSION)" >&2
+              echo "ERROR: versión del wheel ($ACTUAL_VERSION) no coincide con tag ($EXPECTED_VERSION)" >&2
               exit 1
             fi
             python -c "from ai_voice_interconnector import voices; assert 'default' in voices.list_voices(), 'voz default ausente del wheel'"
             deactivate
-            echo "[STEP] Smoke test wheel in a clean venv - FIN"
+            echo "[STEP] Smoke test del wheel en venv limpio - FIN"
       - run:
-          # Upload final: PYPI_API_TOKEN viene del context `pypi-publish`
-          # (prerequisito operativo documentado en docs/RELEASING.md).
-          name: Publish to PyPI (twine upload)
+          name: Publicar en PyPI (twine upload)
           command: |
-            echo "[STEP] Publish to PyPI (twine upload) - INICIO"
+            echo "[STEP] Publicar en PyPI (twine upload) - INICIO"
             TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_API_TOKEN" twine upload --skip-existing dist/*
-            echo "[STEP] Publish to PyPI (twine upload) - FIN"
+            echo "[STEP] Publicar en PyPI (twine upload) - FIN"
 
 workflows:
   build-all:
     # CircleCI NO ejecuta un job en un tag salvo que el job Y todas sus
-    # dependencias declaren `filters.tags`; por eso el filtro `tags: only /^v.*/`
-    # se propaga por toda la cadena (tests → builds → publish-release). Todos
-    # los jobs declaran además `branches: ignore /.*/`: el pipeline completo
-    # corre SOLO en tags `v*`, nunca en pushes de rama.
+    # dependencias declaren `filters.tags`; por eso el filtro `v*` se propaga
+    # por toda la cadena (gates Rust/instaladores → builds → publish-*).
+    # Todos los jobs declaran además `branches: ignore /.*/`: el pipeline
+    # completo corre SOLO en tags `v*`, nunca en pushes de rama (contrato del
+    # pipeline Python legacy preservado; validación local previa al tag vía
+    # docs/BUILD.md).
     jobs:
+      # ── Gates Rust (triple puerta) + cobertura + instaladores ──
+      # Los 4 builds requieren estos 7 gates verdes en la misma pipeline.
       - test-linux:
           filters:
             tags:
@@ -1254,6 +864,12 @@ workflows:
             branches:
               ignore: /.*/
       - test-macos:
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - coverage:
           filters:
             tags:
               only: /^v.*/
@@ -1277,12 +893,7 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
-      - coverage:
-          filters:
-            tags:
-              only: /^v.*/
-            branches:
-              ignore: /.*/
+      # ── Builds nativos Rust (requieren triple puerta + cobertura + instaladores) ──
       - build-windows-x64:
           filters:
             tags:
@@ -1339,6 +950,7 @@ workflows:
             - test-installer-windows
             - test-installer-macos
             - coverage
+      # ── Publicación — solo en tags v* ──
       - publish-release:
           context:
             - github-release
