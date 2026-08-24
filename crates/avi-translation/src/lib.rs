@@ -159,6 +159,19 @@ mod tests {
 
     use avi_core::engine::{HierarchicalSegmenter, Segmenter, TranslationEngine};
 
+    /// Modelo CT2 presente. Los pesos bajo `models/` están gitignoreados:
+    /// en un checkout limpio (CI) los E2E que los requieren se saltan con aviso;
+    /// en desarrollo corren completos.
+    fn modelo_ct2_disponible(subdir: &str) -> bool {
+        std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../models/ct2/"
+        ))
+        .join(subdir)
+        .join("model.bin")
+        .exists()
+    }
+
     /// Carga el modelo opus-mt es→en real (ya convertido a CT2 y provisionado)
     /// vía `Ct2TranslationEngine` y traduce un texto corto, verificando que el
     /// resultado no esté vacío.
@@ -170,6 +183,10 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../models/ct2/opus-mt-es-en"
         );
+        if !modelo_ct2_disponible("opus-mt-es-en") {
+            eprintln!("[translate] skip: sin modelo CT2 es→en (models/ gitignoreado)");
+            return;
+        }
 
         let engine = Ct2TranslationEngine::new(model_dir)
             .expect("el modelo opus-mt-es-en debe cargar pesos CT2 reales desde disco");
@@ -207,6 +224,10 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../models/ct2/opus-mt-es-en"
         );
+        if !modelo_ct2_disponible("opus-mt-es-en") {
+            eprintln!("[translate] skip: sin modelo CT2 es→en (models/ gitignoreado)");
+            return;
+        }
 
         let translator = Translator::new(model_dir, &Config::default())
             .expect("el modelo opus-mt-es-en debe cargar pesos CT2 reales desde disco");
@@ -261,6 +282,11 @@ mod tests {
     #[test]
     fn ct2translationengine_coincide_con_oraculo_python() {
         use crate::Ct2TranslationEngine;
+
+        if !modelo_ct2_disponible("opus-mt-es-en") || !modelo_ct2_disponible("opus-mt-en-es") {
+            eprintln!("[translate] skip: sin modelos CT2 es↔en (models/ gitignoreado)");
+            return;
+        }
 
         // Pares (subdirectorio de modelo, fixture del corpus del oráculo),
         // ambos dentro de la raíz del crate.
@@ -382,6 +408,10 @@ mod tests {
     /// preservando la separación de párrafos en la salida.
     #[test]
     fn translate_multi_parrafo_preserva_separadores() {
+        if !modelo_ct2_disponible("opus-mt-es-en") {
+            eprintln!("[translate] skip: sin modelo CT2 es→en (models/ gitignoreado)");
+            return;
+        }
         let result = crate::translate(
             "Hola, ¿cómo estás?\n\nBuenos días, señor.",
             "es",
@@ -681,6 +711,10 @@ mod tests {
     /// eso esta cobertura del lote se añade aquí).
     #[test]
     fn translate_parrafo_de_11_oraciones_particiona_sin_perder_texto() {
+        if !modelo_ct2_disponible("opus-mt-es-en") {
+            eprintln!("[translate] skip: sin modelo CT2 es→en (models/ gitignoreado)");
+            return;
+        }
         let oraciones: Vec<String> = (1..=11)
             .map(|i| {
                 format!(
@@ -741,6 +775,10 @@ mod tests {
     /// los dos separadores `"\n\n"` y sin filtrar `</s>`/`<unk>`.
     #[test]
     fn translate_multiparrafo_largo_preserva_parrafos() {
+        if !modelo_ct2_disponible("opus-mt-es-en") {
+            eprintln!("[translate] skip: sin modelo CT2 es→en (models/ gitignoreado)");
+            return;
+        }
         let oraciones: Vec<String> = (1..=12)
             .map(|i| {
                 format!(
