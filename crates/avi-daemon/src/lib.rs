@@ -13,7 +13,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use avi_core::engine::SttEngine;
+use avi_core::engine::{hilos_disponibles, SttEngine};
 use avi_core::json_emitter;
 use avi_store::{SpeechStore, VoiceStore};
 use avi_stt::Ct2SttEngine;
@@ -62,7 +62,10 @@ impl DaemonState {
     /// inexistente).
     pub fn new() -> anyhow::Result<Self> {
         let stt_engine = Ct2SttEngine::new(STT_MODEL_DIR)?;
-        let vad_engine = WhisperVadContext::new(VAD_MODEL_DIR, WhisperVadContextParams::default())
+        let mut vad_params = WhisperVadContextParams::default();
+        // Hilos lógicos del equipo del usuario, no una máquina fija de desarrollo.
+        vad_params.set_n_threads(hilos_disponibles() as i32);
+        let vad_engine = WhisperVadContext::new(VAD_MODEL_DIR, vad_params)
             .map_err(|e| {
                 anyhow::anyhow!("fallo al cargar el modelo VAD {}: {:?}", VAD_MODEL_DIR, e)
             })?;

@@ -5,7 +5,7 @@
 //! 16 kHz forzando el idioma indicado (Whisper solo transcribe, nunca traduce,
 //! por construcción: `set_translate(false)`).
 
-use avi_core::engine::SttEngine;
+use avi_core::engine::{hilos_disponibles, SttEngine};
 use whisper_rs::{
     convert_integer_to_float_audio, FullParams, SamplingStrategy, WhisperContext,
     WhisperContextParameters,
@@ -32,8 +32,8 @@ impl SttEngine for Ct2SttEngine {
         let mut state = self.ctx.create_state()?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 0 });
         params.set_translate(false);
-        // 8 = núcleos físicos de la máquina de desarrollo.
-        params.set_n_threads(8);
+        // Hilos lógicos del equipo del usuario, no una máquina fija de desarrollo.
+        params.set_n_threads(hilos_disponibles() as i32);
         // Ventana del encoder (audio_ctx) dinámica según la duración del audio:
         // capacidad = ctx×20 ms con margen >=25% (múltiplo de 64, piso 256
         // verificado, tope 1500 del modelo). El default de whisper.cpp (1500

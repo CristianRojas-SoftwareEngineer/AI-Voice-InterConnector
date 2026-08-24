@@ -170,3 +170,14 @@ impl TranslationEngine for DummyTranslationEngine {
         Ok(format!("[{}->{}] {}", source_lang, target_lang, text))
     }
 }
+
+/// Núcleos físicos del equipo, para dimensionar el paralelismo de los motores
+/// (whisper.cpp/ggml y ct2rs). Se usan físicos y no lógicos a propósito: los
+/// hilos de ggml hacen busy-wait en las barreras de sincronización, y lanzar
+/// más hilos que núcleos físicos (SMT/Hyper-Threading) sobre-suscribe las
+/// unidades SIMD y degrada el throughput manteniendo el 100% de CPU. Los
+/// motores usan los recursos del equipo del usuario, no una máquina de
+/// desarrollo fija.
+pub fn hilos_disponibles() -> usize {
+    num_cpus::get_physical().max(1)
+}

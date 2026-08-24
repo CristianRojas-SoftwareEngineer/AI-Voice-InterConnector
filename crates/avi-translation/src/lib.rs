@@ -6,7 +6,7 @@
 //! (`_MarianCT2Model.translate`): SentencePiece embebido + token `</s>` manual,
 //! sin `sacremoses` ni `MarianTokenizer`.
 
-use avi_core::engine::{HierarchicalSegmenter, Segmenter, TranslationEngine};
+use avi_core::engine::{hilos_disponibles, HierarchicalSegmenter, Segmenter, TranslationEngine};
 use ct2rs::{ComputeType, Config, Translator};
 
 /// Motor de traducción real sobre un modelo Marian/opus-mt en formato CT2.
@@ -21,7 +21,9 @@ impl Ct2TranslationEngine {
             model_dir,
             &Config {
                 compute_type: ComputeType::INT8,
-                num_threads_per_replica: 8,
+                // Hilos lógicos del equipo del usuario, no una máquina fija de
+                // desarrollo (mismo criterio que el STT).
+                num_threads_per_replica: hilos_disponibles(),
                 ..Default::default()
             },
         )?;
