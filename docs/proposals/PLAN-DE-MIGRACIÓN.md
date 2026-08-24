@@ -428,6 +428,11 @@ una ruta WSL2; **WSL2 no se usa en producción**. La distribución en Windows se
   **no comparten runtime**.
 - STT mantiene `task="transcribe"` estricto. Traducción mantiene el par `es<->en` y el
   passthrough.
+- **Paralelismo dimensionado a núcleos físicos:** los tres motores (STT, VAD, traducción) fijan su
+  número de hilos con `hilos_disponibles()` (`num_cpus::get_physical`, en `avi-core`), no con un valor
+  fijo. Se usan físicos y no lógicos a propósito: los hilos de ggml hacen busy-wait en las barreras de
+  sincronización y sobre-suscribir los núcleos vía SMT degrada el throughput manteniendo el 100 % de
+  CPU.
 - **Tokenización:** `ct2rs` cubre **SentencePiece** de fábrica; el token `</s>` se anexa
   manualmente al texto de origen, replicando el runtime del oráculo (SentencePiece crudo +
   `</s>` manual en `model_loader.py`; el `.spm` embebido ya aplica la normalización
@@ -563,8 +568,11 @@ traducción), y **al final** el TTS
 > 0.05 por ítem sobre texto normalizado, sin diacríticos ni puntuación): el oráculo Python
 > `faster-whisper-medium` se descartó (defecto CT2 issue #654) y `faster-whisper-small` queda solo
 > como snapshot de producción del oráculo, no como referencia del test. `task="transcribe"`
-> estricto se conserva (Whisper solo transcribe, nunca traduce). Rollback: worker Python de STT
-> (se conserva).
+> estricto se conserva (Whisper solo transcribe, nunca traduce). **Estabilización posterior
+> (post-2026-08-15):** el motor añade `audio_ctx` dinámico por duración (elimina el piso de ~9 s del
+> default fijo en clips cortos), segmentación VAD Silero (`ggml-silero-v5.1.2.bin`) para audio largo
+> (>15 s) en el daemon, y dimensiona sus hilos a núcleos **físicos** vía `hilos_disponibles()`
+> (`num_cpus`, ver §2.4). Rollback: worker Python de STT (se conserva).
 
 ### Fase 4 — Traducción (`ct2rs::Translator`) + segmentación
 

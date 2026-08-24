@@ -1,7 +1,7 @@
 ﻿# Progreso de Migración — AI-Voice-InterConnector
 
 **Plan de referencia:** [`PLAN-DE-MIGRACIÓN.md`](./PLAN-DE-MIGRACIÓN.md)  
-**Última actualización:** 2026-08-15
+**Última actualización:** 2026-08-23
 
 ---
 
@@ -117,7 +117,7 @@ normalizado (minúsculas, sin diacríticos ni puntuación), 2/2 en verde. El mod
 
 Optimización de rendimiento (backend + cuantización + hilos): se reemplazó el backend ruy por
 **oneDNN + OpenMP** en el build de CTranslate2 y se fijó **cuantización int8** con
-`num_threads_per_replica = 8` (núcleos físicos). Speedup medido a nivel motor (release, mediana de 3):
+`num_threads_per_replica = 8`. Speedup medido a nivel motor (release, mediana de 3):
 **1.98x** (14 436.72 ms ruy/fp32 → 7 275.53 ms oneDNN/int8+8 hilos), con **paridad contra el oráculo
 Python mantenida** (1.0047x; dorada 4/4 WER ≤ 0.05) y suite workspace 48/48 en verde. Caveat igual que
 en traducción: el CLI construye el motor por invocación (recarga del modelo ~1 s, preexistente, fuera de
@@ -125,7 +125,10 @@ alcance; el daemon Fase 6 lo resolverá con motor residente).
 
 > **Nota histórica (migración STT whisper-rs, post-F5):** esta optimización correspondía al motor
 > CT2 y quedó superada por la migración a whisper-rs (el motor actual usa GGUF q8 de whisper.cpp
-> y no pasa por CT2).
+> y no pasa por CT2). El número de hilos ya no es un `8` fijo: hoy se dimensiona dinámicamente vía
+> `hilos_disponibles()` (núcleos **físicos**, `crates/avi-core/src/engine.rs`) tanto en STT como en
+> VAD y traducción. El motor STT actual añade además `audio_ctx` dinámico por duración y
+> segmentación VAD Silero para audio largo (ver «Optimizaciones de estabilización» más abajo).
 
 | Ítem | Estado |
 |------|--------|
@@ -134,6 +137,7 @@ alcance; el daemon Fase 6 lo resolverá con motor residente).
 | Integrar con captura/carga de audio (pipeline `--mic`/`--audio` → transcripción) | ✅ |
 | Validar contra oráculo Python (WER ≤ 0.05, corpus de 4 audios) | ✅ |
 | Optimización STT (backend oneDNN+OpenMP, cuantización int8 + 8 hilos): speedup a nivel motor 1.98x, paridad con oráculo 1.0047x | ✅ |
+| `audio_ctx` dinámico por duración + segmentación VAD Silero para audio largo (motor whisper-rs actual, ver estabilización) | ✅ |
 
 ---
 
@@ -169,8 +173,8 @@ Optimización de runtime (compute int8 explícito + 8 hilos): la cuantización *
 reconversión int8 — `Config::default()` de CT2 resuelve al tipo del modelo (`int8_float32`: pesos int8,
 acumulación fp32), a diferencia de STT. El experimento lo confirmó (variantes default e INT8 explícito,
 tiempos idénticos; control FP32 1.5-2.1x más lento) y dejó fijado `compute_type: INT8` (endurecimiento
-frente a la resolución por defecto) + `num_threads_per_replica: 8` (~1-10% adicional). Suite 48/48 y
-paridad intactas.
+frente a la resolución por defecto) + `num_threads_per_replica: hilos_disponibles()` (núcleos físicos;
+~1-10% adicional). Suite 48/48 y paridad intactas.
 
 | Ítem | Estado |
 |------|--------|
@@ -180,7 +184,7 @@ paridad intactas.
 | Pipeline completo: segmentar → traducir por lotes por párrafo (tope 10) → ensamblar con passthrough | ✅ |
 | Paridad funcional contra oráculo Python (WER medio corpus 0.19 ≤ 0.35, 11 ítems) | ✅ |
 | Optimización de traducción por lotes por párrafo (tope 10): speedup a nivel motor 2.71x (5 oraciones) y ~3.6x (10) | ✅ |
-| Fijar compute int8 explícito + 8 hilos (cuantización ya activa; lever de hilos ~1-10%): sin regresión de paridad | ✅ |
+| Fijar compute int8 explícito + hilos a núcleos físicos (`hilos_disponibles()`; cuantización ya activa; lever de hilos ~1-10%): sin regresión de paridad | ✅ |
 
 ---
 
@@ -260,6 +264,7 @@ fue limitada por quoting de heredoc en bash (registro de mejora en F8).
 | `POST /voices/precompute` (cableado a `clone_voice` para voces clonadas) | ✅ | `crates/avi-daemon/src/lib.rs` |
 | `POST /shutdown` | ✅ | `crates/avi-daemon/src/lib.rs` |
 | `POST /transcribe` (motor STT real `Ct2SttEngine`; campo `audio_b64` alineado al oráculo) | ✅ | `crates/avi-daemon/src/lib.rs` |
+| Segmentación VAD Silero para audio largo (>15 s / 240 000 muestras) en `/transcribe` | ✅ | `crates/avi-daemon/src/lib.rs` |
 | `POST /synthesize` con streaming NDJSON real (evento `result` con `audio_b64`) | ✅ | `crates/avi-daemon/src/lib.rs` |
 | Handshake de `schema_version` en salida (`schema_version="3"`) | ✅ | `crates/avi-daemon/src/lib.rs` |
 | Serialización de síntesis (`synthesis_lock` capturado dentro del `tokio::spawn`) | ✅ | `crates/avi-daemon/src/lib.rs` |
@@ -277,7 +282,9 @@ fue limitada por quoting de heredoc en bash (registro de mejora en F8).
 
 El motor STT (`Ct2SttEngine`, el nombre del struct no cambió) dejó CTranslate2 y corre sobre
 **`whisper-rs` 0.16 (whisper.cpp)** con el modelo GGUF `models/whisper/ggml-medium-q8_0.bin`
-(~823 MB, repo `ggerganov/whisper.cpp` en HF). `models/ct2/whisper-small/` quedó deprecado (no
+(~823 MB, repo `ggerganov/whisper.cpp` en HF). Junto al GGUF se provisiona el modelo VAD Silero
+`models/whisper/ggml-silero-v5.1.2.bin`, usado por el daemon para segmentar audio largo antes de
+transcribir (ver «Optimizaciones de estabilización»). `models/ct2/whisper-small/` quedó deprecado (no
 borrado) y `ct2rs` permanece solo en `avi-translation` (traducción opus-mt). La provisión del
 modelo STT sigue por `setup --with-stt`, ahora bajo el registro **`whisper-gguf`** (`whisper-ct2`
 obsoleto); `doctor` verifica `is_provisioned("whisper-gguf")` y reporta «Modelo STT (Whisper
@@ -285,6 +292,36 @@ GGUF) no provisionado» cuando falta. La paridad quedó cerrada contra **ground 
 (2 pares `(WAV, fixture)`, WER ≤ 0.05 por ítem sobre texto normalizado): el oráculo Python
 `faster-whisper-medium` se descartó (defecto CT2 issue #654); `faster-whisper-small` queda solo
 como snapshot de producción del oráculo.
+
+---
+
+## Optimizaciones de estabilización (post-2026-08-15)
+
+**Estado:** ✅ Aplicadas
+
+Trabajo de **robustez** ejecutado después de la última actualización del plan original de
+migración: no formaba parte del alcance de paridad de fases, pero endurece la reimplementación Rust
+frente a hardware heterogéneo y a audio de duración variable. Las tres optimizaciones son de motor
+(sin cambio de contrato ni de CLI).
+
+1. **`hilos_disponibles()` centralizado en `avi-core`** (`crates/avi-core/src/engine.rs:181`):
+   `num_cpus::get_physical().max(1)` dimensiona el paralelismo de los **tres** motores (STT, VAD y
+   traducción) a núcleos **físicos**, no lógicos. Reemplaza el `8` fijo previo en STT
+   (`crates/avi-stt/src/lib.rs:36`), VAD y traducción (`crates/avi-translation/src/lib.rs:26`).
+   Los hilos de ggml hacen busy-wait en las barreras de sincronización, así que lanzar más hilos que
+   núcleos físicos (SMT/Hyper-Threading) sobre-suscribe las unidades SIMD y degrada el throughput
+   manteniendo el 100 % de CPU. Añade la dependencia `num_cpus`.
+2. **`audio_ctx` dinámico por duración** (`crates/avi-stt/src/lib.rs:65`, `audio_ctx_para_duracion`):
+   la ventana de atención del encoder se escala a la duración del audio (`n_ctx >= 62.5 × duración_s`,
+   redondeado al múltiplo de 64, acotado a `[256, 1500]`). Elimina el piso de ~9 s por llamada que
+   imponía el default fijo de whisper.cpp (1500) en clips cortos —latencia ~4× innecesaria— sin
+   degradar audio largo (un 448 fijo recortaba la cola >8.96 s y provocaba repetición de palabras).
+3. **Segmentación VAD Silero para audio largo (>15 s)** en el daemon
+   (`crates/avi-daemon/src/lib.rs:37,413,438`): `SINGLE_PASS_MAX_SAMPLES = 240_000` (15 s a 16 kHz);
+   más allá de ese umbral, el VAD Silero (`models/whisper/ggml-silero-v5.1.2.bin`) divide el audio en
+   segmentos de voz (`min_speech` 250 ms, `min_silence` 400 ms, `max_speech` 15 s, `speech_pad` 30 ms,
+   `samples_overlap` 0.1 s para no cortar palabras), y cada segmento se transcribe con el `audio_ctx`
+   dinámico del motor. `/transcribe` <=15 s sigue en una sola pasada.
 
 ---
 
@@ -323,6 +360,7 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 | `clap` | Superficie CLI |
 | `ct2rs` | Bindings de CTranslate2 (traducción opus-mt, backend oneDNN + OpenMP); compila desde fuente |
 | `whisper-rs` | Bindings de whisper.cpp (motor STT, modelo GGUF `ggml-medium-q8_0.bin`) |
+| `num_cpus` | Dimensionar los hilos de los motores a los núcleos físicos (`hilos_disponibles()`) |
 
 ---
 
