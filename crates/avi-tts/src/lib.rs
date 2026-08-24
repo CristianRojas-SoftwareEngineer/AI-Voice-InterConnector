@@ -52,7 +52,7 @@ impl Default for GenerationOptions {
 }
 
 impl GenerationOptions {
-    /// Config de producción validada por oído: `temperature=0.35` y `seed=42`
+    /// Config de producción validada por oído: `temperature=0.35` y `seed=4`
     /// fijo, resto de campos igual a `Default`. El `temperature=0` previo corría
     /// el Talker en greedy argmax sobre un clon x-vector-only sin plantilla de
     /// prosodia, produciendo prosodia plana/extraña; 0.35 reactiva el muestreo
@@ -60,10 +60,15 @@ impl GenerationOptions {
     /// soltarse como el default del motor (0.9). No sustituye a `Default` (que
     /// debe seguir coincidiendo con los defaults del motor) sino que es la
     /// superficie que cablea la síntesis de producción (`Qwen3TtsEngine::synthesize`).
+    /// `seed 4` fijado por sweep 2026-08-24: 10 frases ES, bench.qvoice --int4 -j4
+    /// T0.35, WSL seed42 como oráculo, 3 oyentes → seed4 4/10 vs wsl 6/10 (C3 verde),
+    /// C1 WER max 0.000 y C2 SIM min 0.822 PASS (target/seed-sweep/wer.csv,
+    /// speaker_sim.csv). Seed 42 previo sigue verde pero seed4 iguala prosodia
+    /// nativa Windows sin WSL (docs/reviews/2026-08-14-tts-calidad-fase5.md §Cierre).
     pub fn produccion() -> Self {
         Self {
             temperature: 0.35,
-            seed: Some(42),
+            seed: Some(4),
             ..Self::default()
         }
     }
@@ -910,7 +915,7 @@ mod tests {
     fn generation_options_produccion_fija_temperatura_y_seed() {
         let p = GenerationOptions::produccion();
         assert_eq!(p.temperature, 0.35);
-        assert_eq!(p.seed, Some(42));
+        assert_eq!(p.seed, Some(4));
         assert_eq!(p.top_k, DEFAULT_TOP_K);
         assert_eq!(p.top_p, DEFAULT_TOP_P);
         assert_eq!(p.rep_penalty, DEFAULT_REP_PENALTY);

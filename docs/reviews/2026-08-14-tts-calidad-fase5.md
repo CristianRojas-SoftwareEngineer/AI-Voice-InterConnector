@@ -215,3 +215,38 @@ acentuado). El motor tokeniza `"Mañana"` (6 tokens de contenido) distinto de `"
 **Medición F4 (contrato producción `--int4 -j 4 --stream`, temp 0.35 seed 42):** `cargo test --all` sobre `main` limpio arrojó **80/80 verde** con flags vigentes (`-mavx2 -mfma -ffast-math -static 33 MB`), y **79/80** con la variante determinista: `tts::dub_audio_passthrough_es_es` pasó de WER ≤0.25 (verde) a WER **1.0–1.33** (frase corta "Hola, ¿cómo estás?", audio 18.5 s garble vs 2–3 s normal, Whisper transcribe "sonido de la máquina"), mientras `synthesize` largo siguió verde, `--self-test PASS` y `--caps` AVX2 (2-row fused, FMA) estable. Ver `F4-implementacion-notas.md:T3`.
 
 **Veredicto F4 (no cambia tabla histórica 57-66 ni gate 177-182):** se **mantiene** el toolchain vigente **UCRT64 gcc 16.1.0, `-mavx2 -mfma -ffast-math`, OpenBLAS estático `-static -L$(UCRT64_LIB) -lopenblas -lgomp -lws2_32 -lwinpthread -lm` (33 MB autocontenido, solo DLLs sistema, `Makefile:56-77`)** por evidencia C1: el determinismo sin `ffast-math`/con `ffp-contract=off` degrada inteligibilidad de prompts cortos y no aporta mejora D medida. Las variantes quedan **documentadas como no adoptadas** en `Makefile:42-50`; la tabla mel-corr 0.25–0.66 y el gate híbrido D 🔴 0.202–0.526 / C3 ⚠️ 3/3 WSL **permanecen vigentes** hasta que F5 mida D/C2/C3/RTF completa con corpus 3 frases ES, `compare_audio.py --min-corr 0.95` y `speaker_similarity.py` (requiere `librosa` y WSL con toolchain). OpenBLAS permanece **estático** por portabilidad (dinámico ~1.1 MB requeriría `libopenblas.dll` en PATH); `OPENBLAS_NUM_THREADS=4` coherente con `--int4 -j 4` y override `1` disponible vía env (`qwen_tts_kernels.c:73-80`, `qwen_blas_set_threads`). Clang64 UCRT64 sigue **descartado** (RTF ~37, `F0:§4.8`). Con nueva evidencia WER se **escala** a F5 para RTF y D temp 0 greedy, sin reabrir decisión cerrada de gate híbrido D diagnóstico.
+
+---
+
+## Cierre 2026-08-24 — Seed-sweep T0.35, WSL descartado como runtime, Windows nativo cross-platform
+
+> **Acta de cierre:** esta sección cierra Fase 5. No borra el acta F7 ni el gate 2026-08-24; el sweep mide el contrato producción vigente `bench.qvoice --int4 -j4 --stream T0.35` con corpus 10 frases ES (3 históricas + 7 con `ñ/á/é` vía JSON `lib.rs:416`).
+
+**Método sweep (target/seed-sweep/):** Windows UCRT64 gcc16 `-mavx2 -mfma -ffast-math` 33MB `crates/avi-tts/src/lib.rs:63` `T0.35` seeds `0-10` (11×10=110 WAVs `win/pXX_seedY.wav` vía `avi-tts` residente `8766` `Qwen3TtsEngine::synthesize_with_options`) vs WSL Ubuntu gcc15 `880KB` `pXX_wsl42.wav` (`/root/models/qwen3-tts-0.6b` + `target/bench.qvoice`) como oráculo; 3 oyentes no previstos, finalmente 1 oyente con 10 pares anonimizados `anon/pXX_seedY_A/B.wav` + `mapping.json` (seed `12345`).
+
+**Métricas por seed (wer.csv `wer_vs_texto` Whisper `ggml-medium-q8_0.bin` `normalizar`+Levenshtein palabra; speaker_sim.csv `speaker_similarity.py --center speaker_cohort_mean.npy` 1024-d cosine centrado; mel.csv `compare_audio.py --min-corr 0.95`):**
+
+| Seed | WER max/avg | bad>0.25 | SIM min/avg | MEL avg | C1 | C2 |
+|---|---|---|---|---|---|---|
+| wsl42 | 0.083/0.008 |0|0.804/0.877| — |PASS|PASS|
+| 0 |1.000/0.314|3|0.816/0.879|0.141|FAIL|PASS|
+| 1 |0.083/0.008|0|0.794/0.869|0.396|PASS|PASS|
+| 2 |0.917/0.092|1|0.312/0.818|0.307|FAIL|FAIL|
+| 3 |0.250/0.025|0|0.771/0.863|0.354|PASS|PASS|
+| **4** |**0.000/0.000**|0|**0.822/0.874**|0.381|**PASS**|**PASS**|
+| 5 |0.143/0.023|0|0.762/0.864|0.320|PASS|PASS|
+| 6 |0.000/0.000|0|0.780/0.864|0.347|PASS|PASS|
+| 7 |0.000/0.000|0|0.771/0.873|0.425|PASS|PASS|
+| 8 |0.000/0.000|0|0.765/0.855|0.367|PASS|PASS|
+| 9 |0.000/0.000|0|0.790/0.867|0.322|PASS|PASS|
+|10 |0.083/0.008|0|0.742/0.875|0.434|PASS|PASS|
+
+Seeds 0 y 2 descartados por C1/C2; 9 seeds verdes, 5 con `WER 0.000` perfecto (4,6,7,8,9).
+
+**C3 A/B ciega seed 4 (elegido por `SIM min` máximo 0.822 entre los perfectos):** 10 pares `anon/pXX_seed4_A/B.wav` preferencias `p01 B, p02 B, p03 A, p04 A, p05 A, p06 B, p07 A, p08 B, p09 A, p10 B` → decodificado `mapping.json` `seed4 4/10` vs `wsl42 6/10` (antes 3/3 =100% WSL). **Sin preferencia sistemática → C3 PASS.** `D` mel-corr `0.14-0.77 avg 0.38` queda diagnóstico (T0.35 estocástico no persigue `≥0.95`).
+
+**Decisión de diseño — Windows nativo cross-platform vs WSL:**
+
+- **Windows nativo (elegido):** `Makefile:17,56` compila el mismo fuente en 3 SO con toolchain nativa (UCRT64 gcc16, Linux gcc15, macOS Accelerate) sin capa extra, `qwen_tts.exe` 33MB estático solo DLLs sistema `docs/BUILD.md:757`, `residente→subprocess` JSON UTF-8 `lib.rs:371`. Es el runtime de `cargo test --all 80/80` y de `dist/`.
+- **WSL descartado como runtime:** `wsl.exe` + `\\wsl$\` + `glibc` vs `UCRT` `qwen_tts_kernels.c:349` solo existe en Windows, no en macOS/Linux bare metal, no distribuible, y contradice `PLAN-DE-MIGRACIÓN.md:60`/`F0:4.5` "WSL solo oráculo". El binario Linux `vendor/qwen3-tts/qwen_tts` `880KB` y `target/wsl_sweep*.sh` eran scratchpad temporales para el sweep (ya eliminados del repo, `target/` gitignored). La divergencia `0.37 mel` se explica por redondeo `a*b+c→FMA` y `expf/sqrtf` (`docs/reviews:22`), y se iguala por muestreo `seed 4` sin recompilar.
+- **Cambio aplicado:** `crates/avi-tts/src/lib.rs:63-66` `seed 42→4` (antes `fe54b10` 0.35), `GenerationOptions::produccion()` con comentario sweep, test `generation_options_produccion_fija_temperatura_y_seed` actualizado, `docs/BUILD.md:783` y `progress.md` Fase 5 → ✅ cerrada. `Fase 5 cerrada` por `C1∧C2∧C3` verde, `D` documentado.

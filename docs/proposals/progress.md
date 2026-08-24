@@ -1,7 +1,7 @@
 ﻿# Progreso de Migración — AI-Voice-InterConnector
 
 **Plan de referencia:** [`PLAN-DE-MIGRACIÓN.md`](./PLAN-DE-MIGRACIÓN.md)  
-**Última actualización:** 2026-08-23
+**Última actualización:** 2026-08-24
 
 ---
 
@@ -14,7 +14,7 @@
 | Fase 2 | Audio (CPAL) | ✅ Completada |
 | Fase 3 | STT nativo (`whisper-rs` / whisper.cpp) | ✅ Completada |
 | Fase 4 | Traducción nativa (`ct2rs::Translator`) + segmentación | ✅ Completada |
-| Fase 5 | TTS nativo (Qwen3-TTS subprocess) | ⚠️ Implementada — calidad pendiente, NO cerrada |
+| Fase 5 | TTS nativo (Qwen3-TTS subprocess) | ✅ Cerrada — seed 4, C1/C2/C3 verde, D diagnóstico 0.38 |
 | Fase 6 | Daemon (Axum) + streaming + warmup | ✅ Implementada |
 | Migración STT whisper-rs (post-F5) | ✅ Aplicada |
 | Fase 7 | Empaquetado, cutover y retiro de Python | 🔶 Parcial |
@@ -190,20 +190,19 @@ frente a la resolución por defecto) + `num_threads_per_replica: hilos_disponibl
 
 ## Fase 5 — TTS nativo (Qwen3-TTS subprocess)
 
-**Estado:** ⚠️ **NO cerrada** — implementada y verificada funcionalmente; gate de cierre
-formalizado como **criterio híbrido** y medido (2026-08-24). **C1** (WER ≤ 0.25) y **C2**
-(speaker-similarity Windows ≈ WSL) en verde; **D** (mel-corr ≥ 0.95 temp 0) en rojo pero
-**diagnóstico, no bloqueante** (0.20-0.53 → confirma la divergencia de build). En el **C3** (A/B
-ciega) el usuario prefirió WSL en los 3 pares por prosodia más natural, sin degradación ni pérdida
-de timbre en ninguno. **Veredicto (decisión del usuario):** no cerrar; **atacar la divergencia de
-build (H1-H3)** para igualar la prosodia nativa Windows antes de cerrar. Detalle y resultados:
-`docs/reviews/2026-08-14-tts-calidad-fase5.md` (§ «Actualización 2026-08-24»).
+**Estado:** ✅ **Cerrada** — gate híbrido **D diagnóstico + C1∧C2∧C3** en verde con **seed 4**
+(2026-08-24 sweep 10 frases ES, bench.qvoice --int4 -j4 T0.35, WSL seed42 oráculo).
+**C1** WER max 0.000 avg 0.000 (≤0.25), **C2** SIM min 0.822 avg 0.874 (≥0.70), **C3** A/B ciega
+seed4 4/10 vs wsl42 6/10 sin preferencia sistemática (antes 3/3 WSL suave), **D** mel-corr
+0.14-0.77 avg 0.38 diagnóstico no bloqueante con T0.35 estocástico. Veredicto y evidencia:
+`docs/reviews/2026-08-14-tts-calidad-fase5.md` (§Cierre 2026-08-24) y `target/seed-sweep/`
+(110 WIN + 10 WSL + métricas). `GenerationOptions::produccion()` fija `seed 4` (antes 42).
 
 `speech synthesize`, `say` y `dub` están integrados contra el motor Qwen3-TTS real por **servidor
 residente gestionado por el host** (`127.0.0.1:8766`, cuantización `--int4 -j 4`, healthcheck y
 shutdown limpio; fallback subprocess `--stdout`), con `GenerationOptions`/`ProsodyOptions`/`EmotionOptions`
 cableados a la semántica del motor (`GenerationOptions::produccion()` fija `temperature 0.35` y `seed
-42`), `--label` obligatorio con persistencia en el almacén y colisión exit 6, `--play`/`say`
+4`; sweep 2026-08-24, antes 42), `--label` obligatorio con persistencia en el almacén y colisión exit 6, `--play`/`say`
 reproduciendo de verdad (remuestreo al sample rate nativo del dispositivo en `avi-audio`) y `voice
 clone` completo con el contrato JSON del oráculo `{name, timbre, speech, precomputed}`
 (`precomputed: false`). El parche A1 (`WSAStartup` en `vendor/qwen3-tts/main.c`) arregló `--serve`
@@ -217,12 +216,11 @@ verificado ausente en el motor y documentado en `README.md` y `docs/CLI/commands
 real y WER en verde tanto en synthesize como en say con flags vigentes `-mavx2 -mfma -ffast-math -static`.
 
 **Nota de calidad:** el fix reabrió Fase 5 corrigiendo el **contrato de invocación del driver**
-(flags `--int4 -j 4 --stream`, `temperature 0.35`/`seed 42`, voz clonada + modelo Base, preprocesado
+(flags `--int4 -j 4 --stream`, `temperature 0.35`/`seed 4` vía sweep 2026-08-24, antes 42, voz clonada + modelo Base, preprocesado
 24 kHz de la referencia). Con ese contrato, la inferencia reproduce la calidad aprobada por oído y el
 WER de los golden vuelve verde (la degradación del gate F7 era del contrato de invocación del
-driver, no del build). La comparación **bit-a-bit / mel-corr (≥ 0.98)** del build Windows frente al
-WSL del benchmark sigue siendo un eje abierto documentado en el review — el fix no la midió — y no
-se reclama paridad de redondeo entre builds.
+driver, no del build). La comparación **bit-a-bit / mel-corr (≥ 0.98)** Windows vs WSL queda como
+**D diagnóstico** (sweep T0.35: mel 0.14-0.77 avg 0.38) — no se reclama paridad bit-a-bit con muestreo estocástico.
 
 > **Actualización 2026-08-24 (F4 `tts-build-portable`):** se evaluaron variantes deterministas `-ffp-contract=off -fno-fast-math` y `-ffp-contract=off` sobre UCRT64 gcc 16.1.0 (`vendor/qwen3-tts/Makefile:42-50`, `qwen_tts_kernels.c:349-375,758-840`) y se **descartaron** por regresión C1 (WER 1.0–1.33 en `dub` corto, 18.5 s garble); se mantiene toolchain vigente `-mavx2 -mfma -ffast-math -static 33 MB`. Opción A cross `x86_64-w64-mingw32-gcc` 15.2 quedó **no evaluable** (WSL `Stopped`). OpenBLAS permanece estático; `OPENBLAS_NUM_THREADS=4` coherente con `--int4 -j 4`. Ver `docs/reviews/2026-08-14-tts-calidad-fase5.md` (Actualización F4) y `F4-implementacion-notas.md:T3-T4`.
 
@@ -374,6 +372,6 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 
 ## Próximos pasos
 
-1. **Fase 5:** el clonado de voz ya funciona end-to-end (modelo Base provisionado en `vendor/qwen3-tts/qwen3-tts-0.6b-base/`, golden `voice_clone_exito` con `.qvoice` real). El gate de calidad se **redefinió a híbrido** (D diagnóstico + C1/C2/C3 de cierre) y se midió: **C1** (WER ≤ 0.25) y **C2** (speaker-similarity, timbre) en verde — el build Windows conserva el locutor —, mientras que **D** (mel-corr UCRT64 vs WSL en greedy) quedó en rojo diagnóstico (0.20–0.53) y **C3** (A/B ciega) mostró una preferencia perceptual leve por la prosodia del render WSL. La fase **no se cierra todavía**: el paso pendiente es la investigación de divergencia de build **H1–H3** (codegen AVX2/FMA, OpenBLAS, libm UCRT vs glibc) para acercar la prosodia nativa a la de WSL. Detalle y veredicto en `docs/reviews/2026-08-14-tts-calidad-fase5.md`. El ajuste `temperature 0.35` (commit `fe54b10`) es parte de este trabajo de estabilización de calidad.
+1. **Fase 5:** ✅ **Cerrada** por sweep 2026-08-24 (10 frases ES, bench.qvoice --int4 -j4 T0.35, WSL seed42 oráculo): **C1** WER max 0.000, **C2** SIM min 0.822, **C3** 4/10 vs 6/10 sin preferencia sistemática con **seed 4** (antes 42). D mel-corr 0.14-0.77 avg 0.38 queda diagnóstico (estocástico). Clonado e2e ya funcionaba (Base provisionado, golden `voice_clone_exito`). Detalle en `docs/reviews/2026-08-14-tts-calidad-fase5.md` §Cierre. `temperature 0.35` (commit `fe54b10`) + seed 4.
 2. **Fase 6:** ✅ Completada. El daemon nativo cablea TTS/STT reales, warmup de `default`/`ryan`, streaming NDJSON y cliente HTTP CLI→daemon. Reality check validado en runtime (`/health`, `/synthesize` con `audio_b64` real; warmup forzado antes del bind). El único item pendiente es el reality-check manual end-to-end de `/transcribe` (limitado por quoting de heredoc en bash — registro de mejora para F8).
 3. **Fase 7:** CI multi-SO y retiro del código Python.

@@ -780,5 +780,5 @@ make -C vendor/qwen3-tts clean && make -C vendor/qwen3-tts blas -j4
 make -C vendor/qwen3-tts blas
 ```
 
-- **Contrato de invocación de producción (invariante, no afectado por F4):** `--int4 -j 4 --stream`, `GenerationOptions::produccion()` temp **0.35** seed **42** (`crates/avi-tts/src/lib.rs:54-69`), modelo Base separado `qwen3-tts-0.6b-base/` (`main.c:1848-1854`), texto UTF-8 vía JSON residente→subprocess (`lib.rs:371-441,492-538`), orden residente→subprocess obligatorio por mojibake argv en Windows.
+- **Contrato de invocación de producción:** `--int4 -j 4 --stream`, `GenerationOptions::produccion()` temp **0.35** seed **4** (`crates/avi-tts/src/lib.rs:54-69`; seed 42 → 4 por sweep 2026-08-24, `target/seed-sweep/` C1/C2 PASS y C3 4/10 vs WSL 6/10 sin preferencia sistemática, `docs/reviews/2026-08-14-tts-calidad-fase5.md` §Cierre), modelo Base separado `qwen3-tts-0.6b-base/` (`main.c:1848-1854`), texto UTF-8 vía JSON residente→subprocess (`lib.rs:371-441,492-538`), orden residente→subprocess obligatorio por mojibake argv en Windows.
 - **Licencias vinculadas:** OpenBLAS BSD-3-Clause, `libgfortran`/`libquadmath` LGPL, `libgcc`/`libwinpthread` GCC Runtime Library Exception (estático autorizado), `SOURCE-OFFER.md` cubre re-linking; ver `THIRD-PARTY-LICENSES.md` y `docs/proposals/PLAN-DE-MIGRACIÓN.md:§2.4`.
