@@ -44,12 +44,18 @@ fn run_json(args: &[&str]) -> (i32, Value) {
 
 /// Modelo Whisper GGUF presente. Los binarios bajo `models/` están
 /// gitignoreados: en un checkout limpio (CI) los E2E que los requieren se
-/// saltan con aviso; en desarrollo corren completos.
+/// saltan con aviso; en desarrollo corren completos. Solo se compila con
+/// `native-stt`: sin el feature el binario no transcribe, así que los E2E que
+/// dependen de él se gatean por feature (no solo por presencia de modelo).
+#[cfg(feature = "native-stt")]
 fn whisper_model_disponible() -> bool {
     std::path::Path::new("models/whisper/ggml-medium-q8_0.bin").exists()
 }
 
-/// Modelo CT2 es→en presente (mismo criterio de skip que el whisper).
+/// Modelo CT2 es→en presente (mismo criterio de skip que el whisper). Solo se
+/// compila con `native-translation`: sin el feature el binario no traduce, así
+/// que el E2E que lo usa se gatea por feature (no solo por presencia de modelo).
+#[cfg(feature = "native-translation")]
 fn ct2_model_disponible() -> bool {
     std::path::Path::new("models/ct2/opus-mt-es-en/model.bin").exists()
 }
@@ -61,6 +67,10 @@ fn version_coincide_con_fixture() {
     assert_eq!(actual, fixture("cli_version.json"));
 }
 
+// Requiere `native-stt`: sin el motor Whisper el binario responde
+// `stt_unsupported`, por lo que el contrato de transcripción solo aplica con el
+// feature activo (en CI featureless no se compila).
+#[cfg(feature = "native-stt")]
 #[test]
 fn speech_transcribe_con_audio_cumple_contrato() {
     if !whisper_model_disponible() {
@@ -129,6 +139,10 @@ fn translate_texto_vacio_sale_con_codigo_2() {
     assert_eq!(actual, fixture("cli_translate_empty.json"));
 }
 
+// Requiere `native-translation`: sin el motor CT2 el binario responde
+// `translation_unsupported`, por lo que este contrato solo aplica con el feature
+// activo (en CI featureless no se compila).
+#[cfg(feature = "native-translation")]
 #[test]
 fn translate_es_a_en_produce_traduccion() {
     if !ct2_model_disponible() {
@@ -195,6 +209,8 @@ fn translate_par_no_soportado_sale_con_codigo_2() {
 
 mod tts {
     use super::*;
+    // El trait STT solo se necesita para el cálculo de WER real (native-stt).
+    #[cfg(feature = "native-stt")]
     use avi_core::engine::SttEngine;
     use std::path::Path;
     use std::sync::{Mutex, Once};
@@ -276,6 +292,8 @@ mod tts {
     }
 
     /// El WAV producido debe ser PCM s16le mono 24 kHz con muestras (spec del motor).
+    /// Solo lo usan los E2E de síntesis que verifican WER real (native-stt).
+    #[cfg(feature = "native-stt")]
     fn wav_valido_24k(path: &Path) {
         let reader = hound::WavReader::open(path)
             .unwrap_or_else(|e| panic!("WAV ilegible en {}: {}", path.display(), e));
@@ -288,6 +306,7 @@ mod tts {
 
     /// WER (por palabras normalizadas, Levenshtein) del WAV frente al texto
     /// fuente, vía Whisper GGUF (whisper-rs; patrón de `crates/avi-translation/src/lib.rs:313-334`).
+    #[cfg(feature = "native-stt")]
     fn wer_vs_texto(path: &Path, texto: &str) -> f64 {
         let pcm = avi_audio::load_wav_16k_mono_pcm(path.to_string_lossy().as_ref())
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
@@ -308,6 +327,7 @@ mod tts {
     /// Palabras minúsculas sin diacríticos ni puntuación (señal de habla
     /// limpia). El plegado de diacríticos es manual para no depender de
     /// `unicode-normalization`.
+    #[cfg(feature = "native-stt")]
     fn normalizar(s: &str) -> Vec<String> {
         s.to_lowercase()
             .chars()
@@ -329,6 +349,7 @@ mod tts {
     }
 
     /// Distancia de Levenshtein entre secuencias de palabras.
+    #[cfg(feature = "native-stt")]
     fn levenshtein(a: &[String], b: &[String]) -> usize {
         let mut prev: Vec<usize> = (0..=b.len()).collect();
         for (i, x) in a.iter().enumerate() {
@@ -345,6 +366,8 @@ mod tts {
         prev[b.len()]
     }
 
+    /// Solo lo usan los E2E de reproducción/dub que dependen de STT (native-stt).
+    #[cfg(feature = "native-stt")]
     fn hay_dispositivo_audio() -> bool {
         match avi_audio::get_devices_json() {
             Ok(devs) => !devs.is_empty(),
@@ -355,7 +378,10 @@ mod tts {
     // ─── synthesize ─────────────────────────────────────────────────────
 
     /// Éxito con `--label`: exit 0, WAV persistido en `speech/`, envelope y
-    /// WER ≤ 0.25 frente al texto fuente.
+    /// WER ≤ 0.25 frente al texto fuente. La verificación de WER exige el motor
+    /// Whisper (native-stt); sin el feature no se compila (en CI featureless los
+    /// modelos tampoco están, así que no se pierde cobertura).
+    #[cfg(feature = "native-stt")]
     #[test]
     fn synthesize_exito_con_label() {
         if !tts_provisioned() {
@@ -474,6 +500,8 @@ mod tts {
 
     // ─── say ───────────────────────────────────────────────────────────
 
+    // Verifica WER real vía Whisper (native-stt); sin el feature no se compila.
+    #[cfg(feature = "native-stt")]
     #[test]
     fn say_exito_reproduce() {
         if !tts_provisioned() {
@@ -517,7 +545,9 @@ mod tts {
     // ─── dub ───────────────────────────────────────────────────────────
 
     /// Passthrough es→es con `--audio`: exit 0, WAV válido y WER ≤ 0.25 frente
-    /// al texto transcrito (el pipeline devuelve `text`).
+    /// al texto transcrito (el pipeline devuelve `text`). El dub arranca por STT,
+    /// así que exige `native-stt`; sin el feature no se compila.
+    #[cfg(feature = "native-stt")]
     #[test]
     fn dub_audio_passthrough_es_es() {
         if !tts_provisioned() {

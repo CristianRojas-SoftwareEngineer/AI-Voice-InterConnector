@@ -9,31 +9,41 @@ use axum::{
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
+// `StdMutex` solo envuelve el contexto VAD (gateado tras `native-stt`).
+#[cfg(feature = "native-stt")]
 use std::sync::Mutex as StdMutex;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+// `hilos_disponibles` (config del VAD) y el trait `SttEngine` (`.transcribe`)
+// solo los consume la superficie STT/VAD, gateada tras `native-stt`.
+#[cfg(feature = "native-stt")]
 use avi_core::engine::{hilos_disponibles, SttEngine};
 use avi_core::json_emitter;
 use avi_store::{SpeechStore, VoiceStore};
+#[cfg(feature = "native-stt")]
 use avi_stt::Ct2SttEngine;
 use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
 // `Engine` trait requerido por el API no-deprecation de base64 0.22
 // (el motor interno del daemon usa el alfabeto STANDARD, idéntito al `encode`/`decode`
 // libres, por compatibilidad con el cliente raíz del CLI).
 use base64::Engine;
+#[cfg(feature = "native-stt")]
 use whisper_rs::{
     convert_integer_to_float_audio, WhisperVadContext, WhisperVadContextParams, WhisperVadParams,
 };
 
 /// Ruta relativa (al cwd del workspace) del modelo Whisper STT en formato GGUF.
+#[cfg(feature = "native-stt")]
 const STT_MODEL_DIR: &str = "models/whisper/ggml-medium-q8_0.bin";
 /// Ruta relativa (al cwd del workspace) del modelo VAD Silero (GGML), usado
 /// para segmentar audio largo (>15 s) antes de transcribir.
+#[cfg(feature = "native-stt")]
 const VAD_MODEL_DIR: &str = "models/whisper/ggml-silero-v5.1.2.bin";
 /// Umbral de una sola pasada: audio <=15 s (240 000 muestras a 16 kHz) se
 /// transcribe de una vez con `audio_ctx` dinámico del motor (<=960, capacidad
 /// 19.2 s con margen 25%); más allá, el VAD divide en segmentos de <=15 s.
+#[cfg(feature = "native-stt")]
 const SINGLE_PASS_MAX_SAMPLES: usize = 240_000;
 /// Idioma por defecto para `clone_voice` cuando la petición no lo transporta
 /// (el contrato de /voices/precompute no carriya idioma).
@@ -48,10 +58,12 @@ pub struct DaemonState {
     /// Motor TTS nativo (Qwen3-TTS), con ciclo de vida persistente entre peticiones.
     pub tts_engine: Qwen3TtsEngine,
     /// Motor STT nativo (whisper-rs sobre whisper.cpp, modelo GGUF medium-q8).
+    #[cfg(feature = "native-stt")]
     pub stt_engine: Ct2SttEngine,
     /// VAD Silero para segmentar audio largo (>15 s). El contexto vive entre
     /// peticiones (modelo cargado una sola vez); `StdMutex` porque el runtime
     /// ya bloquea en el motor STT y el VAD es rápido en comparación.
+    #[cfg(feature = "native-stt")]
     pub vad_engine: StdMutex<WhisperVadContext>,
 }
 
@@ -61,21 +73,27 @@ impl DaemonState {
     /// Devuelve error si el motor STT o el VAD no pueden inicializarse (modelo
     /// inexistente).
     pub fn new() -> anyhow::Result<Self> {
+        #[cfg(feature = "native-stt")]
         let stt_engine = Ct2SttEngine::new(STT_MODEL_DIR)?;
-        let mut vad_params = WhisperVadContextParams::default();
-        // Hilos lógicos del equipo del usuario, no una máquina fija de desarrollo.
-        vad_params.set_n_threads(hilos_disponibles() as i32);
-        let vad_engine = WhisperVadContext::new(VAD_MODEL_DIR, vad_params)
-            .map_err(|e| {
+        #[cfg(feature = "native-stt")]
+        let vad_engine = {
+            let mut vad_params = WhisperVadContextParams::default();
+            // Hilos lógicos del equipo del usuario, no una máquina fija de desarrollo.
+            vad_params.set_n_threads(hilos_disponibles() as i32);
+            let vad = WhisperVadContext::new(VAD_MODEL_DIR, vad_params).map_err(|e| {
                 anyhow::anyhow!("fallo al cargar el modelo VAD {}: {:?}", VAD_MODEL_DIR, e)
             })?;
+            StdMutex::new(vad)
+        };
         Ok(Self {
             synthesis_lock: Mutex::new(()),
             voice_store: VoiceStore::new(),
             speech_store: SpeechStore::new(),
             tts_engine: Qwen3TtsEngine::new(None),
+            #[cfg(feature = "native-stt")]
             stt_engine,
-            vad_engine: StdMutex::new(vad_engine),
+            #[cfg(feature = "native-stt")]
+            vad_engine,
         })
     }
 }
@@ -368,6 +386,7 @@ async fn synthesize_handler(
 /// Contrato (fuente de verdad: `protocol.py`): el campo es `audio_b64` (no
 /// `audio_pcm_base64`); el audio es PCM i16 little-endian 16 kHz mono; la
 /// respuesta exitosa es `TranscribeResponse{text}`.
+#[cfg(feature = "native-stt")]
 async fn transcribe_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
@@ -435,6 +454,7 @@ async fn transcribe_handler(
 /// segmentos de voz (<=15 s, con padding de 30 ms y solape de 0.1 s para no
 /// cortar palabras), cada segmento se transcribe con el `audio_ctx` dinámico
 /// del motor y los textos se unen con espacios.
+#[cfg(feature = "native-stt")]
 fn transcribir_con_vad(
     state: &DaemonState,
     pcm: &[i16],
@@ -468,6 +488,7 @@ fn transcribir_con_vad(
 
 /// Mapea el token de idioma del cliente (`es-latam`/`en`) al código ISO que
 /// exige Whisper (paridad con `resolve_stt_language` en `src/main.rs`).
+#[cfg(feature = "native-stt")]
 fn resolve_stt_language(token: &str) -> &str {
     match token {
         "es-latam" => "es",
@@ -493,14 +514,17 @@ async fn shutdown_handler() -> impl IntoResponse {
 /// ejercer las rutas en tests de integración inyectando un estado con rutas de
 /// modelo apuntando a `CARGO_MANIFEST_DIR`.
 pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health_handler))
         .route("/voices", get(voices_handler))
         .route("/voices/precompute", post(voices_precompute_handler))
         .route("/synthesize", post(synthesize_handler))
-        .route("/transcribe", post(transcribe_handler))
-        .route("/shutdown", post(shutdown_handler))
-        .with_state(state)
+        .route("/shutdown", post(shutdown_handler));
+    // `/transcribe` solo existe con el motor STT compilado (`native-stt`); sin el
+    // feature el daemon expone el resto de rutas sin whisper.cpp.
+    #[cfg(feature = "native-stt")]
+    let router = router.route("/transcribe", post(transcribe_handler));
+    router.with_state(state)
 }
 
 /// Punto de entrada de producción. Construye el estado con las rutas de modelo de

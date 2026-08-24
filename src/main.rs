@@ -1,12 +1,19 @@
 use avi_audio as audio;
+// El trait STT y el motor real solo entran en scope con `native-stt` (off por
+// defecto); sin el feature, los subcomandos de transcripción devuelven un error
+// explícito de "compilado sin soporte" (ver plan R1/T6).
+#[cfg(feature = "native-stt")]
 use avi_core::engine::SttEngine;
 use avi_core::exit_codes::{CliError, ExitCode};
 use avi_core::json_emitter::emit_raw_json;
 use avi_daemon as daemon;
 use avi_store as store;
 use avi_store::{VoiceStore, SpeechStore, ModelStore};
+#[cfg(feature = "native-stt")]
 use avi_stt::Ct2SttEngine;
 use avi_tts::{Qwen3TtsEngine, TtsEngine};
+// El motor de traducción real solo entra en scope con `native-translation`.
+#[cfg(feature = "native-translation")]
 use avi_translation as translation;
 use base64::Engine;
 use clap::{Parser, Subcommand};
@@ -15,7 +22,7 @@ use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::process::exit;
 
-const VERSION: &str = "0.10.5";
+const VERSION: &str = "0.10.6";
 const APP_NAME: &str = "ai-voice-interconnector";
 /// Dirección del daemon nativo (T7: cliente HTTP async contra este address).
 const DAEMON_ADDR: &str = "127.0.0.1:8765";
@@ -387,15 +394,29 @@ fn handle_translate(json_mode: bool, daemon_mode: DaemonMode, text: &str, from: 
             format!("El modelo de traducción no está provisionado en '{}'.", model_dir),
         ));
     }
-    let translated = translation::translate(text, source, target, model_dir).map_err(|e| {
-        CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
-    })?;
-    if json_mode {
-        emit_raw_json(json!({ "translated": translated, "source": from, "target": to }));
-    } else {
-        println!("{}", translated);
+    // Compilado sin soporte de traducción (feature off): rama de error explícita;
+    // toda la validación previa (par soportado, modelo presente) es pura y corre igual.
+    #[cfg(not(feature = "native-translation"))]
+    {
+        let _ = model_dir;
+        Err(CliError::new(
+            ExitCode::Error,
+            "translation_unsupported",
+            "Este binario se compiló sin soporte de traducción (feature 'native-translation').",
+        ))
     }
-    Ok(())
+    #[cfg(feature = "native-translation")]
+    {
+        let translated = translation::translate(text, source, target, model_dir).map_err(|e| {
+            CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
+        })?;
+        if json_mode {
+            emit_raw_json(json!({ "translated": translated, "source": from, "target": to }));
+        } else {
+            println!("{}", translated);
+        }
+        Ok(())
+    }
 }
 
 // ─── Voice ───────────────────────────────────────────────────────────
@@ -596,32 +617,46 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                 ));
             }
 
-            let pcm = if mic {
-                audio::AudioService::new()
-                    .capture_16k_mono_pcm(duration.expect("validado arriba"))
-                    .map_err(|e| {
+            // Compilado sin soporte STT (feature off): rama de error explícita.
+            // La validación de argumentos y la ausencia de modelo (exit 4) son puras
+            // y ya se ejecutaron arriba; aquí solo se corta la ejecución del motor.
+            #[cfg(not(feature = "native-stt"))]
+            {
+                Err(CliError::new(
+                    ExitCode::Error,
+                    "stt_unsupported",
+                    "Este binario se compiló sin soporte de transcripción (feature 'native-stt').",
+                ))
+            }
+            #[cfg(feature = "native-stt")]
+            {
+                let pcm = if mic {
+                    audio::AudioService::new()
+                        .capture_16k_mono_pcm(duration.expect("validado arriba"))
+                        .map_err(|e| {
+                            CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                        })?
+                } else {
+                    avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
                         CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
                     })?
-            } else {
-                avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
+                };
+
+                let engine = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
                     CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
-                })?
-            };
+                })?;
+                let language = resolve_stt_language(&source_language);
+                let text = engine.transcribe(&pcm, Some(language)).map_err(|e| {
+                    CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                })?;
 
-            let engine = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
-                CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
-            })?;
-            let language = resolve_stt_language(&source_language);
-            let text = engine.transcribe(&pcm, Some(language)).map_err(|e| {
-                CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
-            })?;
-
-            if json_mode {
-                emit_raw_json(json!({ "text": text, "source": source_language }));
-            } else {
-                println!("{}", text);
+                if json_mode {
+                    emit_raw_json(json!({ "text": text, "source": source_language }));
+                } else {
+                    println!("{}", text);
+                }
+                Ok(())
             }
-            Ok(())
         }
         SpeechCommands::Synthesize { text, voice, output, label, force, play } => {
             // Orden de validaciones del oráculo (cli.py:659-667).
@@ -792,92 +827,120 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             }
             require_model_provisioned()?;
 
-            let pcm = if mic {
-                audio::AudioService::new()
-                    .capture_16k_mono_pcm(duration.expect("validado arriba"))
-                    .map_err(|e| {
+            // Doblaje = transcribe→traduce→sintetiza: sin soporte STT (feature off)
+            // el pipeline no puede arrancar; rama de error explícita tras las
+            // validaciones puras (usage, audio existente, modelos ausentes → exit 4).
+            #[cfg(not(feature = "native-stt"))]
+            {
+                let _ = (&voice, &from, &to);
+                Err(CliError::new(
+                    ExitCode::Error,
+                    "stt_unsupported",
+                    "Este binario se compiló sin soporte de transcripción (feature 'native-stt').",
+                ))
+            }
+            #[cfg(feature = "native-stt")]
+            {
+                let pcm = if mic {
+                    audio::AudioService::new()
+                        .capture_16k_mono_pcm(duration.expect("validado arriba"))
+                        .map_err(|e| {
+                            CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                        })?
+                } else {
+                    avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
                         CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
                     })?
-            } else {
-                avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
-                    CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
-                })?
-            };
-            let stt = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
-                CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
-            })?;
-            let transcribed = stt
-                .transcribe(&pcm, Some(resolve_stt_language(&from)))
-                .map_err(|e| {
+                };
+                let stt = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
                     CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
                 })?;
-            if transcribed.trim().is_empty() {
-                return Err(CliError::new(
-                    ExitCode::InvalidInput,
-                    "empty_text",
-                    "El texto transcrito está vacío",
-                ));
-            }
-
-            // Traducción solo si from != to tras normalizar (passthrough si coinciden).
-            let source = resolve_stt_language(&from);
-            let target = resolve_stt_language(&to);
-            let final_text = if source == target {
-                transcribed.clone()
-            } else {
-                let model_dir = match (source, target) {
-                    ("es", "en") => DEFAULT_TRANSLATION_MODEL_ES_EN,
-                    ("en", "es") => DEFAULT_TRANSLATION_MODEL_EN_ES,
-                    _ => {
-                        return Err(CliError::new(
-                            ExitCode::InvalidInput,
-                            "unsupported_language_pair",
-                            format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source, target),
-                        ));
-                    }
-                };
-                if !std::path::Path::new(model_dir).exists() {
+                let transcribed = stt
+                    .transcribe(&pcm, Some(resolve_stt_language(&from)))
+                    .map_err(|e| {
+                        CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                    })?;
+                if transcribed.trim().is_empty() {
                     return Err(CliError::new(
-                        ExitCode::ModelMissing,
-                        "model_missing",
-                        format!("El modelo de traducción no está provisionado en '{}'.", model_dir),
+                        ExitCode::InvalidInput,
+                        "empty_text",
+                        "El texto transcrito está vacío",
                     ));
                 }
-                translation::translate(&transcribed, source, target, model_dir).map_err(|e| {
-                    CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
-                })?
-            };
 
-            let voice_store = VoiceStore::new();
-            if !voice_store.exists(&voice) {
-                return Err(CliError::new(
-                    ExitCode::NotFound,
-                    "voice_not_found",
-                    format!("La voz '{}' no existe.", voice),
-                ));
+                // Traducción solo si from != to tras normalizar (passthrough si coinciden).
+                let source = resolve_stt_language(&from);
+                let target = resolve_stt_language(&to);
+                let final_text = if source == target {
+                    transcribed.clone()
+                } else {
+                    let model_dir = match (source, target) {
+                        ("es", "en") => DEFAULT_TRANSLATION_MODEL_ES_EN,
+                        ("en", "es") => DEFAULT_TRANSLATION_MODEL_EN_ES,
+                        _ => {
+                            return Err(CliError::new(
+                                ExitCode::InvalidInput,
+                                "unsupported_language_pair",
+                                format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source, target),
+                            ));
+                        }
+                    };
+                    if !std::path::Path::new(model_dir).exists() {
+                        return Err(CliError::new(
+                            ExitCode::ModelMissing,
+                            "model_missing",
+                            format!("El modelo de traducción no está provisionado en '{}'.", model_dir),
+                        ));
+                    }
+                    // Sin soporte de traducción (feature off) el par no-passthrough no
+                    // puede resolverse: se corta con un error explícito (type `!`).
+                    #[cfg(not(feature = "native-translation"))]
+                    {
+                        return Err(CliError::new(
+                            ExitCode::Error,
+                            "translation_unsupported",
+                            "Este binario se compiló sin soporte de traducción (feature 'native-translation').",
+                        ))
+                    }
+                    #[cfg(feature = "native-translation")]
+                    {
+                        translation::translate(&transcribed, source, target, model_dir).map_err(|e| {
+                            CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
+                        })?
+                    }
+                };
+
+                let voice_store = VoiceStore::new();
+                if !voice_store.exists(&voice) {
+                    return Err(CliError::new(
+                        ExitCode::NotFound,
+                        "voice_not_found",
+                        format!("La voz '{}' no existe.", voice),
+                    ));
+                }
+                let tmp_wav = std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
+                let engine = Qwen3TtsEngine::new(None);
+                engine.synthesize(&final_text, &voice, Some(&tmp_wav)).map_err(|e| {
+                    CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
+                })?;
+                audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "playback_failed",
+                        format!("Fallo al reproducir el doblaje: {}", e),
+                    )
+                })?;
+                if json_mode {
+                    emit_raw_json(json!({
+                        "status": "dubbed",
+                        "text": final_text,
+                        "audio_path": tmp_wav.to_string_lossy(),
+                    }));
+                } else {
+                    println!("Doblaje reproducido: {}", tmp_wav.display());
+                }
+                Ok(())
             }
-            let tmp_wav = std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
-            let engine = Qwen3TtsEngine::new(None);
-            engine.synthesize(&final_text, &voice, Some(&tmp_wav)).map_err(|e| {
-                CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
-            })?;
-            audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "playback_failed",
-                    format!("Fallo al reproducir el doblaje: {}", e),
-                )
-            })?;
-            if json_mode {
-                emit_raw_json(json!({
-                    "status": "dubbed",
-                    "text": final_text,
-                    "audio_path": tmp_wav.to_string_lossy(),
-                }));
-            } else {
-                println!("Doblaje reproducido: {}", tmp_wav.display());
-            }
-            Ok(())
         }
         SpeechCommands::Play { label, voice } => {
             // Reproducción de locución persistida: local-only.

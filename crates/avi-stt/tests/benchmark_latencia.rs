@@ -1,3 +1,8 @@
+// Todo el benchmark ejercita el motor real (`avi_stt::Ct2SttEngine`), que solo
+// existe con el feature `native-stt`. Sin él, el archivo no se compila (evita el
+// C++ de whisper.cpp en el build de test liso).
+#![cfg(feature = "native-stt")]
+
 use std::time::Instant;
 
 use avi_core::engine::SttEngine;

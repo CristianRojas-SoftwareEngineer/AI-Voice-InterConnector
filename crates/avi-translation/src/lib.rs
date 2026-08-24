@@ -6,14 +6,21 @@
 //! (`_MarianCT2Model.translate`): SentencePiece embebido + token `</s>` manual,
 //! sin `sacremoses` ni `MarianTokenizer`.
 
+// Estos símbolos solo los consume el motor real (`Ct2TranslationEngine` y
+// `translate`), gateado tras `native-translation`; sin el feature quedarían sin
+// uso, por eso el import se gatea junto con ellos.
+#[cfg(feature = "native-translation")]
 use avi_core::engine::{hilos_disponibles, HierarchicalSegmenter, Segmenter, TranslationEngine};
+#[cfg(feature = "native-translation")]
 use ct2rs::{ComputeType, Config, Translator};
 
 /// Motor de traducción real sobre un modelo Marian/opus-mt en formato CT2.
+#[cfg(feature = "native-translation")]
 pub struct Ct2TranslationEngine {
     translator: Translator<ct2rs::tokenizers::auto::Tokenizer>,
 }
 
+#[cfg(feature = "native-translation")]
 impl Ct2TranslationEngine {
     /// Carga el modelo CT2 ubicado en `model_dir`.
     pub fn new(model_dir: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
@@ -80,6 +87,7 @@ impl Ct2TranslationEngine {
     }
 }
 
+#[cfg(feature = "native-translation")]
 impl TranslationEngine for Ct2TranslationEngine {
     fn translate(&self, text: &str, _source_lang: &str, _target_lang: &str) -> anyhow::Result<String> {
         // El texto único se traduce como lote de una sola oración: `translate_lote`
@@ -93,6 +101,11 @@ impl TranslationEngine for Ct2TranslationEngine {
 /// Tope de oraciones por lote de traducción: un párrafo con más oraciones se
 /// parte en grupos de `MAX_ORACIONES_POR_LOTE` para acotar la memoria y la
 /// latencia de cada llamada a `translate_batch` (decisión cerrada de F0 §2.2).
+///
+/// Lógica pura: se mantiene compilable/testeable sin el feature
+/// `native-translation`; `allow(dead_code)` evita el warning-as-error cuando su
+/// único consumidor de producción (`translate`) queda fuera del build.
+#[cfg_attr(not(feature = "native-translation"), allow(dead_code))]
 const MAX_ORACIONES_POR_LOTE: usize = 10;
 
 /// Traduce los párrafos agrupando sus oraciones en lotes de a lo sumo
@@ -101,6 +114,7 @@ const MAX_ORACIONES_POR_LOTE: usize = 10;
 /// los párrafos generados por `"\n\n"` consecutivos) no se traducen pero el
 /// párrafo conserva su posición como lista vacía para no alterar el
 /// reensamblado posterior.
+#[cfg_attr(not(feature = "native-translation"), allow(dead_code))]
 fn traducir_lotes_por_parrafo(
     paragraphs: Vec<Vec<String>>,
     source: &str,
@@ -124,6 +138,7 @@ fn traducir_lotes_por_parrafo(
 /// segmentos unidos con espacio dentro de cada párrafo y párrafos unidos con
 /// `"\n\n"`. Precondición: `source != target` — el passthrough se resuelve en
 /// la capa CLI antes de llamar a esta función.
+#[cfg(feature = "native-translation")]
 pub fn translate(
     text: &str,
     source: &str,
@@ -157,11 +172,16 @@ pub fn translate(
 mod tests {
     use std::cell::{Cell, RefCell};
 
-    use avi_core::engine::{HierarchicalSegmenter, Segmenter, TranslationEngine};
+    // `HierarchicalSegmenter`/`Segmenter` los usan los tests puros de lote; el
+    // trait `TranslationEngine` solo lo usan los tests del motor real (gateados).
+    use avi_core::engine::{HierarchicalSegmenter, Segmenter};
+    #[cfg(feature = "native-translation")]
+    use avi_core::engine::TranslationEngine;
 
     /// Modelo CT2 presente. Los pesos bajo `models/` están gitignoreados:
     /// en un checkout limpio (CI) los E2E que los requieren se saltan con aviso;
     /// en desarrollo corren completos.
+    #[cfg(feature = "native-translation")]
     fn modelo_ct2_disponible(subdir: &str) -> bool {
         std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -175,6 +195,7 @@ mod tests {
     /// Carga el modelo opus-mt es→en real (ya convertido a CT2 y provisionado)
     /// vía `Ct2TranslationEngine` y traduce un texto corto, verificando que el
     /// resultado no esté vacío.
+    #[cfg(feature = "native-translation")]
     #[test]
     fn ct2translationengine_traduce_texto_real() {
         use crate::Ct2TranslationEngine;
@@ -216,6 +237,7 @@ mod tests {
     /// motor real debe anexar `</s>` explícitamente al texto/tokens de origen
     /// antes de invocar `translate_batch` (o el tokenizador SentencePiece
     /// equivalente debe insertarlo).
+    #[cfg(feature = "native-translation")]
     #[test]
     fn ct2rs_carga_modelo_opus_mt_y_traduce() {
         use ct2rs::{Config, Translator};
@@ -252,6 +274,7 @@ mod tests {
     /// `Ct2TranslationEngine::new` sobre una ruta de modelo inexistente debe
     /// devolver `Err`, mismo patrón que
     /// `ct2sttengine_new_con_ruta_inexistente_devuelve_err` de `avi-stt`.
+    #[cfg(feature = "native-translation")]
     #[test]
     fn ct2translationengine_new_con_ruta_inexistente_devuelve_err() {
         use crate::Ct2TranslationEngine;
@@ -279,6 +302,7 @@ mod tests {
     /// equivocado, tokenización rota o salida degradada dispararían el WER
     /// medio muy por encima de 0.35), y se complementan con checks
     /// funcionales: salida no vacía, sin `</s>` ni `<unk>`.
+    #[cfg(feature = "native-translation")]
     #[test]
     fn ct2translationengine_coincide_con_oraculo_python() {
         use crate::Ct2TranslationEngine;
@@ -372,6 +396,7 @@ mod tests {
 
     /// Un par del corpus de paridad: texto de entrada y su traducción de
     /// referencia emitida por el oráculo Python.
+    #[cfg(feature = "native-translation")]
     #[derive(serde::Deserialize)]
     struct ParOraculo {
         input: String,
@@ -380,6 +405,7 @@ mod tests {
 
     /// Distancia de Levenshtein a nivel de palabra entre `referencia` e
     /// `hipotesis`, usada para calcular el WER de la prueba de paridad.
+    #[cfg(feature = "native-translation")]
     fn levenshtein_palabras(referencia: &[&str], hipotesis: &[&str]) -> usize {
         let n = referencia.len();
         let m = hipotesis.len();
@@ -406,6 +432,7 @@ mod tests {
     /// End-to-end con el modelo real: un texto multi-párrafo (`"\n\n"` presente
     /// en la entrada) se traduce sin panic, con resultado no vacío y
     /// preservando la separación de párrafos en la salida.
+    #[cfg(feature = "native-translation")]
     #[test]
     fn translate_multi_parrafo_preserva_separadores() {
         if !modelo_ct2_disponible("opus-mt-es-en") {
@@ -434,6 +461,7 @@ mod tests {
     /// plan): un `model_dir` inexistente hace fallar el pipeline con `Err`
     /// (defensa en profundidad; no sustituye el chequeo `Path::exists` de la
     /// capa CLI).
+    #[cfg(feature = "native-translation")]
     #[test]
     fn translate_con_model_dir_inexistente_devuelve_err() {
         let result = crate::translate(
@@ -709,6 +737,7 @@ mod tests {
     /// contenido: salida no vacía, sin `</s>`/`<unk>` y con longitud acorde a
     /// la entrada (el corpus del oráculo solo cubre una oración por ítem, por
     /// eso esta cobertura del lote se añade aquí).
+    #[cfg(feature = "native-translation")]
     #[test]
     fn translate_parrafo_de_11_oraciones_particiona_sin_perder_texto() {
         if !modelo_ct2_disponible("opus-mt-es-en") {
@@ -773,6 +802,7 @@ mod tests {
     /// End-to-end con el modelo real (es→en): 3 párrafos (el central de 12
     /// oraciones, por encima de los 512 caracteres) se traducen preservando
     /// los dos separadores `"\n\n"` y sin filtrar `</s>`/`<unk>`.
+    #[cfg(feature = "native-translation")]
     #[test]
     fn translate_multiparrafo_largo_preserva_parrafos() {
         if !modelo_ct2_disponible("opus-mt-es-en") {

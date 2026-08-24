@@ -17,6 +17,11 @@
 //! es localizable desde CWD (`crates/avi-daemon`), luego el evento final esperado
 //! es `error` con `reason` `model_missing` — rama aceptada por el plan T8.
 
+// El harness construye `DaemonState` con los campos STT/VAD y usa
+// `whisper_rs`/`avi_stt::Ct2SttEngine`, que solo existen con `native-stt`. Sin el
+// feature el archivo no se compila (evita whisper.cpp en el build de test liso).
+#![cfg(feature = "native-stt")]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;

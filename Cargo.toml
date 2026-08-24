@@ -27,6 +27,14 @@ avi-translation = { path = "crates/avi-translation" }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 base64 = "0.22"
 
+[features]
+# Features de workspace (todos off por defecto): encadenan los features nativos
+# de cada crate. `cargo test`/`cargo llvm-cov` corren lisos (sin C++); los builds
+# de distribución activan `full` para conservar STT + traducción (ver plan R1).
+native-stt = ["avi-stt/native-stt", "avi-daemon/native-stt"]
+native-translation = ["avi-translation/native-translation"]
+full = ["native-stt", "native-translation"]
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_System_Console"] }
 

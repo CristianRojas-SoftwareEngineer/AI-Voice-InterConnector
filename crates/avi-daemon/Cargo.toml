@@ -15,8 +15,14 @@ avi-stt = { path = "../avi-stt" }
 avi-tts = { path = "../avi-tts" }
 base64 = "0.22"
 # VAD Silero para segmentar audio largo (mismo crate que usa avi-stt, sin
-# dependencias nuevas en el árbol).
-whisper-rs = "0.16"
+# dependencias nuevas en el árbol). Opcional tras `native-stt` (off por defecto):
+# la superficie STT/VAD del daemon (`/transcribe`) solo se compila con el feature,
+# dejando el resto de rutas (TTS/voces/store) sin whisper.cpp en los tests.
+whisper-rs = { version = "0.16", optional = true }
+
+[features]
+# Activa la superficie STT/VAD del daemon; encadena el motor real de avi-stt.
+native-stt = ["dep:whisper-rs", "avi-stt/native-stt"]
 
 [dev-dependencies]
 # Solo para el harness de tests dorados: permite ejercitar el Router de Axum

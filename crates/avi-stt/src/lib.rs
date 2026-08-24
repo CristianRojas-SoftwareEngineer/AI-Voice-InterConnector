@@ -5,17 +5,23 @@
 //! 16 kHz forzando el idioma indicado (Whisper solo transcribe, nunca traduce,
 //! por construcción: `set_translate(false)`).
 
-use avi_core::engine::{hilos_disponibles, SttEngine};
+#[cfg(feature = "native-stt")]
+use avi_core::engine::hilos_disponibles;
+#[cfg(feature = "native-stt")]
+use avi_core::engine::SttEngine;
+#[cfg(feature = "native-stt")]
 use whisper_rs::{
     convert_integer_to_float_audio, FullParams, SamplingStrategy, WhisperContext,
     WhisperContextParameters,
 };
 
 /// Motor STT real sobre un modelo Whisper cargado en formato GGUF.
+#[cfg(feature = "native-stt")]
 pub struct Ct2SttEngine {
     ctx: WhisperContext,
 }
 
+#[cfg(feature = "native-stt")]
 impl Ct2SttEngine {
     /// Carga el modelo Whisper GGUF ubicado en `model_path`.
     pub fn new(model_path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
@@ -24,6 +30,7 @@ impl Ct2SttEngine {
     }
 }
 
+#[cfg(feature = "native-stt")]
 impl SttEngine for Ct2SttEngine {
     fn transcribe(&self, audio_pcm: &[i16], language: Option<&str>) -> anyhow::Result<String> {
         let mut buffer = vec![0f32; audio_pcm.len()];
@@ -62,6 +69,11 @@ impl SttEngine for Ct2SttEngine {
 /// de 64 más cercano (invariante de whisper.cpp), y se acota al rango
 /// [256, 1500]: piso 256 verificado experimentalmente (conserva el texto de
 /// 448 en clips <=4 s) y tope 1500 = `n_audio_ctx` del modelo.
+///
+/// Lógica pura (sin C++): se mantiene compilable y testeable aunque el feature
+/// `native-stt` esté off; `allow(dead_code)` evita el warning-as-error cuando
+/// su único consumidor (`Ct2SttEngine::transcribe`) queda fuera del build.
+#[cfg_attr(not(feature = "native-stt"), allow(dead_code))]
 fn audio_ctx_para_duracion(samples: usize) -> i32 {
     let dur_s = samples as f64 / 16000.0;
     let ctx = (((dur_s * 62.5 / 64.0).ceil()) as i32) * 64;
@@ -70,7 +82,9 @@ fn audio_ctx_para_duracion(samples: usize) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "native-stt")]
     use avi_core::engine::SttEngine;
+    #[cfg(feature = "native-stt")]
     use whisper_rs::WhisperContextParameters;
 
     /// Smoke test: fuerza la resolución del enlace con `whisper-rs`/whisper.cpp
@@ -79,6 +93,7 @@ mod tests {
     /// `WhisperContext::new_with_params`; construirlo con sus valores por defecto
     /// ya obliga al linker a resolver los símbolos de whisper.cpp, demostrando
     /// que el toolchain nativo compila la dependencia correctamente.
+    #[cfg(feature = "native-stt")]
     #[test]
     fn whisper_rs_enlaza_correctamente() {
         let _params = WhisperContextParameters::default();
@@ -91,6 +106,7 @@ mod tests {
     /// El fixture `tests/assets/whisper_sample_16k.wav` es voz sintética en español
     /// generada por el propio motor Qwen3-TTS del proyecto, remuestreada a
     /// 16 kHz mono — la tasa que exige Whisper.
+    #[cfg(feature = "native-stt")]
     #[test]
     fn whisper_rs_carga_modelo_gguf_y_transcribe() {
         use crate::Ct2SttEngine;
@@ -138,6 +154,7 @@ mod tests {
     /// `Ct2SttEngine::new` sobre una ruta de modelo inexistente debe devolver
     /// `Err`, cubriendo la rama de "modelo no cargable" que el handler CLI
     /// mapea a `ExitCode::TranscriptionFailed` (10).
+    #[cfg(feature = "native-stt")]
     #[test]
     fn ct2sttengine_new_con_ruta_inexistente_devuelve_err() {
         use crate::Ct2SttEngine;
@@ -213,6 +230,7 @@ mod tests {
     /// `síntesis`/`clonación`/`español`/`espejo`, errores que también cometía
     /// el CT2 small original) y ningún modelo Whisper los transcribe bien. Los
     /// WAV y sus fixtures permanecen en `tests/assets/` sin uso en el corpus.
+    #[cfg(feature = "native-stt")]
     #[test]
     fn ct2sttengine_coincide_con_oraculo_python() {
         use crate::Ct2SttEngine;
@@ -288,6 +306,7 @@ mod tests {
     /// diacríticos (á→a, é→e, í→i, ó→o, ú→u, ü→u, ñ→n) y eliminación de
     /// puntuación (¡¿!?.,;:"'«»…- y similares). El plegado es manual para no
     /// depender de `unicode-normalization`.
+    #[cfg(feature = "native-stt")]
     fn normalizar_texto(texto: &str) -> String {
         texto
             .to_lowercase()
@@ -307,6 +326,7 @@ mod tests {
 
     /// Distancia de Levenshtein a nivel de palabra entre `referencia` e
     /// `hipotesis`, usada para calcular el WER de la prueba de paridad.
+    #[cfg(feature = "native-stt")]
     fn levenshtein_palabras(referencia: &[&str], hipotesis: &[&str]) -> usize {
         let n = referencia.len();
         let m = hipotesis.len();

@@ -6,9 +6,16 @@ edition = "2021"
 [dependencies]
 # Bindings de whisper.cpp (sin features GPU: CPU-only por default). Reemplaza a
 # ct2rs::Whisper como motor STT; CT2 permanece solo en avi-translation.
-whisper-rs = "0.16"
+# Opcional tras el feature `native-stt` (off por defecto): así `cargo test`/
+# `cargo llvm-cov` compilan el crate sin whisper.cpp; los builds de release lo
+# activan para conservar el motor real (ver plan R1).
+whisper-rs = { version = "0.16", optional = true }
 avi-core = { path = "../avi-core" }
 anyhow = "1.0"
+
+[features]
+# Activa el motor STT real (whisper-rs → whisper.cpp compilado desde fuente).
+native-stt = ["dep:whisper-rs"]
 
 [dev-dependencies]
 # Lectura del WAV fixture (mono 16 kHz) que alimenta el test de carga de Whisper.
