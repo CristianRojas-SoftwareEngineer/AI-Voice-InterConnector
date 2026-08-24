@@ -99,6 +99,12 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../models/whisper/ggml-medium-q8_0.bin"
         );
+        // Los binarios bajo `models/` están gitignoreados: en un checkout
+        // limpio (CI) este E2E se salta con aviso; en desarrollo corre completo.
+        if !std::path::Path::new(model_path).exists() {
+            eprintln!("[stt] skip: sin modelo Whisper GGUF (models/ gitignoreado)");
+            return;
+        }
         let engine = Ct2SttEngine::new(model_path)
             .expect("el modelo whisper GGUF debe cargar pesos reales desde disco");
 
@@ -215,6 +221,12 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../models/whisper/ggml-medium-q8_0.bin"
         );
+        // Mismo criterio de skip que `whisper_rs_carga_modelo_gguf_y_transcribe`:
+        // sin modelo (checkout limpio/CI) no hay paridad que medir.
+        if !std::path::Path::new(model_path).exists() {
+            eprintln!("[stt] skip: sin modelo Whisper GGUF (models/ gitignoreado)");
+            return;
+        }
         let engine = Ct2SttEngine::new(model_path).expect("el modelo whisper GGUF debe cargar");
 
         // Pares (audio, fixture de transcripción de referencia), mismo

@@ -42,6 +42,18 @@ fn run_json(args: &[&str]) -> (i32, Value) {
     (code, json)
 }
 
+/// Modelo Whisper GGUF presente. Los binarios bajo `models/` están
+/// gitignoreados: en un checkout limpio (CI) los E2E que los requieren se
+/// saltan con aviso; en desarrollo corren completos.
+fn whisper_model_disponible() -> bool {
+    std::path::Path::new("models/whisper/ggml-medium-q8_0.bin").exists()
+}
+
+/// Modelo CT2 es→en presente (mismo criterio de skip que el whisper).
+fn ct2_model_disponible() -> bool {
+    std::path::Path::new("models/ct2/opus-mt-es-en/model.bin").exists()
+}
+
 #[test]
 fn version_coincide_con_fixture() {
     let (code, actual) = run_json(&["--json", "version"]);
@@ -51,6 +63,10 @@ fn version_coincide_con_fixture() {
 
 #[test]
 fn speech_transcribe_con_audio_cumple_contrato() {
+    if !whisper_model_disponible() {
+        eprintln!("[stt] skip: sin modelo Whisper GGUF (models/ gitignoreado)");
+        return;
+    }
     let (code, actual) = run_json(&[
         "--json",
         "speech",
@@ -115,6 +131,10 @@ fn translate_texto_vacio_sale_con_codigo_2() {
 
 #[test]
 fn translate_es_a_en_produce_traduccion() {
+    if !ct2_model_disponible() {
+        eprintln!("[translate] skip: sin modelo CT2 es→en (models/ gitignoreado)");
+        return;
+    }
     // El texto traducido depende del motor real; se verifican invariantes de
     // contrato (mismo patrón que `speech_transcribe_con_audio_cumple_contrato`).
     let (code, actual) = run_json(&[
@@ -342,6 +362,10 @@ mod tts {
             eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
             return;
         }
+        if !whisper_model_disponible() {
+            eprintln!("[stt] skip: sin modelo Whisper GGUF (models/ gitignoreado)");
+            return;
+        }
         let _guard = lock_tts();
         let label = etiqueta_unica("golden");
         let (code, actual) = run_json(&[
@@ -458,6 +482,10 @@ mod tts {
         }
         if !hay_dispositivo_audio() {
             eprintln!("[tts] skip: sin dispositivo de salida de audio");
+            return;
+        }
+        if !whisper_model_disponible() {
+            eprintln!("[stt] skip: sin modelo Whisper GGUF (models/ gitignoreado)");
             return;
         }
         let _guard = lock_tts();

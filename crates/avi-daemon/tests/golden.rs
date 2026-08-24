@@ -111,8 +111,20 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
+/// Modelos reales (STT + VAD) presentes. Los binarios bajo `models/` están
+/// gitignoreados: en un checkout limpio (CI) estos tests dorados se saltan con
+/// aviso; en desarrollo corren completos.
+fn modelos_presentes() -> bool {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/whisper");
+    root.join("ggml-medium-q8_0.bin").exists() && root.join("ggml-silero-v5.1.2.bin").exists()
+}
+
 #[tokio::test]
 async fn health_coincide_con_fixture() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelos STT/VAD (models/ gitignoreado)");
+        return;
+    }
     let (status, bytes) = send(get("/health")).await;
     assert_eq!(status, StatusCode::OK);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
@@ -121,6 +133,10 @@ async fn health_coincide_con_fixture() {
 
 #[tokio::test]
 async fn transcribe_coincide_con_fixture() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelos STT/VAD (models/ gitignoreado)");
+        return;
+    }
     // Payload `{}` (campo audio_b64 ausente) → rama de error de campo ausente
     // diseñada en la Tarea 5 (no un stub `transcription_pending`).
     let (status, bytes) = send(post_json("/transcribe", serde_json::json!({}))).await;
@@ -131,6 +147,10 @@ async fn transcribe_coincide_con_fixture() {
 
 #[tokio::test]
 async fn synthesize_texto_vacio_es_error_de_contrato() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelos STT/VAD (models/ gitignoreado)");
+        return;
+    }
     let (status, bytes) = send(post_json("/synthesize", serde_json::json!({ "text": "" }))).await;
     assert_eq!(status, StatusCode::OK);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
@@ -139,6 +159,10 @@ async fn synthesize_texto_vacio_es_error_de_contrato() {
 
 #[tokio::test]
 async fn synthesize_emite_stream_ndjson_de_contrato() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelos STT/VAD (models/ gitignoreado)");
+        return;
+    }
     let (status, bytes) = send(post_json(
         "/synthesize",
         serde_json::json!({ "text": "hola", "voice": "default" }),
@@ -199,6 +223,10 @@ async fn synthesize_emite_stream_ndjson_de_contrato() {
 
 #[tokio::test]
 async fn voices_respeta_el_contrato_de_envelope() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelos STT/VAD (models/ gitignoreado)");
+        return;
+    }
     // El contenido exacto depende del `data_dir` del usuario; se verifican los
     // invariantes de contrato en vez de una igualdad exacta.
     let (status, bytes) = send(get("/voices")).await;
@@ -220,6 +248,10 @@ async fn voices_respeta_el_contrato_de_envelope() {
 /// Se concatenan los 4 corpus (~22 s) en memoria — sin fixtures nuevas.
 #[tokio::test]
 async fn transcribe_audio_largo_vad_une_segmentos() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelos STT/VAD (models/ gitignoreado)");
+        return;
+    }
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
     let corpus = [
         "corpus_sintesis_16k.wav",
