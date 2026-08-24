@@ -163,3 +163,43 @@ robótico); (2) clonado e2e funcional en Windows (provisión del modelo Base).
 (UCRT/libm/OpenBLAS de MSYS2), la alternativa es adoptar el motor WSL como motor de producción
 (invocación vía `wsl.exe` desde el CLI Rust, como hace el benchmark) — decisión de arquitectura
 a plantear al usuario.
+
+---
+
+## Actualización 2026-08-24 — Gate híbrido formalizado, medido y veredicto
+
+El gate original de cierre (`mel-corr ≥ 0.98` build Windows vs render WSL) se redefinió como
+**criterio híbrido**, por tres motivos: (1) la degradación del gate F7 era del contrato de
+invocación del driver, ya corregido; (2) el propio `compare_audio.py` (líneas 9-12, 46-47)
+documenta que un build cross-ISA no es bit-idéntico y usa `--min-corr 0.95`; (3) con `temperature
+0.35` (muestreo estocástico) la comparación bit-a-bit pierde sentido. Nuevo criterio:
+
+| Id | Criterio | Rol | Resultado (corpus 3 frases ES, contrato producción) |
+|----|----------|-----|------|
+| **D** | mel-corr ≥ 0.95, temp 0 greedy, Windows vs WSL | Diagnóstico (no bloquea) | 🔴 **0.526 / 0.321 / 0.202** + drift de duración (s3: 6.0 s vs 12.2 s) → confirma la divergencia de build |
+| **C1** | WER ≤ 0.25 (contrato producción, Whisper GGUF) | Gate funcional | 🟢 golden `synthesize`/`say`/`voice_clone`/`dub` con Whisper real (4/4) |
+| **C2** | speaker-similarity ≥ 0.70 (x-vector del motor, centrado por cohorte) | Gate de timbre | 🟢 Windows **0.892 / 0.897 / 0.871**, indistinguible de WSL (0.888-0.904); techo otro-locutor ~0.50 |
+| **C3** | A/B ciega humana (Windows vs WSL) | Gate perceptual | ⚠️ **preferencia WSL 3/3**, suave, por prosodia; sin degradación/robótico en ninguno |
+
+**Hallazgo central:** la divergencia de build (D rojo) **no se traduce en pérdida de timbre**
+(C2 mide Windows ≈ WSL; C3 confirma que ninguno suena robótico). El modo de fallo del gate F7 no
+reaparece. Lo que queda es una **ventaja suave y consistente de prosodia de WSL** (firma
+perceptual residual de la misma divergencia numérica que mide D).
+
+**Métrica C2 (nueva):** `vendor/qwen3-tts/tests/speaker_similarity.py` + asset
+`speaker_cohort_mean.npy`. Extrae el x-vector 1024-d del speaker encoder del propio motor
+(`--xvector-only --save-voice .bin`) y compara referencia-vs-salida por cosine. Los x-vectors
+crudos no discriminan (mismo-locutor ~0.98 vs otro-locutor ~0.94, margen ~0.04); el centrado por
+la media de una cohorte de los 9 presets CustomVoice sube el margen a ~0.37 (umbral 0.70).
+
+**Veredicto (decisión del usuario, 2026-08-24):** Fase 5 **NO se cierra**. La preferencia
+consistente por WSL justifica **atacar la divergencia de build (H1-H3)** para igualar la prosodia
+nativa Windows a la de WSL antes de cerrar. El respaldo (adoptar el motor WSL) queda descartado
+por ahora: contradice el objetivo de motor nativo del plan de migración.
+
+**Nota de encoding (bug aparte, no del producto):** pasar texto con acentos/`ñ` como argumento de
+línea de comandos al `qwen_tts.exe` en Windows (Git Bash) produce mojibake (`�`). El corpus del
+banco se ASCII-izó para esquivarlo, lo que además eliminó la `ñ` (fonema distinto: mañana ≠
+manana). El **camino de producción no usa argv**: el driver envía el texto en el cuerpo JSON
+UTF-8 al residente HTTP, donde `ñ`/acentos sobreviven (los golden de WER pasan sobre español
+acentuado). El motor tokeniza `"Mañana"` (6 tokens de contenido) distinto de `"Manana"` (7).

@@ -190,10 +190,14 @@ frente a la resolución por defecto) + `num_threads_per_replica: hilos_disponibl
 
 ## Fase 5 — TTS nativo (Qwen3-TTS subprocess)
 
-**Estado:** ⚠️ **NO cerrada** — implementada y verificada funcionalmente, pero el gate de calidad
-(F7) **falló**: el build Windows del motor produce audio degradado (no conserva el timbre, robótico)
-frente al stack validado del benchmark (WSL gcc 15.2.0). Investigación abierta:
-`docs/reviews/2026-08-14-tts-calidad-fase5.md`.
+**Estado:** ⚠️ **NO cerrada** — implementada y verificada funcionalmente; gate de cierre
+formalizado como **criterio híbrido** y medido (2026-08-24). **C1** (WER ≤ 0.25) y **C2**
+(speaker-similarity Windows ≈ WSL) en verde; **D** (mel-corr ≥ 0.95 temp 0) en rojo pero
+**diagnóstico, no bloqueante** (0.20-0.53 → confirma la divergencia de build). En el **C3** (A/B
+ciega) el usuario prefirió WSL en los 3 pares por prosodia más natural, sin degradación ni pérdida
+de timbre en ninguno. **Veredicto (decisión del usuario):** no cerrar; **atacar la divergencia de
+build (H1-H3)** para igualar la prosodia nativa Windows antes de cerrar. Detalle y resultados:
+`docs/reviews/2026-08-14-tts-calidad-fase5.md` (§ «Actualización 2026-08-24»).
 
 `speech synthesize`, `say` y `dub` están integrados contra el motor Qwen3-TTS real por **servidor
 residente gestionado por el host** (`127.0.0.1:8766`, cuantización `--int4 -j 4`, healthcheck y
@@ -231,6 +235,8 @@ se reclama paridad de redondeo entre builds.
 | Golden TTS (`synthesize/say/dub/voice clone`) en el harness dorado | ✅ | `tests/cli_golden.rs` |
 | Watermark: verificado ausente + documentación ética | ✅ | `README.md`, `docs/CLI/commands/SPEECH.md` |
 | Inferencia del clonado (`.qvoice` real, e2e, Base provisionado en Windows) | ✅ | `crates/avi-tts/src/lib.rs`, `vendor/qwen3-tts/qwen3-tts-0.6b-base/` |
+| Gate híbrido de cierre (D/C1/C2/C3) formalizado y medido; métrica C2 speaker-similarity | ✅ | `vendor/qwen3-tts/tests/speaker_similarity.py`, `speaker_cohort_mean.npy` |
+| Cierre de calidad: bloqueado en la divergencia de build (prosodia WSL > Windows, H1-H3) | ⚠️ | `docs/reviews/2026-08-14-tts-calidad-fase5.md` |
 
 ---
 
@@ -366,6 +372,6 @@ El pipeline de empaquetado y la provisión de modelos nativa están operativos. 
 
 ## Próximos pasos
 
-1. **Fase 5:** el clonado de voz ya funciona end-to-end (modelo Base provisionado en `vendor/qwen3-tts/qwen3-tts-0.6b-base/`, golden `voice_clone_exito` con `.qvoice` real). Lo pendiente para **cerrar** la fase es el gate de calidad de audio del build Windows: la comparación mel-corr / bit-a-bit del build UCRT64 frente al WSL del benchmark sigue sin medirse (investigación abierta en `docs/reviews/2026-08-14-tts-calidad-fase5.md`). El ajuste `temperature 0.35` (commit `fe54b10`) es parte de este trabajo de estabilización de calidad.
+1. **Fase 5:** el clonado de voz ya funciona end-to-end (modelo Base provisionado en `vendor/qwen3-tts/qwen3-tts-0.6b-base/`, golden `voice_clone_exito` con `.qvoice` real). El gate de calidad se **redefinió a híbrido** (D diagnóstico + C1/C2/C3 de cierre) y se midió: **C1** (WER ≤ 0.25) y **C2** (speaker-similarity, timbre) en verde — el build Windows conserva el locutor —, mientras que **D** (mel-corr UCRT64 vs WSL en greedy) quedó en rojo diagnóstico (0.20–0.53) y **C3** (A/B ciega) mostró una preferencia perceptual leve por la prosodia del render WSL. La fase **no se cierra todavía**: el paso pendiente es la investigación de divergencia de build **H1–H3** (codegen AVX2/FMA, OpenBLAS, libm UCRT vs glibc) para acercar la prosodia nativa a la de WSL. Detalle y veredicto en `docs/reviews/2026-08-14-tts-calidad-fase5.md`. El ajuste `temperature 0.35` (commit `fe54b10`) es parte de este trabajo de estabilización de calidad.
 2. **Fase 6:** ✅ Completada. El daemon nativo cablea TTS/STT reales, warmup de `default`/`ryan`, streaming NDJSON y cliente HTTP CLI→daemon. Reality check validado en runtime (`/health`, `/synthesize` con `audio_b64` real; warmup forzado antes del bind). El único item pendiente es el reality-check manual end-to-end de `/transcribe` (limitado por quoting de heredoc en bash — registro de mejora para F8).
 3. **Fase 7:** CI multi-SO y retiro del código Python.

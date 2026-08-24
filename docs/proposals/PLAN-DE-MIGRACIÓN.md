@@ -609,7 +609,13 @@ traducción), y **al final** el TTS
   de Qwen (reference audio, ICL/x-vector, temperature, top-k/p, seed, rate); motor residente
   + warmup; **migrar el clonado** (timbre → `.qvoice`); portar el bypass de watermark y su
   documentación ética. En Windows usa el build nativo MinGW-w64/UCRT64 del motor (§2.4).
-- **Verificar (⚠️ pendiente de calidad — Fase 5 NO cerrada, gate F7 falló):** `speech synthesize/say/dub` integrados contra el motor real por
+- **Verificar (⚠️ pendiente de calidad — Fase 5 NO cerrada):** gate de cierre formalizado como
+  criterio híbrido y medido (2026-08-24): **C1** (WER ≤ 0.25) y **C2** (speaker-similarity Windows
+  ≈ WSL) verdes; **D** (mel-corr temp 0) rojo pero diagnóstico no bloqueante; **C3** (A/B ciega)
+  sin degradación pero con preferencia consistente por WSL en prosodia. Decisión del usuario: no
+  cerrar; **atacar la divergencia de build (H1-H3)** antes de cerrar (ver
+  `docs/reviews/2026-08-14-tts-calidad-fase5.md`). El fondo funcional ya está: `speech
+  synthesize/say/dub` integrados contra el motor real por
   **servidor residente** (`127.0.0.1:8766`, `--int4 -j 4 --stream`, healthcheck y shutdown limpio;
   fallback subprocess `--stdout`), con golden TTS de inferencia real en el harness dorado (suite
   `cargo test --all` 78/78). El parche A1 (`WSAStartup`, enmienda de la orquestación de la Fase 5)
