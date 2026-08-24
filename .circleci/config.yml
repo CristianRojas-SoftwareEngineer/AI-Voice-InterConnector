@@ -33,17 +33,17 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
-            - cargo-v1-{{ arch }}-
+            - cargo-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
+            - cargo-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-
       - restore_cache:
           keys:
-            - target-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
-            - target-v1-{{ arch }}-
+            - target-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
+            - target-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-
   cargo_save_registry:
     description: Guarda registry/git antes de compilar (un fallo de test no pierde descargas)
     steps:
       - save_cache:
-          key: cargo-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+          key: cargo-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
           paths:
             - ~/.cargo/registry
             - ~/.cargo/git
@@ -51,7 +51,7 @@ commands:
     description: Guarda target/ siempre (when always) — el parcial acelera el re-run
     steps:
       - save_cache:
-          key: target-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+          key: target-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
           paths:
             - target
           when: always
@@ -66,14 +66,17 @@ jobs:
     # así que re-correrla en ARM64 no aportaría señal (ver docs/BUILD.md §4).
     # Es la arquitectura más barata/rápida disponible.
     docker:
-      - image: cimg/rust:1.96.0 # TODO: pinnear por digest (ver parameters.rust_version)
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: medium
     steps:
       - checkout
       - run:
-          # libclang-dev es REQUISITO de bindgen (whisper-rs-sys): sin él el
-          # build-script muere con «Unable to find libclang» (pipeline #2).
-          # cmake compila whisper.cpp; pkg-config expone ALSA a cpal.
+          # libasound2-dev + pkg-config exponen ALSA a cpal (sí se compila en la
+          # suite). libclang-dev (bindgen/whisper-rs-sys) y cmake (whisper.cpp) ya
+          # NO se ejercitan con native-stt/native-translation off (la suite no
+          # compila C++); se conservan por simetría con coverage y con los build-*,
+          # que activan --features full. Contexto histórico: sin libclang-dev el
+          # build-script moría con «Unable to find libclang» (pipeline #2).
           name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
@@ -185,9 +188,11 @@ jobs:
             if ! command -v pkg-config >/dev/null 2>&1; then brew install pkg-config; fi
             cmake --version
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      # NOTA: sin libomp — avi-translation compila ct2rs con OPENMP_RUNTIME=NONE
-      # en macOS (features por target en su Cargo.toml): los runners con Apple
-      # clang no traen libomp y find_package(OpenMP REQUIRED) fallaba (#2/#4).
+      # NOTA: la suite featureless no compila ct2rs (native-translation off).
+      # Cuando sí se compila (build-darwin-arm64 con --features full),
+      # avi-translation usa OPENMP_RUNTIME=NONE en macOS (features por target en
+      # su Cargo.toml): los runners con Apple clang no traen libomp y
+      # find_package(OpenMP REQUIRED) fallaba (#2/#4).
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -213,13 +218,15 @@ jobs:
     # instrumentación no rompa la suite; el gate por módulo se añadirá con
     # `cargo llvm-cov --fail-under-lines` cuando se defina el umbral.
     docker:
-      - image: cimg/rust:1.96.0 # TODO: pinnear por digest
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: medium
     steps:
       - checkout
       - run:
-          # libclang-dev: requisito de bindgen (whisper-rs-sys), igual que en
-          # test-linux — llvm-cov compila la misma workspace.
+          # NOTA (R1): con native-stt/native-translation off por defecto,
+          # coverage compila la workspace SIN los stacks C++ (no aparece
+          # whisper-rs-sys/ct2rs); libclang-dev/cmake se conservan por simetría
+          # con test-linux y por si un futuro umbral corre coverage con features.
           name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
@@ -368,7 +375,7 @@ jobs:
           command: |
             Write-Host "[STEP] Compilar binario release (cargo build --release) - INICIO"
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            cargo build --release --verbose
+            cargo build --release --features full --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Compilar binario release (cargo build --release) - FIN"
       - run:
@@ -429,7 +436,7 @@ jobs:
     # ct2rs supera los 4 GB de `medium` (OOM silencioso). Simetría con
     # docs/BUILD.md §4 — `large` trae 4 vCPU de regalo no aprovechados.
     docker:
-      - image: cimg/rust:1.96.0 # TODO: pinnear por digest
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: large
     steps:
       - checkout
@@ -455,7 +462,7 @@ jobs:
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            cargo build --release --verbose
+            cargo build --release --features full --verbose
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
       - run:
           name: Smoke test del binario (version + voces de fábrica)
@@ -509,7 +516,7 @@ jobs:
     # Sin test-linux-arm64 (suite mockeada arch-independiente), el smoke
     # test de este build es el único gate del stack aarch64 (wheels nativas).
     docker:
-      - image: cimg/rust:1.96.0 # TODO: pinnear por digest
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: arm.medium
     steps:
       - checkout
@@ -535,7 +542,7 @@ jobs:
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            cargo build --release --verbose
+            cargo build --release --features full --verbose
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
       - run:
           # Gate de facto ARM64: no hay test-linux-arm64 (suite mockeada),
@@ -612,8 +619,10 @@ jobs:
             if ! command -v pkg-config >/dev/null 2>&1; then brew install pkg-config; fi
             cmake --version
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      # NOTA: sin libomp — ct2rs compila con OPENMP_RUNTIME=NONE en macOS
-      # (mismo fix por features que test-macos, pipelines #2/#4).
+      # NOTA: sin libomp — con --features full este build sí compila ct2rs, que
+      # usa OPENMP_RUNTIME=NONE en macOS (features por target en
+      # avi-translation/Cargo.toml): Apple clang no trae libomp y
+      # find_package(OpenMP REQUIRED) fallaba (#2/#4).
       - cargo_restore_caches
       - run:
           name: Precargar dependencias (cargo fetch)
@@ -629,7 +638,7 @@ jobs:
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
             source "$HOME/.cargo/env"
-            cargo build --release --verbose
+            cargo build --release --features full --verbose
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
       - run:
           name: Smoke test del binario (version + voces de fábrica)
