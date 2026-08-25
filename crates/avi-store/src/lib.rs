@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 /// Directorio base de datos del usuario (~/.ai-voice-interconnector)
 pub fn data_dir() -> PathBuf {
@@ -8,6 +8,12 @@ pub fn data_dir() -> PathBuf {
         .map(|d| d.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".ai-voice-interconnector"))
 }
+
+/// Voces de fábrica embebidas en el binario (paridad con `src/ai_voice_interconnector/voices/default/`).
+/// El binario Rust no distribuye los `.wav` por separado; se materializan en `ensure_initialized()`
+/// si faltan, preservando la voz `default` tras instalación limpia sin `src/` (12 MB extra en el binario).
+const DEFAULT_SPEECH_WAV: &[u8] = include_bytes!("../assets/default/speech-reference.wav");
+const DEFAULT_TIMBRE_WAV: &[u8] = include_bytes!("../assets/default/timbre-reference.wav");
 
 // ─── VoiceStore ──────────────────────────────────────────────────────
 
@@ -26,18 +32,32 @@ pub struct VoiceStore {
     base_dir: PathBuf,
 }
 
+impl Default for VoiceStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VoiceStore {
     pub fn new() -> Self {
         let base_dir = data_dir().join("voices");
         Self { base_dir }
     }
 
-    /// Asegura que el directorio base y la voz "default" existan
+    /// Asegura que el directorio base y la voz "default" existan, materializando
+    /// los `.wav` de fábrica embebidos si faltan (idempotente, no sobrescribe).
     pub fn ensure_initialized(&self) -> Result<()> {
         std::fs::create_dir_all(&self.base_dir)?;
         let default_dir = self.base_dir.join("default");
-        if !default_dir.exists() {
-            std::fs::create_dir_all(&default_dir)?;
+        std::fs::create_dir_all(&default_dir)?;
+        // Materializar voces de fábrica embebidas (paridad Python→Rust, precondición B1).
+        let speech_path = default_dir.join("speech-reference.wav");
+        if !speech_path.is_file() {
+            std::fs::write(&speech_path, DEFAULT_SPEECH_WAV)?;
+        }
+        let timbre_path = default_dir.join("timbre-reference.wav");
+        if !timbre_path.is_file() {
+            std::fs::write(&timbre_path, DEFAULT_TIMBRE_WAV)?;
         }
         Ok(())
     }
@@ -49,7 +69,11 @@ impl VoiceStore {
         for entry in std::fs::read_dir(&self.base_dir)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
-                let name = entry.file_name().to_string_lossy().to_string().to_lowercase();
+                let name = entry
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string()
+                    .to_lowercase();
                 let is_factory = name == "default";
                 let ref_path = self.find_reference(&name);
                 voices.push(VoiceEntry {
@@ -70,11 +94,20 @@ impl VoiceStore {
         if name.is_empty() {
             return Err("El nombre de la voz no puede estar vacío.".into());
         }
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
-            return Err(format!("El nombre de voz '{}' contiene caracteres no permitidos.", name));
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        {
+            return Err(format!(
+                "El nombre de voz '{}' contiene caracteres no permitidos.",
+                name
+            ));
         }
         if name.contains('/') || name.contains('\\') || name.contains("..") || name.contains('\0') {
-            return Err(format!("El nombre de voz '{}' contiene caracteres no permitidos.", name));
+            return Err(format!(
+                "El nombre de voz '{}' contiene caracteres no permitidos.",
+                name
+            ));
         }
         if name.len() > 64 {
             return Err("El nombre de la voz excede 64 caracteres.".into());
@@ -168,6 +201,12 @@ pub struct SpeechStore {
     base_dir: PathBuf,
 }
 
+impl Default for SpeechStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SpeechStore {
     pub fn new() -> Self {
         let base_dir = data_dir().join("speech");
@@ -223,7 +262,8 @@ impl SpeechStore {
 
     /// Ruta del WAV para una locución (voice/label normalizados)
     pub fn audio_path(&self, voice: &str, label: &str) -> PathBuf {
-        self.voice_dir(voice).join(format!("{}.wav", label.to_lowercase()))
+        self.voice_dir(voice)
+            .join(format!("{}.wav", label.to_lowercase()))
     }
 
     /// Buscar una locución por (voz, etiqueta)
@@ -250,7 +290,10 @@ impl SpeechStore {
         let wav = self.audio_path(voice, &label);
         let meta = self.voice_dir(voice).join(format!("{}.json", label));
         if !wav.is_file() && !meta.is_file() {
-            return Err(format!("La locución '{}' de la voz '{}' no existe.", label, voice));
+            return Err(format!(
+                "La locución '{}' de la voz '{}' no existe.",
+                label, voice
+            ));
         }
         if wav.is_file() {
             std::fs::remove_file(&wav).map_err(|e| e.to_string())?;
@@ -262,7 +305,13 @@ impl SpeechStore {
     }
 
     /// Guardar una locución (WAV ya escrito por el motor; solo guarda los metadatos)
-    pub fn save_metadata(&self, voice: &str, label: &str, text: &str, duration_secs: f64) -> Result<PathBuf> {
+    pub fn save_metadata(
+        &self,
+        voice: &str,
+        label: &str,
+        text: &str,
+        duration_secs: f64,
+    ) -> Result<PathBuf> {
         let voice = voice.to_lowercase();
         let label = label.to_lowercase();
         let dir = self.voice_dir(&voice);
@@ -325,10 +374,91 @@ pub struct ModelEntry {
     pub size_bytes: Option<u64>,
 }
 
+/// Pines de modelos: `(nombre_lógico, repo HF, revisión)`.
+/// La revisión es un **commit hash** de HuggingFace: mismo binario → mismos
+/// bytes (reproducibilidad); actualizar un pin es una acción deliberada y
+/// auditable en THIRD-PARTY-LICENSES.md.
+pub const MODEL_REVISIONS: &[(&str, &str, &str)] = &[
+    // Motor TTS Qwen3-TTS 0.6B CustomVoice (pesos safetensors BF16)
+    (
+        "qwen3-tts-0.6b",
+        "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        "85e237c12c027371202489a0ec509ded67b5e4b5",
+    ),
+    // Traducción es→en / en→es (Marian opus-mt convertido a CTranslate2)
+    (
+        "marian-es-en",
+        "Helsinki-NLP/opus-mt-es-en",
+        "c96e2c5399ebfae4fc43d9669556b9afa74bb69d",
+    ),
+    (
+        "marian-en-es",
+        "Helsinki-NLP/opus-mt-en-es",
+        "5bc4493d463cf000c1f0b50f8d56886a392ed4ab",
+    ),
+    // STT whisper.cpp GGUF q8_0 (solo los 2 ficheros necesarios: el repo
+    // completo del upstream trae TODOS los formatos/tamaños, decenas de GB)
+    (
+        "whisper-gguf",
+        "ggerganov/whisper.cpp",
+        "5359861c739e955e79d9a303bcbc70fb988958b1",
+    ),
+];
+
+/// Patrones de descarga por modelo (`snapshot_download` con `allow_patterns`).
+/// Vacío = snapshot completo (repos pequeños/cohesivos). Para `whisper-gguf`
+/// se acota al GGUF q8_0 medio + VAD Silero que usa el motor (`DEFAULT_WHISPER_MODEL_DIR`
+/// y la segmentación del daemon); sin esto se bajarían ~40 GB de formatos no usados.
+pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[(
+    "whisper-gguf",
+    &["ggml-medium-q8_0.bin", "ggml-silero-v5.1.2.bin"],
+)];
+
+/// Directorio raíz de la cache de HuggingFace — decisión de la aplicación, no
+/// del crate.
+///
+/// `hf-hub` 1.0 resuelve con fallback `HOME`→`/tmp` (hardcodeado), lo que en
+/// Windows produce `<unidad-del-cwd>:\tmp\.cache\huggingface\hub`: ubicación
+/// no-canónica, dependiente de la unidad y compartida entre usuarios. Aquí se
+/// decide localmente para que lectura (`is_provisioned`, cleanup/uninstall) y
+/// escritura (`ensure_downloaded`) usen SIEMPRE la misma ruta, determinista en
+/// los 4 targets:
+///
+/// 1. `HF_HUB_CACHE` (override explícito del usuario)
+/// 2. `HF_HOME/hub` (convención HF)
+/// 3. `{home}/.cache/huggingface/hub` — misma convención que `huggingface_hub`
+///    de Python en los tres SO, por lo que reutiliza modelos ya bajados por
+///    instalaciones previas.
+pub fn hf_cache_dir() -> PathBuf {
+    if let Ok(cache) = std::env::var("HF_HUB_CACHE") {
+        if !cache.is_empty() {
+            return PathBuf::from(cache);
+        }
+    }
+    if let Ok(home) = std::env::var("HF_HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home).join("hub");
+        }
+    }
+    let home = directories::UserDirs::new()
+        .map(|d| d.home_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".cache").join("huggingface").join("hub")
+}
+
 /// Almacén de modelos descargados.
-/// Layout en disco: <data_dir>/models/<nombre>/
+///
+/// Fuente de verdad: snapshots de HuggingFace en `hf_cache_dir()` con layout
+/// `models--<org>--<repo>/snapshots/<hash>/`. `data_dir()/models/<name>/manifest.json`
+/// queda como índice de compatibilidad (doctor/estado), no como almacenamiento.
 pub struct ModelStore {
     base_dir: PathBuf,
+}
+
+impl Default for ModelStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ModelStore {
@@ -342,24 +472,90 @@ impl ModelStore {
         Ok(())
     }
 
-    /// Verificar si un modelo está provisionado
-    pub fn is_provisioned(&self, model_name: &str) -> bool {
-        let manifest = self.base_dir.join(model_name).join("manifest.json");
-        if let Ok(content) = std::fs::read_to_string(&manifest) {
-            if let Ok(entry) = serde_json::from_str::<ModelEntry>(&content) {
-                return entry.status == ModelStatus::Ready;
-            }
-        }
-        false
+    /// Resolución del repo HF y revisión pinneada de un modelo lógico.
+    pub fn revision_of(model_name: &str) -> Option<(&'static str, &'static str)> {
+        MODEL_REVISIONS
+            .iter()
+            .find(|(name, _, _)| *name == model_name)
+            .map(|(_, repo, rev)| (*repo, *rev))
     }
 
-    /// Listar todos los modelos
+    /// Ruta del snapshot HF de un modelo.
+    ///
+    /// La revisión pinneada puede ser un ref (`main`) o un commit hash. hf-hub
+    /// materializa el snapshot bajo `snapshots/<commit-hash>` y deja la
+    /// resolución del ref en `refs/<revision>` (archivo con el hash). Aquí se
+    /// replica esa resolución: `snapshots/<rev>` directo si existe, si no se
+    /// lee `refs/<rev>`.
+    pub fn model_snapshot_path(&self, model_name: &str) -> Option<PathBuf> {
+        let (repo, rev) = ModelStore::revision_of(model_name)?;
+        let repo_dir = hf_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
+        let direct = repo_dir.join("snapshots").join(rev);
+        if direct.is_dir() {
+            return Some(direct);
+        }
+        // Resolver ref → commit hash (layout estándar de HF hub)
+        let ref_file = repo_dir.join("refs").join(rev);
+        if let Ok(hash) = std::fs::read_to_string(&ref_file) {
+            let hash = hash.trim();
+            if !hash.is_empty() {
+                let resolved = repo_dir.join("snapshots").join(hash);
+                if resolved.is_dir() {
+                    return Some(resolved);
+                }
+            }
+        }
+        Some(direct)
+    }
+
+    /// Verificar si un modelo está provisionado: snapshot HF presente y no vacío.
+    /// Si no hay pin para el nombre, cae al índice legacy `manifest.json`.
+    pub fn is_provisioned(&self, model_name: &str) -> bool {
+        match self.model_snapshot_path(model_name) {
+            Some(snapshot) => {
+                snapshot.is_dir()
+                    && std::fs::read_dir(&snapshot)
+                        .map(|mut d| d.next().is_some())
+                        .unwrap_or(false)
+            }
+            None => {
+                let manifest = self.base_dir.join(model_name).join("manifest.json");
+                if let Ok(content) = std::fs::read_to_string(&manifest) {
+                    if let Ok(entry) = serde_json::from_str::<ModelEntry>(&content) {
+                        return entry.status == ModelStatus::Ready;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    /// Listar todos los modelos conocidos (pines + cualquier índice legacy).
     pub fn list(&self) -> Result<Vec<ModelEntry>> {
         self.ensure_initialized()?;
         let mut entries = Vec::new();
+        for (name, repo, rev) in MODEL_REVISIONS {
+            let status = if self.is_provisioned(name) {
+                ModelStatus::Ready
+            } else {
+                ModelStatus::Missing
+            };
+            entries.push(ModelEntry {
+                name: name.to_string(),
+                revision: rev.to_string(),
+                status,
+                path: hf_cache_dir().join(format!("models--{}", repo.replace('/', "--"))),
+                size_bytes: None,
+            });
+        }
+        // Índices legacy sin pin (compatibilidad)
         for dir in std::fs::read_dir(&self.base_dir)? {
             let dir = dir?;
             if !dir.file_type()?.is_dir() {
+                continue;
+            }
+            let name = dir.file_name().to_string_lossy().to_string();
+            if ModelStore::revision_of(&name).is_some() {
                 continue;
             }
             let manifest = dir.path().join("manifest.json");
@@ -369,29 +565,21 @@ impl ModelStore {
                         entries.push(entry);
                     }
                 }
-            } else {
-                // Directorio sin manifiesto → modelo incompleto
-                entries.push(ModelEntry {
-                    name: dir.file_name().to_string_lossy().to_string(),
-                    revision: "unknown".to_string(),
-                    status: ModelStatus::Missing,
-                    path: dir.path(),
-                    size_bytes: None,
-                });
             }
         }
         Ok(entries)
     }
 
-    /// Directorio de un modelo
+    /// Directorio de un modelo: snapshot HF si hay pin, si no índice legacy.
     pub fn model_dir(&self, model_name: &str) -> PathBuf {
-        self.base_dir.join(model_name)
+        self.model_snapshot_path(model_name)
+            .unwrap_or_else(|| self.base_dir.join(model_name))
     }
 
     /// Registrar un modelo como provisionado escribiendo su manifest.json
     pub fn register_provisioned(&self, model_name: &str, revision: &str) -> Result<ModelEntry> {
         self.ensure_initialized()?;
-        let dir = self.model_dir(model_name);
+        let dir = self.base_dir.join(model_name);
         std::fs::create_dir_all(&dir)?;
 
         let entry = ModelEntry {
@@ -399,7 +587,7 @@ impl ModelStore {
             revision: revision.to_string(),
             status: ModelStatus::Ready,
             path: dir.clone(),
-            size_bytes: Some(0),
+            size_bytes: None,
         };
 
         let manifest_path = dir.join("manifest.json");
@@ -408,11 +596,197 @@ impl ModelStore {
 
         Ok(entry)
     }
+
+    /// Borrar el snapshot HF de un modelo (cleanup/uninstall).
+    pub fn remove_hf_snapshot(&self, model_name: &str) -> Result<bool> {
+        if let Some((repo, _)) = ModelStore::revision_of(model_name) {
+            let dir = hf_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
+            if dir.is_dir() {
+                std::fs::remove_dir_all(&dir)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Descarga nativa de un modelo pinneado vía HuggingFace Hub.
+    ///
+    /// Usa `hf-hub` (`snapshot_download` con revisión de `MODEL_REVISIONS`): cache
+    /// estándar en `hf_cache_dir()`, resume por Range, ETag/commit-hash y reintentos
+    /// del propio crate. La barra `indicatif` refleja archivos/bytes agregados vía
+    /// `ProgressHandler`. Idempotente: si el snapshot ya existe y no es
+    /// `force_download`, HF resuelve desde cache sin red. Compila igual en los 4
+    /// targets (rustls, sin OpenSSL nativo).
+    pub async fn ensure_downloaded(model_name: &str) -> Result<PathBuf> {
+        let (repo_id, revision) = ModelStore::revision_of(model_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Modelo desconocido (sin pin en MODEL_REVISIONS): {}",
+                model_name
+            )
+        })?;
+        let progress = indicatif_progress();
+        // Cache explícita: la resolución de la app (hf_cache_dir) manda sobre el
+        // fallback roto de hf-hub (HOME→/tmp); lectura y escritura convergen.
+        let client = hf_hub::HFClient::builder()
+            .cache_dir(hf_cache_dir())
+            .build()?;
+        let (owner, name) = hf_hub::split_id(repo_id);
+        let repo = client.model(owner, name);
+        // allow_patterns acota la descarga a los ficheros que el motor usa
+        // (crítico en repos multi-formato como ggerganov/whisper.cpp).
+        let patterns: Option<Vec<String>> = MODEL_FILE_PATTERNS
+            .iter()
+            .find(|(n, _)| *n == model_name)
+            .map(|(_, p)| p.iter().map(|s| s.to_string()).collect());
+        let snapshot = repo
+            .snapshot_download()
+            .maybe_revision(Some(revision.to_string()))
+            .maybe_allow_patterns(patterns)
+            .max_workers(4)
+            .progress(progress)
+            .send()
+            .await?;
+        tracing::info!(
+            "Snapshot {}@{} listo en {}",
+            repo_id,
+            revision,
+            snapshot.display()
+        );
+        Ok(snapshot)
+    }
+}
+
+/// Handler de progreso que puentea los eventos de `hf-hub` a una barra
+/// `indicatif` (bytes totales agregados; los eventos `Progress` son deltas
+/// por archivo y se acumulan por nombre de archivo).
+fn indicatif_progress() -> hf_hub::progress::Progress {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    struct BarHandler {
+        bar: indicatif::ProgressBar,
+        // Estado acumulado por archivo: los eventos Progress son deltas.
+        per_file: Mutex<HashMap<String, u64>>,
+        total_bytes: AtomicU64,
+    }
+
+    impl hf_hub::progress::ProgressHandler for BarHandler {
+        fn on_progress(&self, event: &hf_hub::progress::ProgressEvent) {
+            match event {
+                hf_hub::progress::ProgressEvent::Download(
+                    hf_hub::progress::DownloadEvent::Start { total_bytes, .. },
+                ) => {
+                    self.total_bytes.store(*total_bytes, Ordering::Relaxed);
+                    self.bar.set_length(*total_bytes);
+                }
+                hf_hub::progress::ProgressEvent::Download(
+                    hf_hub::progress::DownloadEvent::Progress { files },
+                ) => {
+                    let mut acc = 0u64;
+                    let mut map = self.per_file.lock().unwrap();
+                    for f in files {
+                        map.insert(f.filename.clone(), f.bytes_completed);
+                    }
+                    for v in map.values() {
+                        acc += *v;
+                    }
+                    drop(map);
+                    self.bar
+                        .set_position(acc.min(self.bar.length().unwrap_or(u64::MAX)));
+                }
+                hf_hub::progress::ProgressEvent::Download(
+                    hf_hub::progress::DownloadEvent::AggregateProgress {
+                        bytes_completed,
+                        total_bytes,
+                        ..
+                    },
+                ) => {
+                    // Lote xet: totales agregados del lote en curso.
+                    if self.total_bytes.load(Ordering::Relaxed) == 0 && *total_bytes > 0 {
+                        self.bar.set_length(*total_bytes);
+                    }
+                    let pos = (*bytes_completed).min(self.bar.length().unwrap_or(u64::MAX));
+                    self.bar.set_position(pos);
+                }
+                hf_hub::progress::ProgressEvent::Download(
+                    hf_hub::progress::DownloadEvent::Complete,
+                ) => {
+                    self.bar.finish_with_message("descarga completa");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let bar = indicatif::ProgressBar::new(0);
+    bar.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] {bar:30.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec} eta:{eta}")
+            .unwrap(),
+    );
+    hf_hub::progress::Progress::new(BarHandler {
+        bar,
+        per_file: Mutex::new(HashMap::new()),
+        total_bytes: AtomicU64::new(0),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serializa los tests que manipulan variables de entorno (estado global
+    /// del proceso): `cargo test` los corre en paralelo y sin lock se pisan.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// T-descargador: `hf_cache_dir()` honra `HF_HUB_CACHE`, luego `HF_HOME/hub`,
+    /// y cae en `{home}/.cache/huggingface/hub` — nunca en `/tmp`.
+    #[test]
+    fn hf_cache_dir_precedencia_env_y_fallback() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let hf_hub_cache = std::env::var("HF_HUB_CACHE").ok();
+        let hf_home = std::env::var("HF_HOME").ok();
+        let xdg = std::env::var("XDG_CACHE_HOME").ok();
+
+        // 1. HF_HUB_CACHE tiene precedencia máxima
+        std::env::set_var("HF_HUB_CACHE", r"C:\cache_custom\hub");
+        std::env::remove_var("HF_HOME");
+        assert_eq!(hf_cache_dir(), PathBuf::from(r"C:\cache_custom\hub"));
+
+        // 2. Sin HF_HUB_CACHE, HF_HOME/hub
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::set_var("HF_HOME", "/hf_home_custom");
+        assert_eq!(hf_cache_dir(), PathBuf::from("/hf_home_custom").join("hub"));
+
+        // 3. Fallback: home/.cache/huggingface/hub (nunca /tmp)
+        std::env::remove_var("HF_HOME");
+        let dir = hf_cache_dir();
+        let dir_str = dir.to_string_lossy().to_lowercase();
+        assert!(
+            dir_str.ends_with(r"\.cache\huggingface\hub")
+                || dir_str.ends_with("/.cache/huggingface/hub"),
+            "el fallback debe ser {{home}}/.cache/huggingface/hub, fue: {dir_str}"
+        );
+        assert!(
+            !dir_str.contains("\\tmp\\"),
+            "no debe caer en /tmp: {dir_str}"
+        );
+
+        // Restaurar estado env original
+        match hf_hub_cache {
+            Some(v) => std::env::set_var("HF_HUB_CACHE", v),
+            None => std::env::remove_var("HF_HUB_CACHE"),
+        }
+        match hf_home {
+            Some(v) => std::env::set_var("HF_HOME", v),
+            None => std::env::remove_var("HF_HOME"),
+        }
+        if let Some(v) = xdg {
+            std::env::set_var("XDG_CACHE_HOME", v);
+        }
+    }
 
     fn wav_minimo() -> Vec<u8> {
         let spec = hound::WavSpec {
@@ -431,11 +805,8 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "avi_store_test_{}_{}",
-            tag,
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("avi_store_test_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -450,8 +821,14 @@ mod tests {
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, wav_minimo()).unwrap();
 
-        let saved = speech.save("VIVIAN", "SaludoDePrueba", "Hola", &wav_src).unwrap();
-        let rel = saved.strip_prefix(dir.join("speech")).unwrap().to_string_lossy().to_string();
+        let saved = speech
+            .save("VIVIAN", "SaludoDePrueba", "Hola", &wav_src)
+            .unwrap();
+        let rel = saved
+            .strip_prefix(dir.join("speech"))
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         assert_eq!(rel.replace('\\', "/"), "vivian/saludodeprueba.wav");
 
         assert!(speech.find("vivian", "saludodeprueba").is_some());
@@ -469,9 +846,17 @@ mod tests {
         let vdir = voices.voice_dir("MiVoz");
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("reference.qvoice"), b"QVCE").unwrap();
-        assert!(voices.exists("MIVOZ"), "exists debe normalizar a minúsculas");
+        assert!(
+            voices.exists("MIVOZ"),
+            "exists debe normalizar a minúsculas"
+        );
         assert_eq!(
-            voices.find_reference("MIVOZ").unwrap().file_name().unwrap().to_string_lossy(),
+            voices
+                .find_reference("MIVOZ")
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
             "reference.qvoice"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -487,7 +872,9 @@ mod tests {
 
         let path = speech.save("ryan", "saludo", "Hola", &wav_src).unwrap();
         assert!(path.is_file());
-        let entry = speech.find("ryan", "saludo").expect("la locución debe existir");
+        let entry = speech
+            .find("ryan", "saludo")
+            .expect("la locución debe existir");
         assert_eq!(entry.metadata.text, "Hola");
         // 1 muestra a 24 kHz → 1/24000 s
         assert!((entry.metadata.duration_secs - 1.0 / 24_000.0).abs() < 1e-9);
@@ -517,7 +904,10 @@ mod tests {
     #[test]
     fn validate_name_regex_oraculo() {
         assert!(VoiceStore::validate_name("Mi_Voz-2").is_ok());
-        assert!(VoiceStore::validate_name("mi voz").is_err(), "espacios fuera del regex");
+        assert!(
+            VoiceStore::validate_name("mi voz").is_err(),
+            "espacios fuera del regex"
+        );
         assert!(VoiceStore::validate_name("mi@voz").is_err());
         assert!(VoiceStore::validate_name("").is_err());
         assert!(VoiceStore::validate_name("a/b").is_err());
@@ -545,8 +935,55 @@ mod tests {
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("speech-reference.wav"), b"RIFF").unwrap();
         assert_eq!(
-            voices.find_reference("OTRA").unwrap().file_name().unwrap().to_string_lossy(),
+            voices
+                .find_reference("OTRA")
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
             "speech-reference.wav"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T1-bloqueante: `ensure_initialized` materializa las voces de fábrica embebidas
+    /// si faltan y es idempotente (no trunca si ya existen).
+    #[test]
+    fn ensure_initialized_materializa_default_wavs() {
+        let dir = temp_dir("factory");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        voices.ensure_initialized().unwrap();
+        let speech = voices.voice_dir("default").join("speech-reference.wav");
+        let timbre = voices.voice_dir("default").join("timbre-reference.wav");
+        assert!(speech.is_file(), "speech-reference.wav debe materializarse");
+        assert!(timbre.is_file(), "timbre-reference.wav debe materializarse");
+        assert!(
+            speech.metadata().unwrap().len() > 1000,
+            "speech wav no vacío"
+        );
+        assert!(
+            timbre.metadata().unwrap().len() > 1000,
+            "timbre wav no vacío"
+        );
+        // Idempotencia: segunda inicialización no trunca ficheros existentes
+        std::fs::write(&speech, b"CUSTOM").unwrap();
+        voices.ensure_initialized().unwrap();
+        assert_eq!(
+            speech.metadata().unwrap().len(),
+            6,
+            "no debe sobrescribir wav existente"
+        );
+        // Verificar que `list` sigue viendo default y find_reference funciona
+        assert!(voices.exists("default"));
+        assert!(voices.find_reference("default").is_some());
+        // Si faltaba uno, lo recrea sin tocar el otro
+        std::fs::remove_file(&timbre).unwrap();
+        voices.ensure_initialized().unwrap();
+        assert!(timbre.is_file(), "timbre recreado si faltaba");
+        assert_eq!(
+            std::fs::read(&speech).unwrap(),
+            b"CUSTOM",
+            "speech custom preservado"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

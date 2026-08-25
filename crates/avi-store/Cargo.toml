@@ -10,3 +10,10 @@ serde_json = "1.0"
 directories = "5.0"
 chrono = { version = "0.4", features = ["serde"] }
 hound = "3"
+# Descargador nativo de modelos HF (plan descargador-nativo): cache en
+# ~/.cache/huggingface/hub, resume por Range, ETag; rustls evita OpenSSL nativo
+# (compila igual en Windows x64, Linux x64/arm64 y macOS arm64).
+hf-hub = { version = "1.0", default-features = false, features = ["rustls-tls"] }
+indicatif = "0.17"
+tokio = { version = "1.35", features = ["rt", "macros"] }
+tracing = "0.1"
