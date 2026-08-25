@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.10.7 — 2026-08-24](#0107--2026-08-24)
 - [0.10.6 — 2026-08-24](#0106--2026-08-24)
 - [0.10.5 — 2026-08-11](#0105--2026-08-11)
 - [0.10.4 — 2026-08-10](#0104--2026-08-10)
@@ -33,6 +34,43 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.10.7] — 2026-08-24
+
+Optimización de la infraestructura de CI (CircleCI). No hay cambios de contrato
+ni de comportamiento del CLI ni del binario distribuido: los `build-*` siguen
+compilando con `--features full` y el gating de los engines nativos es idéntico.
+Los artefactos son funcionalmente idénticos a 0.10.6.
+
+### Cambiado
+
+- **Clave de caché `target` discriminada por variante de feature set**
+  (`test`/`full`/`cov`): la clave `target-v1-…` codificaba arquitectura,
+  toolchain y `Cargo.lock`, pero no el feature set, de modo que los jobs
+  featureless (`test-linux`, `coverage`) y los `build-*` con `--features full`
+  colisionaban en amd64 sobre una clave inmutable (first-write-wins). El job
+  featureless ganaba la carrera y dejaba un `target/` sin C++ que obligaba al
+  build a recompilar ~275 crates y los tres stacks C++ desde cero (pipeline #15:
+  `build-linux-x64` 17m26s, `build-windows-x64` 38m56s vs `build-linux-arm64`
+  1m20s). Cada familia de job restaura y guarda ahora su propia clave, y de paso
+  el `target/llvm-cov-target` de `coverage` persiste bajo clave propia (antes
+  nunca se cacheaba). La clave de registry (`cargo-v1-…`) permanece sin variante.
+- **`sccache` como `RUSTC_WRAPPER` con directorio cacheado por arquitectura**:
+  los objetos Rust se reutilizan por contenido entre corridas y variantes,
+  sobreviviendo a bumps de `Cargo.lock` que invalidan `target/`. Envuelve
+  `rustc`, no las builds CMake de whisper.cpp/CTranslate2; `sccache --show-stats`
+  deja el hit-rate visible en el log. `CARGO_INCREMENTAL=0` acompaña al wrapper.
+- **Caché de toolchain (`~/.rustup`, `~/.cargo/bin`)**: los executors
+  Windows/macOS dejan de reinstalar el toolchain con rustup-init en cada corrida
+  y `coverage` restaura `cargo-llvm-cov` en vez de recompilarlo desde fuente.
+
+### Añadido
+
+- **Workflow `branch-checks` de feedback temprano en rama**: un job `lint`
+  (`cargo fmt --check` + `cargo clippy` sin features) y `test-linux` corren en
+  pushes de rama, rompiendo el anti-patrón por el que el contrato tags-only
+  difería todo el feedback al momento de etiquetar. El workflow `build-all`
+  permanece tags-only e intacto como única puerta del release.
 
 ## [0.10.6] — 2026-08-24
 
