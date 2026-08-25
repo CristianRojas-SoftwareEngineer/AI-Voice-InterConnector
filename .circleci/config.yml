@@ -320,8 +320,11 @@ jobs:
             else
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
             fi
-            echo 'source "$HOME/.cargo/env"' >> $BASH_ENV
-            source "$HOME/.cargo/env"
+            # No sourcear ~/.cargo/env: no está en la caché de toolchain
+            # (solo ~/.rustup y ~/.cargo/bin), así que en caché tibia no existe.
+            # El env de rustup solo antepone ~/.cargo/bin al PATH; lo hacemos directo.
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> $BASH_ENV
+            export PATH="$HOME/.cargo/bin:$PATH"
             cargo --version
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
@@ -345,7 +348,7 @@ jobs:
           name: Precargar dependencias (cargo fetch)
           command: |
             echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            source "$HOME/.cargo/env"
+            export PATH="$HOME/.cargo/bin:$PATH"
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
@@ -355,7 +358,7 @@ jobs:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
-            source "$HOME/.cargo/env"
+            export PATH="$HOME/.cargo/bin:$PATH"
             cargo test --all --verbose
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
       - run:
@@ -863,8 +866,11 @@ jobs:
             else
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
             fi
-            echo 'source "$HOME/.cargo/env"' >> $BASH_ENV
-            source "$HOME/.cargo/env"
+            # No sourcear ~/.cargo/env: no está en la caché de toolchain
+            # (solo ~/.rustup y ~/.cargo/bin), así que en caché tibia no existe.
+            # El env de rustup solo antepone ~/.cargo/bin al PATH; lo hacemos directo.
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> $BASH_ENV
+            export PATH="$HOME/.cargo/bin:$PATH"
             cargo --version
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
@@ -887,7 +893,7 @@ jobs:
           name: Precargar dependencias (cargo fetch)
           command: |
             echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            source "$HOME/.cargo/env"
+            export PATH="$HOME/.cargo/bin:$PATH"
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
@@ -898,19 +904,19 @@ jobs:
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            source "$HOME/.cargo/env"
+            export PATH="$HOME/.cargo/bin:$PATH"
             cargo build --release --features full --verbose
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: |
-            source "$HOME/.cargo/env"
+            export PATH="$HOME/.cargo/bin:$PATH"
             sccache --show-stats
       - run:
           name: Smoke test del binario (version + voces de fábrica)
           command: |
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
-            source "$HOME/.cargo/env"
+            export PATH="$HOME/.cargo/bin:$PATH"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
             # Valida la voz de fábrica 'default' (runner limpio: voice list
