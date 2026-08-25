@@ -1,5 +1,7 @@
 # Pipeline CircleCI Tier 1 — Rust nativo 3 SO (Linux/Windows/macOS)
 # Triple puerta `cargo test --all` + `coverage` como gate de los 4 builds nativos.
+# Dos workflows: `build-all` (release, SOLO en tags v*) y `branch-checks`
+# (gates ligeros fmt/clippy/test featureless en cada push de rama, R5).
 # Artefactos: binarios Rust versionados vía `persist_to_workspace` → `publish-release`.
 # Pines reproducibles: `rust_version` + digest de `cimg/rust` (ver §Reproducibilidad).
 # Ver docs/BUILD.md §4 para arquitectura completa y docs/proposals/progress.md:340-346 para Fase 7.
@@ -30,6 +32,14 @@ parameters:
 commands:
   cargo_restore_caches:
     description: Restaura caché de registry/git y de target/ (con fallback parcial)
+    # `variant` discrimina el feature set del target/ (test featureless, full con
+    # C++, cov instrumentado): sin él, jobs de distinta variante colisionan en una
+    # clave inmutable (first-write-wins) y se envenenan mutuamente. El registry
+    # (cargo-v1-…) NO lleva variante: es independiente del feature set.
+    parameters:
+      variant:
+        type: string
+        default: "test"
     steps:
       - restore_cache:
           keys:
@@ -37,8 +47,8 @@ commands:
             - cargo-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-
       - restore_cache:
           keys:
-            - target-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
-            - target-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-
+            - target-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock" }}
+            - target-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-
   cargo_save_registry:
     description: Guarda registry/git antes de compilar (un fallo de test no pierde descargas)
     steps:
@@ -49,12 +59,112 @@ commands:
             - ~/.cargo/git
   cargo_save_target:
     description: Guarda target/ siempre (when always) — el parcial acelera el re-run
+    # `variant` debe coincidir con el pasado a cargo_restore_caches en el mismo job.
+    parameters:
+      variant:
+        type: string
+        default: "test"
     steps:
       - save_cache:
-          key: target-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
+          key: target-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock" }}
           paths:
             - target
           when: always
+
+  # Caché de toolchain (R3): ~/.rustup (toolchain + componentes) y ~/.cargo/bin
+  # (binarios instalados: rustup, cargo, cargo-llvm-cov). Clave sin checksum —
+  # solo depende de arch + rust_version — así que es inmutable y se reconstruye
+  # al bumpear rust_version. Evita rustup-init (Win/macOS) y el `cargo install
+  # cargo-llvm-cov --locked` (coverage) en cada corrida.
+  toolchain_restore_cache:
+    description: Restaura ~/.rustup y ~/.cargo/bin por arch + rust_version
+    steps:
+      - restore_cache:
+          keys:
+            - toolchain-v1-{{ arch }}-<< pipeline.parameters.rust_version >>
+  toolchain_save_cache:
+    description: Guarda ~/.rustup y ~/.cargo/bin (clave inmutable por arch + rust_version)
+    steps:
+      - save_cache:
+          key: toolchain-v1-{{ arch }}-<< pipeline.parameters.rust_version >>
+          paths:
+            - ~/.rustup
+            - ~/.cargo/bin
+
+  # sccache (R2): envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
+  # hash de contenido en ~/.cache/sccache. Reutiliza artefactos entre corridas y
+  # entre variantes (test/full/cov), sobreviviendo a bumps de Cargo.lock que
+  # invalidan target/. NO acelera los builds CMake de whisper.cpp/CTranslate2
+  # (sccache no envuelve el C++), solo la parte Rust. Clave de caché rolling:
+  # guarda con {{ epoch }} (siempre escribe) y restaura por prefijo (último
+  # estado del mismo arch+toolchain).
+  sccache_restore_cache:
+    description: Restaura el directorio de sccache (rolling, fallback por prefijo)
+    steps:
+      - restore_cache:
+          keys:
+            - sccache-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-
+  sccache_save_cache:
+    description: Guarda el directorio de sccache (clave rolling con epoch)
+    steps:
+      - save_cache:
+          key: sccache-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ epoch }}
+          paths:
+            - ~/.cache/sccache
+          when: always
+  sccache_setup_unix:
+    description: Instala sccache (pin) y lo activa como RUSTC_WRAPPER (bash)
+    steps:
+      - run:
+          name: Configurar sccache (RUSTC_WRAPPER)
+          command: |
+            echo "[STEP] Configurar sccache - INICIO"
+            SCCACHE_VERSION="0.8.2"
+            if ! command -v sccache >/dev/null 2>&1; then
+              case "$(uname -m)" in
+                x86_64|amd64) SCCACHE_ARCH="x86_64" ;;
+                aarch64|arm64) SCCACHE_ARCH="aarch64" ;;
+                *) echo "arch no soportada por sccache: $(uname -m)" >&2; exit 1 ;;
+              esac
+              case "$(uname -s)" in
+                Linux) SCCACHE_TRIPLE="${SCCACHE_ARCH}-unknown-linux-musl" ;;
+                Darwin) SCCACHE_TRIPLE="${SCCACHE_ARCH}-apple-darwin" ;;
+                *) echo "SO no soportado por sccache: $(uname -s)" >&2; exit 1 ;;
+              esac
+              SCCACHE_PKG="sccache-v${SCCACHE_VERSION}-${SCCACHE_TRIPLE}"
+              curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_PKG}.tar.gz" -o /tmp/sccache.tar.gz
+              tar -xzf /tmp/sccache.tar.gz -C /tmp
+              sudo install -m 755 "/tmp/${SCCACHE_PKG}/sccache" /usr/local/bin/sccache
+            fi
+            # Persistir env a $BASH_ENV para los steps de compilación siguientes.
+            # CARGO_INCREMENTAL=0: sccache no cachea con compilación incremental.
+            echo 'export RUSTC_WRAPPER=sccache' >> "$BASH_ENV"
+            echo 'export SCCACHE_DIR=$HOME/.cache/sccache' >> "$BASH_ENV"
+            echo 'export CARGO_INCREMENTAL=0' >> "$BASH_ENV"
+            sccache --version
+            echo "[STEP] Configurar sccache - FIN"
+  sccache_setup_windows:
+    description: Instala sccache (pin) como RUSTC_WRAPPER (PowerShell)
+    steps:
+      - run:
+          name: Configurar sccache (RUSTC_WRAPPER)
+          command: |
+            Write-Host "[STEP] Configurar sccache - INICIO"
+            $ErrorActionPreference = "Stop"
+            $SccacheVersion = "0.8.2"
+            $Pkg = "sccache-v$SccacheVersion-x86_64-pc-windows-msvc"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # sccache.exe en ~/.cargo/bin (en PATH). PowerShell no tiene $BASH_ENV:
+            # los steps de compilación exportan RUSTC_WRAPPER/SCCACHE_DIR inline.
+            $Dest = "$env:USERPROFILE\.cargo\bin\sccache.exe"
+            if (-not (Test-Path $Dest)) {
+              Invoke-WebRequest -Uri "https://github.com/mozilla/sccache/releases/download/v$SccacheVersion/$Pkg.tar.gz" -OutFile "$env:TEMP\sccache.tar.gz"
+              tar -xzf "$env:TEMP\sccache.tar.gz" -C "$env:TEMP"
+              Copy-Item "$env:TEMP\$Pkg\sccache.exe" $Dest -Force
+            }
+            & $Dest --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "[STEP] Configurar sccache - FIN"
 
 jobs:
   # ──────────────────────────────────────────────────────────────
@@ -101,13 +211,19 @@ jobs:
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
+      - sccache_restore_cache
+      - sccache_setup_unix
       - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
             cargo test --all --verbose
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: sccache --show-stats
       - cargo_save_target
+      - sccache_save_cache
 
   test-windows:
     # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
@@ -116,29 +232,36 @@ jobs:
     executor: win/server-2022
     steps:
       - checkout
+      - toolchain_restore_cache
       - run:
           name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
           command: |
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
             $ErrorActionPreference = "Stop"
             $RustVersion = "<< pipeline.parameters.rust_version >>"
-            # rustup-init estático oficial (pin exacto, no choco): reproducible
-            # e independiente del repo de Chocolatey; choco podría servir una
-            # versión distinta sin cambio en el repo. Invoke-WebRequest no
-            # setea $LASTEXITCODE: con ErrorActionPreference=Stop un fallo de
-            # descarga lanza y aborta el step.
-            Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
-            .\rustup-init.exe -y --default-toolchain $RustVersion --profile minimal --no-modify-path
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             # Prefijo de PATH SOLO para este step: los steps posteriores que
             # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
             # equivalente de $BASH_ENV).
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # Idempotente (R3): si la caché de toolchain ya trae cargo, no
+            # re-ejecutar rustup-init (ahorra ~2-3 min por corrida). rustup-init
+            # estático oficial (pin exacto, no choco): reproducible e
+            # independiente del repo de Chocolatey. Invoke-WebRequest no setea
+            # $LASTEXITCODE: con ErrorActionPreference=Stop un fallo de descarga
+            # lanza y aborta el step.
+            if (Get-Command cargo -ErrorAction SilentlyContinue) {
+              Write-Host "Toolchain restaurado de caché; se omite rustup-init"
+            } else {
+              Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+              .\rustup-init.exe -y --default-toolchain $RustVersion --profile minimal --no-modify-path
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
             cargo --version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             rustc --version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
+      - toolchain_save_cache
       - cargo_restore_caches
       - run:
           name: Precargar dependencias (cargo fetch)
@@ -149,15 +272,23 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
+      - sccache_restore_cache
+      - sccache_setup_windows
       - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
+            $env:RUSTC_WRAPPER = "sccache"
+            $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
+            $env:CARGO_INCREMENTAL = "0"
             cargo test --all --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            sccache --show-stats
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
       - cargo_save_target
+      - sccache_save_cache
 
   test-macos:
     # Suite Rust en macOS nativo (Apple Silicon, Xcode 26.4.0). Valida código
@@ -168,16 +299,24 @@ jobs:
     resource_class: m4pro.medium
     steps:
       - checkout
+      - toolchain_restore_cache
       - run:
           name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
           command: |
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
+            # Idempotente (R3): si la caché de toolchain ya trae rustup, se omite
+            # la instalación (ahorra ~2-3 min por corrida).
+            if [ -x "$HOME/.cargo/bin/rustup" ]; then
+              echo "Toolchain restaurado de caché; se omite rustup-init"
+            else
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
+            fi
             echo 'source "$HOME/.cargo/env"' >> $BASH_ENV
             source "$HOME/.cargo/env"
             cargo --version
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
+      - toolchain_save_cache
       - cargo_restore_caches
       - run:
           name: Instalar dependencias de sistema (cmake, pkg-config)
@@ -201,6 +340,8 @@ jobs:
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
+      - sccache_restore_cache
+      - sccache_setup_unix
       - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
@@ -208,7 +349,11 @@ jobs:
             source "$HOME/.cargo/env"
             cargo test --all --verbose
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: sccache --show-stats
       - cargo_save_target
+      - sccache_save_cache
 
   coverage:
     # Job de cobertura Rust (cargo-llvm-cov, LLVM instrumentation). Corre solo
@@ -233,6 +378,73 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
+      - cargo_restore_caches:
+          variant: cov
+      - run:
+          name: Precargar dependencias (cargo fetch)
+          command: |
+            echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
+            cargo fetch --locked
+            echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
+      - cargo_save_registry
+      - toolchain_restore_cache
+      - run:
+          name: Instalar cargo-llvm-cov
+          command: |
+            echo "[STEP] Instalar cargo-llvm-cov - INICIO"
+            rustup component add llvm-tools-preview
+            # Idempotente: si la caché de toolchain ya trae el binario, no
+            # recompilar desde fuente (ahorra ~2-4 min por corrida).
+            if command -v cargo-llvm-cov >/dev/null 2>&1; then
+              echo "cargo-llvm-cov restaurado de caché; se omite cargo install"
+            else
+              cargo install cargo-llvm-cov --locked
+            fi
+            cargo llvm-cov --version
+            echo "[STEP] Instalar cargo-llvm-cov - FIN"
+      - toolchain_save_cache
+      - sccache_restore_cache
+      - sccache_setup_unix
+      - run:
+          name: Ejecutar suite con cobertura (cargo llvm-cov)
+          command: |
+            echo "[STEP] Ejecutar suite con cobertura - INICIO"
+            # Genera lcov.info y resumen por líneas; falla si no hay tests
+            cargo llvm-cov --workspace --lcov --output-path lcov.info --verbose
+            cargo llvm-cov --workspace --summary-only
+            echo "[STEP] Ejecutar suite con cobertura - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: sccache --show-stats
+      - store_artifacts:
+          path: lcov.info
+          destination: coverage-lcov
+      - cargo_save_target:
+          variant: cov
+      - sccache_save_cache
+
+  # ──────────────────────────────────────────────────────────────
+  # Gate ligero de rama (R5) — fmt + clippy featureless (~1-2 min sin C++)
+  # ──────────────────────────────────────────────────────────────
+  lint:
+    # Señal temprana en cada push de rama (workflow branch-checks): formato y
+    # lint sin --features full (no compila C++). NO participa del release
+    # tags-only (build-all), que sigue siendo la única puerta en tags v*.
+    # Reutiliza la caché featureless (variante test por defecto) sin colisionar
+    # con los build-* (variante full).
+    docker:
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          # libasound2-dev + pkg-config: cpal se compila al chequear con clippy.
+          name: Instalar dependencias de sistema (libasound2-dev, pkg-config)
+          command: |
+            echo "[STEP] Instalar dependencias de sistema - INICIO"
+            sudo apt-get update
+            sudo apt-get install -y libasound2-dev pkg-config
+            echo "[STEP] Instalar dependencias de sistema - FIN"
       - cargo_restore_caches
       - run:
           name: Precargar dependencias (cargo fetch)
@@ -242,25 +454,17 @@ jobs:
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
       - run:
-          name: Instalar cargo-llvm-cov
+          name: Verificar formato (cargo fmt --all --check)
           command: |
-            echo "[STEP] Instalar cargo-llvm-cov - INICIO"
-            rustup component add llvm-tools-preview
-            cargo install cargo-llvm-cov --locked
-            cargo llvm-cov --version
-            echo "[STEP] Instalar cargo-llvm-cov - FIN"
+            echo "[STEP] Verificar formato - INICIO"
+            cargo fmt --all --check
+            echo "[STEP] Verificar formato - FIN"
       - run:
-          name: Ejecutar suite con cobertura (cargo llvm-cov)
+          name: Lint (cargo clippy --all-targets)
           command: |
-            echo "[STEP] Ejecutar suite con cobertura - INICIO"
-            # Genera lcov.info y resumen por líneas; falla si no hay tests
-            cargo llvm-cov --workspace --lcov --output-path lcov.info --verbose
-            cargo llvm-cov --workspace --summary-only
-            echo "[STEP] Ejecutar suite con cobertura - FIN"
-      - store_artifacts:
-          path: lcov.info
-          destination: coverage-lcov
-      - cargo_save_target
+            echo "[STEP] Lint (cargo clippy --all-targets) - INICIO"
+            cargo clippy --all-targets
+            echo "[STEP] Lint (cargo clippy --all-targets) - FIN"
 
   # ──────────────────────────────────────────────────────────────
   # Smoke tests de instaladores de una línea (mock por PATH, sin red)
@@ -343,23 +547,32 @@ jobs:
     executor: win/server-2022
     steps:
       - checkout
+      - toolchain_restore_cache
       - run:
           name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
           command: |
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
             $ErrorActionPreference = "Stop"
             $RustVersion = "<< pipeline.parameters.rust_version >>"
-            Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
-            .\rustup-init.exe -y --default-toolchain $RustVersion --profile minimal --no-modify-path
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             # Prefijo de PATH SOLO para este step: los steps posteriores que
             # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
             # equivalente de $BASH_ENV).
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # Idempotente (R3): si la caché de toolchain ya trae cargo, se omite
+            # rustup-init (ahorra ~2-3 min por corrida).
+            if (Get-Command cargo -ErrorAction SilentlyContinue) {
+              Write-Host "Toolchain restaurado de caché; se omite rustup-init"
+            } else {
+              Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+              .\rustup-init.exe -y --default-toolchain $RustVersion --profile minimal --no-modify-path
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
             cargo --version
             rustc --version
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
-      - cargo_restore_caches
+      - toolchain_save_cache
+      - cargo_restore_caches:
+          variant: full
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -369,14 +582,21 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
+      - sccache_restore_cache
+      - sccache_setup_windows
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
             Write-Host "[STEP] Compilar binario release (cargo build --release) - INICIO"
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
+            $env:RUSTC_WRAPPER = "sccache"
+            $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
+            $env:CARGO_INCREMENTAL = "0"
             cargo build --release --features full --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            sccache --show-stats
             Write-Host "[STEP] Compilar binario release (cargo build --release) - FIN"
       - run:
           name: Smoke test del binario (version + voces de fábrica)
@@ -397,7 +617,9 @@ jobs:
             if (-not ($voiceList | Where-Object { $_ -like '  - default*' })) { throw "La voz de fábrica 'default' no está registrada" }
             Write-Host "Binario Windows OK: version + voice list"
             Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - FIN"
-      - cargo_save_target
+      - cargo_save_target:
+          variant: full
+      - sccache_save_cache
       - run:
           # Nombre del artefacto con la versión REAL del CLI: la fuente de
           # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
@@ -449,7 +671,8 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev patchelf
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches
+      - cargo_restore_caches:
+          variant: full
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -457,6 +680,8 @@ jobs:
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
+      - sccache_restore_cache
+      - sccache_setup_unix
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -464,6 +689,9 @@ jobs:
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
             cargo build --release --features full --verbose
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: sccache --show-stats
       - run:
           name: Smoke test del binario (version + voces de fábrica)
           command: |
@@ -476,7 +704,9 @@ jobs:
             target/release/ai-voice-interconnector voice list | grep -q '^  - default'
             echo "Binario Linux x64 OK: version + voice list"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
-      - cargo_save_target
+      - cargo_save_target:
+          variant: full
+      - sccache_save_cache
       - run:
           # Nombre del artefacto con la versión REAL del CLI: la fuente de
           # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
@@ -529,7 +759,8 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev patchelf
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches
+      - cargo_restore_caches:
+          variant: full
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -537,6 +768,8 @@ jobs:
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
+      - sccache_restore_cache
+      - sccache_setup_unix
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -544,6 +777,9 @@ jobs:
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
             cargo build --release --features full --verbose
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: sccache --show-stats
       - run:
           # Gate de facto ARM64: no hay test-linux-arm64 (suite mockeada),
           # así que este smoke test es la única validación del stack aarch64.
@@ -558,7 +794,9 @@ jobs:
             target/release/ai-voice-interconnector voice list | grep -q '^  - default'
             echo "Binario Linux ARM64 OK: version + voice list"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
-      - cargo_save_target
+      - cargo_save_target:
+          variant: full
+      - sccache_save_cache
       - run:
           # Nombre del artefacto con la versión REAL del CLI: la fuente de
           # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
@@ -600,17 +838,25 @@ jobs:
     resource_class: m4pro.medium
     steps:
       - checkout
+      - toolchain_restore_cache
       - run:
           name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
           no_output_timeout: 10m
           command: |
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
+            # Idempotente (R3): si la caché de toolchain ya trae rustup, se omite
+            # la instalación (ahorra ~2-3 min por corrida).
+            if [ -x "$HOME/.cargo/bin/rustup" ]; then
+              echo "Toolchain restaurado de caché; se omite rustup-init"
+            else
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
+            fi
             echo 'source "$HOME/.cargo/env"' >> $BASH_ENV
             source "$HOME/.cargo/env"
             cargo --version
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
+      - toolchain_save_cache
       - run:
           name: Instalar dependencias de sistema (cmake, pkg-config)
           command: |
@@ -623,7 +869,8 @@ jobs:
       # usa OPENMP_RUNTIME=NONE en macOS (features por target en
       # avi-translation/Cargo.toml): Apple clang no trae libomp y
       # find_package(OpenMP REQUIRED) fallaba (#2/#4).
-      - cargo_restore_caches
+      - cargo_restore_caches:
+          variant: full
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -632,6 +879,8 @@ jobs:
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
+      - sccache_restore_cache
+      - sccache_setup_unix
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -640,6 +889,11 @@ jobs:
             source "$HOME/.cargo/env"
             cargo build --release --features full --verbose
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: |
+            source "$HOME/.cargo/env"
+            sccache --show-stats
       - run:
           name: Smoke test del binario (version + voces de fábrica)
           command: |
@@ -653,7 +907,9 @@ jobs:
             target/release/ai-voice-interconnector voice list | grep -q '^  - default'
             echo "Binario macOS ARM64 OK: version + voice list"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
-      - cargo_save_target
+      - cargo_save_target:
+          variant: full
+      - sccache_save_cache
       - run:
           # Nombre del artefacto con la versión REAL del CLI: la fuente de
           # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
@@ -899,14 +1155,29 @@ jobs:
             echo "[STEP] Publicar en PyPI (twine upload) - FIN"
 
 workflows:
+  # Gates ligeros en cada push de rama (R5): fmt/clippy (job lint) y la suite
+  # featureless (test-linux) dan señal temprana SIN disparar el release. Este
+  # workflow complementa build-all; no lo modifica ni comparte disparadores
+  # (branch-checks corre en ramas; build-all solo en tags v*).
+  branch-checks:
+    jobs:
+      - lint:
+          filters:
+            tags:
+              ignore: /.*/
+      - test-linux:
+          filters:
+            tags:
+              ignore: /.*/
+
   build-all:
     # CircleCI NO ejecuta un job en un tag salvo que el job Y todas sus
     # dependencias declaren `filters.tags`; por eso el filtro `v*` se propaga
     # por toda la cadena (gates Rust/instaladores → builds → publish-*).
-    # Todos los jobs declaran además `branches: ignore /.*/`: el pipeline
-    # completo corre SOLO en tags `v*`, nunca en pushes de rama (contrato del
-    # pipeline Python legacy preservado; validación local previa al tag vía
-    # docs/BUILD.md).
+    # Todos los jobs declaran además `branches: ignore /.*/`: este workflow de
+    # release corre SOLO en tags `v*`, nunca en pushes de rama. El feedback en
+    # rama lo cubre el workflow `branch-checks` (fmt/clippy/test featureless);
+    # la validación completa previa al tag sigue en docs/BUILD.md.
     jobs:
       # ── Gates Rust (triple puerta) + cobertura + instaladores ──
       # Los 4 builds requieren estos 7 gates verdes en la misma pipeline.

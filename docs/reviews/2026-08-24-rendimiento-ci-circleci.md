@@ -6,8 +6,8 @@ verdes en el pipeline #10) pero **no cumplía el objetivo de tiempo**: la iterac
 exigió 5 ciclos de push para descubrir fallos básicos de entorno, y el coste por corrida era de
 decenas de minutos por plataforma. El job que aún fallaba, `coverage` (timeout silencioso en el
 recompile instrumentado; ver P2/P3), se ataca de raíz con R1: con `native-stt`/`native-translation`
-off por defecto, test y coverage ya no compilan C++. **R1/R6/R7 quedan implementadas en este
-cambio** (validación end-to-end en CI pendiente del próximo tag); ver la Instrucción de cierre.
+off por defecto, test y coverage ya no compilan C++. **R1–R7 quedan implementadas** (queda solo
+R8; validación end-to-end en CI pendiente del próximo tag); ver la Instrucción de cierre.
 **Autor:** Sesión interactiva de implementación CI (`bc895d7` → `386b095`).
 
 ---
@@ -83,6 +83,20 @@ aparte).
   contiene `llvm-cov-target`. Resultado: **cada corrida recompila la workspace instrumentada
   completa desde cero**, incluidos los sys-crates nativos (`whisper-rs-sys`, `onednn-src`, `ct2rs`
   vía CMake). En #10 el step murió aún compilando, sin correr un solo test ni emitir `lcov.info`.
+- **Envenenamiento de la clave `target` por feature set (regresión de R1, no vista en #10):**
+  al volver `whisper-rs`/`ct2rs` opcionales (R1), los jobs featureless (`test-linux`, `coverage`)
+  y los `build-*` con `--features full` que comparten arquitectura (amd64) pasaron a colisionar
+  en una única clave `target-v1-{arch}-{rust}-{Cargo.lock}` que **no codifica el feature set**.
+  Como las claves de CircleCI son inmutables (first-write-wins), el job featureless rápido gana
+  la carrera y persiste un `target/` sin C++; el `build-*` restaura ese estado y **recompila
+  todo desde cero** (los 3 stacks C++ incluidos). Evidencia del pipeline #15: `build-linux-x64`
+  17m26s y `build-windows-x64` 38m56s recompilando **~275 crates**, frente a `build-linux-arm64`
+  en **1m20s** con solo ~20 crates —la única arquitectura sin gemelo featureless que envenene su
+  clave (los orígenes de caché confirman la carrera: job 73 `test-linux` vs job 82
+  `build-linux-arm64`)—. Es un defecto introducido por el propio feature-gating y no capturado
+  en la cronología #2–#10. **Corregido** añadiendo un discriminante de variante
+  (`test`/`full`/`cov`) a la clave `target`: cada familia restaura/guarda la suya y deja de
+  colisionar; el mismo cambio resuelve de raíz el caso `llvm-cov-target` (variante `cov`, R4).
 - **Toolchains sin cachear:** `~/.rustup` (rustup-init en Win/macOS, ~2–3 min) y
   `~/.cargo/bin` (`cargo install cargo-llvm-cov --locked`, ~2–4 min compilando desde fuente)
   se reinstalan en cada job.
@@ -116,15 +130,17 @@ aparte).
 | # | Recomendación | Impacto esperado | Esfuerzo |
 |---|---|---|---|
 | R1 | **Feature-gate de engines pesados**: mover `whisper-rs` y `ct2rs` a features opcionales (p. ej. `native-stt`/`native-translation`) o deps target-específicas ya probadas; los jobs de test corren `cargo test --all` sin features → sin C++, sin bindgen, sin CMake | test jobs de ~8–40 min → **~1–2 min frío** en los 3 SO | Medio (toca Cargo.toml de avi-stt/avi-translation y cfgs) |
-| R2 | **sccache** como wrapper de `rustc` con disco cacheado por arch (restaurable vía cache CircleCI) | elimina la mayor parte del re-trabajo cruzado debug/release/instrumentada y entre runs | Bajo-Medio |
-| R3 | **Cachear toolchain**: `~/.rustup` + `~/.cargo/bin` con clave `rust_version+arch` (y sumar `rust_version` a las claves existentes al bump) | −4 a −6 min por job Win/macOS | Bajo |
-| R4 | **Decidir cobertura**: (a) cachear `target/llvm-cov-target` **con clave propia** (`target-cov-v1-…`, no compartida con test-linux), (b) compartirla con tests aceptando reinstrumentación, o (c) diferir el job hasta definir umbral (`--fail-under-lines`). Hoy cuesta >10 min sin gate | coverage de ∞/timeout → determinista | Bajo (decisión) |
-| R5 | **Gates ligeros en rama** (fmt, clippy, `cargo check/test` sin features pesadas) + matriz completa solo en tags | feedback temprano; rompe el anti-patrón de descubrir entornos al liberar | Medio |
+| R2 ✅ | **sccache** como wrapper de `rustc` con disco cacheado por arch (restaurable vía cache CircleCI). **Implementada**: `RUSTC_WRAPPER=sccache` + `SCCACHE_DIR` cacheado por arch (clave rolling con `epoch`), `sccache --show-stats` tras compilar; `CARGO_INCREMENTAL=0` requerido | elimina la mayor parte del re-trabajo cruzado debug/release/instrumentada y entre runs | Bajo-Medio |
+| R3 ✅ | **Cachear toolchain**: `~/.rustup` + `~/.cargo/bin` con clave `rust_version+arch`. **Implementada**: comandos `toolchain_restore/save_cache` (clave `toolchain-v1-{arch}-{rust}`) alrededor de rustup-init (Win/macOS) y del `cargo install cargo-llvm-cov` (idempotente) | −4 a −6 min por job Win/macOS | Bajo |
+| R4 ✅ | **Decidir cobertura**: cachear `target/llvm-cov-target` **con clave propia**. **Resuelta** por el discriminante de variante de R2-target: `coverage` usa `target-…-cov-…`, ya no comparte clave con `test-linux` y persiste su `llvm-cov-target` | coverage de ∞/timeout → determinista | Bajo (decisión) |
+| R5 ✅ | **Gates ligeros en rama** (fmt, clippy, `cargo test` sin features pesadas) + matriz completa solo en tags. **Implementada**: job `lint` (fmt + clippy featureless) + workflow `branch-checks` (con `test-linux`) filtrado a ramas; `build-all` sigue tags-only intacto | feedback temprano; rompe el anti-patrón de descubrir entornos al liberar | Medio |
 | R6 | **Auto-cancel** de workflows obsoletos (Project Settings → Advanced → cancel redundant workflows, o API) | evita matrices solapadas quemando créditos | Trivial |
 | R7 | Pin **digest de cimg/rust** y procedimiento de bump documentado (ya esbozado en parameters) | reproducibilidad | Trivial |
 | R8 | Medio plazo: **binarios prebuilt/vendored** de whisper.cpp y CTranslate2 por plataforma (o crates alternativos con build precompilado) | elimina el coste C++ de raíz incluso en builds release | Alto |
 
 Secuencia sugerida: R6+R7 (inmediato) → R1 (mayor palanca, habilita R5) → R3+R4 → R2 → R8.
+Estado: R1–R7 implementadas; **queda solo R8** (binarios prebuilt/vendored de whisper.cpp y
+CTranslate2), de esfuerzo alto y fuera del alcance de la optimización de caché.
 
 ## Lecciones cristalizadas
 
@@ -139,13 +155,17 @@ Secuencia sugerida: R6+R7 (inmediato) → R1 (mayor palanca, habilita R5) → R3
 
 ---
 
-Instrucción de cierre: **R1/R6/R7 implementadas** (este cambio). R1: `whisper-rs`/`ct2rs`
+Instrucción de cierre: **R1–R7 implementadas**. R1: `whisper-rs`/`ct2rs`
 opcionales tras `native-stt`/`native-translation` (off por defecto) → test y coverage compilan la
 workspace sin C++; los 4 `build-*` activan `--features full` para no distribuir un binario sin
 motores. R6: auto-cancel de workflows redundantes activado en el panel del proyecto. R7: digest de
-`cimg/rust` pinneado en sus 4 referencias y `rust_version` añadido a las claves de caché. Validación
-end-to-end en CI pendiente del próximo tag. Pendientes: R4 (clave propia para
-`target/llvm-cov-target`), R2/R3/R5/R8.
+`cimg/rust` pinneado en sus 4 referencias y `rust_version` añadido a las claves de caché.
+**R2/R3/R4/R5 implementadas en este cambio** (además de resolver el envenenamiento de la clave
+`target` por feature set, ver P2): R2 `sccache` como `RUSTC_WRAPPER` con directorio cacheado por
+arch; R3 caché de toolchain + `cargo-llvm-cov` idempotente; R4 resuelta por el discriminante de
+variante (`cov`) que da a `coverage` clave `target` propia; R5 job `lint` + workflow
+`branch-checks` en ramas sin tocar el release tags-only. Validación end-to-end en CI pendiente del
+próximo tag. **Pendiente: solo R8** (binarios prebuilt/vendored de whisper.cpp/CTranslate2).
 
 **Actualización #10:** test-windows completó su primera corrida verde (28m27s) con caché
 persistido; la palanca crítica era `coverage`, ahora atacada de raíz por R1.
