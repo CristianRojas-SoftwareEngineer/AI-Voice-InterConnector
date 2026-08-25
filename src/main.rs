@@ -8,7 +8,7 @@ use avi_core::exit_codes::{CliError, ExitCode};
 use avi_core::json_emitter::emit_raw_json;
 use avi_daemon as daemon;
 use avi_store as store;
-use avi_store::{VoiceStore, SpeechStore, ModelStore};
+use avi_store::{ModelStore, SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_stt::Ct2SttEngine;
 use avi_tts::{Qwen3TtsEngine, TtsEngine};
@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::io::IsTerminal;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::exit;
 
 const VERSION: &str = "0.10.7";
@@ -122,8 +123,21 @@ enum Commands {
         #[arg(long)]
         with_stt: bool,
     },
-    /// Limpia modelos/caché
-    Cleanup,
+    /// Limpia modelos/caché (usa --all para desinstalación completa)
+    Cleanup {
+        /// Elimina también binario y PATH (desinstalación completa, alias de `uninstall`)
+        #[arg(long)]
+        all: bool,
+    },
+    /// Desinstala el programa (datos + binario + PATH) en un comando
+    Uninstall {
+        /// No pedir confirmación
+        #[arg(long, short)]
+        force: bool,
+        /// Alias de --force
+        #[arg(long)]
+        yes: bool,
+    },
     /// Diagnóstico de entorno
     Doctor,
 }
@@ -291,9 +305,16 @@ async fn main() {
         Some(Commands::Speech { action }) => handle_speech(json_mode, daemon_mode, action).await,
         Some(Commands::Daemon { action }) => handle_daemon(json_mode, action).await,
         Some(Commands::Setup { language, with_stt }) => {
-            handle_setup(json_mode, &language, with_stt)
+            handle_setup(json_mode, &language, with_stt).await
         }
-        Some(Commands::Cleanup) => handle_cleanup(json_mode),
+        Some(Commands::Cleanup { all }) => {
+            if all {
+                handle_uninstall(json_mode, true)
+            } else {
+                handle_cleanup(json_mode)
+            }
+        }
+        Some(Commands::Uninstall { force, yes }) => handle_uninstall(json_mode, force || yes),
         Some(Commands::Doctor) => handle_doctor(json_mode),
         None => handle_version(json_mode),
     };
@@ -323,9 +344,8 @@ fn handle_version(json_mode: bool) -> Result<(), CliError> {
 }
 
 fn handle_devices(json_mode: bool) -> Result<(), CliError> {
-    let devices = audio::get_devices_json().map_err(|e| {
-        CliError::new(ExitCode::Error, "audio_enumeration_failed", e.to_string())
-    })?;
+    let devices = audio::get_devices_json()
+        .map_err(|e| CliError::new(ExitCode::Error, "audio_enumeration_failed", e.to_string()))?;
     if json_mode {
         emit_raw_json(json!({ "devices": devices }));
     } else {
@@ -342,7 +362,13 @@ fn handle_devices(json_mode: bool) -> Result<(), CliError> {
     Ok(())
 }
 
-fn handle_translate(json_mode: bool, daemon_mode: DaemonMode, text: &str, from: &str, to: &str) -> Result<(), CliError> {
+fn handle_translate(
+    json_mode: bool,
+    daemon_mode: DaemonMode,
+    text: &str,
+    from: &str,
+    to: &str,
+) -> Result<(), CliError> {
     // T7: el daemon nativo aún no expone /translate (el contrato NDJSON de esta
     // fase cubre solo synthesize/transcribe). En ForceDaemon se rechaza con
     // DaemonUnreachable; en Auto/ForceDirect se ejecuta local, preservando el
@@ -382,7 +408,10 @@ fn handle_translate(json_mode: bool, daemon_mode: DaemonMode, text: &str, from: 
             return Err(CliError::new(
                 ExitCode::InvalidInput,
                 "unsupported_language_pair",
-                format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source, target),
+                format!(
+                    "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
+                    source, target
+                ),
             ));
         }
     };
@@ -391,7 +420,10 @@ fn handle_translate(json_mode: bool, daemon_mode: DaemonMode, text: &str, from: 
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
-            format!("El modelo de traducción no está provisionado en '{}'.", model_dir),
+            format!(
+                "El modelo de traducción no está provisionado en '{}'.",
+                model_dir
+            ),
         ));
     }
     // Compilado sin soporte de traducción (feature off): rama de error explícita;
@@ -408,7 +440,11 @@ fn handle_translate(json_mode: bool, daemon_mode: DaemonMode, text: &str, from: 
     #[cfg(feature = "native-translation")]
     {
         let translated = translation::translate(text, source, target, model_dir).map_err(|e| {
-            CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
+            CliError::new(
+                ExitCode::TranslationFailed,
+                "translation_failed",
+                e.to_string(),
+            )
         })?;
         if json_mode {
             emit_raw_json(json!({ "translated": translated, "source": from, "target": to }));
@@ -426,9 +462,9 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
 
     match action {
         VoiceCommands::List => {
-            let voices = voice_store.list().map_err(|e| {
-                CliError::new(ExitCode::Error, "voice_list_failed", e.to_string())
-            })?;
+            let voices = voice_store
+                .list()
+                .map_err(|e| CliError::new(ExitCode::Error, "voice_list_failed", e.to_string()))?;
             if json_mode {
                 let names: Vec<&str> = voices.iter().map(|v| v.name.as_str()).collect();
                 emit_raw_json(json!({ "voices": names }));
@@ -450,9 +486,8 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
             // Orden de validaciones del oráculo (cli.py:841-899).
             require_model_provisioned()?;
             let name = name.to_lowercase();
-            VoiceStore::validate_name(&name).map_err(|e| {
-                CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e)
-            })?;
+            VoiceStore::validate_name(&name)
+                .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
             let speech_path = std::path::Path::new(&speech_reference);
             if !speech_path.is_file() {
                 return Err(CliError::new(
@@ -474,7 +509,10 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
                 return Err(CliError::new(
                     ExitCode::StateConflict,
                     "voice_exists",
-                    format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name),
+                    format!(
+                        "La voz '{}' ya existe (usa --force para sobrescribirla).",
+                        name
+                    ),
                 ));
             }
 
@@ -487,9 +525,8 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
                 )
             })?;
             let tmp_qvoice = std::env::temp_dir().join(format!("{}.qvoice", name));
-            avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name, "es").map_err(|e| {
-                CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string())
-            })?;
+            avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name, "es")
+                .map_err(|e| CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()))?;
             let saved_qvoice = voice_store
                 .save_reference(&name, &tmp_qvoice)
                 .map_err(|e| CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()))?;
@@ -520,9 +557,8 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
             Ok(())
         }
         VoiceCommands::Remove { name } => {
-            VoiceStore::validate_name(&name).map_err(|e| {
-                CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e)
-            })?;
+            VoiceStore::validate_name(&name)
+                .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
             voice_store.remove(&name).map_err(|e| {
                 if name == "default" {
                     CliError::new(ExitCode::InvalidInput, "cannot_remove_default", e)
@@ -542,26 +578,33 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
 
 // ─── Speech ──────────────────────────────────────────────────────────
 
-async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechCommands) -> Result<(), CliError> {
+async fn handle_speech(
+    json_mode: bool,
+    daemon_mode: DaemonMode,
+    action: SpeechCommands,
+) -> Result<(), CliError> {
     let speech_store = SpeechStore::new();
 
     match action {
         SpeechCommands::List => {
             // Listado de locuciones: local-only; el daemon no expone GET /speech.
             require_local(daemon_mode)?;
-            let items = speech_store.list().map_err(|e| {
-                CliError::new(ExitCode::Error, "speech_list_failed", e.to_string())
-            })?;
+            let items = speech_store
+                .list()
+                .map_err(|e| CliError::new(ExitCode::Error, "speech_list_failed", e.to_string()))?;
             if json_mode {
-                let entries: Vec<serde_json::Value> = items.iter().map(|e| {
-                    json!({
-                        "label": e.metadata.label,
-                        "voice": e.metadata.voice,
-                        "text": e.metadata.text,
-                        "created_at": e.metadata.created_at,
-                        "duration_secs": e.metadata.duration_secs,
+                let entries: Vec<serde_json::Value> = items
+                    .iter()
+                    .map(|e| {
+                        json!({
+                            "label": e.metadata.label,
+                            "voice": e.metadata.voice,
+                            "text": e.metadata.text,
+                            "created_at": e.metadata.created_at,
+                            "duration_secs": e.metadata.duration_secs,
+                        })
                     })
-                }).collect();
+                    .collect();
                 emit_raw_json(json!({ "speech": entries }));
             } else {
                 println!("Habla sintética albergada:");
@@ -569,15 +612,24 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                     println!("  (ninguna locución guardada)");
                 } else {
                     for e in &items {
-                        println!("  - [{}] {} ({:.1}s) — «{}»",
-                            e.metadata.voice, e.metadata.label,
-                            e.metadata.duration_secs, e.metadata.text);
+                        println!(
+                            "  - [{}] {} ({:.1}s) — «{}»",
+                            e.metadata.voice,
+                            e.metadata.label,
+                            e.metadata.duration_secs,
+                            e.metadata.text
+                        );
                     }
                 }
             }
             Ok(())
         }
-        SpeechCommands::Transcribe { audio, mic, duration, source_language } => {
+        SpeechCommands::Transcribe {
+            audio,
+            mic,
+            duration,
+            source_language,
+        } => {
             // Validación de argumentos: --audio/--mic mutuamente excluyentes, uno
             // requerido; --duration solo válido con --mic.
             if audio.is_none() && !mic {
@@ -603,7 +655,12 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             let client = daemon_client();
             if route_to_daemon(daemon_mode, &client).await {
                 return transcribe_via_daemon(
-                    json_mode, &client, audio.as_deref(), mic, duration, &source_language,
+                    json_mode,
+                    &client,
+                    audio.as_deref(),
+                    mic,
+                    duration,
+                    &source_language,
                 )
                 .await;
             }
@@ -634,20 +691,38 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                     audio::AudioService::new()
                         .capture_16k_mono_pcm(duration.expect("validado arriba"))
                         .map_err(|e| {
-                            CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                            CliError::new(
+                                ExitCode::TranscriptionFailed,
+                                "transcription_error",
+                                e.to_string(),
+                            )
                         })?
                 } else {
-                    avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
-                        CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
-                    })?
+                    avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(
+                        |e| {
+                            CliError::new(
+                                ExitCode::TranscriptionFailed,
+                                "transcription_error",
+                                e.to_string(),
+                            )
+                        },
+                    )?
                 };
 
                 let engine = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
-                    CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                    CliError::new(
+                        ExitCode::TranscriptionFailed,
+                        "transcription_error",
+                        e.to_string(),
+                    )
                 })?;
                 let language = resolve_stt_language(&source_language);
                 let text = engine.transcribe(&pcm, Some(language)).map_err(|e| {
-                    CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                    CliError::new(
+                        ExitCode::TranscriptionFailed,
+                        "transcription_error",
+                        e.to_string(),
+                    )
                 })?;
 
                 if json_mode {
@@ -658,7 +733,14 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                 Ok(())
             }
         }
-        SpeechCommands::Synthesize { text, voice, output, label, force, play } => {
+        SpeechCommands::Synthesize {
+            text,
+            voice,
+            output,
+            label,
+            force,
+            play,
+        } => {
             // Orden de validaciones del oráculo (cli.py:659-667).
             if text.trim().is_empty() {
                 return Err(CliError::new(
@@ -671,10 +753,9 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             // T7 — dispatch 3 modos (Synthesize es delegable al daemon).
             let client = daemon_client();
             if route_to_daemon(daemon_mode, &client).await {
-                let saved = synthesize_via_daemon(
-                    &client, &text, &voice, &label, force, play, &output,
-                )
-                .await?;
+                let saved =
+                    synthesize_via_daemon(&client, &text, &voice, &label, force, play, &output)
+                        .await?;
                 if json_mode {
                     emit_raw_json(json!({
                         "status": "success",
@@ -703,15 +784,18 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                 return Err(CliError::new(
                     ExitCode::StateConflict,
                     "label_exists",
-                    format!("Ya existe una locución con la etiqueta '{}' (usa --force).", label),
+                    format!(
+                        "Ya existe una locución con la etiqueta '{}' (usa --force).",
+                        label
+                    ),
                 ));
             }
 
             let tmp_wav = std::env::temp_dir().join(format!("avi_tts_{}.wav", label));
             let engine = Qwen3TtsEngine::new(None);
-            engine.synthesize(&text, &voice, Some(&tmp_wav)).map_err(|e| {
-                CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
-            })?;
+            engine
+                .synthesize(&text, &voice, Some(&tmp_wav))
+                .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
             if play {
                 audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
                     CliError::new(
@@ -766,9 +850,9 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             }
             let tmp_wav = std::env::temp_dir().join(format!("avi_say_{}.wav", std::process::id()));
             let engine = Qwen3TtsEngine::new(None);
-            engine.synthesize(&text, &voice, Some(&tmp_wav)).map_err(|e| {
-                CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
-            })?;
+            engine
+                .synthesize(&text, &voice, Some(&tmp_wav))
+                .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
             // Divergencia 5 corregida: `say` reproduce de verdad.
             audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
                 CliError::new(
@@ -788,7 +872,14 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             }
             Ok(())
         }
-        SpeechCommands::Dub { audio, mic, duration, voice, from, to } => {
+        SpeechCommands::Dub {
+            audio,
+            mic,
+            duration,
+            voice,
+            from,
+            to,
+        } => {
             // Doblaje es un pipeline compuesto (transcribe→traduce→sintetiza) que
             // el daemon no expone como ruta única; se mantiene local-only.
             // T7: ForceDaemon → DaemonUnreachable (ruta no delegable).
@@ -845,20 +936,38 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                     audio::AudioService::new()
                         .capture_16k_mono_pcm(duration.expect("validado arriba"))
                         .map_err(|e| {
-                            CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                            CliError::new(
+                                ExitCode::TranscriptionFailed,
+                                "transcription_error",
+                                e.to_string(),
+                            )
                         })?
                 } else {
-                    avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
-                        CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
-                    })?
+                    avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(
+                        |e| {
+                            CliError::new(
+                                ExitCode::TranscriptionFailed,
+                                "transcription_error",
+                                e.to_string(),
+                            )
+                        },
+                    )?
                 };
                 let stt = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
-                    CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                    CliError::new(
+                        ExitCode::TranscriptionFailed,
+                        "transcription_error",
+                        e.to_string(),
+                    )
                 })?;
                 let transcribed = stt
                     .transcribe(&pcm, Some(resolve_stt_language(&from)))
                     .map_err(|e| {
-                        CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                        CliError::new(
+                            ExitCode::TranscriptionFailed,
+                            "transcription_error",
+                            e.to_string(),
+                        )
                     })?;
                 if transcribed.trim().is_empty() {
                     return Err(CliError::new(
@@ -881,7 +990,10 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                             return Err(CliError::new(
                                 ExitCode::InvalidInput,
                                 "unsupported_language_pair",
-                                format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source, target),
+                                format!(
+                                    "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
+                                    source, target
+                                ),
                             ));
                         }
                     };
@@ -889,7 +1001,10 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                         return Err(CliError::new(
                             ExitCode::ModelMissing,
                             "model_missing",
-                            format!("El modelo de traducción no está provisionado en '{}'.", model_dir),
+                            format!(
+                                "El modelo de traducción no está provisionado en '{}'.",
+                                model_dir
+                            ),
                         ));
                     }
                     // Sin soporte de traducción (feature off) el par no-passthrough no
@@ -900,13 +1015,19 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                             ExitCode::Error,
                             "translation_unsupported",
                             "Este binario se compiló sin soporte de traducción (feature 'native-translation').",
-                        ))
+                        ));
                     }
                     #[cfg(feature = "native-translation")]
                     {
-                        translation::translate(&transcribed, source, target, model_dir).map_err(|e| {
-                            CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
-                        })?
+                        translation::translate(&transcribed, source, target, model_dir).map_err(
+                            |e| {
+                                CliError::new(
+                                    ExitCode::TranslationFailed,
+                                    "translation_failed",
+                                    e.to_string(),
+                                )
+                            },
+                        )?
                     }
                 };
 
@@ -918,11 +1039,14 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
                         format!("La voz '{}' no existe.", voice),
                     ));
                 }
-                let tmp_wav = std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
+                let tmp_wav =
+                    std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
                 let engine = Qwen3TtsEngine::new(None);
-                engine.synthesize(&final_text, &voice, Some(&tmp_wav)).map_err(|e| {
-                    CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
-                })?;
+                engine
+                    .synthesize(&final_text, &voice, Some(&tmp_wav))
+                    .map_err(|e| {
+                        CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
+                    })?;
                 audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
                     CliError::new(
                         ExitCode::Error,
@@ -948,15 +1072,22 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             es_identificador_valido(Some(&voice), Some(&label))?;
             match speech_store.find(&voice, &label) {
                 Some(entry) => {
-                    audio::AudioService::new().play_wav(&entry.audio_path).map_err(|e| {
-                        CliError::new(
-                            ExitCode::Error,
-                            "playback_failed",
-                            format!("Fallo al reproducir la locución '{}' de la voz '{}': {}", label, voice, e),
-                        )
-                    })?;
+                    audio::AudioService::new()
+                        .play_wav(&entry.audio_path)
+                        .map_err(|e| {
+                            CliError::new(
+                                ExitCode::Error,
+                                "playback_failed",
+                                format!(
+                                    "Fallo al reproducir la locución '{}' de la voz '{}': {}",
+                                    label, voice, e
+                                ),
+                            )
+                        })?;
                     if json_mode {
-                        emit_raw_json(json!({ "status": "played", "label": label, "voice": voice }));
+                        emit_raw_json(
+                            json!({ "status": "played", "label": label, "voice": voice }),
+                        );
                     } else {
                         println!("Reproduciendo locución '{}' de la voz '{}'.", label, voice);
                     }
@@ -973,9 +1104,9 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
             // Borrado de locución: local-only.
             require_local(daemon_mode)?;
             es_identificador_valido(Some(&voice), Some(&label))?;
-            speech_store.remove(&voice, &label).map_err(|e| {
-                CliError::new(ExitCode::NotFound, "speech_not_found", e)
-            })?;
+            speech_store
+                .remove(&voice, &label)
+                .map_err(|e| CliError::new(ExitCode::NotFound, "speech_not_found", e))?;
             if json_mode {
                 emit_raw_json(json!({ "status": "removed", "label": label, "voice": voice }));
             } else {
@@ -991,9 +1122,12 @@ async fn handle_speech(json_mode: bool, daemon_mode: DaemonMode, action: SpeechC
 async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), CliError> {
     match action {
         DaemonCommands::Serve => {
-            let addr: SocketAddr = "127.0.0.1:8765".parse().map_err(|e: std::net::AddrParseError| {
-                CliError::new(ExitCode::Error, "invalid_address", e.to_string())
-            })?;
+            let addr: SocketAddr =
+                "127.0.0.1:8765"
+                    .parse()
+                    .map_err(|e: std::net::AddrParseError| {
+                        CliError::new(ExitCode::Error, "invalid_address", e.to_string())
+                    })?;
             daemon::run_daemon_server(addr).await.map_err(|e| {
                 CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string())
             })
@@ -1110,30 +1244,45 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
 
 // ─── Setup / Cleanup / Doctor ────────────────────────────────────────
 
-fn handle_setup(json_mode: bool, language: &str, with_stt: bool) -> Result<(), CliError> {
+async fn handle_setup(json_mode: bool, language: &str, with_stt: bool) -> Result<(), CliError> {
     let model_store = ModelStore::new();
     let voice_store = VoiceStore::new();
 
     // 1. Inicializar VoiceStore y directorio por defecto
-    voice_store.ensure_initialized().map_err(|e| {
-        CliError::new(ExitCode::Error, "voice_store_init_failed", e.to_string())
-    })?;
+    voice_store
+        .ensure_initialized()
+        .map_err(|e| CliError::new(ExitCode::Error, "voice_store_init_failed", e.to_string()))?;
 
-    // 2. Registrar modelo de síntesis TTS (Qwen3-TTS 0.6B)
-    model_store.register_provisioned("qwen3-tts-0.6b", "v1.0").map_err(|e| {
-        CliError::new(ExitCode::Error, "model_provision_failed", e.to_string())
-    })?;
-
-    // 3. Registrar modelo de traducción (Marian es<->en)
-    model_store.register_provisioned("marian-es-en", "v1.0").map_err(|e| {
-        CliError::new(ExitCode::Error, "model_provision_failed", e.to_string())
-    })?;
-
-    // 4. Registrar modelo STT si se solicita --with-stt
+    // 2. Descargar y registrar TODOS los modelos pinneados (decisión de diseño:
+    // setup todo-por-defecto). `--language`/`--with-stt` siguen aceptados pero
+    // son redundantes: el set es fijo (qwen + marian es↔en + whisper).
     if with_stt {
-        model_store.register_provisioned("whisper-gguf", "v1.0").map_err(|e| {
-            CliError::new(ExitCode::Error, "model_provision_failed", e.to_string())
-        })?;
+        tracing::info!("--with-stt es redundante: whisper-gguf ya está incluido en setup");
+    }
+    let mut provisioned = Vec::new();
+    for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
+        // Idempotente: snapshot HF presente → solo registrar índice.
+        if !model_store.is_provisioned(name) {
+            store::ModelStore::ensure_downloaded(name)
+                .await
+                .map_err(|e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "model_download_failed",
+                        format!("{}: {}", name, e),
+                    )
+                })?;
+        }
+        model_store
+            .register_provisioned(name, "hf-snapshot")
+            .map_err(|e| {
+                CliError::new(
+                    ExitCode::Error,
+                    "model_provision_failed",
+                    format!("{}: {}", name, e),
+                )
+            })?;
+        provisioned.push(name.to_string());
     }
 
     if json_mode {
@@ -1141,19 +1290,41 @@ fn handle_setup(json_mode: bool, language: &str, with_stt: bool) -> Result<(), C
             "status": "completed",
             "language": language,
             "with_stt": with_stt,
-            "models_provisioned": ["qwen3-tts-0.6b", "marian-es-en"]
+            "models_provisioned": provisioned
         }));
     } else {
         println!(
-            "Setup completado: provisión de modelos finalizada para idioma '{}'{}.",
-            language,
-            if with_stt { " (con STT)" } else { "" }
+            "Setup completado: {} modelo(s) disponibles para idioma '{}'.",
+            provisioned.len(),
+            language
         );
     }
     Ok(())
 }
 
 fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {
+    // Limpieza real de datos: borra el directorio de datos del usuario (modelos, voces, locuciones)
+    let data = store::data_dir();
+    if data.exists() {
+        // Solo borra subdirectorios conocidos para no arriesgar datos ajenos si data_dir es "."
+        for sub in &["models", "speech", "voices"] {
+            let p = data.join(sub);
+            if p.exists() {
+                let _ = std::fs::remove_dir_all(&p);
+            }
+        }
+        // Si quedó vacío, intenta borrar el propio data_dir
+        let _ = std::fs::remove_dir(&data);
+    }
+    // Snapshots HF de los modelos pinneados (~/.cache/huggingface/hub/models--*)
+    let model_store = ModelStore::new();
+    for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
+        match model_store.remove_hf_snapshot(name) {
+            Ok(removed) if removed => eprintln!("Snapshot {} eliminado.", name),
+            Ok(_) => {}
+            Err(e) => eprintln!("  ✗ No se pudo borrar {}: {}", name, e),
+        }
+    }
     if json_mode {
         emit_raw_json(json!({ "status": "cleanup_complete" }));
     } else {
@@ -1162,9 +1333,156 @@ fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {
     Ok(())
 }
 
-fn handle_doctor(_json_mode: bool) -> Result<(), CliError> {
+fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> {
+    // Confirmación interactiva si no es --force/--yes y hay TTY
+    if !force && std::io::stdin().is_terminal() {
+        eprint!("Esto eliminará datos (modelos, voces, locuciones), el binario y la integración PATH. ¿Continuar? [y/N]: ");
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_ok() {
+            let t = input.trim().to_ascii_lowercase();
+            if t != "y" && t != "yes" && t != "s" && t != "si" {
+                if json_mode {
+                    emit_raw_json(json!({ "status": "cancelled" }));
+                } else {
+                    println!("Cancelado.");
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    // 1. Datos de usuario (incluye modelos, voces, locuciones)
+    let data = store::data_dir();
+    if data.exists() {
+        std::fs::remove_dir_all(&data).map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "uninstall_failed",
+                format!("No se pudo borrar {}: {}", data.display(), e),
+            )
+        })?;
+    }
+
+    // 1b. Snapshots HF de los modelos pinneados (~/.cache/huggingface/hub)
+    {
+        let model_store = ModelStore::new();
+        for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
+            if let Err(e) = model_store.remove_hf_snapshot(name) {
+                eprintln!("  ✗ No se pudo borrar snapshot {}: {}", name, e);
+            }
+        }
+    }
+
+    // 2. Integración por SO (binario + PATH)
+    #[cfg(unix)]
+    {
+        let home = directories::BaseDirs::new()
+            .map(|d| d.home_dir().to_path_buf())
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+            });
+        let link = home.join(".local/bin/ai-voice-interconnector");
+        // `is_symlink` requiere `symlink_metadata`; basta con intentar borrar si existe
+        if link.exists() || std::fs::symlink_metadata(&link).is_ok() {
+            let _ = std::fs::remove_file(&link);
+        }
+        let install_dir = home.join(".local/opt/ai-voice-interconnector");
+        if install_dir.exists() {
+            let _ = std::fs::remove_dir_all(&install_dir);
+        }
+        // Fallback: si el binario se ejecuta desde otro prefijo, intenta borrar su directorio padre
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                if parent != install_dir && parent.join("ai-voice-interconnector").exists() {
+                    let _ = std::fs::remove_dir_all(parent);
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let install_dir = {
+            let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(local).join("Programs/ai-voice-interconnector")
+        };
+        // Quitar del PATH de usuario (HKCU\Environment)
+        let _ = remove_windows_user_path(&install_dir);
+        // Borrar directorio de instalación (puede fallar si el exe está en uso)
+        if install_dir.exists() {
+            match std::fs::remove_dir_all(&install_dir) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    eprintln!("Aviso: no se pudo borrar {} (binario en uso). Bórralo manualmente tras cerrar la terminal.", install_dir.display());
+                }
+                Err(e) => {
+                    return Err(CliError::new(
+                        ExitCode::Error,
+                        "uninstall_failed",
+                        format!("No se pudo borrar {}: {}", install_dir.display(), e),
+                    ));
+                }
+            }
+        }
+    }
+
+    if json_mode {
+        emit_raw_json(json!({ "status": "uninstalled" }));
+    } else {
+        println!("Desinstalación completada.");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_windows_user_path(dir: &std::path::Path) -> Result<(), String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let env = hkcu
+        .open_subkey_with_flags(
+            "Environment",
+            winreg::enums::KEY_READ | winreg::enums::KEY_WRITE,
+        )
+        .map_err(|e| e.to_string())?;
+    let path: String = env.get_value("Path").unwrap_or_default();
+    let target = dir.to_string_lossy().to_string();
+    let filtered: Vec<String> = path
+        .split(';')
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(&target))
+        .map(|s| s.to_string())
+        .collect();
+    let new_path = filtered.join(";");
+    if new_path != path {
+        env.set_value("Path", &new_path)
+            .map_err(|e| e.to_string())?;
+        // Notificar al sistema del cambio de entorno (WM_SETTINGCHANGE)
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SendMessageTimeoutW, HWND_BROADCAST, WM_SETTINGCHANGE,
+            };
+            let wide: Vec<u16> = "Environment\0".encode_utf16().collect();
+            // SMTO_ABORTIFHUNG = 0x0002
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                wide.as_ptr() as isize,
+                2,
+                5000,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
     let model_store = ModelStore::new();
     let voice_store = VoiceStore::new();
+    // Ruta de caché resuelta: auditable (la app decide, no el fallback de hf-hub)
+    let hf_cache = store::hf_cache_dir();
 
     // Chequeos reales de entorno
     let mut issues = Vec::new();
@@ -1175,7 +1493,7 @@ fn handle_doctor(_json_mode: bool) -> Result<(), CliError> {
         issues.push("Directorio de datos no existe");
     }
 
-    // Verificar modelos provisionados
+    // Verificar los 4 modelos pinneados (snapshot HF en hf_cache_dir)
     if !model_store.is_provisioned("qwen3-tts-0.6b") {
         issues.push("Modelo TTS (Qwen3-TTS 0.6B) no provisionado");
     }
@@ -1183,7 +1501,10 @@ fn handle_doctor(_json_mode: bool) -> Result<(), CliError> {
         issues.push("Modelo STT (Whisper GGUF) no provisionado");
     }
     if !model_store.is_provisioned("marian-es-en") {
-        issues.push("Modelo traducción (Marian es→en) no provisionado");
+        issues.push("Modelo traducción es→en (Marian) no provisionado");
+    }
+    if !model_store.is_provisioned("marian-en-es") {
+        issues.push("Modelo traducción en→es (Marian) no provisionado");
     }
 
     // Verificar voces
@@ -1191,13 +1512,31 @@ fn handle_doctor(_json_mode: bool) -> Result<(), CliError> {
         issues.push("Error al listar voces");
     }
 
-    if issues.is_empty() {
+    if json_mode {
+        emit_raw_json(json!({
+            "status": if issues.is_empty() { "ok" } else { "failed" },
+            "data_dir": data_dir.to_string_lossy(),
+            "hf_cache": hf_cache.to_string_lossy(),
+            "issues": issues,
+        }));
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::new(
+                ExitCode::Error,
+                "doctor_checks_failed",
+                "Chequeos de entorno fallaron",
+            ))
+        }
+    } else if issues.is_empty() {
         println!("Diagnóstico: todo correcto.");
+        println!("Cache HF: {}", hf_cache.display());
         Ok(())
     } else {
         for issue in &issues {
             eprintln!("  ✗ {}", issue);
         }
+        eprintln!("Cache HF: {}", hf_cache.display());
         Err(CliError::new(
             ExitCode::Error,
             "doctor_checks_failed",
@@ -1304,13 +1643,20 @@ async fn transcribe_via_daemon(
         audio::AudioService::new()
             .capture_16k_mono_pcm(duration.expect("validado arriba"))
             .map_err(|e| {
-                CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
+                CliError::new(
+                    ExitCode::TranscriptionFailed,
+                    "transcription_error",
+                    e.to_string(),
+                )
             })?
     } else {
-        avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba"))
-            .map_err(|e| {
-                CliError::new(ExitCode::TranscriptionFailed, "transcription_error", e.to_string())
-            })?
+        avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
+            CliError::new(
+                ExitCode::TranscriptionFailed,
+                "transcription_error",
+                e.to_string(),
+            )
+        })?
     };
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -1357,7 +1703,11 @@ async fn transcribe_via_daemon(
 
 /// POST /synthesize al daemon, consume el stream NDJSON y decodifica `audio_b64`
 /// del evento `result`, devolviendo los bytes WAV del motor (24 kHz s16le mono).
-async fn daemon_synthesize_wav(client: &reqwest::Client, text: &str, voice: &str) -> Result<Vec<u8>, CliError> {
+async fn daemon_synthesize_wav(
+    client: &reqwest::Client,
+    text: &str,
+    voice: &str,
+) -> Result<Vec<u8>, CliError> {
     let resp = client
         .post(format!("http://{}/synthesize", DAEMON_ADDR))
         .json(&serde_json::json!({ "text": text, "voice": voice }))
@@ -1455,12 +1805,16 @@ async fn synthesize_via_daemon(
         return Err(CliError::new(
             ExitCode::StateConflict,
             "label_exists",
-            format!("Ya existe una locución con la etiqueta '{}' (usa --force).", label_l),
+            format!(
+                "Ya existe una locución con la etiqueta '{}' (usa --force).",
+                label_l
+            ),
         ));
     }
     let wav = daemon_synthesize_wav(client, text, voice).await?;
     let tmp = std::env::temp_dir().join(format!("avi_tts_{}.wav", label_l));
-    std::fs::write(&tmp, &wav).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    std::fs::write(&tmp, &wav)
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
     if play {
         audio::AudioService::new().play_wav(&tmp).map_err(|e| {
             CliError::new(
@@ -1475,7 +1829,8 @@ async fn synthesize_via_daemon(
         .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
     let _ = std::fs::remove_file(&tmp);
     if let Some(out) = output {
-        std::fs::copy(&saved, out).map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
+        std::fs::copy(&saved, out)
+            .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
     }
     Ok(saved.to_string_lossy().to_string())
 }
@@ -1489,7 +1844,8 @@ async fn say_via_daemon(
 ) -> Result<(), CliError> {
     let wav = daemon_synthesize_wav(client, text, voice).await?;
     let tmp = std::env::temp_dir().join(format!("avi_say_{}.wav", std::process::id()));
-    std::fs::write(&tmp, &wav).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    std::fs::write(&tmp, &wav)
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
     audio::AudioService::new().play_wav(&tmp).map_err(|e| {
         CliError::new(
             ExitCode::Error,
