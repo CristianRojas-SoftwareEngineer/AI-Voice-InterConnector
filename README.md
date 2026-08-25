@@ -2,10 +2,11 @@
 
 Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **español latinoamericano**.
 
-- **Motor**: Chatterbox Multilingual V3 ([modelo MIT](https://huggingface.co/ResembleAI/Chatterbox-Multilingual-es-mx-latam), 23+ idiomas)
-- **Clonación de voz**: Usa tu propia voz como referencia
+- **Motor**: Qwen3-TTS 0.6B CustomVoice (12 Hz, multilingüe; [QwenLM/Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS))
+- **Clonación de voz**: Usa tu propia voz como referencia (~10 s)
 - **Multiplataforma**: Windows x64, Linux x64/ARM64, macOS ARM64 (Apple Silicon)
 - **Consumible via CLI**: Invocable desde cualquier lenguaje de programación
+- **Binario autocontenido**: Rust (`cargo build --release --features full`), sin Python ni dependencias externas
 
 ## Tabla de contenidos
 
@@ -22,7 +23,7 @@ Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **espa
 ## Uso ético y responsable
 
 AI Voice InterConnector clona voces arbitrarias y **el audio que genera no lleva marca de
-agua** (el motor de síntesis Qwen3-TTS no incorpora watermarker), por lo que no es distinguible
+agua** (el motor Qwen3-TTS no incorpora watermarker), por lo que no es distinguible
 por medios técnicos de una grabación real. Esto exige un uso responsable:
 
 - **Consentimiento**: clona únicamente voces para las que tengas permiso explícito
@@ -39,179 +40,116 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 
 ## Características
 
-- **Clonación de voz**: ~10 segundos de audio de referencia
+- **Clonación de voz**: ~10 segundos de audio de referencia (`speech-reference.wav` obligatorio, `timbre-reference.wav` opcional)
 - **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés (`--target-language`)
-- **100% offline**: Sin APIs externas ni conexiones a internet
-- **Instalador por plataforma**: Un instalador único por SO que despliega el bundle PyInstaller `--onedir` (carpeta de la aplicación)
+- **Transcripción STT**: `speech transcribe` (whisper-rs/whisper.cpp, opt-in `--with-stt`)
+- **Traducción**: `translate` es↔en (CTranslate2, opt-in)
+- **Daemon**: `daemon start/status/stop/serve` (Axum, `127.0.0.1:8765`, streaming NDJSON)
+- **100% offline**: Sin APIs externas ni conexiones a internet (modelos en `~/.cache/huggingface/hub`)
+- **Binario autocontenido por plataforma**: `tar.gz` (Linux/macOS) / `.zip` (Windows) con `LICENSE`/`THIRD-PARTY-LICENSES.md`/`SOURCE-OFFER.md`
 - **CLI universal**: `subprocess.run(["./ai-voice-interconnector", "speech", "say", "--text", "..."])`
-- **Audio nativo**: APIs nativas del sistema operativo
+- **Audio nativo**: `cpal` (WASAPI/CoreAudio/ALSA)
 
 ## Instalación
 
-AI Voice InterConnector se distribuye por **dos canales** (detalle completo y matriz de
-trade-offs en [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)): el binario
-pre-compilado por SO (audiencia general, sin Python) y el paquete PyPI
-(audiencia técnica con Python 3.13+).
+AI Voice InterConnector se distribuye por **canal nativo** (archivos comprimidos Rust, ver [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)). La instalación es de **una línea**, sin privilegios de administrador y con verificación de checksum.
 
 ### Instalación de una línea
 
-En Linux, `install-linux.sh` automatiza la Opción 1 completa: resuelve el
-último Release, descarga el `.AppImage` de tu arquitectura, verifica su
-checksum contra `SHA256SUMS.txt`, lo instala en `~/.local/opt/ai-voice-interconnector/`
-(eliminando la versión anterior si existe) y ejecuta `setup` (integra el PATH
-y ofrece descargar el modelo):
+En **Linux** (`curl | sh`), descarga el `tar.gz` de tu arquitectura, verifica `SHA256SUMS.txt`, extrae en `~/.local/opt/ai-voice-interconnector/`, crea el symlink `~/.local/bin/ai-voice-interconnector` y encadena `setup`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-linux.sh | sh
 ```
 
-En macOS (Apple Silicon), `install-macos.sh` hace lo análogo sin `sudo` ni
-Homebrew: descarga el `.dmg` de arm64, verifica su checksum, monta el volumen,
-copia el `.app` a `~/Applications`, limpia la cuarentena de Gatekeeper, crea el
-symlink de PATH en `~/.local/bin` y ejecuta `setup`:
+En **macOS Apple Silicon** (`curl | sh`, sin `sudo` ni Homebrew), análogo a Linux con `shasum` y limpieza de cuarentena Gatekeeper (`xattr`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-macos.sh | sh
 ```
 
-En Windows, `install-windows.ps1` hace lo análogo desde PowerShell: descarga
-el instalador del último Release, verifica su checksum, lo ejecuta en
-silencio (instalación per-user, sin UAC) y corre `ai-voice-interconnector setup`:
+En **Windows** (`irm | iex`, sin UAC), descarga el `.zip` x86_64, verifica `Get-FileHash` y registra `HKCU\Environment\Path`:
 
 ```powershell
 irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-windows.ps1 | iex
 ```
 
-Los tres scripts abortan la instalación si el checksum descargado no coincide
-con `SHA256SUMS.txt` (ver [SECURITY.md](SECURITY.md#nota-sobre-los-instaladores-de-una-línea)).
+Los tres scripts abortan si el checksum no coincide con `SHA256SUMS.txt` (ver [SECURITY.md](SECURITY.md)).
 
-**Alternativa para usuarios de Homebrew (macOS)**: el Cask del tap propio
-automatiza checksum, PATH y cuarentena (pero exige tener Homebrew y no
-provisiona el modelo: hay que correr `ai-voice-interconnector setup` aparte):
+**Alternativa Homebrew (macOS)**: automatiza checksum/PATH/cuarentena (exige Homebrew, no provisiona modelo):
 
 ```bash
 brew tap CristianRojas-SoftwareEngineer/ai-voice-interconnector
 brew install --cask ai-voice-interconnector
+ai-voice-interconnector setup
 ```
 
-**Desinstalación**: `ai-voice-interconnector setup --uninstall` lo hace en **un comando** en
-los tres SO (encadena `cleanup --all`, revierte la integración de PATH y borra el
-binario, en ese orden). Añade `--yes` para omitir la confirmación del cleanup.
-
-- **Linux**: quita el symlink de PATH y borra `~/.local/opt/ai-voice-interconnector/`.
-- **macOS**: quita el symlink de `~/.local/bin` y borra el `.app`. Si instalaste
-  con Homebrew, usa en su lugar `brew uninstall --cask --zap ai-voice-interconnector` (el
-  comando lo detecta y te remite ahí para no dejar el Caskroom inconsistente).
-- **Windows**: borra los datos y delega el binario y el PATH al desinstalador de
-  Inno Setup. La vía idiomática (Configuración → Aplicaciones, sin admin) sigue
-  disponible como alternativa.
-
-### Opción 1: Descargar binario pre-compilado
-
-Descarga el ejecutable para tu plataforma desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases):
+**Desinstalación en un comando** (paridad con instalación):
 
 ```bash
-# Windows: ejecuta el instalador ai-voice-interconnector-<versión>-x86_64-setup.exe.
-# Instala en tu perfil (%LOCALAPPDATA%\Programs\ai-voice-interconnector) y escribe el PATH
-# de usuario (HKCU), sin privilegios de administrador ni prompt de UAC.
-# Agrega ai-voice-interconnector al PATH, muestra una página informativa sobre el modelo y
-# ofrece una casilla para descargarlo (ejecuta 'ai-voice-interconnector setup') al terminar.
-
-# Linux: descarga el AppImage de tu arquitectura, hazlo ejecutable y provisiona
-chmod +x ai-voice-interconnector-<versión>-x86_64.AppImage    # o -arm64.AppImage en ARM64
-./ai-voice-interconnector-<versión>-x86_64.AppImage setup
-# → setup también crea el symlink ~/.local/bin/ai-voice-interconnector para invocarlo por nombre
-
-# macOS (Apple Silicon): monta ai-voice-interconnector-<versión>-arm64.dmg, arrastra el .app
-# a Aplicaciones y ejecuta el script "Instalar (PATH + modelo).command" incluido
-# en el volumen. El script pide tu contraseña de administrador (sudo) para crear
-# el symlink en /usr/local/bin y luego ofrece ejecutar 'setup' como tu usuario.
+ai-voice-interconnector uninstall --force   # o: ai-voice-interconnector cleanup --all --force
+# macOS Cask: brew uninstall --cask --zap ai-voice-interconnector
 ```
 
-> Mac Intel (x86_64) no está soportado: el toolchain actual (torch≥2.3) no
-> publica wheels macOS x86_64.
+- **Linux/macOS**: borra `~/.local/bin` symlink + `~/.local/opt/ai-voice-interconnector/` + datos.
+- **Windows**: borra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` + entrada `HKCU` PATH + datos.
 
-> El AppImage de Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+,
-> Fedora 36+ o equivalente): es la versión mínima que soportan los wheels
-> manylinux de las dependencias empaquetadas (torch, onnxruntime). En una
-> distro más antigua, `ai-voice-interconnector` falla al arrancar con un error del tipo
-> `GLIBC_2.35 not found` (ver solución de problemas en [USAGE.md](USAGE.md)).
+### Descargar binario pre-compilado
 
-Cada Release publica un `SHA256SUMS.txt` con el hash de los 4 artefactos;
-verifica tu descarga contra él antes de ejecutar el instalador (ver
-[SECURITY.md](SECURITY.md) y [docs/RELEASING.md](docs/RELEASING.md)).
+Desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases) (4 artefactos + `SHA256SUMS.txt`):
+
+```bash
+# Linux x64
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.10.7-x86_64-linux.tar.gz -o ai.tar.gz
+tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
+
+# macOS arm64
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.10.7-arm64-macos.tar.gz -o ai.tar.gz
+tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
+
+# Windows x64 (PowerShell)
+Invoke-WebRequest https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.10.7-x86_64-windows.zip -OutFile ai.zip
+Expand-Archive ai.zip -Force; .\ai-voice-interconnector.exe setup
+```
+
+> Mac Intel (x86_64) y Windows ARM64 no están soportados (limitación de toolchain aceptada, ver `docs/BUILD.md`).
+> Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+); el instalador advierte si es menor.
+
+Cada Release publica `SHA256SUMS.txt`; verifica con `sha256sum -c` o `Get-FileHash` antes de ejecutar.
 
 ### Primer arranque: SmartScreen / Gatekeeper
 
-Al ejecutar por primera vez el instalador **descargado desde el navegador**,
-**es esperable** que el sistema lo bloquee con una advertencia («Windows
-protegió tu PC» / «no se puede verificar el desarrollador»); no indica
-malware. El porqué del mecanismo (Mark-of-the-Web / cuarentena, y la firma de
-código como arreglo de fondo diferido) está en
-[SECURITY.md](SECURITY.md#artefactos-sin-firmar).
+Al ejecutar por primera vez un binario **descargado por navegador**, es esperable el bloqueo del SO (Mark-of-the-Web). Los **one-liners no lo disparan** (descarga por CLI sin MOTW, `xattr` en macOS). Detalle en [SECURITY.md](SECURITY.md#artefactos-sin-firmar).
 
-- **Windows (SmartScreen)**: pulsa **Más información** → **Ejecutar de todas
-  formas**.
-- **macOS (Gatekeeper)**: haz clic derecho sobre el `.app`/`.dmg` → **Abrir** y
-  confirma (o quita la cuarentena con `xattr`).
+- **Windows**: *Más información* → *Ejecutar de todas formas*.
+- **macOS**: clic derecho → *Abrir* (o `xattr -d com.apple.quarantine`).
 
-> El canal PyPI (`uv tool install ai-voice-interconnector`, ver [Opción 2](#opción-2-instalar-desde-pypi-uv--pipx))
-> no dispara ninguno de los dos avisos: el launcher lo genera `uv`/`pipx`
-> localmente, sin Mark-of-the-Web ni cuarentena. Detalle en
-> [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
-
-Solo ocurre en el primer arranque. La forma objetiva de confiar en el artefacto
-es **verificar su SHA-256** contra el `SHA256SUMS.txt` del Release (ver
-[SECURITY.md](SECURITY.md)). Detalle paso a paso en
-[USAGE.md](USAGE.md#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar).
+La firma Authenticode/Apple notarization es goal a largo plazo (`docs/GOAL.md`).
 
 ### Provisión del/los modelo(s) (`setup`)
 
-AI Voice InterConnector sirve **dos modelos de voz**, uno por idioma: **`es-mx-latam`**
-(español latinoamericano, ~3 GB) y **`en`** (inglés base, ~3 GB, habilita la
-síntesis cross-lingual). Ninguno viene incluido en el ejecutable: se descargan
-a la caché de HuggingFace de tu usuario (`~/.cache/huggingface/hub`). Esto es
-homólogo en los 3 SO:
-
-- **Windows**: el instalador ofrece una casilla post-instalación que ejecuta
-  `setup` por ti, en tu contexto de usuario.
-- **Linux / macOS**: ejecuta `ai-voice-interconnector setup` manualmente tras instalar.
-
-`setup` corre los chequeos de entorno (igual que `doctor`) y descarga ambos
-modelos por defecto (o uno solo con `--language {es-latam,en}`), solo si
-faltan; si ya están cacheados, termina al instante sin descargar. Hasta que un
-modelo esté provisionado, `speech synthesize` y `daemon start` **fallan de inmediato** y te
-remiten a `ai-voice-interconnector setup` (nunca disparan una descarga silenciosa).
-
-### Opción 2: Instalar desde PyPI (uv / pipx)
-
-Para audiencia técnica con Python 3.13+ ya instalado:
+Cuatro modelos pinneados no vienen en el binario: `qwen3-tts-0.6b` (~4,7 GB),
+`marian-es-en`/`marian-en-es` (~3 GB) y `whisper-gguf` (~823 MB). Se descargan a
+`~/.cache/huggingface/hub` vía `setup`:
 
 ```bash
-uv tool install ai-voice-interconnector
-# o: pipx install ai-voice-interconnector
-
-ai-voice-interconnector setup     # provisiona los modelos, idéntico al canal nativo
-ai-voice-interconnector speech say --text "Hola mundo"
+ai-voice-interconnector setup
+ai-voice-interconnector doctor
 ```
 
-> Linux: `sounddevice` requiere la librería del sistema `libportaudio2` para
-> reproducir audio (`sudo apt install libportaudio2` / `sudo dnf install
-> portaudio`); no es necesaria si solo usas `speech synthesize` para persistir
-> a archivo. Ver
-> [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) para la matriz completa de
-> trade-offs entre canales y el flujo de actualización/desinstalación.
+Hasta provisionar, `speech synthesize`/`daemon start` fallan con exit 4 remitiendo a `setup`.
 
-### Opción 3: Compilar desde código
+### Compilar desde código (Rust)
+
+Requisitos: Rust 1.96.0, `cmake`, `pkg-config`, `libasound2-dev`/`libclang-dev` (Linux). Ver `docs/BUILD.md`.
 
 ```bash
-# Instalar dependencias de build
-pip install -r requirements.txt
-
-# Compilar
-python scripts/build_windows.py    # Windows
-python scripts/build_linux.py     # Linux
-python scripts/build_macos.py     # macOS
+cargo fmt --all --check
+cargo clippy --all-targets
+cargo test --all
+cargo build --release --features full
+./target/release/ai-voice-interconnector version
+./target/release/ai-voice-interconnector voice list
 ```
 
 ## Uso Rápido
@@ -219,81 +157,53 @@ python scripts/build_macos.py     # macOS
 ### Clonación de voz
 
 ```bash
-# Clonar tu voz (requiere ~10 segundos de audio en español)
-# Se necesitan DOS archivos: reference (timbre) y speech (conditioning)
 ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
-
-# Sintetizar y reproducir con tu voz clonada
 ai-voice-interconnector speech say --text "Hola mundo" -v mi_voz
-
-# Sintetizar y guardar en el almacén bajo una etiqueta (--label es requerido)
 ai-voice-interconnector speech synthesize --text "Hola mundo" -v mi_voz --label saludo
 ```
 
 ### Síntesis básica
 
 ```bash
-# Sintetizar y reproducir con la voz de fábrica 'default' (no requiere audios)
-ai-voice-interconnector speech say --text "Hola mundo"
-
-# Sobrescribir la voz por defecto con una voz registrada
+ai-voice-interconnector speech say --text "Hola mundo"                    # voz default
 ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
-
-# Sintetizar y guardar en el almacén bajo una etiqueta (--label es requerido)
 ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo
 ```
 
-> Sin `--voice` ni audios explícitos, `speech synthesize` y `speech say`
-> usan la voz de fábrica **`default`** (empaquetada, de solo lectura). Ver
-> [Modelo de voces](#modelo-de-voces).
+Sin `--voice` usa `default` (embebida en el binario, `crates/avi-store/assets/default/`).
 
 ### Modelo de voces
 
-Las voces se resuelven en **dos niveles**, con precedencia usuario→fábrica:
+Dos niveles, precedencia usuario→fábrica (`avi-store/src/lib.rs`):
 
-- **Fábrica**: empaquetadas en el ejecutable (solo lectura), incluida la voz
-  `default`. Idénticas en desarrollo y en cualquier instalación.
-- **Usuario**: registradas con `voice clone`, escribibles, guardadas en el
-  directorio de datos de usuario por SO (estables entre ejecuciones).
-
-Registrar una voz de usuario con el mismo nombre que una de fábrica la sobrescribe.
+- **Fábrica**: embebida en el binario (`include_bytes!`), materializada en `data_dir()/voices/default/`; `default` no se puede borrar.
+- **Usuario**: `data_dir()/voices/<nombre>/` (escribible), `voice clone`.
 
 ### Comandos disponibles
 
 ```bash
-ai-voice-interconnector speech say --text "..."                    # Sintetizar y reproducir sin persistir
-ai-voice-interconnector speech synthesize --text "..." --label L   # Sintetizar y persistir en el almacén
-ai-voice-interconnector speech dub --mic --source-language es-latam --target-language en -v mi_voz  # Composición voz→voz: transcribe → traduce → sintetiza → reproduce
-ai-voice-interconnector voice clone --name X --timbre-reference ref.wav --speech-reference speech.wav  # Clonar voz
-ai-voice-interconnector voice remove --name X       # Eliminar voz
-ai-voice-interconnector voice list                  # Listar voces (--json disponible)
-ai-voice-interconnector devices                     # Dispositivos de audio (--json disponible)
-ai-voice-interconnector doctor                      # Diagnóstico (--json disponible)
-ai-voice-interconnector setup                       # Provisionar: chequeos + descargar modelo si falta
-ai-voice-interconnector version                     # Versión (--json disponible)
+ai-voice-interconnector speech say --text "..."                    # reproducir sin persistir
+ai-voice-interconnector speech synthesize --text "..." --label L   # persistir
+ai-voice-interconnector speech transcribe --audio file.wav --source-language es-latam
+ai-voice-interconnector speech dub --mic --source-language es-latam --target-language en -v mi_voz
+ai-voice-interconnector voice clone --name X --timbre-reference ref.wav --speech-reference speech.wav
+ai-voice-interconnector voice list / remove --name X
+ai-voice-interconnector translate --text "Hola" --from es --to en
+ai-voice-interconnector devices / doctor / version
+ai-voice-interconnector daemon start / status / stop / serve
+ai-voice-interconnector setup [--with-stt] / cleanup [--all] / uninstall --force
 ```
+
+Contrato estable (`--json` `schema_version="3"`, exit codes `0-10/130`) en `docs/CLI/CONTRACT.md`.
 
 ## Invocación desde cualquier lenguaje
 
 ```bash
-# Bash/shell
 ./ai-voice-interconnector speech say --text "Hola mundo"
-
-# Python
 subprocess.run(["./ai-voice-interconnector", "speech", "say", "--text", "Hola mundo"])
-
-# Node.js
 child_process.spawn("./ai-voice-interconnector", ["speech", "say", "--text", "Hola mundo"])
-
-# Rust
-std::process::Command::new("./ai-voice-interconnector")
-    .args(["speech", "say", "--text", "Hola"])
-    .output()?;
-
-# Go
+std::process::Command::new("./ai-voice-interconnector").args(["speech", "say", "--text", "Hola"]).output()?;
 exec.Command("./ai-voice-interconnector", "speech", "say", "--text", "Hola")
-
-# Java
 new ProcessBuilder("./ai-voice-interconnector", "speech", "say", "--text", "Hola").start()
 ```
 
@@ -301,53 +211,37 @@ new ProcessBuilder("./ai-voice-interconnector", "speech", "say", "--text", "Hola
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│              ai-voice-interconnector (binario CLI)              │
-│   Compilado con PyInstaller --onedir (carpeta de app) │
+│  ai-voice-interconnector (binario Rust)             │
+│  src/main.rs (clap) + crates/* + tokio/axum/cpal    │
 └──────────────────────┬──────────────────────────────┘
-                       │
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│           Chatterbox Multilingual V3                 │
-│   Modelos: es-mx-latam + en (caché de HuggingFace)  │
-│   Licencia: MIT                                     │
-│   Idiomas: 23+ (incl. español es); en habilita cross-lingual │
+│  Qwen3-TTS 0.6B (C, subprocess/HTTP) + Whisper.cpp  │
+│  Modelos: qwen3-tts-0.6b, ggml-medium-q8_0 (HF Hub)  │
 └─────────────────────────────────────────────────────┘
 ```
 
+Ver `docs/DESIGN.md` y `docs/BUILD.md`.
+
 ## Licencia
 
-Copyright © 2026 Cristián Rojas Arredondo.
-
-**GPL-3.0-or-later** — el código de `ai-voice-interconnector` se distribuye bajo la GNU General Public
-License v3 (ver [LICENSE](LICENSE)). Es software libre y de uso comercial permitido, con la
-condición copyleft de que los trabajos derivados que se distribuyan se liberen bajo la misma
-licencia.
-
-El **modelo de voz** Chatterbox Multilingual V3 se distribuye bajo licencia
-[**MIT**](https://huggingface.co/ResembleAI/Chatterbox-Multilingual-es-mx-latam) (verificada
-en HuggingFace), al igual que el modelo base
-[`ResembleAI/chatterbox`](https://huggingface.co/ResembleAI/chatterbox). Las **dependencias**
-empaquetadas conservan sus propias licencias, en su mayoría permisivas (MIT/BSD/Apache 2.0),
-con algunas de copyleft compatible con GPLv3 (MPL-2.0, LGPL-2.1+, GPLv3+). Los runtimes
-propietarios de NVIDIA CUDA que lista el lockfile universal **no se incluyen en ningún
-artefacto distribuido** (todos los builds son CPU-only); solo aplican a instalaciones
-desde código fuente con ese lock. El detalle completo y verificado está en
-[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
+Copyright © 2026 Cristián Rojas Arredondo — **GPL-3.0-or-later** ([LICENSE](LICENSE)).
+Motor Qwen3-TTS MIT/Apache-2.0; dependencias en [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) (inventario Rust `Cargo.lock`). Oferta de fuente GPLv3 §6 en [SOURCE-OFFER.md](SOURCE-OFFER.md).
 
 ## Documentación
 
-- [docs/GOAL.md](docs/GOAL.md) - Meta del proyecto
-- [docs/ROADMAP.md](docs/ROADMAP.md) - Estado actual y roadmap al goal inmediato
-- [docs/DESIGN.md](docs/DESIGN.md) - Diseño técnico
-- [docs/DAEMON-MODE.md](docs/DAEMON-MODE.md) - Daemon mode (servidor persistente)
-- [docs/BUILD.md](docs/BUILD.md) - Guía de compilación PyInstaller
-- [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) - Canales de distribución (nativo + PyPI)
-- [docs/PARITY.md](docs/PARITY.md) - Estado de paridad de experiencia entre Windows, Linux y macOS
-- [docs/MANUAL-VALIDATION.md](docs/MANUAL-VALIDATION.md) - Recorrido manual de validación de la superficie de la CLI
+- [docs/GOAL.md](docs/GOAL.md) - Meta y criterios de aceptación
+- [docs/DESIGN.md](docs/DESIGN.md) - Diseño técnico (Rust)
+- [docs/BUILD.md](docs/BUILD.md) - Guía de compilación Rust
+- [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) - Canal nativo (`tar.gz`/`.zip`)
+- [docs/PARITY.md](docs/PARITY.md) - Paridad Windows/Linux/macOS
+- [docs/SELF-HOSTED-INSTALL.md](docs/SELF-HOSTED-INSTALL.md) - One-liners
+- [docs/RELEASING.md](docs/RELEASING.md) - Publicación de Releases
+- [docs/MANUAL-VALIDATION.md](docs/MANUAL-VALIDATION.md) - Validación manual CLI
 
 ## Comunidad y soporte
 
-- [CHANGELOG.md](CHANGELOG.md) - Historial de cambios por versión
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Cómo contribuir (setup, tests, estilo, flujo de PR)
-- [SECURITY.md](SECURITY.md) - Política de seguridad y cómo reportar vulnerabilidades
-- [Issues](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/issues) - Reporte de bugs y solicitudes de función
+- [CHANGELOG.md](CHANGELOG.md) - Historial
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Cómo contribuir (Rust)
+- [SECURITY.md](SECURITY.md) - Seguridad
+- [Issues](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/issues)

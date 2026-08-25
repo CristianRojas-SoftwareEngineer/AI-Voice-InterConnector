@@ -4,7 +4,7 @@
 
 - [Instalación](#instalación)
   - [Usuario del binario](#usuario-del-binario)
-  - [Usuario de PyPI (`uv tool install` / `pipx`)](#usuario-de-pypi-uv-tool-install-pipx)
+  - [Compilar desde el código fuente (Rust)](#compilar-desde-el-código-fuente-rust)
   - [Desarrollador (desde el código fuente)](#desarrollador-desde-el-código-fuente)
 - [Primer uso: provisionar el modelo (`setup`)](#primer-uso-provisionar-el-modelo-setup)
 - [Comandos](#comandos)
@@ -35,8 +35,8 @@
 - [Experiencia unificada entre sistemas operativos](#experiencia-unificada-entre-sistemas-operativos)
 - [Formato de Audio](#formato-de-audio)
 - [Solución de Problemas](#solución-de-problemas)
-  - ["el modelo 'es-mx-latam' no está descargado"](#el-modelo-es-mx-latam-no-está-descargado)
-  - ["GLIBC_2.35 not found" (o similar) al ejecutar el AppImage en Linux](#glibc_235-not-found-o-similar-al-ejecutar-el-appimage-en-linux)
+  - ["modelo ... no provisionado (exit 4)"](#modelo--no-provisionado-exit-4)
+  - ["GLIBC_2.35 not found" (o similar) al ejecutar el binario en Linux](#glibc_235-not-found-o-similar-al-ejecutar-el-binario-en-linux)
   - ["OneDrive user-data-dir" [WARN] en doctor (Windows)](#onedrive-user-data-dir-warn-en-doctor-windows)
   - ["Voice 'x' not found"](#voice-x-not-found)
   - ["La voz 'x' ya existe"](#la-voz-x-ya-existe)
@@ -59,10 +59,9 @@ en [Experiencia unificada entre sistemas operativos](#experiencia-unificada-entr
 
 ## Instalación
 
-Hay tres flujos según la audiencia: el del **usuario del binario** (instala el
-ejecutable distribuido por SO), el del **usuario de PyPI** (Python 3.13+ ya
-instalado) y el del **desarrollador** (ejecuta desde el código fuente con
-dependencias Python). Matriz de trade-offs completa entre los dos primeros en
+Hay dos flujos según la audiencia: el del **usuario del binario** (canal nativo:
+one-liner o descarga desde Releases) y el del **desarrollador** (compila con
+`cargo` desde el código fuente). El canal PyPI fue retirado; detalle en
 [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
 ### Usuario del binario
@@ -89,159 +88,62 @@ per-user, sin UAC; termina ejecutando `ai-voice-interconnector setup`):
 irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-windows.ps1 | iex
 ```
 
-**Desinstalación limpia**, en **un comando** en los tres SO: `ai-voice-interconnector setup
---uninstall` encadena `ai-voice-interconnector cleanup --all` (caché del modelo + datos de
-usuario), revierte la integración de PATH y borra el binario, en ese orden.
-Añade `--yes` para omitir la confirmación del cleanup. En Windows el binario y el
-PATH los borra el desinstalador de Inno; con Homebrew Cask el comando remite a
+**Desinstalación limpia**, en **un comando** en los tres SO: `ai-voice-interconnector
+uninstall` encadena la limpieza de datos (`data_dir()` + snapshots HF), revierte la
+integración de PATH y borra el binario, en ese orden. Usa `uninstall --force` (o
+`cleanup --all`) para omitir la confirmación. Con Homebrew Cask, la vía idiomática es
 `brew uninstall --cask --zap`. Ver «Desinstalación completa» más abajo.
 
-### Usuario de PyPI (`uv tool install` / `pipx`)
+### Compilar desde el código fuente (Rust)
 
 ```bash
-uv tool install ai-voice-interconnector
-# o: pipx install ai-voice-interconnector
-
-ai-voice-interconnector setup
-ai-voice-interconnector <comando>
-```
-
-Linux requiere la librería del sistema `libportaudio2` para reproducir audio
-(`sudo apt install libportaudio2` / `sudo dnf install portaudio`); no es
-necesaria para `speech synthesize --text T --label L` a archivo. Este canal no dispara
-SmartScreen/Gatekeeper (ver más abajo).
-
-### Desarrollador (desde el código fuente)
-
-```bash
-# 1. Instalar dependencias (runtime + herramientas de build)
-pip install -r requirements.txt
-
-# 2. Ejecutar desde el código fuente
-python bin/ai-voice-interconnector <comando>
+# Requisitos: Rust 1.96, cmake, pkg-config (libasound2-dev/libclang-dev en Linux)
+cargo build --release --features full
+./target/release/ai-voice-interconnector <comando>
 ```
 
 A partir de aquí, todos los ejemplos usan `ai-voice-interconnector <comando>`; si trabajas
-desde el código fuente, sustituye por `python bin/ai-voice-interconnector <comando>`. El
-comportamiento es el mismo.
+desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el binario de
+`target/release/`. El comportamiento es el mismo. Detalle completo en
+[docs/BUILD.md](docs/BUILD.md) y [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Primer uso: provisionar el/los modelo(s) (`setup`)
 
-AI Voice InterConnector sirve **dos modelos**, uno por idioma: `es-mx-latam` (español
-latinoamericano, ~3 GB) y `en` (inglés base, ~3 GB), ninguno incluido en el
-ejecutable. `setup --language {es-latam,en,all}` (default **`all`**) descarga a
-la caché de HuggingFace (`~/.cache/huggingface/hub` por defecto; si defines
-`HF_HOME` o `HF_HUB_CACHE`, se respeta esa ubicación) los modelos del idioma
-pedido; `all` descarga ambos, garantizando que la síntesis cross-lingual
-(reutilizar el timbre de una voz clonada para hablar en el otro idioma) funcione
-sin pasos adicionales.
+`setup` descarga **los 4 modelos pinneados** desde HuggingFace Hub de forma nativa
+(crate `hf-hub`, TLS rustls; sin Python) a la caché canónica
+(`~/.cache/huggingface/hub`; respeta `HF_HUB_CACHE`/`HF_HOME` si las defines):
 
-`setup --language en` (o `all`) además descarga y convierte a formato CT2 el
-par de modelos de traducción `opus-mt-es-en`/`opus-mt-en-es` (Helsinki-NLP,
-licencia CC-BY-4.0 — ver «Licencia»), necesario para el flag `--source-language`
-de `speech say`/`synthesize` y para el comando `translate`. Es idempotente por
-dirección, igual que los modelos de síntesis.
+| Modelo | Repo HF | Uso |
+|---|---|---|
+| `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
+| `marian-es-en` / `marian-en-es` | `Helsinki-NLP/opus-mt-*` | Traducción es↔en |
+| `whisper-gguf` | `ggerganov/whisper.cpp` | STT (~823 MB, GGUF q8_0 + VAD Silero) |
+
+Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
+(`crates/avi-store/src/lib.rs`): mismo binario → mismos pesos.
 
 ```bash
-ai-voice-interconnector setup                     # ambos modelos (default: --language all)
-ai-voice-interconnector setup --language es-latam # solo el modelo en español
-ai-voice-interconnector setup --language en       # solo el modelo en inglés
+ai-voice-interconnector setup            # descarga los 4 (idempotente)
+ai-voice-interconnector setup --with-stt # aceptado; redundante: STT ya va incluido
 ```
 
-**Qué esperar:** `setup` integra primero el comando en el PATH (solo en Linux,
-ejecutado desde el AppImage; en Windows y macOS ese paso lo cubren el instalador
-y el script del `.dmg`), después corre los chequeos de entorno (los mismos que
-`doctor`) y por último descarga cada modelo pedido solo si falta. Un fallo del
-chequeo de audio **no detiene la provisión**: `setup` lo degrada a `[WARN]` y
-continúa, porque la síntesis a archivo (`speech synthesize --text T --label L`)
-funciona sin subsistema de sonido (p. ej. en hosts headless o sesiones SSH);
-`doctor`, en cambio, lo sigue reportando como `[FAIL]` con salida 1, como señal
-diagnóstica. En la primera ejecución (con el default `--language all`) verás
-algo como:
-
-```
-=== AI Voice InterConnector Setup ===
-
-[PASS] Chatterbox TTS: 0.3.x
-[PASS] Audio library: ... — N dispositivo(s)
-
-Descargando el modelo es-mx-latam...
-(Puede tardar varios minutos en la primera ejecución)
-
-Descargando el modelo en...
-(Puede tardar varios minutos en la primera ejecución)
-
-[PASS] ¡Modelo(s) descargado(s) correctamente!
-  Ubicación: ~/.cache/huggingface/hub
-```
-
-El chequeo de espacio en disco escala con el número de modelos pendientes
-(~6 GB requeridos por modelo, no solo por la corrida): con ambos por descargar,
-`setup` exige el doble de espacio libre que con uno solo.
-
-Si lo vuelves a ejecutar con los modelos ya descargados, termina de inmediato
-sin descargar nada (es idempotente, por modelo):
-
-```
-[PASS] El modelo 'es-mx-latam' ya está en caché en: ~/.cache/huggingface/hub
-[PASS] El modelo 'en' ya está en caché en: ~/.cache/huggingface/hub
-Provisión completa. No hay nada que descargar.
-```
-
-**Forzar una re-descarga limpia (`--force-update`):** si necesitas re-descargar
-el/los modelo(s) (p. ej. una caché corrupta o para actualizarlos a la revisión
-fijada por una versión nueva), `setup --force-update` elimina primero **ambos**
-modelos en caché (`es-mx-latam` y `en`, sin importar el `--language` pedido) y
-luego descarga según `--language` (default `all`, ambos), informando el espacio
-liberado. Si combinas `--force-update` con `--language <uno-solo>`, el modelo no
-pedido queda sin re-descargar hasta el siguiente `setup`:
-
-```bash
-ai-voice-interconnector setup --force-update
-# [force-update] Eliminando los modelos en caché para re-descargarlos...
-# [force-update] Espacio liberado total: ... MB
-# → a continuación, la descarga normal de setup
-```
-
-Es un modo mutuamente excluyente con `--remove-path` y `--uninstall`. Sin el flag,
-`setup` es idempotente y no re-descarga un modelo ya presente.
+**Qué esperar:** barra de progreso por bytes con ETA, resume automático si se
+interrumpe, e índice de estado en `data_dir()/models/<name>/manifest.json`.
+Si lo vuelves a ejecutar con los snapshots presentes, termina al instante sin
+descargar nada. La limpieza posterior corresponde a `cleanup` (snapshots + datos)
+o `uninstall --force` (además binario + PATH).
 
 **Provisión por SO** (experiencia homóloga):
 
-- **Windows**: el instalador agrega `ai-voice-interconnector` al PATH de usuario (HKCU) y
-  ofrece una casilla post-instalación que ejecuta `setup` en tu contexto de
-  usuario (con `install-windows.ps1`, el propio script ejecuta `setup` al terminar).
-- **Linux**: `setup` es el punto único de provisión. Ejecutado desde el AppImage,
-  además de descargar el modelo crea el symlink `~/.local/bin/ai-voice-interconnector`
-  apuntando al AppImage, dejando el comando invocable por nombre:
+- **Windows**: `install-windows.ps1` registra el directorio en el PATH de usuario
+  (HKCU) y ejecuta `setup` al terminar.
+- **Linux / macOS**: `install-linux.sh` / `install-macos.sh` crean el symlink
+  `~/.local/bin/ai-voice-interconnector` y encadenan `setup` al terminar.
+  Si `~/.local/bin` no está en tu PATH, el instalador te lo avisa con la línea
+  exacta a añadir al shell profile.
 
-  ```bash
-  # Primer uso con el AppImage descargado
-  chmod +x ai-voice-interconnector-0.1.0-x86_64.AppImage
-  ./ai-voice-interconnector-0.1.0-x86_64.AppImage setup
-  # → symlink en ~/.local/bin + chequeos + descarga del modelo
-
-  # Desde entonces, en una terminal nueva:
-  ai-voice-interconnector speech say --text "Hola"
-
-  # Desinstalación limpia en un comando (datos + symlink + AppImage):
-  ai-voice-interconnector setup --uninstall
-  # Reversión fina de solo el symlink de PATH (sin borrar nada más):
-  ai-voice-interconnector setup --remove-path
-  ```
-
-  Si `~/.local/bin` no está en tu PATH, `setup` te lo advierte con la línea a
-  añadir al shell profile.
-- **macOS**: el `.dmg` incluye `Instalar (PATH + modelo).command`, que enlaza
-  `ai-voice-interconnector` en `~/.local/bin` (per-user, **sin sudo**), avisa si esa ruta no
-  está en tu PATH y a continuación ofrece ejecutar `setup` como tu usuario. Para
-  desinstalar, el mismo `.dmg` trae `Desinstalar (quitar del PATH).command`, que
-  elimina el symlink (y detecta un symlink legado en `/usr/local/bin` de
-  versiones anteriores a 0.5.0, indicando cómo quitarlo); el `.app` se borra
-  arrastrándolo a la Papelera.
-
-> **Importante**: hasta que el modelo esté provisionado, `speech say` y `daemon start`
-> **abortan de inmediato** con un mensaje que remite a `ai-voice-interconnector setup`. Nunca
+> **Importante**: hasta que los modelos estén provisionados, `speech say` y `daemon start`
+> **abortan de inmediato** (exit 4) con un mensaje que remite a `ai-voice-interconnector setup`. Nunca
 > disparan una descarga silenciosa.
 
 ## Comandos
@@ -324,11 +226,10 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `python` | string | Versión de Python del runtime |
-| `platform` | string | Sistema y versión (p. ej. `"Windows 11"`) |
-| `checks` | array de objetos | Un objeto por chequeo: `status` (`"PASS"`/`"FAIL"`/`"WARN"`/`"SKIP"`), `name` (string), `detail` (string) |
-| `passed` | number | Conteo de chequeos `PASS` |
-| `failed` | number | Conteo de chequeos `FAIL` (si > 0, exit 1) |
+| `status` | string | `"ok"` si no hay issues; `"failed"` en caso contrario (exit 1) |
+| `data_dir` | string | Ruta del directorio de datos del usuario |
+| `hf_cache` | string | Ruta de la caché HF resuelta (auditoría de ubicación) |
+| `issues` | array de strings | Descripciones de los chequeos fallidos (vacío si todo correcto) |
 
 **`devices --json`**
 
@@ -346,26 +247,39 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `running` | boolean | Si el daemon responde al health check |
-| `status` | string | Solo con `running: true`: estado reportado (`"healthy"`, `"initializing"`, `"unknown"`) |
-| `model_loaded` | objeto | Solo con `running: true`: dict `{"es-latam": boolean, "en": boolean, "translate:es-en": boolean, "transcribe:small": boolean}` — qué modelo(s) están calientes en RAM (un idioma ausente/`false` se cargaría perezosamente al primer uso); la clave `"translate:es-en"` solo aparece si el daemon arrancó con `--language en`/`all`, y `"transcribe:small"` solo tras la precarga con `--with-stt` o la primera transcripción vía daemon |
-| `uptime_seconds` | number | Solo con `running: true`: segundos desde el arranque |
+| `daemon` | string | `"running"` si `/health` responde; `"stopped"` en caso contrario (exit 0) |
+| `engine` | string | Solo con `running`: motor reportado por el daemon |
+
+**`setup --json`**
+
+| Clave | Tipo | Significado |
+|-------|------|-------------|
+| `status` | string | `"completed"` |
+| `language` | string | El `--language` pedido (aceptado por compatibilidad; el set de modelos es fijo) |
+| `with_stt` | boolean | Espejo del flag `--with-stt` (redundante: STT ya va incluido) |
+| `models_provisioned` | array de strings | Los 4 modelos pinneados (`qwen3-tts-0.6b`, `marian-es-en`, `marian-en-es`, `whisper-gguf`) |
+
+**`cleanup --json` / `uninstall --json`**
+
+| Clave | Tipo | Significado |
+|-------|------|-------------|
+| `status` | string | `"cleanup_complete"` / `"uninstalled"` (uninstall emite `"cancelled"` si se aborta la confirmación) |
 
 **`voice clone --json`**
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `name` | string | Nombre de la voz registrada |
-| `timbre` | string | Ruta absoluta del `timbre-reference.wav` copiado (timbre) |
-| `speech` | string | Ruta absoluta del `speech-reference.wav` copiado (conditioning) |
-| `precomputed` | boolean | `true` si los conditionals se precomputaron al clonar (voz lista sin recomputar en la primera síntesis) |
+| `timbre` | string | Ruta absoluta del `timbre-reference.wav` copiado |
+| `speech` | string | Ruta absoluta del `.qvoice` generado (`reference.qvoice`) |
+| `precomputed` | boolean | Siempre `false` (el clonado genera `.qvoice` bajo demanda) |
 
 **`voice remove --json`**
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `name` | string | Nombre de la voz eliminada |
-| `removed` | boolean | `true` en la rama de éxito (los errores conservan su mensaje en stderr y su exit code, sin payload) |
+| `status` | string | `"removed"` |
+| `voice` | string | Nombre de la voz eliminada |
 
 **`translate --json`**
 
@@ -374,35 +288,6 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `translated` | string | Texto traducido (igual al de entrada si `--from == --to`, passthrough) |
 | `source` | string | El `--from` pedido |
 | `target` | string | El `--to` pedido |
-
-**`setup --json`**
-
-| Clave | Tipo | Significado |
-|-------|------|-------------|
-| `language` | string | El `--language` pedido (`"es-latam"`, `"en"` o `"all"`) |
-| `models` | objeto | Un objeto por modelo provisionado (`"es-mx-latam"` y/o `"en"`, según `language`; con `language` `en`/`all` se suman `"opus-mt-es-en"` y `"opus-mt-en-es"`, el par de traducción), cada uno con `already_cached` (boolean, `true` si no hubo nada que descargar) y `downloaded` (boolean, `true` si esta ejecución lo descargó) |
-| `cache_dir` | string | Raíz de la caché de HuggingFace usada |
-
-Con `--remove-path` (Linux), el payload es distinto: `remove_path` (boolean,
-siempre `true`) y `removed` (boolean, `true` si el symlink existía y se quitó).
-
-Con `--uninstall` (los tres SO; requiere `--yes`, como `cleanup --json`), el
-payload es: `uninstall` (boolean, siempre `true`) y `removed` (lista de las rutas
-eliminadas **en proceso**: las de datos del `cleanup` encadenado, el directorio
-raíz de datos si quedó vacío, el symlink de PATH y —en Unix— el binario). En
-**Windows** el binario lo borra el desinstalador de Inno tras la salida del
-proceso, así que no entra en `removed` sino en un campo adicional `delegated`
-(lista con el directorio de instalación); afirmarlo en `removed` sería falso
-porque aún existe cuando se emite el payload.
-
-**`cleanup --json`** — requiere `--yes` o `--dry-run` (la confirmación
-interactiva contaminaría stdout); sin ellos, error en stderr y exit 2. Los
-listados informativos van a stderr.
-
-| Clave | Tipo | Significado |
-|-------|------|-------------|
-| `removed` | array de strings | Rutas eliminadas (o que se eliminarían, con `--dry-run`) |
-| `dry_run` | boolean | `true` si no se borró nada (solo listado) |
 
 ---
 
@@ -436,36 +321,16 @@ ai-voice-interconnector doctor --json
 **Qué esperar** (entorno sano):
 
 ```
-=== AI Voice InterConnector Doctor ===
-
-Python: 3.13.x ...
-Plataforma: Windows 11 / Linux 6.x / Darwin 24.x
-
-[PASS] Chatterbox TTS: 0.3.x
-[PASS] Audio library: pycaw (Windows) — 2 dispositivo(s)
-[PASS] Chatterbox model (es-latam): es-mx-latam presente en la caché
-[PASS] Chatterbox model (en): en presente en la caché
-[PASS] Translation model (es<->en): opus-mt presente en la caché
-[PASS] Voices directory: 1 voz(voces) disponible(s)
-[PASS] RAM: 16.0 GB
-
-Chequeos: 7 exitosos, 0 fallidos
+Diagnóstico: todo correcto.
+Cache HF: C:\Users\<tu-usuario>\.cache\huggingface\hub
 ```
 
-Cada idioma (`es-latam`/`en`) se reporta como un chequeo `Chatterbox model
-(<idioma>)` independiente: si falta uno solo, ese chequeo falla y remite a
-`ai-voice-interconnector setup --language <idioma>`, sin afectar al otro idioma ya provisionado.
-`Translation model (es<->en)` es un único chequeo lógico (ambas direcciones se
-provisionan juntas con `setup --language en`/`all`): falla si falta cualquiera
-de las dos, remitiendo a `ai-voice-interconnector setup --language en`.
+`doctor` verifica el directorio de datos, los **4 modelos pinneados** (TTS
+Qwen3-TTS, traducción Marian es→en y en→es, STT Whisper GGUF) y el almacén de
+voces. Si falta alguno, lista cada issue con `✗` y remite a
+`ai-voice-interconnector setup`.
 
-Termina con código de salida 0 si todo pasa, y 1 si algún chequeo falla (cada
-`[FAIL]` indica cómo corregirlo, p. ej. `ejecuta: ai-voice-interconnector setup`).
-
-> El número y los nombres de chequeos varían según el SO: por ejemplo, Windows
-> añade el chequeo informativo `OneDrive user-data-dir` (ver solución de
-> problemas), y Linux/macOS añaden `CPU AVX2` (SKIP en ARM). Un `[WARN]` o
-> `[SKIP]` nunca cuenta como fallido ni altera el código de salida.
+Termina con código de salida 0 si todo pasa, y 1 si algún chequeo falla.
 
 ---
 
@@ -541,16 +406,10 @@ Locución 'saludo' guardada (voz 'default').
 - `--text, -t` (requerido): Texto a sintetizar
 - `--label, -l` (requerido): Etiqueta de la locución en el almacén (normalizada a minúsculas)
 - `--voice, -v`: Nombre de la voz a usar (default: `default`)
-- `--play, -p`: Reproduce la toma y pregunta antes de guardar (ver «El bucle de `--play`» más abajo); requiere terminal interactiva en la entrada estándar y es incompatible con `--json`
+- `--output, -o`: Copia adicional del WAV a la ruta indicada
+- `--play`: Reproduce el WAV tras guardar
 - `--force, -f`: Sobrescribe la locución si la etiqueta ya existe para la voz
-- `--compute-backend, -cb`: igual que en `speech say`
-- `--target-language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); `en` reutiliza el timbre clonado para producir audio en inglés (síntesis cross-lingual). Rename de `--language` (§ «Síntesis cross-lingual» abajo)
-- `--source-language`: Idioma del texto de entrada (`es-latam`/`en`, default: igual a `--target-language`, sin traducir); si difiere de `--target-language`, el texto se traduce antes de sintetizar
-- `--exaggeration`: Override de expresividad emocional (default: el de la ruta de `--target-language`); no puede ser negativo, sale con exit 2 si lo es
-- `--cfg-weight`: Override de cfg_weight (default: el de la ruta de `--target-language`); `0.0` no está permitido (crash conocido en el inglés base), debe ser `> 0.0`, sale con exit 2 si no
-- `--temperature`: Override de temperature (default: el de la ruta de `--target-language`); debe ser `> 0.0`, sale con exit 2 si no
-- `--daemon` / `--no-daemon`: igual que en `speech say`
-- `--json`: Emite `{"voice", "label", "t3_time", "s3gen_time", "daemon"}` (ver la referencia de esquemas)
+- `--json`: Emite `{status, audio_path, voice}`
 
 **Colisión de etiqueta:** sin `--force`, guardar sobre una etiqueta que ya
 existe para la voz sale con exit **6**, sin gastar GPU (la comprobación es
@@ -597,89 +456,29 @@ ai-voice-interconnector speech say --text "Hola mundo"
 ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
 ```
 
-**Qué esperar:** el comando reporta su progreso por etapas con timestamps. En
-modo directo (sin daemon), la primera etapa es la carga del modelo (~15–30 s) y
-luego la síntesis; al final, el audio suena por los altavoces. En una terminal
-interactiva verás además un indicador de progreso en vivo (etapa y avance de
-tokens del T3) sobre stderr; ver «Progreso en vivo» más abajo. El siguiente
-ejemplo es la salida capturada (sin TTY):
+**Qué esperar:** en modo directo (sin daemon) se resuelve la voz, se sintetiza
+con Qwen3-TTS y el audio suena por los altavoces. Con el daemon activo, el CLI
+delega vía HTTP y el modelo ya está caliente en memoria. Salida típica (stderr):
 
 ```
-Iniciando speech say...
-[10:00:01] Usando modelo en caché: es-mx-latam (...)...
-[10:00:20] Modelo cargado: es-MX-Latam (vocab=2454, compute_backend=cpu, builtin_voice=sí)...
-[10:00:20] [1-Speech] Etapa 1/4: Cargando conditionals...
-[10:00:21] [1-Speech] -> Done (1.0s)
-[10:00:21] [2-Speech] Etapa 2/4: Generando audio (TTS)...
-[10:00:39]    [Etapa 2a] T3 autoregresivo: 12.0s...
-[10:00:39]    [Etapa 2b] S3Gen vocoder:   6.0s...
-[10:00:39] [2-Speech] -> Done (18.2s)
-[10:00:39] [3-Speech] Etapa 3/4: Convirtiendo a WAV...
-[10:00:39] [3-Speech] -> Done (0.1s)
-[10:00:39] [Reproducción] Reproduciendo audio...
-[10:00:42] [Reproducción] Reproducción finalizada
-Finalizado en 41.5s
+Reproduciendo: C:\Users\<u>\AppData\Local\Temp\avi_say_<pid>.wav
 ```
 
 **Orígenes de voz (resolución usuario→fábrica):**
-- **Fábrica**: voces empaquetadas en el ejecutable, de solo lectura (incluye
-  `default`). Idénticas en desarrollo y en cualquier instalación.
-- **Usuario**: voces registradas con `voice clone`, escribibles, guardadas en el
-  directorio de datos de usuario por SO (estables entre ejecuciones). Una voz de
-  usuario con el mismo nombre que una de fábrica la sobrescribe.
+- **Fábrica**: voz `default` embebida en el binario (`crates/avi-store/assets/default/`),
+  materializada en el primer uso; de solo lectura.
+- **Usuario**: voces registradas con `voice clone` (`.qvoice`), escribibles,
+  guardadas en `data_dir()/voices/<nombre>/`. Una voz de usuario con el mismo
+  nombre que una de fábrica la sobrescribe.
 
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
-- `--voice, -v`: Nombre de la voz registrada a usar (auto-carga sus dos audios)
-- `--target-language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); `en` reutiliza el timbre clonado para producir audio en inglés (síntesis cross-lingual). Rename de `--language` (§ «Síntesis cross-lingual» abajo)
-- `--source-language`: Idioma del texto de entrada (`es-latam`/`en`, default: igual a `--target-language`, sin traducir); si difiere de `--target-language`, el texto se traduce antes de sintetizar
-- `--exaggeration`: Override de expresividad emocional (default: el de la ruta de `--target-language`); no puede ser negativo, sale con exit 2 si lo es
-- `--cfg-weight`: Override de cfg_weight (default: el de la ruta de `--target-language`); `0.0` no está permitido (crash conocido en el inglés base), debe ser `> 0.0`, sale con exit 2 si no
-- `--temperature`: Override de temperature (default: el de la ruta de `--target-language`); debe ser `> 0.0`, sale con exit 2 si no
+- `--voice, -v`: Nombre de la voz a usar (default: `default`)
 - `--daemon`: Usar el daemon sin sondeo previo; si falla, el error se reporta (sin fallback a directo)
 - `--no-daemon`: Forzar modo directo, sin sondear el daemon
 
 `--daemon` y `--no-daemon` son **mutuamente excluyentes**: combinarlos produce
 un error en stderr y exit 2 (`INVALID_INPUT`), antes de cualquier trabajo.
-- `--compute-backend, -cb`: Backend de cómputo para la inferencia (`auto`, `cpu`, `cuda`, `mps`; default: `auto`)
-
-Sin valor, `ai-voice-interconnector` detecta automáticamente el mejor backend disponible
-(CUDA → MPS → CPU) y lo usa durante toda la sesión. El backend elegido se
-muestra en el log de arranque del motor (`Modelo cargado: …,
-compute_backend=…`). Si quieres forzar uno concreto (p. ej. CPU para
-reproducibilidad), pasa el valor explícito. **Nota:** vía daemon el backend
-queda fijado desde su arranque; un `--compute-backend` distinto de `auto` en
-una invocación individual se ignora y `speech say` avisa por stderr. Para forzar
-un backend distinto usa `--no-daemon`, o reinicia el daemon con la variable
-de entorno correspondiente.
-
-**Límite de longitud del texto:** `--text` acepta hasta 5000 caracteres; por
-encima de ese límite `speech say` falla con exit 2 (`INVALID_INPUT`) antes de
-intentar sintetizar, en modo directo o vía daemon (misma regla y mismo límite
-en `speech synthesize`). Por encima de 2000
-caracteres (sin llegar a 5000) se emite una advertencia no bloqueante por
-stderr: el T3 topa la generación en 500 tokens, así que un texto muy largo
-puede truncarse en el audio resultante — se recomienda fragmentar el texto en
-varias llamadas a `speech say`.
-
-**Síntesis cross-lingual:** por defecto (`--target-language es-latam`) usa el
-modelo en español latinoamericano provisionado por `setup`; con
-`--target-language en` usa en su lugar el modelo base en inglés, reutilizando
-el timbre de la voz clonada (`--voice`) para producir audio en inglés. Cada
-idioma se provisiona por separado (ver `setup --language`); si el modelo
-pedido no está en caché, falla de inmediato remitiendo a `ai-voice-interconnector setup
---language <idioma>`. `--target-language` es el rename de la antigua
-`--language` (sin alias de transición); `setup`, `daemon` y `doctor`
-conservan `--language` sin cambios.
-
-**Traducción opt-in antes de sintetizar:** si además declaras
-`--source-language` con un idioma distinto de `--target-language`, el texto
-se traduce (par `opus-mt` es↔en) **antes** de sintetizarlo — útil para
-escribir en tu idioma nativo y obtener audio en el otro, con la misma voz
-clonada. Si solo quieres el texto traducido, sin sintetizar audio, usa el
-comando `translate` (ver más abajo). El modelo de traducción ausente falla
-remitiendo a `setup --language en`; un fallo de la traducción en sí sale con
-exit 9.
 
 **Ejemplos:**
 ```bash
@@ -688,13 +487,6 @@ ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
 
 # Forzar modo directo
 ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
-
-# Síntesis cross-lingual: la voz clonada en español habla en inglés
-ai-voice-interconnector speech say --text "Hello there" --voice mi_voz --target-language en
-
-# Traducción + síntesis: escribes en español, sale en inglés
-ai-voice-interconnector speech say --text "Hola, ¿cómo estás?" --voice mi_voz \
-  --source-language es-latam --target-language en
 ```
 
 #### `speech play`
@@ -832,7 +624,7 @@ exit **5**.
 #### `speech dub`
 
 Composición voz→voz: transcribe la entrada hablada (archivo o micrófono),
-traduce si `--source-language` difiere de `--target-language`, sintetiza con
+traduce si `--from` difiere de `--to`, sintetiza con
 la voz elegida y reproduce el resultado. Reutiliza las etapas de
 `speech transcribe`, la traducción de `speech say`/`synthesize` y el despacho
 de síntesis; no guarda nada en el almacén (sin `--label` ni `--json`).
@@ -843,8 +635,8 @@ es requerida**. Con `--mic`, la grabación es **push-to-talk** por defecto
 fija en segundos y solo es válido junto a `--mic`.
 
 ```bash
-ai-voice-interconnector speech dub --mic --source-language es-latam --target-language en -v mi_voz
-ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --target-language es-latam
+ai-voice-interconnector speech dub --mic --from es --to en -v mi_voz
+ai-voice-interconnector speech dub --audio grabacion.wav --from en --to es
 ```
 
 **Qué esperar:** transcribe tu habla al texto, lo traduce si procede y
@@ -853,14 +645,12 @@ sin `--duration`, el comando espera en silencio a que presiones Enter antes de
 transcribir.
 
 **Opciones:**
-- `--audio`: Ruta del archivo WAV hablado (mutuamente excluyente con `--mic`; exactamente una de las dos es requerida)
+- `--audio, -a`: Ruta del archivo WAV hablado (mutuamente excluyente con `--mic`; exactamente una de las dos es requerida; alias: `--file`)
 - `--mic`: Graba desde el micrófono (mutuamente excluyente con `--audio`; exactamente una de las dos es requerida)
 - `--duration N`: Duración fija de grabación en segundos; solo válido con `--mic`
-- `--source-language` (requerido): Idioma hablado en el audio (`es-latam` o `en`)
-- `--target-language`: Idioma/modelo de síntesis (`es-latam`/`en`, default: `es-latam`); si difiere de `--source-language`, el texto transcrito se traduce antes de sintetizar
+- `--from` (default `es`) / `--to` (default `en`): Idioma hablado y destino (`es`/`en`; si difieren, se traduce antes de sintetizar)
 - `--voice, -v`: Nombre de la voz (default: `default`)
-- `--compute-backend, -cb`, `--exaggeration`, `--cfg-weight`, `--temperature`: igual que en `speech say`
-- `--daemon` / `--no-daemon`: igual que en `speech transcribe`; aplican a la transcripción y a la síntesis
+- `--daemon` / `--no-daemon`: aplican a la transcripción y a la síntesis
 
 `--duration` sin `--mic` sale con exit **2**, y `--mic` sin `--duration` en
 una terminal no interactiva (no TTY) también sale con exit **2**. Un `--audio`
@@ -1010,111 +800,62 @@ modelo ya cargado, sale con exit **9**.
 
 ### `cleanup`
 
-Desaprovisiona los datos del proyecto: los modelos descargados y/o las voces de
-usuario. Es la contraparte de `setup` y completa el ciclo de vida
-instalación→desinstalación.
+Limpia los datos del proyecto: snapshots HF de los modelos pinneados, índice en
+`data_dir()/models`, voces y locuciones. Es la contraparte de `setup` y completa
+el ciclo de vida instalación→desinstalación.
 
 ```bash
-ai-voice-interconnector cleanup --model              # elimina los modelos descargados
-ai-voice-interconnector cleanup --voices             # elimina las voces de usuario y arrastra
-                                            sus locuciones de habla sintética
-                                            (salvo 'default')
-ai-voice-interconnector cleanup --synthetic-speech   # elimina toda la raíz de habla sintética
-ai-voice-interconnector cleanup --all                # los tres anteriores
-ai-voice-interconnector cleanup --all --dry-run      # lista lo que se borraría, sin borrar
-ai-voice-interconnector cleanup --all --yes          # borra sin pedir confirmación (uso programático)
-ai-voice-interconnector cleanup --all --yes --json   # salida JSON (requiere --yes o --dry-run)
+ai-voice-interconnector cleanup            # borra data_dir()/models + speech + voices
+ai-voice-interconnector cleanup --all      # alias de `uninstall`: además binario + PATH
 ```
 
-**Qué esperar:** el comando lista las rutas exactas a eliminar y pide
-confirmación (`s/n`) antes de borrar; con `--dry-run` solo lista. Sin flags
-muestra la ayuda y no borra nada. `--yes`/`-y` omite la confirmación
-interactiva — pensado para invocar `cleanup` vía `subprocess` con stdin
-cerrado; sin `--yes` y con stdin cerrado, la falta de respuesta se trata como
-cancelación limpia («Cancelado: no se borró nada.», exit 0), no como error.
-
-El borrado es **quirúrgico**: dentro de la caché de HuggingFace solo se
-eliminan las carpetas de los dos repos que usa el proyecto
-(`Chatterbox-Multilingual-es-mx-latam` y `chatterbox` de ResembleAI), nunca
-modelos de otros proyectos; `--voices` elimina únicamente el directorio de
-voces de usuario. Todo es recuperable: `setup` reprovisiona los modelos y
+**Qué esperar:** borra `data_dir()/models|speech|voices` y los snapshots HF de
+los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `Helsinki-NLP/opus-mt-*`,
+`ggerganov/whisper.cpp`). El borrado es quirúrgico: nunca toca modelos de otros
+proyectos en la caché. Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
-
-`--model` también barre el modelo de traducción `opus-mt` convertido (ambas
-direcciones es↔en en un solo target): no hay un flag `--language` propio en
-`cleanup`, comparte `--model` con los modelos de síntesis (Simplicity First).
 
 ---
 
 ## Desinstalación completa
 
-**Canal nativo (los tres SO), en un comando**: `ai-voice-interconnector setup --uninstall`
-encadena `cleanup --all` (modelo + voces), revierte la integración de PATH y
-borra el binario, **en ese orden** (datos independientes primero, ancla al
-final). Cancelar el cleanup aborta la desinstalación sin borrar nada (salida 0).
-Con `--yes` se omite la confirmación; con `--json` (que exige `--yes`) emite un
-payload con `schema_version`, `uninstall` y `removed`. Solo aplica a la
-instalación nativa (AppImage / `.app` / Inno); desde fuente o pip/uv aborta
-remitiendo a `pip uninstall ai-voice-interconnector`.
+**Canal nativo (los tres SO), en un comando**: `ai-voice-interconnector uninstall`
+(alias: `cleanup --all`) encadena la limpieza de datos (snapshots HF +
+`data_dir()`), revierte la integración de PATH y borra el binario, **en ese
+orden**. Pide confirmación interactiva salvo con `--force`/`--yes`; cancelar
+aborta sin borrar nada (`{"status":"cancelled"}`, exit 0). Con `--json` emite
+`{"schema_version","status"}`.
 
-- **Linux (AppImage)**: quita el symlink de PATH y borra
-  `~/.local/opt/ai-voice-interconnector/`. (`setup --remove-path` se conserva como reversión
-  fina de solo el symlink, sin borrar nada más.)
-- **macOS (`.app`)**: quita el symlink de `~/.local/bin` y borra el `.app`
-  (resuelto desde el ejecutable, cubre `~/Applications`, `/Applications` y el
-  Cask). Si instalaste con **Homebrew Cask**, el comando lo detecta por la
-  metadata del Caskroom y **remite a `brew uninstall --cask --zap ai-voice-interconnector`**
-  sin borrar nada, para no dejar el Caskroom inconsistente (su `zap` ya cubre los
-  datos). **Nota de transición**: si instalaste una versión anterior a 0.5.0, el
-  symlink vivía en `/usr/local/bin`; el `.command` de desinstalación del `.dmg` lo
-  detecta e indica cómo quitarlo (`sudo rm /usr/local/bin/ai-voice-interconnector`).
-- **Windows (Inno)**: borra los datos en proceso y **delega** el binario y la
-  reversión del PATH (HKCU) al desinstalador de Inno, lanzado desacoplado (el SO
-  mantiene el lock del `.exe`). El directorio de instalación se reporta en el
-  campo `delegated` del payload, no en `removed`. La vía idiomática (Configuración
-  → Aplicaciones, sin admin) sigue disponible como alternativa.
-- **PyPI**: `uv tool uninstall ai-voice-interconnector` / `pipx uninstall ai-voice-interconnector` (más
-  `cleanup --all` para los datos, que la desinstalación del paquete no toca).
+- **Linux**: quita el symlink `~/.local/bin/ai-voice-interconnector`, borra
+  `~/.local/opt/ai-voice-interconnector/` y los datos.
+- **macOS**: igual que Linux en la vía one-liner; con Homebrew Cask la vía
+  idiomática es `brew uninstall --cask --zap ai-voice-interconnector`.
+- **Windows**: borra los datos y el directorio
+  `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, quita esa entrada del PATH
+  de usuario (`HKCU\Environment`) y notifica el cambio al sistema. Si el binario
+  está en uso, avisa y deja el borrado final para después de cerrar la terminal.
 
 ---
 
 ## Actualizar de versión
 
 `ai-voice-interconnector` no tiene auto-actualización: cada nueva versión se instala
-manualmente sobre (o junto a) la anterior. El modelo y las voces en el
+manualmente sobre (o junto a) la anterior. Los modelos y las voces en el
 directorio de datos de usuario no se ven afectados por la actualización del
 binario.
 
-- **Windows**: descarga el nuevo instalador y ejecútalo (o repite el one-liner
-  `irm | iex`); Inno Setup reemplaza la instalación per-user anterior en el
-  mismo directorio y conserva el PATH. Si vienes de una versión per-machine
-  (anterior a 0.4.0, instalada en Program Files), desinstálala primero desde el
-  Panel de control (con admin): instalar la per-user encima dejaría dos
-  instalaciones y PATH duplicado.
-- **Linux**: repite el one-liner `curl -fsSL …/install-linux.sh | sh`. Instala el
-  `.AppImage` nuevo, reapunta el symlink `~/.local/bin/ai-voice-interconnector` y **elimina
-  los AppImages anteriores** de `~/.local/opt/ai-voice-interconnector/` (ya no acumulan
-  gigabytes). En la vía manual (descargar el `.AppImage` a mano), vuelve a
-  correr `setup` **desde el archivo nuevo**:
-  `./ai-voice-interconnector-<versión-nueva>-x86_64.AppImage setup`; esto reapunta el
-  symlink — si solo reemplazas el archivo sin volver a ejecutar `setup`, el
-  symlink sigue apuntando a la ruta del AppImage viejo y el comando deja de
-  funcionar. Borra el `.AppImage` anterior una vez confirmado que el nuevo
-  funciona.
-- **macOS**: repite el one-liner `curl -fsSL …/install-macos.sh | sh` (opción
-  primaria: descarga, verifica, reemplaza el `.app` en `~/Applications` y
-  reapunta el symlink); o `brew upgrade --cask ai-voice-interconnector` si instalaste con
-  Homebrew. En la vía manual, monta el `.dmg` nuevo, arrastra el `.app` a
-  Aplicaciones (sobrescribiendo el anterior) y vuelve a ejecutar el script
-  `Instalar (PATH + modelo).command` del volumen nuevo.
-- **PyPI**: `uv tool upgrade ai-voice-interconnector` / `pipx upgrade ai-voice-interconnector`.
+- **Windows**: repite el one-liner `irm | iex`; reemplaza la instalación per-user
+  anterior en `%LOCALAPPDATA%\Programs\ai-voice-interconnector` y conserva el PATH.
+- **Linux / macOS**: repite el one-liner `curl -fsSL …/install-linux.sh | sh`
+  (o `install-macos.sh`); limpia la versión anterior de
+  `~/.local/opt/ai-voice-interconnector/`, extrae la nueva y reapunta el symlink
+  `~/.local/bin/ai-voice-interconnector`.
+- **macOS (Homebrew)**: `brew upgrade --cask ai-voice-interconnector`.
 
-En los cuatro casos, los modelos descargados (`~/.cache/huggingface/hub`) se
-reutilizan tal cual. Cada versión del binario fija las revisiones exactas de los
-modelos que usa: si tu caché contiene otra revisión (por ejemplo, la de una
-versión anterior), `setup` la detecta como no provisionada y descarga la revisión
-requerida, reutilizando los archivos que no cambiaron entre revisiones (la
-caché de HuggingFace deduplica por contenido).
+Los modelos descargados (`~/.cache/huggingface/hub`) se reutilizan tal cual.
+Cada versión del binario fija las revisiones exactas de los modelos que usa
+(`MODEL_REVISIONS`): si tu caché contiene otra revisión, `setup` la detecta como
+no provisionada y descarga la requerida (la caché deduplica por contenido).
 
 ---
 
@@ -1254,18 +995,12 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
 - **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
   funciona pero puede paginar (ralentizarse) en textos largos. `doctor` emite un
   `[WARN]` de RAM por debajo de 8 GB (no bloquea nada).
-- **Disco**: ~6 GB para los modelos descargados (~3 GB c/u; el chequeo de `setup`
-  escala con los modelos pendientes: ~6 GB libres por modelo, ~12 GB con ambos).
-  El bundle PyInstaller `--onedir` ocupa del orden de 1-2 GB adicionales
-  sin comprimir (Windows/macOS y el AppImage `arm64` de Linux, que resuelven
-  `torch` desde el lock universal); el AppImage `x86_64` de Linux es más liviano
-  al instalar `torch`/`torchaudio` CPU-only sin el stack `nvidia-*-cu12` (ver
-  [docs/BUILD.md](docs/BUILD.md) — tamaño exacto pendiente de medición en CI).
-- **GPU (opcional)**: con `--compute-backend cuda` (NVIDIA) o `mps` (Apple Silicon)
-  la inferencia es más rápida; no es necesaria para el funcionamiento.
+- **Disco**: ~9 GB para los modelos descargados (Qwen3-TTS ~4,7 GB + Marian
+  es↔en ~3 GB + Whisper GGUF ~0,8 GB). El binario instalado ocupa ~40 MB.
+- **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
+  funcionamiento.
 - **Linux — glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+ o equivalente):
-  requisito de los wheels manylinux empaquetados (torch, onnxruntime). Ver la
-  entrada correspondiente en «Solución de Problemas» más abajo.
+  ver la entrada correspondiente en «Solución de Problemas» más abajo.
 
 ---
 
@@ -1323,18 +1058,15 @@ desde el binario como desde el código fuente. En concreto:
   | `4` | Modelo no provisionado | `speech say`/`daemon start` sin ejecutar `setup` |
   | `5` | Daemon inalcanzable | `speech say --daemon` sin daemon; `daemon start/stop/restart` fallido |
   | `6` | Conflicto de estado | Colisión en `voice clone` sin `--force`; voz ocupada; puerto del daemon en uso |
-  | `7` | Operación no aplicable | Voz de fábrica de solo lectura; plataforma no soportada; `setup --uninstall` fuera del canal nativo |
+  | `7` | Operación no aplicable | Voz de fábrica de solo lectura; plataforma no soportada |
   | `8` | Precondición de entorno incumplida | Credenciales, red, permisos o disco insuficientes al provisionar |
   | `9` | Fallo del pipeline de traducción | `translate` con el modelo cargado pero la inferencia falla |
   | `10` | Fallo del pipeline de transcripción | `speech transcribe`/`speech dub` con el modelo cargado pero la inferencia falla (directo o vía daemon) |
   | `130` | Interrupción del usuario | Ctrl+C (128 + SIGINT) durante cualquier comando |
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el
   audio generado para un mismo texto y voz es equivalente en cualquier SO.
-- **El motor auto-detecta el mejor backend de cómputo disponible** (CUDA en
-  NVIDIA, MPS en Apple Silicon, CPU en otro caso); se puede forzar uno
-  concreto con `--compute-backend` (`auto` por default). La detección corre
-  una sola vez al cargar el motor (en cada `speech say` sin daemon, y una vez por
-  arranque del daemon).
+- **El motor de audio** es nativo por SO (`cpal`: WASAPI/CoreAudio/ALSA); no
+  requiere configuración ni selección de backend por el usuario.
 
 Las únicas diferencias son internas y no cambian la forma de usar la aplicación:
 
@@ -1358,25 +1090,22 @@ Las únicas diferencias son internas y no cambian la forma de usar la aplicació
 
 ## Solución de Problemas
 
-### "el modelo 'es-mx-latam' no está descargado" (o "en")
+### "El modelo … no está provisionado. Ejecuta 'setup' primero." (exit 4)
 
-`speech say` (`--target-language`, default `es-latam`) y `daemon start`
-(`--language`, mismo default) requieren el modelo del idioma pedido
-provisionado, y nunca lo descargan por sí mismos. El mensaje de error indica
-el idioma exacto que falta; provisiónalo con:
+`speech say`, `speech synthesize`, `daemon` y `translate` exigen los modelos
+pinneados provisionados, y nunca los descargan por sí mismos. Provisiónalos con:
 
 ```bash
-ai-voice-interconnector setup --language es-latam   # o --language en, o sin flag (ambos)
+ai-voice-interconnector setup
 ```
 
-### "GLIBC_2.35 not found" (o similar) al ejecutar el AppImage en Linux
+### "GLIBC_2.35 not found" (o similar) al ejecutar el binario en Linux
 
-El AppImage requiere **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+ o
-equivalente): es la versión mínima que soportan los wheels manylinux de las
-dependencias empaquetadas (torch, onnxruntime). En una distro más antigua
-(p. ej. Ubuntu 20.04, Debian 11) el binario no arranca. No hay solución desde
-el AppImage mismo: actualiza la distro a una versión con glibc ≥ 2.35, o
-compila `ai-voice-interconnector` desde código fuente en tu distro actual (ver
+El binario Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+
+o equivalente): se compila contra la glibc del runner de build y `crt-static` no
+enlaza glibc estáticamente. En una distro más antigua (p. ej. Ubuntu 20.04,
+Debian 11) el binario no arranca — `install-linux.sh` lo detecta y aborta antes.
+Actualiza la distro o compila desde código fuente en tu distro actual (ver
 [docs/BUILD.md](docs/BUILD.md)).
 
 ### "OneDrive user-data-dir" [WARN] en doctor (Windows)
@@ -1460,21 +1189,17 @@ Cómo proceder:
   bloqueó la descarga, consérvala desde el menú de descargas: **Conservar** →
   **Conservar de todas formas**.)
 
-- **macOS (Gatekeeper)**: al abrir el `.app`/`.dmg` por primera vez, haz clic
+- **macOS (Gatekeeper)**: al abrir el binario por primera vez, haz clic
   derecho sobre él → **Abrir** y confirma; o quita la cuarentena desde una
   terminal:
 
   ```bash
-  xattr -d com.apple.quarantine /Applications/ai-voice-interconnector-arm64.app
+  xattr -d com.apple.quarantine ai-voice-interconnector
   ```
 
 Esto solo ocurre en el primer arranque; las ejecuciones posteriores no vuelven a
-pedir confirmación.
-
-> El canal PyPI (`uv tool install ai-voice-interconnector`) no dispara ninguno de los dos
-> avisos: el launcher lo genera `uv`/`pipx` localmente, sin Mark-of-the-Web ni
-> cuarentena. Ver [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) si prefieres ese
-> canal.
+pedir confirmación. Los one-liners (`curl | sh` / `irm | iex`) descargan por CLI
+y **no disparan ninguno de los dos avisos** (sin Mark-of-the-Web).
 
 Antes de aceptar, puedes comprobar objetivamente que el archivo es el que
 publicó el proyecto cotejando su SHA-256 contra el `SHA256SUMS.txt` del
@@ -1527,9 +1252,8 @@ la persona que ejecuta la herramienta.
 
 ## Licencia
 
-`ai-voice-interconnector` se distribuye bajo **GPL-3.0-or-later** (ver [LICENSE](LICENSE)). El modelo
-Chatterbox se distribuye bajo MIT y el par de traducción `opus-mt` (Helsinki-NLP)
-bajo CC-BY-4.0; las dependencias empaquetadas conservan sus propias
-licencias, en su mayoría permisivas (MIT/BSD/Apache/ISC/PSF) y algunas de copyleft
-compatible con GPLv3 (LGPL-2.1+, MPL-2.0 y el GPLv3+ de pykakasi), detalladas en
-[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
+`ai-voice-interconnector` se distribuye bajo **GPL-3.0-or-later** (ver [LICENSE](LICENSE)). El
+motor Qwen3-TTS se distribuye bajo MIT/Apache-2.0 y el par de traducción
+`opus-mt` (Helsinki-NLP) bajo CC-BY-4.0; las dependencias empaquetadas conservan
+sus propias licencias, en su mayoría permisivas (MIT/Apache-2.0/BSD/ISC),
+detalladas en [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) (inventario de `Cargo.lock`).

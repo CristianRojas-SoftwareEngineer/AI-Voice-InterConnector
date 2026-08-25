@@ -58,7 +58,7 @@ ai-voice-interconnector doctor --json
 Solo si no se hizo desde el instalador.
 
 ```bash
-# Descarga ambos modelos (es-mx-latam y en) a ~/.cache/huggingface/hub (idempotente)
+# Descarga los 4 modelos pinneados a ~/.cache/huggingface/hub (idempotente)
 ai-voice-interconnector setup
 ```
 

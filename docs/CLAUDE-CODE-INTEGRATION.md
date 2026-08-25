@@ -39,9 +39,9 @@ Code. Al final de cada turno (y en avisos relevantes) el usuario escucha un
 mensaje conversacional corto en español —no el texto en bruto del asistente,
 sino una locución procesada.
 
-Es un **consumidor** del CLI público (`ai-voice-interconnector` en PATH): no importa el
-paquete `ai_voice_interconnector`, no comparte código ni requiere el árbol fuente. Sus
-propiedades relevantes para esta integración:
+Es un **consumidor** del CLI público (`ai-voice-interconnector` en PATH): no
+comparte código ni requiere el árbol fuente. Sus propiedades relevantes para
+esta integración:
 
 - **Automático**: disparado por hooks (`Stop`, `Notification`), sin intervención
   del modelo ni del usuario. `SessionStart` verifica el entorno y deja el daemon
@@ -63,14 +63,14 @@ JSON:
 |------------|-----------------------|----------------------------|
 | `speech say --text "<msg>" --daemon` | Síntesis y reproducción de cada locución. Usa el daemon y falla si no está levantado (no lo arranca solo). | Mantener el flag `--daemon` y su semántica (usar el daemon, no auto-arrancarlo). |
 | `speech transcribe --audio <wav> --source-language <lang> --daemon` | No lo consume el plugin (registro de impacto de la Fase 5): transcripción con despacho al daemon de tres modos, forma nueva. | Mantener los tres modos (`--daemon`/`--no-daemon`/autodetección) y el shape `--json` `{"text", "source"}`. |
-| `speech dub --mic --source-language <lang> --target-language <lang> -v <voz>` | No lo consume el plugin (registro de impacto de la Fase 5): composición voz→voz (transcribe → traduce → sintetiza → reproduce), forma nueva. | Mantener `--audio`/`--mic` mutuamente excluyentes (exactamente una) y `--source-language` requerido. |
-| `doctor --json` | Verifica el entorno; busca en `checks[]` los elementos cuyo `name` empieza con `"Chatterbox model"` (uno por idioma: `"Chatterbox model (es-latam)"` y `"Chatterbox model (en)"`) y lee su `status`. | Mantener el prefijo `checks[].name == "Chatterbox model"` (con sufijo ` (<idioma>)` por modelo) y los valores `PASS`/`FAIL`. |
+| `speech dub --mic --from <lang> --to <lang> -v <voz>` | No lo consume el plugin (registro de impacto de la Fase 5): composición voz→voz (transcribe → traduce → sintetiza → reproduce), forma nueva. | Mantener `--audio`/`--mic` mutuamente excluyentes (exactamente una). |
+| `doctor --json` | Verifica el entorno; lee `status` (`ok`/`failed`) y `issues[]`. | Mantener el campo `status` con esos valores y la lista de `issues`. |
 | `daemon status --json` | Lee `running` para saber si el daemon corre. | Mantener el campo booleano `running`. |
 | `daemon start` | Levanta el daemon para dejar los modelos en memoria. | Mantener el subcomando y su arranque desanclable. |
 
 Cambiar cualquiera de estos nombres, flags o campos **rompe la narración** sin
 que este repo tenga tests que lo detecten (el plugin vive fuera). Por eso esta
-tabla es el contrato a preservar; al tocar `cli.py` en `speech say`,
+tabla es el contrato a preservar; al tocar `src/main.rs` en `speech say`,
 `speech transcribe`, `speech dub`, `doctor` o `daemon`, revísala.
 
 ## Qué NO comparten los dos proyectos
@@ -78,12 +78,12 @@ tabla es el contrato a preservar; al tocar `cli.py` en `speech say`,
 El acoplamiento real es solo el contrato público del CLI; todo lo demás es
 disjunto, y por eso el plugin vive en su propio repositorio:
 
-- **Código**: el plugin es TypeScript sobre el Node.js que trae Claude Code; no
-  importa el paquete `ai_voice_interconnector`.
-- **Versionado**: AI-Voice-InterConnector versiona el motor (binarios por SO, PyPI); el
-  plugin versiona con el campo `version` de `plugin.json`, al ritmo de Claude
+- **Código**: el plugin es TypeScript sobre el Node.js que trae Claude Code;
+  no depende del árbol Rust.
+- **Versionado**: AI-Voice-InterConnector versiona el motor (binarios por SO);
+  el plugin versiona con el campo `version` de `plugin.json`, al ritmo de Claude
   Code. Un fix en uno no obliga a un release del otro.
-- **CI e infraestructura**: PyInstaller + pytest + gates de cobertura aquí;
+- **CI e infraestructura**: cargo test/build + publicaciones por tag aquí;
   toolchain TypeScript + `claude plugin validate` allá.
 
 Además, el modelo de distribución de plugins (marketplaces) asume un repo git

@@ -12,8 +12,9 @@ correspondiente a esta versión exacta:
 - **Repositorio:** <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector>
 
 Las atribuciones de las dependencias redistribuidas están en
-`THIRD-PARTY-LICENSES.md`, junto a este archivo. El modelo de voz Chatterbox
-no se empaqueta en el binario y se licencia por separado (MIT, ResembleAI).
+`THIRD-PARTY-LICENSES.md`, junto a este archivo. Los pesos de los modelos no se
+empaquetan en el binario: se descargan con `setup` y conservan sus licencias
+(Qwen3-TTS MIT/Apache-2.0, opus-mt CC-BY-4.0).
 
 Si recibiste este binario sin acceso a las URLs anteriores, puedes solicitar
 el código fuente abriendo un issue en el repositorio o contactando al

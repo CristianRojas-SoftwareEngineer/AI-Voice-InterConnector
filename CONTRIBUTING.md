@@ -18,9 +18,11 @@ flujo de desarrollo, los estándares del proyecto y cómo proponer cambios.
 
 ## Requisitos
 
-- **Python 3.13** (el proyecto fija esta versión en el build y en CI).
-- Git.
-- En Linux, las cabeceras de ALSA para el audio: `libasound2-dev`.
+- **Rust 1.96.0** (ver `rust_version` en `.circleci/config.yml`; `rustup` recomendado).
+- **Cargo** (con Rust).
+- **CMake ≥ 3.20** + **pkg-config** (para `whisper-rs`/`ct2rs`).
+- En Linux: `libasound2-dev` y `libclang-dev` (`sudo apt install libasound2-dev libclang-dev pkg-config cmake`).
+- Git. El proyecto es 100% Rust: sin Python.
 
 ## Configuración del entorno de desarrollo
 
@@ -28,132 +30,103 @@ flujo de desarrollo, los estándares del proyecto y cómo proponer cambios.
 git clone https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector.git
 cd AI-Voice-InterConnector
 
-# Instalar dependencias de desarrollo (límites >=; ver nota más abajo)
-pip install -r requirements.txt
-pip install pytest
+# Verificar toolchain Rust
+rustc --version  # 1.96.0
+cargo --version
 
-# Ejecutar el CLI desde el código fuente
-python bin/ai-voice-interconnector version
-python bin/ai-voice-interconnector doctor
+# Ejecutar el CLI desde el código fuente (sin instalar)
+cargo run -- version
+cargo run -- doctor
+cargo run -- voice list
 ```
 
-> Los **builds y el CI** no instalan desde `requirements.txt`, sino desde
-> `requirements-lock.txt` (lock universal con hashes) con `--require-hashes`, para
-> garantizar reproducibilidad. `requirements.txt` son los límites de desarrollo.
->
-> **Entorno idéntico al de CI** (reproduceibilidad total): si quieres que tu
-> entorno local tenga exactamente las mismas versiones que en el pipeline,
-> instala desde el lock en vez de desde los límites:
->
-> ```bash
-> python -m venv .venv
-> .venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
-> pip install -r requirements-lock.txt --require-hashes
-> pip install pytest
-> ```
->
-> Esto verifica la integridad de cada paquete contra los hashes del lock. Si
-> editaste `pyproject.toml` y el lock está desactualizado, el comando fallará
-> con un error claro — regenera el lock primero (ver «Dependencias y lockfile»
-> más abajo).
+La voz `default` está embebida en el binario (`crates/avi-store/assets/default/`); no requiere `src/` ni Python.
 
 ## Tests
 
-La suite usa `pytest`. Antes de abrir un PR, ejecútala completa y asegúrate de que
-pasa:
+La suite es **100% Rust** (`cargo test --all`, incluye los tests del tooling en
+`crates/xtask`). Antes de abrir un PR, verifica:
 
 ```bash
-pytest tests/ -v
+cargo test --all --verbose          # tests (avi-core/audio/tts/store/daemon/xtask/cli_golden)
+cargo fmt --all --check
+cargo clippy --all-targets
+
+# Validación GPLv3 (gate de CI)
+cargo run -p xtask -- source-offer --check
+cargo run -p xtask -- licenses --check
 ```
 
-- Añade tests para todo comportamiento nuevo o corregido.
-- La suite se ejecuta en CI en **Linux**, **Windows** y **macOS** nativos; evita
-  supuestos específicos de un SO (rutas, permisos, señales) o márcalos con un
-  `skip` justificado.
-- En Windows, los tests de symlink (`TestSetupLinuxPath`, en `tests/test_cli.py`)
-  requieren permiso para crear symlinks: activa el **Modo de programador**
-  (Configuración → Sistema → Para programadores) o ejecuta pytest en una consola
-  elevada; sin ello esos tests se saltan con `skip` y la cobertura local se reduce
-  (en CI corren completos en Linux/macOS).
-- Verificación rápida de sintaxis: `python -m compileall src/`.
+- Añade tests para todo comportamiento nuevo o corregido (`#[test]` en el crate correspondiente).
+- La suite se ejecuta en CI en **Linux**, **Windows** y **macOS** nativos (`test-linux`/`test-windows`/`test-macos`); evita supuestos de un SO.
+- Verificación rápida de sintaxis Rust: `cargo check --all`.
 
 ### Cobertura
 
-La cobertura es **opt-in**: no forma parte de `pytest tests/ -v` (no depende de
-`pytest-cov`). El job `coverage` de CI la mide y aplica un gate por módulo sobre los
-módulos de contrato (`cli.py`, `daemon/*`, `model_cache.py`, `voices.py`, `paths.py`).
-Para reproducirlo en local:
+La cobertura es **opt-in** y usa `cargo-llvm-cov` (no `pytest-cov`). El job `coverage` de CI la mide:
 
 ```bash
-pip install pytest-cov
-pytest tests/ --cov --cov-report=json --cov-report=term-missing
-python scripts/check_coverage.py coverage.json
+cargo install cargo-llvm-cov --locked
+cargo llvm-cov --workspace --lcov --output-path lcov.info
+cargo llvm-cov --workspace --summary-only
 ```
 
-Los pisos por módulo viven en `scripts/check_coverage.py::MODULE_FLOORS` (fuente
-única). Si tu cambio baja deliberadamente la cobertura de un módulo de contrato,
-ajusta el piso correspondiente en el mismo PR con justificación en el mensaje de
-commit; si el gate falla por una regresión no intencional, sube la cobertura en vez
-de bajar el piso.
+No hay gate de porcentaje aún; el job valida que la instrumentación no rompa la suite.
 
 ### Smoke-tests de instaladores
 
-Además de la suite pytest, los instaladores de una línea tienen smoke-tests
-propios en `tests/installer/`, que corren **en CI, no en pytest**:
+Además de `cargo test`, los one-liners tienen smoke-tests en `tests/installer/`, que corren **en CI, no en `cargo test`**:
 
-- `install-linux.bats` — `install-linux.sh` (Linux), con [bats-core](https://github.com/bats-core/bats-core).
+- `install-linux.bats` — `install-linux.sh` (Linux), con [bats-core](https://github.com/bats-core/bats-core) (`bats tests/installer/install-linux.bats`).
 - `install-macos.bats` — `install-macos.sh` (macOS), también con bats.
-- `install-windows.tests.ps1` — `install-windows.ps1` (Windows), con **Pester v5**
-  (`Invoke-Pester tests/installer/install-windows.tests.ps1` en PowerShell).
+- `install-windows.tests.ps1` — `install-windows.ps1` (Windows), con **Pester v5** (`Invoke-Pester tests/installer/install-windows.tests.ps1 -CI`).
 
-Si modificas un instalador, actualiza su smoke-test en el mismo cambio; los tres
-jobs (`test-installer-linux`/`-windows`/`-macos`) son puerta de los builds en CI.
+Si modificas un instalador, actualiza su smoke-test; los tres jobs (`test-installer-*`) son puerta de los 4 builds en CI.
 
 ## Dependencias y lockfile
 
-La fuente de verdad de las dependencias de runtime es `pyproject.toml`. Tras
-modificarla, **regenera el lockfile** de forma deliberada y revisa el diff:
+La fuente de verdad es `Cargo.toml` + `Cargo.lock` (workspace Rust). Tras modificar `Cargo.toml`:
 
 ```bash
-pip install uv
-uv pip compile --universal --generate-hashes --python-version 3.13 \
-    pyproject.toml -o requirements-lock.txt
+cargo update          # regenera Cargo.lock
+cargo test --all      # verifica
 ```
 
-Si cambian las dependencias empaquetadas, actualiza también
-`THIRD-PARTY-LICENSES.md` (ver la sección «Regeneración» de ese archivo).
+Revisa el diff de `Cargo.lock` antes de commitear. Si cambian crates empaquetados, actualiza `THIRD-PARTY-LICENSES.md` (ver su §Regeneración; `cargo-license` o `cargo metadata`).
+
+`THIRD-PARTY-LICENSES.md` y `SOURCE-OFFER.md` viajan dentro de los `tar.gz`/`.zip`; el gate `validate-licenses` falla si divergen.
 
 ## Compilación de binarios
 
 Ver [docs/BUILD.md](docs/BUILD.md) para el detalle por plataforma. Resumen:
 
 ```bash
-npm run build-windows          # o python scripts/build_windows.py
-python scripts/build_linux.py --arch x86_64
-python scripts/build_macos.py --arch arm64
+cargo build --release --features full   # binario completo (STT + traducción)
+cargo build --release                   # featureless (rápido, sin C++)
+
+./target/release/ai-voice-interconnector version
+./target/release/ai-voice-interconnector voice list
+./target/release/ai-voice-interconnector setup
 ```
+
+El empaquetado de distribución (`tar.gz`/`.zip` con 4 docs GPLv3) lo hace el step `Preparar artefacto versionado` de `.circleci/config.yml` solo en tags `v*`.
 
 ## Estilo y convenciones
 
-- **Idioma**: el código, los comentarios, los mensajes de commit y la documentación
-  se escriben en **español**, con ortografía correcta (acentos y signos incluidos).
-- **Comentarios**: explican el *porqué*, no el *qué*; sigue la densidad y el estilo
-  del código circundante.
-- **Commits**: mensajes descriptivos en español, con prefijo de tipo cuando aplique
-  (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build:`), en imperativo.
+- **Idioma**: código, comentarios, mensajes de commit y documentación en **español**, con ortografía correcta.
+- **Comentarios**: explican el *porqué*, no el *qué*; sigue la densidad del código circundante.
+- **Formato/lint**: `cargo fmt --all` y `cargo clippy --all-targets` deben pasar sin diff ni warnings nuevos.
+- **Commits**: mensajes descriptivos en español, prefijo de tipo cuando aplique (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build:`), en imperativo.
 
 ## Flujo de Pull Request
 
 1. Crea una rama a partir de `main`.
-2. Implementa el cambio con sus tests y la actualización documental correspondiente
-   (código, CI y docs deben quedar sincronizados en el mismo cambio).
-3. Verifica que `pytest tests/ -v` pasa en tu máquina.
-4. Abre el PR describiendo el problema, la solución y cómo verificarla.
-5. Enlaza el Issue relacionado si existe.
+2. Implementa el cambio con sus tests y la actualización documental correspondiente (código, CI y docs sincronizados).
+3. Verifica que `cargo test --all`, `cargo fmt --all --check` y `cargo clippy --all-targets` pasan.
+4. Abre el PR describiendo problema, solución y cómo verificarla.
+5. Enlaza el Issue si existe.
 
 ## Reporte de problemas
 
-- **Bugs y solicitudes de función**: abre un
-  [Issue](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/issues).
-- **Vulnerabilidades de seguridad**: sigue [SECURITY.md](SECURITY.md) (no las
-  reportes en un Issue público).
+- **Bugs y solicitudes**: [Issues](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/issues).
+- **Vulnerabilidades**: sigue [SECURITY.md](SECURITY.md) (no en Issue público).

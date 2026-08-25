@@ -1,4 +1,4 @@
-# Goal: Sistema TTS con Chatterbox Multilingual V3
+# Goal: Sistema TTS local con clonación de voz (Qwen3-TTS)
 
 ## Introducción
 
@@ -54,7 +54,7 @@ Si la spec **no cumple ninguno** de los tres, va al **goal inmediato** y se trab
 
 Obtener un sistema TTS **100% local** con audio nativo por sistema operativo, para transformar texto a audio en **español latino** de la mejor calidad disponible, distribuido bajo **licencia GPL-3.0-or-later** (con dependencias y modelo bajo licencias permisivas compatibles).
 
-Motor TTS: **Chatterbox Multilingual V3** (ResembleAI) — 23+ idiomas, clonación de voz, licencia MIT.
+Motor TTS: **Qwen3-TTS 0.6B CustomVoice** - multilingüe, clonación de voz; licencia MIT/Apache-2.0. (El goal original especificaba Chatterbox Multilingual V3; la migración a Rust sustituyó el motor preservando los contratos públicos.)
 
 Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre CTranslate2, opt-in) cierra el bucle de la clonación de voz: el usuario escribe en su idioma nativo y obtiene audio en el idioma destino con su propia voz clonada, en un solo comando (`speech say`/`synthesize --source-language ... --target-language ...`) o vía el comando `translate` cuando solo necesita el texto traducido. El eslabón de entrada de ese bucle (audio→texto) lo cubre `speech transcribe` (`whisper-rs` sobre whisper.cpp, opt-in vía `setup --with-stt`).
 
@@ -64,28 +64,28 @@ Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre 
 
 ## Alcance
 
-Implementar y validar la síntesis en español latinoamericano con voz propia del usuario usando Chatterbox Multilingual V3, distribuida con **equivalencia funcional completa** entre Windows, Linux y macOS: el cierre de las brechas registradas en [docs/PARITY.md](PARITY.md) es parte del alcance del goal inmediato.
+Implementar y validar la síntesis en español latinoamericano con voz propia del usuario usando Qwen3-TTS 0.6B, distribuida con **equivalencia funcional completa** entre Windows, Linux y macOS: el cierre de las brechas registradas en [docs/PARITY.md](PARITY.md) es parte del alcance del goal inmediato.
 
 ## Restricciones
 
 - **100% local**: Sin APIs externas ni conexiones a internet para síntesis
-- **Instalador único por SO (canal nativo)**: Un archivo ejecutable por plataforma; el canal PyPI complementario (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)) no está sujeto a esta restricción
-- **Sin dependencias externas (canal nativo)**: El usuario final no necesita instalar nada más; el canal PyPI requiere Python 3.13+ y, en Linux, `libportaudio2` del sistema
+- **Instalador único por SO (canal nativo)**: Un archivo comprimido por plataforma (`tar.gz`/`.zip` con binario Rust); el canal PyPI fue retirado en la Fase 7 (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md))
+- **Sin dependencias externas (canal nativo)**: El usuario final no necesita instalar nada más (binario autocontenido)
 - **Licencia**: El código propio se distribuye bajo GPL-3.0-or-later; todas las dependencias y los modelos usados deben tener licencias compatibles con GPLv3 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible, como LGPL-2.1+/MPL-2.0). El par de traducción `opus-mt` (opt-in) se distribuye bajo CC-BY-4.0, con atribución registrada en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)
 
 ## Especificación
 
 ### Instalador (canal nativo)
 
-Estos requisitos aplican al **canal nativo** (binarios PyInstaller por SO), que sigue siendo el canal recomendado para usuarios sin Python instalado:
+Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO), que es el único canal de distribución desde la Fase 7:
 
-- **Un solo instalador por SO**: Windows (.exe), Linux (.AppImage/.bin), macOS (.app)
+- **Un solo artefacto por SO**: Windows (`.zip`), Linux (`tar.gz` x64/arm64), macOS (`tar.gz` arm64) — binario autocontenido + docs GPLv3, instala vía one-liner `curl|sh`/`irm|iex` o Cask de Homebrew
 - **Cero dependencias externas**: El usuario final no instala Python, Node, Rust ni nada más
-- **Descarga + instalación + configuración** en un solo paso
-- **Audio nativo**: playback usando APIs nativas de cada SO
-- **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero, en los tres sistemas operativos por igual (ver [docs/PARITY.md](PARITY.md))
+- **Descarga + instalación + configuración** en un solo paso (one-liner verifica checksum, extrae, integra PATH y encadena `setup`)
+- **Audio nativo**: playback usando APIs nativas del SO (cpal)
+- **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero (`uninstall`/`cleanup --all`), en los tres sistemas operativos por igual (ver [docs/PARITY.md](PARITY.md))
 
-El proyecto distribuye además un **canal PyPI** complementario (`uv tool install ai-voice-interconnector` / `pipx install ai-voice-interconnector`) para audiencia técnica con Python 3.13+ ya instalado, que no está sujeto a estos requisitos (sí requiere Python, y en Linux la librería del sistema `libportaudio2`). Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md) para la matriz de trade-offs completa entre ambos canales.
+El **canal PyPI fue retirado en la Fase 7** (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)): la distribución es 100% Rust por archivos comprimidos. La mención histórica se conserva solo para auditoría.
 
 ### Paridad de experiencia
 
@@ -143,13 +143,13 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 
 ### Desinstalación en un comando
 
-La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina binario, PATH integrado y datos (modelo y voces), con residuo cero, en los tres SO. `ai-voice-interconnector setup --uninstall` es multiplataforma y espeja la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación (ver el plan técnico en [docs/ROADMAP.md](ROADMAP.md)):
+La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina binario, PATH integrado y datos (modelo y voces), con residuo cero, en los tres SO. `ai-voice-interconnector uninstall` (y `ai-voice-interconnector cleanup --all` como alias) es multiplataforma y espeja la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación:
 
-- **Linux**: el symlink `~/.local/bin/ai-voice-interconnector`, el directorio de instalación `~/.local/opt/ai-voice-interconnector/` y los datos (`cleanup --all`). Sin `sudo`.
-- **macOS**: los datos (`cleanup --all`), el symlink `~/.local/bin/ai-voice-interconnector` y el `.app` (`rm -rf` seguro sobre el bundle en ejecución). Si la instalación proviene de Homebrew, la desinstalación completa se remite a `brew uninstall --cask --zap` (que cubre también los datos) en lugar de proceder. Sin `sudo`.
-- **Windows**: los datos (`cleanup --all`) en proceso; el binario y el PATH se delegan al desinstalador de Inno Setup (per-user, sin admin), leído desde `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{AppId}_is1`.
+- **Linux**: el symlink `~/.local/bin/ai-voice-interconnector`, el directorio de instalación `~/.local/opt/ai-voice-interconnector/` y los datos (`cleanup`). Sin `sudo`. (`uninstall --force` omite confirmación)
+- **macOS**: análogo a Linux (`uninstall` limpia symlink + `~/.local/opt` + `cleanup`) en la vía one-liner; con **Homebrew Cask**, `brew uninstall --cask --zap ai-voice-interconnector` sigue siendo la vía idiomática (cubre también los datos). Sin `sudo`.
+- **Windows**: los datos (`cleanup`), el directorio `%LOCALAPPDATA%\Programs\ai-voice-interconnector` y la entrada del PATH de usuario (`HKCU\Environment` + `WM_SETTINGCHANGE`). Sin UAC; `--force` omite confirmación.
 
-Las vías idiomáticas por SO (desinstalador de Inno en Configuración → Aplicaciones, `brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `setup --uninstall` es la vía equivalente de un comando en las tres plataformas. El estado real de esta paridad vive en [docs/PARITY.md](PARITY.md).
+Las vías idiomáticas por SO (`brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `uninstall` es la vía equivalente de un comando en las tres plataformas. El estado real de esta paridad vive en [docs/PARITY.md](PARITY.md). Nota histórica: hasta v0.1.x la desinstalación Windows delegaba en el desinstalador de Inno Setup (`HKCU\...\{AppId}_is1`); desde Rust el binario gestiona PATH/dir directamente.
 
 ### Estructura del proyecto
 
@@ -187,14 +187,14 @@ Por tanto, los criterios 1-3 y 9 no son "pendientes" en el sentido de tareas olv
 
 La implementación está completa únicamente cuando:
 
-- [x] El motor Chatterbox Multilingual V3 está implementado y funcional
+- [x] El motor TTS está implementado y funcional (Chatterbox en Python; Qwen3-TTS desde la migración a Rust)
 - [x] La clonación de voz funciona con una muestra de ~10 segundos
 - [x] El audio generado preserva las características de la voz original
 - [x] El español latinoamericano suena natural
 - [x] Hay scripts de build e instalador por cada SO (Windows, Linux, macOS) en el pipeline de CI
 - [ ] Los instaladores funcionan sin ninguna dependencia externa (validación E2E por SO, ver "Validación E2E" arriba: smoke test automatizado en CI + validación manual Windows del propietario + feedback de usuarios reales en Linux y macOS)
 - [ ] La experiencia de instalación, uso, actualización y desinstalación es equivalente en los 3 SO: [docs/PARITY.md](PARITY.md) sin brechas **accionables** abiertas (la de *firma de código* permanece registrada como diferida al goal a largo plazo y no bloquea esta condición)
-- [x] **README.md** refleja la nueva arquitectura con Chatterbox
+- [x] **README.md** refleja la arquitectura vigente
 - [x] **docs/DESIGN.md** corresponde al estado implementado
 - [x] El daemon mode está implementado y funciona correctamente
 - [x] Los logs están normalizados con estructura consistente

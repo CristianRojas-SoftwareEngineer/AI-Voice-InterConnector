@@ -8,9 +8,9 @@
 
 ## Checklist
 
-- [ ] `pytest tests/ -v` pasa en local (la suite corre en CI en Linux, Windows y macOS).
+- [ ] `cargo test --all`, `cargo fmt --all --check` y `cargo clippy --all-targets` pasan en local.
 - [ ] Añadí tests para todo comportamiento nuevo o corregido.
 - [ ] La documentación afectada (`USAGE.md`, `docs/`, `CLAUDE.md`) quedó sincronizada con el cambio.
-- [ ] Si cambié `pyproject.toml`, regeneré `requirements-lock.txt` (y el lock CPU-only si aplica) y revisé el diff.
+- [ ] Si cambié `Cargo.toml`, regeneré `Cargo.lock` y revisé el diff (y actualicé `THIRD-PARTY-LICENSES.md` si aplicó).
 - [ ] Si cambiaron las dependencias empaquetadas, actualicé `THIRD-PARTY-LICENSES.md`.
 - [ ] Mensajes de commit en español, con prefijo de tipo (`feat:`, `fix:`, `docs:`, …).

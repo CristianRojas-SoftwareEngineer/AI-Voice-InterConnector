@@ -66,7 +66,7 @@ limitada, pero conviene explicitar sus supuestos:
 
 - El modelo se descarga desde HuggingFace con `ai-voice-interconnector setup` a la caché local,
   con la **revisión fijada por release** (commit hash auditado, declarado en
-  `src/ai_voice_interconnector/model_cache.py`): un push posterior al repo del modelo —
+  `crates/avi-store/src/lib.rs`, constante `MODEL_REVISIONS`): un push posterior al repo del modelo —
   malicioso o accidental — no se propaga a los usuarios, y la detección de caché
   solo valida el snapshot de esa revisión en ambos repos (language pack y repo
   base). El alcance del pin es ese: protege contra cambios posteriores a la
@@ -155,7 +155,7 @@ todos los artefactos de PyInstaller se empaquetan con `--noupx` (sin
 compresión UPX, una de las señales que la heurística antivirus asocia con
 malware), y el `.exe` de Windows lleva metadata PE de identidad (empresa,
 producto y versión vía `--version-file`), ambas cubiertas por test en
-`tests/test_build_utils.py` y `tests/test_build_windows.py`.
+los smoke tests del binario en los jobs de build (`.circleci/config.yml`).
 
 ### Runbook: reportar un falso positivo de Defender Antivirus (WDSI)
 

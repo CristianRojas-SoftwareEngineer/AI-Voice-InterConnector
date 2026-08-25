@@ -1,184 +1,129 @@
 # Canales de distribución
 
-`ai-voice-interconnector` se distribuye por **dos canales independientes**, publicados
-simultáneamente en cada tag `v*`: el canal **nativo** (binarios PyInstaller
-por SO, ver [docs/BUILD.md](BUILD.md)) y el canal **PyPI** (`pip`/`uv
-tool`/`pipx`). Ambos instalan el mismo CLI con el mismo contrato programático
-(exit codes, esquemas `--json`); difieren en audiencia, prerequisitos y
-fricción del primer arranque.
+`ai-voice-interconnector` se distribuye por un **único canal nativo**, publicado
+en cada tag `v*`: **archivos comprimidos** (`tar.gz`/`.zip`) que agrupan el
+binario Rust autocontenido con los documentos de licencia GPLv3 (ver
+[docs/BUILD.md](BUILD.md)). El canal **PyPI** (`pip`/`uv tool`/`pipx`) fue
+**retirado en la Fase 7**: el motor real ya es Rust, así que el repositorio
+quedó 100 % Rust en su distribución.
 
 ## Tabla de contenidos
 
-- [Los dos canales](#los-dos-canales)
-- [Instalación por canal](#instalación-por-canal)
-- [Por qué el canal pip evita SmartScreen/Gatekeeper](#por-qué-el-canal-pip-evita-smartscreengatekeeper)
-- [Registro de la decisión A vs. B](#registro-de-la-decisión-a-vs-b)
+- [El canal nativo](#el-canal-nativo)
+- [Formato de los artefactos](#formato-de-los-artefactos)
+- [Instalación](#instalación)
+- [Por qué el one-liner evita SmartScreen/Gatekeeper](#por-qué-el-one-liner-evita-smartscreengatekeeper)
+- [Canal PyPI retirado](#canal-pypi-retirado)
 - [Flujo de publicación (CI)](#flujo-de-publicación-ci)
 
-## Los dos canales
+## El canal nativo
 
-| | Canal nativo | Canal PyPI |
+| | Canal nativo |
+|---|---|
+| **Audiencia** | Cualquier usuario final (no requiere Python ni toolchain) |
+| **Instalación** | One-liner por SO (`curl \| sh` / `irm \| iex`) o Homebrew Cask (macOS) |
+| **Tamaño** | Binario pequeño y autocontenido (~13-42 MB; whisper.cpp/CTranslate2 enlazados estáticamente desde fuente vía `crt-static`) |
+| **Dependencias del sistema** | Ninguna (autocontenido) |
+| **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
+| **Actualización** | Re-ejecutar el one-liner por SO (limpia la versión anterior antes de extraer) o `brew upgrade --cask` |
+| **Desinstalación** | Eliminar el directorio de instalación + la entrada de PATH; `ai-voice-interconnector cleanup` para los modelos; en Homebrew `brew uninstall --cask --zap` |
+| **Publicación en CI** | `publish-release` → GitHub Release; `publish-metadata` → Cask del tap |
+| **Reversibilidad de la publicación** | El Release es público al publicarse: revertir implica borrar un Release ya público |
+
+`setup` (default `--language es`) provisiona los modelos en la caché de
+HuggingFace del usuario (`~/.cache/huggingface/hub`): ningún modelo viaja
+dentro del archivo, se descargan en el primer `setup`.
+
+## Formato de los artefactos
+
+Cada uno de los 4 targets se publica como un archivo comprimido con **layout
+plano** (binario + los 4 documentos de la raíz, todos en la raíz del archivo):
+
+| Target | Asset del release | Binario interno |
 |---|---|---|
-| **Audiencia** | Usuario final sin Python instalado | Usuario técnico con Python 3.13+ |
-| **Instalación** | Instalador `.exe`/AppImage/`.dmg` por SO | `uv tool install ai-voice-interconnector` / `pipx install ai-voice-interconnector` |
-| **Tamaño** | ~1-2 GB (bundle onedir autocontenido) | Descarga las dependencias desde PyPI (torch, etc.) al instalar |
-| **Dependencias del sistema** | Ninguna (autocontenido) | Linux: requiere `libportaudio2` del sistema (`sounddevice` no trae wheels con PortAudio embebido) |
-| **SmartScreen / Gatekeeper** | Bloquea el primer arranque (ver más abajo) | No aplica: el launcher lo genera `pip`/`uv` localmente, sin Mark-of-the-Web |
-| **Actualización** | Re-ejecutar el one-liner por SO (Linux/macOS `curl \| sh`, Windows `irm \| iex`; limpia la versión anterior) o `brew upgrade --cask` (ver `USAGE.md`) | `uv tool upgrade ai-voice-interconnector` / `pipx upgrade ai-voice-interconnector` |
-| **Desinstalación** | Linux: `setup --uninstall` (un paso); macOS: `.command` sin `sudo` + Papelera o `brew uninstall --cask --zap`; Windows: desinstalador Inno Setup — todos + `cleanup --all` (ver `USAGE.md`) | `uv tool uninstall ai-voice-interconnector` / `pipx uninstall ai-voice-interconnector` |
-| **Publicación en CI** | Job `publish-release` → GitHub Release directo | Job `publish-pypi` → publicación directa a PyPI |
-| **Reversibilidad de la publicación** | El Release es público al publicarse: revertir implica borrar un Release ya público | Irreversible: un paquete subido no se puede sobrescribir, solo yankear |
+| `build-linux-x64` | `ai-voice-interconnector-<ver>-x86_64-linux.tar.gz` | `ai-voice-interconnector` |
+| `build-linux-arm64` | `ai-voice-interconnector-<ver>-arm64-linux.tar.gz` | `ai-voice-interconnector` |
+| `build-darwin-arm64` | `ai-voice-interconnector-<ver>-arm64-macos.tar.gz` | `ai-voice-interconnector` |
+| `build-windows-x64` | `ai-voice-interconnector-<ver>-x86_64-windows.zip` | `ai-voice-interconnector.exe` |
 
-En ambos casos, `setup` (default `--language all`) provisiona ambos modelos
-(`es-mx-latam` y `en`) en la caché de HuggingFace del usuario
-(`~/.cache/huggingface/hub`) de forma idéntica: ningún modelo viaja dentro del
-paquete, en ningún canal.
+Los 4 documentos incluidos son `LICENSE`, `THIRD-PARTY-LICENSES.md`,
+`SOURCE-OFFER.md` (oferta de fuente GPLv3 §6) y `README.md`. Al viajar dentro
+del archivo, quedan instalados junto al binario, satisfaciendo el cumplimiento
+GPLv3 sin depender del bundle. `SHA256SUMS.txt` se calcula sobre los archivos
+comprimidos.
 
-## Instalación por canal
-
-### Canal nativo (binarios por SO)
+## Instalación
 
 Ver [README.md](../README.md#instalación) y [USAGE.md](../USAGE.md#instalación)
-para el detalle completo por SO (instalador de Windows, AppImage de Linux,
-`.dmg` de macOS).
+para el detalle completo por SO. Las tres plataformas tienen una **instalación
+auto-hospedada de una línea** (`curl | sh` / `irm | iex`), con un script por SO
+que descarga, verifica el checksum, extrae el archivo e **integra el PATH por sí
+mismo** (dado que el `setup` del binario Rust ya no lo hace: solo provisiona
+modelos):
 
-Las tres plataformas tienen además una **instalación auto-hospedada de
-una línea** (`curl | sh` / `irm | iex`), capa adicional sobre el mismo
-artefacto nativo (no un canal nuevo), con un script por SO:
+- **Linux** — `install-linux.sh` (`curl | sh`) selecciona el `tar.gz` de la
+  arquitectura del host, verifica el checksum (`sha256sum`), lo extrae en
+  `~/.local/opt/ai-voice-interconnector/` (limpiando la versión anterior), crea
+  el symlink `~/.local/bin/ai-voice-interconnector` y encadena `setup`.
+- **macOS** — `install-macos.sh` (`curl | sh`) descarga el `tar.gz` de arm64,
+  verifica el checksum (`shasum`), lo extrae en
+  `~/.local/opt/ai-voice-interconnector/`, limpia la cuarentena de Gatekeeper
+  del binario, crea el symlink per-user en `~/.local/bin` y encadena `setup`.
+  **Vía complementaria** para usuarios de Homebrew: el Cask del tap propio
+  (`brew tap CristianRojas-SoftwareEngineer/ai-voice-interconnector && brew
+  install --cask ai-voice-interconnector`), que resuelve PATH, desinstalación
+  (`--zap`) y cuarentena sin intervención manual, pero exige Homebrew y no
+  provisiona los modelos.
+- **Windows** — `install-windows.ps1` (`irm | iex`) descarga el `.zip` x86_64,
+  verifica su checksum, lo extrae en
+  `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, registra ese directorio en
+  el PATH de usuario (HKCU, sin UAC) de forma idempotente y termina con
+  `ai-voice-interconnector setup`.
 
-- **Linux** — `install-linux.sh` (`curl | sh`) automatiza la descarga, verificación
-  de checksum e instalación del `.AppImage` (eliminando la versión anterior al
-  actualizar) y encadena `setup`.
-- **macOS** — `install-macos.sh` (`curl | sh`) descarga el `.dmg` de arm64,
-  verifica el checksum con `shasum`, copia el `.app` a `~/Applications` sin
-  `sudo`, limpia la cuarentena de Gatekeeper, crea el symlink per-user en
-  `~/.local/bin` y encadena `setup`. **Vía complementaria** para usuarios de
-  Homebrew: el Cask del tap propio (`brew tap
-  CristianRojas-SoftwareEngineer/ai-voice-interconnector && brew install --cask
-  ai-voice-interconnector`), que resuelve PATH, desinstalación (`--zap`) y cuarentena sin
-  intervención manual, pero exige Homebrew y no provisiona los modelos.
-- **Windows** — `install-windows.ps1` (`irm | iex`) descarga el instalador Inno Setup
-  del release, verifica su checksum y lo ejecuta en silencio (instalación
-  per-user: `%LOCALAPPDATA%\Programs`, PATH de usuario en HKCU, sin UAC),
-  terminando con `ai-voice-interconnector setup`.
-
-El `.dmg` descargado a mano (con sus scripts `.command` de
-instalación/desinstalación, ahora per-user sin `sudo`) sigue siendo un canal
-válido en paralelo. El porqué de que `install-windows.ps1` no dispare
-SmartScreen (a diferencia de la descarga por navegador) está explicado en
+El porqué de que `install-windows.ps1` no dispare SmartScreen (a diferencia de
+la descarga por navegador) está explicado en
 [SECURITY.md](../SECURITY.md#artefactos-sin-firmar); diseño completo de los
 tres instaladores en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
 
-### Canal PyPI (`uv tool install` / `pipx`)
+## Por qué el one-liner evita SmartScreen/Gatekeeper
 
-```bash
-# Con uv (recomendado: https://docs.astral.sh/uv/)
-uv tool install ai-voice-interconnector
-ai-voice-interconnector setup      # provisiona ambos modelos (default all), idéntico al canal nativo
-ai-voice-interconnector speech say --text "Hola mundo"
+El mecanismo de Mark-of-the-Web/cuarentena que dispara SmartScreen y Gatekeeper
+(detallado en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar)) solo lo añade
+el **navegador** a un archivo descargado. Los one-liners descargan por CLI
+(`curl`, `Invoke-WebRequest`), que no aplica Mark-of-the-Web, así que el archivo
+extraído no lleva la marca y ninguno de los dos sistemas de reputación se
+activa. En macOS, además, `install-macos.sh` limpia explícitamente
+`com.apple.quarantine` del binario extraído. La resolución de raíz (firma de
+código y notarización) sigue pendiente; ver `docs/BUILD.md` §"Limitación
+conocida: firma de código y notarización".
 
-# Con pipx
-pipx install ai-voice-interconnector
-ai-voice-interconnector setup
-```
+## Canal PyPI retirado
 
-**Prerequisito en Linux**: `sounddevice` requiere la librería del sistema
-`libportaudio2` para reproducir audio (no la trae empaquetada, a diferencia
-del bundle nativo). Instálala antes de `setup` si vas a reproducir audio
-directamente (no es necesaria si solo usas `speech synthesize --text T --label L` a archivo):
+**Contexto histórico**: tras el release `v0.1.1`, los binarios nativos seguían
+sin firma de código, disparando SmartScreen/Gatekeeper en cada primer arranque.
+Se adoptaron dos estrategias no excluyentes: **A** (añadir el canal PyPI, sin el
+problema de Mark-of-the-Web) y **B** (firmar/notarizar los binarios nativos).
 
-```bash
-# Debian/Ubuntu
-sudo apt install libportaudio2
-
-# Fedora
-sudo dnf install portaudio
-```
-
-Windows y macOS no requieren ningún paquete adicional del sistema (`pycaw` y
-`afplay` no dependen de PortAudio).
-
-**Actualización**:
-
-```bash
-uv tool upgrade ai-voice-interconnector
-# o
-pipx upgrade ai-voice-interconnector
-```
-
-**Desinstalación**:
-
-```bash
-ai-voice-interconnector cleanup --all --yes   # elimina ambos modelos y voces de usuario (igual que en el canal nativo)
-uv tool uninstall ai-voice-interconnector
-# o
-pipx uninstall ai-voice-interconnector
-```
-
-## Por qué el canal pip evita SmartScreen/Gatekeeper
-
-El mecanismo de Mark-of-the-Web/cuarentena que dispara SmartScreen y
-Gatekeeper (detallado en
-[SECURITY.md](../SECURITY.md#artefactos-sin-firmar)) solo lo añade el
-navegador a un archivo descargado. El canal pip no distribuye un binario
-descargado: `pip`/`uv`/`pipx` descargan el **paquete** (wheel) desde PyPI y
-generan el **launcher ejecutable localmente**, en la máquina del usuario, en
-el momento de la instalación. Un archivo generado localmente no lleva
-Mark-of-the-Web ni cuarentena, así que ninguno de los dos sistemas de
-reputación se activa: es una propiedad estructural del mecanismo de
-instalación, no una mitigación parcial (ver `docs/BUILD.md` §"Limitación
-conocida: firma de código y notarización" para el detalle del canal nativo).
-
-## Registro de la decisión A vs. B
-
-**Contexto**: tras el release `v0.1.1`, los binarios del canal nativo seguían
-sin firma de código, disparando SmartScreen/Gatekeeper en cada primer
-arranque. Existían dos estrategias no excluyentes para reducir esa fricción:
-**A** (añadir un segundo canal de distribución sin el problema de raíz) y
-**B** (firmar/notarizar los binarios del canal nativo existente vía SignPath
-Foundation + Apple Developer ID).
-
-**Alternativas consideradas**:
-- Solo B: elimina la advertencia en el canal nativo, pero requiere aprobación
-  externa de un programa de terceros (SignPath OSS) y una cuenta Apple
-  Developer de pago; sin fecha de cierre garantizada.
-- Solo A: no resuelve la fricción del canal nativo (sigue siendo el canal
-  recomendado para usuarios no técnicos), pero es implementable de inmediato
-  con herramientas ya disponibles (PyPI, `uv`).
-- A y B en paralelo (decisión tomada): A se implementa ahora como canal
-  alternativo inmediato para la audiencia técnica; B queda registrado como
-  goal a largo plazo en [docs/GOAL.md](GOAL.md#goal-a-largo-plazo)
-  para cuando se cumplan sus condiciones de entrada.
-
-**Decisión**: implementar A en este ciclo (este documento y el job
-`publish-pypi`) y registrar B como compromiso futuro, sin bloquear uno con el
-otro.
-
-**Consecuencias**: el proyecto mantiene dos canales de publicación
-automática por tag, con matrices de trade-offs distintas (ver tabla arriba);
-la resolución completa de la fricción de SmartScreen/Gatekeeper en el canal
-nativo sigue pendiente de B.
+Con la migración a Rust, el motor real dejó de ser Python: el paquete PyPI pasó
+a envolver un binario Rust y perdió su razón de ser. En la **Fase 7** se
+**retiró el canal PyPI** (job `publish-pypi`, su nodo en el workflow y el
+context `pypi-publish`), dejando la distribución 100 % Rust por archivos
+comprimidos. La estrategia **B** (firma/notarización) sigue registrada como goal
+a largo plazo en [docs/GOAL.md](GOAL.md#goal-a-largo-plazo) para cuando se
+cumplan sus condiciones de entrada; hasta entonces, el one-liner es la vía que
+evita la fricción de SmartScreen/Gatekeeper.
 
 ## Flujo de publicación (CI)
 
-En cada tag `v*`, tras la triple puerta de tests (`test-linux`,
-`test-windows`, `test-macos`), el job `publish-pypi` corre **en paralelo** a
-los cuatro builds nativos (no depende de ellos: el sdist/wheel no requiere
-PyInstaller):
+En cada tag `v*`, tras la triple puerta de tests (`test-linux`, `test-windows`,
+`test-macos`) y `coverage`, los cuatro `build-*` compilan el binario, lo empaquetan
+con los documentos de licencia en el archivo comprimido de su target y lo
+persisten al workspace. Luego:
 
-1. Construye sdist y wheel (`python -m build`).
-2. Valida la metadata (`twine check`).
-3. Instala el wheel en un venv limpio y verifica que `ai-voice-interconnector version`
-   coincide con el tag y que la voz `default` está presente
-   (`voices.list_voices()`).
-4. Publica a PyPI (`twine upload`) usando `PYPI_API_TOKEN` del context
-   aislado `pypi-publish` (ningún otro job ve ese token).
+1. `publish-release` recoge los 4 archivos, calcula `SHA256SUMS.txt` sobre ellos
+   y crea el GitHub Release (`gh release create`) con los archivos + el checksum.
+2. `publish-metadata` (depende de `publish-release`) renderiza el Cask de
+   Homebrew con `cargo xtask cask` — `binary` stanza sobre el `tar.gz` de
+   macOS, con el `sha256` extraído de `SHA256SUMS.txt` — y lo empuja al tap.
 
-**La publicación a PyPI es irreversible**: al igual que el GitHub Release —que
-se publica directo y, para revertirlo, obliga a borrar un Release ya público—,
-un paquete subido a PyPI no se puede sobrescribir; solo yankear una versión y
-publicar una nueva. Por eso el smoke test del paso 3 corre siempre antes del
-upload. Prerequisito
-operativo (una sola vez): el context `pypi-publish` en CircleCI con la
-variable `PYPI_API_TOKEN` (token API de PyPI con scope al proyecto), análogo
-al context `github-release` existente (ver `docs/RELEASING.md`).
+No hay job de publicación a PyPI: fue retirado en la Fase 7 (ver arriba).

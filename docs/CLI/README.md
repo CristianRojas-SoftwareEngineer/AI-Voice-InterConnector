@@ -37,7 +37,7 @@ docs/CLI/
 
 ## Resumen de comandos
 
-La CLI expone **9 comandos** de nivel superior con **15 subcomandos** en total. Framework: `argparse` (stdlib). Punto de entrada: `ai-voice-interconnector` (vía `pyproject.toml`), `bin/ai-voice-interconnector` (launcher), o `python -m ai_voice_interconnector`.
+La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `src/main.rs` (binario `ai-voice-interconnector`); en desarrollo, `cargo run -- <comando>`.
 
 ### Grupos nominales (con subcomandos)
 
@@ -45,16 +45,17 @@ La CLI expone **9 comandos** de nivel superior con **15 subcomandos** en total. 
 |---|---|---|
 | `speech` | `synthesize`, `say`, `dub`, `play`, `list`, `remove`, `transcribe` | Síntesis de habla, gestión del almacén, transcripción, composición voz→voz |
 | `voice` | `list`, `clone`, `remove` | Gestión del registro de voces |
-| `daemon` | `start`, `stop`, `restart`, `status`, `serve` | Ciclo de vida del daemon FastAPI |
+| `daemon` | `start`, `stop`, `restart`, `status`, `serve` | Ciclo de vida del daemon nativo (Axum) |
 
 ### Comandos standalone
 
 | Comando | Propósito |
 |---|---|
 | `devices` | Lista dispositivos de audio del sistema |
-| `doctor` | Ejecuta diagnósticos del sistema |
-| `setup` | Provisión del runtime (modelos, PATH) |
-| `cleanup` | Borrado de modelo, voces y/o habla sintética |
+| `doctor` | Ejecuta diagnósticos del sistema (incluye ruta de caché HF resuelta) |
+| `setup` | Descarga los modelos pinneados vía HuggingFace Hub y registra el índice |
+| `cleanup` | Borra snapshots HF + datos de usuario (`--all` = alias de `uninstall`) |
+| `uninstall` | Desinstalación en un comando: datos + PATH + binario |
 | `version` | Muestra la versión |
 | `translate` | Traduce texto es↔en sin síntesis de audio |
 

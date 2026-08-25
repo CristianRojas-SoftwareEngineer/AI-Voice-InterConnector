@@ -7,11 +7,9 @@ directo** (sin borrador) sobre el tag. Sin firma de código, el cotejo de
 checksums SHA-256 sigue siendo la cadena de verificación de integridad para el
 usuario final.
 
-En paralelo a los 4 builds nativos corre el job **`publish-pypi`**, que publica
-el paquete al canal PyPI (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)). Igual que
-`publish-release`, `publish-pypi` **no tiene paso de revisión manual**: ambos
-publican en firme en el mismo tag, sin generar un borrador ni requerir un clic
-humano.
+El canal **PyPI fue retirado en la Fase 7** (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)):
+desde la migración a Rust la distribución es 100% archivos comprimidos Rust y no
+hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
 
 ## Tabla de contenidos
 
@@ -31,18 +29,15 @@ humano.
   este corte es obligatorio antes de taggear.
 - `SOURCE-OFFER.md` (oferta de fuente GPLv3 §6, viaja dentro de los 4
   artefactos) está regenerado para la versión a publicar: tras el bump de
-  `__version__`, correr `python scripts/render_source_offer.py >
-  SOURCE-OFFER.md` y commitear el resultado antes del tag. El test de
-  consistencia (`tests/test_pin_consistency.py::TestSourceOfferVersion`) falla
-  si el archivo commiteado diverge del generador, así que un bump sin
-  regenerar no pasa la suite.
-- `THIRD-PARTY-LICENSES.md` está en sincronía con `requirements-lock.txt`:
-  ante altas/bajas de dependencias, regenerar el inventario con `pip-licenses`
-  (ver §Regeneración del propio `THIRD-PARTY-LICENSES.md`). El test de
-  sincronía (`tests/test_third_party_licenses.py::TestRealSync`) falla ante
-  cualquier faltante o sobrante; `python scripts/check_third_party_licenses.py`
-  imprime el diff legible.
-- La suite pasa localmente (`pytest tests/ -v`) en el commit a taggear. **No
+  `VERSION` (`src/main.rs`/`Cargo.toml`), correr `cargo run -p xtask -- source-offer >
+  SOURCE-OFFER.md` y commitear el resultado antes del tag. El gate
+  `validate-licenses` (`cargo run -p xtask -- source-offer --check`) falla
+  si el archivo commiteado diverge del generador.
+- `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock` (Rust):
+  ante altas/bajas de crates, regenerar el inventario (cargo-license) y
+  verificar con `cargo run -p xtask -- licenses --check`. El gate
+  `validate-licenses` falla ante faltantes/sobrantes.
+- La suite pasa localmente (`cargo test --all`; incluye los tests de `xtask`) en el commit a taggear. **No
   hay forma de verificar esto en CircleCI antes de taggear**: el workflow
   `build-all` tiene `branches: ignore: /.*/` en todos sus jobs, así que
   CircleCI no corre nada en pushes a `main` — el tag es lo único que dispara
@@ -52,26 +47,18 @@ humano.
   `build-darwin-arm64`) declaran `requires` sobre la triple puerta de tests
   (`test-linux`, `test-windows`, `test-macos`) **más** los tres smoke-tests de
   instaladores (`test-installer-linux`, `test-installer-windows`,
-  `test-installer-macos`);
-  `publish-pypi` declara solo la triple puerta de tests (los instaladores de
-  una línea no participan del canal PyPI). Si cualquiera de esas puertas falla
-  en el pipeline del tag, ni los builds ni `publish-pypi` llegan a ejecutarse. Correr la suite en local antes de
+  `test-installer-macos`) **más** `coverage` y `validate-licenses`.
+  Si cualquiera de esas puertas falla en el pipeline del tag, los builds no llegan a ejecutarse. Correr la suite en local antes de
   taggear sigue siendo la única manera de anticipar ese resultado.
-- **Revisiones fijadas de los modelos auditadas**: las constantes
-  `MODEL_REVISIONS` y `BASE_MODEL_REVISION` de `src/ai_voice_interconnector/model_cache.py`
-  apuntan a los commit hashes de HuggingFace que este release distribuye. Si el
+- **Revisiones fijadas de los modelos auditadas**: los modelos Qwen3-TTS y opus-mt
+  se descargan vía `ai-voice-interconnector setup` (no se empaquetan). Si el
   release debe incorporar una versión nueva de alguno de los modelos: consultar el `sha`
   vigente (`https://huggingface.co/api/models/<repo>`), auditar el diff de esa
-  revisión en HF, actualizar las constantes y verificar con
-  `setup --force-update` + `doctor`. Si no hay cambio de modelos, no hay nada
-  que hacer (el pin existente sigue vigente).
+  revisión en HF y verificar con `setup` + `doctor`.
 - **Prerequisito operativo (una sola vez):** existe el context `github-release`
   en CircleCI (Organization Settings → Contexts) con la variable `GH_TOKEN` = un
   fine-grained PAT con permiso `contents: write` sobre el repo. Está aislado al
   job `publish-release`; ningún otro job lo ve.
-- **Prerequisito operativo (una sola vez):** existe el context `pypi-publish`
-  en CircleCI con la variable `PYPI_API_TOKEN` = un token API de PyPI con scope
-  al proyecto. Está aislado al job `publish-pypi`; ningún otro job lo ve.
 - **Prerequisitos del canal Cask de macOS (una sola vez):** existe el
   repositorio tap `homebrew-ai-voice-interconnector` (público), y el context de CircleCI
   `homebrew-tap` con la variable `HOMEBREW_TAP_PAT` (un PAT fine-grained con
@@ -79,15 +66,12 @@ humano.
   `publish-metadata`. Además, **el primer Cask del tap es un bootstrap manual
   único**: `publish-metadata` reescribe `Casks/ai-voice-interconnector.rb`, pero asume que
   el archivo ya existe en el tap la primera vez (crearlo a mano con el
-  generador: `python scripts/render_cask.py --tag vX.Y.Z --sums-file
+  generador: `cargo run -p xtask -- cask --tag vX.Y.Z --sums-file
   SHA256SUMS.txt --out Casks/ai-voice-interconnector.rb` y commitear/pushear al tap antes
   del primer release que dependa de este job). Detalle del diseño completo en
   [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
-- **La publicación a PyPI es irreversible**: al igual que el GitHub Release —que
-  se publica directo sobre el tag y, para revertirlo, hay que borrar un Release
-  ya público—, el tag dispara la publicación en firme a PyPI: un paquete subido
-  no se puede sobrescribir, solo yankear una versión y publicar una nueva. Por
-  eso el corte del `CHANGELOG.md` y la versión en `__init__.py` deben estar
+- **La publicación del Release es irreversible**: se publica directo sobre el tag y, para revertirlo, hay que borrar un Release
+  ya público. Por eso el corte del `CHANGELOG.md` y la versión en `src/main.rs`/`Cargo.toml` deben estar
   correctos **antes** de crear el tag, no después.
 
 ## 1. Corte: crear y publicar el tag
@@ -114,9 +98,9 @@ Una vez pushado el tag, el pipeline ejecuta sin intervención:
    workspace compartido.
 2. **`publish-release`** (tras los 4 builds):
    - Recolecta los 4 artefactos del workspace (`attach_workspace`) — ya con su
-     nombre de release: `ai-voice-interconnector-X.Y.Z-x86_64-setup.exe`,
-     `ai-voice-interconnector-X.Y.Z-x86_64.AppImage`, `ai-voice-interconnector-X.Y.Z-arm64.AppImage`,
-     `ai-voice-interconnector-X.Y.Z-arm64.dmg`.
+     nombre de release: `ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`,
+     `ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`, `ai-voice-interconnector-X.Y.Z-arm64-linux.tar.gz`,
+     `ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`.
    - Genera `SHA256SUMS.txt` con los checksums de los 4.
    - Extrae las notas de la sección `[X.Y.Z]` de `CHANGELOG.md`.
    - Inyecta en `notes.md` (tras el recorte del CHANGELOG) un pie con la oferta
@@ -126,24 +110,11 @@ Una vez pushado el tag, el pipeline ejecuta sin intervención:
      que el humano la añada a mano.
    - Publica el GitHub Release directo (sin borrador) sobre el tag `vX.Y.Z`, con
      los 5 assets (4 artefactos + `SHA256SUMS.txt`) y las notas.
-3. **`publish-pypi`** (en paralelo a los 4 builds, solo requiere la triple
-   puerta de tests): construye el sdist y el wheel, valida la metadata
-   (`twine check`), instala el wheel en un venv limpio para verificar que
-   `ai-voice-interconnector version` coincide con el tag y que la voz `default` está
-   presente, y publica a PyPI con `twine upload --skip-existing`. Detalle
-   completo en [docs/DISTRIBUTION.md](DISTRIBUTION.md#flujo-de-publicación-ci).
-   El `--skip-existing` hace idempotente el job ante un re-tag: si falla un
-   build nativo y hay que borrar y recrear el tag (Ej. sección "1. Corte"),
-   el pipeline nuevo vuelve a correr `publish-pypi` desde cero — si esa
-   versión ya se había publicado con éxito en el intento anterior, twine
-   detecta que el archivo ya existe en PyPI y termina en éxito sin reintentar
-   el upload, en vez de fallar ruidosamente.
-
-4. **`publish-metadata`** (tras `publish-release`, solo en tags `v*`): recupera
+ 3. **`publish-metadata`** (tras `publish-release`, solo en tags `v*`): recupera
    `SHA256SUMS.txt` del Release recién publicado (`gh release download`,
    idempotente y sin depender del workspace del pipeline), reescribe
    `Casks/ai-voice-interconnector.rb` con la versión del tag y el sha256 del `.dmg` arm64
-   (`scripts/render_cask.py`), y hace push al tap `homebrew-ai-voice-interconnector`. Si el
+   (`cargo xtask cask`), y hace push al tap `homebrew-ai-voice-interconnector`. Si el
    Cask no cambia (regeneración con los mismos inputs), el commit es un no-op y
    no se empuja nada; reintentar este job en cualquier momento es seguro.
 
@@ -182,7 +153,7 @@ El usuario final puede verificar la integridad de su descarga contra
 sha256sum -c SHA256SUMS.txt --ignore-missing
 
 # Windows (PowerShell)
-Get-FileHash ai-voice-interconnector-X.Y.Z-x86_64-setup.exe -Algorithm SHA256
+Get-FileHash ai-voice-interconnector-X.Y.Z-x86_64-windows.zip -Algorithm SHA256
 # comparar manualmente contra la línea correspondiente de SHA256SUMS.txt
 ```
 

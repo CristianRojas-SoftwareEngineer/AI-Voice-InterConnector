@@ -1,30 +1,31 @@
-# Diseño del Sistema AI Voice InterConnector con Chatterbox Multilingual V3
+# Diseño del Sistema AI Voice InterConnector (Rust + Qwen3-TTS)
 
 ## Tabla de contenidos
 
 - [Resumen ejecutivo](#resumen-ejecutivo)
 - [Arquitectura](#arquitectura)
 - [Estructura del proyecto](#estructura-del-proyecto)
-- [El entry point `bin/ai-voice-interconnector`](#el-entry-point-binai-voice-interconnector)
-- [Motor Chatterbox Multilingual V3](#motor-chatterbox-multilingual-v3)
+- [Entry point `src/main.rs`](#entry-point-srcmainrs)
+- [Motor Qwen3-TTS 0.6B (Rust)](#motor-qwen3-tts-06b-rust)
 - [Traducción cross-lingual (opus-mt / CTranslate2)](#traducción-cross-lingual-opus-mt--ctranslate2)
 - [Flujo de síntesis](#flujo-de-síntesis)
 - [Modelo de voces de dos niveles](#modelo-de-voces-de-dos-niveles)
 - [Comandos CLI](#comandos-cli)
-- [Compilación PyInstaller](#compilación-pyinstaller)
+- [Compilación Rust (cargo)](#compilación-rust-cargo)
 - [Extensibilidad](#extensibilidad)
-- [Warnings silenciados](#warnings-silenciados)
 - [Referencias](#referencias)
+
+> **Nota histórica (única referencia legacy):** hasta v0.1.x el proyecto empaquetó Python con PyInstaller/AppImage/create-dmg/Inno Setup; desde la migración a Rust (Fase 7) el artefacto es un binario Rust autocontenido.
 
 ## Resumen ejecutivo
 
-AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que usa **Chatterbox Multilingual V3** para clonación de voz en español latinoamericano. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
+AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que usa **Qwen3-TTS 0.6B CustomVoice** para clonación de voz en español latinoamericano. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
 
-- **Licencia**: GPL-3.0-or-later (código del proyecto); el modelo y las dependencias conservan sus licencias permisivas (MIT/BSD/Apache), salvo el par de traducción `opus-mt` (CC-BY-4.0)
+- **Licencia**: GPL-3.0-or-later (código del proyecto); modelo y dependencias conservan sus licencias permisivas (MIT/BSD/Apache), salvo traducción `opus-mt` (CC-BY-4.0)
 - **Idiomas**: 23+ incluyendo Español (es)
-- **Clonación**: `speech-reference.wav` obligatorio (≥10 segundos); `timbre-reference.wav` opcional para separar timbre y prosodia
-- **Parámetros del modelo**: 500M
-- **Hardware**: CPU, CUDA, MPS (Apple Silicon)
+- **Clonación**: `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional
+- **Parámetros del modelo**: 0.6B (Qwen3-TTS)
+- **Hardware**: CPU, CUDA, MPS (Apple Silicon) — inferencia local sin APIs externas
 
 ---
 
@@ -32,277 +33,165 @@ AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              ai-voice-interconnector (binario CLI)                     │
-│   Instalador por SO (Windows, Linux, macOS)                │
-│   Bundle PyInstaller --onedir con intérprete embebido      │
+│              ai-voice-interconnector (binario Rust)         │
+│   Instalador por SO (one-liners curl|sh / irm|iex + Cask)  │
+│   Binario autocontenido (cargo build --release --features full) │
 └──────────────────────┬──────────────────────────────────────┘
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│           Chatterbox Multilingual V3                         │
-│   Modelo: es-mx-latam (caché de HuggingFace)              │
-│   Licencia: MIT                                           │
-│   Idiomas: 23+ (español, inglés, francés, etc.)            │
-│   Inferencia: CPU / CUDA / MPS                            │
+│                 Motor TTS (Qwen3-TTS 0.6B)                  │
+│   Modelo: qwen3-tts-0.6b / qwen3-tts-0.6b-base (clonado)    │
+│   Licencia: MIT / Apache-2.0                               │
+│   Runtime: ONNX/CTranslate2 + whisper.cpp (STT)           │
 └─────────────────────────────────────────────────────────────┘
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │           Reproducción de audio (APIs nativas)              │
-│   Windows: winsound (integrado; pycaw enumera)           │
-│   Linux: sounddevice (PortAudio)                         │
-│   macOS: afplay (nativo; sounddevice enumera)            │
+│   Windows: cpal/winsound · Linux: cpal/ALSA · macOS: cpal/CoreAudio │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+El binario expone el CLI (`src/main.rs` + crates) y gestiona el daemon HTTP en `127.0.0.1:8765`. Los modelos se provisionan vía `ai-voice-interconnector setup` en `~/.cache/huggingface/hub` y `data_dir()` por SO.
 
 ## Estructura del proyecto
 
 ```
 AI-Voice-InterConnector/
 ├── src/
-│   └── ai_voice_interconnector/           # Paquete Python
-│       ├── __init__.py            # Imports perezosos (lazy)
-│       ├── __main__.py            # Entry point de `python -m ai_voice_interconnector`
-│       ├── bootstrap.py           # apply() idempotente: warnings, env vars, logging, mock pkg_resources
-│       ├── engine.py              # Façade / composition root de síntesis
-│       ├── compute_backend.py     # ComputeBackendResolver: detección/resolución de backend (cuda/mps/cpu)
-│       ├── audio_writer.py        # AudioWriter: audio → bytes WAV PCM 16-bit mono
-│       ├── synthesis.py           # SynthesisOrchestrator: flujo speech synthesize (conditionals → generate → encode → save)
-│       ├── model_loader.py        # ModelLoader: carga del checkpoint según caché (inyectable)
-│       ├── conditionals.py        # ConditionalsPreparer: cómputo/carga de conditionals (inyectable)
-│       ├── exceptions.py          # Excepciones compartidas del motor y del daemon (sin imports pesados)
-│       ├── audio.py               # Reproducción de audio multiplataforma
-│       ├── timing.py              # Instrumentación y timing
-│       ├── cli.py                 # Interfaz CLI
-│       ├── exit_codes.py          # Códigos de salida del CLI — contrato público congelado
-│       ├── voices.py              # Resolución de voces usuario→fábrica
-│       ├── synthetic_speech.py    # Almacén de habla sintética grabada por `speech` (WAV + sidecar JSON)
-│       ├── paths.py               # Rutas por SO (user-data-dir, modo congelado)
-│       ├── model_cache.py         # Detección de los modelos en la caché de HF
-│       ├── translation/           # Subsistema de traducción cross-lingual es<->en
-│       │   ├── service.py         # TranslationService: orquesta segmentar → traducir → ensamblar
-│       │   ├── segmenter.py       # SentenceSegmenter (pysbd)
-│       │   ├── translator.py      # MarianTranslator (runtime CT2)
-│       │   ├── model_loader.py    # TranslationModelLoader + resolve_language
-│       │   └── assembler.py       # SegmentAssembler
-│       ├── transcription/         # Subsistema de transcripción STT (audio→texto, faster-whisper)
-│       │   ├── service.py         # TranscriptionService: orquesta resolver idioma → cargar modelo → leer WAV → transcribir
-│       │   ├── model_loader.py    # WhisperModelLoader
-│       │   └── transcriber.py     # WhisperTranscriber
-│       ├── voices/                # Voces de FÁBRICA (commiteadas, empaquetadas, solo lectura)
-│       │   └── default/           # Voz por defecto (derivada de assets/audios/)
-│       │       ├── timbre-reference.wav # Timbre de voz (cualquier largo)
-│       │       └── speech-reference.wav # Conditioning (10s+)
-│       └── daemon/                # Daemon mode (FastAPI + IPC)
-│           ├── __init__.py        # Ensambla las exportaciones públicas del paquete daemon
-│           ├── daemon.py          # Gestor del ciclo de vida
-│           ├── server.py          # Endpoints FastAPI
-│           ├── ipc.py             # Cliente HTTP del daemon
-│           ├── protocol.py        # Modelos Pydantic
-│           └── run.py             # Entry point
-│   # Las voces de USUARIO viven en el user-data-dir por SO, no en el repo
-├── bin/
-│   └── ai-voice-interconnector               # Script de entry point
-├── scripts/
-│   ├── build_windows.py          # Build PyInstaller para Windows
-│   ├── build_linux.py            # Build PyInstaller para Linux
-│   ├── build_macos.py            # Build PyInstaller para macOS
-│   ├── build_utils.py            # Utilidades compartidas de build
-│   ├── check_coverage.py         # Verificación de cobertura
-│   ├── check_third_party_licenses.py  # Verificación de licencias
-│   ├── clean_build.py            # Limpieza de artefactos de build
-│   ├── create_installer_windows.py    # Generador de instalador Inno Setup
-│   ├── pyinstaller_wrapper.py    # Wrapper de PyInstaller
-│   ├── render_cask.py            # Generador de Cask de Homebrew
-│   └── render_source_offer.py    # Generador de SOURCE-OFFER.md
-│                                  # (provisión del modelo: `ai-voice-interconnector setup`)
-├── assets/                       # Material fuente (audios, logo)
-│   ├── audios/                   # Audios fuente (voz default) y de prueba
-│   │   ├── Voice Sampler.wav
-│   │   └── Speech Sampler.wav
-│   └── images/                   # Logo del proyecto (fuente de los iconos de build)
-│       └── AI Voice InterConnector - Logo.png
-├── tests/                        # Pytest test suite
-├── requirements.txt               # Python dependencies
-├── pyproject.toml                # Python project config
+│   └── main.rs                         # CLI (clap), dispatch daemon/directo, handle_*
+├── crates/
+│   ├── avi-core/                       # Tipos, exit codes, json emitter
+│   ├── avi-audio/                      # AudioService (cpal, hound)
+│   ├── avi-tts/                        # Qwen3TtsEngine, GenerationOptions, resident
+│   ├── avi-store/                      # VoiceStore, SpeechStore, ModelStore (hf-hub + indicatif; MODEL_REVISIONS; cache_dir propio)
+│   │   └── assets/default/             # speech-reference.wav + timbre-reference.wav embebidos
+│   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)
+│   ├── avi-stt/                        # Ct2SttEngine (whisper-rs)
+│   ├── avi-translation/                # MarianTranslator (CTranslate2)
+│   └── avi-config/                     # Configuración
+├── vendor/
+│   └── qwen3-tts/                      # Binario y pesos Qwen3-TTS (no commiteados todos)
+└── crates/xtask/src/main.rs            # cask / source-offer / licenses (tooling Rust)
+├── install-linux.sh                    # One-liner Linux (curl|sh)
+├── install-macos.sh                    # One-liner macOS (curl|sh)
+├── install-windows.ps1                 # One-liner Windows (irm|iex)
+└── tests/
+    ├── cli_golden.rs                   # Harness dorado del CLI
+    └── installer/                      # bats/Pester de one-liners
+        ├── install-linux.bats
+        ├── install-macos.bats
+        └── install-windows.tests.ps1
+├── Cargo.toml                          # Workspace Rust (version = 0.10.7)
+├── Cargo.lock
+├── .circleci/config.yml                # Pipeline Rust (cargo test/build + publish-release)
 └── docs/
-    ├── DESIGN.md                 # Este documento
-    ├── GOAL.md                   # Meta del proyecto
-    ├── ROADMAP.md                # Roadmap del proyecto
-    ├── DAEMON-MODE.md            # Daemon mode
-    ├── BUILD.md                  # Build y distribución
-    ├── DISTRIBUTION.md           # Estrategia de distribución
-    ├── PARITY.md                 # Paridad multiplataforma
-    ├── RELEASING.md              # Proceso de release
-    ├── SELF-HOSTED-INSTALL.md    # Instaladores auto-hospedados
-    ├── CLI/                      # Documentación de la CLI
-    │   ├── README.md             # Índice de la CLI
-    │   ├── CONTRACT.md           # Contrato normativo
-    │   └── commands/             # Investigación por comando
-    └── proposals/                # Propuestas de diseño
+    ├── DESIGN.md                       # Este documento
+    ├── BUILD.md                        # Build y distribución Rust
+    ├── DISTRIBUTION.md                 # Canales de distribución (tar.gz/zip)
+    ├── PARITY.md                       # Paridad multiplataforma
+    └── SELF-HOSTED-INSTALL.md          # One-liners
 ```
 
-> El modelo `es-mx-latam` no vive en el repo ni en el bundle: reside en la caché
-> de HuggingFace del usuario (`~/.cache/huggingface/hub`) tras `ai-voice-interconnector setup`.
+> Las voces de **fábrica** `default` están embebidas en el binario (`crates/avi-store/assets/default/`) y se materializan en `data_dir()/voices/default/` en `ensure_initialized()`. Las voces de **usuario** viven en `data_dir()/voices/<nombre>/` (user-data-dir por SO).
 
-## El entry point `bin/ai-voice-interconnector`
+## Entry point `src/main.rs`
 
-El archivo `bin/ai-voice-interconnector` es el **punto de entrada único** de la aplicación. Está escrito en **Python 3**, pero deliberadamente **no lleva extensión `.py`**:
+`src/main.rs` es el **punto de entrada único** del binario. Usa `clap` para parsear los subcomandos (`version`, `devices`, `translate`, `voice`, `speech`, `daemon`, `setup`, `cleanup`, `uninstall`, `doctor`) y hace dispatch a los crates (`avi-tts`, `avi-store`, etc.) o al daemon vía HTTP. Es también la **fuente de verdad de la versión** (`const VERSION = "0.10.7"`, espejo de `Cargo.toml`).
 
-- **Convención de comando CLI**: el objetivo del proyecto es exponer una herramienta invocable como `ai-voice-interconnector speech say ...`, no como `ai-voice-interconnector.py speak ...`. Los comandos de terminal no llevan extensión (igual que `git`, `node` o `pip`), de modo que el archivo se nombra como el comando final que representa.
-- **Shebang en vez de extensión**: la primera línea es `#!/usr/bin/env python3`. En Linux/macOS, con el bit de ejecución activo (`chmod +x`), el sistema operativo lee esa línea para saber con qué intérprete ejecutarlo; la extensión `.py` solo orienta a editores y humanos, el SO nunca la necesita. Por eso `./ai-voice-interconnector speech say ...` funciona sin nombrar a Python.
-- **Invocación en desarrollo bajo Windows**: Windows ignora el shebang, así que en desarrollo el entry point se invoca explícitamente a través del intérprete: `python bin/ai-voice-interconnector speech say --text "Hola"`.
+En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-interconnector <args>`.
 
-El archivo no contiene lógica de negocio: prepara el entorno (silencia warnings, ajusta `sys.path`, parchea `pkg_resources` para Python 3.13+) y delega en `ai_voice_interconnector.cli.main`. Además es la **semilla de compilación** que reciben los scripts de `scripts/build_*.py`: PyInstaller lo toma como entrada y produce el bundle final. Véase `docs/BUILD.md`.
-
-## Motor Chatterbox Multilingual V3
+## Motor Qwen3-TTS 0.6B (Rust)
 
 | Aspecto | Detalle |
 |---------|---------|
-| **Modelos** | `es-mx-latam` (`ResembleAI/Chatterbox-Multilingual-es-mx-latam`, ~3 GB descargados vía `allow_patterns`) y `en` (`ResembleAI/chatterbox`, ~3 GB descargados vía `allow_patterns`) |
-| **Licencia** | MIT |
-| **Parámetros** | 500M |
-| **Idiomas** | 23+ (es, en, fr, de, pt, etc.) |
-| **Clonación de voz** | `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional (dual-audio como optimización de timbre y prosodia por separado) |
-| **Inferencia** | CPU, CUDA, MPS |
+| **Modelos** | `qwen3-tts-0.6b` (síntesis) y `qwen3-tts-0.6b-base` (clonado) |
+| **Licencia** | MIT / Apache-2.0 |
+| **Parámetros** | 0.6B |
+| **Clonación de voz** | `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional |
+| **Inferencia** | CPU, CUDA, MPS (vía ONNX/CTranslate2) |
+| **Opciones de generación** | `GenerationOptions::produccion()` temp 0.35 seed 4 |
+
+Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato de invocación (`--int4 -j 4 --stream`, residente HTTP).
 
 ## Traducción cross-lingual (opus-mt / CTranslate2)
 
-Subsistema independiente de texto→texto (`src/ai_voice_interconnector/translation/`) que
-traduce `es<->en` antes de la síntesis (flag opcional `--source-language` en
-`speech say`/`synthesize`) o de forma aislada (comando `translate`, sin voz ni
-motor TTS de por medio). No forma parte del motor Chatterbox: es una etapa
-previa y opcional.
+Subsistema `crates/avi-translation` que traduce `es<->en` antes de la síntesis (`--source-language`/`--target-language` en `speech say`/`synthesize`) o de forma aislada (`translate`). Usa `Helsinki-NLP/opus-mt-es-en` / `opus-mt-en-es` (CC-BY-4.0) convertidos a CT2 en `setup`.
 
-| Aspecto | Detalle |
-|---------|---------|
-| **Modelos** | `Helsinki-NLP/opus-mt-es-en` y `Helsinki-NLP/opus-mt-en-es` (proyecto OPUS-MT, Universidad de Helsinki) |
-| **Licencia** | CC-BY-4.0 (atribución en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)) |
-| **Runtime de inferencia** | CTranslate2 (CT2), embarcado; los pesos se convierten una sola vez con `ctranslate2.converters.TransformersConverter` (cuantización int8) durante `setup --language en/all` |
-| **Segmentación** | `pysbd` (puro Python, MIT) — segmenta el texto en oraciones antes de traducir, para no exceder la ventana del modelo |
-| **Ensamblado** | `SegmentAssembler` recompone las oraciones traducidas en un solo texto |
-| **Provisión** | Fuera del bundle, igual que los modelos de síntesis: se descarga y convierte en `setup`, se verifica en `doctor`, se limpia con `cleanup --model` |
-| **Passthrough** | `TranslationService.translate` devuelve el texto intacto sin cargar ningún modelo si origen == destino |
+## Transcripción STT (whisper-rs / whisper.cpp)
 
-## Transcripción STT (faster-whisper / CTranslate2)
-
-Subsistema independiente de audio→texto (`src/ai_voice_interconnector/transcription/`) que
-transcribe un archivo WAV vía la sub-acción `speech transcribe`, aislada del
-motor Chatterbox y del subsistema de traducción. Espeja el patrón de
-colaboradores inyectables de `translation/` (`ModelLoader` con factory
-inyectable + caché por ruta, orquestador `Service` con fail-fast al cargar el
-modelo antes de decodificar el audio). Whisper **solo transcribe**
-(`task="transcribe"`), nunca traduce: si el usuario necesita el texto en otro
-idioma, encadena `translate` por separado.
-
-| Aspecto | Detalle |
-|---------|---------|
-| **Modelo** | `Systran/faster-whisper-small` (conversión CTranslate2 de `openai/whisper-small`), ya en formato CT2 — sin paso de conversión propio, a diferencia de los modelos de traducción |
-| **Licencia** | MIT |
-| **Runtime de inferencia** | CTranslate2 (CT2), el mismo runtime embarcado que usa `translation/`; sin runtime nuevo |
-| **Resolución de idioma** | Reutiliza `resolve_language` de `translation/model_loader.py` (`es-latam`→`es`) — un solo idioma por invocación, no un par |
-| **Lectura de audio** | `_default_audio_reader` (`transcription/service.py`) decodifica el WAV con `wave` de la stdlib (sin PyAV), downmixea a mono si es estéreo y normaliza int16→float32 |
-| **Remuestreo a 16 kHz** | `faster_whisper.WhisperModel.transcribe` asume 16 kHz cuando recibe un `np.ndarray`; a otra frecuencia (44.1/48/8 kHz) la transcripción degrada a texto ininteligible — verificado empíricamente. `_default_audio_reader` remuestrea siempre a `WHISPER_SAMPLE_RATE = 16000` con `_resample_to_whisper_rate` (interpolación lineal vía `numpy.interp`, no-op si el WAV ya está a 16 kHz), sin añadir ninguna dependencia nueva |
-| **Provisión** | Fuera del bundle, igual que los demás modelos: se descarga con `setup --with-stt` (opt-in, ortogonal a `--language`), se verifica en `doctor`, se limpia con `cleanup --model` |
-| **Passthrough** | No aplica (N/A): a diferencia de la traducción, no existe un caso "origen == destino" que evite cargar el modelo — toda invocación transcribe |
+Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio→texto). Usa `whisper-rs` sobre `whisper.cpp` con modelo GGUF `ggml-medium-q8_0.bin` (MIT), provisionado con `setup --with-stt`.
 
 ## Flujo de síntesis
 
 ```
-1. El usuario ejecuta: ai-voice-interconnector speech say --text "Hola" -v mi_voz
-                    │
-                    ▼
-2. La CLI parsea argumentos y carga ChatterboxEngine
-                    │
-                    ▼
-3. ChatterboxTTS.generate(text, language=es,
-       timbre-reference.wav → Voice Encoder (timbre, opcional),
-       speech-reference.wav    → T3 conditioning + S3Gen decoder
-       (sin timbre-reference.wav, speech-reference.wav cubre también el Voice Encoder))
-                    │
-                    ▼
-4. El modelo produce audio WAV (24kHz, mono)
-                    │
-                    ▼
-5. AudioPlayer.play() → API de audio nativa del SO
-                    │
-                    ▼
-6. El usuario escucha el habla en español con la voz clonada
+1. Usuario: ai-voice-interconnector speech say --text "Hola" -v mi_voz
+                     │
+                     ▼
+2. CLI parsea args y resuelve VoiceStore (default embebida o clonada)
+                     │
+                     ▼
+3. Qwen3TtsEngine::synthesize(text, voice) → resolve_voice_motor
+   - default → Preset "ryan" (sin necesidad de .wav, pero wavs embebidos para paridad)
+   - clonada → Clonada(PathBuf) con reference.qvoice
+                     │
+                     ▼
+4. Intento residente HTTP (127.0.0.1:8766) → fallback subprocess --stdout (PCM 24kHz)
+                     │
+                     ▼
+5. PCM → WAV (hound) → AudioService::play_wav (cpal) o guardado en SpeechStore
+                     │
+                     ▼
+6. Usuario escucha habla en español con voz clonada
 ```
 
 ## Modelo de voces de dos niveles
 
-Las voces se separan en dos orígenes y se resuelven por nombre con precedencia
-**usuario→fábrica** (`voices.py`):
+Las voces se resuelven por nombre con precedencia **usuario→fábrica** (`avi-store/src/lib.rs`):
 
-- **Fábrica**: `src/ai_voice_interconnector/voices/`, versionadas y empaquetadas en el
-  ejecutable vía `--add-data`; de solo lectura. Se resuelven en
-  `paths.bundled_voices_dir()`, siempre relativa al paquete: en modo fuente y
-  pip/uv-installed es `ai_voice_interconnector/voices/` dentro del árbol del paquete; en
-  modo congelado (PyInstaller) es el mismo subdirectorio dentro de
-  `sys._MEIPASS`. Incluye la voz `default`, derivada de `assets/audios/`.
-- **Usuario**: `data_root()/voices` (user-data-dir por SO; escribible),
-  registradas con `voice clone`. Una voz de usuario homónima sobrescribe a la de
-  fábrica.
+- **Fábrica**: `voices/default/` embebida en el binario (`include_bytes!`); se materializa en `data_dir()/voices/default/` en `ensure_initialized()`. Solo lectura, protege `remove("default")`.
+- **Usuario**: `data_dir()/voices/<nombre>/` (escribible), registradas con `voice clone`. Homónima sobrescribe a la de fábrica.
 
-Sin `--voice` ni audios explícitos, la CLI usa la voz `default`, de modo que
-`ai-voice-interconnector speech synthesize --text "Hola" --label NUEVA` funciona sin registrar nada.
+Sin `--voice` la CLI usa `default`.
 
 ## Comandos CLI
 
-La referencia de comandos y flags no vive aquí para evitar deriva: el manual de
-usuario ([USAGE.md](../USAGE.md)) documenta cada comando y su uso, y el contrato
-normativo ([CONTRACT.md](CLI/CONTRACT.md)) fija la superficie estable (exit
-codes, esquema `--json`, payloads). La invocación desde otros lenguajes
-(`subprocess`, `child_process`, `std::process`) está en el
-[README](../README.md#invocación-desde-cualquier-lenguaje).
+La referencia de comandos y flags vive en [USAGE.md](../USAGE.md) y el contrato normativo en [CLI/CONTRACT.md](CLI/CONTRACT.md). Invocación desde otros lenguajes (`subprocess`, `child_process`, `std::process`) en el [README](../README.md).
 
-## Compilación PyInstaller
+Principales:
+
+- `setup [--language es] [--with-stt]` — provisiona modelos
+- `voice clone/list/remove` — gestión de voces
+- `speech say/synthesize/transcribe/dub/play/list/remove` — síntesis y audio
+- `daemon start/stop/restart/status/serve` — daemon HTTP
+- `cleanup [--all]` / `uninstall [--force]` — limpieza y desinstalación en un comando
+- `doctor` — diagnóstico de entorno
+
+## Compilación Rust (cargo)
 
 ```bash
-# Windows
-python scripts/build_windows.py
-
-# Linux
-python scripts/build_linux.py --arch x86_64
-python scripts/build_linux.py --arch arm64
-
-# macOS (Apple Silicon)
-python scripts/build_macos.py --arch arm64
+cargo fmt --all --check
+cargo clippy --all-targets
+cargo test --all
+cargo build --release --features full
+./target/release/ai-voice-interconnector version
+./target/release/ai-voice-interconnector voice list
 ```
+
+El pipeline CI ejecuta `cargo test --all` en Linux/Windows/macOS, `cargo llvm-cov`, `validate-licenses` y los smoke tests de one-liners, y luego 4 builds `cargo build --release --features full` con staging `tar.gz`/`.zip`. Ver `docs/BUILD.md`.
 
 ## Extensibilidad
 
 Para añadir un nuevo motor TTS:
 
-1. Crear nuevo módulo en `src/ai_voice_interconnector/`
-2. Mantener la misma interfaz CLI en `cli.py`
-3. Re-empaquetar con PyInstaller para cada plataforma
-
-## Warnings silenciados
-
-`src/ai_voice_interconnector/bootstrap.py` (`apply()`) silencia mediante una **allow-list explícita**
-(`_SILENCED_WARNINGS`), **no** un catch-all global `warnings.filterwarnings("ignore")`
-ni `PYTHONWARNINGS=ignore` (para no enmascarar deprecaciones propias
-ni de terceros). La allow-list acota solo dos warnings benignos del módulo `warnings`:
-
-- `pkg_resources is deprecated` — por **mensaje**; lo emite `perth` al importar
-  `pkg_resources` en Python 3.13. Con `category=Warning` (no `DeprecationWarning`)
-  porque `perth` lo emite como `UserWarning` en este entorno; así queda acotado por
-  mensaje y cubre ambas categorías.
-- `diffusers LoRACompatibleLinear` — por **módulo** (`r"^diffusers\."`), al importar
-  `chatterbox`, para no atarse al texto exacto del mensaje.
-
-Las tres supresiones siguientes son de `logging` (no las gobierna el catch-all) y se
-conservan intactas:
-- `huggingface_hub` HTTP warnings
-- `chatterbox.models.tokenizers.tokenizer` pkuseg
-- `chatterbox.models.t3.inference.alignment_stream_analyzer` repetition
-
----
+1. Crear nuevo crate en `crates/` o módulo en `crates/avi-tts`
+2. Mantener la interfaz `TtsEngine` y el dispatch en `src/main.rs`
+3. Recompilar con `cargo build --release --features full` y validar con `cargo test --all`
 
 ## Referencias
 
-- [Chatterbox TTS - Resemble AI](https://huggingface.co/ResembleAI/chatterbox-multilingual)
-- [PyInstaller - Python to Executable](https://pyinstaller.org/)
-- [Chatterbox GitHub](https://github.com/resemble-ai/chatterbox)
+- [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
+- [Chatterbox TTS - Resemble AI](https://huggingface.co/ResembleAI/chatterbox-multilingual) (referencia del goal original)
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
+- [CTranslate2](https://github.com/OpenNMT/CTranslate2)
