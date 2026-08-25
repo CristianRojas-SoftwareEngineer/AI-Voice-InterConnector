@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.10.6 — 2026-08-24](#0106--2026-08-24)
 - [0.10.5 — 2026-08-11](#0105--2026-08-11)
 - [0.10.4 — 2026-08-10](#0104--2026-08-10)
 - [0.10.3 — 2026-08-10](#0103--2026-08-10)
@@ -32,6 +33,23 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.10.6] — 2026-08-24
+
+### Cambiado
+
+- **Engines nativos ahora opcionales tras Cargo features** (`native-stt` y
+  `native-translation`, off por defecto): `whisper-rs` (whisper.cpp) y `ct2rs`
+  (CTranslate2 + oneDNN) pasan a dependencias opcionales, de modo que
+  `cargo test` y `cargo llvm-cov` compilan la workspace sin C++. Los builds de
+  release activan `--features full`, por lo que el binario distribuido conserva
+  STT y traducción con comportamiento byte-idéntico: el gating es en tiempo de
+  compilación, de coste cero en runtime. Con esto el job `coverage` deja de
+  morir por `no_output_timeout` mientras compilaba en silencio los stacks
+  nativos, desbloqueando la cadena de release.
+- **CI reproducible**: la imagen `cimg/rust:1.96.0` queda fijada por digest en
+  sus cuatro referencias y las claves de caché de registry y target incorporan
+  `rust_version`, para no mezclar imágenes ni artefactos de toolchains distintos.
 
 ## [0.10.5] — 2026-08-11
 
