@@ -16,8 +16,8 @@ BeforeAll {
         param([switch]$WithoutWindowsAsset)
         $assets = @(
             [pscustomobject]@{
-                name                 = "ai-voice-interconnector-9.9.9-x86_64.AppImage"
-                browser_download_url = "https://example.invalid/ai-voice-interconnector-9.9.9-x86_64.AppImage"
+                name                 = "ai-voice-interconnector-9.9.9-x86_64-linux.tar.gz"
+                browser_download_url = "https://example.invalid/ai-voice-interconnector-9.9.9-x86_64-linux.tar.gz"
             }
             [pscustomobject]@{
                 name                 = "SHA256SUMS.txt"
@@ -26,24 +26,28 @@ BeforeAll {
         )
         if (-not $WithoutWindowsAsset) {
             $assets += [pscustomobject]@{
-                name                 = "ai-voice-interconnector-9.9.9-x86_64-setup.exe"
-                browser_download_url = "https://example.invalid/ai-voice-interconnector-9.9.9-x86_64-setup.exe"
+                name                 = "ai-voice-interconnector-9.9.9-x86_64-windows.zip"
+                browser_download_url = "https://example.invalid/ai-voice-interconnector-9.9.9-x86_64-windows.zip"
             }
         }
         [pscustomobject]@{ tag_name = "v9.9.9"; assets = $assets }
     }
 
-    # Bytes fake del instalador y su hash real (Get-FileHash -InputStream),
+    # Bytes fake del archivo .zip y su hash real (Get-FileHash -InputStream),
     # para que el caso de éxito ejercite la verificación de checksum de verdad.
-    $script:FakeSetupBytes = [System.Text.Encoding]::ASCII.GetBytes("fake-installer-bytes")
-    $stream = [System.IO.MemoryStream]::new($script:FakeSetupBytes)
-    $script:FakeSetupHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.ToLowerInvariant()
+    $script:FakeArchiveBytes = [System.Text.Encoding]::ASCII.GetBytes("fake-archive-bytes")
+    $stream = [System.IO.MemoryStream]::new($script:FakeArchiveBytes)
+    $script:FakeArchiveHash = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.ToLowerInvariant()
     $stream.Dispose()
 }
 
 Describe "Install-AIVoiceInterConnector" {
     BeforeEach {
-        Mock Install-SetupSilently {}
+        # Se mockean las funciones que tocan el disco/registro reales: la
+        # extracción del zip, el registro del PATH de usuario (HKCU), el
+        # refresco de sesión, la migración per-machine y la provisión de modelos.
+        Mock Expand-ArchiveToInstallDir {}
+        Mock Add-UserPathEntry {}
         Mock Update-SessionPath {}
         Mock Test-LegacyMachinePath {}
         Mock Invoke-AIVoiceInterConnectorSetup {}
@@ -54,17 +58,18 @@ Describe "Install-AIVoiceInterConnector" {
             Mock Resolve-LatestRelease { New-FakeRelease }
             Mock Get-RemoteFile {
                 if ($OutFile -like "*SHA256SUMS.txt") {
-                    Set-Content -Path $OutFile -Value "$script:FakeSetupHash  ai-voice-interconnector-9.9.9-x86_64-setup.exe"
+                    Set-Content -Path $OutFile -Value "$script:FakeArchiveHash  ai-voice-interconnector-9.9.9-x86_64-windows.zip"
                 } else {
-                    [System.IO.File]::WriteAllBytes($OutFile, $script:FakeSetupBytes)
+                    [System.IO.File]::WriteAllBytes($OutFile, $script:FakeArchiveBytes)
                 }
             }
         }
 
-        It "descarga, verifica el checksum e instala en silencio" {
+        It "descarga, verifica el checksum, extrae y registra el PATH de usuario" {
             { Install-AIVoiceInterConnector } | Should -Not -Throw
             Should -Invoke Get-RemoteFile -Times 2 -Exactly
-            Should -Invoke Install-SetupSilently -Times 1 -Exactly
+            Should -Invoke Expand-ArchiveToInstallDir -Times 1 -Exactly
+            Should -Invoke Add-UserPathEntry -Times 1 -Exactly
             Should -Invoke Invoke-AIVoiceInterConnectorSetup -Times 1 -Exactly
         }
 
@@ -80,16 +85,17 @@ Describe "Install-AIVoiceInterConnector" {
             Mock Get-RemoteFile {
                 if ($OutFile -like "*SHA256SUMS.txt") {
                     # Hash que no corresponde a los bytes descargados.
-                    Set-Content -Path $OutFile -Value ("0" * 64 + "  ai-voice-interconnector-9.9.9-x86_64-setup.exe")
+                    Set-Content -Path $OutFile -Value ("0" * 64 + "  ai-voice-interconnector-9.9.9-x86_64-windows.zip")
                 } else {
-                    [System.IO.File]::WriteAllBytes($OutFile, $script:FakeSetupBytes)
+                    [System.IO.File]::WriteAllBytes($OutFile, $script:FakeArchiveBytes)
                 }
             }
         }
 
-        It "aborta sin instalar" {
+        It "aborta sin extraer ni registrar el PATH" {
             { Install-AIVoiceInterConnector } | Should -Throw "*checksum*"
-            Should -Invoke Install-SetupSilently -Times 0 -Exactly
+            Should -Invoke Expand-ArchiveToInstallDir -Times 0 -Exactly
+            Should -Invoke Add-UserPathEntry -Times 0 -Exactly
         }
     }
 
@@ -100,9 +106,9 @@ Describe "Install-AIVoiceInterConnector" {
         }
 
         It "aborta antes de descargar nada" {
-            { Install-AIVoiceInterConnector } | Should -Throw "*x86_64-setup.exe*"
+            { Install-AIVoiceInterConnector } | Should -Throw "*x86_64-windows.zip*"
             Should -Invoke Get-RemoteFile -Times 0 -Exactly
-            Should -Invoke Install-SetupSilently -Times 0 -Exactly
+            Should -Invoke Expand-ArchiveToInstallDir -Times 0 -Exactly
         }
     }
 }

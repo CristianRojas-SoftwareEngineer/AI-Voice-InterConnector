@@ -17,13 +17,23 @@ setup() {
     mkdir -p "$MOCK_BIN"
     export PATH="$MOCK_BIN:$PATH"
 
-    # Contenido fijo del "AppImage" falso: un script shell válido, para que
-    # "$final_path" setup (última línea de install-linux.sh) se ejecute sin error
-    # de formato ejecutable, en vez de un ELF real.
-    FAKE_APPIMAGE_CONTENT='#!/bin/sh
+    # Archivo tar.gz falso con layout plano: un binario `ai-voice-interconnector`
+    # que es un script shell válido (para que "$target" setup, última línea de
+    # install-linux.sh, se ejecute sin error de formato ejecutable) más un
+    # documento de licencia, imitando el asset real. Se construye una sola vez
+    # para que su SHA-256 sea determinista.
+    stage="$WORK/stage"
+    mkdir -p "$stage"
+    cat > "$stage/ai-voice-interconnector" <<'BIN'
+#!/bin/sh
 echo "fake ai-voice-interconnector $*"
-'
-    FAKE_SHA256="$(printf '%s' "$FAKE_APPIMAGE_CONTENT" | sha256sum | cut -d' ' -f1)"
+BIN
+    chmod +x "$stage/ai-voice-interconnector"
+    printf 'GPLv3\n' > "$stage/LICENSE"
+    ASSET_TARBALL="$WORK/asset.tar.gz"
+    tar -czf "$ASSET_TARBALL" -C "$stage" .
+    export ASSET_TARBALL
+    FAKE_SHA256="$(sha256sum "$ASSET_TARBALL" | cut -d' ' -f1)"
 }
 
 teardown() {
@@ -40,14 +50,14 @@ EOF
     chmod +x "$MOCK_BIN/uname"
 }
 
-# Instala un mock de `curl` que sirve un release con un único asset .AppImage
+# Instala un mock de `curl` que sirve un release con un único asset .tar.gz
 # por arquitectura ($1 = "x86_64" o "arm64") + SHA256SUMS.txt calculado
-# sobre FAKE_APPIMAGE_CONTENT. $2 opcional: si es "corrupt", el checksum
-# publicado no coincide con el contenido real (para el caso de aborto).
+# sobre el tar.gz falso. $2 opcional: si es "corrupt", el checksum publicado
+# no coincide con el contenido real (para el caso de aborto).
 mock_curl() {
     local arch="$1"
     local mode="${2:-ok}"
-    local asset_name="ai-voice-interconnector-1.0.0-${arch}.AppImage"
+    local asset_name="ai-voice-interconnector-1.0.0-${arch}-linux.tar.gz"
     local published_sha="$FAKE_SHA256"
     if [ "$mode" = "corrupt" ]; then
         published_sha="0000000000000000000000000000000000000000000000000000000000ff"
@@ -75,7 +85,7 @@ case "\$url" in
 JSON
         ;;
     *${asset_name})
-        printf '%s' '$FAKE_APPIMAGE_CONTENT' > "\$out"
+        cp "$ASSET_TARBALL" "\$out"
         ;;
     *SHA256SUMS.txt)
         printf '%s  %s\n' "$published_sha" "$asset_name" > "\$out"
@@ -92,8 +102,12 @@ EOF
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"ai-voice-interconnector-1.0.0-x86_64.AppImage"* ]]
-    [ -f "$HOME/.local/opt/ai-voice-interconnector/ai-voice-interconnector-1.0.0-x86_64.AppImage" ]
+    [[ "$output" == *"ai-voice-interconnector-1.0.0-x86_64-linux.tar.gz"* ]]
+    # El binario se extrae con nombre limpio (sin sufijo de arquitectura).
+    [ -x "$HOME/.local/opt/ai-voice-interconnector/ai-voice-interconnector" ]
+    # Y la entrada de PATH en ~/.local/bin apunta a él (symlink en Linux; en
+    # hosts sin symlinks, ln cae a copia, así que se verifica existencia).
+    [ -e "$HOME/.local/bin/ai-voice-interconnector" ]
 }
 
 @test "selecciona el asset arm64 cuando uname -m devuelve aarch64" {
@@ -103,8 +117,9 @@ EOF
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"ai-voice-interconnector-1.0.0-arm64.AppImage"* ]]
-    [ -f "$HOME/.local/opt/ai-voice-interconnector/ai-voice-interconnector-1.0.0-arm64.AppImage" ]
+    [[ "$output" == *"ai-voice-interconnector-1.0.0-arm64-linux.tar.gz"* ]]
+    [ -x "$HOME/.local/opt/ai-voice-interconnector/ai-voice-interconnector" ]
+    [ -e "$HOME/.local/bin/ai-voice-interconnector" ]
 }
 
 # Instala un mock de `ldd` cuyo `--version` reporta la glibc $1.
@@ -117,7 +132,7 @@ EOF
     chmod +x "$MOCK_BIN/ldd"
 }
 
-@test "glibc < 2.35 aborta encaminando a PyPI/fuente" {
+@test "glibc < 2.35 aborta encaminando a la compilación desde fuente" {
     mock_uname x86_64
     mock_curl x86_64
     mock_ldd 2.31
@@ -126,7 +141,7 @@ EOF
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"glibc"* ]]
-    [[ "$output" == *"PyPI"* ]]
+    [[ "$output" == *"BUILD.md"* ]]
     [ ! -d "$HOME/.local/opt/ai-voice-interconnector" ]
 }
 
@@ -161,27 +176,25 @@ EOF
     [ ! -d "$HOME/.local/opt/ai-voice-interconnector" ]
 }
 
-@test "al actualizar elimina el AppImage anterior y deja solo el nuevo" {
+@test "al actualizar limpia el directorio anterior y deja solo el nuevo contenido" {
     mock_uname x86_64
     mock_curl x86_64
 
-    # Pre-siembra un AppImage de una versión anterior en el directorio de
-    # instalación, como si viniera de una instalación previa.
+    # Pre-siembra un archivo huérfano de una versión anterior en el directorio
+    # de instalación, como si viniera de una instalación previa.
     install_dir="$HOME/.local/opt/ai-voice-interconnector"
     mkdir -p "$install_dir"
-    old_appimage="$install_dir/ai-voice-interconnector-0.9.0-x86_64.AppImage"
-    printf 'viejo' > "$old_appimage"
-    chmod +x "$old_appimage"
+    orphan="$install_dir/ai-voice-interconnector-0.9.0-x86_64.AppImage"
+    printf 'viejo' > "$orphan"
 
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
-    # El viejo fue eliminado y el nuevo existe y es ejecutable.
-    [ ! -e "$old_appimage" ]
-    new_appimage="$install_dir/ai-voice-interconnector-1.0.0-x86_64.AppImage"
-    [ -f "$new_appimage" ]
-    [ -x "$new_appimage" ]
-    # Solo queda un AppImage en el directorio.
-    count="$(ls "$install_dir"/ai-voice-interconnector-*.AppImage | wc -l)"
-    [ "$count" -eq 1 ]
+    # El archivo huérfano fue eliminado (rm -rf del directorio antes de extraer).
+    [ ! -e "$orphan" ]
+    # El binario nuevo existe con nombre limpio y es ejecutable.
+    [ -x "$install_dir/ai-voice-interconnector" ]
+    # No quedan AppImages residuales.
+    count="$(ls "$install_dir"/*.AppImage 2>/dev/null | wc -l)"
+    [ "$count" -eq 0 ]
 }

@@ -1,11 +1,11 @@
-# Smoke-test de install-macos.sh (bats-core): mockea curl/uname/hdiutil/xattr/
-# ditto por PATH, sin red ni .dmg real (shasum es real). Cubre el guard de
+# Smoke-test de install-macos.sh (bats-core): mockea curl/uname/xattr por PATH,
+# sin red ni tar.gz real de GitHub (shasum y tar son reales). Cubre el guard de
 # arquitectura, la selección del asset, el aborto ante checksum corrupto, la
 # instalación feliz y el reemplazo de una instalación anterior
 # (docs/SELF-HOSTED-INSTALL.md).
 #
 # El job CI `test-installer-macos` lo ejecuta en el executor macOS real; los
-# mocks permiten correrlo en cualquier host con shasum.
+# mocks permiten correrlo en cualquier host con shasum y tar.
 #
 # Ejecutar: bats tests/installer/install-macos.bats
 
@@ -21,15 +21,23 @@ setup() {
     mkdir -p "$MOCK_BIN"
     export PATH="$MOCK_BIN:$PATH"
 
-    # Contenido fijo del binario del ".app" que el mock de hdiutil materializa
-    # en el mountpoint: un script shell válido, para que "$target" setup (última
-    # línea de install-macos.sh) se ejecute sin error de formato ejecutable.
-    FAKE_BIN_CONTENT='#!/bin/sh
+    # Archivo tar.gz falso con layout plano: un binario `ai-voice-interconnector`
+    # que es un script shell válido (para que "$target" setup, última línea de
+    # install-macos.sh, se ejecute sin error de formato ejecutable) más un
+    # documento de licencia, imitando el asset real. Se construye una sola vez
+    # para que su SHA-256 sea determinista.
+    stage="$WORK/stage"
+    mkdir -p "$stage"
+    cat > "$stage/ai-voice-interconnector" <<'BIN'
+#!/bin/sh
 echo "fake ai-voice-interconnector $*"
-'
-    # Contenido fijo del ".dmg" falso; su checksum se publica en SHA256SUMS.txt.
-    FAKE_DMG_CONTENT='contenido binario simulado del dmg'
-    FAKE_DMG_SHA="$(printf '%s' "$FAKE_DMG_CONTENT" | shasum -a 256 | cut -d' ' -f1)"
+BIN
+    chmod +x "$stage/ai-voice-interconnector"
+    printf 'GPLv3\n' > "$stage/LICENSE"
+    ASSET_TARBALL="$WORK/asset.tar.gz"
+    tar -czf "$ASSET_TARBALL" -C "$stage" .
+    export ASSET_TARBALL
+    FAKE_SHA="$(shasum -a 256 "$ASSET_TARBALL" | cut -d' ' -f1)"
 }
 
 teardown() {
@@ -46,12 +54,12 @@ EOF
     chmod +x "$MOCK_BIN/uname"
 }
 
-# Mock de `curl`: sirve un release con un único .dmg de arm64 + SHA256SUMS.txt.
-# $1 opcional: si es "corrupt", el checksum publicado no coincide con el .dmg.
+# Mock de `curl`: sirve un release con un único tar.gz de arm64 + SHA256SUMS.txt.
+# $1 opcional: si es "corrupt", el checksum publicado no coincide con el tar.gz.
 mock_curl() {
     local mode="${1:-ok}"
-    local asset_name="ai-voice-interconnector-1.0.0-arm64.dmg"
-    local published_sha="$FAKE_DMG_SHA"
+    local asset_name="ai-voice-interconnector-1.0.0-arm64-macos.tar.gz"
+    local published_sha="$FAKE_SHA"
     if [ "$mode" = "corrupt" ]; then
         published_sha="0000000000000000000000000000000000000000000000000000000000ff"
     fi
@@ -78,7 +86,7 @@ case "\$url" in
 JSON
         ;;
     *${asset_name})
-        printf '%s' '$FAKE_DMG_CONTENT' > "\$out"
+        cp "$ASSET_TARBALL" "\$out"
         ;;
     *SHA256SUMS.txt)
         printf '%s  %s\n' "$published_sha" "$asset_name" > "\$out"
@@ -86,42 +94,6 @@ JSON
 esac
 EOF
     chmod +x "$MOCK_BIN/curl"
-}
-
-# Mock de `hdiutil`: en `attach ... -mountpoint <mp>` materializa un .app falso
-# en <mp>; `detach` es no-op.
-mock_hdiutil() {
-    cat > "$MOCK_BIN/hdiutil" <<EOF
-#!/bin/sh
-action="\$1"
-shift
-if [ "\$action" = "attach" ]; then
-    mp=""
-    while [ \$# -gt 0 ]; do
-        case "\$1" in
-            -mountpoint) mp="\$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
-    app="\$mp/ai-voice-interconnector-arm64.app"
-    mkdir -p "\$app/Contents/MacOS"
-    printf '%s' '$FAKE_BIN_CONTENT' > "\$app/Contents/MacOS/ai-voice-interconnector"
-    chmod +x "\$app/Contents/MacOS/ai-voice-interconnector"
-fi
-exit 0
-EOF
-    chmod +x "$MOCK_BIN/hdiutil"
-}
-
-# Mock de `ditto`: copia recursiva src → dst (ditto src dst hace dst copia de src).
-mock_ditto() {
-    cat > "$MOCK_BIN/ditto" <<'EOF'
-#!/bin/sh
-src="$1"
-dst="$2"
-cp -R "$src" "$dst"
-EOF
-    chmod +x "$MOCK_BIN/ditto"
 }
 
 # Mock de `xattr`: no-op (limpieza de cuarentena).
@@ -137,8 +109,6 @@ EOF
 mock_all() {
     mock_uname arm64
     mock_curl "${1:-ok}"
-    mock_hdiutil
-    mock_ditto
     mock_xattr
 }
 
@@ -150,17 +120,17 @@ mock_all() {
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"arquitectura no soportada"* ]]
-    # El rechazo debe encaminar a Mac Intel hacia las alternativas.
-    [[ "$output" == *"PyPI"* ]]
+    # El rechazo debe encaminar a Mac Intel hacia la compilación desde fuente.
+    [[ "$output" == *"BUILD.md"* ]]
 }
 
-@test "selecciona el asset .dmg de arm64" {
+@test "selecciona el asset tar.gz de arm64" {
     mock_all
 
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"ai-voice-interconnector-1.0.0-arm64.dmg"* ]]
+    [[ "$output" == *"ai-voice-interconnector-1.0.0-arm64-macos.tar.gz"* ]]
 }
 
 @test "aborta si el checksum no coincide" {
@@ -170,19 +140,20 @@ mock_all() {
 
     [ "$status" -ne 0 ]
     [[ "$output" == *"checksum"* ]]
-    [ ! -d "$HOME/Applications/ai-voice-interconnector-arm64.app" ]
+    [ ! -d "$HOME/.local/opt/ai-voice-interconnector" ]
 }
 
-@test "instalación feliz: copia el .app, crea el symlink e invoca setup" {
+@test "instalación feliz: extrae el binario, crea el symlink e invoca setup" {
     mock_all
 
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
-    # El .app quedó copiado a ~/Applications.
-    [ -x "$HOME/Applications/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector" ]
-    # El symlink de PATH per-user apunta al binario del .app.
-    [ -L "$HOME/.local/bin/ai-voice-interconnector" ]
+    # El binario quedó extraído en el directorio de instalación per-user.
+    [ -x "$HOME/.local/opt/ai-voice-interconnector/ai-voice-interconnector" ]
+    # La entrada de PATH en ~/.local/bin apunta al binario extraído (symlink en
+    # macOS; en hosts sin symlinks, ln cae a copia, así que se verifica existencia).
+    [ -e "$HOME/.local/bin/ai-voice-interconnector" ]
     # setup fue invocado (el binario falso lo eco).
     [[ "$output" == *"fake ai-voice-interconnector setup"* ]]
 }
@@ -191,15 +162,15 @@ mock_all() {
     mock_all
 
     # Pre-siembra una instalación anterior con contenido distinguible.
-    old_app="$HOME/Applications/ai-voice-interconnector-arm64.app/Contents/MacOS"
-    mkdir -p "$old_app"
-    printf 'binario viejo' > "$old_app/ai-voice-interconnector"
+    install_dir="$HOME/.local/opt/ai-voice-interconnector"
+    mkdir -p "$install_dir"
+    printf 'binario viejo' > "$install_dir/ai-voice-interconnector"
 
     run sh "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
     # El binario fue reemplazado por el nuevo (script, no "binario viejo").
-    new_bin="$HOME/Applications/ai-voice-interconnector-arm64.app/Contents/MacOS/ai-voice-interconnector"
+    new_bin="$install_dir/ai-voice-interconnector"
     [ -x "$new_bin" ]
     ! grep -q "binario viejo" "$new_bin"
 }
