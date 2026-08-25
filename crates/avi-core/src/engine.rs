@@ -1,11 +1,10 @@
-use serde_json::Value;
-
 pub trait SttEngine: Send + Sync {
     fn transcribe(&self, audio_pcm: &[i16], language: Option<&str>) -> anyhow::Result<String>;
 }
 
 pub trait TranslationEngine: Send + Sync {
-    fn translate(&self, text: &str, source_lang: &str, target_lang: &str) -> anyhow::Result<String>;
+    fn translate(&self, text: &str, source_lang: &str, target_lang: &str)
+        -> anyhow::Result<String>;
 }
 
 pub trait Segmenter: Send + Sync {
@@ -163,7 +162,12 @@ impl SttEngine for DummySttEngine {
 pub struct DummyTranslationEngine;
 
 impl TranslationEngine for DummyTranslationEngine {
-    fn translate(&self, text: &str, source_lang: &str, target_lang: &str) -> anyhow::Result<String> {
+    fn translate(
+        &self,
+        text: &str,
+        source_lang: &str,
+        target_lang: &str,
+    ) -> anyhow::Result<String> {
         if source_lang == target_lang {
             return Ok(text.to_string());
         }

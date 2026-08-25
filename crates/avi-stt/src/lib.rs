@@ -129,8 +129,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/assets/whisper_sample_16k.wav"
         );
-        let mut reader = hound::WavReader::open(wav_path)
-            .expect("el WAV fixture debe abrirse");
+        let mut reader = hound::WavReader::open(wav_path).expect("el WAV fixture debe abrirse");
         assert_eq!(
             reader.spec().sample_rate as usize,
             16000,
@@ -160,7 +159,10 @@ mod tests {
         use crate::Ct2SttEngine;
 
         let result = Ct2SttEngine::new("ruta/que/no/existe/whisper-small");
-        assert!(result.is_err(), "una ruta de modelo inexistente debe fallar");
+        assert!(
+            result.is_err(),
+            "una ruta de modelo inexistente debe fallar"
+        );
     }
 
     /// `audio_ctx_para_duracion` debe escalonar por duración (capacidad
@@ -173,10 +175,10 @@ mod tests {
         // (duración en segundos, contexto esperado)
         let casos: [(usize, i32); 9] = [
             (0, 256),
-            (2, 256),   // 62.5×2=125 → 128 < piso → 256 (capacidad 5.12 s)
-            (4, 256),   // 250 → 256 (capacidad 5.12 s >= 1.25×4 s)
-            (5, 320),   // 312.5 → 320
-            (7, 448),   // 437.5 → 448
+            (2, 256), // 62.5×2=125 → 128 < piso → 256 (capacidad 5.12 s)
+            (4, 256), // 250 → 256 (capacidad 5.12 s >= 1.25×4 s)
+            (5, 320), // 312.5 → 320
+            (7, 448), // 437.5 → 448
             (8, 512),
             (10, 640),  // 625 → 640 (capacidad 12.8 s >= 12.5 s)
             (15, 960),  // 937.5 → 960
@@ -251,7 +253,10 @@ mod tests {
         // directorio `tests/assets/` de este crate.
         let corpus: [(&str, &str); 2] = [
             ("whisper_sample_16k.wav", "whisper_sample_16k.oraculo.txt"),
-            ("corpus_watermark_16k.wav", "corpus_watermark_16k.oraculo.txt"),
+            (
+                "corpus_watermark_16k.wav",
+                "corpus_watermark_16k.oraculo.txt",
+            ),
         ];
 
         for (wav, fixture) in corpus {
@@ -262,8 +267,8 @@ mod tests {
                 .join("tests/assets")
                 .join(fixture);
 
-            let pcm = avi_audio::load_wav_16k_mono_pcm(wav_path)
-                .expect("el WAV fixture debe cargarse");
+            let pcm =
+                avi_audio::load_wav_16k_mono_pcm(wav_path).expect("el WAV fixture debe cargarse");
             let actual = engine
                 .transcribe(&pcm, Some("es"))
                 .expect("la transcripción debe completarse")

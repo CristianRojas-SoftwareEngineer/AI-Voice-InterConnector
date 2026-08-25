@@ -129,18 +129,23 @@ async fn health_handler() -> Json<Value> {
 async fn voices_handler(State(state): State<SharedState>) -> impl IntoResponse {
     match state.voice_store.list() {
         Ok(voices) => {
-            let voice_list: Vec<Value> = voices.iter().map(|v| {
-                json!({
-                    "name": v.name,
-                    "is_factory": v.is_factory,
-                    "has_reference": v.reference_path.is_some(),
+            let voice_list: Vec<Value> = voices
+                .iter()
+                .map(|v| {
+                    json!({
+                        "name": v.name,
+                        "is_factory": v.is_factory,
+                        "has_reference": v.reference_path.is_some(),
+                    })
                 })
-            }).collect();
+                .collect();
             Json(with_sv(json!({ "voices": voice_list }))).into_response()
         }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(with_sv(json!({ "error": e.to_string() })))).into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(with_sv(json!({ "error": e.to_string() }))),
+        )
+            .into_response(),
     }
 }
 
@@ -171,14 +176,12 @@ async fn voices_precompute_handler(
         .into_response(),
         // `reference.qvoice` ya existe → ya precomputado; no hay WAV fuente con
         // el que relanzar `clone_voice` (no se regenera de un .qvoice).
-        Some(path) if path.extension().map_or(false, |e| e == "qvoice") => {
-            Json(with_sv(json!({
-                "name": voice,
-                "precomputed": true,
-                "message": "Voz ya precomputada (reference.qvoice presente).",
-            })))
-            .into_response()
-        }
+        Some(path) if path.extension().is_some_and(|e| e == "qvoice") => Json(with_sv(json!({
+            "name": voice,
+            "precomputed": true,
+            "message": "Voz ya precomputada (reference.qvoice presente).",
+        })))
+        .into_response(),
         // `reference.wav` legado: relanzar clone_voice contra el motor real.
         Some(wav) => {
             let base_model_dir = match state.tts_engine.base_model_dir.as_ref() {
@@ -314,10 +317,7 @@ async fn synthesize_handler(
         };
         // `GenerationOptions::produccion()` fija temperature=0.35 / seed=42; no se
         // alteran temperatura ni seed (prohibido por el brief).
-        let tmp = std::env::temp_dir().join(format!(
-            "avi_daemon_synth_{}.wav",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("avi_daemon_synth_{}.wav", std::process::id()));
         match state.tts_engine.synthesize_with_options(
             &text_owned,
             &profile,
@@ -455,11 +455,7 @@ async fn transcribe_handler(
 /// cortar palabras), cada segmento se transcribe con el `audio_ctx` dinámico
 /// del motor y los textos se unen con espacios.
 #[cfg(feature = "native-stt")]
-fn transcribir_con_vad(
-    state: &DaemonState,
-    pcm: &[i16],
-    language: &str,
-) -> anyhow::Result<String> {
+fn transcribir_con_vad(state: &DaemonState, pcm: &[i16], language: &str) -> anyhow::Result<String> {
     let mut buffer = vec![0f32; pcm.len()];
     convert_integer_to_float_audio(pcm, &mut buffer)?;
 
@@ -480,7 +476,9 @@ fn transcribir_con_vad(
         if fin <= inicio {
             continue;
         }
-        let texto = state.stt_engine.transcribe(&pcm[inicio..fin], Some(language))?;
+        let texto = state
+            .stt_engine
+            .transcribe(&pcm[inicio..fin], Some(language))?;
         textos.push(texto);
     }
     Ok(textos.join(" "))
@@ -551,10 +549,7 @@ pub fn warmup_tts(state: &DaemonState) -> anyhow::Result<()> {
         reference_audio: None,
         qvoice_path: state.voice_store.find_reference("default"),
     };
-    let tmp = std::env::temp_dir().join(format!(
-        "avi_daemon_warmup_{}.wav",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("avi_daemon_warmup_{}.wav", std::process::id()));
     state
         .tts_engine
         .synthesize_with_options(

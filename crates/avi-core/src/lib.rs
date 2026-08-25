@@ -93,10 +93,19 @@ mod tests {
         let result = segmenter.segment(text);
 
         let sentences = &result[0];
-        assert!(sentences.len() > 1, "debe caer al fallback de puntuación fuerte");
+        assert!(
+            sentences.len() > 1,
+            "debe caer al fallback de puntuación fuerte"
+        );
         let joined = sentences.join(" ");
-        assert!(joined.contains("Primero esto"), "no debe perderse el texto inicial");
-        assert!(joined.contains("finalmente esto de aquí"), "no debe perderse el texto final");
+        assert!(
+            joined.contains("Primero esto"),
+            "no debe perderse el texto inicial"
+        );
+        assert!(
+            joined.contains("finalmente esto de aquí"),
+            "no debe perderse el texto final"
+        );
     }
 
     #[test]
@@ -119,7 +128,11 @@ mod tests {
         }
         let joined = sentences.join(" ");
         for word in text.split(' ') {
-            assert!(joined.contains(word), "no debe perderse la palabra '{}'", word);
+            assert!(
+                joined.contains(word),
+                "no debe perderse la palabra '{}'",
+                word
+            );
         }
     }
 }

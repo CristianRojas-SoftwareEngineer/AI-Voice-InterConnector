@@ -99,12 +99,8 @@ pub struct VoiceProfile {
 
 /// Trait público del motor de síntesis TTS
 pub trait TtsEngine: Send + Sync {
-    fn synthesize(
-        &self,
-        text: &str,
-        voice: &str,
-        output_path: Option<&PathBuf>,
-    ) -> Result<PathBuf>;
+    fn synthesize(&self, text: &str, voice: &str, output_path: Option<&PathBuf>)
+        -> Result<PathBuf>;
 
     fn synthesize_with_options(
         &self,
@@ -127,7 +123,11 @@ pub enum VozMotor {
 /// se mapea al preset `ryan` (default del servidor); una voz con `reference.qvoice`
 /// (o `reference.wav` legado, que el orquestador convierte antes de usar) es
 /// clonada; cualquier otro nombre se pasa como preset del motor.
-pub fn resolve_voice_motor(voice: &str, qvoice: Option<&Path>, reference: Option<&Path>) -> VozMotor {
+pub fn resolve_voice_motor(
+    voice: &str,
+    qvoice: Option<&Path>,
+    reference: Option<&Path>,
+) -> VozMotor {
     if voice == "default" {
         return VozMotor::Preset("ryan".to_string());
     }
@@ -162,7 +162,11 @@ fn resolve_binary() -> Option<PathBuf> {
     if vendored.is_file() {
         return Some(vendored);
     }
-    let name = if cfg!(windows) { "qwen_tts.exe" } else { "qwen_tts" };
+    let name = if cfg!(windows) {
+        "qwen_tts.exe"
+    } else {
+        "qwen_tts"
+    };
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
             let cand = dir.join(name);
@@ -387,7 +391,10 @@ impl TtsEngine for Qwen3TtsEngine {
         // Conversión perezosa del `reference.wav` legado → `.qvoice` (decisión e3):
         // si la voz solo tiene un WAV de referencia, se clona una vez y se cachea
         // junto a él como `reference.qvoice`.
-        let qvoice = match (profile.qvoice_path.as_deref(), profile.reference_audio.as_deref()) {
+        let qvoice = match (
+            profile.qvoice_path.as_deref(),
+            profile.reference_audio.as_deref(),
+        ) {
             (Some(q), _) if q.is_file() => Some(q.to_path_buf()),
             (None, Some(r)) if r.is_file() => {
                 let dest = r.with_file_name("reference.qvoice");
@@ -408,13 +415,12 @@ impl TtsEngine for Qwen3TtsEngine {
         // 1. HTTP manual configurado (solo presets; la voz clonada exige un
         //    servidor arrancado con su `--load-voice`, que solo gestiona el residente).
         if let Some(url) = &self.server_url {
-            if matches!(voz, VozMotor::Preset(_)) {
-                if self
+            if matches!(voz, VozMotor::Preset(_))
+                && self
                     .synthesize_via_http(url, text, &voz, options, None, None, &path)
                     .is_ok()
-                {
-                    return Ok(path);
-                }
+            {
+                return Ok(path);
             }
         }
 
@@ -433,10 +439,12 @@ impl TtsEngine for Qwen3TtsEngine {
         }
 
         // 3. Fallback subprocess con `--stdout`.
-        if self.binary_path.is_some() {
-            if self.synthesize_via_subprocess(text, &voz, options, &path).is_ok() {
-                return Ok(path);
-            }
+        if self.binary_path.is_some()
+            && self
+                .synthesize_via_subprocess(text, &voz, options, &path)
+                .is_ok()
+        {
+            return Ok(path);
         }
 
         // 4. Sin binario ni servidor disponibles, el modelo de inferencia no está provisionado.
@@ -502,10 +510,16 @@ pub(crate) fn construir_body_tts(
     emotion: Option<&EmotionOptions>,
 ) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
-    obj.insert("text".to_string(), serde_json::Value::String(text.to_string()));
+    obj.insert(
+        "text".to_string(),
+        serde_json::Value::String(text.to_string()),
+    );
     match voz {
         VozMotor::Preset(speaker) => {
-            obj.insert("speaker".to_string(), serde_json::Value::String(speaker.clone()));
+            obj.insert(
+                "speaker".to_string(),
+                serde_json::Value::String(speaker.clone()),
+            );
             obj.insert(
                 "language".to_string(),
                 serde_json::Value::String(options.language.clone()),
@@ -549,7 +563,12 @@ pub(crate) fn construir_body_tts(
 ///
 /// Envía `Connection: close` y lee la respuesta hasta EOF; devuelve
 /// (código de estado, bytes del body).
-fn http_exchange(url: &str, method: &str, body: Option<&str>, timeout: Duration) -> Result<(u16, Vec<u8>)> {
+fn http_exchange(
+    url: &str,
+    method: &str,
+    body: Option<&str>,
+    timeout: Duration,
+) -> Result<(u16, Vec<u8>)> {
     let (host, port, path) = parse_http_url(url)?;
     let mut stream = std::net::TcpStream::connect(format!("{}:{}", host, port))?;
     stream.set_read_timeout(Some(timeout))?;
@@ -572,9 +591,12 @@ fn http_exchange(url: &str, method: &str, body: Option<&str>, timeout: Duration)
     let mut buf = Vec::new();
     stream.read_to_end(&mut buf)?;
     let text = String::from_utf8_lossy(&buf);
-    let header_end = text
-        .find("\r\n\r\n")
-        .ok_or_else(|| anyhow!("Respuesta HTTP sin final de headers: {:?}", &text[..text.len().min(80)]))?;
+    let header_end = text.find("\r\n\r\n").ok_or_else(|| {
+        anyhow!(
+            "Respuesta HTTP sin final de headers: {:?}",
+            &text[..text.len().min(80)]
+        )
+    })?;
     let status_line = text[..header_end].lines().next().unwrap_or("");
     let status: u16 = status_line
         .split_whitespace()
@@ -694,15 +716,15 @@ pub fn clone_voice(
 /// `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
 pub mod resident {
     use super::*;
-    use std::process::{Child, Stdio};
-    use std::thread;
-    use std::time::Duration;
     #[cfg(test)]
     use std::io::Read;
     #[cfg(test)]
     use std::io::Write;
     #[cfg(test)]
     use std::net::TcpListener;
+    use std::process::{Child, Stdio};
+    use std::thread;
+    use std::time::Duration;
 
     /// Gestor del proceso servidor del motor.
     pub struct Qwen3TtsResident {
@@ -754,7 +776,11 @@ pub mod resident {
                 port
             );
             let child = cmd.spawn().map_err(|e| {
-                anyhow!("No se pudo arrancar el servidor Qwen3-TTS ({}): {}", bin.display(), e)
+                anyhow!(
+                    "No se pudo arrancar el servidor Qwen3-TTS ({}): {}",
+                    bin.display(),
+                    e
+                )
             })?;
             Self::spawn_con_hijo(child, port, 60, 500)
         }
@@ -809,7 +835,9 @@ pub mod resident {
     /// Simulador HTTP mínimo para tests: responde `200 OK` a `/v1/health` y
     /// captura el body de un único `POST /v1/tts`.
     #[cfg(test)]
-    pub(crate) fn simular_servidor(body: std::sync::Arc<Mutex<String>>) -> (u16, thread::JoinHandle<()>) {
+    pub(crate) fn simular_servidor(
+        body: std::sync::Arc<Mutex<String>>,
+    ) -> (u16, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("debe bindear un puerto libre");
         let port = listener.local_addr().expect("puerto local").port();
         let handle = thread::spawn(move || {
@@ -818,7 +846,7 @@ pub mod resident {
                 let mut buf = Vec::new();
                 let mut tmp = [0u8; 8192];
                 let mut headers = String::new();
-                let mut content_length;
+                let content_length;
                 loop {
                     match stream.read(&mut tmp) {
                         Ok(0) => break,
@@ -844,9 +872,10 @@ pub mod resident {
                                     }
                                 }
                                 if buf.len() >= header_len + content_length {
-                                    *body.lock().unwrap() =
-                                        String::from_utf8_lossy(&buf[header_len..header_len + content_length])
-                                            .to_string();
+                                    *body.lock().unwrap() = String::from_utf8_lossy(
+                                        &buf[header_len..header_len + content_length],
+                                    )
+                                    .to_string();
                                 }
                                 break;
                             }
@@ -933,7 +962,10 @@ mod tests {
             &voz,
             &GenerationOptions::default(),
         );
-        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         // Con defaults no se emiten -T/-k/-p/-r (idempotente con los del motor).
         assert_eq!(
             args,
@@ -967,14 +999,16 @@ mod tests {
             &voz,
             &opts,
         );
-        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             args,
             vec![
-                "-d", "md", "-t", "Hola", "-s", "ryan", "-l", "es",
-                "--int4", "-j", "4",
-                "-T", "0.9", "-k", "20", "-p", "0.8", "-r", "1.2", "--seed", "42",
-                "--stream", "--stdout",
+                "-d", "md", "-t", "Hola", "-s", "ryan", "-l", "es", "--int4", "-j", "4", "-T",
+                "0.9", "-k", "20", "-p", "0.8", "-r", "1.2", "--seed", "42", "--stream",
+                "--stdout",
             ]
         );
     }
@@ -990,12 +1024,25 @@ mod tests {
             &voz,
             &GenerationOptions::default(),
         );
-        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             args,
             vec![
-                "-d", "md", "-t", "Hola", "--load-voice", "voz.qvoice", "--icl-only",
-                "--int4", "-j", "4", "--stream", "--stdout",
+                "-d",
+                "md",
+                "-t",
+                "Hola",
+                "--load-voice",
+                "voz.qvoice",
+                "--icl-only",
+                "--int4",
+                "-j",
+                "4",
+                "--stream",
+                "--stdout",
             ]
         );
     }
@@ -1010,12 +1057,21 @@ mod tests {
             8766,
             None,
         );
-        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             args,
             vec![
-                "-d", "vendor/qwen3-tts/qwen3-tts-0.6b", "--serve", "8766",
-                "--int4", "-j", "4", "--stream",
+                "-d",
+                "vendor/qwen3-tts/qwen3-tts-0.6b",
+                "--serve",
+                "8766",
+                "--int4",
+                "-j",
+                "4",
+                "--stream",
             ]
         );
 
@@ -1025,12 +1081,24 @@ mod tests {
             8766,
             Some(Path::new("voz.qvoice")),
         );
-        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             args,
             vec![
-                "-d", "md", "--serve", "8766", "--int4", "-j", "4", "--stream",
-                "--load-voice", "voz.qvoice", "--icl-only",
+                "-d",
+                "md",
+                "--serve",
+                "8766",
+                "--int4",
+                "-j",
+                "4",
+                "--stream",
+                "--load-voice",
+                "voz.qvoice",
+                "--icl-only",
             ]
         );
     }
@@ -1125,7 +1193,10 @@ mod tests {
         // El servidor simulado no termina nunca: se desacopla el hilo.
         drop(handle);
         thread::sleep(Duration::from_millis(800));
-        assert!(!proceso_vivo(pid), "el Drop del gestor debe terminar al hijo");
+        assert!(
+            !proceso_vivo(pid),
+            "el Drop del gestor debe terminar al hijo"
+        );
     }
 
     /// T5: el healthcheck reintenta hasta que el servidor responde. El simulador
@@ -1160,10 +1231,16 @@ mod tests {
         thread::sleep(Duration::from_millis(200));
         let n = *attempts.lock().unwrap();
         if let Err(e) = resultado {
-            panic!("el healthcheck debe triunfar tras los reintentos ({} conexiones recibidas): {}", n, e);
+            panic!(
+                "el healthcheck debe triunfar tras los reintentos ({} conexiones recibidas): {}",
+                n, e
+            );
         }
         if n < 3 {
-            panic!("debe haberse reintentado al menos 3 veces (se recibieron {})", n);
+            panic!(
+                "debe haberse reintentado al menos 3 veces (se recibieron {})",
+                n
+            );
         }
     }
 

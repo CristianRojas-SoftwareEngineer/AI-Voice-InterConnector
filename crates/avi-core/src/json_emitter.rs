@@ -26,7 +26,10 @@ pub fn with_schema_version(val: Value) -> Value {
         Value::Object(m) => m,
         _ => serde_json::Map::new(),
     };
-    map.insert("schema_version".to_string(), Value::String(SCHEMA_VERSION.to_string()));
+    map.insert(
+        "schema_version".to_string(),
+        Value::String(SCHEMA_VERSION.to_string()),
+    );
     Value::Object(map)
 }
 

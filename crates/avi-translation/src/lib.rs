@@ -89,7 +89,12 @@ impl Ct2TranslationEngine {
 
 #[cfg(feature = "native-translation")]
 impl TranslationEngine for Ct2TranslationEngine {
-    fn translate(&self, text: &str, _source_lang: &str, _target_lang: &str) -> anyhow::Result<String> {
+    fn translate(
+        &self,
+        text: &str,
+        _source_lang: &str,
+        _target_lang: &str,
+    ) -> anyhow::Result<String> {
         // El texto único se traduce como lote de una sola oración: `translate_lote`
         // aplica el mismo pre/post procesamiento por ítem que el pipeline antiguo
         // (anexar `</s>`, opciones idénticas y saneo de la hipótesis).
@@ -156,9 +161,7 @@ pub fn translate(
         paragraphs,
         source,
         target,
-        &|oraciones: &[String], src: &str, dst: &str| {
-            engine.translate_lote(oraciones, src, dst)
-        },
+        &|oraciones: &[String], src: &str, dst: &str| engine.translate_lote(oraciones, src, dst),
     )?;
 
     Ok(translated
@@ -174,22 +177,19 @@ mod tests {
 
     // `HierarchicalSegmenter`/`Segmenter` los usan los tests puros de lote; el
     // trait `TranslationEngine` solo lo usan los tests del motor real (gateados).
-    use avi_core::engine::{HierarchicalSegmenter, Segmenter};
     #[cfg(feature = "native-translation")]
     use avi_core::engine::TranslationEngine;
+    use avi_core::engine::{HierarchicalSegmenter, Segmenter};
 
     /// Modelo CT2 presente. Los pesos bajo `models/` están gitignoreados:
     /// en un checkout limpio (CI) los E2E que los requieren se saltan con aviso;
     /// en desarrollo corren completos.
     #[cfg(feature = "native-translation")]
     fn modelo_ct2_disponible(subdir: &str) -> bool {
-        std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../models/ct2/"
-        ))
-        .join(subdir)
-        .join("model.bin")
-        .exists()
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../models/ct2/"))
+            .join(subdir)
+            .join("model.bin")
+            .exists()
     }
 
     /// Carga el modelo opus-mt es→en real (ya convertido a CT2 y provisionado)
@@ -280,7 +280,10 @@ mod tests {
         use crate::Ct2TranslationEngine;
 
         let result = Ct2TranslationEngine::new("ruta/que/no/existe/opus-mt-es-en");
-        assert!(result.is_err(), "una ruta de modelo inexistente debe fallar");
+        assert!(
+            result.is_err(),
+            "una ruta de modelo inexistente debe fallar"
+        );
     }
 
     /// Test de paridad funcional contra el oráculo Python (Decisión cerrada #2
@@ -330,8 +333,8 @@ mod tests {
                 .join("tests/assets")
                 .join(fixture);
 
-            let engine = Ct2TranslationEngine::new(model_dir)
-                .expect("el modelo opus-mt debe cargar");
+            let engine =
+                Ct2TranslationEngine::new(model_dir).expect("el modelo opus-mt debe cargar");
             let pares: Vec<ParOraculo> = serde_json::from_str(
                 &std::fs::read_to_string(fixture_path)
                     .expect("el corpus de referencia del oráculo debe existir"),
@@ -382,7 +385,10 @@ mod tests {
 
                 wer_total += wer;
                 n_items += 1;
-                eprintln!("[corpus] {} | WER {:.4} | {:?} -> {:?}", model, wer, par.input, actual);
+                eprintln!(
+                    "[corpus] {} | WER {:.4} | {:?} -> {:?}",
+                    model, wer, par.input, actual
+                );
             }
         }
 
@@ -450,7 +456,10 @@ mod tests {
         );
 
         let translated = result.expect("la traducción multi-párrafo debe completarse");
-        assert!(!translated.trim().is_empty(), "el resultado no debe estar vacío");
+        assert!(
+            !translated.trim().is_empty(),
+            "el resultado no debe estar vacío"
+        );
         assert!(
             translated.contains("\n\n"),
             "la separación de párrafos debe preservarse en la salida"
@@ -480,7 +489,8 @@ mod tests {
     fn doble_traduccion<'a>(
         llamadas: &'a Cell<usize>,
         tamanos: &'a RefCell<Vec<usize>>,
-    ) -> impl for<'x, 'y, 'z> Fn(&'x [String], &'y str, &'z str) -> anyhow::Result<Vec<String>> + 'a {
+    ) -> impl for<'x, 'y, 'z> Fn(&'x [String], &'y str, &'z str) -> anyhow::Result<Vec<String>> + 'a
+    {
         move |lote: &[String], _source: &str, _target: &str| {
             llamadas.set(llamadas.get() + 1);
             tamanos.borrow_mut().push(lote.len());
@@ -538,7 +548,11 @@ mod tests {
             2,
             "11 oraciones deben partirse en 2 lotes por el tope de 10"
         );
-        assert_eq!(*tamanos.borrow(), vec![10, 1], "los lotes deben ser de 10 y 1");
+        assert_eq!(
+            *tamanos.borrow(),
+            vec![10, 1],
+            "los lotes deben ser de 10 y 1"
+        );
         assert_eq!(
             resultado,
             vec![(1..=11)
@@ -602,16 +616,18 @@ mod tests {
         // oración vacía no debe invocar al traductor y el párrafo conserva su
         // posición para no alterar el reensamblado.
         let parrafos = HierarchicalSegmenter::default().segment("");
-        let resultado =
-            super::traducir_lotes_por_parrafo(parrafos, "es", "en", &doble)
-                .expect("un texto vacío no debe fallar");
+        let resultado = super::traducir_lotes_por_parrafo(parrafos, "es", "en", &doble)
+            .expect("un texto vacío no debe fallar");
 
         assert_eq!(
             llamadas.get(),
             0,
             "un texto vacío no debe invocar al traductor"
         );
-        assert!(tamanos.borrow().is_empty(), "no debe registrarse ningún lote");
+        assert!(
+            tamanos.borrow().is_empty(),
+            "no debe registrarse ningún lote"
+        );
         assert_eq!(
             resultado,
             vec![Vec::<String>::new()],
@@ -629,11 +645,14 @@ mod tests {
         // (comportamiento real de `HierarchicalSegmenter`); no deben invocar al
         // traductor ni alterar el reensamblado posterior.
         let parrafos = HierarchicalSegmenter::default().segment("Hola.\n\n\n\nAdiós.");
-        let resultado =
-            super::traducir_lotes_por_parrafo(parrafos, "es", "en", &doble)
-                .expect("párrafos con huecos vacíos no deben fallar");
+        let resultado = super::traducir_lotes_por_parrafo(parrafos, "es", "en", &doble)
+            .expect("párrafos con huecos vacíos no deben fallar");
 
-        assert_eq!(llamadas.get(), 2, "solo los párrafos no vacíos deben invocar");
+        assert_eq!(
+            llamadas.get(),
+            2,
+            "solo los párrafos no vacíos deben invocar"
+        );
         assert_eq!(
             resultado.len(),
             3,
@@ -659,11 +678,7 @@ mod tests {
         )
         .expect("el multipárrafo no debe fallar");
 
-        assert_eq!(
-            llamadas.get(),
-            3,
-            "5 + 11 oraciones deben suponer 3 lotes"
-        );
+        assert_eq!(llamadas.get(), 3, "5 + 11 oraciones deben suponer 3 lotes");
         assert_eq!(*tamanos.borrow(), vec![5, 10, 1], "lotes de 5, 10 y 1");
         assert_eq!(
             resultado,
@@ -682,7 +697,11 @@ mod tests {
         // párrafos con `"\n\n"`.
         let ensamblado: Vec<String> = resultado.iter().map(|p| p.join(" ")).collect();
         let texto = ensamblado.join("\n\n");
-        assert_eq!(texto.matches("\n\n").count(), 1, "debe haber un separador de párrafos");
+        assert_eq!(
+            texto.matches("\n\n").count(),
+            1,
+            "debe haber un separador de párrafos"
+        );
         assert!(
             texto.starts_with("T:Oración número 1 de la prueba. T:Oración número 2"),
             "el primer párrafo debe encabezar el texto"
@@ -720,10 +739,7 @@ mod tests {
             &doble,
         );
 
-        assert!(
-            resultado.is_err(),
-            "el error del traductor debe propagarse"
-        );
+        assert!(resultado.is_err(), "el error del traductor debe propagarse");
         assert_eq!(
             llamadas.get(),
             2,
@@ -766,7 +782,10 @@ mod tests {
         )
         .expect("el párrafo de 11 oraciones debe traducirse");
 
-        assert!(!translated.trim().is_empty(), "la traducción no debe estar vacía");
+        assert!(
+            !translated.trim().is_empty(),
+            "la traducción no debe estar vacía"
+        );
         assert!(
             !translated.contains("</s>"),
             "el token EOS no debe filtrarse a la salida"
@@ -834,7 +853,10 @@ mod tests {
         )
         .expect("el multipárrafo largo debe traducirse");
 
-        assert!(!translated.trim().is_empty(), "la traducción no debe estar vacía");
+        assert!(
+            !translated.trim().is_empty(),
+            "la traducción no debe estar vacía"
+        );
         assert!(
             !translated.contains("</s>"),
             "el token EOS no debe filtrarse a la salida"

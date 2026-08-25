@@ -212,18 +212,11 @@ async fn synthesize_emite_stream_ndjson_de_contrato() {
     // con audio verdadero se verifica en F5 contra el motor.
     let final_event = eventos.last().unwrap();
     let invariante = match final_event["event"].as_str() {
-        Some("result") => !final_event["audio_b64"]
-            .as_str()
-            .unwrap_or("")
-            .is_empty(),
+        Some("result") => !final_event["audio_b64"].as_str().unwrap_or("").is_empty(),
         Some("error") => final_event.get("reason").is_some(),
         _ => false,
     };
-    assert!(
-        invariante,
-        "evento final insuficiente: {:?}",
-        final_event
-    );
+    assert!(invariante, "evento final insuficiente: {:?}", final_event);
 }
 
 #[tokio::test]
@@ -239,13 +232,18 @@ async fn voices_respeta_el_contrato_de_envelope() {
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
 
     assert_eq!(actual["schema_version"], Value::String("3".to_string()));
-    let voices = actual["voices"].as_array().expect("`voices` debe ser un array");
+    let voices = actual["voices"]
+        .as_array()
+        .expect("`voices` debe ser un array");
     let default = voices
         .iter()
         .find(|v| v["name"] == Value::String("default".to_string()))
         .expect("debe existir la voz de fábrica `default`");
     assert_eq!(default["is_factory"], Value::Bool(true));
-    assert!(default.get("has_reference").is_some(), "contrato: `has_reference` presente");
+    assert!(
+        default.get("has_reference").is_some(),
+        "contrato: `has_reference` presente"
+    );
 }
 
 /// Audio largo (>15 s): el daemon debe segmentar con VAD, transcribir cada

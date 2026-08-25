@@ -17,6 +17,12 @@ pub struct AudioService {
     host: cpal::Host,
 }
 
+impl Default for AudioService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AudioService {
     pub fn new() -> Self {
         Self {
@@ -29,7 +35,9 @@ impl AudioService {
         let mut devices = Vec::new();
         if let Ok(output_devices) = self.host.output_devices() {
             for (idx, dev) in output_devices.enumerate() {
-                let name = dev.name().unwrap_or_else(|_| format!("Dispositivo {}", idx));
+                let name = dev
+                    .name()
+                    .unwrap_or_else(|_| format!("Dispositivo {}", idx));
                 let latency = dev
                     .default_output_config()
                     .map(|c| {
@@ -81,9 +89,10 @@ impl AudioService {
                     .map(|s| s as f32 / max_val)
                     .collect()
             }
-            hound::SampleFormat::Float => {
-                reader.into_samples::<f32>().filter_map(Result::ok).collect()
-            }
+            hound::SampleFormat::Float => reader
+                .into_samples::<f32>()
+                .filter_map(Result::ok)
+                .collect(),
         };
 
         if spec.sample_rate != device_rate {
@@ -141,7 +150,8 @@ impl AudioService {
                         for sample in data.iter_mut() {
                             if *idx < samples.len() {
                                 *sample = (((samples[*idx].clamp(-1.0, 1.0) + 1.0) * 0.5)
-                                    * u16::MAX as f32) as u16;
+                                    * u16::MAX as f32)
+                                    as u16;
                                 *idx += 1;
                             } else {
                                 *sample = u16::MAX / 2;
@@ -252,9 +262,10 @@ pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>> {
                 .map(|s| s as f32 / max_val)
                 .collect()
         }
-        hound::SampleFormat::Float => {
-            reader.into_samples::<f32>().filter_map(Result::ok).collect()
-        }
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .filter_map(Result::ok)
+            .collect(),
     };
 
     let mono = to_mono(&samples, spec.channels as usize);
@@ -278,9 +289,10 @@ pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>> {
                 .map(|s| s as f32 / max_val)
                 .collect()
         }
-        hound::SampleFormat::Float => {
-            reader.into_samples::<f32>().filter_map(Result::ok).collect()
-        }
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .filter_map(Result::ok)
+            .collect(),
     };
 
     let mono = to_mono(&samples, spec.channels as usize);
@@ -472,7 +484,10 @@ mod tests {
 
         // 160 muestras mono @16kHz -> ~240 muestras @24kHz (factor 1.5).
         assert!(!pcm.is_empty());
-        assert!(pcm.len() > 160, "debe quedar sobremuestreado a una tasa mayor");
+        assert!(
+            pcm.len() > 160,
+            "debe quedar sobremuestreado a una tasa mayor"
+        );
     }
 
     #[test]
