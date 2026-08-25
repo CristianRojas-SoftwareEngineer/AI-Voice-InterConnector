@@ -158,6 +158,10 @@ commands:
             # los steps de compilación exportan RUSTC_WRAPPER/SCCACHE_DIR inline.
             $Dest = "$env:USERPROFILE\.cargo\bin\sccache.exe"
             if (-not (Test-Path $Dest)) {
+              # Asegura ~/.cargo/bin: el destino de sccache puede no existir aún
+              # (p. ej. si rustup instaló en un perfil distinto). Copy-Item no
+              # crea directorios intermedios y fallaría con DirectoryNotFound.
+              New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.cargo\bin" | Out-Null
               Invoke-WebRequest -Uri "https://github.com/mozilla/sccache/releases/download/v$SccacheVersion/$Pkg.tar.gz" -OutFile "$env:TEMP\sccache.tar.gz"
               tar -xzf "$env:TEMP\sccache.tar.gz" -C "$env:TEMP"
               Copy-Item "$env:TEMP\$Pkg\sccache.exe" $Dest -Force
@@ -249,7 +253,12 @@ jobs:
             # independiente del repo de Chocolatey. Invoke-WebRequest no setea
             # $LASTEXITCODE: con ErrorActionPreference=Stop un fallo de descarga
             # lanza y aborta el step.
-            if (Get-Command cargo -ErrorAction SilentlyContinue) {
+            # La guarda comprueba la RUTA específica del toolchain fijado
+            # (~/.cargo/bin/cargo.exe), no Get-Command: el executor trae Rust
+            # preinstalado en PATH, así que Get-Command siempre acertaría y
+            # saltaría rustup-init, dejando el 1.96.0 sin instalar y ~/.cargo/bin
+            # inexistente (espeja la guarda de macOS).
+            if (Test-Path "$env:USERPROFILE\.cargo\bin\cargo.exe") {
               Write-Host "Toolchain restaurado de caché; se omite rustup-init"
             } else {
               Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
@@ -559,8 +568,11 @@ jobs:
             # equivalente de $BASH_ENV).
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
             # Idempotente (R3): si la caché de toolchain ya trae cargo, se omite
-            # rustup-init (ahorra ~2-3 min por corrida).
-            if (Get-Command cargo -ErrorAction SilentlyContinue) {
+            # rustup-init (ahorra ~2-3 min por corrida). Guarda por RUTA
+            # específica del toolchain fijado (no Get-Command): el executor trae
+            # Rust preinstalado en PATH y Get-Command saltaría rustup-init
+            # dejando el 1.96.0 sin instalar y ~/.cargo/bin inexistente.
+            if (Test-Path "$env:USERPROFILE\.cargo\bin\cargo.exe") {
               Write-Host "Toolchain restaurado de caché; se omite rustup-init"
             } else {
               Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
