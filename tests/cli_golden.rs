@@ -17,6 +17,12 @@ use serde_json::Value;
 /// Ruta al binario bajo test, inyectada por Cargo en tests de integración.
 const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
 
+/// Serializa los tests que mutan estado compartido del almacén (cleanup borra
+/// snapshots HF + data_dir; los tests TTS dependen de esa provisión). Sin este
+/// lock, `cargo test` los corre en paralelo dentro del mismo binario y cleanup
+/// puede borrar el estado que un test TTS está verificando (carrera intra-binario).
+static STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Carga una fixture dorada desde `tests/golden/`.
 fn fixture(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,11 +40,13 @@ fn run_json(args: &[&str]) -> (i32, Value) {
         .args(args)
         .output()
         .expect("el binario debe ejecutarse");
-    let code = output.status.code().expect("el proceso debe terminar con un código");
+    let code = output
+        .status
+        .code()
+        .expect("el proceso debe terminar con un código");
     let stdout = String::from_utf8(output.stdout).expect("stdout debe ser UTF-8");
-    let json: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("stdout no es JSON válido ({}): {:?}", e, stdout)
-    });
+    let json: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
     (code, json)
 }
 
@@ -96,11 +104,23 @@ fn speech_transcribe_con_audio_cumple_contrato() {
 #[test]
 fn speech_transcribe_sin_audio_ni_mic_sale_con_codigo_2() {
     let output = Command::new(BIN)
-        .args(["--json", "speech", "transcribe", "--source-language", "es-latam"])
+        .args([
+            "--json",
+            "speech",
+            "transcribe",
+            "--source-language",
+            "es-latam",
+        ])
         .output()
         .expect("el binario debe ejecutarse");
-    let code = output.status.code().expect("el proceso debe terminar con un código");
-    assert_eq!(code, 2, "omitir --audio y --mic debe mapear a ExitCode::InvalidInput");
+    let code = output
+        .status
+        .code()
+        .expect("el proceso debe terminar con un código");
+    assert_eq!(
+        code, 2,
+        "omitir --audio y --mic debe mapear a ExitCode::InvalidInput"
+    );
 }
 
 #[test]
@@ -112,6 +132,7 @@ fn daemon_status_coincide_con_fixture() {
 
 #[test]
 fn cleanup_coincide_con_fixture() {
+    let _guard = STATE_LOCK.lock().unwrap();
     let (code, actual) = run_json(&["--json", "cleanup"]);
     assert_eq!(code, 0);
     assert_eq!(actual, fixture("cli_cleanup.json"));
@@ -124,9 +145,13 @@ fn voice_list_respeta_el_contrato_de_envelope() {
     let (code, actual) = run_json(&["--json", "voice", "list"]);
     assert_eq!(code, 0);
     assert_eq!(actual["schema_version"], Value::String("3".to_string()));
-    let voices = actual["voices"].as_array().expect("`voices` debe ser un array");
+    let voices = actual["voices"]
+        .as_array()
+        .expect("`voices` debe ser un array");
     assert!(
-        voices.iter().any(|v| v == &Value::String("default".to_string())),
+        voices
+            .iter()
+            .any(|v| v == &Value::String("default".to_string())),
         "debe listarse la voz de fábrica `default`"
     );
 }
@@ -165,7 +190,9 @@ fn translate_es_a_en_produce_traduccion() {
     assert_eq!(actual["schema_version"], Value::String("3".to_string()));
     assert_eq!(actual["source"], Value::String("es".to_string()));
     assert_eq!(actual["target"], Value::String("en".to_string()));
-    let translated = actual["translated"].as_str().expect("`translated` debe ser un string");
+    let translated = actual["translated"]
+        .as_str()
+        .expect("`translated` debe ser un string");
     assert!(!translated.is_empty(), "`translated` no debe estar vacío");
 }
 
@@ -200,9 +227,15 @@ fn translate_par_no_soportado_sale_con_codigo_2() {
         "--to",
         "de",
     ]);
-    assert_eq!(code, 2, "par no soportado debe mapear a ExitCode::InvalidInput");
+    assert_eq!(
+        code, 2,
+        "par no soportado debe mapear a ExitCode::InvalidInput"
+    );
     assert_eq!(actual["schema_version"], Value::String("3".to_string()));
-    assert_eq!(actual["reason"], Value::String("unsupported_language_pair".to_string()));
+    assert_eq!(
+        actual["reason"],
+        Value::String("unsupported_language_pair".to_string())
+    );
 }
 
 // ─── Golden TTS (Fase 5, Tarea 11) ───────────────────────────────────
@@ -236,21 +269,32 @@ mod tts {
         Path::new("vendor/qwen3-tts/qwen3-tts-0.6b").is_dir()
     }
 
-    /// Registra el modelo TTS en el `ModelStore` vía `setup` (idempotente) y
-    /// devuelve si quedó provisionado. Los casos de error 3/6 dependen solo de
-    /// este registro, no de los pesos (Tarea 11.4: siempre verdes).
+    /// Estado de provisión VERIFICADO AHORA (no cacheado): `doctor` consulta los
+    /// snapshots HF vigentes. Si falta, corre `setup` una sola vez bajo lock
+    /// (evita descargas paralelas) y re-verifica. No se cachea el resultado
+    /// porque `cleanup_coincide_con_fixture` puede borrar la provisión en otro
+    /// hilo entre tests: un caché obsoleto hacía que tests TTS posteriores a
+    /// cleanup confiaran en estado ya eliminado (`model_missing`).
     fn tts_modelo_registrado() -> bool {
-        static ONCE: Once = Once::new();
-        static OK: Mutex<Option<bool>> = Mutex::new(None);
-        ONCE.call_once(|| {
-            let out = Command::new(BIN).args(["setup"]).output();
-            let ok = match out {
-                Ok(o) => o.status.success(),
-                Err(_) => false,
-            };
-            *OK.lock().unwrap() = Some(ok);
-        });
-        *OK.lock().unwrap() == Some(true)
+        static SETUP_LOCK: Mutex<()> = Mutex::new(());
+        let doctor_ok = || {
+            Command::new(BIN)
+                .args(["doctor"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if doctor_ok() {
+            return true;
+        }
+        let _guard = SETUP_LOCK.lock().unwrap();
+        if doctor_ok() {
+            return true;
+        }
+        matches!(
+            Command::new(BIN).args(["setup"]).output(),
+            Ok(o) if o.status.success()
+        )
     }
 
     /// Provisto = modelo registrado + binario + pesos.
@@ -408,11 +452,19 @@ mod tts {
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("3".to_string()));
         assert_eq!(actual["status"], Value::String("success".to_string()));
-        let audio = actual["audio_path"].as_str().expect("audio_path debe existir");
+        let audio = actual["audio_path"]
+            .as_str()
+            .expect("audio_path debe existir");
         let audio_path = Path::new(audio);
-        assert!(audio_path.is_file(), "el WAV debe estar persistido en el almacén");
+        assert!(
+            audio_path.is_file(),
+            "el WAV debe estar persistido en el almacén"
+        );
         wav_valido_24k(audio_path);
-        let wer = wer_vs_texto(audio_path, "Hola, este es un mensaje de prueba para la verificación.");
+        let wer = wer_vs_texto(
+            audio_path,
+            "Hola, este es un mensaje de prueba para la verificación.",
+        );
         assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
         let _ = avi_store::SpeechStore::new().remove("default", &label);
     }
@@ -434,6 +486,7 @@ mod tts {
 
     #[test]
     fn synthesize_voz_inexistente_sale_con_3() {
+        let _guard = STATE_LOCK.lock().unwrap();
         if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
@@ -449,14 +502,22 @@ mod tts {
             "--label",
             "x",
         ]);
-        assert_eq!(code, 3, "voz inexistente → ExitCode::NotFound");
-        assert_eq!(actual["reason"], Value::String("voice_not_found".to_string()));
+        assert_eq!(
+            code, 3,
+            "voz inexistente → ExitCode::NotFound (reason={:?})",
+            actual["reason"]
+        );
+        assert_eq!(
+            actual["reason"],
+            Value::String("voice_not_found".to_string())
+        );
     }
 
     /// Colisión de `--label` sin `--force` → 6. El almacén se fabrica con un
     /// sidecar + WAV mínimo (sin síntesis real).
     #[test]
     fn synthesize_colision_label_sale_con_6() {
+        let _guard = STATE_LOCK.lock().unwrap();
         if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
@@ -493,7 +554,11 @@ mod tts {
             "--label",
             &label,
         ]);
-        assert_eq!(code, 6, "colisión de etiqueta → ExitCode::StateConflict");
+        assert_eq!(
+            code, 6,
+            "colisión de etiqueta → ExitCode::StateConflict (reason={:?})",
+            actual["reason"]
+        );
         assert_eq!(actual["reason"], Value::String("label_exists".to_string()));
         let _ = store.remove("default", &label);
     }
@@ -528,7 +593,9 @@ mod tts {
         ]);
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("reproduced".to_string()));
-        let audio = actual["audio_path"].as_str().expect("audio_path debe existir");
+        let audio = actual["audio_path"]
+            .as_str()
+            .expect("audio_path debe existir");
         let audio_path = Path::new(audio);
         wav_valido_24k(audio_path);
         let wer = wer_vs_texto(audio_path, "Hola, esto es una prueba de reproduccion.");
@@ -576,7 +643,9 @@ mod tts {
         ]);
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        let audio = actual["audio_path"].as_str().expect("audio_path debe existir");
+        let audio = actual["audio_path"]
+            .as_str()
+            .expect("audio_path debe existir");
         let audio_path = Path::new(audio);
         wav_valido_24k(audio_path);
         let texto = actual["text"].as_str().expect("text debe existir");
@@ -586,21 +655,19 @@ mod tts {
 
     #[test]
     fn dub_archivo_inexistente_sale_con_3() {
-        let (code, actual) = run_json(&[
-            "--json",
-            "speech",
-            "dub",
-            "--audio",
-            "no-existe.wav",
-        ]);
+        let (code, actual) = run_json(&["--json", "speech", "dub", "--audio", "no-existe.wav"]);
         assert_eq!(code, 3, "archivo inexistente → ExitCode::NotFound");
-        assert_eq!(actual["reason"], Value::String("audio_not_found".to_string()));
+        assert_eq!(
+            actual["reason"],
+            Value::String("audio_not_found".to_string())
+        );
     }
 
     // ─── voice clone ───────────────────────────────────────────────────
 
     #[test]
     fn voice_clone_exito() {
+        let _state = STATE_LOCK.lock().unwrap();
         if !tts_clone_provisioned() {
             eprintln!(
                 "[tts] skip: el clonado exige el modelo Base del motor Qwen3-TTS \
@@ -627,13 +694,18 @@ mod tts {
         let qvoice = Path::new(speech);
         assert!(qvoice.is_file(), "reference.qvoice debe existir");
         let size = std::fs::metadata(qvoice).expect("metadata").len();
-        assert!(size > 1_000_000, "el .qvoice debe pesar > 1 MB (era {})", size);
+        assert!(
+            size > 1_000_000,
+            "el .qvoice debe pesar > 1 MB (era {})",
+            size
+        );
         let _ = avi_store::VoiceStore::new().remove(&name);
     }
 
     /// Clonado repetido → 6. La voz existente se fabrica con un `.qvoice` mínimo.
     #[test]
     fn voice_clone_repetido_sale_con_6() {
+        let _guard = STATE_LOCK.lock().unwrap();
         if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
@@ -659,6 +731,7 @@ mod tts {
 
     #[test]
     fn voice_clone_nombre_invalido_sale_con_2() {
+        let _guard = STATE_LOCK.lock().unwrap();
         if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
@@ -673,7 +746,10 @@ mod tts {
             "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
         ]);
         assert_eq!(code, 2, "nombre inválido → ExitCode::InvalidInput");
-        assert_eq!(actual["reason"], Value::String("invalid_voice_name".to_string()));
+        assert_eq!(
+            actual["reason"],
+            Value::String("invalid_voice_name".to_string())
+        );
     }
 
     #[test]
@@ -692,6 +768,9 @@ mod tts {
             "no-existe.wav",
         ]);
         assert_eq!(code, 3, "audio inexistente → ExitCode::NotFound");
-        assert_eq!(actual["reason"], Value::String("audio_not_found".to_string()));
+        assert_eq!(
+            actual["reason"],
+            Value::String("audio_not_found".to_string())
+        );
     }
 }
