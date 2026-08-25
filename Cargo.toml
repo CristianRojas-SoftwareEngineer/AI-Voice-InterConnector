@@ -1,7 +1,9 @@
 [package]
 name = "ai-voice-interconnector"
-version = "0.1.0"
+version = "0.10.7"
 edition = "2021"
+# `cargo run` sin --bin: el binario canónico es el CLI (xtask es tooling).
+default-run = "ai-voice-interconnector"
 
 [workspace]
 members = ["crates/*"]
@@ -26,6 +28,12 @@ avi-translation = { path = "crates/avi-translation" }
 # para localhost); el daemon expone solo rutas HTTP en 127.0.0.1:8765.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 base64 = "0.22"
+# Descargador nativo de modelos desde HuggingFace Hub (plan descargador-nativo):
+# maneja cache en ~/.cache/huggingface/hub, resume por Range y validación ETag.
+# `rustls` evita OpenSSL nativo: compila igual en Windows x64, Linux x64/arm64 y
+# macOS arm64 (4 targets de distribución).
+hf-hub = { version = "1.0", default-features = false, features = ["rustls-tls"] }
+indicatif = "0.17"
 
 [features]
 # Features de workspace (todos off por defecto): encadenan los features nativos
@@ -36,7 +44,8 @@ native-translation = ["avi-translation/native-translation"]
 full = ["native-stt", "native-translation"]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_System_Console"] }
+windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+winreg = "0.52"
 
 [dev-dependencies]
 hound = "3"
