@@ -2,7 +2,8 @@
 # Triple puerta `cargo test --all` + `coverage` como gate de los 4 builds nativos.
 # Dos workflows: `build-all` (release, SOLO en tags v*) y `branch-checks`
 # (gates ligeros fmt/clippy/test featureless en cada push de rama, R5).
-# Artefactos: binarios Rust versionados vía `persist_to_workspace` → `publish-release`.
+# Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
+# licencia, versionados vía `persist_to_workspace` → `publish-release`.
 # Pines reproducibles: `rust_version` + digest de `cimg/rust` (ver §Reproducibilidad).
 # Ver docs/BUILD.md §4 para arquitectura completa y docs/proposals/progress.md:340-346 para Fase 7.
 
@@ -479,6 +480,31 @@ jobs:
             echo "[STEP] Lint (cargo clippy --all-targets) - FIN"
 
   # ──────────────────────────────────────────────────────────────
+  # Validación GPLv3 — SOURCE-OFFER.md y THIRD-PARTY-LICENSES.md vivos
+  # ──────────────────────────────────────────────────────────────
+  validate-licenses:
+    # Gate de licencias GPLv3: verifica que SOURCE-OFFER.md esté regenerado para
+    # la versión vigente (cargo xtask source-offer --check) y que THIRD-PARTY-
+    # LICENSES.md esté en sincronía con Cargo.lock (cargo xtask licenses --check).
+    # Corre en ramas y en tags v* como gate de los builds (ver workflows).
+    docker:
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
+    steps:
+      - checkout
+      - run:
+          name: Verificar SOURCE-OFFER.md
+          command: |
+            echo "[STEP] Verificar SOURCE-OFFER.md - INICIO"
+            cargo run -p xtask --quiet -- source-offer --check
+            echo "[STEP] Verificar SOURCE-OFFER.md - FIN"
+      - run:
+          name: Verificar THIRD-PARTY-LICENSES.md
+          command: |
+            echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - INICIO"
+            cargo run -p xtask --quiet -- licenses --check
+            echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
+
+  # ──────────────────────────────────────────────────────────────
   # Smoke tests de instaladores de una línea (mock por PATH, sin red)
   # Valida lógica de parsing de release, checksums y guards sin descargar.
   # ──────────────────────────────────────────────────────────────
@@ -650,22 +676,32 @@ jobs:
             $TagVersion = $env:CIRCLE_TAG -replace '^v',''
             if ($Version -ne $TagVersion) { throw "VERSION en main.rs ($Version) != tag ($TagVersion)" }
             $Src = "target\release\ai-voice-interconnector.exe"
-            $Dst = "artifacts\ai-voice-interconnector-$Version-x86_64-windows.exe"
             if (-not (Test-Path $Src)) { throw "Binario no encontrado: $Src" }
-            Copy-Item $Src $Dst
+            # Staging de layout plano: binario (sin sufijo de arch) + los 4
+            # documentos de la raíz, comprimidos a .zip para que el one-liner de
+            # Windows extraiga y los archivos GPLv3 viajen junto al binario.
+            $Stage = "staging"
+            if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
+            New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+            Copy-Item $Src "$Stage\ai-voice-interconnector.exe"
+            foreach ($Doc in @("LICENSE", "THIRD-PARTY-LICENSES.md", "SOURCE-OFFER.md", "README.md")) {
+              Copy-Item $Doc "$Stage\$Doc"
+            }
+            $Dst = "artifacts\ai-voice-interconnector-$Version-x86_64-windows.zip"
+            Compress-Archive -Path "$Stage\*" -DestinationPath $Dst -Force
             Write-Host "Artefacto: $Dst"
             Write-Host "[STEP] Preparar artefacto versionado - FIN"
       - run:
           name: Emitir SHA-256 del artefacto
           command: |
             Write-Host "[STEP] Emitir SHA-256 del artefacto - INICIO"
-            Get-FileHash artifacts\ai-voice-interconnector-*-x86_64-windows.exe -Algorithm SHA256
+            Get-FileHash artifacts\ai-voice-interconnector-*-x86_64-windows.zip -Algorithm SHA256
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Emitir SHA-256 del artefacto - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - ai-voice-interconnector-*-x86_64-windows.exe
+            - ai-voice-interconnector-*-x86_64-windows.zip
 
   build-linux-x64:
     # Linux x64: el más barato/rápido para la suite, pero el build necesita
@@ -738,28 +774,34 @@ jobs:
               exit 1
             fi
             SRC="target/release/ai-voice-interconnector"
-            DST="artifacts/ai-voice-interconnector-${VERSION}-x86_64-linux"
             test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
-            cp "$SRC" "$DST"
-            chmod +x "$DST"
+            # Staging de layout plano: binario (sin sufijo de arch) + los 4
+            # documentos de la raíz, comprimidos a tar.gz para que el one-liner
+            # extraiga y los archivos GPLv3 viajen junto al binario.
+            STAGE="$(mktemp -d)"
+            cp "$SRC" "$STAGE/ai-voice-interconnector"
+            chmod +x "$STAGE/ai-voice-interconnector"
+            cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
+            DST="artifacts/ai-voice-interconnector-${VERSION}-x86_64-linux.tar.gz"
+            tar -czf "$DST" -C "$STAGE" .
             echo "Artefacto: $DST"
             echo "[STEP] Preparar artefacto versionado - FIN"
       - run:
           name: Emitir SHA-256 del artefacto
           command: |
             echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
-            sha256sum artifacts/ai-voice-interconnector-*-x86_64-linux
+            sha256sum artifacts/ai-voice-interconnector-*-x86_64-linux.tar.gz
             echo "[STEP] Emitir SHA-256 del artefacto - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - ai-voice-interconnector-*-x86_64-linux
+            - ai-voice-interconnector-*-x86_64-linux.tar.gz
 
   build-linux-arm64:
     # Linux ARM64 nativo (no cross-compile): Docker arm.medium ejecuta
     # aarch64 real, evitando toolchain de cross-compilación y sysroot.
     # Sin test-linux-arm64 (suite mockeada arch-independiente), el smoke
-    # test de este build es el único gate del stack aarch64 (wheels nativas).
+    # test de este build es el único gate del stack aarch64 (binario nativo).
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: arm.medium
@@ -828,22 +870,28 @@ jobs:
               exit 1
             fi
             SRC="target/release/ai-voice-interconnector"
-            DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-linux"
             test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
-            cp "$SRC" "$DST"
-            chmod +x "$DST"
+            # Staging de layout plano: binario (sin sufijo de arch) + los 4
+            # documentos de la raíz, comprimidos a tar.gz para que el one-liner
+            # extraiga y los archivos GPLv3 viajen junto al binario.
+            STAGE="$(mktemp -d)"
+            cp "$SRC" "$STAGE/ai-voice-interconnector"
+            chmod +x "$STAGE/ai-voice-interconnector"
+            cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
+            DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-linux.tar.gz"
+            tar -czf "$DST" -C "$STAGE" .
             echo "Artefacto: $DST"
             echo "[STEP] Preparar artefacto versionado - FIN"
       - run:
           name: Emitir SHA-256 del artefacto
           command: |
             echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
-            sha256sum artifacts/ai-voice-interconnector-*-arm64-linux
+            sha256sum artifacts/ai-voice-interconnector-*-arm64-linux.tar.gz
             echo "[STEP] Emitir SHA-256 del artefacto - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - ai-voice-interconnector-*-arm64-linux
+            - ai-voice-interconnector-*-arm64-linux.tar.gz
 
   build-darwin-arm64:
     # macOS ARM64 (Apple Silicon, Xcode 26.4.0): clang nativo, sin cross.
@@ -944,22 +992,28 @@ jobs:
               exit 1
             fi
             SRC="target/release/ai-voice-interconnector"
-            DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-macos"
             test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
-            cp "$SRC" "$DST"
-            chmod +x "$DST"
+            # Staging de layout plano: binario (sin sufijo de arch) + los 4
+            # documentos de la raíz, comprimidos a tar.gz. Homebrew autoextrae el
+            # tar.gz (binary stanza) y los archivos GPLv3 viajan junto al binario.
+            STAGE="$(mktemp -d)"
+            cp "$SRC" "$STAGE/ai-voice-interconnector"
+            chmod +x "$STAGE/ai-voice-interconnector"
+            cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
+            DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-macos.tar.gz"
+            tar -czf "$DST" -C "$STAGE" .
             echo "Artefacto: $DST"
             echo "[STEP] Preparar artefacto versionado - FIN"
       - run:
           name: Emitir SHA-256 del artefacto
           command: |
             echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
-            shasum -a 256 artifacts/ai-voice-interconnector-*-arm64-macos
+            shasum -a 256 artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz
             echo "[STEP] Emitir SHA-256 del artefacto - FIN"
       - persist_to_workspace:
           root: artifacts
           paths:
-            - ai-voice-interconnector-*-arm64-macos
+            - ai-voice-interconnector-*-arm64-macos.tar.gz
 
   # ──────────────────────────────────────────────────────────────
   # CD — publicación del GitHub Release (Rust nativo, 4 binarios)
@@ -1050,12 +1104,11 @@ jobs:
   publish-metadata:
     # Actualiza el Cask de Homebrew tras cada Release (solo macOS). Requiere
     # contexts `github-release` y `homebrew-tap`. El Cask inicial es bootstrap
-    # manual. NOTA Fase 7.1: `render_cask.py` aún espera `*.dmg` (legado
-    # PyInstaller); con binario Rust crudo `*-arm64-macos` el SHA del Cask debe
-    # adaptarse en la siguiente entrega (generar .dmg o tar.gz, o cambiar Cask
-    # a `binary` stanza). Hasta entonces, este job fallará si el .dmg no existe.
+    # manual. `cargo xtask cask` genera un `binary` stanza sobre el tar.gz de
+    # macOS (`*-arm64-macos.tar.gz`): Homebrew autoextrae el archivo y enlaza
+    # `ai-voice-interconnector` desde la raíz del staged_path.
     docker:
-      - image: cimg/base:current
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
       - run:
@@ -1070,7 +1123,7 @@ jobs:
             echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
               | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
             sudo apt-get update
-            sudo apt-get install -y gh git python3 ruby
+            sudo apt-get install -y gh git ruby
             echo "[STEP] Instalar gh CLI - FIN"
       - run:
           name: Descargar SHA256SUMS.txt del release recién publicado
@@ -1086,7 +1139,7 @@ jobs:
           command: |
             echo "[STEP] Renderizar Cask - INICIO"
             set -euo pipefail
-            python3 scripts/render_cask.py \
+            cargo run -p xtask --quiet -- cask \
               --tag "$CIRCLE_TAG" \
               --sums-file /tmp/release-metadata/SHA256SUMS.txt \
               --out /tmp/tap-clone/Casks/ai-voice-interconnector.rb
@@ -1119,59 +1172,6 @@ jobs:
             fi
             echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
 
-  # ──────────────────────────────────────────────────────────────
-  # Canal Python (legado) — se retirará en Fase 7 paso 4
-  # Mantiene compatibilidad hasta que `publish-pypi` sea eliminado y el
-  # repo quede 100% Rust. Requiere jobs Rust como gate para evitar
-  # publicar Python si Rust está roto.
-  # ──────────────────────────────────────────────────────────────
-  publish-pypi:
-    docker:
-      - image: cimg/python:3.13@sha256:9d189f873178a2bea234b7d51e31e1ae01a73646e962cf697f757b588f8d77b6
-    steps:
-      - checkout
-      - run:
-          name: Instalar tooling de build (build, twine)
-          command: |
-            echo "[STEP] Instalar tooling de build (build, twine) - INICIO"
-            pip install build==1.2.2.post1 twine==6.1.0
-            echo "[STEP] Instalar tooling de build (build, twine) - FIN"
-      - run:
-          name: Compilar sdist y wheel
-          command: |
-            echo "[STEP] Compilar sdist y wheel - INICIO"
-            python -m build
-            echo "[STEP] Compilar sdist y wheel - FIN"
-      - run:
-          name: Validar metadata del paquete (twine check)
-          command: |
-            echo "[STEP] Validar metadata del paquete (twine check) - INICIO"
-            twine check dist/*
-            echo "[STEP] Validar metadata del paquete (twine check) - FIN"
-      - run:
-          name: Smoke test del wheel en venv limpio
-          command: |
-            echo "[STEP] Smoke test del wheel en venv limpio - INICIO"
-            set -euo pipefail
-            python -m venv /tmp/smoke-venv
-            source /tmp/smoke-venv/bin/activate
-            pip install dist/*.whl
-            EXPECTED_VERSION="${CIRCLE_TAG#v}"
-            ACTUAL_VERSION="$(ai-voice-interconnector version --json | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
-            if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
-              echo "ERROR: versión del wheel ($ACTUAL_VERSION) no coincide con tag ($EXPECTED_VERSION)" >&2
-              exit 1
-            fi
-            python -c "from ai_voice_interconnector import voices; assert 'default' in voices.list_voices(), 'voz default ausente del wheel'"
-            deactivate
-            echo "[STEP] Smoke test del wheel en venv limpio - FIN"
-      - run:
-          name: Publicar en PyPI (twine upload)
-          command: |
-            echo "[STEP] Publicar en PyPI (twine upload) - INICIO"
-            TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_API_TOKEN" twine upload --skip-existing dist/*
-            echo "[STEP] Publicar en PyPI (twine upload) - FIN"
-
 workflows:
   # Gates ligeros en cada push de rama (R5): fmt/clippy (job lint) y la suite
   # featureless (test-linux) dan señal temprana SIN disparar el release. Este
@@ -1180,6 +1180,10 @@ workflows:
   branch-checks:
     jobs:
       - lint:
+          filters:
+            tags:
+              ignore: /.*/
+      - validate-licenses:
           filters:
             tags:
               ignore: /.*/
@@ -1197,8 +1201,14 @@ workflows:
     # rama lo cubre el workflow `branch-checks` (fmt/clippy/test featureless);
     # la validación completa previa al tag sigue en docs/BUILD.md.
     jobs:
-      # ── Gates Rust (triple puerta) + cobertura + instaladores ──
-      # Los 4 builds requieren estos 7 gates verdes en la misma pipeline.
+      # ── Gates Rust (triple puerta) + cobertura + instaladores + licencias ──
+      # Los 4 builds requieren estos 8 gates verdes en la misma pipeline.
+      - validate-licenses:
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
       - test-linux:
           filters:
             tags:
@@ -1256,6 +1266,7 @@ workflows:
             - test-installer-windows
             - test-installer-macos
             - coverage
+            - validate-licenses
       - build-linux-x64:
           filters:
             tags:
@@ -1270,6 +1281,7 @@ workflows:
             - test-installer-windows
             - test-installer-macos
             - coverage
+            - validate-licenses
       - build-linux-arm64:
           filters:
             tags:
@@ -1284,6 +1296,7 @@ workflows:
             - test-installer-windows
             - test-installer-macos
             - coverage
+            - validate-licenses
       - build-darwin-arm64:
           filters:
             tags:
@@ -1298,6 +1311,7 @@ workflows:
             - test-installer-windows
             - test-installer-macos
             - coverage
+            - validate-licenses
       # ── Publicación — solo en tags v* ──
       - publish-release:
           context:
@@ -1323,16 +1337,3 @@ workflows:
               ignore: /.*/
           requires:
             - publish-release
-      - publish-pypi:
-          context:
-            - pypi-publish
-          filters:
-            tags:
-              only: /^v.*/
-            branches:
-              ignore: /.*/
-          requires:
-            - test-linux
-            - test-windows
-            - test-macos
-            - coverage
