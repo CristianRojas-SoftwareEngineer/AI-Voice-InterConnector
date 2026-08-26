@@ -1258,25 +1258,6 @@ jobs:
             echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
 
 workflows:
-  # Gates ligeros en cada push de rama (R5): fmt/clippy (job lint) y la suite
-  # featureless (test-linux) dan señal temprana SIN disparar el release. Este
-  # workflow complementa build-all; no lo modifica ni comparte disparadores
-  # (branch-checks corre en ramas; build-all solo en tags v*).
-  branch-checks:
-    jobs:
-      - lint:
-          filters:
-            tags:
-              ignore: /.*/
-      - validate-licenses:
-          filters:
-            tags:
-              ignore: /.*/
-      - test-linux:
-          filters:
-            tags:
-              ignore: /.*/
-
   build-all:
     # CircleCI NO ejecuta un job en un tag salvo que el job Y todas sus
     # dependencias declaren `filters.tags`; por eso el filtro `v*` se propaga
