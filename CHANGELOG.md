@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.11.3 — 2026-08-26](#0113--2026-08-26)
 - [0.11.2 — 2026-08-26](#0112--2026-08-26)
 - [0.11.1 — 2026-08-26](#0111--2026-08-26)
 - [0.11.0 — 2026-08-26](#0110--2026-08-26)
@@ -37,6 +38,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.11.3] — 2026-08-26
+
+Aislamiento de caches por SO en CircleCI: `sccache`/`target`/`toolchain` OS-específicos para evitar 0% hits en Windows (40m → ~2m).
+
+### Corregido
+
+- `.circleci/config.yml:34-130`: claves `sccache-v1-{{ arch }}-...`, `target-v1-...`, `toolchain-v1-...` ahora incluyen `<< parameters.os >>` (linux/windows/macos).
 
 ## [0.11.2] — 2026-08-26
 

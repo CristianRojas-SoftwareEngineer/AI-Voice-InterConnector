@@ -1,6 +1,6 @@
 [package]
 name = "ai-voice-interconnector"
-version = "0.11.2"
+version = "0.11.3"
 edition = "2021"
 # `cargo run` sin --bin: el binario canónico es el CLI (xtask es tooling).
 default-run = "ai-voice-interconnector"
