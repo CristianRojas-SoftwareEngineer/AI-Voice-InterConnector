@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.11.1 — 2026-08-26](#0111--2026-08-26)
 - [0.11.0 — 2026-08-26](#0110--2026-08-26)
 - [0.10.7 — 2026-08-24](#0107--2026-08-24)
 - [0.10.6 — 2026-08-24](#0106--2026-08-24)
@@ -35,6 +36,19 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.11.1] — 2026-08-26
+
+Reconciliación de residuos de la migración STT `whisper/GGUF` → **Parakeet TDT 0.6B v3** (post-0.11.0).
+
+### Corregido
+
+- `src/main.rs:1503-1504` (`doctor`): verificación de `whisper-gguf` ausente en `MODEL_REVISIONS` → `parakeet-tdt-v3`; `doctor` ya no reporta falso negativo en instalación sana.
+- `tests/cli_golden.rs:354-368` y helpers: `wer_vs_texto` de `Ct2SttEngine` (`whisper-rs`) → `ParakeetEngine` (`ort`); `whisper_model_disponible()` → `parakeet_model_disponible()` y skips actualizados — `cargo test --features native-stt` vuelve a compilar.
+
+### Documentado
+
+- `README.md:45,132,219-220`, `USAGE.md:120,260,329,563,606,814,925,999`, `CONTRIBUTING.md:23`, `.cargo/config.toml:11-15`, `THIRD-PARTY-LICENSES.md:27`: descripciones, tablas y comentarios de `whisper/GGUF` → `Parakeet TDT v3`.
 
 ## [0.11.0] — 2026-08-26
 
