@@ -193,6 +193,9 @@ fn run_ort_build() -> Result<()> {
     let ort_repo = "https://github.com/microsoft/onnxruntime.git";
 
     let src_dir = Path::new("ort-src");
+    // El proyecto CMake raíz de ONNX Runtime vive en `cmake/`, no en la raíz del
+    // repo; `-S` debe apuntar ahí (el clone sigue siendo a `ort-src`).
+    let src_cmake_dir = src_dir.join("cmake");
     let build_dir = Path::new("ort-build");
     let out_dir = Path::new("target/ort-mt");
 
@@ -225,7 +228,7 @@ fn run_ort_build() -> Result<()> {
             "-B",
             build_dir.to_str().unwrap(),
             "-S",
-            src_dir.to_str().unwrap(),
+            src_cmake_dir.to_str().unwrap(),
             "-G",
             "Visual Studio 17 2022",
             "-A",
