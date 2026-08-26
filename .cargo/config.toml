@@ -8,12 +8,13 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
 
-# whisper.cpp se compila vía CMake con el generador multi-config de Visual Studio,
-# cuyo runtime por defecto es el dinámico (`/MD`) mientras el workspace enlaza el
-# CRT estático (`+crt-static` de arriba). Forzar la política CMP0091 (respetada a
-# partir de CMake 3.15) junto con `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`
-# alinea whisper.cpp al `/MT` del workspace y resuelve los `LNK1120` de símbolos
-# `__imp_*` al enlazar los binarios de tests.
+# CTranslate2 (vía `ct2rs`) se compila vía CMake con el generador multi-config
+# de Visual Studio, cuyo runtime por defecto es el dinámico (`/MD`) mientras el
+# workspace enlaza el CRT estático (`+crt-static` de arriba). Forzar la política
+# CMP0091 (respetada a partir de CMake 3.15) junto con
+# `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` alinea CTranslate2 al `/MT` del
+# workspace y resuelve los `LNK1120` de símbolos `__imp_*` al enlazar los binarios
+# de tests.
 [env]
 CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
 CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"

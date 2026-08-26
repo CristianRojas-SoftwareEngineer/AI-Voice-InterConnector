@@ -20,7 +20,7 @@ flujo de desarrollo, los estándares del proyecto y cómo proponer cambios.
 
 - **Rust 1.96.0** (ver `rust_version` en `.circleci/config.yml`; `rustup` recomendado).
 - **Cargo** (con Rust).
-- **CMake ≥ 3.20** + **pkg-config** (para `whisper-rs`/`ct2rs`).
+- **CMake ≥ 3.20** + **pkg-config** (para `ct2rs`/`ort`).
 - En Linux: `libasound2-dev` y `libclang-dev` (`sudo apt install libasound2-dev libclang-dev pkg-config cmake`).
 - Git. El proyecto es 100% Rust: sin Python.
 

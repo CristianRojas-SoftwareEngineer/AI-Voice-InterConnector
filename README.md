@@ -42,7 +42,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 
 - **Clonación de voz**: ~10 segundos de audio de referencia (`speech-reference.wav` obligatorio, `timbre-reference.wav` opcional)
 - **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés (`--target-language`)
-- **Transcripción STT**: `speech transcribe` (whisper-rs/whisper.cpp, opt-in `--with-stt`)
+- **Transcripción STT**: `speech transcribe` (Parakeet TDT 0.6B v3 int8, ONNX Runtime)
 - **Traducción**: `translate` es↔en (CTranslate2, opt-in)
 - **Daemon**: `daemon start/status/stop/serve` (Axum, `127.0.0.1:8765`, streaming NDJSON)
 - **100% offline**: Sin APIs externas ni conexiones a internet (modelos en `~/.cache/huggingface/hub`)
@@ -129,7 +129,7 @@ La firma Authenticode/Apple notarization es goal a largo plazo (`docs/GOAL.md`).
 ### Provisión del/los modelo(s) (`setup`)
 
 Cuatro modelos pinneados no vienen en el binario: `qwen3-tts-0.6b` (~4,7 GB),
-`marian-es-en`/`marian-en-es` (~3 GB) y `whisper-gguf` (~823 MB). Se descargan a
+`marian-es-en`/`marian-en-es` (~3 GB) y `parakeet-tdt-v3` (~600 MB, int8). Se descargan a
 `~/.cache/huggingface/hub` vía `setup`:
 
 ```bash
@@ -216,8 +216,8 @@ new ProcessBuilder("./ai-voice-interconnector", "speech", "say", "--text", "Hola
 └──────────────────────┬──────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│  Qwen3-TTS 0.6B (C, subprocess/HTTP) + Whisper.cpp  │
-│  Modelos: qwen3-tts-0.6b, ggml-medium-q8_0 (HF Hub)  │
+│  Qwen3-TTS 0.6B (C, subprocess/HTTP) + Parakeet TDT  │
+│  Modelos: qwen3-tts-0.6b, parakeet-tdt-v3 (HF Hub)   │
 └─────────────────────────────────────────────────────┘
 ```
 

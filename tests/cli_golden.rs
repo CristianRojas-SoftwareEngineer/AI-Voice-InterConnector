@@ -50,17 +50,17 @@ fn run_json(args: &[&str]) -> (i32, Value) {
     (code, json)
 }
 
-/// Modelo Whisper GGUF presente. Los binarios bajo `models/` están
+/// Modelo Parakeet TDT v3 presente. Los binarios bajo `models/` están
 /// gitignoreados: en un checkout limpio (CI) los E2E que los requieren se
 /// saltan con aviso; en desarrollo corren completos. Solo se compila con
 /// `native-stt`: sin el feature el binario no transcribe, así que los E2E que
 /// dependen de él se gatean por feature (no solo por presencia de modelo).
 #[cfg(feature = "native-stt")]
-fn whisper_model_disponible() -> bool {
-    std::path::Path::new("models/whisper/ggml-medium-q8_0.bin").exists()
+fn parakeet_model_disponible() -> bool {
+    std::path::Path::new("models/parakeet-tdt-v3").exists()
 }
 
-/// Modelo CT2 es→en presente (mismo criterio de skip que el whisper). Solo se
+/// Modelo CT2 es→en presente (mismo criterio de skip que el Parakeet). Solo se
 /// compila con `native-translation`: sin el feature el binario no traduce, así
 /// que el E2E que lo usa se gatea por feature (no solo por presencia de modelo).
 #[cfg(feature = "native-translation")]
@@ -75,14 +75,14 @@ fn version_coincide_con_fixture() {
     assert_eq!(actual, fixture("cli_version.json"));
 }
 
-// Requiere `native-stt`: sin el motor Whisper el binario responde
+// Requiere `native-stt`: sin el motor Parakeet el binario responde
 // `stt_unsupported`, por lo que el contrato de transcripción solo aplica con el
 // feature activo (en CI featureless no se compila).
 #[cfg(feature = "native-stt")]
 #[test]
 fn speech_transcribe_con_audio_cumple_contrato() {
-    if !whisper_model_disponible() {
-        eprintln!("[stt] skip: sin modelo Whisper GGUF (models/ gitignoreado)");
+    if !parakeet_model_disponible() {
+        eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (models/ gitignoreado)");
         return;
     }
     let (code, actual) = run_json(&[
@@ -349,13 +349,13 @@ mod tts {
     }
 
     /// WER (por palabras normalizadas, Levenshtein) del WAV frente al texto
-    /// fuente, vía Whisper GGUF (whisper-rs; patrón de `crates/avi-translation/src/lib.rs:313-334`).
+    /// fuente, vía Parakeet TDT v3 (ort/ONNX Runtime).
     #[cfg(feature = "native-stt")]
     fn wer_vs_texto(path: &Path, texto: &str) -> f64 {
         let pcm = avi_audio::load_wav_16k_mono_pcm(path.to_string_lossy().as_ref())
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
-        let engine = avi_stt::Ct2SttEngine::new("models/whisper/ggml-medium-q8_0.bin")
-            .expect("el modelo Whisper GGUF debe existir");
+        let engine = avi_stt::ParakeetEngine::new("models/parakeet-tdt-v3")
+            .expect("el modelo Parakeet TDT v3 debe existir");
         let transcrito = engine
             .transcribe(&pcm, Some("es"))
             .expect("la transcripción no debe fallar");
@@ -423,7 +423,7 @@ mod tts {
 
     /// Éxito con `--label`: exit 0, WAV persistido en `speech/`, envelope y
     /// WER ≤ 0.25 frente al texto fuente. La verificación de WER exige el motor
-    /// Whisper (native-stt); sin el feature no se compila (en CI featureless los
+    /// Parakeet (native-stt); sin el feature no se compila (en CI featureless los
     /// modelos tampoco están, así que no se pierde cobertura).
     #[cfg(feature = "native-stt")]
     #[test]
@@ -432,8 +432,8 @@ mod tts {
             eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
             return;
         }
-        if !whisper_model_disponible() {
-            eprintln!("[stt] skip: sin modelo Whisper GGUF (models/ gitignoreado)");
+        if !parakeet_model_disponible() {
+            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (models/ gitignoreado)");
             return;
         }
         let _guard = lock_tts();
@@ -565,7 +565,7 @@ mod tts {
 
     // ─── say ───────────────────────────────────────────────────────────
 
-    // Verifica WER real vía Whisper (native-stt); sin el feature no se compila.
+    // Verifica WER real vía Parakeet (native-stt); sin el feature no se compila.
     #[cfg(feature = "native-stt")]
     #[test]
     fn say_exito_reproduce() {
@@ -577,8 +577,8 @@ mod tts {
             eprintln!("[tts] skip: sin dispositivo de salida de audio");
             return;
         }
-        if !whisper_model_disponible() {
-            eprintln!("[stt] skip: sin modelo Whisper GGUF (models/ gitignoreado)");
+        if !parakeet_model_disponible() {
+            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (models/ gitignoreado)");
             return;
         }
         let _guard = lock_tts();
@@ -621,8 +621,8 @@ mod tts {
             eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
             return;
         }
-        if !Path::new("models/whisper/ggml-medium-q8_0.bin").exists() {
-            eprintln!("[tts] skip: sin modelo Whisper GGUF");
+        if !Path::new("models/parakeet-tdt-v3").exists() {
+            eprintln!("[stt] skip: sin modelo Parakeet TDT v3");
             return;
         }
         if !hay_dispositivo_audio() {

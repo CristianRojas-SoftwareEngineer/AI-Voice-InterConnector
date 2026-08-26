@@ -1500,8 +1500,8 @@ fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
     if !model_store.is_provisioned("qwen3-tts-0.6b") {
         issues.push("Modelo TTS (Qwen3-TTS 0.6B) no provisionado");
     }
-    if !model_store.is_provisioned("whisper-gguf") {
-        issues.push("Modelo STT (Whisper GGUF) no provisionado");
+    if !model_store.is_provisioned("parakeet-tdt-v3") {
+        issues.push("Modelo STT (Parakeet TDT v3) no provisionado");
     }
     if !model_store.is_provisioned("marian-es-en") {
         issues.push("Modelo traducción es→en (Marian) no provisionado");

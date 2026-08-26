@@ -117,7 +117,7 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 |---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
 | `marian-es-en` / `marian-en-es` | `Helsinki-NLP/opus-mt-*` | Traducción es↔en |
-| `whisper-gguf` | `ggerganov/whisper.cpp` | STT (~823 MB, GGUF q8_0 + VAD Silero) |
+| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (~600 MB, ONNX int8) |
 
 Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
 (`crates/avi-store/src/lib.rs`): mismo binario → mismos pesos.
@@ -257,7 +257,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `status` | string | `"completed"` |
 | `language` | string | El `--language` pedido (aceptado por compatibilidad; el set de modelos es fijo) |
 | `with_stt` | boolean | Espejo del flag `--with-stt` (redundante: STT ya va incluido) |
-| `models_provisioned` | array de strings | Los 4 modelos pinneados (`qwen3-tts-0.6b`, `marian-es-en`, `marian-en-es`, `whisper-gguf`) |
+| `models_provisioned` | array de strings | Los 4 modelos pinneados (`qwen3-tts-0.6b`, `marian-es-en`, `marian-en-es`, `parakeet-tdt-v3`) |
 
 **`cleanup --json` / `uninstall --json`**
 
@@ -326,7 +326,7 @@ Cache HF: C:\Users\<tu-usuario>\.cache\huggingface\hub
 ```
 
 `doctor` verifica el directorio de datos, los **4 modelos pinneados** (TTS
-Qwen3-TTS, traducción Marian es→en y en→es, STT Whisper GGUF) y el almacén de
+Qwen3-TTS, traducción Marian es→en y en→es, STT Parakeet TDT v3) y el almacén de
 voces. Si falta alguno, lista cada issue con `✗` y remite a
 `ai-voice-interconnector setup`.
 
@@ -560,7 +560,7 @@ muestras, nunca rutas); la transcripción en sí se despacha al daemon con el
 mismo patrón de tres modos que la síntesis: sin flags sondea el daemon y lo usa
 si responde, `--daemon` lo exige (exit 5 si no está activo) y `--no-daemon`
 fuerza el modo directo. Es una sub-acción del grupo `speech`, aislada de la
-síntesis y de `translate`: Whisper solo transcribe (nunca traduce), así que si
+síntesis y de `translate`: el STT solo transcribe (nunca traduce), así que si
 necesitas el texto en otro idioma, encadena `translate` por separado.
 
 `--audio` y `--mic` son **mutuamente excluyentes y uno de los dos es
@@ -603,7 +603,7 @@ preserva el token de entrada.
 - `--daemon` / `--no-daemon`: igual que en `speech say` (despacho de tres modos; la captura del audio siempre ocurre en el cliente)
 - `--json`: Emite `{"text", "source"}`
 
-La captura de micrófono es directa a 16 kHz/mono/int16 (formato que Whisper
+La captura de micrófono es directa a 16 kHz/mono/int16 (formato que Parakeet
 asume), sin remuestreo posterior; el backend de captura es `miniaudio`
 (único, sin ramas por sistema operativo). El WAV pasado con `--audio`, en
 cambio, sí se remuestrea internamente a esos mismos 16 kHz sin importar la
@@ -811,7 +811,7 @@ ai-voice-interconnector cleanup --all      # alias de `uninstall`: además binar
 
 **Qué esperar:** borra `data_dir()/models|speech|voices` y los snapshots HF de
 los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `Helsinki-NLP/opus-mt-*`,
-`ggerganov/whisper.cpp`). El borrado es quirúrgico: nunca toca modelos de otros
+`istupakov/parakeet-tdt-0.6b-v3-onnx`). El borrado es quirúrgico: nunca toca modelos de otros
 proyectos en la caché. Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
 
@@ -922,7 +922,7 @@ distinto de `--target-language`; `daemon status --json` lo expone como la
 clave `"translate:es-en"` de `model_loaded` (ver la referencia de esquemas).
 
 Con `--with-stt`, `daemon start` precarga en RAM el modelo de transcripción
-`faster-whisper-small` (opt-in y simétrico a `setup --with-stt`; sin el flag,
+`parakeet-tdt-v3` (opt-in y simétrico a `setup --with-stt`; sin el flag,
 la primera transcripción vía daemon paga la carga fría). Exige el modelo
 provisionado en disco: si falta, `daemon start --with-stt` sale con exit **4**
 remitiendo a `ai-voice-interconnector setup --with-stt`, sin lanzar el proceso;
@@ -996,7 +996,7 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
   funciona pero puede paginar (ralentizarse) en textos largos. `doctor` emite un
   `[WARN]` de RAM por debajo de 8 GB (no bloquea nada).
 - **Disco**: ~9 GB para los modelos descargados (Qwen3-TTS ~4,7 GB + Marian
-  es↔en ~3 GB + Whisper GGUF ~0,8 GB). El binario instalado ocupa ~40 MB.
+  es↔en ~3 GB + Parakeet TDT v3 ~0,6 GB). El binario instalado ocupa ~40 MB.
 - **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
   funcionamiento.
 - **Linux — glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+ o equivalente):

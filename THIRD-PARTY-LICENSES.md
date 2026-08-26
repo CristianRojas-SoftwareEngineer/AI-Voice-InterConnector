@@ -24,7 +24,7 @@ HuggingFace del usuario mediante `ai-voice-interconnector setup`. Se listan por 
 | `ResembleAI/Chatterbox-Multilingual-es-mx-latam` (language pack es-mx-latam) | **MIT** | <https://huggingface.co/ResembleAI/Chatterbox-Multilingual-es-mx-latam> |
 | `qwen3-tts-0.6b` / `qwen3-tts-0.6b-base` (motor Qwen3-TTS) | **MIT / Apache-2.0** | <https://github.com/QwenLM/Qwen3-TTS> |
 | `Helsinki-NLP/opus-mt-es-en` / `opus-mt-en-es` (traducción) | **CC-BY-4.0** | <https://huggingface.co/Helsinki-NLP/opus-mt-es-en> |
-| `ggml-medium-q8_0.bin` (whisper.cpp) | **MIT** | <https://huggingface.co/ggerganov/whisper.cpp> |
+| `istupakov/parakeet-tdt-0.6b-v3-onnx` (Parakeet TDT 0.6B v3 int8, ONNX) | **CC-BY-4.0** | <https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx> |
 
 ---
 
