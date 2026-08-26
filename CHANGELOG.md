@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.11.2 — 2026-08-26](#0112--2026-08-26)
 - [0.11.1 — 2026-08-26](#0111--2026-08-26)
 - [0.11.0 — 2026-08-26](#0110--2026-08-26)
 - [0.10.7 — 2026-08-24](#0107--2026-08-24)
@@ -36,6 +37,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.11.2] — 2026-08-26
+
+Sincronización de fixture dorada `version` tras bump `0.11.1` (el tag anterior falló por golden desactualizada).
+
+### Corregido
+
+- `tests/golden/cli_version.json:4` `0.11.0` → `0.11.2` para alinear con `const VERSION` y `Cargo.toml`.
 
 ## [0.11.1] — 2026-08-26
 
