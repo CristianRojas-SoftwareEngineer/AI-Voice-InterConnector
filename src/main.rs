@@ -1385,11 +1385,7 @@ fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> {
     // 2. Integración por SO (binario + PATH)
     #[cfg(unix)]
     {
-        let home = directories::BaseDirs::new()
-            .map(|d| d.home_dir().to_path_buf())
-            .unwrap_or_else(|| {
-                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
-            });
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
         let link = home.join(".local/bin/ai-voice-interconnector");
         // `is_symlink` requiere `symlink_metadata`; basta con intentar borrar si existe
         if link.exists() || std::fs::symlink_metadata(&link).is_ok() {
