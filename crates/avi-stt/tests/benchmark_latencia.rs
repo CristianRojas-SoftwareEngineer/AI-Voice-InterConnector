@@ -1,14 +1,14 @@
-// Todo el benchmark ejercita el motor real (`avi_stt::Ct2SttEngine`), que solo
-// existe con el feature `native-stt`. Sin él, el archivo no se compila (evita el
-// C++ de whisper.cpp en el build de test liso).
+// Todo el benchmark ejercita el motor real (`avi_stt::ParakeetEngine`), que
+// solo existe con el feature `native-stt`. Sin él, el archivo no se compila
+// (evita ONNX Runtime en el build de test liso).
 #![cfg(feature = "native-stt")]
 
 use std::time::Instant;
 
 use avi_core::engine::SttEngine;
 
-/// Benchmark opt-in de latencia y calidad del motor STT (whisper-rs, GGUF
-/// medium-q8, greedy, 8 hilos) sobre los WAVs del repo.
+/// Benchmark opt-in de latencia y calidad del motor STT (Parakeet TDT v3 int8
+/// vía ort, greedy, hilos físicos) sobre los WAVs del repo.
 ///
 /// Mide: tiempo de carga del modelo, latencia por transcripción (min/mediana/
 /// max sobre 5 medidas tras 2 warmups), RTF vs duración del audio y WER
@@ -18,10 +18,7 @@ use avi_core::engine::SttEngine;
 #[test]
 #[ignore]
 fn benchmark_latencia_calidad() {
-    let model_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../models/whisper/ggml-medium-q8_0.bin"
-    );
+    let model_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../models/parakeet-tdt-v3");
     let assets = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/assets");
     let archivos = [
         (
@@ -47,7 +44,7 @@ fn benchmark_latencia_calidad() {
     ];
 
     let t0 = Instant::now();
-    let engine = avi_stt::Ct2SttEngine::new(model_path).expect("cargar GGUF medium-q8");
+    let engine = avi_stt::ParakeetEngine::new(model_dir).expect("cargar Parakeet int8");
     println!("CARGA_MODELO_MS={}", t0.elapsed().as_millis());
 
     for (nombre, correcto, _fixture) in archivos {

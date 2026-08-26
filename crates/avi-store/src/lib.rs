@@ -396,22 +396,27 @@ pub const MODEL_REVISIONS: &[(&str, &str, &str)] = &[
         "Helsinki-NLP/opus-mt-en-es",
         "5bc4493d463cf000c1f0b50f8d56886a392ed4ab",
     ),
-    // STT whisper.cpp GGUF q8_0 (solo los 2 ficheros necesarios: el repo
-    // completo del upstream trae TODOS los formatos/tamaños, decenas de GB)
+    // STT Parakeet TDT 0.6B v3 int8 (export istupakov/onnx-asr; 4 artefactos
+    // canónicos — el repo upstream completo pesa decenas de GB)
     (
-        "whisper-gguf",
-        "ggerganov/whisper.cpp",
-        "5359861c739e955e79d9a303bcbc70fb988958b1",
+        "parakeet-tdt-v3",
+        "istupakov/parakeet-tdt-0.6b-v3-onnx",
+        "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
     ),
 ];
 
 /// Patrones de descarga por modelo (`snapshot_download` con `allow_patterns`).
-/// Vacío = snapshot completo (repos pequeños/cohesivos). Para `whisper-gguf`
-/// se acota al GGUF q8_0 medio + VAD Silero que usa el motor (`DEFAULT_WHISPER_MODEL_DIR`
-/// y la segmentación del daemon); sin esto se bajarían ~40 GB de formatos no usados.
+/// Vacío = snapshot completo (repos pequeños/cohesivos). Para `parakeet-tdt-v3`
+/// se acota a los 4 artefactos que consume `ParakeetEngine`
+/// (`DEFAULT_PARAKEET_MODEL_DIR`); sin esto se bajarían ~40 GB de formatos no usados.
 pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[(
-    "whisper-gguf",
-    &["ggml-medium-q8_0.bin", "ggml-silero-v5.1.2.bin"],
+    "parakeet-tdt-v3",
+    &[
+        "encoder-model.int8.onnx",
+        "decoder_joint-model.int8.onnx",
+        "nemo128.onnx",
+        "vocab.txt",
+    ],
 )];
 
 /// Directorio raíz de la cache de HuggingFace — decisión de la aplicación, no

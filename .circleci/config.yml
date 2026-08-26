@@ -113,6 +113,25 @@ commands:
           paths:
             - ~/.cache/sccache
           when: always
+
+  # Caché del build nativo de ONNX Runtime /MT (T1 del reemplazo STT whisper→parakeet).
+  # target/ort-mt contiene onnxruntime.lib, construido por `xtask ort` y consumido
+  # por el crate ort vía ORT_LIB_PATH. Clave por arch + rust_version + Cargo.lock.
+  ort_restore_cache:
+    description: Restaura caché de target/ort-mt (onnxruntime.lib estático /MT)
+    steps:
+      - restore_cache:
+          keys:
+            - ort-mt-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
+            - ort-mt-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-
+  ort_save_cache:
+    description: Guarda caché de target/ort-mt (when always)
+    steps:
+      - save_cache:
+          key: ort-mt-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
+          paths:
+            - target/ort-mt
+          when: always
   sccache_setup_unix:
     description: Instala sccache (pin) y lo activa como RUSTC_WRAPPER (bash)
     steps:
@@ -625,6 +644,20 @@ jobs:
       - cargo_save_registry
       - sccache_restore_cache
       - sccache_setup_windows
+      - ort_restore_cache
+      - run:
+          name: Construir ONNX Runtime /MT (xtask ort) si no está en caché
+          command: |
+            Write-Host "[STEP] Construir ONNX Runtime /MT (xtask ort) - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # target/ort-mt/onnxruntime.lib es el artefacto cacheado.
+            if (Test-Path "target\ort-mt\onnxruntime.lib") {
+              Write-Host "onnxruntime.lib restaurado de caché; se omite xtask ort"
+            } else {
+              cargo run -p xtask --quiet -- ort
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            Write-Host "[STEP] Construir ONNX Runtime /MT (xtask ort) - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -635,10 +668,15 @@ jobs:
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
             $env:CARGO_INCREMENTAL = "0"
+            # ORT_LIB_PATH apunta a target/ort-mt (onnxruntime.lib estático /MT
+            # producido por xtask ort arriba). El crate ort =2.0.0-rc.13 lo consume
+            # vía estrategia `system`, sin descarga de binario precompilado.
+            $env:ORT_LIB_PATH = "target\ort-mt"
             cargo build --release --features full --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - ort_save_cache
       - run:
           name: Smoke test del binario (version + voces de fábrica)
           command: |

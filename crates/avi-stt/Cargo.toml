@@ -4,24 +4,26 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Bindings de whisper.cpp (sin features GPU: CPU-only por default). Reemplaza a
-# ct2rs::Whisper como motor STT; CT2 permanece solo en avi-translation.
-# Opcional tras el feature `native-stt` (off por defecto): así `cargo test`/
-# `cargo llvm-cov` compilan el crate sin whisper.cpp; los builds de release lo
-# activan para conservar el motor real (ver plan R1).
-whisper-rs = { version = "0.16", optional = true }
+# Bindings de ONNX Runtime vía el crate `ort` (CPU-only en Windows MSVC `/MT`).
+# Reemplaza a whisper-rs/whisper.cpp como motor STT; CT2 (ct2rs) permanece
+# solo en avi-translation. El binding y la `.lib` estática `/MT` (generada por
+# `xtask ort` → `ORT_LIB_PATH`) se emparejan: `ort =2.0.0-rc.13` apareja con
+# ONNX Runtime 1.28. Opcional tras el feature `native-stt` (off por default):
+# así `cargo test`/`cargo llvm-cov` compilan el crate sin ONNX Runtime; los
+# builds de release lo activan para conservar el motor real.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"], optional = true }
 avi-core = { path = "../avi-core" }
 anyhow = "1.0"
 
 [features]
-# Activa el motor STT real (whisper-rs → whisper.cpp compilado desde fuente).
-native-stt = ["dep:whisper-rs"]
+# Activa el motor STT real (ort → onnxruntime estático `/MT`).
+native-stt = ["dep:ort"]
 
 [dev-dependencies]
-# Lectura del WAV fixture (mono 16 kHz) que alimenta el test de carga de Whisper.
+# Lectura del WAV fixture (mono 16 kHz) que alimenta los tests de Parakeet.
 hound = "3.5"
-# Normalización de WAV a PCM 16 kHz mono, reutilizada por el test de paridad
-# de Ct2SttEngine contra el oráculo Python.
+# Normalización de WAV a PCM 16 kHz mono, reutilizado por el test de paridad
+# de ParakeetEngine.
 avi-audio = { path = "../avi-audio" }
 # Trait `SttEngine` en scope para el benchmark de latencia/calidad opt-in
 # (`crates/avi-stt/tests/benchmark_latencia.rs`, marcado `#[ignore]`).

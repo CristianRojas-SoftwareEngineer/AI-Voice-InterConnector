@@ -9,44 +9,27 @@ use axum::{
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
-// `StdMutex` solo envuelve el contexto VAD (gateado tras `native-stt`).
-#[cfg(feature = "native-stt")]
-use std::sync::Mutex as StdMutex;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-
-// `hilos_disponibles` (config del VAD) y el trait `SttEngine` (`.transcribe`)
-// solo los consume la superficie STT/VAD, gateada tras `native-stt`.
+// `hilos_disponibles` y el trait `SttEngine` (`.transcribe`) solo los consume
+// la superficie STT, gateada tras `native-stt`.
 #[cfg(feature = "native-stt")]
 use avi_core::engine::{hilos_disponibles, SttEngine};
 use avi_core::json_emitter;
 use avi_store::{SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
-use avi_stt::Ct2SttEngine;
+use avi_stt::{detectar_idioma, ParakeetEngine};
 use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
 // `Engine` trait requerido por el API no-deprecation de base64 0.22
-// (el motor interno del daemon usa el alfabeto STANDARD, idéntito al `encode`/`decode`
+// (el motor interno del daemon usa el alfabeto STANDARD, idéntico al `encode`/`decode`
 // libres, por compatibilidad con el cliente raíz del CLI).
 use base64::Engine;
-#[cfg(feature = "native-stt")]
-use whisper_rs::{
-    convert_integer_to_float_audio, WhisperVadContext, WhisperVadContextParams, WhisperVadParams,
-};
 
-/// Ruta relativa (al cwd del workspace) del modelo Whisper STT en formato GGUF.
+/// Ruta relativa (al cwd del workspace) del modelo Parakeet STT (export int8).
 #[cfg(feature = "native-stt")]
-const STT_MODEL_DIR: &str = "models/whisper/ggml-medium-q8_0.bin";
-/// Ruta relativa (al cwd del workspace) del modelo VAD Silero (GGML), usado
-/// para segmentar audio largo (>15 s) antes de transcribir.
-#[cfg(feature = "native-stt")]
-const VAD_MODEL_DIR: &str = "models/whisper/ggml-silero-v5.1.2.bin";
-/// Umbral de una sola pasada: audio <=15 s (240 000 muestras a 16 kHz) se
-/// transcribe de una vez con `audio_ctx` dinámico del motor (<=960, capacidad
-/// 19.2 s con margen 25%); más allá, el VAD divide en segmentos de <=15 s.
-#[cfg(feature = "native-stt")]
-const SINGLE_PASS_MAX_SAMPLES: usize = 240_000;
+const STT_MODEL_DIR: &str = "models/parakeet-tdt-v3";
 /// Idioma por defecto para `clone_voice` cuando la petición no lo transporta
-/// (el contrato de /voices/precompute no carriya idioma).
+/// (el contrato de /voices/precompute no carriba idioma).
 const DEFAULT_CLONE_LANGUAGE: &str = "es";
 
 /// Estado compartido del daemon
@@ -57,34 +40,26 @@ pub struct DaemonState {
     pub speech_store: SpeechStore,
     /// Motor TTS nativo (Qwen3-TTS), con ciclo de vida persistente entre peticiones.
     pub tts_engine: Qwen3TtsEngine,
-    /// Motor STT nativo (whisper-rs sobre whisper.cpp, modelo GGUF medium-q8).
+    /// Motor STT nativo (Parakeet TDT v3 int8 vía ort). Parakeet no necesita
+    /// chunking VAD: su RTF (~0.11 en audio largo) es lineal y no degrada con
+    /// la duración, por lo que `transcribe_handler` transcribe de una sola vez.
     #[cfg(feature = "native-stt")]
-    pub stt_engine: Ct2SttEngine,
-    /// VAD Silero para segmentar audio largo (>15 s). El contexto vive entre
-    /// peticiones (modelo cargado una sola vez); `StdMutex` porque el runtime
-    /// ya bloquea en el motor STT y el VAD es rápido en comparación.
-    #[cfg(feature = "native-stt")]
-    pub vad_engine: StdMutex<WhisperVadContext>,
+    pub stt_engine: ParakeetEngine,
 }
 
 impl DaemonState {
     /// Constructor de producción. Las rutas de modelo son relativas al cwd del
     /// workspace, correcto cuando `daemon serve` se lanza desde la raíz del repo.
-    /// Devuelve error si el motor STT o el VAD no pueden inicializarse (modelo
-    /// inexistente).
+    /// Devuelve error si el motor STT no puede inicializarse (modelo inexistente).
     pub fn new() -> anyhow::Result<Self> {
         #[cfg(feature = "native-stt")]
-        let stt_engine = Ct2SttEngine::new(STT_MODEL_DIR)?;
+        let stt_engine = ParakeetEngine::new(STT_MODEL_DIR)
+            .map_err(|e| anyhow::anyhow!("fallo al cargar el modelo STT {}: {e}", STT_MODEL_DIR))?;
+        // Los hilos lógicos del equipo del usuario dimensionan el paralelismo de
+        // ONNX Runtime (heredado de `avi-stt::parakeet`); el runtime del daemon
+        // serializa síntesis y STT fuera de esta construcción.
         #[cfg(feature = "native-stt")]
-        let vad_engine = {
-            let mut vad_params = WhisperVadContextParams::default();
-            // Hilos lógicos del equipo del usuario, no una máquina fija de desarrollo.
-            vad_params.set_n_threads(hilos_disponibles() as i32);
-            let vad = WhisperVadContext::new(VAD_MODEL_DIR, vad_params).map_err(|e| {
-                anyhow::anyhow!("fallo al cargar el modelo VAD {}: {:?}", VAD_MODEL_DIR, e)
-            })?;
-            StdMutex::new(vad)
-        };
+        let _ = hilos_disponibles();
         Ok(Self {
             synthesis_lock: Mutex::new(()),
             voice_store: VoiceStore::new(),
@@ -92,8 +67,6 @@ impl DaemonState {
             tts_engine: Qwen3TtsEngine::new(None),
             #[cfg(feature = "native-stt")]
             stt_engine,
-            #[cfg(feature = "native-stt")]
-            vad_engine,
         })
     }
 }
@@ -429,14 +402,21 @@ async fn transcribe_handler(
         .unwrap_or("es-latam");
     let language = resolve_stt_language(source_language);
 
-    let result = if pcm.len() > SINGLE_PASS_MAX_SAMPLES {
-        transcribir_con_vad(&state, &pcm, language)
-    } else {
-        state.stt_engine.transcribe(&pcm, Some(language))
-    };
+    // Parakeet no necesita chunking VAD (no degrada con la duración de audio);
+    // se transcribe de una sola pasada.
+    let result = state.stt_engine.transcribe(&pcm, Some(language));
     match result {
         Ok(text) => {
-            let body = with_sv(json!({ "text": text }));
+            // Guardia de idioma: si el detector heurístico marca inglés
+            // sospechoso en una sesión en español, se anexa el campo aditivo
+            // `language_warning` al JSON de respuesta. El campo es opcional y
+            // aditivo: clientes que lo ignoren no se ven afectados.
+            let (idioma, _ratio) = detectar_idioma(&text);
+            let body = if idioma == "EN-SOSPECHOSO" {
+                with_sv(json!({ "text": text, "language_warning": true }))
+            } else {
+                with_sv(json!({ "text": text }))
+            };
             Json(body).into_response()
         }
         Err(e) => {
@@ -450,42 +430,8 @@ async fn transcribe_handler(
     }
 }
 
-/// Transcripción de audio largo (>15 s): el VAD Silero divide el audio en
-/// segmentos de voz (<=15 s, con padding de 30 ms y solape de 0.1 s para no
-/// cortar palabras), cada segmento se transcribe con el `audio_ctx` dinámico
-/// del motor y los textos se unen con espacios.
-#[cfg(feature = "native-stt")]
-fn transcribir_con_vad(state: &DaemonState, pcm: &[i16], language: &str) -> anyhow::Result<String> {
-    let mut buffer = vec![0f32; pcm.len()];
-    convert_integer_to_float_audio(pcm, &mut buffer)?;
-
-    let mut vad = state.vad_engine.lock().expect("lock VAD no envenenado");
-    let mut params = WhisperVadParams::new();
-    params.set_min_speech_duration(250);
-    params.set_min_silence_duration(400);
-    params.set_max_speech_duration(15.0);
-    params.set_speech_pad(30);
-    params.set_samples_overlap(0.1);
-
-    let segments = vad.segments_from_samples(params, &buffer)?;
-    let mut textos = Vec::new();
-    for seg in segments {
-        // Timestamps en centisegundos (10 ms) → muestras a 16 kHz.
-        let inicio = (seg.start / 100.0 * 16000.0) as usize;
-        let fin = (seg.end / 100.0 * 16000.0) as usize;
-        if fin <= inicio {
-            continue;
-        }
-        let texto = state
-            .stt_engine
-            .transcribe(&pcm[inicio..fin], Some(language))?;
-        textos.push(texto);
-    }
-    Ok(textos.join(" "))
-}
-
 /// Mapea el token de idioma del cliente (`es-latam`/`en`) al código ISO que
-/// exige Whisper (paridad con `resolve_stt_language` en `src/main.rs`).
+/// exige Parakeet (paridad con `resolve_stt_language` en `src/main.rs`).
 #[cfg(feature = "native-stt")]
 fn resolve_stt_language(token: &str) -> &str {
     match token {
@@ -519,7 +465,7 @@ pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
         .route("/synthesize", post(synthesize_handler))
         .route("/shutdown", post(shutdown_handler));
     // `/transcribe` solo existe con el motor STT compilado (`native-stt`); sin el
-    // feature el daemon expone el resto de rutas sin whisper.cpp.
+    // feature el daemon expone el resto de rutas sin ONNX Runtime.
     #[cfg(feature = "native-stt")]
     let router = router.route("/transcribe", post(transcribe_handler));
     router.with_state(state)

@@ -10,7 +10,7 @@ use avi_daemon as daemon;
 use avi_store as store;
 use avi_store::{ModelStore, SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
-use avi_stt::Ct2SttEngine;
+use avi_stt::ParakeetEngine;
 use avi_tts::{Qwen3TtsEngine, TtsEngine};
 // El motor de traducción real solo entra en scope con `native-translation`.
 #[cfg(feature = "native-translation")]
@@ -27,9 +27,10 @@ const VERSION: &str = "0.10.7";
 const APP_NAME: &str = "ai-voice-interconnector";
 /// Dirección del daemon nativo (T7: cliente HTTP async contra este address).
 const DAEMON_ADDR: &str = "127.0.0.1:8765";
-/// Ruta fija del modelo Whisper ya convertido a GGUF (whisper.cpp), reutilizado
-/// por `speech transcribe` (no se gestiona vía `ModelStore`: layout incompatible).
-const DEFAULT_WHISPER_MODEL_DIR: &str = "models/whisper/ggml-medium-q8_0.bin";
+/// Ruta fija del modelo Parakeet TDT 0.6B v3 int8 (export istupakov), reutilizado
+/// por `speech transcribe` (no se gestiona vía `ModelStore`: layout ONNX). Parakeet
+/// consume 4 archivos en este directorio (`ParakeetEngine::new` valida su presencia).
+const STT_MODEL_DIR: &str = "models/parakeet-tdt-v3";
 /// Ruta fija del modelo Marian/opus-mt es→en ya convertido a CT2, reutilizado
 /// por `translate` (no se gestiona vía `ModelStore`: layout incompatible).
 const DEFAULT_TRANSLATION_MODEL_ES_EN: &str = "models/ct2/opus-mt-es-en";
@@ -666,11 +667,14 @@ async fn handle_speech(
             }
 
             // Modelo ausente -> exit 4, previo a construir el motor.
-            if !std::path::Path::new(DEFAULT_WHISPER_MODEL_DIR).exists() {
+            if !std::path::Path::new(STT_MODEL_DIR)
+                .join("nemo128.onnx")
+                .exists()
+            {
                 return Err(CliError::new(
                     ExitCode::ModelMissing,
                     "model_missing",
-                    "El modelo de transcripción no está provisionado en 'models/whisper/ggml-medium-q8_0.bin'.",
+                    "El modelo de transcripción no está provisionado en 'models/parakeet-tdt-v3' (Parakeet TDT 0.6B v3 int8).",
                 ));
             }
 
@@ -709,7 +713,7 @@ async fn handle_speech(
                     )?
                 };
 
-                let engine = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
+                let engine = ParakeetEngine::new(STT_MODEL_DIR).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
                         "transcription_error",
@@ -909,11 +913,14 @@ async fn handle_speech(
                 }
             }
             // Modelos ausentes → exit 4 antes de tocar audio (patrón main.rs:479-485).
-            if !std::path::Path::new(DEFAULT_WHISPER_MODEL_DIR).exists() {
+            if !std::path::Path::new(STT_MODEL_DIR)
+                .join("nemo128.onnx")
+                .exists()
+            {
                 return Err(CliError::new(
                     ExitCode::ModelMissing,
                     "model_missing",
-                    "El modelo de transcripción no está provisionado en 'models/whisper/ggml-medium-q8_0.bin'.",
+                    "El modelo de transcripción no está provisionado en 'models/parakeet-tdt-v3' (Parakeet TDT 0.6B v3 int8).",
                 ));
             }
             require_model_provisioned()?;
@@ -953,7 +960,7 @@ async fn handle_speech(
                         },
                     )?
                 };
-                let stt = Ct2SttEngine::new(DEFAULT_WHISPER_MODEL_DIR).map_err(|e| {
+                let stt = ParakeetEngine::new(STT_MODEL_DIR).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
                         "transcription_error",
@@ -1255,9 +1262,9 @@ async fn handle_setup(json_mode: bool, language: &str, with_stt: bool) -> Result
 
     // 2. Descargar y registrar TODOS los modelos pinneados (decisión de diseño:
     // setup todo-por-defecto). `--language`/`--with-stt` siguen aceptados pero
-    // son redundantes: el set es fijo (qwen + marian es↔en + whisper).
+    // son redundantes: el set es fijo (qwen + marian es↔en + parakeet-tdt-v3).
     if with_stt {
-        tracing::info!("--with-stt es redundante: whisper-gguf ya está incluido en setup");
+        tracing::info!("--with-stt es redundante: parakeet-tdt-v3 ya está incluido en setup");
     }
     let mut provisioned = Vec::new();
     for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {

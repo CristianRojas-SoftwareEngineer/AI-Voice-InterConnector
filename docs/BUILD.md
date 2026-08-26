@@ -129,6 +129,52 @@ cargo build --release --features full
 ./target/release/ai-voice-interconnector doctor
 ```
 
+### Build de ONNX Runtime /MT (xtask ort)
+
+El motor STT Parakeet requiere **ONNX Runtime** enlazado estáticamente en `/MT`
+(con el CRT estático de MSVC), coherente con el resto del binario Rust
+(`+crt-static` en `.cargo/config.toml`). No existe binario precompilado válido
+para este perfil: el build de pyke distribuye en `/MD_DynamicRelease` y produce
+cientos de `LNK2001`/`LNK2038` de mezcla de runtimes.
+
+El subcomando **`xtask ort`** reproduce la receta validada en el spike:
+
+```bash
+cargo run -p xtask -- ort
+```
+
+Ejecuta estos pasos:
+
+1. **Clon superficial** del tag `v1.28.1` de ONNX Runtime
+   (`git clone --depth 1 --branch v1.28.1`).
+2. **Configuración CMake** con el generador *Visual Studio 17 2022* / x64 y los
+   flags `/MT`:
+   `-DCMAKE_POLICY_DEFAULT_CMP0091=NEW` `-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`
+   `-DABSL_MSVC_STATIC_RUNTIME=ON` `-Donnxruntime_BUILD_UNIT_TESTS=OFF`.
+3. **Build Release** del target `onnxruntime`
+   (`cmake --build ort-build --config Release --target onnxruntime`).
+4. **Build explícito** de `re2.vcxproj` y `model_package.vcxproj` (no incluidos en
+   `ALL_BUILD`) vía `msbuild`.
+5. **Fusión manual** con `lib.exe` y un `merge.rsp` que incluye `onnxruntime.lib`
+   + `model_package.lib` (+ `re2.lib`), produciendo:
+
+```
+target/ort-mt/onnxruntime.lib
+```
+
+#### Consumo en CI / local
+
+El crate `ort =2.0.0-rc.13` (serie 1.28, coherente con la `.lib` v1.28.1) lo
+consume vía estrategia `system`, apuntando con:
+
+```bash
+ORT_LIB_PATH=target/ort-mt
+```
+
+El job `build-windows-x64` de CircleCI cachea `target/ort-mt` entre corridas
+para no recompilar ONNX Runtime en cada release. El tag `v1.28.1` no se modifica
+sin revalidar el binding `ort` ↔ librería nativa.
+
 ### Verificación post-build
 
 El **smoke test del binario está automatizado en CI**: cada uno de los
