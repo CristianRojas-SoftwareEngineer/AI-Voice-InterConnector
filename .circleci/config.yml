@@ -114,24 +114,6 @@ commands:
             - ~/.cache/sccache
           when: always
 
-  # Caché del build nativo de ONNX Runtime /MT (T1 del reemplazo STT whisper→parakeet).
-  # target/ort-mt contiene onnxruntime.lib, construido por `xtask ort` y consumido
-  # por el crate ort vía ORT_LIB_PATH. Clave por arch + rust_version + Cargo.lock.
-  ort_restore_cache:
-    description: Restaura caché de target/ort-mt (onnxruntime.lib estático /MT)
-    steps:
-      - restore_cache:
-          keys:
-            - ort-mt-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
-            - ort-mt-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-
-  ort_save_cache:
-    description: Guarda caché de target/ort-mt (when always)
-    steps:
-      - save_cache:
-          key: ort-mt-v1-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock" }}
-          paths:
-            - target/ort-mt
-          when: always
   sccache_setup_unix:
     description: Instala sccache (pin) y lo activa como RUSTC_WRAPPER (bash)
     steps:
@@ -644,30 +626,6 @@ jobs:
       - cargo_save_registry
       - sccache_restore_cache
       - sccache_setup_windows
-      - ort_restore_cache
-      - run:
-          name: Construir ONNX Runtime /MT (xtask ort) si no está en caché
-          command: |
-            Write-Host "[STEP] Construir ONNX Runtime /MT (xtask ort) - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            # target/ort-mt/onnxruntime.lib es el artefacto cacheado.
-            if (Test-Path "target\ort-mt\onnxruntime.lib") {
-              Write-Host "onnxruntime.lib restaurado de caché; se omite xtask ort"
-            } else {
-              # El executor win/server-2022 no trae cmake en PATH (msbuild y
-              # lib.exe sí, vía VS2022). xtask ort invoca `cmake` para generar y
-              # construir ONNX Runtime, así que se instala vía Chocolatey solo en
-              # cache miss y se prefija su bin al PATH de este mismo step.
-              if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-                choco install cmake --no-progress -y --installargs 'ADD_CMAKE_TO_PATH=System'
-                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                $env:PATH = "C:\Program Files\CMake\bin;$env:PATH"
-              }
-              cmake --version
-              cargo run -p xtask --quiet -- ort
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            }
-            Write-Host "[STEP] Construir ONNX Runtime /MT (xtask ort) - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -678,15 +636,13 @@ jobs:
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
             $env:CARGO_INCREMENTAL = "0"
-            # ORT_LIB_PATH apunta a target/ort-mt (onnxruntime.lib estático /MT
-            # producido por xtask ort arriba). El crate ort =2.0.0-rc.13 lo consume
-            # vía estrategia `system`, sin descarga de binario precompilado.
-            $env:ORT_LIB_PATH = "target\ort-mt"
+            # El crate `ort` usa `load-dynamic`: no enlaza ONNX Runtime en
+            # build-time (no hay ORT_LIB_PATH). La librería dinámica se descarga
+            # y empaqueta junto al binario en el step de bundling siguiente.
             cargo build --release --features full --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Compilar binario release (cargo build --release) - FIN"
-      - ort_save_cache
       - run:
           name: Smoke test del binario (version + voces de fábrica)
           command: |
@@ -710,6 +666,46 @@ jobs:
           variant: full
       - sccache_save_cache
       - run:
+          # Autocontención (requisito duro): el crate `ort` en `load-dynamic`
+          # busca onnxruntime.dll junto al ejecutable. Se empaqueta la librería
+          # oficial de Microsoft (ONNX Runtime 1.28.0, pareja de ort rc.13) y sus
+          # 3 DLLs del runtime VC++ (la dll de MS es /MD), de modo que el usuario
+          # no necesite instalar el VC++ Redistributable ni nada previo.
+          name: Empaquetar ONNX Runtime + runtime VC++ (bundle load-dynamic)
+          command: |
+            Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - INICIO"
+            $ErrorActionPreference = "Stop"
+            $OrtVersion = "1.28.0"
+            $Bundle = "ort-bundle"
+            if (Test-Path $Bundle) { Remove-Item -Recurse -Force $Bundle }
+            New-Item -ItemType Directory -Force -Path $Bundle | Out-Null
+            # 1. Librería dinámica oficial de Microsoft (win-x64).
+            $Zip = "onnxruntime-win-x64-$OrtVersion.zip"
+            $Url = "https://github.com/microsoft/onnxruntime/releases/download/v$OrtVersion/$Zip"
+            Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\$Zip"
+            Expand-Archive -Path "$env:TEMP\$Zip" -DestinationPath "$env:TEMP\ort-extract" -Force
+            $Dll = Get-ChildItem -Path "$env:TEMP\ort-extract" -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
+            if (-not $Dll) { throw "onnxruntime.dll no encontrada en $Zip" }
+            Copy-Item $Dll.FullName "$Bundle\onnxruntime.dll"
+            # 2. Runtime VC++ (app-local): la dll de MS es /MD y depende de estas 3.
+            $Vc = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+            $RedistRoot = "C:\Program Files\Microsoft Visual Studio\2022"
+            foreach ($Name in $Vc) {
+              $Found = Get-ChildItem -Path $RedistRoot -Recurse -Filter $Name -ErrorAction SilentlyContinue |
+                       Where-Object { $_.FullName -match '\\Redist\\MSVC\\.*\\x64\\Microsoft\.VC\d+\.CRT\\' } |
+                       Select-Object -First 1
+              if (-not $Found) {
+                # Fallback: el redistribuible ya instalado en el sistema.
+                $Sys = Join-Path $env:WINDIR "System32\$Name"
+                if (Test-Path $Sys) { $Found = Get-Item $Sys }
+              }
+              if (-not $Found) { throw "No se encontró $Name (VC++ Redist ni System32)" }
+              Copy-Item $Found.FullName "$Bundle\$Name"
+            }
+            Write-Host "Bundle ONNX Runtime + VC++:"
+            Get-ChildItem $Bundle | ForEach-Object { Write-Host "  $($_.Name)" }
+            Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - FIN"
+      - run:
           # Nombre del artefacto con la versión REAL del CLI: la fuente de
           # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
           # que quedó en 0.1.0 tras la migración). Fail-fast: si difiere del tag
@@ -726,8 +722,10 @@ jobs:
             $Src = "target\release\ai-voice-interconnector.exe"
             if (-not (Test-Path $Src)) { throw "Binario no encontrado: $Src" }
             # Staging de layout plano: binario (sin sufijo de arch) + los 4
-            # documentos de la raíz, comprimidos a .zip para que el one-liner de
-            # Windows extraiga y los archivos GPLv3 viajen junto al binario.
+            # documentos de la raíz + la librería ONNX Runtime y el runtime VC++
+            # empaquetados en el step anterior, comprimidos a .zip para que el
+            # one-liner de Windows extraiga todo junto al binario (GPLv3 +
+            # autocontención STT).
             $Stage = "staging"
             if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
             New-Item -ItemType Directory -Force -Path $Stage | Out-Null
@@ -735,6 +733,8 @@ jobs:
             foreach ($Doc in @("LICENSE", "THIRD-PARTY-LICENSES.md", "SOURCE-OFFER.md", "README.md")) {
               Copy-Item $Doc "$Stage\$Doc"
             }
+            # Librería ONNX Runtime + runtime VC++ (autocontención STT).
+            Copy-Item "ort-bundle\*" $Stage
             $Dst = "artifacts\ai-voice-interconnector-$Version-x86_64-windows.zip"
             Compress-Archive -Path "$Stage\*" -DestinationPath $Dst -Force
             Write-Host "Artefacto: $Dst"
@@ -824,12 +824,24 @@ jobs:
             SRC="target/release/ai-voice-interconnector"
             test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
             # Staging de layout plano: binario (sin sufijo de arch) + los 4
-            # documentos de la raíz, comprimidos a tar.gz para que el one-liner
-            # extraiga y los archivos GPLv3 viajen junto al binario.
+            # documentos de la raíz + la librería ONNX Runtime, comprimidos a
+            # tar.gz para que el one-liner extraiga y todo viaje junto al binario.
             STAGE="$(mktemp -d)"
             cp "$SRC" "$STAGE/ai-voice-interconnector"
             chmod +x "$STAGE/ai-voice-interconnector"
             cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
+            # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
+            # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
+            # oficial de Microsoft (ONNX Runtime 1.28.0, pareja de ort rc.13) con el
+            # nombre por defecto que busca ort, sin que el usuario instale nada.
+            ORT_VERSION="1.28.0"
+            ORT_TGZ="onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+            curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
+            ORT_EXTRACT="$(mktemp -d)"
+            tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
+            ORT_LIB="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f | head -n1)"
+            test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
+            cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
             DST="artifacts/ai-voice-interconnector-${VERSION}-x86_64-linux.tar.gz"
             tar -czf "$DST" -C "$STAGE" .
             echo "Artefacto: $DST"
@@ -920,12 +932,24 @@ jobs:
             SRC="target/release/ai-voice-interconnector"
             test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
             # Staging de layout plano: binario (sin sufijo de arch) + los 4
-            # documentos de la raíz, comprimidos a tar.gz para que el one-liner
-            # extraiga y los archivos GPLv3 viajen junto al binario.
+            # documentos de la raíz + la librería ONNX Runtime, comprimidos a
+            # tar.gz para que el one-liner extraiga y todo viaje junto al binario.
             STAGE="$(mktemp -d)"
             cp "$SRC" "$STAGE/ai-voice-interconnector"
             chmod +x "$STAGE/ai-voice-interconnector"
             cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
+            # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
+            # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
+            # oficial de Microsoft (ONNX Runtime 1.28.0, pareja de ort rc.13, build
+            # aarch64) con el nombre por defecto que busca ort.
+            ORT_VERSION="1.28.0"
+            ORT_TGZ="onnxruntime-linux-aarch64-${ORT_VERSION}.tgz"
+            curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
+            ORT_EXTRACT="$(mktemp -d)"
+            tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
+            ORT_LIB="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f | head -n1)"
+            test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
+            cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
             DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-linux.tar.gz"
             tar -czf "$DST" -C "$STAGE" .
             echo "Artefacto: $DST"
@@ -1042,12 +1066,25 @@ jobs:
             SRC="target/release/ai-voice-interconnector"
             test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
             # Staging de layout plano: binario (sin sufijo de arch) + los 4
-            # documentos de la raíz, comprimidos a tar.gz. Homebrew autoextrae el
-            # tar.gz (binary stanza) y los archivos GPLv3 viajan junto al binario.
+            # documentos de la raíz + la librería ONNX Runtime, comprimidos a
+            # tar.gz. Homebrew autoextrae el tar.gz (binary stanza) y todo viaja
+            # junto al binario.
             STAGE="$(mktemp -d)"
             cp "$SRC" "$STAGE/ai-voice-interconnector"
             chmod +x "$STAGE/ai-voice-interconnector"
             cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
+            # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
+            # busca libonnxruntime.dylib junto al ejecutable. Se empaqueta la
+            # librería oficial de Microsoft (ONNX Runtime 1.28.0, pareja de ort
+            # rc.13, build osx-arm64) con el nombre por defecto que busca ort.
+            ORT_VERSION="1.28.0"
+            ORT_TGZ="onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
+            curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
+            ORT_EXTRACT="$(mktemp -d)"
+            tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
+            ORT_LIB="$(find "$ORT_EXTRACT" -name 'libonnxruntime.*.dylib' -type f | head -n1)"
+            test -n "$ORT_LIB" || (echo "libonnxruntime.dylib no encontrada en ${ORT_TGZ}" && exit 1)
+            cp "$ORT_LIB" "$STAGE/libonnxruntime.dylib"
             DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-macos.tar.gz"
             tar -czf "$DST" -C "$STAGE" .
             echo "Artefacto: $DST"

@@ -129,51 +129,47 @@ cargo build --release --features full
 ./target/release/ai-voice-interconnector doctor
 ```
 
-### Build de ONNX Runtime /MT (xtask ort)
+### ONNX Runtime vía `load-dynamic` (sin build en compilación)
 
-El motor STT Parakeet requiere **ONNX Runtime** enlazado estáticamente en `/MT`
-(con el CRT estático de MSVC), coherente con el resto del binario Rust
-(`+crt-static` en `.cargo/config.toml`). No existe binario precompilado válido
-para este perfil: el build de pyke distribuye en `/MD_DynamicRelease` y produce
-cientos de `LNK2001`/`LNK2038` de mezcla de runtimes.
+El motor STT Parakeet consume **ONNX Runtime** a través del crate
+`ort =2.0.0-rc.13` en modo **`load-dynamic`** (`crates/avi-stt/Cargo.toml`): no
+enlaza nada en build-time ni requiere una `.lib`, y **el build local/CI de la app
+no necesita compilar ni tener presente ONNX Runtime**. Por eso las cuatro
+arquitecturas compilan `--features full` sin ningún paso previo de ONNX Runtime.
 
-El subcomando **`xtask ort`** reproduce la receta validada en el spike:
+En runtime, `ort` carga la librería dinámica del SO. Si `ORT_DYLIB_PATH` no está
+definido, usa el nombre por defecto (`onnxruntime.dll` / `libonnxruntime.so` /
+`libonnxruntime.dylib`) y lo resuelve **contra el directorio del ejecutable**
+(`current_exe().parent()`). Colocar la librería junto al binario basta: no hay
+`rpath` ni variables de entorno que fijar.
 
-```bash
-cargo run -p xtask -- ort
-```
+#### Empaquetado en los artefactos de release
 
-Ejecuta estos pasos:
+El binario distribuido es **autocontenido**: el usuario solo ejecuta el
+instalador de la app, sin instalar nada previo. Cada job de build de CircleCI,
+antes del staging del artefacto, descarga el asset oficial de Microsoft de
+**ONNX Runtime 1.28.0** (pareja de `ort` rc.13) para su plataforma y coloca la
+librería dinámica junto al binario con el nombre por defecto que busca `ort`:
 
-1. **Clon superficial** del tag `v1.28.1` de ONNX Runtime
-   (`git clone --depth 1 --branch v1.28.1`).
-2. **Configuración CMake** con el generador *Visual Studio 17 2022* / x64 y los
-   flags `/MT`:
-   `-DCMAKE_POLICY_DEFAULT_CMP0091=NEW` `-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`
-   `-DABSL_MSVC_STATIC_RUNTIME=ON` `-Donnxruntime_BUILD_UNIT_TESTS=OFF`.
-3. **Build Release** del target `onnxruntime`
-   (`cmake --build ort-build --config Release --target onnxruntime`).
-4. **Build explícito** de `re2.vcxproj` y `model_package.vcxproj` (no incluidos en
-   `ALL_BUILD`) vía `msbuild`.
-5. **Fusión manual** con `lib.exe` y un `merge.rsp` que incluye `onnxruntime.lib`
-   + `model_package.lib` (+ `re2.lib`), produciendo:
+| Job | Asset MS v1.28.0 | Librería empaquetada |
+|---|---|---|
+| build-windows-x64 | `onnxruntime-win-x64-1.28.0.zip` | `onnxruntime.dll` |
+| build-linux-x64 | `onnxruntime-linux-x64-1.28.0.tgz` | `libonnxruntime.so` |
+| build-linux-arm64 | `onnxruntime-linux-aarch64-1.28.0.tgz` | `libonnxruntime.so` |
+| build-darwin-arm64 | `onnxruntime-osx-arm64-1.28.0.tgz` | `libonnxruntime.dylib` |
 
-```
-target/ort-mt/onnxruntime.lib
-```
+En **Windows**, la `onnxruntime.dll` de Microsoft es `/MD` y depende del runtime
+de VC++ (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`). Para no exigir
+al usuario instalar el *Visual C++ Redistributable*, esas tres DLLs se empaquetan
+también junto al binario (*app-local deployment*, permitido por la licencia de
+redistribución de MS); el Universal CRT (`ucrtbase.dll`) ya forma parte de
+Windows 10/11. En Linux/macOS la librería depende del runtime C++ del SO
+(`libstdc++` / `libc++`), ya considerado base.
 
-#### Consumo en CI / local
-
-El crate `ort =2.0.0-rc.13` (serie 1.28, coherente con la `.lib` v1.28.1) lo
-consume vía estrategia `system`, apuntando con:
-
-```bash
-ORT_LIB_PATH=target/ort-mt
-```
-
-El job `build-windows-x64` de CircleCI cachea `target/ort-mt` entre corridas
-para no recompilar ONNX Runtime en cada release. El tag `v1.28.1` no se modifica
-sin revalidar el binding `ort` ↔ librería nativa.
+Los instaladores extraen el archivo completo (layout plano) al directorio de
+instalación y ejecutan el binario desde ahí, de modo que la librería llega junto
+al binario y `ort` la encuentra sin cambios en los instaladores. La versión
+1.28.0 no se cambia sin revalidar el binding `ort` ↔ librería nativa.
 
 ### Verificación post-build
 

@@ -40,21 +40,27 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 Motor de transcripción STT migrado de `whisper-rs`/`whisper.cpp` (formato GGUF)
 a **Parakeet TDT 0.6B v3 int8** vía ONNX Runtime (feature `native-stt`, opt-in).
-El binario distribuido conserva `+crt-static` y el CRT `/MT` de MSVC en Windows.
+El crate `ort` opera en modo `load-dynamic`: la librería ONNX Runtime se empaqueta
+junto al binario en los artefactos de release, manteniendo la app autocontenida.
 
 ### Añadido
 
 - Motor STT nativo Parakeet TDT 0.6B v3 int8 (`crates/avi-stt/parakeet.rs`) sobre
-  `ort =2.0.0-rc.13` ↔ ONNX Runtime v1.28.1, con subcomando `xtask ort` para el
-  build estático `/MT`. Pipeline `nemo128 → encoder → decoder_joint` con
-  decodificador TDT greedy; la salida `encoder_outputs` se consume con layout
-  `[B, 1024, T']` sin transponer, `targets`/`target_length` como int32, y los
-  estados LSTM del predictor se indexan por nombre `output_states_1`/`2`.
-  Guardia heurística de idioma (`detectar_idioma`, `EN-SOSPECHOSO`) y campo
-  aditivo `language_warning` en `/transcribe`.
+  `ort =2.0.0-rc.13` ↔ ONNX Runtime 1.28.0 en modo `load-dynamic` (carga la
+  librería dinámica en runtime desde el directorio del binario). Pipeline
+  `nemo128 → encoder → decoder_joint` con decodificador TDT greedy; la salida
+  `encoder_outputs` se consume con layout `[B, 1024, T']` sin transponer,
+  `targets`/`target_length` como int32, y los estados LSTM del predictor se
+  indexan por nombre `output_states_1`/`2`. Guardia heurística de idioma
+  (`detectar_idioma`, `EN-SOSPECHOSO`) y campo aditivo `language_warning` en
+  `/transcribe`.
 - CLI raíz (`src/main.rs`): `speech transcribe`/`speech dub` usan ParakeetEngine
   in-process; Parakeet no necesita chunking VAD (RTF ~0.11 lineal sobre audio >22 s).
-- Cache `target/ort-mt` de ONNX Runtime `/MT` v1.28.1 en CircleCI (`build-windows-x64`).
+- Empaquetado de la librería ONNX Runtime 1.28.0 junto al binario en los cuatro
+  jobs de build de CircleCI (`onnxruntime.dll` / `libonnxruntime.so` /
+  `libonnxruntime.dylib` según plataforma). En Windows se incluyen además las
+  DLLs del runtime VC++ (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`)
+  para que la app sea autocontenida sin exigir el Visual C++ Redistributable.
 - `crates/avi-store`: `MODEL_REVISIONS` → `parakeet-tdt-v3`
   (sha `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce`).
 
@@ -62,8 +68,9 @@ El binario distribuido conserva `+crt-static` y el CRT `/MT` de MSVC en Windows.
 
 - `crates/avi-stt/Cargo.toml` y `crates/avi-daemon/Cargo.toml`: `whisper-rs`
   eliminado; feature `native-stt = ["dep:ort"]` (off por defecto).
-- Docs: `docs/BUILD.md` documenta el build `xtask ort`; el drift documental legacy
-  en `docs/CLI/` y `docs/DAEMON-MODE.md` se preserva (subsistema Python).
+- Docs: `docs/BUILD.md` documenta el consumo de ONNX Runtime vía `load-dynamic`
+  y su empaquetado en release; el drift documental legacy en `docs/CLI/` y
+  `docs/DAEMON-MODE.md` se preserva (subsistema Python).
 
 ### Notas de release
 

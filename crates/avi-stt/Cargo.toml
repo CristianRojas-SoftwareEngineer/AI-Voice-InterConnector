@@ -4,19 +4,21 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Bindings de ONNX Runtime vía el crate `ort` (CPU-only en Windows MSVC `/MT`).
-# Reemplaza a whisper-rs/whisper.cpp como motor STT; CT2 (ct2rs) permanece
-# solo en avi-translation. El binding y la `.lib` estática `/MT` (generada por
-# `xtask ort` → `ORT_LIB_PATH`) se emparejan: `ort =2.0.0-rc.13` apareja con
-# ONNX Runtime 1.28. Opcional tras el feature `native-stt` (off por default):
-# así `cargo test`/`cargo llvm-cov` compilan el crate sin ONNX Runtime; los
-# builds de release lo activan para conservar el motor real.
+# Bindings de ONNX Runtime vía el crate `ort` en modo `load-dynamic`: no enlaza
+# nada en build-time; carga la librería dinámica (`onnxruntime.dll` / `.so` /
+# `.dylib`) en runtime desde el directorio del binario. Reemplaza a
+# whisper-rs/whisper.cpp como motor STT; CT2 (ct2rs) permanece solo en
+# avi-translation. `ort =2.0.0-rc.13` apareja con ONNX Runtime 1.28, cuya
+# librería se empaqueta junto al binario en los artefactos de release (ver
+# `.circleci/config.yml`). Opcional tras el feature `native-stt` (off por
+# default): así `cargo test`/`cargo llvm-cov` compilan el crate sin ONNX
+# Runtime; los builds de release lo activan para conservar el motor real.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"], optional = true }
 avi-core = { path = "../avi-core" }
 anyhow = "1.0"
 
 [features]
-# Activa el motor STT real (ort → onnxruntime estático `/MT`).
+# Activa el motor STT real (ort → onnxruntime dinámico vía `load-dynamic`).
 native-stt = ["dep:ort"]
 
 [dev-dependencies]
