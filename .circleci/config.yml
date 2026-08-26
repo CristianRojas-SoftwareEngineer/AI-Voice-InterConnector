@@ -654,6 +654,16 @@ jobs:
             if (Test-Path "target\ort-mt\onnxruntime.lib") {
               Write-Host "onnxruntime.lib restaurado de caché; se omite xtask ort"
             } else {
+              # El executor win/server-2022 no trae cmake en PATH (msbuild y
+              # lib.exe sí, vía VS2022). xtask ort invoca `cmake` para generar y
+              # construir ONNX Runtime, así que se instala vía Chocolatey solo en
+              # cache miss y se prefija su bin al PATH de este mismo step.
+              if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+                choco install cmake --no-progress -y --installargs 'ADD_CMAKE_TO_PATH=System'
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                $env:PATH = "C:\Program Files\CMake\bin;$env:PATH"
+              }
+              cmake --version
               cargo run -p xtask --quiet -- ort
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
