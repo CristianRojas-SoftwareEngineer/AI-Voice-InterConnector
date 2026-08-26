@@ -78,14 +78,14 @@ en `docs/BUILD.md` §9.
 
 ## Inventario completo del lockfile
 
-Generado desde `Cargo.lock` (447 crates únicos, directos y transitivos).
-Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-later 9, ISC 3, MIT 389, MPL-2.0 2, Unicode-3.0 18, Zlib 4.
+Generado desde `Cargo.lock` (455 crates únicos, directos y transitivos).
+Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-later 9, ISC 3, MIT 393, MPL-2.0 2, Unicode-3.0 18, Zlib 4.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
 | `ahash` | 0.8.12 | MIT OR Apache-2.0 | MIT |
 | `aho-corasick` | 1.1.5 | Unlicense OR MIT | MIT |
-| `ai-voice-interconnector` | 0.10.7 | GPL-3.0-or-later | GPL-3.0-or-later |
+| `ai-voice-interconnector` | 0.11.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `alsa` | 0.9.1 | Apache-2.0/MIT | MIT |
 | `alsa-sys` | 0.3.1 | MIT | MIT |
 | `android_system_properties` | 0.1.6 | MIT OR Apache-2.0 | MIT |
@@ -274,6 +274,7 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 | `macro_rules_attribute-proc_macro` | 0.2.3 | MIT OR Apache-2.0 | MIT |
 | `matchers` | 0.2.0 | MIT | MIT |
 | `matchit` | 0.7.3 | MIT AND BSD-3-Clause | MIT |
+| `matrixmultiply` | 0.3.11 | MIT/Apache-2.0 | MIT |
 | `memchr` | 2.8.3 | Unlicense OR MIT | MIT |
 | `mime` | 0.3.17 | MIT OR Apache-2.0 | MIT |
 | `mime_guess` | 2.0.5 | MIT | MIT |
@@ -282,6 +283,7 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 | `monostate` | 0.1.18 | MIT OR Apache-2.0 | MIT |
 | `monostate-impl` | 0.1.18 | MIT OR Apache-2.0 | MIT |
 | `more-asserts` | 0.3.1 | Unlicense OR MIT OR Apache-2.0 OR CC0-1.0 | MIT |
+| `ndarray` | 0.17.2 | MIT OR Apache-2.0 | MIT |
 | `ndk` | 0.8.0 | MIT OR Apache-2.0 | MIT |
 | `ndk-context` | 0.1.1 | MIT OR Apache-2.0 | MIT |
 | `ndk-sys` | 0.5.0+25.2.9519653 | MIT OR Apache-2.0 | MIT |
@@ -313,6 +315,8 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 | `onig_sys` | 69.9.3 | MIT OR Apache-2.0 | MIT |
 | `openssl-probe` | 0.2.1 | MIT OR Apache-2.0 | MIT |
 | `option-ext` | 0.2.0 | MPL-2.0 | MPL-2.0 |
+| `ort` | 2.0.0-rc.13 | MIT OR Apache-2.0 | MIT |
+| `ort-sys` | 2.0.0-rc.13 | MIT OR Apache-2.0 | MIT |
 | `os_str_bytes` | 6.6.1 | MIT OR Apache-2.0 | MIT |
 | `parking_lot` | 0.12.5 | MIT OR Apache-2.0 | MIT |
 | `parking_lot_core` | 0.9.12 | MIT OR Apache-2.0 | MIT |
@@ -325,6 +329,7 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 | `pin-project-lite` | 0.2.17 | Apache-2.0 OR MIT | MIT |
 | `pkg-config` | 0.3.33 | MIT OR Apache-2.0 | MIT |
 | `portable-atomic` | 1.15.0 | Apache-2.0 OR MIT | MIT |
+| `portable-atomic-util` | 0.2.7 | Apache-2.0 OR MIT | MIT |
 | `potential_utf` | 0.1.6 | Unicode-3.0 | Unicode-3.0 |
 | `powerfmt` | 0.2.0 | MIT OR Apache-2.0 | MIT |
 | `ppv-lite86` | 0.2.21 | MIT OR Apache-2.0 | MIT |
@@ -343,6 +348,7 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 | `rand_chacha` | 0.9.0 | MIT OR Apache-2.0 | MIT |
 | `rand_core` | 0.10.1 | MIT OR Apache-2.0 | MIT |
 | `rand_pcg` | 0.10.2 | MIT OR Apache-2.0 | MIT |
+| `rawpointer` | 0.2.1 | MIT/Apache-2.0 | MIT |
 | `rayon` | 1.12.0 | MIT OR Apache-2.0 | MIT |
 | `rayon-cond` | 0.4.0 | MIT OR Apache-2.0 | MIT |
 | `rayon-core` | 1.13.0 | MIT OR Apache-2.0 | MIT |
@@ -481,8 +487,6 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 | `web-sys` | 0.3.104 | MIT OR Apache-2.0 | MIT |
 | `web-time` | 1.1.0 | MIT OR Apache-2.0 | MIT |
 | `webpki-root-certs` | 1.0.9 | CDLA-Permissive-2.0 | CDLA-Permissive-2.0 |
-| `whisper-rs` | 0.16.0 | MIT OR Apache-2.0 | MIT |
-| `whisper-rs-sys` | 0.15.0 | MIT OR Apache-2.0 | MIT |
 | `whoami` | 2.1.3 | Apache-2.0 OR BSL-1.0 OR MIT | MIT |
 | `winapi` | 0.3.9 | MIT/Apache-2.0 | MIT |
 | `winapi-i686-pc-windows-gnu` | 0.4.0 | MIT/Apache-2.0 | MIT |

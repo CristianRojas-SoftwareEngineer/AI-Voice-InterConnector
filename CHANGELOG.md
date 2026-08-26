@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.11.0 — 2026-08-26](#0110--2026-08-26)
 - [0.10.7 — 2026-08-24](#0107--2026-08-24)
 - [0.10.6 — 2026-08-24](#0106--2026-08-24)
 - [0.10.5 — 2026-08-11](#0105--2026-08-11)
@@ -34,6 +35,43 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.11.0] — 2026-08-26
+
+Motor de transcripción STT migrado de `whisper-rs`/`whisper.cpp` (formato GGUF)
+a **Parakeet TDT 0.6B v3 int8** vía ONNX Runtime (feature `native-stt`, opt-in).
+El binario distribuido conserva `+crt-static` y el CRT `/MT` de MSVC en Windows.
+
+### Añadido
+
+- Motor STT nativo Parakeet TDT 0.6B v3 int8 (`crates/avi-stt/parakeet.rs`) sobre
+  `ort =2.0.0-rc.13` ↔ ONNX Runtime v1.28.1, con subcomando `xtask ort` para el
+  build estático `/MT`. Pipeline `nemo128 → encoder → decoder_joint` con
+  decodificador TDT greedy; la salida `encoder_outputs` se consume con layout
+  `[B, 1024, T']` sin transponer, `targets`/`target_length` como int32, y los
+  estados LSTM del predictor se indexan por nombre `output_states_1`/`2`.
+  Guardia heurística de idioma (`detectar_idioma`, `EN-SOSPECHOSO`) y campo
+  aditivo `language_warning` en `/transcribe`.
+- CLI raíz (`src/main.rs`): `speech transcribe`/`speech dub` usan ParakeetEngine
+  in-process; Parakeet no necesita chunking VAD (RTF ~0.11 lineal sobre audio >22 s).
+- Cache `target/ort-mt` de ONNX Runtime `/MT` v1.28.1 en CircleCI (`build-windows-x64`).
+- `crates/avi-store`: `MODEL_REVISIONS` → `parakeet-tdt-v3`
+  (sha `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce`).
+
+### Cambiado
+
+- `crates/avi-stt/Cargo.toml` y `crates/avi-daemon/Cargo.toml`: `whisper-rs`
+  eliminado; feature `native-stt = ["dep:ort"]` (off por defecto).
+- Docs: `docs/BUILD.md` documenta el build `xtask ort`; el drift documental legacy
+  en `docs/CLI/` y `docs/DAEMON-MODE.md` se preserva (subsistema Python).
+
+### Notas de release
+
+- WER real ~0.08–0.21 sobre corpus de voz sintética (umbral de paridad ≤0.25);
+  el fixture `whisper_sample` (saludo breve) se emite en inglés y dispara la
+  guardia de idioma → `EN-SOSPECHOSO`.
+- `native-stt` es **opt-in**: `cargo build --release --features native-stt`;
+  el build featureless no compila ONNX Runtime (R1 — tests/CI sin C++).
 
 ## [0.10.7] — 2026-08-24
 
