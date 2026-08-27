@@ -554,6 +554,22 @@ jobs:
             cargo run -p xtask --quiet -- licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
 
+  validate-changelog:
+    # Gate de CHANGELOG: verifica que exista la sección ## [X.Y.Z] para la
+    # versión bumppeada antes del tag, evitando el fallo silencioso de
+    # publish-release (~14 min de pipeline deshechos). Corre en tags v* como
+    # gate de los builds (ver workflow build-all).
+    docker:
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
+    steps:
+      - checkout
+      - run:
+          name: Verificar sección de CHANGELOG
+          command: |
+            echo "[STEP] Verificar CHANGELOG - INICIO"
+            cargo run -p xtask --quiet -- changelog --check
+            echo "[STEP] Verificar CHANGELOG - FIN"
+
   # ──────────────────────────────────────────────────────────────
   # Smoke tests de instaladores de una línea (mock por PATH, sin red)
   # Valida lógica de parsing de release, checksums y guards sin descargar.
@@ -1344,6 +1360,12 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
+      - validate-changelog:
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
       - test-linux:
           filters:
             tags:
@@ -1402,6 +1424,7 @@ workflows:
             - test-installer-macos
             - coverage
             - validate-licenses
+            - validate-changelog
       - build-linux-x64:
           filters:
             tags:
@@ -1417,6 +1440,7 @@ workflows:
             - test-installer-macos
             - coverage
             - validate-licenses
+            - validate-changelog
       - build-linux-arm64:
           filters:
             tags:
@@ -1432,6 +1456,7 @@ workflows:
             - test-installer-macos
             - coverage
             - validate-licenses
+            - validate-changelog
       - build-darwin-arm64:
           filters:
             tags:
@@ -1447,6 +1472,7 @@ workflows:
             - test-installer-macos
             - coverage
             - validate-licenses
+            - validate-changelog
       # ── Publicación — solo en tags v* ──
       - publish-release:
           context:

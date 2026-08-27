@@ -94,6 +94,16 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+    /// Genera el borrador de release (bump de versión + CHANGELOG)
+    Release {
+        #[arg(value_name = "X.Y.Z")]
+        version: String,
+    },
+    /// Verifica la sección del CHANGELOG para la versión actual
+    Changelog {
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -160,6 +170,29 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Commands::Release { version } => {
+            let version = version.trim();
+            if !Regex::new(r"^\d+\.\d+\.\d+$").unwrap().is_match(version) {
+                anyhow::bail!("versión inválida '{}': debe ser X.Y.Z (ej. 0.14.0)", version);
+            }
+            bump_version(version)?;
+            scaffold_changelog(version)?;
+            println!("Borrador de release {} generado:", version);
+            println!("  - src/main.rs (VERSION)");
+            println!("  - Cargo.toml (package.version)");
+            println!("  - Cargo.lock (ai-voice-interconnector)");
+            println!("  - tests/golden/cli_version.json");
+            println!("  - CHANGELOG.md (sección + TOC + definición de enlace)");
+            println!("Cierra los TODO: curar del CHANGELOG, commitea con conventional-commits y crea el tag v{}", version);
+        }
+        Commands::Changelog { check } => {
+            if check {
+                check_changelog()?;
+                println!("CHANGELOG.md en sincronía con la versión actual");
+            } else {
+                println!("Usa --check para verificar la sección del CHANGELOG");
+            }
+        }
     }
     Ok(())
 }
@@ -207,6 +240,274 @@ fn render_source_offer(version: &str) -> String {
     SOURCE_OFFER_TEMPLATE
         .replace("{version}", version)
         .replace("{repo}", GITHUB_REPO)
+}
+
+/// Reemplaza la versión en un archivo usando el regex con dos grupos de captura.
+fn bump_in_file(path: &Path, pattern: &str, version: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let re = Regex::new(pattern)?;
+    if !re.is_match(&text) {
+        anyhow::bail!("no se encontró la versión en {}", path.display());
+    }
+    let result = re.replace_all(&text, |caps: &regex::Captures| {
+        format!("{}{}{}", &caps[1], version, &caps[3])
+    });
+    std::fs::write(path, result.as_ref())?;
+    Ok(())
+}
+
+fn bump_version(version: &str) -> Result<()> {
+    // src/main.rs: const VERSION: &str = "0.13.0";
+    bump_in_file(
+        Path::new("src/main.rs"),
+        r#"(const VERSION:\s*&str\s*=\s*")([^"]+)(")"#,
+        version,
+    )?;
+
+    // Cargo.toml: version = "0.13.0" dentro de [package] con name
+    bump_in_file(
+        Path::new("Cargo.toml"),
+        r#"(name\s*=\s*"ai-voice-interconnector"\s*\n[^\[]*?version\s*=\s*")([^"]+)(")"#,
+        version,
+    )?;
+
+    // Cargo.lock: name = "ai-voice-interconnector"\nversion = "0.13.0"
+    bump_in_file(
+        Path::new("Cargo.lock"),
+        r#"(name\s*=\s*"ai-voice-interconnector"\s*\nversion\s*=\s*")([^"]+)(")"#,
+        version,
+    )?;
+
+    // tests/golden/cli_version.json: "version": "0.13.0"
+    bump_in_file(
+        Path::new("tests/golden/cli_version.json"),
+        r#"("version":\s*")([^"]+)(")"#,
+        version,
+    )?;
+
+    Ok(())
+}
+
+/// Resuelve el último tag anotado en el repositorio.
+fn last_tag() -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["describe", "--tags", "--abbrev=0"])
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("no se pudo determinar el último tag con git describe");
+    }
+    let tag = String::from_utf8(output.stdout)?;
+    Ok(tag.trim().trim_start_matches('v').to_string())
+}
+
+/// Genera la sección del CHANGELOG pre-rellenada para `version`.
+fn scaffold_changelog(version: &str) -> Result<()> {
+    let last = last_tag()?;
+    let date = today_iso();
+
+    // Recopilar commits desde el último tag
+    let output = std::process::Command::new("git")
+        .args([
+            "log",
+            &format!("v{}..HEAD", last),
+            "--pretty=format:%H%x00%s%x00%B",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        anyhow::bail!("no se pudo obtener el historial de commits");
+    }
+
+    let raw = String::from_utf8(output.stdout)?;
+    let records: Vec<&str> = raw.split("\u{00}").filter(|s| !s.is_empty()).collect();
+
+    // Cada commit: hash, subject, body (separados por \x00)
+    // records = [hash, subject, body, hash, subject, body, ...]
+    let mut added: Vec<String> = Vec::new();
+    let mut fixed: Vec<String> = Vec::new();
+    let mut changed: Vec<String> = Vec::new();
+    let mut breaking: Vec<String> = Vec::new();
+
+    let mut i = 0;
+    while i + 2 < records.len() {
+        let _hash = records[i];
+        let subject = records[i + 1].trim();
+        let body = records[i + 2].trim();
+        i += 3;
+
+        // Extraer el Resumen de cambios (primera línea del bloque si existe)
+        let summary = extract_resumen_cambios(body);
+
+        // Parsear tipo y breaking del subject
+        let (tipo, is_breaking) = parse_commit_header(subject);
+
+        let bullet = if let Some(resumen) = &summary {
+            format!("- {} — {}  <!-- TODO: curar -->", subject, resumen)
+        } else {
+            format!("- {}  <!-- TODO: curar -->", subject)
+        };
+
+        match (tipo.as_str(), is_breaking) {
+            ("feat", false) => added.push(bullet),
+            ("fix", false) => fixed.push(bullet),
+            (_, true) => breaking.push(bullet),
+            ("refactor", false) | ("perf", false) | ("build", false) => changed.push(bullet),
+            _ => changed.push(bullet),
+        }
+    }
+
+    if added.is_empty() && fixed.is_empty() && changed.is_empty() && breaking.is_empty() {
+        anyhow::bail!(
+            "no se encontraron commits desde el tag v{} — el rango está vacío",
+            last
+        );
+    }
+
+    // Construir la sección del CHANGELOG
+    let mut section = String::new();
+    section.push_str(&format!("## [{}] — {}\n\n", version, date));
+
+    // Párrafo introductorio: placeholder del humano
+    section.push_str("<!-- TODO: curar — escribe aquí el párrafo introductorio que\n");
+    section.push_str("   sintetice la necesidad observada y la propuesta de la release. -->\n\n");
+
+    if !changed.is_empty() {
+        section.push_str("### Cambiado\n\n");
+        section.push_str(&changed.join("\n"));
+        section.push_str("\n\n");
+    }
+    if !added.is_empty() {
+        section.push_str("### Añadido\n\n");
+        section.push_str(&added.join("\n"));
+        section.push_str("\n\n");
+    }
+    if !fixed.is_empty() {
+        section.push_str("### Corregido\n\n");
+        section.push_str(&fixed.join("\n"));
+        section.push_str("\n\n");
+    }
+    if !breaking.is_empty() {
+        section.push_str("### Notas de release\n\n");
+        section.push_str(&breaking.join("\n"));
+        section.push_str("\n\n");
+    }
+
+    // Insertar la sección en el CHANGELOG (después del TOC, antes de la primera sección)
+    let changelog_path = Path::new("CHANGELOG.md");
+    let text = std::fs::read_to_string(changelog_path)?;
+
+    // Insertar después de la tabla de contenidos (línea "## Tabla de contenidos")
+    let toc_end = text
+        .find("## Tabla de contenidos")
+        .ok_or_else(|| anyhow::anyhow!("no se encontró la tabla de contenidos del CHANGELOG"))?;
+
+    // Buscar el final del TOC: la primera "## [" que sigue
+    let after_toc = &text[toc_end..];
+    let toc_close = after_toc
+        .find("\n## [")
+        .ok_or_else(|| anyhow::anyhow!("no se encontró el inicio de la primera sección del CHANGELOG"))?;
+
+    let insert_pos = toc_end + toc_close + 1; // posición del "\n" antes de "## ["
+    let mut new_text = text[..insert_pos].to_string();
+    new_text.push('\n');
+    new_text.push_str(&section);
+    new_text.push_str(&text[insert_pos..]);
+
+    // Añadir entrada al TOC (después del encabezado "## Tabla de contenidos")
+    let toc_marker = "## Tabla de contenidos\n\n";
+    let toc_pos = new_text
+        .find(toc_marker)
+        .ok_or_else(|| anyhow::anyhow!("no se encontró el marcador del TOC"))?
+        + toc_marker.len();
+    let toc_entry = format!("- [{} — {}](#{})\n", version, date, slug(version, &date));
+    let mut result = new_text[..toc_pos].to_string();
+    result.push_str(&toc_entry);
+    result.push_str(&new_text[toc_pos..]);
+
+    // Añadir definición de enlace al final del archivo
+    let link = format!("[{}]: https://github.com/{}/compare/v{}...v{}\n", version, GITHUB_REPO, last, version);
+    if !result.contains(&format!("[{}]: ", version)) {
+        result = result.trim_end().to_string();
+        result.push('\n');
+        result.push_str(&link);
+    }
+
+    std::fs::write(changelog_path, result)?;
+    Ok(())
+}
+
+/// Extrae la primera línea del bloque "Resumen de cambios:" del cuerpo del commit.
+fn extract_resumen_cambios(body: &str) -> Option<String> {
+    for line in body.lines() {
+        if line.trim_start().starts_with("Resumen de cambios") {
+            // La primera bullet después del header
+            for bullet in body.lines().skip_while(|l| !l.trim_start().starts_with("Resumen de cambios")) {
+                let bullet = bullet.trim_start();
+                if bullet.starts_with("- ") || bullet.starts_with("* ") {
+                    return Some(bullet.trim_start_matches(|c| c == '-' || c == '*' || c == ' ').to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parsea el tipo de commit y si es breaking change del subject.
+fn parse_commit_header(subject: &str) -> (String, bool) {
+    // feat(scope)!: ... o feat!: ...
+    let re = Regex::new(r"^(\w+)(\([^)]+\))?!?:.").unwrap();
+    if let Some(caps) = re.captures(subject) {
+        let tipo = caps[1].to_string();
+        let has_bang = subject.contains("!:");
+        let has_breaking_footer = subject.contains("BREAKING CHANGE");
+        return (tipo, has_bang || has_breaking_footer);
+    }
+    ("chore".to_string(), false)
+}
+
+/// Formatea la fecha actual como YYYY-MM-DD usando el comando `date`.
+fn today_iso() -> String {
+    let output = std::process::Command::new("date")
+        .arg("+%Y-%m-%d")
+        .output();
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                return s.trim().to_string();
+            }
+        }
+    }
+    // Fallback: obtener de git (último commit)
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%ad", "--date=format:%Y-%m-%d"])
+        .output()
+    {
+        if out.status.success() {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                return s.trim().to_string();
+            }
+        }
+    }
+    "0000-00-00".to_string()
+}
+
+/// Genera el slug de anclaje para el TOC (lowercase, sin puntos/special).
+fn slug(version: &str, date: &str) -> String {
+    let v = version.replace('.', "");
+    let d = date.replace('-', "");
+    format!("{}-{}", v, d)
+}
+
+fn check_changelog() -> Result<()> {
+    let version = get_version()?;
+    let text = std::fs::read_to_string("CHANGELOG.md")?;
+    let marker = format!("## [{}]", version);
+    for line in text.lines() {
+        if line.starts_with(&marker) {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("no se encontró la sección [{}] en CHANGELOG.md", version)
 }
 
 fn parse_macos_sha256(sums_text: &str, version: &str) -> Result<String> {

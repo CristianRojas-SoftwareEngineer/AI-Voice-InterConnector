@@ -23,10 +23,21 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
 
 - No hay hallazgos Bloqueantes ni Mayores abiertos (criterios de
   aceptación del release; ver `docs/GOAL.md` §"Criterios de Aceptación").
-- `CHANGELOG.md` tiene la sección de la versión a publicar cortada (no
-  "No publicado"), con las entradas reales de esa versión. **El job de release
-  falla si no encuentra la sección `[X.Y.Z]`** (X.Y.Z = tag sin la `v`), así que
-  este corte es obligatorio antes de taggear.
+- `CHANGELOG.md` tiene la sección `## [X.Y.Z]` de la versión a publicar (no
+  "No publicado"). **El job `publish-release` falla si no encuentra la sección
+  `[X.Y.Z]`** (X.Y.Z = tag sin la `v`), así que este corte es obligatorio antes
+  de taggear. Genera el borrador atómicamente con:
+  ```bash
+  cargo run -p xtask -- release X.Y.Z
+  ```
+  Este comando bumpea la versión en `src/main.rs`, `Cargo.toml`, `Cargo.lock` y
+  `tests/golden/cli_version.json`, e inserta en `CHANGELOG.md` la sección nueva
+  con su entrada en la tabla de contenidos y su definición de enlace al final,
+  pre-rellenada desde `git log` agrupada por tipo de commit. Cierra los marcadores
+  `TODO: curar` (párrafo introductorio y bullets), commitea con
+  `conventional-commits` y luego crea el tag. El job `validate-changelog`
+  (`cargo run -p xtask -- changelog --check`) verifica en CI que la sección
+  existe antes de los builds.
 - `SOURCE-OFFER.md` (oferta de fuente GPLv3 §6, viaja dentro de los 4
   artefactos) está regenerado para la versión a publicar: tras el bump de
   `VERSION` (`src/main.rs`/`Cargo.toml`), correr `cargo run -p xtask -- source-offer >
@@ -47,7 +58,9 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
   `build-darwin-arm64`) declaran `requires` sobre la triple puerta de tests
   (`test-linux`, `test-windows`, `test-macos`) **más** los tres smoke-tests de
   instaladores (`test-installer-linux`, `test-installer-windows`,
-  `test-installer-macos`) **más** `coverage` y `validate-licenses`.
+  `test-installer-macos`) **más** `coverage`, `validate-licenses` y `validate-changelog`.
+  `validate-changelog` (job nuevo) verifica `cargo run -p xtask -- changelog --check`
+  antes de los builds, evitando el fallo silencioso de `publish-release`.
   Si cualquiera de esas puertas falla en el pipeline del tag, los builds no llegan a ejecutarse. Correr la suite en local antes de
   taggear sigue siendo la única manera de anticipar ese resultado.
 - **Revisiones fijadas de los modelos auditadas**: los modelos Qwen3-TTS y opus-mt
@@ -77,8 +90,13 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
 ## 1. Corte: crear y publicar el tag
 
 ```bash
+cargo run -p xtask -- release X.Y.Z
+# → cura los TODO: curar del CHANGELOG
+# → cargo test --all
+git add -A
+git commit -m "release: vX.Y.Z"  # conventional-commits
 git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
+git push origin main --tags
 ```
 
 El push del tag dispara el workflow `build-all` en CircleCI sobre ese commit:
