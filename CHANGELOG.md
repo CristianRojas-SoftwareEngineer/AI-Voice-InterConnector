@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.15.1 — 2026-08-27](#0151-20260827)
 - [0.15.0 — 2026-08-27](#0150-20260827)
 - [0.14.0 — 2026-08-27](#0140-20260827)
 - [0.13.0 — 2026-08-27](#0130--2026-08-27)
@@ -44,6 +45,16 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
 
+
+
+## [0.15.1] — 2026-08-27
+
+El `cargo xtask release` anterior mutaba antes de validar el rango, dejando el working tree a medio bumpear cuando el rango estaba vacío. Este patch hace el corte atómico en ejecución —pre-valida árbol limpio y `v{last}..HEAD` antes de tocar archivos— y refina la skill `/release` para ser descubrible pero exigir confirmación explícita antes de `tag/push`.
+
+### Corregido
+
+- `crates/xtask/src/main.rs`: pre-validación atómica en `Commands::Release` que aborta sin mutar si el árbol está sucio o el rango `v{last}..HEAD` está vacío.
+- `.claude/skills/release/SKILL.md`: descripción ampliada para descubrimiento ante `pipeline de tag fallido` y gate de confirmación explícita antes de bump/tag/push.
 
 ## [0.15.0] — 2026-08-27
 
@@ -1150,3 +1161,4 @@ estado con el que nace el producto.
 [0.1.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.1.0
 [0.14.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.12.0...v0.14.0
 [0.15.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.14.0...v0.15.0
+[0.15.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.0...v0.15.1

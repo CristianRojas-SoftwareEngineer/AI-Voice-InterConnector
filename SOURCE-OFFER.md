@@ -1,14 +1,14 @@
 # Oferta de código fuente (GPLv3 §6)
 
-**AI Voice InterConnector 0.15.0** se distribuye bajo la licencia
+**AI Voice InterConnector 0.15.1** se distribuye bajo la licencia
 **GPL-3.0-or-later** (ver `LICENSE`). Conforme a la sección 6 de la GPLv3,
 este binario va acompañado de una oferta de acceso al código fuente completo
 correspondiente a esta versión exacta:
 
 - **Código fuente (tarball del tag):**
-  <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/archive/refs/tags/v0.15.0.tar.gz>
-- **Release v0.15.0 (artefactos y notas):**
-  <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.15.0>
+  <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/archive/refs/tags/v0.15.1.tar.gz>
+- **Release v0.15.1 (artefactos y notas):**
+  <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.15.1>
 - **Repositorio:** <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector>
 
 Las atribuciones de las dependencias redistribuidas están en
