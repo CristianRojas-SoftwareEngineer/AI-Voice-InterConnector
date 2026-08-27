@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.14.0 — 2026-08-27](#0140-20260827)
 - [0.13.0 — 2026-08-27](#0130--2026-08-27)
 - [0.12.0 — 2026-08-27](#0120--2026-08-27)
 - [0.11.3 — 2026-08-26](#0113--2026-08-26)
@@ -40,6 +41,34 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+
+## [0.14.0] — 2026-08-27
+
+Incorporación del subcomando `cargo xtask release X.Y.Z` que une atómicamente el
+bump de versión (src/main.rs, Cargo.toml, Cargo.lock, cli_version.json) con el
+corte del borrador de CHANGELOG.md, pre-rellenado desde `git log` y dejado con
+marcadores `TODO: curar` para que el humano cierre la narrativa editorial sin
+reescribir desde cero. Añadido el job `validate-changelog` en CircleCI como
+defensa temprana ante un tag creado sin su sección de CHANGELOG.
+
+### Añadido
+
+- `crates/xtask/src/main.rs`: subcomando `release X.Y.Z` con `bump_version`
+  (regex dirigido, conserva el patrón de `get_version()`) y `scaffold_changelog`
+  (último tag vía `git describe`, commits con `git log --pretty=format` y cuerpo
+  parseado para extraer `Resumen de cambios:`; sección `## [X.Y.Z] — fecha`,
+  entrada en el TOC y definición de enlace al final).
+- `crates/xtask/src/main.rs`: subcomando `changelog --check` que falla con
+  mensaje explícito si falta la sección `## [X.Y.Z]` para la versión de
+  `Cargo.toml`.
+
+### Cambiado
+
+- `docs/RELEASING.md`: el prerequisito de corte manual del CHANGELOG se
+  reemplaza por `cargo run -p xtask -- release X.Y.Z`.
+- `.circleci/config.yml`: job `validate-changelog` requerido por los 4 builds;
+  el `awk` de `publish-release` se mantiene como segunda barrera.
 
 ## [0.13.0] — 2026-08-27
 
@@ -1108,3 +1137,4 @@ estado con el que nace el producto.
 [0.2.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.2.0
 [0.1.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.1.0
+[0.14.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.12.0...v0.14.0
