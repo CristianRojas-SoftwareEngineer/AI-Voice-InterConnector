@@ -12,10 +12,9 @@ voices/*
 AppDir/
 ai-voice-interconnector.png
 *.spec
-# Config de Claude Code: ignorar el contenido de .claude/ (skills, sesión, etc.),
-# pero versionar el prompt de continuidad.
+# Config de Claude Code: ignorar todo el contenido de .claude/ (incluido el prompt
+# de continuidad — se genera localmente y no se versiona).
 .claude/*
-!.claude/continuity-prompt.md
 __pycache__/
 *.pyc
 .pytest_cache/
