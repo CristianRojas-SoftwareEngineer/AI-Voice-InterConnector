@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.15.0 — 2026-08-27](#0150-20260827)
 - [0.14.0 — 2026-08-27](#0140-20260827)
 - [0.13.0 — 2026-08-27](#0130--2026-08-27)
 - [0.12.0 — 2026-08-27](#0120--2026-08-27)
@@ -42,6 +43,16 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
+
+
+## [0.15.0] — 2026-08-27
+
+El corte manual exigía tres acciones desacopladas (bump, regeneración de `SOURCE-OFFER.md` y `push --tags`) que se olvidaban y forzaban re-tagueos (pipelines `v0.13.0`/`v0.14.0` fallidos). Esta minor vuelve atómico el bump dentro de `cargo xtask release` —incluida la oferta GPLv3— y guía el flujo vía skill `/release`, eliminando la causa raíz de los re-tagueos.
+
+### Añadido
+
+- `crates/xtask/src/main.rs`: `bump_version` ahora escribe `SOURCE-OFFER.md` vía `render_source_offer` en la misma transacción del bump; `release` lista el artefacto entre los generados.
+- `.claude/skills/release/SKILL.md`: skill orquestadora que valida `X.Y.Z`, ejecuta `xtask release`, guía la curación de `TODO`, valida gates y ejecuta `commit`/`tag`/`push --tags`.
 
 ## [0.14.0] — 2026-08-27
 
@@ -1138,3 +1149,4 @@ estado con el que nace el producto.
 [0.1.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.1.0
 [0.14.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.12.0...v0.14.0
+[0.15.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.14.0...v0.15.0
