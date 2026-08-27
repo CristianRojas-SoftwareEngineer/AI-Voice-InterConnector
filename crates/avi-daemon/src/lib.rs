@@ -35,6 +35,35 @@ const STT_MODEL_DIR: &str = "models/parakeet-tdt-v3";
 /// (el contrato de /voices/precompute no carriba idioma).
 const DEFAULT_CLONE_LANGUAGE: &str = "es";
 
+/// Estado de pre-calentamiento (warmup) del motor TTS. Desacoplado del readiness:
+/// el daemon sirve en cuanto enlaza; `warm` refleja si el modelo ya está caliente.
+/// Transiciones: `Warming` → `Warm` (éxito) o `Warming` → `Failed(causa)` (fallo,
+/// que degrada pero no derriba el daemon: la primera petición paga cold-start).
+pub enum WarmState {
+    Warming,
+    Warm,
+    Failed(String),
+}
+
+impl WarmState {
+    /// Etiqueta pública para el campo `warm` de `/health`.
+    fn label(&self) -> &'static str {
+        match self {
+            WarmState::Warming => "warming",
+            WarmState::Warm => "warm",
+            WarmState::Failed(_) => "warm_failed",
+        }
+    }
+
+    /// Causa del fallo de warmup, si aplica (mapea al campo `warm_error`).
+    fn error(&self) -> Option<String> {
+        match self {
+            WarmState::Failed(e) => Some(e.clone()),
+            _ => None,
+        }
+    }
+}
+
 /// Estado compartido del daemon
 pub struct DaemonState {
     /// Lock de serialización de síntesis (una a la vez)
@@ -48,6 +77,16 @@ pub struct DaemonState {
     /// la duración, por lo que `transcribe_handler` transcribe de una sola vez.
     #[cfg(feature = "native-stt")]
     pub stt_engine: ParakeetEngine,
+    /// Estado de warmup del motor TTS, con interior mutability seguro entre hilos:
+    /// el warmup corre en un `spawn_blocking` de segundo plano y actualiza este
+    /// campo; `/health` lo lee. Inicializa en `Warming`.
+    pub warm: std::sync::RwLock<WarmState>,
+    /// Señal de cierre compartida: `shutdown_handler` notifica y `run_daemon_server`
+    /// la observa para el graceful shutdown. Evita `process::exit` dentro del
+    /// runtime tokio de `axum::serve`, que no termina fiablemente el proceso en
+    /// Windows (causa raíz del cuelgue de los E2E). Al cerrar de forma natural se
+    /// ejecutan los `Drop` (matando al `Qwen3TtsResident` y `qwen_tts.exe`).
+    pub shutdown_notify: Arc<tokio::sync::Notify>,
 }
 
 impl DaemonState {
@@ -70,7 +109,25 @@ impl DaemonState {
             tts_engine: Qwen3TtsEngine::new(None),
             #[cfg(feature = "native-stt")]
             stt_engine,
+            warm: std::sync::RwLock::new(WarmState::Warming),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         })
+    }
+
+    /// Marca el warmup como completado con éxito (`Warming` → `Warm`).
+    pub fn set_warm(&self) {
+        *self.warm.write().unwrap() = WarmState::Warm;
+    }
+
+    /// Marca el warmup como fallido conservando la causa (`Warming` → `Failed`).
+    pub fn set_warm_failed(&self, causa: String) {
+        *self.warm.write().unwrap() = WarmState::Failed(causa);
+    }
+
+    /// Instantánea del estado de warmup: `(etiqueta, causa-de-fallo opcional)`.
+    pub fn warm_snapshot(&self) -> (&'static str, Option<String>) {
+        let guard = self.warm.read().unwrap();
+        (guard.label(), guard.error())
     }
 }
 
@@ -93,12 +150,27 @@ async fn emit_ndjson(tx: &tokio::sync::mpsc::Sender<String>, event: Value) {
 
 // ─── Handlers ────────────────────────────────────────────────────────────
 
-/// GET /health — handshake con schema_version estricto
-async fn health_handler() -> Json<Value> {
-    Json(with_sv(json!({
-        "status": "healthy",
-        "engine": "rust_native"
-    })))
+/// Construye el cuerpo de `/health` a partir del estado de warmup. Función pura
+/// (testeable sin daemon): emite `{status:"ready", warm, engine}` y añade
+/// `warm_error` solo cuando el warmup falló.
+fn health_body(warm_label: &str, warm_error: Option<String>) -> Value {
+    let mut body = json!({
+        "status": "ready",
+        "warm": warm_label,
+        "engine": "rust_native",
+    });
+    if let Some(err) = warm_error {
+        body["warm_error"] = Value::String(err);
+    }
+    body
+}
+
+/// GET /health — readiness (enlazado + motor construido) con estado de warmup.
+/// Reporta `{status:"ready", warm, engine}` leyendo el estado compartido; readiness
+/// es inmediato, `warm` refleja el pre-calentamiento en curso o su resultado.
+async fn health_handler(State(state): State<SharedState>) -> Json<Value> {
+    let (label, error) = state.warm_snapshot();
+    Json(with_sv(health_body(label, error)))
 }
 
 /// GET /voices — listar voces registradas
@@ -443,14 +515,30 @@ fn resolve_stt_language(token: &str) -> &str {
     }
 }
 
-/// POST /shutdown — apagar el daemon gracefully
-async fn shutdown_handler() -> impl IntoResponse {
-    // Programar el shutdown en un task separado (da tiempo a enviar la respuesta)
-    tokio::spawn(async {
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        std::process::exit(0);
-    });
-
+/// POST /shutdown — apagar el daemon gracefully.
+///
+/// Notifica `state.shutdown_notify` en vez de llamar a `process::exit`: `exit`
+/// dentro del runtime tokio de `axum::serve` no termina fiablemente el proceso
+/// en Windows (la task async donde se dispara puede no completarse), dejando el
+/// daemon —y con él el `Qwen3TtsResident` más su hijo `qwen_tts.exe`— vivos,
+/// causa raíz del cuelgue de los E2E de `cli_golden`. Al notificar,
+/// `with_graceful_shutdown` cierra el runtime de forma natural y corre los
+/// `Drop` del `Arc<DaemonState>` compartido (que matan al residente) antes del
+/// exit.
+async fn shutdown_handler(State(state): State<SharedState>) -> impl IntoResponse {
+    // 1) Detener el residente qwen_tts. `Qwen3TtsEngine::shutdown` es NO BLOQUEANTE:
+    //    mata `qwen_tts.exe` por PID (sin tomar el `Mutex<resident>` que el hilo
+    //    `spawn_blocking(warmup)` retiene durante el spawn + healthcheck + síntesis,
+    //    causa raíz del deadlock anterior) y libera el residente con `try_lock`.
+    //    Se mantiene sincrónico y breve para que las conexiones HTTP keep-alive del
+    //    residente se liberen antes de notificar el cierre del servidor.
+    state.tts_engine.shutdown();
+    // 2) Señalar el graceful shutdown del `serve` de `run_daemon_server`. Al
+    //    terminar el residente (paso 1), `serve().await` retorna y el runtime
+    //    cierra naturalmente, ejecutando los `Drop` del `Arc<DaemonState>` (que
+    //    hacen `kill+wait` sobre el `child` ya terminado) y dejando sin padre a
+    //    `qwen_tts` si quedaba vivo.
+    state.shutdown_notify.notify_one();
     Json(with_sv(json!({ "status": "shutting_down" })))
 }
 
@@ -468,7 +556,9 @@ pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
         .route("/synthesize", post(synthesize_handler))
         .route("/shutdown", post(shutdown_handler));
     // `/transcribe` solo existe con el motor STT compilado (`native-stt`); sin el
-    // feature el daemon expone el resto de rutas sin ONNX Runtime.
+    // feature el daemon expone el resto de rutas sin ONNX Runtime. El `#[cfg]` se
+    // aplica a un método builder distinto (no como argumento anidado, que el macro
+    // de axum 0.7 no parsea en Rust 2021/Windows → error E0061).
     #[cfg(feature = "native-stt")]
     let router = router.route("/transcribe", post(transcribe_handler));
     router.with_state(state)
@@ -481,10 +571,12 @@ pub fn build_router() -> Router {
     build_router_with_state(state)
 }
 
-/// Warmup del motor TTS de arranque (Tarea 3).
+/// Warmup del motor TTS de pre-calentamiento.
 ///
-/// Precarga la voz `default`→preset `ryan` en el motor residente, para que el
-/// daemon ya tenga el modelo caliente antes de aceptar peticiones.
+/// Precarga la voz `default`→preset `ryan` en el motor residente para que el
+/// modelo ya esté caliente. Corre en segundo plano tras el bind (no antes): es
+/// una optimización, no un requisito de correctitud, y un fallo no aborta el
+/// arranque —la primera petición paga el cold-start.
 ///
 /// Riesgo heredado (R2): el residente enlaza en `INADDR_ANY`
 /// (`avi-tts/src/lib.rs:746-750`); el warmup lo mantiene vivo, extendiendo esa
@@ -507,24 +599,87 @@ pub fn warmup_tts(state: &DaemonState) -> anyhow::Result<()> {
             &GenerationOptions::produccion(),
             Some(&tmp),
         )
-        .map_err(|e| anyhow::anyhow!("Warmup TTS falló; abortando arranque del daemon: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e))?;
     let _ = std::fs::remove_file(&tmp);
     Ok(())
 }
 
 /// Inicia el daemon nativo escuchando en `addr`. Construye el estado (propagando
-/// errores de inicialización de motores), ejecuta el warmup TTS, y luego enlaza
-/// el listener y sirve. El warmup ocurre ANTES del bind para que el modelo ya
-/// esté caliente cuando se empiecen a aceptar peticiones.
+/// errores de inicialización de motores), enlaza el listener y comienza a servir
+/// de inmediato; el warmup TTS corre en segundo plano (`spawn_blocking`) sin
+/// bloquear el bind. Readiness (enlazado + motor construido) queda así desacoplado
+/// del pre-calentamiento: un warmup fallido degrada —pero no derriba— el daemon.
 pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
     let state = Arc::new(DaemonState::new()?);
+    let app = build_router_with_state(state.clone());
 
-    // T3: warmup TTS antes del bind.
-    warmup_tts(&state)?;
-
-    let app = build_router_with_state(state);
     let listener = TcpListener::bind(addr).await?;
     println!("Daemon nativo escuchando en http://{}", addr);
-    axum::serve(listener, app).await?;
+
+    // Warmup en segundo plano: `synthesize` es síncrono, por lo que corre en
+    // `spawn_blocking` para no bloquear el runtime async del servidor. Su resultado
+    // actualiza el estado `warm`; un fallo no aborta el arranque.
+    let warm_state = state.clone();
+    tokio::task::spawn_blocking(move || match warmup_tts(&warm_state) {
+        Ok(()) => warm_state.set_warm(),
+        Err(e) => warm_state.set_warm_failed(e.to_string()),
+    });
+
+    // El shutdown se dispara desde `shutdown_handler`: `tts_engine.shutdown()`
+    // mata al residente qwen_tts (liberando sus conexiones HTTP keep-alive) y
+    // luego `notify_one()` despierta esta future. Al no quedar conexiones vivas
+    // del residente, `axum::serve` retorna de forma natural y el runtime termina
+    // cerrando los `Drop` del `Arc<DaemonState>` compartido → cierre limpio sin
+    // `process::exit` (que no termina fiablemente el proceso en Windows cuando
+    // el runtime está dentro de `axum::serve`).
+    let shutdown = async move {
+        state.shutdown_notify.notified().await;
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Warming` → `Warm`: la etiqueta cambia y no hay causa de error.
+    #[test]
+    fn warm_state_transiciona_a_warm() {
+        let warm = std::sync::RwLock::new(WarmState::Warming);
+        assert_eq!(warm.read().unwrap().label(), "warming");
+        *warm.write().unwrap() = WarmState::Warm;
+        assert_eq!(warm.read().unwrap().label(), "warm");
+        assert!(warm.read().unwrap().error().is_none());
+    }
+
+    /// `Warming` → `Failed(causa)`: la etiqueta es `warm_failed` y conserva la causa.
+    #[test]
+    fn warm_state_transiciona_a_failed_con_causa() {
+        let warm = std::sync::RwLock::new(WarmState::Warming);
+        *warm.write().unwrap() = WarmState::Failed("motor caído".to_string());
+        let guard = warm.read().unwrap();
+        assert_eq!(guard.label(), "warm_failed");
+        assert_eq!(guard.error().as_deref(), Some("motor caído"));
+    }
+
+    /// `health_body` en warming: `status:ready`, sin `warm_error`.
+    #[test]
+    fn health_body_warming_sin_warm_error() {
+        let body = health_body("warming", None);
+        assert_eq!(body["status"], "ready");
+        assert_eq!(body["warm"], "warming");
+        assert_eq!(body["engine"], "rust_native");
+        assert!(body.get("warm_error").is_none());
+    }
+
+    /// `health_body` en fallo: incluye `warm_error` con la causa.
+    #[test]
+    fn health_body_failed_incluye_warm_error() {
+        let body = health_body("warm_failed", Some("boom".to_string()));
+        assert_eq!(body["warm"], "warm_failed");
+        assert_eq!(body["warm_error"], "boom");
+    }
 }

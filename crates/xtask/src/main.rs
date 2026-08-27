@@ -254,7 +254,7 @@ fn diff_lines(a: &str, b: &str) -> Vec<String> {
         match line {
             diff::Result::Left(l) => out.push(format!("-{}", l)),
             diff::Result::Right(l) => out.push(format!("+{}", l)),
-            diff::Result::Both(_, _) => {}
+            diff::Result::Both => {}
         }
     }
     out
@@ -265,7 +265,7 @@ mod diff {
     pub enum Result<'a> {
         Left(&'a str),
         Right(&'a str),
-        Both(&'a str, &'a str),
+        Both,
     }
     pub fn lines<'a>(a: &'a str, b: &'a str) -> Vec<Result<'a>> {
         let a_lines: Vec<&str> = a.lines().collect();
@@ -275,7 +275,7 @@ mod diff {
         let mut j = 0;
         while i < a_lines.len() && j < b_lines.len() {
             if a_lines[i] == b_lines[j] {
-                res.push(Result::Both(a_lines[i], b_lines[j]));
+                res.push(Result::Both);
                 i += 1;
                 j += 1;
             } else {
@@ -322,7 +322,7 @@ fn cargo_lock_packages(text: &str) -> std::collections::HashSet<String> {
 
 fn licenses_doc_packages(text: &str) -> std::collections::HashSet<String> {
     let header = "| Paquete | Versión |";
-    let mut lines = text.lines();
+    let lines = text.lines();
     let mut start = None;
     for (idx, line) in lines.clone().enumerate() {
         if line.starts_with(header) {
@@ -358,16 +358,6 @@ fn check_licenses() -> Result<(Vec<String>, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sha(label: &str) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        // Use actual sha256 for test stability: use a simple deterministic hex (not real sha256 but for test we need 64 hex)
-        // Instead compute real sha256 via a small helper
-        let mut hasher = DefaultHasher::new();
-        label.hash(&mut hasher);
-        format!("{:064x}", hasher.finish())
-    }
 
     fn sample_sums() -> String {
         let macos = "a".repeat(64);

@@ -1,5 +1,6 @@
 {
   "schema_version": "3",
-  "status": "healthy",
+  "status": "ready",
+  "warm": "warming",
   "engine": "rust_native"
 }

@@ -1,6 +1,6 @@
 # Daemon Mode
 
-El daemon nativo (Rust, Axum) mantiene los motores calientes entre invocaciones del CLI: el peso de la voz `default` se precarga al arranque y las síntesis posteriores evitan la carga fría del modelo.
+El daemon nativo (Rust, Axum) mantiene los motores calientes entre invocaciones del CLI: sirve en cuanto enlaza el puerto y el peso de la voz `default` se precarga en segundo plano, sin bloquear el arranque; las peticiones que lleguen antes de que el motor esté caliente pagan carga fría.
 
 ## Tabla de contenidos
 
@@ -23,7 +23,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 ```
 
 - **Servidor**: Axum sobre `127.0.0.1:8765` (loopback, puerto fijo por diseño).
-- **Warmup**: precarga del preset `ryan` (voz `default`) al arrancar.
+- **Warmup**: precarga del preset `ryan` (voz `default`) en segundo plano (`spawn_blocking`), tras el `bind` del puerto; no bloquea el arranque y el readiness es inmediato al enlazar. Un warmup fallido no derriba el daemon: sigue sirviendo.
 - **Serialización**: `synthesis_lock` — una síntesis a la vez; el resto espera.
 - **STT**: audio largo (>15 s) se segmenta con VAD Silero antes de transcribir.
 
@@ -31,7 +31,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 
 | Ruta | Método | Función |
 |---|---|---|
-| `/health` | GET | Estado + handshake de `schema_version` |
+| `/health` | GET | `status:"ready"` + handshake de `schema_version` + estado de warmup `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla) |
 | `/synthesize` | POST | Síntesis con progreso streaming NDJSON, evento final `result` (`audio_b64`, WAV 24 kHz) |
 | `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), VAD para clips largos |
 | `/voices` | GET | Voces registradas |
@@ -40,12 +40,14 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 
 El handshake es estricto: un daemon de otra `schema_version` se trata como no utilizable.
 
+Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediato en cuanto el puerto está enlazado y el motor construido; warm indica si el precalentamiento en segundo plano ya terminó.
+
 ## Comandos del Daemon
 
 ```bash
 ai-voice-interconnector daemon start     # inicio en segundo plano (spawn_background + daemon.pid)
 ai-voice-interconnector daemon serve     # primer plano
-ai-voice-interconnector daemon status    # GET /health → running/stopped
+ai-voice-interconnector daemon status    # GET /health → running/stopped, además del estado `warm` para diagnóstico
 ai-voice-interconnector daemon stop      # POST /shutdown (borra daemon.pid)
 ai-voice-interconnector daemon restart   # stop + spawn_background automático
 ```

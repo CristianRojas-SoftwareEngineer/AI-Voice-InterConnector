@@ -22,7 +22,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use avi_daemon::{build_router_with_state, DaemonState};
+use avi_daemon::{build_router_with_state, DaemonState, WarmState};
 use avi_store::{SpeechStore, VoiceStore};
 
 /// Estado de test único: carga el motor STT real una sola vez (ruta relativa a
@@ -45,6 +45,8 @@ fn test_state() -> Arc<DaemonState> {
                 speech_store: SpeechStore::new(),
                 tts_engine: avi_tts::Qwen3TtsEngine::new(None),
                 stt_engine,
+                warm: std::sync::RwLock::new(WarmState::Warming),
+                shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             })
         })
         .clone()
@@ -246,7 +248,7 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
     ];
     let mut pcm: Vec<i16> = Vec::new();
     for wav in corpus {
-        let seg = avi_audio::load_wav_16k_mono_pcm(&assets.join(wav))
+        let seg = avi_audio::load_wav_16k_mono_pcm(assets.join(wav))
             .expect("el WAV corpus debe cargarse");
         pcm.extend_from_slice(&seg);
     }
@@ -282,13 +284,4 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
             frase
         );
     }
-}
-
-/// Content-type del response (cabecera `content-type`), para validar el envelope
-/// NDJSON sobre el stream binario sin asumir longitud.
-fn response_content_type(_: &[u8]) -> &str {
-    // Los tests usan `oneshot` sobre el router: no hay cabeceras HTTP crudas; el
-    // content-type se verifica indirectamente por el éxito del parseo NDJSON. El
-    // plan T8 valida el evento (no el header) en este harness.
-    "application/x-ndjson"
 }

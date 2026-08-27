@@ -35,16 +35,43 @@ fn fixture(name: &str) -> Value {
 }
 
 /// Ejecuta el binario con `args` y devuelve (código de salida, stdout parseado a JSON).
+///
+/// Usa un *tempfile* (`Stdio::File`) en vez de `Command::output()` (que captura `stdout`
+/// vía un **pipe** con `bInheritHandle=TRUE`). El comando `daemon start` lanza el daemon
+/// hijo (y este, a su vez, `qwen_tts.exe` vendido/precompilado) que heredan el pipe del
+/// test: `output()` no retorna hasta que **todos** los holders del write-end lo cierran —
+/// es decir, hasta el graceful shutdown del daemon (~10 s) — colgando el E2E en timeout
+/// (exit 124). El fix de `spawn_background` (`CREATE_NO_HANDLE_INHERIT` + `Stdio::null`)
+/// es necesario pero insuficiente: el binario vendido no respeta `creation_flags` y Rust
+/// std decide `bInheritHandles` de forma independiente al flag. Al redirigir `stdout` a
+/// un tempfile **no hay pipe** para heredar: `spawn()`+`wait()` retorna en cuanto el CLI
+/// termina (~1.3 s tras `daemon start` con el bind-first).
+///
+/// Patrón equivalente al del legacy Python: el daemon no comparte I/O (pipe) con el
+/// proceso que lo lanza.
 fn run_json(args: &[&str]) -> (i32, Value) {
-    let output = Command::new(BIN)
+    let tmp = std::env::temp_dir().join(format!(
+        "cli_golden_{}_{}.out",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    ));
+    let mut child = Command::new(BIN)
         .args(args)
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::fs::File::create(&tmp).expect("tempfile creable"))
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .expect("el binario debe ejecutarse");
-    let code = output
-        .status
+    let status = child.wait().expect("el proceso debe terminar");
+    let stdout = std::fs::read_to_string(&tmp)
+        .unwrap_or_else(|e| panic!("no se pudo leer tempfile {}: {}", tmp.display(), e));
+    let _ = std::fs::remove_file(&tmp);
+    let code = status
         .code()
         .expect("el proceso debe terminar con un código");
-    let stdout = String::from_utf8(output.stdout).expect("stdout debe ser UTF-8");
     let json: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
     (code, json)
@@ -246,7 +273,7 @@ mod tts {
     #[cfg(feature = "native-stt")]
     use avi_core::engine::SttEngine;
     use std::path::Path;
-    use std::sync::{Mutex, Once};
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Ruta del binario del motor Qwen3-TTS (override o vendored).
@@ -757,6 +784,11 @@ mod tts {
 
     #[test]
     fn voice_clone_audio_inexistente_sale_con_3() {
+        // Serializa con el resto de la suite (patrón de los demás `voice_clone_*`):
+        // los E2E de daemon, al apagarse, matan `qwen_tts.exe` por nombre de imagen
+        // (global), y sin este lock la síntesis de este test podría cruzarse con ese
+        // kill en paralelo y salir con un código distinto de 3.
+        let _guard = STATE_LOCK.lock().unwrap();
         if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
@@ -779,18 +811,7 @@ mod tts {
 
     // ─── daemon start/status/restart ────────────────────────────────
 
-    fn daemon_cleanup() {
-        let _ = Command::new(BIN)
-            .args(["daemon", "stop"])
-            .output();
-        // También POST directo por si stop falló
-        let _ = std::process::Command::new(BIN)
-            .args(["--json", "daemon", "status"])
-            .output();
-    }
-
     #[test]
-    #[ignore = "E2E: paga warmup real; ejecutar con --ignored en el reality check"]
     fn daemon_start_exito() {
         let _guard = STATE_LOCK.lock().unwrap();
         // Asegurar estado limpio
@@ -821,7 +842,6 @@ mod tts {
     }
 
     #[test]
-    #[ignore = "E2E: paga warmup real; ejecutar con --ignored en el reality check"]
     fn daemon_restart_rearma() {
         let _guard = STATE_LOCK.lock().unwrap();
         let _ = Command::new(BIN).args(["daemon", "stop"]).output();
@@ -847,7 +867,6 @@ mod tts {
     }
 
     #[test]
-    #[ignore = "E2E: paga warmup real; ejecutar con --ignored en el reality check"]
     fn daemon_status_running() {
         let _guard = STATE_LOCK.lock().unwrap();
         let _ = Command::new(BIN).args(["daemon", "stop"]).output();

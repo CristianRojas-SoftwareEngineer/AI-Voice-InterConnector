@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -180,7 +181,7 @@ fn resolve_binary() -> Option<PathBuf> {
 
 /// Resolución del directorio de pesos por capas (decisión e1):
 /// 1. `QWEN3_TTS_MODEL_DIR`; 2. directorio hermano del binario
-/// (`<dir del bin>/qwen3-tts-0.6b`); 3. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b`.
+///    (`<dir del bin>/qwen3-tts-0.6b`); 3. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b`.
 fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("QWEN3_TTS_MODEL_DIR") {
         let p = PathBuf::from(d);
@@ -246,6 +247,24 @@ pub struct Qwen3TtsEngine {
     pub model_dir: Option<PathBuf>,
     pub base_model_dir: Option<PathBuf>,
     resident: Mutex<Option<ResidentState>>,
+    /// PID del proceso `qwen_tts.exe` arrancado (0 si no hay). Se usa en `shutdown`
+    /// como señal binaria «hubo residente» (0 / no-0) para decidir si invocar el
+    /// kill, SIN tomar el `Mutex<resident>` que el hilo `spawn_blocking(warmup)`
+    /// retiene durante el spawn + `wait_health` (30 s) + síntesis HTTP (30 s).
+    resident_pid: AtomicU32,
+    /// Señal de apagado en curso. `shutdown()` la activa **antes** de matar al
+    /// residente; `synthesize_with_options` la consulta tras fallar el residente y,
+    /// si está activa, **aborta con `Err` en vez de caer al fallback de subproceso**.
+    ///
+    /// Es la pieza que cierra el apagado limpio del daemon. Sin ella, matar al
+    /// residente durante el warmup no lo detiene: la cascada de síntesis
+    /// (residente → subproceso) reacciona al fallo del residente re-lanzando OTRO
+    /// `qwen_tts.exe` por subproceso (whack-a-mole), y ese hilo `spawn_blocking`
+    /// nunca termina, por lo que el runtime de `axum::serve` no cierra y el proceso
+    /// del daemon queda colgado con `qwen_tts.exe` huérfano. Con el flag, matar al
+    /// residente hace fallar la síntesis en curso y la cascada aborta en vez de
+    /// re-spawnear: el `spawn_blocking` retorna y el runtime cierra por sí solo.
+    shutting_down: AtomicBool,
 }
 
 /// Estado del servidor residente: se indexa por voz (decisión e3) — al cambiar
@@ -266,10 +285,38 @@ impl Qwen3TtsEngine {
             model_dir,
             base_model_dir,
             resident: Mutex::new(None),
+            resident_pid: AtomicU32::new(0),
+            shutting_down: AtomicBool::new(false),
+        }
+    }
+
+    /// Detén el residente HTTP gestionado, SIN bloquear. Se llama desde
+    /// `shutdown_handler` (avi-daemon) antes de notificar el graceful shutdown.
+    ///
+    /// Orden importante: primero se activa `shutting_down`, LUEGO se mata al
+    /// residente. El flag debe estar visible antes de que muera el residente, para
+    /// que cuando la síntesis del warmup falle (por el kill) la cascada de
+    /// `synthesize_with_options` vea el flag y aborte en vez de re-lanzar un
+    /// subproceso `qwen_tts.exe` (whack-a-mole). Ese aborto es lo que permite que el
+    /// hilo `spawn_blocking(warmup)` retorne y el runtime cierre el proceso limpio.
+    ///
+    /// No bloqueante: el hilo del warmup retiene el `Mutex<resident>` durante el
+    /// spawn + `wait_health` + síntesis HTTP, así que `self.resident.lock()` se
+    /// colgaría. Por eso se mata el proceso sin tomar el lock y el drop del residente
+    /// se hace best-effort con `try_lock` (si el warmup lo tiene, no esperamos: el
+    /// proceso ya está muerto y su `Drop` recolectará el estado al liberarse).
+    pub fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Relaxed);
+        if self.resident_pid.load(Ordering::Relaxed) != 0 {
+            crate::resident::kill_resident_process();
+        }
+        if let Ok(mut guard) = self.resident.try_lock() {
+            *guard = None;
         }
     }
 
     /// Intentar la síntesis vía HTTP local (servidor manual o residente).
+    #[allow(clippy::too_many_arguments)]
     fn synthesize_via_http(
         &self,
         server_url: &str,
@@ -356,6 +403,7 @@ impl Qwen3TtsEngine {
             };
             let port = default_port();
             let spawned = resident::Qwen3TtsResident::spawn(model_dir, port, load_voice)?;
+            self.resident_pid.store(spawned.pid(), Ordering::Relaxed);
             *guard = Some(ResidentState {
                 resident: spawned,
                 voz_key,
@@ -439,10 +487,19 @@ impl TtsEngine for Qwen3TtsEngine {
         //    bug de calidad en español con tildes/eñes.
         match self.synthesize_via_residente(text, &voz, options, &path) {
             Ok(()) => return Ok(path),
-            Err(e) => eprintln!(
-                "[avi-tts] El servidor residente Qwen3-TTS falló; reintentando por subproceso: {}",
-                e
-            ),
+            Err(e) => {
+                // Si el daemon está apagándose, el fallo del residente es esperado
+                // (`shutdown()` lo mató): abortar en vez de caer al fallback evita
+                // re-lanzar un `qwen_tts.exe` por subproceso, que colgaría el cierre
+                // del daemon (whack-a-mole). Ver el campo `shutting_down`.
+                if self.shutting_down.load(Ordering::Relaxed) {
+                    return Err(anyhow!("Síntesis abortada: daemon en apagado"));
+                }
+                eprintln!(
+                    "[avi-tts] El servidor residente Qwen3-TTS falló; reintentando por subproceso: {}",
+                    e
+                );
+            }
         }
 
         // 3. Fallback subprocess con `--stdout`.
@@ -729,7 +786,7 @@ pub mod resident {
     use std::io::Write;
     #[cfg(test)]
     use std::net::TcpListener;
-    use std::process::{Child, Stdio};
+    use std::process::Child;
     use std::thread;
     use std::time::Duration;
 
@@ -775,7 +832,28 @@ pub mod resident {
             let bin = resolve_binary()
                 .ok_or_else(|| anyhow!("El binario Qwen3-TTS no está provisionado."))?;
             let mut cmd = build_resident_command(&bin, model_dir.as_ref(), port, load_voice);
-            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+            // Windows: `qwen_tts.exe` NO debe heredar handles ni abrir terminal del
+            // padre. `CREATE_NO_WINDOW (0x8)` evita la ventana de consola independiente;
+            // `CREATE_NO_HANDLE_INHERIT (0x02000000)` fuerza bInheritHandles=FALSE para
+            // que el pipe (write-end) del proceso abuelo (test CLI) no se herede. Sin
+            // esto el `Command::output()` del test se cuelga (el residente vive toda la
+            // sesión). `Stdio::null` en los 3 STD cierra la herencia de stdin/tty.
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                use std::process::Stdio;
+                cmd.stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(0x02000000 | 0x00000008);
+            }
+            #[cfg(unix)]
+            {
+                use std::process::Stdio;
+                cmd.stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+            }
             // Riesgo R2 documentado: el motor enlaza en INADDR_ANY, no en loopback.
             eprintln!(
                 "[avi-tts] Aviso: el motor Qwen3-TTS enlaza en todas las interfaces \
@@ -806,15 +884,55 @@ pub mod resident {
                 port,
             })
         }
+
+        /// PID del proceso `qwen_tts.exe` (0 si no hay). Permite matar el residente
+        /// por PID durante `shutdown` sin tomar el `Mutex<resident>` del engine,
+        /// evitando el deadlock con el warmup que lo retiene.
+        pub fn pid(&self) -> u32 {
+            self.child.as_ref().map(|c| c.id()).unwrap_or(0)
+        }
     }
 
     impl Drop for Qwen3TtsResident {
         fn drop(&mut self) {
             if let Some(mut child) = self.child.take() {
-                // Windows: TerminateProcess; Unix: SIGKILL (shutdown determinista).
+                // En el apagado del daemon `kill_resident_process` ya terminó al
+                // servidor por nombre de imagen; aquí `kill+wait` recolecta el estado
+                // del `child` (ya muerto entonces, o vivo en un drop normal).
                 let _ = child.kill();
                 let _ = child.wait();
             }
+        }
+    }
+
+    /// Mata el proceso residente del motor POR NOMBRE DE IMAGEN (`qwen_tts`), sin
+    /// tomar el `Mutex<resident>` que el `spawn_blocking(warmup)` retiene.
+    ///
+    /// No se mata por el PID de `child.id()`: el `qwen_tts` vendido desacopla su
+    /// proceso servidor real del `Child` que Rust captura (lo re-lanza/daemoniza),
+    /// de modo que `taskkill /PID <child>` retorna 0 pero deja vivo al servidor.
+    /// Matar por nombre de imagen alcanza al servidor real. El apagado limpio no
+    /// depende solo de esto: la señal `shutting_down` del engine impide que la
+    /// cascada de síntesis re-lance el proceso tras el kill (ver `Qwen3TtsEngine`).
+    pub(crate) fn kill_resident_process() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // `CREATE_NO_HANDLE_INHERIT (0x02000000)` evita heredar handles del padre
+            // (p. ej. pipes del test); `CREATE_NO_WINDOW (0x8)`, sin ventana.
+            let _ = Command::new("cmd")
+                .args(["/C", "taskkill /F /T /IM qwen_tts.exe"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(0x02000000 | 0x00000008)
+                .status();
+        }
+        #[cfg(unix)]
+        {
+            let _ = Command::new("sh")
+                .args(["-c", "pkill -9 -f 'qwen_tts.*--serve' || true"])
+                .status();
         }
     }
 
@@ -852,7 +970,6 @@ pub mod resident {
                 let Ok(mut stream) = stream else { continue };
                 let mut buf = Vec::new();
                 let mut tmp = [0u8; 8192];
-                let mut headers = String::new();
                 let content_length;
                 loop {
                     match stream.read(&mut tmp) {
@@ -861,7 +978,7 @@ pub mod resident {
                             buf.extend_from_slice(&tmp[..n]);
                             let text = String::from_utf8_lossy(&buf);
                             if let Some(end) = text.find("\r\n\r\n") {
-                                headers = text[..end].to_string();
+                                let headers = text[..end].to_string();
                                 content_length = headers
                                     .lines()
                                     .find_map(|l| {
@@ -993,12 +1110,14 @@ mod tests {
             ]
         );
 
-        let mut opts = GenerationOptions::default();
-        opts.temperature = 0.9;
-        opts.top_k = 20;
-        opts.top_p = 0.8;
-        opts.rep_penalty = 1.2;
-        opts.seed = Some(42);
+        let opts = GenerationOptions {
+            temperature: 0.9,
+            top_k: 20,
+            top_p: 0.8,
+            rep_penalty: 1.2,
+            seed: Some(42),
+            ..Default::default()
+        };
         let cmd = build_synthesis_command(
             Path::new("qwen_tts.exe"),
             Path::new("md"),
@@ -1290,9 +1409,11 @@ mod tests {
         assert_eq!(parsed["speaker"], "ryan");
         assert!(parsed.get("seed").is_none());
 
-        let mut opts = GenerationOptions::default();
-        opts.temperature = 0.9;
-        opts.seed = Some(7);
+        let opts = GenerationOptions {
+            temperature: 0.9,
+            seed: Some(7),
+            ..Default::default()
+        };
         let body = Arc::new(Mutex::new(String::new()));
         let (port, handle) = resident::simular_servidor(body.clone());
         let engine = Qwen3TtsEngine::new(Some(format!("http://127.0.0.1:{}", port)));

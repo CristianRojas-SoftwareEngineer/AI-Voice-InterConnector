@@ -23,14 +23,15 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::exit;
 
-const VERSION: &str = "0.12.0";
+const VERSION: &str = "0.13.0";
 const APP_NAME: &str = "ai-voice-interconnector";
 /// Dirección del daemon nativo (T7: cliente HTTP async contra este address).
 const DAEMON_ADDR: &str = "127.0.0.1:8765";
-/// Techo temporal para esperar la disponibilidad del daemon en `daemon start/restart`.
-/// Dimensionado para cubrir el warmup TTS en frío (que precede al `bind`); no es un
-/// tiempo de espera fijo: el sondeo retorna en cuanto `/health` responde sano.
-const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+/// Techo temporal para esperar que el daemon sea alcanzable en `daemon start/restart`.
+/// Dimensionado solo para spawn + bind del proceso (el warmup TTS corre en segundo
+/// plano, ya no bloquea el arranque); no es un tiempo de espera fijo: el sondeo
+/// retorna en cuanto `/health` responde.
+const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Intervalo entre reintentos del sondeo de readiness.
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 /// Ruta fija del modelo Parakeet TDT 0.6B v3 int8 (export istupakov), reutilizado
@@ -1163,7 +1164,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let pid = daemon::spawn_background().map_err(|e| {
                 CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo lanzar el daemon: {}", e))
             })?;
-            poll_health(&client, DAEMON_ADDR, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL)
+            await_daemon_ready(&client, DAEMON_ADDR, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL)
                 .await
                 .map_err(|e| {
                     CliError::new(ExitCode::DaemonUnreachable, "daemon_unreachable", e.to_string())
@@ -1228,7 +1229,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let pid = daemon::spawn_background().map_err(|e| {
                 CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo lanzar el daemon: {}", e))
             })?;
-            poll_health(&client, DAEMON_ADDR, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL)
+            await_daemon_ready(&client, DAEMON_ADDR, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL)
                 .await
                 .map_err(|e| {
                     CliError::new(ExitCode::DaemonUnreachable, "daemon_unreachable", e.to_string())
@@ -1261,23 +1262,27 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                             format!("Respuesta de /health no es JSON: {}", e),
                         )
                     })?;
+                    let engine = val.get("engine").and_then(|e| e.as_str());
+                    let warm_label = val.get("warm").and_then(|w| w.as_str());
+                    let warm_error = val
+                        .get("warm_error")
+                        .and_then(|e| e.as_str())
+                        .map(|s| s.to_string());
                     if json_mode {
-                        emit_raw_json(json!({
-                            "daemon": "running",
-                            "engine": val.get("engine").unwrap_or(&Value::Null),
-                        }));
+                        let warm = warm_label.map(|l| (l, warm_error));
+                        emit_raw_json(status_body(true, engine, warm));
                     } else {
-                        let engine = val
-                            .get("engine")
-                            .and_then(|e| e.as_str())
-                            .unwrap_or("desconocido");
-                        println!("Daemon: en ejecución (motor: {}).", engine);
+                        println!(
+                            "Daemon: en ejecución (motor: {}, warm: {}).",
+                            engine.unwrap_or("desconocido"),
+                            warm_label.unwrap_or("desconocido")
+                        );
                     }
                     Ok(())
                 }
                 _ => {
                     if json_mode {
-                        emit_raw_json(json!({ "daemon": "stopped" }));
+                        emit_raw_json(status_body(false, None, None));
                     } else {
                         println!("Daemon: no está en ejecución.");
                     }
@@ -1668,7 +1673,10 @@ fn remove_daemon_pid_file() -> std::io::Result<()> {
     Ok(())
 }
 
-async fn poll_health(
+/// Espera acotada a que el daemon sea alcanzable (`/health` responde) tras el
+/// spawn+bind. Con el warmup movido a segundo plano, «alcanzable = listo»: el
+/// sondeo retorna en cuanto `probe_health` es `true` o falla al vencer el deadline.
+async fn await_daemon_ready(
     client: &reqwest::Client,
     addr: &str,
     deadline: std::time::Duration,
@@ -1682,6 +1690,31 @@ async fn poll_health(
         tokio::time::sleep(interval).await;
     }
     anyhow::bail!("El daemon no respondió a /health tras {:?}", deadline)
+}
+
+/// Construye el cuerpo JSON de `daemon status`. Función pura (testeable sin daemon):
+/// `stopped` cuando no es alcanzable (fixture intacta, sin campos extra); si es
+/// alcanzable, `running` con `engine` y `warm` (más `warm_error` cuando el warmup
+/// falló) leídos de `/health`. El `schema_version` lo añade `emit_raw_json`.
+fn status_body(
+    reachable: bool,
+    engine: Option<&str>,
+    warm: Option<(&str, Option<String>)>,
+) -> Value {
+    if !reachable {
+        return json!({ "daemon": "stopped" });
+    }
+    let mut body = json!({ "daemon": "running" });
+    if let Some(eng) = engine {
+        body["engine"] = Value::String(eng.to_string());
+    }
+    if let Some((label, error)) = warm {
+        body["warm"] = Value::String(label.to_string());
+        if let Some(err) = error {
+            body["warm_error"] = Value::String(err);
+        }
+    }
+    body
 }
 
 async fn wait_health_down(client: &reqwest::Client, timeout: std::time::Duration) -> anyhow::Result<()> {
@@ -1992,12 +2025,12 @@ async fn say_via_daemon(
 mod tests {
     use super::*;
 
-    /// `poll_health` debe agotar el deadline por reloj de pared (no un recuento
-    /// fijo de iteraciones) contra un puerto cerrado: retorna `Err` y el tiempo
-    /// transcurrido queda acotado por el deadline. Hermético: no arranca daemon
-    /// ni paga warmup, y usa un puerto efímero cerrado (no el 8765 compartido).
+    /// `await_daemon_ready` debe agotar el deadline por reloj de pared (no un
+    /// recuento fijo de iteraciones) contra un puerto cerrado: retorna `Err` y el
+    /// tiempo transcurrido queda acotado por el deadline. Hermético: no arranca
+    /// daemon ni paga warmup, y usa un puerto efímero cerrado (no el 8765 compartido).
     #[tokio::test]
-    async fn poll_health_respeta_deadline() {
+    async fn await_daemon_ready_respeta_deadline() {
         // Puerto efímero: enlazamos, capturamos la dirección y dropeamos el
         // listener para garantizar que el puerto queda cerrado (connection-refused).
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind efímero");
@@ -2007,7 +2040,7 @@ mod tests {
         let deadline = std::time::Duration::from_millis(800);
         let interval = std::time::Duration::from_millis(100);
         let start = std::time::Instant::now();
-        let res = poll_health(&daemon_client(), &addr, deadline, interval).await;
+        let res = await_daemon_ready(&daemon_client(), &addr, deadline, interval).await;
         let elapsed = start.elapsed();
 
         assert!(res.is_err(), "esperado Err contra puerto cerrado");
@@ -2022,5 +2055,31 @@ mod tests {
             "no debe exceder holgadamente el deadline: elapsed={:?}",
             elapsed
         );
+    }
+
+    /// `status_body` mapea los tres casos del contrato de `daemon status`:
+    /// `stopped` (fixture intacta, sin campos extra), `running` + `warm`, y
+    /// `running` + `warm_error` cuando el warmup falló.
+    #[test]
+    fn status_body_mapea_stopped_running_y_warm() {
+        // stopped: solo `daemon` (schema_version lo añade emit_raw_json).
+        let stopped = status_body(false, None, None);
+        assert_eq!(stopped, json!({ "daemon": "stopped" }));
+
+        // running + warm, sin warm_error.
+        let running = status_body(true, Some("rust_native"), Some(("warm", None)));
+        assert_eq!(running["daemon"], "running");
+        assert_eq!(running["engine"], "rust_native");
+        assert_eq!(running["warm"], "warm");
+        assert!(running.get("warm_error").is_none());
+
+        // running + warm_failed con causa.
+        let failed = status_body(
+            true,
+            Some("rust_native"),
+            Some(("warm_failed", Some("boom".to_string()))),
+        );
+        assert_eq!(failed["warm"], "warm_failed");
+        assert_eq!(failed["warm_error"], "boom");
     }
 }

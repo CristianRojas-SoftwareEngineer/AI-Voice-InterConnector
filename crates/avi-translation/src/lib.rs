@@ -62,8 +62,10 @@ impl Ct2TranslationEngine {
         // generación del token `<unk>` en la hipótesis (mismo default sano del
         // oráculo Python, `disable_unk=True` en ctranslate2), evitando `<unk>`
         // crudo en la salida ante vocabulario fuera de cobertura.
-        let mut options = ct2rs::TranslationOptions::default();
-        options.disable_unk = true;
+        let options = ct2rs::TranslationOptions {
+            disable_unk: true,
+            ..Default::default()
+        };
         let results = self.translator.translate_batch(&sources, &options, None)?;
         if results.len() != oraciones.len() {
             anyhow::bail!(
@@ -120,6 +122,7 @@ const MAX_ORACIONES_POR_LOTE: usize = 10;
 /// párrafo conserva su posición como lista vacía para no alterar el
 /// reensamblado posterior.
 #[cfg_attr(not(feature = "native-translation"), allow(dead_code))]
+#[allow(clippy::type_complexity)]
 fn traducir_lotes_por_parrafo(
     paragraphs: Vec<Vec<String>>,
     source: &str,
@@ -417,11 +420,11 @@ mod tests {
         let m = hipotesis.len();
         let mut dp = vec![vec![0usize; m + 1]; n + 1];
 
-        for i in 0..=n {
-            dp[i][0] = i;
+        for (i, row) in dp.iter_mut().enumerate() {
+            row[0] = i;
         }
-        for j in 0..=m {
-            dp[0][j] = j;
+        for (j, cell) in dp[0].iter_mut().enumerate() {
+            *cell = j;
         }
         for i in 1..=n {
             for j in 1..=m {
