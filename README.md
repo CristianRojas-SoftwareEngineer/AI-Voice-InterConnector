@@ -100,15 +100,15 @@ Desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-Inte
 
 ```bash
 # Linux x64
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.10.7-x86_64-linux.tar.gz -o ai.tar.gz
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.15.1-x86_64-linux.tar.gz -o ai.tar.gz
 tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
 
 # macOS arm64
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.10.7-arm64-macos.tar.gz -o ai.tar.gz
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.15.1-arm64-macos.tar.gz -o ai.tar.gz
 tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
 
 # Windows x64 (PowerShell)
-Invoke-WebRequest https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.10.7-x86_64-windows.zip -OutFile ai.zip
+Invoke-WebRequest https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.15.1-x86_64-windows.zip -OutFile ai.zip
 Expand-Archive ai.zip -Force; .\ai-voice-interconnector.exe setup
 ```
 

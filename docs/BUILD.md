@@ -1,12 +1,10 @@
 # Guía de Construcción
 
 `ai-voice-interconnector` se compila como un **binario Rust autocontenido**
-(`cargo build --release --features full`; whisper.cpp/CTranslate2 enlazados
-estáticamente desde fuente) y se **empaqueta por SO en un archivo comprimido**
-(`tar.gz` en los 3 targets Unix, `.zip` en Windows) que agrupa el binario con los
-documentos de licencia GPLv3.
-
-> **Nota histórica (única referencia legacy):** hasta v0.1.x el proyecto usó PyInstaller/AppImage/create-dmg/Inno Setup; desde la migración a Rust (Fase 7) el artefacto es un binario autocontenido en `tar.gz`/`.zip`.
+(`cargo build --release --features full`; CTranslate2 (ct2rs) compilado estático +
+Parakeet vía ort load-dynamic (sin enlace en build)) y se **empaqueta por SO en un
+archivo comprimido** (`tar.gz` en los 3 targets Unix, `.zip` en Windows) que
+agrupa el binario con los documentos de licencia GPLv3.
 
 ## Tabla de contenidos
 
@@ -23,18 +21,18 @@ documentos de licencia GPLv3.
 
 - **Rust 1.96.0** (ver `rust_version` en `.circleci/config.yml` y `rust-toolchain.toml` si existe)
 - **Cargo** (incluido con Rust)
-- **CMake ≥ 3.20** (para whisper.cpp/ctranslate2)
+- **CMake ≥ 3.20** (para CTranslate2/ct2rs, solo con `native-translation`)
 - **pkg-config**
-- **libasound2-dev** (Linux, para `cpal` ALSA) y **libclang-dev** (para `bindgen`/`whisper-rs-sys`)
+- **libasound2-dev** (Linux, para `cpal` ALSA) y **libclang-dev** (solo con `--features native-translation`/`full`, para `bindgen` de `ct2rs`; no requerido para `featureless` ni `native-stt`)
 - **sccache 0.8.2** (opcional, acelera recompilaciones; el CI lo usa con `RUSTC_WRAPPER=sccache`)
 
 No se requiere Python, Node ni toolchain adicional para compilar o empaquetar.
 
 ### Empaquetado por plataforma (archivos comprimidos)
 
-El binario Rust es autocontenido (`crt-static`; whisper.cpp/CTranslate2 enlazados
-estáticamente desde fuente), así que el empaquetado **no requiere herramientas de
-terceros**: cada target se comprime con una utilidad del sistema base.
+El binario Rust es autocontenido (`crt-static`; CTranslate2 (ct2rs) enlazado
+estático; Parakeet vía ort load-dynamic), así que el empaquetado **no requiere
+herramientas de terceros**: cada target se comprime con una utilidad del sistema base.
 
 | Plataforma | Formato | Utilidad de empaquetado |
 |------------|---------|-------------------------|
@@ -294,7 +292,7 @@ propio crate. No hay Python en la ruta de descarga.
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Pesos TTS (síntesis) |
 | `marian-es-en` | `Helsinki-NLP/opus-mt-es-en` | Traducción es→en (CT2) |
 | `marian-en-es` | `Helsinki-NLP/opus-mt-en-es` | Traducción en→es (CT2) |
-| `whisper-gguf` | `ggerganov/whisper.cpp` | STT GGUF q8_0 (~823 MB) |
+| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (~600 MB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
 
 Los pines viven en `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs`): tuplas
 `(nombre_lógico, repo, revisión)`. Actualizar una revisión es una acción

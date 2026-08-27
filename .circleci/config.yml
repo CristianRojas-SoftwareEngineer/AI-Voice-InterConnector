@@ -113,7 +113,7 @@ commands:
   # sccache (R2): envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
   # hash de contenido en ~/.cache/sccache. Reutiliza artefactos entre corridas y
   # entre variantes (test/full/cov), sobreviviendo a bumps de Cargo.lock que
-  # invalidan target/. NO acelera los builds CMake de whisper.cpp/CTranslate2
+  # invalidan target/. NO acelera los builds CMake de CTranslate2 (ct2rs)
   # (sccache no envuelve el C++), solo la parte Rust. Clave de caché rolling:
   # guarda con {{ epoch }} (siempre escribe) y restaura por prefijo (último
   # estado del mismo arch+toolchain).
@@ -204,7 +204,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   test-linux:
     # Executor x86_64 Docker con Rust preinstalado. La suite es
-    # arch-independiente y mockea el engine (whisper/Qwen no se ejercitan),
+    # arch-independiente y mockea el engine (Parakeet/Qwen no se ejercitan),
     # así que re-correrla en ARM64 no aportaría señal (ver docs/BUILD.md §4).
     # Es la arquitectura más barata/rápida disponible.
     docker:
@@ -214,9 +214,9 @@ jobs:
       - checkout
       - run:
           # libasound2-dev + pkg-config exponen ALSA a cpal (sí se compila en la
-          # suite). libclang-dev (bindgen/whisper-rs-sys) y cmake (whisper.cpp) ya
-          # NO se ejercitan con native-stt/native-translation off (la suite no
-          # compila C++); se conservan por simetría con coverage y con los build-*,
+          # suite). libclang-dev (bindgen/ct2rs, solo con native-translation) ya
+          # NO se ejercita con native-stt/native-translation off (la suite no
+          # compila C++); se conserva por simetría con coverage y con los build-*,
           # que activan --features full. Contexto histórico: sin libclang-dev el
           # build-script moría con «Unable to find libclang» (pipeline #2).
           name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
@@ -426,7 +426,7 @@ jobs:
       - run:
           # NOTA (R1): con native-stt/native-translation off por defecto,
           # coverage compila la workspace SIN los stacks C++ (no aparece
-          # whisper-rs-sys/ct2rs); libclang-dev/cmake se conservan por simetría
+          # ct2rs con C++); libclang-dev/cmake se conservan por simetría
           # con test-linux y por si un futuro umbral corre coverage con features.
           name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
           command: |
@@ -824,8 +824,8 @@ jobs:
 
   build-linux-x64:
     # Linux x64: el más barato/rápido para la suite, pero el build necesita
-    # `large` (8 GB RAM): el linking de whisper-rs + tokio + cpal +
-    # ct2rs supera los 4 GB de `medium` (OOM silencioso). Simetría con
+    # `large` (8 GB RAM): el linking de cpal + tokio + ct2rs (ort es
+    # load-dynamic) supera los 4 GB de `medium` (OOM silencioso). Simetría con
     # docs/BUILD.md §4 — `large` trae 4 vCPU de regalo no aprovechados.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
@@ -833,13 +833,12 @@ jobs:
     steps:
       - checkout
       - run:
-          # patchelf lo necesita el bundling de AppImage (legado); libclang-dev
-          # es requisito de bindgen (whisper-rs-sys), igual que en test-linux.
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, patchelf)
+          # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev patchelf
+            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
       - cargo_restore_caches:
           os: linux
@@ -943,13 +942,12 @@ jobs:
     steps:
       - checkout
       - run:
-          # patchelf lo necesita el bundling de AppImage (legado); libclang-dev
-          # es requisito de bindgen (whisper-rs-sys), igual que en test-linux.
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, patchelf)
+          # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev patchelf
+            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
       - cargo_restore_caches:
           os: linux

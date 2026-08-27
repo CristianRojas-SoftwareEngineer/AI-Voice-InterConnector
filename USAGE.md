@@ -223,7 +223,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `name` | string | Siempre `"ai-voice-interconnector"` |
-| `version` | string | Versión del programa (p. ej. `"0.1.0"`) |
+| `version` | string | Versión del programa (p. ej. `"0.15.1"`) |
 
 **`doctor --json`**
 
@@ -307,7 +307,7 @@ ai-voice-interconnector version --json
 **Qué esperar:**
 
 ```
-ai-voice-interconnector 0.1.0
+ai-voice-interconnector 0.15.1
 ```
 
 ---
@@ -1076,8 +1076,8 @@ Las únicas diferencias son internas y no cambian la forma de usar la aplicació
 
 | Aspecto | Windows | Linux | macOS |
 |---------|---------|-------|-------|
-| Reproducción de audio | winsound (integrado) | sounddevice (PortAudio) | afplay (integrado) |
-| Enumeración de dispositivos | pycaw | sounddevice | sounddevice |
+| Reproducción de audio | cpal (WASAPI) | cpal (ALSA) | cpal (CoreAudio) |
+| Enumeración de dispositivos | cpal | cpal | cpal |
 | Voces de usuario (binario) | `%LOCALAPPDATA%\ai-voice-interconnector\voices` | `~/.local/share/ai-voice-interconnector/voices` | `~/Library/Application Support/ai-voice-interconnector/voices` |
 | Caché del modelo | `~/.cache/huggingface/hub` | `~/.cache/huggingface/hub` | `~/.cache/huggingface/hub` |
 

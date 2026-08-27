@@ -15,8 +15,6 @@
 - [Extensibilidad](#extensibilidad)
 - [Referencias](#referencias)
 
-> **Nota histórica (única referencia legacy):** hasta v0.1.x el proyecto empaquetó Python con PyInstaller/AppImage/create-dmg/Inno Setup; desde la migración a Rust (Fase 7) el artefacto es un binario Rust autocontenido.
-
 ## Resumen ejecutivo
 
 AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que usa **Qwen3-TTS 0.6B CustomVoice** para clonación de voz en español latinoamericano. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
@@ -43,13 +41,13 @@ AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 │                 Motor TTS (Qwen3-TTS 0.6B)                  │
 │   Modelo: qwen3-tts-0.6b / qwen3-tts-0.6b-base (clonado)    │
 │   Licencia: MIT / Apache-2.0                               │
-│   Runtime: ONNX/CTranslate2 + whisper.cpp (STT)           │
+│   Runtime: Parakeet TDT v3 int8 (ort load-dynamic ONNX Runtime 1.28.0) + CTranslate2 (ct2rs) │
 └─────────────────────────────────────────────────────────────┘
-                       │
-                       ▼
+                        │
+                        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │           Reproducción de audio (APIs nativas)              │
-│   Windows: cpal/winsound · Linux: cpal/ALSA · macOS: cpal/CoreAudio │
+│   Windows: cpal (WASAPI) · Linux: cpal (ALSA) · macOS: cpal (CoreAudio) │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,7 +66,7 @@ AI-Voice-InterConnector/
 │   ├── avi-store/                      # VoiceStore, SpeechStore, ModelStore (hf-hub + indicatif; MODEL_REVISIONS; cache_dir propio)
 │   │   └── assets/default/             # speech-reference.wav + timbre-reference.wav embebidos
 │   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)
-│   ├── avi-stt/                        # Ct2SttEngine (whisper-rs)
+│   ├── avi-stt/                        # ParakeetEngine (ort, load-dynamic)
 │   ├── avi-translation/                # MarianTranslator (CTranslate2)
 │   └── avi-config/                     # Configuración
 ├── vendor/
@@ -83,7 +81,7 @@ AI-Voice-InterConnector/
         ├── install-linux.bats
         ├── install-macos.bats
         └── install-windows.tests.ps1
-├── Cargo.toml                          # Workspace Rust (version = 0.10.7)
+├── Cargo.toml                          # Workspace Rust (version = 0.15.1)
 ├── Cargo.lock
 ├── .circleci/config.yml                # Pipeline Rust (cargo test/build + publish-release)
 └── docs/
@@ -98,7 +96,7 @@ AI-Voice-InterConnector/
 
 ## Entry point `src/main.rs`
 
-`src/main.rs` es el **punto de entrada único** del binario. Usa `clap` para parsear los subcomandos (`version`, `devices`, `translate`, `voice`, `speech`, `daemon`, `setup`, `cleanup`, `uninstall`, `doctor`) y hace dispatch a los crates (`avi-tts`, `avi-store`, etc.) o al daemon vía HTTP. Es también la **fuente de verdad de la versión** (`const VERSION = "0.10.7"`, espejo de `Cargo.toml`).
+`src/main.rs` es el **punto de entrada único** del binario. Usa `clap` para parsear los subcomandos (`version`, `devices`, `translate`, `voice`, `speech`, `daemon`, `setup`, `cleanup`, `uninstall`, `doctor`) y hace dispatch a los crates (`avi-tts`, `avi-store`, etc.) o al daemon vía HTTP. Es también la **fuente de verdad de la versión** (`const VERSION = "0.15.1"`, espejo de `Cargo.toml`).
 
 En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-interconnector <args>`.
 
@@ -119,9 +117,9 @@ Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato 
 
 Subsistema `crates/avi-translation` que traduce `es<->en` antes de la síntesis (`--source-language`/`--target-language` en `speech say`/`synthesize`) o de forma aislada (`translate`). Usa `Helsinki-NLP/opus-mt-es-en` / `opus-mt-en-es` (CC-BY-4.0) convertidos a CT2 en `setup`.
 
-## Transcripción STT (whisper-rs / whisper.cpp)
+## Transcripción STT (Parakeet TDT v3 int8 / ort)
 
-Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio→texto). Usa `whisper-rs` sobre `whisper.cpp` con modelo GGUF `ggml-medium-q8_0.bin` (MIT), provisionado con `setup --with-stt`.
+Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio→texto). Usa `ParakeetEngine` vía `ort` `load-dynamic` (ONNX Runtime 1.28.0) con 4 artefactos acotados (`encoder-model.int8.onnx`, `decoder_joint-model.int8.onnx`, `nemo128.onnx`, `vocab.txt`), incluido por defecto (setup base).
 
 ## Flujo de síntesis
 
@@ -192,6 +190,5 @@ Para añadir un nuevo motor TTS:
 ## Referencias
 
 - [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
-- [Chatterbox TTS - Resemble AI](https://huggingface.co/ResembleAI/chatterbox-multilingual) (referencia del goal original)
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
 - [CTranslate2](https://github.com/OpenNMT/CTranslate2)
+- [ONNX Runtime](https://onnxruntime.ai/)

@@ -102,8 +102,9 @@ El instalador Linux no necesita ningún recurso previo.
 ## Endurecimiento del build
 
 El artefacto es un **binario Rust autocontenido**, enlazado estáticamente al CRT
-(`+crt-static`; whisper.cpp/CTranslate2 compilados desde fuente), no un bundle
-PyInstaller: desaparece el patrón «desempaquetar y ejecutar» que elevaba la
+(`+crt-static`; CTranslate2 (ct2rs) compilado estático + Parakeet vía `ort`
+`load-dynamic`), no un bundle empaquetado: desaparece el patrón
+«desempaquetar y ejecutar» que elevaba la
 puntuación heurística del clasificador. Aun así, el binario **sigue sin firma de
 código**, y Microsoft Defender **Antivirus** puede marcarlo por reputación baja,
 independiente del MOTW.

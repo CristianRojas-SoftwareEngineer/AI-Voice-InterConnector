@@ -22,7 +22,7 @@ quedó 100 % Rust en su distribución.
 |---|---|
 | **Audiencia** | Cualquier usuario final (no requiere Python ni toolchain) |
 | **Instalación** | One-liner por SO (`curl \| sh` / `irm \| iex`) o Homebrew Cask (macOS) |
-| **Tamaño** | Binario pequeño y autocontenido (~13-42 MB; whisper.cpp/CTranslate2 enlazados estáticamente desde fuente vía `crt-static`) |
+| **Tamaño** | Binario pequeño y autocontenido (~13-42 MB; CTranslate2 (ct2rs) enlazado estático + Parakeet vía `ort` `load-dynamic` vía `crt-static`) |
 | **Dependencias del sistema** | Ninguna (autocontenido) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
 | **Actualización** | Re-ejecutar el one-liner por SO (limpia la versión anterior antes de extraer) o `brew upgrade --cask` |

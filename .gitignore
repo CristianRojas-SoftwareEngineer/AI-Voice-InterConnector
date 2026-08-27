@@ -8,8 +8,6 @@ target/
 # (se empaqueta vía --add-data y sirve de voz por defecto).
 voices/*
 !voices/default/
-# Artefactos de build del AppImage
-AppDir/
 ai-voice-interconnector.png
 *.spec
 # Config de Claude Code: ignorar todo el contenido de .claude/ (incluido el prompt

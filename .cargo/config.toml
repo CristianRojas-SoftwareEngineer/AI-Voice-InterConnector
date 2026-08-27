@@ -2,9 +2,10 @@
 #
 # `ct2rs` compila CTranslate2 desde fuente y la enlaza con el CRT estático de MSVC
 # (`/MT`). Rust usa por defecto el CRT dinámico (`/MD`), lo que provoca al enlazar
-# el binario de tests de `avi-stt` el error `LNK2038` (RuntimeLibrary mismatch:
-# `MT_StaticRelease` vs `MD_DynamicRelease`) y el fatal `LNK1169`. Alinear todo el
-# workspace al CRT estático resuelve el conflicto de forma reproducible.
+# el binario de tests de `avi-translation` (ct2rs) el error `LNK2038`
+# (RuntimeLibrary mismatch: `MT_StaticRelease` vs `MD_DynamicRelease`) y el fatal
+# `LNK1169`. Alinear todo el workspace al CRT estático resuelve el conflicto de
+# forma reproducible.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
 

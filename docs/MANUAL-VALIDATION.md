@@ -7,7 +7,8 @@ ejecuta en Windows sobre cada release, y que sirve de guion para el feedback de
 usuarios reales en Linux y macOS. El pipeline de CI solo corre un **smoke test
 automatizado** del binario congelado (`ai-voice-interconnector version`, exit 0); la matriz de
 comandos de abajo es la parte que **no** cabe en un runner de CI porque exige
-cargar los modelos Chatterbox, descargar ~6 GB de pesos (ambos modelos) y sintetizar audio real.
+cargar Qwen3-TTS + Parakeet, descargar ~9 GB base (~11,5 GB con `--with-base`)
+y sintetizar audio real.
 
 La secuencia está en orden lógico: cada paso asume que el anterior pasó. Ejecutar
 tras instalar el artefacto del release (en Windows,

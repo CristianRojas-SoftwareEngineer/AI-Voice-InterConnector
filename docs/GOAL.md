@@ -54,13 +54,13 @@ Si la spec **no cumple ninguno** de los tres, va al **goal inmediato** y se trab
 
 Obtener un sistema TTS **100% local** con audio nativo por sistema operativo, para transformar texto a audio en **español latino** de la mejor calidad disponible, distribuido bajo **licencia GPL-3.0-or-later** (con dependencias y modelo bajo licencias permisivas compatibles).
 
-Motor TTS: **Qwen3-TTS 0.6B CustomVoice** - multilingüe, clonación de voz; licencia MIT/Apache-2.0. (El goal original especificaba Chatterbox Multilingual V3; la migración a Rust sustituyó el motor preservando los contratos públicos.)
+Motor TTS: **Qwen3-TTS 0.6B CustomVoice** - multilingüe, clonación de voz; licencia MIT/Apache-2.0.
 
-Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre CTranslate2, opt-in) cierra el bucle de la clonación de voz: el usuario escribe en su idioma nativo y obtiene audio en el idioma destino con su propia voz clonada, en un solo comando (`speech say`/`synthesize --source-language ... --target-language ...`) o vía el comando `translate` cuando solo necesita el texto traducido. El eslabón de entrada de ese bucle (audio→texto) lo cubre `speech transcribe` (`whisper-rs` sobre whisper.cpp, opt-in vía `setup --with-stt`).
+Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre CTranslate2, opt-in) cierra el bucle de la clonación de voz: el usuario escribe en su idioma nativo y obtiene audio en el idioma destino con su propia voz clonada, en un solo comando (`speech say`/`synthesize --source-language ... --target-language ...`) o vía el comando `translate` cuando solo necesita el texto traducido. El eslabón de entrada de ese bucle (audio→texto) lo cubre `speech transcribe` (Parakeet TDT v3 int8 vía `ort` `load-dynamic`, incluido por defecto en `setup` base).
 
 **El sistema debe ser consumible via línea de comandos** para que cualquier aplicación en cualquier lenguaje de programación pueda invocarlo (Python, JavaScript/Node, Rust, Go, Java, C#, etc.)
 
-**La experiencia del usuario final debe ser equivalente en Windows, Linux y macOS**: instalar, usar, actualizar y desinstalar con la misma cantidad de fricción, privilegios y residuo en los tres SO. Las diferencias tecnológicas idiomáticas por SO (Inno Setup, AppImage, `.dmg`/Cask) son aceptables; las diferencias de experiencia no. El estado de esta equivalencia y las brechas pendientes se registran en [docs/PARITY.md](PARITY.md).
+**La experiencia del usuario final debe ser equivalente en Windows, Linux y macOS**: instalar, usar, actualizar y desinstalar con la misma cantidad de fricción, privilegios y residuo en los tres SO. Las diferencias de empaquetado idiomáticas por SO (formatos `tar.gz`/`zip`/Cask) son aceptables; las diferencias de experiencia no. El estado de esta equivalencia y las brechas pendientes se registran en [docs/PARITY.md](PARITY.md).
 
 ## Alcance
 
@@ -149,7 +149,7 @@ La desinstalación es **equivalente en esfuerzo a la instalación de una línea*
 - **macOS**: análogo a Linux (`uninstall` limpia symlink + `~/.local/opt` + `cleanup`) en la vía one-liner; con **Homebrew Cask**, `brew uninstall --cask --zap ai-voice-interconnector` sigue siendo la vía idiomática (cubre también los datos). Sin `sudo`.
 - **Windows**: los datos (`cleanup`), el directorio `%LOCALAPPDATA%\Programs\ai-voice-interconnector` y la entrada del PATH de usuario (`HKCU\Environment` + `WM_SETTINGCHANGE`). Sin UAC; `--force` omite confirmación.
 
-Las vías idiomáticas por SO (`brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `uninstall` es la vía equivalente de un comando en las tres plataformas. El estado real de esta paridad vive en [docs/PARITY.md](PARITY.md). Nota histórica: hasta v0.1.x la desinstalación Windows delegaba en el desinstalador de Inno Setup (`HKCU\...\{AppId}_is1`); desde Rust el binario gestiona PATH/dir directamente.
+Las vías idiomáticas por SO (`brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `uninstall` es la vía equivalente de un comando en las tres plataformas. El estado real de esta paridad vive en [docs/PARITY.md](PARITY.md). El binario gestiona PATH/dir directamente.
 
 ### Estructura del proyecto
 
@@ -168,11 +168,11 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 7. [x] El español latinoamericano suena natural y con buena prosodia
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
-10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del registro de [docs/PARITY.md](PARITY.md) están cerradas a nivel de código/scripts/tests (one-liner macOS `install-macos.sh`, `.command` sin `sudo`, limpieza de AppImages en `install-linux.sh`, `zap` del Cask completo, README con las tres plataformas — cerradas en v0.5.0 — y `setup --uninstall` multiplataforma — brecha de *desinstalación en un comando*, cerrada a nivel de código/scripts/tests en v0.6.0). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
+10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del registro de [docs/PARITY.md](PARITY.md) están cerradas a nivel de código/scripts/tests (one-liner macOS `install-macos.sh`, `.command` sin `sudo`, limpieza de artefactos en `install-linux.sh`, `zap` del Cask completo, README con las tres plataformas — cerradas en v0.5.0 — y `setup --uninstall` multiplataforma — brecha de *desinstalación en un comando*, cerrada a nivel de código/scripts/tests en v0.6.0). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
 
 ### Validación E2E
 
-La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de los modelos Chatterbox + descarga de ~6 GB de pesos (ambos modelos) + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** del binario congelado (`ai-voice-interconnector version`, exit 0) en los cuatro jobs de build, que detecta empaquetados rotos (metadata faltante, `--collect-all` incompleto) sin pagar el coste del modelo.
+La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de Qwen3-TTS + Parakeet + descarga de ~9 GB base (~11,5 GB con `--with-base`) + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** del binario congelado (`ai-voice-interconnector version`, exit 0) en los cuatro jobs de build, que detecta empaquetados rotos sin pagar el coste del modelo.
 
 Fuera del pipeline, la validación se reparte así:
 
@@ -187,7 +187,7 @@ Por tanto, los criterios 1-3 y 9 no son "pendientes" en el sentido de tareas olv
 
 La implementación está completa únicamente cuando:
 
-- [x] El motor TTS está implementado y funcional (Chatterbox en Python; Qwen3-TTS desde la migración a Rust)
+- [x] El motor TTS está implementado y funcional (Qwen3-TTS)
 - [x] La clonación de voz funciona con una muestra de ~10 segundos
 - [x] El audio generado preserva las características de la voz original
 - [x] El español latinoamericano suena natural

@@ -11,7 +11,6 @@
   - [Nota sobre los instaladores de una línea](#nota-sobre-los-instaladores-de-una-línea)
 - [Artefactos sin firmar](#artefactos-sin-firmar)
   - [Runbook: reportar un falso positivo de Defender Antivirus (WDSI)](#runbook-reportar-un-falso-positivo-de-defender-antivirus-wdsi)
-  - [Runbook: reportar un falso positivo de ClamAV](#runbook-reportar-un-falso-positivo-de-clamav)
   - [Runbook: bloqueo de Gatekeeper en macOS](#runbook-bloqueo-de-gatekeeper-en-macos)
 
 ## Versiones soportadas
@@ -73,8 +72,9 @@ limitada, pero conviene explicitar sus supuestos:
   revisión auditada; no es una verificación criptográfica por archivo de los
   pesos descargados (el transporte y el direccionamiento por hash de commit
   corren a cargo de HuggingFace Hub).
-- Los builds se producen desde un **lockfile con hashes** (`--require-hashes`), lo
-  que protege la cadena de dependencias frente a paquetes alterados en PyPI.
+- Los builds se producen desde **`Cargo.lock`**; la cadena se verifica con
+  `cargo run -p xtask -- licenses --check` / `source-offer --check` y
+  `THIRD-PARTY-LICENSES.md` / `SOURCE-OFFER.md` (ver `docs/RELEASING.md`).
 
 ### Contenido generado
 
@@ -91,17 +91,18 @@ en macOS, `install-windows.ps1` en Windows; raíz del repo) se sirven por
 patrón habitual de instalación de una línea. La mitigación de ese patrón
 —ejecutar contenido remoto sin inspeccionarlo antes— es común a los tres: **el
 propio script verifica el checksum SHA-256** del artefacto descargado (el
-`.AppImage`, el `.dmg` o el `.exe`) contra `SHA256SUMS.txt` (publicado junto al
-Release, ver «Artefactos sin firmar» abajo) **antes** de darle permisos de
-ejecución, montarlo o invocarlo; un checksum que no coincide aborta la
-instalación sin ejecutar nada. Ninguno requiere privilegios elevados:
+`tar.gz` o el `zip` `ai-voice-interconnector-<ver>-<arch>-<so>.tar.gz/.zip`)
+contra `SHA256SUMS.txt` (publicado junto al Release, ver «Artefactos sin firmar»
+abajo) **antes** de darle permisos de ejecución o invocarlo; un checksum que no
+coincide aborta la instalación sin ejecutar nada. Ninguno requiere privilegios
+elevados:
 
 - **Linux** (`install-linux.sh`): instala en `~/.local/opt/ai-voice-interconnector/`, sin `sudo`.
-- **macOS** (`install-macos.sh`): verifica con `shasum -a 256 -c`, copia el
-  `.app` a `~/Applications` y crea el symlink en `~/.local/bin`, sin `sudo`.
-  Limpia el atributo `com.apple.quarantine` del `.app` copiado (legítimo: el
-  usuario ya expresó intención al ejecutar el script), lo que evita la
-  advertencia de Gatekeeper en el primer arranque.
+- **macOS** (`install-macos.sh`): verifica con `shasum -a 256 -c`, extrae el
+  `tar.gz` en `~/.local/opt/ai-voice-interconnector/` y crea el symlink en
+  `~/.local/bin`, sin `sudo`. Limpia el atributo `com.apple.quarantine` del
+  binario copiado (legítimo: el usuario ya expresó intención al ejecutar el
+  script), lo que evita la advertencia de Gatekeeper en el primer arranque.
 - **Windows** (`install-windows.ps1`): instalación per-user
   (`%LOCALAPPDATA%\Programs\ai-voice-interconnector`, PATH en `HKCU\Environment`), sin UAC.
   El navegador sella todo archivo descargado con el Mark-of-the-Web, la marca
@@ -123,13 +124,12 @@ Ambos avisos dependen de una marca que **solo añade el navegador** al descargar
 un archivo de internet: en Windows es el *Mark-of-the-Web* (MOTW, `ZoneId=3`),
 en macOS el atributo extendido `com.apple.quarantine`. Una descarga por línea
 de comandos (`curl`, `Invoke-WebRequest`, `gh`) no la aplica, y un binario
-generado localmente (como el launcher del canal PyPI, ver
-[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)) tampoco la lleva nunca; por eso
-los instaladores de una línea de este proyecto no disparan la advertencia
-aunque el binario siga sin firmar. La firma de código (ver «Ruta prevista»
-abajo) es el arreglo de fondo: sustituye la advertencia de reputación por una
-confirmación de identidad del editor, independientemente del medio de
-descarga.
+generado localmente tampoco la lleva nunca (ver
+[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)); por eso los instaladores de
+una línea de este proyecto no disparan la advertencia aunque el binario siga
+sin firmar. La firma de código (ver «Ruta prevista» abajo) es el arreglo de
+fondo: sustituye la advertencia de reputación por una confirmación de
+identidad del editor, independientemente del medio de descarga.
 
 Sin firma de código, la única verificación de integridad disponible es cotejar
 el SHA-256 del artefacto descargado contra el archivo `SHA256SUMS.txt`
@@ -150,12 +150,8 @@ publicada). La firma OV no suprime la advertencia de SmartScreen de inmediato
 —la reputación se acumula por volumen de descargas— pero reemplaza «editor
 desconocido» por un editor verificable.
 
-Mientras tanto, el build aplica dos mitigaciones baratas sin firma de código:
-todos los artefactos de PyInstaller se empaquetan con `--noupx` (sin
-compresión UPX, una de las señales que la heurística antivirus asocia con
-malware), y el `.exe` de Windows lleva metadata PE de identidad (empresa,
-producto y versión vía `--version-file`), ambas cubiertas por test en
-los smoke tests del binario en los jobs de build (`.circleci/config.yml`).
+El artefacto es un binario Rust `crt-static` autocontenido (CTranslate2 enlazado
+estático; Parakeet vía `ort` `load-dynamic`).
 
 ### Runbook: reportar un falso positivo de Defender Antivirus (WDSI)
 
@@ -165,22 +161,22 @@ al portal de Microsoft (*Windows Defender Security Intelligence*):
 
 1. Entra a [microsoft.com/wdsi](https://www.microsoft.com/en-us/wdsi/filesubmission)
    y elige **"Submit a file for malware analysis"**.
-2. Sube el artefacto marcado (el `.exe` o el instalador Inno Setup) tal cual se
-   descargó del [Release](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases);
+2. Sube el artefacto marcado (el `tar.gz` o el `zip`
+   `ai-voice-interconnector-<ver>-<arch>-<so>.tar.gz/.zip`) tal cual se descargó
+   del [Release](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases);
    el reporte funciona con el binario **sin firmar**, no hace falta esperar a
    tener firma de código.
 3. Clasifica la muestra como **"Incorrectly detected as malware / False
    Positive"** e indica la detección exacta que reportó Defender.
-4. En el campo de comentarios, aclara que es un ejecutable PyInstaller de
-   código abierto (enlaza este repositorio y el commit/tag del que se
-   construyó el artefacto, verificable contra `SHA256SUMS.txt` — ver
-   [docs/RELEASING.md](docs/RELEASING.md)).
+4. En el campo de comentarios, aclara que es un binario Rust de código abierto
+   (enlaza este repositorio y el commit/tag del que se construyó el artefacto,
+   verificable contra `SHA256SUMS.txt` — ver [docs/RELEASING.md](docs/RELEASING.md)).
 5. Microsoft revisa la muestra con un analista y, si confirma el falso
    positivo, **borra la detección globalmente** para todos los usuarios de
    Defender (no solo para quien reportó).
 
 Alcance de este runbook: cubre **únicamente** la detección de Defender
-Antivirus (ver también los runbooks de ClamAV y Gatekeeper abajo). **No**
+Antivirus (ver también el runbook de Gatekeeper abajo). **No**
 desactiva ni acelera el paso de SmartScreen — SmartScreen es
 reputación de archivo/editor, y solo la resuelve la firma de código (ver la
 ruta prevista arriba), no un reporte a WDSI. Firmar el binario tampoco borra
@@ -191,28 +187,6 @@ con firma de código, la reputación se hereda entre versiones y esa
 recurrencia disminuye considerablemente. Ver también la guía de usuario para
 los diálogos de bloqueo en
 [USAGE.md](USAGE.md#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar).
-
-### Runbook: reportar un falso positivo de ClamAV
-
-ClamAV (usado sobre todo en Linux y en pasarelas de correo) puede marcar el
-binario PyInstaller como `PUA.Win32.Packer.PyInstaller` u otra detección de
-empaquetador, especialmente el AppImage/onedir de Linux. No hay un portal
-central de falsos positivos equivalente al de Microsoft; el reporte se hace al
-proyecto ClamAV:
-
-1. Confirma la detección con `clamscan --verbose <ruta-del-artefacto>` y anota
-   la firma exacta que reportó (p. ej. `PUA.Win32.Packer.PyInstaller-*`).
-2. Verifica la integridad del archivo cotejando su SHA-256 contra
-   `SHA256SUMS.txt` del [Release](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases)
-   (ver [docs/RELEASING.md](docs/RELEASING.md)): un hash que coincide descarta
-   que el archivo haya sido alterado en tránsito.
-3. Reporta la firma como falso positivo a ClamAV vía su rastreador de
-   incidencias / portal de muestras (Talos/Cisco), adjuntando el artefacto y
-   aclarando que es un ejecutable PyInstaller de código abierto (enlaza este
-   repositorio y el commit/tag del que se construyó).
-4. Mientras la firma no se actualiza, el usuario afectado puede excluir la ruta
-   o el archivo de su escaneo local (p. ej. `clamscan --exclude=<ruta>`) tras
-   confirmar el paso 2.
 
 ### Runbook: bloqueo de Gatekeeper en macOS
 

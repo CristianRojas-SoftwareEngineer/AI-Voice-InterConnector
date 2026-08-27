@@ -64,7 +64,7 @@ Son **dos preguntas encadenadas, no una**. La primera forma las clases; la segun
 
 La locución tiene `(voz, etiqueta)`, y las cinco sub-acciones del grupo `speech` operan exactamente sobre ese par: cae del lado de `voice list`. Emitir además la ruta le daría al integrador un **segundo handle, no gobernado**, sobre un recurso que ya tiene el suyo — y nada le impediría usarlo, momento en el cual el invariante de las rutas sería decorativo: no lo violaría el sistema, lo violaría el consumidor con lo que el sistema le entregó.
 
-**La asimetría de reversibilidad que respalda el criterio.** Las dos opciones no cuestan lo mismo si resultan equivocadas: **añadir una clave después es aditivo** y está cubierto por la política de compatibilidad del esquema `--json`; **retirarla es incompatible** y obliga a subir `cli.SCHEMA_VERSION`. Con esa asimetría, el lado seguro se conoce de antemano y no hay opcionalidad que comprar aplazando la decisión.
+**La asimetría de reversibilidad que respalda el criterio.** Las dos opciones no cuestan lo mismo si resultan equivocadas: **añadir una clave después es aditivo** y está cubierto por la política de compatibilidad del esquema `--json`; **retirarla es incompatible** y obliga a subir `schema_version="3"` (`src/main.rs` / `crates/avi-core/src/json_emitter.rs`). Con esa asimetría, el lado seguro se conoce de antemano y no hay opcionalidad que comprar aplazando la decisión.
 
 **Coste declarado.** Ninguna superficie saca los bytes de una locución fuera de la CLI: `speech play` la reproduce y no hay ningún comando de exportación. Un orquestador que quiera el WAV no lo tiene. Eso es un hueco de la superficie de comandos; la respuesta, si la necesidad aparece, es un comando explícito con su propia decisión, no una clave en un listado.
 
@@ -110,8 +110,8 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | CLI | Entrada de referencia de timbre de `voice clone` (opcional) | `--timbre-reference` (`-t`) |
 | CLI | Entrada de referencia de habla de `voice clone` (obligatoria, ≥10s) | `--speech-reference` (`-s`) |
 | CLI | Borrado masivo de la salida | `cleanup --synthetic-speech` |
-| Filesystem | Almacén de la salida generada | `data_root()/synthetic-speech/` |
-| Filesystem | Archivos de referencia de una voz | `timbre-reference.wav`, `speech-reference.wav` |
+| Filesystem | Almacén de la salida generada | `<data_dir>/speech/<voz>/<etiqueta>.wav` (`crates/avi-store/src/lib.rs` `SpeechStore`) |
+| Filesystem | Archivos de referencia de una voz | `timbre-reference.wav`, `speech-reference.wav` (`crates/avi-store/src/lib.rs` `VoiceStore`) |
 | Payload | Clave del listado | `synthetic_speech` |
 | Interno | Parámetro del timbre en el motor y el protocolo | `timbre` |
 
@@ -120,10 +120,10 @@ El orden de palabras respeta la convención del repo, con el núcleo al final (`
 En disco los dos sentidos quedan separados por nombre y no por posición:
 
 ```
-data_root()/
-  voices/<voz>/timbre-reference.wav     ← entrada aportada (opcional)
-  voices/<voz>/speech-reference.wav     ← entrada aportada (obligatoria)
-  synthetic-speech/<voz>/<etiqueta>.wav ← salida generada
+<data_dir>/
+  voices/<voz>/timbre-reference.wav     ← entrada aportada (opcional) (`VoiceStore`)
+  voices/<voz>/speech-reference.wav     ← entrada aportada (obligatoria) (`VoiceStore`)
+  speech/<voz>/<etiqueta>.wav           ← salida generada (`SpeechStore`)
 ```
 
 **En prosa española la unidad se llama «locución».** Nunca aparece como identificador.
@@ -266,9 +266,9 @@ Con los dos flags declarados, la exclusión mutua entre ellos tiene sentido plen
 
 #### Un solo mecanismo para la exclusión mutua, y es el declarativo
 
-La exclusión mutua se declara con `add_mutually_exclusive_group`, junto a los flags que restringe, en todos los sitios donde exista —el grupo de tres modos de `setup` incluido. **La garantía queda en un solo lugar, no repetida por convención en cada comando.** Una comprobación manual es esa convención repetida, y no escala: en un grupo de tres modos, un cuarto añadido a mano no rompe nada y deja de cubrir una combinación en silencio; el `if` vive lejos de los flags que restringe, donde nadie que añada uno lo va a leer.
+La exclusión mutua se declara con `clap` (`conflicts_with`) en `src/main.rs` (`Commands`/`VoiceCommands`/`SpeechCommands`/`DaemonCommands`), junto a los flags que restringe, en todos los sitios donde exista —el grupo de tres modos de `setup` incluido. **La garantía queda en un solo lugar, no repetida por convención en cada comando.** Una comprobación manual es esa convención repetida, y no escala: en un grupo de tres modos, un cuarto añadido a mano no rompe nada y deja de cubrir una combinación en silencio; el `if` vive lejos de los flags que restringe, donde nadie que añada uno lo va a leer.
 
-El coste es que el mensaje lo formatea argparse en inglés, igual que el de todas las demás rutas de parseo, y ese mensaje entra íntegro en el payload de error.
+El coste es que el mensaje lo formatea `clap` en inglés, igual que el de todas las demás rutas de parseo, y ese mensaje entra íntegro en el payload de error.
 
 #### Validación de identificadores y de existencia
 
@@ -343,16 +343,9 @@ La única interacción entre `--json` y el comportamiento es la regla 2: `--json
 
 #### Ubicación y layout
 
-`data_root()/synthetic-speech/<voz>/<etiqueta>.wav`, **raíz hermana de `voices/`**.
+`<data_dir>/speech/<voz>/<etiqueta>.wav` (`crates/avi-store/src/lib.rs` `SpeechStore`), **raíz hermana de `voices/`** (`VoiceStore`: `<data_dir>/voices/<nombre>/`; caché HF: `hf_cache_dir()`).
 
-**Divergencia de layout con el runtime nativo (Fase 5).** La ruta `synthetic-speech/` describe el
-runtime Python legado. El host Rust conserva su layout propio, `<data_dir>/speech/<voz>/<etiqueta>.wav`
-(decisión de gate e6: preservar `SpeechStore`), y su sidecar incluye `duration_secs`. Consecuencia
-declarada: **los datos de un runtime no son intercambiables con los del otro** — locuciones y sidecars
-escritos por uno no los lee el otro. La normalización de identificadores a minúsculas y la colisión
-exit 6 sí son comunes a ambos.
-
-**Por qué no anidado en `voices/<voz>/synthetic-speech/`**, que sería la opción intuitiva y ahorraría código de borrado: `default` es una voz de **fábrica**, en un directorio empaquetado de solo lectura. Sus locuciones tendrían que ir a un espejo en el registro de usuario: un directorio con `synthetic-speech/` pero sin `timbre-reference.wav` ni `speech-reference.wav`. Ese directorio sería invisible para `list_voices` e indeleble por `voice remove`, porque `_is_valid_voice_dir` es el guard que protege el `rmtree` y exige `speech-reference.wav`.
+**Por qué no anidado en `voices/<voz>/speech/`**, que sería la opción intuitiva y ahorraría código de borrado: `default` es una voz de **fábrica**, en un directorio empaquetado de solo lectura. Sus locuciones tendrían que ir a un espejo en el registro de usuario: un directorio con `speech/` pero sin `timbre-reference.wav` ni `speech-reference.wav`. Ese directorio sería invisible para `VoiceStore::list` e indeleble por `voice remove`, porque `VoiceStore` (`crates/avi-store/src/lib.rs`) valida por `speech-reference.wav` como guard del borrado.
 
 Coste aceptado de la raíz separada: el arrastre de las locuciones al borrar una voz no es gratis y exige código explícito.
 
@@ -376,19 +369,19 @@ Cada locución son dos archivos, y **el `.wav` manda**. El `.json` son metadatos
 Junto a cada `<etiqueta>.wav` se escribe `<etiqueta>.json` con tres campos: `text`, `voice` y `created_at`. Sin él las etiquetas son opacas: pasadas unas semanas, `saludo2` no le dice nada a nadie.
 
 - **`created_at` en ISO 8601 UTC.**
-- **El sidecar es formato interno y no lleva versión de esquema propia.** Su única superficie estable es el payload `--json`, gobernado por `cli.SCHEMA_VERSION`. Darle versión propia daría al proyecto tres versiones de esquema donde hay dos.
+- **El sidecar es formato interno y no lleva versión de esquema propia.** Su única superficie estable es el payload `--json`, gobernado por `schema_version="3"` (`src/main.rs` / `crates/avi-core/src/json_emitter.rs`). Darle versión propia daría al proyecto tres versiones de esquema donde hay dos.
 - **Un lector que encuentre un campo desconocido lo ignora**, igual que hacen los modelos del protocolo IPC con `extra="ignore"`.
 - **`speech list` tolera un sidecar ausente** mostrando la locución sin metadatos, en vez de fallar. Muestra el texto **truncado** en la salida humana y **completo** en el payload `--json`.
 
 #### Atomicidad de la escritura
 
-Cada archivo se escribe a un temporal en el mismo directorio y se publica con `os.replace`, de modo que una interrupción no deje un WAV truncado que `speech list` mostraría como válido y `speech play` intentaría reproducir.
+Cada archivo se escribe a un temporal en el mismo directorio y se publica con `rename` atómico, de modo que una interrupción no deje un WAV truncado que `speech list` mostraría como válido y `speech play` intentaría reproducir.
 
-**El sidecar se publica antes del WAV**, así que la aparición del `.wav` implica que sus metadatos ya están completos. Combinado con que el WAV es el recurso de registro, una interrupción entre ambos `os.replace` deja basura inocua: el sidecar huérfano no ocupa la etiqueta, y `speech remove` lo alcanza.
+**El sidecar se publica antes del WAV**, así que la aparición del `.wav` implica que sus metadatos ya están completos. Combinado con que el WAV es el recurso de registro, una interrupción entre ambos `rename` deja basura inocua: el sidecar huérfano no ocupa la etiqueta, y `speech remove` lo alcanza.
 
 #### Validación de identificadores
 
-La etiqueta y el nombre de voz son la misma clase de identificador: un segmento de ruta. Los valida **un solo validador parametrizado**, `_validate_path_segment(value, kind="voz" | "etiqueta")`, que ambos invocan en vez de duplicar la regex.
+La etiqueta y el nombre de voz son la misma clase de identificador: un segmento de ruta. Los valida **`crates/avi-store/src/lib.rs` `VoiceStore::validate_name`** (validador único parametrizado por `kind="voz" | "etiqueta"`), que `VoiceStore` y `SpeechStore` invocan en vez de duplicar la regla.
 
 - **El parámetro `kind` determina el sustantivo del mensaje** —«Nombre de voz inválido» frente a «Nombre de etiqueta inválido»—, de modo que `speech synthesize --label "mi saludo"` no culpe a `--voice`. Sin eso, el mensaje de error más frecuente del flag más usado apuntaría a otra cosa.
 - **Las etiquetas se normalizan a minúsculas**, porque el validador lo hace deliberadamente para evitar colisiones en filesystems case-insensitive. `--label Saludo` y `--label saludo` son la misma etiqueta, y el archivo se llama `saludo.wav`. Se declara en el help de `--label` y en `USAGE.md`.
@@ -436,9 +429,9 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 
 **El 6 tiene un solo dueño.** «Puerto ya en uso» y «la voz ya existe» son el mismo hecho y llevan el mismo código; no hay una constante aparte para el conflicto del daemon.
 
-#### El 2 significa lo que argparse quiere decir con él
+#### El 2 significa lo que `clap` quiere decir con él
 
-El exit 2 es, en Unix y en argparse, el código del error de invocación, y aquí significa exactamente eso. Como consecuencia, **todas las rutas de fallo de parseo son correctas sin escribir una línea de validación**: flag requerido ausente, valor fuera de `choices`, grupo mutuamente excluyente violado, subcomando inválido en los tres niveles, y flag desconocido en cualquier comando.
+El exit 2 es, en Unix y en `clap`, el código del error de invocación, y aquí significa exactamente eso. Como consecuencia, **todas las rutas de fallo de parseo son correctas sin escribir una línea de validación**: flag requerido ausente, valor fuera de `choices`, grupo mutuamente excluyente violado (`conflicts_with`), subcomando inválido en los tres niveles, y flag desconocido en cualquier comando.
 
 **Ausente = exploración (0), inválido = error (2).** `ai-voice-interconnector` a secas y `ai-voice-interconnector speech` a secas no son un error: imprimen la ayuda y salen con `EXIT_OK`, igual que `--help`, porque una invocación sin subcomando es exploratoria. La regla no es «ausente o inválido → 2».
 
@@ -449,22 +442,22 @@ Dos pruebas de que la convención es la correcta:
 
 #### Dónde viven las constantes, y por qué eso es parte del contrato
 
-**Las constantes viven en un módulo hoja, `exit_codes.py`, sin imports del paquete.** Un módulo sin dependencias internas **no puede** cerrar un ciclo de import, así que la justificación que empujaría una constante a declararse fuera del bloque no está disponible ni siquiera como pretexto. `cli.py` reexporta las constantes, de modo que `cli.EXIT_*` es un nombre válido; el paquete `daemon` importa del módulo hoja en vez de arrastrar `cli` entero.
+**Las constantes viven en `crates/avi-core/src/exit_codes.rs` (`ExitCode`), sin dependencias circulares.** Un crate hoja sin imports del binario **no puede** cerrar un ciclo, así que la justificación que empujaría una constante a declararse fuera del módulo no está disponible ni siquiera como pretexto. `crates/avi-core/src/json_emitter.rs` (`emit_raw_json`) y `src/main.rs` (`Cli::parse`, `handle_*`) reexportan el contrato, de modo que `ExitCode::InvalidInput` es el nombre canónico.
 
-**Un contrato cerrado sin un lugar legítimo donde crecer no impide el crecimiento: lo empuja fuera del campo de visión.** El dueño es el módulo, no una advertencia.
+**Un contrato cerrado sin un lugar legítimo donde crecer no impide el crecimiento: lo empuja fuera del campo de visión.** El dueño es el crate `avi-core`, no una advertencia.
 
 **Dos invariantes de gobernanza lo sostienen**, y son distintos:
 
-1. **Ningún `EXIT_*` puede definirse fuera de `exit_codes.py`.** Un test recorre los módulos del paquete y falla ante una asignación con ese prefijo en cualquier otro archivo.
-2. **La tabla de `USAGE.md` y el módulo dicen lo mismo.** Compara los pares valor/constante con las filas de la tabla pública. Un código declarado por fuera y además sin documentar es invisible dos veces.
+1. **Ningún `ExitCode` puede definirse fuera de `crates/avi-core/src/exit_codes.rs`.** Un test recorre los crates y falla ante una definición con ese prefijo en cualquier otro archivo.
+2. **La tabla de `USAGE.md` y el módulo dicen lo mismo.** Compara los pares valor/variante con las filas de la tabla pública. Un código declarado por fuera y además sin documentar es invisible dos veces.
 
-La reexportación desde `cli.py` crea dos sitios donde *parecen* vivir las constantes; el primer invariante lo desactiva —cualquier definición fuera del módulo hoja falla—, así que la reexportación es un alias y no una segunda declaración. La distinción queda escrita en el módulo.
+La reexportación desde `src/main.rs` crea dos sitios donde *parecen* vivir las constantes; el primer invariante lo desactiva —cualquier definición fuera del crate hoja falla—, así que la reexportación es un alias y no una segunda declaración. La distinción queda escrita en el crate.
 
-**El comentario del módulo** enuncia el criterio generador en sus dos tiempos —clase de causa y admisión por la siguiente llamada del consumidor—, fecha el congelamiento de la tabla **en la 1.0**, advierte que un intercambio de valores es indetectable para un consumidor, y recoge el criterio de revisión que no puede ser test.
+**El comentario del crate** enuncia el criterio generador en sus dos tiempos —clase de causa y admisión por la siguiente llamada del consumidor—, fecha el congelamiento de la tabla **en la 1.0**, advierte que un intercambio de valores es indetectable para un consumidor, y recoge el criterio de revisión que no puede ser test. La versión del esquema es `schema_version="3"` (`src/main.rs` / `crates/avi-core/src/json_emitter.rs`).
 
 **Dos reglas transversales, y solo una es mecanizable.**
 
-- **Test**: ningún `sys.exit(EXIT_ERROR)` puede alcanzarse por una causa prevista con remedio declarado en su propio mensaje. Un `EXIT_ERROR` cuyo mensaje contenga «reintenta» es por construcción un olvido.
+- **Test**: ningún `ExitCode::Error` puede alcanzarse por una causa prevista con remedio declarado en su propio mensaje. Un `EXIT_ERROR` cuyo mensaje contenga «reintenta» es por construcción un olvido.
 - **Criterio de revisión, no test**: ningún `EXIT_INVALID_INPUT` puede alcanzarse con una invocación bien formada. «Bien formada» no tiene definición ejecutable, y escribirla como test produciría una aserción que no afirma nada. Su lugar es el comentario del módulo, junto al criterio generador.
 
 ## 10. El canal de error y los payloads
@@ -491,19 +484,19 @@ Las tres reglas de compatibilidad y la regla de promoción son contrato **de con
 
 #### El mecanismo: un solo punto de traducción
 
-**La invariante no se sostiene con un `if` por sitio**, porque eso la deja en manos de que nadie olvide uno. Es la misma solución que la ruta de éxito ya tiene con `emit_json()`, cuyo docstring enuncia el motivo: *«la garantía queda en un solo lugar, no repetida por convención en cada comando»*. La ruta de fallo tiene la misma forma:
+**La invariante no se sostiene con un `if` por sitio**, porque eso la deja en manos de que nadie olvide uno. Es la misma solución que la ruta de éxito ya tiene con `emit_raw_json` (`crates/avi-core/src/json_emitter.rs`), cuyo doc enuncia el motivo: *«la garantía queda en un solo lugar, no repetida por convención en cada comando»*. La ruta de fallo tiene la misma forma:
 
-- Los sitios de fallo levantan **`CliError(code, reason, message)`** en vez de imprimir y salir.
-- **`main()` es el único punto que lo traduce**: mensaje humano a stderr, payload a stdout si se pidió `--json`, y salida con el código. No queda otro camino hasta la salida, así que la invariante no necesita vigilancia.
-- El invariante que la protege es mecanizable: **ninguna salida no-cero fuera de `main()`**.
+- Los sitios de fallo retornan **`ExitCode` + `reason` + `message`** (tipo `CliError` en `crates/avi-core/src/exit_codes.rs` / `crates/avi-core/src/json_emitter.rs`) en vez de imprimir y salir.
+- **`src/main.rs` (`main` / `handle_*` / `emit_raw_json`) es el único punto que lo traduce**: mensaje humano a stderr, payload a stdout si se pidió `--json`, y salida con el código. No queda otro camino hasta la salida, así que la invariante no necesita vigilancia.
+- El invariante que la protege es mecanizable: **ninguna salida no-cero fuera de `src/main.rs`**.
 
-**La salida por veredicto entra por el mismo punto único.** Un comando que ya emitió su payload propio y quiere salir con código ≠ 0 sin adjuntar objeto `error` **devuelve el entero** del código; `main()` honra un retorno entero ≠ 0 con `sys.exit(code)`. No hay tipo de excepción nuevo ni `sys.exit` disperso: la salida sigue pasando por `main()`, así que **ninguna salida no-cero fuera de `main()`** se mantiene. `doctor` es el caso que lo usa: emite su reporte y retorna `EXIT_ERROR` cuando hay FAIL.
+**La salida por veredicto entra por el mismo punto único.** Un comando que ya emitió su payload propio y quiere salir con código ≠ 0 sin adjuntar objeto `error` **devuelve el entero** del código; `src/main.rs` honra un retorno `ExitCode` ≠ 0 y sale con ese código. No hay tipo de error nuevo disperso: la salida sigue pasando por `main`, así que **ninguna salida no-cero fuera de `src/main.rs`** se mantiene. `doctor` es el caso que lo usa: emite su reporte y retorna `ExitCode::Error` cuando hay FAIL.
 
-**`CliError` hereda de `BaseException`, no de `Exception`, y esa elección no es estilística.** Una señal de control de flujo no debe ser capturable por un manejador de errores de dominio — es la razón por la que `SystemExit` tampoco lo es. Con `Exception` como base, las salidas envueltas en un `except Exception` de su propio comando quedarían capturadas y saldrían con 1, y alguna además pasaría por la función clasificadora de fallos de provisión y se diagnosticaría como imprevisto. Un test afirma que `CliError` **no** desciende de `Exception`, porque el invariante de salidas comprueba la forma de la salida y no su destino.
+**`CliError` es señal de control de flujo, no error de dominio.** Una señal de flujo no debe ser capturable por un manejador genérico; en Rust se modela como tipo propio en `avi-core` que `src/main.rs` traduce, sin propagación silenciosa por handlers genéricos. Un test afirma la separación entre error de dominio y señal de salida.
 
-**El fallo de parseo entra por el mismo canal.** Una subclase de `ArgumentParser` sobrescribe `error()` para que levante `CliError(EXIT_INVALID_INPUT, "usage_error", message)` en vez de imprimir y salir: así el texto que argparse ya calcula entra al payload en vez de perderse, y el 2 —el fallo más frecuente que verá un consumidor programado— deja stdout tan poblado como cualquier otro. `parse_args()` corre dentro del mismo handler. Queda un residuo honesto: al fallar el parseo no existe `args`, así que hay que mirar `sys.argv` para saber si se pidió `--json`; decide *si* emitir, no qué, y vive en un único sitio.
+**El fallo de parseo entra por el mismo canal.** `src/main.rs` (`Cli::parse` con `clap`) traduce el error de parseo a `ExitCode::InvalidInput` (`"usage_error"`) en vez de imprimir y salir: así el texto que `clap` ya calcula entra al payload en vez de perderse, y el 2 —el fallo más frecuente que verá un consumidor programado— deja stdout tan poblado como cualquier otro. `Cli::parse` corre dentro del mismo handler. Queda un residuo honesto: al fallar el parseo no existe `Cli`, así que hay que inspeccionar los args crudos para saber si se pidió `--json`; decide *si* emitir, no qué, y vive en un único sitio.
 
-**El render deja pasar intacto cualquier `SystemExit` de código 0.** `--help` sale por esa vía sin pasar nunca por `error()`, así que un handler que no discrimine por código emitiría payload de error en la invocación más común de toda la CLI. Es el único caso, y tiene test de regresión propio en los tres niveles de parser.
+**El render deja pasar intacto el exit 0.** `--help` sale por esa vía sin pasar nunca por error, así que un handler que no discrimine por código emitiría payload de error en la invocación más común de toda la CLI. Es el único caso, y tiene test de regresión propio.
 
 **`daemon serve` queda fuera del mecanismo, y por una razón concreta: no acepta `--json`.** No hay payload que emitir, así que la invariante del canal no tiene alcance ahí y ese comando sale directamente. Esa es la condición que lo autoriza y ninguna otra: darle `--json` reabriría el hueco.
 
@@ -531,8 +524,8 @@ Los payloads de `daemon start`, `stop` y `restart` no llevan clave booleana prop
 
 Son **dos, independientes**, y ambas valen `"3"`:
 
-- **`protocol.SCHEMA_VERSION`** — forma de los mensajes IPC del daemon. Subió a `"2"` porque `/synthesize` identifica la voz por su nombre y no transporta rutas: una forma que no es aditiva y por tanto exige versión propia. Subió otra vez a `"3"` con el rediseño cross-lingual: `HealthResponse.model_loaded` pasó de `bool` a `dict[str, bool]` (un modelo cargado por idioma en vez de uno solo), un cambio incompatible de un campo existente.
-- **`cli.SCHEMA_VERSION`** — forma de los payloads `--json` de la CLI. Subió a `"2"` porque el payload de síntesis no lleva clave de ruta de salida. Subió otra vez a `"3"` por la misma razón que `protocol.SCHEMA_VERSION`: `daemon status --json` refleja el mismo cambio de `model_loaded` de booleano a objeto por idioma.
+- **`crates/avi-daemon/src/lib.rs` (`DaemonState`, `run_daemon_server`) — protocolo IPC del daemon.** Subió a `"2"` porque `/synthesize` identifica la voz por su nombre y no transporta rutas: una forma que no es aditiva y por tanto exige versión propia. Subió otra vez a `"3"` con el rediseño cross-lingual: `model_loaded` pasó de `bool` a `dict[str, bool]` (un modelo cargado por idioma en vez de uno solo), un cambio incompatible de un campo existente (`crates/avi-core/src/engine.rs` `SttEngine`/`TtsEngine`, estados `warm`/`warm_failed`).
+- **`src/main.rs` / `crates/avi-core/src/json_emitter.rs` (`schema_version="3"`) — payloads `--json` de la CLI.** Subió a `"2"` porque el payload de síntesis no lleva clave de ruta de salida. Subió otra vez a `"3"` por la misma razón que el protocolo del daemon: `daemon status --json` refleja el mismo cambio de `model_loaded` de booleano a objeto por idioma.
 
 Son dos causas independientes que coinciden en el mismo hecho generador. Los payloads del grupo `speech` no influyen en ninguna: añadir subcomandos es aditivo, y añadir la clave `error` también lo es.
 
@@ -566,7 +559,7 @@ El chequeo de audio degrada a WARN en vez de FAIL, **con la premisa que lo sosti
 - **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime), y los archivos en disco se llaman `timbre-reference.wav` y `speech-reference.wav`. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
 - **`voice clone` recibe el despacho al daemon en sus tres modos**, porque precomputa los conditionals de la voz al clonarla y necesita el modelo cargado igual que las dos sub-acciones que sintetizan.
 - **`voice clone` sobre un nombre tomado sin `--force` sale con 6**, y sobre un nombre libre `--force` es un no-op declarado.
-- `_is_valid_voice_dir` reconoce una voz por `speech-reference.wav`; `timbre-reference.wav` es opcional.
+- `VoiceStore` (`crates/avi-store/src/lib.rs`) reconoce una voz por `speech-reference.wav`; `timbre-reference.wav` es opcional.
 - En `voice list` y `voice remove`, `-n` es `--name`.
 
 ## 12. Contratos externos
@@ -581,7 +574,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 `/synthesize` recibe `voice: str`. No hay lista de directorios de audio permitidos, ni validación de rutas de audio, ni directorio de sesión del daemon, porque no hay rutas que validar.
 
-**Riesgo conocido y declarado**: `data_root()` depende de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. Está atenuado porque `/voices` permite inspeccionar la vista del daemon.
+**Riesgo conocido y declarado**: `data_dir()` / `hf_cache_dir()` (`crates/avi-store/src/lib.rs`) depende de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. Está atenuado porque `/voices` permite inspeccionar la vista del daemon.
 
 ## 13. El comando `translate`, `speech transcribe`, `speech dub` y la síntesis cross-lingual
 
