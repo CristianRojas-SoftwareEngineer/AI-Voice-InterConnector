@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.15.2 — 2026-08-27](#0152-20260827)
 - [0.15.1 — 2026-08-27](#0151-20260827)
 - [0.15.0 — 2026-08-27](#0150-20260827)
 - [0.14.0 — 2026-08-27](#0140-20260827)
@@ -46,6 +47,20 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.15.2] — 2026-08-27
+
+La auditoría del 2026-08-27 contrastó el ground truth Rust 0.15.1 (Qwen3-TTS 0.6B + Parakeet TDT v3 int8 `ort` + CTranslate2 `ct2rs` + `cpal` + `tar.gz/zip`) contra 17 documentos y halló 20 drifts: `docs/BUILD.md` describía `whisper.cpp/GGUF` y `libclang` incondicional, `docs/DESIGN.md` diagramaba `whisper.cpp` en 0.10.7, `docs/CLI/CONTRACT.md` citaba rutas Python inexistentes y `SECURITY.md` modelaba `PyPI`. Esta patch reescribe cada documento al estado canónico sin notas históricas, condiciona `libclang` a `native-translation/full` y limpia artefactos `AppImage/PyInstaller`.
+
+### Corregido
+
+- `docs/BUILD.md`, `docs/DESIGN.md`, `docs/CLI/CONTRACT.md`, `SECURITY.md`, `USAGE.md`, `README.md`, `docs/GOAL.md`, `docs/MANUAL-VALIDATION.md`, `CONTRIBUTING.md`: sincronizados al stack Parakeet/`ct2rs`/`cpal` 0.15.1 y pesos `~9GB` base.
+- `.circleci/config.yml`, `.cargo/config.toml`, `.gitignore`, `docs/DISTRIBUTION.md`, `docs/SELF-HOSTED-INSTALL.md`: comentarios y artefactos `whisper/AppImage/patchelf` a `ct2rs/ort`.
+
+### Eliminado
+
+- `.npmignore` (23 líneas) — reglas `src/tests/docs/.circleci` del canal `npm` retirado en Fase 7.
 
 ## [0.15.1] — 2026-08-27
 
@@ -1162,3 +1177,4 @@ estado con el que nace el producto.
 [0.14.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.12.0...v0.14.0
 [0.15.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.14.0...v0.15.0
 [0.15.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.0...v0.15.1
+[0.15.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.1...v0.15.2
