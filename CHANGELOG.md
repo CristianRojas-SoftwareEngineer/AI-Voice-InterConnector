@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.13.0 — 2026-08-27](#0130--2026-08-27)
 - [0.11.3 — 2026-08-26](#0113--2026-08-26)
 - [0.11.2 — 2026-08-26](#0112--2026-08-26)
 - [0.11.1 — 2026-08-26](#0111--2026-08-26)
@@ -38,6 +39,43 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [0.13.0] — 2026-08-27
+
+Fix estructural del arranque del daemon: readiness inmediato tras enlazar el
+puerto y warmup en segundo plano, desacoplando *readiness* (enlazado + motor
+construido) de *warm* (pre-calentamiento). Elimina de raíz el acoplamiento
+`warmup→bind` que retrasaba el `bind` hasta terminar una síntesis TTS real.
+
+### Cambiado
+
+- `crates/avi-daemon/src/lib.rs`: `run_daemon_server` enlaza el `TcpListener`
+  antes del warmup; el warmup real corre en `tokio::task::spawn_blocking` sin
+  bloquear el arranque. Un warmup fallido degrada (`warm_failed`) pero no derriba
+  el daemon: sigue sirviendo y la primera petición paga cold-start.
+- `src/main.rs`: el sondeo de arranque (`await_daemon_ready`) espera solo a que el
+  daemon sea alcanzable (spawn+bind acotado), sin el deadline dimensionado para la
+  síntesis; `daemon status` expone el estado `warm` para diagnóstico.
+
+### Añadido
+
+- Estado `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla) en
+  `DaemonState`, expuesto en `/health` y en `daemon status`.
+- Los tres E2E de daemon (`daemon_start_exito`, `daemon_restart_rearma`,
+  `daemon_status_running`) vuelven a la suite por defecto (des-ignorados) al dejar
+  `start` de pagar síntesis real.
+
+### Corregido
+
+- Depuración de warnings de clippy en `avi-tts`, `avi-stt`, `avi-translation` y
+  `xtask` (default y `--all-features`): `doc_lazy_continuation`,
+  `needless_range_loop`, `field_reassign_with_default`, dead code, entre otros.
+
+### Notas de release
+
+- **BREAKING**: `/health` cambia de `{status:"healthy"}` a
+  `{status:"ready", warm, engine}`. El único consumidor es el CLI raíz, alineado
+  en el mismo release.
 
 ## [0.11.3] — 2026-08-26
 
