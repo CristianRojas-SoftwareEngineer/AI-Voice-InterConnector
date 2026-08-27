@@ -27,23 +27,23 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
   "No publicado"). **El job `publish-release` falla si no encuentra la sección
   `[X.Y.Z]`** (X.Y.Z = tag sin la `v`), así que este corte es obligatorio antes
   de taggear. Genera el borrador atómicamente con:
-  ```bash
+   ```bash
   cargo run -p xtask -- release X.Y.Z
+  # o vía skill: /release X.Y.Z
   ```
-  Este comando bumpea la versión en `src/main.rs`, `Cargo.toml`, `Cargo.lock` y
-  `tests/golden/cli_version.json`, e inserta en `CHANGELOG.md` la sección nueva
-  con su entrada en la tabla de contenidos y su definición de enlace al final,
-  pre-rellenada desde `git log` agrupada por tipo de commit. Cierra los marcadores
-  `TODO: curar` (párrafo introductorio y bullets), commitea con
-  `conventional-commits` y luego crea el tag. El job `validate-changelog`
-  (`cargo run -p xtask -- changelog --check`) verifica en CI que la sección
-  existe antes de los builds.
-- `SOURCE-OFFER.md` (oferta de fuente GPLv3 §6, viaja dentro de los 4
-  artefactos) está regenerado para la versión a publicar: tras el bump de
-  `VERSION` (`src/main.rs`/`Cargo.toml`), correr `cargo run -p xtask -- source-offer >
-  SOURCE-OFFER.md` y commitear el resultado antes del tag. El gate
-  `validate-licenses` (`cargo run -p xtask -- source-offer --check`) falla
-  si el archivo commiteado diverge del generador.
+  Este comando bumpea la versión en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
+  `tests/golden/cli_version.json` y **`SOURCE-OFFER.md`** (oferta GPLv3 §6
+  versionada, antes paso manual separado), e inserta en `CHANGELOG.md` la
+  sección nueva con su entrada en la tabla de contenidos y su definición de
+  enlace al final, pre-rellenada desde `git log` agrupada por tipo de commit.
+  Cierra los marcadores `TODO: curar` (párrafo introductorio y bullets),
+  commitea con `conventional-commits` y luego crea el tag. El job
+  `validate-changelog` (`cargo run -p xtask -- changelog --check`) verifica en
+  CI que la sección existe antes de los builds. El gate `validate-licenses`
+  (`cargo run -p xtask -- source-offer --check`) verifica que `SOURCE-OFFER.md`
+  coincida con el renderizado para la versión bumpeada (ahora generado
+  atómicamente).
+- `SOURCE-OFFER.md` viaja dentro de los 4 artefactos y ya queda en `X.Y.Z` tras el bump atómico; no requiere paso manual extra.
 - `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock` (Rust):
   ante altas/bajas de crates, regenerar el inventario (cargo-license) y
   verificar con `cargo run -p xtask -- licenses --check`. El gate
@@ -90,13 +90,13 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
 ## 1. Corte: crear y publicar el tag
 
 ```bash
-cargo run -p xtask -- release X.Y.Z
-# → cura los TODO: curar del CHANGELOG
-# → cargo test --all
+cargo run -p xtask -- release X.Y.Z   # o /release X.Y.Z (skill orquestadora)
+# → cura los TODO: curar del CHANGELOG (párrafo + bullets)
+# → cargo test --all && cargo run -p xtask -- changelog --check -- source-offer --check -- licenses --check
 git add -A
 git commit -m "release: vX.Y.Z"  # conventional-commits
 git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin main --tags
+git push origin main --tags       # --tags es obligatorio: sin él el tag no dispara build-all
 ```
 
 El push del tag dispara el workflow `build-all` en CircleCI sobre ese commit:

@@ -182,6 +182,7 @@ fn main() -> Result<()> {
             println!("  - Cargo.toml (package.version)");
             println!("  - Cargo.lock (ai-voice-interconnector)");
             println!("  - tests/golden/cli_version.json");
+            println!("  - SOURCE-OFFER.md (oferta GPLv3 §6 versionada)");
             println!("  - CHANGELOG.md (sección + TOC + definición de enlace)");
             println!("Cierra los TODO: curar del CHANGELOG, commitea con conventional-commits y crea el tag v{}", version);
         }
@@ -284,6 +285,10 @@ fn bump_version(version: &str) -> Result<()> {
         r#"("version":\s*")([^"]+)(")"#,
         version,
     )?;
+
+    // SOURCE-OFFER.md: oferta GPLv3 §6 versionada (antes paso manual separado)
+    let offer = render_source_offer(version);
+    std::fs::write(Path::new("SOURCE-OFFER.md"), offer)?;
 
     Ok(())
 }
