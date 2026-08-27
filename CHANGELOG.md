@@ -8,6 +8,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 ## Tabla de contenidos
 
 - [0.13.0 — 2026-08-27](#0130--2026-08-27)
+- [0.12.0 — 2026-08-27](#0120--2026-08-27)
 - [0.11.3 — 2026-08-26](#0113--2026-08-26)
 - [0.11.2 — 2026-08-26](#0112--2026-08-26)
 - [0.11.1 — 2026-08-26](#0111--2026-08-26)
@@ -76,6 +77,37 @@ construido) de *warm* (pre-calentamiento). Elimina de raíz el acoplamiento
 - **BREAKING**: `/health` cambia de `{status:"healthy"}` a
   `{status:"ready", warm, engine}`. El único consumidor es el CLI raíz, alineado
   en el mismo release.
+
+## [0.12.0] — 2026-08-27
+
+Arranque en segundo plano fiable del daemon: se corrige el falso negativo de
+`daemon start`/`restart` (el sondeo se agotaba antes de que el warmup en frío
+terminara, devolviendo `daemon_unreachable` con el daemon sano) y se añade
+`spawn_background` desacoplado del proceso padre, con el modelo Base de clonado
+resuelto desde el snapshot HF de `setup --with-base`.
+
+### Añadido
+
+- `crates/avi-daemon/src/spawn.rs`: `spawn_background` (Stdio nulo +
+  `DETACHED_PROCESS` en Windows, `setsid` en Unix) para desacoplar el arranque en
+  segundo plano del proceso padre.
+- `crates/avi-tts/src/lib.rs`: capa de resolución HF en `resolve_base_model_dir`
+  para el modelo Base de clonado desde el snapshot descargado por
+  `setup --with-base`.
+- `crates/avi-store/src/lib.rs`: pin auditable del modelo Base
+  `qwen3-tts-0.6b-base` verificado + test.
+
+### Corregido
+
+- `src/main.rs`: `daemon start`/`restart` esperan readiness contra un deadline por
+  reloj de pared (techo 60 s, retorno inmediato al primer `/health` sano),
+  eliminando el falso negativo `daemon_unreachable`; `daemon.pid` se persiste solo
+  tras confirmar readiness (sin PID stale ante un warmup fallido).
+
+### Notas de release
+
+- Los E2E de daemon quedan `#[ignore]` en el CI por defecto (disponibles bajo
+  `--ignored`); el modelo Base de clonado pesa ~2,5 GB.
 
 ## [0.11.3] — 2026-08-26
 
