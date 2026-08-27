@@ -175,6 +175,35 @@ fn main() -> Result<()> {
             if !Regex::new(r"^\d+\.\d+\.\d+$").unwrap().is_match(version) {
                 anyhow::bail!("versión inválida '{}': debe ser X.Y.Z (ej. 0.14.0)", version);
             }
+            // Pre-validación atómica: abortar antes de mutar si el árbol está sucio
+            // o no hay commits nuevos desde el último tag.
+            {
+                let last = last_tag()?;
+                let diff_status = std::process::Command::new("git")
+                    .args(["diff", "--quiet"])
+                    .status()?;
+                let diff_cached_status = std::process::Command::new("git")
+                    .args(["diff", "--cached", "--quiet"])
+                    .status()?;
+                if !diff_status.success() || !diff_cached_status.success() {
+                    anyhow::bail!(
+                        "working tree con cambios pendientes: commitea o stashea antes de release (git status debe estar limpio)"
+                    );
+                }
+                let log_out = std::process::Command::new("git")
+                    .args(["log", &format!("v{}..HEAD", last), "--oneline"])
+                    .output()?;
+                if !log_out.status.success() {
+                    anyhow::bail!("no se pudo verificar el rango v{}..HEAD", last);
+                }
+                let log_text = String::from_utf8(log_out.stdout)?;
+                if log_text.trim().is_empty() {
+                    anyhow::bail!(
+                        "no se encontraron commits desde el tag v{} — el rango está vacío; commitea cambios antes de release",
+                        last
+                    );
+                }
+            }
             bump_version(version)?;
             scaffold_changelog(version)?;
             println!("Borrador de release {} generado:", version);
