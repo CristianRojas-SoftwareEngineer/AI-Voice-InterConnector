@@ -207,8 +207,9 @@ fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
 /// separada de `resolve_model_dir`: solo la usa el clonado (`--ref-audio`),
 /// que exige el modelo Base (`vendor/qwen3-tts/main.c:1848`), distinto del
 /// CustomVoice usado por la síntesis general.
-/// 1. `QWEN3_TTS_BASE_MODEL_DIR`; 2. directorio hermano del binario
-/// (`<dir del bin>/qwen3-tts-0.6b-base`); 3. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b-base`.
+/// Orden: 1. `QWEN3_TTS_BASE_MODEL_DIR`; 2. directorio hermano del binario
+/// (`<dir del bin>/qwen3-tts-0.6b-base`); 3. snapshot HF `ModelStore::model_snapshot_path("qwen3-tts-0.6b-base")`;
+/// 4. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b-base`.
 pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("QWEN3_TTS_BASE_MODEL_DIR") {
         let p = PathBuf::from(d);
@@ -222,6 +223,12 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
             if hermano.is_dir() {
                 return Some(hermano);
             }
+        }
+    }
+    // Capa HF: snapshot cacheado por setup --with-base
+    if let Some(p) = avi_store::ModelStore::new().model_snapshot_path("qwen3-tts-0.6b-base") {
+        if p.is_dir() && p.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false) {
+            return Some(p);
         }
     }
     let vendored = PathBuf::from("vendor/qwen3-tts/qwen3-tts-0.6b-base");

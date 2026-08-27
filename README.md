@@ -44,7 +44,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 - **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés (`--target-language`)
 - **Transcripción STT**: `speech transcribe` (Parakeet TDT 0.6B v3 int8, ONNX Runtime)
 - **Traducción**: `translate` es↔en (CTranslate2, opt-in)
-- **Daemon**: `daemon start/status/stop/serve` (Axum, `127.0.0.1:8765`, streaming NDJSON)
+- **Daemon**: `daemon start/status/stop/restart/serve` (Axum, `127.0.0.1:8765`, streaming NDJSON)
 - **100% offline**: Sin APIs externas ni conexiones a internet (modelos en `~/.cache/huggingface/hub`)
 - **Binario autocontenido por plataforma**: `tar.gz` (Linux/macOS) / `.zip` (Windows) con `LICENSE`/`THIRD-PARTY-LICENSES.md`/`SOURCE-OFFER.md`
 - **CLI universal**: `subprocess.run(["./ai-voice-interconnector", "speech", "say", "--text", "..."])`
@@ -128,9 +128,9 @@ La firma Authenticode/Apple notarization es goal a largo plazo (`docs/GOAL.md`).
 
 ### Provisión del/los modelo(s) (`setup`)
 
-Cuatro modelos pinneados no vienen en el binario: `qwen3-tts-0.6b` (~4,7 GB),
-`marian-es-en`/`marian-en-es` (~3 GB) y `parakeet-tdt-v3` (~600 MB, int8). Se descargan a
-`~/.cache/huggingface/hub` vía `setup`:
+Cinco modelos pinneados (4 + 1 opt-in) no vienen en el binario: `qwen3-tts-0.6b` (~4,7 GB),
+`marian-es-en`/`marian-en-es` (~3 GB), `parakeet-tdt-v3` (~600 MB, int8) y `qwen3-tts-0.6b-base` (~2,5 GB, opt-in con `setup --with-base`). Se descargan a
+`~/.cache/huggingface/hub` vía `setup` (~9 GB base, ~11,5 GB con `--with-base`):
 
 ```bash
 ai-voice-interconnector setup
@@ -190,8 +190,8 @@ ai-voice-interconnector voice clone --name X --timbre-reference ref.wav --speech
 ai-voice-interconnector voice list / remove --name X
 ai-voice-interconnector translate --text "Hola" --from es --to en
 ai-voice-interconnector devices / doctor / version
-ai-voice-interconnector daemon start / status / stop / serve
-ai-voice-interconnector setup [--with-stt] / cleanup [--all] / uninstall --force
+ai-voice-interconnector daemon start / status / stop / restart / serve
+ai-voice-interconnector setup [--with-base] [--with-stt] / cleanup [--all] / uninstall --force
 ```
 
 Contrato estable (`--json` `schema_version="3"`, exit codes `0-10/130`) en `docs/CLI/CONTRACT.md`.

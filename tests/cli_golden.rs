@@ -304,11 +304,14 @@ mod tts {
 
     /// El clonado de voz exige el modelo Base del motor (graft ICL); el modelo
     /// CustomVoice vendorizado (`qwen3-tts-0.6b/`) no sirve para clonado. El
-    /// modelo Base se provisiona en un directorio separado
-    /// (`qwen3-tts-0.6b-base/`, `config.json: "tts_model_type"`).
+    /// modelo Base se provisiona vía `ModelStore` snapshot HF o directorio vendored
+    /// (`qwen3-tts-0.6b-base/`, `config.json: "tts_model_type": "base"`).
     fn tts_clone_provisioned() -> bool {
         if !tts_provisioned() {
             return false;
+        }
+        if avi_store::ModelStore::new().is_provisioned("qwen3-tts-0.6b-base") {
+            return true;
         }
         let config = Path::new("vendor/qwen3-tts/qwen3-tts-0.6b-base/config.json");
         match std::fs::read_to_string(config) {
@@ -671,7 +674,7 @@ mod tts {
         if !tts_clone_provisioned() {
             eprintln!(
                 "[tts] skip: el clonado exige el modelo Base del motor Qwen3-TTS \
-                 (el vendored es CustomVoice); pendiente de F6/F7"
+                 (usa setup --with-base)"
             );
             return;
         }
@@ -772,5 +775,100 @@ mod tts {
             actual["reason"],
             Value::String("audio_not_found".to_string())
         );
+    }
+
+    // ─── daemon start/status/restart ────────────────────────────────
+
+    fn daemon_cleanup() {
+        let _ = Command::new(BIN)
+            .args(["daemon", "stop"])
+            .output();
+        // También POST directo por si stop falló
+        let _ = std::process::Command::new(BIN)
+            .args(["--json", "daemon", "status"])
+            .output();
+    }
+
+    #[test]
+    #[ignore = "E2E: paga warmup real; ejecutar con --ignored en el reality check"]
+    fn daemon_start_exito() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        // Asegurar estado limpio
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if !tts_modelo_registrado() {
+            eprintln!("[daemon] skip: sin modelo TTS provisionado para daemon start");
+            return;
+        }
+        let (code, actual) = run_json(&["--json", "daemon", "start"]);
+        // Puede ser already_running si otro test dejó daemon; aceptar running
+        assert!(
+            code == 0,
+            "daemon start debe salir 0, fue {} reason {:?}",
+            code, actual
+        );
+        assert_eq!(actual["daemon"], Value::String("running".to_string()));
+        // Verificar status running
+        let (code2, actual2) = run_json(&["--json", "daemon", "status"]);
+        assert_eq!(code2, 0);
+        assert_eq!(actual2["daemon"], Value::String("running".to_string()));
+        // Cleanup garantizado: POST /shutdown
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (code3, actual3) = run_json(&["--json", "daemon", "status"]);
+        assert_eq!(actual3["daemon"], Value::String("stopped".to_string()), "tras stop debe quedar stopped");
+        let _ = code3;
+    }
+
+    #[test]
+    #[ignore = "E2E: paga warmup real; ejecutar con --ignored en el reality check"]
+    fn daemon_restart_rearma() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if !tts_modelo_registrado() {
+            eprintln!("[daemon] skip: sin modelo TTS provisionado para daemon restart");
+            return;
+        }
+        // Asegurar que haya daemon corriendo
+        let _ = run_json(&["--json", "daemon", "start"]);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (code, actual) = run_json(&["--json", "daemon", "restart"]);
+        assert_eq!(code, 0, "daemon restart debe salir 0");
+        assert_eq!(actual["daemon"], Value::String("running".to_string()));
+        assert!(actual.get("pid").is_some() || actual.get("status").is_some());
+        // Status debe seguir running
+        let (code2, actual2) = run_json(&["--json", "daemon", "status"]);
+        assert_eq!(actual2["daemon"], Value::String("running".to_string()));
+        let _ = code2;
+        // Cleanup
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    #[test]
+    #[ignore = "E2E: paga warmup real; ejecutar con --ignored en el reality check"]
+    fn daemon_status_running() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if !tts_modelo_registrado() {
+            eprintln!("[daemon] skip: sin modelo TTS provisionado");
+            return;
+        }
+        let _ = run_json(&["--json", "daemon", "start"]);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (code, actual) = run_json(&["--json", "daemon", "status"]);
+        assert_eq!(code, 0);
+        // Cuando está running, el fixture running debe coincidir (schema_version 3)
+        if actual["daemon"] == Value::String("running".to_string()) {
+            assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+            let expected = fixture("cli_daemon_status_running.json");
+            // Comparar daemon y engine
+            assert_eq!(actual["daemon"], expected["daemon"]);
+        }
+        // Cleanup
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }

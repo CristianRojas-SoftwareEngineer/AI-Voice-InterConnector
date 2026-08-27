@@ -403,6 +403,15 @@ pub const MODEL_REVISIONS: &[(&str, &str, &str)] = &[
         "istupakov/parakeet-tdt-0.6b-v3-onnx",
         "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
     ),
+    // Modelo Base Qwen3-TTS 0.6B para clonado de voz (speaker encoder) — snapshot
+    // completo. Repo público Qwen/Qwen3-TTS-12Hz-0.6B-Base verificado por dry-run:
+    // config.json con "tts_model_type": "base" + speaker_encoder_config; artefactos
+    // model.safetensors + speech_tokenizer/model.safetensors (no requiere allow_patterns).
+    (
+        "qwen3-tts-0.6b-base",
+        "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        "5d83992436eae1d760afd27aff78a71d676296fc",
+    ),
 ];
 
 /// Patrones de descarga por modelo (`snapshot_download` con `allow_patterns`).
@@ -991,5 +1000,37 @@ mod tests {
             "speech custom preservado"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T1: `revision_of("qwen3-tts-0.6b-base")` existe con repo público confirmado y hash
+    /// real (40 hex), y `model_snapshot_path` resuelve bajo HF_HUB_CACHE temporal.
+    #[test]
+    fn revision_of_base_existe_y_snapshot_resuelve() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Pin debe existir
+        let (repo, rev) = ModelStore::revision_of("qwen3-tts-0.6b-base")
+            .expect("qwen3-tts-0.6b-base debe estar en MODEL_REVISIONS");
+        assert_eq!(repo, "Qwen/Qwen3-TTS-12Hz-0.6B-Base");
+        assert_eq!(rev.len(), 40, "commit hash debe ser 40 chars");
+        // Snapshot resuelve con HF_HUB_CACHE temporal no vacío
+        let prev = std::env::var("HF_HUB_CACHE").ok();
+        let tmp = temp_dir("base_snapshot");
+        std::env::set_var("HF_HUB_CACHE", tmp.to_string_lossy().to_string());
+        let store = ModelStore::new();
+        // Crear snapshot vacío con al menos un fichero para que is_provisioned sea true
+        let (repo2, rev2) = ModelStore::revision_of("qwen3-tts-0.6b-base").unwrap();
+        let repo_dir = hf_cache_dir().join(format!("models--{}", repo2.replace('/', "--")));
+        let snap = repo_dir.join("snapshots").join(rev2);
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(snap.join("config.json"), br#"{"tts_model_type":"base"}"#).unwrap();
+        assert!(store.is_provisioned("qwen3-tts-0.6b-base"));
+        let resolved = store.model_snapshot_path("qwen3-tts-0.6b-base").unwrap();
+        assert!(resolved.is_dir());
+        match prev {
+            Some(v) => std::env::set_var("HF_HUB_CACHE", v),
+            None => std::env::remove_var("HF_HUB_CACHE"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&repo_dir);
     }
 }

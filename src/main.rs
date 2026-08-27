@@ -23,10 +23,16 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::exit;
 
-const VERSION: &str = "0.11.3";
+const VERSION: &str = "0.12.0";
 const APP_NAME: &str = "ai-voice-interconnector";
 /// Dirección del daemon nativo (T7: cliente HTTP async contra este address).
 const DAEMON_ADDR: &str = "127.0.0.1:8765";
+/// Techo temporal para esperar la disponibilidad del daemon en `daemon start/restart`.
+/// Dimensionado para cubrir el warmup TTS en frío (que precede al `bind`); no es un
+/// tiempo de espera fijo: el sondeo retorna en cuanto `/health` responde sano.
+const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+/// Intervalo entre reintentos del sondeo de readiness.
+const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 /// Ruta fija del modelo Parakeet TDT 0.6B v3 int8 (export istupakov), reutilizado
 /// por `speech transcribe` (no se gestiona vía `ModelStore`: layout ONNX). Parakeet
 /// consume 4 archivos en este directorio (`ParakeetEngine::new` valida su presencia).
@@ -123,6 +129,9 @@ enum Commands {
         language: String,
         #[arg(long)]
         with_stt: bool,
+        /// Incluye el modelo Base de clonado Qwen3-TTS (~2,5 GB)
+        #[arg(long, alias = "with-clone", alias = "clone")]
+        with_base: bool,
     },
     /// Limpia modelos/caché (usa --all para desinstalación completa)
     Cleanup {
@@ -305,8 +314,8 @@ async fn main() {
         Some(Commands::Voice { action }) => handle_voice(json_mode, action),
         Some(Commands::Speech { action }) => handle_speech(json_mode, daemon_mode, action).await,
         Some(Commands::Daemon { action }) => handle_daemon(json_mode, action).await,
-        Some(Commands::Setup { language, with_stt }) => {
-            handle_setup(json_mode, &language, with_stt).await
+        Some(Commands::Setup { language, with_stt, with_base }) => {
+            handle_setup(json_mode, &language, with_stt, with_base).await
         }
         Some(Commands::Cleanup { all }) => {
             if all {
@@ -1140,67 +1149,97 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             })
         }
         DaemonCommands::Start => {
-            eprintln!("Daemon: inicio en segundo plano no implementado aún (use 'daemon serve').");
-            Err(CliError::new(
-                ExitCode::NotApplicable,
-                "not_implemented",
-                "El inicio del daemon en segundo plano no está implementado aún.",
-            ))
-        }
-        DaemonCommands::Stop => {
-            // T7: POST /shutdown al daemon nativo; si no responde, DaemonUnreachable.
+            require_model_provisioned()?;
             let client = daemon_client();
-            let resp = client
-                .post(format!("http://{}/shutdown", DAEMON_ADDR))
-                .send()
+            if daemon_activo(&client).await {
+                let pid = read_daemon_pid().unwrap_or(0);
+                if json_mode {
+                    emit_raw_json(json!({ "status": "already_running", "daemon": "running", "pid": pid }));
+                } else {
+                    println!("Daemon ya en ejecución (pid {}).", pid);
+                }
+                return Ok(());
+            }
+            let pid = daemon::spawn_background().map_err(|e| {
+                CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo lanzar el daemon: {}", e))
+            })?;
+            poll_health(&client, DAEMON_ADDR, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL)
                 .await
                 .map_err(|e| {
-                    CliError::new(
-                        ExitCode::DaemonUnreachable,
-                        "daemon_unreachable",
-                        format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
-                    )
+                    CliError::new(ExitCode::DaemonUnreachable, "daemon_unreachable", e.to_string())
                 })?;
-            if !resp.status().is_success() {
-                return Err(CliError::new(
-                    ExitCode::Error,
-                    "daemon_error",
-                    format!("El daemon devolvió el código {}", resp.status()),
-                ));
-            }
+            write_daemon_pid(pid).map_err(|e| {
+                CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo escribir daemon.pid: {}", e))
+            })?;
             if json_mode {
-                emit_raw_json(json!({ "status": "shutdown_sent" }));
+                emit_raw_json(json!({ "status": "started", "daemon": "running", "pid": pid }));
             } else {
-                println!("Señal de apagado enviada al daemon en {}.", DAEMON_ADDR);
+                println!("Daemon iniciado correctamente (pid {}).", pid);
             }
             Ok(())
         }
-        DaemonCommands::Restart => {
-            // El daemon nativo no expone /restart; se emite Stop (shutdown) y se
-            // reporta el rearme como pendiente (Start no implementado en background).
+        DaemonCommands::Stop => {
             let client = daemon_client();
             let resp = client
                 .post(format!("http://{}/shutdown", DAEMON_ADDR))
                 .send()
-                .await
-                .map_err(|e| {
-                    CliError::new(
-                        ExitCode::DaemonUnreachable,
-                        "daemon_unreachable",
-                        format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
-                    )
-                })?;
-            if !resp.status().is_success() {
-                return Err(CliError::new(
+                .await;
+            match resp {
+                Ok(r) if r.status().is_success() => {
+                    let _ = remove_daemon_pid_file();
+                    if json_mode {
+                        emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
+                    } else {
+                        println!("Señal de apagado enviada al daemon en {}.", DAEMON_ADDR);
+                    }
+                    Ok(())
+                }
+                Ok(r) => Err(CliError::new(
                     ExitCode::Error,
                     "daemon_error",
-                    format!("El daemon devolvió el código {}", resp.status()),
-                ));
+                    format!("El daemon devolvió el código {}", r.status()),
+                )),
+                Err(_e) => {
+                    // Idempotencia: si no responde pero hay pid stale, limpiar
+                    let _ = remove_daemon_pid_file();
+                    Err(CliError::new(
+                        ExitCode::DaemonUnreachable,
+                        "daemon_unreachable",
+                        format!("Daemon inalcanzable en {}", DAEMON_ADDR),
+                    ))
+                }
             }
-            if json_mode {
-                emit_raw_json(json!({ "status": "restart_requested", "daemon": "stopped" }));
+        }
+        DaemonCommands::Restart => {
+            // Restart = Stop + spawn_background (orquestado CLI, sin ruta /restart)
+            let client = daemon_client();
+            let was_running = daemon_activo(&client).await;
+            if was_running {
+                let _ = client
+                    .post(format!("http://{}/shutdown", DAEMON_ADDR))
+                    .send()
+                    .await;
+                let _ = wait_health_down(&client, std::time::Duration::from_secs(5)).await;
+                let _ = remove_daemon_pid_file();
             } else {
-                println!("Daemon reiniciado (rearmado en background: pendiente).");
+                let _ = remove_daemon_pid_file();
+            }
+            require_model_provisioned()?;
+            let pid = daemon::spawn_background().map_err(|e| {
+                CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo lanzar el daemon: {}", e))
+            })?;
+            poll_health(&client, DAEMON_ADDR, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL)
+                .await
+                .map_err(|e| {
+                    CliError::new(ExitCode::DaemonUnreachable, "daemon_unreachable", e.to_string())
+                })?;
+            write_daemon_pid(pid).map_err(|e| {
+                CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo escribir daemon.pid: {}", e))
+            })?;
+            if json_mode {
+                emit_raw_json(json!({ "status": "restarted", "daemon": "running", "pid": pid }));
+            } else {
+                println!("Daemon reiniciado (pid {}).", pid);
             }
             Ok(())
         }
@@ -1251,7 +1290,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
 
 // ─── Setup / Cleanup / Doctor ────────────────────────────────────────
 
-async fn handle_setup(json_mode: bool, language: &str, with_stt: bool) -> Result<(), CliError> {
+async fn handle_setup(json_mode: bool, language: &str, with_stt: bool, with_base: bool) -> Result<(), CliError> {
     let model_store = ModelStore::new();
     let voice_store = VoiceStore::new();
 
@@ -1260,14 +1299,16 @@ async fn handle_setup(json_mode: bool, language: &str, with_stt: bool) -> Result
         .ensure_initialized()
         .map_err(|e| CliError::new(ExitCode::Error, "voice_store_init_failed", e.to_string()))?;
 
-    // 2. Descargar y registrar TODOS los modelos pinneados (decisión de diseño:
-    // setup todo-por-defecto). `--language`/`--with-stt` siguen aceptados pero
-    // son redundantes: el set es fijo (qwen + marian es↔en + parakeet-tdt-v3).
+    // 2. Descargar y registrar modelos pinneados. Base es opt-in (--with-base).
     if with_stt {
         tracing::info!("--with-stt es redundante: parakeet-tdt-v3 ya está incluido en setup");
     }
     let mut provisioned = Vec::new();
-    for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
+    for name in store::MODEL_REVISIONS
+        .iter()
+        .map(|(n, _, _)| *n)
+        .filter(|n| *n != "qwen3-tts-0.6b-base" || with_base)
+    {
         // Idempotente: snapshot HF presente → solo registrar índice.
         if !model_store.is_provisioned(name) {
             store::ModelStore::ensure_downloaded(name)
@@ -1509,6 +1550,9 @@ fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
     if !model_store.is_provisioned("marian-en-es") {
         issues.push("Modelo traducción en→es (Marian) no provisionado");
     }
+    // Base opt-in: WARN si falta, no FAIL
+    let base_ready = model_store.is_provisioned("qwen3-tts-0.6b-base");
+    let base_status = if base_ready { "ready" } else { "missing_opt_in" };
 
     // Verificar voces
     if let Err(_e) = voice_store.list() {
@@ -1521,6 +1565,7 @@ fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
             "data_dir": data_dir.to_string_lossy(),
             "hf_cache": hf_cache.to_string_lossy(),
             "issues": issues,
+            "base_status": base_status,
         }));
         if issues.is_empty() {
             Ok(())
@@ -1532,12 +1577,19 @@ fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
             ))
         }
     } else if issues.is_empty() {
-        println!("Diagnóstico: todo correcto.");
+        if base_ready {
+            println!("Diagnóstico: todo correcto.");
+        } else {
+            println!("Diagnóstico: todo correcto. [WARN] Modelo Base de clonado no provisionado (usa setup --with-base).");
+        }
         println!("Cache HF: {}", hf_cache.display());
         Ok(())
     } else {
         for issue in &issues {
             eprintln!("  ✗ {}", issue);
+        }
+        if !base_ready {
+            eprintln!("  ⚠ [WARN] Modelo Base de clonado no provisionado (usa setup --with-base).");
         }
         eprintln!("Cache HF: {}", hf_cache.display());
         Err(CliError::new(
@@ -1581,6 +1633,68 @@ fn es_identificador_valido(ids: Option<&str>, mas: Option<&str>) -> Result<(), C
     Ok(())
 }
 
+fn daemon_pid_path() -> PathBuf {
+    store::data_dir().join("daemon.pid")
+}
+
+fn write_daemon_pid(pid: u32) -> anyhow::Result<()> {
+    let path = daemon_pid_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("pid.tmp");
+    let content = serde_json::json!({
+        "pid": pid,
+        "addr": DAEMON_ADDR,
+        "started_at": chrono::Utc::now().to_rfc3339()
+    });
+    std::fs::write(&tmp, serde_json::to_string_pretty(&content)?)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+fn read_daemon_pid() -> Option<u32> {
+    let path = daemon_pid_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    let v: Value = serde_json::from_str(&content).ok()?;
+    v.get("pid")?.as_u64().map(|n| n as u32)
+}
+
+fn remove_daemon_pid_file() -> std::io::Result<()> {
+    let p = daemon_pid_path();
+    if p.exists() {
+        std::fs::remove_file(p)?;
+    }
+    Ok(())
+}
+
+async fn poll_health(
+    client: &reqwest::Client,
+    addr: &str,
+    deadline: std::time::Duration,
+    interval: std::time::Duration,
+) -> anyhow::Result<()> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < deadline {
+        if probe_health(client, addr).await {
+            return Ok(());
+        }
+        tokio::time::sleep(interval).await;
+    }
+    anyhow::bail!("El daemon no respondió a /health tras {:?}", deadline)
+}
+
+async fn wait_health_down(client: &reqwest::Client, timeout: std::time::Duration) -> anyhow::Result<()> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if !daemon_activo(client).await {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    anyhow::bail!("El daemon no se apagó tras {:?}", timeout)
+}
+
 // ─── Cliente HTTP async del daemon (T7) ────────────────────────────────
 
 /// Cliente `reqwest` hacia el daemon en `DAEMON_ADDR` (HTTP, sin TLS: basta para
@@ -1594,18 +1708,23 @@ fn daemon_client() -> reqwest::Client {
         .expect("construir el cliente HTTP del daemon")
 }
 
-/// Probe de vida (GET /health) con deadline corto; `false` en cualquier Fallo
-/// (connection-refused incluido), habilitando el fallback Auto→local.
-async fn daemon_activo(client: &reqwest::Client) -> bool {
+/// Probe de vida (GET /health) con deadline corto contra `addr`; `false` en
+/// cualquier fallo (connection-refused incluido).
+async fn probe_health(client: &reqwest::Client, addr: &str) -> bool {
     match tokio::time::timeout(
         std::time::Duration::from_millis(500),
-        client.get(format!("http://{}/health", DAEMON_ADDR)).send(),
+        client.get(format!("http://{}/health", addr)).send(),
     )
     .await
     {
         Ok(Ok(resp)) => resp.status().is_success(),
         _ => false,
     }
+}
+
+/// Probe de vida sobre `DAEMON_ADDR`; `false` habilita el fallback Auto→local.
+async fn daemon_activo(client: &reqwest::Client) -> bool {
+    probe_health(client, DAEMON_ADDR).await
 }
 
 /// Decide si una acción delegable se despacha al daemon:
@@ -1867,4 +1986,41 @@ async fn say_via_daemon(
     }
     let _ = std::fs::remove_file(&tmp);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `poll_health` debe agotar el deadline por reloj de pared (no un recuento
+    /// fijo de iteraciones) contra un puerto cerrado: retorna `Err` y el tiempo
+    /// transcurrido queda acotado por el deadline. Hermético: no arranca daemon
+    /// ni paga warmup, y usa un puerto efímero cerrado (no el 8765 compartido).
+    #[tokio::test]
+    async fn poll_health_respeta_deadline() {
+        // Puerto efímero: enlazamos, capturamos la dirección y dropeamos el
+        // listener para garantizar que el puerto queda cerrado (connection-refused).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind efímero");
+        let addr = listener.local_addr().expect("local_addr").to_string();
+        drop(listener);
+
+        let deadline = std::time::Duration::from_millis(800);
+        let interval = std::time::Duration::from_millis(100);
+        let start = std::time::Instant::now();
+        let res = poll_health(&daemon_client(), &addr, deadline, interval).await;
+        let elapsed = start.elapsed();
+
+        assert!(res.is_err(), "esperado Err contra puerto cerrado");
+        assert!(
+            elapsed >= deadline,
+            "debe respetar el deadline: elapsed={:?} < deadline={:?}",
+            elapsed,
+            deadline
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(1500),
+            "no debe exceder holgadamente el deadline: elapsed={:?}",
+            elapsed
+        );
+    }
 }

@@ -15,6 +15,9 @@ avi-stt = { path = "../avi-stt" }
 avi-tts = { path = "../avi-tts" }
 base64 = "0.22"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 # Activa la superficie STT del daemon; encadena el motor Parakeet de avi-stt.
 native-stt = ["avi-stt/native-stt"]

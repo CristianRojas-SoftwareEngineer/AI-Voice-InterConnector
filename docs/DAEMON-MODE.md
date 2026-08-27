@@ -43,11 +43,11 @@ El handshake es estricto: un daemon de otra `schema_version` se trata como no ut
 ## Comandos del Daemon
 
 ```bash
-ai-voice-interconnector daemon start     # inicio en segundo plano (pendiente; usar serve)
+ai-voice-interconnector daemon start     # inicio en segundo plano (spawn_background + daemon.pid)
 ai-voice-interconnector daemon serve     # primer plano
 ai-voice-interconnector daemon status    # GET /health → running/stopped
-ai-voice-interconnector daemon stop      # POST /shutdown
-ai-voice-interconnector daemon restart   # stop + aviso de rearme manual
+ai-voice-interconnector daemon stop      # POST /shutdown (borra daemon.pid)
+ai-voice-interconnector daemon restart   # stop + spawn_background automático
 ```
 
 Despacho desde el CLI: `--daemon` fuerza IPC (exit 5 si no responde), `--no-daemon` fuerza proceso local, sin flags autodetecta.

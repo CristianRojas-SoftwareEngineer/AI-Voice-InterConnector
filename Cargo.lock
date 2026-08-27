@@ -27,8 +27,9 @@ dependencies = [
 
 [[package]]
 name = "ai-voice-interconnector"
-version = "0.11.3"
+version = "0.12.0"
 dependencies = [
+ "anyhow",
  "avi-audio",
  "avi-core",
  "avi-daemon",
@@ -37,6 +38,7 @@ dependencies = [
  "avi-translation",
  "avi-tts",
  "base64 0.22.1",
+ "chrono",
  "clap",
  "ctrlc",
  "hf-hub",
@@ -221,6 +223,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "http-body-util",
+ "libc",
  "serde_json",
  "tokio",
  "tokio-stream",

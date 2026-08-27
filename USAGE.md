@@ -109,7 +109,7 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 
 ## Primer uso: provisionar el/los modelo(s) (`setup`)
 
-`setup` descarga **los 4 modelos pinneados** desde HuggingFace Hub de forma nativa
+`setup` descarga **los 4 modelos base + 1 opt-in** desde HuggingFace Hub de forma nativa
 (crate `hf-hub`, TLS rustls; sin Python) a la caché canónica
 (`~/.cache/huggingface/hub`; respeta `HF_HUB_CACHE`/`HF_HOME` si las defines):
 
@@ -118,13 +118,16 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
 | `marian-es-en` / `marian-en-es` | `Helsinki-NLP/opus-mt-*` | Traducción es↔en |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (~600 MB, ONNX int8) |
+| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (~2,5 GB, opt-in) | Clonado de voz (Base) |
 
 Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
-(`crates/avi-store/src/lib.rs`): mismo binario → mismos pesos.
+(`crates/avi-store/src/lib.rs`): mismo binario → mismos pesos. El Base es opt-in por peso (~11,5 GB total).
 
 ```bash
-ai-voice-interconnector setup            # descarga los 4 (idempotente)
-ai-voice-interconnector setup --with-stt # aceptado; redundante: STT ya va incluido
+ai-voice-interconnector setup                        # descarga los 4 base (idempotente)
+ai-voice-interconnector setup --with-base            # incluye Base para voice clone (~2,5 GB)
+ai-voice-interconnector setup --with-stt             # aceptado; redundante: STT ya va incluido
+ai-voice-interconnector setup --with-base --with-stt # ambos flags combinables
 ```
 
 **Qué esperar:** barra de progreso por bytes con ETA, resume automático si se
@@ -257,7 +260,8 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `status` | string | `"completed"` |
 | `language` | string | El `--language` pedido (aceptado por compatibilidad; el set de modelos es fijo) |
 | `with_stt` | boolean | Espejo del flag `--with-stt` (redundante: STT ya va incluido) |
-| `models_provisioned` | array de strings | Los 4 modelos pinneados (`qwen3-tts-0.6b`, `marian-es-en`, `marian-en-es`, `parakeet-tdt-v3`) |
+| `with_base` | boolean | Espejo del flag `--with-base` (opt-in Base) |
+| `models_provisioned` | array de strings | Los 4 modelos base + 1 opt-in si `--with-base` (`qwen3-tts-0.6b`, `marian-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
 
 **`cleanup --json` / `uninstall --json`**
 
@@ -664,15 +668,15 @@ cargado) y **10** (fallo de transcripción con el modelo cargado).
 
 ### `voice clone`
 
-Clona una voz a partir de dos archivos de audio.
+Clona una voz a partir de un audio de referencia (requiere modelo Base).
 
 ```bash
-ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
+ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav
+# Si falta Base: ai-voice-interconnector setup --with-base
 ```
 
-**Qué esperar:** el comando valida que ambos audios sean cargables, copia los
-archivos al directorio de voces de usuario, **precomputa los conditionals** de
-la voz (`conditionals.pt`) y confirma:
+**Qué esperar:** el comando valida que el audio sea cargable, genera `reference.qvoice` vía
+`avi_tts::clone_voice` con el modelo Base, y confirma (error `model_missing` → `setup --with-base`):
 
 ```
 Iniciando voice_clone...
@@ -891,9 +895,9 @@ ai-voice-interconnector daemon start --language es-latam
 ai-voice-interconnector daemon start --with-stt
 ```
 
-**Qué esperar:** `daemon start` verifica que el/los modelo(s) del `--language`
-pedido estén descargados, lanza el servidor en segundo plano y confirma con
-`Daemon iniciado correctamente`. Luego `daemon status` muestra:
+**Qué esperar:** `daemon start` verifica que los modelos estén provisionados, lanza el servidor en segundo plano
+con `spawn_background` + PID file `data_dir()/daemon.pid` + poll `30×200ms`, y confirma con
+`Daemon iniciado correctamente (pid ...)`. Luego `daemon status` muestra:
 
 ```
 Daemon en ejecución:
@@ -929,7 +933,7 @@ remitiendo a `ai-voice-interconnector setup --with-stt`, sin lanzar el proceso;
 `daemon status --json` lo expone como la clave `"transcribe:small"` de
 `model_loaded`.
 
-`daemon stop` responde `Daemon detenido` y `daemon restart`, `Daemon reiniciado`.
+`daemon stop` responde `Daemon detenido` (borra `daemon.pid` incluso si ya estaba caído) y `daemon restart` orquesta `POST /shutdown` → espera caída `5s` → `spawn_background` → poll `running`.
 
 ### Uso con daemon
 
