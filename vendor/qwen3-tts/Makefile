@@ -36,7 +36,16 @@ else ifneq (,$(filter x86_64 amd64,$(UNAME_M)))
         ARCH_FLAGS = -mavx2 -mfma
     endif
 else
-    ARCH_FLAGS = -march=native
+    # ARM (aarch64): NEON es baseline obligatorio de ARMv8-A -> portable por defecto.
+    # -march=native acoplaria a la microarquitectura del runner (SIGILL en CPUs de
+    # campo mas viejas), el mismo fallo que off-Mac en x86. Honra SIMD como x86:
+    #   SIMD=native -> -march=native (dev box; misma CPU build=run)
+    #   (default)   -> -march=armv8-a (portable; NEON garantizado en todo ARMv8-A)
+    ifeq ($(SIMD),native)
+        ARCH_FLAGS = -march=native
+    else
+        ARCH_FLAGS = -march=armv8-a
+    endif
 endif
 
 # F4 TTS-build-portable: variante determinista evaluada 2026-08-24.

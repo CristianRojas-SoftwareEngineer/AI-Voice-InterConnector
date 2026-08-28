@@ -51,4 +51,7 @@ vendor/qwen3-tts/tests/golden/
 *.a
 *.d
 *.exe
-!vendor/qwen3-tts/qwen_tts.exe
+# Binarios del motor TTS: ahora se compilan desde fuente en CI/dev vía
+# `cargo run -p xtask -- build-engine` (no se versionan). `qwen_tts.exe` ya lo
+# cubre `*.exe`; `qwen_tts` (Unix) necesita regla propia (sin extensión).
+vendor/qwen3-tts/qwen_tts

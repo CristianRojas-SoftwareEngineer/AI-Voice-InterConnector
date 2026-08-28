@@ -1,1 +1,4 @@
 * text=auto eol=lf
+# Binarios: exentos de la normalización de fin de línea de `* text=auto eol=lf`
+# (la auto-detección ya los cubre; explícito = a prueba de futuros .exe).
+*.exe binary

@@ -1,7 +1,7 @@
 # Pipeline CircleCI Tier 1 — Rust nativo 3 SO (Linux/Windows/macOS)
 # Triple puerta `cargo test --all` + `coverage` como gate de los 4 builds nativos.
-# Dos workflows: `build-all` (release, SOLO en tags v*) y `branch-checks`
-# (gates ligeros fmt/clippy/test featureless en cada push de rama, R5).
+# Un único workflow `build-all` (release, SOLO en tags v*); no hay gates de rama
+# en CI: la validación previa al tag (fmt/clippy/test) se documenta en docs/BUILD.md.
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
 # licencia, versionados vía `persist_to_workspace` → `publish-release`.
 # Pines reproducibles: `rust_version` + digest de `cimg/rust` (ver §Reproducibilidad).
@@ -26,6 +26,29 @@ parameters:
     description: >
       Versión exacta de Rust (toolchain) usada en todos los jobs Rust
       (cargo test/build). Espejo entre plataformas (Linux/Windows/macOS).
+  # Pines del toolchain C del motor TTS en Windows (MSYS2 UCRT64). Fuente única,
+  # espejo de las versiones tabuladas en docs/BUILD.md §9. El release base fija un
+  # snapshot reproducible; la caché de C:\msys64 (msys2_*_cache) es el mecanismo de
+  # determinismo, y el assert de gcc en el bootstrap ataja el drift upstream en
+  # caché fría. Bump = editar aquí (invalida la caché por clave) + docs/BUILD.md §9.
+  msys2_base_release:
+    type: string
+    default: "2026-06-11"
+    description: >
+      Release del instalador base de MSYS2 (github.com/msys2/msys2-installer) del
+      que se extrae C:\msys64. Debe ser posterior a la publicación de gcc del pin.
+  msys2_gcc_version:
+    type: string
+    default: "16.1.0"
+    description: Versión de gcc UCRT64 (ancla de la GCC Runtime Library Exception).
+  msys2_openblas_version:
+    type: string
+    default: "0.3.33-3"
+    description: Versión de mingw-w64-ucrt-x86_64-openblas.
+  msys2_make_version:
+    type: string
+    default: "4.4.1"
+    description: Versión de make/mingw32-make (mingw-w64-ucrt-x86_64-make).
 
 # Cachés duales compartidas por todos los jobs Rust (restore/save nativos,
 # idénticos en bash y PowerShell). Separadas porque invalidan distinto:
@@ -109,6 +132,24 @@ commands:
           paths:
             - ~/.rustup
             - ~/.cargo/bin
+
+  # Caché del toolchain C del motor TTS en Windows (MSYS2 UCRT64 en C:\msys64).
+  # Espejo de toolchain_*_cache pero solo-Windows: clave inmutable por arch + los
+  # pines de versión (release base + gcc/openblas/make), así un bump de pin
+  # invalida la caché y reconstruye. Es el mecanismo de determinismo del release.
+  msys2_restore_cache:
+    description: Restaura C:\msys64 por arch + pines de versión MSYS2
+    steps:
+      - restore_cache:
+          keys:
+            - msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_release >>-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-make<< pipeline.parameters.msys2_make_version >>
+  msys2_save_cache:
+    description: Guarda C:\msys64 (clave inmutable por arch + pines de versión MSYS2)
+    steps:
+      - save_cache:
+          key: msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_release >>-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-make<< pipeline.parameters.msys2_make_version >>
+          paths:
+            - C:\msys64
 
   # sccache (R2): envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
   # hash de contenido en ~/.cache/sccache. Reutiliza artefactos entre corridas y
@@ -486,50 +527,6 @@ jobs:
           os: linux
 
   # ──────────────────────────────────────────────────────────────
-  # Gate ligero de rama (R5) — fmt + clippy featureless (~1-2 min sin C++)
-  # ──────────────────────────────────────────────────────────────
-  lint:
-    # Señal temprana en cada push de rama (workflow branch-checks): formato y
-    # lint sin --features full (no compila C++). NO participa del release
-    # tags-only (build-all), que sigue siendo la única puerta en tags v*.
-    # Reutiliza la caché featureless (variante test por defecto) sin colisionar
-    # con los build-* (variante full).
-    docker:
-      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
-    resource_class: medium
-    steps:
-      - checkout
-      - run:
-          # libasound2-dev + pkg-config: cpal se compila al chequear con clippy.
-          name: Instalar dependencias de sistema (libasound2-dev, pkg-config)
-          command: |
-            echo "[STEP] Instalar dependencias de sistema - INICIO"
-            sudo apt-get update
-            sudo apt-get install -y libasound2-dev pkg-config
-            echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches:
-          os: linux
-      - run:
-          name: Precargar dependencias (cargo fetch)
-          command: |
-            echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            cargo fetch --locked
-            echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
-      - cargo_save_registry
-      - run:
-          name: Verificar formato (cargo fmt --all --check)
-          command: |
-            echo "[STEP] Verificar formato - INICIO"
-            cargo fmt --all --check
-            echo "[STEP] Verificar formato - FIN"
-      - run:
-          name: Lint (cargo clippy --all-targets)
-          command: |
-            echo "[STEP] Lint (cargo clippy --all-targets) - INICIO"
-            cargo clippy --all-targets
-            echo "[STEP] Lint (cargo clippy --all-targets) - FIN"
-
-  # ──────────────────────────────────────────────────────────────
   # Validación GPLv3 — SOURCE-OFFER.md y THIRD-PARTY-LICENSES.md vivos
   # ──────────────────────────────────────────────────────────────
   validate-licenses:
@@ -541,6 +538,14 @@ jobs:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
+      # Caché de compilación de xtask (variante propia `xtask`, sin colisión con
+      # test/full/cov): evita recompilar xtask en frío en cada release.
+      - cargo_restore_caches:
+          os: linux
+          variant: xtask
+      - sccache_restore_cache:
+          os: linux
+      - sccache_setup_unix
       - run:
           name: Verificar SOURCE-OFFER.md
           command: |
@@ -553,6 +558,11 @@ jobs:
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - INICIO"
             cargo run -p xtask --quiet -- licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
+      - sccache_save_cache:
+          os: linux
+      - cargo_save_target:
+          os: linux
+          variant: xtask
 
   validate-changelog:
     # Gate de CHANGELOG: verifica que exista la sección ## [X.Y.Z] para la
@@ -563,12 +573,25 @@ jobs:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
+      # Caché de compilación de xtask (variante propia `xtask`, sin colisión con
+      # test/full/cov): evita recompilar xtask en frío en cada release.
+      - cargo_restore_caches:
+          os: linux
+          variant: xtask
+      - sccache_restore_cache:
+          os: linux
+      - sccache_setup_unix
       - run:
           name: Verificar sección de CHANGELOG
           command: |
             echo "[STEP] Verificar CHANGELOG - INICIO"
             cargo run -p xtask --quiet -- changelog --check
             echo "[STEP] Verificar CHANGELOG - FIN"
+      - sccache_save_cache:
+          os: linux
+      - cargo_save_target:
+          os: linux
+          variant: xtask
 
   # ──────────────────────────────────────────────────────────────
   # Smoke tests de instaladores de una línea (mock por PATH, sin red)
@@ -680,6 +703,46 @@ jobs:
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - toolchain_save_cache:
           os: windows
+      - msys2_restore_cache
+      - run:
+          # Bootstrap del toolchain C del motor TTS (MSYS2 UCRT64). Idempotente: si
+          # la caché trajo C:\msys64, se omite la instalación. En caché fría extrae
+          # el release base pineado y sincroniza gcc (RLE: libgfortran/libgcc/
+          # libquadmath estáticos), openblas y make (mingw32-make). El release base
+          # + la caché fijan el resultado; el assert de gcc ataja drift upstream.
+          # pacman -Q + gcc --version quedan al log como evidencia auditable (RLE).
+          name: Bootstrap MSYS2 UCRT64 (toolchain motor TTS)
+          command: |
+            Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - INICIO"
+            $ErrorActionPreference = "Stop"
+            $Root = "C:\msys64"
+            $GccPin = "<< pipeline.parameters.msys2_gcc_version >>"
+            if (Test-Path "$Root\ucrt64\bin\gcc.exe") {
+              Write-Host "MSYS2 restaurado de caché; se omite instalación"
+            } else {
+              $Release = "<< pipeline.parameters.msys2_base_release >>"
+              $Compact = $Release -replace '-', ''
+              $Tar = "msys2-base-x86_64-$Compact.tar.xz"
+              $Url = "https://github.com/msys2/msys2-installer/releases/download/$Release/$Tar"
+              Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\$Tar"
+              # tar de Windows (bsdtar/libarchive) descomprime .tar.xz -> C:\msys64.
+              tar -xf "$env:TEMP\$Tar" -C "C:\"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              $Bash = "$Root\usr\bin\bash.exe"
+              # Primera ejecución: inicializa runtime + keyring de pacman.
+              & $Bash -lc "true"
+              & $Bash -lc "pacman-key --init && pacman-key --populate msys2"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              & $Bash -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            # Auditabilidad (RLE) + verificación de pines: pacman -Q y gcc --version.
+            & "$Root\usr\bin\bash.exe" -lc "pacman -Q mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make"
+            & "$Root\ucrt64\bin\gcc.exe" --version
+            $GccInstalled = (& "$Root\ucrt64\bin\gcc.exe" -dumpfullversion).Trim()
+            if ($GccInstalled -ne $GccPin) { throw "gcc instalado ($GccInstalled) != pin declarado ($GccPin): bump del pin/release base requerido" }
+            Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - FIN"
+      - msys2_save_cache
       - cargo_restore_caches:
           os: windows
           variant: full
@@ -736,6 +799,19 @@ jobs:
           variant: full
       - sccache_save_cache:
           os: windows
+      - run:
+          # Interfaz uniforme (los 4 SO): `xtask build-engine` compila el motor con
+          # mingw32-make bajo el entorno MSYS2 UCRT64 (PATH ucrt64/bin + usr/bin,
+          # MSYSTEM=UCRT64, leído de MSYS2_ROOT default C:\msys64) y verifica con
+          # --self-test. Produce vendor\qwen3-tts\qwen_tts.exe fresco desde fuente
+          # (antes: blob de 33 MB versionado). El staging de abajo lo consume.
+          name: Compilar y verificar motor TTS
+          command: |
+            Write-Host "[STEP] Compilar y verificar motor TTS - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            cargo run -p xtask -- build-engine --self-test
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "[STEP] Compilar y verificar motor TTS - FIN"
       - run:
           # Autocontención (requisito duro): el crate `ort` en `load-dynamic`
           # busca onnxruntime.dll junto al ejecutable. Se empaqueta la librería
@@ -837,11 +913,13 @@ jobs:
       - checkout
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
+          # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
+          # target `blas` del Makefile de qwen_tts en Linux.
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, libopenblas-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
+            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
       - cargo_restore_caches:
           os: linux
@@ -878,6 +956,14 @@ jobs:
             target/release/ai-voice-interconnector voice list | grep -q '^  - default'
             echo "Binario Linux x64 OK: version + voice list"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
+      - run:
+          # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
+          # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
+          # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
+          # oráculo de kernels sin pesos) en un solo paso. Antes: bloque `make blas` +
+          # `--self-test` triplicado idéntico en los 3 jobs Unix.
+          name: Compilar y verificar motor TTS
+          command: cargo run -p xtask -- build-engine --self-test
       - cargo_save_target:
           os: linux
           variant: full
@@ -919,6 +1005,14 @@ jobs:
             ORT_LIB="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f | head -n1)"
             test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
             cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
+            # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
+            # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
+            # tras extraer, sin variables de entorno (paridad con Windows).
+            VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
+            test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
+            mkdir -p "$STAGE/vendor/qwen3-tts"
+            cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
+            chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
             DST="artifacts/ai-voice-interconnector-${VERSION}-x86_64-linux.tar.gz"
             tar -czf "$DST" -C "$STAGE" .
             echo "Artefacto: $DST"
@@ -946,11 +1040,13 @@ jobs:
       - checkout
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
+          # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
+          # target `blas` del Makefile de qwen_tts en Linux.
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, libopenblas-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
+            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
       - cargo_restore_caches:
           os: linux
@@ -989,6 +1085,14 @@ jobs:
             target/release/ai-voice-interconnector voice list | grep -q '^  - default'
             echo "Binario Linux ARM64 OK: version + voice list"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
+      - run:
+          # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
+          # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
+          # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
+          # oráculo de kernels sin pesos) en un solo paso. Antes: bloque `make blas` +
+          # `--self-test` triplicado idéntico en los 3 jobs Unix.
+          name: Compilar y verificar motor TTS
+          command: cargo run -p xtask -- build-engine --self-test
       - cargo_save_target:
           os: linux
           variant: full
@@ -1030,6 +1134,14 @@ jobs:
             ORT_LIB="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f | head -n1)"
             test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
             cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
+            # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
+            # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
+            # tras extraer, sin variables de entorno (paridad con Windows).
+            VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
+            test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
+            mkdir -p "$STAGE/vendor/qwen3-tts"
+            cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
+            chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
             DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-linux.tar.gz"
             tar -czf "$DST" -C "$STAGE" .
             echo "Artefacto: $DST"
@@ -1078,12 +1190,18 @@ jobs:
       - toolchain_save_cache:
           os: macos
       - run:
-          name: Instalar dependencias de sistema (cmake, pkg-config)
+          name: Instalar dependencias de sistema (cmake, pkg-config, make)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
             if ! command -v pkg-config >/dev/null 2>&1; then brew install pkg-config; fi
             cmake --version
+            # make y gcc/clang (el Makefile de qwen_tts invoca `gcc`, que en macOS
+            # resuelve al shim de Apple clang) vienen con el toolchain de Xcode;
+            # se verifica su presencia antes de `make blas` (BLAS = Accelerate,
+            # sin dependencia por brew).
+            make --version
+            gcc --version
             echo "[STEP] Instalar dependencias de sistema - FIN"
       # NOTA: sin libomp — con --features full este build sí compila ct2rs, que
       # usa OPENMP_RUNTIME=NONE en macOS (features por target en
@@ -1129,6 +1247,15 @@ jobs:
             target/release/ai-voice-interconnector voice list | grep -q '^  - default'
             echo "Binario macOS ARM64 OK: version + voice list"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
+      - run:
+          # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
+          # por plataforma (make + framework Accelerate en macOS), centraliza la
+          # política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
+          # oráculo de kernels sin pesos) en un solo paso.
+          name: Compilar y verificar motor TTS
+          command: |
+            export PATH="$HOME/.cargo/bin:$PATH"
+            cargo run -p xtask -- build-engine --self-test
       - cargo_save_target:
           os: macos
           variant: full
@@ -1171,6 +1298,14 @@ jobs:
             ORT_LIB="$(find "$ORT_EXTRACT" -name 'libonnxruntime.*.dylib' -type f | head -n1)"
             test -n "$ORT_LIB" || (echo "libonnxruntime.dylib no encontrada en ${ORT_TGZ}" && exit 1)
             cp "$ORT_LIB" "$STAGE/libonnxruntime.dylib"
+            # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
+            # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
+            # tras extraer, sin variables de entorno (paridad con Windows).
+            VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
+            test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
+            mkdir -p "$STAGE/vendor/qwen3-tts"
+            cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
+            chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
             DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-macos.tar.gz"
             tar -czf "$DST" -C "$STAGE" .
             echo "Artefacto: $DST"
@@ -1282,6 +1417,14 @@ jobs:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
+      # Caché de compilación de xtask (variante propia `xtask`, sin colisión con
+      # test/full/cov): evita recompilar xtask en frío para renderizar el Cask.
+      - cargo_restore_caches:
+          os: linux
+          variant: xtask
+      - sccache_restore_cache:
+          os: linux
+      - sccache_setup_unix
       - run:
           name: Instalar gh CLI (repo apt oficial, firmado)
           command: |
@@ -1342,6 +1485,11 @@ jobs:
               git push origin HEAD:main
             fi
             echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
+      - sccache_save_cache:
+          os: linux
+      - cargo_save_target:
+          os: linux
+          variant: xtask
 
 workflows:
   build-all:
@@ -1349,9 +1497,8 @@ workflows:
     # dependencias declaren `filters.tags`; por eso el filtro `v*` se propaga
     # por toda la cadena (gates Rust/instaladores → builds → publish-*).
     # Todos los jobs declaran además `branches: ignore /.*/`: este workflow de
-    # release corre SOLO en tags `v*`, nunca en pushes de rama. El feedback en
-    # rama lo cubre el workflow `branch-checks` (fmt/clippy/test featureless);
-    # la validación completa previa al tag sigue en docs/BUILD.md.
+    # release corre SOLO en tags `v*`, nunca en pushes de rama. La validación
+    # completa previa al tag (fmt/clippy/test) se documenta en docs/BUILD.md.
     jobs:
       # ── Gates Rust (triple puerta) + cobertura + instaladores + licencias ──
       # Los 4 builds requieren estos 8 gates verdes en la misma pipeline.

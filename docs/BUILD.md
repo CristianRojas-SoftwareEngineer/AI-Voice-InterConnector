@@ -369,13 +369,50 @@ plano (binario + 4 documentos en la raíz).
 
 > Esta sección documenta el toolchain C del motor Qwen3-TTS vigente (F4).
 
-**Toolchain vigente (Windows):** MSYS2 UCRT64 **gcc 16.1.0** (Rev5, 2026-05-09), `mingw-w64-ucrt-x86_64-openblas 0.3.33-3`, `mingw32-make 4.4.1` (`vendor/qwen3-tts/Makefile:3-5,17-77`). WSL oráculo: Ubuntu gcc **15.2.0-16ubuntu1**, `libopenblas-dev 0.3.32+ds-5`.
+### Interfaz uniforme: `xtask build-engine`
+
+El motor se **compila desde fuente en CI en las 4 plataformas** (antes Windows
+arrastraba un blob `qwen_tts.exe` de 33 MB versionado a mano; **ya no se
+versiona**). Los 4 jobs de build invocan una única interfaz:
+
+```bash
+cargo run -p xtask -- build-engine --self-test
+```
+
+`build-engine` (`crates/xtask/src/main.rs`) oculta el mecanismo por plataforma:
+en Unix invoca `make` con el entorno heredado; en Windows invoca `mingw32-make`
+con el entorno MSYS2 UCRT64 augmentado (`PATH` con `ucrt64\bin` + `usr\bin` para
+`cygpath`, `MSYSTEM=UCRT64`), leyendo la raíz de `MSYS2_ROOT` (default
+`C:\msys64`). Pasa `SIMD=auto` por defecto (la política SIMD es autoridad única
+del `Makefile`), compila con `make blas` y verifica con `--self-test` (oráculo de
+kernels, sin pesos del modelo). El mismo comando sirve para CI, dev local y este
+doc. En dev local sin MSYS2, Windows falla con un mensaje que guía a instalar
+UCRT64 o definir `MSYS2_ROOT`.
+
+**Toolchain vigente (Windows):** MSYS2 UCRT64 **gcc 16.1.0** (Rev5, 2026-05-09),
+`mingw-w64-ucrt-x86_64-openblas 0.3.33-3`, `mingw32-make 4.4.1`
+(`vendor/qwen3-tts/Makefile:3-5,17-85`). En CI se **aprovisiona pineado**: el job
+`build-windows-x64` extrae el release base de MSYS2 (`msys2_base_release`,
+`2026-06-11`) y sincroniza las versiones pineadas (parámetros `msys2_*_version`
+del pipeline, espejo de esta tabla), cacheando `C:\msys64` por clave de versión
+(determinismo de release). El log del bootstrap captura `pacman -Q` + `gcc
+--version` como evidencia de la **GCC Runtime Library Exception** (libgfortran/
+libquadmath/libgcc estáticos en el `.exe`). WSL oráculo: Ubuntu gcc
+**15.2.0-16ubuntu1**, `libopenblas-dev 0.3.32+ds-5`.
 
 | Plataforma | `ARCH_FLAGS` | `CFLAGS_BASE` | `LDLIBS` / BLAS | Shims |
 |---|---|---|---|---|
 | Windows UCRT64 | `-mavx2 -mfma` (Haswell 2013+, `SIMD=auto`; `SIMD=scalar` vacía) | `-Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math` | `-static -L$(UCRT64_LIB) -lopenblas -lgomp -lws2_32 -lwinpthread -lm` (33 MB autocontenido) | `third_party/ingot/mingw_shim/unistd.h`, `sys/mman.h` vía `-include` |
 | Linux x86_64 | `-mavx2 -mfma` | `-Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math` | `-lopenblas` | — |
-| macOS / Linux ARM | `-march=native` | idem | `-framework Accelerate` (macOS) | — |
+| Linux ARM64 | `-march=armv8-a` (portable; NEON baseline ARMv8-A. `SIMD=native` → `-march=native`) | idem | `-lopenblas` | — |
+| macOS (arm64) | `-march=native` (single-vendor) | idem | `-framework Accelerate` | — |
+
+> **Baseline ARM portable.** La rama ARM del `Makefile` honra `SIMD` como x86:
+> por defecto `-march=armv8-a` (NEON garantizado en todo ARMv8-A), no
+> `-march=native` — que acoplaría el codegen a la microarquitectura del runner y
+> haría `SIGILL` en CPUs de campo más viejas. `SIMD=native` recupera `-march=native`
+> para el dev box (misma CPU build=run). macOS conserva `-march=native` (host
+> single-vendor). Cierra el hallazgo 3.1 de la revisión del pipeline.
 
 Ver `vendor/qwen3-tts/CLAUDE.md` y `crates/avi-tts/src/lib.rs` para el contrato
 de invocación (`--int4 -j 4 --stream`, `GenerationOptions::produccion()` temp

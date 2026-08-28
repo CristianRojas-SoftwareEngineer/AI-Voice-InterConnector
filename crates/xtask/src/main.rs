@@ -104,6 +104,18 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+    /// Compila el motor TTS nativo (qwen_tts) desde vendor/qwen3-tts
+    BuildEngine {
+        /// Ejecuta `<bin> --self-test` tras compilar (oráculo de kernels)
+        #[arg(long)]
+        self_test: bool,
+        /// Política SIMD pass-through al Makefile (default "auto")
+        #[arg(long)]
+        simd: Option<String>,
+        /// Paralelismo del build (-jN); default = paralelismo del host
+        #[arg(long)]
+        jobs: Option<usize>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -223,7 +235,140 @@ fn main() -> Result<()> {
                 println!("Usa --check para verificar la sección del CHANGELOG");
             }
         }
+        Commands::BuildEngine {
+            self_test,
+            simd,
+            jobs,
+        } => {
+            build_engine(self_test, simd, jobs)?;
+        }
     }
+    Ok(())
+}
+
+/// Directorio del motor TTS vendorizado.
+fn engine_dir() -> PathBuf {
+    Path::new("vendor").join("qwen3-tts")
+}
+
+/// Nombre del binario del motor según plataforma (.exe en Windows).
+fn engine_bin_name() -> &'static str {
+    if cfg!(windows) {
+        "qwen_tts.exe"
+    } else {
+        "qwen_tts"
+    }
+}
+
+/// Programa `make` según plataforma: mingw32-make (Windows/MinGW) o make (Unix).
+fn make_program() -> &'static str {
+    if cfg!(windows) {
+        "mingw32-make"
+    } else {
+        "make"
+    }
+}
+
+/// Augmenta el entorno de un `Command` con el toolchain MSYS2 UCRT64 (Windows):
+/// PATH con `<MSYS2>\ucrt64\bin` + `<MSYS2>\usr\bin` (cygpath) y MSYSTEM=UCRT64.
+/// La raíz se lee de `MSYS2_ROOT` (default `C:\msys64`). No lanza un login-shell:
+/// invoca mingw32-make directo con el env corregido (robusto y testeable).
+#[cfg(windows)]
+fn augment_windows_env(cmd: &mut std::process::Command) -> Result<()> {
+    let root = std::env::var("MSYS2_ROOT").unwrap_or_else(|_| r"C:\msys64".to_string());
+    let root = Path::new(&root);
+    let ucrt_bin = root.join("ucrt64").join("bin");
+    let usr_bin = root.join("usr").join("bin");
+    if !ucrt_bin.is_dir() {
+        anyhow::bail!(
+            "no se encontró el toolchain MSYS2 UCRT64 en {}: instala MSYS2 con el grupo \
+             mingw-w64-ucrt-x86_64-toolchain (o define MSYS2_ROOT apuntando a tu raíz de MSYS2)",
+            ucrt_bin.display()
+        );
+    }
+    // Prepone ucrt64/bin (gcc/mingw32-make) y usr/bin (cygpath) al PATH heredado.
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![ucrt_bin, usr_bin];
+    paths.extend(std::env::split_paths(&current));
+    let new_path = std::env::join_paths(paths)
+        .map_err(|e| anyhow!("no se pudo construir el PATH de MSYS2: {}", e))?;
+    cmd.env("PATH", new_path);
+    cmd.env("MSYSTEM", "UCRT64");
+    Ok(())
+}
+
+/// Compila el motor TTS (`make blas`) desde vendor/qwen3-tts, ocultando el
+/// mecanismo por plataforma: Unix invoca `make` con el entorno heredado; Windows
+/// invoca `mingw32-make` con el entorno MSYS2 UCRT64 augmentado. Verifica que el
+/// binario se generó y, con --self-test, ejecuta el oráculo de kernels.
+fn build_engine(self_test: bool, simd: Option<String>, jobs: Option<usize>) -> Result<()> {
+    let dir = engine_dir();
+    let simd = simd.unwrap_or_else(|| "auto".to_string());
+    let jobs = jobs.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    });
+
+    let mut cmd = std::process::Command::new(make_program());
+    cmd.arg("-C")
+        .arg(&dir)
+        .arg("blas")
+        .arg(format!("SIMD={}", simd))
+        .arg(format!("-j{}", jobs));
+    #[cfg(windows)]
+    augment_windows_env(&mut cmd)?;
+
+    eprintln!(
+        "Compilando motor TTS: {} -C {} blas SIMD={} -j{}",
+        make_program(),
+        dir.display(),
+        simd,
+        jobs
+    );
+    let status = cmd.status().map_err(|e| {
+        anyhow!(
+            "no se pudo invocar {}: {} (¿toolchain de compilación instalado?)",
+            make_program(),
+            e
+        )
+    })?;
+    if !status.success() {
+        anyhow::bail!(
+            "la compilación del motor TTS falló (exit {:?})",
+            status.code()
+        );
+    }
+
+    let bin = dir.join(engine_bin_name());
+    if !bin.is_file() {
+        anyhow::bail!("el binario del motor no se generó: {}", bin.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&bin)?.permissions().mode();
+        if mode & 0o111 == 0 {
+            anyhow::bail!("el binario del motor no es ejecutable: {}", bin.display());
+        }
+    }
+
+    if self_test {
+        let mut test_cmd = std::process::Command::new(&bin);
+        test_cmd.arg("--self-test");
+        // El .exe es -static, pero augmentar el PATH es barato y evita sorpresas
+        // si alguna DLL del sistema MSYS2 fuese necesaria.
+        #[cfg(windows)]
+        augment_windows_env(&mut test_cmd)?;
+        let st = test_cmd
+            .status()
+            .map_err(|e| anyhow!("no se pudo ejecutar {} --self-test: {}", bin.display(), e))?;
+        if !st.success() {
+            anyhow::bail!("el --self-test del motor falló (exit {:?})", st.code());
+        }
+    }
+
+    println!("Motor TTS compilado: {}", bin.display());
     Ok(())
 }
 
@@ -750,5 +895,30 @@ mod tests {
     fn test_normalize() {
         assert_eq!(normalize("My_Package.Name"), "my-package-name");
         assert_eq!(normalize("a--b__c..d"), "a-b-c-d");
+    }
+
+    #[test]
+    fn test_engine_bin_name_por_plataforma() {
+        if cfg!(windows) {
+            assert_eq!(engine_bin_name(), "qwen_tts.exe");
+        } else {
+            assert_eq!(engine_bin_name(), "qwen_tts");
+        }
+    }
+
+    #[test]
+    fn test_make_program_por_plataforma() {
+        if cfg!(windows) {
+            assert_eq!(make_program(), "mingw32-make");
+        } else {
+            assert_eq!(make_program(), "make");
+        }
+    }
+
+    #[test]
+    fn test_engine_dir() {
+        let dir = engine_dir();
+        assert!(dir.ends_with("qwen3-tts"));
+        assert!(dir.starts_with("vendor"));
     }
 }
