@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.17.0 — 2026-08-28](#0170-20260828)
 - [0.16.0 — 2026-08-27](#0160-20260827)
 - [0.15.2 — 2026-08-27](#0152-20260827)
 - [0.15.1 — 2026-08-27](#0151-20260827)
@@ -50,6 +51,24 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.17.0] — 2026-08-28
+
+El motor TTS `qwen_tts` se producía de forma inconsistente: los tres jobs Unix de CircleCI compilaban desde fuente con un bloque triplicado idéntico, mientras que Windows no compilaba y arrastraba un binario precompilado versionado en git (`vendor/qwen3-tts/qwen_tts.exe`, 33 MB) de origen opaco. Esta release unifica la producción del motor tras una única interfaz `cargo run -p xtask -- build-engine --self-test`, usada por los cuatro jobs de build: elimina la triplicación, hace que Windows compile fresco desde fuente, centraliza la política SIMD y convierte a `xtask` en la fuente única reutilizable por CI, dev local y documentación.
+
+### Añadido
+
+- Subcomando `xtask build-engine` (`--self-test`/`--simd`/`--jobs`) como driver uniforme de compilación del motor en las 4 plataformas, encapsulando el mecanismo por SO (Unix: `make`; Windows: `mingw32-make` con entorno UCRT64 augmentado) — `crates/xtask/src/main.rs`.
+
+### Cambiado
+
+- CI: los tres bloques Unix de compilación del motor se colapsan en un único step; `build-windows-x64` aprovisiona MSYS2 pineado + cacheado y compila el motor desde fuente — `.circleci/config.yml`.
+- Baseline SIMD portable en ARM64 (aarch64): la rama ARM del `Makefile` honra `SIMD` con default `-march=armv8-a` (antes `-march=native`, que acoplaba el binario a la microarquitectura del runner y arriesgaba `SIGILL` en CPUs más antiguas) — `vendor/qwen3-tts/Makefile`.
+
+### Notas de release
+
+- El binario del motor deja de versionarse: `vendor/qwen3-tts/qwen_tts.exe` fue eliminado del árbol y **purgado del historial de git** (reescritura con `git filter-repo` + force-push a `main`). Los clones y ramas existentes deben re-clonar o rebasarse sobre el nuevo historial.
 
 ## [0.16.0] — 2026-08-27
 
@@ -1198,3 +1217,4 @@ estado con el que nace el producto.
 [0.15.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.0...v0.15.1
 [0.15.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.1...v0.15.2
 [0.16.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.2...v0.16.0
+[0.17.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.16.0...v0.17.0
