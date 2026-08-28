@@ -39,15 +39,15 @@ parameters:
       que se extrae C:\msys64. Debe ser posterior a la publicación de gcc del pin.
   msys2_gcc_version:
     type: string
-    default: "16.1.0"
+    default: "16.2.0"
     description: Versión de gcc UCRT64 (ancla de la GCC Runtime Library Exception).
   msys2_openblas_version:
     type: string
-    default: "0.3.33-3"
+    default: "0.3.34-1"
     description: Versión de mingw-w64-ucrt-x86_64-openblas.
   msys2_make_version:
     type: string
-    default: "4.4.1"
+    default: "4.4.1-5"
     description: Versión de make/mingw32-make (mingw-w64-ucrt-x86_64-make).
 
 # Cachés duales compartidas por todos los jobs Rust (restore/save nativos,

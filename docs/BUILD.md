@@ -389,8 +389,8 @@ kernels, sin pesos del modelo). El mismo comando sirve para CI, dev local y este
 doc. En dev local sin MSYS2, Windows falla con un mensaje que guía a instalar
 UCRT64 o definir `MSYS2_ROOT`.
 
-**Toolchain vigente (Windows):** MSYS2 UCRT64 **gcc 16.1.0** (Rev5, 2026-05-09),
-`mingw-w64-ucrt-x86_64-openblas 0.3.33-3`, `mingw32-make 4.4.1`
+**Toolchain vigente (Windows):** MSYS2 UCRT64 **gcc 16.2.0** (Rev3),
+`mingw-w64-ucrt-x86_64-openblas 0.3.34-1`, `mingw32-make 4.4.1-5`
 (`vendor/qwen3-tts/Makefile:3-5,17-85`). En CI se **aprovisiona pineado**: el job
 `build-windows-x64` extrae el release base de MSYS2 (`msys2_base_release`,
 `2026-06-11`) y sincroniza las versiones pineadas (parámetros `msys2_*_version`
