@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.17.1 — 2026-08-28](#0171-20260828)
 - [0.17.0 — 2026-08-28](#0170-20260828)
 - [0.16.0 — 2026-08-27](#0160-20260827)
 - [0.15.2 — 2026-08-27](#0152-20260827)
@@ -52,6 +53,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.17.1] — 2026-08-28
+
+El guardrail de versión de gcc en el job `build-windows-x64` abortaba el build cuando la versión que `pacman -Sy` instalaba desde MSYS2 UCRT64 difería del pin declarado. Como `pacman -Sy` sincroniza siempre la versión vigente mientras el pin es una constante fija, cada avance de gcc upstream rompía el release y obligaba a un bump manual del parámetro para desbloquearlo. Esta release cambia el comportamiento a "log on drift": ante un desfase se advierte y se continúa, tomando la versión realmente instalada como fuente de verdad de la evidencia auditable de la GCC Runtime Library Exception, eliminando el mantenimiento manual obligatorio sin perder trazabilidad del compilador.
+
+### Cambiado
+
+- El bootstrap de MSYS2 en `build-windows-x64` ya no aborta cuando gcc difiere del pin declarado: registra una advertencia y continúa, usando la versión instalada como evidencia RLE. El pin se conserva como referencia esperada y clave de caché.
 
 ## [0.17.0] — 2026-08-28
 
@@ -1218,3 +1228,4 @@ estado con el que nace el producto.
 [0.15.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.1...v0.15.2
 [0.16.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.2...v0.16.0
 [0.17.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.16.0...v0.17.0
+[0.17.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.17.0...v0.17.1
