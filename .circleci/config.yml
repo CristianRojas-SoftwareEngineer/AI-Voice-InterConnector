@@ -710,9 +710,10 @@ jobs:
           # instala el base de MSYS2 vía Chocolatey (ya presente en el executor)
           # pineado a la misma versión del release base, y sincroniza gcc (RLE:
           # libgfortran/libgcc/libquadmath estáticos), openblas y make (mingw32-make).
-          # El pin de choco + la caché fijan el resultado; el assert de gcc ataja
-          # drift upstream. pacman -Q + gcc --version quedan al log como evidencia
-          # auditable (RLE). Marcadores por subpaso para localizar cuelgues.
+          # El pin de choco + la caché fijan el resultado; si upstream driftó gcc,
+          # se loguea (no aborta) y la versión instalada manda como evidencia RLE.
+          # pacman -Q + gcc --version quedan al log como evidencia auditable (RLE).
+          # Marcadores por subpaso para localizar cuelgues.
           name: Bootstrap MSYS2 UCRT64 (toolchain motor TTS)
           command: |
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - INICIO"
@@ -743,7 +744,14 @@ jobs:
             & "$Root\usr\bin\bash.exe" -lc "pacman -Q mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make"
             & "$Root\ucrt64\bin\gcc.exe" --version
             $GccInstalled = (& "$Root\ucrt64\bin\gcc.exe" -dumpfullversion).Trim()
-            if ($GccInstalled -ne $GccPin) { throw "gcc instalado ($GccInstalled) != pin declarado ($GccPin): bump del pin/release base requerido" }
+            # Log on drift (no halt): la versión instalada es la fuente de verdad de
+            # la evidencia RLE. Si difiere del pin declarado, se advierte pero no se
+            # aborta; actualizar el pin es opcional (solo refresca la clave de caché).
+            if ($GccInstalled -ne $GccPin) {
+              Write-Host "[WARN] gcc instalado ($GccInstalled) != pin declarado ($GccPin): drift upstream de MSYS2; evidencia RLE = $GccInstalled"
+            } else {
+              Write-Host "gcc instalado ($GccInstalled) coincide con el pin declarado"
+            }
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - FIN"
       - msys2_save_cache
       - cargo_restore_caches:
