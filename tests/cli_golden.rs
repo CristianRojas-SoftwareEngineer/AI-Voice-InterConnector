@@ -11,8 +11,11 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Ruta al binario bajo test, inyectada por Cargo en tests de integración.
 const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
@@ -50,18 +53,48 @@ fn fixture(name: &str) -> Value {
 /// Patrón equivalente al del legacy Python: el daemon no comparte I/O (pipe) con el
 /// proceso que lo lanza.
 fn run_json(args: &[&str]) -> (i32, Value) {
-    let tmp = std::env::temp_dir().join(format!(
-        "cli_golden_{}_{}.out",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    ));
+    // Corrección estructural sin sobreingeniería: la causa no es el contenido del
+    // daemon sino el primitivo de FS. `File::create` trunca y no es atómico: con
+    // `SystemTime` de resolución gruesa en Windows + `cargo test` paralelo, dos
+    // hilos generan el mismo `tmp` y el `remove_file` de uno borra el de otro
+    // -> `read_to_string` falla con `NotFound (os 2)` solo en `win/server-2022`.
+    // Se reemplaza por creación atómica `O_CREAT|O_EXCL` (`create_new(true)`):
+    // el SO garantiza exclusión y el bucle reintenta solo en colisión, sin
+    // depender de `ThreadId`/`sleep`/`retry` sintomático. Es el mismo coste que
+    // `tempfile::NamedTempFile` pero sin añadir dependencia.
+    let (tmp, file) = {
+        let mut attempts = 0;
+        loop {
+            let candidate = std::env::temp_dir().join(format!(
+                "cli_golden_{}_{}_{}.out",
+                std::process::id(),
+                TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0),
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(f) => break (candidate, f),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    attempts += 1;
+                    if attempts > 10 {
+                        panic!("no se pudo crear tempfile único tras 10 intentos: {}", e);
+                    }
+                    continue;
+                }
+                Err(e) => panic!("no se pudo crear tempfile {}: {}", candidate.display(), e),
+            }
+        }
+    };
     let mut child = Command::new(BIN)
         .args(args)
         .stdin(std::process::Stdio::null())
-        .stdout(std::fs::File::create(&tmp).expect("tempfile creable"))
+        .stdout(file)
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("el binario debe ejecutarse");
