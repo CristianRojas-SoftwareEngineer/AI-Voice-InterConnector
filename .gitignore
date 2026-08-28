@@ -51,3 +51,4 @@ vendor/qwen3-tts/tests/golden/
 *.a
 *.d
 *.exe
+!vendor/qwen3-tts/qwen_tts.exe
