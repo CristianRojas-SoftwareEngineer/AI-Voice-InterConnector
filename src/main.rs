@@ -19,11 +19,12 @@ use base64::Engine;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::io::IsTerminal;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::exit;
 
-const VERSION: &str = "0.15.2";
+const VERSION: &str = "0.16.0";
 const APP_NAME: &str = "ai-voice-interconnector";
 /// Dirección del daemon nativo (T7: cliente HTTP async contra este address).
 const DAEMON_ADDR: &str = "127.0.0.1:8765";
@@ -336,6 +337,7 @@ async fn main() {
         } else {
             eprintln!("Error: {}", err.message);
         }
+        std::io::stdout().flush().ok();
         exit(err.code.code());
     }
 }

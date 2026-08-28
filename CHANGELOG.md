@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.16.0 — 2026-08-27](#0160-20260827)
 - [0.15.2 — 2026-08-27](#0152-20260827)
 - [0.15.1 — 2026-08-27](#0151-20260827)
 - [0.15.0 — 2026-08-27](#0150-20260827)
@@ -48,6 +49,24 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.16.0] — 2026-08-27
+
+Esta release corrige tres defectos de empaquetado que bloqueaban la validación E2E del daemon en Windows: onnxruntime.dll fallaba con ERROR 1114 por runtime VC++ VS2017 incorrecto, qwen_tts.exe ausente del release zip, y ruta del modelo STT CWD-relative vacía en vez del cache HuggingFace. El bump también elimina artefactos de sesión (prompt de continuidad desplazado, script de humo temporal).
+
+### Corregido
+
+- CRT: fuente de VC++ runtimes desde onnxruntime-win-x64 zip (`Microsoft.VC14[34]\.CRT` = VS2022+) en vez de VS Redist/System32 (VS2017 14.16 → ERROR 1114 en onnxruntime.dll).
+- `qwen_tts.exe`: paso de empaquetado que copia `vendor/qwen3-tts/qwen_tts.exe` al stage del release.
+- Ruta modelo STT: `ModelStore::model_dir("parakeet-tdt-v3")` (HF cache) en lugar de `models/parakeet-tdt-v3` CWD-relative; eliminada const muerta `STT_MODEL_DIR` en `src/main.rs` y `crates/avi-daemon/src/lib.rs`.
+- `crates/avi-store/src/lib.rs`: eliminada función `model_dir()` asociada duplicada (error de compilación preexistente).
+- `crates/avi-stt/src/lib.rs`: guards de tests Parakeet verifican existencia de `nemo128.onnx` (skip limpio en vez de panic).
+
+### Cambiado
+
+- `docs/session.md` eliminado — el prompt de continuidad vive en `.claude/continuity-prompt.md` por contrato del skill.
+- `_smoke.ps1` eliminado — script de humo temporal tras validación end-to-end del daemon.
 
 ## [0.15.2] — 2026-08-27
 
@@ -1178,3 +1197,4 @@ estado con el que nace el producto.
 [0.15.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.14.0...v0.15.0
 [0.15.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.0...v0.15.1
 [0.15.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.1...v0.15.2
+[0.16.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.2...v0.16.0
