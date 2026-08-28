@@ -759,15 +759,13 @@ jobs:
             if (-not $Dll) { throw "onnxruntime.dll no encontrada en $Zip" }
             Copy-Item $Dll.FullName "$Bundle\onnxruntime.dll"
             # 2. Runtime VC++ (app-local): la dll de MS es /MD y depende de estas 3.
-            #    Se obtienen del paquete oficial onnxruntime-win-x64-$OrtVersion.zip
-            #    (misma versión que onnxruntime.dll -> versión compatible, determinista).
+            #    onnxruntime-win-x64-1.28.0.zip ya no las incluye.
+            #    Se obtienen de System32 (Windows Server 2022 -> VC++ 2022 CRT compatible).
             $Vc = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
             foreach ($Name in $Vc) {
-              $Found = Get-ChildItem -Path "$env:TEMP\ort-extract" -Recurse -Filter $Name -ErrorAction SilentlyContinue |
-                       Where-Object { $_.FullName -match 'Microsoft\.VC14[34]\.CRT\\' } |
-                       Sort-Object FullName |
+              $Found = Get-ChildItem -Path "C:\Windows\System32" -Filter $Name -ErrorAction SilentlyContinue |
                        Select-Object -First 1
-              if (-not $Found) { throw "No se encontró $Name en onnxruntime-win-x64-$OrtVersion.zip (Redist/vc/Microsoft.VC14[34].CRT/)" }
+              if (-not $Found) { throw "No se encontró $Name en System32" }
               Copy-Item $Found.FullName "$Bundle\$Name"
             }
             Write-Host "Bundle ONNX Runtime + VC++:"
