@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.2 — 2026-08-28](#0182-20260828)
 - [0.18.1 — 2026-08-28](#0181-20260828)
 - [0.18.0 — 2026-08-28](#0180-20260828)
 - [0.17.1 — 2026-08-28](#0171-20260828)
@@ -58,6 +59,23 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.2] — 2026-08-28
+
+La auditoría sistémica post-`v0.18.1` (pipeline #96 verde) reveló divergencia entre la documentación y el binario Rust: `speech synthesize` prometía flags `compute-backend` y métricas `t3_time` inexistentes, `voice clone` documentaba modo daemon sin implementación, `DAEMON.md` describía `FastAPI/uvicorn` legacy, y guías de validación referenciaban artefacto `setup.exe` y ejemplos `0.15.1`. Esta release sincroniza la doc al código verificado (`src/main.rs`, `crates/avi-daemon`), implementa el despacho `voice clone` 3-modos decidido y restaura `push-to-talk` en `transcribe/dub`, sin reintroducir superficie Python/Chatterbox.
+
+### Corregido
+
+- `src/main.rs:470` `voice clone` ahora respeta `--daemon/--no-daemon` (3 modos, `ForceDaemon` → `DaemonUnreachable` si no hay daemon, `Auto` con aviso de modelo caliente).
+- `src/main.rs:681,937` `speech transcribe`/`dub` permiten `--mic` sin `--duration` en TTY (push-to-talk), exigen `--duration` solo sin TTY.
+- `THIRD-PARTY-LICENSES.md:88` `0.13.0` → `0.18.1` y `README.md:103`/`docs/DESIGN.md:84` `0.15.1` → `X.Y.Z` placeholder.
+
+### Cambiado
+
+- `docs/CLI/CONTRACT.md:167` y `USAGE.md:177` corrigen contrato `speech synthesize/say` al payload real (`status/audio_path/voice`) y eliminan flags inexistentes.
+- `docs/CLI/commands/DAEMON.md` reescrito a `Axum` (5 subcomandos, `/health`, `spawn_background` con `CREATE_NO_HANDLE_INHERIT`).
+- `docs/MANUAL-VALIDATION.md:15` y `docs/GOAL.md:162` artefactos `setup.exe` → `zip/tar.gz`; `docs/BUILD.md:414` documenta `log on drift` de gcc (`v0.17.1`); `docs/CLI/README.md:34,79` y `CLAUDE.md:145` referencias muertas.
 
 ## [0.18.1] — 2026-08-28
 
@@ -1266,3 +1284,4 @@ estado con el que nace el producto.
 [0.17.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.17.0...v0.17.1
 [0.18.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.17.1...v0.18.0
 [0.18.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.0...v0.18.1
+[0.18.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.1...v0.18.2
