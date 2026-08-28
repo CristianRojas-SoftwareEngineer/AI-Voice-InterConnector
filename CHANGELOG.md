@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.0 — 2026-08-28](#0180-20260828)
 - [0.17.1 — 2026-08-28](#0171-20260828)
 - [0.17.0 — 2026-08-28](#0170-20260828)
 - [0.16.0 — 2026-08-27](#0160-20260827)
@@ -54,6 +55,27 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.0] — 2026-08-28
+
+El checksum que formaba la clave exacta de las cachés de `cargo registry` y
+`target/` en CI incluía la versión del propio crate dentro de `Cargo.lock`.
+Como cada release bumpea esa versión, la clave cambiaba en cada corte aunque
+las dependencias no variaran: nunca había acierto exacto entre releases y todo
+dependía de un fallback por prefijo frágil, anclado a una caché vieja y casi
+vacía, que forzaba recompilación en frío de las dependencias nativas pesadas y
+builds de decenas de minutos. Esta release deriva la clave de un `Cargo.lock`
+normalizado (versión del crate neutralizada) generado por el nuevo subcomando
+`xtask cache-key`, y re-keya `registry` y `target/` a un namespace limpio `v2`:
+la clave exacta se vuelve estable entre releases y solo cambia ante cambios
+reales de dependencias, restaurando el reuso de caché de forma predecible.
+
+### Cambiado
+
+- Deriva la clave de caché de `registry`/`target/` de un `Cargo.lock`
+  normalizado (`xtask cache-key`) en vez del `Cargo.lock` crudo, re-keyando
+  ambas familias a `v2`; `toolchain`/`msys2`/`sccache` permanecen en `v1`.
 
 ## [0.17.1] — 2026-08-28
 
@@ -1229,3 +1251,4 @@ estado con el que nace el producto.
 [0.16.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.15.2...v0.16.0
 [0.17.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.16.0...v0.17.0
 [0.17.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.17.0...v0.17.1
+[0.18.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.17.1...v0.18.0
