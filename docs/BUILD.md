@@ -322,12 +322,17 @@ para auditoría. `cleanup` borra snapshots HF de los 4 pines + datos de usuario;
 Los jobs Rust usan `cargo registry` + `target/` + `toolchain` + `sccache`
 (`RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0`). La clave de `registry` y `target/`
 (namespace `v2`) NO se deriva de `Cargo.lock` directo, sino de un **lock normalizado**
-(`Cargo.lock.cachekey`) que `xtask cache-key` genera neutralizando la línea `version`
-del propio crate. Motivo: cada release bumpea esa versión, así que el checksum de
+(`Cargo.lock.cachekey`) que el primer step de `cargo_restore_caches` genera con un
+transform de texto (`perl -0777`, ejecutado en `shell: bash`): neutraliza la línea
+`version` del propio crate (`ai-voice-interconnector` → `0.0.0`) dejando el resto del
+lock intacto. Motivo: cada release bumpea esa versión, así que el checksum de
 `Cargo.lock` cambiaría en cada corte aunque las dependencias no varíen, invalidando la
 clave exacta y dejando todo al frágil fallback por prefijo. Con la normalización la
 clave exacta es estable entre releases y solo cambia ante cambios reales de
-dependencias.
+dependencias. Generar la clave con un transform de texto (en vez de compilar `xtask`
+desde cero antes de restaurar caché) evita compilar el árbol de dependencias de cargo
+en cada job —incluido `windows-sys`/`dlltool`, ausente en `test-windows` antes de
+instalar MSYS2— y su correspondiente coste de red en frío.
 
 Matriz de invalidación por familia de caché:
 

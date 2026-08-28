@@ -66,16 +66,19 @@ las dependencias no variaran: nunca había acierto exacto entre releases y todo
 dependía de un fallback por prefijo frágil, anclado a una caché vieja y casi
 vacía, que forzaba recompilación en frío de las dependencias nativas pesadas y
 builds de decenas de minutos. Esta release deriva la clave de un `Cargo.lock`
-normalizado (versión del crate neutralizada) generado por el nuevo subcomando
-`xtask cache-key`, y re-keya `registry` y `target/` a un namespace limpio `v2`:
+normalizado (versión del crate neutralizada) generado por un transform de texto
+(`perl`, en `shell: bash`) en el primer step de `cargo_restore_caches`, y re-keya
+`registry` y `target/` a un namespace limpio `v2`:
 la clave exacta se vuelve estable entre releases y solo cambia ante cambios
 reales de dependencias, restaurando el reuso de caché de forma predecible.
 
 ### Cambiado
 
 - Deriva la clave de caché de `registry`/`target/` de un `Cargo.lock`
-  normalizado (`xtask cache-key`) en vez del `Cargo.lock` crudo, re-keyando
-  ambas familias a `v2`; `toolchain`/`msys2`/`sccache` permanecen en `v1`.
+  normalizado (versión del crate neutralizada, generado por un transform de
+  texto `perl` en vez de compilar `xtask` desde cero) en vez del `Cargo.lock`
+  crudo, re-keyando ambas familias a `v2`; `toolchain`/`msys2`/`sccache`
+  permanecen en `v1`.
 
 ## [0.17.1] — 2026-08-28
 

@@ -85,14 +85,17 @@ commands:
     steps:
       # Genera Cargo.lock.cachekey ANTES de restore_cache: la clave de CircleCI se
       # forma en tiempo de config, así que el insumo del checksum debe existir en el
-      # working dir antes de restaurar. Sin override de `shell` ni `export`: el
-      # comando es sintaxis idéntica en bash (Linux/macOS) y PowerShell (Windows), y
-      # cargo ya está en PATH en los tres executors en este punto (Docker/Windows
-      # preinstalado, macOS vía $BASH_ENV). Un único mecanismo cross-platform (xtask),
+      # working dir antes de restaurar. `shell: bash` está disponible en los tres
+      # executors (nativo Linux/macOS, Git-bash en el orb de Windows) y `perl`
+      # viene bundleado con Git-bash (presente también en los SO *nix). Generar la
+      # clave con un transform de texto evita compilar xtask (y su árbol, que en
+      # Windows tira de windows-sys/raw-dylib y necesita dlltool.exe, ausente antes
+      # de instalar MSYS2) desde cero en cada job. Un único mecanismo cross-platform,
       # sin ramas por shell (ver Objetivo 2 del plan de clave estable).
       - run:
           name: Generar Cargo.lock.cachekey (clave de caché normalizada)
-          command: cargo run -p xtask -- cache-key
+          shell: bash
+          command: perl -0777 -pe 's/(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/' Cargo.lock > Cargo.lock.cachekey
       - restore_cache:
           keys:
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}
