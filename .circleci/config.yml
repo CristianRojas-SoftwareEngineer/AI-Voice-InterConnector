@@ -706,11 +706,13 @@ jobs:
       - msys2_restore_cache
       - run:
           # Bootstrap del toolchain C del motor TTS (MSYS2 UCRT64). Idempotente: si
-          # la caché trajo C:\msys64, se omite la instalación. En caché fría extrae
-          # el release base pineado y sincroniza gcc (RLE: libgfortran/libgcc/
-          # libquadmath estáticos), openblas y make (mingw32-make). El release base
-          # + la caché fijan el resultado; el assert de gcc ataja drift upstream.
-          # pacman -Q + gcc --version quedan al log como evidencia auditable (RLE).
+          # la caché trajo C:\msys64 con gcc, se omite la instalación. En caché fría
+          # instala el base de MSYS2 vía Chocolatey (ya presente en el executor)
+          # pineado a la misma versión del release base, y sincroniza gcc (RLE:
+          # libgfortran/libgcc/libquadmath estáticos), openblas y make (mingw32-make).
+          # El pin de choco + la caché fijan el resultado; el assert de gcc ataja
+          # drift upstream. pacman -Q + gcc --version quedan al log como evidencia
+          # auditable (RLE). Marcadores por subpaso para localizar cuelgues.
           name: Bootstrap MSYS2 UCRT64 (toolchain motor TTS)
           command: |
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - INICIO"
@@ -721,20 +723,21 @@ jobs:
               Write-Host "MSYS2 restaurado de caché; se omite instalación"
             } else {
               $Release = "<< pipeline.parameters.msys2_base_release >>"
-              $Compact = $Release -replace '-', ''
-              $Tar = "msys2-base-x86_64-$Compact.tar.xz"
-              $Url = "https://github.com/msys2/msys2-installer/releases/download/$Release/$Tar"
-              Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\$Tar"
-              # tar de Windows (bsdtar/libarchive) descomprime .tar.xz -> C:\msys64.
-              tar -xf "$env:TEMP\$Tar" -C "C:\"
+              # Versión de choco = release base compactado + sufijo .0.0
+              # (2026-06-11 -> 20260611.0.0): mismo pin que el release upstream.
+              $ChocoVer = ($Release -replace '-', '') + ".0.0"
+              Write-Host "[STEP] Instalar base MSYS2 via Chocolatey ($ChocoVer) - INICIO"
+              choco install msys2 --version=$ChocoVer -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              # choco gestiona base + keyring: no corremos `pacman-key --init`
+              # (el hang por entropía que agotaba el no_output_timeout).
+              if (-not (Test-Path "$Root\usr\bin\bash.exe")) { throw "MSYS2 no quedó en $Root tras choco (revisar /InstallDir; ¿anidó C:\msys64\msys64?)" }
+              Write-Host "[STEP] Instalar base MSYS2 via Chocolatey - FIN"
               $Bash = "$Root\usr\bin\bash.exe"
-              # Primera ejecución: inicializa runtime + keyring de pacman.
-              & $Bash -lc "true"
-              & $Bash -lc "pacman-key --init && pacman-key --populate msys2"
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              Write-Host "[STEP] Sincronizar toolchain (pacman -S gcc/openblas/make) - INICIO"
               & $Bash -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make"
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              Write-Host "[STEP] Sincronizar toolchain - FIN"
             }
             # Auditabilidad (RLE) + verificación de pines: pacman -Q y gcc --version.
             & "$Root\usr\bin\bash.exe" -lc "pacman -Q mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make"
