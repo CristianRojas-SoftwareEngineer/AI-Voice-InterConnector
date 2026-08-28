@@ -159,9 +159,9 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 <!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI + scripts/build_*.py) produce los instaladores y un smoke test automatizado del binario congelado (`ai-voice-interconnector version`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
-1. [ ] El instalador de Windows (.exe) funciona en Windows 10/11 sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo)
-2. [ ] El instalador de Linux funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
-3. [ ] El instalador de macOS funciona en el mínimo declarado por `LSMinimumSystemVersion` (Apple Silicon; Mac Intel no soportado) — derivado dinámicamente del `MACOSX_DEPLOYMENT_TARGET` del toolchain de build, no un número fijo (validación E2E por SO, ver "Validación E2E" más abajo)
+1. [ ] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en Windows 10/11 sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo)
+2. [ ] El artefacto de Linux (`ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`) funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
+3. [ ] El artefacto de macOS (`ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`) funciona en el mínimo declarado por `LSMinimumSystemVersion` (Apple Silicon; Mac Intel no soportado) — derivado dinámicamente del `MACOSX_DEPLOYMENT_TARGET` del toolchain de build, no un número fijo (validación E2E por SO, ver "Validación E2E" más abajo)
 4. [x] `ai-voice-interconnector speech say --text "Hola mundo"` reproduce audio en español
 5. [x] `ai-voice-interconnector voice clone --name test --timbre-reference ref.wav --speech-reference speech.wav` clona la voz (`--timbre-reference` es opcional)
 6. [x] El audio generado suena en español con las características de la voz de referencia
@@ -198,7 +198,7 @@ La implementación está completa únicamente cuando:
 - [x] **docs/DESIGN.md** corresponde al estado implementado
 - [x] El daemon mode está implementado y funciona correctamente
 - [x] Los logs están normalizados con estructura consistente
-- [x] Los tests pytest pasan (795/795)
+- [x] Los tests `cargo test --all` pasan en los 3 SO (suite Rust)
 
 ---
 
@@ -214,8 +214,8 @@ Especificaciones **no comprometidas** para el goal inmediato. No se trabajan aho
 
 **Especificación diferida**:
 
-- **Windows**: firma Authenticode vía [SignPath Foundation](https://signpath.org/) (firma gratuita para proyectos open source), integrada al job de CI que produce el instalador `.exe`.
-- **macOS**: notarización con una cuenta Apple Developer ID, integrada al job de CI que produce el `.dmg`.
+- **Windows**: firma Authenticode vía [SignPath Foundation](https://signpath.org/) (firma gratuita para proyectos open source), integrada al job de CI que produce el artefacto `ai-voice-interconnector-X.Y.Z-x86_64-windows.zip` (binario `ai-voice-interconnector.exe` dentro del zip).
+- **macOS**: notarización con una cuenta Apple Developer ID, integrada al job de CI que produce el artefacto `ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`.
 
 **Condiciones de entrada** (promueven esta spec al goal inmediato):
 

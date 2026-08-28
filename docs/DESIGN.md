@@ -81,7 +81,7 @@ AI-Voice-InterConnector/
         ├── install-linux.bats
         ├── install-macos.bats
         └── install-windows.tests.ps1
-├── Cargo.toml                          # Workspace Rust (version = 0.15.1)
+├── Cargo.toml                          # Workspace Rust (version = X.Y.Z, espejo de src/main.rs)
 ├── Cargo.lock
 ├── .circleci/config.yml                # Pipeline Rust (cargo test/build + publish-release)
 └── docs/
@@ -96,7 +96,7 @@ AI-Voice-InterConnector/
 
 ## Entry point `src/main.rs`
 
-`src/main.rs` es el **punto de entrada único** del binario. Usa `clap` para parsear los subcomandos (`version`, `devices`, `translate`, `voice`, `speech`, `daemon`, `setup`, `cleanup`, `uninstall`, `doctor`) y hace dispatch a los crates (`avi-tts`, `avi-store`, etc.) o al daemon vía HTTP. Es también la **fuente de verdad de la versión** (`const VERSION = "0.15.1"`, espejo de `Cargo.toml`).
+`src/main.rs` es el **punto de entrada único** del binario. Usa `clap` para parsear los subcomandos (`version`, `devices`, `translate`, `voice`, `speech`, `daemon`, `setup`, `cleanup`, `uninstall`, `doctor`) y hace dispatch a los crates (`avi-tts`, `avi-store`, etc.) o al daemon vía HTTP. Es también la **fuente de verdad de la versión** (`const VERSION = "X.Y.Z"`, espejo de `Cargo.toml` y `tests/golden/cli_version.json`).
 
 En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-interconnector <args>`.
 

@@ -143,6 +143,7 @@ The test: Every changed line should trace directly to the user's request.
 **Make every commit self-explanatory and descriptive.**
 
 - The `conventional-commits` skill is the authority on commit message format and structure. Follow it.
+- For releases (`bump`/`tag`/`publish`), the `release` skill (`.claude/skills/release/SKILL.md`, `cargo run -p xtask -- release X.Y.Z`) is the source of truth; see `docs/RELEASING.md`.
 <!-- </version_control> -->
 
 ---

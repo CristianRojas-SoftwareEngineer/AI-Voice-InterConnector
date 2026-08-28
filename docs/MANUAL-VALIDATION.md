@@ -11,9 +11,9 @@ cargar Qwen3-TTS + Parakeet, descargar ~9 GB base (~11,5 GB con `--with-base`)
 y sintetizar audio real.
 
 La secuencia está en orden lógico: cada paso asume que el anterior pasó. Ejecutar
-tras instalar el artefacto del release (en Windows,
-`ai-voice-interconnector-X.Y.Z-x86_64-setup.exe`) y marcar la casilla de setup del
-instalador, o bien desde una terminal nueva (el instalador agrega el `PATH`
+tras instalar el artefacto del release (Windows `ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`,
+Linux `ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`, macOS `ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`)
+descomprimido y con `setup` ejecutado, o bien desde una terminal nueva (el instalador agrega el `PATH`
 automáticamente).
 
 > Los comandos se muestran para una shell POSIX. En Windows (`cmd`/PowerShell)

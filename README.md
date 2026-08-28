@@ -99,16 +99,16 @@ ai-voice-interconnector uninstall --force   # o: ai-voice-interconnector cleanup
 Desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases) (4 artefactos + `SHA256SUMS.txt`):
 
 ```bash
-# Linux x64
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.15.1-x86_64-linux.tar.gz -o ai.tar.gz
+# Linux x64 (sustituye X.Y.Z por la versión del Release)
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz -o ai.tar.gz
 tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
 
 # macOS arm64
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.15.1-arm64-macos.tar.gz -o ai.tar.gz
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz -o ai.tar.gz
 tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
 
 # Windows x64 (PowerShell)
-Invoke-WebRequest https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-0.15.1-x86_64-windows.zip -OutFile ai.zip
+Invoke-WebRequest https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-x86_64-windows.zip -OutFile ai.zip
 Expand-Archive ai.zip -Force; .\ai-voice-interconnector.exe setup
 ```
 
@@ -141,7 +141,7 @@ Hasta provisionar, `speech synthesize`/`daemon start` fallan con exit 4 remitien
 
 ### Compilar desde código (Rust)
 
-Requisitos: Rust 1.96.0, `cmake`, `pkg-config`, `libasound2-dev`/`libclang-dev` (Linux). Ver `docs/BUILD.md`.
+Requisitos: Rust 1.96.0, `cmake`, `pkg-config`, `libasound2-dev` (Linux) y `libclang-dev` solo con `--features native-translation/full` (traducción). Ver `docs/BUILD.md`.
 
 ```bash
 cargo fmt --all --check

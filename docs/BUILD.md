@@ -419,7 +419,9 @@ UCRT64 o definir `MSYS2_ROOT`.
 del pipeline, espejo de esta tabla), cacheando `C:\msys64` por clave de versión
 (determinismo de release). El log del bootstrap captura `pacman -Q` + `gcc
 --version` como evidencia de la **GCC Runtime Library Exception** (libgfortran/
-libquadmath/libgcc estáticos en el `.exe`). WSL oráculo: Ubuntu gcc
+libquadmath/libgcc estáticos en el `.exe`). Si la versión instalada difiere del
+pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidencia
+(`log on drift` desde `v0.17.1`, no `fail-fast`). WSL oráculo: Ubuntu gcc
 **15.2.0-16ubuntu1**, `libopenblas-dev 0.3.32+ds-5`.
 
 | Plataforma | `ARCH_FLAGS` | `CFLAGS_BASE` | `LDLIBS` / BLAS | Shims |

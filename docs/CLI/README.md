@@ -31,7 +31,7 @@ docs/CLI/
 | [commands/DOCTOR.md](commands/DOCTOR.md) | Investigación de `doctor`: diagnósticos del sistema y patrón de veredicto |
 | [commands/SETUP.md](commands/SETUP.md) | Investigación de `setup`: provisión del runtime, modelos y PATH |
 | [commands/CLEANUP.md](commands/CLEANUP.md) | Investigación de `cleanup`: borrado de modelos, voces y habla sintética |
-| [commands/DAEMON.md](commands/DAEMON.md) | Investigación de `daemon`: ciclo de vida, endpoints FastAPI, protocolo IPC |
+| [commands/DAEMON.md](commands/DAEMON.md) | Investigación de `daemon`: ciclo de vida, endpoints Axum, protocolo IPC |
 | [commands/VERSION.md](commands/VERSION.md) | Investigación de `version`: fuente de versión y payload |
 | [commands/TRANSLATE.md](commands/TRANSLATE.md) | Investigación de `translate`: pipeline de traducción, divergencia ISO vs CLI |
 
@@ -76,4 +76,4 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 | 10 | `EXIT_TRANSCRIPTION_FAILED` | Fallo de transcripción |
 | 130 | `EXIT_INTERRUPTED` | Interrupción por usuario (Ctrl+C) |
 
-Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). La clase `CliError` hereda de `BaseException` para evitar captura por `except Exception` genérico.
+Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). `CliError` vive en `crates/avi-core/src/exit_codes.rs` y se traduce en `src/main.rs` (`ExitCode` + `reason`), sin herencia Python.

@@ -176,26 +176,23 @@ campo a campo en modo directo y vía daemon.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
+| `status` | string | Siempre `"success"` |
+| `audio_path` | string | Ruta del WAV en el almacén (`speech/<voz>/<etiqueta>.wav`) |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
-| `label` | string | Etiqueta de la locución guardada (normalizada a minúsculas) |
-| `t3_time` | number | Segundos del T3 autoregresivo |
-| `s3gen_time` | number | Segundos del vocoder S3Gen |
-| `daemon` | boolean | `true` si la síntesis se despachó vía daemon, `false` en modo directo |
 
-**`speech say --json`** — no persiste nada, así que solo emite la voz
-efectiva; no repite el `text` (el llamador acaba de mandarlo) ni tiempos de
-síntesis.
+**`speech say --json`** — no persiste nada; emite ruta temporal y voz.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
+| `status` | string | Siempre `"reproduced"` |
+| `audio_path` | string | Ruta del WAV temporal reproducido |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
 
-**`speech play --json`** / **`speech remove --json`** — el código de salida ya
-transporta el resultado (0 = éxito, 3 = etiqueta inexistente); el payload solo
-identifica la locución afectada.
+**`speech play --json`** / **`speech remove --json`** — identifican la locución y el resultado.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
+| `status` | string | `"played"` / `"removed"` |
 | `voice` | string | Nombre de la voz de la locución |
 | `label` | string | Etiqueta de la locución |
 
@@ -203,7 +200,7 @@ identifica la locución afectada.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `synthetic_speech` | array de objetos | Un objeto por locución guardada: `voice` (string), `label` (string), `text` (string, texto completo sin truncar), `created_at` (string, ISO 8601 UTC) |
+| `speech` | array de objetos | Un objeto por locución guardada: `voice` (string), `label` (string), `text` (string, texto completo sin truncar), `created_at` (string, ISO 8601 UTC), `duration_secs` (number) |
 
 **`daemon start` / `stop` / `restart --json`** — payload de resultado de la
 acción (no de estado; para eso está `daemon status --json`). Los mensajes
@@ -223,7 +220,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `name` | string | Siempre `"ai-voice-interconnector"` |
-| `version` | string | Versión del programa (p. ej. `"0.15.1"`) |
+| `version` | string | Versión del programa (p. ej. `"0.18.1"`) |
 
 **`doctor --json`**
 
@@ -307,7 +304,7 @@ ai-voice-interconnector version --json
 **Qué esperar:**
 
 ```
-ai-voice-interconnector 0.15.1
+ai-voice-interconnector X.Y.Z
 ```
 
 ---

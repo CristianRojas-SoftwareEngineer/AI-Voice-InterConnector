@@ -310,7 +310,7 @@ async fn main() {
         Some(Commands::Translate { text, from, to }) => {
             handle_translate(json_mode, daemon_mode, &text, &from, &to)
         }
-        Some(Commands::Voice { action }) => handle_voice(json_mode, action),
+        Some(Commands::Voice { action }) => handle_voice(json_mode, daemon_mode, action).await,
         Some(Commands::Speech { action }) => handle_speech(json_mode, daemon_mode, action).await,
         Some(Commands::Daemon { action }) => handle_daemon(json_mode, action).await,
         Some(Commands::Setup { language, with_stt, with_base }) => {
@@ -467,11 +467,13 @@ fn handle_translate(
 
 // ─── Voice ───────────────────────────────────────────────────────────
 
-fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> {
+async fn handle_voice(json_mode: bool, daemon_mode: DaemonMode, action: VoiceCommands) -> Result<(), CliError> {
     let voice_store = VoiceStore::new();
 
     match action {
         VoiceCommands::List => {
+            // List es local-only; ForceDaemon debe fallar con DaemonUnreachable (paridad con speech dub/play)
+            require_local(daemon_mode)?;
             let voices = voice_store
                 .list()
                 .map_err(|e| CliError::new(ExitCode::Error, "voice_list_failed", e.to_string()))?;
@@ -497,6 +499,32 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
             let name = name.to_lowercase();
             VoiceStore::validate_name(&name)
                 .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
+            // Tarea 2: despacho 3-modos para voice clone (S3-02). List/Remove son local-only
+            // y ya validaron require_local; Clone respeta ForceDaemon/ForceDirect/Auto:
+            // ForceDaemon exige daemon activo (exit 5), ForceDirect evita sondeo, Auto
+            // sondea y si responde avisa por stderr pero mantiene clonado local (no hay
+            // endpoint clone en daemon, solo precompute post-registro).
+            {
+                let client = daemon_client();
+                match daemon_mode {
+                    DaemonMode::ForceDaemon => {
+                        if !daemon_activo(&client).await {
+                            return Err(CliError::new(
+                                ExitCode::DaemonUnreachable,
+                                "daemon_unreachable",
+                                "Daemon inalcanzable en 127.0.0.1:8765",
+                            ));
+                        }
+                    }
+                    DaemonMode::Auto => {
+                        // Best-effort: si el daemon responde, el precompute posterior será más rápido (modelo caliente)
+                        if daemon_activo(&client).await {
+                            eprintln!("Daemon activo: el precompute de '{}' usará modelo caliente.", name);
+                        }
+                    }
+                    DaemonMode::ForceDirect => {}
+                }
+            }
             require_model_provisioned()?;
             let speech_path = std::path::Path::new(&speech_reference);
             if !speech_path.is_file() {
@@ -567,6 +595,7 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
             Ok(())
         }
         VoiceCommands::Remove { name } => {
+            require_local(daemon_mode)?;
             VoiceStore::validate_name(&name)
                 .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
             voice_store.remove(&name).map_err(|e| {
@@ -649,7 +678,8 @@ async fn handle_speech(
                     "Debe especificarse --audio o --mic.",
                 ));
             }
-            if mic && duration.is_none() {
+            // T4: push-to-talk sin --duration permitido en TTY (S2-01); sin TTY se exige --duration
+            if mic && duration.is_none() && !std::io::stdin().is_terminal() {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
                     "usage_error",
@@ -905,7 +935,7 @@ async fn handle_speech(
                     "--duration solo es válido con --mic.",
                 ));
             }
-            if mic && duration.is_none() && std::io::stdin().is_terminal() {
+            if mic && duration.is_none() && !std::io::stdin().is_terminal() {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
                     "usage_error",

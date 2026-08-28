@@ -164,8 +164,8 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 
 | Sub-acción | Parámetros |
 |---|---|
-| `speech synthesize` | `--text/-t` **requerido** · `--label/-l` **requerido** · `--voice/-v` · `--play/-p` · `--force/-f` · `--compute-backend/-cb` · `--source-language` · `--target-language` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
-| `speech say` | `--text/-t` **requerido** · `--voice/-v` · `--compute-backend/-cb` · `--source-language` · `--target-language` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
+| `speech synthesize` | `--text/-t` **requerido** · `--label/-l` **requerido** · `--voice/-v` · `--output/-o` · `--play` · `--force/-f` · `--json` · `--daemon`/`--no-daemon` |
+| `speech say` | `--text/-t` **requerido** · `--voice/-v` · `--json` · `--daemon`/`--no-daemon` |
 | `speech play` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
 | `speech list` | `--voice/-v` (filtro) · `--json` |
 | `speech remove` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
@@ -175,10 +175,6 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 **El namespace es obligatorio en la gestión.** Las etiquetas viven bajo una voz, así que `play` y `remove` toman `--voice` con el mismo default que `synthesize` y `say`; `list` lo admite como filtro y sin él recorre todas las voces. Es un segmento más que en `voice remove --name X`, inevitable dado el layout del almacén.
 
 **`--label` requerido en `synthesize` es lo que sostiene el reparto.** Elimina de raíz la invocación con efecto cero sin escribir ninguna regla —la rechaza el parser— y elimina la trampa de «previsualizo con un comando y guardo con otro»: como `synthesize` siempre persiste, nadie pierde la toma que acaba de oír.
-
-**`--compute-backend/-cb` lo declaran las dos que sintetizan**, con valores `auto` (default), `cpu`, `cuda` y `mps`. Solo surte efecto en la ruta directa; su interacción con el despacho está en §5.
-
-**`--target-language` es el rename de `--language`, y `--source-language` es nuevo.** `--target-language {es-latam, en}` (default `es-latam`) elige el modelo y el idioma del audio, igual que antes hacía `--language`. `--source-language {es-latam, en}` (default: igual a `--target-language`) declara el idioma del texto de entrada; ambos son opcionales y la traducción es **opt-in**: si coinciden, el comportamiento es el de siempre. Detalle del rename y de la traducción previa a la síntesis en §13.
 
 **`speech play` no necesita modelo ni daemon**: lee el WAV del almacén y lo reproduce.
 
@@ -246,11 +242,9 @@ Con la autodetección por defecto, «usa el daemon» deja de ser algo que haya q
 
 Con los dos flags declarados, la exclusión mutua entre ellos tiene sentido pleno: «exige daemon» y «prohíbe daemon» se contradicen.
 
-#### `--compute-backend` y el despacho
+#### Despacho y modo directo
 
-**`--compute-backend` solo surte efecto en la ruta directa.** El daemon fija modelo y compute backend al arrancar, así que con el daemon activo un valor explícito se avisa por stderr y se ignora. La vía para imponer un backend distinto del que el daemon fijó es `--no-daemon`, que es también la razón documentada de ese flag.
-
-`voice clone` recibe los tres modos de despacho, pero **no** declara `--compute-backend`.
+Con el daemon activo, `speech synthesize`/`say`/`transcribe`/`dub` y `voice clone` pueden usar modelo caliente; `--no-daemon` fuerza ruta directa sin sondeo.
 
 ## 6. Reglas de validación
 
@@ -506,15 +500,15 @@ Ninguno emite ruta, por el criterio de la ruta en los payloads. Todos llevan ade
 
 | Sub-acción | Payload |
 |---|---|
-| `speech synthesize` | `{"voice", "label", "t3_time", "s3gen_time", "daemon"}` |
-| `speech say` | `{"voice"}` |
-| `speech list` | `{"synthetic_speech": [{"voice", "label", "text", "created_at"}]}` |
-| `speech play` | `{"voice", "label"}` |
-| `speech remove` | `{"voice", "label"}` |
+| `speech synthesize` | `{"status":"success", "audio_path", "voice"}` |
+| `speech say` | `{"status":"reproduced", "audio_path", "voice"}` |
+| `speech list` | `{"speech": [{"voice", "label", "text", "created_at", "duration_secs"}]}` |
+| `speech play` | `{"status":"played", "voice", "label"}` |
+| `speech remove` | `{"status":"removed", "voice", "label"}` |
 
-- **`synthesize`** lleva `label` siempre, porque `--label` es requerido. No hace falta ningún campo de persistencia: bajo `--json` el bucle es inalcanzable y la persistencia es cierta cuando la salida es 0.
-- **`say`** no lleva `label` porque no produce artefacto, y **no repite el `text`**: el llamador acaba de mandarlo, y devolver la entrada no es información. Lo único que el llamador puede no saber es qué voz se usó, porque si no pasó `--voice` la eligió el sistema.
-- **La asimetría entre los dos gemelos es deliberada**: `synthesize` emite los tiempos de síntesis y `say` no, pese a que el llamador de `say` tampoco los conoce. Quedarse en un solo campo es la aplicación de la asimetría de reversibilidad: añadir después la duración del audio o los tiempos de síntesis no cuesta nada, y retirarlos sí.
+- **`synthesize`** persiste y emite `audio_path` (ruta del WAV en el almacén) y `voice`; `label` va implícito en `audio_path`. Bajo `--json` el bucle es inalcanzable y la persistencia es cierta cuando la salida es 0.
+- **`say`** no persiste: emite `audio_path` temporal y `voice`; no repite `text`.
+- **Ambos comparten `voice`** porque si no se pasó `--voice` la eligió el sistema (`default`).
 - **`list`** emite el texto completo. La clave es el nombre del recurso en snake_case, siguiendo el precedente de `voice list --json`, que emite `{"voices": [...]}` — y evitando que un identificador del contrato legible por máquina contradiga el vocabulario de la superficie.
 - **`remove`** no lleva campo de resultado: el código de salida ya transporta la información (0 = se borró, 3 = no existía). Un campo `removed` chocaría además con `cleanup --json`, que emite `removed` como lista de rutas, y la misma clave con dos tipos bajo una sola versión de esquema es justo lo que un consumidor tipado no puede manejar.
 
