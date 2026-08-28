@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.1 — 2026-08-28](#0181-20260828)
 - [0.18.0 — 2026-08-28](#0180-20260828)
 - [0.17.1 — 2026-08-28](#0171-20260828)
 - [0.17.0 — 2026-08-28](#0170-20260828)
@@ -56,6 +57,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.1] — 2026-08-28
+
+El job `test-windows` fallaba de forma determinista en `daemon_status_coincide_con_fixture` con `panic` en `read_to_string` del `tempfile`, solo en `win/server-2022`, mientras `test-linux` y `test-macos` pasaban. La causa no estaba en `daemon status` sino en el harness `tests/cli_golden.rs:run_json`: `File::create` trunca sin atomicidad y, con la resolución gruesa de `SystemTime` en Windows más `cargo test` en paralelo, dos hilos generaban el mismo `tmp` y el `remove_file` de uno borraba el del otro. Esta patch reemplaza la creación por `OpenOptions::create_new(true)` (`O_CREAT|O_EXCL`) con reintento atómico, garantizando exclusión del SO sin añadir dependencia ni sobreingenierizar el harness.
+
+### Corregido
+
+- `tests/cli_golden.rs:run_json` pasa de `File::create` a creación atómica `O_EXCL` con contador y reintento en `AlreadyExists`, eliminando la carrera de `tempfile` que hacía fallar `daemon_status` solo en Windows.
 
 ## [0.18.0] — 2026-08-28
 
@@ -1255,3 +1265,4 @@ estado con el que nace el producto.
 [0.17.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.16.0...v0.17.0
 [0.17.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.17.0...v0.17.1
 [0.18.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.17.1...v0.18.0
+[0.18.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.0...v0.18.1
