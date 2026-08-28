@@ -759,18 +759,15 @@ jobs:
             if (-not $Dll) { throw "onnxruntime.dll no encontrada en $Zip" }
             Copy-Item $Dll.FullName "$Bundle\onnxruntime.dll"
             # 2. Runtime VC++ (app-local): la dll de MS es /MD y depende de estas 3.
+            #    Se obtienen del paquete oficial onnxruntime-win-x64-$OrtVersion.zip
+            #    (misma versión que onnxruntime.dll -> versión compatible, determinista).
             $Vc = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
-            $RedistRoot = "C:\Program Files\Microsoft Visual Studio\2022"
             foreach ($Name in $Vc) {
-              $Found = Get-ChildItem -Path $RedistRoot -Recurse -Filter $Name -ErrorAction SilentlyContinue |
-                       Where-Object { $_.FullName -match '\\Redist\\MSVC\\.*\\x64\\Microsoft\.VC\d+\.CRT\\' } |
+              $Found = Get-ChildItem -Path "$env:TEMP\ort-extract" -Recurse -Filter $Name -ErrorAction SilentlyContinue |
+                       Where-Object { $_.FullName -match 'Microsoft\.VC14[34]\.CRT\\' } |
+                       Sort-Object FullName |
                        Select-Object -First 1
-              if (-not $Found) {
-                # Fallback: el redistribuible ya instalado en el sistema.
-                $Sys = Join-Path $env:WINDIR "System32\$Name"
-                if (Test-Path $Sys) { $Found = Get-Item $Sys }
-              }
-              if (-not $Found) { throw "No se encontró $Name (VC++ Redist ni System32)" }
+              if (-not $Found) { throw "No se encontró $Name en onnxruntime-win-x64-$OrtVersion.zip (Redist/vc/Microsoft.VC14[34].CRT/)" }
               Copy-Item $Found.FullName "$Bundle\$Name"
             }
             Write-Host "Bundle ONNX Runtime + VC++:"
@@ -806,6 +803,14 @@ jobs:
             }
             # Librería ONNX Runtime + runtime VC++ (autocontención STT).
             Copy-Item "ort-bundle\*" $Stage
+            # Motor TTS vendido (qwen_tts.exe): se incluye junto al binario para que
+            # la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts.exe) funcione
+            # en el instalador sin variables de entorno.
+            $VendoredTTS = "vendor\qwen3-tts\qwen_tts.exe"
+            if (-not (Test-Path $VendoredTTS)) { throw "qwen_tts.exe vendido no encontrado en $VendoredTTS" }
+            $VendoredDst = "$Stage\vendor\qwen3-tts"
+            New-Item -ItemType Directory -Force -Path $VendoredDst | Out-Null
+            Copy-Item $VendoredTTS "$VendoredDst\qwen_tts.exe"
             $Dst = "artifacts\ai-voice-interconnector-$Version-x86_64-windows.zip"
             Compress-Archive -Path "$Stage\*" -DestinationPath $Dst -Force
             Write-Host "Artefacto: $Dst"

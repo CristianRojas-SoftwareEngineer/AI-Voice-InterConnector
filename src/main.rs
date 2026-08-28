@@ -34,10 +34,7 @@ const DAEMON_ADDR: &str = "127.0.0.1:8765";
 const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Intervalo entre reintentos del sondeo de readiness.
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
-/// Ruta fija del modelo Parakeet TDT 0.6B v3 int8 (export istupakov), reutilizado
-/// por `speech transcribe` (no se gestiona vía `ModelStore`: layout ONNX). Parakeet
-/// consume 4 archivos en este directorio (`ParakeetEngine::new` valida su presencia).
-const STT_MODEL_DIR: &str = "models/parakeet-tdt-v3";
+
 /// Ruta fija del modelo Marian/opus-mt es→en ya convertido a CT2, reutilizado
 /// por `translate` (no se gestiona vía `ModelStore`: layout incompatible).
 const DEFAULT_TRANSLATION_MODEL_ES_EN: &str = "models/ct2/opus-mt-es-en";
@@ -494,11 +491,11 @@ fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> 
             timbre_reference,
             force,
         } => {
-            // Orden de validaciones del oráculo (cli.py:841-899).
-            require_model_provisioned()?;
+            // Orden de validaciones del oráculo (cli.py:841-899): nombre antes de modelo.
             let name = name.to_lowercase();
             VoiceStore::validate_name(&name)
                 .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
+            require_model_provisioned()?;
             let speech_path = std::path::Path::new(&speech_reference);
             if !speech_path.is_file() {
                 return Err(CliError::new(
@@ -677,14 +674,14 @@ async fn handle_speech(
             }
 
             // Modelo ausente -> exit 4, previo a construir el motor.
-            if !std::path::Path::new(STT_MODEL_DIR)
+            if !ModelStore::new().model_dir("parakeet-tdt-v3")
                 .join("nemo128.onnx")
                 .exists()
             {
                 return Err(CliError::new(
                     ExitCode::ModelMissing,
                     "model_missing",
-                    "El modelo de transcripción no está provisionado en 'models/parakeet-tdt-v3' (Parakeet TDT 0.6B v3 int8).",
+                    "El modelo de transcripción no está provisionado (parakeet-tdt-v3, se descarga con 'setup').",
                 ));
             }
 
@@ -723,7 +720,7 @@ async fn handle_speech(
                     )?
                 };
 
-                let engine = ParakeetEngine::new(STT_MODEL_DIR).map_err(|e| {
+                let engine = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3")).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
                         "transcription_error",
@@ -923,14 +920,14 @@ async fn handle_speech(
                 }
             }
             // Modelos ausentes → exit 4 antes de tocar audio (patrón main.rs:479-485).
-            if !std::path::Path::new(STT_MODEL_DIR)
+            if !ModelStore::new().model_dir("parakeet-tdt-v3")
                 .join("nemo128.onnx")
                 .exists()
             {
                 return Err(CliError::new(
                     ExitCode::ModelMissing,
                     "model_missing",
-                    "El modelo de transcripción no está provisionado en 'models/parakeet-tdt-v3' (Parakeet TDT 0.6B v3 int8).",
+                    "El modelo de transcripción no está provisionado (parakeet-tdt-v3, se descarga con 'setup').",
                 ));
             }
             require_model_provisioned()?;
@@ -970,7 +967,7 @@ async fn handle_speech(
                         },
                     )?
                 };
-                let stt = ParakeetEngine::new(STT_MODEL_DIR).map_err(|e| {
+                let stt = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3")).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
                         "transcription_error",

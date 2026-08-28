@@ -21,6 +21,8 @@ use avi_core::engine::{hilos_disponibles, SttEngine};
 use avi_core::json_emitter;
 use avi_store::{SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
+use avi_store::ModelStore;
+#[cfg(feature = "native-stt")]
 use avi_stt::{detectar_idioma, ParakeetEngine};
 use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
 // `Engine` trait requerido por el API no-deprecation de base64 0.22
@@ -28,9 +30,7 @@ use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
 // libres, por compatibilidad con el cliente raíz del CLI).
 use base64::Engine;
 
-/// Ruta relativa (al cwd del workspace) del modelo Parakeet STT (export int8).
-#[cfg(feature = "native-stt")]
-const STT_MODEL_DIR: &str = "models/parakeet-tdt-v3";
+
 /// Idioma por defecto para `clone_voice` cuando la petición no lo transporta
 /// (el contrato de /voices/precompute no carriba idioma).
 const DEFAULT_CLONE_LANGUAGE: &str = "es";
@@ -95,8 +95,10 @@ impl DaemonState {
     /// Devuelve error si el motor STT no puede inicializarse (modelo inexistente).
     pub fn new() -> anyhow::Result<Self> {
         #[cfg(feature = "native-stt")]
-        let stt_engine = ParakeetEngine::new(STT_MODEL_DIR)
-            .map_err(|e| anyhow::anyhow!("fallo al cargar el modelo STT {}: {e}", STT_MODEL_DIR))?;
+        let stt_dir = ModelStore::new().model_dir("parakeet-tdt-v3");
+        #[cfg(feature = "native-stt")]
+        let stt_engine = ParakeetEngine::new(&stt_dir)
+            .map_err(|e| anyhow::anyhow!("fallo al cargar el modelo STT {}: {e}", stt_dir.display()))?;
         // Los hilos lógicos del equipo del usuario dimensionan el paralelismo de
         // ONNX Runtime (heredado de `avi-stt::parakeet`); el runtime del daemon
         // serializa síntesis y STT fuera de esta construcción.

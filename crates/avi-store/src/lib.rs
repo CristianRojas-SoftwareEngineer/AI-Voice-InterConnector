@@ -522,6 +522,8 @@ impl ModelStore {
         Some(direct)
     }
 
+
+
     /// Verificar si un modelo está provisionado: snapshot HF presente y no vacío.
     /// Si no hay pin para el nombre, cae al índice legacy `manifest.json`.
     pub fn is_provisioned(&self, model_name: &str) -> bool {
