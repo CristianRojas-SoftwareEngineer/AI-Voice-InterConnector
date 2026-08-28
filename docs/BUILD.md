@@ -320,8 +320,25 @@ para auditoría. `cleanup` borra snapshots HF de los 4 pines + datos de usuario;
 ### Cacheo de dependencias y toolchain
 
 Los jobs Rust usan `cargo registry` + `target/` + `toolchain` + `sccache`
-(`RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0`) con claves por `arch` +
-`rust_version` + `Cargo.lock`. Ver `.circleci/config.yml` para claves exactas.
+(`RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0`). La clave de `registry` y `target/`
+(namespace `v2`) NO se deriva de `Cargo.lock` directo, sino de un **lock normalizado**
+(`Cargo.lock.cachekey`) que `xtask cache-key` genera neutralizando la línea `version`
+del propio crate. Motivo: cada release bumpea esa versión, así que el checksum de
+`Cargo.lock` cambiaría en cada corte aunque las dependencias no varíen, invalidando la
+clave exacta y dejando todo al frágil fallback por prefijo. Con la normalización la
+clave exacta es estable entre releases y solo cambia ante cambios reales de
+dependencias.
+
+Matriz de invalidación por familia de caché:
+
+| Caché | Namespace | Se invalida cuando… |
+|-------|-----------|---------------------|
+| `registry` + `target/` | `v2` | cambian dependencias reales en `Cargo.lock` (no el bump de versión del crate) |
+| `toolchain` | `v1` | cambia `rust_version` |
+| `msys2` | `v1` | cambian los pines de versión MSYS2 (release base + gcc/openblas/make) |
+| `sccache` | `v1` | rolling (`epoch`); restaura por prefijo del mismo `arch`+toolchain |
+
+Ver `.circleci/config.yml` para claves exactas.
 
 ### Reproducibilidad: pines por digest y sus implicaciones
 
