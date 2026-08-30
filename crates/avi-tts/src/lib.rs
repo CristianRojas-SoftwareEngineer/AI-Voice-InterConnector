@@ -146,13 +146,25 @@ pub fn resolve_voice_motor(
 }
 
 /// Resolución del binario del motor por capas (decisión e1):
-/// 1. `QWEN3_TTS_BIN`; 2. `<cwd>/vendor/qwen3-tts/qwen_tts(.exe)`;
-/// 3. búsqueda en `PATH`.
+/// 1. `QWEN3_TTS_BIN`; 2. `<exe_dir>/vendor/qwen3-tts/qwen_tts(.exe)`; 3. `<cwd>/vendor/qwen3-tts/qwen_tts(.exe)`;
+/// 4. búsqueda en `PATH`.
 fn resolve_binary() -> Option<PathBuf> {
     if let Some(b) = std::env::var_os("QWEN3_TTS_BIN") {
         let p = PathBuf::from(b);
         if !p.as_os_str().is_empty() {
             return Some(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join(if cfg!(windows) {
+                "vendor/qwen3-tts/qwen_tts.exe"
+            } else {
+                "vendor/qwen3-tts/qwen_tts"
+            });
+            if cand.is_file() {
+                return Some(cand);
+            }
         }
     }
     let vendored = PathBuf::from(if cfg!(windows) {
@@ -181,7 +193,8 @@ fn resolve_binary() -> Option<PathBuf> {
 
 /// Resolución del directorio de pesos por capas (decisión e1):
 /// 1. `QWEN3_TTS_MODEL_DIR`; 2. directorio hermano del binario
-///    (`<dir del bin>/qwen3-tts-0.6b`); 3. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b`.
+///    (`<dir del bin>/qwen3-tts-0.6b`); 3. `<exe_dir>/vendor/qwen3-tts/qwen3-tts-0.6b`;
+/// 4. snapshot HF `ModelStore::model_snapshot_path("qwen3-tts-0.6b")`; 5. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b`.
 fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("QWEN3_TTS_MODEL_DIR") {
         let p = PathBuf::from(d);
@@ -197,6 +210,19 @@ fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
             }
         }
     }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join("vendor/qwen3-tts/qwen3-tts-0.6b");
+            if cand.is_dir() {
+                return Some(cand);
+            }
+        }
+    }
+    if let Some(p) = avi_store::ModelStore::new().model_snapshot_path("qwen3-tts-0.6b") {
+        if p.is_dir() && p.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false) {
+            return Some(p);
+        }
+    }
     let vendored = PathBuf::from("vendor/qwen3-tts/qwen3-tts-0.6b");
     if vendored.is_dir() {
         return Some(vendored);
@@ -209,8 +235,9 @@ fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
 /// que exige el modelo Base (`vendor/qwen3-tts/main.c:1848`), distinto del
 /// CustomVoice usado por la síntesis general.
 /// Orden: 1. `QWEN3_TTS_BASE_MODEL_DIR`; 2. directorio hermano del binario
-/// (`<dir del bin>/qwen3-tts-0.6b-base`); 3. snapshot HF `ModelStore::model_snapshot_path("qwen3-tts-0.6b-base")`;
-/// 4. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b-base`.
+/// (`<dir del bin>/qwen3-tts-0.6b-base`); 3. `<exe_dir>/vendor/qwen3-tts/qwen3-tts-0.6b-base`;
+/// 4. snapshot HF `ModelStore::model_snapshot_path("qwen3-tts-0.6b-base")`;
+/// 5. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b-base`.
 pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("QWEN3_TTS_BASE_MODEL_DIR") {
         let p = PathBuf::from(d);
@@ -223,6 +250,14 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
             let hermano = parent.join("qwen3-tts-0.6b-base");
             if hermano.is_dir() {
                 return Some(hermano);
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join("vendor/qwen3-tts/qwen3-tts-0.6b-base");
+            if cand.is_dir() {
+                return Some(cand);
             }
         }
     }
@@ -1483,5 +1518,46 @@ mod tests {
                 .map(|s| s.success())
                 .unwrap_or(true)
         }
+    }
+
+    /// T4: `resolve_binary` halla el binario junto al `current_exe` aunque `cwd` no tenga vendor.
+    #[test]
+    fn resolve_binary_halla_exe_dir_vendor() {
+        // Guardar env para no contaminar otros tests (serializados por --test-threads=1 en CI)
+        let orig = std::env::var_os("QWEN3_TTS_BIN");
+        std::env::remove_var("QWEN3_TTS_BIN");
+        let exe_dir = std::env::current_exe()
+            .expect("current_exe")
+            .parent()
+            .expect("parent")
+            .to_path_buf();
+        let cand = exe_dir.join(if cfg!(windows) {
+            "vendor/qwen3-tts/qwen_tts.exe"
+        } else {
+            "vendor/qwen3-tts/qwen_tts"
+        });
+        let created_dir = cand.parent().unwrap().to_path_buf();
+        let existed = cand.is_file();
+        if !existed {
+            std::fs::create_dir_all(&created_dir).unwrap();
+            std::fs::write(&cand, b"fake").unwrap();
+        }
+        let found = resolve_binary();
+        // Limpiar
+        if !existed {
+            let _ = std::fs::remove_file(&cand);
+            // No borrar created_dir si quedó con otros ficheros
+            let _ = std::fs::remove_dir(&created_dir);
+            let _ = std::fs::remove_dir(exe_dir.join("vendor/qwen3-tts"));
+            let _ = std::fs::remove_dir(exe_dir.join("vendor"));
+        }
+        if let Some(o) = orig {
+            std::env::set_var("QWEN3_TTS_BIN", o);
+        }
+        assert!(
+            found.is_some(),
+            "resolve_binary debe hallar el binario en <exe_dir>/vendor"
+        );
+        assert_eq!(found.unwrap(), cand);
     }
 }

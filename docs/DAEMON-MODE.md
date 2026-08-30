@@ -61,6 +61,17 @@ progreso línea a línea y un objeto final `{"type":"result","audio_b64":…}` c
 WAV en base64. El cliente del CLI reconstruye el WAV y lo persiste/reproduce según
 los flags.
 
+## Resolución de binario y modelo
+
+El motor `Qwen3-TTS` resuelve su binario y pesos en este orden (decisión e1):
+
+1. `QWEN3_TTS_BIN` / `QWEN3_TTS_MODEL_DIR` / `QWEN3_TTS_BASE_MODEL_DIR` (override absoluto)
+2. `<exe_dir>/vendor/qwen3-tts/qwen_tts(.exe)` y `<exe_dir>/vendor/qwen3-tts/qwen3-tts-0.6b{,-base}` (junto al `current_exe` instalado)
+3. `<cwd>/vendor/qwen3-tts/...` (desarrollo desde la raíz del repo)
+4. `PATH` (`qwen_tts`) y snapshot HF (`ModelStore::model_snapshot_path`) como último fallback
+
+Este orden garantiza que `daemon start` calienta desde cualquier `CWD` sin necesidad de `QWEN3_TTS_BIN` cuando se usa el binario instalado.
+
 ## Decisiones de Diseño
 
 - **Transporte HTTP (no stdio)**: mismo contrato que el canal Python previo; clientes externos no notan el cambio.
