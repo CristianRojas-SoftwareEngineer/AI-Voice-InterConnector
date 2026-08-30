@@ -4,7 +4,7 @@
 # en CI: la validación previa al tag (fmt/clippy/test) se documenta en docs/BUILD.md.
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
 # licencia, versionados vía `persist_to_workspace` → `publish-release`.
-# Pines reproducibles: `rust_version` + digest de `cimg/rust` (ver §Reproducibilidad).
+# Pines reproducibles: `rust_version` + `ort_version` + digest de `cimg/rust` (ver §Reproducibilidad).
 # Ver docs/BUILD.md §4 para arquitectura completa y docs/proposals/progress.md:340-346 para Fase 7.
 
 version: 2.1
@@ -49,6 +49,10 @@ parameters:
     type: string
     default: "4.4.1-5"
     description: Versión de make/mingw32-make (mingw-w64-ucrt-x86_64-make).
+  ort_version:
+    type: string
+    default: "1.28.0"
+    description: Versión de ONNX Runtime (pareja de ort 2.0.0-rc.13) empaquetada en los 4 builds.
 
 # Cachés duales compartidas por todos los jobs Rust (restore/save nativos,
 # idénticos en bash y PowerShell). Separadas porque invalidan distinto:
@@ -65,6 +69,8 @@ parameters:
 #   - toolchain (v1): cambia con rust_version. NO se re-keya: su semántica no cambia.
 #   - msys2 (v1): cambia con los pines de versión MSYS2. NO se re-keya.
 #   - sccache (v1): rolling con epoch. NO se re-keya.
+#   - ort-bundle (v1): cambia con ort_version (<< pipeline.parameters.ort_version >>).
+#   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey + msys2 gcc/openblas.
 commands:
   cargo_restore_caches:
     description: Restaura caché de registry/git y de target/ (con fallback parcial)
@@ -535,9 +541,9 @@ jobs:
           name: Ejecutar suite con cobertura (cargo llvm-cov)
           command: |
             echo "[STEP] Ejecutar suite con cobertura - INICIO"
-            # Genera lcov.info y resumen por líneas; falla si no hay tests
+            # Genera lcov.info; el resumen se imprime sin re-ejecutar la suite
             cargo llvm-cov --workspace --lcov --output-path lcov.info --verbose
-            cargo llvm-cov --workspace --summary-only
+            cargo llvm-cov report
             echo "[STEP] Ejecutar suite con cobertura - FIN"
       - run:
           name: Estadísticas de sccache (hit-rate)
@@ -836,53 +842,93 @@ jobs:
       - sccache_save_cache:
           os: windows
       - run:
+          name: Generar .engine-cachekey (clave TTS)
+          shell: bash
+          command: |
+            echo "[STEP] Generar .engine-cachekey - INICIO"
+            # Agregado determinista: Makefile + fuentes C/H (incluye vendor/lz4) + ingot
+            # Orden alfabético para estabilidad del checksum (find | sort)
+            cat vendor/qwen3-tts/Makefile > vendor/qwen3-tts/.engine-cachekey
+            find vendor/qwen3-tts -maxdepth 1 -type f \( -name '*.c' -o -name '*.h' \) -print | sort | xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
+            find vendor/qwen3-tts/vendor -type f \( -name '*.c' -o -name '*.h' \) -print | sort | xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
+            find vendor/qwen3-tts/third_party/ingot -type f \( -name '*.c' -o -name '*.h' \) -print | sort | xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
+            echo "[STEP] Generar .engine-cachekey - FIN"
+      - restore_cache:
+          keys:
+            - tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+      - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` compila el motor con
           # mingw32-make bajo el entorno MSYS2 UCRT64 (PATH ucrt64/bin + usr/bin,
           # MSYSTEM=UCRT64, leído de MSYS2_ROOT default C:\msys64) y verifica con
           # --self-test. Produce vendor\qwen3-tts\qwen_tts.exe fresco desde fuente
           # (antes: blob de 33 MB versionado). El staging de abajo lo consume.
+          # Cacheado: si qwen_tts.exe existe tras restore (clave exacta sin fallback),
+          # es fresco y solo se verifica; si no, build completo.
           name: Compilar y verificar motor TTS
           command: |
             Write-Host "[STEP] Compilar y verificar motor TTS - INICIO"
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            cargo run -p xtask -- build-engine --self-test
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $TtsExe = "vendor\qwen3-tts\qwen_tts.exe"
+            if (Test-Path $TtsExe) {
+              Write-Host "Motor TTS restaurado de caché; se ejecuta --self-test directo"
+              & $TtsExe --self-test
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } else {
+              cargo run -p xtask -- build-engine --self-test
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
             Write-Host "[STEP] Compilar y verificar motor TTS - FIN"
+      - save_cache:
+          key: tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+          paths:
+            - vendor/qwen3-tts/qwen_tts.exe
+      - restore_cache:
+          keys:
+            - ort-v1-win-x64-<< pipeline.parameters.ort_version >>
       - run:
           # Autocontención (requisito duro): el crate `ort` en `load-dynamic`
           # busca onnxruntime.dll junto al ejecutable. Se empaqueta la librería
-          # oficial de Microsoft (ONNX Runtime 1.28.0, pareja de ort rc.13) y sus
+          # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13) y sus
           # 3 DLLs del runtime VC++ (la dll de MS es /MD), de modo que el usuario
           # no necesite instalar el VC++ Redistributable ni nada previo.
+          # Cacheado: si onnxruntime.dll existe tras restore, se omite descarga.
           name: Empaquetar ONNX Runtime + runtime VC++ (bundle load-dynamic)
           command: |
             Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - INICIO"
             $ErrorActionPreference = "Stop"
-            $OrtVersion = "1.28.0"
+            $OrtVersion = "<< pipeline.parameters.ort_version >>"
             $Bundle = "ort-bundle"
-            if (Test-Path $Bundle) { Remove-Item -Recurse -Force $Bundle }
-            New-Item -ItemType Directory -Force -Path $Bundle | Out-Null
-            # 1. Librería dinámica oficial de Microsoft (win-x64).
-            $Zip = "onnxruntime-win-x64-$OrtVersion.zip"
-            $Url = "https://github.com/microsoft/onnxruntime/releases/download/v$OrtVersion/$Zip"
-            Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\$Zip"
-            Expand-Archive -Path "$env:TEMP\$Zip" -DestinationPath "$env:TEMP\ort-extract" -Force
-            $Dll = Get-ChildItem -Path "$env:TEMP\ort-extract" -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
-            if (-not $Dll) { throw "onnxruntime.dll no encontrada en $Zip" }
-            Copy-Item $Dll.FullName "$Bundle\onnxruntime.dll"
-            # 2. Runtime VC++ (app-local): la dll de MS es /MD y depende de estas 3.
-            #    onnxruntime-win-x64-1.28.0.zip ya no las incluye.
-            #    Se obtienen de System32 (Windows Server 2022 -> VC++ 2022 CRT compatible).
-            $Vc = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
-            foreach ($Name in $Vc) {
-              $Found = Get-ChildItem -Path "C:\Windows\System32" -Filter $Name -ErrorAction SilentlyContinue |
-                       Select-Object -First 1
-              if (-not $Found) { throw "No se encontró $Name en System32" }
-              Copy-Item $Found.FullName "$Bundle\$Name"
+            if (-not (Test-Path "$Bundle\onnxruntime.dll")) {
+              if (Test-Path $Bundle) { Remove-Item -Recurse -Force $Bundle }
+              New-Item -ItemType Directory -Force -Path $Bundle | Out-Null
+              # 1. Librería dinámica oficial de Microsoft (win-x64).
+              $Zip = "onnxruntime-win-x64-$OrtVersion.zip"
+              $Url = "https://github.com/microsoft/onnxruntime/releases/download/v$OrtVersion/$Zip"
+              Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\$Zip"
+              Expand-Archive -Path "$env:TEMP\$Zip" -DestinationPath "$env:TEMP\ort-extract" -Force
+              $Dll = Get-ChildItem -Path "$env:TEMP\ort-extract" -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
+              if (-not $Dll) { throw "onnxruntime.dll no encontrada en $Zip" }
+              Copy-Item $Dll.FullName "$Bundle\onnxruntime.dll"
+              # 2. Runtime VC++ (app-local): la dll de MS es /MD y depende de estas 3.
+              #    onnxruntime-win-x64-1.28.0.zip ya no las incluye.
+              #    Se obtienen de System32 (Windows Server 2022 -> VC++ 2022 CRT compatible).
+              $Vc = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+              foreach ($Name in $Vc) {
+                $Found = Get-ChildItem -Path "C:\Windows\System32" -Filter $Name -ErrorAction SilentlyContinue |
+                         Select-Object -First 1
+                if (-not $Found) { throw "No se encontró $Name en System32" }
+                Copy-Item $Found.FullName "$Bundle\$Name"
+              }
+            } else {
+              Write-Host "Bundle ONNX Runtime restaurado de caché; se omite descarga"
             }
             Write-Host "Bundle ONNX Runtime + VC++:"
             Get-ChildItem $Bundle | ForEach-Object { Write-Host "  $($_.Name)" }
             Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - FIN"
+      - save_cache:
+          key: ort-v1-win-x64-<< pipeline.parameters.ort_version >>
+          paths:
+            - ort-bundle
       - run:
           # Nombre del artefacto con la versión REAL del CLI: la fuente de
           # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
@@ -1031,9 +1077,9 @@ jobs:
             cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
             # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
             # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
-            # oficial de Microsoft (ONNX Runtime 1.28.0, pareja de ort rc.13) con el
+            # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13) con el
             # nombre por defecto que busca ort, sin que el usuario instale nada.
-            ORT_VERSION="1.28.0"
+            ORT_VERSION="<< pipeline.parameters.ort_version >>"
             ORT_TGZ="onnxruntime-linux-x64-${ORT_VERSION}.tgz"
             curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
             ORT_EXTRACT="$(mktemp -d)"
@@ -1160,9 +1206,9 @@ jobs:
             cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
             # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
             # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
-            # oficial de Microsoft (ONNX Runtime 1.28.0, pareja de ort rc.13, build
+            # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13, build
             # aarch64) con el nombre por defecto que busca ort.
-            ORT_VERSION="1.28.0"
+            ORT_VERSION="<< pipeline.parameters.ort_version >>"
             ORT_TGZ="onnxruntime-linux-aarch64-${ORT_VERSION}.tgz"
             curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
             ORT_EXTRACT="$(mktemp -d)"
@@ -1324,9 +1370,9 @@ jobs:
             cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
             # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
             # busca libonnxruntime.dylib junto al ejecutable. Se empaqueta la
-            # librería oficial de Microsoft (ONNX Runtime 1.28.0, pareja de ort
+            # librería oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort
             # rc.13, build osx-arm64) con el nombre por defecto que busca ort.
-            ORT_VERSION="1.28.0"
+            ORT_VERSION="<< pipeline.parameters.ort_version >>"
             ORT_TGZ="onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
             curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
             ORT_EXTRACT="$(mktemp -d)"

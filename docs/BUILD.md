@@ -342,14 +342,17 @@ Matriz de invalidación por familia de caché:
 | `toolchain` | `v1` | cambia `rust_version` |
 | `msys2` | `v1` | cambian los pines de versión MSYS2 (release base + gcc/openblas/make) |
 | `sccache` | `v1` | rolling (`epoch`); restaura por prefijo del mismo `arch`+toolchain |
+| `ort-bundle` | `v1` | cambia `ort_version` (`1.28.0`) — sin `Cargo.toml` en la clave para no invalidar por bump del crate |
+| `tts` (`qwen_tts.exe`) | `v1` | cambia `vendor/qwen3-tts/.engine-cachekey` (agregado de `Makefile` + `*.c/*.h` + `third_party/ingot`) + `msys2_gcc_version`/`openblas` |
 
-Ver `.circleci/config.yml` para claves exactas.
+Ver `.circleci/config.yml` para claves exactas. `coverage` genera `lcov.info` en una sola corrida y el resumen con `cargo llvm-cov report` (sin re-ejecutar la suite).
 
 ### Reproducibilidad: pines por digest y sus implicaciones
 
 Las imágenes `cimg/rust:1.96.0` van pineadas por digest (`@sha256:...`), y
-`rust_version` es parámetro único del pipeline. Ver `.circleci/config.yml`
-§Reproducibilidad para procedimiento de bump.
+`rust_version` + `ort_version` son parámetros únicos del pipeline (`pipeline.parameters`).
+Ver `.circleci/config.yml` §Reproducibilidad para procedimiento de bump (bumpear
+`ort_version` invalida `ort-v1` en el siguiente tag).
 
 El archivo de configuración completo está en `.circleci/config.yml`.
 
@@ -437,6 +440,13 @@ pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidenc
 > haría `SIGILL` en CPUs de campo más viejas. `SIMD=native` recupera `-march=native`
 > para el dev box (misma CPU build=run). macOS conserva `-march=native` (host
 > single-vendor). Cierra el hallazgo 3.1 de la revisión del pipeline.
+
+En CI Windows el binario del motor (`vendor/qwen3-tts/qwen_tts.exe`) se cachea con
+clave `tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}` donde
+`.engine-cachekey` es el agregado determinista de `Makefile` + `*.c/*.h` (incluye `vendor/lz4.*`) + `third_party/ingot/**/*.{c,h}`.
+Si existe tras `restore_cache` (clave exacta sin fallback) solo se verifica con `--self-test`;
+si no, se compila. El bundle ONNX Runtime (`ort-bundle/`) se cachea con
+`ort-v1-win-x64-<< pipeline.parameters.ort_version >>` y guarda tras el bundling.
 
 Ver `vendor/qwen3-tts/CLAUDE.md` y `crates/avi-tts/src/lib.rs` para el contrato
 de invocación (`--int4 -j 4 --stream`, `GenerationOptions::produccion()` temp
