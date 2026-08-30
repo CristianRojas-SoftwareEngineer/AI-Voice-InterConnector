@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.3 — 2026-08-30](#0183-20260830)
 - [0.18.2 — 2026-08-28](#0182-20260828)
 - [0.18.1 — 2026-08-28](#0181-20260828)
 - [0.18.0 — 2026-08-28](#0180-20260828)
@@ -60,6 +61,19 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.3] — 2026-08-30
+
+El pipeline `build-all` en `v0.18.2` (#97, 17m31s) estaba dominado por `build-windows-x64` (10m08s) y por una doble ejecución encadenada de la suite en `coverage` (4m33s) que mantenía el gate en 5m56s, además de dos pasos sin caché en Windows que re-descargaban ONNX Runtime y recompilaban el motor TTS en cada tag. Esta patch corrige la cobertura para rehusar los `.profraw` con `cargo llvm-cov report` y añade dos cachés con claves estables (`ort-v1` por `ort_version` y `tts-v1` por `.engine-cachekey` + pines de toolchain), reduciendo el wall a ~13m50s sin invalidar cachés `v2` vigentes y sin tocar `sccache`/`CARGO_INCREMENTAL`.
+
+### Cambiado
+
+- `ci`: corrige doble ejecución en `coverage` — `cargo llvm-cov report` en vez de segunda corrida completa (`273199` → ~3m50s, -~25s de wall) — `.circleci/config.yml:540`.
+- `ci`: cachea `ort-bundle` con `ort-v1-win-x64-<< pipeline.parameters.ort_version >>` y guarda tras el bundling, con guarda `Test-Path onnxruntime.dll` — `.circleci/config.yml:884`.
+- `ci`: cachea `qwen_tts.exe` con `tts-v1-{{ arch }}-gcc<<...>>-ob<<...>>-{{ checksum ".engine-cachekey" }}` y generación determinista de `.engine-cachekey` — `.circleci/config.yml:844`.
+- `ci`: parametriza `ORT_VERSION` en los 4 builds vía `pipeline.parameters.ort_version` — `.circleci/config.yml:1077,1206,1370`.
+- `docs`: actualiza `BUILD.md` con matriz de invalidación para `ort-bundle`/`tts` y pines reproducibles.
 
 ## [0.18.2] — 2026-08-28
 
@@ -1285,3 +1299,4 @@ estado con el que nace el producto.
 [0.18.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.17.1...v0.18.0
 [0.18.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.0...v0.18.1
 [0.18.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.1...v0.18.2
+[0.18.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.2...v0.18.3
