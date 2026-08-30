@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.5 — 2026-08-30](#0185-20260830)
 - [0.18.4 — 2026-08-30](#0184-20260830)
 - [0.18.3 — 2026-08-30](#0183-20260830)
 - [0.18.2 — 2026-08-28](#0182-20260828)
@@ -64,6 +65,16 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.5] — 2026-08-30
+
+El daemon instalado quedaba en `warm_failed` con `No está provisionado` y simulaba cuelgue al lanzarse desde un `CWD` distinto al `install_dir`, porque `resolve_binary` solo miraba `<cwd>/vendor` y `PATH` y no `<exe_dir>/vendor` donde vive `qwen_tts.exe` vendido; además el skill `test-windows-e2e-as-final-user` prescribía `daemon start` con pipe capturado (`| Out-String`/`Start-Job`) que hereda el write-end y deja al padre colgado 10s. Esta patch corrige la resolución a `env → exe_dir/vendor → cwd/vendor → PATH/HF` (con fallback HF para `qwen3-tts-0.6b`) y el skill a lanzamiento detached sin pipe con `Start-Process` y poll de `/health`, desbloqueando `warm: warm` desde cualquier `CWD` sin `QWEN3_TTS_BIN`.
+
+### Corregido
+
+- `tts`: resuelve `qwen_tts` y modelos `qwen3-tts-0.6b{,-base}` relativo a `current_exe` antes que `cwd` y añade fallback HF para `qwen3-tts-0.6b` — `crates/avi-tts/src/lib.rs:151-176,182-240,253-262`.
+- `skill`: corrige drift en `test-windows-e2e-as-final-user` — `T3` con `Start-Process` detached sin pipe y `RedirectStandardOutput` + poll `/health`, overview a `0.18.5` y constraint contra pipe capture — `.claude/skills/test-windows-e2e-as-final-user/SKILL.md`.
 
 ## [0.18.4] — 2026-08-30
 
@@ -1311,3 +1322,4 @@ estado con el que nace el producto.
 [0.18.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.1...v0.18.2
 [0.18.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.2...v0.18.3
 [0.18.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.3...v0.18.4
+[0.18.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.4...v0.18.5
