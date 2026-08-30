@@ -847,11 +847,11 @@ jobs:
           command: |
             echo "[STEP] Generar .engine-cachekey - INICIO"
             # Agregado determinista: Makefile + fuentes C/H (incluye vendor/lz4) + ingot
-            # Orden alfabético para estabilidad del checksum (find | sort)
+            # Usa /usr/bin/find y /usr/bin/sort + xargs -r para evitar el find de Windows (System32) y ruido "File not found - *.c"
             cat vendor/qwen3-tts/Makefile > vendor/qwen3-tts/.engine-cachekey
-            find vendor/qwen3-tts -maxdepth 1 -type f \( -name '*.c' -o -name '*.h' \) -print | sort | xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
-            find vendor/qwen3-tts/vendor -type f \( -name '*.c' -o -name '*.h' \) -print | sort | xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
-            find vendor/qwen3-tts/third_party/ingot -type f \( -name '*.c' -o -name '*.h' \) -print | sort | xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
+            /usr/bin/find vendor/qwen3-tts -maxdepth 1 -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs -r cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
+            /usr/bin/find vendor/qwen3-tts/vendor -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs -r cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
+            /usr/bin/find vendor/qwen3-tts/third_party/ingot -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs -r cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
             echo "[STEP] Generar .engine-cachekey - FIN"
       - restore_cache:
           keys:
