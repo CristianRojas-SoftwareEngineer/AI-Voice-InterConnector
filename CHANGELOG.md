@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.4 — 2026-08-30](#0184-20260830)
 - [0.18.3 — 2026-08-30](#0183-20260830)
 - [0.18.2 — 2026-08-28](#0182-20260828)
 - [0.18.1 — 2026-08-28](#0181-20260828)
@@ -62,6 +63,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.4] — 2026-08-30
+
+El pipeline `v0.18.3` (#100) finalizó en `success` con los cachés `tts-v1`/`ort-v1` guardados correctamente, pero el step `Generar .engine-cachekey` emitía tres líneas `File not found - *.c` por el sombreado del `find` de Windows (`System32`) sobre el de MSYS2 y el uso de `xargs` sin `-r`. Esta patch fuerza `/usr/bin/find` + `/usr/bin/sort` + `xargs -r` para un agregado silencioso y determinista, eliminando el ruido sin alterar la clave.
+
+### Corregido
+
+- `ci`: elimina ruido `File not found - *.c` en `Generar .engine-cachekey` forzando `/usr/bin/find`/`sort`/`xargs -r` — `.circleci/config.yml:844`.
 
 ## [0.18.3] — 2026-08-30
 
@@ -1300,3 +1310,4 @@ estado con el que nace el producto.
 [0.18.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.0...v0.18.1
 [0.18.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.1...v0.18.2
 [0.18.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.2...v0.18.3
+[0.18.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.3...v0.18.4
