@@ -122,6 +122,7 @@ commands:
     description: Guarda target/ siempre (when always) — el parcial acelera el re-run
     # `variant` debe coincidir con el pasado a cargo_restore_caches en el mismo job.
     # `os` debe coincidir también: target/ es OS-específico.
+    # Solo para jobs build-* (variant full); test-*/coverage usan solo sccache.
     parameters:
       variant:
         type: string
@@ -135,6 +136,18 @@ commands:
           paths:
             - target
           when: always
+
+  cargo_restore_registry:
+    description: Restaura solo registry/git (sin target) — para test-*/coverage donde sccache es suficiente
+    steps:
+      - run:
+          name: Generar Cargo.lock.cachekey (clave de caché normalizada)
+          shell: bash
+          command: perl -0777 -pe 's/(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/' Cargo.lock > Cargo.lock.cachekey
+      - restore_cache:
+          keys:
+            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}
+            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-
 
   # Caché de toolchain (R3): ~/.rustup (toolchain + componentes) y ~/.cargo/bin
   # (binarios instalados: rustup, cargo, cargo-llvm-cov). Clave sin checksum —
@@ -279,6 +292,8 @@ jobs:
     # arch-independiente y mockea el engine (Parakeet/Qwen no se ejercitan),
     # así que re-correrla en ARM64 no aportaría señal (ver docs/BUILD.md §4).
     # Es la arquitectura más barata/rápida disponible.
+    # Caché: registry + sccache (sin target) — sccache content-addressed evita
+    # el artefacto derivado 770 MiB y el upload 235s de Windows.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: medium
@@ -297,8 +312,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches:
-          os: linux
+      - cargo_restore_registry
       - run:
           name: Verificar toolchain Rust
           command: |
@@ -328,8 +342,6 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
-      - cargo_save_target:
-          os: linux
       - sccache_save_cache:
           os: linux
 
@@ -337,6 +349,8 @@ jobs:
     # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
     # test-linux/macos: valida código específico de Windows (winsound, tray)
     # antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
+    # Caché: registry + sccache (sin target) — elimina el artefacto derivado
+    # 770 MiB restore / 831 MiB save (235s upload NTFS) que dominaba 56% del pipeline.
     executor: win/server-2022
     steps:
       - checkout
@@ -377,8 +391,7 @@ jobs:
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - toolchain_save_cache:
           os: windows
-      - cargo_restore_caches:
-          os: windows
+      - cargo_restore_registry
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -404,8 +417,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
-      - cargo_save_target:
-          os: windows
       - sccache_save_cache:
           os: windows
 
@@ -413,6 +424,7 @@ jobs:
     # Suite Rust en macOS nativo (Apple Silicon, Xcode 26.4.0). Valida código
     # específico de macOS (afplay/CoreAudio, rutas POSIX, señales) — sin Mac
     # físico, este gate en CI es la única validación antes del usuario real.
+    # Caché: registry + sccache (sin target) — coherente con test-linux/windows.
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
@@ -441,8 +453,7 @@ jobs:
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - toolchain_save_cache:
           os: macos
-      - cargo_restore_caches:
-          os: macos
+      - cargo_restore_registry
       - run:
           name: Instalar dependencias de sistema (cmake, pkg-config)
           command: |
@@ -478,8 +489,6 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
-      - cargo_save_target:
-          os: macos
       - sccache_save_cache:
           os: macos
 
@@ -506,9 +515,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches:
-          os: linux
-          variant: cov
+      - cargo_restore_registry
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -551,9 +558,6 @@ jobs:
       - store_artifacts:
           path: lcov.info
           destination: coverage-lcov
-      - cargo_save_target:
-          os: linux
-          variant: cov
       - sccache_save_cache:
           os: linux
 
@@ -565,15 +569,12 @@ jobs:
     # la versión vigente (cargo xtask source-offer --check) y que THIRD-PARTY-
     # LICENSES.md esté en sincronía con Cargo.lock (cargo xtask licenses --check).
     # Corre en ramas y en tags v* como gate de los builds (ver workflows).
+    # Caché: registry + sccache (sin target) — xtask es pequeño, sccache basta.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
-      # Caché de compilación de xtask (variante propia `xtask`, sin colisión con
-      # test/full/cov): evita recompilar xtask en frío en cada release.
-      - cargo_restore_caches:
-          os: linux
-          variant: xtask
+      - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
       - sccache_setup_unix
@@ -591,24 +592,18 @@ jobs:
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
       - sccache_save_cache:
           os: linux
-      - cargo_save_target:
-          os: linux
-          variant: xtask
 
   validate-changelog:
     # Gate de CHANGELOG: verifica que exista la sección ## [X.Y.Z] para la
     # versión bumppeada antes del tag, evitando el fallo silencioso de
     # publish-release (~14 min de pipeline deshechos). Corre en tags v* como
     # gate de los builds (ver workflow build-all).
+    # Caché: registry + sccache (sin target) — coherente con test-*.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
-      # Caché de compilación de xtask (variante propia `xtask`, sin colisión con
-      # test/full/cov): evita recompilar xtask en frío en cada release.
-      - cargo_restore_caches:
-          os: linux
-          variant: xtask
+      - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
       - sccache_setup_unix
@@ -620,9 +615,6 @@ jobs:
             echo "[STEP] Verificar CHANGELOG - FIN"
       - sccache_save_cache:
           os: linux
-      - cargo_save_target:
-          os: linux
-          variant: xtask
 
   # ──────────────────────────────────────────────────────────────
   # Smoke tests de instaladores de una línea (mock por PATH, sin red)
@@ -1499,11 +1491,8 @@ jobs:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
-      # Caché de compilación de xtask (variante propia `xtask`, sin colisión con
-      # test/full/cov): evita recompilar xtask en frío para renderizar el Cask.
-      - cargo_restore_caches:
-          os: linux
-          variant: xtask
+      # Caché: registry + sccache (sin target xtask) — coherente con test-*/coverage.
+      - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
       - sccache_setup_unix
@@ -1569,9 +1558,6 @@ jobs:
             echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
       - sccache_save_cache:
           os: linux
-      - cargo_save_target:
-          os: linux
-          variant: xtask
 
 workflows:
   build-all:
