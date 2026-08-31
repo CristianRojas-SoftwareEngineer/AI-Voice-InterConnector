@@ -91,10 +91,10 @@ Tanto `_transcribe_stage` (`cli.py:451-513`) como `_dispatch_synthesis` (`cli.py
 
 `_transcribe_stage` (`cli.py:451-513`) despacha a:
 
-- **Daemon:** `_transcribe_via_daemon` (`cli.py:421-448`) → codifica audio a base64 PCM int16 → `POST /transcribe` → daemon decodifica, convierte a float32, delega a `WhisperTranscriber` → `faster_whisper.WhisperModel.transcribe(audio, language, task="transcribe")` → texto
-- **Directo:** instancia `TranscriptionService` localmente → mismo pipeline sin HTTP
+- **Daemon:** transcribe vía `avi-daemon` → `POST /transcribe` (`src/main.rs:743`, `crates/avi-daemon/src/lib.rs:286-508`) → delega a `ParakeetEngine::transcribe` (`crates/avi-stt/src/parakeet.rs`) sobre `ort` load-dynamic con los 4 artefactos `MODEL_FILE_PATTERNS` → texto
+- **Directo:** instancia `ParakeetEngine` localmente (`crates/avi-stt/src/lib.rs:40`) → mismo pipeline sin HTTP vía `hf_cache_dir()` + `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs:381`)
 
-**Detalle clave:** `task="transcribe"` está hardcodeado — Whisper solo transcribe, nunca traduce. La traducción es responsabilidad exclusiva del subsistema de traducción.
+**Detalle clave:** `ParakeetEngine` solo transcribe, nunca traduce. La traducción es responsabilidad exclusiva de `avi-translation` vía `ct2rs`.
 
 ### Etapa 3: Traducción (condicional)
 
@@ -114,7 +114,7 @@ La traducción NO es una etapa separada en `cmd_speech_dub`. Está incrustada en
 `_dispatch_synthesis` (`cli.py:361-418`) despacha a:
 
 - **Daemon:** `_synthesize_via_daemon` → `POST /synthesize` con `SynthesizeRequest` → daemon selecciona engine por idioma, serializa con `_synthesis_lock`, emite NDJSON (progress events + result), limpieza de memoria post-síntesis
-- **Directo:** instancia `ChatterboxEngine.get_instance(model, backend)` → lazy imports de torch/chatterbox → `engine.synthesize(text, timbre_ref, speech_ref, ...)`
+- **Directo:** instancia `Qwen3TtsEngine` (`crates/avi-tts/src/lib.rs:279-811`, `src/main.rs:557-777` `clone_voice`/`synthesize_via_subprocess`) → `engine.synthesize(text, reference.qvoice, GenerationOptions::produccion())` (`crates/avi-tts/src/lib.rs:419` `synthesize_via_residente`); solo `hf-hub` + `ct2rs` + `ort` (stack Rust nativo)
 
 **Parámetros de síntesis del engine** (`engine.py`):
 
@@ -145,7 +145,7 @@ El daemon (`daemon/server.py`) expone 6 endpoints, ninguno es de dubbing:
 |---|---|
 | `GET /health` | Estado del daemon, modelos cargados, uptime |
 | `POST /synthesize` | Síntesis (con traducción integrada si source≠target) |
-| `POST /transcribe` | Transcripción vía faster-whisper |
+| `POST /transcribe` | Transcripción vía `ParakeetEngine` (`ort` load-dynamic, `parakeet-tdt-0.6b-v3`) |
 | `GET /voices` | Lista de voces |
 | `POST /voices/precompute` | Precomputa conditionals de una voz |
 | `POST /shutdown` | Apaga el daemon |
@@ -159,7 +159,7 @@ Antes de llegar a `_dispatch_synthesis`, `cmd_speech_dub` ejecuta (`cli.py:583-5
 1. `_validate_synthesis_text(text)` — texto no vacío, ≤ `MAX_TEXT_LENGTH` (5000 chars), warning si > 2000 chars
 2. `_validate_synthesis_params(args)` — `cfg_weight > 0.0`, `exaggeration >= 0.0`
 3. `_validate_identifier(voice_name)` — normaliza y valida el nombre de voz
-4. `_require_model_cached(model_for(target_language))` — verifica que el modelo esté descargado
+4. `is_provisioned(target_language)` (`crates/avi-store/src/lib.rs:550`) — verifica snapshot HF vía `hf_cache_dir()`
 5. `_require_voice_exists(voice_name)` — verifica que la voz exista (usuario o fábrica)
 
 ### Manejo de errores

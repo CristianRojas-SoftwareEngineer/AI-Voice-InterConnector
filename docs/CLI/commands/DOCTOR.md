@@ -1,6 +1,6 @@
 ## Recorrido
 
-La investigación examinó la implementación completa de `doctor` explorando tres zonas del código: la definición del parser CLI (`cli.py:2653-2656`), la función handler `cmd_doctor` y sus helpers (`cli.py:1127-1400`), y el mecanismo de retorno entero en `main()` (`cli.py:2783-2804`). Se leyeron también los códigos de salida (`exit_codes.py`) y las firmas de los módulos auxiliares invocados (`model_cache.py`, `voices.py`, `translation/service.py`, `transcription/service.py`, `audio.py`). No hubo desviaciones del plan ni fuentes faltantes.
+La investigación examinó la implementación completa de `doctor` explorando tres zonas del código: el handler CLI (`src/main.rs:531` `handle_doctor`), los helpers de verificación de snapshots HF (`crates/avi-store/src/lib.rs:550` `is_provisioned`, `hf_cache_dir`, `xet_cache_dir`) y el mecanismo de retorno entero en `src/main.rs` (`main`/`handle_*`). Se leyeron también los códigos de salida (`crates/avi-core/src/exit_codes.rs`) y los módulos auxiliares invocados (`avi-store`, `avi-translation`, `avi-stt`, `avi-tts`, `avi-audio`, `avi-core`). No hubo desviaciones del plan ni fuentes faltantes.
 
 ---
 
@@ -39,10 +39,10 @@ Ubicación: `cli.py:1274-1400`.
 El handler ejecuta este flujo:
 
 ```
-checks = _environment_checks()          ← 2 chequeos base (Chatterbox + Audio)
-checks += modelo Chatterbox (es + en)   ← 2 chequeos por idioma
-checks += modelo de traducción           ← 1 chequeo par es<->en
-checks += modelo de transcripción        ← 1 chequeo
+checks = _environment_checks()          ← 2 chequeos base (Qwen3-TTS vía hf_cache_dir + Audio)
+checks += modelo Qwen3-TTS (`qwen3-tts-0.6b`)   ← verificación snapshot HF `hf_cache_dir()` + `MODEL_REVISIONS`
+checks += modelo de traducción           ← 1 chequeo par es<->en (`opus-mt` vía `hf_cache_dir()`)
+checks += modelo de transcripción Parakeet        ← 1 chequeo `parakeet-tdt-0.6b-v3` (4 artefactos)
 checks += directorio de voces            ← 1 chequeo
 checks += RAM (advisory)                 ← 1 chequeo
 checks += AVX2 (advisory)               ← 1 chequeo
@@ -54,26 +54,26 @@ else      → print reporte + return EXIT_ERROR si hay FAIL
 
 ### Chequeos de entorno base: `_environment_checks`
 
-Ubicación: `cli.py:1127-1174`.
+Ubicación: `src/main.rs:531` (compartido con `setup`).
 
-Función compartida con `setup`. Devuelve la primera tanda de chequeos:
+Función compartida. Devuelve la primera tanda de chequeos:
 
 | # | Check | Fuente | Éxito | Fallo |
 |---|---|---|---|---|
-| 1 | **Chatterbox TTS** | `import chatterbox` → `chatterbox.__version__` | PASS + versión | FAIL: "NO INSTALADO" |
-| 2 | **Audio library** | `get_audio_devices_with_status()` (`audio.py:184`) | PASS: nombre lib + # dispositivos | FAIL: import faltante, sin dispositivos, o excepción |
+| 1 | **Qwen3-TTS / Parakeet snapshot** | `hf_cache_dir()` + `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs:550` `is_provisioned`) | PASS + snapshot presente (`hf_cache_dir()`/ `models--Qwen--*`, `models--istupakov--*`) | FAIL: "no está en caché (ejecuta: ai-voice-interconnector setup)" |
+| 2 | **Audio library** | `avi-audio` (`crates/avi-audio/src/lib.rs`) | PASS: nombre lib + # dispositivos | FAIL: import faltante, sin dispositivos, o excepción |
 
-El chequeo de audio usa la enumeración real de dispositivos (no solo el import), reflejando el estado efectivo del subsistema: un host headless/RDP importa la librería sin error pero falla al enumerar → FAIL con detalle específico por plataforma (`cli.py:1153-1165`).
+El chequeo de audio usa la enumeración real de dispositivos, reflejando el estado efectivo del subsistema: un host headless/RDP falla al enumerar → FAIL con detalle específico por plataforma.
 
-### Chequeo de modelo Chatterbox
+### Chequeo de modelo Qwen3-TTS / Parakeet (HF snapshots)
 
-Ubicación: `cli.py:1282-1293`.
+Ubicación: `src/main.rs:531` + `crates/avi-store/src/lib.rs:550`.
 
-Itera sobre `(("es-latam", "es-mx-latam"), ("en", "en"))` y llama a `is_model_cached(model)` (`model_cache.py:166`) para cada par:
+Verifica snapshots HF vía `hf_cache_dir()` y `MODEL_REVISIONS` (`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` `85e237c`, `istupakov/parakeet-tdt-0.6b-v3-onnx` `8f23f0c`):
 
-| Idioma | Modelo | Éxito | Fallo |
+| Idioma | Modelo HF | Éxito | Fallo |
 |---|---|---|---|
-| `es-latam` | `es-mx-latam` | PASS: "{model} presente en la caché" | FAIL: "{model} no está en caché (ejecuta: ai-voice-interconnector setup --language {lang})" |
+| `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | PASS: "presente en `hf_cache_dir()`" | FAIL: "no está en caché (ejecuta: ai-voice-interconnector setup)" |
 | `en` | `en` | PASS: "{model} presente en la caché" | FAIL: "{model} no está en caché (ejecuta: ai-voice-interconnector setup --language {lang})" |
 
 Genera **2 chequeos** (uno por idioma), no uno consolidado.
@@ -99,22 +99,21 @@ missing = [
 
 Es un **único chequeo lógico** — las dos direcciones se agrupan porque se provisionan juntas en `setup --language en/all` (`cli.py:1295-1297`).
 
-### Chequeo de modelo de transcripción
+### Chequeo de modelo de transcripción (Parakeet)
 
-Ubicación: `cli.py:1314-1326`.
+Ubicación: `src/main.rs:531` + `crates/avi-store/src/lib.rs:550`.
 
-Verifica la existencia del directorio de caché de `faster-whisper-small`:
+Verifica el snapshot HF `parakeet-tdt-0.6b-v3` (4 artefactos) vía `hf_cache_dir()` + `MODEL_REVISIONS`:
 
-```python
-from .transcription import default_cache_dir as transcription_cache_dir
-if Path(transcription_cache_dir()).exists():
-    checks.append(("PASS", ...))
+```rust
+let snap = ModelStore::new().model_snapshot_path("parakeet-tdt-v3").unwrap();
+if snap.is_dir() && snap.join("nemo128.onnx").is_file() { /* PASS */ }
 ```
 
 | Condición | Resultado |
 |---|---|
-| Directorio existe | PASS: "faster-whisper-small presente en la caché" |
-| Directorio no existe | FAIL: "falta faster-whisper-small (ejecuta: ai-voice-interconnector setup --with-stt)" |
+| Directorio existe con 4 artefactos `size>0` | PASS: "parakeet-tdt-0.6b-v3 presente en `hf_cache_dir()`" |
+| Directorio no existe / incompleto | FAIL: "falta parakeet-tdt-0.6b-v3 (ejecuta: ai-voice-interconnector setup --with-stt)" |
 | Excepción | FAIL con mensaje de error |
 
 ### Chequeo de directorio de voces
@@ -211,11 +210,10 @@ Cuando se pasa `--json`, `cmd_doctor` emite un único objeto JSON vía `emit_jso
 ```json
 {
   "schema_version": "3",
-  "python": "3.x.x ...",
   "platform": "Windows 10",
   "checks": [
-    {"status": "PASS", "name": "Chatterbox TTS", "detail": "0.x.x"},
-    {"status": "FAIL", "name": "Chatterbox model (es-latam)", "detail": "es-mx-latam no está en caché..."},
+    {"status": "PASS", "name": "Qwen3-TTS", "detail": "snapshot presente hf_cache_dir"},
+    {"status": "FAIL", "name": "Parakeet model", "detail": "no está en caché hf_cache_dir (setup)"},
     ...
   ],
   "passed": 7,
@@ -251,12 +249,12 @@ El comentario en `exit_codes.py:10` confirma: "1 error genérico (incluye cheque
 
 | # | Nombre | Helper | Tipos posibles | Altera exit code |
 |---|---|---|---|---|
-| 1 | Chatterbox TTS | `_environment_checks` (`cli.py:1136-1140`) | PASS / FAIL | Sí (FAIL) |
-| 2 | Audio library | `_environment_checks` (`cli.py:1147-1172`) | PASS / FAIL | Sí (FAIL) |
-| 3 | Chatterbox model (es-latam) | `cmd_doctor` (`cli.py:1282-1293`) | PASS / FAIL | Sí (FAIL) |
-| 4 | Chatterbox model (en) | `cmd_doctor` (`cli.py:1282-1293`) | PASS / FAIL | Sí (FAIL) |
-| 5 | Translation model (es↔en) | `cmd_doctor` (`cli.py:1298-1312`) | PASS / FAIL | Sí (FAIL) |
-| 6 | Transcription model (whisper-small) | `cmd_doctor` (`cli.py:1316-1326`) | PASS / FAIL | Sí (FAIL) |
+| 1 | Qwen3-TTS / Parakeet snapshot | `_environment_checks` / `is_provisioned` (`crates/avi-store/src/lib.rs:550`) | PASS / FAIL | Sí (FAIL) |
+| 2 | Audio library | `_environment_checks` (`avi-audio`) | PASS / FAIL | Sí (FAIL) |
+| 3 | Qwen3-TTS model (qwen3-tts-0.6b) | `handle_doctor` (`src/main.rs:531`) vía `hf_cache_dir()` | PASS / FAIL | Sí (FAIL) |
+| 4 | Parakeet model (parakeet-tdt-0.6b-v3) | `handle_doctor` vía `hf_cache_dir()` + 4 artefactos | PASS / FAIL | Sí (FAIL) |
+| 5 | Translation model (es↔en, opus-mt) | `handle_doctor` vía `hf_cache_dir()` | PASS / FAIL | Sí (FAIL) |
+| 6 | Transcription model (parakeet, mismo) | `handle_doctor` (`crates/avi-stt`) | PASS / FAIL | Sí (FAIL) |
 | 7 | Voices directory | `cmd_doctor` (`cli.py:1329-1334`) | PASS / SKIP | No |
 | 8 | RAM | `cmd_doctor` (`cli.py:1339-1353`) | PASS / WARN / SKIP | No |
 | 9 | CPU AVX2 | `_check_avx2` (`cli.py:1177-1221`) | PASS / WARN / SKIP | No |
@@ -272,4 +270,4 @@ El comentario en `exit_codes.py:10` confirma: "1 error genérico (incluye cheque
 
 2. **Separación FAIL/WARN/SKIP:** solo FAIL cuenta como fallo. Los chequeos advisory (RAM, AVX2, OneDrive) retornan WARN y son puramente informativos — reflejan la filosofía de que el sistema puede funcionar con RAM baja o sin AVX2 verificable, pero el usuario debe tener visibilidad. SKIP se usa para plataformas donde un chequeo no aplica.
 
-3. **Composición modular:** `_environment_checks` (`cli.py:1127`) es compartida con `setup`, evitando duplicación. Cada chequeo de modelo delega a un módulo especializado (`model_cache`, `translation`, `transcription`, `voices`) sin importar su lógica interna — doctor solo verifica existencia en caché, nunca carga ni descarga.
+3. **Composición modular:** `_environment_checks` (`src/main.rs:531`) es compartida con `setup`, evitando duplicación. Cada chequeo de modelo delega a `avi-store` (`hf_cache_dir`, `xet_cache_dir`, `is_provisioned`), `avi-translation`, `avi-stt`, `avi-tts` sin importar su lógica interna — doctor solo verifica existencia de snapshot HF, nunca carga ni descarga.

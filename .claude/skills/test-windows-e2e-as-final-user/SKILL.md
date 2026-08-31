@@ -16,7 +16,7 @@ Ask, confirm, and respond to the user in **Spanish** (native Spanish-speaking au
 <!-- </user_communication> -->
 
 <!-- <overview> -->
-Reusable task command for the full manual E2E on the **Windows dev machine** as a final user. Each invocation is interpreted as a request to run `cleanup → install → setup → daemon → voice clone → synthesis matrix → store/transcribe/translate/dub → cleanup/uninstall` from zero, validating the published `vX.Y.Z` without depending on CI. Evolved from `.claude/plans/2026-08-27-prueba-e2e-windows-completa.md` (0.15.2) to `0.18.6` with initial zero-residue purge (`src/main.rs:1387` `crates/avi-store/src/lib.rs:446` `hub+xet`), `exe_dir` resolution (`crates/avi-tts/src/lib.rs:151`) and detached launch without pipe inheritance (`crates/avi-daemon/src/spawn.rs:30`).
+Reusable task command for the full manual E2E on the **Windows dev machine** as a final user. Each invocation is interpreted as a request to run `cleanup → install → setup → daemon → voice clone → synthesis matrix → store/transcribe/translate/dub → cleanup/uninstall` from zero, validating the published `vX.Y.Z` without depending on CI. Evolved from `.claude/plans/2026-08-27-prueba-e2e-windows-completa.md` (0.15.2) to `0.18.8` with pipeline heterogéneo (`test-linux`/`coverage` con `target-v2` `os: linux`, `test-windows`/`macos` con `registry+sccache` `os: windows/macos`, `sccache_save_cache_conditional` umbral 85 % `.circleci/config.yml:228` ahorra 1 GiB/~50s cuando `hit ≥85%`), zero-residue purge (`src/main.rs:1387` `crates/avi-store/src/lib.rs:446` `hub+xet`), `exe_dir` resolution (`crates/avi-tts/src/lib.rs:151`) and detached launch without pipe inheritance (`crates/avi-daemon/src/spawn.rs:30`).
 <!-- </overview> -->
 
 ## When it applies
@@ -33,6 +33,8 @@ Reusable task command for the full manual E2E on the **Windows dev machine** as 
 - **Contract:** `schema_version="3"` (`crates/avi-core/src/exit_codes.rs`), exit codes `0-10/130`, `WAV 24kHz mono 16-bit` (`hound`), `WER ≤0.25` via `ParakeetEngine` when `native-stt` is available. Signing (`SmartScreen`) is deferred per `docs/GOAL.md:209`.
 
 ## Workflow
+
+Pipeline vigente **heterogéneo** desde 0.18.8: `test-linux`/`coverage` restauran `target-v2` (`os: linux`, `cargo_restore_caches`), `test-windows`/`macos` restauran solo `registry` (`cargo_restore_registry` + `sccache` sin `target`); `sccache_save_cache_conditional` (`.circleci/config.yml:228`) guarda solo si `hit <85%`. Ver `docs/BUILD.md` §Cacheo y `.circleci/config.yml:75-391`.
 
 Execute in order. Each task needs the previous task's artifacts (purge → binary → models → daemon → `.qvoice` → persisted wav). Do not parallelize. Report `PASS/FAIL` per step with command, exit code, and payload.
 
@@ -119,7 +121,7 @@ No mutations to `docs/`, `Cargo`, `.circleci` — report only. `0a` always purge
 
 ## Constraints
 
-- Run only on the Windows dev machine as the final user; do not mock `curl`/`sha256sum` or network (unlike `tests/installer`).
-- The `~9 GB` download is expected cost — not an incident. Use `hound` for `WAV` validation and `ParakeetEngine` for `WER` when compiled with `native-stt`. Each E2E re-downloads due to `0a`.
+- Run only on the Windows dev machine as the final user; do not mock `curl`/`sha256sum` or network (unlike `tests/installer`). CI heterogéneo (`test-linux`/`coverage` con `target-v2`, `test-windows`/`macos` sin `target` + `sccache` condicional 85 % `.circleci/config.yml:228` — `hit ≥85%` omite `save_cache` y vacía `~/.cache/sccache`, ahorra 1 GiB/~50s) — no asumir `target` uniforme.
+- The `~9 GB` download is expected cost — not an incident. Use `hound` for `WAV` validation and `ParakeetEngine` for `WER` when compiled with `native-stt`. Each E2E re-downloads due to `0a`. Modelos pineados: `qwen3-tts-0.6b` `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` `85e237c`, `parakeet-tdt-v3` `istupakov/parakeet-tdt-0.6b-v3-onnx` `8f23f0c` (4 artefactos `encoder-model.int8.onnx`/`decoder_joint-model.int8.onnx`/`nemo128.onnx`/`vocab.txt`), `marian-es-en` `Helsinki-NLP/opus-mt-es-en` `c96e2c` / `marian-en-es` `5bc4493` (`crates/avi-store/src/lib.rs:381` `MODEL_REVISIONS`).
 - Never launch `daemon start` with pipe capture (`| Out-String`, `Start-Job` with `Invoke-Expression`, `Command::output` without `Stdio::null`); use `Start-Process` detached with `RedirectStandardOutput` and a 15s timeout + `taskkill` escape, or the workflow will hang on the same bug it validates.
 - `0a` is destructive by design (borra `hub`+`xet`+`data_dir`+`vendor`+`PATH`): confirmar coste `~11.5 GB` con `--with-base` antes de ejecutar.

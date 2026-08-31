@@ -1208,7 +1208,7 @@ Release (ver [SECURITY.md](SECURITY.md#artefactos-sin-firmar)):
 
 ```powershell
 # Windows (PowerShell)
-Get-FileHash .\ai-voice-interconnector-X.Y.Z-x86_64-setup.exe -Algorithm SHA256
+Get-FileHash .\ai-voice-interconnector-X.Y.Z-x86_64-windows.zip -Algorithm SHA256
 ```
 
 ```bash

@@ -1,6 +1,6 @@
 ## Recorrido
 
-La investigación examinó la implementación completa del comando `cleanup` explorando tres fuentes principales: el parser de argumentos (`cli.py:2684-2705`), el handler `cmd_cleanup` (`cli.py:2157-2293`) y las constantes de salida (`exit_codes.py`). Se complementó con los módulos de soporte: `model_cache.py` (rutas de caché HF y funciones de listado), `voices.py` (estructura de directorios de voces), `synthetic_speech.py` (raíz del almacén de audio), `translation/service.py` y `transcription/service.py` (rutas de modelos derivados). También se examinó `_uninstall_cleanup_data` (`cli.py:1489-1536`), el helper que encadena `cleanup --all` durante la desinstalación.
+La investigación examinó la implementación completa del comando `cleanup` explorando tres fuentes principales: el handler CLI (`src/main.rs:319-326` `handle_cleanup`), el almacén `avi-store` (`crates/avi-store/src/lib.rs:675-703` `hf_cache_dir`, `xet_cache_dir`, `remove_hf_snapshot`, `remove_xet_cache`) y las constantes de salida (`crates/avi-core/src/exit_codes.rs`). Se complementó con `VoiceStore`/`SpeechStore` (`crates/avi-store/src/lib.rs`) y el helper que encadena `cleanup --all` durante la desinstalación (`src/main.rs:1387`).
 
 ---
 
@@ -46,14 +46,14 @@ do_synthetic = getattr(args, "synthetic_speech", False) or getattr(args, "all", 
 
 ### Qué se borra por cada flag
 
-**`--model`** (`cli.py:2207-2231`) — borra cuatro tipos de ruta:
+**`--model`** (`src/main.rs:319-326` + `crates/avi-store/src/lib.rs:675-703`) — borra snapshots HF pineados vía `hf_cache_dir()`/`xet_cache_dir()`:
 
-1. **Carpetas de caché HF** (`model_cache.py:251-262`): `models--ResembleAI--Chatterbox-Multilingual-es-mx-latam` y `models--ResembleAI--chatterbox` dentro de `HF_HUB_CACHE`
-2. **Locks huérfanos** (`model_cache.py:265-272`): `.locks/models--ResembleAI--*` en la misma raíz
-3. **Modelo de traducción** (`translation/service.py:18-22`): directorio `translation-models/` completo (contiene `opus-mt-es-en` y `opus-mt-en-es`)
-4. **Modelo de transcripción** (`transcription/service.py:41-45`): directorio `transcription-models/faster-whisper-small`
+1. **Snapshots HF** (`MODEL_REVISIONS` `crates/avi-store/src/lib.rs:381`): `models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice`, `models--Qwen--Qwen3-TTS-12Hz-0.6B-Base`, `models--istupakov--parakeet-tdt-0.6b-v3-onnx` (4 artefactos), `models--Helsinki-NLP--opus-mt-es-en`, `models--Helsinki-NLP--opus-mt-en-es` dentro de `hf_cache_dir()`
+2. **Cache `xet`** (`xet_cache_dir()` `crates/avi-store/src/lib.rs:446`): `~/.cache/huggingface/xet` (`shard-cache` + `stage` + `.locks`) limpiado atómicamente con `hub`
+3. **Índice de compatibilidad** (`data_dir()/models/<name>/manifest.json`): limpiado si existe
+4. Daemon detenido graceful (`src/main.rs:1387`) y `daemon.pid` borrado antes del borrado
 
-Cada ruta se valida con defensa en profundidad: solo se aceptan carpetas que empiecen con `models--ResembleAI--` (`cli.py:2211-2218`). Cualquier ruta inesperada lanza `RuntimeError`.
+Cada ruta se valida con defensa en profundidad: solo se aceptan prefijos `models--Qwen--`, `models--istupakov--`, `models--Helsinki-NLP--`, `xet` derivados de `MODEL_REVISIONS` y `hf_cache_dir()`. Cualquier ruta inesperada no se borra.
 
 **`--voices`** (`cli.py:2232-2253`) — borra dos cosas:
 

@@ -58,7 +58,7 @@ ai-voice-interconnector voice remove --name NAME [--json]
 **`cmd_voice_clone`** (`cli.py:839-897`):
 
 ```
-_require_model_cached()                          ← aborta si modelo no está en caché
+is_provisioned() (`crates/avi-store/src/lib.rs:550`)                          ← aborta si modelo no está en `hf_cache_dir()`
     │
     ▼
 voices.clone_voice_files(name, timbre, speech)   ← valida + copia audios
@@ -137,11 +137,11 @@ Precompute (3 modos)
     │                          ├─ Sí → DaemonIPCClient().precompute_voice(name)
     │                          └─ No → CliError exit 5
     │
-    ├─ --no-daemon ───────► ChatterboxEngine.get_instance() → engine.precompute_voice(name)
+     ├─ --no-daemon ───────► avi_tts::clone_voice con Qwen3TtsEngine + reference.qvoice (`crates/avi-tts/src/lib.rs:744`, `src/main.rs:557-777`) → engine.precompute_voice(name)
     │
-    └─ sin flags ─────────► is_daemon_running()?
-                               ├─ Sí → DaemonIPCClient().precompute_voice(name)
-                               └─ No → ChatterboxEngine.get_instance() → engine.precompute_voice(name)
+     └─ sin flags ─────────► is_daemon_running()?
+                                ├─ Sí → DaemonIPCClient().precompute_voice(name)
+                                └─ No → avi_tts::clone_voice con Qwen3TtsEngine + reference.qvoice → engine.precompute_voice(name)
 ```
 
 **Invariante de degradación:** salvo con `--daemon` caído (exit 5), cualquier fallo del precómputo se captura y devuelve `False` (`cli.py:935-941`). La voz queda registrada y el primer `speech synthesize --voice <nombre>` computa los conditionals on-the-fly.
@@ -184,7 +184,7 @@ class PrecomputeVoiceResponse(ProtocolModel):
 
 | Excepción / Condición | Subcomando | Código exit | Razón |
 |---|---|---|---|
-| Modelo no en caché | clone | 4 | `model_missing` (vía `_require_model_cached`) |
+| Modelo no en caché | clone | 4 | `model_missing` (vía `is_provisioned` `hf_cache_dir`) |
 | Audio no cargable (librosa) | clone | 2 | `usage_error` |
 | Habla < 10s | clone | 2 | `usage_error` |
 | Voz ya existe (sin `--force`) | clone | 6 | `voice_exists` |

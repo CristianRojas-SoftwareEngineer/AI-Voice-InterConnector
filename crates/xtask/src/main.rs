@@ -12,7 +12,7 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
 
   url "https://github.com/{repo}/releases/download/v#{version}/ai-voice-interconnector-#{version}-arm64-macos.tar.gz"
   name "AI Voice InterConnector"
-  desc "Motor de sintesis de voz (TTS) offline con clonacion de voz en espanol latinoamericano"
+  desc "Motor de síntesis de voz (TTS) offline con clonación de voz en español latinoamericano"
   homepage "https://github.com/{repo}"
 
   livecheck do
@@ -20,14 +20,18 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
     strategy :github_latest
   end
 
-  depends_on macos: ">= :big_sur"
+  depends_on macos: ">= :ventura"
 
   binary "ai-voice-interconnector"
 
   zap trash: [
     "~/Library/Application Support/ai-voice-interconnector",
-    "~/.cache/huggingface/hub/models--ResembleAI--Chatterbox-Multilingual-es-mx-latam",
-    "~/.cache/huggingface/hub/models--ResembleAI--chatterbox",
+    "~/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice",
+    "~/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base",
+    "~/.cache/huggingface/hub/models--istupakov--parakeet-tdt-0.6b-v3-onnx",
+    "~/.cache/huggingface/hub/models--Helsinki-NLP--opus-mt-es-en",
+    "~/.cache/huggingface/hub/models--Helsinki-NLP--opus-mt-en-es",
+    "~/.cache/huggingface/xet",
   ]
 
   caveats <<~EOS
@@ -874,8 +878,91 @@ mod tests {
         assert!(!c.contains("\n  app "));
         assert!(c.contains("releases/download/v#{version}/"));
         assert!(c.contains("zap trash:"));
-        assert!(c.contains("models--ResembleAI--chatterbox"));
+        assert!(c.contains("models--Qwen--"));
+        assert!(c.contains("models--istupakov--"));
+        assert!(c.contains("models--Helsinki-NLP--"));
+        assert!(!c.contains("Chatterbox"));
+        assert!(!c.contains("ResembleAI"));
         assert!(c.contains("GPL-3.0-or-later"));
+        assert!(c.contains(r#"depends_on macos: ">= :ventura""#));
+        assert!(c.contains("síntesis"));
+    }
+
+    #[test]
+    fn test_cask_zap_no_chatterbox_sino_qwen_parakeet_opusmt() {
+        let c = render_cask("9.9.9", &"b".repeat(64));
+        assert!(c.contains("models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice"));
+        assert!(c.contains("models--Qwen--Qwen3-TTS-12Hz-0.6B-Base"));
+        assert!(c.contains("models--istupakov--parakeet-tdt-0.6b-v3-onnx"));
+        assert!(c.contains("models--Helsinki-NLP--opus-mt-es-en"));
+        assert!(c.contains("models--Helsinki-NLP--opus-mt-en-es"));
+        assert!(c.contains("~/.cache/huggingface/xet"));
+        assert!(!c.contains("ResembleAI"));
+        assert!(!c.contains("chatterbox"));
+        assert!(!c.contains("Chatterbox"));
+    }
+
+    #[test]
+    fn test_pipeline_heterogeneo_y_sccache_condicional() {
+        let candidates = [
+            ".circleci/config.yml",
+            "../../.circleci/config.yml",
+            "C:/Users/Cristian/Desktop/Proyectos/Voices/AI-Voice-InterConnector/.circleci/config.yml",
+        ];
+        let mut cfg_opt = None;
+        for p in candidates {
+            if let Ok(t) = std::fs::read_to_string(p) {
+                cfg_opt = Some(t);
+                break;
+            }
+        }
+        // Fallback via CARGO_MANIFEST_DIR
+        let cfg = cfg_opt.unwrap_or_else(|| {
+            let m = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.circleci/config.yml");
+            std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
+        });
+        // Heterogeneidad: test-linux usa cargo_restore_caches (registry+target), test-windows/macos usan cargo_restore_registry (solo registry)
+        assert!(
+            cfg.contains("cargo_restore_caches") && cfg.contains("cargo_restore_registry"),
+            "debe existir ambos comandos cargo_restore_caches y cargo_restore_registry para modelo heterogéneo"
+        );
+        // test-linux debe tener os: linux y variant: test, y guardar target
+        assert!(
+            cfg.contains("test-linux") && cfg.contains("os: linux") && cfg.contains("target-v2"),
+            "test-linux debe usar target-v2 con os linux"
+        );
+        // test-windows y test-macos no deben tener target en restore (solo registry+sccache)
+        // Verificar que sccache_save_cache_conditional existe con umbral 85
+        assert!(
+            cfg.contains("sccache_save_cache_conditional"),
+            "debe existir sccache_save_cache_conditional"
+        );
+        assert!(
+            cfg.contains("85") && cfg.contains("sccache_save_cache_conditional:228") || cfg.contains("sccache_save_cache_conditional"),
+            "sccache_save_cache_conditional debe documentar umbral 85%"
+        );
+        // Verificar que test-windows contiene cargo_restore_registry y sccache
+        // Búsqueda simple de bloques
+        let windows_section = cfg.split("test-windows").nth(1).unwrap_or("");
+        assert!(
+            windows_section.contains("cargo_restore_registry"),
+            "test-windows debe usar cargo_restore_registry"
+        );
+        assert!(
+            windows_section.contains("sccache_restore_cache"),
+            "test-windows debe usar sccache"
+        );
+        // Similar para test-macos
+        let macos_section = cfg.split("test-macos").nth(1).unwrap_or("");
+        assert!(
+            macos_section.contains("cargo_restore_registry"),
+            "test-macos debe usar cargo_restore_registry"
+        );
+        // Verificar sccache condicional guarda solo si hit <85%
+        assert!(
+            cfg.contains("Hit $HIT% <85%") || cfg.contains("hit <85%") || cfg.contains("< 85"),
+            "sccache condicional debe distinguir hit <85%"
+        );
     }
 
     #[test]

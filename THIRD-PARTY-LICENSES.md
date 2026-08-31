@@ -21,7 +21,6 @@ HuggingFace del usuario mediante `ai-voice-interconnector setup`. Se listan por 
 
 | Modelo | Licencia (verificada en HuggingFace) | Fuente |
 |--------|--------------------------------------|--------|
-| `ResembleAI/Chatterbox-Multilingual-es-mx-latam` (language pack es-mx-latam) | **MIT** | <https://huggingface.co/ResembleAI/Chatterbox-Multilingual-es-mx-latam> |
 | `qwen3-tts-0.6b` / `qwen3-tts-0.6b-base` (motor Qwen3-TTS, Base opt-in) | **MIT / Apache-2.0** | <https://github.com/QwenLM/Qwen3-TTS> |
 | `Helsinki-NLP/opus-mt-es-en` / `opus-mt-en-es` (traducción) | **CC-BY-4.0** | <https://huggingface.co/Helsinki-NLP/opus-mt-es-en> |
 | `istupakov/parakeet-tdt-0.6b-v3-onnx` (Parakeet TDT 0.6B v3 int8, ONNX) | **CC-BY-4.0** | <https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx> |
@@ -85,7 +84,7 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 |---------|---------|---------------------|--------|
 | `ahash` | 0.8.12 | MIT OR Apache-2.0 | MIT |
 | `aho-corasick` | 1.1.5 | Unlicense OR MIT | MIT |
-| `ai-voice-interconnector` | 0.18.1 | GPL-3.0-or-later | GPL-3.0-or-later |
+| `ai-voice-interconnector` | 0.18.8 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `alsa` | 0.9.1 | Apache-2.0/MIT | MIT |
 | `alsa-sys` | 0.3.1 | MIT | MIT |
 | `android_system_properties` | 0.1.6 | MIT OR Apache-2.0 | MIT |

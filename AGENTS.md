@@ -9,6 +9,7 @@
 - [4. Surgical Changes](#4-surgical-changes)
 - [5. Version Control](#5-version-control)
 - [6. Structural Code Intelligence (Codebase Memory MCP)](#6-structural-code-intelligence-codebase-memory-mcp)
+- [7. Ejecución de herramientas — Timeout](#7-ejecución-de-herramientas--timeout)
 
 <!-- <language_efficiency> -->
 
@@ -177,3 +178,13 @@ This repository is indexed by the `codebase-memory-mcp` MCP server: a knowledge 
 - The index does NOT auto-update (`auto_index=false`). After a merge, refactor, or adding/removing files/functions, resync with the `/cbm-resync` user command (incremental, cheap, idempotent).
 - If graph results look stale or missing recently-added symbols, suggest running `/cbm-resync` instead of silently falling back to Grep.
 <!-- </structural_code_intelligence> -->
+
+---
+
+<!-- <tool_execution> -->
+
+## 7. Ejecución de herramientas — Timeout
+
+**El tool `bash` (`default.bash`) tiene `timeout` por defecto `120000ms`.** Para suites largas como `cargo test --all` (`80 tests` `~120-150s` con `cli_golden` + `daemon` `cargo test --lib` `6s` es rápido pero `--all` no), el `timeout` debe subirse **por llamada** a `300000ms` vía parámetro `timeout` del tool — no es global ni persistible vía env. Política de repo: todo `cargo test --all` se ejecuta con `timeout: 300000`; `cargo test --lib`/`-p xtask` mantienen `120000ms`.
+
+<!-- </tool_execution> -->

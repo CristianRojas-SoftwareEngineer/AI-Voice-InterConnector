@@ -1,6 +1,6 @@
 ## Recorrido
 
-La investigación examinó la implementación completa de `setup` explorando tres fuentes principales: el parser CLI (`cli.py:2659-2681`), el handler principal `cmd_setup` (`cli.py:1871-2136`), y el módulo de caché de modelos (`model_cache.py`). Se leyeron en paralelo las implementaciones del handler, los helpers de integración de PATH (`_integrate_linux_path`, `_remove_linux_path`, `_path_symlink`), las tres ramas de desinstalación por SO (`_uninstall_linux`, `_uninstall_macos`, `_uninstall_windows`), la función de conversión de modelos de traducción (`_convert_translation_model`), el clasificador de fallos de provisión (`_describe_provision_failure`), los chequeos de entorno compartidos con `doctor` (`_environment_checks`), y las constantes de salida (`exit_codes.py`). No hubo desviaciones del plan ni fuentes faltantes.
+La investigación examinó la implementación completa de `setup` explorando tres fuentes principales: el handler CLI (`src/main.rs:460-777`), el almacén nativo (`crates/avi-store/src/lib.rs:381-801` `MODEL_REVISIONS`, `hf_cache_dir`, `xet_cache_dir`) y el descargador `hf-hub`/`ct2rs`/`ort`. Se leyeron en paralelo los helpers de integración de PATH, las tres ramas de desinstalación por SO, la provisión de modelos de traducción y el clasificador de fallos de provisión (`src/main.rs`), los chequeos de entorno compartidos con `doctor` y las constantes de salida (`crates/avi-core/src/exit_codes.rs`). No hubo desviaciones del plan ni fuentes faltantes.
 
 ---
 
@@ -8,7 +8,7 @@ La investigación examinó la implementación completa de `setup` explorando tre
 
 **Diseño de `setup`:** Es un comando de provisión idempotente con tres modos mutuamente excluyentes (`--remove-path`, `--force-update`, `--uninstall`) que cortan el flujo normal. El flujo normal ejecuta: integración de PATH (solo Linux AppImage) → chequeos de entorno (FAIL de audio degrado a WARN) → descarga condicional de modelos TTS por idioma → descarga de modelos de traducción (si `--language` incluye `en`/`all`) → descarga opt-in de modelo de transcripción (`--with-stt`) → limpieza de descargas parciales huérfanas. Cada modo exclusivo implementa una operación destructiva específica sin ejecutar provisión.
 
-**Implementación:** `cmd_setup` (linea 1871) despacha los tres modos exclusivos antes de cualquier lógica de provisión. El flujo normal delega en `model_cache.py` para inspección de caché y en `huggingface_hub.snapshot_download` para descargas con revisión fijada. `MODEL_ALLOW_PATTERNS` (definido en `model_cache.py`) filtra los archivos descargados a los checkpoints de inferencia necesarios, evitando descargar variantes no usadas (~10 GB menos para el modelo `en`). La descarga de modelos de traducción usa `snapshot_download` + conversión CT2 vía `ctranslate2.TransformersConverter`. El modelo de transcripción (`faster-whisper-small`) se descarga sin conversión. El manejo de errores clasifica las excepciones en familias (credenciales, red, permisos, disco) con códigos de salida accionables.
+**Implementación:** `cmd_setup` (`src/main.rs:460-777`) despacha vía `avi-store` (`crates/avi-store/src/lib.rs:381` `MODEL_REVISIONS`, `lib.rs:634` `ensure_downloaded`) con `hf-hub`/`ct2rs`/`ort`. `MODEL_FILE_PATTERNS` (`crates/avi-store/src/lib.rs:421`) filtra los 4 artefactos Parakeet (`encoder-model.int8.onnx`, `decoder_joint-model.int8.onnx`, `nemo128.onnx`, `vocab.txt`, acotado a ~600 MB en vez de ~40 GB), evitando descargar variantes no usadas. La descarga de traducción usa `ct2rs`; `ParakeetEngine` usa `ort` load-dynamic (stack Rust nativo sin Python). El manejo de errores clasifica las excepciones en familias (credenciales, red, permisos, disco) con códigos de salida accionables.
 
 **Proceso de ejecución:** Impresión de banner → integración de PATH (Linux) → chequeos de entorno → resolución de modelos a descargar según `--language` → pre-chequeo de espacio en disco (6 GB/modelo) → descarga por `snapshot_download` con revisión fijada y `allow_patterns` (solo checkpoints de inferencia) → descarga de Voice Encoder si `es-mx-latam` fue provisionado → descarga de modelos de traducción (si aplica) → descarga de modelo de transcripción (si `--with-stt`) → limpieza de `.incomplete` huérfanos → emisión JSON (si `--json`).
 
@@ -27,7 +27,7 @@ El parser de `setup` se define en `cli.py:2659-2681` como subcomando de nivel su
 | `--uninstall` | flag (exclusive) | False | Desinstala en un paso: encadena `cleanup --all`, revierte PATH, borra binario |
 | `--yes, -y` | flag | False | Omite la confirmación interactiva del cleanup encadenado por `--uninstall` |
 | `--language` | `es-latam` \| `en` \| `all` | `all` | Idioma(s) a provisionar; `all` descarga ambos modelos |
-| `--with-stt` | flag | False | Provisiona el modelo de transcripción `faster-whisper-small` (opt-in) |
+| `--with-stt` | flag | False | Provisiona el modelo de transcripción `parakeet-tdt-0.6b-v3` int8 (`ParakeetEngine`/`ort` load-dynamic, opt-in) |
 | `--json` | flag | False | Emite JSON legible por máquina en stdout |
 
 Los tres flags de modo (`--remove-path`, `--force-update`, `--uninstall`) están en un `add_mutually_exclusive_group()` (`cli.py:2663`), lo que garantiza que solo uno puede activarse por invocación. El handler se asigna via `set_defaults(func=cmd_setup)` en linea 2681.
@@ -52,27 +52,27 @@ Resolución de modelos a provisionar
     │  --language es-latam → ["es-mx-latam"]
     │  --language en → ["en"]
     ▼
-model_for(lang) → alias de modelo         ← model_cache.py:68-75
+MODEL_REVISIONS → alias de modelo         ← crates/avi-store/src/lib.rs:381
     │
     ▼
-Bucle: is_model_cached(model)             ← model_cache.py:166-222
+Bucle: is_provisioned(model)             ← crates/avi-store/src/lib.rs:550
     │  cached → print [PASS], registrar en results
     │  no cached → añadir a pending
     ▼
 Pre-chequeo de espacio en disco           ← 6 GB * nº modelos pendientes
     │  insuficiente → aborta con EXIT_PRECONDITION_FAILED (8)
     ▼
-Bucle: snapshot_download(repo, revision, token)  ← model_cache.py:35-41, revisiones fijadas
+Bucle: ensure_downloaded(repo, revision)  ← crates/avi-store/src/lib.rs:713, hf-hub + hf_cache_dir()
     │
     ▼
 Descarga de Voice Encoder (si es-mx-latam) ← ve.safetensors desde BASE_MODEL_REPO
     │
     ▼
 _provision_translation_pairs()             ← solo si --language incluye en/all
-    │  opus-mt-es-en + opus-mt-en-es → conversión CT2
-    ▼
-_provision_whisper_model()                  ← solo si --with-stt
-    │  faster-whisper-small → descarga sin conversión
+     │  opus-mt-es-en + opus-mt-en-es → conversión CT2 vía `ct2rs`
+     ▼
+ParakeetEngine::ensure_downloaded           ← solo si --with-stt
+     │  `parakeet-tdt-0.6b-v3` int8 (4 artefactos) → `ort` load-dynamic vía `hf_cache_dir()`
     ▼
 _purge_incomplete()                         ← borra *.incomplete huérfanos
     │
@@ -100,11 +100,11 @@ Con `--json`, emite `{"remove_path": true, "removed": <bool>}` (`cli.py:1899-190
 
 **Implementación:** bloque integrado en `cmd_setup` (`cli.py:1936-1954`).
 
-Este modo NO es mutuamente excluyente con el flujo normal — ejecuta primero el borrado y luego continúa con la provisión completa. Borra quirúrgicamente las carpetas de caché de ambos modelos (acotado a `models--ResembleAI--*`) antes del gate de descarga, forzando una re-descarga limpia.
+Este modo NO es mutuamente excluyente con el flujo normal — ejecuta primero el borrado y luego continúa con la provisión completa. Borra quirúrgicamente las carpetas de caché de los modelos pinneados (`models--Qwen--*`, `models--istupakov--*`, `models--Helsinki-NLP--*`, `xet`) antes del gate de descarga, forzando una re-descarga limpia.
 
 **Proceso:**
-1. Itera `model_cache_dirs()` (solo carpetas del proyecto, `model_cache.py:251-262`)
-2. Valida que cada ruta empiece por `models--ResembleAI--` (defensa en profundidad)
+1. Itera snapshots HF vía `hf_cache_dir()` (`crates/avi-store/src/lib.rs:446,675-703` `remove_hf_snapshot`/`remove_xet_cache`)
+2. Valida que cada ruta sea pin en `MODEL_REVISIONS` (defensa en profundidad)
 3. Calcula tamaño con `_dir_size()` (recursivo sobre archivos)
 4. `shutil.rmtree()` de cada carpeta
 5. Imprime espacio liberado total
@@ -134,29 +134,28 @@ Este modo NO es mutuamente excluyente con el flujo normal — ejecuta primero el
 
 ### Descarga de modelos (HuggingFace)
 
-El módulo `model_cache.py` proporciona la capa de detección de modelos sin dependencias de ML:
+El módulo `avi-store` (`crates/avi-store/src/lib.rs`) proporciona la capa de detección sin Python:
 
 | Función | Propósito | Fuente |
 |---|---|---|
-| `hub_cache_path()` | Raíz de caché HF (respeta `HF_HUB_CACHE`/`HF_HOME`) | `model_cache.py:50-60` |
-| `model_for(lang)` | Traduce `es-latam`→`es-mx-latam`, `en`→`en` | `model_cache.py:68-75` |
-| `is_model_cached(model)` | Valida snapshot + archivos safetensors + VE | `model_cache.py:166-222` |
-| `_safetensors_header_ok(path)` | Validación ligera de header (previene truncados) | `model_cache.py:78-102` |
-| `_resolve_cached_snapshot(dir, rev)` | Resuelve snapshot por revisión fijada | `model_cache.py:105-135` |
-| `model_cache_dirs()` | Carpetas HF de ambos repos del proyecto | `model_cache.py:251-262` |
-| `purge_incomplete_downloads()` | Borra `*.incomplete` huérfanos en blobs | `model_cache.py:225-248` |
+| `hf_cache_dir()` | Raíz de caché HF (respeta `HF_HUB_CACHE`/`HF_HOME` → `~/.cache/huggingface/hub`) | `crates/avi-store/src/lib.rs:446` |
+| `MODEL_REVISIONS` | Pines `(nombre, repo, revisión)` auditables | `crates/avi-store/src/lib.rs:381` |
+| `is_provisioned(model)` | Valida snapshot + ficheros críticos `MODEL_FILE_PATTERNS` con `size>0` | `crates/avi-store/src/lib.rs:550` |
+| `model_snapshot_path(model)` | Resuelve snapshot por revisión fijada (`snapshots/<hash>`) | `crates/avi-store/src/lib.rs:524` |
+| `remove_hf_snapshot` / `remove_xet_cache` | Borrado quirúrgico `hub` + `xet` | `crates/avi-store/src/lib.rs:675-703` |
+| `ensure_downloaded(model)` | Descarga vía `hf-hub` con `HF_CACHE_DIR` explícito + validación/rollback | `crates/avi-store/src/lib.rs:713` |
 
-**Revisiones fijadas** (`model_cache.py:35-41`): cada modelo se descarga con un commit hash auditado, no con `main`. Un push posterior al repo no se propaga a los usuarios.
+**Revisiones fijadas** (`crates/avi-store/src/lib.rs:381` `MODEL_REVISIONS`): cada modelo se descarga con un commit hash auditado, no con `main`. Un push posterior al repo no se propaga a los usuarios.
 
 **Modelos descargados por idioma:**
 
 | `--language` | Modelos TTS | Modelo traducción | Modelo STT |
 |---|---|---|---|
-| `es-latam` | `Chatterbox-Multilingual-es-mx-latam` | — | No (salvo `--with-stt`) |
-| `en` | `chatterbox` + `ve.safetensors` | `opus-mt-es-en` + `opus-mt-en-es` (CT2) | No (salvo `--with-stt`) |
-| `all` (default) | Ambos TTS | Ambas direcciones de traducción | No (salvo `--with-stt`) |
+| `es-latam` | `qwen3-tts-0.6b` (`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`) | — | `parakeet-tdt-0.6b-v3` int8 (4 artefactos, opt-in `--with-stt`) |
+| `en` | `qwen3-tts-0.6b` + Base opt-in | `opus-mt-es-en` + `opus-mt-en-es` (CT2) | idem |
+| `all` (default) | 4 base | Ambas direcciones de traducción | idem |
 
-**Validación de integridad:** `is_model_cached` valida no solo existencia sino también headers safetensors (previene caché truncada que pasa `.exists()` pero revienta al cargar) (`model_cache.py:190-220`).
+**Validación de integridad:** `is_provisioned` valida no solo existencia sino también ficheros críticos con `size>0` (`crates/avi-store/src/lib.rs:550`) y `ensure_downloaded` valida/rollback de snapshot+blobs, previniendo caché truncada que pasa `.exists()` pero revienta al cargar.
 
 ### Integración de PATH (Linux)
 
@@ -176,7 +175,7 @@ Crea `~/.local/bin/ai-voice-interconnector` como symlink a `$APPIMAGE`. Si ya ex
 
 **`--language`:** controla qué modelos TTS se descargan. El default `all` garantiza offline completo es+en desde el primer uso. El flag sirve para *reducir* el alcance, no ampliarlo (`cli.py:1960-1962`). La provisión de modelos de traducción solo ocurre cuando `--language` incluye `en` o `all` (`cli.py:1998`).
 
-**`--with-stt`:** opt-in ortogonal a `--language`. Gateado por `getattr(args, "with_stt", False)` (`cli.py:2031`). Descarga `Systran/faster-whisper-small` sin conversión CT2 (ya viene en formato CT2). Idempotente: se salta si el directorio ya existe (`cli.py:2037-2043`).
+**`--with-stt`:** opt-in ortogonal a `--language`. Descarga `parakeet-tdt-0.6b-v3` int8 (4 artefactos `MODEL_FILE_PATTERNS` `crates/avi-store/src/lib.rs:421`) vía `hf-hub` con `ort` load-dynamic (`crates/avi-stt/src/parakeet.rs`). Idempotente: se salta si `hf_cache_dir()` ya tiene el snapshot pinneado (`8f23f0c`).
 
 ### Manejo de errores
 
@@ -195,7 +194,7 @@ Crea `~/.local/bin/ai-voice-interconnector` como symlink a `$APPIMAGE`. Si ya ex
 
 | Chequeo | PASS | FAIL en setup | FAIL en doctor |
 |---|---|---|---|
-| Chatterbox importable | `PASS` | `EXIT_PRECONDITION_FAILED` (8) | `EXIT_ERROR` (1) |
+| Qwen3-TTS/Parakeet importable (`hf_cache_dir()` snapshots) | `PASS` | `EXIT_PRECONDITION_FAILED` (8) | `EXIT_ERROR` (1) |
 | Librería de audio | `PASS` | Degradado a `WARN` (continúa) | `FAIL` con salida 1 |
 
 La degradación del FAIL de audio a WARN en setup es intencional: la síntesis a disco funciona sin subsistema de sonido (`cli.py:1886-1891`).
