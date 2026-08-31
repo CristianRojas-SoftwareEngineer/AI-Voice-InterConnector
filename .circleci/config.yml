@@ -607,7 +607,7 @@ jobs:
       - cargo_save_target:
           os: linux
           variant: cov
-      - sccache_save_cache_conditional:
+      - sccache_save_cache:
           os: linux
 
   # ──────────────────────────────────────────────────────────────
@@ -639,7 +639,7 @@ jobs:
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - INICIO"
             cargo run -p xtask --quiet -- licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
-      - sccache_save_cache_conditional:
+      - sccache_save_cache:
           os: linux
 
   validate-changelog:
@@ -662,7 +662,7 @@ jobs:
             echo "[STEP] Verificar CHANGELOG - INICIO"
             cargo run -p xtask --quiet -- changelog --check
             echo "[STEP] Verificar CHANGELOG - FIN"
-      - sccache_save_cache_conditional:
+      - sccache_save_cache:
           os: linux
 
   # ──────────────────────────────────────────────────────────────
@@ -1605,7 +1605,7 @@ jobs:
               git push origin HEAD:main
             fi
             echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
-      - sccache_save_cache_conditional:
+      - sccache_save_cache:
           os: linux
 
 workflows:
