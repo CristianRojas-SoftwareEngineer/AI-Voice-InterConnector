@@ -386,7 +386,7 @@ jobs:
       - cargo_save_target:
           os: linux
           variant: test
-      - sccache_save_cache_conditional:
+      - sccache_save_cache:
           os: linux
 
   test-windows:
@@ -461,7 +461,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
-      - sccache_save_cache_conditional:
+      - sccache_save_cache:
           os: windows
 
   test-macos:
@@ -533,7 +533,7 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
-      - sccache_save_cache_conditional:
+      - sccache_save_cache:
           os: macos
 
   coverage:
