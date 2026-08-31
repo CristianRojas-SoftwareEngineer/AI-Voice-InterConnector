@@ -144,6 +144,17 @@ binario Rust ya no la realiza: `setup` solo provisiona el modelo. El script no m
 propaga a la sesión actual que ejecutó el `curl | sh` (el script lo avisa con la
 línea exacta a añadir).
 
+**Modo `--check`**: ejecutar `sh install-linux.sh --check` compara la versión
+instalada (`ai-voice-interconnector --version`) con la última publicada en
+GitHub y reporta la transición (`1.0.0 → 2.0.0`), `Ya estás en la versión`, o
+`no instalado → 2.0.0` sin descargar ni extraer nada.
+
+**Wrapper de auto-actualización**: `upgrade-ai-voice-interconnector.sh`
+detecta el SO (`uname -s`), obtiene la versión corriente y la última, reporta
+la transición y, salvo que se pase `--check`, re-ejecuta el one-liner del SO
+correspondiente (`install-linux.sh` o `install-macos.sh`). Es el punto de
+entrada unificado para la auto-actualización desde shell.
+
 ## Instalador Windows (`irm | iex`)
 
 `install-windows.ps1` vive en la raíz del repo, servido desde
@@ -173,6 +184,16 @@ entrada de PATH legada per-machine, para evitar un PATH duplicado.
 **Limitaciones conocidas**: Defender Antivirus puede marcar el binario sin firma
 (independiente del MOTW; runbook WDSI arriba); el `.zip` descargado por navegador sí
 lleva MOTW y dispara SmartScreen (lo resuelve la firma de código, no este script).
+
+**Modo `-Check`**: ejecutar `install-windows.ps1 -Check` compara la
+versión instalada (`ai-voice-interconnector --version`) con la última
+publicada en GitHub y reporta la transición (`1.0.0 -> 2.0.0`), `Ya estás
+en la versión`, o `no instalado -> 2.0.0` sin descargar ni extraer nada.
+
+**Wrapper de auto-actualización**: `upgrade-ai-voice-interconnector.ps1`
+detecta la versión corriente, la compara con la última, reporta la
+transición, y, salvo que se pase `-Check`, re-ejecuta `install-windows.ps1`.
+Es el punto de entrada unificado para la auto-actualización desde PowerShell.
 
 ## Cask de macOS
 

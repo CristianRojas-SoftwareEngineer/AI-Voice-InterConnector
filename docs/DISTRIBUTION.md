@@ -25,7 +25,7 @@ quedó 100 % Rust en su distribución.
 | **Tamaño** | Binario pequeño y autocontenido (~13-42 MB; CTranslate2 (ct2rs) enlazado estático + Parakeet vía `ort` `load-dynamic` vía `crt-static`) |
 | **Dependencias del sistema** | Ninguna (autocontenido) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
-| **Actualización** | Re-ejecutar el one-liner por SO (limpia la versión anterior antes de extraer) o `brew upgrade --cask` |
+| **Actualización** | Re-ejecutar el one-liner por SO con `--check` (reporta la transición sin instalar), `upgrade-ai-voice-interconnector.{sh,ps1}` (wrapper), o `brew upgrade --cask` |
 | **Desinstalación** | Eliminar el directorio de instalación + la entrada de PATH; `ai-voice-interconnector cleanup` para los modelos; en Homebrew `brew uninstall --cask --zap` |
 | **Publicación en CI** | `publish-release` → GitHub Release; `publish-metadata` → Cask del tap |
 | **Reversibilidad de la publicación** | El Release es público al publicarse: revertir implica borrar un Release ya público |

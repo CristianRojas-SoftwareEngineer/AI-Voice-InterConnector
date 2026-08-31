@@ -40,6 +40,15 @@ require_cmd tar
 require_cmd chmod
 require_cmd mkdir
 
+# --- Modo --check (reporta transición sin instalar) -------------------
+CHECK_MODE=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --check) CHECK_MODE=1; shift ;;
+        *) shift ;;
+    esac
+done
+
 # --- Selección de arquitectura -------------------------------------------
 # Mapea uname -m al sufijo de arquitectura de los assets del release
 # (build-linux-x64 → *-x86_64-linux.tar.gz, build-linux-arm64 → *-arm64-linux.tar.gz).
@@ -101,6 +110,25 @@ sums_url="$(printf '%s' "$release_json" \
 
 archive_name="$(basename "$archive_url")"
 log "Asset seleccionado: $archive_name"
+
+# Extrae tag_name del JSON de la API (para modo --check), sin prefijo v.
+latest_tag="$(printf '%s' "$release_json" | grep -o '"tag_name": *"[^"]*"' | sed -E 's/.*"([^"]+)"/\1/' | head -n1)"
+latest_tag="$(printf '%s' "$latest_tag" | sed -E 's/^v//')"
+
+# --- Modo --check: reporta transición sin instalar -------------------
+if [ "$CHECK_MODE" = "1" ]; then
+    if command -v ai-voice-interconnector >/dev/null 2>&1; then
+        current="$(ai-voice-interconnector --version | awk '{print $2}')"
+        if [ "$current" = "$latest_tag" ]; then
+            log "Ya estás en la versión $latest_tag"
+        else
+            log "$current → $latest_tag"
+        fi
+    else
+        log "no instalado → $latest_tag"
+    fi
+    exit 0
+fi
 
 # --- Descarga y verificación de checksum ----------------------------------
 work_dir="$(mktemp -d)"

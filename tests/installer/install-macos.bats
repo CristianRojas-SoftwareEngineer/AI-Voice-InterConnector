@@ -38,6 +38,14 @@ BIN
     tar -czf "$ASSET_TARBALL" -C "$stage" .
     export ASSET_TARBALL
     FAKE_SHA="$(shasum -a 256 "$ASSET_TARBALL" | cut -d' ' -f1)"
+
+    # Mock de `ai-voice-interconnector` para modo --check: reporta
+    # "ai-voice-interconnector 1.0.0" a --version.
+    cat > "$MOCK_BIN/ai-voice-interconnector" <<'MOCK'
+#!/bin/sh
+echo "ai-voice-interconnector 1.0.0"
+MOCK
+    chmod +x "$MOCK_BIN/ai-voice-interconnector"
 }
 
 teardown() {
@@ -82,7 +90,8 @@ case "\$url" in
 {"assets":[
 {"browser_download_url":"https://example.invalid/${asset_name}"},
 {"browser_download_url":"https://example.invalid/SHA256SUMS.txt"}
-]}
+],
+"tag_name":"v1.0.0"}
 JSON
         ;;
     *${asset_name})
@@ -173,4 +182,70 @@ mock_all() {
     new_bin="$install_dir/ai-voice-interconnector"
     [ -x "$new_bin" ]
     ! grep -q "binario viejo" "$new_bin"
+}
+
+@test "--check reporta transición cuando hay versión nueva" {
+    mock_all
+    # curl responde con tag_name v2.0.0 (versión nueva respecto al mock 1.0.0).
+    cat > "$MOCK_BIN/curl" <<'EOF'
+#!/bin/sh
+out=""
+url=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        -fsSL) shift ;;
+        http*) url="$1"; shift ;;
+        *) shift ;;
+    esac
+done
+case "$url" in
+    *api.github.com*)
+        cat <<JSON
+{"assets":[{"browser_download_url":"https://example.invalid/ai-voice-interconnector-1.0.0-arm64-macos.tar.gz"},{"browser_download_url":"https://example.invalid/SHA256SUMS.txt"}],"tag_name":"v2.0.0"}
+JSON
+        ;;
+    *) ;;
+esac
+EOF
+    chmod +x "$MOCK_BIN/curl"
+
+    run sh "$INSTALL_SH" --check
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"1.0.0 → 2.0.0"* ]]
+    [ ! -d "$HOME/.local/opt/ai-voice-interconnector" ]
+}
+
+@test "--check reporta ya estás en la versión cuando no hay actualización" {
+    mock_all
+    # curl responde con tag_name v1.0.0 (misma versión del mock).
+    cat > "$MOCK_BIN/curl" <<'EOF'
+#!/bin/sh
+out=""
+url=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        -fsSL) shift ;;
+        http*) url="$1"; shift ;;
+        *) shift ;;
+    esac
+done
+case "$url" in
+    *api.github.com*)
+        cat <<JSON
+{"assets":[{"browser_download_url":"https://example.invalid/ai-voice-interconnector-1.0.0-arm64-macos.tar.gz"},{"browser_download_url":"https://example.invalid/SHA256SUMS.txt"}],"tag_name":"v1.0.0"}
+JSON
+        ;;
+    *) ;;
+esac
+EOF
+    chmod +x "$MOCK_BIN/curl"
+
+    run sh "$INSTALL_SH" --check
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Ya estás en la versión"* ]]
+    [ ! -d "$HOME/.local/opt/ai-voice-interconnector" ]
 }
