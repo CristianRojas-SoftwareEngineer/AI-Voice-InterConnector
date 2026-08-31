@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.8 — 2026-08-31](#0188-20260831)
 - [0.18.7 — 2026-08-31](#0187-20260831)
 - [0.18.6 — 2026-08-30](#0186-20260830)
 - [0.18.5 — 2026-08-30](#0185-20260830)
@@ -70,6 +71,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.8] — 2026-08-31
+
+`v0.18.7` (`14m36s`) mejoró `test-windows` (`-2.5m`) al quitar `target`, pero `test-linux` empeoró (`+57s`) por `hit Rust 15% 230 miss` sin `target` — `restore 8s` barato en `docker ext4` ahorra `50s` de `compile`. Esta patch heterogeneiza: reintroduce `target-v2` solo en `test-linux/coverage` donde `coste < beneficio`, mantiene `registry+sccache` en `test-windows/macos` donde `upload 235s NTFS` domina, equilibrando ambos sin tocar validaciones.
+
+### Cambiado
+
+- `ci`: heterogeneiza `target` — `test-linux`/`coverage` restauran `target-v2 test/cov` `8-15s`, `test-windows/macos` quedan `registry+sccache` — ` .circleci/config.yml:315,523`.
 
 ## [0.18.7] — 2026-08-31
 
@@ -1349,3 +1359,4 @@ estado con el que nace el producto.
 [0.18.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.4...v0.18.5
 [0.18.6]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.5...v0.18.6
 [0.18.7]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.6...v0.18.7
+[0.18.8]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.7...v0.18.8
