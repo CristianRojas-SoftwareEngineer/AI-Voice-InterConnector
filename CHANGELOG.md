@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.6 — 2026-08-30](#0186-20260830)
 - [0.18.5 — 2026-08-30](#0185-20260830)
 - [0.18.4 — 2026-08-30](#0184-20260830)
 - [0.18.3 — 2026-08-30](#0183-20260830)
@@ -66,6 +67,19 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.6] — 2026-08-30
+
+La limpieza manual de `hub` sin `xet` dejaba `shard-cache` huérfano y el siguiente `setup` marcaba éxito en `1s` con `parakeet` solo `vocab.txt` y `blobs/*.incomplete`, validado como `is_provisioned` y `doctor ok` falso que derivaba en `daemon_unreachable`; además `cleanup`/`uninstall` dejaban `daemon.pid` vivo y no purgaban `xet`. Esta patch endurece la provisión a validación por ficheros críticos y atomicidad con rollback, purga `hub+xet` y detiene el daemon en `cleanup`/`uninstall` en Windows, Linux y macOS, y refina la skill E2E a purga inicial desde cero para un gate determinista.
+
+### Corregido
+
+- `store`: `is_provisioned` exige ficheros críticos `MODEL_FILE_PATTERNS` con `size>0` y `ensure_downloaded` valida/rollback de `snapshot`+`blobs` — `crates/avi-store/src/lib.rs:529,636`.
+- `store`: `xet_cache_dir` y `remove_xet_cache` (+ `locks`) para coherencia `hub`/`xet` — `crates/avi-store/src/lib.rs:446,618`.
+- `cli`: `cleanup`/`uninstall` paran daemon graceful `5s` + `remove_daemon_pid_file` y purgan `hub+xet+temp` — `src/main.rs:1387,1471`.
+- `skill`: `test-windows-e2e-as-final-user` `0.18.6` con `0a Limpieza inicial` desde cero y `xet` — `.claude/skills/test-windows-e2e-as-final-user/SKILL.md`.
+- `docs`: `SELF-HOSTED-INSTALL.md` con desinstalación `hub+xet+daemon` y contrato `install → setup reintentable`.
 
 ## [0.18.5] — 2026-08-30
 
@@ -1323,3 +1337,4 @@ estado con el que nace el producto.
 [0.18.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.2...v0.18.3
 [0.18.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.3...v0.18.4
 [0.18.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.4...v0.18.5
+[0.18.6]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.5...v0.18.6
