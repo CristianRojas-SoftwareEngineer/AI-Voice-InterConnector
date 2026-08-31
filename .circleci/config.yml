@@ -386,8 +386,6 @@ jobs:
       - cargo_save_target:
           os: linux
           variant: test
-      - sccache_save_cache:
-          os: linux
 
   test-windows:
     # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
@@ -461,8 +459,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
-      - sccache_save_cache:
-          os: windows
 
   test-macos:
     # Suite Rust en macOS nativo (Apple Silicon, Xcode 26.4.0). Valida código
@@ -533,8 +529,6 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
-      - sccache_save_cache:
-          os: macos
 
   coverage:
     # Job de cobertura Rust (cargo-llvm-cov, LLVM instrumentation). Corre solo
@@ -607,8 +601,6 @@ jobs:
       - cargo_save_target:
           os: linux
           variant: cov
-      - sccache_save_cache:
-          os: linux
 
   # ──────────────────────────────────────────────────────────────
   # Validación GPLv3 — SOURCE-OFFER.md y THIRD-PARTY-LICENSES.md vivos
@@ -639,8 +631,6 @@ jobs:
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - INICIO"
             cargo run -p xtask --quiet -- licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
-      - sccache_save_cache:
-          os: linux
 
   validate-changelog:
     # Gate de CHANGELOG: verifica que exista la sección ## [X.Y.Z] para la
@@ -662,8 +652,6 @@ jobs:
             echo "[STEP] Verificar CHANGELOG - INICIO"
             cargo run -p xtask --quiet -- changelog --check
             echo "[STEP] Verificar CHANGELOG - FIN"
-      - sccache_save_cache:
-          os: linux
 
   # ──────────────────────────────────────────────────────────────
   # Smoke tests de instaladores de una línea (mock por PATH, sin red)
@@ -1605,8 +1593,6 @@ jobs:
               git push origin HEAD:main
             fi
             echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
-      - sccache_save_cache:
-          os: linux
 
 workflows:
   build-all:
