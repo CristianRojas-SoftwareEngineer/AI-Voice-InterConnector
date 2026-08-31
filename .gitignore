@@ -59,3 +59,6 @@ vendor/qwen3-tts/qwen_tts
 Cargo.lock.cachekey
 vendor/qwen3-tts/.engine-cachekey
 ort-bundle/
+
+# Ignorar .claude/skills/ (skills locales del agente, no se versionan).
+.claude/skills/
