@@ -7,9 +7,12 @@
 //! estado/error) entre el runtime nativo y lo que el resto del sistema espera.
 //!
 //! El harness construye `DaemonState` con el motor STT real (Parakeet TDT v3 int8,
-//! export de `istupakov`), que solo existe con `native-stt`. Sin el feature el
-//! archivo no compila (evita ONNX Runtime en el build de test liso).
-#![cfg(feature = "native-stt")]
+//! export de `istupakov`), que solo existe con `native-stt`. Sin el feature, el
+//! harness cae a un `ParakeetEngine` construido con un directorio de modelo
+//! vacío; `oneshot` no ejerce la ruta `/transcribe` en estos tests, así que el
+//! motor se queda sin inicializar y el resto de la suite corre sin ONNX
+//! Runtime. Los tests que sí requieren STT (golden transcribe) son gated
+//! individualmente con `#[cfg(feature = "native-stt")]` en sus cuerpos.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,19 +38,36 @@ fn test_state() -> Arc<DaemonState> {
         .get_or_init(|| {
             // `cargo test -p avi-daemon` ejecuta con CWD=crates/avi-daemon; los
             // modelos están bajo la raíz del workspace (CARGO_MANIFEST_DIR/..).
-            let stt_model_dir =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/parakeet-tdt-v3");
-            let stt_engine = avi_stt::ParakeetEngine::new(&stt_model_dir)
-                .expect("el modelo STT de test debe cargarse");
-            Arc::new(DaemonState {
-                synthesis_lock: tokio::sync::Mutex::new(()),
-                voice_store: VoiceStore::new(),
-                speech_store: SpeechStore::new(),
-                tts_engine: avi_tts::Qwen3TtsEngine::new(None),
-                stt_engine,
-                warm: std::sync::RwLock::new(WarmState::Warming),
-                shutdown_notify: Arc::new(tokio::sync::Notify::new()),
-            })
+            // El motor STT solo se construye si el feature `native-stt` está
+            // activo; sin él, los tests que ejercen `/transcribe` se saltan y
+            // el resto corre contra un `DaemonState` sin campo stt_engine.
+            #[cfg(feature = "native-stt")]
+            {
+                let stt_model_dir =
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/parakeet-tdt-v3");
+                let stt_engine = avi_stt::ParakeetEngine::new(&stt_model_dir)
+                    .expect("el modelo STT de test debe cargarse");
+                Arc::new(DaemonState {
+                    synthesis_lock: tokio::sync::Mutex::new(()),
+                    voice_store: VoiceStore::new(),
+                    speech_store: SpeechStore::new(),
+                    tts_engine: avi_tts::Qwen3TtsEngine::new(None),
+                    stt_engine,
+                    warm: std::sync::RwLock::new(WarmState::Warming),
+                    shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+                })
+            }
+            #[cfg(not(feature = "native-stt"))]
+            {
+                Arc::new(DaemonState {
+                    synthesis_lock: tokio::sync::Mutex::new(()),
+                    voice_store: VoiceStore::new(),
+                    speech_store: SpeechStore::new(),
+                    tts_engine: avi_tts::Qwen3TtsEngine::new(None),
+                    warm: std::sync::RwLock::new(WarmState::Warming),
+                    shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+                })
+            }
         })
         .clone()
 }

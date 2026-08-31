@@ -25,7 +25,10 @@ mod tests {
         let model_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../models/parakeet-tdt-v3");
         // Los binarios bajo `models/` están gitignoreados: en un checkout
         // limpio (CI) este E2E se salta con aviso; en desarrollo corre completo.
-        if !std::path::Path::new(model_dir).join("nemo128.onnx").exists() {
+        if !std::path::Path::new(model_dir)
+            .join("nemo128.onnx")
+            .exists()
+        {
             eprintln!("[stt] skip: sin modelo Parakeet (models/ gitignoreado)");
             return;
         }
@@ -86,7 +89,10 @@ mod tests {
     #[test]
     fn parakeet_engine_coincide_con_oraculo() {
         let model_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../models/parakeet-tdt-v3");
-        if !std::path::Path::new(model_dir).join("nemo128.onnx").exists() {
+        if !std::path::Path::new(model_dir)
+            .join("nemo128.onnx")
+            .exists()
+        {
             eprintln!("[stt] skip: sin modelo Parakeet (models/ gitignoreado)");
             return;
         }

@@ -1,0 +1,6 @@
+{
+  "schema_version": "3",
+  "status": "error",
+  "reason": "missing_source",
+  "message": "La petición de traducción no incluye el campo 'source' (idioma origen)."
+}

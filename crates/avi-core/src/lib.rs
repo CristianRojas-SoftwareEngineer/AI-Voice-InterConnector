@@ -6,6 +6,8 @@ pub mod json_emitter;
 mod tests {
     use crate::engine::{HierarchicalSegmenter, Segmenter};
     use crate::exit_codes::ExitCode;
+    use crate::json_emitter::{emit_raw_json, with_schema_version, SCHEMA_VERSION};
+    use serde_json::{json, Value};
 
     #[test]
     fn test_exit_codes() {
@@ -134,5 +136,50 @@ mod tests {
                 word
             );
         }
+    }
+
+    #[test]
+    fn test_emit_raw_json_includes_schema_version() {
+        let val = with_schema_version(json!({ "status": "ok" }));
+        assert_eq!(
+            val.get("schema_version").and_then(|v| v.as_str()),
+            Some(SCHEMA_VERSION),
+            "el envelope debe llevar schema_version=\"{}\"",
+            SCHEMA_VERSION
+        );
+        assert_eq!(
+            SCHEMA_VERSION, "3",
+            "schema_version canónico debe ser \"3\""
+        );
+    }
+
+    #[test]
+    fn test_emit_raw_json_preserves_data() {
+        let input = json!({ "status": "ok", "count": 42, "label": "test" });
+        let val = with_schema_version(input.clone());
+        // los campos originales deben sobrevivir en el envelope
+        assert_eq!(val.get("status"), Some(&json!("ok")));
+        assert_eq!(val.get("count"), Some(&json!(42)));
+        assert_eq!(val.get("label"), Some(&json!("test")));
+        // emit_raw_json se ejecuta sin panicar y produce un Value válido
+        // (no se redirige stdout en el test; sólo se verifica la construcción
+        // del envelope, que es la lógica de dominio testeable)
+        let _ = emit_raw_json(input);
+    }
+
+    #[test]
+    fn test_emit_raw_json_flatten_schema_version() {
+        // `schema_version` debe ser campo raíz, no anidado dentro de `data`
+        let val = with_schema_version(json!({ "data": { "nested": true } }));
+        assert!(
+            val.get("schema_version").is_some(),
+            "schema_version debe ser campo raíz, no anidado"
+        );
+        let nested = val.get("data").and_then(|d| d.get("nested"));
+        assert_eq!(
+            nested,
+            Some(&Value::Bool(true)),
+            "los campos anidados en `data` deben preservarse"
+        );
     }
 }

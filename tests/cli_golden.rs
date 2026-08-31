@@ -859,7 +859,8 @@ mod tts {
         assert!(
             code == 0,
             "daemon start debe salir 0, fue {} reason {:?}",
-            code, actual
+            code,
+            actual
         );
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
         // Verificar status running
@@ -870,7 +871,11 @@ mod tts {
         let _ = Command::new(BIN).args(["daemon", "stop"]).output();
         std::thread::sleep(std::time::Duration::from_millis(500));
         let (code3, actual3) = run_json(&["--json", "daemon", "status"]);
-        assert_eq!(actual3["daemon"], Value::String("stopped".to_string()), "tras stop debe quedar stopped");
+        assert_eq!(
+            actual3["daemon"],
+            Value::String("stopped".to_string()),
+            "tras stop debe quedar stopped"
+        );
         let _ = code3;
     }
 

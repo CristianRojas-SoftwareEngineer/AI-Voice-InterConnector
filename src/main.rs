@@ -313,9 +313,11 @@ async fn main() {
         Some(Commands::Voice { action }) => handle_voice(json_mode, daemon_mode, action).await,
         Some(Commands::Speech { action }) => handle_speech(json_mode, daemon_mode, action).await,
         Some(Commands::Daemon { action }) => handle_daemon(json_mode, action).await,
-        Some(Commands::Setup { language, with_stt, with_base }) => {
-            handle_setup(json_mode, &language, with_stt, with_base).await
-        }
+        Some(Commands::Setup {
+            language,
+            with_stt,
+            with_base,
+        }) => handle_setup(json_mode, &language, with_stt, with_base).await,
         Some(Commands::Cleanup { all }) => {
             if all {
                 handle_uninstall(json_mode, true).await
@@ -467,7 +469,11 @@ fn handle_translate(
 
 // ─── Voice ───────────────────────────────────────────────────────────
 
-async fn handle_voice(json_mode: bool, daemon_mode: DaemonMode, action: VoiceCommands) -> Result<(), CliError> {
+async fn handle_voice(
+    json_mode: bool,
+    daemon_mode: DaemonMode,
+    action: VoiceCommands,
+) -> Result<(), CliError> {
     let voice_store = VoiceStore::new();
 
     match action {
@@ -519,7 +525,10 @@ async fn handle_voice(json_mode: bool, daemon_mode: DaemonMode, action: VoiceCom
                     DaemonMode::Auto => {
                         // Best-effort: si el daemon responde, el precompute posterior será más rápido (modelo caliente)
                         if daemon_activo(&client).await {
-                            eprintln!("Daemon activo: el precompute de '{}' usará modelo caliente.", name);
+                            eprintln!(
+                                "Daemon activo: el precompute de '{}' usará modelo caliente.",
+                                name
+                            );
                         }
                     }
                     DaemonMode::ForceDirect => {}
@@ -706,7 +715,8 @@ async fn handle_speech(
             }
 
             // Modelo ausente -> exit 4, previo a construir el motor.
-            if !ModelStore::new().model_dir("parakeet-tdt-v3")
+            if !ModelStore::new()
+                .model_dir("parakeet-tdt-v3")
                 .join("nemo128.onnx")
                 .exists()
             {
@@ -752,13 +762,14 @@ async fn handle_speech(
                     )?
                 };
 
-                let engine = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3")).map_err(|e| {
-                    CliError::new(
-                        ExitCode::TranscriptionFailed,
-                        "transcription_error",
-                        e.to_string(),
-                    )
-                })?;
+                let engine = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3"))
+                    .map_err(|e| {
+                        CliError::new(
+                            ExitCode::TranscriptionFailed,
+                            "transcription_error",
+                            e.to_string(),
+                        )
+                    })?;
                 let language = resolve_stt_language(&source_language);
                 let text = engine.transcribe(&pcm, Some(language)).map_err(|e| {
                     CliError::new(
@@ -952,7 +963,8 @@ async fn handle_speech(
                 }
             }
             // Modelos ausentes → exit 4 antes de tocar audio (patrón main.rs:479-485).
-            if !ModelStore::new().model_dir("parakeet-tdt-v3")
+            if !ModelStore::new()
+                .model_dir("parakeet-tdt-v3")
                 .join("nemo128.onnx")
                 .exists()
             {
@@ -999,13 +1011,14 @@ async fn handle_speech(
                         },
                     )?
                 };
-                let stt = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3")).map_err(|e| {
-                    CliError::new(
-                        ExitCode::TranscriptionFailed,
-                        "transcription_error",
-                        e.to_string(),
-                    )
-                })?;
+                let stt = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3"))
+                    .map_err(|e| {
+                        CliError::new(
+                            ExitCode::TranscriptionFailed,
+                            "transcription_error",
+                            e.to_string(),
+                        )
+                    })?;
                 let transcribed = stt
                     .transcribe(&pcm, Some(resolve_stt_language(&from)))
                     .map_err(|e| {
@@ -1184,22 +1197,41 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             if daemon_activo(&client).await {
                 let pid = read_daemon_pid().unwrap_or(0);
                 if json_mode {
-                    emit_raw_json(json!({ "status": "already_running", "daemon": "running", "pid": pid }));
+                    emit_raw_json(
+                        json!({ "status": "already_running", "daemon": "running", "pid": pid }),
+                    );
                 } else {
                     println!("Daemon ya en ejecución (pid {}).", pid);
                 }
                 return Ok(());
             }
             let pid = daemon::spawn_background().map_err(|e| {
-                CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo lanzar el daemon: {}", e))
+                CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("No se pudo lanzar el daemon: {}", e),
+                )
             })?;
-            await_daemon_ready(&client, DAEMON_ADDR, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL)
-                .await
-                .map_err(|e| {
-                    CliError::new(ExitCode::DaemonUnreachable, "daemon_unreachable", e.to_string())
-                })?;
+            await_daemon_ready(
+                &client,
+                DAEMON_ADDR,
+                DAEMON_READY_DEADLINE,
+                DAEMON_POLL_INTERVAL,
+            )
+            .await
+            .map_err(|e| {
+                CliError::new(
+                    ExitCode::DaemonUnreachable,
+                    "daemon_unreachable",
+                    e.to_string(),
+                )
+            })?;
             write_daemon_pid(pid).map_err(|e| {
-                CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo escribir daemon.pid: {}", e))
+                CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("No se pudo escribir daemon.pid: {}", e),
+                )
             })?;
             if json_mode {
                 emit_raw_json(json!({ "status": "started", "daemon": "running", "pid": pid }));
@@ -1256,15 +1288,32 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             }
             require_model_provisioned()?;
             let pid = daemon::spawn_background().map_err(|e| {
-                CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo lanzar el daemon: {}", e))
+                CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("No se pudo lanzar el daemon: {}", e),
+                )
             })?;
-            await_daemon_ready(&client, DAEMON_ADDR, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL)
-                .await
-                .map_err(|e| {
-                    CliError::new(ExitCode::DaemonUnreachable, "daemon_unreachable", e.to_string())
-                })?;
+            await_daemon_ready(
+                &client,
+                DAEMON_ADDR,
+                DAEMON_READY_DEADLINE,
+                DAEMON_POLL_INTERVAL,
+            )
+            .await
+            .map_err(|e| {
+                CliError::new(
+                    ExitCode::DaemonUnreachable,
+                    "daemon_unreachable",
+                    e.to_string(),
+                )
+            })?;
             write_daemon_pid(pid).map_err(|e| {
-                CliError::new(ExitCode::Error, "daemon_error", format!("No se pudo escribir daemon.pid: {}", e))
+                CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("No se pudo escribir daemon.pid: {}", e),
+                )
             })?;
             if json_mode {
                 emit_raw_json(json!({ "status": "restarted", "daemon": "running", "pid": pid }));
@@ -1324,7 +1373,12 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
 
 // ─── Setup / Cleanup / Doctor ────────────────────────────────────────
 
-async fn handle_setup(json_mode: bool, language: &str, with_stt: bool, with_base: bool) -> Result<(), CliError> {
+async fn handle_setup(
+    json_mode: bool,
+    language: &str,
+    with_stt: bool,
+    with_base: bool,
+) -> Result<(), CliError> {
     let model_store = ModelStore::new();
     let voice_store = VoiceStore::new();
 
@@ -1449,7 +1503,8 @@ async fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {
         if let Ok(entries) = std::fs::read_dir(&tmp) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-") {
+                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-")
+                {
                     let p = entry.path();
                     if p.is_dir() {
                         let _ = std::fs::remove_dir_all(&p);
@@ -1545,7 +1600,9 @@ async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> 
             if let Ok(entries) = std::fs::read_dir(&tmp) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-") {
+                    if name.starts_with("avi_")
+                        || name.starts_with("ai-voice-interconnector-install-")
+                    {
                         let p = entry.path();
                         if p.is_dir() {
                             let _ = std::fs::remove_dir_all(&p);
@@ -1687,7 +1744,11 @@ fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
     }
     // Base opt-in: WARN si falta, no FAIL
     let base_ready = model_store.is_provisioned("qwen3-tts-0.6b-base");
-    let base_status = if base_ready { "ready" } else { "missing_opt_in" };
+    let base_status = if base_ready {
+        "ready"
+    } else {
+        "missing_opt_in"
+    };
 
     // Verificar voces
     if let Err(_e) = voice_store.list() {
@@ -1847,7 +1908,10 @@ fn status_body(
     body
 }
 
-async fn wait_health_down(client: &reqwest::Client, timeout: std::time::Duration) -> anyhow::Result<()> {
+async fn wait_health_down(
+    client: &reqwest::Client,
+    timeout: std::time::Duration,
+) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
         if !daemon_activo(client).await {

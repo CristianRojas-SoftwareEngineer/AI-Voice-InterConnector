@@ -219,7 +219,11 @@ fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
         }
     }
     if let Some(p) = avi_store::ModelStore::new().model_snapshot_path("qwen3-tts-0.6b") {
-        if p.is_dir() && p.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false) {
+        if p.is_dir()
+            && p.read_dir()
+                .map(|mut i| i.next().is_some())
+                .unwrap_or(false)
+        {
             return Some(p);
         }
     }
@@ -263,7 +267,11 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     }
     // Capa HF: snapshot cacheado por setup --with-base
     if let Some(p) = avi_store::ModelStore::new().model_snapshot_path("qwen3-tts-0.6b-base") {
-        if p.is_dir() && p.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false) {
+        if p.is_dir()
+            && p.read_dir()
+                .map(|mut i| i.next().is_some())
+                .unwrap_or(false)
+        {
             return Some(p);
         }
     }

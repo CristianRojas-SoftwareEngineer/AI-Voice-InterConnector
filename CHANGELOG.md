@@ -11,7 +11,6 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.18.15 — 2026-08-31](#01815-20260831)
 - [0.18.14 — 2026-08-31](#01814-20260831)
 - [0.18.13 — 2026-08-31](#01813-20260831)
-- [0.18.13 — 2026-08-31](#01813-20260831)
 - [0.18.12 — 2026-08-31](#01812-20260831)
 - [0.18.11 — 2026-08-31](#01811-20260831)
 - [0.18.10 — 2026-08-31](#01810-20260831)
@@ -119,19 +118,11 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 `v0.18.12` (`16.9m`) confirmó que el cuello es `compile` puro, no `I/O` de caché: `test-windows 333.5s` `cargo test` y `build-windows 244.5s` `cargo build --release`. Esta patch arranca `sccache --start-server` con `SCCACHE_SERVER_PORT=4226` tras `sccache_setup_unix/windows` para que todos los `rustc` del job compartan objetos en RAM en vez de disco, evitando latencia de `~1ms` por objeto y permitiendo `hit 90%+` entre `proc-macro` y `bin`; ahorra `~30-50s` en `build-windows` por `hit` adicional y `~10s` en `test-windows`.
 
-738611f6ab4660d0126c4efa2ce0ac5f25b3e4fd  <!-- TODO: curar -->
+738611f6ab4660d0126c4efa2ce0ac5f25b3e4fd
 
 ### Corregido
 
-- fix(ci): quitar sccache --status que rompe sccache 0.8.2  <!-- TODO: curar -->
-
-## [0.18.13] — 2026-08-31
-
-`v0.18.12` (`16.9m`) confirmó que el cuello es `compile` puro, no `I/O` de caché: `test-windows 333.5s` `cargo test` y `build-windows 244.5s` `cargo build --release`. Esta patch arranca `sccache --start-server` con `SCCACHE_SERVER_PORT=4226` tras `sccache_setup_unix/windows` para que todos los `rustc` del job compartan objetos en RAM en vez de disco, evitando latencia de `~1ms` por objeto y permitiendo `hit 90%+` entre `proc-macro` y `bin`; ahorra `~30-50s` en `build-windows` por `hit` adicional y `~10s` en `test-windows`.
-
-### Cambiado
-
-- `ci`: `sccache_setup_unix` y `sccache_setup_windows` arrancan `sccache --start-server` con `SCCACHE_SERVER_PORT=4226`; los jobs Rust comparten objetos en RAM por puerto — `.circleci/config.yml:241-245,323-328`.
+- fix(ci): quitar sccache --status que rompe sccache 0.8.2
 
 ## [0.18.12] — 2026-08-31
 

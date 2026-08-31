@@ -189,7 +189,10 @@ fn main() -> Result<()> {
         Commands::Release { version } => {
             let version = version.trim();
             if !Regex::new(r"^\d+\.\d+\.\d+$").unwrap().is_match(version) {
-                anyhow::bail!("versión inválida '{}': debe ser X.Y.Z (ej. 0.14.0)", version);
+                anyhow::bail!(
+                    "versión inválida '{}': debe ser X.Y.Z (ej. 0.14.0)",
+                    version
+                );
             }
             // Pre-validación atómica: abortar antes de mutar si el árbol está sucio
             // o no hay commits nuevos desde el último tag.
@@ -586,9 +589,9 @@ fn scaffold_changelog(version: &str) -> Result<()> {
 
     // Buscar el final del TOC: la primera "## [" que sigue
     let after_toc = &text[toc_end..];
-    let toc_close = after_toc
-        .find("\n## [")
-        .ok_or_else(|| anyhow::anyhow!("no se encontró el inicio de la primera sección del CHANGELOG"))?;
+    let toc_close = after_toc.find("\n## [").ok_or_else(|| {
+        anyhow::anyhow!("no se encontró el inicio de la primera sección del CHANGELOG")
+    })?;
 
     let insert_pos = toc_end + toc_close + 1; // posición del "\n" antes de "## ["
     let mut new_text = text[..insert_pos].to_string();
@@ -608,7 +611,10 @@ fn scaffold_changelog(version: &str) -> Result<()> {
     result.push_str(&new_text[toc_pos..]);
 
     // Añadir definición de enlace al final del archivo
-    let link = format!("[{}]: https://github.com/{}/compare/v{}...v{}\n", version, GITHUB_REPO, last, version);
+    let link = format!(
+        "[{}]: https://github.com/{}/compare/v{}...v{}\n",
+        version, GITHUB_REPO, last, version
+    );
     if !result.contains(&format!("[{}]: ", version)) {
         result = result.trim_end().to_string();
         result.push('\n');
@@ -624,10 +630,17 @@ fn extract_resumen_cambios(body: &str) -> Option<String> {
     for line in body.lines() {
         if line.trim_start().starts_with("Resumen de cambios") {
             // La primera bullet después del header
-            for bullet in body.lines().skip_while(|l| !l.trim_start().starts_with("Resumen de cambios")) {
+            for bullet in body
+                .lines()
+                .skip_while(|l| !l.trim_start().starts_with("Resumen de cambios"))
+            {
                 let bullet = bullet.trim_start();
                 if bullet.starts_with("- ") || bullet.starts_with("* ") {
-                    return Some(bullet.trim_start_matches(|c| c == '-' || c == '*' || c == ' ').to_string());
+                    return Some(
+                        bullet
+                            .trim_start_matches(|c| c == '-' || c == '*' || c == ' ')
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -650,9 +663,7 @@ fn parse_commit_header(subject: &str) -> (String, bool) {
 
 /// Formatea la fecha actual como YYYY-MM-DD usando el comando `date`.
 fn today_iso() -> String {
-    let output = std::process::Command::new("date")
-        .arg("+%Y-%m-%d")
-        .output();
+    let output = std::process::Command::new("date").arg("+%Y-%m-%d").output();
     if let Ok(out) = output {
         if out.status.success() {
             if let Ok(s) = String::from_utf8(out.stdout) {
@@ -918,7 +929,8 @@ mod tests {
         }
         // Fallback via CARGO_MANIFEST_DIR
         let cfg = cfg_opt.unwrap_or_else(|| {
-            let m = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.circleci/config.yml");
+            let m =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.circleci/config.yml");
             std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
         });
         // Heterogeneidad: test-linux usa cargo_restore_caches (registry+target), test-windows/macos usan cargo_restore_registry (solo registry)
@@ -938,7 +950,8 @@ mod tests {
             "debe existir sccache_save_cache_conditional"
         );
         assert!(
-            cfg.contains("85") && cfg.contains("sccache_save_cache_conditional:228") || cfg.contains("sccache_save_cache_conditional"),
+            cfg.contains("85") && cfg.contains("sccache_save_cache_conditional:228")
+                || cfg.contains("sccache_save_cache_conditional"),
             "sccache_save_cache_conditional debe documentar umbral 85%"
         );
         // Verificar que test-windows contiene cargo_restore_registry y sccache
@@ -1001,7 +1014,6 @@ mod tests {
             assert_eq!(make_program(), "make");
         }
     }
-
 
     #[test]
     fn test_engine_dir() {

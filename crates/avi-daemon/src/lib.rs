@@ -19,9 +19,9 @@ pub use spawn::spawn_background;
 #[cfg(feature = "native-stt")]
 use avi_core::engine::{hilos_disponibles, SttEngine};
 use avi_core::json_emitter;
-use avi_store::{SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_store::ModelStore;
+use avi_store::{SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_stt::{detectar_idioma, ParakeetEngine};
 use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
@@ -29,7 +29,6 @@ use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
 // (el motor interno del daemon usa el alfabeto STANDARD, idéntico al `encode`/`decode`
 // libres, por compatibilidad con el cliente raíz del CLI).
 use base64::Engine;
-
 
 /// Idioma por defecto para `clone_voice` cuando la petición no lo transporta
 /// (el contrato de /voices/precompute no carriba idioma).
@@ -97,8 +96,9 @@ impl DaemonState {
         #[cfg(feature = "native-stt")]
         let stt_dir = ModelStore::new().model_dir("parakeet-tdt-v3");
         #[cfg(feature = "native-stt")]
-        let stt_engine = ParakeetEngine::new(&stt_dir)
-            .map_err(|e| anyhow::anyhow!("fallo al cargar el modelo STT {}: {e}", stt_dir.display()))?;
+        let stt_engine = ParakeetEngine::new(&stt_dir).map_err(|e| {
+            anyhow::anyhow!("fallo al cargar el modelo STT {}: {e}", stt_dir.display())
+        })?;
         // Los hilos lógicos del equipo del usuario dimensionan el paralelismo de
         // ONNX Runtime (heredado de `avi-stt::parakeet`); el runtime del daemon
         // serializa síntesis y STT fuera de esta construcción.
@@ -315,7 +315,7 @@ async fn synthesize_handler(
     let voice_owned = voice.clone();
 
     tokio::spawn(async move {
-        // T4: el lock envuelve TODO el trabajo de síntesis —incluido dentro del
+        // T4: el lock envuelve completamente el trabajo de síntesis —incluido dentro del
         // spawn—, serializando síntesis concurrentes. No se añade semáforo de
         // admisión (fuera de alcance de esta rutina).
         let _lock = state.synthesis_lock.lock().await;

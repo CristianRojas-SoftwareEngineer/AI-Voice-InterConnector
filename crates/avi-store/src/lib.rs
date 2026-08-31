@@ -542,8 +542,6 @@ impl ModelStore {
         Some(direct)
     }
 
-
-
     /// Verificar si un modelo está provisionado: snapshot HF presente con
     /// integridad mínima (ficheros críticos con `size>0`). Si no hay pin,
     /// cae al índice legacy `manifest.json`.
@@ -554,9 +552,8 @@ impl ModelStore {
                     return false;
                 }
                 // Para modelos con `allow_patterns` (parakeet), exigir todos los ficheros críticos
-                if let Some((_, patterns)) = MODEL_FILE_PATTERNS
-                    .iter()
-                    .find(|(n, _)| *n == model_name)
+                if let Some((_, patterns)) =
+                    MODEL_FILE_PATTERNS.iter().find(|(n, _)| *n == model_name)
                 {
                     for pat in *patterns {
                         let p = snapshot.join(pat);
@@ -754,9 +751,7 @@ impl ModelStore {
                             .map(|en| {
                                 let p = en.path();
                                 p.is_file()
-                                    && std::fs::metadata(&p)
-                                        .map(|m| m.len() > 0)
-                                        .unwrap_or(false)
+                                    && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
                             })
                             .unwrap_or(false)
                     })
