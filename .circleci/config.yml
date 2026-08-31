@@ -351,9 +351,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches:
-          os: linux
-          variant: test
+      - cargo_restore_registry
       - run:
           name: Verificar toolchain Rust
           command: |
@@ -383,9 +381,6 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
-      - cargo_save_target:
-          os: linux
-          variant: test
 
   test-windows:
     # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
