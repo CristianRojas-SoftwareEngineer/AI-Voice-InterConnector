@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.7 — 2026-08-31](#0187-20260831)
 - [0.18.6 — 2026-08-30](#0186-20260830)
 - [0.18.5 — 2026-08-30](#0185-20260830)
 - [0.18.4 — 2026-08-30](#0184-20260830)
@@ -68,6 +69,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.7] — 2026-08-31
+
+El pipeline `v0.18.6` (#111 `17m26s`) mostraba `test-windows` como cuello con `9m53s` (`56%` del total) por el artefacto derivado `target` (`770 MiB restore` + `831 MiB save` `235s` `NTFS`) que duplicaba `sccache` (`1.0 GiB`, `82-97%` hit) y contenía `first-write-wins` entre los 3 `test-*` paralelos. Esta patch elimina `target-v2` de `test-*/coverage/validate` y deja solo `registry+sccache` content-addressed, coherente con el `hit-rate` ya medido y sin tocar la triple puerta ni los gates de licencias; `build-*` conservan `target-v2-full` para `release`.
+
+### Cambiado
+
+- `ci`: elimina `target` cache de `test-linux/windows/macos`, `coverage` y `validate`, deja `cargo registry + sccache` (`1 GiB`) como única caché de compilación en `test` — ` .circleci/config.yml:140,315,394,456,518`.
 
 ## [0.18.6] — 2026-08-30
 
@@ -1338,3 +1348,4 @@ estado con el que nace el producto.
 [0.18.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.3...v0.18.4
 [0.18.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.4...v0.18.5
 [0.18.6]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.5...v0.18.6
+[0.18.7]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.6...v0.18.7
