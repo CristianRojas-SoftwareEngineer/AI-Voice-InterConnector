@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.16 — 2026-08-31](#01816-20260831)
 - [0.18.15 — 2026-08-31](#01815-20260831)
 - [0.18.14 — 2026-08-31](#01814-20260831)
 - [0.18.13 — 2026-08-31](#01813-20260831)
@@ -88,6 +89,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.16] — 2026-08-31
+
+`v0.18.15` (`12m15s`) dejó `test-linux 345s 5m45s` con `cargo_restore_caches test` + `cargo_save_target test` reintroducido en `9116480` para Linux heterogéneo. Pero en Linux `sccache` da `hit 15%` (medido en `v0.18.7 #114`) y no cubre `proc-macro`/`build-script` outputs que el `target` sí; `target-v2-test 666 MiB 18s + cargo test 270s = 345s` es **peor** que `cargo_restore_registry + cargo test 210s = 265s`. En Windows sí compensa (`sccache 88%`). Esta patch quita `cargo_restore_caches test` y `cargo_save_target test` solo de `test-linux` (clave distinta a `test-windows` y a `coverage`-`cov`); `coverage` conserva `target-v2-cov` y `test-windows` conserva `target-v2-test windows`. Espera `test-linux 345s→265s` `-80s` y `pipeline 12m15s→11m35s` con `triple puerta` `docs/BUILD.md:215` intacta.
+
+### Cambiado
+
+- `ci`: `test-linux` usa `cargo_restore_registry` sin `target`; `coverage` y `test-windows` mantienen `target` — `.circleci/config.yml:354,386`.
 
 ## [0.18.15] — 2026-08-31
 
@@ -1451,3 +1461,4 @@ estado con el que nace el producto.
 [0.18.13]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.12...v0.18.13
 [0.18.14]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.13...v0.18.14
 [0.18.15]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.14...v0.18.15
+[0.18.16]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.15...v0.18.16
