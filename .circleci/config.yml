@@ -299,7 +299,6 @@ commands:
             # proc-macro, bin y la caché local sin reescribir en disco.
             echo 'export SCCACHE_SERVER_PORT=4226' >> "$BASH_ENV"
             sccache --start-server || true
-            sccache --status
             echo "[STEP] Configurar sccache - FIN"
   sccache_setup_windows:
     description: Instala sccache (pin) como RUSTC_WRAPPER (PowerShell)
@@ -328,7 +327,6 @@ commands:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $env:SCCACHE_SERVER_PORT = "4226"
             sccache --start-server
-            sccache --status
             Write-Host "[STEP] Configurar sccache - FIN"
 
 jobs:
