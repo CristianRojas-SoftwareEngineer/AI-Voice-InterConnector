@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.14 — 2026-08-31](#01814-20260831)
 - [0.18.13 — 2026-08-31](#01813-20260831)
 - [0.18.13 — 2026-08-31](#01813-20260831)
 - [0.18.12 — 2026-08-31](#01812-20260831)
@@ -85,14 +86,18 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [0.18.13] — 2026-08-31
 
-<!-- TODO: curar — escribe aquí el párrafo introductorio que
-   sintetice la necesidad observada y la propuesta de la release. -->
+## [0.18.14] — 2026-08-31
+
+`v0.18.13` (`22.4m`) mostró que `sccache --start-server` con `SCCACHE_SERVER_PORT=4226` **empeoró** el pipeline: `test-windows 412s→622s` `+210s` y `build-windows 414s→663s` `+249s`, total `+5m32s` `+33%` vs `v0.18.12 16.9m`. El server vive en el `setup` step del job y muere con él; `proc-macro` y `build scripts` no comparten objetos con el `cargo` principal. Esta patch revierte `sccache server` dejando solo el setup original (`RUSTC_WRAPPER=sccache`, `SCCACHE_DIR`, `CARGO_INCREMENTAL=0`); `v0.18.12` 16.9m sigue siendo el óptimo medido con `triple puerta` `docs/BUILD.md:215` intacta.
 
 ### Cambiado
 
-- release: v0.18.13
+- `ci`: revierte `sccache --start-server` y `SCCACHE_SERVER_PORT=4226` de `sccache_setup_unix/windows`; vuelve a setup original sin server — `.circleci/config.yml:241-245,323-328`.
+
+## [0.18.13] — 2026-08-31
+
+`v0.18.12` (`16.9m`) confirmó que el cuello es `compile` puro, no `I/O` de caché: `test-windows 333.5s` `cargo test` y `build-windows 244.5s` `cargo build --release`. Esta patch arranca `sccache --start-server` con `SCCACHE_SERVER_PORT=4226` tras `sccache_setup_unix/windows` para que todos los `rustc` del job compartan objetos en RAM en vez de disco, evitando latencia de `~1ms` por objeto y permitiendo `hit 90%+` entre `proc-macro` y `bin`; ahorra `~30-50s` en `build-windows` por `hit` adicional y `~10s` en `test-windows`.
 
 738611f6ab4660d0126c4efa2ce0ac5f25b3e4fd  <!-- TODO: curar -->
 
@@ -1434,3 +1439,4 @@ estado con el que nace el producto.
 [0.18.11]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.10...v0.18.11
 [0.18.12]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.11...v0.18.12
 [0.18.13]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.12...v0.18.13
+[0.18.14]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.13...v0.18.14
