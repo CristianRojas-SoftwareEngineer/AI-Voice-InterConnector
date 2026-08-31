@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.17 — 2026-08-31](#01817-20260831)
 - [0.18.16 — 2026-08-31](#01816-20260831)
 - [0.18.15 — 2026-08-31](#01815-20260831)
 - [0.18.14 — 2026-08-31](#01814-20260831)
@@ -89,6 +90,21 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.17] — 2026-08-31
+
+Corrección de drifts documentales en el repo: comentarios inline desactualizados,
+documentación con versiones hardcodeadas y gaps en la suite de tests. Se
+actualizan las referencias de versiones en SOURCE-OFFER.md, se elimina una
+entrada duplicada de 0.18.13 en el CHANGELOG y se amplía la cobertura con
+nuevos tests unitarios e integración.
+
+### Corregido
+
+- `fix`: corregir drifts documentales (SOURCE-OFFER.md, CHANGELOG.md), añadir
+  tests unitarios (json_emitter) y fixtures de error, y clarificar comentarios
+  inline ambiguos — `.claude/orchestration/revisar-docs-tests-release/`
 
 ## [0.18.16] — 2026-08-31
 
@@ -1453,3 +1469,4 @@ estado con el que nace el producto.
 [0.18.14]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.13...v0.18.14
 [0.18.15]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.14...v0.18.15
 [0.18.16]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.15...v0.18.16
+[0.18.17]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.16...v0.18.17
