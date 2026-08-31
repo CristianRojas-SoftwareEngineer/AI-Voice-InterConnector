@@ -48,7 +48,21 @@ Describe "upgrade-ai-voice-interconnector.ps1" {
 
     Describe "modo -Check" {
         BeforeEach {
-            Mock Invoke-RestMethod { New-FakeRelease }
+            Mock Invoke-RestMethod { & {
+                [pscustomobject]@{
+                    tag_name = "v9.9.9"
+                    assets = @(
+                        [pscustomobject]@{
+                            name                 = "ai-voice-interconnector-9.9.9-x86_64-windows.zip"
+                            browser_download_url = "https://example.invalid/ai-voice-interconnector-9.9.9-x86_64-windows.zip"
+                        }
+                        [pscustomobject]@{
+                            name                 = "SHA256SUMS.txt"
+                            browser_download_url = "https://example.invalid/SHA256SUMS.txt"
+                        }
+                    )
+                }
+            } }
             # Write-Host es llamado por Write-Log (definida en upgrade-ai-voice-interconnector.ps1);
             # capturamos la salida para verificar la transicion reportada.
             $Global:_UpgradeCheckMessages = @()
@@ -71,9 +85,37 @@ Describe "upgrade-ai-voice-interconnector.ps1" {
 
     Describe "modo install" {
         BeforeEach {
-            Mock Invoke-RestMethod { New-FakeRelease }
+            Mock Invoke-RestMethod { & {
+                [pscustomobject]@{
+                    tag_name = "v9.9.9"
+                    assets = @(
+                        [pscustomobject]@{
+                            name                 = "ai-voice-interconnector-9.9.9-x86_64-windows.zip"
+                            browser_download_url = "https://example.invalid/ai-voice-interconnector-9.9.9-x86_64-windows.zip"
+                        }
+                        [pscustomobject]@{
+                            name                 = "SHA256SUMS.txt"
+                            browser_download_url = "https://example.invalid/SHA256SUMS.txt"
+                        }
+                    )
+                }
+            } }
             Mock ai-voice-interconnector { return "ai-voice-interconnector 1.0.0" }
-            Mock Resolve-LatestRelease { New-FakeRelease }
+            Mock Resolve-LatestRelease { & {
+                [pscustomobject]@{
+                    tag_name = "v9.9.9"
+                    assets = @(
+                        [pscustomobject]@{
+                            name                 = "ai-voice-interconnector-9.9.9-x86_64-windows.zip"
+                            browser_download_url = "https://example.invalid/ai-voice-interconnector-9.9.9-x86_64-windows.zip"
+                        }
+                        [pscustomobject]@{
+                            name                 = "SHA256SUMS.txt"
+                            browser_download_url = "https://example.invalid/SHA256SUMS.txt"
+                        }
+                    )
+                }
+            } }
             # Get-RemoteFile y Test-Sha256Sum tocan red/disco reales; mockearlos.
             Mock Get-RemoteFile {}
             Mock Test-Sha256Sum {}

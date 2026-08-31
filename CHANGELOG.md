@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.18 — 2026-08-31](#01818-20260831)
 - [0.18.17 — 2026-08-31](#01817-20260831)
 - [0.18.16 — 2026-08-31](#01816-20260831)
 - [0.18.15 — 2026-08-31](#01815-20260831)
@@ -91,6 +92,43 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.18] — 2026-08-31
+
+Correcciones críticas en la auto-actualización B+C+D de los instaladores
+POSIX. `$script_dir` quedaba sin definir en el wrapper de auto-actualización
+(producción fallaba silenciosamente cuando el one-liner no está en PATH) y
+los guards de sistema (glibc en Linux, arquitectura en macOS) se ejecutaban
+antes del `exit --check`, provocando que el modo check abortara en sistemas
+incompatibles en vez de solo reportar la transición. Esta release corrige
+ambos defectos, reordena los guards después del exit y añade el test de
+cobertura que faltaba.
+
+### Cambiado
+
+- fix(upgrade): definir `script_dir` en `upgrade-ai-voice-interconnector.sh`
+  para reparar el fallback roto del one-liner
+- fix(install-linux): mover guard de glibc después del `exit --check`
+- fix(install-macos): mover guard de arquitectura después del `exit --check`
+- test(install-macos): añadir test de --check sobre x86_64 sin abortar por
+  arquitectura
+- docs(install-linux): eliminar comentarios aspiracionales sobre
+  build_utils.py y test_pin_consistency
+
+### Corregido
+
+- fix(install-windows): Add-Check param to Install-AIVoiceInterConnector and fix mock scope
+
+- Add param([switch]$Check) to Install-AIVoiceInterConnector so
+  'Install-AIVoiceInterConnector -Check' actually enters check-mode
+  instead of falling through to the download path
+- Pass -Check:$Check from the script body so 'install-windows.ps1 -Check'
+  works end-to-end
+- Fix install-windows.tests.ps1 modo -Check: use $Global:_UpgradeCheckMessages
+  instead of $script:messages to avoid Pester v5 scope isolation
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
 
 ## [0.18.17] — 2026-08-31
 
@@ -1470,3 +1508,4 @@ estado con el que nace el producto.
 [0.18.15]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.14...v0.18.15
 [0.18.16]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.15...v0.18.16
 [0.18.17]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.16...v0.18.17
+[0.18.18]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.17...v0.18.18
