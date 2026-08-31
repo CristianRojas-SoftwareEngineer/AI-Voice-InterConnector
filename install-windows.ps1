@@ -23,7 +23,8 @@
 param(
     [string]$Repo = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector",
     [string]$ApiUrl = "https://api.github.com/repos/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest",
-    [switch]$NoSetup
+    [switch]$NoSetup,
+    [switch]$Check
 )
 
 $ErrorActionPreference = "Stop"
@@ -188,6 +189,24 @@ function Invoke-AIVoiceInterConnectorSetup {
 }
 
 function Install-AIVoiceInterConnector {
+    param([switch]$Check)
+
+    if ($Check) {
+        $release = Resolve-LatestRelease -Url $ApiUrl
+        $latest = $release.tag_name -replace '^v',''
+        if (Get-Command ai-voice-interconnector -ErrorAction SilentlyContinue) {
+            $current = (& ai-voice-interconnector --version) -split ' ' | Select-Object -Last 1
+            if ($current -eq $latest) {
+                Write-Log "Ya estás en la versión $latest"
+            } else {
+                Write-Log "$current -> $latest"
+            }
+        } else {
+            Write-Log "no instalado -> $latest"
+        }
+        return
+    }
+
     $release = Resolve-LatestRelease -Url $ApiUrl
     $asset = Select-WindowsAsset -Release $release
     Write-Log "Asset seleccionado: $($asset.ArchiveName)"
@@ -228,7 +247,7 @@ function Install-AIVoiceInterConnector {
 # `irm | iex` o ejecución directa se corre la instalación.
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        Install-AIVoiceInterConnector
+        Install-AIVoiceInterConnector -Check:$Check
     } catch {
         Write-Error $_
         exit 1
