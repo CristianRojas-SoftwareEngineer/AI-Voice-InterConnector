@@ -433,7 +433,9 @@ jobs:
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - toolchain_save_cache:
           os: windows
-      - cargo_restore_registry
+      - cargo_restore_caches:
+          os: windows
+          variant: test
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -459,6 +461,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+      - cargo_save_target:
+          os: windows
+          variant: test
 
   test-macos:
     # Suite Rust en macOS nativo (Apple Silicon, Xcode 26.4.0). Valida código
