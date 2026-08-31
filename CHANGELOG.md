@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.10 — 2026-08-31](#01810-20260831)
 - [0.18.9 — 2026-08-31](#0189-20260831)
 - [0.18.8 — 2026-08-31](#0188-20260831)
 - [0.18.7 — 2026-08-31](#0187-20260831)
@@ -74,6 +75,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.10] — 2026-08-31
+
+`v0.18.9` (`19.8m`) mostró `test-windows` con `hit 88.77%` vaciando `1.1 GiB→107 B` y `build-windows` restaurando `107 B 53ms` con `miss 100%` compilando `458s` vs `178s` previos, llevando `build 10.2m` vs `5.5m`. Esta patch revierte `sccache_save_cache_conditional` a `sccache_save_cache` incondicional en `test-linux/windows/macos` — `test-*` alimentan `build` del mismo `workflow` y no deben condicionar — mantiene condicional solo en `coverage/validate` donde no alimenta `build`, restaurando `build 5.5m` y `workflow ~14m` sin perder el ahorro `heterogéneo`.
+
+### Corregido
+
+- `ci`: `test-linux/windows/macos` vuelven a `sccache_save_cache` incondicional para no envenenar `build-windows` (`107 B`→`1.1 GiB`), `coverage/validate` mantienen condicional `85%` — `.circleci/config.yml:390,464,536`.
 
 ## [0.18.9] — 2026-08-31
 
@@ -1373,3 +1383,4 @@ estado con el que nace el producto.
 [0.18.7]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.6...v0.18.7
 [0.18.8]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.7...v0.18.8
 [0.18.9]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.8...v0.18.9
+[0.18.10]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.9...v0.18.10
