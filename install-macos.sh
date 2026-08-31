@@ -52,15 +52,6 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-# --- Guard de arquitectura -------------------------------------------------
-# ai-voice-interconnector publica solo el tar.gz de Apple Silicon (arm64). Mac
-# Intel no está soportado (limitación de toolchain documentada en el README).
-machine="$(uname -m)"
-if [ "$machine" != "arm64" ]; then
-    log "Alternativa para Mac Intel: compila desde la fuente (docs/BUILD.md)."
-    fail "arquitectura no soportada: $machine (ai-voice-interconnector solo publica tar.gz para Apple Silicon / arm64 en macOS)"
-fi
-log "Arquitectura detectada: $machine"
 
 # --- Resolver el release y elegir los assets ------------------------------
 log "Resolviendo el último release de $REPO..."
@@ -101,6 +92,16 @@ if [ "$CHECK_MODE" = "1" ]; then
     fi
     exit 0
 fi
+# --- Guard de arquitectura -------------------------------------------------
+# ai-voice-interconnector publica solo el tar.gz de Apple Silicon (arm64). Mac
+# Intel no está soportado (limitación de toolchain documentada en el README).
+machine="$(uname -m)"
+if [ "$machine" != "arm64" ]; then
+    log "Alternativa para Mac Intel: compila desde la fuente (docs/BUILD.md)."
+    fail "arquitectura no soportada: $machine (ai-voice-interconnector solo publica tar.gz para Apple Silicon / arm64 en macOS)"
+fi
+log "Arquitectura detectada: $machine"
+
 
 # --- Descarga y verificación de checksum ----------------------------------
 work_dir="$(mktemp -d)"

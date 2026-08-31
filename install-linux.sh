@@ -66,29 +66,6 @@ case "$machine" in
 esac
 log "Arquitectura detectada: $machine -> $ASSET_ARCH"
 
-# --- glibc: guard de versión mínima ----------------------------------------
-# El binario se compila sobre glibc 2.35 (runner base Ubuntu 22.04); crt-static
-# no enlaza glibc estáticamente en el target gnu, así que en distros más antiguas
-# no arranca. Detectarlo aquí evita instalar un binario que fallaría en el primer
-# uso: se aborta encaminando a la compilación desde fuente. Si la versión no puede
-# parsearse se continúa: es preferible no bloquear a ciegas sobre un parseo fallido.
-# Piso declarado UNA SOLA VEZ en scripts/build_utils.py (GLIBC_FLOOR = (2, 35)).
-# Mantener ambas variables sincronizadas con esa constante; el test
-# tests/test_pin_consistency.py.TestGlibcFloorConsistency vigila la coincidencia.
-GLIBC_FLOOR_MAJOR=2
-GLIBC_FLOOR_MINOR=35
-if command -v ldd >/dev/null 2>&1; then
-    glibc_version="$(ldd --version 2>/dev/null | head -n1 | grep -o '[0-9]\+\.[0-9]\+$' || true)"
-    if [ -n "$glibc_version" ]; then
-        glibc_major="$(printf '%s' "$glibc_version" | cut -d. -f1)"
-        glibc_minor="$(printf '%s' "$glibc_version" | cut -d. -f2)"
-        if [ "$glibc_major" -lt "$GLIBC_FLOOR_MAJOR" ] || { [ "$glibc_major" -eq "$GLIBC_FLOOR_MAJOR" ] && [ "$glibc_minor" -lt "$GLIBC_FLOOR_MINOR" ]; }; then
-            log "glibc $glibc_version detectada: el binario requiere glibc >= ${GLIBC_FLOOR_MAJOR}.${GLIBC_FLOOR_MINOR} y no funcionaría en este sistema."
-            log "Alternativa: compila desde la fuente (docs/BUILD.md)."
-            fail "glibc insuficiente ($glibc_version < ${GLIBC_FLOOR_MAJOR}.${GLIBC_FLOOR_MINOR})"
-        fi
-    fi
-fi
 
 # --- Resolver el release y elegir los assets ------------------------------
 log "Resolviendo el último release de $REPO..."
@@ -128,6 +105,30 @@ if [ "$CHECK_MODE" = "1" ]; then
         log "no instalado → $latest_tag"
     fi
     exit 0
+fi
+
+# --- glibc: guard de versión mínima ----------------------------------------
+# El binario se compila sobre glibc 2.35 (runner base Ubuntu 22.04); crt-static
+# no enlaza glibc estáticamente en el target gnu, así que en distros más antiguas
+# no arranca. Detectarlo aquí evita instalar un binario que fallaría en el primer
+# uso: se aborta encaminando a la compilación desde fuente. Si la versión no puede
+# parsearse se continúa: es preferible no bloquear a ciegas sobre un parseo fallido.
+# Piso declarado UNA SOLA VEZ en scripts/build_utils.py (GLIBC_FLOOR = (2, 35)).
+# Mantener ambas variables sincronizadas con esa constante; el test
+# tests/test_pin_consistency.py.TestGlibcFloorConsistency vigila la coincidencia.
+GLIBC_FLOOR_MAJOR=2
+GLIBC_FLOOR_MINOR=35
+if command -v ldd >/dev/null 2>&1; then
+    glibc_version="$(ldd --version 2>/dev/null | head -n1 | grep -o '[0-9]\+\.[0-9]\+$' || true)"
+    if [ -n "$glibc_version" ]; then
+        glibc_major="$(printf '%s' "$glibc_version" | cut -d. -f1)"
+        glibc_minor="$(printf '%s' "$glibc_version" | cut -d. -f2)"
+        if [ "$glibc_major" -lt "$GLIBC_FLOOR_MAJOR" ] || { [ "$glibc_major" -eq "$GLIBC_FLOOR_MAJOR" ] && [ "$glibc_minor" -lt "$GLIBC_FLOOR_MINOR" ]; }; then
+            log "glibc $glibc_version detectada: el binario requiere glibc >= ${GLIBC_FLOOR_MAJOR}.${GLIBC_FLOOR_MINOR} y no funcionaría en este sistema."
+            log "Alternativa: compila desde la fuente (docs/BUILD.md)."
+            fail "glibc insuficiente ($glibc_version < ${GLIBC_FLOOR_MAJOR}.${GLIBC_FLOOR_MINOR})"
+        fi
+    fi
 fi
 
 # --- Descarga y verificación de checksum ----------------------------------

@@ -10,6 +10,7 @@
 # correspondiente salvo que se pase --check.
 
 set -eu
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 
 REPO="CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
 
