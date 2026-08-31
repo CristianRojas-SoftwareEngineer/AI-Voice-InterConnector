@@ -8,6 +8,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 ## Tabla de contenidos
 
 - [0.18.13 — 2026-08-31](#01813-20260831)
+- [0.18.13 — 2026-08-31](#01813-20260831)
 - [0.18.12 — 2026-08-31](#01812-20260831)
 - [0.18.11 — 2026-08-31](#01811-20260831)
 - [0.18.10 — 2026-08-31](#01810-20260831)
@@ -82,6 +83,22 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.13] — 2026-08-31
+
+<!-- TODO: curar — escribe aquí el párrafo introductorio que
+   sintetice la necesidad observada y la propuesta de la release. -->
+
+### Cambiado
+
+- release: v0.18.13
+
+738611f6ab4660d0126c4efa2ce0ac5f25b3e4fd  <!-- TODO: curar -->
+
+### Corregido
+
+- fix(ci): quitar sccache --status que rompe sccache 0.8.2  <!-- TODO: curar -->
 
 ## [0.18.13] — 2026-08-31
 
