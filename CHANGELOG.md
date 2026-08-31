@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.15 — 2026-08-31](#01815-20260831)
 - [0.18.14 — 2026-08-31](#01814-20260831)
 - [0.18.13 — 2026-08-31](#01813-20260831)
 - [0.18.13 — 2026-08-31](#01813-20260831)
@@ -86,6 +87,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.15] — 2026-08-31
+
+`v0.18.14` (`16m26s`) paga `cargo test 333-345s` en `test-windows` porque no hereda `target-v2 700 MiB` del `pipeline` anterior — `8a94363` lo eliminó para ahorrar `restore 23s + save 235s NTFS` pero subió `compile 86s` que no se amortiza cuando `sccache` solo cubre `~88%` Rust. Esta patch reintroduce `cargo_restore_caches test` y `cargo_save_target test` en `test-windows`, coherente con el heterogéneo `9116480` que ya tiene `target` en `test-linux`/`coverage` y `test-macos` sin `target`. Coste en `#139` (primer `pipeline`): `restore 20s 700 MiB` + `save 235s NTFS`. Beneficio sostenido desde `#140`: `cargo test` con `target` heredado + `sccache 88%` reduce `compile 333s → 200-220s`, **neto `~120s` por `pipeline`** sin perder la triple puerta `docs/BUILD.md:215`.
+
+### Cambiado
+
+- `ci`: `test-windows` reintroduce `target-v2 test` (`cargo_restore_caches:392` + `cargo_save_target:464`) coherente con `test-linux:315` heterogéneo — `.circleci/config.yml:392,464`.
 
 ## [0.18.14] — 2026-08-31
 
@@ -1440,3 +1450,4 @@ estado con el que nace el producto.
 [0.18.12]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.11...v0.18.12
 [0.18.13]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.12...v0.18.13
 [0.18.14]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.13...v0.18.14
+[0.18.15]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.14...v0.18.15
