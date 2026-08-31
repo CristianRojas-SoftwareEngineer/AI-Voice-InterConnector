@@ -113,9 +113,6 @@ fi
 # no arranca. Detectarlo aquí evita instalar un binario que fallaría en el primer
 # uso: se aborta encaminando a la compilación desde fuente. Si la versión no puede
 # parsearse se continúa: es preferible no bloquear a ciegas sobre un parseo fallido.
-# Piso declarado UNA SOLA VEZ en scripts/build_utils.py (GLIBC_FLOOR = (2, 35)).
-# Mantener ambas variables sincronizadas con esa constante; el test
-# tests/test_pin_consistency.py.TestGlibcFloorConsistency vigila la coincidencia.
 GLIBC_FLOOR_MAJOR=2
 GLIBC_FLOOR_MINOR=35
 if command -v ldd >/dev/null 2>&1; then
