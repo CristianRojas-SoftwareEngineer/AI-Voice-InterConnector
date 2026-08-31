@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.9 — 2026-08-31](#0189-20260831)
 - [0.18.8 — 2026-08-31](#0188-20260831)
 - [0.18.7 — 2026-08-31](#0187-20260831)
 - [0.18.6 — 2026-08-30](#0186-20260830)
@@ -72,6 +73,17 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.9] — 2026-08-31
+
+`v0.18.8` (`13.9m`) equilibró `test-linux` con `target` (`195s`) y `test-windows` sin `target` (`413s`), pero `docs/BUILD.md` seguía describiendo cacheo uniforme, `SKILL.md` permanecía en `0.18.6` con pipeline homogéneo, `CASK` limpiaba `Chatterbox` muerto y `CONTRACT` prometía `faster-whisper` inexistente, y `THIRD-PARTY-LICENSES` declaraba `0.18.1`. Esta patch corrige todos los drifts documentales y de comentarios inline a la realidad heterogénea `0.18.8` y añade guard `sccache 85%`/`CASK zap` para que la suite falle si regresa, dejando `AGENTS.md` con política `timeout 300s` para `cargo test --all`.
+
+### Corregido
+
+- `docs`: `BUILD.md` heterogéneo `target-v2` solo `linux/coverage` + `sccache_save_cache_conditional 85%`, `SKILL.md` `0.18.6→0.18.8`, `CASK` `Chatterbox→Qwen/parakeet/opus-mt/xet`, `CONTRACT`/`commands` purga `faster-whisper`/`Chatterbox` — `docs/BUILD.md:320, SKILL.md:19, xtask:27`.
+- `ci`: `AGENTS.md`/`CLAUDE.md` política `timeout 300s` para `cargo test --all` vs `120s` por defecto — `AGENTS.md:151`.
+- `tests`: `xtask` `11/11` con `test_cask_zap_no_chatterbox` y `test_pipeline_heterogeneo_y_sccache_condicional` que afirman `pipeline` heterogéneo y `zap` real — `crates/xtask/src/main.rs:871`.
 
 ## [0.18.8] — 2026-08-31
 
@@ -1360,3 +1372,4 @@ estado con el que nace el producto.
 [0.18.6]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.5...v0.18.6
 [0.18.7]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.6...v0.18.7
 [0.18.8]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.7...v0.18.8
+[0.18.9]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.8...v0.18.9
