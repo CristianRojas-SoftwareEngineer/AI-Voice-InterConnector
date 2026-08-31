@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.12 — 2026-08-31](#01812-20260831)
 - [0.18.11 — 2026-08-31](#01811-20260831)
 - [0.18.10 — 2026-08-31](#01810-20260831)
 - [0.18.9 — 2026-08-31](#0189-20260831)
@@ -78,6 +79,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.12] — 2026-08-31
+
+`v0.18.11` (`15.8m`) eliminó el envenenamiento `sccache 107 B` pero `test-windows 510s` aún paga `save 1.1 GiB 57s` sin beneficio neto (`build 371s` ya hereda `1.1 GiB` del `pipeline` anterior). Esta patch omite `sccache_save_cache` por completo en `test-*`/`coverage`/`validate`/`publish-metadata` y deja solo `build-*` `841,1051,1180,1343` con `save` para alimentar el siguiente `pipeline`; `test-*` restauran el `1.1 GiB` del `pipeline` anterior, ahorra `~57s` en `test-windows` y `~30s` en `test-linux`/`macos` y debería acercar el `wall-clock` al óptimo `v0.18.8 13.9m` con `triple puerta` intacta.
+
+### Cambiado
+
+- `ci`: `test-linux/windows/macos`, `coverage`, `validate-licenses`, `validate-changelog` y `publish-metadata` ya no guardan `sccache`; solo `build-linux-x64/arm64`, `build-windows-x64` y `build-darwin-arm64` lo guardan — `.circleci/config.yml`.
 
 ## [0.18.11] — 2026-08-31
 
@@ -1395,3 +1405,4 @@ estado con el que nace el producto.
 [0.18.9]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.8...v0.18.9
 [0.18.10]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.9...v0.18.10
 [0.18.11]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.10...v0.18.11
+[0.18.12]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.11...v0.18.12
