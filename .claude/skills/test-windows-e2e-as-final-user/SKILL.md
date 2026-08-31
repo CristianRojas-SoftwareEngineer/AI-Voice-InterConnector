@@ -16,7 +16,7 @@ Ask, confirm, and respond to the user in **Spanish** (native Spanish-speaking au
 <!-- </user_communication> -->
 
 <!-- <overview> -->
-Reusable task command for the full manual E2E on the **Windows dev machine** as a final user. Each invocation is interpreted as a request to run `cleanup → install → setup → daemon → voice clone → synthesis matrix → store/transcribe/translate/dub → cleanup/uninstall` from zero, validating the published `vX.Y.Z` without depending on CI. Evolved from `.claude/plans/2026-08-27-prueba-e2e-windows-completa.md` (0.15.2) to `0.18.8` with pipeline heterogéneo (`test-linux`/`coverage` con `target-v2` `os: linux`, `test-windows`/`macos` con `registry+sccache` `os: windows/macos`, `sccache_save_cache_conditional` umbral 85 % `.circleci/config.yml:228` ahorra 1 GiB/~50s cuando `hit ≥85%`), zero-residue purge (`src/main.rs:1387` `crates/avi-store/src/lib.rs:446` `hub+xet`), `exe_dir` resolution (`crates/avi-tts/src/lib.rs:151`) and detached launch without pipe inheritance (`crates/avi-daemon/src/spawn.rs:30`).
+Reusable task command for the full manual E2E on the **Windows dev machine** as a final user. Each invocation is interpreted as a request to run `cleanup → install → setup → daemon → voice clone → synthesis matrix → store/transcribe/translate/dub → cleanup/uninstall` from zero, validating the published `vX.Y.Z` without depending on CI. Evolved from `.claude/plans/2026-08-27-prueba-e2e-windows-completa.md` (0.15.2) to `0.18.18` with pipeline heterogéneo (`test-linux`/`coverage` con `target-v2` `os: linux`, `test-windows`/`macos` con `registry+sccache` `os: windows/macos`, `sccache_save_cache_conditional` umbral 85 % `.circleci/config.yml:228` ahorra 1 GiB/~50s cuando `hit ≥85%`), zero-residue purge (`src/main.rs:1387` `crates/avi-store/src/lib.rs:446` `hub+xet`), `exe_dir` resolution (`crates/avi-tts/src/lib.rs:151`) and detached launch without pipe inheritance (`crates/avi-daemon/src/spawn.rs:30`).
 <!-- </overview> -->
 
 ## When it applies
@@ -34,7 +34,7 @@ Reusable task command for the full manual E2E on the **Windows dev machine** as 
 
 ## Workflow
 
-Pipeline vigente **heterogéneo** desde 0.18.8: `test-linux`/`coverage` restauran `target-v2` (`os: linux`, `cargo_restore_caches`), `test-windows`/`macos` restauran solo `registry` (`cargo_restore_registry` + `sccache` sin `target`); `sccache_save_cache_conditional` (`.circleci/config.yml:228`) guarda solo si `hit <85%`. Ver `docs/BUILD.md` §Cacheo y `.circleci/config.yml:75-391`.
+Pipeline vigente **heterogéneo** desde 0.18.18: `test-linux`/`coverage` restauran `target-v2` (`os: linux`, `cargo_restore_caches`), `test-windows`/`macos` restauran solo `registry` (`cargo_restore_registry` + `sccache` sin `target`); `sccache_save_cache_conditional` (`.circleci/config.yml:228`) guarda solo si `hit <85%`. Ver `docs/BUILD.md` §Cacheo y `.circleci/config.yml:75-391`.
 
 Execute in order. Each task needs the previous task's artifacts (purge → binary → models → daemon → `.qvoice` → persisted wav). Do not parallelize. Report `PASS/FAIL` per step with command, exit code, and payload.
 
