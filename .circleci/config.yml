@@ -225,6 +225,45 @@ commands:
             - ~/.cache/sccache
           when: always
 
+  sccache_save_cache_conditional:
+    description: Guarda sccache solo si hit <85% — evita upload 1 GiB/57s en Windows cuando hit 88% (pagas 30-40s por tag sin beneficio)
+    parameters:
+      os:
+        type: string
+        default: "linux"
+    steps:
+      - run:
+          name: Decidir guardado sccache por hit-rate
+          shell: bash
+          command: |
+            echo "[STEP] Decidir guardado sccache por hit-rate - INICIO"
+            # sccache está en PATH tras sccache_setup; en Windows también (cargo bin)
+            if ! command -v sccache >/dev/null 2>&1; then
+              if [ -x "$HOME/.cargo/bin/sccache" ]; then export PATH="$HOME/.cargo/bin:$PATH"; fi
+              if [ -x "$USERPROFILE\\.cargo\\bin\\sccache.exe" ]; then export PATH="$USERPROFILE\\.cargo\\bin:$PATH"; fi
+            fi
+            STATS=$(sccache --show-stats 2>&1 || true)
+            echo "$STATS"
+            HIT=$(echo "$STATS" | grep -E "Cache hits rate" | head -1 | sed -E 's/.* ([0-9.]+) %.*/\1/')
+            if [ -z "$HIT" ]; then HIT=0; fi
+            echo "Hit-rate detectado: $HIT%"
+            # python para comparar float portable (bash no tiene float)
+            if python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) < 85 else 1)" "$HIT" 2>/dev/null || python -c "import sys; sys.exit(0 if float(sys.argv[1]) < 85 else 1)" "$HIT"; then
+              echo "Hit $HIT% <85% → se guardará sccache (aporta)"
+            else
+              echo "Hit $HIT% >=85% → se omite guardado sccache (ahorra ~50s upload 1 GiB, hit ya alto)"
+              # Vaciar para que save_cache suba ~KB en vez de 1 GiB (cuando save_cache corre, sube vacío)
+              rm -rf ~/.cache/sccache/* 2>/dev/null || true
+              rm -rf "$USERPROFILE/.cache/sccache/"* 2>/dev/null || true
+              rm -rf "$HOME/.cache/sccache/"* 2>/dev/null || true
+            fi
+            echo "[STEP] Decidir guardado sccache por hit-rate - FIN"
+      - save_cache:
+          key: sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-{{ epoch }}
+          paths:
+            - ~/.cache/sccache
+          when: always
+
   sccache_setup_unix:
     description: Instala sccache (pin) y lo activa como RUSTC_WRAPPER (bash)
     steps:
@@ -347,7 +386,7 @@ jobs:
       - cargo_save_target:
           os: linux
           variant: test
-      - sccache_save_cache:
+      - sccache_save_cache_conditional:
           os: linux
 
   test-windows:
@@ -422,7 +461,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
-      - sccache_save_cache:
+      - sccache_save_cache_conditional:
           os: windows
 
   test-macos:
@@ -494,7 +533,7 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
-      - sccache_save_cache:
+      - sccache_save_cache_conditional:
           os: macos
 
   coverage:
@@ -568,7 +607,7 @@ jobs:
       - cargo_save_target:
           os: linux
           variant: cov
-      - sccache_save_cache:
+      - sccache_save_cache_conditional:
           os: linux
 
   # ──────────────────────────────────────────────────────────────
@@ -600,7 +639,7 @@ jobs:
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - INICIO"
             cargo run -p xtask --quiet -- licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
-      - sccache_save_cache:
+      - sccache_save_cache_conditional:
           os: linux
 
   validate-changelog:
@@ -623,7 +662,7 @@ jobs:
             echo "[STEP] Verificar CHANGELOG - INICIO"
             cargo run -p xtask --quiet -- changelog --check
             echo "[STEP] Verificar CHANGELOG - FIN"
-      - sccache_save_cache:
+      - sccache_save_cache_conditional:
           os: linux
 
   # ──────────────────────────────────────────────────────────────
@@ -1566,7 +1605,7 @@ jobs:
               git push origin HEAD:main
             fi
             echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
-      - sccache_save_cache:
+      - sccache_save_cache_conditional:
           os: linux
 
 workflows:
