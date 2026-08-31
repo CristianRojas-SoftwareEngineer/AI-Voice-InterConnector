@@ -292,8 +292,8 @@ jobs:
     # arch-independiente y mockea el engine (Parakeet/Qwen no se ejercitan),
     # así que re-correrla en ARM64 no aportaría señal (ver docs/BUILD.md §4).
     # Es la arquitectura más barata/rápida disponible.
-    # Caché: registry + sccache (sin target) — sccache content-addressed evita
-    # el artefacto derivado 770 MiB y el upload 235s de Windows.
+    # Caché heterogénea: en Linux target 375 MiB 8s ahorra 50s de compile vs sccache 15% hit,
+    # coste 8s < beneficio 50s; en Windows el mismo target costaría 258s y pierde.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: medium
@@ -312,7 +312,9 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_registry
+      - cargo_restore_caches:
+          os: linux
+          variant: test
       - run:
           name: Verificar toolchain Rust
           command: |
@@ -342,6 +344,9 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
+      - cargo_save_target:
+          os: linux
+          variant: test
       - sccache_save_cache:
           os: linux
 
@@ -515,7 +520,9 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_registry
+      - cargo_restore_caches:
+          os: linux
+          variant: cov
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -558,6 +565,9 @@ jobs:
       - store_artifacts:
           path: lcov.info
           destination: coverage-lcov
+      - cargo_save_target:
+          os: linux
+          variant: cov
       - sccache_save_cache:
           os: linux
 
