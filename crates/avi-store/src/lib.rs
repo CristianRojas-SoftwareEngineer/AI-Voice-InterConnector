@@ -460,6 +460,26 @@ pub fn hf_cache_dir() -> PathBuf {
     home.join(".cache").join("huggingface").join("hub")
 }
 
+/// Directorio raíz de la cache xet (shard-cache) acoplada a `hf_cache_dir`.
+/// `hf-hub` con `xet` usa `~/.cache/huggingface/xet` además de `hub`; purgar
+/// solo `hub` deja `shard-cache` huérfano e incoherente (bug T2).
+pub fn xet_cache_dir() -> PathBuf {
+    // Deriva de `hf_cache_dir` reemplazando el último componente `hub` por `xet`
+    // para honrar `HF_HUB_CACHE`/`HF_HOME` cuando apuntan a `hub`.
+    let hub = hf_cache_dir();
+    if hub.ends_with("hub") {
+        hub.parent()
+            .map(|p| p.join("xet"))
+            .unwrap_or_else(|| hub.join("../xet"))
+    } else {
+        // Fallback directo a `~/.cache/huggingface/xet` si `hf_cache_dir` no termina en hub
+        let home = directories::UserDirs::new()
+            .map(|d| d.home_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        home.join(".cache").join("huggingface").join("xet")
+    }
+}
+
 /// Almacén de modelos descargados.
 ///
 /// Fuente de verdad: snapshots de HuggingFace en `hf_cache_dir()` con layout
@@ -524,15 +544,54 @@ impl ModelStore {
 
 
 
-    /// Verificar si un modelo está provisionado: snapshot HF presente y no vacío.
-    /// Si no hay pin para el nombre, cae al índice legacy `manifest.json`.
+    /// Verificar si un modelo está provisionado: snapshot HF presente con
+    /// integridad mínima (ficheros críticos con `size>0`). Si no hay pin,
+    /// cae al índice legacy `manifest.json`.
     pub fn is_provisioned(&self, model_name: &str) -> bool {
         match self.model_snapshot_path(model_name) {
             Some(snapshot) => {
-                snapshot.is_dir()
-                    && std::fs::read_dir(&snapshot)
-                        .map(|mut d| d.next().is_some())
-                        .unwrap_or(false)
+                if !snapshot.is_dir() {
+                    return false;
+                }
+                // Para modelos con `allow_patterns` (parakeet), exigir todos los ficheros críticos
+                if let Some((_, patterns)) = MODEL_FILE_PATTERNS
+                    .iter()
+                    .find(|(n, _)| *n == model_name)
+                {
+                    for pat in *patterns {
+                        let p = snapshot.join(pat);
+                        if !p.is_file() {
+                            return false;
+                        }
+                        if let Ok(md) = std::fs::metadata(&p) {
+                            if md.len() == 0 {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                // Modelos sin patrones: al menos un fichero con tamaño >0
+                match std::fs::read_dir(&snapshot) {
+                    Ok(mut entries) => {
+                        for entry in entries.by_ref() {
+                            if let Ok(e) = entry {
+                                let path = e.path();
+                                if path.is_file() {
+                                    if let Ok(md) = std::fs::metadata(&path) {
+                                        if md.len() > 0 {
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        false
+                    }
+                    Err(_) => false,
+                }
             }
             None => {
                 let manifest = self.base_dir.join(model_name).join("manifest.json");
@@ -625,6 +684,24 @@ impl ModelStore {
         Ok(false)
     }
 
+    /// Borrar la cache xet asociada a `hf_cache_dir` (shard-cache + staging + logs).
+    /// Se usa en `cleanup`/`uninstall` para evitar incoherencia `hub` purgado + `xet` vivo.
+    pub fn remove_xet_cache() -> Result<bool> {
+        let xet = xet_cache_dir();
+        let mut removed = false;
+        if xet.is_dir() {
+            std::fs::remove_dir_all(&xet)?;
+            removed = true;
+        }
+        // Limpiar locks huérfanos de hub si quedaron
+        let locks = hf_cache_dir().join(".locks");
+        if locks.is_dir() {
+            // Intentar borrar, ignorar error si no está vacío por otro proceso
+            let _ = std::fs::remove_dir_all(&locks);
+        }
+        Ok(removed)
+    }
+
     /// Descarga nativa de un modelo pinneado vía HuggingFace Hub.
     ///
     /// Usa `hf-hub` (`snapshot_download` con revisión de `MODEL_REVISIONS`): cache
@@ -657,11 +734,62 @@ impl ModelStore {
         let snapshot = repo
             .snapshot_download()
             .maybe_revision(Some(revision.to_string()))
-            .maybe_allow_patterns(patterns)
+            .maybe_allow_patterns(patterns.clone())
             .max_workers(4)
             .progress(progress)
             .send()
             .await?;
+        // Validación atómica: el snapshot debe contener los ficheros críticos con tamaño>0
+        // Si la descarga dejó un snapshot vacío (hub/xet incoherente), borrar y fallar para retry
+        let valid = if let Some(pats) = patterns {
+            pats.iter().all(|pat| {
+                let p = snapshot.join(pat);
+                p.is_file() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
+            })
+        } else {
+            std::fs::read_dir(&snapshot)
+                .map(|mut d| {
+                    d.any(|e| {
+                        e.ok()
+                            .map(|en| {
+                                let p = en.path();
+                                p.is_file()
+                                    && std::fs::metadata(&p)
+                                        .map(|m| m.len() > 0)
+                                        .unwrap_or(false)
+                            })
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        };
+        if !valid {
+            let _ = std::fs::remove_dir_all(&snapshot);
+            // Limpiar blobs incompletos del repo si existen
+            let repo_dir = hf_cache_dir().join(format!("models--{}", repo_id.replace('/', "--")));
+            let blobs = repo_dir.join("blobs");
+            if blobs.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&blobs) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("incomplete")
+                            || path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n.ends_with(".incomplete"))
+                                .unwrap_or(false)
+                        {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                }
+            }
+            anyhow::bail!(
+                "Snapshot {}@{} incompleto tras descarga (ficheros críticos faltantes); limpiado para reintento",
+                repo_id,
+                revision
+            );
+        }
         tracing::info!(
             "Snapshot {}@{} listo en {}",
             repo_id,

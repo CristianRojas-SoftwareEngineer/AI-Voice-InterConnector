@@ -237,11 +237,13 @@ cuarentena elimina la fricción de Gatekeeper para quien use el one-liner.
 
 ## Desinstalación
 
-`ai-voice-interconnector uninstall` (y `ai-voice-interconnector cleanup --all` como alias) es el **desinstalador en un comando** multiplataforma que cierra la paridad con `setup --uninstall` de Python. El flujo interno es datos primero (`data_dir()`), integración de PATH después y binario al final, con confirmación interactiva (`--force`/`--yes` la omite) e idempotencia:
+`ai-voice-interconnector uninstall` (y `ai-voice-interconnector cleanup --all` como alias) es el **desinstalador en un comando** multiplataforma que cierra la paridad con `setup --uninstall` de Python. El flujo interno es parada de daemon primero (`POST /shutdown` graceful con `timeout 5s`, fallback `taskkill`/`kill`), datos después (`data_dir()` con `daemon.pid`), `hub`+`xet` (`~/.cache/huggingface/hub` y `~/.cache/huggingface/xet` con `shard-cache`/`logs` y `.locks`) y `temp` (`avi_*`, `ai-voice-interconnector-install-*`), integración de PATH después y binario al final, con confirmación interactiva (`--force`/`--yes` la omite) e idempotencia:
 
-- **Linux / macOS (one-liner)**: `ai-voice-interconnector uninstall --force` borra el symlink `~/.local/bin/ai-voice-interconnector`, el directorio `~/.local/opt/ai-voice-interconnector/` y los datos (`cleanup`).
-- **Windows**: `ai-voice-interconnector uninstall --force` borra `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, quita esa entrada del PATH de usuario (`HKCU\Environment` + `WM_SETTINGCHANGE`) y borra los datos. Si el binario está en uso, avisa y deja el borrado final para después de cerrar la terminal.
-- **macOS (Cask)**: `brew uninstall --cask --zap ai-voice-interconnector` sigue siendo la vía idiomática (binario, PATH y, con `--zap`, datos).
+- **Linux / macOS (one-liner)**: `ai-voice-interconnector uninstall --force` para el daemon, borra el symlink `~/.local/bin/ai-voice-interconnector`, el directorio `~/.local/opt/ai-voice-interconnector/`, los datos (`cleanup`) y `hub`+`xet`+`logs`.
+- **Windows**: `ai-voice-interconnector uninstall --force` para el daemon (`qwen_tts.exe` incluido), borra `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, quita esa entrada del PATH de usuario (`HKCU\Environment` + `WM_SETTINGCHANGE`), borra los datos y `hub`+`xet`+`logs`+`temp`. Si el binario está en uso, avisa y deja el borrado final para después de cerrar la terminal.
+- **macOS (Cask)**: `brew uninstall --cask --zap ai-voice-interconnector` sigue siendo la vía idiomática (binario, PATH y, con `--zap`, `data_dir` + `hub` + `xet`).
+
+`cleanup` (sin `--all`) hace lo mismo sin borrar binario/PATH: para el daemon, borra `models/speech/voices` + `daemon.pid`, purga `hub`+`xet` y `temp`, dejando el binario reintentable (`setup` descarga limpio). El contrato de instalación es `binario siempre + aviso`: `install-*.sh/ps1` instala el binario aunque `setup` falle por red, deja `doctor --json` en `failed` y es reintentable con `ai-voice-interconnector setup` + verificación `doctor --json` (no aborta instalación).
 
 El procedimiento manual por SO (borrado/registry) queda como fallback y para auditoría. El estado de paridad (brecha cerrada en v0.10.8) vive en [docs/PARITY.md](PARITY.md#fase-5--desinstalación).
 

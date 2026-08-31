@@ -318,12 +318,12 @@ async fn main() {
         }
         Some(Commands::Cleanup { all }) => {
             if all {
-                handle_uninstall(json_mode, true)
+                handle_uninstall(json_mode, true).await
             } else {
-                handle_cleanup(json_mode)
+                handle_cleanup(json_mode).await
             }
         }
-        Some(Commands::Uninstall { force, yes }) => handle_uninstall(json_mode, force || yes),
+        Some(Commands::Uninstall { force, yes }) => handle_uninstall(json_mode, force || yes).await,
         Some(Commands::Doctor) => handle_doctor(json_mode),
         None => handle_version(json_mode),
     };
@@ -1384,27 +1384,80 @@ async fn handle_setup(json_mode: bool, language: &str, with_stt: bool, with_base
     Ok(())
 }
 
-fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {
-    // Limpieza real de datos: borra el directorio de datos del usuario (modelos, voces, locuciones)
+async fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {
+    // 0. Parar daemon graceful si está vivo (libera puerto y permite borrar data_dir)
+    {
+        let client = daemon_client();
+        if daemon_activo(&client).await {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client
+                    .post(format!("http://{}/shutdown", DAEMON_ADDR))
+                    .send(),
+            )
+            .await;
+            let _ = wait_health_down(&client, std::time::Duration::from_secs(5)).await;
+        }
+        let _ = remove_daemon_pid_file();
+        // Fallback Windows: matar qwen_tts huérfano si quedó
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "qwen_tts.exe"])
+                .output();
+        }
+    }
+    // 1. Limpieza real de datos: borra subdirectorios conocidos + daemon.pid
     let data = store::data_dir();
     if data.exists() {
-        // Solo borra subdirectorios conocidos para no arriesgar datos ajenos si data_dir es "."
         for sub in &["models", "speech", "voices"] {
             let p = data.join(sub);
             if p.exists() {
                 let _ = std::fs::remove_dir_all(&p);
             }
         }
+        let _ = std::fs::remove_file(data.join("daemon.pid"));
         // Si quedó vacío, intenta borrar el propio data_dir
         let _ = std::fs::remove_dir(&data);
+        // Si sigue existiendo (daemon.pid huérfano), forzar remove_dir_all
+        if data.exists() {
+            if let Ok(mut entries) = std::fs::read_dir(&data) {
+                if entries.next().is_none() {
+                    let _ = std::fs::remove_dir(&data);
+                }
+            }
+        }
     }
-    // Snapshots HF de los modelos pinneados (~/.cache/huggingface/hub/models--*)
+    // 2. Snapshots HF de los modelos pinneados (~/.cache/huggingface/hub/models--*)
     let model_store = ModelStore::new();
     for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
         match model_store.remove_hf_snapshot(name) {
             Ok(removed) if removed => eprintln!("Snapshot {} eliminado.", name),
             Ok(_) => {}
             Err(e) => eprintln!("  ✗ No se pudo borrar {}: {}", name, e),
+        }
+    }
+    // 3. Purga xet shard-cache + logs + .locks para coherencia hub/xet
+    match store::ModelStore::remove_xet_cache() {
+        Ok(true) => eprintln!("Cache xet eliminada."),
+        Ok(false) => {}
+        Err(e) => eprintln!("  ✗ No se pudo borrar cache xet: {}", e),
+    }
+    // 4. Temp huérfano
+    {
+        let tmp = std::env::temp_dir();
+        if let Ok(entries) = std::fs::read_dir(&tmp) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-") {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        let _ = std::fs::remove_dir_all(&p);
+                    } else {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                }
+            }
         }
     }
     if json_mode {
@@ -1415,7 +1468,7 @@ fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {
     Ok(())
 }
 
-fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> {
+async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> {
     // Confirmación interactiva si no es --force/--yes y hay TTY
     if !force && std::io::stdin().is_terminal() {
         eprint!("Esto eliminará datos (modelos, voces, locuciones), el binario y la integración PATH. ¿Continuar? [y/N]: ");
@@ -1432,6 +1485,31 @@ fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> {
                 }
                 return Ok(());
             }
+        }
+    }
+
+    // 0. Parar daemon graceful si está vivo
+    {
+        let client = daemon_client();
+        if daemon_activo(&client).await {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client
+                    .post(format!("http://{}/shutdown", DAEMON_ADDR))
+                    .send(),
+            )
+            .await;
+            let _ = wait_health_down(&client, std::time::Duration::from_secs(5)).await;
+        }
+        let _ = remove_daemon_pid_file();
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "qwen_tts.exe"])
+                .output();
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "ai-voice-interconnector.exe"])
+                .output();
         }
     }
 
@@ -1453,6 +1531,29 @@ fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> {
         for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
             if let Err(e) = model_store.remove_hf_snapshot(name) {
                 eprintln!("  ✗ No se pudo borrar snapshot {}: {}", name, e);
+            }
+        }
+        // 1c. Cache xet + locks
+        match store::ModelStore::remove_xet_cache() {
+            Ok(true) => eprintln!("Cache xet eliminada."),
+            Ok(false) => {}
+            Err(e) => eprintln!("  ✗ No se pudo borrar cache xet: {}", e),
+        }
+        // Temp huérfano
+        {
+            let tmp = std::env::temp_dir();
+            if let Ok(entries) = std::fs::read_dir(&tmp) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-") {
+                        let p = entry.path();
+                        if p.is_dir() {
+                            let _ = std::fs::remove_dir_all(&p);
+                        } else {
+                            let _ = std::fs::remove_file(&p);
+                        }
+                    }
+                }
             }
         }
     }
