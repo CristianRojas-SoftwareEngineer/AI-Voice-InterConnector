@@ -845,12 +845,11 @@ jobs:
             Write-Host "[STEP] Limpiar target/release por determinismo de release - INICIO"
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
             # Determinismo: `cargo clean --release` invalida target/release antes del
-            # build, impidiendo que el binary empaquetado sea stale (cross-release target/
-            # cache). preserva target/debug, registry (cargo-v2-*) y sccache (objetos .o
-            # cacheados por hash de source conservan el speedup parcial). `2>$null` no
-            # existe en PS, así que se usa -ErrorAction SilentlyContinue para tolerar
-            # target/ inexistente tras toolchain_restore_cache.
-            cargo clean --release -ErrorAction SilentlyContinue
+            # build, impidiendo que el binary empaquetado sea stale (cross-release
+            # target/ cache). Preserva target/debug, registry (cargo-v2-*) y sccache (objetos .o
+            # cacheados por hash de source conservan el speedup parcial). `; $global:LASTEXITCODE=0`
+            # tolera target/ inexistente tras toolchain_restore_cache sin pasar flags a cargo.
+            cargo clean --release; $global:LASTEXITCODE=0
             Write-Host "[STEP] Limpiar target/release por determinismo de release - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
