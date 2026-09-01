@@ -141,7 +141,7 @@ commands:
           when: always
 
   cargo_restore_registry:
-    description: Restaura solo registry/git (sin target) — para test-*/coverage donde sccache es suficiente
+    description: Restaura solo registry/git (sin target) — para test-linux/test-macos (sin target) donde sccache es suficiente; coverage y test-windows usan cargo_restore_caches con target-v2
     steps:
       - run:
           name: Generar Cargo.lock.cachekey (clave de caché normalizada)
@@ -334,8 +334,8 @@ jobs:
     # arch-independiente y mockea el engine (Parakeet/Qwen no se ejercitan),
     # así que re-correrla en ARM64 no aportaría señal (ver docs/BUILD.md §4).
     # Es la arquitectura más barata/rápida disponible.
-    # Caché heterogénea: en Linux target 375 MiB 8s ahorra 50s de compile vs sccache 15% hit,
-    # coste 8s < beneficio 50s; en Windows el mismo target costaría 258s y pierde.
+    # Caché heterogénea: test-linux usa cargo_restore_registry (sin target) y reconstruye vía sccache (~15% hit en frío);
+    # target-v2 375 MiB 8s (ext4) → 50s de compile aplica a test-windows/coverage (referencia histórica ext4 8s vs sccache 15%).
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: medium
@@ -389,8 +389,8 @@ jobs:
     # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
     # test-linux/macos: valida código específico de Windows (winsound, tray)
     # antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
-    # Caché: registry + sccache (sin target) — elimina el artefacto derivado
-    # 770 MiB restore / 831 MiB save (235s upload NTFS) que dominaba 56% del pipeline.
+    # Caché: registry + target-v2 + sccache (cargo_restore_caches os: windows variant: test) — target-v2 770 MiB restore / 831 MiB save con coste NTFS 235s
+    # que antes dominaba 56% del pipeline si se eliminaba.
     executor: win/server-2022
     steps:
       - checkout
@@ -860,7 +860,7 @@ jobs:
             # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
             # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
             # --json DEBE exponer name + version + schema_version. Sin este gate
-            # un binary stale (target/ cache cross-release sin cargo clean) pasa
+            # un binary stale por sccache hit sin cambios de *.rs (target/ vacío + sccache por contenido) pasa
             # el smoke de texto pero viola el contrato JSON y rompe consumidores.
             $jsonRaw = & $Exe version --json | Out-String
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

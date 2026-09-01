@@ -933,48 +933,166 @@ mod tests {
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.circleci/config.yml");
             std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
         });
-        // Heterogeneidad: test-linux usa cargo_restore_caches (registry+target), test-windows/macos usan cargo_restore_registry (solo registry)
+        // Heterogeneidad vigente: test-windows y coverage usan cargo_restore_caches (registry+target-v2 + sccache); test-linux y test-macos usan cargo_restore_registry (solo registry + sccache)
         assert!(
             cfg.contains("cargo_restore_caches") && cfg.contains("cargo_restore_registry"),
             "debe existir ambos comandos cargo_restore_caches y cargo_restore_registry para modelo heterogéneo"
         );
-        // test-linux debe tener os: linux y variant: test, y guardar target
+        // sccache_save_cache_conditional en config.yml:231 con umbral 85% estricto
         assert!(
-            cfg.contains("test-linux") && cfg.contains("os: linux") && cfg.contains("target-v2"),
-            "test-linux debe usar target-v2 con os linux"
+            cfg.contains("sccache_save_cache_conditional") && cfg.contains("85"),
+            "debe existir sccache_save_cache_conditional con umbral 85"
         );
-        // test-windows y test-macos no deben tener target en restore (solo registry+sccache)
-        // Verificar que sccache_save_cache_conditional existe con umbral 85
+        // Referencia 231 validada contra docs/BUILD.md (config.yml no contiene literal ":231") + posición real en config
+        {
+            let docs_candidates = [
+                "docs/BUILD.md",
+                "../../docs/BUILD.md",
+                "C:/Users/Cristian/Desktop/Proyectos/Voices/AI-Voice-InterConnector/docs/BUILD.md",
+            ];
+            let mut docs_opt = None;
+            for p in docs_candidates {
+                if let Ok(t) = std::fs::read_to_string(p) {
+                    docs_opt = Some(t);
+                    break;
+                }
+            }
+            let docs = docs_opt.unwrap_or_else(|| {
+                let m = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/BUILD.md");
+                std::fs::read_to_string(&m).expect("no se pudo leer docs/BUILD.md")
+            });
+            assert!(
+                docs.contains("config.yml:231"),
+                "docs/BUILD.md debe referenciar config.yml:231 tras corrección"
+            );
+            assert!(
+                !docs.contains("config.yml:228"),
+                "docs/BUILD.md no debe referenciar config.yml:228 obsoleto"
+            );
+        }
+        // Verificar que la definición real de sccache_save_cache_conditional está en torno a línea 231
+        {
+            let line_num = cfg
+                .lines()
+                .enumerate()
+                .find(|(_, l)| {
+                    l.trim_start().starts_with("sccache_save_cache_conditional:")
+                })
+                .map(|(i, _)| i + 1)
+                .unwrap_or(0);
+            assert!(
+                (228..=235).contains(&line_num),
+                "sccache_save_cache_conditional debe estar en torno a línea 231, encontrado en {}",
+                line_num
+            );
+        }
+        // Secciones scoping por job (delimitadas por siguiente job header para evitar falso-positivo cross-job)
+        let linux_section = cfg
+            .split("  test-linux:")
+            .nth(1)
+            .unwrap_or("")
+            .split("  test-windows:")
+            .next()
+            .unwrap_or("");
         assert!(
-            cfg.contains("sccache_save_cache_conditional"),
-            "debe existir sccache_save_cache_conditional"
+            linux_section.contains("cargo_restore_registry"),
+            "test-linux debe usar cargo_restore_registry"
         );
         assert!(
-            cfg.contains("85") && cfg.contains("sccache_save_cache_conditional:228")
-                || cfg.contains("sccache_save_cache_conditional"),
-            "sccache_save_cache_conditional debe documentar umbral 85%"
+            !linux_section.contains("cargo_restore_caches"),
+            "test-linux no debe usar cargo_restore_caches (usa solo registry + sccache)"
         );
-        // Verificar que test-windows contiene cargo_restore_registry y sccache
-        // Búsqueda simple de bloques
-        let windows_section = cfg.split("test-windows").nth(1).unwrap_or("");
         assert!(
-            windows_section.contains("cargo_restore_registry"),
-            "test-windows debe usar cargo_restore_registry"
+            !linux_section.contains("cargo_save_target"),
+            "test-linux no debe guardar target-v2"
+        );
+        assert!(
+            linux_section.contains("sccache_restore_cache"),
+            "test-linux debe usar sccache"
+        );
+        let windows_section = cfg
+            .split("  test-windows:")
+            .nth(1)
+            .unwrap_or("")
+            .split("  test-macos:")
+            .next()
+            .unwrap_or("");
+        assert!(
+            windows_section.contains("cargo_restore_caches"),
+            "test-windows debe usar cargo_restore_caches"
+        );
+        assert!(
+            windows_section.contains("os: windows"),
+            "test-windows debe usar os: windows"
+        );
+        assert!(
+            windows_section.contains("variant: test"),
+            "test-windows debe usar variant: test"
+        );
+        assert!(
+            windows_section.contains("cargo_save_target"),
+            "test-windows debe guardar target-v2 (cargo_save_target)"
         );
         assert!(
             windows_section.contains("sccache_restore_cache"),
             "test-windows debe usar sccache"
         );
-        // Similar para test-macos
-        let macos_section = cfg.split("test-macos").nth(1).unwrap_or("");
+        // coverage debe usar cargo_restore_caches con os: linux y variant: cov y guardar target-v2
+        let coverage_section = cfg
+            .split("  coverage:")
+            .nth(1)
+            .unwrap_or("")
+            .split("  validate-licenses")
+            .next()
+            .unwrap_or("");
+        assert!(
+            coverage_section.contains("cargo_restore_caches"),
+            "coverage debe usar cargo_restore_caches"
+        );
+        assert!(
+            coverage_section.contains("os: linux"),
+            "coverage debe usar os: linux"
+        );
+        assert!(
+            coverage_section.contains("variant: cov"),
+            "coverage debe usar variant: cov"
+        );
+        assert!(
+            coverage_section.contains("cargo_save_target"),
+            "coverage debe guardar target-v2 (cargo_save_target)"
+        );
+        // test-macos usa cargo_restore_registry (solo registry + sccache)
+        let macos_section = cfg
+            .split("  test-macos:")
+            .nth(1)
+            .unwrap_or("")
+            .split("  coverage:")
+            .next()
+            .unwrap_or("");
         assert!(
             macos_section.contains("cargo_restore_registry"),
             "test-macos debe usar cargo_restore_registry"
         );
-        // Verificar sccache condicional guarda solo si hit <85%
         assert!(
-            cfg.contains("Hit $HIT% <85%") || cfg.contains("hit <85%") || cfg.contains("< 85"),
-            "sccache condicional debe distinguir hit <85%"
+            macos_section.contains("sccache_restore_cache"),
+            "test-macos debe usar sccache"
+        );
+        assert!(
+            !macos_section.contains("cargo_save_target"),
+            "test-macos no debe guardar target-v2"
+        );
+        // sccache condicional estricto: Hit $HIT% <85% y >=85% + rm -rf ~/.cache/sccache
+        assert!(
+            cfg.contains("Hit $HIT% <85%"),
+            "sccache condicional debe contener 'Hit $HIT% <85%'"
+        );
+        assert!(
+            cfg.contains(">=85%"),
+            "sccache condicional debe contener '>=85%'"
+        );
+        assert!(
+            cfg.contains("rm -rf ~/.cache/sccache"),
+            "sccache condicional debe vaciar ~/.cache/sccache cuando hit >=85%"
         );
     }
 
