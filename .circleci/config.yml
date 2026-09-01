@@ -123,6 +123,16 @@ commands:
     # `variant` debe coincidir con el pasado a cargo_restore_caches en el mismo job.
     # `os` debe coincidir también: target/ es OS-específico.
     # Solo para jobs build-* (variant full); test-*/coverage usan solo sccache.
+    # Determinismo de release: los jobs build-* corren `cargo clean --release` antes
+    # de `cargo build --release` sobre tags v*, invalidando target/release de forma
+    # explícita. La key target-v2-... ({arch}-{os}·{rust_version}-{variant}-{checksum
+    # Cargo.lock.cachekey}) sigue discriminando por variant+lock, pero el clean previo
+    # garantiza que el binary empaquetado se linkea desde el checkout del tag, no de
+    # una cache cross-release (el perl `Cargo.lock.cachekey` neutraliza el bump de
+    # versión del crate raíz, por lo que la key no cambia entre releases sin bumps de
+    # dependencias → sin el clean el binary sería stale, omitiendo campos como
+    # `version` en `version --json`). La cache de target/ salva acelerar re-runs en
+    # el MISMO commit/tag; sccache persiste por separado para objetos .o.
     parameters:
       variant:
         type: string
@@ -830,6 +840,19 @@ jobs:
           os: windows
       - sccache_setup_windows
       - run:
+          name: Limpiar target/release (invalidación determinista de binary de release)
+          command: |
+            Write-Host "[STEP] Limpiar target/release por determinismo de release - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # Determinismo: `cargo clean --release` invalida target/release antes del
+            # build, impidiendo que el binary empaquetado sea stale (cross-release target/
+            # cache). preserva target/debug, registry (cargo-v2-*) y sccache (objetos .o
+            # cacheados por hash de source conservan el speedup parcial). `2>$null` no
+            # existe en PS, así que se usa -ErrorAction SilentlyContinue para tolerar
+            # target/ inexistente tras toolchain_restore_cache.
+            cargo clean --release -ErrorAction SilentlyContinue
+            Write-Host "[STEP] Limpiar target/release por determinismo de release - FIN"
+      - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
@@ -855,6 +878,20 @@ jobs:
             if (-not (Test-Path $Exe)) { throw "Binario no encontrado: $Exe" }
             & $Exe version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # Contrato JSON determinista (src/main.rs:349 handle_version ->
+            # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
+            # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
+            # --json DEBE exponer name + version + schema_version. Sin este gate
+            # un binary stale (target/ cache cross-release sin cargo clean) pasa
+            # el smoke de texto pero viola el contrato JSON y rompe consumidores.
+            $jsonRaw = & $Exe version --json | Out-String
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            try { $j = $jsonRaw | ConvertFrom-Json } catch { throw "version --json no es JSON válido: $jsonRaw : $_" }
+            if (-not $j.PSObject.Properties['version'] -or -not $j.version) { throw "version --json: campo 'version' ausente o vacío: $jsonRaw" }
+            if (-not $j.PSObject.Properties['name'] -or $j.name -ne 'ai-voice-interconnector') { throw "version --json: campo 'name' incorrecto: $jsonRaw" }
+            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '3') { throw "version --json: campo 'schema_version' != '3': $jsonRaw" }
+            $expectedTag = $env:CIRCLE_TAG; if ($expectedTag) { $expectedTag = $expectedTag.TrimStart('v'); if ($j.version -ne $expectedTag) { throw "version --json: version '$($j.version)' != CIRCLE_TAG '$expectedTag' (tag=$env:CIRCLE_TAG)" } }
+            Write-Host "version --json OK: name=$($j.name) version=$($j.version) schema_version=$($j.schema_version)"
             # Valida que la voz de fábrica 'default' quede registrada en un
             # runner limpio (voice list no carga el modelo y auto-inicializa
             # el store). El CLI imprime '  - default (fábrica)': se compara por
@@ -863,7 +900,7 @@ jobs:
             $voiceList = & $Exe voice list
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if (-not ($voiceList | Where-Object { $_ -like '  - default*' })) { throw "La voz de fábrica 'default' no está registrada" }
-            Write-Host "Binario Windows OK: version + voice list"
+            Write-Host "Binario Windows OK: version + voice list + version --json"
             Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - FIN"
       - cargo_save_target:
           os: windows
@@ -1046,6 +1083,16 @@ jobs:
           os: linux
       - sccache_setup_unix
       - run:
+          name: Limpiar target/release (invalidación determinista de binary de release)
+          command: |
+            echo "[STEP] Limpiar target/release por determinismo de release - INICIO"
+            # Determinismo: `cargo clean --release` invalida target/release antes del
+            # build, impidiendo que el binary empaquetado sea stale (cross-release
+            # target/ cache). Preserva target/debug, registry (cargo-v2-*) y sccache
+            # (objetos .o cacheados por hash de source conservan el speedup parcial).
+            cargo clean --release || true
+            echo "[STEP] Limpiar target/release por determinismo de release - FIN"
+      - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
@@ -1061,11 +1108,17 @@ jobs:
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
+            # Contrato JSON determinista (src/main.rs:349 handle_version ->
+            # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
+            # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
+            # --json DEBE exponer name + version + schema_version. Python3 parsea
+            # sin depender de jq (cimg/rust ya lo provee, pero python3 es canónico).
+            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="3", "schema_version !=3: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
             target/release/ai-voice-interconnector voice list | grep -q '^  - default'
-            echo "Binario Linux x64 OK: version + voice list"
+            echo "Binario Linux x64 OK: version + voice list + version --json"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
@@ -1180,6 +1233,23 @@ jobs:
             cargo build --release --features full --verbose
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
       - run:
+          name: Limpiar target/release (invalidación determinista de binary de release)
+          command: |
+            echo "[STEP] Limpiar target/release por determinismo de release - INICIO"
+            # Determinismo: `cargo clean --release` invalida target/release antes del
+            # build, impidiendo que el binary empaquetado sea stale (cross-release
+            # target/ cache). Preserva target/debug, registry (cargo-v2-*) y sccache
+            # (objetos .o cacheados por hash de source conservan el speedup parcial).
+            cargo clean --release || true
+            echo "[STEP] Limpiar target/release por determinismo de release - FIN"
+      - run:
+          name: Compilar binario release (cargo build --release)
+          no_output_timeout: 25m
+          command: |
+            echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
+            cargo build --release --features full --verbose
+            echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
       - run:
@@ -1190,11 +1260,17 @@ jobs:
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
+            # Contrato JSON determinista (src/main.rs:349 handle_version ->
+            # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
+            # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
+            # --json DEBE exponer name + version + schema_version. Python3 parsea
+            # sin depender de jq (cimg/rust ya lo provee, pero python3 es canónico).
+            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="3", "schema_version !=3: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
             target/release/ai-voice-interconnector voice list | grep -q '^  - default'
-            echo "Binario Linux ARM64 OK: version + voice list"
+            echo "Binario Linux ARM64 OK: version + voice list + version --json"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
@@ -1333,6 +1409,17 @@ jobs:
           os: macos
       - sccache_setup_unix
       - run:
+          name: Limpiar target/release (invalidación determinista de binary de release)
+          command: |
+            echo "[STEP] Limpiar target/release por determinismo de release - INICIO"
+            # Determinismo: `cargo clean --release` invalida target/release antes del
+            # build, impidiendo que el binary empaquetado sea stale (cross-release
+            # target/ cache). Preserva target/debug, registry (cargo-v2-*) y sccache
+            # (objetos .o cacheados por hash de source conservan el speedup parcial).
+            # `|| true` tolera target/ inexistente tras toolchain_restore_cache.
+            cargo clean --release || true
+            echo "[STEP] Limpiar target/release por determinismo de release - FIN"
+      - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
@@ -1352,11 +1439,17 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
+            # Contrato JSON determinista (src/main.rs:349 handle_version ->
+            # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
+            # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
+            # --json DEBE exponer name + version + schema_version. Python3 parsea
+            # sin depender de jq (cimg/rust ya lo provee, pero python3 es canónico).
+            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="3", "schema_version !=3: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
             target/release/ai-voice-interconnector voice list | grep -q '^  - default'
-            echo "Binario macOS ARM64 OK: version + voice list"
+            echo "Binario macOS ARM64 OK: version + voice list + version --json"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
