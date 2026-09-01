@@ -122,10 +122,10 @@ commands:
     description: Guarda target/ siempre (when always) — el parcial acelera el re-run
     # `variant` debe coincidir con el pasado a cargo_restore_caches en el mismo job.
     # `os` debe coincidir también: target/ es OS-específico.
-    # Solo para test-linux/coverage (variant test/cov); build-* (variant full) no usa
-    # target/ — usa solo registry+sccache (cargo_restore_registry) para determinismo por
-    # contenido. sccache decide por hash de cada *.rs: hit cuando no hay cambios
-    # (no recompila), miss solo para crates con VERSION bump. Ver docs/BUILD.md:326.
+    # Para test-windows/coverage (variant test/cov) y build-* (variant full); test-linux/macos
+    # reconstruyen vía sccache. build-* combina sccache (Rust por contenido) + target
+    # (C++ OUT_DIR de ct2rs/oneDNN) y ejecuta `cargo clean -p ai-voice-interconnector`
+    # antes de `cargo build` para determinismo del bump VERSION sin perder C++. Ver docs/BUILD.md:326.
     parameters:
       variant:
         type: string
@@ -141,7 +141,7 @@ commands:
           when: always
 
   cargo_restore_registry:
-    description: Restaura solo registry/git (sin target) — para test-linux/test-macos (sin target) donde sccache es suficiente; coverage y test-windows usan cargo_restore_caches con target-v2
+    description: Restaura solo registry/git (sin target) — para test-linux/test-macos (sin target) donde sccache es suficiente; coverage, test-windows y build-* usan cargo_restore_caches con target-v2
     steps:
       - run:
           name: Generar Cargo.lock.cachekey (clave de caché normalizada)
@@ -817,7 +817,9 @@ jobs:
             }
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - FIN"
       - msys2_save_cache
-      - cargo_restore_registry
+      - cargo_restore_caches:
+          os: windows
+          variant: full
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -830,6 +832,14 @@ jobs:
       - sccache_restore_cache:
           os: windows
       - sccache_setup_windows
+      - run:
+          name: Limpiar crate versionado para determinismo (cargo clean -p)
+          command: |
+            Write-Host "[STEP] Limpiar crate versionado - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            cargo clean -p ai-voice-interconnector
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "[STEP] Limpiar crate versionado - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -882,6 +892,9 @@ jobs:
             Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - FIN"
       - sccache_save_cache:
           os: windows
+      - cargo_save_target:
+          os: windows
+          variant: full
       - run:
           name: Generar .engine-cachekey (clave TTS)
           shell: bash
@@ -1044,7 +1057,9 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_registry
+      - cargo_restore_caches:
+          os: linux
+          variant: full
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -1055,6 +1070,12 @@ jobs:
       - sccache_restore_cache:
           os: linux
       - sccache_setup_unix
+      - run:
+          name: Limpiar crate versionado para determinismo (cargo clean -p)
+          command: |
+            echo "[STEP] Limpiar crate versionado - INICIO"
+            cargo clean -p ai-voice-interconnector
+            echo "[STEP] Limpiar crate versionado - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1091,6 +1112,9 @@ jobs:
           # `--self-test` triplicado idéntico en los 3 jobs Unix.
           name: Compilar y verificar motor TTS
           command: cargo run -p xtask -- build-engine --self-test
+      - cargo_save_target:
+          os: linux
+          variant: full
       - sccache_save_cache:
           os: linux
       - run:
@@ -1172,7 +1196,9 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_registry
+      - cargo_restore_caches:
+          os: linux
+          variant: full
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -1184,12 +1210,11 @@ jobs:
           os: linux
       - sccache_setup_unix
       - run:
-          name: Compilar binario release (cargo build --release)
-          no_output_timeout: 25m
+          name: Limpiar crate versionado para determinismo (cargo clean -p)
           command: |
-            echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            cargo build --release --features full --verbose
-            echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+            echo "[STEP] Limpiar crate versionado - INICIO"
+            cargo clean -p ai-voice-interconnector
+            echo "[STEP] Limpiar crate versionado - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1228,6 +1253,9 @@ jobs:
           # `--self-test` triplicado idéntico en los 3 jobs Unix.
           name: Compilar y verificar motor TTS
           command: cargo run -p xtask -- build-engine --self-test
+      - cargo_save_target:
+          os: linux
+          variant: full
       - sccache_save_cache:
           os: linux
       - run:
@@ -1339,7 +1367,9 @@ jobs:
       # usa OPENMP_RUNTIME=NONE en macOS (features por target en
       # avi-translation/Cargo.toml): Apple clang no trae libomp y
       # find_package(OpenMP REQUIRED) fallaba (#2/#4).
-      - cargo_restore_registry
+      - cargo_restore_caches:
+          os: macos
+          variant: full
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -1351,6 +1381,13 @@ jobs:
       - sccache_restore_cache:
           os: macos
       - sccache_setup_unix
+      - run:
+          name: Limpiar crate versionado para determinismo (cargo clean -p)
+          command: |
+            echo "[STEP] Limpiar crate versionado - INICIO"
+            export PATH="$HOME/.cargo/bin:$PATH"
+            cargo clean -p ai-voice-interconnector
+            echo "[STEP] Limpiar crate versionado - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1392,6 +1429,9 @@ jobs:
           command: |
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo run -p xtask -- build-engine --self-test
+      - cargo_save_target:
+          os: macos
+          variant: full
       - sccache_save_cache:
           os: macos
       - run:

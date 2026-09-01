@@ -1094,7 +1094,7 @@ mod tests {
             cfg.contains("rm -rf ~/.cache/sccache"),
             "sccache condicional debe vaciar ~/.cache/sccache cuando hit >=85%"
         );
-        // build-* deben usar cargo_restore_registry sin target (opción C: sccache por contenido, sin target-v2)
+        // build-* deben usar cargo_restore_caches con target-v2 full + cargo clean -p (heterogéneo con target en build-*)
         for job in [
             "build-windows-x64",
             "build-linux-x64",
@@ -1112,20 +1112,21 @@ mod tests {
                 .split("\n  publish-")
                 .next()
                 .unwrap_or("");
-            // Debe contener restore de registry (sin target)
             assert!(
-                section.contains("cargo_restore_registry"),
-                "{job} debe usar cargo_restore_registry (solo registry, sin target)"
+                section.contains("cargo_restore_caches"),
+                "{job} debe usar cargo_restore_caches (con target-v2)"
             );
-            // No debe restaurar target-v2
             assert!(
-                !section.contains("cargo_restore_caches"),
-                "{job} no debe usar cargo_restore_caches (sin target-v2)"
+                section.contains("variant: full"),
+                "{job} debe usar variant: full"
             );
-            // No debe guardar target-v2
             assert!(
-                !section.contains("cargo_save_target"),
-                "{job} no debe guardar target-v2 (cargo_save_target)"
+                section.contains("cargo_save_target"),
+                "{job} debe guardar target-v2 (cargo_save_target)"
+            );
+            assert!(
+                section.contains("cargo clean -p ai-voice-interconnector"),
+                "{job} debe ejecutar cargo clean -p ai-voice-interconnector para determinismo"
             );
         }
     }
