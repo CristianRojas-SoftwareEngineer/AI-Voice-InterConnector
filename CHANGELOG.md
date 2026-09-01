@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.23 — 2026-09-01](#01823-20260901)
 - [0.18.22 — 2026-09-01](#01822-20260901)
 - [0.18.21 — 2026-08-31](#01821-20260831)
 - [0.18.20 — 2026-08-31](#01820-20260831)
@@ -101,6 +102,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.23] — 2026-09-01
+
+Tras el primer tag con opción C (`v0.18.22`, wall `48m21s` con `build-windows 40m23s` en frío), quedó un drift menor: el guard `test_pipeline_heterogeneo_y_sccache_condicional` cubría `test-*`/`coverage` pero no asertaba que los 4 `build-*` usaran `cargo_restore_registry` sin `target-v2`, y `docs/BUILD.md:338` carecía de baseline medido para validar la proyección `~12-18m` en hit. Esta patch completa el guard para los 4 builds y deja trazable la medición frío vs hit.
+
+### Corregido
+
+- fix(docs,ci): completar guard heterogéneo para build-* opción C y documentar medición v0.18.22 — `crates/xtask/src/main.rs:1084-1117` añade bucle que aserta `cargo_restore_registry` sin `cargo_restore_caches`/`cargo_save_target` en `build-windows-x64`/`build-linux-x64`/`build-linux-arm64`/`build-darwin-arm64`; `docs/BUILD.md:338` documenta wall `48m21s` frío y proyección hit `12-18m`.
 
 ## [0.18.22] — 2026-09-01
 
@@ -1554,3 +1564,4 @@ estado con el que nace el producto.
 [0.18.20]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.19...v0.18.20
 [0.18.21]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.20...v0.18.21
 [0.18.22]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.21...v0.18.22
+[0.18.23]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.22...v0.18.23
