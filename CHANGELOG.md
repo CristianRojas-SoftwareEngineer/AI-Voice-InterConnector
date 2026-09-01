@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.24 — 2026-09-01](#01824-20260901)
 - [0.18.23 — 2026-09-01](#01823-20260901)
 - [0.18.22 — 2026-09-01](#01822-20260901)
 - [0.18.21 — 2026-08-31](#01821-20260831)
@@ -103,6 +104,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.24] — 2026-09-01
+
+La opción C pura (`build-*` sin `target`, solo `registry`+`sccache` por contenido `v0.18.21`) preserva determinismo pero deja el stack C++ (`ct2rs`/`oneDNN`/`sentencepiece`/`aws-lc-sys`) fuera de caché: `v0.18.23` midió Rust `87-100%` hit pero `build-windows 37m21s` y wall `50m50s` por `cmake` recompilado en cada tag. Esta patch heterogeneiza `target-v2-full` solo a los 4 `build-*` y añade `cargo clean -p ai-voice-interconnector` para determinismo del bump sin perder `OUT_DIR` C++, devolviendo el wall a `~32-35m` sin la complejidad de envolver C++ con `sccache`.
+
+### Corregido
+
+- fix(ci): heterogeneizar `target-v2` a `build-*` `full` con `cargo clean -p` — `.circleci/config.yml:75-143` invierte comentarios y 4 jobs `build-*` pasan de `cargo_restore_registry` a `cargo_restore_caches variant:full` + `cargo_save_target variant:full` con `cargo clean -p ai-voice-interconnector` antes de `cargo build`; `docs/BUILD.md:331,338` sincroniza matriz y bloque determinismo; `crates/xtask/src/main.rs:1097` guard exige `target` + `clean` en `build-*`.
 
 ## [0.18.23] — 2026-09-01
 
@@ -1565,3 +1575,4 @@ estado con el que nace el producto.
 [0.18.21]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.20...v0.18.21
 [0.18.22]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.21...v0.18.22
 [0.18.23]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.22...v0.18.23
+[0.18.24]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.23...v0.18.24
