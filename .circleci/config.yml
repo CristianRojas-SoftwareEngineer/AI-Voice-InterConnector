@@ -122,17 +122,10 @@ commands:
     description: Guarda target/ siempre (when always) — el parcial acelera el re-run
     # `variant` debe coincidir con el pasado a cargo_restore_caches en el mismo job.
     # `os` debe coincidir también: target/ es OS-específico.
-    # Solo para jobs build-* (variant full); test-*/coverage usan solo sccache.
-    # Determinismo de release: los jobs build-* corren `cargo clean --release` antes
-    # de `cargo build --release` sobre tags v*, invalidando target/release de forma
-    # explícita. La key target-v2-... ({arch}-{os}·{rust_version}-{variant}-{checksum
-    # Cargo.lock.cachekey}) sigue discriminando por variant+lock, pero el clean previo
-    # garantiza que el binary empaquetado se linkea desde el checkout del tag, no de
-    # una cache cross-release (el perl `Cargo.lock.cachekey` neutraliza el bump de
-    # versión del crate raíz, por lo que la key no cambia entre releases sin bumps de
-    # dependencias → sin el clean el binary sería stale, omitiendo campos como
-    # `version` en `version --json`). La cache de target/ salva acelerar re-runs en
-    # el MISMO commit/tag; sccache persiste por separado para objetos .o.
+    # Solo para test-linux/coverage (variant test/cov); build-* (variant full) no usa
+    # target/ — usa solo registry+sccache (cargo_restore_registry) para determinismo por
+    # contenido. sccache decide por hash de cada *.rs: hit cuando no hay cambios
+    # (no recompila), miss solo para crates con VERSION bump. Ver docs/BUILD.md:326.
     parameters:
       variant:
         type: string
@@ -824,9 +817,7 @@ jobs:
             }
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - FIN"
       - msys2_save_cache
-      - cargo_restore_caches:
-          os: windows
-          variant: full
+      - cargo_restore_registry
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -839,18 +830,6 @@ jobs:
       - sccache_restore_cache:
           os: windows
       - sccache_setup_windows
-      - run:
-          name: Limpiar target/release (invalidación determinista de binary de release)
-          command: |
-            Write-Host "[STEP] Limpiar target/release por determinismo de release - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            # Determinismo: `cargo clean --release` invalida target/release antes del
-            # build, impidiendo que el binary empaquetado sea stale (cross-release
-            # target/ cache). Preserva target/debug, registry (cargo-v2-*) y sccache (objetos .o
-            # cacheados por hash de source conservan el speedup parcial). `; $global:LASTEXITCODE=0`
-            # tolera target/ inexistente tras toolchain_restore_cache sin pasar flags a cargo.
-            cargo clean --release; $global:LASTEXITCODE=0
-            Write-Host "[STEP] Limpiar target/release por determinismo de release - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -901,9 +880,6 @@ jobs:
             if (-not ($voiceList | Where-Object { $_ -like '  - default*' })) { throw "La voz de fábrica 'default' no está registrada" }
             Write-Host "Binario Windows OK: version + voice list + version --json"
             Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - FIN"
-      - cargo_save_target:
-          os: windows
-          variant: full
       - sccache_save_cache:
           os: windows
       - run:
@@ -1068,9 +1044,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches:
-          os: linux
-          variant: full
+      - cargo_restore_registry
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -1081,16 +1055,6 @@ jobs:
       - sccache_restore_cache:
           os: linux
       - sccache_setup_unix
-      - run:
-          name: Limpiar target/release (invalidación determinista de binary de release)
-          command: |
-            echo "[STEP] Limpiar target/release por determinismo de release - INICIO"
-            # Determinismo: `cargo clean --release` invalida target/release antes del
-            # build, impidiendo que el binary empaquetado sea stale (cross-release
-            # target/ cache). Preserva target/debug, registry (cargo-v2-*) y sccache
-            # (objetos .o cacheados por hash de source conservan el speedup parcial).
-            cargo clean --release || true
-            echo "[STEP] Limpiar target/release por determinismo de release - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1127,9 +1091,6 @@ jobs:
           # `--self-test` triplicado idéntico en los 3 jobs Unix.
           name: Compilar y verificar motor TTS
           command: cargo run -p xtask -- build-engine --self-test
-      - cargo_save_target:
-          os: linux
-          variant: full
       - sccache_save_cache:
           os: linux
       - run:
@@ -1211,9 +1172,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches:
-          os: linux
-          variant: full
+      - cargo_restore_registry
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -1231,16 +1190,6 @@ jobs:
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
             cargo build --release --features full --verbose
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
-      - run:
-          name: Limpiar target/release (invalidación determinista de binary de release)
-          command: |
-            echo "[STEP] Limpiar target/release por determinismo de release - INICIO"
-            # Determinismo: `cargo clean --release` invalida target/release antes del
-            # build, impidiendo que el binary empaquetado sea stale (cross-release
-            # target/ cache). Preserva target/debug, registry (cargo-v2-*) y sccache
-            # (objetos .o cacheados por hash de source conservan el speedup parcial).
-            cargo clean --release || true
-            echo "[STEP] Limpiar target/release por determinismo de release - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1279,9 +1228,6 @@ jobs:
           # `--self-test` triplicado idéntico en los 3 jobs Unix.
           name: Compilar y verificar motor TTS
           command: cargo run -p xtask -- build-engine --self-test
-      - cargo_save_target:
-          os: linux
-          variant: full
       - sccache_save_cache:
           os: linux
       - run:
@@ -1393,9 +1339,7 @@ jobs:
       # usa OPENMP_RUNTIME=NONE en macOS (features por target en
       # avi-translation/Cargo.toml): Apple clang no trae libomp y
       # find_package(OpenMP REQUIRED) fallaba (#2/#4).
-      - cargo_restore_caches:
-          os: macos
-          variant: full
+      - cargo_restore_registry
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -1407,17 +1351,6 @@ jobs:
       - sccache_restore_cache:
           os: macos
       - sccache_setup_unix
-      - run:
-          name: Limpiar target/release (invalidación determinista de binary de release)
-          command: |
-            echo "[STEP] Limpiar target/release por determinismo de release - INICIO"
-            # Determinismo: `cargo clean --release` invalida target/release antes del
-            # build, impidiendo que el binary empaquetado sea stale (cross-release
-            # target/ cache). Preserva target/debug, registry (cargo-v2-*) y sccache
-            # (objetos .o cacheados por hash de source conservan el speedup parcial).
-            # `|| true` tolera target/ inexistente tras toolchain_restore_cache.
-            cargo clean --release || true
-            echo "[STEP] Limpiar target/release por determinismo de release - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1459,9 +1392,6 @@ jobs:
           command: |
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo run -p xtask -- build-engine --self-test
-      - cargo_save_target:
-          os: macos
-          variant: full
       - sccache_save_cache:
           os: macos
       - run:
