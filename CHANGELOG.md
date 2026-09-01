@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.19 — 2026-08-31](#01819-20260831)
 - [0.18.18 — 2026-08-31](#01818-20260831)
 - [0.18.17 — 2026-08-31](#01817-20260831)
 - [0.18.16 — 2026-08-31](#01816-20260831)
@@ -93,6 +94,16 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.19] — 2026-08-31
+
+Se detectó que los binarios publicados en `v0.18.18` (y `v0.18.17`) omitían el campo `version` en `version --json` pese a que el source del tag lo incluía (`src/main.rs:349`). La causa fue la reutilización cross-release de `target/` en CircleCI: la key `target-v2-…` depende de `Cargo.lock.cachekey` que neutraliza el bump de versión del crate raíz (`perl` en `.circleci/config.yml:104`), por lo que un bump sin cambio de dependencias hace hit y `cargo build --release` con `sccache` relinkeaba un binary stale previo a `67fc1bc`. Esta release corrige el pipeline para garantizar builds deterministas desde el checkout del tag y añade validación fail-fast del contrato JSON, asegurando que los artefactos de GitHub Release cumplan `schema_version=3` y que `version` coincida con el tag.
+
+### Corregido
+
+- fix(ci): garantizar builds deterministas de release y validar contrato `version --json` — `.circleci/config.yml` añade `cargo clean --release` en `build-windows-x64`, `build-linux-x64`, `build-linux-arm64` y `build-darwin-arm64` antes de `cargo build --release`, actualiza comentario `cargo_save_target` y amplía smoke-tests con `version --json` (`name`/`version`/`schema_version` y `version==CIRCLE_TAG`); `docs/BUILD.md` documenta la política de determinismo.
+- fix(.gitignore): ignorar `.claude/skills/` y des-rastrear `SKILL.md` local
 
 ## [0.18.18] — 2026-08-31
 
@@ -1509,3 +1520,4 @@ estado con el que nace el producto.
 [0.18.16]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.15...v0.18.16
 [0.18.17]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.16...v0.18.17
 [0.18.18]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.17...v0.18.18
+[0.18.19]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.18...v0.18.19
