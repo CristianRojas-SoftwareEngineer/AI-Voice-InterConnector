@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.20 — 2026-08-31](#01820-20260831)
 - [0.18.19 — 2026-08-31](#01819-20260831)
 - [0.18.18 — 2026-08-31](#01818-20260831)
 - [0.18.17 — 2026-08-31](#01817-20260831)
@@ -95,6 +96,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.20] — 2026-08-31
+
+La `v0.18.19` introdujo el fix determinista (`cargo clean --release` + validación `version --json`), pero el step de Windows contenía un bug de sintaxis PowerShell (`cargo clean --release -ErrorAction SilentlyContinue` se pasa como argumento `-E` a `cargo`, error `unexpected argument '-E'` en el log del job 896 del pipeline 155) que dejaba `target/release` sin limpiar y rompía la garantía en ese target. Esta patch corrige la sintaxis a `cargo clean --release; $global:LASTEXITCODE=0` para asegurar la invalidación en los 4 `build-*` sobre tag `v*`.
+
+### Corregido
+
+- fix(ci): corregir sintaxis PowerShell de `cargo clean` en `build-windows-x64` — `.circleci/config.yml:843` reemplaza `-ErrorAction SilentlyContinue` por `; $global:LASTEXITCODE=0` y actualiza el comentario, garantizando `Limpiar target/release` efectivo en Windows al igual que en Linux/macOS.
 
 ## [0.18.19] — 2026-08-31
 
@@ -1521,3 +1531,4 @@ estado con el que nace el producto.
 [0.18.17]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.16...v0.18.17
 [0.18.18]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.17...v0.18.18
 [0.18.19]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.18...v0.18.19
+[0.18.20]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.19...v0.18.20
