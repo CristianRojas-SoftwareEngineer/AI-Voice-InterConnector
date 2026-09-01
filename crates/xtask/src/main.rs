@@ -1094,6 +1094,40 @@ mod tests {
             cfg.contains("rm -rf ~/.cache/sccache"),
             "sccache condicional debe vaciar ~/.cache/sccache cuando hit >=85%"
         );
+        // build-* deben usar cargo_restore_registry sin target (opción C: sccache por contenido, sin target-v2)
+        for job in [
+            "build-windows-x64",
+            "build-linux-x64",
+            "build-linux-arm64",
+            "build-darwin-arm64",
+        ] {
+            let header = format!("  {}:", job);
+            let section = cfg
+                .split(&header)
+                .nth(1)
+                .unwrap_or("")
+                .split("\n  build-")
+                .next()
+                .unwrap_or("")
+                .split("\n  publish-")
+                .next()
+                .unwrap_or("");
+            // Debe contener restore de registry (sin target)
+            assert!(
+                section.contains("cargo_restore_registry"),
+                "{job} debe usar cargo_restore_registry (solo registry, sin target)"
+            );
+            // No debe restaurar target-v2
+            assert!(
+                !section.contains("cargo_restore_caches"),
+                "{job} no debe usar cargo_restore_caches (sin target-v2)"
+            );
+            // No debe guardar target-v2
+            assert!(
+                !section.contains("cargo_save_target"),
+                "{job} no debe guardar target-v2 (cargo_save_target)"
+            );
+        }
     }
 
     #[test]
