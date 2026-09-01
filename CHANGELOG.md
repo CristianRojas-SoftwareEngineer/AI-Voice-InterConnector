@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.25 — 2026-09-01](#01825-20260901)
 - [0.18.24 — 2026-09-01](#01824-20260901)
 - [0.18.23 — 2026-09-01](#01823-20260901)
 - [0.18.22 — 2026-09-01](#01822-20260901)
@@ -105,6 +106,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.25] — 2026-09-01
+
+Tras `v0.18.24` (heterogéneo con `target` en `build-*` y wall `14.6m`), quedó un drift menor de redacción: `docs/BUILD.md:322` seguía describiendo solo `test-windows`/`coverage` con `cargo_restore_caches` y omitía los 4 `build-*`. Esta patch corrige el párrafo para incluir `build-* variant:full` y, al no modificar lógica, permite medir el hit 100% de caché en el siguiente pipeline.
+
+### Corregido
+
+- fix(docs): corregir párrafo heterogéneo `docs/BUILD.md:322` para incluir `build-*` `variant:full` en `cargo_restore_caches`.
 
 ## [0.18.24] — 2026-09-01
 
@@ -1576,3 +1586,4 @@ estado con el que nace el producto.
 [0.18.22]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.21...v0.18.22
 [0.18.23]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.22...v0.18.23
 [0.18.24]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.23...v0.18.24
+[0.18.25]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.24...v0.18.25
