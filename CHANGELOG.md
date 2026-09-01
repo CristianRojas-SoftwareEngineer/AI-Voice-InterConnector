@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.22 — 2026-09-01](#01822-20260901)
 - [0.18.21 — 2026-08-31](#01821-20260831)
 - [0.18.20 — 2026-08-31](#01820-20260831)
 - [0.18.19 — 2026-08-31](#01819-20260831)
@@ -99,6 +100,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.22] — 2026-09-01
+
+La migración a opción C (`build-*` sin `target/`, solo `registry`+`sccache`) dejó 8 drifts entre lo que el pipeline hace y lo que dicen sus comentarios, su doc y su guard: `docs/BUILD.md:322,324,331` y `config.yml:144,337,392,863` describían el heterogéneo inverso de `v0.18.8`, y `crates/xtask/src/main.rs:936-979` asertaba el heterogéneo antiguo enmascarado por `||` laxo. Esta patch corrige los 4 comentarios inline, la matriz heterogénea y el guard a su estado vigente (`test-windows`/`coverage` con `target-v2`, `test-linux`/`test-macos` sin `target`, `sccache` 85% en `config.yml:231`), restableciendo la fidelidad del modelo mental y la capacidad del guard para detectar futuras inversiones.
+
+### Corregido
+
+- fix(docs,ci): corregir drifts de modelo heterogéneo y guard `sccache` tras opción C — `.circleci/config.yml:144,337,392,863` comentarios reformulados a `sccache` por contenido sin `cargo clean`; `docs/BUILD.md:322,324,331` matriz corregida a `test-windows`/`coverage` con `target-v2`; `crates/xtask/src/main.rs:917-979` guard reescrito con scoping preciso y validación `85%` estricta.
 
 ## [0.18.21] — 2026-08-31
 
@@ -1543,3 +1553,4 @@ estado con el que nace el producto.
 [0.18.19]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.18...v0.18.19
 [0.18.20]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.19...v0.18.20
 [0.18.21]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.20...v0.18.21
+[0.18.22]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.21...v0.18.22
