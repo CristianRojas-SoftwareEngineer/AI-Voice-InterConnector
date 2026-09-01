@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.21 — 2026-08-31](#01821-20260831)
 - [0.18.20 — 2026-08-31](#01820-20260831)
 - [0.18.19 — 2026-08-31](#01819-20260831)
 - [0.18.18 — 2026-08-31](#01818-20260831)
@@ -97,6 +98,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.21] — 2026-08-31
+
+La `v0.18.20` garantizó determinismo con `cargo clean --release` en los 4 `build-*`, pero impuso un coste fijo de 15-45m por tag (`Removed 4.0GiB` en Windows) aunque `src/main.rs` solo cambiara `VERSION`. Esta release aplica la opción C — `build-*` sin `target/`, solo `registry`+`sccache` — donde `sccache` decide por hash de contenido de cada `*.rs`: hit cuando no hay cambios (`~3-5m`), miss solo para crates con `VERSION` bump, sin `cargo clean` ni `target-v2` cross-release. Mantiene la validación `version --json == CIRCLE_TAG` y reduce el wall de 53m a ~12-18m en hit.
+
+### Cambiado
+
+- perf(ci): migrar `build-*` a `registry`+`sccache` sin `target/` (opción C) — `.circleci/config.yml` cambia 4 `build-*` de `cargo_restore_caches` a `cargo_restore_registry`, elimina `Limpiar target/release` y `cargo_save_target`; `docs/BUILD.md` actualiza matriz `target-v2` y bloque de determinismo.
 
 ## [0.18.20] — 2026-08-31
 
@@ -1532,3 +1542,4 @@ estado con el que nace el producto.
 [0.18.18]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.17...v0.18.18
 [0.18.19]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.18...v0.18.19
 [0.18.20]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.19...v0.18.20
+[0.18.21]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.20...v0.18.21
