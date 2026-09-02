@@ -181,6 +181,14 @@ Nota de migración: quien tenga una versión Inno per-machine antigua debe
 desinstalarla primero (Panel de control, con admin); el script avisa si detecta esa
 entrada de PATH legada per-machine, para evitar un PATH duplicado.
 
+**Dónde viven los datos**: el binario se instala en
+`%LOCALAPPDATA%\Programs\ai-voice-interconnector`, pero el `data_dir` del usuario
+(manifiestos, registro, voces y `daemon.pid`) está en
+`%APPDATA%\ai-voice-interconnector\data` (Roaming) —no en `%LOCALAPPDATA%`—,
+relevante para cálculos de espacio en entornos con roaming de perfiles de dominio.
+El peso real de los modelos (~9 GB) no vive en `data_dir` sino en la caché de
+Hugging Face (`~/.cache/huggingface/hub`).
+
 **Limitaciones conocidas**: Defender Antivirus puede marcar el binario sin firma
 (independiente del MOTW; runbook WDSI arriba); el `.zip` descargado por navegador sí
 lleva MOTW y dispara SmartScreen (lo resuelve la firma de código, no este script).
