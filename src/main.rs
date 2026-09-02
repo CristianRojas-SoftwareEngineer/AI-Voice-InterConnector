@@ -607,12 +607,17 @@ async fn handle_voice(
             require_local(daemon_mode)?;
             VoiceStore::validate_name(&name)
                 .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
+            // Validación estructural: fábrica protegida se rechaza antes de tocar el store,
+            // sin depender del mensaje de error (evita string matching frágil).
+            if avi_store::is_factory_name(&name) {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "cannot_remove_default",
+                    format!("La voz '{}' no se puede eliminar.", name.to_lowercase()),
+                ));
+            }
             voice_store.remove(&name).map_err(|e| {
-                if e.contains("no se puede eliminar") {
-                    CliError::new(ExitCode::InvalidInput, "cannot_remove_default", e)
-                } else {
-                    CliError::new(ExitCode::NotFound, "voice_not_found", e)
-                }
+                CliError::new(ExitCode::NotFound, "voice_not_found", e)
             })?;
             if json_mode {
                 emit_raw_json(json!({ "status": "removed", "voice": name }));

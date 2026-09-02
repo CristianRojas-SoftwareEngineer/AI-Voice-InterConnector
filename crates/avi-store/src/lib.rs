@@ -19,7 +19,7 @@ pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
 /// embedding + pesos Base). Se materializa en `ensure_initialized` si falta.
 const FACTORY_DEFAULT_QVOICE: &[u8] = include_bytes!("../assets/default/reference.qvoice");
 
-fn is_factory_name(name: &str) -> bool {
+pub fn is_factory_name(name: &str) -> bool {
     FACTORY_VOICES.contains(&name.to_lowercase().as_str())
 }
 
