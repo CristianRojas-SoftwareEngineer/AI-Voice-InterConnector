@@ -24,7 +24,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::exit;
 
-const VERSION: &str = "0.18.25";
+const VERSION: &str = "0.18.26";
 const APP_NAME: &str = "ai-voice-interconnector";
 /// Dirección del daemon nativo (T7: cliente HTTP async contra este address).
 const DAEMON_ADDR: &str = "127.0.0.1:8765";

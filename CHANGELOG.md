@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [0.18.26 — 2026-09-02](#01826-20260902)
 - [0.18.25 — 2026-09-01](#01825-20260901)
 - [0.18.24 — 2026-09-01](#01824-20260901)
 - [0.18.23 — 2026-09-01](#01823-20260901)
@@ -107,6 +108,39 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+
+## [0.18.26] — 2026-09-02
+
+En `v0.18.10–v0.18.25`, `uninstall --force` en Windows se auto-mataba: el
+fallback `taskkill /F /IM ai-voice-interconnector.exe` de `handle_uninstall`
+mataba al propio CLI —daemon y CLI comparten la imagen del binario— antes de
+borrar PATH e `install_dir`, devolviendo `exit 1` sin tocar nada y bloqueando la
+desinstalación del usuario final. Esta patch sustituye ese fallback por un kill
+por **PID** leído de `daemon.pid` (con guarda `pid != process::id()`), consolida
+la parada del daemon + `qwen_tts` en el helper compartido
+`stop_daemon_and_resident()` para `cleanup`/`uninstall`, y añade una regresión
+Windows-only que detectaría la auto-muerte en CI `test-windows`. De paso, los
+`.ps1` del instalador ganan BOM UTF-8 para PowerShell 5.1 y se documenta `data_dir`.
+
+### Corregido
+
+- fix(uninstall): no auto-matarse en `--force` (kill por PID) — `src/main.rs`:
+  helper `stop_daemon_and_resident()` (shutdown graceful + fallback `cfg(windows)`
+  `taskkill /F /T /PID` con guarda `pid != process::id()`, nunca por imagen
+  compartida) reemplaza el bloque 0 de `handle_cleanup`/`handle_uninstall`;
+  `tests/cli_golden.rs`: harness `run_json_env`/`open_atomic_tmp` + regresión
+  `uninstall_force_no_se_auto_mata` (sandbox aislado con `LOCALAPPDATA`/`HF_*`).
+- fix(installer): añadir BOM UTF-8 a los `.ps1` para PowerShell 5.1 —
+  `install-windows.ps1`, `upgrade-ai-voice-interconnector.ps1` y los tests del
+  instalador.
+
+### Cambiado
+
+- docs(reviews): documentar `data_dir` y retirar la revisión de hallazgos
+  colaterales de la E2E — `docs/SELF-HOSTED-INSTALL.md` documenta `data_dir`
+  (la revisión añadida en el rango se elimina al quedar sus recomendaciones
+  ejecutadas y sin usuarios afectados).
 
 ## [0.18.25] — 2026-09-01
 
@@ -1587,3 +1621,4 @@ estado con el que nace el producto.
 [0.18.23]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.22...v0.18.23
 [0.18.24]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.23...v0.18.24
 [0.18.25]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.24...v0.18.25
+[0.18.26]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.25...v0.18.26
