@@ -1,4 +1,4 @@
-# Smoke-test Pester (v5) de upgrade-ai-voice-interconnector.ps1
+﻿# Smoke-test Pester (v5) de upgrade-ai-voice-interconnector.ps1
 # (docs/SELF-HOSTED-INSTALL.md).
 #
 # Valida el wrapper sin red ni instalacion reales:

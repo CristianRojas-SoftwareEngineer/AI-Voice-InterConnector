@@ -1,4 +1,4 @@
-# Smoke-test Pester (v5) de install-windows.ps1 (docs/SELF-HOSTED-INSTALL.md).
+﻿# Smoke-test Pester (v5) de install-windows.ps1 (docs/SELF-HOSTED-INSTALL.md).
 #
 # Valida el orquestador Install-AIVoiceInterConnector sin red ni instalacion reales:
 # el dot-source de install-windows.ps1 solo define funciones (guard de

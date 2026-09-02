@@ -1,4 +1,4 @@
-# Instalador auto-hospedado de ai-voice-interconnector para Windows.
+﻿# Instalador auto-hospedado de ai-voice-interconnector para Windows.
 #
 # Uso:
 #   irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-windows.ps1 | iex

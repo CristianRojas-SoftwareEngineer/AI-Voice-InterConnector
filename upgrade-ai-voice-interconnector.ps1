@@ -1,4 +1,4 @@
-# Wrapper de auto-actualización de ai-voice-interconnector para Windows.
+﻿# Wrapper de auto-actualización de ai-voice-interconnector para Windows.
 #
 # Uso:
 #   .\upgrade-ai-voice-interconnector.ps1          # actualiza (re-ejecuta install-windows.ps1)
