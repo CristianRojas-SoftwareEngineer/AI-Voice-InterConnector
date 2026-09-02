@@ -170,7 +170,7 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 | `speech list` | `--voice/-v` (filtro) · `--json` |
 | `speech remove` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
 
-**`--voice/-v` es opcional en las cinco** y, si falta, usa la voz de fábrica `default`.
+**`--voice/-v` es opcional en las cinco** y, si falta, usa la voz de fábrica `default` (voz clonada de fábrica con `.qvoice` graft, `crates/avi-store/assets/default/reference.qvoice`, `crates/avi-store/src/lib.rs` `FACTORY_VOICES`). El catálogo de voces de fábrica es `default` (clonada), `ryan` y `vivian` (presets del motor `qwen_tts.c:spk_table`): todas entradas del registro `VoiceStore`. La distinción interna preset/clonada (`avi-tts/src/lib.rs` `resolve_voice_motor`, presencia de `reference.qvoice`) es detalle no-normativo; para el contrato toda voz es una entrada del registro. `default` usa el camino clonado para garantizar `WER ≤0.25` en texto corto (H1).
 
 **El namespace es obligatorio en la gestión.** Las etiquetas viven bajo una voz, así que `play` y `remove` toman `--voice` con el mismo default que `synthesize` y `say`; `list` lo admite como filtro y sin él recorre todas las voces. Es un segmento más que en `voice remove --name X`, inevitable dado el layout del almacén.
 
@@ -275,7 +275,7 @@ El coste es que el mensaje lo formatea `clap` en inglés, igual que el de todas 
 | Colisión de etiqueta sin `--force` | `synthesize` | **6** |
 | Colisión de nombre de voz sin `--force` | `voice clone` | **6** |
 
-**La voz se valida en las cinco sub-acciones y sale 3 si no está**, de modo que «voz mal escrita» nunca se disfrace de «sin resultados»: sin esa regla, `speech list --voice noexiste` devolvería una lista vacía y un usuario que se equivoca al escribir concluiría que sus locuciones se perdieron. Con `--voice` opcional en las cinco, la pregunta es la misma en todas y la respuesta también.
+**La voz se valida en las cinco sub-acciones y sale 3 si no está** —el catálogo es el registro unificado `VoiceStore` (`crates/avi-store/src/lib.rs` `FACTORY_VOICES`): voces de fábrica (`default`→`ryan`, `ryan`, `vivian`) más clonadas del usuario—, de modo que «voz mal escrita» nunca se disfrace de «sin resultados»: sin esa regla, `speech list --voice noexiste` devolvería una lista vacía y un usuario que se equivoca al escribir concluiría que sus locuciones se perdieron. Con `--voice` opcional en las cinco, la pregunta es la misma en todas y la respuesta también.
 
 La etiqueta inexistente sale **3** y no 2: la invocación está bien formada y el recurso no está, que es exactamente lo que el 3 significa.
 
@@ -339,7 +339,7 @@ La única interacción entre `--json` y el comportamiento es la regla 2: `--json
 
 `<data_dir>/speech/<voz>/<etiqueta>.wav` (`crates/avi-store/src/lib.rs` `SpeechStore`), **raíz hermana de `voices/`** (`VoiceStore`: `<data_dir>/voices/<nombre>/`; caché HF: `hf_cache_dir()`).
 
-**Por qué no anidado en `voices/<voz>/speech/`**, que sería la opción intuitiva y ahorraría código de borrado: `default` es una voz de **fábrica**, en un directorio empaquetado de solo lectura. Sus locuciones tendrían que ir a un espejo en el registro de usuario: un directorio con `speech/` pero sin `timbre-reference.wav` ni `speech-reference.wav`. Ese directorio sería invisible para `VoiceStore::list` e indeleble por `voice remove`, porque `VoiceStore` (`crates/avi-store/src/lib.rs`) valida por `speech-reference.wav` como guard del borrado.
+**Por qué no anidado en `voices/<voz>/speech/`**, que sería la opción intuitiva y ahorraría código de borrado: las voces de fábrica (`default`→`ryan`, `ryan`, `vivian`; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) son entradas del registro `VoiceStore` sin audio de referencia —la resolución preset/clonada es detalle interno no-normativo de `avi-tts/src/lib.rs` `resolve_voice_motor`— y el almacén separa la salida generada (`speech/`) del registro (`voices/`).
 
 Coste aceptado de la raíz separada: el arrastre de las locuciones al borrar una voz no es gratis y exige código explícito.
 
@@ -536,7 +536,7 @@ Son dos causas independientes que coinciden en el mismo hecho generador. Los pay
 | `--all` | Modelo + voces + habla sintética |
 | `--dry-run` | Cubre las locuciones en los tres modos anteriores |
 
-**`synthetic-speech/default/` sobrevive a `--voices` y cae únicamente con `--synthetic-speech` o `--all`.** El criterio es el del propio flag —las locuciones se van con su voz— y la voz de fábrica no se va nunca: es de solo lectura y `--voices` no la borra. Importa declararlo porque `default` es la voz por defecto de `speech synthesize` y su namespace es probablemente el más poblado.
+**`synthetic-speech/default/` (y `ryan`/`vivian`) sobrevive a `--voices` y cae únicamente con `--synthetic-speech` o `--all`.** El criterio es el del propio flag —las locuciones se van con su voz— y las voces de fábrica (`default`→`ryan`, `ryan`, `vivian`; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) no se van nunca: `voice remove` las protege (exit 2) y `--voices` no las borra. Importa declararlo porque `default` es la voz por defecto de `speech synthesize` y su namespace es probablemente el más poblado.
 
 `--all` incluye la habla sintética por necesidad: si no la incluyera dejaría residuo tras una desinstalación completa, que es justo lo que ese flag existe para evitar.
 
@@ -553,7 +553,8 @@ El chequeo de audio degrada a WARN en vez de FAIL, **con la premisa que lo sosti
 - **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime), y los archivos en disco se llaman `timbre-reference.wav` y `speech-reference.wav`. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
 - **`voice clone` recibe el despacho al daemon en sus tres modos**, porque precomputa los conditionals de la voz al clonarla y necesita el modelo cargado igual que las dos sub-acciones que sintetizan.
 - **`voice clone` sobre un nombre tomado sin `--force` sale con 6**, y sobre un nombre libre `--force` es un no-op declarado.
-- `VoiceStore` (`crates/avi-store/src/lib.rs`) reconoce una voz por `speech-reference.wav`; `timbre-reference.wav` es opcional.
+- `VoiceStore` (`crates/avi-store/src/lib.rs`) reconoce una voz clonada por `reference.qvoice` (o `speech-reference.wav` legado); `timbre-reference.wav` es legado. Las voces de fábrica (`default`→`ryan`, `ryan`, `vivian`; `FACTORY_VOICES`) no llevan referencia: son presets puros sin audio y `voice remove` las protege (exit 2).
+- `voice list` muestra las tres de fábrica (`is_factory=true`) más las clonadas del usuario; `voice remove` rechaza las de fábrica con exit 2.
 - En `voice list` y `voice remove`, `-n` es `--name`.
 
 ## 12. Contratos externos

@@ -608,7 +608,7 @@ async fn handle_voice(
             VoiceStore::validate_name(&name)
                 .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
             voice_store.remove(&name).map_err(|e| {
-                if name == "default" {
+                if e.contains("no se puede eliminar") {
                     CliError::new(ExitCode::InvalidInput, "cannot_remove_default", e)
                 } else {
                     CliError::new(ExitCode::NotFound, "voice_not_found", e)

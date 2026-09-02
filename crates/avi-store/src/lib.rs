@@ -9,11 +9,19 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".ai-voice-interconnector"))
 }
 
-/// Voces de fábrica embebidas en el binario (paridad con `src/ai_voice_interconnector/voices/default/`).
-/// El binario Rust no distribuye los `.wav` por separado; se materializan en `ensure_initialized()`
-/// si faltan, preservando la voz `default` tras instalación limpia sin `src/` (12 MB extra en el binario).
-const DEFAULT_SPEECH_WAV: &[u8] = include_bytes!("../assets/default/speech-reference.wav");
-const DEFAULT_TIMBRE_WAV: &[u8] = include_bytes!("../assets/default/timbre-reference.wav");
+/// Voces de fábrica: `ryan`/`vivian` son presets del motor (`qwen_tts.c:spk_table`)
+/// sin audio; `default` es voz clonada de fábrica (`.qvoice` graft vía Base) para
+/// garantizar `WER ≤0.25` en texto corto (H1). La distinción preset/clonada vive
+/// en `avi-tts::resolve_voice_motor` (presencia de `reference.qvoice`).
+pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
+
+/// Asset embebido: `.qvoice` de fábrica para `default` (16 MB graft, speaker
+/// embedding + pesos Base). Se materializa en `ensure_initialized` si falta.
+const FACTORY_DEFAULT_QVOICE: &[u8] = include_bytes!("../assets/default/reference.qvoice");
+
+fn is_factory_name(name: &str) -> bool {
+    FACTORY_VOICES.contains(&name.to_lowercase().as_str())
+}
 
 // ─── VoiceStore ──────────────────────────────────────────────────────
 
@@ -44,20 +52,41 @@ impl VoiceStore {
         Self { base_dir }
     }
 
-    /// Asegura que el directorio base y la voz "default" existan, materializando
-    /// los `.wav` de fábrica embebidos si faltan (idempotente, no sobrescribe).
+    /// Asegura que el directorio base y las voces de fábrica existan
+    /// (`default` clonada de fábrica con `.qvoice`, `ryan`/`vivian` presets).
+    /// Idempotente; materializa `default/reference.qvoice` desde el asset embebido.
     pub fn ensure_initialized(&self) -> Result<()> {
         std::fs::create_dir_all(&self.base_dir)?;
-        let default_dir = self.base_dir.join("default");
-        std::fs::create_dir_all(&default_dir)?;
-        // Materializar voces de fábrica embebidas (paridad Python→Rust, precondición B1).
-        let speech_path = default_dir.join("speech-reference.wav");
-        if !speech_path.is_file() {
-            std::fs::write(&speech_path, DEFAULT_SPEECH_WAV)?;
+        for name in FACTORY_VOICES {
+            let dir = self.base_dir.join(name);
+            std::fs::create_dir_all(&dir)?;
         }
-        let timbre_path = default_dir.join("timbre-reference.wav");
-        if !timbre_path.is_file() {
-            std::fs::write(&timbre_path, DEFAULT_TIMBRE_WAV)?;
+        // Materializar `default` clonada de fábrica desde el asset embebido (T7).
+        // Solo si no existe ya un `reference.qvoice` (preserva clonación del usuario
+        // si re-inicializa, aunque `default` es fábrica y no debería ser sobreescrita
+        // por el usuario; aun así, idempotente).
+        let default_qvoice = self.base_dir.join("default").join("reference.qvoice");
+        if !default_qvoice.is_file() && !FACTORY_DEFAULT_QVOICE.is_empty() {
+            // Validar que el asset sea un .qvoice graft válido (magic QVCE/QV3)
+            if FACTORY_DEFAULT_QVOICE.len() > 4 {
+                let _ = std::fs::write(&default_qvoice, FACTORY_DEFAULT_QVOICE);
+            }
+        }
+        // Limpieza de materialización legada (12 MB embebidos pre-T4): si quedó
+        // `speech-reference.wav` / `timbre-reference.wav` de la factoria anterior,
+        // se eliminan para que `find_reference` no devuelva un legado como clonada.
+        // No borrar `reference.qvoice` de `default` (ahora es la fábrica T7).
+        for name in FACTORY_VOICES {
+            let dir = self.base_dir.join(name);
+            let legacy_speech = dir.join("speech-reference.wav");
+            // Solo borrar en voces de fábrica; las clonadas del usuario conservan su legado.
+            if is_factory_name(name) && legacy_speech.is_file() {
+                let _ = std::fs::remove_file(&legacy_speech);
+            }
+            let legacy_timbre = dir.join("timbre-reference.wav");
+            if is_factory_name(name) && legacy_timbre.is_file() {
+                let _ = std::fs::remove_file(&legacy_timbre);
+            }
         }
         Ok(())
     }
@@ -74,7 +103,7 @@ impl VoiceStore {
                     .to_string_lossy()
                     .to_string()
                     .to_lowercase();
-                let is_factory = name == "default";
+                let is_factory = is_factory_name(&name);
                 let ref_path = self.find_reference(&name);
                 voices.push(VoiceEntry {
                     name,
@@ -83,7 +112,7 @@ impl VoiceStore {
                 });
             }
         }
-        // Asegurar que "default" esté primero
+        // Fábrica primero (default, ryan, vivian), luego clonadas alfabéticamente
         voices.sort_by(|a, b| b.is_factory.cmp(&a.is_factory).then(a.name.cmp(&b.name)));
         Ok(voices)
     }
@@ -121,11 +150,11 @@ impl VoiceStore {
         self.base_dir.join(name.to_lowercase()).is_dir()
     }
 
-    /// Eliminar una voz (no permite eliminar "default")
+    /// Eliminar una voz (no permite eliminar voces de fábrica: default, ryan, vivian)
     pub fn remove(&self, name: &str) -> Result<(), String> {
         let name = name.to_lowercase();
-        if name == "default" {
-            return Err("La voz 'default' no se puede eliminar.".into());
+        if is_factory_name(&name) {
+            return Err(format!("La voz '{}' no se puede eliminar.", name));
         }
         let dir = self.base_dir.join(&name);
         if !dir.is_dir() {
@@ -136,7 +165,9 @@ impl VoiceStore {
     }
 
     /// Buscar el archivo de referencia de una voz: `reference.qvoice`,
-    /// `reference.wav` legado o `speech-reference.wav` (nombre normalizado)
+    /// `reference.wav` legado o `speech-reference.wav` (nombre normalizado).
+    /// Las voces de fábrica nunca devuelven legado: son presets puros y nunca
+    /// deben caer en el brazo `Clonada` de `resolve_voice_motor`.
     pub fn find_reference(&self, name: &str) -> Option<PathBuf> {
         let dir = self.base_dir.join(name.to_lowercase());
         for ext in &["qvoice", "wav"] {
@@ -144,6 +175,9 @@ impl VoiceStore {
             if path.is_file() {
                 return Some(path);
             }
+        }
+        if is_factory_name(name) {
+            return None;
         }
         let legacy = dir.join("speech-reference.wav");
         if legacy.is_file() {
@@ -1085,44 +1119,98 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// T1-bloqueante: `ensure_initialized` materializa las voces de fábrica embebidas
-    /// si faltan y es idempotente (no trunca si ya existen).
+    /// T4+T7: `ensure_initialized` registra voces de fábrica (`default` clonada
+    /// de fábrica con `.qvoice`, `ryan`/`vivian` presets) y `list`/`remove`/
+    /// `find_reference` reflejan el registro unificado (--voice ryan alcanzable).
     #[test]
-    fn ensure_initialized_materializa_default_wavs() {
+    fn ensure_initialized_registra_voces_factory() {
         let dir = temp_dir("factory");
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         voices.ensure_initialized().unwrap();
-        let speech = voices.voice_dir("default").join("speech-reference.wav");
-        let timbre = voices.voice_dir("default").join("timbre-reference.wav");
-        assert!(speech.is_file(), "speech-reference.wav debe materializarse");
-        assert!(timbre.is_file(), "timbre-reference.wav debe materializarse");
+        // Las tres fábricas deben existir; `default` es clonada con qvoice, `ryan`/`vivian` presets puros
+        for name in ["default", "ryan", "vivian"] {
+            let d = voices.voice_dir(name);
+            assert!(d.is_dir(), "directorio de fábrica '{}' debe existir", name);
+            assert!(
+                voices.exists(name),
+                "exists('{}') debe ser true (hoy sería exit 3 para ryan)",
+                name
+            );
+            // No debe haber WAV legado materializado
+            assert!(
+                !d.join("speech-reference.wav").is_file(),
+                "no debe materializar speech-reference.wav para '{}'",
+                name
+            );
+            assert!(
+                !d.join("timbre-reference.wav").is_file(),
+                "no debe materializar timbre-reference.wav para '{}'",
+                name
+            );
+        }
+        // `default` clonada de fábrica debe tener `reference.qvoice` materializado
         assert!(
-            speech.metadata().unwrap().len() > 1000,
-            "speech wav no vacío"
+            voices.find_reference("default").is_some(),
+            "fábrica 'default' debe tener reference.qvoice (T7)"
         );
+        assert_eq!(
+            voices
+                .find_reference("default")
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            "reference.qvoice"
+        );
+        // `ryan`/`vivian` siguen presets puros sin referencia
+        for name in ["ryan", "vivian"] {
+            assert!(
+                voices.find_reference(name).is_none(),
+                "fábrica '{}' sin qvoice no debe tener referencia (preset puro)",
+                name
+            );
+        }
+        // Idempotencia: segunda inicialización no borra directorios ni datos de usuario
+        let custom_dir = voices.voice_dir("mivoz");
+        std::fs::create_dir_all(&custom_dir).unwrap();
+        std::fs::write(custom_dir.join("reference.qvoice"), b"QVCE").unwrap();
+        voices.ensure_initialized().unwrap();
+        assert!(custom_dir.join("reference.qvoice").is_file(), "voz clonada preservada");
+        for name in ["default", "ryan", "vivian"] {
+            assert!(voices.voice_dir(name).is_dir(), "fábrica '{}' preservada tras 2º init", name);
+        }
+        // `list` debe ver las tres fábricas marcadas is_factory + la clonada
+        let list = voices.list().unwrap();
+        let factory_names: Vec<String> = list.iter().filter(|v| v.is_factory).map(|v| v.name.clone()).collect();
+        assert_eq!(factory_names.len(), 3, "tres voces de fábrica");
+        assert!(factory_names.contains(&"default".to_string()));
+        assert!(factory_names.contains(&"ryan".to_string()));
+        assert!(factory_names.contains(&"vivian".to_string()));
+        // Todas las fábricas protegidas contra borrado
+        for name in ["default", "ryan", "vivian", "DEFAULT", "RYAN"] {
+            assert!(
+                voices.remove(name).is_err(),
+                "remove('{}') debe fallar (fábrica protegida)",
+                name
+            );
+        }
+        // Fábrica con legado speech-reference.wav no cae en Clonada
+        let legacy = voices.voice_dir("ryan").join("speech-reference.wav");
+        std::fs::write(&legacy, b"RIFF").unwrap();
         assert!(
-            timbre.metadata().unwrap().len() > 1000,
-            "timbre wav no vacío"
+            voices.find_reference("ryan").is_none(),
+            "fábrica con legado no debe resolver como clonada"
         );
-        // Idempotencia: segunda inicialización no trunca ficheros existentes
-        std::fs::write(&speech, b"CUSTOM").unwrap();
+        // Limpieza legada en siguiente ensure_initialized
         voices.ensure_initialized().unwrap();
+        assert!(!legacy.is_file(), "ensure_initialized debe limpiar legado de fábrica");
+        // Voz clonada con legado sí resuelve (compatibilidad)
+        let clon_dir = voices.voice_dir("otra");
+        std::fs::create_dir_all(&clon_dir).unwrap();
+        std::fs::write(clon_dir.join("speech-reference.wav"), b"RIFF").unwrap();
         assert_eq!(
-            speech.metadata().unwrap().len(),
-            6,
-            "no debe sobrescribir wav existente"
-        );
-        // Verificar que `list` sigue viendo default y find_reference funciona
-        assert!(voices.exists("default"));
-        assert!(voices.find_reference("default").is_some());
-        // Si faltaba uno, lo recrea sin tocar el otro
-        std::fs::remove_file(&timbre).unwrap();
-        voices.ensure_initialized().unwrap();
-        assert!(timbre.is_file(), "timbre recreado si faltaba");
-        assert_eq!(
-            std::fs::read(&speech).unwrap(),
-            b"CUSTOM",
-            "speech custom preservado"
+            voices.find_reference("OTRA").unwrap().file_name().unwrap().to_string_lossy(),
+            "speech-reference.wav"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

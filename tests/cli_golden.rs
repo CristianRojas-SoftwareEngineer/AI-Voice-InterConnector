@@ -617,6 +617,60 @@ mod tts {
         let _ = avi_store::SpeechStore::new().remove("default", &label);
     }
 
+    /// Gate WER texto corto — disparador exacto de H1 (Tarea 6).
+    ///
+    /// Cubre el caso que la E2E `test-windows-e2e` sintetizaba sin veredicto:
+    /// texto de 2-4 palabras (`"Hola mundo"`) con voz `default` (preset ryan).
+    /// Verifica `WAV 24kHz mono 16-bit` y `WER ≤ 0.25` vía Parakeet (`native-stt`),
+    /// mismo patrón que `synthesize_exito_con_label` (11 palabras): requiere
+    /// `tts_provisioned()` + `parakeet_model_disponible()`, usa `wav_valido_24k`
+    /// y `wer_vs_texto`, falla la E2E/gate si `WER > 0.25`.
+    #[cfg(feature = "native-stt")]
+    #[test]
+    fn synthesize_exito_texto_corto_wer_gate() {
+        if !tts_provisioned() {
+            eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
+            return;
+        }
+        if !parakeet_model_disponible() {
+            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (models/ gitignoreado)");
+            return;
+        }
+        let _guard = lock_tts();
+        let texto_corto = "Hola mundo";
+        let label = etiqueta_unica("golden_corto");
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "synthesize",
+            "--text",
+            texto_corto,
+            "--voice",
+            "default",
+            "--label",
+            &label,
+        ]);
+        assert_eq!(code, 0);
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["status"], Value::String("success".to_string()));
+        let audio = actual["audio_path"]
+            .as_str()
+            .expect("audio_path debe existir");
+        let audio_path = Path::new(audio);
+        assert!(
+            audio_path.is_file(),
+            "el WAV debe estar persistido en el almacén"
+        );
+        wav_valido_24k(audio_path);
+        let wer = wer_vs_texto(audio_path, texto_corto);
+        assert!(
+            wer <= 0.25,
+            "WER texto corto '{}' = {} debe ser ≤ 0.25 (disparador H1)",
+            texto_corto, wer
+        );
+        let _ = avi_store::SpeechStore::new().remove("default", &label);
+    }
+
     #[test]
     fn synthesize_texto_vacio_sale_con_2() {
         let (code, actual) = run_json(&[

@@ -120,18 +120,15 @@ pub enum VozMotor {
     Clonada(PathBuf),
 }
 
-/// Tabla de resolución voz → motor (decisión e3): la voz de fábrica `default`
-/// se mapea al preset `ryan` (default del servidor); una voz con `reference.qvoice`
-/// (o `reference.wav` legado, que el orquestador convierte antes de usar) es
-/// clonada; cualquier otro nombre se pasa como preset del motor.
+/// Resolución voz → motor: una voz con `reference.qvoice` (o `reference.wav`
+/// legado) es clonada; cualquier otra es preset. `default` es alias de `ryan`
+/// (registro unificado de fábrica) y se resuelve aquí tras comprobar clonada,
+/// sin early return que oculte la rama Clonada.
 pub fn resolve_voice_motor(
     voice: &str,
     qvoice: Option<&Path>,
     reference: Option<&Path>,
 ) -> VozMotor {
-    if voice == "default" {
-        return VozMotor::Preset("ryan".to_string());
-    }
     if let Some(q) = qvoice {
         if q.is_file() {
             return VozMotor::Clonada(q.to_path_buf());
@@ -142,7 +139,9 @@ pub fn resolve_voice_motor(
             return VozMotor::Clonada(r.to_path_buf());
         }
     }
-    VozMotor::Preset(voice.to_string())
+    // Alias del registro: default → ryan (preset puro, nunca Clonada si no hay qvoice)
+    let canonical = if voice == "default" { "ryan" } else { voice };
+    VozMotor::Preset(canonical.to_string())
 }
 
 /// Resolución del binario del motor por capas (decisión e1):
