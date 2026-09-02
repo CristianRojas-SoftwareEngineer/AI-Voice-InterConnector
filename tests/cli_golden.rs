@@ -37,7 +37,10 @@ fn fixture(name: &str) -> Value {
         .unwrap_or_else(|e| panic!("fixture {} no es JSON válido: {}", name, e))
 }
 
-/// Ejecuta el binario con `args` y devuelve (código de salida, stdout parseado a JSON).
+/// Ejecuta el binario con `args` y envs extra, devolviendo (código de salida, stdout
+/// parseado a JSON). Las envs se inyectan vía `.env()` en el `Command` hijo: los tests
+/// que necesitan aislar el estado del sandbox (p. ej. `LOCALAPPDATA`/`HF_*` en
+/// `uninstall_force_no_se_auto_mata`) las pasan por aquí; `run_json` delega sin envs.
 ///
 /// Usa un *tempfile* (`Stdio::File`) en vez de `Command::output()` (que captura `stdout`
 /// vía un **pipe** con `bInheritHandle=TRUE`). El comando `daemon start` lanza el daemon
@@ -52,52 +55,17 @@ fn fixture(name: &str) -> Value {
 ///
 /// Patrón equivalente al del legacy Python: el daemon no comparte I/O (pipe) con el
 /// proceso que lo lanza.
-fn run_json(args: &[&str]) -> (i32, Value) {
-    // Corrección estructural sin sobreingeniería: la causa no es el contenido del
-    // daemon sino el primitivo de FS. `File::create` trunca y no es atómico: con
-    // `SystemTime` de resolución gruesa en Windows + `cargo test` paralelo, dos
-    // hilos generan el mismo `tmp` y el `remove_file` de uno borra el de otro
-    // -> `read_to_string` falla con `NotFound (os 2)` solo en `win/server-2022`.
-    // Se reemplaza por creación atómica `O_CREAT|O_EXCL` (`create_new(true)`):
-    // el SO garantiza exclusión y el bucle reintenta solo en colisión, sin
-    // depender de `ThreadId`/`sleep`/`retry` sintomático. Es el mismo coste que
-    // `tempfile::NamedTempFile` pero sin añadir dependencia.
-    let (tmp, file) = {
-        let mut attempts = 0;
-        loop {
-            let candidate = std::env::temp_dir().join(format!(
-                "cli_golden_{}_{}_{}.out",
-                std::process::id(),
-                TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0),
-            ));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
-                Ok(f) => break (candidate, f),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    attempts += 1;
-                    if attempts > 10 {
-                        panic!("no se pudo crear tempfile único tras 10 intentos: {}", e);
-                    }
-                    continue;
-                }
-                Err(e) => panic!("no se pudo crear tempfile {}: {}", candidate.display(), e),
-            }
-        }
-    };
-    let mut child = Command::new(BIN)
-        .args(args)
+fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
+    let (tmp, file) = open_atomic_tmp();
+    let mut cmd = Command::new(BIN);
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(file)
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("el binario debe ejecutarse");
+        .stderr(std::process::Stdio::null());
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("el binario debe ejecutarse");
     let status = child.wait().expect("el proceso debe terminar");
     let stdout = std::fs::read_to_string(&tmp)
         .unwrap_or_else(|e| panic!("no se pudo leer tempfile {}: {}", tmp.display(), e));
@@ -108,6 +76,52 @@ fn run_json(args: &[&str]) -> (i32, Value) {
     let json: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
     (code, json)
+}
+
+/// Ejecuta el binario con `args` (sin envs extra). Delega en [`run_json_env`].
+fn run_json(args: &[&str]) -> (i32, Value) {
+    run_json_env(args, &[])
+}
+
+/// Crea un tempfile único con semántica atómica `O_CREAT|O_EXCL` (`create_new`).
+///
+/// Corrección estructural sin sobreingeniería: la causa no es el contenido del
+/// daemon sino el primitivo de FS. `File::create` trunca y no es atómico: con
+/// `SystemTime` de resolución gruesa en Windows + `cargo test` paralelo, dos
+/// hilos generan el mismo `tmp` y el `remove_file` de uno borra el de otro
+/// -> `read_to_string` falla con `NotFound (os 2)` solo en `win/server-2022`.
+/// Se reemplaza por creación atómica `O_CREAT|O_EXCL` (`create_new(true)`):
+/// el SO garantiza exclusión y el bucle reintenta solo en colisión, sin
+/// depender de `ThreadId`/`sleep`/`retry` sintomático. Es el mismo coste que
+/// `tempfile::NamedTempFile` pero sin añadir dependencia.
+fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
+    let mut attempts = 0;
+    loop {
+        let candidate = std::env::temp_dir().join(format!(
+            "cli_golden_{}_{}_{}.out",
+            std::process::id(),
+            TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(f) => break (candidate, f),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                attempts += 1;
+                if attempts > 10 {
+                    panic!("no se pudo crear tempfile único tras 10 intentos: {}", e);
+                }
+                continue;
+            }
+            Err(e) => panic!("no se pudo crear tempfile {}: {}", candidate.display(), e),
+        }
+    }
 }
 
 /// Modelo Parakeet TDT v3 presente. Los binarios bajo `models/` están
@@ -196,6 +210,77 @@ fn cleanup_coincide_con_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup"]);
     assert_eq!(code, 0);
     assert_eq!(actual, fixture("cli_cleanup.json"));
+}
+
+/// Regresión del self-kill de `uninstall --force` en Windows (v0.18.10–v0.18.25):
+/// el fallback `taskkill /F /IM ai-voice-interconnector.exe` mataba al propio CLI
+/// (daemon y CLI comparten la imagen del binario) antes de borrar PATH/install_dir,
+/// retornando `exit 1` sin tocar nada. La corrección sustituyó ese fallback por un
+/// kill por **PID** leído de `daemon.pid` (con guarda `pid != process::id()`). Si
+/// reapareciera el kill por imagen, el binario bajo test moriría por `taskkill` y
+/// `status.code()` devolvería `None`, provocando el fallo del test (regresión en CI
+/// `test-windows`).
+///
+/// Sandbox aislado: `LOCALAPPDATA` (honrada en `handle_uninstall` para el
+/// `install_dir`) y `HF_HUB_CACHE`/`HF_HOME` (honradas por `hf_cache_dir` en
+/// `avi-store`) apuntan a un directorio temporal propio, con un `install_dir` falso
+/// como marcador. El nombre del sandbox no empieza por `avi_` ni
+/// `ai-voice-interconnector-install-`, ajeno al barrido de temp huérfano de
+/// `uninstall`. Si hubiera un daemon real activo en 127.0.0.1:8765, el test se salta
+/// con aviso: `cargo test` no debe detener el daemon del usuario (esa ruta la cubre
+/// el E2E manual).
+#[cfg(windows)]
+#[test]
+fn uninstall_force_no_se_auto_mata() {
+    let _guard = STATE_LOCK.lock().unwrap();
+
+    // (a) Skip si hay daemon real activo (no detenerlo desde `cargo test`).
+    let (_, status) = run_json(&["--json", "daemon", "status"]);
+    if status["daemon"] == Value::String("running".to_string()) {
+        eprintln!("[uninstall] skip: daemon activo en 127.0.0.1:8765");
+        return;
+    }
+
+    // (b) Sandbox con install_dir falso (marcador) y caches HF aisladas.
+    let sandbox = std::env::temp_dir().join(format!(
+        "uninstall_sandbox_{}_{}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
+    ));
+    let local = sandbox.join("LocalAppData");
+    let programs = local.join("Programs/ai-voice-interconnector");
+    std::fs::create_dir_all(&programs)
+        .unwrap_or_else(|e| panic!("no se pudo crear install_dir falso: {}", e));
+    std::fs::write(programs.join("ai-voice-interconnector.exe"), b"marker")
+        .unwrap_or_else(|e| panic!("no se pudo escribir el marcador: {}", e));
+    let hf = sandbox.join("hf");
+    std::fs::create_dir_all(&hf).unwrap();
+
+    // (c) uninstall --force contra el sandbox aislado.
+    let (code, actual) = run_json_env(
+        &["--json", "uninstall", "--force"],
+        &[
+            ("LOCALAPPDATA", local.to_str().unwrap()),
+            ("HF_HUB_CACHE", hf.to_str().unwrap()),
+            ("HF_HOME", hf.to_str().unwrap()),
+        ],
+    );
+
+    // (d) Invariante crítico: no auto-muerte, contrato JSON intacto, install_dir borrado.
+    assert_eq!(
+        code, 0,
+        "uninstall --force no debe auto-matarse: {}",
+        actual
+    );
+    assert_eq!(actual["status"], Value::String("uninstalled".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert!(
+        !programs.exists(),
+        "el install_dir del sandbox debe borrarse tras uninstall"
+    );
+
+    // (e) Limpieza del sandbox.
+    let _ = std::fs::remove_dir_all(&sandbox);
 }
 
 #[test]

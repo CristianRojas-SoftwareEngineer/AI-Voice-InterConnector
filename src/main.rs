@@ -1440,27 +1440,7 @@ async fn handle_setup(
 
 async fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {
     // 0. Parar daemon graceful si está vivo (libera puerto y permite borrar data_dir)
-    {
-        let client = daemon_client();
-        if daemon_activo(&client).await {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                client
-                    .post(format!("http://{}/shutdown", DAEMON_ADDR))
-                    .send(),
-            )
-            .await;
-            let _ = wait_health_down(&client, std::time::Duration::from_secs(5)).await;
-        }
-        let _ = remove_daemon_pid_file();
-        // Fallback Windows: matar qwen_tts huérfano si quedó
-        #[cfg(windows)]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/IM", "qwen_tts.exe"])
-                .output();
-        }
-    }
+    stop_daemon_and_resident().await;
     // 1. Limpieza real de datos: borra subdirectorios conocidos + daemon.pid
     let data = store::data_dir();
     if data.exists() {
@@ -1523,6 +1503,54 @@ async fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Fuente única de verdad para detener el daemon residente y `qwen_tts` huérfano,
+/// compartida por `handle_cleanup` y `handle_uninstall` (consolida el bloque 0 que
+/// ambas duplicaban con drift).
+///
+/// Secuencia: shutdown graceful (`POST /shutdown` + espera de `/health` down) si el
+/// daemon responde; fallback `#[cfg(windows)]` de kill por **PID** leído de
+/// `daemon.pid` cuando sigue vivo tras el intento graceful (daemon colgado que ignora
+/// `/shutdown`); kill de `qwen_tts.exe` por imagen; y `remove_daemon_pid_file()`.
+///
+/// Por qué el fallback es por PID y nunca por imagen: daemon y CLI comparten la misma
+/// imagen `ai-voice-interconnector.exe` (el daemon es el mismo binario lanzado con
+/// `daemon serve`), así que `taskkill /IM` no puede distinguirlos y mataba al propio
+/// invocador (bug v0.18.10–v0.18.25 en `uninstall --force`). La guarda
+/// `pid != process::id()` previene la auto-muerte incluso si el PID leído fuera el del
+/// propio proceso.
+async fn stop_daemon_and_resident() {
+    let client = daemon_client();
+    if daemon_activo(&client).await {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client
+                .post(format!("http://{}/shutdown", DAEMON_ADDR))
+                .send(),
+        )
+        .await;
+        let _ = wait_health_down(&client, std::time::Duration::from_secs(5)).await;
+    }
+    #[cfg(windows)]
+    {
+        // Fallback: daemon que ignora /shutdown. Kill por PID (nunca por imagen:
+        // compartida con el CLI), con guarda contra auto-muerte.
+        if daemon_activo(&client).await {
+            if let Some(pid) = read_daemon_pid() {
+                if pid != std::process::id() {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &pid.to_string()])
+                        .output();
+                }
+            }
+        }
+        // qwen_tts tiene imagen distinta al CLI: kill por nombre es seguro.
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/IM", "qwen_tts.exe"])
+            .output();
+    }
+    let _ = remove_daemon_pid_file();
+}
+
 async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> {
     // Confirmación interactiva si no es --force/--yes y hay TTY
     if !force && std::io::stdin().is_terminal() {
@@ -1543,30 +1571,9 @@ async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> 
         }
     }
 
-    // 0. Parar daemon graceful si está vivo
-    {
-        let client = daemon_client();
-        if daemon_activo(&client).await {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                client
-                    .post(format!("http://{}/shutdown", DAEMON_ADDR))
-                    .send(),
-            )
-            .await;
-            let _ = wait_health_down(&client, std::time::Duration::from_secs(5)).await;
-        }
-        let _ = remove_daemon_pid_file();
-        #[cfg(windows)]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/IM", "qwen_tts.exe"])
-                .output();
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/IM", "ai-voice-interconnector.exe"])
-                .output();
-        }
-    }
+    // 0. Parar daemon graceful si está vivo (helper compartido con `cleanup`; el
+    // fallback de daemon colgado mata por PID, nunca por imagen compartida con el CLI)
+    stop_daemon_and_resident().await;
 
     // 1. Datos de usuario (incluye modelos, voces, locuciones)
     let data = store::data_dir();
