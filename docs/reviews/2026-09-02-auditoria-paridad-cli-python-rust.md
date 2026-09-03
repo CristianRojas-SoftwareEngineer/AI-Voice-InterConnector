@@ -1,7 +1,7 @@
 # Revisión: auditoría de paridad de superficie CLI oráculo Python → Rust
 
 - **Fecha**: 2026-09-02
-- **Estado**: Cerrado (diagnóstico). Auditoría documental y de código; ninguna corrección fue aplicada. Este documento es el registro para planificar las correcciones y sirve de insumo a la fase 3 del orden recomendado en `docs/reviews/2026-09-02-hallazgos-e2e-windows-v0.18.26.md`.
+- **Estado**: Cerrado (diagnóstico) — actualizado 2026-09-04: **P7 corregido** en `src/main.rs:942` (guarda `audio.is_none() && !mic → usage_error 2` espejo de `Transcribe`, sin `panic 101`) — ver §9. Auditoría documental y de código; ninguna corrección fue aplicada en v0.18.26 salvo P7 post-release. Este documento es el registro para planificar las correcciones y sirve de insumo a la fase 3 del orden recomendado en `docs/reviews/2026-09-02-hallazgos-e2e-windows-v0.18.26.md`.
 - **Alcance**: Diff flag a flag de la superficie completa de CLI entre el oráculo Python en su estado final y el CLI Rust actual, arbitrado por `docs/CLI/CONTRACT.md`.
 - **Naturaleza**: Diagnóstico post-prueba. Cada divergencia se clasifica como rotura de paridad (el oráculo la implementaba y el contrato la promete, pero el Rust no), cambio deliberado de la migración, o defecto nuevo introducido por el port.
 - **Origen**: Hallazgo 5 de la revisión E2E de v0.18.26 (`speech list --voice` rechazado) resultó ser una **regresión de paridad del port Python→Rust** — no un drift documental como se clasificó originalmente — lo que motivó auditar la superficie completa en busca de roturas del mismo tipo. Un cruce posterior con los hallazgos de la E2E trasladó a este documento dos de ellos con evidencia ampliada: `speech list --voice` (P6.1, con su reproducción E2E) y `translate es→en` roto (P8, con la verificación de que el oráculo sí provisionaba la conversión CT2).
@@ -165,6 +165,8 @@ No se reprodujo empíricamente en esta auditoría (requeriría una instalación 
 Copiar la guarda de `Transcribe` a la rama `Dub` (`if audio.is_none() && !mic` → `usage_error` exit 2) y añadir un test de regresión que invoque `speech dub` sin fuente (con modelos simulados o reordenando los chequeos para que la validación de uso preceda a la de provisionamiento, como manda el eje de clasificación del contrato §1: la invocación mal formada se clasifica antes que la precondición de entorno).
 
 **Confianza**: Alta en la lectura de código; pendiente la reproducción empírica.
+
+> **Actualización 2026-09-04 — Corregido:** guarda añadida en `src/main.rs:942` (`if audio.is_none() && !mic` antes de `model_missing`) con `usage_error` `2` y mensaje `Debe especificarse --audio o --mic.` — espejo exacto de `Transcribe` `src/main.rs:685`. Elimina `audio.expect("validado arriba")` `src/main.rs:1006` como `panic 101` y cumple eje `CONTRACT.md §1` (`2` antes que `4`). Verificado con `cargo test` (gates `dub` y `transcribe`) y `speech dub --json` sin fuente `→ 2` sin modelo.
 
 ## 10. Hallazgo P8 — `translate es→en` roto para el usuario final: la provisión CT2 del `setup` nunca fue portada
 

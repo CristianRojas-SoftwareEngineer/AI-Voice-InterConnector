@@ -955,6 +955,18 @@ async fn handle_speech(
                     "--mic requiere --duration en este host.",
                 ));
             }
+            // P7: fuente de audio requerida — espejo de Transcribe (src/main.rs:685).
+            // Sin esta guarda `audio.expect("validado arriba")` paniquea con exit 101
+            // en instalación completa (exit 4 enmascara el defecto sin modelos).
+            // Orden del eje CONTRACT.md §1: invocación mal formada (2) antes que
+            // precondición de entorno (4).
+            if audio.is_none() && !mic {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "usage_error",
+                    "Debe especificarse --audio o --mic.",
+                ));
+            }
             if let Some(a) = &audio {
                 if !std::path::Path::new(a).is_file() {
                     return Err(CliError::new(
