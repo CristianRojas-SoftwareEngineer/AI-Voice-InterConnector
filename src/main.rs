@@ -1256,12 +1256,10 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
         }
         DaemonCommands::Stop => {
             let client = daemon_client();
-            let resp = client
-                .post(format!("http://{}/shutdown", DAEMON_ADDR))
-                .send()
-                .await;
+            let fut = client.post(format!("http://{}/shutdown", DAEMON_ADDR)).send();
+            let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut).await;
             match resp {
-                Ok(r) if r.status().is_success() => {
+                Ok(Ok(r)) if r.status().is_success() => {
                     let _ = remove_daemon_pid_file();
                     if json_mode {
                         emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
@@ -1270,13 +1268,12 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     }
                     Ok(())
                 }
-                Ok(r) => Err(CliError::new(
+                Ok(Ok(r)) => Err(CliError::new(
                     ExitCode::Error,
                     "daemon_error",
                     format!("El daemon devolvió el código {}", r.status()),
                 )),
-                Err(_e) => {
-                    // Idempotencia: si no responde pero hay pid stale, limpiar
+                Ok(Err(_)) | Err(_) => {
                     let _ = remove_daemon_pid_file();
                     Err(CliError::new(
                         ExitCode::DaemonUnreachable,
@@ -1287,15 +1284,40 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             }
         }
         DaemonCommands::Restart => {
-            // Restart = Stop + spawn_background (orquestado CLI, sin ruta /restart)
+            // Restart determinista: Stop acotado + spawn + ready acotado con presupuesto global
+            // — sin heredar timeout 120s, sin let _ =, sin Ok falso
+            let t_total = std::time::Instant::now();
+            let budget = std::time::Duration::from_secs(12);
             let client = daemon_client();
             let was_running = daemon_activo(&client).await;
             if was_running {
-                let _ = client
-                    .post(format!("http://{}/shutdown", DAEMON_ADDR))
-                    .send()
-                    .await;
-                let _ = wait_health_down(&client, std::time::Duration::from_secs(5)).await;
+                // POST /shutdown acotado 1500ms (2*500ms probe + margen) — no hereda 120s
+                let shutdown_fut = client.post(format!("http://{}/shutdown", DAEMON_ADDR)).send();
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(1500),
+                    shutdown_fut,
+                )
+                .await;
+                // wait_health_down 5s con kill determinista si no baja
+                let down_res =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), wait_health_down(&client, std::time::Duration::from_secs(5))).await;
+                let down_ok = matches!(down_res, Ok(Ok(())));
+                if !down_ok {
+                    if let Some(pid) = read_daemon_pid() {
+                        #[cfg(windows)]
+                        {
+                            let _ = std::process::Command::new("taskkill")
+                                .args(["/PID", &pid.to_string(), "/F"])
+                                .output();
+                        }
+                        #[cfg(unix)]
+                        {
+                            let _ = std::process::Command::new("kill")
+                                .args(["-9", &pid.to_string()])
+                                .output();
+                        }
+                    }
+                }
                 let _ = remove_daemon_pid_file();
             } else {
                 let _ = remove_daemon_pid_file();
@@ -1308,14 +1330,18 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     format!("No se pudo lanzar el daemon: {}", e),
                 )
             })?;
-            await_daemon_ready(
+            let elapsed = t_total.elapsed();
+            let remaining = budget.checked_sub(elapsed).unwrap_or(std::time::Duration::from_millis(800));
+            // ready acotado al restante del presupuesto global — nunca >10s vigente
+            let ready_deadline = std::cmp::min(remaining, DAEMON_READY_DEADLINE);
+            let ready_res = await_daemon_ready(
                 &client,
                 DAEMON_ADDR,
-                DAEMON_READY_DEADLINE,
+                ready_deadline,
                 DAEMON_POLL_INTERVAL,
             )
-            .await
-            .map_err(|e| {
+            .await;
+            ready_res.map_err(|e| {
                 CliError::new(
                     ExitCode::DaemonUnreachable,
                     "daemon_unreachable",
@@ -1347,7 +1373,19 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             .await
             {
                 Ok(Ok(resp)) if resp.status().is_success() => {
-                    let val: Value = resp.json().await.map_err(|e| {
+                    let val: Value = tokio::time::timeout(
+                        std::time::Duration::from_millis(800),
+                        resp.json::<Value>(),
+                    )
+                    .await
+                    .map_err(|_| {
+                        CliError::new(
+                            ExitCode::DaemonUnreachable,
+                            "daemon_unreachable",
+                            format!("Daemon inalcanzable en {} (timeout json)", DAEMON_ADDR),
+                        )
+                    })?
+                    .map_err(|e| {
                         CliError::new(
                             ExitCode::Error,
                             "daemon_error",
