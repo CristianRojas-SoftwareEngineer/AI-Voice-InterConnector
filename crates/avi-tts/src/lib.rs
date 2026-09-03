@@ -120,25 +120,14 @@ pub enum VozMotor {
     Clonada(PathBuf),
 }
 
-/// Resolución voz → motor: una voz con `reference.qvoice` (o `reference.wav`
-/// legado) es clonada; cualquier otra es preset. `default` ya no es alias de
-/// `ryan`: con `reference.qvoice` graft resuelve como Clonada arriba; sin
-/// referencia resuelve como `Preset("default")` y el motor cae a `ryan`
-/// por `spk_table` sólo si el binario lo exige, sin alias muerto en Rust
-/// (limpieza H1 T4 — preserva precedencia Clonada).
-pub fn resolve_voice_motor(
-    voice: &str,
-    qvoice: Option<&Path>,
-    reference: Option<&Path>,
-) -> VozMotor {
+/// Resolución voz → motor: una voz con `reference.qvoice` es clonada;
+/// cualquier otra es preset. `default` con `reference.qvoice` graft resuelve
+/// como `Clonada`; sin referencia resuelve como `Preset("default")` y el
+/// motor cae a `ryan` por `spk_table` sólo si el binario lo exige.
+pub fn resolve_voice_motor(voice: &str, qvoice: Option<&Path>) -> VozMotor {
     if let Some(q) = qvoice {
         if q.is_file() {
             return VozMotor::Clonada(q.to_path_buf());
-        }
-    }
-    if let Some(r) = reference {
-        if r.is_file() {
-            return VozMotor::Clonada(r.to_path_buf());
         }
     }
     VozMotor::Preset(voice.to_string())
@@ -507,7 +496,7 @@ impl TtsEngine for Qwen3TtsEngine {
             }
             _ => None,
         };
-        let voz = resolve_voice_motor(&profile.name, qvoice.as_deref(), None);
+        let voz = resolve_voice_motor(&profile.name, qvoice.as_deref());
 
         // 1. HTTP manual configurado (solo presets; la voz clonada exige un
         //    servidor arrancado con su `--load-voice`, que solo gestiona el residente).
@@ -1320,34 +1309,26 @@ mod tests {
         assert_eq!(obj.get("emotion").and_then(|v| v.as_str()), Some("joy"));
     }
 
-    /// T6: tabla de resolución voz → motor (H1 T4: default ya no es alias Preset(ryan)).
+    /// T6: tabla de resolución voz → motor (default resuelve como Preset(default)).
     #[test]
     fn resolve_voice_motor_tabla() {
-        // T4: default sin referencia resuelve como Preset("default") — el alias muerto se eliminó;
-        // con reference.qvoice (caso prod) resolvería como Clonada (precedencia arriba).
+        // default sin referencia resuelve como Preset("default"); con qvoice resuelve como Clonada.
         assert_eq!(
-            resolve_voice_motor("default", None, None),
+            resolve_voice_motor("default", None),
             VozMotor::Preset("default".to_string())
         );
         let q = std::env::temp_dir().join("avi_tts_test_referencia.qvoice");
         std::fs::write(&q, b"QVCE").unwrap();
         assert_eq!(
-            resolve_voice_motor("mi_voz", Some(&q), None),
+            resolve_voice_motor("mi_voz", Some(&q)),
             VozMotor::Clonada(q.clone())
-        );
-        let w = std::env::temp_dir().join("avi_tts_test_referencia.wav");
-        std::fs::write(&w, b"RIFF").unwrap();
-        assert_eq!(
-            resolve_voice_motor("mi_voz", None, Some(&w)),
-            VozMotor::Clonada(w.clone())
         );
         // Sin referencia → preset con el nombre dado.
         assert_eq!(
-            resolve_voice_motor("vivian", None, None),
+            resolve_voice_motor("vivian", None),
             VozMotor::Preset("vivian".to_string())
         );
         std::fs::remove_file(&q).ok();
-        std::fs::remove_file(&w).ok();
     }
 
     /// T5: el healthcheck responde cuando el listener simula `/v1/health`, y
@@ -1450,7 +1431,6 @@ mod tests {
         assert_eq!(parsed["top_k"], 50);
         assert!((parsed["rep_penalty"].as_f64().unwrap() - 1.05).abs() < 1e-6);
         assert_eq!(parsed["language"], "es");
-        // H1 T4: default sin qvoice ya no es alias Preset(ryan) sino Preset(default); con qvoice sería Clonada.
         assert_eq!(parsed["speaker"], "default");
         assert!(parsed.get("seed").is_none());
 

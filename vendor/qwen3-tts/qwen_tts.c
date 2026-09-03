@@ -1662,9 +1662,9 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
         /* Suppress EOS for first 2 frames */
         if (frame < 2) ctx->logits[QWEN_TTS_CODEC_EOS] = -1e30f;
 
-        /* EOS boosting (H1 T2 opción a recomendada): estabilizar preset corto sin reintroducir Auto-capped 120..600.
-         * Para texto corto/medio (text_content_len ≤ 11, disparador H1) usar boost más agresivo:
-         *   boost_start = expected*1.5, +1.0/frame cap +15. Para texto largo/clonada mantener original.
+        /* EOS boosting: estabilizar preset corto.
+         * Para texto corto (text_content_len ≤ 11) usar boost más agresivo:
+         *   boost_start = expected*1.5, +1.0/frame cap +15. Para texto largo/clonada mantener base expected*2.0 +0.5 cap +10.
          * Heurística: ~3 frames por token BPE. */
         {
             int expected_frames = text_content_len * 3;
@@ -2018,7 +2018,7 @@ int qwen_tts_generate_batch(qwen_tts_ctx_t *ctx, char **chunks, int nc,
         int n_active = B;
 
         for (int frame = 0; frame < GEN_CAP && n_active > 0; frame++) {
-            /* 1. per-chunk codec head + sample code0 — H1 T2 batch mirror: boost corto agresivo */
+            /* 1. per-chunk codec head + sample code0 — boost corto agresivo para texto ≤11 */
             for (int b = 0; b < B; b++) {
                 if (!active[b]) { code0[b] = 0; continue; }
                 matvec_bf16(logits, ctx->codec_head_bf16, last_hidden + (size_t)b * h, vocab, h);

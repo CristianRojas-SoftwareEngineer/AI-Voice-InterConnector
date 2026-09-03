@@ -157,8 +157,7 @@ static int cp_to_utf8(uint32_t cp, char *out) {
     return 4;
 }
 
-/* Convert input byte to GPT-2 unicode UTF-8 string, return length
- * Verificado H1: byte 0xC3→U+0103? No, byte_to_unicode mapea bytes no-ASCII a U+0100..U+0143 sin colisión con '.' (0x2E) ni delimitadores. 0xC3 (ó byte1) y 0xB3 (ó byte2) van a codepoints distintos de ASCII/puntuación, sin estado global. */
+/* Convert input byte to GPT-2 unicode UTF-8 string, return length */
 static int byte_to_gpt2_utf8(uint8_t b, char *out) {
     return cp_to_utf8(byte_to_unicode[b], out);
 }
@@ -511,7 +510,7 @@ static char **pre_tokenize(const char *text, int *n_chunks) {
                     /* Determine type of what follows and consume accordingly */
                     unsigned char nc = (unsigned char)text[i];
                     if (is_letter(nc) || is_utf8_start(nc)) {
-                        /* Space + letters — avance UTF-8 con guardia de progreso (H1: ó + .) */
+                        /* Space + letters — avance UTF-8 con validación de continuación y guardia de progreso */
                         while (i < len) {
                             unsigned char cc = (unsigned char)text[i];
                             if (is_letter(cc)) { i++; }
@@ -609,7 +608,7 @@ static char **pre_tokenize(const char *text, int *n_chunks) {
                 /* Skip optional non-letter prefix */
                 if (!is_letter((unsigned char)text[lookahead]) && !is_utf8_start((unsigned char)text[lookahead]))
                     lookahead++;
-                /* Consume letters — con validación UTF-8 y guardia de progreso (H1) */
+                /* Consume letters — con validación UTF-8 y guardia de progreso */
                 int loop_start = lookahead;
                 while (lookahead < len) {
                     unsigned char cc = (unsigned char)text[lookahead];
@@ -898,7 +897,7 @@ int32_t *qwen_tokenizer_encode_para(qwen_tokenizer_t *tok, const char *text, int
             }
         }
         if (matched >= 0) {
-            if (p > seg) {  /* flush the BPE of the text before this tag — slice ya sanitizado por pre_tokenize (H1) */
+            if (p > seg) {  /* flush the BPE of the text before this tag — slice ya sanitizado por pre_tokenize */
                 size_t sl = (size_t)(p - seg);
                 char *sub = (char *)malloc(sl + 1);
                 memcpy(sub, seg, sl); sub[sl] = '\0';
@@ -908,7 +907,7 @@ int32_t *qwen_tokenizer_encode_para(qwen_tokenizer_t *tok, const char *text, int
                 free(sub_ids); free(sub);
             }
             PARA_PUSH(PARA_TAGS[matched].id);
-            /* Guardia de progreso mínimo 1 char/iteración (H1): mlen>0 garantizado por tags, pero validar */
+            /* Guardia de progreso mínimo 1 char/iteración: mlen>0 garantizado por tags, pero validar */
             if (mlen <= 0) mlen = 1;
             p += mlen; seg = p;
         } else {
@@ -927,7 +926,7 @@ int32_t *qwen_tokenizer_encode_para(qwen_tokenizer_t *tok, const char *text, int
             }
         }
     }
-    /* Sanitizar slice final antes de apply_bpe (H1): el pre_tokenize ya tolera UTF-8 fragmentado */
+    /* Sanitizar slice final antes de apply_bpe: el pre_tokenize ya tolera UTF-8 fragmentado */
     if (p > seg) {  /* flush trailing text */
         int subn = 0;
         int32_t *sub_ids = qwen_tokenizer_encode(tok, seg, &subn);

@@ -11,7 +11,7 @@ pub fn data_dir() -> PathBuf {
 
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (`qwen_tts.c:spk_table`)
 /// sin audio; `default` es voz clonada de fábrica (`.qvoice` graft vía Base) para
-/// garantizar `WER ≤0.25` en texto corto (H1). La distinción preset/clonada vive
+/// garantizar `WER ≤0.25` en texto corto. La distinción preset/clonada vive
 /// en `avi-tts::resolve_voice_motor` (presencia de `reference.qvoice`).
 pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
 
@@ -191,24 +191,14 @@ impl VoiceStore {
         Ok(())
     }
 
-    /// Buscar el archivo de referencia de una voz: `reference.qvoice`,
-    /// `reference.wav` legado o `speech-reference.wav` (nombre normalizado).
-    /// Las voces de fábrica nunca devuelven legado: son presets puros y nunca
-    /// deben caer en el brazo `Clonada` de `resolve_voice_motor`.
+    /// Buscar el archivo de referencia de una voz: `reference.qvoice`.
+    /// Solo `reference.qvoice` determina la rama clonada; los presets no
+    /// tienen referencia y resuelven como `Preset` en `resolve_voice_motor`.
     pub fn find_reference(&self, name: &str) -> Option<PathBuf> {
         let dir = self.base_dir.join(name.to_lowercase());
-        for ext in &["qvoice", "wav"] {
-            let path = dir.join(format!("reference.{}", ext));
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-        if is_factory_name(name) {
-            return None;
-        }
-        let legacy = dir.join("speech-reference.wav");
-        if legacy.is_file() {
-            return Some(legacy);
+        let path = dir.join("reference.qvoice");
+        if path.is_file() {
+            return Some(path);
         }
         None
     }
@@ -1143,18 +1133,13 @@ mod tests {
         assert!(saved.is_file());
         assert_eq!(voices.find_reference("mivoz").unwrap(), saved);
 
-        // Fallback a speech-reference.wav (legado del oráculo).
+        // Sin fallback wav: solo qvoice es canónico.
         let vdir = voices.voice_dir("otra");
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("speech-reference.wav"), b"RIFF").unwrap();
-        assert_eq!(
-            voices
-                .find_reference("OTRA")
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-            "speech-reference.wav"
+        assert!(
+            voices.find_reference("OTRA").is_none(),
+            "sin reference.qvoice no resuelve como clonada"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1234,7 +1219,7 @@ mod tests {
                 name
             );
         }
-        // Fábrica con legado speech-reference.wav no cae en Clonada
+        // Fábrica con speech-reference.wav no cae en Clonada (solo qvoice)
         let legacy = voices.voice_dir("ryan").join("speech-reference.wav");
         std::fs::write(&legacy, b"RIFF").unwrap();
         assert!(
@@ -1244,13 +1229,13 @@ mod tests {
         // Limpieza legada en siguiente ensure_initialized
         voices.ensure_initialized().unwrap();
         assert!(!legacy.is_file(), "ensure_initialized debe limpiar legado de fábrica");
-        // Voz clonada con legado sí resuelve (compatibilidad)
+        // Voz sin qvoice no resuelve como clonada aunque tenga wav legado
         let clon_dir = voices.voice_dir("otra");
         std::fs::create_dir_all(&clon_dir).unwrap();
         std::fs::write(clon_dir.join("speech-reference.wav"), b"RIFF").unwrap();
-        assert_eq!(
-            voices.find_reference("OTRA").unwrap().file_name().unwrap().to_string_lossy(),
-            "speech-reference.wav"
+        assert!(
+            voices.find_reference("OTRA").is_none(),
+            "sin qvoice no resuelve como clonada"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
