@@ -60,3 +60,54 @@ pub fn spawn_background() -> anyhow::Result<u32> {
     let child = cmd.spawn()?;
     Ok(child.id())
 }
+
+/// Helper determinista de desinstalación en Windows (`H4`).
+///
+/// No borra `install_dir` desde el proceso vivo (determinista: `PermissionDenied`
+/// si lo intentara). Escribe un `.ps1` en `%TEMP%` que espera la muerte del
+/// `PID` padre y luego borra `LiteralPath` con `Remove-Item -Recurse -Force`,
+/// sin best-effort: si crear el archivo o spawnear falla, retorna `Err` y
+/// `handle_uninstall` falla — no hay aviso `Bórralo manualmente`.
+#[cfg(windows)]
+pub fn spawn_uninstall_helper(install_dir: &std::path::Path, pid: u32) -> anyhow::Result<std::path::PathBuf> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    let dir_literal = install_dir.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
+         Start-Sleep -Milliseconds 500; \
+         if (Test-Path -LiteralPath '{dir}') {{ \
+           Remove-Item -LiteralPath '{dir}' -Recurse -Force -ErrorAction SilentlyContinue \
+         }}; \
+         Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n",
+        pid = pid,
+        dir = dir_literal
+    );
+
+    let helper = std::env::temp_dir().join(format!(
+        "avi-uninstall-{}-{}.ps1",
+        pid,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ));
+    std::fs::write(&helper, script)?;
+
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        helper.to_string_lossy().as_ref(),
+    ]);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    cmd.creation_flags(0x02000000 | 0x00000008 | 0x00000200);
+    cmd.spawn()?;
+    Ok(helper)
+}

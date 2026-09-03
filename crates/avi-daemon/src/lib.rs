@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 pub mod spawn;
-pub use spawn::spawn_background;
+pub use spawn::{spawn_background, spawn_uninstall_helper};
 // `hilos_disponibles` y el trait `SttEngine` (`.transcribe`) solo los consume
 // la superficie STT, gateada tras `native-stt`.
 #[cfg(feature = "native-stt")]

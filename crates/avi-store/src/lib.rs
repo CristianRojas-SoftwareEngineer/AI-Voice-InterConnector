@@ -23,6 +23,33 @@ pub fn is_factory_name(name: &str) -> bool {
     FACTORY_VOICES.contains(&name.to_lowercase().as_str())
 }
 
+/// Directorio de instalación per-user en Windows — única fuente canónica.
+///
+/// Espejo de `install-windows.ps1:Get-InstallDir` (`Join-Path $env:LOCALAPPDATA
+/// "Programs\ai-voice-interconnector"`). Construcción determinista en dos
+/// `join` — no `join("Programs/ai-...")` que deja `/` mixto — para que
+/// `display` y comparación sean coherentes con el registro `HKCU`.
+#[cfg(windows)]
+pub fn windows_install_dir() -> PathBuf {
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(local)
+        .join("Programs")
+        .join("ai-voice-interconnector")
+}
+
+/// Normalización canónica de una entrada de `PATH` para comparación
+/// determinista: `/` → `\`, `lowercase`, `trim` de `\` y espacios.
+/// Hace que `C:\...\Programs/ai-voice-interconnector` y
+/// `C:\...\Programs\ai-voice-interconnector\` sean idénticas.
+pub fn canonical_path_key(p: &Path) -> String {
+    p.to_string_lossy()
+        .replace('/', "\\")
+        .to_lowercase()
+        .trim_matches('\\')
+        .trim()
+        .to_string()
+}
+
 // ─── VoiceStore ──────────────────────────────────────────────────────
 
 /// Una voz registrada (fábrica o de usuario)
@@ -1226,6 +1253,37 @@ mod tests {
             "speech-reference.wav"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn windows_install_dir_y_canonical_path_key_deterministas() {
+        // windows_install_dir usa dos join — no mixto — y canonical_path_key
+        // normaliza \ vs / , case y trailing.
+        #[cfg(windows)]
+        {
+            let dir = windows_install_dir();
+            assert!(
+                !dir.to_string_lossy().contains('/'),
+                "install_dir no debe contener '/' mixto: {}",
+                dir.display()
+            );
+            assert!(dir.ends_with("ai-voice-interconnector"));
+        }
+        // canonical_path_key es cross-platform.
+        assert_eq!(
+            canonical_path_key(std::path::Path::new(
+                "C:\\Users\\Ana\\AppData\\Local\\Programs/ai-voice-interconnector\\"
+            )),
+            canonical_path_key(std::path::Path::new(
+                "C:\\Users\\ana\\AppData\\Local\\Programs\\ai-voice-interconnector"
+            ))
+        );
+        assert_eq!(
+            canonical_path_key(std::path::Path::new(
+                "C:/Users/Ana/AppData/Local/Programs/ai-voice-interconnector/"
+            )),
+            "c:\\users\\ana\\appdata\\local\\programs\\ai-voice-interconnector"
+        );
     }
 
     /// T1: `revision_of("qwen3-tts-0.6b-base")` existe con repo público confirmado y hash

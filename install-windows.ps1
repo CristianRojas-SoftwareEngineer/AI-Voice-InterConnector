@@ -101,6 +101,8 @@ function Test-Sha256Sum {
 
 function Get-InstallDir {
     # Directorio de instalación per-user (sin UAC). Constante del proyecto.
+    # Espejo de `crates/avi-store/src/lib.rs:windows_install_dir` — no cambiar
+    # sin alinear ambas fuentes canónicas.
     return Join-Path $env:LOCALAPPDATA "Programs\ai-voice-interconnector"
 }
 

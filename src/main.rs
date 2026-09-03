@@ -1726,26 +1726,53 @@ async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> 
     }
     #[cfg(windows)]
     {
-        let install_dir = {
-            let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(local).join("Programs/ai-voice-interconnector")
-        };
-        // Quitar del PATH de usuario (HKCU\Environment)
-        let _ = remove_windows_user_path(&install_dir);
-        // Borrar directorio de instalación (puede fallar si el exe está en uso)
+        // Fuente canónica única — espejo de `install-windows.ps1:Get-InstallDir`
+        // y `avi-store::windows_install_dir`. Sin `join("Programs/ai-...")` mixto.
+        let install_dir = store::windows_install_dir();
+        // H2 determinista: sin `let _ =`, si falla propaga `path_cleanup_failed`
+        remove_windows_user_path(&install_dir).map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "path_cleanup_failed",
+                format!("No se pudo limpiar PATH de {}: {}", install_dir.display(), e),
+            )
+        })?;
+        // H4 determinista: si el `exe` vivo está dentro de `install_dir`,
+        // no se puede `remove_dir_all` sin `PermissionDenied` — se delega a
+        // helper desacoplado `Wait-Process PID` + `Remove-Item -LiteralPath`.
+        // Si el `exe` no está dentro (sandbox de `cargo test`), borrado
+        // síncrono determinista. Sin aviso `Bórralo manualmente`.
         if install_dir.exists() {
-            match std::fs::remove_dir_all(&install_dir) {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    eprintln!("Aviso: no se pudo borrar {} (binario en uso). Bórralo manualmente tras cerrar la terminal.", install_dir.display());
-                }
-                Err(e) => {
-                    return Err(CliError::new(
+            let inside = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.canonicalize().ok())
+                .and_then(|exe| {
+                    install_dir
+                        .canonicalize()
+                        .ok()
+                        .map(|dir| exe.starts_with(dir))
+                })
+                .unwrap_or(false);
+            if inside {
+                daemon::spawn_uninstall_helper(&install_dir, std::process::id()).map_err(|e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "uninstall_failed",
+                        format!(
+                            "No se pudo programar el borrado de {}: {}",
+                            install_dir.display(),
+                            e
+                        ),
+                    )
+                })?;
+            } else {
+                std::fs::remove_dir_all(&install_dir).map_err(|e| {
+                    CliError::new(
                         ExitCode::Error,
                         "uninstall_failed",
                         format!("No se pudo borrar {}: {}", install_dir.display(), e),
-                    ));
-                }
+                    )
+                })?;
             }
         }
     }
@@ -1770,10 +1797,15 @@ fn remove_windows_user_path(dir: &std::path::Path) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     let path: String = env.get_value("Path").unwrap_or_default();
-    let target = dir.to_string_lossy().to_string();
+    let target_key = store::canonical_path_key(dir);
     let filtered: Vec<String> = path
         .split(';')
-        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(&target))
+        .filter(|s| {
+            if s.is_empty() {
+                return false;
+            }
+            store::canonical_path_key(std::path::Path::new(s)) != target_key
+        })
         .map(|s| s.to_string())
         .collect();
     let new_path = filtered.join(";");

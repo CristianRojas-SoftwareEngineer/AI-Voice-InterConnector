@@ -266,7 +266,11 @@ fn uninstall_force_no_se_auto_mata() {
         ],
     );
 
-    // (d) Invariante crítico: no auto-muerte, contrato JSON intacto, install_dir borrado.
+    // (d) Invariante crítico: no auto-muerte, contrato JSON intacto.
+    // H2+H4 atómicos: `PATH` canónico sin residuo y helper desacoplado
+    // determinista — no se afirma `!programs.exists()` síncrono porque `H4`
+    // es `Wait-Process PID` + `Remove-Item -LiteralPath` tras la salida del
+    // padre (determinista sin `PermissionDenied` aviso).
     assert_eq!(
         code, 0,
         "uninstall --force no debe auto-matarse: {}",
@@ -274,10 +278,21 @@ fn uninstall_force_no_se_auto_mata() {
     );
     assert_eq!(actual["status"], Value::String("uninstalled".to_string()));
     assert_eq!(actual["schema_version"], Value::String("3".to_string()));
-    assert!(
-        !programs.exists(),
-        "el install_dir del sandbox debe borrarse tras uninstall"
-    );
+    // H4: el helper se crea en `TEMP\avi-uninstall-*.ps1` y borra
+    // `install_dir` tras la muerte del PID; el padre no intenta
+    // `remove_dir_all` síncrono. En sandbox sin `exe` vivo el helper lo
+    // borra en <1s; se espera de forma determinista sin best-effort.
+    {
+        let mut ok = !programs.exists();
+        for _ in 0..10 {
+            if ok {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            ok = !programs.exists();
+        }
+        assert!(ok, "el install_dir del sandbox debe borrarse (H4 determinista)");
+    }
 
     // (e) Limpieza del sandbox.
     let _ = std::fs::remove_dir_all(&sandbox);

@@ -159,7 +159,7 @@ Reproducir con `RUST_LOG` activo y auditar `handle_daemon` restart (`src/main.rs
 Dos resultados de `uninstall --force` que NO son defectos y quedan como referencia:
 
 1. **Fix del self-kill validado**: el fallback de kill del daemon por PID con guarda `pid != std::process::id()` (`stop_daemon_and_resident`, introducido para v0.18.26 tras el self-kill de v0.18.10–v0.18.25 documentado en el plan de la corrección) funciona: el CLI completa con exit 0, `{"status":"uninstalled","schema_version":"3"}`, elimina `data_dir`, snapshots HF y caché xet, y no se auto-mata.
-2. **El directorio de instalación queda en disco**: en Windows un ejecutable no puede borrarse a sí mismo mientras corre. El binario emite el aviso correcto ("binario en uso. Bórralo manualmente tras cerrar la terminal.") y el caso está contemplado. Solo la entrada PATH (hallazgo 2) es residuo real.
+2. **El directorio de instalación queda en disco (H4 atómico determinista desde fix H2+H4)**: en Windows un ejecutable no puede borrarse a sí mismo mientras corre. Antes del fix el binario emitía `Aviso: binario en uso. Bórralo manualmente` (`src/main.rs:1740` best-effort); con el fix `H2+H4` atómicos `src/main.rs:1727` no intenta `remove_dir_all` desde el proceso vivo y delega a helper desacoplado `crates/avi-daemon/src/spawn.rs:spawn_uninstall_helper` (`Wait-Process PID` + `Remove-Item -LiteralPath` con `Stdio::null` + `CREATE_NO_HANDLE_INHERIT|CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP`), sin aviso y sin `let _ =`. Solo la entrada PATH (hallazgo 2, ahora determinista vía `avi-store::canonical_path_key`) es residuo real.
 
 ## 6. Entorno de la máquina de pruebas (nota)
 
