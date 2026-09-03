@@ -1662,15 +1662,18 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
         /* Suppress EOS for first 2 frames */
         if (frame < 2) ctx->logits[QWEN_TTS_CODEC_EOS] = -1e30f;
 
-        /* EOS boosting: after 2x expected duration, gently boost EOS logit.
-         * Heuristic: ~3 frames per BPE token. Start boosting at 2x expected,
-         * linearly increasing by 0.5 per frame beyond that threshold. */
+        /* EOS boosting (H1 T2 opción a recomendada): estabilizar preset corto sin reintroducir Auto-capped 120..600.
+         * Para texto corto/medio (text_content_len ≤ 11, disparador H1) usar boost más agresivo:
+         *   boost_start = expected*1.5, +1.0/frame cap +15. Para texto largo/clonada mantener original.
+         * Heurística: ~3 frames por token BPE. */
         {
             int expected_frames = text_content_len * 3;
-            int boost_start = expected_frames * 2;
+            int is_short = (text_content_len > 0 && text_content_len <= 11);
+            int boost_start = is_short ? (expected_frames * 3 / 2) : (expected_frames * 2);
             if (expected_frames > 0 && frame > boost_start) {
-                float boost = 0.5f * (frame - boost_start);
-                if (boost > 10.0f) boost = 10.0f;  /* cap at +10 */
+                float boost = (is_short ? 1.0f : 0.5f) * (float)(frame - boost_start);
+                float cap = is_short ? 15.0f : 10.0f;
+                if (boost > cap) boost = cap;
                 ctx->logits[QWEN_TTS_CODEC_EOS] += boost;
             }
         }
@@ -2015,15 +2018,19 @@ int qwen_tts_generate_batch(qwen_tts_ctx_t *ctx, char **chunks, int nc,
         int n_active = B;
 
         for (int frame = 0; frame < GEN_CAP && n_active > 0; frame++) {
-            /* 1. per-chunk codec head + sample code0 */
+            /* 1. per-chunk codec head + sample code0 — H1 T2 batch mirror: boost corto agresivo */
             for (int b = 0; b < B; b++) {
                 if (!active[b]) { code0[b] = 0; continue; }
                 matvec_bf16(logits, ctx->codec_head_bf16, last_hidden + (size_t)b * h, vocab, h);
                 for (int t = 0; t < vocab; t++) { if (logits[t] > 100.0f) logits[t] = 100.0f; if (logits[t] < -100.0f) logits[t] = -100.0f; }
                 for (int t = 2048; t < vocab; t++) if (t != QWEN_TTS_CODEC_EOS) logits[t] = -1e30f;
                 if (frame < 2) logits[QWEN_TTS_CODEC_EOS] = -1e30f;
-                int ef = tcl[b] * 3, bs = ef * 2;
-                if (ef > 0 && frame > bs) { float bo = 0.5f * (frame - bs); if (bo > 10.0f) bo = 10.0f; logits[QWEN_TTS_CODEC_EOS] += bo; }
+                {
+                    int ef = tcl[b] * 3;
+                    int is_short_b = (tcl[b] > 0 && tcl[b] <= 11);
+                    int bs = is_short_b ? (ef * 3 / 2) : (ef * 2);
+                    if (ef > 0 && frame > bs) { float bo = (is_short_b ? 1.0f : 0.5f) * (float)(frame - bs); float cap_b = is_short_b ? 15.0f : 10.0f; if (bo > cap_b) bo = cap_b; logits[QWEN_TTS_CODEC_EOS] += bo; }
+                }
                 float ft = ctx->temperature; int ftk = ctx->top_k;
                 if (ctx->greedy_warmup > 0 && frame < ctx->greedy_warmup) { ft = 0.0f; ftk = 1; }
                 int c0 = qwen_tts_sample(logits, vocab, ft, ftk, ctx->top_p, ctx->rep_penalty, prev_tok[b], nprev[b]);

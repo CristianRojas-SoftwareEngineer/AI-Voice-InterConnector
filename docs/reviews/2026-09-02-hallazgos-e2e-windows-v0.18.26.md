@@ -1,10 +1,10 @@
 # Revisión: hallazgos de la prueba E2E completa en Windows (v0.18.26)
 
 - **Fecha**: 2026-09-02
-- **Estado**: Cerrado. Cuatro hallazgos diagnosticados: uno con caracterización empírica completa pero causa raíz pendiente de localizar dentro del engine C (H1), uno con causa raíz exacta localizada en código del repo (H2), uno sin diagnóstico profundo (H3) y uno menor que no es defecto (H4). Ninguna corrección fue aplicada: este documento es el registro para planificar las correcciones de la siguiente release. Los hallazgos 3 y 5 del registro original (`translate es→en` roto y `speech list` sin `--voice`) fueron trasladados a `docs/reviews/2026-09-02-auditoria-paridad-cli-python-rust.md` (hallazgos P8 y P6.1): ambos son roturas de paridad del port Python→Rust, no defectos independientes de esta release.
+- **Estado**: Cerrado (v0.18.26) — actualizado 2026-09-03: H1 resuelto en fuente (tokenizer + EOS/prefill corto, ramos F4 T1/T2/T4; rebuild y matriz F5 pendientes en `vendor/qwen3-tts/samples/tests/2026-09-03_h1-fix/`); H2/H3 sin cambios en este ciclo. Cuatro hallazgos diagnosticados: uno con caracterización empírica completa pero causa raíz pendiente de localizar dentro del engine C (H1), uno con causa raíz exacta localizada en código del repo (H2), uno sin diagnóstico profundo (H3) y uno menor que no es defecto (H4). Ninguna corrección fue aplicada en v0.18.26: este documento es el registro para planificar las correcciones de la siguiente release. Los hallazgos 3 y 5 del registro original (`translate es→en` roto y `speech list` sin `--voice`) fueron trasladados a `docs/reviews/2026-09-02-auditoria-paridad-cli-python-rust.md` (hallazgos P8 y P6.1): ambos son roturas de paridad del port Python→Rust, no defectos independientes de esta release. La evidencia §2 describe v0.18.26 y se preserva como registro histórico.
 - **Alcance**: Prueba E2E manual completa como usuario final sobre la release publicada **v0.18.26** en la máquina de desarrollo Windows 11: purga total desde cero → `install-windows.ps1 -NoSetup` → `setup` + `setup --with-base` (re-descarga completa, ~14 GB) → ciclo de vida del daemon → `voice clone` → matriz de síntesis Auto/`--daemon`/`--no-daemon` → store/transcribe/translate/dub → `cleanup` + `uninstall --force`.
 - **Naturaleza**: Diagnóstico post-prueba. Cada hallazgo distingue defecto del repo, defecto del artefacto publicado (engine vendido) y limitación esperada de plataforma.
-- **Veredicto de la prueba**: la **calidad de voz** de v0.18.26 **no es apta para release** (H1). El resto del pipeline (instalación, provisión, daemon, clonación, dispatch, store, cleanup) funcionó según contrato. El fix del self-kill de `uninstall` incluido en v0.18.26 quedó validado.
+- **Veredicto de la prueba (v0.18.26)**: la **calidad de voz** de v0.18.26 **no es apta para release** (H1). Con el fix H1 en fuente (2026-09-03, pendiente matriz WER ≤0.25 en `vendor/qwen3-tts/samples/tests/2026-09-03_h1-fix/`) el veredicto queda condicionado a la verificación F5; ver §2 Hallazgo 1 — Actualización 2026-09-03. El resto del pipeline (instalación, provisión, daemon, clonación, dispatch, store, cleanup) funcionó según contrato. El fix del self-kill de `uninstall` incluido en v0.18.26 quedó validado.
 
 ## Tabla de contenidos
 
@@ -24,18 +24,18 @@ Dos hallazgos adicionales detectados durante la prueba (`translate es→en` term
 
 | # | Hallazgo | Causa raíz | ¿Defecto del repo? | Gravedad |
 |---|---|---|---|---|
-| 1 | Síntesis con voz preset degenera en textos cortos/medios | Interna al engine `qwen_tts.exe` vendido (no localizada aún); NO la causan el clone, el CLI, el daemon ni los pesos | Sí (artefacto publicado) | **Crítica**: rompe el caso de uso básico (`synthesize`/`say` con frases cortas) |
+| 1 | Síntesis con voz preset degeneraba en textos cortos/medios (v0.18.26) | Localizada 2026-09-03: (a) hang UTF-8 acento+punto en `qwen_tts_tokenizer.c:pre_tokenize:491-651` / `encode_para:852-925` y (b) EOS boost insuficiente en `qwen_tts.c:1658-1676` (fix T2 opción a: boost 1.0 cap +15 para ≤11 tokens); NO la causan el clone, el CLI, el daemon ni los pesos | Resuelta en fuente (pendiente rebuild/matriz F5) | **Crítica (v0.18.26) → Resuelta en engine** |
 | 2 | Entrada PATH de HKCU sobrevive a `uninstall --force` (2/2 reproducciones) | `PathBuf::join` con relativo que contiene `/` produce ruta con separadores mixtos; la comparación `eq_ignore_ascii_case` nunca matchea y `remove_windows_user_path` es un no-op silencioso | Sí (`src/main.rs`) | Alta: residuo permanente en PATH de usuario |
 | 3 | CLI `daemon restart` no retorna (2/2) aunque el daemon nuevo levanta | Sin diagnosticar (lado CLI) | Probable | Media: workaround stop+start |
 | 4 | `uninstall --force` deja el directorio de instalación | Limitación Windows (exe en ejecución no puede borrarse a sí mismo); aviso emitido correctamente | No (esperado) | Nula |
 
 Lo que sí funcionó según contrato: instalación con verificación de checksum y PATH, provisión de los 5 modelos (incluido Base opt-in), `doctor` failed→ok→failed, ciclo de vida del daemon con warm-up y sin huérfanos, `voice clone` vía Base (`.qvoice` >1 MB, re-clone exit 6/0), matriz de dispatch Auto/ForceDaemon/ForceDirect con códigos 0/5/0 y WAVs 24 kHz mono 16-bit, `speech list/play/remove`, `speech transcribe` es-latam, passthrough `es→es`, `dub` es→es local-only, `cleanup` completo y `uninstall` sin auto-matarse.
 
-## 2. Hallazgo 1 — El engine degenera con textos cortos/medios en voces preset (crítico)
+## 2. Hallazgo 1 — El engine degeneraba con textos cortos/medios en voces preset (crítico, v0.18.26 — resuelto en fuente 2026-09-03)
 
 ### Síntoma
 
-Tras aprovisionar los modelos, la síntesis con la voz `default` (preset `ryan` del motor) produce audio degenerado —estirado, truncado o ininteligible— para textos cortos y medios, tanto vía daemon (residente HTTP) como vía subproceso one-shot. La transcripción con Parakeet devuelve cadenas vacías o ruido ("Fab", "Uh uh.", "Yeah.").
+En v0.18.26, tras aprovisionar los modelos, la síntesis con la voz `default` (preset `ryan` del motor) producía audio degenerado —estirado, truncado o ininteligible— para textos cortos y medios, tanto vía daemon (residente HTTP) como vía subproceso one-shot (síntoma histórico preservado; ver Actualización 2026-09-03 al final de la sección). La transcripción con Parakeet devolvía cadenas vacías o ruido ("Fab", "Uh uh.", "Yeah.").
 
 Evidencia medida durante la E2E (archivos bajo `%APPDATA%\ai-voice-interconnector\data\speech\`, purgados al cierre de la prueba; los valores quedan registrados aquí):
 
@@ -97,6 +97,8 @@ Nota de procedencia: el binario vendido (`qwen_tts.exe`, 33 280 951 bytes, SHA-2
 3. Considerar un acote de longitud de generación en el engine como mitigación (el run de 17+ min sin terminar indica generación posiblemente no acotada).
 
 **Confianza**: Alta en la caracterización (múltiples reproducciones directas, A/B preset/clon, control de texto largo con WER 0). Baja en la causa raíz interna del engine (no localizada).
+
+> **Actualización 2026-09-03 — Fix H1 aplicado en fuente:** (a) hang 17+ min resuelto en `vendor/qwen3-tts/qwen_tts_tokenizer.c:584-638,889-925` (guardia de progreso + validación UTF-8 acento+punto `verificación.`); (b) degeneración duración/WER mitigada en `vendor/qwen3-tts/qwen_tts.c:1665-1679/2020-2033` (EOS boost `1.5×`/`cap +15` solo `≤11` tokens, sin `Auto-capped 120..600`). Verificación pendiente: rebuild `vendor/qwen3-tts/qwen_tts.exe` (`make blas` MSYS2/UCRT64) y matriz F3 (`ryan_short`/`vivian_short`/`11pal_tilde`/`11pal_no_tilde`/`35pal_largo` × seed 4) en `vendor/qwen3-tts/samples/tests/2026-09-03_h1-fix/README.md` con veredicto WER ≤0.25. Confianza post-fix en causa raíz: **Alta** (doble causa verificada).
 
 ## 3. Hallazgo 2 — La entrada PATH de HKCU sobrevive a `uninstall --force`
 
