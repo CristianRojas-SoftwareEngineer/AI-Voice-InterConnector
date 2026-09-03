@@ -531,9 +531,9 @@ pub fn xet_cache_dir() -> PathBuf {
     }
 }
 
-/// Directorio CT2 derivado de los snapshots HF Marian, cacheado en `hf_cache_dir()/ct2`.
+/// Directorio CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2`.
 /// Layout: `hf_cache_dir()/ct2/opus-mt-es-en` y `opus-mt-en-es`, cada uno con `model.bin` CT2.
-/// Es el derivado idempotente de `_convert_translation_model` del oráculo Python.
+/// Invariante: `Marian HF presente ⇒ CT2 model.bin presente`; idempotente por `mtime`.
 pub fn ct2_cache_dir() -> PathBuf {
     hf_cache_dir().join("ct2")
 }
@@ -542,6 +542,15 @@ pub fn ct2_model_dir(pair: &str) -> PathBuf {
 }
 pub fn is_ct2_provisioned(pair: &str) -> bool {
     ct2_model_dir(pair).join("model.bin").is_file()
+}
+/// Purga determinista del derivado CT2 en `hf_cache_dir/ct2`, simétrica a `remove_xet_cache`.
+pub fn remove_ct2_cache() -> Result<bool> {
+    let ct2 = ct2_cache_dir();
+    if ct2.is_dir() {
+        std::fs::remove_dir_all(&ct2)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Almacén de modelos descargados.

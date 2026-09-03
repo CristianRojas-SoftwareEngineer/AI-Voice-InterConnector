@@ -591,7 +591,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 #### Provisión y daemon
 
-`setup --language {en, all}` descarga y convierte a formato CT2 el par `opus-mt-{es,en}` junto al modelo TTS inglés; `doctor` reporta un chequeo único «Translation model (es<->en)» que exige **ambas** direcciones para pasar; `cleanup --model` incluye la caché de modelos de traducción en el barrido. `daemon start --language {en, all}` precarga también el modelo de traducción en RAM.
+`setup` descarga `Marian` (`opus-mt-es-en`/`en-es`) y convierte incondicionalmente su derivado obligatorio `CT2` `INT8` en `hf_cache_dir/ct2/opus-mt-{es-en,en-es}/model.bin` (`crates/avi-store/src/lib.rs:ct2_model_dir`, idempotente por `mtime`); `doctor` exige `model.bin` para ambas direcciones (Falla con `CT2 es→en/en→es no provisionado` si `Marian HF` está pero `CT2` no); `cleanup` purga `hf_cache_dir/ct2` junto a `hub/xet`. Sin gating por `--language`: la provisión es determinista para la instalación por defecto.
 
 #### `speech transcribe`: audio→texto, verificable sin traducir ni sintetizar
 
