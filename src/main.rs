@@ -36,11 +36,8 @@ const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 /// Intervalo entre reintentos del sondeo de readiness.
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Ruta fija del modelo Marian/opus-mt es→en ya convertido a CT2, reutilizado
-/// por `translate` (no se gestiona vía `ModelStore`: layout incompatible).
-const DEFAULT_TRANSLATION_MODEL_ES_EN: &str = "models/ct2/opus-mt-es-en";
-/// Ruta fija del modelo Marian/opus-mt en→es ya convertido a CT2 (ídem).
-const DEFAULT_TRANSLATION_MODEL_EN_ES: &str = "models/ct2/opus-mt-en-es";
+/// CT2 derivado de Marian se cachea en `hf_cache_dir()/ct2` vía `ModelStore::ct2_model_dir`
+/// (oráculo `default_cache_dir`), no en `models/ct2` CWD. Ver `handle_setup` conversión.
 
 /// Resuelve un token de idioma de la CLI (`es-latam`/`en`) al código ISO que
 /// exige el motor STT: `es-latam` -> `es`; cualquier otro valor pasa verbatim
@@ -413,9 +410,9 @@ fn handle_translate(
         return Ok(());
     }
     // Par no soportado → exit 2 (validación pura, sin tocar el modelo).
-    let model_dir = match (source, target) {
-        ("es", "en") => DEFAULT_TRANSLATION_MODEL_ES_EN,
-        ("en", "es") => DEFAULT_TRANSLATION_MODEL_EN_ES,
+    let ct2_dir = match (source, target) {
+        ("es", "en") => store::ct2_model_dir("es-en"),
+        ("en", "es") => store::ct2_model_dir("en-es"),
         _ => {
             return Err(CliError::new(
                 ExitCode::InvalidInput,
@@ -427,15 +424,14 @@ fn handle_translate(
             ));
         }
     };
-    // Modelo ausente -> exit 4, previo a construir el motor (patrón de STT).
-    // Se verifica `model.bin` (CT2) en lugar del directorio para evitar falso positivo con dir vacío.
-    if !std::path::Path::new(model_dir).join("model.bin").exists() {
+    // CT2 derivado en hf_cache_dir()/ct2 — se verifica model.bin para evitar dir vacío.
+    if !ct2_dir.join("model.bin").is_file() {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
             format!(
-                "El modelo de traducción no está provisionado en '{}/model.bin'.",
-                model_dir
+                "El modelo de traducción no está provisionado en '{}' (hf_cache_dir/ct2) — ejecuta setup --language en.",
+                ct2_dir.display()
             ),
         ));
     }
@@ -443,7 +439,7 @@ fn handle_translate(
     // toda la validación previa (par soportado, modelo presente) es pura y corre igual.
     #[cfg(not(feature = "native-translation"))]
     {
-        let _ = model_dir;
+        let _ = ct2_dir.as_os_str();
         Err(CliError::new(
             ExitCode::Error,
             "translation_unsupported",
@@ -452,7 +448,7 @@ fn handle_translate(
     }
     #[cfg(feature = "native-translation")]
     {
-        let translated = translation::translate(text, source, target, model_dir).map_err(|e| {
+        let translated = translation::translate(text, source, target, &ct2_dir).map_err(|e| {
             CliError::new(
                 ExitCode::TranslationFailed,
                 "translation_failed",
@@ -1048,9 +1044,9 @@ async fn handle_speech(
                 let final_text = if source == target {
                     transcribed.clone()
                 } else {
-                    let model_dir = match (source, target) {
-                        ("es", "en") => DEFAULT_TRANSLATION_MODEL_ES_EN,
-                        ("en", "es") => DEFAULT_TRANSLATION_MODEL_EN_ES,
+                    let ct2_dir = match (source, target) {
+                        ("es", "en") => store::ct2_model_dir("es-en"),
+                        ("en", "es") => store::ct2_model_dir("en-es"),
                         _ => {
                             return Err(CliError::new(
                                 ExitCode::InvalidInput,
@@ -1062,13 +1058,13 @@ async fn handle_speech(
                             ));
                         }
                     };
-                    if !std::path::Path::new(model_dir).exists() {
+                    if !ct2_dir.join("model.bin").is_file() {
                         return Err(CliError::new(
                             ExitCode::ModelMissing,
                             "model_missing",
                             format!(
-                                "El modelo de traducción no está provisionado en '{}'.",
-                                model_dir
+                                "El modelo de traducción no está provisionado en '{}' (hf_cache_dir/ct2) — ejecuta setup --language en.",
+                                ct2_dir.display()
                             ),
                         ));
                     }
@@ -1084,7 +1080,7 @@ async fn handle_speech(
                     }
                     #[cfg(feature = "native-translation")]
                     {
-                        translation::translate(&transcribed, source, target, model_dir).map_err(
+                        translation::translate(&transcribed, source, target, &ct2_dir).map_err(
                             |e| {
                                 CliError::new(
                                     ExitCode::TranslationFailed,
@@ -1427,6 +1423,51 @@ async fn handle_setup(
         provisioned.push(name.to_string());
     }
 
+    // 2b. Conversión CT2 idempotente para Marian (oráculo _provision_translation_pairs / _convert_translation_model)
+    // Gateado por --language en|all, idempotente: si CT2 ya existe y es más nuevo que HF snapshot, skip.
+    if language == "en" || language == "all" {
+        for pair in &["es-en", "en-es"] {
+            let hf_name = format!("marian-{}", pair);
+            if !model_store.is_provisioned(&hf_name) {
+                continue;
+            }
+            let Some(hf_snapshot) = model_store.model_snapshot_path(&hf_name) else {
+                continue;
+            };
+            let ct2_dir = store::ct2_model_dir(pair);
+            if store::is_ct2_provisioned(pair) {
+                // Si ya existe model.bin, verificar mtime para idempotencia real
+                let ct2_mtime = std::fs::metadata(ct2_dir.join("model.bin"))
+                    .and_then(|m| m.modified())
+                    .ok();
+                let hf_mtime = std::fs::metadata(hf_snapshot.join("pytorch_model.bin"))
+                    .or_else(|_| std::fs::metadata(hf_snapshot.join("model.safetensors")))
+                    .and_then(|m| m.modified())
+                    .ok();
+                if let (Some(ct2_t), Some(hf_t)) = (ct2_mtime, hf_mtime) {
+                    if ct2_t > hf_t {
+                        tracing::info!("CT2 {} ya convertido ({}), skip", pair, ct2_dir.display());
+                        continue;
+                    }
+                } else {
+                    tracing::info!("CT2 {} ya existe, skip", pair);
+                    continue;
+                }
+            }
+            if let Err(e) = convert_marian_to_ct2(&hf_snapshot, &ct2_dir) {
+                tracing::warn!(
+                    "No se pudo convertir CT2 {}: {} — ejecuta manualmente: ct2-transformers-converter --model {} --output_dir {} --quantization int8",
+                    pair,
+                    e,
+                    hf_snapshot.display(),
+                    ct2_dir.display()
+                );
+            } else {
+                tracing::info!("CT2 {} convertido en {}", pair, ct2_dir.display());
+            }
+        }
+    }
+
     if json_mode {
         emit_raw_json(json!({
             "status": "completed",
@@ -1442,6 +1483,39 @@ async fn handle_setup(
         );
     }
     Ok(())
+}
+
+fn convert_marian_to_ct2(
+    hf_snapshot: &std::path::Path,
+    ct2_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(ct2_dir)?;
+    // Intentar conversión vía Python ctranslate2.converters.transformers (oráculo _convert_translation_model)
+    let try_converter = |bin: &str| {
+        std::process::Command::new(bin)
+            .args([
+                "-m",
+                "ctranslate2.converters.transformers",
+                "--model",
+                &hf_snapshot.to_string_lossy(),
+                "--output_dir",
+                &ct2_dir.to_string_lossy(),
+                "--quantization",
+                "int8",
+                "--force",
+            ])
+            .status()
+    };
+    match try_converter("python") {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => anyhow::bail!("converter python exit {}", s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match try_converter("python3") {
+            Ok(s) if s.success() => Ok(()),
+            Ok(s) => anyhow::bail!("converter python3 exit {}", s),
+            Err(e2) => anyhow::bail!("python no encontrado: {} / {}", e, e2),
+        },
+        Err(e) => anyhow::bail!("fallo al ejecutar converter: {}", e),
+    }
 }
 
 async fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {

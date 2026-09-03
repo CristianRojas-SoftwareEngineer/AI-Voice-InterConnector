@@ -514,6 +514,19 @@ pub fn xet_cache_dir() -> PathBuf {
     }
 }
 
+/// Directorio CT2 derivado de los snapshots HF Marian, cacheado en `hf_cache_dir()/ct2`.
+/// Layout: `hf_cache_dir()/ct2/opus-mt-es-en` y `opus-mt-en-es`, cada uno con `model.bin` CT2.
+/// Es el derivado idempotente de `_convert_translation_model` del oráculo Python.
+pub fn ct2_cache_dir() -> PathBuf {
+    hf_cache_dir().join("ct2")
+}
+pub fn ct2_model_dir(pair: &str) -> PathBuf {
+    ct2_cache_dir().join(format!("opus-mt-{}", pair))
+}
+pub fn is_ct2_provisioned(pair: &str) -> bool {
+    ct2_model_dir(pair).join("model.bin").is_file()
+}
+
 /// Almacén de modelos descargados.
 ///
 /// Fuente de verdad: snapshots de HuggingFace en `hf_cache_dir()` con layout

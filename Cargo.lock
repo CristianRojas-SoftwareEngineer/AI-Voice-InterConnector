@@ -264,6 +264,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "avi-core",
+ "avi-store",
  "ct2rs",
  "serde",
  "serde_json",

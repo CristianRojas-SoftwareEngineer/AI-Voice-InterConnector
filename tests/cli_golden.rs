@@ -139,7 +139,7 @@ fn parakeet_model_disponible() -> bool {
 /// que el E2E que lo usa se gatea por feature (no solo por presencia de modelo).
 #[cfg(feature = "native-translation")]
 fn ct2_model_disponible() -> bool {
-    std::path::Path::new("models/ct2/opus-mt-es-en/model.bin").exists()
+    avi_store::is_ct2_provisioned("es-en") && avi_store::is_ct2_provisioned("en-es")
 }
 
 #[test]
@@ -316,7 +316,7 @@ fn translate_texto_vacio_sale_con_codigo_2() {
 #[test]
 fn translate_es_a_en_produce_traduccion() {
     if !ct2_model_disponible() {
-        eprintln!("[translate] skip: sin modelo CT2 es→en (models/ gitignoreado)");
+        eprintln!("[translate] skip: sin modelo CT2 es→en");
         return;
     }
     // El texto traducido depende del motor real; se verifican invariantes de
