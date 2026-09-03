@@ -18,7 +18,9 @@ use avi_core::engine::SttEngine;
 #[test]
 #[ignore]
 fn benchmark_latencia_calidad() {
-    let model_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../models/parakeet-tdt-v3");
+    let model_dir = avi_store::ModelStore::new()
+        .model_snapshot_path("parakeet-tdt-v3")
+        .expect("snapshot HF parakeet-tdt-v3 no provisionado — ejecuta setup --with-stt");
     let assets = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/assets");
     let archivos = [
         (

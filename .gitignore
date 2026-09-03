@@ -29,7 +29,8 @@ uv.lock
 .claude/orchestration/
 
 # --- Runtime nativo Rust/CT2 y motor Qwen (desbloqueo de Fase 0) ---
-# Pesos de modelos (CT2 + HF), multi-GB, nunca se versionan.
+# Pesos de modelos en HF cache (`hf_cache_dir()` → ~/.cache/huggingface/hub, `ModelStore::is_provisioned`), multi-GB, nunca se versionan.
+# `models/` CWD es legado eliminado (STT/CT2 ya no leen `models/parakeet-tdt-v3` ni `models/ct2` CWD).
 models/
 # Muestras/artefactos de audio de pruebas locales (no son fuente).
 samples/

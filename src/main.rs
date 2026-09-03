@@ -428,12 +428,13 @@ fn handle_translate(
         }
     };
     // Modelo ausente -> exit 4, previo a construir el motor (patrón de STT).
-    if !std::path::Path::new(model_dir).exists() {
+    // Se verifica `model.bin` (CT2) en lugar del directorio para evitar falso positivo con dir vacío.
+    if !std::path::Path::new(model_dir).join("model.bin").exists() {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
             format!(
-                "El modelo de traducción no está provisionado en '{}'.",
+                "El modelo de traducción no está provisionado en '{}/model.bin'.",
                 model_dir
             ),
         ));

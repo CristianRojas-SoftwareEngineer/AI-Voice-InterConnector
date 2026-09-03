@@ -131,7 +131,7 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
 /// dependen de él se gatean por feature (no solo por presencia de modelo).
 #[cfg(feature = "native-stt")]
 fn parakeet_model_disponible() -> bool {
-    std::path::Path::new("models/parakeet-tdt-v3").exists()
+    avi_store::ModelStore::new().is_provisioned("parakeet-tdt-v3")
 }
 
 /// Modelo CT2 es→en presente (mismo criterio de skip que el Parakeet). Solo se
@@ -156,7 +156,7 @@ fn version_coincide_con_fixture() {
 #[test]
 fn speech_transcribe_con_audio_cumple_contrato() {
     if !parakeet_model_disponible() {
-        eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (models/ gitignoreado)");
+        eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
     let (code, actual) = run_json(&[
@@ -502,7 +502,10 @@ mod tts {
     fn wer_vs_texto(path: &Path, texto: &str) -> f64 {
         let pcm = avi_audio::load_wav_16k_mono_pcm(path.to_string_lossy().as_ref())
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
-        let engine = avi_stt::ParakeetEngine::new("models/parakeet-tdt-v3")
+        let snapshot = avi_store::ModelStore::new()
+            .model_snapshot_path("parakeet-tdt-v3")
+            .expect("snapshot HF parakeet-tdt-v3 no provisionado — ejecuta setup --with-stt");
+        let engine = avi_stt::ParakeetEngine::new(snapshot)
             .expect("el modelo Parakeet TDT v3 debe existir");
         let transcrito = engine
             .transcribe(&pcm, Some("es"))
@@ -581,7 +584,7 @@ mod tts {
             return;
         }
         if !parakeet_model_disponible() {
-            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (models/ gitignoreado)");
+            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
             return;
         }
         let _guard = lock_tts();
@@ -633,7 +636,7 @@ mod tts {
             return;
         }
         if !parakeet_model_disponible() {
-            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (models/ gitignoreado)");
+            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
             return;
         }
         let _guard = lock_tts();
@@ -780,7 +783,7 @@ mod tts {
             return;
         }
         if !parakeet_model_disponible() {
-            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (models/ gitignoreado)");
+            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
             return;
         }
         let _guard = lock_tts();
@@ -823,8 +826,8 @@ mod tts {
             eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
             return;
         }
-        if !Path::new("models/parakeet-tdt-v3").exists() {
-            eprintln!("[stt] skip: sin modelo Parakeet TDT v3");
+        if !avi_store::ModelStore::new().is_provisioned("parakeet-tdt-v3") {
+            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
             return;
         }
         if !hay_dispositivo_audio() {

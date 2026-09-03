@@ -16,20 +16,20 @@ mod tests {
     use crate::{detectar_idioma, normalizar_texto, ParakeetEngine};
     use avi_core::engine::SttEngine;
 
-    /// Carga el modelo Parakeet (`models/parakeet-tdt-v3/`) vía
+    /// Carga el modelo Parakeet (HF cache `hf_cache_dir()` vía `ModelStore`) vía
     /// `ParakeetEngine` y transcribe una muestra corta de voz real, verificando
     /// que la salida no esté vacía.
     #[cfg(feature = "native-stt")]
     #[test]
     fn parakeet_carga_modelo_y_transcribe() {
-        let model_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../models/parakeet-tdt-v3");
-        // Los binarios bajo `models/` están gitignoreados: en un checkout
+        let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3") else {
+            eprintln!("[stt] skip: sin modelo Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+            return;
+        };
+        // Los snapshots bajo `hf_cache_dir()` están gitignoreados: en un checkout
         // limpio (CI) este E2E se salta con aviso; en desarrollo corre completo.
-        if !std::path::Path::new(model_dir)
-            .join("nemo128.onnx")
-            .exists()
-        {
-            eprintln!("[stt] skip: sin modelo Parakeet (models/ gitignoreado)");
+        if !model_dir.join("nemo128.onnx").exists() {
+            eprintln!("[stt] skip: sin modelo Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
             return;
         }
         let engine = ParakeetEngine::new(model_dir)
@@ -88,12 +88,12 @@ mod tests {
     #[cfg(feature = "native-stt")]
     #[test]
     fn parakeet_engine_coincide_con_oraculo() {
-        let model_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../models/parakeet-tdt-v3");
-        if !std::path::Path::new(model_dir)
-            .join("nemo128.onnx")
-            .exists()
-        {
-            eprintln!("[stt] skip: sin modelo Parakeet (models/ gitignoreado)");
+        let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3") else {
+            eprintln!("[stt] skip: sin modelo Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+            return;
+        };
+        if !model_dir.join("nemo128.onnx").exists() {
+            eprintln!("[stt] skip: sin modelo Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
             return;
         }
         let engine = ParakeetEngine::new(model_dir).expect("el modelo Parakeet debe cargar");

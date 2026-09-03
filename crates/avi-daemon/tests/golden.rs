@@ -43,8 +43,9 @@ fn test_state() -> Arc<DaemonState> {
             // el resto corre contra un `DaemonState` sin campo stt_engine.
             #[cfg(feature = "native-stt")]
             {
-                let stt_model_dir =
-                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/parakeet-tdt-v3");
+                let stt_model_dir = avi_store::ModelStore::new()
+                    .model_snapshot_path("parakeet-tdt-v3")
+                    .expect("el modelo STT de test debe estar provisionado en hf_cache_dir — ejecuta setup --with-stt");
                 let stt_engine = avi_stt::ParakeetEngine::new(&stt_model_dir)
                     .expect("el modelo STT de test debe cargarse");
                 Arc::new(DaemonState {
@@ -119,25 +120,20 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
-/// Modelos reales de STT (Parakeet TDT v3 int8: 4 archivos) presentes. Los binarios
-/// bajo `models/` están gitignoreados: en un checkout limpio (CI) estos tests
+/// Modelos reales de STT (Parakeet TDT v3 int8: 4 archivos) presentes. Los snapshots
+/// bajo `hf_cache_dir()` están gitignoreados: en un checkout limpio (CI) estos tests
 /// dorados se saltan con aviso; en desarrollo corren completos.
 fn modelos_presentes() -> bool {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models/parakeet-tdt-v3");
-    [
-        "nemo128.onnx",
-        "encoder-model.int8.onnx",
-        "decoder_joint-model.int8.onnx",
-        "vocab.txt",
-    ]
-    .iter()
-    .all(|f| root.join(f).exists())
+    #[cfg(not(feature = "native-stt"))]
+    return false;
+    #[cfg(feature = "native-stt")]
+    return avi_store::ModelStore::new().is_provisioned("parakeet-tdt-v3");
 }
 
 #[tokio::test]
 async fn health_coincide_con_fixture() {
     if !modelos_presentes() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (models/ gitignoreado)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
     let (status, bytes) = send(get("/health")).await;
@@ -149,7 +145,7 @@ async fn health_coincide_con_fixture() {
 #[tokio::test]
 async fn transcribe_coincide_con_fixture() {
     if !modelos_presentes() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (models/ gitignoreado)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
     // Payload `{}` (campo audio_b64 ausente) → rama de error de campo ausente
@@ -163,7 +159,7 @@ async fn transcribe_coincide_con_fixture() {
 #[tokio::test]
 async fn synthesize_texto_vacio_es_error_de_contrato() {
     if !modelos_presentes() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (models/ gitignoreado)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
     let (status, bytes) = send(post_json("/synthesize", serde_json::json!({ "text": "" }))).await;
@@ -175,7 +171,7 @@ async fn synthesize_texto_vacio_es_error_de_contrato() {
 #[tokio::test]
 async fn synthesize_emite_stream_ndjson_de_contrato() {
     if !modelos_presentes() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (models/ gitignoreado)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
     let (status, bytes) = send(post_json(
@@ -227,7 +223,7 @@ async fn synthesize_emite_stream_ndjson_de_contrato() {
 #[tokio::test]
 async fn voices_respeta_el_contrato_de_envelope() {
     if !modelos_presentes() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (models/ gitignoreado)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
     // El contenido exacto depende del `data_dir` del usuario; se verifican los
@@ -256,7 +252,7 @@ async fn voices_respeta_el_contrato_de_envelope() {
 #[tokio::test]
 async fn transcribe_audio_largo_transcribe_de_una_pasada() {
     if !modelos_presentes() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (models/ gitignoreado)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
