@@ -887,53 +887,18 @@ ai-voice-interconnector daemon restart
 # Detener
 ai-voice-interconnector daemon stop
 
-# Auto-reinicio en caso de crash
-ai-voice-interconnector daemon start --autorestart --max-retries 3
-
-# Precargar solo un idioma (default: all = ambos, es-latam y en)
-ai-voice-interconnector daemon start --language es-latam
-
-# Precargar también el modelo de transcripción (requiere setup --with-stt; opt-in)
-ai-voice-interconnector daemon start --with-stt
+# Auto-reinicio configurable en caso de crash (supervisado)
+ai-voice-interconnector daemon start --auto-restart --max-retries 3
+ai-voice-interconnector daemon serve --auto-restart --max-retries 3
 ```
 
 **Qué esperar:** `daemon start` verifica que los modelos estén provisionados, lanza el servidor en segundo plano
-con `spawn_background` + PID file `data_dir()/daemon.pid` + poll `30×200ms`, y confirma con
-`Daemon iniciado correctamente (pid ...)`. Luego `daemon status` muestra:
+con `spawn_background` + PID file `data_dir()/daemon.pid` + poll `await_daemon_ready` (`10s` deadline, `250ms` poll), y confirma con
+`Daemon iniciado correctamente (pid ...)`. Luego `daemon status` muestra estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
 
-```
-Daemon en ejecución:
-  Estado: healthy
-  Modelos cargados: es-latam, en
-  Tiempo activo: 42.3s
-```
+Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^retries` capado a `4s`; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Sin `--auto-restart`, el daemon es `fail-stop`.
 
-«Modelos cargados» lista los idiomas calientes en RAM (los precargados al
-arrancar); un idioma no listado se cargaría perezosamente en la primera
-síntesis que lo pida.
-
-Tras precargar los pesos, `daemon start` ejecuta además una **síntesis
-descartable por idioma precargado** con la voz de fábrica. La precarga solo
-carga los pesos, nunca ejecuta un forward, así que la inicialización perezosa
-del runtime (contexto CUDA + autotune cuDNN en GPU; pool oneDNN/MKL en CPU) se
-dispararía recién en la primera síntesis real como latencia sorpresa; el warmup
-la paga en el arranque —que ya se asume lento—. Es best-effort: un warmup
-fallido (por ejemplo, la voz de fábrica ausente) se registra y no aborta el
-arranque.
-
-Con `--language en`/`all` (default), `daemon start` además precarga en RAM el
-par de traducción `opus-mt` es↔en (ambas direcciones), calentándolo desde el
-arranque en vez de esperar a la primera síntesis con `--source-language`
-distinto de `--target-language`; `daemon status --json` lo expone como la
-clave `"translate:es-en"` de `model_loaded` (ver la referencia de esquemas).
-
-Con `--with-stt`, `daemon start` precarga en RAM el modelo de transcripción
-`parakeet-tdt-v3` (opt-in y simétrico a `setup --with-stt`; sin el flag,
-la primera transcripción vía daemon paga la carga fría). Exige el modelo
-provisionado en disco: si falta, `daemon start --with-stt` sale con exit **4**
-remitiendo a `ai-voice-interconnector setup --with-stt`, sin lanzar el proceso;
-`daemon status --json` lo expone como la clave `"transcribe:small"` de
-`model_loaded`.
+Warmup: tras enlazar `127.0.0.1:8765`, el daemon precarga `default→ryan` vía `spawn_blocking(warmup_tts)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start).
 
 `daemon stop` responde `Daemon detenido` (borra `daemon.pid` incluso si ya estaba caído) y `daemon restart` orquesta `POST /shutdown` → espera caída `5s` → `spawn_background` → poll `running`.
 

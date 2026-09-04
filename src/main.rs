@@ -262,7 +262,14 @@ enum SpeechCommands {
 #[derive(Subcommand)]
 enum DaemonCommands {
     /// Iniciar el daemon en segundo plano
-    Start,
+    Start {
+        /// Reiniciar automáticamente el daemon si falla
+        #[arg(long)]
+        auto_restart: bool,
+        /// Número máximo de reintentos con reinicio automático (default 3)
+        #[arg(long, default_value_t = 3)]
+        max_retries: u32,
+    },
     /// Detener el daemon
     Stop,
     /// Reiniciar el daemon
@@ -270,7 +277,14 @@ enum DaemonCommands {
     /// Estado del daemon
     Status,
     /// Ejecutar el servidor HTTP del daemon en primer plano
-    Serve,
+    Serve {
+        /// Reiniciar automáticamente el daemon si falla
+        #[arg(long)]
+        auto_restart: bool,
+        /// Número máximo de reintentos con reinicio automático (default 3)
+        #[arg(long, default_value_t = 3)]
+        max_retries: u32,
+    },
 }
 
 // ─── Bootstrap ───────────────────────────────────────────────────────
@@ -1204,18 +1218,24 @@ async fn handle_speech(
 
 async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), CliError> {
     match action {
-        DaemonCommands::Serve => {
+        DaemonCommands::Serve {
+            auto_restart,
+            max_retries,
+        } => {
             let addr: SocketAddr =
                 "127.0.0.1:8765"
                     .parse()
                     .map_err(|e: std::net::AddrParseError| {
                         CliError::new(ExitCode::Error, "invalid_address", e.to_string())
                     })?;
-            daemon::run_daemon_server(addr).await.map_err(|e| {
-                CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string())
-            })
+            daemon::run_supervised(addr, auto_restart, max_retries)
+                .await
+                .map_err(|e| CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string()))
         }
-        DaemonCommands::Start => {
+        DaemonCommands::Start {
+            auto_restart,
+            max_retries,
+        } => {
             require_model_provisioned()?;
             let client = daemon_client();
             if daemon_activo(&client).await {
@@ -1229,7 +1249,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                 }
                 return Ok(());
             }
-            let pid = daemon::spawn_background().map_err(|e| {
+            let pid = daemon::spawn_background(auto_restart, max_retries).map_err(|e| {
                 CliError::new(
                     ExitCode::Error,
                     "daemon_error",
@@ -1333,7 +1353,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                 let _ = remove_daemon_pid_file();
             }
             require_model_provisioned()?;
-            let pid = daemon::spawn_background().map_err(|e| {
+            let pid = daemon::spawn_background(false, 3).map_err(|e| {
                 CliError::new(
                     ExitCode::Error,
                     "daemon_error",

@@ -643,6 +643,45 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Ejecuta el daemon con supervisión configurable de reinicios.
+///
+/// Si `auto_restart` es `false`, ejecuta `run_daemon_server` una sola vez.
+/// Si es `true`, reintenta hasta `max_retries` veces tras un fallo no graceful
+/// (crash) con backoff exponencial `500ms * 2^retries` capado a 4s. Un apagado
+/// graceful vía `shutdown_notify` (`daemon stop`) no reintenta y retorna `Ok`.
+pub async fn run_supervised(
+    addr: SocketAddr,
+    auto_restart: bool,
+    max_retries: u32,
+) -> anyhow::Result<()> {
+    if !auto_restart {
+        return run_daemon_server(addr).await;
+    }
+    let mut retries: u32 = 0;
+    loop {
+        match run_daemon_server(addr).await {
+            Ok(()) => {
+                // Apagado graceful (stop) — no reintentar
+                return Ok(());
+            }
+            Err(e) => {
+                if retries >= max_retries {
+                    return Err(e);
+                }
+                retries += 1;
+                // Backoff 500ms * 2^(retries-1) capado a 4000ms
+                let backoff_ms = 500u64.saturating_mul(1u64 << retries.min(5).saturating_sub(1));
+                let backoff_ms = backoff_ms.min(4000);
+                eprintln!(
+                    "Daemon falló (intento {}/{}): {} — reintentando en {}ms",
+                    retries, max_retries, e, backoff_ms
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1153,4 +1153,74 @@ mod tts {
         let _ = Command::new(BIN).args(["daemon", "stop"]).output();
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
+
+    #[test]
+    fn daemon_help_lista_auto_restart() {
+        // Verifica que --help de start/serve lista los flags restaurados
+        let out_start = Command::new(BIN)
+            .args(["daemon", "start", "--help"])
+            .output()
+            .expect("daemon start --help");
+        let stdout_start = String::from_utf8_lossy(&out_start.stdout);
+        let stderr_start = String::from_utf8_lossy(&out_start.stderr);
+        let combined_start = format!("{}{}", stdout_start, stderr_start);
+        assert!(
+            combined_start.contains("--auto-restart"),
+            "daemon start --help debe listar --auto-restart, fue: {}",
+            combined_start
+        );
+        assert!(
+            combined_start.contains("--max-retries"),
+            "daemon start --help debe listar --max-retries, fue: {}",
+            combined_start
+        );
+        let out_serve = Command::new(BIN)
+            .args(["daemon", "serve", "--help"])
+            .output()
+            .expect("daemon serve --help");
+        let stdout_serve = String::from_utf8_lossy(&out_serve.stdout);
+        let stderr_serve = String::from_utf8_lossy(&out_serve.stderr);
+        let combined_serve = format!("{}{}", stdout_serve, stderr_serve);
+        assert!(
+            combined_serve.contains("--auto-restart"),
+            "daemon serve --help debe listar --auto-restart, fue: {}",
+            combined_serve
+        );
+        assert!(
+            combined_serve.contains("--max-retries"),
+            "daemon serve --help debe listar --max-retries, fue: {}",
+            combined_serve
+        );
+    }
+
+    #[test]
+    fn daemon_start_con_auto_restart() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if !tts_modelo_registrado() {
+            eprintln!("[daemon] skip: sin modelo TTS provisionado para auto-restart");
+            return;
+        }
+        // Start con supervisor habilitado y max 1 (no debe fallar en estado sano)
+        let (code, actual) = run_json(&[
+            "--json",
+            "daemon",
+            "start",
+            "--auto-restart",
+            "--max-retries",
+            "1",
+        ]);
+        assert_eq!(code, 0, "daemon start --auto-restart debe salir 0");
+        assert_eq!(actual["daemon"], Value::String("running".to_string()));
+        // Stop no debe reintentar (graceful)
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (_, actual2) = run_json(&["--json", "daemon", "status"]);
+        assert_eq!(
+            actual2["daemon"],
+            Value::String("stopped".to_string()),
+            "tras stop no debe reintentar"
+        );
+    }
 }

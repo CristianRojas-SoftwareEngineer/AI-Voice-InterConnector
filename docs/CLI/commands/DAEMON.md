@@ -8,13 +8,13 @@ El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Q
 
 | Subcomando | Parámetros | Descripción |
 |---|---|---|
-| `daemon start` | `--json` | Lanza daemon en background (`spawn_background`, `await_daemon_ready`) |
+| `daemon start` | `--json` `--auto-restart` `--max-retries` (default 3) | Lanza daemon en background (`spawn_background` con supervisión opcional, `await_daemon_ready`) |
 | `daemon stop` | `--json` | `POST /shutdown` + borra `daemon.pid` |
-| `daemon restart` | `--json` | `stop` → `wait_health_down 5s` → `start` |
+| `daemon restart` | `--json` | `stop` → `wait_health_down 5s` → `start` (sin flags de supervisión) |
 | `daemon status` | `--json` | `GET /health` → `running`/`stopped` + `warm` |
-| `daemon serve` | — | Ejecuta servidor en foreground (`run_daemon_server`) |
+| `daemon serve` | `--auto-restart` `--max-retries` (default 3) | Ejecuta servidor en foreground (`run_supervised`) |
 
-Todos salvo `serve` aceptan `--json`. `start`/`restart` exigen modelo provisionado (`require_model_provisioned`), `stop`/`status` no.
+`start`/`serve` aceptan `--auto-restart`/`--max-retries`; `start`/`stop`/`restart`/`status` aceptan `--json` ( `serve` sin `--json`). `start`/`restart` exigen modelo provisionado (`require_model_provisioned`), `stop`/`status` no.
 
 ## Despacho del handler
 
@@ -86,4 +86,4 @@ Prefijo `x-schema-version: 3` (`crates/avi-core/src/json_emitter.rs:5`).
 | `--json` | Sí (`started`/`already_running`) | No |
 | Warmup | background `spawn_blocking` | igual |
 
-No hay `--autorestart/--max-retries/--language/--with-stt` en `start`/`serve` (contrario a `DAEMON.md` legacy): el daemon precarga `default→ryan` y `parakeet` vía `warmup_tts`, no por flags CLI.
+Supervisión configurable: `start`/`serve` con `--auto-restart` habilitan `run_supervised` (`crates/avi-daemon/src/lib.rs:614`) con contador `retries` y backoff `500ms*2^retries` capado a 4s, hasta `max_retries` (default 3). Un apagado graceful vía `POST /shutdown` (`shutdown_notify`) no reintenta; solo los crashes reintentan. Sin `--auto-restart`, el daemon es `fail-stop`. No hay `--language/--with-stt` en `start`/`serve` — `language` es local a `translate`/`dub` y `with-stt` es feature de compilación `native-stt`.

@@ -102,17 +102,17 @@ El núcleo reproducible (pines, cachés `v2`, `schema_version="3"`, `exit_codes`
 - **Decisión requerida**: Sí — ¿contrato o código manda? ¿restaurar cross-lingual?
 - **Prioridad**: P0
 
-### C-03 — `daemon start/serve` sin flags y `DAEMON.md` legacy (ex-P4 + S3-03 → H-04)
-- **Categoría**: Rotura de paridad + drift documental
-- **Área/plataforma**: `DaemonCommands` unitarias `src/main.rs:254` vs `docs/CLI/commands/DAEMON.md:1` `crates/avi-daemon/src/lib.rs:1` `crates/avi-daemon/src/spawn.rs:21` y oráculo `daemon/run.py`
-- **Síntoma**: `DaemonCommands` tiene 5 variantes unitarias `src/main.rs:254` (`start/stop/restart/status/serve`) sin flags; oráculo ofrecía `start: --autorestart --max-retries --language (all) --with-stt` y `serve: --auto-restart --max-retries (0=infinito) --language --with-stt`; contrato `593` documenta `daemon start --language {en,all}`.
-- **Evidencia**: `DAEMON.md:9` `FastAPI/uvicorn`, `daemon/server.py:2708`, `protocol.py`, `Pydantic ProtocolModel`, `DaemonManager.start() O_CREAT|O_EXCL`; real `Axum Router` `crates/avi-daemon/src/lib.rs:1`, `TcpListener::bind`→`spawn_blocking(warmup_tts)` `crates/avi-daemon/src/lib.rs:614`, `WarmState::Warming`, `tokio::sync::Notify`, `spawn_background` `crates/avi-daemon/src/spawn.rs:42` `CREATE_NO_HANDLE_INHERIT|CREATE_NO_WINDOW`. Tabla `DAEMON.md:27` `start --autorestart --max-retries --language --with-stt` vs `Start` sin args `src/main.rs:257`. Oráculo ya traía inconsistencia `--autorestart` vs `--auto-restart` a unificar.
+### C-03 — `daemon start/serve` sin flags y `DAEMON.md` legacy (ex-P4 + S3-03 → H-04) — ✅ **Resuelto problemas 1 y 2 (2026-09-04) — `--auto-restart`/`--max-retries`**
+- **Categoría**: Rotura de paridad + drift documental — **corregido para supervisión** (`--language`/`--with-stt` eliminados como residuos legacy, sin retrocompat)
+- **Área/plataforma**: `DaemonCommands::{Start,Serve}` `src/main.rs:254` con `--auto-restart`/`--max-retries` (default 3) vs `docs/CLI/commands/DAEMON.md:1` `crates/avi-daemon/src/lib.rs:614` `run_supervised` `crates/avi-daemon/src/spawn.rs:21` `spawn_background` y oráculo `daemon/run.py`
+- **Síntoma (histórico)**: 5 variantes unitarias sin flags; oráculo `start: --autorestart --max-retries` y `serve: --auto-restart --max-retries (0=infinito)` + `--language` + `--with-stt`. **Corregido en `src/main.rs:254` (`Start/Serve {auto_restart: bool, max_retries: u32}`), `src/main.rs:1205` `run_supervised` con backoff `500ms*2^retries` capado a 4s, `crates/avi-daemon/src/spawn.rs:21` `spawn_background(auto_restart,max_retries)` con forwarding `--auto-restart`/`--max-retries`. `--language`/`--with-stt` no restaurados — eliminados como legacy (daemon es solo TTS; `language` es de `translate`/`dub`, `with-stt` es feature `native-stt`).**
+- **Evidencia (post-fix)**: `DAEMON.md:9` `Axum Router` `crates/avi-daemon/src/lib.rs:1`, `TcpListener::bind→spawn_blocking(warmup_tts)` `crates/avi-daemon/src/lib.rs:614`, `WarmState::Warming`, `tokio::sync::Notify`, `spawn_background` `crates/avi-daemon/src/spawn.rs:21` con `CREATE_NO_HANDLE_INHERIT`; `DAEMON.md:27` ahora `start --auto-restart --max-retries` y `serve --auto-restart --max-retries`; `src/main.rs:262` unificado a `--auto-restart` (kebab, sin alias `--autorestart`); `CONTRACT.md:596` y `USAGE.md:891` sincronizados a `--auto-restart`/`--max-retries` (default 3, graceful `stop` no reintenta). Tests `tests/cli_golden.rs` `daemon_help_lista_auto_restart` y `daemon_start_con_auto_restart` verdes.
 - **Confianza**: Alta
-- **Causa**: Doc no reescrito tras migración Python→Rust (0.10-0.12).
-- **Impacto**: Auto-reinicio ante crash no configurable; onboarding con modelo mental falso y riesgo de reintroducir bugs de herencia de handles ya corregidos `tests/cli_golden.rs:40`.
-- **Corrección propuesta**: Reescribir `DAEMON.md` desde `src/main.rs:1140` y `crates/avi-daemon/src/lib.rs:158` (5 subcomandos reales, `DAEMON_ADDR 127.0.0.1:8765`, estados `warming/warm/warm_failed`); mantener `DAEMON-MODE.md:25` ya sincronizado como referencia; evaluar si auto-reinicio sigue siendo requisito.
-- **Decisión requerida**: Sí — ¿archivar `DAEMON.md` legacy o reescribirlo como contrato Rust? ¿restaurar flags daemon?
-- **Prioridad**: P1
+- **Causa**: Doc no reescrito tras migración Python→Rust (0.10-0.12) — supervisión nunca portada.
+- **Impacto (residual)**: Ninguno para problemas 1 y 2 — supervisión configurable restaurada; onboarding sincronizado; riesgo de reintroducir bugs de handles mitigado por `run_supervised` + `shutdown_notify`.
+- **Corrección aplicada**: `src/main.rs:262` parser unificado, `crates/avi-daemon/src/lib.rs:614` `run_supervised` + `spawn.rs:21` forwarding, `src/main.rs:1205` integración `Start/Serve`, docs `CONTRACT.md:596`/`DAEMON.md:1`/`USAGE.md:891` reconciliados, tests `cli_golden` con `--help` y `start --auto-restart`.
+- **Decisión requerida**: No — cerradas: nombre `--auto-restart` (sin alias), default `3` (no `0` infinito), ubicación `crates/avi-daemon` supervisando ambas vías.
+- **Prioridad**: P1 — **cerrado para 1 y 2; --language/--with-stt descartados como legacy**
 
 ### C-04 — `voice clone` promete `--daemon/--no-daemon` inexistente (ex-S3-02 → H-09)
 - **Categoría**: Documentación

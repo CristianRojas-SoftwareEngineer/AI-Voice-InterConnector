@@ -18,10 +18,14 @@ use std::process::Command;
 /// `with_graceful_shutdown` + `tokio::sync::Notify` (el antiguo
 /// `tokio::spawn(async { process::exit(0) })` no terminaba el proceso dentro del
 /// runtime de `axum::serve`).
-pub fn spawn_background() -> anyhow::Result<u32> {
+pub fn spawn_background(auto_restart: bool, max_retries: u32) -> anyhow::Result<u32> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
     cmd.arg("daemon").arg("serve");
+    if auto_restart {
+        cmd.arg("--auto-restart");
+    }
+    cmd.arg("--max-retries").arg(max_retries.to_string());
 
     #[cfg(windows)]
     {
