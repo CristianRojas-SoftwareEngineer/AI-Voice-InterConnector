@@ -66,28 +66,28 @@ El núcleo reproducible (pines, cachés `v2`, `schema_version="3"`, `exit_codes`
 
 ## 3. Hallazgos críticos — Alta / S3
 
-### C-01 — `cleanup` perdió borrado granular y `--all` cambió de semántica (ex-P1 → H-01)
-- **Categoría**: Rotura de paridad + cambio de semántica
-- **Área/plataforma**: `src/main.rs:132` vs `docs/CLI/CONTRACT.md:534` §11 y oráculo `7542962`
-- **Síntoma**: `cleanup` en Rust acepta solo `--all` `src/main.rs:132`; los 5 modos granulares del oráculo no existen.
-- **Evidencia**:
+### C-01 — `cleanup` perdió borrado granular y `--all` cambió de semántica (ex-P1 → H-01) — ✅ **Resuelto en F4/F6 (2026-09-04)**
+- **Categoría**: Rotura de paridad + cambio de semántica — **corregido**
+- **Área/plataforma**: `src/main.rs:132`/`318`/`1569` vs `docs/CLI/CONTRACT.md:534` §11 y oráculo `7542962` — ver `F6-drift-docs.md`
+- **Síntoma (histórico)**: `cleanup` en Rust aceptaba solo `--all` `src/main.rs:132`; los 5 modos granulares del oráculo no existían. **Corregido en `src/main.rs:132` (6 flags: `voices, synthetic_speech, model, all, dry_run, yes`), `src/main.rs:318` desacoplado (solo `Uninstall` toca binario/PATH), `src/main.rs:1569` gates `sin flags→2`, `dry-run`, `yes`/confirmación.**
+- **Evidencia (post-fix)**:
 
-| Superficie | Oráculo `7542962` | `CONTRACT.md` | Rust HEAD |
+| Superficie | Oráculo `7542962` | `CONTRACT.md §11` | Rust post-F4 |
 |---|---|---|---|
-| `--synthetic-speech` | ✅ borra raíz de habla sintética | ✅ 112, 183, 534 | ❌ |
-| `--voices` | ✅ voces + locuciones (arrastra namespaces) | ✅ 183, 535, 539 | ❌ |
-| `--model` | ✅ modelos HF | ✅ 593 | ❌ |
-| `--dry-run` | ✅ lista sin borrar | ✅ 537 | ❌ |
-| `--yes` | ✅ omite confirmación | — | ❌ |
-| `--all` | modelos+voces+habla sintética | 536 "Modelo + voces + habla sintética" | **delega en `handle_uninstall` `src/main.rs:322`** |
+| `--synthetic-speech` | ✅ borra raíz de habla sintética | ✅ 534 | ✅ `src/main.rs:132,1652` |
+| `--voices` | ✅ voces + locuciones (arrastra namespaces) | ✅ 535, 539 | ✅ `src/main.rs:132,1628` (preserva `FACTORY_VOICES`, arrastre excepto `default`) |
+| `--model` | ✅ modelos HF | ✅ 536 | ✅ `src/main.rs:132,1603` (`MODEL_REVISIONS`+xet+ct2) |
+| `--dry-run` | ✅ lista sin borrar | ✅ 537 | ✅ `src/main.rs:132,1678` (`removed`/`dry_run:true`) |
+| `--yes` | ✅ omite confirmación | ✅ 537 | ✅ `src/main.rs:132,1699` (`-y` alias) |
+| `--all` | modelos+voces+habla sintética (sin binario/PATH) | 536 "Modelo + voces + habla sintética — sin binario ni PATH" | ✅ unión en `src/main.rs:1596`, **no delega** en `handle_uninstall` |
 
-  Triple divergencia: (1) borrado granular perdido — contrato 183 *"`speech remove` cubre el borrado individual y `cleanup --synthetic-speech` el masivo, exactamente el reparto que existe entre `voice remove` y `cleanup --voices`"* sin implementación; (2) `cleanup` sin flags ya no es error de uso — en oráculo era error, en Rust borra `models/ speech/ voices/` + snapshots HF `src/main.rs:1441`; (3) `--all` cambió de limpieza a desinstalación completa (binario+PATH).
-- **Confianza**: Alta (inventarios completos `add_parser`/`add_argument` + lectura `handle_cleanup`).
+   Triple divergencia cerrada: (1) borrado granular restaurado con arrastre §11; (2) `cleanup` sin flags → `2` `usage_error` (`src/main.rs:1589`, `tests/cli_golden.rs` `cleanup_sin_flags_es_exit_2`); (3) `--all` = unión sin binario/PATH, `uninstall` = único con binario/PATH (`src/main.rs:318`). Tests `tests/cli_golden.rs` + fixtures `tests/golden/cli_cleanup_*.json` verdes (F5).
+- **Confianza**: Alta (inventarios completos + suite `cargo test --lib`/`cli_golden` verde + reality check binario real F5).
 - **Causa**: Port fiel en rutas calientes, pérdida sistemática en periferia de gestión no ejercitada por E2E.
-- **Impacto**: Superficie de gestión perdida; usuario que sigue el contrato y ejecuta `cleanup --all` esperando limpieza obtiene desinstalación.
-- **Corrección propuesta**: Restaurar `--voices/--synthetic-speech/--model/--dry-run/--yes` con semántica de arrastre §11 y desacoplar `--all` de `handle_uninstall`; alternativa desdocumentar el alias pero reescribir `CONTRACT.md` §11.
-- **Decisión requerida**: Sí — ¿restaurar granular o desdocumentar? ¿`--all` sigue siendo alias de `uninstall`?
-- **Prioridad**: P0
+- **Impacto (residual)**: Ninguno — superficie restaurada; docs reconciliados en F6 (`CONTRACT.md §11`, `USAGE.md`, `CLEANUP.md`, transversales).
+- **Corrección aplicada**: Restaurados `--voices/--synthetic-speech/--model/--dry-run/--yes` con semántica de arrastre §11 y desacoplado `--all` de `handle_uninstall`; docs reconciliados en `.claude/orchestration/cleanup-granular-2026-09-04/F6-drift-docs.md`.
+- **Decisión requerida**: No — cerrada: `--all` = unión (no alias), conjunto 6 flags, `CONTRACT.md §11` fuente de verdad (F0).
+- **Prioridad**: P0 — **cerrado**
 
 ### C-02 — `speech synthesize/say` sin cross-lingual ni payload prometido (ex-P2 + S3-01 → H-02)
 - **Categoría**: Rotura de paridad (parcialmente deliberada por cambio de engine) + drift documental

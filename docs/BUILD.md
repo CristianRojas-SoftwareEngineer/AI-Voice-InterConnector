@@ -190,7 +190,7 @@ los instaladores por SO es por diseño **externa al pipeline** (ver
 | PATH | El one-liner `install-windows.ps1` registra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` en HKCU (sin UAC); el binario `uninstall` lo revierte | `install-linux.sh` crea symlink `~/.local/bin/ai-voice-interconnector → ~/.local/opt/ai-voice-interconnector/ai-voice-interconnector`; `uninstall` lo borra | One-liner `install-macos.sh` análogo a Linux (`~/.local/bin`); Cask `brew install --cask` enlaza en `/opt/homebrew/bin` |
 | Guía hacia `setup` | El one-liner encadena `setup` tras instalar | Ídem | Ídem (Cask no encadena; caveat remite a `setup`) |
 | Desinstalación | `ai-voice-interconnector uninstall --force` (HKCU + dir + cleanup) o manual | `ai-voice-interconnector uninstall --force` (symlink + dir + cleanup) | `ai-voice-interconnector uninstall --force` o `brew uninstall --cask --zap` |
-| Datos provisionados | `ai-voice-interconnector cleanup` / `cleanup --all` | Ídem | Ídem |
+| Datos provisionados | `ai-voice-interconnector cleanup --voices` / `--synthetic-speech` / `--model` / `--all` (unión sin binario/PATH; sin flags → exit 2) | Ídem | Ídem |
 
 ### Limitación conocida: firma de código y notarización
 
@@ -314,8 +314,7 @@ compatibilidad:
 | macOS | `~/.cache/huggingface/hub` | `~/Library/Application Support/ai-voice-interconnector/data` |
 
 `doctor` imprime la ruta resuelta (`Cache HF:` / campo `hf_cache` en `--json`)
-para auditoría. `cleanup` borra snapshots HF de los 4 pines + datos de usuario;
-`uninstall` añade binario+PATH al mismo barrido.
+para auditoría. `cleanup --model/--voices/--synthetic-speech/--all` borra selectivamente snapshots HF + datos de usuario (sin binario ni PATH; `cleanup` sin flags → exit 2 `usage_error`; `src/main.rs:1589`); `uninstall` es el único que añade binario+PATH.
 
 ### Cacheo de dependencias y toolchain
 

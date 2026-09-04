@@ -129,11 +129,20 @@ enum Commands {
         #[arg(long, alias = "with-clone", alias = "clone")]
         with_base: bool,
     },
-    /// Limpia modelos/caché (usa --all para desinstalación completa)
+    /// Limpia datos provisionados de forma granular; --all = unión de --voices/--synthetic-speech/--model, sin binario ni PATH
     Cleanup {
-        /// Elimina también binario y PATH (desinstalación completa, alias de `uninstall`)
+        #[arg(long)]
+        voices: bool,
+        #[arg(long)]
+        synthetic_speech: bool,
+        #[arg(long)]
+        model: bool,
         #[arg(long)]
         all: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Desinstala el programa (datos + binario + PATH) en un comando
     Uninstall {
@@ -315,13 +324,14 @@ async fn main() {
             with_stt,
             with_base,
         }) => handle_setup(json_mode, &language, with_stt, with_base).await,
-        Some(Commands::Cleanup { all }) => {
-            if all {
-                handle_uninstall(json_mode, true).await
-            } else {
-                handle_cleanup(json_mode).await
-            }
-        }
+        Some(Commands::Cleanup {
+            voices,
+            synthetic_speech,
+            model,
+            all,
+            dry_run,
+            yes,
+        }) => handle_cleanup(json_mode, voices, synthetic_speech, model, all, dry_run, yes).await,
         Some(Commands::Uninstall { force, yes }) => handle_uninstall(json_mode, force || yes).await,
         Some(Commands::Doctor) => handle_doctor(json_mode),
         None => handle_version(json_mode),
@@ -1566,71 +1576,253 @@ fn convert_marian_to_ct2(
     }
 }
 
-async fn handle_cleanup(json_mode: bool) -> Result<(), CliError> {
-    // 0. Parar daemon graceful si está vivo (libera puerto y permite borrar data_dir)
-    stop_daemon_and_resident().await;
-    // 1. Limpieza real de datos: borra subdirectorios conocidos + daemon.pid
-    let data = store::data_dir();
-    if data.exists() {
-        for sub in &["models", "speech", "voices"] {
-            let p = data.join(sub);
+async fn handle_cleanup(
+    json_mode: bool,
+    voices: bool,
+    synthetic_speech: bool,
+    model: bool,
+    all: bool,
+    dry_run: bool,
+    yes: bool,
+) -> Result<(), CliError> {
+    // Gate sin flags → InvalidInput exit 2 sin borrar (paridad oráculo 7542962, CONTRACT §11)
+    if !voices && !synthetic_speech && !model && !all {
+        return Err(CliError::new(
+            ExitCode::InvalidInput,
+            "usage_error",
+            "cleanup requiere al menos un flag: --voices, --synthetic-speech, --model o --all",
+        ));
+    }
+    let do_voices = voices || all;
+    let do_speech = synthetic_speech || all;
+    let do_model = model || all;
+
+    // Construir lista de rutas candidatas existentes para --dry-run y payload removed
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    // --model: snapshots HF + xet + ct2 + legacy data_dir/models
+    if do_model {
+        for (_, repo, _) in store::MODEL_REVISIONS {
+            let p = store::hf_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
             if p.exists() {
-                let _ = std::fs::remove_dir_all(&p);
+                candidates.push(p);
             }
         }
-        let _ = std::fs::remove_file(data.join("daemon.pid"));
-        // Si quedó vacío, intenta borrar el propio data_dir
-        let _ = std::fs::remove_dir(&data);
-        // Si sigue existiendo (daemon.pid huérfano), forzar remove_dir_all
-        if data.exists() {
-            if let Ok(mut entries) = std::fs::read_dir(&data) {
-                if entries.next().is_none() {
-                    let _ = std::fs::remove_dir(&data);
-                }
-            }
+        let xet = store::xet_cache_dir();
+        if xet.exists() {
+            candidates.push(xet);
+        }
+        let locks = store::hf_cache_dir().join(".locks");
+        if locks.exists() {
+            candidates.push(locks);
+        }
+        let ct2 = store::ct2_cache_dir();
+        if ct2.exists() {
+            candidates.push(ct2);
+        }
+        let legacy_models = store::data_dir().join("models");
+        if legacy_models.exists() {
+            candidates.push(legacy_models);
         }
     }
-    // 2. Snapshots HF de los modelos pinneados (~/.cache/huggingface/hub/models--*)
-    let model_store = ModelStore::new();
-    for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
-        match model_store.remove_hf_snapshot(name) {
-            Ok(removed) if removed => eprintln!("Snapshot {} eliminado.", name),
-            Ok(_) => {}
-            Err(e) => eprintln!("  ✗ No se pudo borrar {}: {}", name, e),
-        }
-    }
-    // 3. Purga xet shard-cache + logs + .locks para coherencia hub/xet
-    match store::ModelStore::remove_xet_cache() {
-        Ok(true) => eprintln!("Cache xet eliminada."),
-        Ok(false) => {}
-        Err(e) => eprintln!("  ✗ No se pudo borrar cache xet: {}", e),
-    }
-    // 3b. Purga CT2 derivado obligatorio `hf_cache_dir/ct2`, simétrica a xet
-    match store::remove_ct2_cache() {
-        Ok(true) => eprintln!("Cache CT2 eliminada."),
-        Ok(false) => {}
-        Err(e) => eprintln!("  ✗ No se pudo borrar cache CT2: {}", e),
-    }
-    // 4. Temp huérfano
-    {
-        let tmp = std::env::temp_dir();
-        if let Ok(entries) = std::fs::read_dir(&tmp) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-")
-                {
-                    let p = entry.path();
-                    if p.is_dir() {
-                        let _ = std::fs::remove_dir_all(&p);
-                    } else {
-                        let _ = std::fs::remove_file(&p);
+    // --voices: voces no-fábrica + arrastre speech/<voz> excepto default
+    if do_voices {
+        let voice_base = store::data_dir().join("voices");
+        if voice_base.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&voice_base) {
+                for entry in entries.flatten() {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        let name = entry.file_name().to_string_lossy().to_lowercase();
+                        if store::is_factory_name(&name) {
+                            continue;
+                        }
+                        candidates.push(entry.path());
+                        // Arrastre speech/<voz> solo si no se va a borrar speech entero
+                        if !do_speech && name != "default" {
+                            let sp = store::data_dir().join("speech").join(&name);
+                            if sp.exists() {
+                                candidates.push(sp);
+                            }
+                        }
                     }
                 }
             }
         }
     }
+    // --synthetic-speech: speech/ entero (subsumido si ya hay arrastre, deduplicado arriba)
+    if do_speech {
+        let sp_root = store::data_dir().join("speech");
+        if sp_root.exists() {
+            candidates.push(sp_root);
+        }
+    }
+    // Temp huérfano siempre candidato auxiliar (no categoría, pero se limpia con cualquier cleanup)
+    {
+        let tmp = std::env::temp_dir();
+        if let Ok(entries) = std::fs::read_dir(&tmp) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-") {
+                    candidates.push(entry.path());
+                }
+            }
+        }
+    }
+    // Deduplicar candidatos por display (evita duplicar speech/<voz> bajo speech/ root)
+    {
+        let mut seen = std::collections::HashSet::new();
+        candidates.retain(|p| seen.insert(p.display().to_string()));
+    }
+    let removed_display: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
+
+    // Gate --dry-run: listar sin borrar, exit 0, payload con removed/dry_run
+    if dry_run {
+        if json_mode {
+            emit_raw_json(json!({
+                "status": "cleanup_complete",
+                "removed": removed_display,
+                "dry_run": true
+            }));
+        } else {
+            if candidates.is_empty() {
+                println!("Nada para limpiar (dry-run).");
+            } else {
+                println!("Dry-run: se eliminarían {} ruta(s):", candidates.len());
+                for p in &candidates {
+                    println!("  {}", p.display());
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Confirmación si no es --yes y hay TTY (patrón handle_uninstall:1688)
+    if !yes && std::io::stdin().is_terminal() {
+        eprint!("Esto eliminará datos seleccionados. ¿Continuar? [y/N]: ");
+        let _ = std::io::stderr().flush();
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_ok() {
+            let t = input.trim().to_ascii_lowercase();
+            if t != "y" && t != "yes" && t != "s" && t != "si" && t != "sí" {
+                if json_mode {
+                    emit_raw_json(json!({ "status": "cancelled" }));
+                } else {
+                    println!("Cancelado.");
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    // 0. Parar daemon graceful si está vivo (libera puerto; reutiliza helper compartido)
+    stop_daemon_and_resident().await;
+
+    let mut actually_removed: Vec<String> = Vec::new();
+
+    // Branch --model
+    if do_model {
+        let model_store = ModelStore::new();
+        for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
+            match model_store.remove_hf_snapshot(name) {
+                Ok(true) => {
+                    eprintln!("Snapshot {} eliminado.", name);
+                    actually_removed.push(format!("hf:{}", name));
+                }
+                Ok(false) => {}
+                Err(e) => eprintln!("  ✗ No se pudo borrar {}: {}", name, e),
+            }
+        }
+        match store::ModelStore::remove_xet_cache() {
+            Ok(true) => {
+                eprintln!("Cache xet eliminada.");
+                actually_removed.push(store::xet_cache_dir().display().to_string());
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("  ✗ No se pudo borrar cache xet: {}", e),
+        }
+        match store::remove_ct2_cache() {
+            Ok(true) => {
+                eprintln!("Cache CT2 eliminada.");
+                actually_removed.push(store::ct2_cache_dir().display().to_string());
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("  ✗ No se pudo borrar cache CT2: {}", e),
+        }
+        let legacy_models = store::data_dir().join("models");
+        if legacy_models.exists() {
+            let _ = std::fs::remove_dir_all(&legacy_models);
+            actually_removed.push(legacy_models.display().to_string());
+        }
+    }
+    // Branch --voices (con arrastre speech/<voz> excepto default; preserva FACTORY_VOICES)
+    if do_voices {
+        let voice_base = store::data_dir().join("voices");
+        if voice_base.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&voice_base) {
+                for entry in entries.flatten() {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        let name = entry.file_name().to_string_lossy().to_lowercase();
+                        if store::is_factory_name(&name) {
+                            continue;
+                        }
+                        let p = entry.path();
+                        if p.exists() {
+                            let _ = std::fs::remove_dir_all(&p);
+                            actually_removed.push(p.display().to_string());
+                        }
+                        if !do_speech && name != "default" {
+                            let sp = store::data_dir().join("speech").join(&name);
+                            if sp.exists() {
+                                let _ = std::fs::remove_dir_all(&sp);
+                                actually_removed.push(sp.display().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Branch --synthetic-speech: speech/ entero
+    if do_speech {
+        let sp_root = store::data_dir().join("speech");
+        if sp_root.exists() {
+            let _ = std::fs::remove_dir_all(&sp_root);
+            actually_removed.push(sp_root.display().to_string());
+        }
+    }
+    // Temp huérfano (siempre que haya borrado selectivo)
+    {
+        let tmp = std::env::temp_dir();
+        if let Ok(entries) = std::fs::read_dir(&tmp) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-") {
+                    let p = entry.path();
+                    let disp = p.display().to_string();
+                    if p.is_dir() {
+                        let _ = std::fs::remove_dir_all(&p);
+                    } else {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                    // Solo registrar si existía (ya estaba en candidates)
+                    if removed_display.contains(&disp) {
+                        actually_removed.push(disp);
+                    }
+                }
+            }
+        }
+    }
+    // Si no hay payload previo de dry-run, emitir removed real o candidates como fallback
+    let final_removed = if actually_removed.is_empty() {
+        removed_display.clone()
+    } else {
+        actually_removed
+    };
     if json_mode {
-        emit_raw_json(json!({ "status": "cleanup_complete" }));
+        emit_raw_json(json!({
+            "status": "cleanup_complete",
+            "removed": final_removed,
+            "dry_run": false
+        }));
     } else {
         println!("Limpieza de modelos/caché completada.");
     }

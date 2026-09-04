@@ -1,16 +1,16 @@
 ## Recorrido
 
-La investigación examinó la implementación completa del comando `cleanup` explorando tres fuentes principales: el handler CLI (`src/main.rs:319-326` `handle_cleanup`), el almacén `avi-store` (`crates/avi-store/src/lib.rs:675-703` `hf_cache_dir`, `xet_cache_dir`, `remove_hf_snapshot`, `remove_xet_cache`) y las constantes de salida (`crates/avi-core/src/exit_codes.rs`). Se complementó con `VoiceStore`/`SpeechStore` (`crates/avi-store/src/lib.rs`) y el helper que encadena `cleanup --all` durante la desinstalación (`src/main.rs:1387`).
+La investigación examinó la implementación Rust del comando `cleanup` explorando tres fuentes principales: el parser CLI (`src/main.rs:132` `Commands::Cleanup` con 6 flags), el handler granular (`src/main.rs:1579` `handle_cleanup` con gates `sin flags→2`, `dry-run`, `yes`/confirmación y branches selectivos) y el despacho desacoplado (`src/main.rs:327` `Cleanup` → `handle_cleanup`, solo `Uninstall` toca binario/PATH). Se complementó con el almacén `avi-store` (`crates/avi-store/src/lib.rs:497` `hf_cache_dir`, `517` `xet_cache_dir`, `537` `ct2_cache_dir`, `745` `remove_hf_snapshot`/`remove_xet_cache`) y las constantes de salida (`crates/avi-core/src/exit_codes.rs`). Oráculo Python `cli.py:2684` se conserva solo como referencia histórica; la fuente vigente es Rust.
 
 ---
 
 ## Respuestas a los objetivos
 
-**Diseño de `cleanup`:** Es un comando de borrado quirúrgico con banderas de selección combinables (`--model`, `--voices`, `--synthetic-speech`, `--all`). Nunca toca la caché completa de HuggingFace ni datos de otros proyectos. Devuelve un `CleanupResult` (NamedTuple) para que `_uninstall_cleanup_data` pueda distinguir borrado exitoso de cancelación atómica.
+**Diseño de `cleanup`:** Es un comando de borrado quirúrgico granular con banderas de selección combinables (`--voices`, `--synthetic-speech`, `--model`, `--all` como unión, `--dry-run`, `--yes/-y`). Nunca toca la caché completa de HuggingFace ni datos de otros proyectos, y **nunca borra binario ni PATH** — solo `uninstall` lo hace (`src/main.rs:318`). `cleanup` sin flags → `InvalidInput` exit 2 `usage_error` (`src/main.rs:1589`). Devuelve payload `--json` con `removed` + `dry_run` (`src/main.rs:1678`).
 
-**Implementación:** El handler `cmd_cleanup` (`cli.py:2157`) calcula los targets a partir de las banderas, filtra solo los que existen, imprime el listado, gestiona confirmación/dry-run, y ejecuta `shutil.rmtree` por cada ruta. No hay helpers auxiliares fuera de `_emit_cleanup_json`; toda la lógica vive en una sola función.
+**Implementación:** El handler `handle_cleanup` (`src/main.rs:1579`) calcula `do_voices/do_speech/do_model` a partir de los flags (`src/main.rs:1596`), construye la lista de candidatas existentes (defensa en profundidad por `MODEL_REVISIONS` + `hf_cache_dir()`/`xet_cache_dir()`/`ct2_cache_dir()`), gestiona gate `dry-run` (lista sin borrar), confirmación interactiva (`--yes` la omite), y ejecuta borrado selectivo por branch. `stop_daemon_and_resident()` (`src/main.rs:1847`) es el paso 0.
 
-**Proceso de ejecución:** Resolución de banderas → construcción de lista de targets (con defensa en profundidad) → filtrado de existentes → impresión del listado → gate dry-run → confirmación interactiva (o `--yes`) → `shutil.rmtree` por ruta → emisión JSON condicional.
+**Proceso de ejecución:** Gate `sin flags → 2` → resolución `--all` → construcción de candidatas (filtrado de existentes) → gate `dry-run` → confirmación (`--yes` o `y/yes/s/si/sí`) → branches `remove_hf_snapshot`/`remove_xet_cache`/`remove_ct2_cache`/`remove_dir_all` por categoría → emisión JSON `removed`/`dry_run`.
 
 ---
 
@@ -18,158 +18,133 @@ La investigación examinó la implementación completa del comando `cleanup` exp
 
 ### Definición CLI (parser)
 
-El parser se define en `cli.py:2684-2705` con los siguientes argumentos:
+El parser se define en `src/main.rs:132-146` con los siguientes argumentos:
 
 | Argumento | Tipo | Descripción |
 |---|---|---|
-| `--model` | `store_true` | Elimina carpetas de caché HF de los dos repos del proyecto + modelo de traducción + modelo de transcripción |
-| `--voices` | `store_true` | Elimina el directorio de voces de usuario (arrastra habla sintética de esas voces, excluye `default`) |
-| `--synthetic-speech` | `store_true` | Elimina la raíz entera de habla sintética (`default` incluida) |
-| `--all` | `store_true` | Equivale a `--model --voices --synthetic-speech` |
-| `--dry-run` | `store_true` | Lista lo que se borraría sin borrar nada |
-| `--yes`, `-y` | `store_true` | Omite la confirmación interactiva |
-| `--json` | `store_true` | Emite JSON legible por máquina (requiere `--yes` o `--dry-run`) |
+| `--voices` | `bool` | Elimina voces no-fábrica y arrastra `speech/<voz>` excepto `default` |
+| `--synthetic-speech` | `bool` | Elimina la raíz entera `speech/` (`default` incluida) |
+| `--model` | `bool` | Elimina snapshots HF pineados + `xet` + `ct2` + `data_dir()/models` legado |
+| `--all` | `bool` | Unión de `--voices` + `--synthetic-speech` + `--model` (sin binario ni PATH) |
+| `--dry-run` | `bool` | Lista lo que se borraría sin borrar nada (exit 0, con `removed`/`dry_run`) |
+| `--yes`, `-y` | `bool` | Omite la confirmación interactiva |
+| `--json` | `bool` | Global (`Cli::json`); con `cleanup` emite `status` + `removed` + `dry_run` |
 
-**Sin flags:** se muestra la ayuda del subcomando (`cli.py:2196-2204`). No se borra nada.
+Docstring: «limpieza granular; --all = unión de --voices/--synthetic-speech/--model, sin binario ni PATH» (`src/main.rs:132`).
+
+**Sin flags:** `src/main.rs:1589` → `Err(InvalidInput, "usage_error", "cleanup requiere al menos un flag...")` exit 2. No se borra nada.
 
 ### Banderas de selección y sus interacciones
 
-La resolución de banderas ocurre en `cli.py:2192-2194`:
+La resolución ocurre en `src/main.rs:1596-1598`:
 
-```python
-do_model = getattr(args, "model", False) or getattr(args, "all", False)
-do_voices = getattr(args, "voices", False) or getattr(args, "all", False)
-do_synthetic = getattr(args, "synthetic_speech", False) or getattr(args, "all", False)
+```rust
+let do_voices = voices || all;
+let do_speech = synthetic_speech || all;
+let do_model = model || all;
 ```
 
-`--all` activa las tres categorías. Las banderas individuales son independientes entre sí y se pueden combinar libremente.
+`--all` activa las tres categorías. Las banderas individuales son independientes y combinables. `--all` **no delega** en `handle_uninstall` (`src/main.rs:327` desacoplado; solo `Uninstall` toca `windows_install_dir`/`remove_windows_user_path`/`spawn_uninstall_helper`).
 
 ### Qué se borra por cada flag
 
-**`--model`** (`src/main.rs:319-326` + `crates/avi-store/src/lib.rs:675-703`) — borra snapshots HF pineados vía `hf_cache_dir()`/`xet_cache_dir()`:
+**`--model`** (`src/main.rs:1603-1626`, `crates/avi-store/src/lib.rs:497-554,745-773`) — borra vía `hf_cache_dir()`/`xet_cache_dir()`/`ct2_cache_dir()`:
 
-1. **Snapshots HF** (`MODEL_REVISIONS` `crates/avi-store/src/lib.rs:381`): `models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice`, `models--Qwen--Qwen3-TTS-12Hz-0.6B-Base`, `models--istupakov--parakeet-tdt-0.6b-v3-onnx` (4 artefactos), `models--Helsinki-NLP--opus-mt-es-en`, `models--Helsinki-NLP--opus-mt-en-es` dentro de `hf_cache_dir()`
-2. **Cache `xet`** (`xet_cache_dir()` `crates/avi-store/src/lib.rs:446`): `~/.cache/huggingface/xet` (`shard-cache` + `stage` + `.locks`) limpiado atómicamente con `hub`
-3. **Índice de compatibilidad** (`data_dir()/models/<name>/manifest.json`): limpiado si existe
-4. Daemon detenido graceful (`src/main.rs:1387`) y `daemon.pid` borrado antes del borrado
+1. **Snapshots HF** (`MODEL_REVISIONS` `crates/avi-store/src/lib.rs:432`): `models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice`, `models--Qwen--Qwen3-TTS-12Hz-0.6B-Base`, `models--istupakov--parakeet-tdt-0.6b-v3-onnx`, `models--Helsinki-NLP--opus-mt-es-en`, `models--Helsinki-NLP--opus-mt-en-es` dentro de `hf_cache_dir()`
+2. **Cache `xet`** (`xet_cache_dir()` `crates/avi-store/src/lib.rs:517`): `~/.cache/huggingface/xet` + `.locks` limpiado atómicamente
+3. **Cache `ct2`** (`ct2_cache_dir()` `crates/avi-store/src/lib.rs:537`): `hf_cache_dir()/ct2` (`ct2_model_dir` por par)
+4. **Índice legado** (`data_dir()/models`): limpiado si existe
+5. Daemon detenido graceful (`stop_daemon_and_resident()` `src/main.rs:1847`) y temp huérfano `avi_*`/`ai-voice-interconnector-install-*` (`src/main.rs:1659`)
 
-Cada ruta se valida con defensa en profundidad: solo se aceptan prefijos `models--Qwen--`, `models--istupakov--`, `models--Helsinki-NLP--`, `xet` derivados de `MODEL_REVISIONS` y `hf_cache_dir()`. Cualquier ruta inesperada no se borra.
+Cada ruta se filtra por existencia antes de borrar; `--model` nunca toca `voices/` ni `speech/`.
 
-**`--voices`** (`cli.py:2232-2253`) — borra dos cosas:
+**`--voices`** (`src/main.rs:1628-1650`) — borra dos cosas:
 
-1. **Directorio de voces de usuario** (`voices.py:56-58`): `{data_root}/voices` — todo el directorio, no Voice individual
-2. **Arrastre de habla sintética** (`cli.py:2240-2253`): para cada subdirectorio en `{data_root}/synthetic-speech/`, lo borra **excepto `default`** — voz de fábrica de solo lectura que `--voices` nunca toca
+1. **Voces no-fábrica** (`FACTORY_VOICES` `crates/avi-store/src/lib.rs:16`): cada subdirectorio en `data_dir()/voices` excepto `default`/`ryan`/`vivian` (`is_factory_name`)
+2. **Arrastre de habla sintética** (`src/main.rs:1640`): para cada voz borrada, `data_dir()/speech/<voz>` **excepto `default`** y solo si `!do_speech` (si `do_speech` ya borrará la raíz entera, evita duplicado)
 
-**`--synthetic-speech`** (`cli.py:2235-2239`) — borra:
+**`--synthetic-speech`** (`src/main.rs:1652-1657`) — borra:
 
-1. **Raíz entera de habla sintética** (`synthetic_speech.py:28-30`): `{data_root}/synthetic-speech` — todas las locuciones, `default` incluida
+1. **Raíz entera** `data_dir()/speech` — todas las locuciones, `default` incluida
 
 ### Interacción `--voices` / `--synthetic-speech`
 
-La lógica de arrastre es condicional (`cli.py:2240`):
+La lógica de arrastre es condicional (`src/main.rs:1640`):
 
-- Si `--synthetic-speech` está activo, se borra la raíz completa (rama `if do_synthetic`, línea 2235)
-- Si solo `--voices` está activo (sin `--synthetic-speech`), se activa la rama `elif do_voices` (línea 2240) que itera los namespaces y borra cada uno excepto `default`
+- Si `--synthetic-speech` (o `--all`) está activo, se borra la raíz completa (no hay iteración por namespace)
+- Si solo `--voices` está activo, se itera `voices/` y se arrastra cada `speech/<voz>` excepto `default`
 
-Esto garantiza que `--voices` nunca elimina la voz de fábrica `default`, incluso si tiene locuciones sintéticas asociadas.
+Esto garantiza que `--voices` nunca elimina `default`, incluso con locuciones asociadas.
 
 ### Modo dry-run
 
-El gate de dry-run está en `cli.py:2266-2269`:
+El gate está en `src/main.rs:1678-1696`:
 
-```python
-if getattr(args, "dry_run", False):
-    print("\n(dry-run) No se borró nada.", file=info_out)
-    _emit_cleanup_json([p for p, _kind in existing])
-    return CleanupResult([], False)
+```rust
+if dry_run {
+    emit_raw_json(json!({"status":"cleanup_complete","removed":removed_display,"dry_run":true}));
+    return Ok(());
+}
 ```
 
 **Comportamiento:**
-- Lista las rutas que existen y se borrarían
-- No ejecuta `shutil.rmtree` en ninguna ruta
-- Emite JSON con las rutas candidatas (no vacío)
-- Retorna `CleanupResult([], False)` — `removed` vacío, `cancelled=False`
+- Lista las rutas candidatas existentes (filtradas por flag)
+- No ejecuta `remove_dir_all`/`remove_hf_snapshot`/`remove_xet_cache`/`remove_ct2_cache`
+- Emite JSON con `removed` (candidatas) + `dry_run:true`
+- Retorna `Ok(())` exit 0; en modo humano imprime `Dry-run: se eliminarían N ruta(s):` o `Nada para limpiar (dry-run).`
 
-En modo `--json`, los listados informativos van a `stderr` (`cli.py:2173-2175`) para no contaminar el stdout reservado al JSON.
+En `--json`, los listados no contaminan stdout (payload único vía `emit_raw_json`).
 
 ### Lógica de confirmación
 
-La confirmación ocurre en `cli.py:2271-2282`:
+La confirmación ocurre en `src/main.rs:1699-1714` (patrón de `handle_uninstall`):
 
-1. Si `--yes` está activo: se omite la confirmación, se procede al borrado
-2. Si no hay `--yes`: se muestra `input("\n¿Eliminar estas rutas? (s/n): ")`
-3. Acepta: `s`, `si`, `sí`, `y`, `yes` (normalizado a minúsculas)
-4. Cualquier otra respuesta: `"Cancelado: no se borró nada."` → `CleanupResult([], True)`
-5. `EOFError` (stdin cerrado, típicamente subprocess sin `--yes`): misma cancelación, sin traceback (`cli.py:2275-2279`)
+1. Si `--yes`/`-y` está activo: se omite la confirmación
+2. Si `--dry-run`: ya retornó antes (no hay confirmación)
+3. Si `stdin.is_terminal()` es falso: se omite (no interactivo; procede sin preguntar, coherente con `handle_uninstall`)
+4. Si hay TTY: `eprint!("¿Continuar? [y/N]: ")` + `read_line`; acepta `s`, `si`, `sí`, `y`, `yes` (case-insensitive)
+5. Cualquier otra respuesta (incl. vacío, `n`, `no`) o `EOF`: `{"status":"cancelled"}` con `--json` o `Cancelado.` en humano, exit 0 sin borrar
 
-**Invariante:** `cancelled=True` solo cuando el usuario declinó. El camino "no hay nada que limpiar" y el dry-run **no** son cancelaciones (`cancelled=False`).
+**Invariante:** `cancelled`/`Cancelado` solo cuando el usuario declinó. `dry-run` y "nada que limpiar" no son cancelaciones (exit 0 con `removed`/`dry_run`).
 
 ### Contrato JSON (`--json`)
 
-El gate de validación está en `cli.py:2177-2183`:
-
-```python
-if json_mode and not (getattr(args, "yes", False) or getattr(args, "dry_run", False)):
-    raise CliError(EXIT_INVALID_INPUT, "usage_error",
-        "Error: cleanup --json requiere --yes o --dry-run ...")
-```
-
-**Razón:** la confirmación interactiva (`input()`) escribiría a stdout, contaminando el payload JSON.
-
-**Payload emitido** por `_emit_cleanup_json` (`cli.py:2185-2190`):
+Payload emitido en `src/main.rs:1679` (dry-run) y `src/main.rs:1820` (real):
 
 ```json
 {
+  "status": "cleanup_complete",
   "removed": ["path/to/dir1", "path/to/dir2"],
   "dry_run": true
 }
 ```
 
-Se inyecta `schema_version` automáticamente vía `emit_json` (`cli.py:69-78`). Exactamente un objeto JSON por invocación.
+`schema_version="3"` lo inyecta `emit_raw_json`. Exactamente un objeto JSON por invocación.
 
-**Excepciones:**
-- Sin flags de selección + `--json`: emite `usage` a stderr + JSON vacío (`cli.py:2199-2202`)
-- Nada que limpiar + `--json`: emite JSON con `removed: []`
+**Casos:**
+- `cancelled` por declinar confirmación: `{"status":"cancelled"}` exit 0 (`src/main.rs:1707`)
+- Sin flags + `--json`: `{"error":"cleanup requiere al menos un flag...","reason":"usage_error"}` exit 2 (`src/main.rs:1590`)
+- Nada que limpiar: `removed: []` con `dry_run:false` (o `true` en dry-run)
 
-### Estructura de retorno: `CleanupResult`
-
-Definido en `cli.py:2142-2154` como `NamedTuple`:
-
-| Campo | Tipo | Significado |
-|---|---|---|
-| `removed` | `list` | Rutas efectivamente eliminadas (vacío en dry-run, cancelación, o "nada que limpiar") |
-| `cancelled` | `bool` | `True` solo si el usuario declinó la confirmación interactiva |
-
-Este tipo es el contrato interno para `_uninstall_cleanup_data` (`cli.py:1489`): con `cancelled=True`, la desinstalación aborta atómicamente sin borrar PATH ni binario.
+Nota de divergencia con oráculo `cli.py:2177`: el oráculo exigía `--json` con `--yes`/`--dry-run` (exit 2 `usage_error`); Rust no impone ese gate — `--json` solo, sin `--yes`, procede en no-TTY y pide confirmación en TTY sin contaminar stdout (stderr para prompt, stdout para JSON).
 
 ### Manejo de errores
 
 | Condición | Código exit | Razón | Fuente |
 |---|---|---|---|
-| `--json` sin `--yes` ni `--dry-run` | 2 | `usage_error` | `cli.py:2178-2183` |
-| Ruta fuera del proyecto (defensa en profundidad) | — | `RuntimeError` | `cli.py:2212`, `cli.py:2218` |
-| Sin flags de selección | 0 | Ayuda mostrada, nada borrado | `cli.py:2196-2204` |
-| Nada que limpiar | 0 | Mensaje informativo | `cli.py:2257-2260` |
-| Dry-run | 0 | Listado sin borrado | `cli.py:2266-2269` |
-| Cancelación del usuario | 0 | `cancelled=True` | `cli.py:2280-2282` |
-| `EOFError` en input | 0 | Cancelación por stdin cerrado | `cli.py:2275-2279` |
+| Sin flags de categoría | 2 | `usage_error` | `src/main.rs:1589` |
+| Sin flags + `--json` | 2 | `usage_error` | `src/main.rs:1589` (mismo gate) |
+| Nada que limpiar | 0 | `removed: []` | `src/main.rs:1686`/`1820` |
+| Dry-run | 0 | `dry_run:true` + `removed` candidatas | `src/main.rs:1678` |
+| Cancelación del usuario | 0 | `cancelled` | `src/main.rs:1707` |
+| `EOFError`/sin TTY | 0 | Cancelación o procede sin prompt | `src/main.rs:1699-1714` |
 
-### Integración con `_uninstall_cleanup_data`
+### Integración con `handle_uninstall`
 
-`_uninstall_cleanup_data` (`cli.py:1489-1536`) es el único consumidor interno de `cmd_cleanup`. Lo invoca con:
-
-```python
-cleanup_args = argparse.Namespace(
-    model=False, voices=False, all=True,
-    dry_run=False, yes=...,
-    json=False, cleanup_parser=...
-)
-```
-
-Siempre ejecuta `cleanup --all` (el primer borrado del orden unificado de desinstalación). Tras un cleanup no cancelado, elimina `data_root()` si quedó vacío (`cli.py:1530-1534`). Con `cancelled=True`, retorna `( [], True )` y la desinstalación completa aborta.
+`handle_uninstall` (`src/main.rs:1880`) es el **único** que borra binario y PATH. `cleanup --all` no lo invoca; expande a los tres flags y borra solo datos (`src/main.rs:327`). `uninstall` reutiliza `stop_daemon_and_resident()` y luego borra `data_dir()` entero + snapshots `MODEL_REVISIONS` + `xet` + temp + integración por SO (`windows_install_dir`/`remove_windows_user_path`/`spawn_uninstall_helper` en Windows, symlink/dir en Unix). Tolerancias del oráculo `CleanupResult`/`_uninstall_cleanup_data` no existen en Rust: `handle_cleanup` retorna `Result<(), CliError>` y `handle_uninstall` gestiona su propio flujo.
 
 ---
 
 ## Conclusiones
 
-El comando `cleanup` implementa un borrado quirúrgico con tres categorías de datos (modelos, voces, habla sintética) que se pueden combinar libremente. Su diseño se distingue por: (1) la defensa en profundidad — cada ruta se valida antes de agregarla a targets, impidiendo borrados accidentales fuera del proyecto; (2) la distinción semántica entre `--voices` (arrastre parcial, preserva `default`) y `--synthetic-speech` (raíz completa, incluye `default`); (3) el contrato `CleanupResult` que permite al uninstall encadenado distinguir cancelación atómica de éxito; y (4) la separación estricta stdout/diagnóstico en modo `--json`, con el gate que impide `--json` sin `--yes` o `--dry-run`. La implementación es monocapa — toda la lógica vive en `cmd_cleanup` sin helpers auxiliares — lo que facilita el razonamiento sobre el estado y las transiciones del comando.
+El comando `cleanup` Rust restablece el borrado granular del oráculo `7542962` con semántica de unión para `--all`, gates `sin flags→2` y `dry-run` sin side-effects, confirmación `s/si/sí/y/yes` y payload `removed`/`dry_run`/`cancelled`. Se distingue por: (1) defensa en profundidad por `MODEL_REVISIONS` + `hf_cache_dir()`/`xet_cache_dir()`/`ct2_cache_dir()`; (2) distinción `--voices` (arrastre parcial, preserva `default`/`ryan`/`vivian`) vs `--synthetic-speech` (raíz completa); (3) `Handle_cleanup` desacoplado de `handle_uninstall` — `--all` no toca binario/PATH; (4) `stop_daemon_and_resident()` compartido como paso 0. La implementación es granular por branches, no monocapa, y el contrato `CONTRACT.md §11` es la fuente de verdad.

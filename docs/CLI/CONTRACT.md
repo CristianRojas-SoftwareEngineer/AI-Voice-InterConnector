@@ -529,18 +529,20 @@ Son dos causas independientes que coinciden en el mismo hecho generador. Los pay
 
 #### `cleanup`
 
-| Modo | Qué borra |
+| Flag | Qué borra / efecto |
 |---|---|
-| `--synthetic-speech` | La raíz `synthetic-speech/` entera |
-| `--voices` | Las voces que puede borrar y, **con ellas, solo los namespaces de habla sintética de esas voces** |
-| `--all` | Modelo + voces + habla sintética |
-| `--dry-run` | Cubre las locuciones en los tres modos anteriores |
+| `--voices` | Las voces que puede borrar y, **con ellas, solo los namespaces de habla sintética de esas voces** (arrastre `speech/<voz>` excepto `default`) |
+| `--synthetic-speech` | La raíz `synthetic-speech/` entera (`speech/`), `default` incluida |
+| `--model` | Snapshots HF pineados (`MODEL_REVISIONS` en `hf_cache_dir()`), `xet` + `.locks` y `ct2` (`hf_cache_dir/ct2`), y `data_dir()/models` legado |
+| `--all` | Unión Modelo + voces + habla sintética (**sin binario ni PATH**; solo datos) |
+| `--dry-run` | Lista sin borrar (exit 0); cubre los tres modos anteriores; con `--json` emite `removed` + `dry_run:true` |
+| `--yes` / `-y` | Omite la confirmación interactiva (`s/si/sí/y/yes`); con `--dry-run` es no-op |
 
-**`synthetic-speech/default/` (y `ryan`/`vivian`) sobrevive a `--voices` y cae únicamente con `--synthetic-speech` o `--all`.** El criterio es el del propio flag —las locuciones se van con su voz— y las voces de fábrica (`default`, `ryan`, `vivian`; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) no se van nunca: `voice remove` las protege (exit 2) y `--voices` no las borra. Importa declararlo porque `default` es la voz por defecto de `speech synthesize` y su namespace es probablemente el más poblado.
+**Gate `sin flags → exit 2`:** `cleanup` sin ningún flag de categoría (`--voices`, `--synthetic-speech`, `--model`, `--all`) sale con `2` `usage_error` sin borrar (`src/main.rs:1589`). `--all` equivale a `--voices --synthetic-speech --model` (`src/main.rs:1596`).
 
-`--all` incluye la habla sintética por necesidad: si no la incluyera dejaría residuo tras una desinstalación completa, que es justo lo que ese flag existe para evitar.
+**`synthetic-speech/default/` (y `ryan`/`vivian`) sobrevive a `--voices` y cae únicamente con `--synthetic-speech` o `--all`.** El criterio es el del propio flag —las locuciones se van con su voz— y las voces de fábrica (`default`, `ryan`, `vivian`; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) no se van nunca: `voice remove` las protege (exit 2) y `--voices` no las borra. Importa declararlo porque `default` es la voz por defecto de `speech synthesize` y su namespace es probablemente el más poblado. Reparto con `speech remove`: el borrado individual es `speech remove --label`, el masivo es `cleanup --synthetic-speech` (`CONTRACT.md:183`).
 
-Con la raíz separada del registro de voces, el arrastre de `--voices` es código explícito y no un efecto del `rmtree`.
+`--all` es unión de limpiezas de datos; **no toca binario ni PATH** — solo `uninstall` borra binario y PATH (`src/main.rs:318`). Con la raíz separada del registro de voces, el arrastre de `--voices` es código explícito y no un efecto del `rmtree`.
 
 #### `setup`
 

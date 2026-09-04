@@ -54,7 +54,7 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 | `devices` | Lista dispositivos de audio del sistema |
 | `doctor` | Ejecuta diagnósticos del sistema (incluye ruta de caché HF resuelta) |
 | `setup` | Descarga los modelos pinneados vía HuggingFace Hub y registra el índice |
-| `cleanup` | Borra snapshots HF + datos de usuario (`--all` = alias de `uninstall`) |
+| `cleanup` | Borra selectivamente snapshots HF + datos de usuario (`--voices`/`--synthetic-speech`/`--model`/`--all` = unión sin binario ni PATH, `--dry-run`, `--yes/-y`; sin flags → exit 2) |
 | `uninstall` | Desinstalación en un comando: datos + PATH + binario |
 | `version` | Muestra la versión |
 | `translate` | Traduce texto es↔en sin síntesis de audio |

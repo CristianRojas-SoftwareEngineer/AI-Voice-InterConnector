@@ -87,7 +87,8 @@ ai-voice-interconnector setup
 **Desinstalación en un comando** (paridad con instalación):
 
 ```bash
-ai-voice-interconnector uninstall --force   # o: ai-voice-interconnector cleanup --all --force
+ai-voice-interconnector uninstall --force   # desinstalación completa (datos + binario + PATH)
+# Limpieza de datos sin binario/PATH: ai-voice-interconnector cleanup --all --yes  # unión Modelo+voces+habla
 # macOS Cask: brew uninstall --cask --zap ai-voice-interconnector
 ```
 
@@ -191,7 +192,7 @@ ai-voice-interconnector voice list / remove --name X
 ai-voice-interconnector translate --text "Hola" --from es --to en
 ai-voice-interconnector devices / doctor / version
 ai-voice-interconnector daemon start / status / stop / restart / serve
-ai-voice-interconnector setup [--with-base] [--with-stt] / cleanup [--all] / uninstall --force
+ai-voice-interconnector setup [--with-base] [--with-stt] / cleanup [--voices|--synthetic-speech|--model|--all] [--dry-run] [-y|--yes] / uninstall --force
 ```
 
 Contrato estable (`--json` `schema_version="3"`, exit codes `0-10/130`) en `docs/CLI/CONTRACT.md`.

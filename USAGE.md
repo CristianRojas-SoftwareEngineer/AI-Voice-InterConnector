@@ -264,7 +264,9 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `"cleanup_complete"` / `"uninstalled"` (uninstall emite `"cancelled"` si se aborta la confirmación) |
+| `status` | string | `"cleanup_complete"` / `"uninstalled"` / `"cancelled"` (cancelación de la confirmación, exit 0) |
+| `removed` | array de strings | Solo `cleanup`: rutas efectivamente eliminadas (o candidatas con `--dry-run`); vacío si nada que limpiar |
+| `dry_run` | boolean | Solo `cleanup`: `true` con `--dry-run`, `false` en borrado real |
 
 **`voice clone --json`**
 
@@ -801,19 +803,22 @@ modelo ya cargado, sale con exit **9**.
 
 ### `cleanup`
 
-Limpia los datos del proyecto: snapshots HF de los modelos pinneados, índice en
-`data_dir()/models`, voces y locuciones. Es la contraparte de `setup` y completa
-el ciclo de vida instalación→desinstalación.
+Limpia los datos del proyecto de forma **granular** (fuente de verdad: `docs/CLI/CONTRACT.md §11`). Es la contraparte de `setup` y completa
+el ciclo de vida instalación→desinstalación. **Sin flags → exit `2` `usage_error` sin borrar.**
 
 ```bash
-ai-voice-interconnector cleanup            # borra data_dir()/models + speech + voices
-ai-voice-interconnector cleanup --all      # alias de `uninstall`: además binario + PATH
+ai-voice-interconnector cleanup --voices              # voces no-fábrica + arrastre speech/<voz> (excepto default)
+ai-voice-interconnector cleanup --synthetic-speech    # raíz speech/ entera (incluye default)
+ai-voice-interconnector cleanup --model               # snapshots HF pineados + xet + ct2 + data_dir()/models
+ai-voice-interconnector cleanup --all                 # unión Modelo+voces+habla (sin binario ni PATH)
+ai-voice-interconnector cleanup --all --dry-run       # lista sin borrar (exit 0, --json con removed/dry_run)
+ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y alias)
 ```
 
-**Qué esperar:** borra `data_dir()/models|speech|voices` y los snapshots HF de
+**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o snapshots HF de
 los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `Helsinki-NLP/opus-mt-*`,
-`istupakov/parakeet-tdt-0.6b-v3-onnx`). El borrado es quirúrgico: nunca toca modelos de otros
-proyectos en la caché. Todo es recuperable: `setup` re-descarga los modelos y
+`istupakov/parakeet-tdt-0.6b-v3-onnx`) + `xet`/`ct2`. `--all` es la unión de las tres categorías **sin binario ni PATH** — solo `uninstall` borra binario y PATH (`src/main.rs:318`). El borrado es quirúrgico: nunca toca modelos de otros
+proyectos en la caché. `--dry-run` lista candidatas sin borrar; `--yes/-y` omite la confirmación interactiva. Con `--json` emite `{"status":"cleanup_complete","removed":[...],"dry_run":bool}`. Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
 
 ---
@@ -821,7 +826,7 @@ proyectos en la caché. Todo es recuperable: `setup` re-descarga los modelos y
 ## Desinstalación completa
 
 **Canal nativo (los tres SO), en un comando**: `ai-voice-interconnector uninstall`
-(alias: `cleanup --all`) encadena la limpieza de datos (snapshots HF +
+(encadena limpieza de datos vía `cleanup --all` como unión sin binario/PATH + borrado de binario/PATH) encadena la limpieza de datos (snapshots HF +
 `data_dir()`), revierte la integración de PATH y borra el binario, **en ese
 orden**. Pide confirmación interactiva salvo con `--force`/`--yes`; cancelar
 aborta sin borrar nada (`{"status":"cancelled"}`, exit 0). Con `--json` emite

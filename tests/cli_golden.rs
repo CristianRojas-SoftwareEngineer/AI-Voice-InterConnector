@@ -206,10 +206,78 @@ fn daemon_status_coincide_con_fixture() {
 
 #[test]
 fn cleanup_coincide_con_fixture() {
+    // Redefinido: cleanup sin flags → exit 2 usage_error (paridad oráculo, CONTRACT §11)
     let _guard = STATE_LOCK.lock().unwrap();
     let (code, actual) = run_json(&["--json", "cleanup"]);
+    assert_eq!(code, 2, "cleanup sin flags debe ser InvalidInput");
+    assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+}
+
+#[test]
+fn cleanup_sin_flags_es_exit_2() {
+    let _guard = STATE_LOCK.lock().unwrap();
+    let (code, actual) = run_json(&["--json", "cleanup"]);
+    assert_eq!(code, 2);
+    assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
+}
+
+#[test]
+fn cleanup_voices_coincide_con_fixture() {
+    let _guard = STATE_LOCK.lock().unwrap();
+    let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
     assert_eq!(code, 0);
-    assert_eq!(actual, fixture("cli_cleanup.json"));
+    assert_eq!(actual["status"], Value::String("cleanup_complete".to_string()));
+    assert_eq!(actual["dry_run"], Value::Bool(true));
+    assert!(actual["removed"].is_array());
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+}
+
+#[test]
+fn cleanup_synthetic_speech_coincide_con_fixture() {
+    let _guard = STATE_LOCK.lock().unwrap();
+    let (code, actual) = run_json(&["--json", "cleanup", "--synthetic-speech", "--dry-run"]);
+    assert_eq!(code, 0);
+    assert_eq!(actual["status"], Value::String("cleanup_complete".to_string()));
+    assert_eq!(actual["dry_run"], Value::Bool(true));
+    assert!(actual["removed"].is_array());
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+}
+
+#[test]
+fn cleanup_model_coincide_con_fixture() {
+    let _guard = STATE_LOCK.lock().unwrap();
+    let (code, actual) = run_json(&["--json", "cleanup", "--model", "--dry-run"]);
+    assert_eq!(code, 0);
+    assert_eq!(actual["status"], Value::String("cleanup_complete".to_string()));
+    assert_eq!(actual["dry_run"], Value::Bool(true));
+    assert!(actual["removed"].is_array());
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+}
+
+#[test]
+fn cleanup_all_coincide_con_fixture() {
+    let _guard = STATE_LOCK.lock().unwrap();
+    let (code, actual) = run_json(&["--json", "cleanup", "--all", "--dry-run"]);
+    assert_eq!(code, 0);
+    assert_eq!(actual["status"], Value::String("cleanup_complete".to_string()));
+    assert_eq!(actual["dry_run"], Value::Bool(true));
+    assert!(actual["removed"].is_array());
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+}
+
+#[test]
+fn cleanup_dry_run_coincide_con_fixture() {
+    let _guard = STATE_LOCK.lock().unwrap();
+    // --voices + --dry-run es el caso canónico de dry_run; valida fixture dedicada
+    let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
+    assert_eq!(code, 0);
+    assert_eq!(actual["dry_run"], Value::Bool(true));
+    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    // fixture de referencia para dry_run debe coincidir en status
+    let expected = fixture("cli_cleanup_dry_run.json");
+    assert_eq!(actual["status"], expected["status"]);
+    assert_eq!(actual["dry_run"], expected["dry_run"]);
 }
 
 /// Regresión del self-kill de `uninstall --force` en Windows (v0.18.10–v0.18.25):

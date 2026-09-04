@@ -83,7 +83,7 @@ Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO)
 - **Cero dependencias externas**: El usuario final no instala Python, Node, Rust ni nada más
 - **Descarga + instalación + configuración** en un solo paso (one-liner verifica checksum, extrae, integra PATH y encadena `setup`)
 - **Audio nativo**: playback usando APIs nativas del SO (cpal)
-- **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero (`uninstall`/`cleanup --all`), en los tres sistemas operativos por igual (ver [docs/PARITY.md](PARITY.md))
+- **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero (`uninstall` borra binario+PATH; `cleanup --all` es unión Modelo+voces+habla sin binario ni PATH — ver `docs/CLI/CONTRACT.md §11`), en los tres sistemas operativos por igual (ver [docs/PARITY.md](PARITY.md))
 
 El **canal PyPI fue retirado en la Fase 7** (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)): la distribución es 100% Rust por archivos comprimidos. La mención histórica se conserva solo para auditoría.
 
@@ -98,7 +98,7 @@ El ideal de paridad que persigue el goal inmediato, por fase del ciclo de vida (
 | Provisión | Modelo descargado al terminar la instalación (`setup` encadenado u ofrecido) |
 | Uso | CLI, daemon, voces y contratos `--json` idénticos |
 | Actualización | Reemplaza la versión anterior sin residuo ni pasos-trampa |
-| Desinstalación | Datos (`cleanup --all`) + binario, con residuo cero |
+| Desinstalación | Datos (`cleanup --all` = unión Modelo+voces+habla, sin binario ni PATH) + binario (`uninstall`), con residuo cero |
 
 ### Comandos CLI
 
@@ -143,7 +143,7 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 
 ### Desinstalación en un comando
 
-La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina binario, PATH integrado y datos (modelo y voces), con residuo cero, en los tres SO. `ai-voice-interconnector uninstall` (y `ai-voice-interconnector cleanup --all` como alias) es multiplataforma y espeja la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación:
+La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina binario, PATH integrado y datos (modelo y voces), con residuo cero, en los tres SO. `ai-voice-interconnector uninstall` es el único que borra binario y PATH (`cleanup --all` es unión Modelo+voces+habla sin binario ni PATH — `src/main.rs:132/318/1569`, `docs/CLI/CONTRACT.md §11`). Ambos son multiplataforma y espejan la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación:
 
 - **Linux**: el symlink `~/.local/bin/ai-voice-interconnector`, el directorio de instalación `~/.local/opt/ai-voice-interconnector/` y los datos (`cleanup`). Sin `sudo`. (`uninstall --force` omite confirmación)
 - **macOS**: análogo a Linux (`uninstall` limpia symlink + `~/.local/opt` + `cleanup`) en la vía one-liner; con **Homebrew Cask**, `brew uninstall --cask --zap ai-voice-interconnector` sigue siendo la vía idiomática (cubre también los datos). Sin `sudo`.
