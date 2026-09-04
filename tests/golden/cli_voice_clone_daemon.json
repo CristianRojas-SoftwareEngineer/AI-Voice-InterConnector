@@ -1,0 +1,6 @@
+{
+  "schema_version": "3",
+  "name": "mivoz_daemon",
+  "speech": "/tmp/mivoz_daemon/reference.qvoice",
+  "precomputed": false
+}

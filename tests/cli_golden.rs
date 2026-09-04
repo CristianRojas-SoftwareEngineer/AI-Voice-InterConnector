@@ -1223,4 +1223,190 @@ mod tts {
             "tras stop no debe reintentar"
         );
     }
+
+    #[test]
+    fn translate_con_daemon_delega() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        let _tts = lock_tts();
+        #[cfg(not(feature = "native-translation"))]
+        {
+            eprintln!("[translate] skip: sin feature native-translation");
+            return;
+        }
+        #[cfg(feature = "native-translation")]
+        if !ct2_model_disponible() {
+            eprintln!("[translate] skip: sin modelo CT2 es→en");
+            return;
+        }
+        // Asegurar daemon limpio y arrancado
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if !tts_modelo_registrado() {
+            eprintln!("[daemon] skip: sin modelo TTS para daemon warm");
+            return;
+        }
+        let (code_start, _) = run_json(&["--json", "daemon", "start"]);
+        if code_start != 0 {
+            eprintln!("[daemon] skip: no se pudo arrancar daemon");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (code, actual) = run_json(&[
+            "--json",
+            "--daemon",
+            "translate",
+            "--text",
+            "Hola",
+            "--from",
+            "es",
+            "--to",
+            "en",
+        ]);
+        assert_eq!(code, 0, "translate --daemon debe delegar con exit 0");
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert!(actual.get("translated").is_some());
+        let expected = fixture("cli_translate_daemon.json");
+        assert_eq!(actual["source"], expected["source"] );
+        // cleanup
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    #[test]
+    fn translate_force_daemon_sin_daemon_exit5() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (code, actual) = run_json(&[
+            "--json",
+            "--daemon",
+            "translate",
+            "--text",
+            "Hola",
+            "--from",
+            "es",
+            "--to",
+            "en",
+        ]);
+        assert_eq!(code, 5, "translate --daemon sin daemon debe salir 5");
+        assert_eq!(actual["reason"], Value::String("daemon_unreachable".to_string()));
+    }
+
+    #[test]
+    fn clone_con_daemon_delega() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        let _tts = lock_tts();
+        if !tts_clone_provisioned() {
+            eprintln!("[tts] skip: clonado exige Base");
+            return;
+        }
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (code_start, _) = run_json(&["--json", "daemon", "start"]);
+        if code_start != 0 {
+            eprintln!("[daemon] skip: no se pudo arrancar daemon");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let name = etiqueta_unica("clon_daemon");
+        let (code, actual) = run_json(&[
+            "--json",
+            "--daemon",
+            "voice",
+            "clone",
+            "--name",
+            &name,
+            "--speech-reference",
+            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+        ]);
+        assert_eq!(code, 0, "voice clone --daemon debe delegar con exit 0");
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["name"], Value::String(name.clone()));
+        let _ = avi_store::VoiceStore::new().remove(&name);
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    #[cfg(feature = "native-stt")]
+    #[test]
+    fn dub_daemon_passthrough() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        let _tts = lock_tts();
+        if !tts_provisioned() || !parakeet_model_disponible() || !hay_dispositivo_audio() {
+            eprintln!("[dub] skip: sin modelos/audio");
+            return;
+        }
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (code_start, _) = run_json(&["--json", "daemon", "start"]);
+        if code_start != 0 {
+            eprintln!("[daemon] skip: no se pudo arrancar daemon");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (code, actual) = run_json(&[
+            "--json",
+            "--daemon",
+            "speech",
+            "dub",
+            "--audio",
+            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "--from",
+            "es",
+            "--to",
+            "es",
+        ]);
+        assert_eq!(code, 0, "dub passthrough --daemon debe salir 0");
+        assert_eq!(actual["status"], Value::String("dubbed".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[allow(unreachable_code)]
+    fn dub_daemon_con_traduccion() {
+        let _guard = STATE_LOCK.lock().unwrap();
+        let _tts = lock_tts();
+        if !tts_provisioned() || !parakeet_model_disponible() || !hay_dispositivo_audio() {
+            eprintln!("[dub] skip: sin modelos/audio");
+            return;
+        }
+        #[cfg(not(feature = "native-translation"))]
+        {
+            eprintln!("[dub] skip: sin native-translation");
+            return;
+        }
+        #[cfg(feature = "native-translation")]
+        if !ct2_model_disponible() {
+            eprintln!("[translate] skip: sin CT2");
+            return;
+        }
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (code_start, _) = run_json(&["--json", "daemon", "start"]);
+        if code_start != 0 {
+            eprintln!("[daemon] skip: no se pudo arrancar daemon");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (code, actual) = run_json(&[
+            "--json",
+            "--daemon",
+            "speech",
+            "dub",
+            "--audio",
+            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "--from",
+            "es",
+            "--to",
+            "en",
+        ]);
+        assert_eq!(code, 0, "dub con traducción --daemon debe salir 0");
+        assert_eq!(actual["status"], Value::String("dubbed".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 }

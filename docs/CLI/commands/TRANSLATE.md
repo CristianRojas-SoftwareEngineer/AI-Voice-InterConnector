@@ -6,7 +6,7 @@ La investigación examinó la implementación completa de `translate` explorando
 
 ## Respuestas a los objetivos
 
-**Diseño de `translate`:** Es un comando standalone de texto→texto que orquesta un pipeline de cuatro etapas (validar → segmentar → traducir → ensamblar) con un atajo de passthrough cuando origen y destino coinciden. No invoca audio, motor TTS ni daemon.
+**Diseño de `translate`:** Es un comando standalone de texto→texto que orquesta un pipeline de cuatro etapas (validar → segmentar → traducir → ensamblar) con un atajo de passthrough cuando origen y destino coinciden. No invoca audio ni motor TTS; delega al daemon (`POST /translate` con CT2 residente, `crates/avi-daemon/src/lib.rs:553`) cuando está activo (3 modos, `src/main.rs:398`), o ejecuta CT2 local si no.
 
 **Implementación:** El handler `cmd_translate` (`cli.py:1045`) instancia el pipeline completo con colaboradores concretos (`TranslationModelLoader`, `SentenceSegmenter`, `MarianTranslator`, `SegmentAssembler`) y delega la traducción a `TranslationService.translate`. Las tres excepciones de dominio (`TranslationModelMissingError`, `UnsupportedLanguagePairError`, `TranslationFailedError`) se mapean a códigos de salida existentes.
 
@@ -136,6 +136,10 @@ Cuando `--json` está activo, `emit_json` (`cli.py:69-80`) emite un único objet
 
 ---
 
+### Despacho al daemon (T5)
+
+`translate` es delegable en 3 modos (`--daemon`/`--no-daemon`/auto) vía `handle_translate` (`src/main.rs:398`) + `translate_via_daemon` (timeout 1500ms) → `POST /translate` (`crates/avi-daemon/src/lib.rs:580` `translate_handler`) con CT2 residente (`DaemonState:ct2_engine` `Option<HashMap>`). Passthrough `source==target` sin motor; `unsupported_language_pair`/`empty_text` validaciones puras antes del despacho.
+
 ## Conclusiones
 
-`translate` es un comando standalone de texto→texto que implementa un pipeline de traducción `es<->en` sin dependencias de audio ni motor TTS. Su diseño es notable por: (1) la arquitectura de colaboradores inyectables — `TranslationService` recibe loader, segmenter, translator y assembler via constructor, lo que permite tests sin runtime CT2; (2) la segmentación jerárquica de 4 niveles (párrafos → oraciones → puntuación → tokens) que adapta dinámicamente textos largos al límite de ~512 tokens de MarianMT sin romper oraciones innecesariamente; (3) el manejo explícito del token `</s>` en el encoder que previene loops de repetición en el decoder; (4) la divergencia ISO vs taxonomía CLI como decisión deliberada (D5) — `translate` usa códigos ISO porque MarianMT solo opera con ISO 639-1, mientras el resto de la CLI usa `es-latam` para síntesis; y (5) el atajo de passthrough que evita cargar modelos cuando origen y destino coinciden, manteniendo la interfaz uniforme.
+`translate` es un comando standalone de texto→texto que implementa un pipeline de traducción `es<->en` sin dependencias de audio ni motor TTS, ahora delegable al daemon con CT2 residente. Su diseño es notable por: (1) la arquitectura de colaboradores inyectables — `TranslationService` recibe loader, segmenter, translator y assembler via constructor, lo que permite tests sin runtime CT2; (2) la segmentación jerárquica de 4 niveles (párrafos → oraciones → puntuación → tokens) que adapta dinámicamente textos largos al límite de ~512 tokens de MarianMT sin romper oraciones innecesariamente; (3) el manejo explícito del token `</s>` en el encoder que previene loops de repetición en el decoder; (4) la divergencia ISO vs taxonomía CLI como decisión deliberada (D5) — `translate` usa códigos ISO porque MarianMT solo opera con ISO 639-1, mientras el resto de la CLI usa `es-latam` para síntesis; y (5) el atajo de passthrough que evita cargar modelos cuando origen y destino coinciden, manteniendo la interfaz uniforme.

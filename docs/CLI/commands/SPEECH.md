@@ -6,11 +6,11 @@ La investigación examinó la implementación completa de `speech dub` explorand
 
 ## Respuestas a los objetivos
 
-**Diseño de `speech dub`:** Es un pipeline de cuatro etapas (transcribe → traduce → sintetiza → reproduce) orquestado íntegramente en el lado del CLI. El daemon no expone un endpoint `/dub`; en su lugar, el CLI compone dos llamadas atómicas (`/transcribe` y `/synthesize`) en secuencia. La traducción está incrustada dentro de `/synthesize` cuando `source_language != target_language`.
+**Diseño de `speech dub`:** Es un pipeline de cuatro etapas (transcribe → traduce → sintetiza → reproduce). El daemon expone `POST /dub` (`crates/avi-daemon/src/lib.rs` `dub_handler`) con CT2 residente y `synthesis_lock`; el CLI despacha en 3 modos (`--daemon`/`--no-daemon`/auto) vía `route_to_daemon` + `dub_via_daemon` (pipeline `POST /dub`) con fallback a composición `transcribe_via_daemon` + traducción local + `daemon_synthesize_wav`.
 
-**Implementación:** El handler `cmd_speech_dub` (line 560) reutiliza helpers compartidos con `speech transcribe` y `speech synthesize` — no existen funciones auxiliares específicas de dub. El despacho tri-modal (daemon explícito / autodetección / directo) se aplica tanto a la transcripción como a la síntesis de forma independiente.
+**Implementación:** El handler `handle_speech:Dub` (`src/main.rs:955`) valida `--audio`/`--mic` y delega a `dub_via_daemon` (timeout 10000ms) si `route_to_daemon` es true; si no, rama local transcribe→traduce→sintetiza. El despacho tri-modal cubre las tres etapas.
 
-**Proceso de ejecución:** Validación de inputs → captura de audio (archivo WAV o micrófono) → transcripción vía Whisper → validación del texto transcrito → traducción condicional → síntesis con la voz target → reproducción del resultado.
+**Proceso de ejecución:** Validación de inputs → captura de audio (archivo WAV o micrófono) → transcripción vía Parakeet TDT v3 (`ParakeetEngine::transcribe`, `crates/avi-stt`) → validación del texto transcrito → traducción condicional CT2 → síntesis con la voz target → reproducción del resultado.
 
 ---
 
@@ -137,20 +137,23 @@ de API CUDA/Metal). El audio sintetizado no es distinguible por medios técnicos
 
 `_play_audio` (`cli.py:126-138`) instancia `AudioPlayer` (vía `miniaudio`) y reproduce los bytes de audio resultantes. Fallo si la librería de audio no está disponible → exit 8.
 
-### Daemon: no hay endpoint `/dub`
+### Daemon: `POST /dub` y pipeline
 
-El daemon (`daemon/server.py`) expone 6 endpoints, ninguno es de dubbing:
+El daemon (`crates/avi-daemon/src/lib.rs:1080` `dub_handler`) expone 9 endpoints, incluido `POST /dub`:
 
 | Endpoint | Propósito |
 |---|---|
 | `GET /health` | Estado del daemon, modelos cargados, uptime |
-| `POST /synthesize` | Síntesis (con traducción integrada si source≠target) |
-| `POST /transcribe` | Transcripción vía `ParakeetEngine` (`ort` load-dynamic, `parakeet-tdt-0.6b-v3`) |
+| `POST /synthesize` | Síntesis (NDJSON `audio_b64`) |
+| `POST /transcribe` | Transcripción Parakeet (`native-stt`) |
+| `POST /translate` | Traducción CT2 residente (`native-translation`) |
 | `GET /voices` | Lista de voces |
-| `POST /voices/precompute` | Precomputa conditionals de una voz |
+| `POST /voices/precompute` | Precomputa conditionals |
+| `POST /voices/clone` | Clona voz desde `audio_b64` |
+| `POST /dub` | Pipeline transcribe→translate→synthesize (`audio_b64`) |
 | `POST /shutdown` | Apaga el daemon |
 
-El CLI compone `dub` orquestando `/transcribe` + `/synthesize` en secuencia.
+`POST /dub` pipelinea `stt_engine.transcribe` → `ct2_engine` si `source!=target` → `tts_engine.synthesize_with_options` bajo `synthesis_lock`; el CLI también conserva fallback a composición `transcribe_via_daemon` + traducción local + `daemon_synthesize_wav`.
 
 ### Validaciones previas a la síntesis
 

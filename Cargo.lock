@@ -219,6 +219,7 @@ dependencies = [
  "avi-core",
  "avi-store",
  "avi-stt",
+ "avi-translation",
  "avi-tts",
  "axum",
  "base64 0.22.1",

@@ -1,5 +1,6 @@
 {
   "schema_version": "3",
   "daemon": "running",
-  "engine": "rust_native"
+  "engine": "rust_native",
+  "warm": "warm"
 }

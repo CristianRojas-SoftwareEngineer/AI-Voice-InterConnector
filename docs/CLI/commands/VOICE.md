@@ -128,21 +128,17 @@ Simple wrapper sobre `voices.list_voices()`. Si la lista está vacía, imprime u
 
 ### Precómputo de conditionals
 
-**Ruta de despacho** (`cli.py:900-941`):
+**Ruta de despacho `voice clone` (3 modos, `POST /voices/clone`)** (`src/main.rs:519` `clone_via_daemon`):
 
 ```
-Precompute (3 modos)
+Clone (3 modos, POST /voices/clone)
     │
-    ├─ --daemon ──────────► is_daemon_running()?
-    │                          ├─ Sí → DaemonIPCClient().precompute_voice(name)
-    │                          └─ No → CliError exit 5
-    │
-     ├─ --no-daemon ───────► avi_tts::clone_voice con Qwen3TtsEngine + reference.qvoice (`crates/avi-tts/src/lib.rs:744`, `src/main.rs:557-777`) → engine.precompute_voice(name)
-    │
-     └─ sin flags ─────────► is_daemon_running()?
-                                ├─ Sí → DaemonIPCClient().precompute_voice(name)
-                                └─ No → avi_tts::clone_voice con Qwen3TtsEngine + reference.qvoice → engine.precompute_voice(name)
+    ├─ --daemon ──────────► route_to_daemon? → Sí → POST /voices/clone (timeout 1500ms) → {name,speech,precomputed:false} : exit 5
+    ├─ --no-daemon ───────► Qwen3TtsEngine::new + avi_tts::clone_voice → save_reference (local)
+    └─ sin flags ─────────► route_to_daemon? → Sí → POST /voices/clone : local
 ```
+
+Precompute previo (`POST /voices/precompute`) se mantiene como fallback post-registro; `POST /voices/clone` (`crates/avi-daemon/src/lib.rs:669` `voices_clone_handler`) decodifica `audio_b64`, valida `VoiceStore::validate_name`, `exists`/`force`, `clone_voice` con `DEFAULT_CLONE_LANGUAGE` y `save_reference`.
 
 **Invariante de degradación:** salvo con `--daemon` caído (exit 5), cualquier fallo del precómputo se captura y devuelve `False` (`cli.py:935-941`). La voz queda registrada y el primer `speech synthesize --voice <nombre>` computa los conditionals on-the-fly.
 

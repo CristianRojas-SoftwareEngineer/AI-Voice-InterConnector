@@ -232,9 +232,21 @@ La autodetección es el único camino por defecto: un comportamiento especificad
 
 #### Qué superficies lo reciben
 
-**Las cinco que necesitan un modelo cargado: `speech synthesize`, `speech say` y `voice clone` (el TTS) y `speech transcribe` y `speech dub` (el de transcripción).** `voice clone` precomputa los conditionals de la voz al clonarla, así que necesita el modelo igual que las dos que sintetizan, y recibe los tres modos por simetría: con `--daemon` lo exige y sale 5 si no está, y con `--no-daemon` fuerza la ruta directa.
+| Comando | Delegable | Endpoint | Razón local-only |
+|---|---|---|---|
+| `speech synthesize` | Sí | `POST /synthesize` | — |
+| `speech say` | Sí | `POST /synthesize` | — |
+| `speech transcribe` | Sí | `POST /transcribe` | — |
+| `speech dub` | Sí | `POST /dub` | — |
+| `voice clone` | Sí | `POST /voices/clone` | — |
+| `translate` | Sí | `POST /translate` | — |
+| `speech play` | No | — | sin modelo (`play_wav` sobre `SpeechStore`) |
+| `speech list` | No | — | sin modelo |
+| `speech remove` | No | — | sin modelo |
+| `voice list` | No | — | sin modelo (`VoiceStore`) |
+| `voice remove` | No | — | sin modelo |
 
-`speech play`, `speech list` y `speech remove` no lo reciben porque no tocan el modelo.
+Delegables: 6 (`synthesize`, `say`, `transcribe`, `dub`, `clone`, `translate`). Local-only: 5 (`play`, `remove`, `list`, `voice list`/`remove`). `setup`/`cleanup`/`doctor`/`daemon`/`devices`/`version` fuera de alcance (provisión/diagnóstico/gestión, no usan modelo residente).
 
 #### Por qué `--daemon` significa exigir y no seleccionar
 
@@ -589,7 +601,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 #### El rename `--language` → `--target-language`
 
-**Cambio incompatible y deliberado, sin alias de transición.** `speech say`/`speech synthesize` reemplazan `--language` por `--target-language`; `setup`, `daemon` y `doctor` **conservan** `--language`, porque ahí no hay ambigüedad origen/destino (la provisión no traduce). El integrador de narración (§12) no se ve afectado: sus invocaciones nunca pasan `--language` en `speech say`, así que el rename no le rompe ningún flag en uso, aunque sí es parte del mismo contrato versionado.
+**Cambio incompatible y deliberado, sin alias de transición.** `speech say`/`speech synthesize` reemplazan `--language` por `--target-language`; `setup` y `doctor` **conservan** `--language` porque ahí no hay ambigüedad origen/destino (la provisión no traduce). `daemon` **no expone** `--language`/`--with-stt` (`docs/CLI/commands/DAEMON.md:93`, F0 §4.6 — `native-stt`/`native-translation` son features de compilación, no flags de ejecución). El integrador de narración (§12) no se ve afectado: sus invocaciones nunca pasan `--language` en `speech say`, así que el rename no le rompe ningún flag en uso, aunque sí es parte del mismo contrato versionado.
 
 #### Provisión y daemon
 

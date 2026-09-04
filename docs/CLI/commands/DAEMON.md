@@ -1,6 +1,6 @@
 # Comando `daemon` — ciclo de vida del daemon nativo
 
-El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Qwen3-TTS y Parakeet TDT v3 en memoria, evitando la carga en cada invocación (~15–30 s). El CLI actúa como cliente HTTP sobre `127.0.0.1:8765` (`src/main.rs:30` `DAEMON_ADDR`).
+El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Qwen3-TTS, Parakeet TDT v3 y CT2 `es↔en` en memoria, evitando la carga en cada invocación (~15–30 s). El CLI actúa como cliente HTTP sobre `127.0.0.1:8765` (`src/main.rs:30` `DAEMON_ADDR`).
 
 ## Definición CLI
 
@@ -41,11 +41,12 @@ CLI (ai-voice-interconnector)
   │                  DaemonState ──► Qwen3TtsEngine (resident qwen_tts)
   │                       ├── warm: RwLock<WarmState> (Warming/Warm/Failed)
   │                       ├── synthesis_lock: Mutex<()>
+  │                       ├── ct2_engine: Option<HashMap<String,Ct2TranslationEngine>> (native-translation)
   │                       └── shutdown_notify: Arc<Notify>
   └── DaemonIPCClient (reqwest) ◄──► Axum Router
 ```
 
-`crates/avi-daemon/src/lib.rs:68` `DaemonState { synthesis_lock, voice_store, speech_store, tts_engine, stt_engine, warm, shutdown_notify }`.
+`crates/avi-daemon/src/lib.rs:68` `DaemonState { synthesis_lock, voice_store, speech_store, tts_engine, stt_engine, ct2_engine, warm, shutdown_notify }`.
 `crates/avi-daemon/src/lib.rs:614` `run_daemon_server` bindea `TcpListener`, `spawn_blocking(warmup_tts)` (`crates/avi-daemon/src/lib.rs:589`), `with_graceful_shutdown(notify)`.
 
 ## Endpoints
@@ -55,8 +56,11 @@ CLI (ai-voice-interconnector)
 | `/health` | GET | — | `{status:"ready", warm, engine, warm_error?}` + `schema_version="3"` | Readiness + warmup |
 | `/synthesize` | POST | `{text, voice}` | NDJSON `start → progress → result{audio_b64}` o `error` | Síntesis streaming 24 kHz |
 | `/transcribe` | POST | `{audio_b64, source_language}` | `{text}` o `error` | Transcripción Parakeet (feature `native-stt`) |
+| `/translate` | POST | `{text, from, to}` | `{translated, source, target}` o `error` | Traducción CT2 residente (feature `native-translation`) |
 | `/voices` | GET | — | `{voices: [{name,is_factory}]}` | Listar voces |
 | `/voices/precompute` | POST | `{name}` | `{precomputed, message}` | Precomputar `.qvoice` |
+| `/voices/clone` | POST | `{name, audio_b64, timbre_b64?, force?}` | `{name, speech, precomputed:false}` o `error` | Clonar voz (audio base64) |
+| `/dub` | POST | `{audio_b64, from, to, voice}` | `{status:"dubbed", text, translated, audio_b64}` o `error` | Pipeline transcribe→translate→synthesize |
 | `/shutdown` | POST | — | `{status:"shutting_down"}` | `shutdown_notify` + `tts_engine.shutdown()` |
 
 Prefijo `x-schema-version: 3` (`crates/avi-core/src/json_emitter.rs:5`).

@@ -13,6 +13,7 @@ avi-core = { path = "../avi-core" }
 avi-store = { path = "../avi-store" }
 avi-stt = { path = "../avi-stt" }
 avi-tts = { path = "../avi-tts" }
+avi-translation = { path = "../avi-translation", optional = true }
 base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
@@ -21,6 +22,8 @@ libc = "0.2"
 [features]
 # Activa la superficie STT del daemon; encadena el motor Parakeet de avi-stt.
 native-stt = ["avi-stt/native-stt"]
+# Activa la superficie de traducción CT2 residente; encadena el motor Ct2 de avi-translation.
+native-translation = ["avi-translation/native-translation"]
 
 [dev-dependencies]
 # Solo para el harness de tests dorados: permite ejercitar el Router de Axum
