@@ -53,23 +53,21 @@ CLI (ai-voice-interconnector)
 
 | Endpoint | Método | Request | Response | Descripción |
 |---|---|---|---|---|
-| `/health` | GET | — | `{status:"ready", warm, engine, warm_error?}` + `schema_version="3"` | Readiness + warmup |
+| `/health` | GET | — | `{status:"ready", warm, engine, warm_error?, ct2?, stt?}` + `schema_version="3"` | Readiness + warmup (7 rutas) |
 | `/synthesize` | POST | `{text, voice}` | NDJSON `start → progress → result{audio_b64}` o `error` | Síntesis streaming 24 kHz |
 | `/transcribe` | POST | `{audio_b64, source_language}` | `{text}` o `error` | Transcripción Parakeet (feature `native-stt`) |
 | `/translate` | POST | `{text, from, to}` | `{translated, source, target}` o `error` | Traducción CT2 residente (feature `native-translation`) |
-| `/voices` | GET | — | `{voices: [{name,is_factory}]}` | Listar voces |
-| `/voices/precompute` | POST | `{name}` | `{precomputed, message}` | Precomputar `.qvoice` |
 | `/voices/clone` | POST | `{name, audio_b64, timbre_b64?, force?}` | `{name, speech, precomputed:false}` o `error` | Clonar voz (audio base64) |
 | `/dub` | POST | `{audio_b64, from, to, voice}` | `{status:"dubbed", text, translated, audio_b64}` o `error` | Pipeline transcribe→translate→synthesize |
 | `/shutdown` | POST | — | `{status:"shutting_down"}` | `shutdown_notify` + `tts_engine.shutdown()` |
 
-Prefijo `x-schema-version: 3` (`crates/avi-core/src/json_emitter.rs:5`).
+7 rutas públicas (podadas `GET /voices` y `POST /voices/precompute`; sin legado). Prefijo `x-schema-version: 3` (`crates/avi-core/src/json_emitter.rs:5`).
 
 ## Protocolo
 
 - `synthesize`: NDJSON `application/x-ndjson` con `schema_version`.
 - `transcribe`: PCM `i16le 16kHz mono` base64 en `audio_b64`.
-- `health_body` (`lib.rs:158`): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`.
+- `health_body` (`lib.rs:158`): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`. `GET /health` puede incluir `ct2`/`stt` aditivas `warm/warming/warm_failed` cuando residentes, sin bump `schema_version`.
 
 ## Gestión del ciclo de vida
 

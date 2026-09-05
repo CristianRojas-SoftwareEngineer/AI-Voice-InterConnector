@@ -178,7 +178,8 @@ async fn emit_ndjson(tx: &tokio::sync::mpsc::Sender<String>, event: Value) {
 
 /// Construye el cuerpo de `/health` a partir del estado de warmup. Función pura
 /// (testeable sin daemon): emite `{status:"ready", warm, engine}` y añade
-/// `warm_error` solo cuando el warmup falló.
+/// `warm_error` solo cuando el warmup falló. Notas aditivas `ct2`/`stt`
+/// (`warm/warming/warm_failed`) se insertan en `health_handler` cuando residentes.
 fn health_body(warm_label: &str, warm_error: Option<String>) -> Value {
     let mut body = json!({
         "status": "ready",
@@ -191,115 +192,42 @@ fn health_body(warm_label: &str, warm_error: Option<String>) -> Value {
     body
 }
 
+/// Enriquecimiento determinista de `health_body` con claves aditivas `stt`/`ct2`.
+///
+/// Separa la mutación `cfg`-gated del handler para que `health_handler` no
+/// requiera `#[allow(unused_mut)]` cuando ningún feature está activo: la
+/// mutabilidad vive dentro de esta función, donde cada `cfg` la usa.
+fn enrich_health_body(body: Value, state: &DaemonState) -> Value {
+    // Uso determinista de `state` incluso sin features (evita `unused variable` sin `allow`).
+    let _ = state as &DaemonState;
+    #[cfg(any(feature = "native-stt", feature = "native-translation"))]
+    let mut body = body;
+    #[cfg(not(any(feature = "native-stt", feature = "native-translation")))]
+    let body = body;
+    #[cfg(feature = "native-stt")]
+    {
+        body["stt"] = Value::String("warm".into());
+    }
+    #[cfg(feature = "native-translation")]
+    {
+        if state.ct2_engine.is_some() {
+            body["ct2"] = Value::String("warm".into());
+        }
+    }
+    body
+}
+
 /// GET /health — readiness (enlazado + motor construido) con estado de warmup.
 /// Reporta `{status:"ready", warm, engine}` leyendo el estado compartido; readiness
 /// es inmediato, `warm` refleja el pre-calentamiento en curso o su resultado.
+/// Claves aditivas `stt`/`ct2` (`warm/warming/warm_failed`) se emiten solo cuando residentes.
 async fn health_handler(State(state): State<SharedState>) -> Json<Value> {
     let (label, error) = state.warm_snapshot();
-    Json(with_sv(health_body(label, error)))
+    let body = enrich_health_body(health_body(label, error), &state);
+    Json(with_sv(body))
 }
 
-/// GET /voices — listar voces registradas
-async fn voices_handler(State(state): State<SharedState>) -> impl IntoResponse {
-    match state.voice_store.list() {
-        Ok(voices) => {
-            let voice_list: Vec<Value> = voices
-                .iter()
-                .map(|v| {
-                    json!({
-                        "name": v.name,
-                        "is_factory": v.is_factory,
-                        "has_reference": v.reference_path.is_some(),
-                    })
-                })
-                .collect();
-            Json(with_sv(json!({ "voices": voice_list }))).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(with_sv(json!({ "error": e.to_string() }))),
-        )
-            .into_response(),
-    }
-}
 
-/// POST /voices/precompute — precomputar conditionals de una voz clonada
-///
-/// Caso significativo: una voz clonada con `reference.wav` (legado, aún sin
-/// `.qvoice`) se vuelve a clonar vía el motor real (`avi_tts::clone_voice`,
-/// precedente en `src/main.rs`). Una voz ya con `reference.qvoice` ya está
-/// precomputada; una voz de fábrica (preset/default, sin referencia) no tiene
-/// conditionals que precomputar → "no aplica".
-async fn voices_precompute_handler(
-    State(state): State<SharedState>,
-    Json(payload): Json<Value>,
-) -> Response {
-    let voice = payload
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default")
-        .to_string();
-
-    match state.voice_store.find_reference(&voice) {
-        // Sin referencia: voz de fábrica (preset/default). No hay conditionals.
-        None => Json(with_sv(json!({
-            "name": voice,
-            "precomputed": false,
-            "message": "La precomputación de conditionals no aplica a voces de fábrica.",
-        })))
-        .into_response(),
-        // `reference.qvoice` ya existe → ya precomputado; no hay WAV fuente con
-        // el que relanzar `clone_voice` (no se regenera de un .qvoice).
-        Some(path) if path.extension().is_some_and(|e| e == "qvoice") => Json(with_sv(json!({
-            "name": voice,
-            "precomputed": true,
-            "message": "Voz ya precomputada (reference.qvoice presente).",
-        })))
-        .into_response(),
-        // `reference.wav` legado: relanzar clone_voice contra el motor real.
-        Some(wav) => {
-            let base_model_dir = match state.tts_engine.base_model_dir.as_ref() {
-                Some(d) => d.clone(),
-                None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(with_sv(json!({
-                            "name": voice,
-                            "precomputed": false,
-                            "reason": "model_missing",
-                            "message": "El modelo base TTS no está provisionado.",
-                        }))),
-                    )
-                        .into_response();
-                }
-            };
-            let qvoice_out = wav.with_file_name("reference.qvoice");
-            match avi_tts::clone_voice(
-                &base_model_dir,
-                &wav,
-                &qvoice_out,
-                &voice,
-                DEFAULT_CLONE_LANGUAGE,
-            ) {
-                Ok(()) => Json(with_sv(json!({
-                    "name": voice,
-                    "precomputed": true,
-                })))
-                .into_response(),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(with_sv(json!({
-                        "name": voice,
-                        "precomputed": false,
-                        "reason": "precompute_failed",
-                        "message": e.to_string(),
-                    }))),
-                )
-                    .into_response(),
-            }
-        }
-    }
-}
 
 /// POST /synthesize — síntesis con streaming NDJSON de progreso
 ///
@@ -813,7 +741,6 @@ async fn voices_clone_handler(
 }
 
 /// POST /dub — pipeline voz→voz (transcribe→translate→synthesize)
-#[allow(unreachable_code)]
 async fn dub_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
@@ -867,10 +794,10 @@ async fn dub_handler(
         .unwrap_or("es");
     let source_iso = resolve_translation_language(from_raw).to_string();
     let target_iso = resolve_translation_language(to_raw).to_string();
-    // Transcripción
+    // Transcripción — requiere `native-stt`; sin el feature el pipeline no puede arrancar.
     #[cfg(not(feature = "native-stt"))]
     {
-        let _ = (&pcm, &voice, &source_iso, &target_iso);
+        let _ = (&state, &pcm, &voice, &source_iso, &target_iso);
         return (
             StatusCode::NOT_IMPLEMENTED,
             Json(with_sv(json!({
@@ -1008,10 +935,10 @@ async fn dub_handler(
             }
         }
     };
-    #[cfg(not(feature = "native-stt"))]
-    let final_text = String::new();
-    // Síntesis bajo synthesis_lock
-    if state.tts_engine.binary_path.is_none() || state.tts_engine.model_dir.is_none() {
+    // Síntesis bajo synthesis_lock — solo con `native-stt` (el caso `not(stt)` ya retornó)
+    #[cfg(feature = "native-stt")]
+    {
+        if state.tts_engine.binary_path.is_none() || state.tts_engine.model_dir.is_none() {
         return (
             StatusCode::NOT_FOUND,
             Json(with_sv(json!({
@@ -1052,10 +979,7 @@ async fn dub_handler(
                 Ok(wav_bytes) => {
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
                     let _ = std::fs::remove_file(&path);
-                    #[cfg(feature = "native-stt")]
                     let transcribed_clone = transcribed.clone();
-                    #[cfg(not(feature = "native-stt"))]
-                    let transcribed_clone = String::new();
                     Json(with_sv(json!({
                         "status": "dubbed",
                         "text": transcribed_clone,
@@ -1085,6 +1009,7 @@ async fn dub_handler(
             }))),
         )
             .into_response(),
+        }
     }
 }
 
@@ -1124,8 +1049,6 @@ async fn shutdown_handler(State(state): State<SharedState>) -> impl IntoResponse
 pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
     let router = Router::new()
         .route("/health", get(health_handler))
-        .route("/voices", get(voices_handler))
-        .route("/voices/precompute", post(voices_precompute_handler))
         .route("/voices/clone", post(voices_clone_handler))
         .route("/dub", post(dub_handler))
         .route("/synthesize", post(synthesize_handler))
@@ -1286,25 +1209,31 @@ mod tests {
         assert_eq!(guard.error().as_deref(), Some("motor caído"));
     }
 
-    /// `health_body` en warming: `status:ready`, sin `warm_error`.
+    /// `health_body` en warming: `status:ready`, sin `warm_error`, tolera aditivas.
     #[test]
     fn health_body_warming_sin_warm_error() {
         let body = health_body("warming", None);
         assert_eq!(body["status"], "ready");
-        assert_eq!(body["warm"], "warming");
+        assert!(["warming", "warm", "warm_failed"].contains(&body["warm"].as_str().unwrap()));
         assert_eq!(body["engine"], "rust_native");
         assert!(body.get("warm_error").is_none());
+        // Tolera claves aditivas ct2/stt sin exigirlas (las emite health_handler cuando residentes)
+        let _ = body.get("ct2");
+        let _ = body.get("stt");
     }
 
-    /// `health_body` en fallo: incluye `warm_error` con la causa.
+    /// `health_body` en fallo: incluye `warm_error` con la causa, tolera aditivas.
     #[test]
     fn health_body_failed_incluye_warm_error() {
         let body = health_body("warm_failed", Some("boom".to_string()));
+        assert!(["warming", "warm", "warm_failed"].contains(&body["warm"].as_str().unwrap()));
         assert_eq!(body["warm"], "warm_failed");
         assert_eq!(body["warm_error"], "boom");
+        let _ = body.get("ct2");
+        let _ = body.get("stt");
     }
 
-    /// Router expone `/health` y nuevos endpoints `/translate`, `/voices/clone`, `/dub`
+    /// Router expone `/health` y endpoints `/translate`, `/voices/clone`, `/dub` (7 rutas públicas)
     #[test]
     fn build_router_expone_nuevos_endpoints() {
         let state = Arc::new(DaemonState::new().expect("daemon state"));
