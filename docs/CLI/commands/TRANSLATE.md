@@ -6,7 +6,7 @@ La investigación examinó la implementación completa de `translate` explorando
 
 ## Respuestas a los objetivos
 
-**Diseño de `translate`:** Es un comando standalone de texto→texto que orquesta un pipeline de cuatro etapas (validar → segmentar → traducir → ensamblar) con un atajo de passthrough cuando origen y destino coinciden. No invoca audio ni motor TTS; delega al daemon (`POST /translate` con CT2 residente, `crates/avi-daemon/src/lib.rs:553`) cuando está activo (3 modos, `src/main.rs:398`), o ejecuta CT2 local si no.
+**Diseño de `translate`:** Es un comando standalone de texto→texto que orquesta un pipeline de cuatro etapas (validar → segmentar → traducir → ensamblar) con un atajo de passthrough cuando origen y destino coinciden. No invoca audio ni motor TTS; delega al daemon (`POST /translate` con CT2 residente, `crates/avi-daemon/src/lib.rs:553`) cuando está activo (3 modos, `src/main.rs:398`), o ejecuta CT2 local si no. Ambas vías exigen el derivado sano (`model.bin` más `tokenizer.json` o `source.spm`+`target.spm`); sin él, exit 4 con los ficheros faltantes (exit 9 solo con modelo cargado).
 
 **Implementación:** El handler `cmd_translate` (`cli.py:1045`) instancia el pipeline completo con colaboradores concretos (`TranslationModelLoader`, `SentenceSegmenter`, `MarianTranslator`, `SegmentAssembler`) y delega la traducción a `TranslationService.translate`. Las tres excepciones de dominio (`TranslationModelMissingError`, `UnsupportedLanguagePairError`, `TranslationFailedError`) se mapean a códigos de salida existentes.
 
@@ -89,6 +89,7 @@ Cada nivel solo se aplica si el fragmento del nivel anterior excede `max_length`
 
 - **Carga:** importa `ctranslate2` y `sentencepiece` de forma diferida (dentro del `__init__`) para no arrastrar librerías pesadas en comandos que no traducen (`model_loader.py:90-93`)
 - **Tokenización:** `source.spm` para tokenizar la entrada, `target.spm` para detokenizar la salida (`model_loader.py:65-70`)
+- **Derivado exigido:** el dir CT2 queda provisionado solo con `model.bin` más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot por `setup` con `--copy_files` y copia posterior verificada); `setup` repara el dir roto por reconversión atómica (temporal + rename, gate `is_ct2_provisioned` == loader)
 - **Token `</s>`:** Se añade manualmente al final de los tokens fuente (`model_loader.py:81`). Sin este token, el encoder nunca recibe marca de fin de secuencia y el decoder entra en loop de repetición (`model_loader.py:73-79`)
 - **Inferencia:** `translate_batch([tokens])` → `results[0].hypotheses[0]` → detokenización (`model_loader.py:82-84`)
 
@@ -138,7 +139,7 @@ Cuando `--json` está activo, `emit_json` (`cli.py:69-80`) emite un único objet
 
 ### Despacho al daemon (T5)
 
-`translate` es delegable en 3 modos (`--daemon`/`--no-daemon`/auto) vía `handle_translate` (`src/main.rs:398`) + `translate_via_daemon` (timeout 1500ms) → `POST /translate` (`crates/avi-daemon/src/lib.rs:580` `translate_handler`) con CT2 residente (`DaemonState:ct2_engine` `Option<HashMap>`). Passthrough `source==target` sin motor; `unsupported_language_pair`/`empty_text` validaciones puras antes del despacho.
+`translate` es delegable en 3 modos (`--daemon`/`--no-daemon`/auto) vía `handle_translate` (`src/main.rs:398`) + `translate_via_daemon` (timeout 1500ms) → `POST /translate` (`crates/avi-daemon/src/lib.rs:580` `translate_handler`) con CT2 residente (`DaemonState:ct2_engine` `Option<HashMap>`). Passthrough `source==target` sin motor; `unsupported_language_pair`/`empty_text` validaciones puras antes del despacho. Ambas ramas (local y `translate_handler`) aplican el gate `is_ct2_provisioned` (`model.bin` más tokenizador); exit 4 si falta el derivado, 9 solo con modelo cargado.
 
 ## Conclusiones
 

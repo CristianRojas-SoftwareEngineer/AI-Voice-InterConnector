@@ -532,16 +532,44 @@ pub fn xet_cache_dir() -> PathBuf {
 }
 
 /// Directorio CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2`.
-/// Layout: `hf_cache_dir()/ct2/opus-mt-es-en` y `opus-mt-en-es`, cada uno con `model.bin` CT2.
-/// Invariante: `Marian HF presente ⇒ CT2 model.bin presente`; idempotente por `mtime`.
+/// Layout: `hf_cache_dir()/ct2/opus-mt-es-en` y `opus-mt-en-es`, cada uno con
+/// `model.bin` CT2 más tokenizador utilizable por el loader (`tokenizer.json`,
+/// o `source.spm` más `target.spm` copiados desde el snapshot por `setup`).
+/// Invariante: provisionado equivale a cargable por `Translator::new` — el gate
+/// `is_ct2_provisioned` exige exactamente lo que el loader necesita, en el orden
+/// real de `auto::Tokenizer` en `ct2rs 0.10.0`; la idempotencia por `mtime` solo
+/// aplica a dirs sanos (un dir roto es no provisionado y fuerza reconversión).
 pub fn ct2_cache_dir() -> PathBuf {
     hf_cache_dir().join("ct2")
 }
 pub fn ct2_model_dir(pair: &str) -> PathBuf {
     ct2_cache_dir().join(format!("opus-mt-{}", pair))
 }
+/// Ficheros ausentes del derivado CT2 en `dir`: vacío equivale a cargable por
+/// el loader (`model.bin` presente más tokenizador completo). Nombra cada
+/// candidato ausente para errores accionables.
+pub fn ct2_dir_faltantes(dir: &std::path::Path) -> Vec<String> {
+    let mut faltan = Vec::new();
+    if !dir.join("model.bin").is_file() {
+        faltan.push("model.bin".to_string());
+    }
+    let tokenizador_ok = dir.join("tokenizer.json").is_file()
+        || (dir.join("source.spm").is_file() && dir.join("target.spm").is_file());
+    if !tokenizador_ok {
+        for candidato in ["tokenizer.json", "source.spm", "target.spm"] {
+            if !dir.join(candidato).is_file() {
+                faltan.push(candidato.to_string());
+            }
+        }
+    }
+    faltan
+}
+/// Ficheros ausentes del derivado CT2 del par (`es-en`/`en-es`).
+pub fn ct2_archivos_faltantes(pair: &str) -> Vec<String> {
+    ct2_dir_faltantes(&ct2_model_dir(pair))
+}
 pub fn is_ct2_provisioned(pair: &str) -> bool {
-    ct2_model_dir(pair).join("model.bin").is_file()
+    ct2_archivos_faltantes(pair).is_empty()
 }
 /// Purga determinista del derivado CT2 en `hf_cache_dir/ct2`, simétrica a `remove_xet_cache`.
 pub fn remove_ct2_cache() -> Result<bool> {

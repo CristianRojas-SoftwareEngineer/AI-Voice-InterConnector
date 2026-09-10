@@ -47,6 +47,7 @@ CLI (ai-voice-interconnector)
 ```
 
 `crates/avi-daemon/src/lib.rs:69` `DaemonState { synthesis_lock, voice_store, speech_store, tts_engine, stt_engine, ct2_engine, warm, shutdown_notify }`.
+`ct2_engine: None` significa motor ausente o roto: también es `None` con `model.bin` huérfano (sin tokenizador) — el arranque lo registra con los ficheros faltantes (`ct2_archivos_faltantes`) sin derribar el servidor (`DaemonState::new`, `crates/avi-daemon/src/lib.rs:116-128`, gate `is_ct2_provisioned` == loader).
 `crates/avi-daemon/src/lib.rs:1234` `run_daemon_server` bindea `TcpListener`, `spawn_blocking(warmup_tts)` (`crates/avi-daemon/src/lib.rs:1245`), `with_graceful_shutdown(notify)`.
 
 ## Endpoints
@@ -68,6 +69,7 @@ CLI (ai-voice-interconnector)
 - `synthesize`: NDJSON `application/x-ndjson` con `schema_version`.
 - `transcribe`: PCM `i16le 16kHz mono` base64 en `audio_b64`.
 - `health_body` (`lib.rs:183`): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`. `GET /health` puede incluir `ct2`/`stt` aditivas `warm/warming/warm_failed` cuando residentes, sin bump `schema_version`.
+- `translate`/`dub` (etapa de traducción) exigen el derivado sano vía `is_ct2_provisioned` (`model.bin` más `tokenizer.json` o `source.spm`+`target.spm`); sin él responden `model_missing` (exit 4 en CLI) con los ficheros faltantes.
 
 ## Gestión del ciclo de vida
 

@@ -6,7 +6,7 @@ La investigación examinó la implementación completa de `speech dub` explorand
 
 ## Respuestas a los objetivos
 
-**Diseño de `speech dub`:** Es un pipeline de cuatro etapas (transcribe → traduce → sintetiza → reproduce). El daemon expone `POST /dub` (`crates/avi-daemon/src/lib.rs` `dub_handler`) con CT2 residente y `synthesis_lock`; el CLI despacha en 3 modos (`--daemon`/`--no-daemon`/auto) vía `route_to_daemon` + `dub_via_daemon` (pipeline `POST /dub`) con fallback a composición `transcribe_via_daemon` + traducción local + `daemon_synthesize_wav`.
+**Diseño de `speech dub`:** Es un pipeline de cuatro etapas (transcribe → traduce → sintetiza → reproduce). El daemon expone `POST /dub` (`crates/avi-daemon/src/lib.rs` `dub_handler`) con CT2 residente y `synthesis_lock`; el CLI despacha en 3 modos (`--daemon`/`--no-daemon`/auto) vía `route_to_daemon` + `dub_via_daemon` (pipeline `POST /dub`) con fallback a composición `transcribe_via_daemon` + traducción local + `daemon_synthesize_wav`. La etapa de traducción exige el derivado CT2 sano vía `avi-translation` (`model.bin` más `tokenizer.json` o `source.spm`+`target.spm`); sin él, exit 4 con los ficheros faltantes.
 
 **Implementación:** El handler `handle_speech:Dub` (`src/main.rs:955`) valida `--audio`/`--mic` y delega a `dub_via_daemon` (timeout 10000ms) si `route_to_daemon` es true; si no, rama local transcribe→traduce→sintetiza. El despacho tri-modal cubre las tres etapas.
 
@@ -91,7 +91,7 @@ Tanto `_transcribe_stage` (`cli.py:451-513`) como `_dispatch_synthesis` (`cli.py
 - **Daemon:** transcribe vía `avi-daemon` → `POST /transcribe` (`src/main.rs:743`, `crates/avi-daemon/src/lib.rs:286-508`) → delega a `ParakeetEngine::transcribe` (`crates/avi-stt/src/parakeet.rs`) sobre `ort` load-dynamic con los 4 artefactos `MODEL_FILE_PATTERNS` → texto
 - **Directo:** instancia `ParakeetEngine` localmente (`crates/avi-stt/src/lib.rs:40`) → mismo pipeline sin HTTP vía `hf_cache_dir()` + `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs:381`)
 
-**Detalle clave:** `ParakeetEngine` solo transcribe, nunca traduce. La traducción es responsabilidad exclusiva de `avi-translation` vía `ct2rs`.
+**Detalle clave:** `ParakeetEngine` solo transcribe, nunca traduce. La traducción es responsabilidad exclusiva de `avi-translation` vía `ct2rs` sobre el derivado sano (mismo gate `is_ct2_provisioned` que `translate`: exit 4 sin tokenizador, 9 solo con modelo cargado).
 
 ### Etapa 3: Traducción (condicional)
 
@@ -150,7 +150,7 @@ El daemon (`crates/avi-daemon/src/lib.rs:1080` `dub_handler`) expone 9 endpoints
 | `POST /dub` | Pipeline transcribe→translate→synthesize (`audio_b64`) |
 | `POST /shutdown` | Apaga el daemon |
 
-`POST /dub` pipelinea `stt_engine.transcribe` → `ct2_engine` si `source!=target` → `tts_engine.synthesize_with_options` bajo `synthesis_lock`; el CLI también conserva fallback a composición `transcribe_via_daemon` + traducción local + `daemon_synthesize_wav`.
+`POST /dub` pipelinea `stt_engine.transcribe` → `ct2_engine` si `source!=target` → `tts_engine.synthesize_with_options` bajo `synthesis_lock`; el CLI también conserva fallback a composición `transcribe_via_daemon` + traducción local + `daemon_synthesize_wav`. `dub_handler` y la composición aplican `is_ct2_provisioned`; `ct2_engine: None` con `model.bin` huérfano (sin tokenizador) sale con 4 y los ficheros faltantes, no con 9.
 
 ### Validaciones previas a la síntesis
 

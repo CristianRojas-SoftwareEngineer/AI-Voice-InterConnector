@@ -69,7 +69,7 @@ Descarga de Voice Encoder (si es-mx-latam) ← ve.safetensors desde BASE_MODEL_R
     │
     ▼
 _provision_translation_pairs()             ← solo si --language incluye en/all
-     │  opus-mt-es-en + opus-mt-en-es → conversión CT2 vía `ct2rs`
+     │  opus-mt-es-en + opus-mt-en-es → conversión CT2 vía `ct2rs` con `--copy_files source.spm target.spm` + copia posterior verificada, escritura atómica (temporal hermano + rename) y reparación del dir roto por reconversión (gate `is_ct2_provisioned` == loader)
      ▼
 ParakeetEngine::ensure_downloaded           ← solo si --with-stt
      │  `parakeet-tdt-0.6b-v3` int8 (4 artefactos) → `ort` load-dynamic vía `hf_cache_dir()`
@@ -152,7 +152,7 @@ El módulo `avi-store` (`crates/avi-store/src/lib.rs`) proporciona la capa de de
 | `--language` | Modelos TTS | Modelo traducción | Modelo STT |
 |---|---|---|---|
 | `es-latam` | `qwen3-tts-0.6b` (`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`) | — | `parakeet-tdt-0.6b-v3` int8 (4 artefactos, opt-in `--with-stt`) |
-| `en` | `qwen3-tts-0.6b` + Base opt-in | `opus-mt-es-en` + `opus-mt-en-es` (CT2) | idem |
+| `en` | `qwen3-tts-0.6b` + Base opt-in | `opus-mt-es-en` + `opus-mt-en-es` (derivado CT2: `model.bin` + `source.spm`+`target.spm`) | idem |
 | `all` (default) | 4 base | Ambas direcciones de traducción | idem |
 
 **Validación de integridad:** `is_provisioned` valida no solo existencia sino también ficheros críticos con `size>0` (`crates/avi-store/src/lib.rs:550`) y `ensure_downloaded` valida/rollback de snapshot+blobs, previniendo caché truncada que pasa `.exists()` pero revienta al cargar.

@@ -1,7 +1,7 @@
 # Revisión: bloqueos de la suite de tests — causas y corrección estructural
 
 - **Fecha**: 2026-09-10 (diagnóstico) · 2026-09-10 (ejecución F5 y refinado)
-- **Estado**: Corregido y verificado salvo 2 tests bloqueados por causa motor externa (E1 → C-05 en `docs/reviews/2026-09-04-hallazgos-pendientes.md`) y 1 hallazgo pendiente de scope de producto (E2, §8).
+- **Estado**: Corregido y verificado; E1 (motor CT2 → C-05) resuelto 2026-09-10 con evidencia F5 de C-05-motor-CT2. Quedan 2 hallazgos abiertos de scope de producto: E2 (§8, intacto) y E3 (§9, ciclo de vida/warmup).
 - **Alcance**: `tests/cli_golden.rs` (44 tests físicos: 36 por defecto + 8 gateados por `native-stt`/`native-translation`), ciclo de vida del daemon (`src/main.rs`, `crates/avi-daemon/src/spawn.rs`, `crates/avi-daemon/src/lib.rs`) y régimen de ejecución de inferencia real. Solo se documentan soluciones que eliminan trabajo o defectos de raíz; no se documentan mitigaciones.
 - **Síntoma que originó la revisión**: la corrida completa no terminó en 300s y dejó dos procesos huérfanos (`ai-voice-interconnector` + `qwen_tts`).
 
@@ -15,6 +15,7 @@
 - 6. Criterio de cierre y veredicto
 - 7. Método y fuentes
 - 8. Pendiente abierto (E2)
+- 9. Hallazgo abierto (E3): ciclo de vida/warmup
 
 ## 1. Resumen ejecutivo
 
@@ -29,8 +30,9 @@ No había interbloqueo ni espera infinita: la raíz era triple —cada test pesa
 | P3 | Reproducción en tiempo real como verificación (§3) | ✅ Resuelto | Solo-archivo + 1 humo de audio en `say` |
 | P4 | Ciclo de vida frágil (§3) | ✅ Resuelto | Dueño único, asserts explícitos, skips sin efectos |
 | P5 | Sleeps fijos en vez de estado (§3) | ✅ Resuelto | Poll-hasta-`warm`; 2 sleeps residuales justificados |
-| E1 | Motor CT2 roto (externo, C-05) | ⏳ Abierto | Bloquea 2 tests; scope de producto |
+| E1 | Motor CT2 roto (externo, C-05) | ✅ Resuelto | Gate == loader, `setup` repara, CLI es↔en exit 0, 17/17, dorada translate (F5 C-05-motor-CT2 2026-09-10) |
 | E2 | Daemon retiene stdout del spawner (§8) | ⏳ Abierto | Scope de producto |
+| E3 | Ciclo de vida/warmup: flakiness + huérfanos (§9) | ⏳ Abierto | Scope de producto |
 
 ## 3. Problemas resueltos (P1–P5)
 
@@ -77,7 +79,7 @@ WAV + WER donde existían; humo único acotado. Elimina la pared de tiempo real 
 
 ## 6. Criterio de cierre y veredicto
 
-Orden seguido: O1 → O2+O3+colaterales en paralelo, serie conservada. Baselines: lib 14/14, daemon 6/6+7/7, rápidas 29/29 en segundos, `cargo check` sin warnings nuevos. Pesada serial en verde test por test (tabla en F5 §2 de `.claude/orchestration/harness-estructural/F5-ground-truth.md`), con re-verificación en frío del readiness (35 s). **No verde total por E1**: `translate_es_a_en` (exit 9) y `dub_daemon_con_traduccion` (exit 1) — `failed to create a tokenizer` a nivel crate (C-05).
+Orden seguido: O1 → O2+O3+colaterales en paralelo, serie conservada. Baselines: lib 14/14, daemon 6/6+7/7, rápidas 29/29 en segundos, `cargo check` sin warnings nuevos. Pesada serial en verde test por test (tabla en F5 §2 de `.claude/orchestration/harness-estructural/F5-ground-truth.md`), con re-verificación en frío del readiness (35 s). **E1 resuelto (motor, 2026-09-10)**: gate `is_ct2_provisioned` == loader, `setup` repara ambos dirs con `.spm`, CLI es↔en exit 0, `avi-translation` 17/17, dorada `translate_es_a_en_produce_traduccion` en verde y `tts::dub_daemon_con_traduccion` verificada por el usuario (27.36s, exit 0) — evidencia en `.claude/orchestration/c05-motor-ct2/F5-ground-truth.md`.
 
 ## 7. Método y fuentes
 
@@ -86,3 +88,16 @@ Diagnóstico sin mutaciones (ciclo `src/main.rs:1353-1571`, pidfile `:2339-2357`
 ## 8. Pendiente abierto (E2)
 
 **El daemon retiene el stdout del spawner** — evidenciado en F5 por eliminación (matar qwen no liberó el log; matar el daemon PID 12380 sí, dos ocasiones). Revisa el descartado de §4: `spawn_background` anula stdio pero el daemon retuvo el destino de redirección (`>> log 2>&1`; hipótesis: se hereda stderr). Un daemon así mantiene ocupados archivos del spawner y puede atar su consola — la misma familia de los incidentes originales. Fix (producto): auditar los tres streams en `spawn_background` y respawn de supervisión + regresión con tempfile. Decisión requerida: ¿en qué scope se agenda?
+
+## 9. Hallazgo abierto (E3): ciclo de vida/warmup — flakiness + huérfanos
+
+**Estado**: ⏳ Abierto (2026-09-10, observado en F5 de C-05-motor-CT2; el motor C-05/E1 queda verificado y este hallazgo es de ciclo de vida, familia E2).
+
+Mismo comando en las tres corridas (`cargo test --features native-stt,native-translation --test cli_golden -- --test-threads=1 --exact tts::dub_daemon_con_traduccion --nocapture`; evidencia en `.claude/orchestration/c05-motor-ct2/F5-ground-truth.md`):
+
+- (i) **Degradación por reutilización**: con daemon residual reutilizado (15:23Z), 12s FAILED — dub vía daemon exit 5 (timeout cliente `/dub` 10s). Con arranque fresco (usuario, ~15:20Z), el mismo comando da exit 0 en 9.97s (total 27.36s, warm en intento 29/50, 17.38s).
+- (ii) **Huérfanos tras abortos**: las corridas abortadas dejan `ai-voice-interconnector` + `qwen_tts` huérfanos; F5 los detuvo con `Stop-Process` en dos ocasiones (corrida detenida por el usuario y corrida final) y verificó estado limpio al cierre.
+- (iii) **Varianza entre corridas idénticas**: 27s ok (~15:20Z) frente a 12s exit-5 (15:23Z) frente a 150s+ sin audio (15:34Z, arranque limpio verificado, qwen quemando CPU —316s en 2.7 min de pared— sin llegar a audio; comando abortado a ~2.7 min). Atasco pre-audio genuino (warmup/primera síntesis), sin evidencia de fase exacta por buffer del canal.
+- (iv) **Atascos invisibles**: el hijo qwen arranca con stdio a null (`spawn_background`, ver `docs/CLI/commands/DAEMON.md`), por lo que un atasco pre-audio como el de (iii) no deja traza observable en el canal.
+
+No se afirma causa más allá de lo observado. Nota: los techos de guards F4b (180s resto, 360s dub) siguen pendientes de re-medición — se citan como pendientes, no como definitivos. Decisión requerida: ¿en qué scope se agenda?

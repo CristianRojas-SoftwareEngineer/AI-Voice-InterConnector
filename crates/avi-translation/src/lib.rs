@@ -280,6 +280,31 @@ mod tests {
         );
     }
 
+    /// Regresión C-05/E1: un dir con solo `model.bin` (sin tokenizador) no es
+    /// provisionado y el loader lo rechaza con `Err` — el gate coincide con el
+    /// loader por construcción, sin depender de modelos reales.
+    #[cfg(feature = "native-translation")]
+    #[test]
+    fn ct2_dir_solo_con_model_bin_no_provisionado_y_loader_falla() {
+        use crate::Ct2TranslationEngine;
+
+        let dir = std::env::temp_dir().join(format!("avi_ct2_roto_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("crear dir temporal");
+        std::fs::write(dir.join("model.bin"), b"senyuelo-sin-tokenizador")
+            .expect("escribir model.bin señuelo");
+
+        assert!(
+            !avi_store::ct2_dir_faltantes(&dir).is_empty(),
+            "un dir sin tokenizador no debe pasar el gate"
+        );
+        assert!(
+            Ct2TranslationEngine::new(&dir).is_err(),
+            "el loader debe rechazar un dir sin tokenizador"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Test de paridad funcional contra el oráculo Python (Decisión cerrada #2
     /// de F0).
     ///

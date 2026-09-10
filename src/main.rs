@@ -36,8 +36,10 @@ const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 /// Intervalo entre reintentos del sondeo de readiness.
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2` (`ct2_model_dir`) → `model.bin`.
-/// Incondicional cuando Marian está provisionado; idempotente por `mtime` (`ct2 > hf` → skip).
+/// CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2` (`ct2_model_dir`) → `model.bin`
+/// más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` autocontenidos).
+/// Incondicional cuando Marian está provisionado; idempotente por `mtime` solo sobre dirs
+/// sanos (dir roto ⇒ reconversión); escritura atómica (temporal hermano + rename).
 
 /// Resuelve un token de idioma de la CLI (`es-latam`/`en`) al código ISO que
 /// exige el motor STT: `es-latam` -> `es`; cualquier otro valor pasa verbatim
@@ -475,18 +477,20 @@ async fn handle_translate(
         return translate_via_daemon(json_mode, &client, text, from, to).await;
     }
     // Rama local: verifica modelo y traduce
-    let ct2_dir = match (source, target) {
-        ("es", "en") => store::ct2_model_dir("es-en"),
-        ("en", "es") => store::ct2_model_dir("en-es"),
+    let pair = match (source, target) {
+        ("es", "en") => "es-en",
+        ("en", "es") => "en-es",
         _ => unreachable!(),
     };
-    if !ct2_dir.join("model.bin").is_file() {
+    let ct2_dir = store::ct2_model_dir(pair);
+    if !store::is_ct2_provisioned(pair) {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
             format!(
-                "El modelo de traducción no está provisionado en '{}' (hf_cache_dir/ct2) — ejecuta setup.",
-                ct2_dir.display()
+                "El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.",
+                ct2_dir.display(),
+                store::ct2_archivos_faltantes(pair).join(", "),
             ),
         ));
     }
@@ -530,9 +534,9 @@ fn traducir_si_difiere(
     if source == target {
         return Ok(texto.to_string());
     }
-    let ct2_dir = match (source, target) {
-        ("es", "en") => store::ct2_model_dir("es-en"),
-        ("en", "es") => store::ct2_model_dir("en-es"),
+    let pair = match (source, target) {
+        ("es", "en") => "es-en",
+        ("en", "es") => "en-es",
         _ => {
             return Err(CliError::new(
                 ExitCode::InvalidInput,
@@ -544,13 +548,15 @@ fn traducir_si_difiere(
             ));
         }
     };
-    if !ct2_dir.join("model.bin").is_file() {
+    let ct2_dir = store::ct2_model_dir(pair);
+    if !store::is_ct2_provisioned(pair) {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
             format!(
-                "El modelo de traducción no está provisionado en '{}' (hf_cache_dir/ct2) — ejecuta setup.",
-                ct2_dir.display()
+                "El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.",
+                ct2_dir.display(),
+                store::ct2_archivos_faltantes(pair).join(", "),
             ),
         ));
     }
@@ -1198,9 +1204,9 @@ async fn handle_speech(
                 let final_text = if source == target {
                     transcribed.clone()
                 } else {
-                    let ct2_dir = match (source, target) {
-                        ("es", "en") => store::ct2_model_dir("es-en"),
-                        ("en", "es") => store::ct2_model_dir("en-es"),
+                    let pair = match (source, target) {
+                        ("es", "en") => "es-en",
+                        ("en", "es") => "en-es",
                         _ => {
                             return Err(CliError::new(
                                 ExitCode::InvalidInput,
@@ -1212,13 +1218,15 @@ async fn handle_speech(
                             ));
                         }
                     };
-                    if !ct2_dir.join("model.bin").is_file() {
+                    let ct2_dir = store::ct2_model_dir(pair);
+                    if !store::is_ct2_provisioned(pair) {
                         return Err(CliError::new(
                             ExitCode::ModelMissing,
                             "model_missing",
                             format!(
-                                "El modelo de traducción no está provisionado en '{}' (hf_cache_dir/ct2) — ejecuta setup.",
-                                ct2_dir.display()
+                                "El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.",
+                                ct2_dir.display(),
+                                store::ct2_archivos_faltantes(pair).join(", "),
                             ),
                         ));
                     }
@@ -1622,7 +1630,8 @@ async fn handle_setup(
     }
 
     // 2b. CT2 es derivado obligatorio de Marian HF en `hf_cache_dir/ct2`.
-    // Incondicional cuando Marian está provisionado; idempotente por mtime (ct2 > hf → skip).
+    // Incondicional cuando Marian está provisionado; idempotente por mtime solo sobre dirs
+    // sanos (gate nuevo en falso ⇒ reconversión aunque ct2 > hf).
     // Determinista: fallo de conversión → setup falla con `ct2_conversion_failed`.
     for pair in &["es-en", "en-es"] {
         let hf_name = format!("marian-{}", pair);
@@ -1630,8 +1639,27 @@ async fn handle_setup(
             continue;
         }
         let Some(hf_snapshot) = model_store.model_snapshot_path(&hf_name) else {
-            continue;
+            return Err(CliError::new(
+                ExitCode::Error,
+                "ct2_conversion_failed",
+                format!(
+                    "No se pudo convertir CT2 {}: snapshot HF de '{}' no resoluble — limpia la cache HF y reintenta setup",
+                    pair, hf_name
+                ),
+            ));
         };
+        if !hf_snapshot.is_dir() {
+            return Err(CliError::new(
+                ExitCode::Error,
+                "ct2_conversion_failed",
+                format!(
+                    "No se pudo convertir CT2 {}: snapshot HF de '{}' ausente en '{}' — limpia la cache HF y reintenta setup",
+                    pair,
+                    hf_name,
+                    hf_snapshot.display()
+                ),
+            ));
+        }
         let ct2_dir = store::ct2_model_dir(pair);
         if store::is_ct2_provisioned(pair) {
             let ct2_mtime = std::fs::metadata(ct2_dir.join("model.bin"))
@@ -1685,33 +1713,81 @@ fn convert_marian_to_ct2(
     hf_snapshot: &std::path::Path,
     ct2_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
-    std::fs::create_dir_all(ct2_dir)?;
-    // Conversión determinista a CT2 int8 vía `python -m ctranslate2.converters.transformers`.
-    let try_converter = |bin: &str| {
-        std::process::Command::new(bin)
-            .args([
-                "-m",
-                "ctranslate2.converters.transformers",
-                "--model",
-                &hf_snapshot.to_string_lossy(),
-                "--output_dir",
-                &ct2_dir.to_string_lossy(),
-                "--quantization",
-                "int8",
-                "--force",
-            ])
-            .status()
-    };
-    match try_converter("python") {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => anyhow::bail!("converter python exit {}", s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match try_converter("python3") {
-            Ok(s) if s.success() => Ok(()),
-            Ok(s) => anyhow::bail!("converter python3 exit {}", s),
-            Err(e2) => anyhow::bail!("python no encontrado: {} / {}", e, e2),
-        },
-        Err(e) => anyhow::bail!("fallo al ejecutar converter: {}", e),
+    // Escritura atómica: el conversor vuelca en un dir temporal hermano y solo
+    // tras verificar el derivado completo se renombra sobre el destino. Así un
+    // fallo nunca deja un parcial que el gate acepte, y el dir previo roto se
+    // sustituye entero (reparación por reconversión).
+    let tmp_dir = ct2_dir.with_extension(format!("tmp-{}", std::process::id()));
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)?;
     }
+    std::fs::create_dir_all(&tmp_dir)?;
+    let convertir = || -> anyhow::Result<()> {
+        // Conversión determinista a CT2 int8 vía `python -m ctranslate2.converters.transformers`,
+        // con `--copy_files` para que el derivado quede autocontenido (tokenizador
+        // dentro del dir CT2, no solo en el snapshot).
+        let try_converter = |bin: &str| {
+            std::process::Command::new(bin)
+                .args([
+                    "-m",
+                    "ctranslate2.converters.transformers",
+                    "--model",
+                    &hf_snapshot.to_string_lossy(),
+                    "--output_dir",
+                    &tmp_dir.to_string_lossy(),
+                    "--quantization",
+                    "int8",
+                    "--copy_files",
+                    "source.spm",
+                    "target.spm",
+                    "--force",
+                ])
+                .status()
+        };
+        match try_converter("python") {
+            Ok(s) if s.success() => {},
+            Ok(s) => anyhow::bail!("converter python exit {}", s),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match try_converter("python3") {
+                Ok(s) if s.success() => {},
+                Ok(s) => anyhow::bail!("converter python3 exit {}", s),
+                Err(e2) => anyhow::bail!("python no encontrado: {} / {}", e, e2),
+            },
+            Err(e) => anyhow::bail!("fallo al ejecutar converter: {}", e),
+        }
+        // Copia posterior verificada: si el conversor no depositó los `.spm`
+        // (versión sin `--copy_files`), se copian desde el snapshot pinneado.
+        for spm in ["source.spm", "target.spm"] {
+            if !tmp_dir.join(spm).is_file() {
+                let origen = hf_snapshot.join(spm);
+                if !origen.is_file() {
+                    anyhow::bail!(
+                        "el snapshot {} no contiene {} (revisión inesperada) — limpia la cache HF y reintenta setup",
+                        hf_snapshot.display(),
+                        spm
+                    );
+                }
+                std::fs::copy(&origen, tmp_dir.join(spm))?;
+            }
+        }
+        // Verificación con el mismo criterio del gate antes de declarar éxito.
+        let faltan = store::ct2_dir_faltantes(&tmp_dir);
+        if !faltan.is_empty() {
+            anyhow::bail!(
+                "derivado CT2 incompleto (faltan: {}) — limpia la cache HF y reintenta setup",
+                faltan.join(", ")
+            );
+        }
+        Ok(())
+    };
+    if let Err(e) = convertir() {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(e);
+    }
+    if ct2_dir.exists() {
+        std::fs::remove_dir_all(ct2_dir)?;
+    }
+    std::fs::rename(&tmp_dir, ct2_dir)?;
+    Ok(())
 }
 
 async fn handle_cleanup(
@@ -2242,12 +2318,12 @@ fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
     if !model_store.is_provisioned("marian-es-en") {
         issues.push("Modelo traducción es→en (Marian) no provisionado");
     } else if !store::is_ct2_provisioned("es-en") {
-        issues.push("Modelo CT2 es→en no provisionado en 'hf_cache_dir/ct2/opus-mt-es-en/model.bin' — ejecuta setup");
+        issues.push("Modelo CT2 es→en incompleto en 'hf_cache_dir/ct2/opus-mt-es-en' (exige model.bin más tokenizer.json o source.spm+target.spm) — ejecuta setup");
     }
     if !model_store.is_provisioned("marian-en-es") {
         issues.push("Modelo traducción en→es (Marian) no provisionado");
     } else if !store::is_ct2_provisioned("en-es") {
-        issues.push("Modelo CT2 en→es no provisionado en 'hf_cache_dir/ct2/opus-mt-en-es/model.bin' — ejecuta setup");
+        issues.push("Modelo CT2 en→es incompleto en 'hf_cache_dir/ct2/opus-mt-en-es' (exige model.bin más tokenizer.json o source.spm+target.spm) — ejecuta setup");
     }
     // Base opt-in: WARN si falta, no FAIL
     let base_ready = model_store.is_provisioned("qwen3-tts-0.6b-base");
@@ -3141,9 +3217,9 @@ async fn dub_compose_via_daemon(
     let final_text = if source == target {
         transcribed.clone()
     } else {
-        let ct2_dir = match (source, target) {
-            ("es", "en") => store::ct2_model_dir("es-en"),
-            ("en", "es") => store::ct2_model_dir("en-es"),
+        let pair = match (source, target) {
+            ("es", "en") => "es-en",
+            ("en", "es") => "en-es",
             _ => {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
@@ -3152,11 +3228,12 @@ async fn dub_compose_via_daemon(
                 ));
             }
         };
-        if !ct2_dir.join("model.bin").is_file() {
+        let ct2_dir = store::ct2_model_dir(pair);
+        if !store::is_ct2_provisioned(pair) {
             return Err(CliError::new(
                 ExitCode::ModelMissing,
                 "model_missing",
-                format!("El modelo de traducción no está provisionado en '{}' — ejecuta setup.", ct2_dir.display()),
+                format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), store::ct2_archivos_faltantes(pair).join(", ")),
             ));
         }
         #[cfg(not(feature = "native-translation"))]

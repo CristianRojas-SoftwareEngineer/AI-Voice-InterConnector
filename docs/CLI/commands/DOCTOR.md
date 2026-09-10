@@ -41,7 +41,7 @@ El handler ejecuta este flujo:
 ```
 checks = _environment_checks()          ← 2 chequeos base (Qwen3-TTS vía hf_cache_dir + Audio)
 checks += modelo Qwen3-TTS (`qwen3-tts-0.6b`)   ← verificación snapshot HF `hf_cache_dir()` + `MODEL_REVISIONS`
-checks += modelo de traducción           ← 1 chequeo par es<->en (`opus-mt` vía `hf_cache_dir()`)
+checks += modelo de traducción           ← 1 chequeo par es<->en (derivado CT2 completo vía `is_ct2_provisioned`, no solo `model.bin`)
 checks += modelo de transcripción Parakeet        ← 1 chequeo `parakeet-tdt-0.6b-v3` (4 artefactos)
 checks += directorio de voces            ← 1 chequeo
 checks += RAM (advisory)                 ← 1 chequeo
@@ -82,19 +82,19 @@ Genera **2 chequeos** (uno por idioma), no uno consolidado.
 
 Ubicación: `cli.py:1295-1312`.
 
-Verifica la presencia de los dos modelos CT2 (opus-mt) que se provisionan juntos:
+Verifica los dos derivados CT2 (opus-mt) que se provisionan juntos, con el gate coincidente (`is_ct2_provisioned`: `model.bin` más `tokenizer.json` o `source.spm`+`target.spm`), listando los ficheros faltantes (`ct2_archivos_faltantes`, `src/main.rs:2220-2251`):
 
 ```python
 missing = [
     f"{source}->{target}" for source, target in (("es", "en"), ("en", "es"))
-    if not Path(default_cache_dir(source, target)).exists()
+    if not is_ct2_provisioned(f"{source}-{target}")
 ]
 ```
 
 | Condición | Resultado |
 |---|---|
-| Ambas direcciones presentes (`es→en` y `en→es`) | PASS: "opus-mt presente en la caché" |
-| Falta una o ambas | FAIL: "falta(n) {lista} (ejecuta: ai-voice-interconnector setup --language en)" |
+| Ambas direcciones con derivado completo (`model.bin` + tokenizador) | PASS: "opus-mt presente en la caché" |
+| Falta una o ambas (incluido `model.bin` huérfano sin tokenizador) | FAIL: "falta(n) {lista} (faltan: {ficheros}; ejecuta: ai-voice-interconnector setup --language en)" |
 | Excepción | FAIL con mensaje de error |
 
 Es un **único chequeo lógico** — las dos direcciones se agrupan porque se provisionan juntas en `setup --language en/all` (`cli.py:1295-1297`).
@@ -253,7 +253,7 @@ El comentario en `exit_codes.py:10` confirma: "1 error genérico (incluye cheque
 | 2 | Audio library | `_environment_checks` (`avi-audio`) | PASS / FAIL | Sí (FAIL) |
 | 3 | Qwen3-TTS model (qwen3-tts-0.6b) | `handle_doctor` (`src/main.rs:531`) vía `hf_cache_dir()` | PASS / FAIL | Sí (FAIL) |
 | 4 | Parakeet model (parakeet-tdt-0.6b-v3) | `handle_doctor` vía `hf_cache_dir()` + 4 artefactos | PASS / FAIL | Sí (FAIL) |
-| 5 | Translation model (es↔en, opus-mt) | `handle_doctor` vía `hf_cache_dir()` | PASS / FAIL | Sí (FAIL) |
+| 5 | Translation model (es↔en, opus-mt) | `handle_doctor` (`src/main.rs:2220-2251`) vía `is_ct2_provisioned` (derivado completo, lista ficheros faltantes) | PASS / FAIL | Sí (FAIL) |
 | 6 | Transcription model (parakeet, mismo) | `handle_doctor` (`crates/avi-stt`) | PASS / FAIL | Sí (FAIL) |
 | 7 | Voices directory | `cmd_doctor` (`cli.py:1329-1334`) | PASS / SKIP | No |
 | 8 | RAM | `cmd_doctor` (`cli.py:1339-1353`) | PASS / WARN / SKIP | No |

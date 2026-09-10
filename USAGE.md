@@ -116,7 +116,7 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 | Modelo | Repo HF | Uso |
 |---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
-| `marian-es-en` / `marian-en-es` | `Helsinki-NLP/opus-mt-*` | Traducción es↔en |
+| `marian-es-en` / `marian-en-es` | `Helsinki-NLP/opus-mt-*` | Traducción es↔en (derivado CT2: `model.bin` + `tokenizer.json` o `source.spm`+`target.spm`) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (~600 MB, ONNX int8) |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (~2,5 GB, opt-in) | Clonado de voz (Base) |
 
@@ -803,8 +803,11 @@ de esquemas) y nada por stdout salvo ese objeto.
 - `--json`: Emite `{"translated", "source", "target"}`
 
 **Passthrough:** si `--from` y `--to` coinciden, devuelve el texto intacto sin
-cargar ningún modelo. Si el modelo de traducción no está provisionado, falla
-remitiendo a `ai-voice-interconnector setup --language en`; si la traducción falla con el
+cargar ningún modelo. El derivado CT2 exigido es `model.bin` más tokenizador
+(`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot por
+`setup`); si el dir está roto (sin tokenizador), `setup` lo reconvierte de
+forma atómica. Si el modelo de traducción no está provisionado, falla
+remitiendo a `ai-voice-interconnector setup --language en` (exit **4**); si la traducción falla con el
 modelo ya cargado, sale con exit **9**.
 
 ---
@@ -817,7 +820,7 @@ el ciclo de vida instalación→desinstalación. **Sin flags → exit `2` `usage
 ```bash
 ai-voice-interconnector cleanup --voices              # voces no-fábrica + arrastre speech/<voz> (excepto default)
 ai-voice-interconnector cleanup --synthetic-speech    # raíz speech/ entera (incluye default)
-ai-voice-interconnector cleanup --model               # snapshots HF pineados + xet + ct2 + data_dir()/models
+ai-voice-interconnector cleanup --model               # snapshots HF pineados + xet + ct2 (derivado completo) + data_dir()/models
 ai-voice-interconnector cleanup --all                 # unión Modelo+voces+habla (sin binario ni PATH)
 ai-voice-interconnector cleanup --all --dry-run       # lista sin borrar (exit 0, --json con removed/dry_run)
 ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y alias)
@@ -825,7 +828,7 @@ ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y
 
 **Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o snapshots HF de
 los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `Helsinki-NLP/opus-mt-*`,
-`istupakov/parakeet-tdt-0.6b-v3-onnx`) + `xet`/`ct2`. `--all` es la unión de las tres categorías **sin binario ni PATH** — solo `uninstall` borra binario y PATH (`src/main.rs:318`). El borrado es quirúrgico: nunca toca modelos de otros
+`istupakov/parakeet-tdt-0.6b-v3-onnx`) + `xet`/`ct2` (incluido el derivado CT2 completo: `model.bin` + tokenizador). `--all` es la unión de las tres categorías **sin binario ni PATH** — solo `uninstall` borra binario y PATH (`src/main.rs:318`). El borrado es quirúrgico: nunca toca modelos de otros
 proyectos en la caché. `--dry-run` lista candidatas sin borrar; `--yes/-y` omite la confirmación interactiva. Con `--json` emite `{"status":"cleanup_complete","removed":[...],"dry_run":bool}`. Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
 

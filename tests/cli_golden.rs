@@ -9,9 +9,11 @@
 //! porque capturar `stdout` + exit code con fidelidad exige ejecutar el binario real,
 //! y `CARGO_BIN_EXE_*` solo está disponible para tests de integración.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -25,6 +27,128 @@ const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
 /// lock, `cargo test` los corre en paralelo dentro del mismo binario y cleanup
 /// puede borrar el estado que un test TTS está verificando (carrera intra-binario).
 static STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+// ─── Observabilidad F4b (solo instrumentación, sin cambios de comportamiento) ───
+//
+// Hitos por `eprintln!` (stderr, sin buffer) con formato único
+// `[hito][mm:ss.mmm-desde-inicio-test] mensaje`. Sin `println!` para progreso.
+// Guard de tiempo por test pesado: `hito_inicio_*` fija el techo y
+// `comprobar_guard` falla con `panic!` (último hito + fase exacta) en los polls
+// ya existentes (`esperar_estado_daemon`).
+// Techos: 180 s (resto) y 360 s (dub). Salen de techos del producto en
+// `src/main.rs` (cliente HTTP 120 s `:2516`, POST /dub 10 s `:3049`, arranque
+// 10 s `:35`, parada 5 s en `wait_health_down` `:2494-2505` + 1.5 s shutdown
+// `:1416`) más warmup TTS en segundo plano y presupuesto `:56-59`: 1 operación
+// (120 s) + arranque/parada (~15-25 s) + margen → 180 s; dub encadena
+// STT+traducción+TTS (hasta 2×120 s) + arranque/parada → 360 s. Sin baseline F5
+// aún (F5 es posterior según F3); se re-medira en F5 y se ajustara si hace falta.
+
+/// Techo del guard para tests pesados no-dub (3 min).
+const GUARD_PESADO_SECS: u64 = 180;
+/// Techo del guard para tests dub (6 min, encadenan STT+traducción+TTS).
+/// Solo lo usan tests con `native-stt`; en compilación sin ese feature queda
+/// sin usar (permitido para mantener `cargo check --tests` limpio en ambas).
+#[allow(dead_code)]
+const GUARD_DUB_SECS: u64 = 360;
+
+static PROCESO_T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Instante de arranque del proceso (respaldo del timestamp cuando el test no
+/// fijó `hito_inicio`; los pesados siempre lo fijan).
+fn proceso_t0() -> Instant {
+    *PROCESO_T0.get_or_init(Instant::now)
+}
+
+thread_local! {
+    static TEST_T0: RefCell<Option<Instant>> = RefCell::new(None);
+    static TEST_NOMBRE: RefCell<String> = RefCell::new(String::new());
+    static TEST_LIMITE: RefCell<Option<Duration>> = RefCell::new(None);
+    static ULTIMO_HITO: RefCell<String> = RefCell::new(String::new());
+}
+
+/// Transcurrido desde el inicio del test (o del proceso si no hay inicio).
+fn elapsed_test() -> Duration {
+    let t0 = TEST_T0.with(|c| *c.borrow());
+    match t0 {
+        Some(t) => t.elapsed(),
+        None => proceso_t0().elapsed(),
+    }
+}
+
+/// Formato mm:ss.mmm del transcurrido.
+fn formato_mm_ss(d: Duration) -> String {
+    let ms = d.as_millis();
+    format!("{:02}:{:02}.{:03}", ms / 60000, (ms / 1000) % 60, ms % 1000)
+}
+
+/// Hito único de progreso (stderr, sin buffer). Registra el último hito para
+/// el diagnóstico del guard.
+fn hito(mensaje: &str) {
+    let ts = formato_mm_ss(elapsed_test());
+    ULTIMO_HITO.with(|c| *c.borrow_mut() = mensaje.to_string());
+    eprintln!("[hito][{}] {}", ts, mensaje);
+}
+
+/// Inicio de test pesado con techo explícito. Debe ser la primera línea del
+/// test (antes de locks) para que el guard incluya la contención.
+fn hito_inicio(nombre: &str, limite: Duration) {
+    TEST_T0.with(|c| *c.borrow_mut() = Some(Instant::now()));
+    TEST_NOMBRE.with(|c| *c.borrow_mut() = nombre.to_string());
+    TEST_LIMITE.with(|c| *c.borrow_mut() = Some(limite));
+    ULTIMO_HITO.with(|c| *c.borrow_mut() = format!("inicio {}", nombre));
+    let ts = formato_mm_ss(Duration::from_millis(0));
+    eprintln!(
+        "[hito][{}] inicio {} (techo {:?})",
+        ts, nombre, limite
+    );
+}
+
+/// Inicio con techo estándar (3 min).
+fn hito_inicio_pesado(nombre: &str) {
+    hito_inicio(nombre, Duration::from_secs(GUARD_PESADO_SECS));
+}
+
+/// Inicio para dub (6 min). Solo lo usan tests con `native-stt`.
+#[allow(dead_code)]
+fn hito_inicio_dub(nombre: &str) {
+    hito_inicio(nombre, Duration::from_secs(GUARD_DUB_SECS));
+}
+
+/// Fin de test pesado. Desactiva el guard para no filtrar al siguiente test
+/// del mismo hilo del harness.
+fn hito_fin(nombre: &str) {
+    let ts = formato_mm_ss(elapsed_test());
+    eprintln!("[hito][{}] fin {}", ts, nombre);
+    TEST_LIMITE.with(|c| *c.borrow_mut() = None);
+}
+
+/// Último hito registrado (para el diagnóstico del guard).
+fn ultimo_hito() -> String {
+    ULTIMO_HITO.with(|c| c.borrow().clone())
+}
+
+/// Guard genérico: falla en vez de colgarse. Se llama en los polls ya
+/// existentes (`esperar_estado_daemon`); al expirar hace `panic!` con test,
+/// fase, transcurrido, techo y último hito. Inactivo sin `hito_inicio`.
+fn comprobar_guard(fase: &str) {
+    let nombre = TEST_NOMBRE.with(|n| n.borrow().clone());
+    let limite = TEST_LIMITE.with(|c| *c.borrow());
+    let t0 = TEST_T0.with(|c| *c.borrow());
+    if let (Some(lim), Some(t)) = (limite, t0) {
+        let elapsed = t.elapsed();
+        if elapsed > lim {
+            TEST_LIMITE.with(|c| *c.borrow_mut() = None);
+            panic!(
+                "guardia de tiempo: test '{}' superó techo {:?} en fase '{}' (transcurrido {:.1} s; último hito: {})",
+                nombre,
+                lim,
+                fase,
+                elapsed.as_secs_f64(),
+                ultimo_hito()
+            );
+        }
+    }
+}
 
 // ─── Fixture por sesión del daemon (Tarea 1) ──────────────────────────
 //
@@ -89,13 +213,25 @@ fn estado_daemon() -> Value {
 /// (`warm_failed` con su causa): nunca pasa en silencio.
 fn esperar_estado_daemon(esperado: &str, reintentos: u32) -> Value {
     let mut ultimo = Value::Null;
-    for _ in 0..reintentos {
+    for intento in 0..reintentos {
+        comprobar_guard(&format!("esperar_estado_daemon({})", esperado));
         ultimo = estado_daemon();
         if ultimo["daemon"] == Value::String(esperado.to_string()) {
             if esperado != "running" {
+                hito(&format!(
+                    "esperar_estado_daemon: '{}' observado en intento {}/{}",
+                    esperado,
+                    intento + 1,
+                    reintentos
+                ));
                 return ultimo;
             }
             if ultimo["warm"] == Value::String("warm".to_string()) {
+                hito(&format!(
+                    "esperar_estado_daemon: 'running+warm' observado en intento {}/{}",
+                    intento + 1,
+                    reintentos
+                ));
                 return ultimo;
             }
             if ultimo["warm"] == Value::String("warm_failed".to_string()) {
@@ -123,9 +259,14 @@ fn ensure_session_daemon() {
     if actual["daemon"] == Value::String("running".to_string())
         && actual["warm"] == Value::String("warm".to_string())
     {
+        hito("ensure_session_daemon: reutilización (running+warm observado)");
         return;
     }
     if actual["daemon"] != Value::String("running".to_string()) {
+        hito(&format!(
+            "ensure_session_daemon: arranque (daemon observado: {})",
+            actual.get("daemon").unwrap_or(&Value::Null)
+        ));
         let (code, actual) = run_json(&["--json", "daemon", "start"]);
         assert_eq!(
             code, 0,
@@ -133,6 +274,9 @@ fn ensure_session_daemon() {
             code, actual
         );
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
+        hito("ensure_session_daemon: start exit 0, esperando warm (50 reintentos)");
+    } else {
+        hito("ensure_session_daemon: running sin warm, esperando warm (50 reintentos)");
     }
     esperar_estado_daemon("running", 50);
 }
@@ -147,7 +291,13 @@ fn shutdown_session_daemon() {
         "el apagado de sesión debe salir 0 o 5 (fue {}): {}",
         code, actual
     );
+    if code == 0 {
+        hito("shutdown_session_daemon: stop exit 0 (shutdown_sent), esperando stopped (75 reintentos)");
+    } else {
+        hito("shutdown_session_daemon: stop exit 5 tolerado (ya detenido), esperando stopped (75 reintentos)");
+    }
     esperar_estado_daemon("stopped", 75);
+    hito("shutdown_session_daemon: apagado ok (stopped observado)");
 }
 
 /// Carga una fixture dorada desde `tests/golden/`.
@@ -180,6 +330,7 @@ fn fixture(name: &str) -> Value {
 /// Patrón equivalente al del legacy Python: el daemon no comparte I/O (pipe) con el
 /// proceso que lo lanza.
 fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
+    let t_cmd = Instant::now();
     let (tmp, file) = open_atomic_tmp();
     let mut cmd = Command::new(BIN);
     cmd.args(args)
@@ -199,6 +350,12 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
         .expect("el proceso debe terminar con un código");
     let json: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
+    hito(&format!(
+        "run_json_env: `{}` → exit {} en {} ms",
+        args.join(" "),
+        code,
+        t_cmd.elapsed().as_millis()
+    ));
     (code, json)
 }
 
@@ -810,12 +967,15 @@ mod tts {
     #[cfg(feature = "native-stt")]
     #[test]
     fn synthesize_exito_con_label() {
+        hito_inicio_pesado("tts::synthesize_exito_con_label");
         if !tts_provisioned() {
             eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
+            hito_fin("tts::synthesize_exito_con_label (skip sin provisión)");
             return;
         }
         if !parakeet_model_disponible() {
             eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+            hito_fin("tts::synthesize_exito_con_label (skip sin STT)");
             return;
         }
         // Serie + ciclo: excluye cleanup (STATE) y paradas del ciclo durante la
@@ -862,6 +1022,7 @@ mod tts {
         );
         assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
         let _ = avi_store::SpeechStore::new().remove("default", &label);
+        hito_fin("tts::synthesize_exito_con_label");
     }
 
     /// Gate WER texto corto — disparador exacto de H1 (Tarea 6).
@@ -1267,10 +1428,12 @@ mod tts {
 
     #[test]
     fn daemon_start_exito() {
+        hito_inicio_pesado("tts::daemon_start_exito");
         let _guard = STATE_LOCK.lock().unwrap();
         // Skip sin efectos: no tocar el ciclo si no hay provisión.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado para daemon start");
+            hito_fin("tts::daemon_start_exito (skip sin provisión)");
             return;
         }
         // Precondición observada (dueña: fixture de sesión): partir de detenido.
@@ -1297,14 +1460,17 @@ mod tts {
             Value::String("stopped".to_string()),
             "tras stop debe quedar stopped"
         );
+        hito_fin("tts::daemon_start_exito");
     }
 
     #[test]
     fn daemon_restart_rearma() {
+        hito_inicio_pesado("tts::daemon_restart_rearma");
         let _guard = STATE_LOCK.lock().unwrap();
         // Skip sin efectos: no tocar el ciclo si no hay provisión.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado para daemon restart");
+            hito_fin("tts::daemon_restart_rearma (skip sin provisión)");
             return;
         }
         // Base observada: daemon en ejecución (adhesión si la sesión ya arrancó).
@@ -1317,14 +1483,17 @@ mod tts {
         esperar_estado_daemon("running", 50);
         // Restaurar detenido (convención de la sesión: sin huérfanos al cerrar).
         shutdown_session_daemon();
+        hito_fin("tts::daemon_restart_rearma");
     }
 
     #[test]
     fn daemon_status_running() {
+        hito_inicio_pesado("tts::daemon_status_running");
         let _guard = STATE_LOCK.lock().unwrap();
         // Skip sin efectos: no tocar el ciclo si no hay provisión.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado");
+            hito_fin("tts::daemon_status_running (skip sin provisión)");
             return;
         }
         // Semántica verificada: `status` contra daemon en ejecución.
@@ -1341,6 +1510,7 @@ mod tts {
         assert_eq!(actual["daemon"], expected["daemon"]);
         // Restaurar detenido (convención de la sesión: sin huérfanos al cerrar).
         shutdown_session_daemon();
+        hito_fin("tts::daemon_status_running");
     }
 
     #[test]
@@ -1384,10 +1554,12 @@ mod tts {
 
     #[test]
     fn daemon_start_con_auto_restart() {
+        hito_inicio_pesado("tts::daemon_start_con_auto_restart");
         let _guard = STATE_LOCK.lock().unwrap();
         // Skip sin efectos: no tocar el ciclo si no hay provisión.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado para auto-restart");
+            hito_fin("tts::daemon_start_con_auto_restart (skip sin provisión)");
             return;
         }
         // Precondición observada (dueña: fixture de sesión): partir de detenido.
@@ -1412,25 +1584,31 @@ mod tts {
             Value::String("stopped".to_string()),
             "tras stop no debe reintentar"
         );
+        hito_fin("tts::daemon_start_con_auto_restart");
     }
 
     #[test]
+    #[allow(unreachable_code)]
     fn translate_con_daemon_delega() {
+        hito_inicio_pesado("tts::translate_con_daemon_delega");
         let _guard = STATE_LOCK.lock().unwrap();
         let _tts = lock_tts();
         #[cfg(not(feature = "native-translation"))]
         {
             eprintln!("[translate] skip: sin feature native-translation");
+            hito_fin("tts::translate_con_daemon_delega (skip sin feature)");
             return;
         }
         #[cfg(feature = "native-translation")]
         if !ct2_model_disponible() {
             eprintln!("[translate] skip: sin modelo CT2 es→en");
+            hito_fin("tts::translate_con_daemon_delega (skip sin CT2)");
             return;
         }
         // Skip sin efectos antes de tocar el ciclo.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS para daemon warm");
+            hito_fin("tts::translate_con_daemon_delega (skip sin provisión)");
             return;
         }
         // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
@@ -1452,10 +1630,12 @@ mod tts {
         let expected = fixture("cli_translate_daemon.json");
         assert_eq!(actual["source"], expected["source"] );
         // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
+        hito_fin("tts::translate_con_daemon_delega");
     }
 
     #[test]
     fn translate_force_daemon_sin_daemon_exit5() {
+        hito_inicio_pesado("tts::translate_force_daemon_sin_daemon_exit5");
         let _guard = STATE_LOCK.lock().unwrap();
         // Aislamiento total: la ausencia debe observarse sin carreras con
         // usuarios del daemon (serie de inferencia + ciclo de sesión).
@@ -1477,14 +1657,17 @@ mod tts {
         ]);
         assert_eq!(code, 5, "translate --daemon sin daemon debe salir 5");
         assert_eq!(actual["reason"], Value::String("daemon_unreachable".to_string()));
+        hito_fin("tts::translate_force_daemon_sin_daemon_exit5");
     }
 
     #[test]
     fn clone_con_daemon_delega() {
+        hito_inicio_pesado("tts::clone_con_daemon_delega");
         let _guard = STATE_LOCK.lock().unwrap();
         let _tts = lock_tts();
         if !tts_clone_provisioned() {
             eprintln!("[tts] skip: clonado exige Base");
+            hito_fin("tts::clone_con_daemon_delega (skip sin Base)");
             return;
         }
         // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
@@ -1505,15 +1688,18 @@ mod tts {
         assert_eq!(actual["name"], Value::String(name.clone()));
         let _ = avi_store::VoiceStore::new().remove(&name);
         // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
+        hito_fin("tts::clone_con_daemon_delega");
     }
 
     #[cfg(feature = "native-stt")]
     #[test]
     fn dub_daemon_passthrough() {
+        hito_inicio_dub("tts::dub_daemon_passthrough");
         let _guard = STATE_LOCK.lock().unwrap();
         let _tts = lock_tts();
         if !tts_provisioned() || !parakeet_model_disponible() || !hay_dispositivo_audio() {
             eprintln!("[dub] skip: sin modelos/audio");
+            hito_fin("tts::dub_daemon_passthrough (skip sin modelos/audio)");
             return;
         }
         // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
@@ -1549,26 +1735,31 @@ mod tts {
         let texto = actual["text"].as_str().expect("text debe existir");
         assert!(!texto.is_empty(), "`text` no debe estar vacío");
         // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
+        hito_fin("tts::dub_daemon_passthrough");
     }
 
     #[cfg(feature = "native-stt")]
     #[test]
     #[allow(unreachable_code)]
     fn dub_daemon_con_traduccion() {
+        hito_inicio_dub("tts::dub_daemon_con_traduccion");
         let _guard = STATE_LOCK.lock().unwrap();
         let _tts = lock_tts();
         if !tts_provisioned() || !parakeet_model_disponible() || !hay_dispositivo_audio() {
             eprintln!("[dub] skip: sin modelos/audio");
+            hito_fin("tts::dub_daemon_con_traduccion (skip sin modelos/audio)");
             return;
         }
         #[cfg(not(feature = "native-translation"))]
         {
             eprintln!("[dub] skip: sin native-translation");
+            hito_fin("tts::dub_daemon_con_traduccion (skip sin feature)");
             return;
         }
         #[cfg(feature = "native-translation")]
         if !ct2_model_disponible() {
             eprintln!("[translate] skip: sin CT2");
+            hito_fin("tts::dub_daemon_con_traduccion (skip sin CT2)");
             return;
         }
         // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
@@ -1604,6 +1795,7 @@ mod tts {
         let texto = actual["text"].as_str().expect("text debe existir");
         assert!(!texto.is_empty(), "`text` no debe estar vacío");
         // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
+        hito_fin("tts::dub_daemon_con_traduccion");
     }
 }
 
@@ -1726,4 +1918,20 @@ fn contrato_speech_coincide_con_help() {
             flag
         );
     }
+}
+
+/// Demostración del guard de tiempo F4b (prueba rápida, sin daemons ni minutos):
+/// fija un techo diminuto a propósito y exige `panic!` con diagnóstico
+/// (último hito + fase exacta). `#[should_panic]` mantiene la suite en verde
+/// mientras demuestra que el mecanismo falla en vez de colgarse.
+#[test]
+#[should_panic(expected = "guardia de tiempo")]
+fn hito_guard_expira_con_diagnostico() {
+    hito_inicio(
+        "hito_guard_expira_con_diagnostico",
+        Duration::from_millis(50),
+    );
+    hito("hito_guard_expira_con_diagnostico: hito previo al guard");
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    comprobar_guard("fase-demostracion-guard");
 }

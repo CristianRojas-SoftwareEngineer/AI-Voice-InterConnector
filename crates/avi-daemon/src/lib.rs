@@ -79,8 +79,10 @@ pub struct DaemonState {
     #[cfg(feature = "native-stt")]
     pub stt_engine: ParakeetEngine,
     /// Motores CT2 residentes para traducción `es↔en` (uno por dirección).
-    /// Se precargan en `DaemonState::new` si `ct2_model_dir/*/model.bin` existe;
-    /// degradan a `None` si faltan, sin derribar `run_daemon_server:614`.
+    /// Se precargan en `DaemonState::new` si el derivado está provisionado según
+    /// el gate coincidente (`model.bin` más tokenizador); `None` significa motor
+    /// ausente o roto (`model.bin` huérfano sin tokenizador: se registra el motivo
+    /// y se arranca igual, sin derribar `run_daemon_server:614`).
     /// El warmup CT2 no duplica `warmup_tts`: la primera petición paga frío si
     /// el residente no estaba; documentado sin warmup separado.
     #[cfg(feature = "native-translation")]
@@ -118,10 +120,17 @@ impl DaemonState {
             let mut map = std::collections::HashMap::new();
             for pair in &["es-en", "en-es"] {
                 let dir = avi_store::ct2_model_dir(pair);
-                if dir.join("model.bin").is_file() {
+                if avi_store::is_ct2_provisioned(pair) {
                     if let Ok(engine) = Ct2TranslationEngine::new(&dir) {
                         map.insert(pair.to_string(), engine);
                     }
+                } else if dir.join("model.bin").is_file() {
+                    eprintln!(
+                        "[daemon] CT2 {} roto en '{}' (faltan: {}) — arranca sin residente, ejecuta setup",
+                        pair,
+                        dir.display(),
+                        avi_store::ct2_archivos_faltantes(pair).join(", ")
+                    );
                 }
             }
             if map.is_empty() { None } else { Some(map) }
@@ -367,13 +376,13 @@ async fn synthesize_handler(
                 }
             };
             let ct2_dir = avi_store::ct2_model_dir(pair);
-            if !ct2_dir.join("model.bin").is_file() {
+            if !avi_store::is_ct2_provisioned(pair) {
                 emit_ndjson(
                     &tx,
                     json!({
                         "event": "error",
                         "reason": "model_missing",
-                        "message": format!("El modelo de traducción no está provisionado en '{}' — ejecuta setup.", ct2_dir.display()),
+                        "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_archivos_faltantes(pair).join(", ")),
                     }),
                 )
                 .await;
@@ -649,13 +658,13 @@ async fn translate_handler(
         }
     };
     let ct2_dir = avi_store::ct2_model_dir(pair);
-    if !ct2_dir.join("model.bin").is_file() {
+    if !avi_store::is_ct2_provisioned(pair) {
         return (
             StatusCode::NOT_FOUND,
             Json(with_sv(json!({
                 "error": "model_missing",
                 "reason": "model_missing",
-                "message": format!("El modelo de traducción no está provisionado en '{}' (hf_cache_dir/ct2) — ejecuta setup.", ct2_dir.display()),
+                "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_archivos_faltantes(pair).join(", ")),
             }))),
         )
             .into_response();
@@ -975,13 +984,13 @@ async fn dub_handler(
             }
         };
         let ct2_dir = avi_store::ct2_model_dir(pair);
-        if !ct2_dir.join("model.bin").is_file() {
+        if !avi_store::is_ct2_provisioned(pair) {
             return (
                 StatusCode::NOT_FOUND,
                 Json(with_sv(json!({
                     "status": "error",
                     "reason": "model_missing",
-                    "message": format!("El modelo de traducción no está provisionado en '{}' — ejecuta setup.", ct2_dir.display()),
+                    "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_archivos_faltantes(pair).join(", ")),
                 }))),
             )
                 .into_response();

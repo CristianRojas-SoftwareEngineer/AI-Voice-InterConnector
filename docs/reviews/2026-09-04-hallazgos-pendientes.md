@@ -173,21 +173,22 @@ El núcleo reproducible (pines, cachés `v2`, `schema_version="3"`, `exit_codes`
 - **Decisión requerida**: Sí — ¿se implementa el endpoint precompute o se documenta su ausencia?
 - **Prioridad**: P0 — **pendiente — falso positivo: flag existe pero feature no
 
-### C-05 — Motor de traducción CT2 roto por construcción: gate y loader discrepan (E1 de F5-harness-estructural, 2026-09-10)
+### C-05 — Motor de traducción CT2 roto por construcción: gate y loader discrepan (E1 de F5-harness-estructural, 2026-09-10) — ✅ **Resuelto (2026-09-10, C-05-motor-CT2)**
 
 - **Categoría**: Rotura funcional total — feature contratada (`translate`, `dub` con traducción) que falla en el 100% de los casos, en cualquier máquina.
 - **Área/plataforma**: `crates/avi-translation/src/lib.rs:26-38` (`Ct2TranslationEngine::new` → `Translator::new`) vs `crates/avi-store/src/lib.rs:543-545` (`is_ct2_provisioned`) vs `src/main.rs:1684-1707` (conversor Marian→CT2).
-- **Síntoma**: `translate` directo sale 9 (`translation_failed`), vía daemon sale 1; `dub` con traducción sale 1. El loader falla con `failed to create a tokenizer`: el dir convertido `hf_cache/ct2/opus-mt-<par>/` trae `model.bin` + `shared_vocabulary.json` + `config.json` pero ningún activo de tokenizador (`source.spm`/`tokenizer.json`), y nada los deposita ahí (el snapshot HF sí trae `source.spm`/`target.spm`/`vocab.json`).
+- **Síntoma** (histórico, antes de la corrección): `translate` directo salía 9 (`translation_failed`), vía daemon salía 1; `dub` con traducción salía 1. El loader fallaba con `failed to create a tokenizer`: el dir convertido `hf_cache/ct2/opus-mt-<par>/` traía `model.bin` + `shared_vocabulary.json` + `config.json` pero ningún activo de tokenizador (`source.spm`/`tokenizer.json`), y nada los depositaba ahí (el snapshot HF sí trae `source.spm`/`target.spm`/`vocab.json`).
 - **Evidencia (F5 2026-09-10)**:
   - ✅ `cargo test -p avi-translation --features native-translation` 6/6 en rojo con el mismo error — independiente de CLI, harness y estrategia C.
   - ✅ Doradas `translate_es_a_en_produce_traduccion` (exit 9) y `tts::dub_daemon_con_traduccion` (exit 1) bloqueadas por causa motor, no harness.
-  - ✅ El gate `is_ct2_provisioned` (solo exige `model.bin`) no skipea: gate y loader exigen cosas distintas por construcción.
+  - ✅ El gate `is_ct2_provisioned` (entonces solo exigía `model.bin`) no skipeaba: gate y loader exigían cosas distintas por construcción.
 - **Confianza**: Alta — reproducido a nivel crate, CLI directo, daemon y tests dorados.
-- **Causa**: el pipeline de provisión nunca deposita el tokenizador en el dir convertido; ningún paso de `setup` lo copia (verificado por búsqueda exhaustiva). Re-ejecutar `setup` reproduce el mismo dir roto: no es entorno, es defecto de producto.
-- **Impacto**: `translate`, `dub` con traducción y las rutas con idiomas distintos de estrategia C (etapa `traducir_si_difiere` en `say`/`synthesize`/`dub`) inejecutables en la práctica; 2 tests dorados en rojo por causa motor.
+- **Causa** (histórica): el pipeline de provisión nunca depositaba el tokenizador en el dir convertido; ningún paso de `setup` lo copiaba (verificado por búsqueda exhaustiva). Re-ejecutar `setup` reproducía el mismo dir roto: no era entorno, era defecto de producto.
+- **Impacto** (histórico): `translate`, `dub` con traducción y las rutas con idiomas distintos de estrategia C (etapa `traducir_si_difiere` en `say`/`synthesize`/`dub`) inejecutables en la práctica; 2 tests dorados en rojo por causa motor.
 - **Corrección propuesta**: (a) el conversor copia `source.spm` al dir CT2 + regresión con los unit tests existentes; (b) alternativa: fallback al `.spm` del snapshot HF; (c) mientras tanto: el gate exige presencia de tokenizador para skipear con honestidad en vez de fallar.
-- **Decisión requerida**: Sí — ¿qué opción, y en qué scope de producto?
-- **Prioridad**: P0 — **pendiente (motor roto)**
+- **Decisión requerida**: No — cerrada: gate `is_ct2_provisioned` exige `model.bin` más tokenizador (`tokenizer.json` o `source.spm`+`target.spm`), `setup` repara el dir roto por reconversión atómica, exits 4/9 intactos.
+- **Prioridad**: P0 — **cerrado**
+- **Evidencia de cierre (F5 2026-09-10, `.claude/orchestration/c05-motor-ct2/F5-ground-truth.md`)**: ✅ `setup` repara ambos dirs (`opus-mt-es-en` y `opus-mt-en-es` con `model.bin` + `source.spm` + `target.spm`); ✅ CLI es→en (`Hola, ¿cómo estás?` → `Hey, how are you?`, exit 0) y en→es (exit 0); ✅ `cargo test -p avi-translation --features native-translation` 17/17; ✅ dorada `translate_es_a_en_produce_traduccion` en verde y `tts::dub_daemon_con_traduccion` verificada por el usuario (27.36s, exit 0).
 
 ## 4. Hallazgos medios — Media / S2
 
@@ -409,7 +410,7 @@ El núcleo reproducible (pines, cachés `v2`, `schema_version="3"`, `exit_codes`
 | **C-02** | Paridad+Drift | P2 + S3-01 | H-02 | ✅ Resuelto | Cerrado 2026-09-10 (estrategia C `07aab20`): flags reimplementados + purga + contrato reconciliado |
 | **C-03** | Paridad+Drift | P4 + S3-03 | H-04 | ⏳ Pendiente | Supervisión corregida (2026-09-04); **--language/--with-stt falsos positivos**: eran features reales del Python oráculo, no legacy |
 | **C-04** | Drift | S3-02 | H-09 | ⏳ Pendiente | Falso positivo: flags `--daemon/--no-daemon` existen y routing funciona, pero `POST /voices/precompute` purgado del daemon — precompute de conditionals no funciona |
-| **C-05** | Motor (F5) | E1 | — | ⏳ Pendiente | CT2 sin tokenizador en el dir convertido: gate (`model.bin`) vs loader discrepan por construcción |
+| **C-05** | Motor (F5) | E1 | — | ✅ Resuelto | Cerrado 2026-09-10 (gate == loader, `setup` repara, CLI es↔en exit 0, 17/17, dorada translate) |
 | **M-01** | Paridad | P3 | H-03 | ✅ Resuelto | Cerrado 2026-09-10: nombres largos restaurados, §13 reconciliado |
 | **M-02** | Paridad | P5 | H-05 | ⏳ Pendiente | `setup` sin `--force-update/--yes`; `--language` texto libre |
 | **M-03** | Drift | S2-01 | H-10 | ✅ Resuelto | USAGE y código coinciden (TTY permite push-to-talk) |
@@ -434,7 +435,7 @@ Excluidos por resueltos: P7 (`55fde2e`), P8 (`b78c3aa`+`4fbe77e`), H1-H4 E2E (`1
 - **C-02** — ✅ cerrado 2026-09-10 (estrategia C, `07aab20`): tabla de flags en §3 aplicada — reimplementados `--source-language`/`--target-language`/`--temperature` en `Synthesize`/`Say`/`Dub`, purgados `--exaggeration`/`--cfg-weight`/`--compute-backend` del §13; payload real documentado.
 - **C-03** — la supervisión `--auto-restart`/`--max-retries` está corregida; **pendiente** reimplementar `--language`/`--with-stt` en `DaemonCommands::{Start,Serve}` (`src/main.rs:279-286`). Ver §3. **Falso positivo**: estos flags eran features reales del oráculo Python (`daemon/run.py:50-55`), no residuos legacy.
 - **C-04** — **falso positivo**: el flag `--daemon` existe y el routing funciona, pero el endpoint `POST /voices/precompute` fue purgado del daemon (`crates/avi-daemon/src/lib.rs`), rompiendo `CONTRACT.md:238,241`. Implementar el endpoint o actualizar el contrato para reflejar su ausencia.
-- **C-05** — motor de traducción CT2 roto por construcción (gate `model.bin` vs loader sin tokenizador, ver §3). Sin esto, `translate`, `dub` con traducción y las rutas cross-lingual no funcionan en ningún caso.
+- **C-05** — ✅ cerrado 2026-09-10: gate `is_ct2_provisioned` == loader (derivado con tokenizador), `setup` repara por reconversión atómica (ver §3).
 
 **Fase 2 — P1 habilita paridad funcional y `value_parser`:**
 - **M-01** — ✅ cerrado 2026-09-10: nombres largos restaurados con `value_parser`, §13 reconciliado.
