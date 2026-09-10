@@ -115,7 +115,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | Payload | Clave del listado | `synthetic_speech` |
 | Interno | Parámetro del timbre en el motor y el protocolo | `timbre` |
 
-El orden de palabras respeta la convención del repo, con el núcleo al final (`--compute-backend`, `--timbre-reference`). El qualifier vive solo en el directorio y en el flag de `cleanup` —las dos operaciones de gestión—, no en la ruta caliente, que es `speech synthesize`.
+El orden de palabras respeta la convención del repo, con el núcleo al final (`--temperature`, `--timbre-reference`). El qualifier vive solo en el directorio y en el flag de `cleanup` —las dos operaciones de gestión—, no en la ruta caliente, que es `speech synthesize`.
 
 En disco los dos sentidos quedan separados por nombre y no por posición:
 
@@ -164,8 +164,8 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 
 | Sub-acción | Parámetros |
 |---|---|
-| `speech synthesize` | `--text/-t` **requerido** · `--label/-l` **requerido** · `--voice/-v` · `--output/-o` · `--play` · `--force/-f` · `--json` · `--daemon`/`--no-daemon` |
-| `speech say` | `--text/-t` **requerido** · `--voice/-v` · `--json` · `--daemon`/`--no-daemon` |
+| `speech synthesize` | `--text/-t` **requerido** · `--label/-l` **requerido** · `--voice/-v` · `--output/-o` · `--play` · `--force/-f` · `--source-language` · `--target-language` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
+| `speech say` | `--text/-t` **requerido** · `--voice/-v` · `--source-language` · `--target-language` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
 | `speech play` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
 | `speech list` | `--voice/-v` (filtro) · `--json` |
 | `speech remove` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
@@ -597,7 +597,9 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 #### Traducción opt-in en `speech say`/`speech synthesize`
 
-`--source-language`/`--target-language` (§3) insertan una etapa de traducción **antes** de la síntesis cuando declaran idiomas distintos; el motor de síntesis no cambia, solo recibe el texto ya traducido. El modelo de traducción ausente reutiliza el exit **4** (`EXIT_MODEL_MISSING`), remitiendo a `setup`, en vez de un código propio: es la misma precondición de entorno que el modelo TTS. Un fallo de la inferencia de traducción, con el modelo ya cargado, sale con **9** (`EXIT_TRANSLATION_FAILED`, §9) — código distinto del **1** genérico de síntesis, porque distingue en qué etapa falló la invocación.
+`--source-language`/`--target-language` (§3) insertan una etapa de traducción **antes** de la síntesis cuando declaran idiomas distintos; el motor de síntesis no cambia, solo recibe el texto ya traducido. Ambos son opcionales en `say`/`synthesize`: `--target-language` vale `es-latam` por defecto y `--source-language` vale lo mismo que `--target-language` cuando se omite, por lo que sin flags no se traduce. Solo se admite `es-latam` o `en`; cualquier otro valor sale con **2**. El modelo de traducción ausente reutiliza el exit **4** (`EXIT_MODEL_MISSING`), remitiendo a `setup`, en vez de un código propio: es la misma precondición de entorno que el modelo TTS. Un fallo de la inferencia de traducción, con el modelo ya cargado, sale con **9** (`EXIT_TRANSLATION_FAILED`, §9) — código distinto del **1** genérico de síntesis, porque distingue en qué etapa falló la invocación.
+
+`--temperature` es un override opcional del muestreo en `say`/`synthesize`/`dub`: sin el flag se usa la temperatura de producción (`0.35`); con el flag debe cumplirse `0 < t <= 2.0`, y fuera de ese rango sale con **2**.
 
 #### El rename `--language` → `--target-language`
 
@@ -627,11 +629,11 @@ Si el modelo `parakeet-tdt-0.6b-v3` no está provisionado, sale con **4** (`EXIT
 
 `speech dub` es la **composición voz→voz**: transcribe la entrada hablada (archivo o micrófono), traduce el texto si `--source-language` difiere de `--target-language`, sintetiza con la voz elegida y reproduce el resultado. Reutiliza las máquinas existentes —`_transcribe_stage` (los tres modos de `speech transcribe`), la traducción opt-in de `say`/`synthesize` y el despacho de síntesis (§5)— sin modificarlas. `say`/`synthesize` **no cambian**: siguen siendo texto→voz con `--text` requerido; la entrada de audio del bucle vive solo en `dub`. No persiste nada: no declara `--label` ni `--json`.
 
-Exige **exactamente una** de `{--audio, --mic}` (grupo mutuamente excluyente `required=True`, espejo de `speech transcribe`); `--duration N` solo es válido con `--mic` (con `--audio` sale con **2**); `--source-language` es **requerido** (`es-latam`/`en`); `--target-language` (default `es-latam`) elige el idioma/modelo de síntesis y dispara la traducción si difiere del hablado; `-v/--voice`, `--compute-backend/-cb`, `--exaggeration`, `--cfg-weight` y `--temperature` son los de `say`. `--daemon`/`--no-daemon` aplican a la transcripción y a la síntesis (los tres modos, §5); sin flags, ambas etapas usan el daemon solo si responde.
+Exige **exactamente una** de `{--audio, --mic}` (grupo mutuamente excluyente `required=True`, espejo de `speech transcribe`); `--duration N` solo es válido con `--mic` (con `--audio` sale con **2**); `--source-language` es **requerido** (`es-latam`/`en`); `--target-language` (default `es-latam`) elige el idioma/modelo de síntesis y dispara la traducción si difiere del hablado; `-v/--voice` y `--temperature` son los de `say`. `--daemon`/`--no-daemon` aplican a la transcripción y a la síntesis (los tres modos, §5); sin flags, ambas etapas usan el daemon solo si responde.
 
 | Parámetros | Comportamiento |
 |---|---|
-| `--audio` **o** `--mic` (mutuamente excluyentes, uno requerido) · `--duration N` (solo con `--mic`) · `--source-language` **requerido** · `--target-language` (default `es-latam`) · `-v/--voice` · `--compute-backend/-cb` · `--exaggeration` · `--cfg-weight` · `--temperature` · `--daemon`/`--no-daemon` | transcribe → traduce (si `source != target`) → sintetiza → reproduce |
+| `--audio` **o** `--mic` (mutuamente excluyentes, uno requerido) · `--duration N` (solo con `--mic`) · `--source-language` **requerido** · `--target-language` (default `es-latam`) · `-v/--voice` · `--temperature` · `--daemon`/`--no-daemon` | transcribe → traduce (si `source != target`) → sintetiza → reproduce |
 
 Códigos de salida aplicables en la cadena: **4** (`EXIT_MODEL_MISSING`, modelo de transcripción no provisionado, remite a `setup --with-stt`), **5** (`EXIT_DAEMON_UNREACHABLE`, daemon exigido pero inactivo o de versión antigua sin `/transcribe`), **9** (`EXIT_TRANSLATION_FAILED`, fallo del pipeline de traducción con el modelo cargado) y **10** (`EXIT_TRANSCRIPTION_FAILED`, fallo del pipeline de transcripción con el modelo cargado); más **2** (uso inválido: `--duration` sin `--mic`, `--mic` sin TTY y sin `--duration`) y **3** (`--audio` inexistente).
 

@@ -412,6 +412,9 @@ Locución 'saludo' guardada (voz 'default').
 - `--output, -o`: Copia adicional del WAV a la ruta indicada
 - `--play`: Reproduce el WAV tras guardar
 - `--force, -f`: Sobrescribe la locución si la etiqueta ya existe para la voz
+- `--source-language`: Idioma del texto de entrada (`es-latam` o `en`; por defecto igual a `--target-language`, sin traducir)
+- `--target-language`: Idioma/modelo de síntesis (`es-latam` o `en`; default `es-latam`; si difiere del origen, el texto se traduce antes de sintetizar)
+- `--temperature`: Override del muestreo (`0 < t <= 2.0`; sin el flag se usa la temperatura de producción)
 - `--json`: Emite `{status, audio_path, voice}`
 
 **Colisión de etiqueta:** sin `--force`, guardar sobre una etiqueta que ya
@@ -477,6 +480,9 @@ Reproduciendo: C:\Users\<u>\AppData\Local\Temp\avi_say_<pid>.wav
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
 - `--voice, -v`: Nombre de la voz a usar (default: `default`)
+- `--source-language`: Idioma del texto de entrada (`es-latam` o `en`; por defecto igual a `--target-language`, sin traducir)
+- `--target-language`: Idioma/modelo de síntesis (`es-latam` o `en`; default `es-latam`; si difiere del origen, el texto se traduce antes de sintetizar)
+- `--temperature`: Override del muestreo (`0 < t <= 2.0`; sin el flag se usa la temperatura de producción)
 - `--daemon`: Usar el daemon sin sondeo previo; si falla, el error se reporta (sin fallback a directo)
 - `--no-daemon`: Forzar modo directo, sin sondear el daemon
 
@@ -627,7 +633,7 @@ exit **5**.
 #### `speech dub`
 
 Composición voz→voz: transcribe la entrada hablada (archivo o micrófono),
-traduce si `--from` difiere de `--to`, sintetiza con
+traduce si `--source-language` difiere de `--target-language`, sintetiza con
 la voz elegida y reproduce el resultado. Reutiliza las etapas de
 `speech transcribe`, la traducción de `speech say`/`synthesize` y el despacho
 de síntesis; no guarda nada en el almacén (sin `--label` ni `--json`).
@@ -638,8 +644,8 @@ es requerida**. Con `--mic`, la grabación es **push-to-talk** por defecto
 fija en segundos y solo es válido junto a `--mic`.
 
 ```bash
-ai-voice-interconnector speech dub --mic --from es --to en -v mi_voz
-ai-voice-interconnector speech dub --audio grabacion.wav --from en --to es
+ai-voice-interconnector speech dub --mic --source-language es-latam --target-language en -v mi_voz
+ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --target-language es-latam
 ```
 
 **Qué esperar:** transcribe tu habla al texto, lo traduce si procede y
@@ -651,7 +657,9 @@ transcribir.
 - `--audio, -a`: Ruta del archivo WAV hablado (mutuamente excluyente con `--mic`; exactamente una de las dos es requerida; alias: `--file`)
 - `--mic`: Graba desde el micrófono (mutuamente excluyente con `--audio`; exactamente una de las dos es requerida)
 - `--duration N`: Duración fija de grabación en segundos; solo válido con `--mic`
-- `--from` (default `es`) / `--to` (default `en`): Idioma hablado y destino (`es`/`en`; si difieren, se traduce antes de sintetizar)
+- `--source-language` (requerido): Idioma hablado en el audio (`es-latam` o `en`)
+- `--target-language`: Idioma/modelo de síntesis (`es-latam` o `en`; default `es-latam`; si difiere del origen, se traduce antes de sintetizar)
+- `--temperature`: Override del muestreo (`0 < t <= 2.0`; sin el flag se usa la temperatura de producción)
 - `--voice, -v`: Nombre de la voz (default: `default`)
 - `--daemon` / `--no-daemon`: aplican a la transcripción y a la síntesis
 

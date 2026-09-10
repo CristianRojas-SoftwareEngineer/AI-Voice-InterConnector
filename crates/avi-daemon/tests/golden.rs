@@ -165,6 +165,52 @@ async fn synthesize_texto_vacio_es_error_de_contrato() {
     assert_eq!(actual, fixture("daemon_synthesize_empty.json"));
 }
 
+/// Compatibilidad hacia atrás: un payload antiguo sin los campos opcionales de
+/// idioma y temperatura se comporta igual que antes (mismo error de contrato).
+#[tokio::test]
+async fn synthesize_payload_antiguo_sin_campos_nuevos() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        return;
+    }
+    let (status, bytes) = send(post_json(
+        "/synthesize",
+        serde_json::json!({ "text": "", "voice": "default" }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(actual, fixture("daemon_synthesize_empty.json"));
+}
+
+/// Temperatura fuera de rango (`0`): el stream NDJSON termina en error con
+/// motivo `usage_error`, sin llegar a la síntesis.
+#[tokio::test]
+async fn synthesize_temperatura_invalida_es_error_de_uso() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        return;
+    }
+    let (status, bytes) = send(post_json(
+        "/synthesize",
+        serde_json::json!({ "text": "hola", "voice": "default", "temperature": 0.0 }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let eventos: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .collect();
+    let final_event = eventos.last().expect("debe haber al menos un evento");
+    assert_eq!(final_event["event"], Value::String("error".to_string()));
+    assert_eq!(
+        final_event["reason"],
+        Value::String("usage_error".to_string())
+    );
+}
+
 #[tokio::test]
 async fn synthesize_emite_stream_ndjson_de_contrato() {
     if !modelos_presentes() {

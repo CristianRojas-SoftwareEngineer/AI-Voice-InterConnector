@@ -70,10 +70,7 @@ Tanto `_transcribe_stage` (`cli.py:451-513`) como `_dispatch_synthesis` (`cli.py
 | `--duration` | int | None | Duración fija de grabación en segundos (solo con `--mic`) |
 | `--target-language` | `es-latam` \| `en` | `es-latam` | Idioma/modelo de síntesis; si difiere de source, se traduce |
 | `--voice, -v` | str | `default` | Nombre de la voz a usar |
-| `--compute-backend, -cb` | `auto\|cpu\|cuda\|mps` | `auto` | Backend de cómputo (solo en ruta directa) |
-| `--exaggeration` | float | None | Override de expresividad emocional |
-| `--cfg-weight` | float | None | Override de guidance (no permite 0.0) |
-| `--temperature` | float | None | Override de temperatura |
+| `--temperature` | float | None | Override de temperatura (`0 < t <= 2.0`; sin el flag se usa la de producción) |
 | `--daemon` | flag | False | Exige daemon |
 | `--no-daemon` | flag | False | Fuerza modo directo |
 

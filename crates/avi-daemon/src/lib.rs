@@ -249,6 +249,21 @@ async fn synthesize_handler(
         .and_then(|v| v.as_str())
         .unwrap_or("default")
         .to_string();
+    // Traducción opt-in: sin flags no se traduce (origen = destino).
+    let target_raw = payload
+        .get("target_language")
+        .and_then(|v| v.as_str())
+        .unwrap_or("es-latam")
+        .to_string();
+    let source_raw = payload
+        .get("source_language")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| target_raw.as_str())
+        .to_string();
+    let temperature = payload
+        .get("temperature")
+        .and_then(|v| v.as_f64())
+        .map(|t| t as f32);
 
     // Validación de texto vacío: se evalúa antes del motor y devuelve un cuerpo
     // JSON plano (no stream), para que el test de contrato de texto vacío siga
@@ -265,6 +280,8 @@ async fn synthesize_handler(
     let state = state.clone();
     let text_owned = text.clone();
     let voice_owned = voice.clone();
+    let source_owned = source_raw.clone();
+    let target_owned = target_raw.clone();
 
     tokio::spawn(async move {
         // T4: el lock envuelve completamente el trabajo de síntesis —incluido dentro del
@@ -310,6 +327,101 @@ async fn synthesize_handler(
         )
         .await;
 
+        // Temperatura opcional del CLI (ya validada allí); aquí se defiende el
+        // rango para payloads directos al HTTP.
+        if let Some(t) = temperature {
+            if !(t > 0.0 && t <= 2.0) {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "usage_error",
+                        "message": "Error: --temperature debe ser mayor que 0 y como máximo 2.0.",
+                    }),
+                )
+                .await;
+                return;
+            }
+        }
+
+        // Traducción opt-in con el motor residente: passthrough si coinciden.
+        let source_iso = resolve_translation_language(&source_owned).to_string();
+        let target_iso = resolve_translation_language(&target_owned).to_string();
+        let text_final = if source_iso == target_iso {
+            text_owned.clone()
+        } else {
+            let pair = match (source_iso.as_str(), target_iso.as_str()) {
+                ("es", "en") => "es-en",
+                ("en", "es") => "en-es",
+                _ => {
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "reason": "unsupported_language_pair",
+                            "message": format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source_iso, target_iso),
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let ct2_dir = avi_store::ct2_model_dir(pair);
+            if !ct2_dir.join("model.bin").is_file() {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "model_missing",
+                        "message": format!("El modelo de traducción no está provisionado en '{}' — ejecuta setup.", ct2_dir.display()),
+                    }),
+                )
+                .await;
+                return;
+            }
+            #[cfg(not(feature = "native-translation"))]
+            {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "translation_unsupported",
+                        "message": "Este binario se compiló sin soporte de traducción (feature 'native-translation').",
+                    }),
+                )
+                .await;
+                return;
+            }
+            #[cfg(feature = "native-translation")]
+            {
+                let translated = if let Some(map) = state.ct2_engine.as_ref() {
+                    if let Some(engine) = map.get(pair) {
+                        use avi_core::engine::TranslationEngine;
+                        engine.translate(&text_owned, &source_iso, &target_iso)
+                    } else {
+                        avi_translation::translate(&text_owned, &source_iso, &target_iso, &ct2_dir)
+                    }
+                } else {
+                    avi_translation::translate(&text_owned, &source_iso, &target_iso, &ct2_dir)
+                };
+                match translated {
+                    Ok(t) => t,
+                    Err(e) => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": "translation_failed",
+                                "message": e.to_string(),
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+        };
+
         // Perfil de voz: .qvoice si la voz está clonada; el motor resuelve el
         // preset vía `resolve_voice_motor` a partir del nombre.
         let profile = VoiceProfile {
@@ -317,13 +429,14 @@ async fn synthesize_handler(
             reference_audio: None,
             qvoice_path: state.voice_store.find_reference(&voice_owned),
         };
-        // `GenerationOptions::produccion()` fija temperature=0.35 / seed=42; no se
-        // alteran temperatura ni seed (prohibido por el brief).
+        // Sin flag se usa la config de producción (temperature=0.35); con flag
+        // se sobrescribe la temperatura ya validada.
+        let options = GenerationOptions::con_temperatura(temperature);
         let tmp = std::env::temp_dir().join(format!("avi_daemon_synth_{}.wav", std::process::id()));
         match state.tts_engine.synthesize_with_options(
-            &text_owned,
+            &text_final,
             &profile,
-            &GenerationOptions::produccion(),
+            &options,
             Some(&tmp),
         ) {
             Ok(path) => {
@@ -792,12 +905,16 @@ async fn dub_handler(
         .or_else(|| payload.get("target_language"))
         .and_then(|v| v.as_str())
         .unwrap_or("es");
+    let temperature = payload
+        .get("temperature")
+        .and_then(|v| v.as_f64())
+        .map(|t| t as f32);
     let source_iso = resolve_translation_language(from_raw).to_string();
     let target_iso = resolve_translation_language(to_raw).to_string();
     // Transcripción — requiere `native-stt`; sin el feature el pipeline no puede arrancar.
     #[cfg(not(feature = "native-stt"))]
     {
-        let _ = (&state, &pcm, &voice, &source_iso, &target_iso);
+        let _ = (&state, &pcm, &voice, &source_iso, &target_iso, &temperature);
         return (
             StatusCode::NOT_IMPLEMENTED,
             Json(with_sv(json!({
@@ -970,7 +1087,7 @@ async fn dub_handler(
     let synth_res = state.tts_engine.synthesize_with_options(
         &final_text,
         &profile,
-        &GenerationOptions::produccion(),
+        &GenerationOptions::con_temperatura(temperature),
         Some(&tmp),
     );
     match synth_res {

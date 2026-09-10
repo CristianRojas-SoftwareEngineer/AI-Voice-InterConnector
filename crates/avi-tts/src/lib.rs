@@ -73,6 +73,16 @@ impl GenerationOptions {
             ..Self::default()
         }
     }
+
+    /// Resuelve la temperatura opcional del CLI a opciones efectivas: sin flag
+    /// se usa la config de producción; con flag se sobrescribe la temperatura.
+    pub fn con_temperatura(temperature: Option<f32>) -> Self {
+        let mut opts = Self::produccion();
+        if let Some(t) = temperature {
+            opts.temperature = t;
+        }
+        opts
+    }
 }
 
 /// Opciones de prosodia (ganancia y tempo), serializables al body HTTP.
@@ -344,6 +354,25 @@ impl Qwen3TtsEngine {
         if let Ok(mut guard) = self.resident.try_lock() {
             *guard = None;
         }
+    }
+
+    /// Síntesis con temperatura opcional del CLI: sin flag usa la config de
+    /// producción; con flag sobrescribe la temperatura (ya validada en el CLI).
+    pub fn synthesize_with_temperature(
+        &self,
+        text: &str,
+        voice: &str,
+        temperature: Option<f32>,
+        output_path: Option<&PathBuf>,
+    ) -> Result<PathBuf> {
+        let options = GenerationOptions::con_temperatura(temperature);
+        let qvoice_path = avi_store::VoiceStore::new().find_reference(voice);
+        let profile = VoiceProfile {
+            name: voice.to_string(),
+            reference_audio: None,
+            qvoice_path,
+        };
+        self.synthesize_with_options(text, &profile, &options, output_path)
     }
 
     /// Intentar la síntesis vía HTTP local (servidor manual o residente).
@@ -1104,6 +1133,23 @@ mod tests {
         assert_eq!(p.top_p, DEFAULT_TOP_P);
         assert_eq!(p.rep_penalty, DEFAULT_REP_PENALTY);
         assert_eq!(p.language, "es");
+    }
+
+    /// `con_temperatura(None)` equivale a `produccion()`; con `Some` solo
+    /// cambia la temperatura (bordes del rango válido incluidos).
+    #[test]
+    fn generation_options_con_temperatura_resuelve_override() {
+        let p = GenerationOptions::con_temperatura(None);
+        assert_eq!(p.temperature, 0.35);
+        assert_eq!(p.seed, Some(4));
+        let o = GenerationOptions::con_temperatura(Some(0.9));
+        assert_eq!(o.temperature, 0.9);
+        assert_eq!(o.seed, Some(4));
+        assert_eq!(o.top_k, DEFAULT_TOP_K);
+        let min = GenerationOptions::con_temperatura(Some(f32::MIN_POSITIVE));
+        assert!(min.temperature > 0.0);
+        let max = GenerationOptions::con_temperatura(Some(2.0));
+        assert_eq!(max.temperature, 2.0);
     }
 
     /// T2: args del subprocess para preset (con y sin overrides) y voz clonada.

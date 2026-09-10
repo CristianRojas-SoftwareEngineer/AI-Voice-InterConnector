@@ -11,7 +11,7 @@ use avi_store as store;
 use avi_store::{ModelStore, SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_stt::ParakeetEngine;
-use avi_tts::{Qwen3TtsEngine, TtsEngine};
+use avi_tts::Qwen3TtsEngine;
 // El motor de traducción real solo entra en scope con `native-translation`.
 #[cfg(feature = "native-translation")]
 use avi_translation as translation;
@@ -47,6 +47,20 @@ fn resolve_stt_language(token: &str) -> &str {
         "es-latam" => "es",
         other => other,
     }
+}
+
+/// Valida el override de temperatura (`0 < t <= 2.0`); exit 2 si no calza.
+fn validar_temperature(temperature: Option<f32>) -> Result<(), CliError> {
+    if let Some(t) = temperature {
+        if !(t > 0.0 && t <= 2.0) {
+            return Err(CliError::new(
+                ExitCode::InvalidInput,
+                "usage_error",
+                "Error: --temperature debe ser mayor que 0 y como máximo 2.0.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Parser)]
@@ -217,6 +231,15 @@ enum SpeechCommands {
         force: bool,
         #[arg(long)]
         play: bool,
+        /// Idioma del texto de entrada (por defecto igual a --target-language, sin traducir)
+        #[arg(long, value_parser = ["es-latam", "en"])]
+        source_language: Option<String>,
+        /// Idioma/modelo de síntesis (si difiere del origen, el texto se traduce antes de sintetizar)
+        #[arg(long, default_value = "es-latam", value_parser = ["es-latam", "en"])]
+        target_language: String,
+        /// Override del muestreo (por defecto la temperatura de producción; 0 < t <= 2.0)
+        #[arg(long)]
+        temperature: Option<f32>,
     },
     /// Sintetizar y reproducir
     Say {
@@ -224,6 +247,15 @@ enum SpeechCommands {
         text: String,
         #[arg(short, long, default_value = "default")]
         voice: String,
+        /// Idioma del texto de entrada (por defecto igual a --target-language, sin traducir)
+        #[arg(long, value_parser = ["es-latam", "en"])]
+        source_language: Option<String>,
+        /// Idioma/modelo de síntesis (si difiere del origen, el texto se traduce antes de sintetizar)
+        #[arg(long, default_value = "es-latam", value_parser = ["es-latam", "en"])]
+        target_language: String,
+        /// Override del muestreo (por defecto la temperatura de producción; 0 < t <= 2.0)
+        #[arg(long)]
+        temperature: Option<f32>,
     },
     /// Doblaje voz→voz: transcribe, traduce, sintetiza y reproduce
     Dub {
@@ -232,10 +264,15 @@ enum SpeechCommands {
         audio: Option<String>,
         #[arg(short, long, default_value = "default")]
         voice: String,
-        #[arg(long, default_value = "es")]
-        from: String,
-        #[arg(long, default_value = "en")]
-        to: String,
+        /// Idioma hablado en el audio de entrada
+        #[arg(long, value_parser = ["es-latam", "en"])]
+        source_language: String,
+        /// Idioma/modelo de síntesis (si difiere del origen, el texto transcrito se traduce antes de sintetizar)
+        #[arg(long, default_value = "es-latam", value_parser = ["es-latam", "en"])]
+        target_language: String,
+        /// Override del muestreo (por defecto la temperatura de producción; 0 < t <= 2.0)
+        #[arg(long)]
+        temperature: Option<f32>,
         /// Capturar desde el micrófono (mutuamente excluyente con --audio)
         #[arg(long, conflicts_with = "audio")]
         mic: bool,
@@ -477,6 +514,60 @@ async fn handle_translate(
             println!("{}", translated);
         }
         Ok(())
+    }
+}
+
+/// Traducción opt-in previa a la síntesis: passthrough si origen y destino
+/// coinciden tras normalizar; exit 2 si el par no es soportado, exit 4 si
+/// falta el modelo, exit 9 si falla la traducción.
+fn traducir_si_difiere(
+    texto: &str,
+    source_token: &str,
+    target_token: &str,
+) -> Result<String, CliError> {
+    let source = resolve_stt_language(source_token);
+    let target = resolve_stt_language(target_token);
+    if source == target {
+        return Ok(texto.to_string());
+    }
+    let ct2_dir = match (source, target) {
+        ("es", "en") => store::ct2_model_dir("es-en"),
+        ("en", "es") => store::ct2_model_dir("en-es"),
+        _ => {
+            return Err(CliError::new(
+                ExitCode::InvalidInput,
+                "unsupported_language_pair",
+                format!(
+                    "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
+                    source, target
+                ),
+            ));
+        }
+    };
+    if !ct2_dir.join("model.bin").is_file() {
+        return Err(CliError::new(
+            ExitCode::ModelMissing,
+            "model_missing",
+            format!(
+                "El modelo de traducción no está provisionado en '{}' (hf_cache_dir/ct2) — ejecuta setup.",
+                ct2_dir.display()
+            ),
+        ));
+    }
+    #[cfg(not(feature = "native-translation"))]
+    {
+        let _ = ct2_dir.as_os_str();
+        Err(CliError::new(
+            ExitCode::Error,
+            "translation_unsupported",
+            "Este binario se compiló sin soporte de traducción (feature 'native-translation').",
+        ))
+    }
+    #[cfg(feature = "native-translation")]
+    {
+        translation::translate(texto, source, target, &ct2_dir).map_err(|e| {
+            CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
+        })
     }
 }
 
@@ -798,7 +889,11 @@ async fn handle_speech(
             label,
             force,
             play,
+            source_language,
+            target_language,
+            temperature,
         } => {
+            validar_temperature(temperature)?;
             // Orden de validaciones del oráculo (cli.py:659-667).
             if text.trim().is_empty() {
                 return Err(CliError::new(
@@ -807,13 +902,25 @@ async fn handle_speech(
                     "El texto a sintetizar está vacío",
                 ));
             }
+            // Origen por defecto = destino (sin traducir).
+            let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
             // T7 — dispatch 3 modos (Synthesize es delegable al daemon).
             let client = daemon_client();
             if route_to_daemon(daemon_mode, &client).await {
-                let saved =
-                    synthesize_via_daemon(&client, &text, &voice, &label, force, play, &output)
-                        .await?;
+                let saved = synthesize_via_daemon(
+                    &client,
+                    &text,
+                    &voice,
+                    &label,
+                    force,
+                    play,
+                    &output,
+                    source_eff,
+                    &target_language,
+                    temperature,
+                )
+                .await?;
                 if json_mode {
                     emit_raw_json(json!({
                         "status": "success",
@@ -851,8 +958,10 @@ async fn handle_speech(
 
             let tmp_wav = std::env::temp_dir().join(format!("avi_tts_{}.wav", label));
             let engine = Qwen3TtsEngine::new(None);
+            // Traducción opt-in antes de sintetizar (passthrough si coinciden).
+            let texto_final = traducir_si_difiere(&text, source_eff, &target_language)?;
             engine
-                .synthesize(&text, &voice, Some(&tmp_wav))
+                .synthesize_with_temperature(&texto_final, &voice, temperature, Some(&tmp_wav))
                 .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
             if play {
                 audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
@@ -864,7 +973,7 @@ async fn handle_speech(
                 })?;
             }
             let saved = speech_store
-                .save(&voice, &label, &text, &tmp_wav)
+                .save(&voice, &label, &texto_final, &tmp_wav)
                 .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
             if let Some(out) = &output {
                 std::fs::copy(&saved, out).map_err(|e| {
@@ -882,7 +991,14 @@ async fn handle_speech(
             }
             Ok(())
         }
-        SpeechCommands::Say { text, voice } => {
+        SpeechCommands::Say {
+            text,
+            voice,
+            source_language,
+            target_language,
+            temperature,
+        } => {
+            validar_temperature(temperature)?;
             if text.trim().is_empty() {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
@@ -890,11 +1006,22 @@ async fn handle_speech(
                     "El texto a sintetizar está vacío",
                 ));
             }
+            // Origen por defecto = destino (sin traducir).
+            let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
             // T7 — dispatch 3 modos (Say es delegable al daemon).
             let client = daemon_client();
             if route_to_daemon(daemon_mode, &client).await {
-                return say_via_daemon(json_mode, &client, &text, &voice).await;
+                return say_via_daemon(
+                    json_mode,
+                    &client,
+                    &text,
+                    &voice,
+                    source_eff,
+                    &target_language,
+                    temperature,
+                )
+                .await;
             }
 
             require_model_provisioned()?;
@@ -908,8 +1035,10 @@ async fn handle_speech(
             }
             let tmp_wav = std::env::temp_dir().join(format!("avi_say_{}.wav", std::process::id()));
             let engine = Qwen3TtsEngine::new(None);
+            // Traducción opt-in antes de sintetizar (passthrough si coinciden).
+            let texto_final = traducir_si_difiere(&text, source_eff, &target_language)?;
             engine
-                .synthesize(&text, &voice, Some(&tmp_wav))
+                .synthesize_with_temperature(&texto_final, &voice, temperature, Some(&tmp_wav))
                 .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
             // Divergencia 5 corregida: `say` reproduce de verdad.
             audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
@@ -935,9 +1064,11 @@ async fn handle_speech(
             mic,
             duration,
             voice,
-            from,
-            to,
+            source_language,
+            target_language,
+            temperature,
         } => {
+            validar_temperature(temperature)?;
             // Validaciones puras del oráculo (cli.py:562-624) — antes del despacho
             if duration.is_some() && !mic {
                 return Err(CliError::new(
@@ -979,8 +1110,9 @@ async fn handle_speech(
                         audio.as_deref(),
                         mic,
                         duration,
-                        &from,
-                        &to,
+                        &source_language,
+                        &target_language,
+                        temperature,
                         &voice,
                     )
                     .await;
@@ -1005,7 +1137,7 @@ async fn handle_speech(
             // validaciones puras (usage, audio existente, modelos ausentes → exit 4).
             #[cfg(not(feature = "native-stt"))]
             {
-                let _ = (&voice, &from, &to);
+                let _ = (&voice, &source_language, &target_language);
                 Err(CliError::new(
                     ExitCode::Error,
                     "stt_unsupported",
@@ -1044,7 +1176,7 @@ async fn handle_speech(
                         )
                     })?;
                 let transcribed = stt
-                    .transcribe(&pcm, Some(resolve_stt_language(&from)))
+                    .transcribe(&pcm, Some(resolve_stt_language(&source_language)))
                     .map_err(|e| {
                         CliError::new(
                             ExitCode::TranscriptionFailed,
@@ -1060,9 +1192,9 @@ async fn handle_speech(
                     ));
                 }
 
-                // Traducción solo si from != to tras normalizar (passthrough si coinciden).
-                let source = resolve_stt_language(&from);
-                let target = resolve_stt_language(&to);
+                // Traducción solo si source != target tras normalizar (passthrough si coinciden).
+                let source = resolve_stt_language(&source_language);
+                let target = resolve_stt_language(&target_language);
                 let final_text = if source == target {
                     transcribed.clone()
                 } else {
@@ -1126,7 +1258,7 @@ async fn handle_speech(
                     std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
                 let engine = Qwen3TtsEngine::new(None);
                 engine
-                    .synthesize(&final_text, &voice, Some(&tmp_wav))
+                    .synthesize_with_temperature(&final_text, &voice, temperature, Some(&tmp_wav))
                     .map_err(|e| {
                         CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
                     })?;
@@ -2517,10 +2649,18 @@ async fn daemon_synthesize_wav(
     client: &reqwest::Client,
     text: &str,
     voice: &str,
+    source_language: &str,
+    target_language: &str,
+    temperature: Option<f32>,
 ) -> Result<Vec<u8>, CliError> {
+    let mut payload =
+        serde_json::json!({ "text": text, "voice": voice, "source_language": source_language, "target_language": target_language });
+    if let Some(t) = temperature {
+        payload["temperature"] = serde_json::json!(t);
+    }
     let resp = client
         .post(format!("http://{}/synthesize", DAEMON_ADDR))
-        .json(&serde_json::json!({ "text": text, "voice": voice }))
+        .json(&payload)
         .send()
         .await
         .map_err(|e| {
@@ -2607,6 +2747,9 @@ async fn synthesize_via_daemon(
     force: bool,
     play: bool,
     output: &Option<String>,
+    source_language: &str,
+    target_language: &str,
+    temperature: Option<f32>,
 ) -> Result<String, CliError> {
     let speech_store = SpeechStore::new();
     let label_l = label.to_lowercase();
@@ -2621,7 +2764,7 @@ async fn synthesize_via_daemon(
             ),
         ));
     }
-    let wav = daemon_synthesize_wav(client, text, voice).await?;
+    let wav = daemon_synthesize_wav(client, text, voice, source_language, target_language, temperature).await?;
     let tmp = std::env::temp_dir().join(format!("avi_tts_{}.wav", label_l));
     std::fs::write(&tmp, &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
@@ -2651,8 +2794,13 @@ async fn say_via_daemon(
     client: &reqwest::Client,
     text: &str,
     voice: &str,
+    source_language: &str,
+    target_language: &str,
+    temperature: Option<f32>,
 ) -> Result<(), CliError> {
-    let wav = daemon_synthesize_wav(client, text, voice).await?;
+    let wav =
+        daemon_synthesize_wav(client, text, voice, source_language, target_language, temperature)
+            .await?;
     let tmp = std::env::temp_dir().join(format!("avi_say_{}.wav", std::process::id()));
     std::fs::write(&tmp, &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
@@ -2779,8 +2927,9 @@ async fn dub_via_daemon(
     audio: Option<&str>,
     mic: bool,
     duration: Option<u64>,
-    from: &str,
-    to: &str,
+    source_language: &str,
+    target_language: &str,
+    temperature: Option<f32>,
     voice: &str,
 ) -> Result<(), CliError> {
     // Captura/lectura PCM y encode a base64 para POST /dub
@@ -2805,12 +2954,17 @@ async fn dub_via_daemon(
     };
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "audio_b64": audio_b64,
-        "from": from,
-        "to": to,
+        "from": source_language,
+        "to": target_language,
+        "source_language": source_language,
+        "target_language": target_language,
         "voice": voice,
     });
+    if let Some(t) = temperature {
+        payload["temperature"] = serde_json::json!(t);
+    }
     // POST /dub con timeout acotado (no 120s); dub puede tardar por síntesis, techo 30s
     let fut = client
         .post(format!("http://{}/dub", DAEMON_ADDR))
@@ -2836,7 +2990,16 @@ async fn dub_via_daemon(
         let status = resp.status();
         // Si 404, el daemon es viejo sin /dub → degradar a composición
         if status == reqwest::StatusCode::NOT_FOUND {
-            return dub_compose_via_daemon(json_mode, client, Some(pcm), from, to, voice).await;
+            return dub_compose_via_daemon(
+                json_mode,
+                client,
+                Some(pcm),
+                source_language,
+                target_language,
+                temperature,
+                voice,
+            )
+            .await;
         }
         let body: Value = resp.json().await.unwrap_or(json!({}));
         let reason = body
@@ -2918,6 +3081,7 @@ async fn dub_compose_via_daemon(
     pcm_opt: Option<Vec<i16>>,
     from: &str,
     to: &str,
+    temperature: Option<f32>,
     voice: &str,
 ) -> Result<(), CliError> {
     // Transcribe vía daemon (reusa PCM ya capturado)
@@ -3019,7 +3183,8 @@ async fn dub_compose_via_daemon(
             format!("La voz '{}' no existe.", voice),
         ));
     }
-    let wav_bytes = daemon_synthesize_wav(client, &final_text, voice).await?;
+    let wav_bytes =
+        daemon_synthesize_wav(client, &final_text, voice, target, target, temperature).await?;
     let tmp_wav = std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
     std::fs::write(&tmp_wav, &wav_bytes)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
