@@ -26,6 +26,130 @@ const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
 /// puede borrar el estado que un test TTS está verificando (carrera intra-binario).
 static STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// ─── Fixture por sesión del daemon (Tarea 1) ──────────────────────────
+//
+// Dueña única del ciclo de vida del daemon en la corrida pesada serial: un
+// solo arranque y un solo apagado por corrida, determinados por la fixture y
+// no por cada test. Suprime N-1 calentamientos (la síntesis de `warmup_tts`
+// en `crates/avi-daemon/src/lib.rs:1209-1227`, lanzada en segundo plano sin
+// bloquear el bind en `crates/avi-daemon/src/lib.rs:1244-1248`) y elimina la
+// clase de huérfanos por ciclos interrumpidos a mitad.
+//
+// Semántica que respeta (solo lectura del producto, sin modificarlo):
+// - Adhesión: `daemon start` reutiliza el residente si `/health` responde
+//   (`src/main.rs:1359-1368`, exit 0 `already_running` sin rearranque ni
+//   calentamiento nuevo); la fixture nunca rearranca un daemon observado
+//   como `running`.
+// - Rancio: la adhesión es por probe HTTP, no por pidfile: pidfile rancio
+//   con daemon muerto → probe falso → spawn fresco (parte de cero).
+// - Readiness observada (intento 2): `daemon start` solo espera bind-ready
+//   (deadline 10 s, poll 250 ms en `src/main.rs:35-37`, retorna en cuanto
+//   `/health` responde), pero el warmup TTS corre en segundo plano y la
+//   inferencia solo es fiable con `warm == "warm"` (`daemon status` propaga
+//   `warm` desde `/health` vía `status_body` en `src/main.rs:2397-2416`); la
+//   fixture exige `daemon == esperado` MÁS `warm == "warm"`, sin los sleeps
+//   fijos (300/500 ms) que los ciclos por test suponían.
+// - Apagado acotado: `daemon stop` envía POST /shutdown con timeout 1500 ms
+//   (`src/main.rs:1405-1432`); la fixture observa la ausencia por poll en vez
+//   de suponerla tras un sleep.
+//
+// Presupuesto explícito por test (serie permanente, sin tocar el producto):
+// techo = timeout del cliente HTTP del daemon, 120 s por petición
+// (`src/main.rs:2440`; el POST /dub lo acota a 10 s). Ningún test de la serie
+// espera más que eso por una operación contra el residente.
+//
+// Contrato de locks (la fixture NO toma locks: los aportan los llamantes):
+// - llamar SIEMPRE bajo `STATE_LOCK` (excluye paradas/arranques concurrentes
+//   del ciclo entre tests del mismo binario);
+// - añadir `TTS_LOCK` (`tts::lock_tts`) si el test hace inferencia (serie por
+//   diseño: el residente ocupa el puerto 8766 y ~2.7 GB de RAM).
+// La contención del estado compartido la dan los namespaces por test ya
+// existentes (`etiqueta_unica`), no la fixture.
+//
+// `run_json_env` queda intacto: la captura por tempfile (sin pipe para
+// heredar el write-end al hijo) sigue valiendo con la fixture — el arranque
+// único reduce además los holders transitorios del pipe.
+//
+// Reversión (Tareas 1-2): devolver a cada test su ciclo propio
+// (`daemon stop` + sleep + `daemon start` + sleep … `daemon stop` + sleep).
+
+/// Estado observado del daemon vía `daemon status` (sin locks: los llamantes
+/// los aportan según el contrato de la fixture por sesión).
+fn estado_daemon() -> Value {
+    let (_, actual) = run_json(&["--json", "daemon", "status"]);
+    actual
+}
+
+/// Espera por estado OBSERVADO (poll cada 200 ms, como `wait_health_down` en
+/// `src/main.rs:2427`) hasta ver `daemon == esperado`. Cuando se espera
+/// `running`, además exige `warm == "warm"` (intento 2: el bind-ready no basta,
+/// el warmup TTS corre en segundo plano y la inferencia solo es fiable en
+/// caliente). Retorna en cuanto se observa — no es un sleep fijo — y falla
+/// explícito (panic) al agotar los reintentos o si el warmup falló
+/// (`warm_failed` con su causa): nunca pasa en silencio.
+fn esperar_estado_daemon(esperado: &str, reintentos: u32) -> Value {
+    let mut ultimo = Value::Null;
+    for _ in 0..reintentos {
+        ultimo = estado_daemon();
+        if ultimo["daemon"] == Value::String(esperado.to_string()) {
+            if esperado != "running" {
+                return ultimo;
+            }
+            if ultimo["warm"] == Value::String("warm".to_string()) {
+                return ultimo;
+            }
+            if ultimo["warm"] == Value::String("warm_failed".to_string()) {
+                panic!(
+                    "el warmup del daemon falló (warm_error: {}) (último: {})",
+                    ultimo.get("warm_error").unwrap_or(&Value::Null),
+                    ultimo
+                );
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    panic!(
+        "el daemon no alcanzó el estado '{}' (con warm) tras {} reintentos (último: {})",
+        esperado, reintentos, ultimo
+    );
+}
+
+/// Asegura el daemon caliente de la sesión (idempotente). Adhesión solo si ya
+/// está `running` Y `warm`; si está `stopped`, arranca una vez y falla
+/// explícito si el arranque no deja `running` observado. En todo caso espera
+/// (poll acotado, panic al agotar) a `warm == "warm"` antes de retornar.
+fn ensure_session_daemon() {
+    let actual = estado_daemon();
+    if actual["daemon"] == Value::String("running".to_string())
+        && actual["warm"] == Value::String("warm".to_string())
+    {
+        return;
+    }
+    if actual["daemon"] != Value::String("running".to_string()) {
+        let (code, actual) = run_json(&["--json", "daemon", "start"]);
+        assert_eq!(
+            code, 0,
+            "el arranque de sesión debe salir 0 (fue {}): {}",
+            code, actual
+        );
+        assert_eq!(actual["daemon"], Value::String("running".to_string()));
+    }
+    esperar_estado_daemon("running", 50);
+}
+
+/// Apagado único de la sesión (idempotente). Tolera exit 0 (`shutdown_sent`)
+/// y exit 5 (ya detenido); cualquier otro código falla explícito. La ausencia
+/// queda observada por poll, no supuesta tras un sleep.
+fn shutdown_session_daemon() {
+    let (code, actual) = run_json(&["--json", "daemon", "stop"]);
+    assert!(
+        code == 0 || code == 5,
+        "el apagado de sesión debe salir 0 o 5 (fue {}): {}",
+        code, actual
+    );
+    esperar_estado_daemon("stopped", 75);
+}
+
 /// Carga una fixture dorada desde `tests/golden/`.
 fn fixture(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -159,6 +283,13 @@ fn speech_transcribe_con_audio_cumple_contrato() {
         eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
+    // Régimen con fixture (Tarea 5): testigo natural del despacho `Auto`
+    // (`src/main.rs:794-810`): con sesión en ejecución delega al daemon, sin
+    // ella cae a directo; ambas rutas emiten {text, source}+schema, así que
+    // las invariantes no dependen de la ruta efectiva. El lock excluye
+    // paradas del ciclo durante la petición (sin reenrute forzado: sin flags
+    // `--daemon`/`--no-daemon`).
+    let _guard = STATE_LOCK.lock().unwrap();
     let (code, actual) = run_json(&[
         "--json",
         "speech",
@@ -199,9 +330,19 @@ fn speech_transcribe_sin_audio_ni_mic_sale_con_codigo_2() {
 
 #[test]
 fn daemon_status_coincide_con_fixture() {
+    // Desdoble por régimen (Tarea 5): con fixture de sesión en ejecución el
+    // estado efectivo es `running`; sin daemon, `stopped` intacto. Se elimina
+    // la comparación incondicional contra la fixture detenida (falso rojo
+    // bajo sesión).
     let (code, actual) = run_json(&["--json", "daemon", "status"]);
     assert_eq!(code, 0);
-    assert_eq!(actual, fixture("cli_daemon_status.json"));
+    if actual["daemon"] == Value::String("running".to_string()) {
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        let expected = fixture("cli_daemon_status_running.json");
+        assert_eq!(actual["daemon"], expected["daemon"]);
+    } else {
+        assert_eq!(actual, fixture("cli_daemon_status.json"));
+    }
 }
 
 #[test]
@@ -402,6 +543,13 @@ fn translate_es_a_en_produce_traduccion() {
         eprintln!("[translate] skip: sin modelo CT2 es→en");
         return;
     }
+    // Régimen con fixture (Tarea 5): testigo natural del despacho `Auto`:
+    // con sesión en ejecución la ruta efectiva es el daemon, sin ella el
+    // directo; validaciones (vacío/passthrough/par) y envelope son comunes
+    // antes del despacho (`src/main.rs:442-471`), así que las invariantes no
+    // dependen de la ruta. El lock excluye paradas del ciclo durante la
+    // petición (sin reenrute forzado).
+    let _guard = STATE_LOCK.lock().unwrap();
     // El texto traducido depende del motor real; se verifican invariantes de
     // contrato (mismo patrón que `speech_transcribe_con_audio_cumple_contrato`).
     let (code, actual) = run_json(&[
@@ -670,10 +818,23 @@ mod tts {
             eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
             return;
         }
+        // Serie + ciclo: excluye cleanup (STATE) y paradas del ciclo durante la
+        // vía caliente; el orden STATE→TTS coincide con el resto de la suite.
+        let _state = STATE_LOCK.lock().unwrap();
         let _guard = lock_tts();
         let label = etiqueta_unica("golden");
+        // Vía daemon caliente (Tarea 3): la sesión ya pagó la carga del motor
+        // una sola vez; este test no recarga en frío. `--daemon` fuerza la ruta
+        // (sin fallback silencioso a directo): si el daemon no responde, falla.
+        // Paridad de envelope verificada en el producto: mismo
+        // {status, audio_path, voice} persistido en el almacén, con chequeo de
+        // colisión de etiqueta en el cliente en ambas rutas
+        // (`src/main.rs:925-929` frente a `src/main.rs:984-988`;
+        // `src/main.rs:2757` frente a `src/main.rs:948`).
+        ensure_session_daemon();
         let (code, actual) = run_json(&[
             "--json",
+            "--daemon",
             "speech",
             "synthesize",
             "--text",
@@ -725,8 +886,12 @@ mod tts {
         let _guard = lock_tts();
         let texto_corto = "Hola mundo";
         let label = etiqueta_unica("golden_corto");
+        // Testigo en directo de `synthesize` (Tarea 3): ruta local fijada con
+        // `--no-daemon` para que la sesión en ejecución (Auto→daemon) no lo
+        // reenrute en silencio. Es el más barato con gate WER.
         let (code, actual) = run_json(&[
             "--json",
+            "--no-daemon",
             "speech",
             "synthesize",
             "--text",
@@ -779,8 +944,12 @@ mod tts {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
         }
+        // Ruta directa fijada (colateral del régimen con fixture): la
+        // existencia de la voz solo se verifica en la rama local
+        // (`src/main.rs:937-944`); la vía daemon la resuelve el residente.
         let (code, actual) = run_json(&[
             "--json",
+            "--no-daemon",
             "speech",
             "synthesize",
             "--text",
@@ -870,12 +1039,20 @@ mod tts {
             return;
         }
         let _guard = lock_tts();
+        // Testigo en directo de `say` (Tarea 3): ruta local fijada con
+        // `--no-daemon` — la vía daemon borra su WAV efímero tras reproducir
+        // (`src/main.rs:2823`) y rompería la verificación sobre archivo.
+        // Humo único de audio (Tarea 4): esta es la ÚNICA reproducción real de
+        // la suite, acotada a un texto corto ("Hola mundo", <2 s); la
+        // verificación es sobre el archivo (WAV válido + WER), no sobre el
+        // altavoz. Gate de dispositivo como hoy (sin mezclador no hay humo).
         let (code, actual) = run_json(&[
             "--json",
+            "--no-daemon",
             "speech",
             "say",
             "--text",
-            "Hola, esto es una prueba de reproduccion.",
+            "Hola mundo",
             "--voice",
             "default",
         ]);
@@ -886,7 +1063,7 @@ mod tts {
             .expect("audio_path debe existir");
         let audio_path = Path::new(audio);
         wav_valido_24k(audio_path);
-        let wer = wer_vs_texto(audio_path, "Hola, esto es una prueba de reproduccion.");
+        let wer = wer_vs_texto(audio_path, "Hola mundo");
         assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
     }
 
@@ -918,16 +1095,24 @@ mod tts {
             return;
         }
         let _guard = lock_tts();
+        // Testigo en directo de `dub` (Tarea 3): ruta local fijada con
+        // `--no-daemon` para que la sesión en ejecución no lo reenrute.
+        // Verificación solo-archivo (Tarea 4): WAV válido + WER sobre el
+        // archivo producido. El gate de audio se conserva porque `dub`
+        // reproduce siempre en ambas rutas (`src/main.rs:1265` y
+        // `src/main.rs:3059`): sin mezclador el comando falla con
+        // `playback_failed` y no hay archivo que verificar.
         let (code, actual) = run_json(&[
             "--json",
+            "--no-daemon",
             "speech",
             "dub",
             "--audio",
             "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
-            "--from",
-            "es",
-            "--to",
-            "es",
+            "--source-language",
+            "es-latam",
+            "--target-language",
+            "es-latam",
         ]);
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
@@ -943,7 +1128,15 @@ mod tts {
 
     #[test]
     fn dub_archivo_inexistente_sale_con_3() {
-        let (code, actual) = run_json(&["--json", "speech", "dub", "--audio", "no-existe.wav"]);
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "dub",
+            "--audio",
+            "no-existe.wav",
+            "--source-language",
+            "es-latam",
+        ]);
         assert_eq!(code, 3, "archivo inexistente → ExitCode::NotFound");
         assert_eq!(
             actual["reason"],
@@ -965,8 +1158,11 @@ mod tts {
         }
         let _guard = lock_tts();
         let name = etiqueta_unica("clon");
+        // Testigo en directo de `clone` (Tarea 3): ruta local fijada con
+        // `--no-daemon` para que la sesión en ejecución no lo reenrute.
         let (code, actual) = run_json(&[
             "--json",
+            "--no-daemon",
             "voice",
             "clone",
             "--name",
@@ -1072,15 +1268,16 @@ mod tts {
     #[test]
     fn daemon_start_exito() {
         let _guard = STATE_LOCK.lock().unwrap();
-        // Asegurar estado limpio
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Skip sin efectos: no tocar el ciclo si no hay provisión.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado para daemon start");
             return;
         }
+        // Precondición observada (dueña: fixture de sesión): partir de detenido.
+        shutdown_session_daemon();
         let (code, actual) = run_json(&["--json", "daemon", "start"]);
-        // Puede ser already_running si otro test dejó daemon; aceptar running
+        // `start` con adhesión: exit 0 tanto en spawn fresco como en
+        // `already_running` (sin rearranque ni calentamiento nuevo).
         assert!(
             code == 0,
             "daemon start debe salir 0, fue {} reason {:?}",
@@ -1088,70 +1285,62 @@ mod tts {
             actual
         );
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
-        // Verificar status running
-        let (code2, actual2) = run_json(&["--json", "daemon", "status"]);
-        assert_eq!(code2, 0);
-        assert_eq!(actual2["daemon"], Value::String("running".to_string()));
-        // Cleanup garantizado: POST /shutdown
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Verificar status running (observado por la fixture, sin sleeps fijos).
+        esperar_estado_daemon("running", 50);
+        // Cleanup garantizado por la fixture: apagado único con ausencia
+        // observada (convención de la sesión: sin huérfanos al cerrar).
+        shutdown_session_daemon();
         let (code3, actual3) = run_json(&["--json", "daemon", "status"]);
+        assert_eq!(code3, 0);
         assert_eq!(
             actual3["daemon"],
             Value::String("stopped".to_string()),
             "tras stop debe quedar stopped"
         );
-        let _ = code3;
     }
 
     #[test]
     fn daemon_restart_rearma() {
         let _guard = STATE_LOCK.lock().unwrap();
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Skip sin efectos: no tocar el ciclo si no hay provisión.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado para daemon restart");
             return;
         }
-        // Asegurar que haya daemon corriendo
-        let _ = run_json(&["--json", "daemon", "start"]);
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Base observada: daemon en ejecución (adhesión si la sesión ya arrancó).
+        ensure_session_daemon();
         let (code, actual) = run_json(&["--json", "daemon", "restart"]);
         assert_eq!(code, 0, "daemon restart debe salir 0");
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
         assert!(actual.get("pid").is_some() || actual.get("status").is_some());
-        // Status debe seguir running
-        let (code2, actual2) = run_json(&["--json", "daemon", "status"]);
-        assert_eq!(actual2["daemon"], Value::String("running".to_string()));
-        let _ = code2;
-        // Cleanup
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Status debe seguir running (observado, sin sleeps fijos).
+        esperar_estado_daemon("running", 50);
+        // Restaurar detenido (convención de la sesión: sin huérfanos al cerrar).
+        shutdown_session_daemon();
     }
 
     #[test]
     fn daemon_status_running() {
         let _guard = STATE_LOCK.lock().unwrap();
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Skip sin efectos: no tocar el ciclo si no hay provisión.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado");
             return;
         }
-        let _ = run_json(&["--json", "daemon", "start"]);
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Semántica verificada: `status` contra daemon en ejecución.
+        ensure_session_daemon();
         let (code, actual) = run_json(&["--json", "daemon", "status"]);
         assert_eq!(code, 0);
+        // Endurecida: antes condicional (pasaba sin verificar si no estaba
+        // running); ahora el `running` se exige porque la fixture lo garantiza.
+        assert_eq!(actual["daemon"], Value::String("running".to_string()));
         // Cuando está running, el fixture running debe coincidir (schema_version 3)
-        if actual["daemon"] == Value::String("running".to_string()) {
-            assert_eq!(actual["schema_version"], Value::String("3".to_string()));
-            let expected = fixture("cli_daemon_status_running.json");
-            // Comparar daemon y engine
-            assert_eq!(actual["daemon"], expected["daemon"]);
-        }
-        // Cleanup
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        let expected = fixture("cli_daemon_status_running.json");
+        // Comparar daemon y engine
+        assert_eq!(actual["daemon"], expected["daemon"]);
+        // Restaurar detenido (convención de la sesión: sin huérfanos al cerrar).
+        shutdown_session_daemon();
     }
 
     #[test]
@@ -1196,12 +1385,13 @@ mod tts {
     #[test]
     fn daemon_start_con_auto_restart() {
         let _guard = STATE_LOCK.lock().unwrap();
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Skip sin efectos: no tocar el ciclo si no hay provisión.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado para auto-restart");
             return;
         }
+        // Precondición observada (dueña: fixture de sesión): partir de detenido.
+        shutdown_session_daemon();
         // Start con supervisor habilitado y max 1 (no debe fallar en estado sano)
         let (code, actual) = run_json(&[
             "--json",
@@ -1213,9 +1403,9 @@ mod tts {
         ]);
         assert_eq!(code, 0, "daemon start --auto-restart debe salir 0");
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
-        // Stop no debe reintentar (graceful)
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        esperar_estado_daemon("running", 50);
+        // Stop no debe reintentar (graceful): ausencia observada por la fixture.
+        shutdown_session_daemon();
         let (_, actual2) = run_json(&["--json", "daemon", "status"]);
         assert_eq!(
             actual2["daemon"],
@@ -1238,19 +1428,13 @@ mod tts {
             eprintln!("[translate] skip: sin modelo CT2 es→en");
             return;
         }
-        // Asegurar daemon limpio y arrancado
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Skip sin efectos antes de tocar el ciclo.
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS para daemon warm");
             return;
         }
-        let (code_start, _) = run_json(&["--json", "daemon", "start"]);
-        if code_start != 0 {
-            eprintln!("[daemon] skip: no se pudo arrancar daemon");
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
+        ensure_session_daemon();
         let (code, actual) = run_json(&[
             "--json",
             "--daemon",
@@ -1267,16 +1451,19 @@ mod tts {
         assert!(actual.get("translated").is_some());
         let expected = fixture("cli_translate_daemon.json");
         assert_eq!(actual["source"], expected["source"] );
-        // cleanup
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
     }
 
     #[test]
     fn translate_force_daemon_sin_daemon_exit5() {
         let _guard = STATE_LOCK.lock().unwrap();
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Aislamiento total: la ausencia debe observarse sin carreras con
+        // usuarios del daemon (serie de inferencia + ciclo de sesión).
+        let _tts = lock_tts();
+        // Partición previa: fixture detenida con ausencia observada (sin
+        // sleeps). No se rearranca: el próximo `ensure_session_daemon` la
+        // repara bajo demanda, así que el orden de ejecución no importa.
+        shutdown_session_daemon();
         let (code, actual) = run_json(&[
             "--json",
             "--daemon",
@@ -1300,14 +1487,8 @@ mod tts {
             eprintln!("[tts] skip: clonado exige Base");
             return;
         }
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let (code_start, _) = run_json(&["--json", "daemon", "start"]);
-        if code_start != 0 {
-            eprintln!("[daemon] skip: no se pudo arrancar daemon");
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
+        ensure_session_daemon();
         let name = etiqueta_unica("clon_daemon");
         let (code, actual) = run_json(&[
             "--json",
@@ -1323,8 +1504,7 @@ mod tts {
         assert_eq!(actual["schema_version"], Value::String("3".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
         let _ = avi_store::VoiceStore::new().remove(&name);
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
     }
 
     #[cfg(feature = "native-stt")]
@@ -1336,14 +1516,8 @@ mod tts {
             eprintln!("[dub] skip: sin modelos/audio");
             return;
         }
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let (code_start, _) = run_json(&["--json", "daemon", "start"]);
-        if code_start != 0 {
-            eprintln!("[daemon] skip: no se pudo arrancar daemon");
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
+        ensure_session_daemon();
         let (code, actual) = run_json(&[
             "--json",
             "--daemon",
@@ -1351,16 +1525,30 @@ mod tts {
             "dub",
             "--audio",
             "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
-            "--from",
-            "es",
-            "--to",
-            "es",
+            "--source-language",
+            "es-latam",
+            "--target-language",
+            "es-latam",
         ]);
         assert_eq!(code, 0, "dub passthrough --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
         assert_eq!(actual["schema_version"], Value::String("3".to_string()));
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Verificación sobre el archivo recibido (Tarea 4): WAV válido más
+        // texto no vacío. Sin gate WER: este test no lo tenía y añadir un
+        // umbral numérico sobre inferencia sin poder ejecutar la pesada sería
+        // endurecer a ciegas; el gate WER vive en los testigos directos.
+        let audio = actual["audio_path"]
+            .as_str()
+            .expect("audio_path debe existir");
+        let audio_path = Path::new(audio);
+        assert!(
+            audio_path.is_file(),
+            "el WAV del daemon debe estar persistido"
+        );
+        wav_valido_24k(audio_path);
+        let texto = actual["text"].as_str().expect("text debe existir");
+        assert!(!texto.is_empty(), "`text` no debe estar vacío");
+        // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
     }
 
     #[cfg(feature = "native-stt")]
@@ -1383,14 +1571,8 @@ mod tts {
             eprintln!("[translate] skip: sin CT2");
             return;
         }
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let (code_start, _) = run_json(&["--json", "daemon", "start"]);
-        if code_start != 0 {
-            eprintln!("[daemon] skip: no se pudo arrancar daemon");
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
+        ensure_session_daemon();
         let (code, actual) = run_json(&[
             "--json",
             "--daemon",
@@ -1398,15 +1580,150 @@ mod tts {
             "dub",
             "--audio",
             "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
-            "--from",
-            "es",
-            "--to",
+            "--source-language",
+            "es-latam",
+            "--target-language",
             "en",
         ]);
         assert_eq!(code, 0, "dub con traducción --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
         assert_eq!(actual["schema_version"], Value::String("3".to_string()));
-        let _ = Command::new(BIN).args(["daemon", "stop"]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Verificación sobre el archivo recibido (Tarea 4): WAV válido más
+        // texto traducido no vacío (el daemon devuelve en `text` el final
+        // traducido; `src/main.rs:3051-3055`). Sin gate WER por el mismo
+        // motivo que `dub_daemon_passthrough`: no endurecer a ciegas.
+        let audio = actual["audio_path"]
+            .as_str()
+            .expect("audio_path debe existir");
+        let audio_path = Path::new(audio);
+        assert!(
+            audio_path.is_file(),
+            "el WAV del daemon debe estar persistido"
+        );
+        wav_valido_24k(audio_path);
+        let texto = actual["text"].as_str().expect("text debe existir");
+        assert!(!texto.is_empty(), "`text` no debe estar vacío");
+        // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
+    }
+}
+
+/// Ejecuta el binario con `args` capturando stdout como texto plano y
+/// devolviendo (código de salida, stdout). Para aserciones sobre `--help`.
+fn run_text(args: &[&str]) -> (i32, String) {
+    let output = Command::new(BIN)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .expect("el binario debe ejecutarse");
+    let code = output
+        .status
+        .code()
+        .expect("el proceso debe terminar con un código");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    (code, stdout)
+}
+
+/// Ayuda de `synthesize`/`say`/`dub`: expone los flags de idioma y
+/// temperatura y ya no ofrece los parámetros sin efecto.
+#[test]
+fn speech_help_expone_idiomas_y_temperatura() {
+    for sub in ["synthesize", "say", "dub"] {
+        let (code, help) = run_text(&["speech", sub, "--help"]);
+        assert_eq!(code, 0, "help de {} debe salir 0", sub);
+        for flag in ["--source-language", "--target-language", "--temperature"] {
+            assert!(
+                help.contains(flag),
+                "help de {} debe documentar {}",
+                sub,
+                flag
+            );
+        }
+        for flag in ["--compute-backend", "--exaggeration", "--cfg-weight"] {
+            assert!(
+                !help.contains(flag),
+                "help de {} no debe ofrecer {}",
+                sub,
+                flag
+            );
+        }
+    }
+    let (_, dub_help) = run_text(&["speech", "dub", "--help"]);
+    assert!(
+        !dub_help.contains("--from") && !dub_help.contains("--to "),
+        "help de dub no debe ofrecer --from/--to"
+    );
+}
+
+/// Temperatura fuera de rango en `say`/`synthesize`/`dub`: exit 2 con
+/// `usage_error`, antes de cualquier trabajo.
+#[test]
+fn speech_temperatura_invalida_es_exit_2() {
+    for args in [
+        vec!["speech", "say", "--text", "Hola", "--temperature", "0"],
+        vec!["speech", "say", "--text", "Hola", "--temperature", "2.5"],
+        vec![
+            "speech",
+            "synthesize",
+            "--text",
+            "Hola",
+            "--label",
+            "x",
+            "--temperature",
+            "0",
+        ],
+        vec!["speech", "dub", "--temperature", "0"],
+    ] {
+        let output = Command::new(BIN)
+            .args(&args)
+            .arg("--json")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("el binario debe ejecutarse");
+        let code = output.status.code().expect("el proceso debe terminar");
+        assert_eq!(code, 2, "temperatura inválida debe salir 2: {:?}", args);
+    }
+}
+
+/// `dub` sin `--source-language`: el parser lo exige → exit 2.
+#[test]
+fn speech_dub_sin_origen_es_exit_2() {
+    let output = Command::new(BIN)
+        .args(["speech", "dub", "--audio", "no-existe.wav"])
+        .output()
+        .expect("el binario debe ejecutarse");
+    assert_eq!(
+        output.status.code().expect("el proceso debe terminar"),
+        2,
+        "dub sin --source-language debe salir 2"
+    );
+}
+
+/// Detector de drift contrato↔código: el contrato no promete parámetros sin
+/// efecto y documenta los flags que el binario expone.
+#[test]
+fn contrato_speech_coincide_con_help() {
+    let contrato = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/CLI/CONTRACT.md"),
+    )
+    .expect("el contrato debe leerse");
+    for flag in ["--compute-backend", "--exaggeration", "--cfg-weight"] {
+        assert!(
+            !contrato.contains(flag),
+            "el contrato no debe prometer {}",
+            flag
+        );
+    }
+    assert!(
+        contrato.contains("--temperature"),
+        "el contrato debe especificar --temperature"
+    );
+    let (_, help) = run_text(&["speech", "synthesize", "--help"]);
+    for flag in ["--source-language", "--target-language", "--temperature"] {
+        assert!(
+            help.contains(flag),
+            "el binario debe exponer lo contratado: {}",
+            flag
+        );
     }
 }

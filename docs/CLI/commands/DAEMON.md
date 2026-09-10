@@ -4,7 +4,7 @@ El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Q
 
 ## Definición CLI
 
-`src/main.rs:257` `enum DaemonCommands`:
+`src/main.rs:300` `enum DaemonCommands`:
 
 | Subcomando | Parámetros | Descripción |
 |---|---|---|
@@ -18,7 +18,7 @@ El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Q
 
 ## Despacho del handler
 
-`src/main.rs:1138` `handle_daemon(json_mode, action)`:
+`src/main.rs:1337` `handle_daemon(json_mode, action)`:
 
 ```
 handle_daemon
@@ -46,8 +46,8 @@ CLI (ai-voice-interconnector)
   └── DaemonIPCClient (reqwest) ◄──► Axum Router
 ```
 
-`crates/avi-daemon/src/lib.rs:68` `DaemonState { synthesis_lock, voice_store, speech_store, tts_engine, stt_engine, ct2_engine, warm, shutdown_notify }`.
-`crates/avi-daemon/src/lib.rs:614` `run_daemon_server` bindea `TcpListener`, `spawn_blocking(warmup_tts)` (`crates/avi-daemon/src/lib.rs:589`), `with_graceful_shutdown(notify)`.
+`crates/avi-daemon/src/lib.rs:69` `DaemonState { synthesis_lock, voice_store, speech_store, tts_engine, stt_engine, ct2_engine, warm, shutdown_notify }`.
+`crates/avi-daemon/src/lib.rs:1234` `run_daemon_server` bindea `TcpListener`, `spawn_blocking(warmup_tts)` (`crates/avi-daemon/src/lib.rs:1245`), `with_graceful_shutdown(notify)`.
 
 ## Endpoints
 
@@ -67,17 +67,17 @@ CLI (ai-voice-interconnector)
 
 - `synthesize`: NDJSON `application/x-ndjson` con `schema_version`.
 - `transcribe`: PCM `i16le 16kHz mono` base64 en `audio_b64`.
-- `health_body` (`lib.rs:158`): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`. `GET /health` puede incluir `ct2`/`stt` aditivas `warm/warming/warm_failed` cuando residentes, sin bump `schema_version`.
+- `health_body` (`lib.rs:183`): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`. `GET /health` puede incluir `ct2`/`stt` aditivas `warm/warming/warm_failed` cuando residentes, sin bump `schema_version`.
 
 ## Gestión del ciclo de vida
 
-**`start` (`src/main.rs:1151`):** idempotente si `daemon_activo` (GET /health ok) → `already_running`. Si no, `spawn_background` (`src/main.rs:1163` / `crates/avi-daemon/src/spawn.rs:21`) con `Stdio::null` + `CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP` (Win) / `setsid` (Unix) + `CREATE_NO_HANDLE_INHERIT` (`0x02000000`) para no heredar `pipe` de `cargo test`. Luego `await_daemon_ready` (`10s deadline, 250ms poll`) y `write_daemon_pid` (`data_dir()/daemon.pid`).
+**`start` (`src/main.rs:1353`):** idempotente si `daemon_activo` (GET /health ok) → `already_running`. Si no, `spawn_background` (`src/main.rs:1370` / `crates/avi-daemon/src/spawn.rs:21`) con `Stdio::null` + `CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP` (Win) / `setsid` (Unix) + `CREATE_NO_HANDLE_INHERIT` (`0x02000000`) para no heredar `pipe` de `cargo test`. Luego `await_daemon_ready` (`10s deadline, 250ms poll`) y `write_daemon_pid` (`data_dir()/daemon.pid`).
 
-**`stop` (`src/main.rs:1181`):** `POST /shutdown` → `tts_engine.shutdown()` (mata `qwen_tts` por PID sin `Mutex`) + `notify_one()` para cierre graceful de `Axum` sin `process::exit`.
+**`stop` (`src/main.rs:1405`):** `POST /shutdown` → `tts_engine.shutdown()` (mata `qwen_tts` por PID sin `Mutex`) + `notify_one()` para cierre graceful de `Axum` sin `process::exit`.
 
-**`restart` (`src/main.rs:1213`):** `shutdown` → `wait_health_down 5s` → `start` (sin `/restart` dedicado).
+**`restart` (`src/main.rs:1434`):** `shutdown` → `wait_health_down 5s` → `start` (sin `/restart` dedicado).
 
-**`status` (`src/main.rs:1246`):** `GET /health 500ms` → `status_body(true, engine, warm)` o `status_body(false)` (`stopped`) con `schema_version="3"` (fixture `tests/golden/cli_daemon_status.json`).
+**`status` (`src/main.rs:1513`):** `GET /health 500ms` → `status_body(true, engine, warm)` o `status_body(false)` (`stopped`) con `schema_version="3"` (fixture `tests/golden/cli_daemon_status.json`).
 
 ## Foreground vs background
 
@@ -88,4 +88,4 @@ CLI (ai-voice-interconnector)
 | `--json` | Sí (`started`/`already_running`) | No |
 | Warmup | background `spawn_blocking` | igual |
 
-Supervisión configurable: `start`/`serve` con `--auto-restart` habilitan `run_supervised` (`crates/avi-daemon/src/lib.rs:614`) con contador `retries` y backoff `500ms*2^retries` capado a 4s, hasta `max_retries` (default 3). Un apagado graceful vía `POST /shutdown` (`shutdown_notify`) no reintenta; solo los crashes reintentan. Sin `--auto-restart`, el daemon es `fail-stop`. No hay `--language/--with-stt` en `start`/`serve` — `language` es local a `translate`/`dub` y `with-stt` es feature de compilación `native-stt`.
+Supervisión configurable: `start`/`serve` con `--auto-restart` habilitan `run_supervised` (`crates/avi-daemon/src/lib.rs:1272`) con contador `retries` y backoff `500ms*2^retries` capado a 4s, hasta `max_retries` (default 3). Un apagado graceful vía `POST /shutdown` (`shutdown_notify`) no reintenta; solo los crashes reintentan. Sin `--auto-restart`, el daemon es `fail-stop`. No hay `--language/--with-stt` en `start`/`serve` — `language` es local a `translate`/`dub` y `with-stt` es feature de compilación `native-stt`.
