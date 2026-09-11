@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 0 resueltos — 14 pendientes
+- **Estado**: 2 resueltos (H-04 ✅, H-02 ✅) — 12 pendientes
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -63,13 +63,13 @@
 
 ### H-02 — El warmup se cuelga sin deadline visible
 
-- **Severidad**: 🔴 Crítica · **Área**: warmup (`crates/avi-daemon/src/lib.rs:1218-1257`, warmup en segundo plano tras el bind)
+- **Severidad**: 🔴 Crítica · **Área**: warmup (`crates/avi-daemon/src/lib.rs`, warmup en segundo plano tras el bind)
 - **Síntoma**: corridas idénticas del mismo comando varían entre warm en ~17s y 150s+ quemando CPU sin llegar al audio, sin mensaje ni fase identificable.
-- **Causa**: no demostrada. El warmup es una síntesis única sin deadline propio con diagnóstico; si el residente no responde, nada lo declara fallido a tiempo. H-04 (implementado) restaura la traza del motor, pero aún no hay deadline ni fase visible.
-- **Impacto**: cuelgues indistinguibles de lentitud; el observador solo puede abortar a ciegas.
-- **Corrección propuesta**: deadline al warmup con diagnóstico de fase + causa visible; la traza del motor (H-04 ✅) permite ahora identificar la fase atascada.
-- **Relaciones**: bloqueado por H-04 · alimenta a H-01 (el aborto del observador deja huérfanos) · una vez estable, desbloquea H-06 (preload) y H-14 (re-medir).
-- **Decisión requerida**: sí — ¿qué techo (medido, no supuesto) y con qué diagnóstico?
+- **Causa**: demostrada por investigación (2026-09-11): el motor C vendido se cuelga intermitentemente (~17% de las corridas observadas) tras cargar el tokenizer, durante la fase de síntesis — un black box no reparable desde este repo; y la cadena de fallos en Rust carecía de deadlines en dos puntos: el `spawn_blocking(warmup_tts)` del daemon y el fallback subprocess `cmd.output()` que reintentaba lanzando el mismo binario colgante sin plazo alguno.
+- **Corrección (implementada)**: eliminado íntegramente el fallback subprocess (el residente HTTP queda como único camino de síntesis, con healthcheck y POST ambos acotados a 30 s; también se cierra el bug de mal-tokenización UTF-8 acentuado por argv en Windows) y añadido `WARMUP_DEADLINE` de 40 s (~2× el TTFN feliz medido de ~18-20 s, muy por debajo del hang histórico de 150 s+) sobre el `JoinHandle` del `spawn_blocking`: al expirar, `set_warm_failed` con diagnóstico citando el log del motor y `shutdown()` termina al residente colgado. Estado: ✅ Implementado (commit 30f7cf1).
+- **Impacto resuelto**: el cuelgue intermitente del motor es ahora un fallo rápido y observable (`/health` reporta `warm_failed` con causa); smoke del daemon confirma `warming` → `warm` en ~20 s y sin huérfanos.
+- **Relaciones**: desbloqueado por H-04 (traza del motor) · reduce la superficie de H-01 (sin subprocess que re-lanzar) · desbloquea H-06 (preload) y H-14 (re-medir).
+- **Decisión requerida**: resuelta — techo de 40 s medido (2× TTFN feliz, lejos del hang histórico), fail-fast sin reintento: decisión explícita del usuario.
 
 ## 3. Altos
 
@@ -195,12 +195,12 @@
 
 ```
 H-04 ✅ (traza del residente) — stderr → logs/qwen3-tts_*.log + try_wait en wait_health (commit 865d236)
- ├─ desbloquea ─> H-02 (deadline de warmup)
+ ├─ desbloquea ─> H-02 ✅ (deadline de warmup 40 s + fallback subprocess eliminado, commit 30f7cf1)
  ├─ desbloquea ─> H-05 (degradación por reutilización)
  └─ comparte zona ─> H-03 (streams del lanzamiento) ── H-01 (huérfanos)
 H-01 ── alimenta ──> H-05 (residual degradado)
-H-02 ── abortos ──> H-01 · H-01 ── contamina ──> H-05
-H-02 estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos)
+H-02 ✅ ── reduce superficie de ──> H-01 (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
+H-02 ✅ estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos)
 H-09 · H-13 ── independientes (provisión/medición)
 H-10 · H-11 ── triviales aislados (relleno)
 H-07 + H-06 ── mismo dilema implementar-vs-documentar (superficie daemon)
@@ -210,7 +210,7 @@ H-12 ── última (toca UX de audio + humo de tests)
 
 **Orden recomendado (con fundamento)**:
 
-1. **H-04 ✅** — traza del residente implementada (stderr→log + `try_wait`) — base observable e higiénica (misma zona: lanzamiento del daemon); **luego H-02 + H-05** con traza ya visible, **re-midiendo H-14**. Fundamento: sin traza no hay diagnóstico posible y todo lo que toca el daemon depende de un arranque estable.
+1. **H-04 ✅** — traza del residente implementada (stderr→log + `try_wait`) — base observable e higiénica (misma zona: lanzamiento del daemon); **luego H-02 + H-05** con traza ya visible, **re-midiendo H-14**. Fundamento: sin traza no hay diagnóstico posible y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236) y H-02 ✅ (30f7cf1) implementados; H-05 y H-14 quedan habilitados.
 2. **H-09 + H-13** — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup.
 3. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
 4. **H-10 + H-11** — triviales aislados.
