@@ -65,9 +65,9 @@
 
 - **Severidad**: 🔴 Crítica · **Área**: warmup (`crates/avi-daemon/src/lib.rs:1218-1257`, warmup en segundo plano tras el bind)
 - **Síntoma**: corridas idénticas del mismo comando varían entre warm en ~17s y 150s+ quemando CPU sin llegar al audio, sin mensaje ni fase identificable.
-- **Causa**: no demostrada. El warmup es una síntesis única sin deadline propio con diagnóstico; si el residente no responde, nada lo declara fallido a tiempo.
-- **Impacto**: cuelgues indistinguibles de lentitud; el observador solo puede abortar a ciegas (ver H-04).
-- **Corrección propuesta**: deadline al warmup con diagnóstico de fase + causa visible; depende de H-04 para saber dónde se atasca.
+- **Causa**: no demostrada. El warmup es una síntesis única sin deadline propio con diagnóstico; si el residente no responde, nada lo declara fallido a tiempo. H-04 (implementado) restaura la traza del motor, pero aún no hay deadline ni fase visible.
+- **Impacto**: cuelgues indistinguibles de lentitud; el observador solo puede abortar a ciegas.
+- **Corrección propuesta**: deadline al warmup con diagnóstico de fase + causa visible; la traza del motor (H-04 ✅) permite ahora identificar la fase atascada.
 - **Relaciones**: bloqueado por H-04 · alimenta a H-01 (el aborto del observador deja huérfanos) · una vez estable, desbloquea H-06 (preload) y H-14 (re-medir).
 - **Decisión requerida**: sí — ¿qué techo (medido, no supuesto) y con qué diagnóstico?
 
@@ -85,22 +85,22 @@
 
 ### H-04 — El motor de voz no deja traza observable
 
-- **Severidad**: 🟠 Alta · **Área**: observabilidad (lanzamiento del residente en `crates/avi-tts/src/lib.rs`, healthcheck `wait_health` en `:1000-1018`)
-- **Síntoma**: el hijo del motor arranca con los tres streams a `null`; un atasco pre-audio no deja ninguna traza en ningún canal.
-- **Causa**: decisión de diseño (silencio total del residente), no bug puntual. Demostrada en código.
-- **Impacto**: H-02, H-05 y cualquier atasco futuro son imposibles de diagnosticar; toda verificación es a ciegas.
-- **Corrección propuesta**: log del residente a fichero rotativo en vez de `null`, con niveles; prerrequisito de H-02 y H-05.
-- **Relaciones**: desbloquea a H-02 y H-05 · comparte zona con H-03.
-- **Decisión requerida**: sí — ¿fichero siempre o solo con flag de diagnóstico?
+- **Severidad**: 🟠 Alta · **Área**: observabilidad (lanzamiento del residente en `crates/avi-tts/src/lib.rs`, healthcheck `wait_health` en `:896-1018`)
+- **Síntoma**: el motor arrancaba con stderr a `Stdio::null()`, silenciando el diagnóstico del motor C (20+ `fprintf(stderr)` en `vendor/qwen3-tts`); un atasco pre-audio no dejaba traza.
+- **Causa**: decisión de diseño (silencio del stderr para evitar herencia de handles). Demostrada en código (`:895-916`). Hipótesis A (eliminar `null`) descartada: el residente se lanza por el daemon (que ya tiene stdio a null) y no hereda el pipe del test; la regresión de `cli_golden` se resolvió con tempfile (`tests/cli_golden.rs:319-331`).
+- **Corrección (implementada)**: stderr del residente → `data_dir()/logs/qwen3-tts_<pid>_<ms>.log` (rotación por sesión); stdin/stdout conservan `null` + flags de no-herencia (`0x02000000|0x8`). `wait_health` agrega `child.try_wait()` para distinguir *crash* (exit code + path de log) de *hang* (timeout). Estado: ✅ Implementado (commit 865d236).
+- **Impacto resuelto**: H-02, H-05 y H-01 son ahora diagnosticables; el motor C deja trazas en stderr.
+- **Relaciones**: desbloquea a H-02 y H-05 · comparte zona con H-03 · cierra la ciega de H-01 (orphans visibles vía `try_wait` + log).
+- **Decisión requerida**: resuelta — fichero siempre activo (rotación por sesión), no flag. Fundamento: H-01/H-02 son fallas de prod, requieren visibilidad continua.
 
 ### H-05 — El daemon reutilizado degrada: sirve estado pero falla síntesis
 
 - **Severidad**: 🟠 Alta · **Área**: daemon (`DaemonState::new` en `crates/avi-daemon/src/lib.rs:116-128`, `translate_handler` `:594-708`, `dub_handler` `:977-988`)
 - **Síntoma**: con daemon residual reutilizado, el `dub` vía daemon sale exit 5 (timeout de cliente `/dub` 10s) en 12s; con arranque fresco, exit 0 en ~10s. El daemon responde `status`/`warm` pero no sirve la petición.
-- **Causa**: no demostrada (requiere H-04 para investigar).
+- **Causa**: no demostrada. H-04 (implementado) restaura la traza del residente, disponible para investigarla.
 - **Impacto**: la fixture de sesión reutiliza el daemon por diseño, por lo que un residual degradado envenena toda la sesión de tests.
 - **Corrección propuesta**: validar salud real (no solo `warm`) al reutilizar, o no reutilizar nunca un daemon ajeno a la sesión.
-- **Relaciones**: alimentado por H-01 · diagnosticable solo tras H-04.
+- **Relaciones**: alimentado por H-01 · H-04 implementado: diagnóstico disponible.
 - **Decisión requerida**: sí — ¿revalidar al reutilizar o arranque fresco siempre?
 
 ### H-06 — `daemon start/serve` sin control de idioma ni STT
@@ -194,7 +194,7 @@
 ## 6. Grafo de relaciones y orden de ataque
 
 ```
-H-04 (traza del residente)
+H-04 ✅ (traza del residente) — stderr → logs/qwen3-tts_*.log + try_wait en wait_health (commit 865d236)
  ├─ desbloquea ─> H-02 (deadline de warmup)
  ├─ desbloquea ─> H-05 (degradación por reutilización)
  └─ comparte zona ─> H-03 (streams del lanzamiento) ── H-01 (huérfanos)
@@ -210,7 +210,7 @@ H-12 ── última (toca UX de audio + humo de tests)
 
 **Orden recomendado (con fundamento)**:
 
-1. **H-04 → H-03 + H-01** — base observable e higiénica (misma zona: lanzamiento del daemon); **luego H-02 + H-05** con traza ya visible, **re-midiendo H-14**. Fundamento: sin traza no hay diagnóstico posible y todo lo que toca el daemon depende de un arranque estable.
+1. **H-04 ✅** — traza del residente implementada (stderr→log + `try_wait`) — base observable e higiénica (misma zona: lanzamiento del daemon); **luego H-02 + H-05** con traza ya visible, **re-midiendo H-14**. Fundamento: sin traza no hay diagnóstico posible y todo lo que toca el daemon depende de un arranque estable.
 2. **H-09 + H-13** — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup.
 3. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
 4. **H-10 + H-11** — triviales aislados.
