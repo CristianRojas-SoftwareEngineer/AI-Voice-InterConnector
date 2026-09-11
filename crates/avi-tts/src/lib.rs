@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -280,8 +280,8 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     None
 }
 
-/// Motor Qwen3-TTS con servidor HTTP residente gestionado por el host y
-/// fallback a subprocess con PCM por stdout.
+/// Motor Qwen3-TTS con servidor HTTP residente gestionado por el host como
+/// único camino de síntesis (healthcheck y POST ambos acotados a 30 s).
 pub struct Qwen3TtsEngine {
     pub server_url: Option<String>,
     pub binary_path: Option<PathBuf>,
@@ -293,19 +293,6 @@ pub struct Qwen3TtsEngine {
     /// kill, SIN tomar el `Mutex<resident>` que el hilo `spawn_blocking(warmup)`
     /// retiene durante el spawn + `wait_health` (30 s) + síntesis HTTP (30 s).
     resident_pid: AtomicU32,
-    /// Señal de apagado en curso. `shutdown()` la activa **antes** de matar al
-    /// residente; `synthesize_with_options` la consulta tras fallar el residente y,
-    /// si está activa, **aborta con `Err` en vez de caer al fallback de subproceso**.
-    ///
-    /// Es la pieza que cierra el apagado limpio del daemon. Sin ella, matar al
-    /// residente durante el warmup no lo detiene: la cascada de síntesis
-    /// (residente → subproceso) reacciona al fallo del residente re-lanzando OTRO
-    /// `qwen_tts.exe` por subproceso (whack-a-mole), y ese hilo `spawn_blocking`
-    /// nunca termina, por lo que el runtime de `axum::serve` no cierra y el proceso
-    /// del daemon queda colgado con `qwen_tts.exe` huérfano. Con el flag, matar al
-    /// residente hace fallar la síntesis en curso y la cascada aborta en vez de
-    /// re-spawnear: el `spawn_blocking` retorna y el runtime cierra por sí solo.
-    shutting_down: AtomicBool,
 }
 
 /// Estado del servidor residente: se indexa por voz (decisión e3) — al cambiar
@@ -327,19 +314,15 @@ impl Qwen3TtsEngine {
             base_model_dir,
             resident: Mutex::new(None),
             resident_pid: AtomicU32::new(0),
-            shutting_down: AtomicBool::new(false),
         }
     }
 
     /// Detén el residente HTTP gestionado, SIN bloquear. Se llama desde
     /// `shutdown_handler` (avi-daemon) antes de notificar el graceful shutdown.
     ///
-    /// Orden importante: primero se activa `shutting_down`, LUEGO se mata al
-    /// residente. El flag debe estar visible antes de que muera el residente, para
-    /// que cuando la síntesis del warmup falle (por el kill) la cascada de
-    /// `synthesize_with_options` vea el flag y aborte en vez de re-lanzar un
-    /// subproceso `qwen_tts.exe` (whack-a-mole). Ese aborto es lo que permite que el
-    /// hilo `spawn_blocking(warmup)` retorne y el runtime cierre el proceso limpio.
+    /// Matar al residente hace fallar la síntesis en curso (el residente es el
+    /// único camino, sin fallback), así que el hilo `spawn_blocking(warmup)`
+    /// retorna y el runtime cierra el proceso limpio.
     ///
     /// No bloqueante: el hilo del warmup retiene el `Mutex<resident>` durante el
     /// spawn + `wait_health` + síntesis HTTP, así que `self.resident.lock()` se
@@ -347,7 +330,6 @@ impl Qwen3TtsEngine {
     /// se hace best-effort con `try_lock` (si el warmup lo tiene, no esperamos: el
     /// proceso ya está muerto y su `Drop` recolectará el estado al liberarse).
     pub fn shutdown(&self) {
-        self.shutting_down.store(true, Ordering::Relaxed);
         if self.resident_pid.load(Ordering::Relaxed) != 0 {
             crate::resident::kill_resident_process();
         }
@@ -403,39 +385,6 @@ impl Qwen3TtsEngine {
                 status
             ))
         }
-    }
-
-    /// Intentar la síntesis vía invocación de subprocess binario con `--stdout`.
-    fn synthesize_via_subprocess(
-        &self,
-        text: &str,
-        voz: &VozMotor,
-        options: &GenerationOptions,
-        out_path: &Path,
-    ) -> Result<()> {
-        let bin = self
-            .binary_path
-            .as_ref()
-            .ok_or_else(|| anyhow!("El binario de síntesis Qwen3-TTS no está provisionado."))?;
-        let model_dir = self
-            .model_dir
-            .as_ref()
-            .ok_or_else(|| anyhow!("El modelo de síntesis Qwen3-TTS no está provisionado."))?;
-        let mut cmd = build_synthesis_command(bin, model_dir, text, voz, options);
-        let output = cmd.output().map_err(|e| {
-            anyhow!(
-                "No se pudo ejecutar el binario Qwen3-TTS ({}): {}",
-                bin.display(),
-                e
-            )
-        })?;
-        if !output.status.success() {
-            return Err(anyhow!(
-                "Subproceso Qwen3-TTS finalizó con código de error: {:?}",
-                output.status.code()
-            ));
-        }
-        pcm_a_wav(&output.stdout, out_path)
     }
 
     /// Síntesis vía servidor residente: arranca (o reutiliza) el residente de
@@ -539,87 +488,13 @@ impl TtsEngine for Qwen3TtsEngine {
             }
         }
 
-        // 2. Servidor residente gestionado por el host (decisión F0). Este orden
-        //    (residente antes que subprocess) es OBLIGATORIO, no solo preferido:
-        //    el subprocess recibe el texto por argv y el `.exe` MinGW mal-tokeniza
-        //    UTF-8 acentuado en Windows, mientras que el residente lo transporta
-        //    por body HTTP JSON (ruta segura). Invertir el orden reintroduciría el
-        //    bug de calidad en español con tildes/eñes.
-        match self.synthesize_via_residente(text, &voz, options, &path) {
-            Ok(()) => return Ok(path),
-            Err(e) => {
-                // Si el daemon está apagándose, el fallo del residente es esperado
-                // (`shutdown()` lo mató): abortar en vez de caer al fallback evita
-                // re-lanzar un `qwen_tts.exe` por subproceso, que colgaría el cierre
-                // del daemon (whack-a-mole). Ver el campo `shutting_down`.
-                if self.shutting_down.load(Ordering::Relaxed) {
-                    return Err(anyhow!("Síntesis abortada: daemon en apagado"));
-                }
-                eprintln!(
-                    "[avi-tts] El servidor residente Qwen3-TTS falló; reintentando por subproceso: {}",
-                    e
-                );
-            }
-        }
-
-        // 3. Fallback subprocess con `--stdout`.
-        if self.binary_path.is_some()
-            && self
-                .synthesize_via_subprocess(text, &voz, options, &path)
-                .is_ok()
-        {
-            return Ok(path);
-        }
-
-        // 4. Sin binario ni servidor disponibles, el modelo de inferencia no está provisionado.
-        Err(anyhow!(
-            "El modelo o binario de síntesis Qwen3-TTS no está provisionado."
-        ))
+        // 2. Servidor residente gestionado por el host (decisión F0): único
+        //    camino restante, con healthcheck (30 s) y POST (30 s) acotados.
+        //    El texto viaja por body HTTP JSON, ruta segura para UTF-8 acentuado
+        //    (a diferencia del argv de un subprocess en Windows).
+        self.synthesize_via_residente(text, &voz, options, &path)?;
+        Ok(path)
     }
-}
-
-/// Construye el `Command` del subprocess de síntesis (Tarea 2): invocación real
-/// `-d <model_dir> -t <text> -s <speaker> -l <language>` con flags condicionales
-/// `-T/-k/-p/-r/--seed` cuando difieren de los defaults del motor, o
-/// `--load-voice <qvoice> --icl-only` en lugar de `-s` para voz clonada;
-/// siempre `--stdout` (PCM s16le 24 kHz por stdout).
-pub(crate) fn build_synthesis_command(
-    bin: &Path,
-    model_dir: &Path,
-    text: &str,
-    voz: &VozMotor,
-    options: &GenerationOptions,
-) -> Command {
-    let mut cmd = Command::new(bin);
-    cmd.arg("-d").arg(model_dir).arg("-t").arg(text);
-    match voz {
-        VozMotor::Preset(speaker) => {
-            cmd.arg("-s").arg(speaker).arg("-l").arg(&options.language);
-        }
-        VozMotor::Clonada(qvoice) => {
-            cmd.arg("--load-voice").arg(qvoice).arg("--icl-only");
-        }
-    }
-    cmd.arg("--int4");
-    cmd.arg("-j").arg("4");
-    if options.temperature != DEFAULT_TEMPERATURE {
-        cmd.arg("-T").arg(options.temperature.to_string());
-    }
-    if options.top_k != DEFAULT_TOP_K {
-        cmd.arg("-k").arg(options.top_k.to_string());
-    }
-    if options.top_p != DEFAULT_TOP_P {
-        cmd.arg("-p").arg(options.top_p.to_string());
-    }
-    if options.rep_penalty != DEFAULT_REP_PENALTY {
-        cmd.arg("-r").arg(options.rep_penalty.to_string());
-    }
-    if let Some(seed) = options.seed {
-        cmd.arg("--seed").arg(seed.to_string());
-    }
-    cmd.arg("--stream");
-    cmd.arg("--stdout");
-    cmd
 }
 
 /// Construye el body HTTP de `POST /v1/tts` (Tarea 3): sin `format` (el
@@ -748,23 +623,6 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String)> {
         None => (authority.to_string(), 80),
     };
     Ok((host, port, path.to_string()))
-}
-
-/// Envuelve el PCM s16le 24 kHz mono crudo (canal `--stdout` del motor) en un
-/// WAV válido con la misma spec que `/v1/tts` (24 kHz / 16-bit / mono).
-pub(crate) fn pcm_a_wav(pcm: &[u8], out_path: &Path) -> Result<()> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 24_000,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(out_path, spec)?;
-    for chunk in pcm.chunks_exact(2) {
-        writer.write_sample(i16::from_le_bytes([chunk[0], chunk[1]]))?;
-    }
-    writer.finalize()?;
-    Ok(())
 }
 
 /// Normaliza `ref_audio` (WAV de cualquier tasa/canales) al formato que exige el
@@ -992,9 +850,9 @@ pub mod resident {
     /// No se mata por el PID de `child.id()`: el `qwen_tts` vendido desacopla su
     /// proceso servidor real del `Child` que Rust captura (lo re-lanza/daemoniza),
     /// de modo que `taskkill /PID <child>` retorna 0 pero deja vivo al servidor.
-    /// Matar por nombre de imagen alcanza al servidor real. El apagado limpio no
-    /// depende solo de esto: la señal `shutting_down` del engine impide que la
-    /// cascada de síntesis re-lance el proceso tras el kill (ver `Qwen3TtsEngine`).
+    /// Matar por nombre de imagen alcanza al servidor real. Con el residente como
+    /// único camino de síntesis (sin fallback), el kill no puede desencadenar
+    /// re-lanzamientos: la síntesis en curso simplemente falla.
     pub(crate) fn kill_resident_process() {
         #[cfg(windows)]
         {
@@ -1204,104 +1062,6 @@ mod tests {
         assert!(min.temperature > 0.0);
         let max = GenerationOptions::con_temperatura(Some(2.0));
         assert_eq!(max.temperature, 2.0);
-    }
-
-    /// T2: args del subprocess para preset (con y sin overrides) y voz clonada.
-    #[test]
-    fn build_synthesis_command_args_preset() {
-        let voz = VozMotor::Preset("ryan".to_string());
-        let cmd = build_synthesis_command(
-            Path::new("qwen_tts.exe"),
-            Path::new("vendor/qwen3-tts/qwen3-tts-0.6b"),
-            "Hola",
-            &voz,
-            &GenerationOptions::default(),
-        );
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        // Con defaults no se emiten -T/-k/-p/-r (idempotente con los del motor).
-        assert_eq!(
-            args,
-            vec![
-                "-d",
-                "vendor/qwen3-tts/qwen3-tts-0.6b",
-                "-t",
-                "Hola",
-                "-s",
-                "ryan",
-                "-l",
-                "es",
-                "--int4",
-                "-j",
-                "4",
-                "--stream",
-                "--stdout",
-            ]
-        );
-
-        let opts = GenerationOptions {
-            temperature: 0.9,
-            top_k: 20,
-            top_p: 0.8,
-            rep_penalty: 1.2,
-            seed: Some(42),
-            ..Default::default()
-        };
-        let cmd = build_synthesis_command(
-            Path::new("qwen_tts.exe"),
-            Path::new("md"),
-            "Hola",
-            &voz,
-            &opts,
-        );
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            args,
-            vec![
-                "-d", "md", "-t", "Hola", "-s", "ryan", "-l", "es", "--int4", "-j", "4", "-T",
-                "0.9", "-k", "20", "-p", "0.8", "-r", "1.2", "--seed", "42", "--stream",
-                "--stdout",
-            ]
-        );
-    }
-
-    /// T2: voz clonada → `--load-voice <qvoice> --icl-only` en lugar de `-s/-l`.
-    #[test]
-    fn build_synthesis_command_args_voz_clonada() {
-        let voz = VozMotor::Clonada(PathBuf::from("voz.qvoice"));
-        let cmd = build_synthesis_command(
-            Path::new("qwen_tts.exe"),
-            Path::new("md"),
-            "Hola",
-            &voz,
-            &GenerationOptions::default(),
-        );
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            args,
-            vec![
-                "-d",
-                "md",
-                "-t",
-                "Hola",
-                "--load-voice",
-                "voz.qvoice",
-                "--icl-only",
-                "--int4",
-                "-j",
-                "4",
-                "--stream",
-                "--stdout",
-            ]
-        );
     }
 
     /// T6: argv exacto de arranque del residente (preset y voz clonada), sin
@@ -1621,25 +1381,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&body.lock().unwrap()).unwrap();
         assert!((parsed["temperature"].as_f64().unwrap() - 0.9).abs() < 1e-6);
         assert_eq!(parsed["seed"], 7);
-    }
-
-    /// T1: `pcm_a_wav` envuelve PCM crudo en un WAV de la spec del motor.
-    #[test]
-    fn pcm_a_wav_escribe_wav_24k_mono_16bit() {
-        let out = std::env::temp_dir().join("avi_tts_test_pcm.wav");
-        let pcm: Vec<u8> = [0i16, 100i16, -100i16, 32767i16]
-            .iter()
-            .flat_map(|s| s.to_le_bytes())
-            .collect();
-        pcm_a_wav(&pcm, &out).unwrap();
-        let reader = hound::WavReader::open(&out).unwrap();
-        let spec = reader.spec();
-        assert_eq!(spec.channels, 1);
-        assert_eq!(spec.sample_rate, 24_000);
-        assert_eq!(spec.bits_per_sample, 16);
-        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
-        assert_eq!(reader.duration(), 4);
-        std::fs::remove_file(&out).ok();
     }
 
     /// Proceso que duerme para simular el hijo del residente en tests.

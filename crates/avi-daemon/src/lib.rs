@@ -1197,6 +1197,13 @@ pub fn build_router() -> Router {
     build_router_with_state(state)
 }
 
+/// Deadline del warmup TTS (H-02): si `spawn_blocking(warmup_tts)` no termina en
+/// este plazo, el daemon marca `warm_failed` con diagnóstico y termina al
+/// residente. Valor medido, no supuesto: ~2× el TTFN feliz observado (~18-20 s
+/// de spawn + healthcheck + síntesis), muy por debajo del hang histórico del
+/// motor C (150 s+ quemando CPU sin llegar al audio).
+const WARMUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(40);
+
 /// Warmup del motor TTS de pre-calentamiento.
 ///
 /// Precarga la voz `default`→preset `ryan` en el motor residente para que el
@@ -1238,8 +1245,9 @@ pub fn warmup_tts(state: &DaemonState) -> anyhow::Result<()> {
 /// Inicia el daemon nativo escuchando en `addr`. Construye el estado (propagando
 /// errores de inicialización de motores), enlaza el listener y comienza a servir
 /// de inmediato; el warmup TTS corre en segundo plano (`spawn_blocking`) sin
-/// bloquear el bind. Readiness (enlazado + motor construido) queda así desacoplado
-/// del pre-calentamiento: un warmup fallido degrada —pero no derriba— el daemon.
+/// bloquear el bind, acotado a `WARMUP_DEADLINE`. Readiness (enlazado + motor
+/// construido) queda así desacoplado del pre-calentamiento: un warmup fallido o
+/// vencido por el deadline degrada —pero no derriba— el daemon.
 pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
     let state = Arc::new(DaemonState::new()?);
     let app = build_router_with_state(state.clone());
@@ -1248,12 +1256,27 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
     println!("Daemon nativo escuchando en http://{}", addr);
 
     // Warmup en segundo plano: `synthesize` es síncrono, por lo que corre en
-    // `spawn_blocking` para no bloquear el runtime async del servidor. Su resultado
-    // actualiza el estado `warm`; un fallo no aborta el arranque.
+    // `spawn_blocking` para no bloquear el runtime async del servidor. El
+    // `JoinHandle` se envuelve en un `timeout(WARMUP_DEADLINE)`: si expira, se
+    // marca `warm_failed` con diagnóstico (posible cuelgue del motor C, ver log
+    // del motor en `data/logs/qwen3-tts_*.log`) y se termina al residente
+    // colgado con `shutdown()` (mata por imagen de proceso, sin tomar el mutex
+    // que el hilo del warmup retiene). Un fallo no aborta el arranque.
     let warm_state = state.clone();
-    tokio::task::spawn_blocking(move || match warmup_tts(&warm_state) {
+    let handle = tokio::task::spawn_blocking(move || match warmup_tts(&warm_state) {
         Ok(()) => warm_state.set_warm(),
         Err(e) => warm_state.set_warm_failed(e.to_string()),
+    });
+    let timeout_state = state.clone();
+    tokio::spawn(async move {
+        if tokio::time::timeout(WARMUP_DEADLINE, handle).await.is_err() {
+            timeout_state.set_warm_failed(format!(
+                "Warmup TTS venció el deadline de {} s: posible cuelgue del motor C. \
+                 Ver el log del motor en data/logs/qwen3-tts_*.log",
+                WARMUP_DEADLINE.as_secs()
+            ));
+            timeout_state.tts_engine.shutdown();
+        }
     });
 
     // El shutdown se dispara desde `shutdown_handler`: `tts_engine.shutdown()`
