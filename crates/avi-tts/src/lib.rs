@@ -854,6 +854,9 @@ pub mod resident {
     pub struct Qwen3TtsResident {
         child: Option<Child>,
         pub port: u16,
+        /// Ruta del fichero de log de stderr del motor (incluida en errores de healthcheck).
+        #[allow(dead_code)]
+        pub(crate) log_path: PathBuf,
     }
 
     /// Construye el `Command` de arranque del residente (Tareas 2 y 3), sin
@@ -892,27 +895,41 @@ pub mod resident {
             let bin = resolve_binary()
                 .ok_or_else(|| anyhow!("El binario Qwen3-TTS no está provisionado."))?;
             let mut cmd = build_resident_command(&bin, model_dir.as_ref(), port, load_voice);
+            // Redirige stderr del motor a un fichero de log (rotación por sesión).
+            // stdin/stdout permanecen en null: el motor no necesita TTY ni stdin y su
+            // stdout no se consume. stderr captura los ~20 `fprintf(stderr, *)` del
+            // motor C (cuyos mensajes se perdían a null, cegando H-02/H-05/H-01).
+            let log_path = resident_log_path();
+            let log_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .map_err(|e| anyhow!(
+                    "No se pudo abrir el log de stderr del motor ({}): {}",
+                    log_path.display(),
+                    e
+                ))?;
+            use std::process::Stdio;
             // Windows: `qwen_tts.exe` NO debe heredar handles ni abrir terminal del
             // padre. `CREATE_NO_WINDOW (0x8)` evita la ventana de consola independiente;
             // `CREATE_NO_HANDLE_INHERIT (0x02000000)` fuerza bInheritHandles=FALSE para
             // que el pipe (write-end) del proceso abuelo (test CLI) no se herede. Sin
             // esto el `Command::output()` del test se cuelga (el residente vive toda la
-            // sesión). `Stdio::null` en los 3 STD cierra la herencia de stdin/tty.
+            // sesión). `Stdio::null` en stdin/stdout cierra la herencia de stdin/tty;
+            // stderr va al log (Stdio::from marca el handle no-heredable).
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
-                use std::process::Stdio;
                 cmd.stdin(Stdio::null())
                     .stdout(Stdio::null())
-                    .stderr(Stdio::null())
+                    .stderr(Stdio::from(log_file))
                     .creation_flags(0x02000000 | 0x00000008);
             }
             #[cfg(unix)]
             {
-                use std::process::Stdio;
                 cmd.stdin(Stdio::null())
                     .stdout(Stdio::null())
-                    .stderr(Stdio::null());
+                    .stderr(Stdio::from(log_file));
             }
             // Riesgo R2 documentado: el motor enlaza en INADDR_ANY, no en loopback.
             eprintln!(
@@ -927,21 +944,25 @@ pub mod resident {
                     e
                 )
             })?;
-            Self::spawn_con_hijo(child, port, 60, 500)
+            Self::spawn_con_hijo(child, port, log_path, 60, 500)
         }
 
         /// Arranca el healthcheck sobre un hijo ya lanzado (retries/intervalo
-        /// configurables para los tests de reintentos).
+        /// configurables para los tests de reintentos). `log_path` se guarda en el
+        /// struct para incluirse en errores de `wait_health`.
         pub(crate) fn spawn_con_hijo(
             child: Child,
             port: u16,
+            log_path: PathBuf,
             retries: usize,
             interval_ms: u64,
         ) -> Result<Self> {
-            wait_health(port, retries, interval_ms)?;
+            let mut child = child;
+            wait_health(&mut child, port, retries, interval_ms, log_path.as_path())?;
             Ok(Self {
                 child: Some(child),
                 port,
+                log_path,
             })
         }
 
@@ -996,10 +1017,41 @@ pub mod resident {
         }
     }
 
-    /// Healthcheck `GET /v1/health` con reintentos.
-    pub(crate) fn wait_health(port: u16, retries: usize, interval_ms: u64) -> Result<()> {
+    /// Ruta del fichero de log de stderr del motor residente. Crea el directorio
+    /// `logs/` bajo `data_dir()` si no existe. El nombre incluye PID y timestamp
+    /// para unicidad por sesión (rotación simple: un fichero por spawn).
+    pub(crate) fn resident_log_path() -> PathBuf {
+        let dir = avi_store::data_dir().join("logs");
+        std::fs::create_dir_all(&dir).expect("no se pudo crear el directorio de logs");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("SystemTime antes del epoch");
+        let filename = format!("qwen3-tts_{}_{}.log", std::process::id(), now.as_millis());
+        dir.join(filename)
+    }
+
+    /// Healthcheck `GET /v1/health` con reintentos. Distingue *crash* del motor
+    /// (el `child` terminó inesperadamente) de *hang* (timeout agotado). En caso
+    /// de crash incluye el código de salida y la ruta del log de stderr.
+    pub(crate) fn wait_health(
+        child: &mut Child,
+        port: u16,
+        retries: usize,
+        interval_ms: u64,
+        log_path: &Path,
+    ) -> Result<()> {
         let url = format!("http://127.0.0.1:{}/v1/health", port);
         for i in 0..retries {
+            // Detecta crash inmediato: si el proceso terminó, el motor no va a
+            // responder nunca. `try_wait` no bloquea.
+            if let Some(status) = child.try_wait()? {
+                return Err(anyhow!(
+                    "El servidor Qwen3-TTS terminó inesperadamente (exit {}) antes \
+                     de que el healthcheck pasara. Log de stderr: {}",
+                    status.code().unwrap_or(-1),
+                    log_path.display()
+                ));
+            }
             let ok = http_exchange(&url, "GET", None, Duration::from_millis(interval_ms))
                 .map(|(status, _)| (200..300).contains(&status))
                 .unwrap_or(false);
@@ -1011,9 +1063,11 @@ pub mod resident {
             }
         }
         Err(anyhow!(
-            "El servidor Qwen3-TTS no respondió a /v1/health en el puerto {} tras {} intentos.",
+            "El servidor Qwen3-TTS no respondió a /v1/health en el puerto {} tras {} \
+             intentos. Log de stderr: {}",
             port,
-            retries
+            retries,
+            log_path.display()
         ))
     }
 
@@ -1384,8 +1438,14 @@ mod tests {
         let (port, handle) = resident::simular_servidor(Arc::new(Mutex::new(String::new())));
         let child = proceso_durmiente();
         let pid = child.id();
-        let resident = resident::Qwen3TtsResident::spawn_con_hijo(child, port, 10, 50)
-            .expect("el healthcheck debe pasar contra el listener simulado");
+        let resident = resident::Qwen3TtsResident::spawn_con_hijo(
+            child,
+            port,
+            resident::resident_log_path(),
+            10,
+            50,
+        )
+        .expect("el healthcheck debe pasar contra el listener simulado");
         drop(resident);
         // El servidor simulado no termina nunca: se desacopla el hilo.
         drop(handle);
@@ -1421,7 +1481,13 @@ mod tests {
             }
         });
         let child = proceso_durmiente();
-        let resultado = resident::Qwen3TtsResident::spawn_con_hijo(child, port, 5, 50);
+        let resultado = resident::Qwen3TtsResident::spawn_con_hijo(
+            child,
+            port,
+            resident::resident_log_path(),
+            5,
+            50,
+        );
         // El servidor simulado termina solo tras su N-ésima conexión: se
         // desacopla el hilo y se da margen para que drene las conexiones en vuelo.
         drop(handle);
@@ -1445,8 +1511,70 @@ mod tests {
     #[test]
     fn residente_healthcheck_falla_sin_servidor() {
         let child = proceso_durmiente();
-        let result = resident::Qwen3TtsResident::spawn_con_hijo(child, 1, 3, 30);
+        let result = resident::Qwen3TtsResident::spawn_con_hijo(
+            child,
+            1,
+            resident::resident_log_path(),
+            3,
+            30,
+        );
         assert!(result.is_err(), "sin servidor el healthcheck debe fallar");
+    }
+
+    /// T5: `resident_log_path()` crea el directorio `logs/` bajo `data_dir()` y
+    /// devuelve un filename con el patrón `qwen3-tts_<pid>_<ms>.log`.
+    #[test]
+    fn log_path_crea_directorio_y_filename() {
+        let path = resident::resident_log_path();
+        let parent = path.parent().expect("el log debe tener directorio padre");
+        assert!(
+            parent.is_dir(),
+            "el directorio de logs/ debe crearse: {}",
+            parent.display()
+        );
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .expect("el filename debe ser UTF-8 válido");
+        assert!(
+            name.starts_with("qwen3-tts_") && name.ends_with(".log"),
+            "el filename debe seguir qwen3-tts_<pid>_<ms>.log: {}",
+            name
+        );
+    }
+
+    /// T5: `wait_health` distingue *crash* (el child muere inesperadamente) de
+    /// *hang* (timeout). Un proceso que sale inmediatamente produce un error que
+    /// menciona "terminó inesperadamente" + código de salida + ruta del log.
+    #[test]
+    fn wait_health_distingue_crash_de_hang() {
+        // Proceso que muere inmediatamente (exit 1) en lugar de servir.
+        let mut child = if cfg!(windows) {
+            Command::new("cmd")
+                .args(["/C", "exit 1"])
+                .spawn()
+                .expect("cmd debe existir en Windows")
+        } else {
+            Command::new("sh")
+                .arg("-c")
+                .arg("exit 1")
+                .spawn()
+                .expect("sh debe existir en Unix")
+        };
+        let log_path = resident::resident_log_path();
+        let err = resident::wait_health(&mut child, 1, 3, 50, log_path.as_path())
+            .expect_err("el healthcheck debe fallar si el proceso muere");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("terminó inesperadamente") || msg.contains("crash"),
+            "el error debe indicar crash/hang, no timeout: {}",
+            msg
+        );
+        assert!(
+            msg.contains(log_path.to_str().unwrap()),
+            "el error debe incluir la ruta del log: {}",
+            msg
+        );
     }
 
     /// T7: el body del POST contra un servidor simulado transporta los defaults
