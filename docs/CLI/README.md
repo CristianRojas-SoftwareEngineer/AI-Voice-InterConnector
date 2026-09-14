@@ -74,6 +74,6 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 | 8 | `EXIT_PRECONDITION_FAILED` | Precondición incumplida |
 | 9 | `EXIT_TRANSLATION_FAILED` | Fallo de traducción |
 | 10 | `EXIT_TRANSCRIPTION_FAILED` | Fallo de transcripción |
-| 130 | `EXIT_INTERRUPTED` | Interrupción por usuario (Ctrl+C, con limpieza acotada de 2 s y salida preservada) |
+| 130 | `EXIT_INTERRUPTED` | Interrupción por usuario (Ctrl+C, con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria) |
 
 Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). `CliError` vive en `crates/avi-core/src/exit_codes.rs` y se traduce en `src/main.rs` (`ExitCode` + `reason`), sin herencia Python.

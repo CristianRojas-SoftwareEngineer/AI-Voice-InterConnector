@@ -8,7 +8,7 @@ El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Q
 
 | Subcomando | Parámetros | Descripción |
 |---|---|---|
-| `daemon start` | `--json` `--auto-restart` `--max-retries` (default 3) | Revalida el residual (PID vivo + probe): sano → `already_running`, degradado → reclama el árbol y rearranca con `started`; si no, lanza en background (`spawn_background`, `await_daemon_ready`) |
+| `daemon start` | `--json` `--auto-restart` `--max-retries` (default 3) | Revalida el residual (PID vivo + probe): sano → `already_running`, degradado → reclama el árbol y rearranca con `started`; si no, lanza en background (`spawn_background`, `await_daemon_ready`); con `--auto-restart` los reintentos parten de reclamo activo del árbol propio previo con deadline y verificación |
 | `daemon stop` | `--json` | Parada unificada con deadline global de 8 s (`stop_daemon_and_resident`: graceful + árbol preciso + verificación; borra `daemon.pid` solo tras muerte verificada, exit 5 sin borrar pista si sigue vivo) |
 | `daemon restart` | `--json` | Ayudante único de parada (sin doble techo ni kill duplicado) → `start` fresco con presupuesto de 12 s (sin flags de supervisión heredados) |
 | `daemon status` | `--json` | `GET /health` → `running`/`stopped` + `warm` |
@@ -29,7 +29,7 @@ handle_daemon
  └── Status → GET /health (500ms timeout) → running/stopped + warm/engine
 ```
 
-`serve` no usa subproceso; los otros 4 usan `avi_daemon::spawn::spawn_background`. El handler Ctrl+C está instalado en `main` para todos los modos (`src/main.rs:355`): limpieza acotada de 2 s sobre el árbol del pidfile y salida 130 preservada.
+`serve` no usa subproceso; los otros 4 usan `avi_daemon::spawn::spawn_background`. El handler Ctrl+C está instalado en `main` para todos los modos (`src/main.rs:355`): limpieza acotada de 2 s sobre el árbol del pidfile —o del PID en memoria en la ventana spawn→write sin pidfile (D-02)— y salida 130 preservada.
 
 ## Arquitectura del daemon
 
@@ -48,7 +48,7 @@ CLI (ai-voice-interconnector)
 
 `crates/avi-daemon/src/lib.rs:69` `DaemonState { synthesis_lock, voice_store, speech_store, tts_engine, stt_engine, ct2_engine, warm, shutdown_notify }`.
 `ct2_engine: None` significa motor ausente o roto: también es `None` con `model.bin` huérfano (sin tokenizador) — el arranque lo registra con los ficheros faltantes (`ct2_archivos_faltantes`) sin derribar el servidor (`DaemonState::new`, `crates/avi-daemon/src/lib.rs:116-128`, gate `is_ct2_provisioned` == loader).
-`crates/avi-daemon/src/lib.rs:1252` `run_daemon_server` bindea `TcpListener`, `spawn_blocking(warmup_tts)`, `with_graceful_shutdown` por la misma ruta desde `POST /shutdown` y desde Ctrl+C/SIGTERM (`tts_engine.shutdown()` preciso-primero + `notify_one()`). Cierre garantizado: Job `KILL_ON_JOB_CLOSE` en `Serve` (Windows), kill preciso del árbol por PID con verificación (`crates/avi-daemon/src/spawn.rs:84-168`) y reclamo matar-y-rearrancar en `start` (`src/main.rs:2110-2164`).
+`crates/avi-daemon/src/lib.rs:1252` `run_daemon_server` bindea `TcpListener`, `spawn_blocking(warmup_tts)`, `with_graceful_shutdown` por la misma ruta desde `POST /shutdown` y desde Ctrl+C/SIGTERM (`tts_engine.shutdown()` preciso-primero + `notify_one()`). Cierre garantizado: Job `KILL_ON_JOB_CLOSE` en `Serve` (Windows), kill preciso del árbol por PID con verificación (`crates/avi-daemon/src/spawn.rs:84-168`) y reclamo matar-y-rearrancar en `start` (`src/main.rs:2110-2164`, en Unix ante líder muerto además por grupo con verificación por 8766 cerrado; runtime Unix diferido a CI, ver H-15).
 
 ## Endpoints
 
@@ -73,22 +73,22 @@ CLI (ai-voice-interconnector)
 
 ## Gestión del ciclo de vida
 
-**`start` (`src/main.rs:1431`):** revalida el residual por PID vivo + probe (`clasificar_residual`, `src/main.rs:2110`): sano (probe + PID vivo) → `already_running` con salida 0; degradado (probe y PID discrepan: colgado, pista rancia o sin pista) → reclama el árbol preciso (`reclamar_residual_degradado`, `src/main.rs:2135`) y rearranca desde cero con salida 0 y payload `started` (nunca `already_running` ciego). Si no hay residual, `spawn_background` (`crates/avi-daemon/src/spawn.rs:21`) con `Stdio::null` + `CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP` (Win) / `setsid` (Unix) + `CREATE_NO_HANDLE_INHERIT` (`0x02000000`) para no heredar `pipe` de `cargo test`. Luego `await_daemon_ready` (`10s deadline, 250ms poll`) y `write_daemon_pid` (`data_dir()/daemon.pid`).
+**`start` (`src/main.rs:1431`):** revalida el residual por PID vivo + probe (`clasificar_residual`, `src/main.rs:2110`): sano (probe + PID vivo) → `already_running` con salida 0; degradado (probe y PID discrepan: colgado, pista rancia o sin pista —incluido `Parado` con residente vivo por 8766, D-04—) → reclama el árbol preciso (`reclamar_residual_degradado`, `src/main.rs:2135`, en Unix ante líder muerto además por grupo con verificación por 8766 cerrado + PID sin viveza —runtime Unix diferido a CI, ver H-15—; ante residente-solo con preciso-primero e imagen del residente solo como último recurso verificado, nunca imagen del daemon) y rearranca desde cero con salida 0 y payload `started` (nunca `already_running` ciego). Si no hay residual, `spawn_background` (`crates/avi-daemon/src/spawn.rs:21`) con `Stdio::null` + `CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP` (Win) / `setsid` (Unix) + `CREATE_NO_HANDLE_INHERIT` (`0x02000000`) para no heredar `pipe` de `cargo test`. Luego `await_daemon_ready` (`10s deadline, 250ms poll`) y `write_daemon_pid` (`data_dir()/daemon.pid`).
 
-**`stop` (`src/main.rs:1496`):** parada unificada `stop_daemon_and_resident` (`src/main.rs:2187`) con deadline global de 8 s (`STOP_DEADLINE_GLOBAL`): graceful (`POST /shutdown` 1,5 s + espera de `/health` down hasta 3 s) si responde, árbol preciso por PID (`taskkill /F /T /PID` en Windows, `kill -9` al grupo en Unix, con guarda anti-auto-muerte) cuando sigue vivo y verificación a nivel de sistema (probe + `pid_vivo`). El pidfile solo se borra tras muerte verificada; si el árbol sigue vivo se conserva la pista y se falla con exit 5. Sin kill por imagen para el daemon (comparte imagen con el CLI); el residente se reclama en `avi-tts` con preciso primero e imagen solo como último recurso documentado.
+**`stop` (`src/main.rs:1496`):** parada unificada `stop_daemon_and_resident` (`src/main.rs:2187`) con deadline global de 8 s (`STOP_DEADLINE_GLOBAL`): graceful (`POST /shutdown` 1,5 s + espera de `/health` down hasta 3 s) si responde, árbol preciso por PID (`taskkill /F /T /PID` en Windows, `kill -9` al grupo en Unix —ante líder muerto el reclamo de `start` reutiliza esa vía de grupo con verificación por 8766, runtime Unix diferido a CI, ver H-15—, con guarda anti-auto-muerte) cuando sigue vivo, más reclamo del residente-solo sin PID del daemon con preciso-primero e imagen del residente solo como último recurso verificado (D-04, nunca imagen del daemon), y verificación a nivel de sistema (probe + `pid_vivo` + 8766 cerrado). El pidfile solo se borra tras muerte verificada; si el árbol sigue vivo se conserva la pista y se falla con exit 5. Sin kill por imagen para el daemon (comparte imagen con el CLI); el residente se reclama en `avi-tts` con preciso primero e imagen solo como último recurso documentado.
 
 **`restart` (`src/main.rs:1525`):** parada unificada sobre el ayudante único (sin doble techo `timeout(5s, wait_health_down(5s))` ni kill por PID duplicado) → `spawn_background` fresco → `await ready` acotado al restante del presupuesto de 12 s (nunca más de 10 s) → `write pid` con payload `restarted` (sin `/restart` dedicado).
 
-**`status` (`src/main.rs:1573`):** `GET /health 500ms` + JSON 800ms → `status_body(true, engine, warm)` o `status_body(false)` (`stopped`) con `schema_version="3"` (fixture `tests/golden/cli_daemon_status.json`). Solo probe: no distingue degradado (ver H-05).
+**`status` (`src/main.rs:1573`):** `GET /health 500ms` + JSON 800ms → `status_body(true, engine, warm)` o `status_body(false)` (`stopped`) con `schema_version="3"` (fixture `tests/golden/cli_daemon_status.json`). Solo probe en display (contrato intacto); D-04: el `stopped` por probe incluye en `clasificar_residual` la búsqueda del residente por 8766 antes de declarar vía libre (ver H-05).
 
 ## Foreground vs background
 
 | Aspecto | `daemon start` | `daemon serve` |
 |---|---|---|
 | Proceso | `Popen` separado | Mismo proceso CLI (con Job `KILL_ON_JOB_CLOSE` en Windows: al morir el daemon el SO cierra el árbol, residente incluido) |
-| PID | `data_dir()/daemon.pid` | No |
+| PID | `data_dir()/daemon.pid` (el handler además conserva el PID en memoria desde el spawn para la ventana sin pidfile, D-02) | No |
 | `--json` | Sí (`started` tras arranque o reclamo / `already_running` solo si sano) | No |
 | Warmup | background `spawn_blocking` | igual |
-| Señales | Ctrl+C del CLI con limpieza acotada de 2 s (exit 130 preservado) | Ctrl+C/SIGTERM escuchados en `run_daemon_server` por la misma ruta que `POST /shutdown` |
+| Señales | Ctrl+C del CLI con limpieza acotada de 2 s (exit 130 preservado, con PID en memoria si aún no hay pidfile) | Ctrl+C/SIGTERM escuchados en `run_daemon_server` por la misma ruta que `POST /shutdown` (cobertura `serve` Unix sin pidfile ni auto-muerte, D-02) |
 
-Supervisión configurable: `start`/`serve` con `--auto-restart` habilitan `run_supervised` (`crates/avi-daemon/src/lib.rs:1342`) con contador `retries` y backoff `500ms*2^retries` capado a 4s, hasta `max_retries` (default 3). Antes de cada reintento se verifica que el puerto quedó libre (el `Drop` previo ya mató el árbol preciso, sin kill global); el reclamo activo matar-y-rearrancar ante otra instancia vive en `daemon start`, nunca en `serve`. Un apagado graceful vía `POST /shutdown` (`shutdown_notify`) no reintenta; solo los crashes reintentan. Sin `--auto-restart`, el daemon es `fail-stop`. No hay `--language/--with-stt` en `start`/`serve` — `language` es local a `translate`/`dub` y `with-stt` es feature de compilación `native-stt`.
+Supervisión configurable: `start`/`serve` con `--auto-restart` habilitan `run_supervised` (`crates/avi-daemon/src/lib.rs:1342`) con contador `retries` y backoff `500ms*2^retries` capado a 4s, hasta `max_retries` (default 3). Antes de cada reintento hay reclamo activo del árbol propio previo con deadline (5 s) y verificación (muerte + puerto libre en el log; el `Drop` previo ya mató el árbol preciso, sin kill global ni otra instancia); el reclamo activo matar-y-rearrancar ante otra instancia vive en `daemon start` (en Unix ante líder muerto por grupo con verificación por 8766, runtime diferido a CI; prueba de crash vivo con log pendiente de CI/entorno rápido, ver H-15), nunca en `serve`. Un apagado graceful vía `POST /shutdown` (`shutdown_notify`) no reintenta; solo los crashes reintentan. Sin `--auto-restart`, el daemon es `fail-stop`. No hay `--language/--with-stt` en `start`/`serve` — `language` es local a `translate`/`dub` y `with-stt` es feature de compilación `native-stt`.

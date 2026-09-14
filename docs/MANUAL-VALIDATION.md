@@ -156,7 +156,7 @@ ai-voice-interconnector daemon stop
 # Confirmar que se detuvo
 ai-voice-interconnector daemon status
 
-# Confirmar cero huérfanos a nivel SO (H-01): sin `ai-voice-interconnector` ni `qwen_tts` residuales, puertos 8765/8766 cerrados y `daemon.pid` sin PID vivo
+# Confirmar cero huérfanos a nivel SO (H-01): sin `ai-voice-interconnector` ni `qwen_tts` residuales, puertos 8765/8766 cerrados y `daemon.pid` sin PID vivo (D-01 Unix —reclamo por grupo ante líder muerto con verificación por 8766— se alcanza en CI, no en local Windows; D-04 caso residente-solo —Parado con 8766 abierto reclama antes de declarar fresco— incluido; D-05 reclamo activo con deadline 5 s —crash vivo con log pendiente de CI/entorno rápido, ver H-15—; barrido 8766 del reaper en Unix pendiente, ver H-15)
 ```
 
 ## 9. Casos de error esperados

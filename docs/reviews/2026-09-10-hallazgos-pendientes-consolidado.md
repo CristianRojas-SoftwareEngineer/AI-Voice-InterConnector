@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 3 resueltos (H-04 ✅, H-02 ✅, H-01 ✅) — 11 pendientes
+- **Estado**: 3 resueltos (H-04 ✅, H-02 ✅, H-01 ✅) — 12 pendientes (H-03, H-05–H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -28,6 +28,7 @@
   - [H-12 — Play sin flujo interactivo](#h-12--speech-synthesize---play-sin-flujo-interactivo)
   - [H-13 — Rama alternativa del gate](#h-13--rama-alternativa-del-gate-de-traducción-sin-evidencia)
   - [H-14 — Techos de guards sin re-medir](#h-14--techos-de-guards-de-tests-sin-re-medir)
+  - [H-15 — Marginalidad temporal de la suite y barrido Unix pendiente](#h-15--marginalidad-temporal-de-la-suite-y-barrido-unix-pendiente)
 - [6. Grafo de relaciones y orden de ataque](#6-grafo-de-relaciones-y-orden-de-ataque)
 
 ## 1. Índice
@@ -48,6 +49,7 @@
 | H-12 | `speech synthesize --play` sin flujo interactivo | ⚪ Baja | CLI/UX |
 | H-13 | Rama alternativa del gate de traducción sin evidencia | ⚪ Baja | Motor |
 | H-14 | Techos de guards de tests sin re-medir | ⚪ Baja | Tests |
+| H-15 | Marginalidad temporal de la suite y barrido Unix pendiente | ⚪ Baja | Tests/Ciclo de vida |
 
 ## 2. Críticos
 
@@ -56,8 +58,8 @@
 - **Severidad**: 🔴 Crítica · **Área**: ciclo de vida (`crates/avi-daemon/src/spawn.rs`, `crates/avi-daemon/src/lib.rs:1152-1342`, `crates/avi-tts/src/lib.rs:336`, `src/main.rs:355-411,1409-1572,2098-2230`)
 - **Síntoma**: toda vía anormal (aborto externo, timeout, panic del test antes del apagado) dejaba vivos a `ai-voice-interconnector` + `qwen_tts`, ociosos, ocupando puertos y ficheros. Observado en 4 ocasiones en un solo día; un antecedente consumió 8 horas de CPU.
 - **Causa**: demostrada por lectura y por eliminación: el apagado solo corría en la vía feliz —el handler Ctrl+C hacía `exit(130)` sin limpieza (`src/main.rs:355`), `Stop` borraba el pidfile aunque el proceso siguiera vivo, `Restart` acumulaba doble techo y kill por PID duplicado sin árbol del residente, `serve` no escuchaba señales, el residente se mataba por imagen global y la fixture se adhería por probe sin revalidar (`already_running` ciego)—. Los procesos sobrevivían a la muerte de su padre.
-- **Corrección (implementada)**: cierre estructural en producto + harness. Producto: handler Ctrl+C con limpieza acotada de 2 s y exit 130 preservado (`CTRL_C_LIMPIEZA_DEADLINE`); Job `KILL_ON_JOB_CLOSE` en la rama `Serve` (Windows) más árbol matable por PID con verificación (`matar_arbol_por_pid`: `taskkill /F /T` en Windows, `kill -9` al grupo en Unix); reclamo matar-y-rearrancar al arrancar (`clasificar_residual` por PID vivo + probe: sano → `already_running`, degradado → se reclama el árbol y se rearranca con salida 0 y payload `started`); parada unificada con deadline global de 8 s (`stop_daemon_and_resident` al servicio de reclamo, stop, restart, cleanup y uninstall: graceful 1,5 s + espera 3 s + árbol preciso + verificación, borrado del pidfile solo tras muerte verificada y exit 5 sin borrar pista si el árbol sigue vivo); `Restart` sobre el ayudante único sin doble techo ni kill duplicado; `serve` escucha Ctrl+C/SIGTERM por la misma ruta que `POST /shutdown` y `shutdown_handler` mata el árbol preciso del residente primero, con kill por imagen solo como último recurso documentado con verificación inmediata; residente sin breakaway y `Drop` como cierre por árbol. Harness: `verificar_cero_huerfanos` (árbol muerto + puertos 8765/8766 cerrados + pidfile sin PID vivo, `panic!` si queda resto), reaper ante techo, timeout o `warm_failed`, `ensure` que revalida y prueba pesada nueva `tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos` (reclamo con `started` + cero huérfanos a nivel SO). Estado: ✅ Implementado (commit a908ac6).
-- **Impacto resuelto**: suite `cargo test --all` en verde 112/0 sobre el baseline 96/14 (raíz `clone_con_daemon_delega` + cascada `STATE_LOCK`, sin tocar clonado) y verificación SO post-suite sin `qwen_tts.exe` ni `ai-voice-interconnector.exe` —cero huérfanos—; el residual degradado ya no contamina la siguiente corrida (reclamo con `started`).
+- **Corrección (implementada)**: cierre estructural en producto + harness. Producto: handler Ctrl+C con limpieza acotada de 2 s y exit 130 preservado (`CTRL_C_LIMPIEZA_DEADLINE`); Job `KILL_ON_JOB_CLOSE` en la rama `Serve` (Windows) más árbol matable por PID con verificación (`matar_arbol_por_pid`: `taskkill /F /T` en Windows, `kill -9` al grupo en Unix); reclamo matar-y-rearrancar al arrancar (`clasificar_residual` por PID vivo + probe: sano → `already_running`, degradado → se reclama el árbol y se rearranca con salida 0 y payload `started`); parada unificada con deadline global de 8 s (`stop_daemon_and_resident` al servicio de reclamo, stop, restart, cleanup y uninstall: graceful 1,5 s + espera 3 s + árbol preciso + verificación, borrado del pidfile solo tras muerte verificada y exit 5 sin borrar pista si el árbol sigue vivo); `Restart` sobre el ayudante único sin doble techo ni kill duplicado; `serve` escucha Ctrl+C/SIGTERM por la misma ruta que `POST /shutdown` y `shutdown_handler` mata el árbol preciso del residente primero, con kill por imagen solo como último recurso documentado con verificación inmediata; residente sin breakaway y `Drop` como cierre por árbol. Harness: `verificar_cero_huerfanos` (árbol muerto + puertos 8765/8766 cerrados + pidfile sin PID vivo, `panic!` con reaper previo si queda resto), reaper ante techo, timeout, `warm_failed` o cualquier `panic!` fuera de guards/polls (`fallo_con_reaper` + `GuardReaper`), `STATE_LOCK` con recuperación ante envenenado (mismo tipo y contrato) e higiene de `TEST_LIMITE` restaurada, `ensure` que revalida y prueba pesada nueva `tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos` (reclamo con `started` + cero huérfanos a nivel SO). Cierre D-01..D-05 (F5): D-01 con techo (compila sin warnings + predicado puro en verde + tensado `#[cfg(unix)]` sin simular; runtime Unix diferido a CI); D-02 (PID en memoria + `serve` por misma ruta, 130 y 2 s intactos, sin rojo que los contradiga); D-03 (`d03_*` 2/2, reaper verificado en fallos reales con muerte verificada, cobertura a 8 tests con `ensure` + barrido del residente en 8766 por puerto preciso con `netstat -ano` y verificación a 8 s —en Unix solo log, pendiente, ver H-15—); D-04 (predicado puro en verde, residente-solo con preciso-primero e imagen del residente solo como último recurso verificado, imagen del daemon prohibida); D-05 en código (reclamo activo con deadline 5 s + verificación, backoff y `Ok` intactos; crash vivo con log pendiente de CI/entorno rápido, ver H-15). Estado: ✅ Implementado (commit a908ac6 + restos D-01..D-05).
+- **Impacto resuelto**: invariantes intactos (sin cascada ante rojos —D-03 contiene—; cero huérfanos post-suite a nivel SO; exit 130 preservado). Estado de suite F5 (2026-09-14, esta máquina): `cargo check --all-targets` limpio sin warnings; `cargo test --lib` 54/54; binario 4/4 (incluidos 2 unitarios D-01/D-04); dorada `cli_golden` 37/40 — 3 rojos clase-timeout sin fallo de aserción de lógica (marginalidad temporal pre-existente, ver H-15): `tts::clone_con_daemon_delega` (exit 5, clonado ~1,6 s contra presupuesto CLI fijo de 1500 ms), `tts::h01_aborto_simulado` (guard 180 s esperando `running` bajo carga paralela) y `tts::translate_force_daemon_sin_daemon_exit5` (guard 180 s esperando `stopped` bajo la misma carga); bisect en base `ff9a9f9` (sin cambios) reproduce el rojo semilla idéntico (exit 5, 1589 ms): no hay regresión demostrada del diff.
 - **Relaciones**: alimentaba a H-05 (ahora diagnosticable con traza H-04 + reclamo H-01) · comparte zona con H-03 (siguiente del cluster: stdio del lanzamiento) · H-02 reduce su superficie (sin subprocess que re-lanzar) · H-04 lo vuelve detectable a tiempo.
 - **Decisión requerida**: resuelta — producto + harness; matar-y-rearrancar ante residual degradado; exit 130 preservado con limpieza acotada; `started` tras reclamo; kill por imagen solo como último recurso documentado (residente).
 
@@ -191,6 +193,16 @@
 - **Relaciones**: cuelga del cluster ciclo de vida (necesita warmup estable para medir bien).
 - **Decisión requerida**: no.
 
+### H-15 — Marginalidad temporal de la suite y barrido Unix pendiente
+
+- **Severidad**: ⚪ Baja · **Área**: tests/ciclo de vida (guards en `tests/cli_golden.rs:47,52,134-153`, presupuesto CLI en `src/main.rs:3187`, reaper en `tests/cli_golden.rs:188-213`)
+- **Síntoma**: la dorada `cli_golden` queda 37/40 en esta máquina por 3 rojos clase-timeout, cero fallos de aserción de lógica: `tts::clone_con_daemon_delega` (exit 5 `daemon_unreachable`: el daemon clona bien pero tarda ~1,6 s contra el presupuesto CLI fijo de 1500 ms; en local el mismo clonado tarda ~0,5 s), `tts::h01_aborto_simulado` (guard 180 s esperando `running`: la máquina bajo carga paralela no calentó a tiempo, polls de 300-545 ms) y `tts::translate_force_daemon_sin_daemon_exit5` (guard 180 s esperando `stopped`: parada + sondeos lentos bajo la misma carga). El resto de la suite está verde (`cargo check` limpio, `--lib` 54/54, binario 4/4) y el cierre post-suite deja cero huérfanos a nivel SO.
+- **Causa**: marginalidad temporal pre-existente de la máquina bajo carga paralela, no regresión del diff: con el árbol en `stash` (base `ff9a9f9`, sin cambios D-01..D-05) `clone_con_daemon_delega` falla idéntico (exit 5, 1589 ms); los 2 guard-timeouts son colapso bajo carga paralela, nunca aserciones de conducta. El presupuesto de 1500 ms NO se toca en este cierre (decisión cerrada F0 §4/F5).
+- **Impacto**: suite completa 37/40 idéntica en base; sin cascada (D-03 contiene: 37 pasan con rojos dentro) y sin fuga (el rojo persiste pero ya sin huérfano del daemon). Ningún ✅ de este documento sobrestima: H-01 sigue ✅ por producto + harness, la suite se declara en 37/40 con rojos visibles.
+- **Corrección propuesta (follow-up, no en este cierre)**: 1) re-medir en CI/entorno rápido si los guards de 180 s y el presupuesto fijo de 1500 ms para clonado pesado siguen calibrados bajo carga paralela, y solo entonces decidir si se ajustan; 2) probar en CI el crash vivo de D-05 con log (los dorados pesados hacen skip en local); 3) implementar el barrido del residente en 8766 del reaper en Unix (hoy solo log; en Windows barre por puerto preciso con `netstat -ano`, sin kill por imagen, con verificación a 8 s); 4) runtime Unix de D-01 en CI. Sin reality check Unix posible en esta máquina (techo declarado: solo toolchains Windows instalados).
+- **Relaciones**: cuelga de H-01 (invariantes intactos; el reaper contiene los rojos) · extiende a H-14 (re-medir techos con baseline real) · techos de D-01 (runtime Unix) y D-05 (crash vivo) · cobertura D-03 (8 tests con `ensure` + barrido 8766).
+- **Decisión requerida**: sí — ¿en qué scope se agenda este follow-up (CI rápido para re-medir guards/presupuesto + crash vivo D-05 + runtime Unix D-01 + barrido Unix del reaper), manteniendo intacto el presupuesto de 1500 ms hasta entonces?
+
 ## 6. Grafo de relaciones y orden de ataque
 
 ```
@@ -200,17 +212,19 @@ H-04 ✅ (traza del residente) — stderr → logs/qwen3-tts_*.log + try_wait en
  └─ comparte zona ─> H-03 (streams del lanzamiento, siguiente del cluster) ── H-01 ✅ (cierre estructural: reclamo + parada unificada + verificación SO)
 H-01 ✅ ── contenía ──> H-05 (residual degradado: ahora se reclama con `started`)
 H-02 ✅ ── reduce superficie de ──> H-01 ✅ (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
-H-02 ✅ estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos)
+H-02 ✅ estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos) · H-15 (marginalidad temporal + presupuesto de clonado + barrido Unix del reaper)
+H-01 ✅ ── contiene ──> H-15 (3 rojos clase-timeout sin cascada ni fuga; bisect en base sin regresión)
 H-09 · H-13 ── independientes (provisión/medición)
 H-10 · H-11 ── triviales aislados (relleno)
 H-07 + H-06 ── mismo dilema implementar-vs-documentar (superficie daemon)
 H-08 ⇆ H-12 (UX interactiva de audio: decidir H-08 primero, diseñar H-12 después)
 H-12 ── última (toca UX de audio + humo de tests)
+H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuesto + crash vivo D-05 + runtime Unix D-01 + barrido Unix del reaper, todo en CI/entorno rápido
 ```
 
 **Orden recomendado (con fundamento)**:
 
-1. **H-04 ✅ — H-02 ✅ — H-01 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s y cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO) — base observable y sin huérfanos (misma zona: lanzamiento del daemon); **luego H-03 + H-05** con traza ya visible y reclamo, **re-midiendo H-14**. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1) y H-01 ✅ implementados; H-05 diagnosticable, H-03 siguiente del cluster y H-14 habilitado.
+1. **H-04 ✅ — H-02 ✅ — H-01 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s y cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO) — base observable y sin huérfanos (misma zona: lanzamiento del daemon); **luego H-03 + H-05** con traza ya visible y reclamo, **re-midiendo H-14**. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1) y H-01 ✅ implementados; H-05 diagnosticable, H-03 siguiente del cluster y H-14 habilitado. H-15 queda como follow-up (suite 37/40 por marginalidad temporal + presupuesto 1500 ms intacto + crash vivo D-05 + runtime Unix D-01 y barrido Unix del reaper, todo pendiente de CI/entorno rápido).
 2. **H-03 + H-05** — siguiente del cluster ciclo de vida: auditar los tres streams en el lanzamiento (H-03, misma zona `spawn.rs`) e investigar la degradación por reutilización con traza H-04 y reclamo H-01 ya disponibles (H-05 diagnosticable).
 3. **H-09 + H-13** — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup.
 4. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
