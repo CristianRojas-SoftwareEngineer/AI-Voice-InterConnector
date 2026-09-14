@@ -55,10 +55,10 @@
 
 ### H-01 — Abortos y fallos dejan daemon + motor huérfanos
 
-- **Severidad**: 🔴 Crítica · **Área**: ciclo de vida (`crates/avi-daemon/src/spawn.rs`, `crates/avi-daemon/src/lib.rs:1152-1342`, `crates/avi-tts/src/lib.rs:336`, `src/main.rs:355-411,1409-1572,2098-2230`)
+- **Severidad**: 🔴 Crítica · **Área**: ciclo de vida (`crates/avi-daemon/src/spawn.rs`, `crates/avi-daemon/src/lib.rs:1152-1349`, `crates/avi-tts/src/lib.rs:336`, `src/main.rs:363-424,1422-1591,2119-2332`)
 - **Síntoma**: toda vía anormal (aborto externo, timeout, panic del test antes del apagado) dejaba vivos a `ai-voice-interconnector` + `qwen_tts`, ociosos, ocupando puertos y ficheros. Observado en 4 ocasiones en un solo día; un antecedente consumió 8 horas de CPU.
-- **Causa**: demostrada por lectura y por eliminación: el apagado solo corría en la vía feliz —el handler Ctrl+C hacía `exit(130)` sin limpieza (`src/main.rs:355`), `Stop` borraba el pidfile aunque el proceso siguiera vivo, `Restart` acumulaba doble techo y kill por PID duplicado sin árbol del residente, `serve` no escuchaba señales, el residente se mataba por imagen global y la fixture se adhería por probe sin revalidar (`already_running` ciego)—. Los procesos sobrevivían a la muerte de su padre.
-- **Corrección (implementada)**: cierre estructural en producto + harness. Producto: handler Ctrl+C con limpieza acotada de 2 s y exit 130 preservado (`CTRL_C_LIMPIEZA_DEADLINE`); Job `KILL_ON_JOB_CLOSE` en la rama `Serve` (Windows) más árbol matable por PID con verificación (`matar_arbol_por_pid`: `taskkill /F /T` en Windows, `kill -9` al grupo en Unix); reclamo matar-y-rearrancar al arrancar (`clasificar_residual` por PID vivo + probe: sano → `already_running`, degradado → se reclama el árbol y se rearranca con salida 0 y payload `started`); parada unificada con deadline global de 8 s (`stop_daemon_and_resident` al servicio de reclamo, stop, restart, cleanup y uninstall: graceful 1,5 s + espera 3 s + árbol preciso + verificación, borrado del pidfile solo tras muerte verificada y exit 5 sin borrar pista si el árbol sigue vivo); `Restart` sobre el ayudante único sin doble techo ni kill duplicado; `serve` escucha Ctrl+C/SIGTERM por la misma ruta que `POST /shutdown` y `shutdown_handler` mata el árbol preciso del residente primero, con kill por imagen solo como último recurso documentado con verificación inmediata; residente sin breakaway y `Drop` como cierre por árbol. Harness: `verificar_cero_huerfanos` (árbol muerto + puertos 8765/8766 cerrados + pidfile sin PID vivo, `panic!` con reaper previo si queda resto), reaper ante techo, timeout, `warm_failed` o cualquier `panic!` fuera de guards/polls (`fallo_con_reaper` + `GuardReaper`), `STATE_LOCK` con recuperación ante envenenado (mismo tipo y contrato) e higiene de `TEST_LIMITE` restaurada, `ensure` que revalida y prueba pesada nueva `tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos` (reclamo con `started` + cero huérfanos a nivel SO). Cierre D-01..D-05 (F5): D-01 con techo (compila sin warnings + predicado puro en verde + tensado `#[cfg(unix)]` sin simular; runtime Unix diferido a CI); D-02 (PID en memoria + `serve` por misma ruta, 130 y 2 s intactos, sin rojo que los contradiga); D-03 (`d03_*` 2/2, reaper verificado en fallos reales con muerte verificada, cobertura a 8 tests con `ensure` + barrido del residente en 8766 por puerto preciso con `netstat -ano` y verificación a 8 s —en Unix solo log, pendiente, ver H-15—); D-04 (predicado puro en verde, residente-solo con preciso-primero e imagen del residente solo como último recurso verificado, imagen del daemon prohibida); D-05 en código (reclamo activo con deadline 5 s + verificación, backoff y `Ok` intactos; crash vivo con log pendiente de CI/entorno rápido, ver H-15). Estado: ✅ Implementado (commit a908ac6 + restos D-01..D-05).
+- **Causa**: demostrada por lectura y por eliminación: el apagado solo corría en la vía feliz —el handler Ctrl+C hacía `exit(130)` sin limpieza (`src/main.rs:363`), `Stop` borraba el pidfile aunque el proceso siguiera vivo, `Restart` acumulaba doble techo y kill por PID duplicado sin árbol del residente, `serve` no escuchaba señales, el residente se mataba por imagen global y la fixture se adhería por probe sin revalidar (`already_running` ciego)—. Los procesos sobrevivían a la muerte de su padre.
+- **Corrección (implementada)**: cierre estructural en producto + harness. Producto: handler Ctrl+C con limpieza acotada de 2 s y exit 130 preservado (`CTRL_C_LIMPIEZA_DEADLINE`); Job `KILL_ON_JOB_CLOSE` en la rama `Serve` (Windows) más árbol matable por PID con verificación (`matar_arbol_por_pid`: `taskkill /F /T` en Windows, `kill -9` al grupo en Unix); reclamo matar-y-rearrancar al arrancar (`clasificar_residual` por PID vivo + probe: sano → `already_running`, degradado → se reclama el árbol y se rearranca con salida 0 y payload `started`); parada unificada con deadline global de 8 s (`stop_daemon_and_resident` al servicio de reclamo, stop, restart, cleanup y uninstall: graceful 1,5 s + espera 3 s + árbol preciso + verificación, borrado del pidfile solo tras muerte verificada y exit 5 sin borrar pista si el árbol sigue vivo); `Restart` sobre el ayudante único sin doble techo ni kill duplicado; `serve` escucha Ctrl+C/SIGTERM por la misma ruta que `POST /shutdown` y `shutdown_handler` mata el árbol preciso del residente primero, con kill por imagen solo como último recurso documentado con verificación inmediata; residente sin breakaway y `Drop` como cierre por árbol. Harness: `verificar_cero_huerfanos` (árbol muerto + puertos 8765/8766 cerrados + pidfile sin PID vivo, `panic!` con reaper previo si queda resto), reaper ante techo, timeout, `warm_failed` o cualquier `panic!` fuera de guards/polls (`fallo_con_reaper` + `GuardReaper`), `STATE_LOCK` con recuperación ante envenenado (mismo tipo y contrato) e higiene de `TEST_LIMITE` restaurada, `ensure` que revalida y prueba pesada nueva `tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos` (reclamo con `started` + cero huérfanos a nivel SO). Cierre D-01..D-05 (F5): D-01 con techo (compila sin warnings + predicado puro en verde + tensado `#[cfg(unix)]` sin simular; runtime Unix diferido a CI); D-02 (PID en memoria + `serve` por misma ruta, 130 y 2 s intactos, sin rojo que los contradiga); D-03 (`d03_*` 2/2, reaper verificado en fallos reales con muerte verificada, cobertura a 8 tests con `ensure` + barrido del residente en 8766 por puerto preciso con `netstat -ano` y verificación a 8 s —en Unix solo log, pendiente, ver H-15—); D-04 (predicado puro en verde, residente-solo con preciso-primero e imagen del residente solo como último recurso verificado, imagen del daemon prohibida); D-05 en código (reclamo activo con deadline 5 s + verificación, backoff y `Ok` intactos; crash vivo con log pendiente de CI/entorno rápido, ver H-15). Estado: ✅ Implementado (commit a908ac6 + restos D-01..D-05 en commit 193eeac).
 - **Impacto resuelto**: invariantes intactos (sin cascada ante rojos —D-03 contiene—; cero huérfanos post-suite a nivel SO; exit 130 preservado). Estado de suite F5 (2026-09-14, esta máquina): `cargo check --all-targets` limpio sin warnings; `cargo test --lib` 54/54; binario 4/4 (incluidos 2 unitarios D-01/D-04); dorada `cli_golden` 37/40 — 3 rojos clase-timeout sin fallo de aserción de lógica (marginalidad temporal pre-existente, ver H-15): `tts::clone_con_daemon_delega` (exit 5, clonado ~1,6 s contra presupuesto CLI fijo de 1500 ms), `tts::h01_aborto_simulado` (guard 180 s esperando `running` bajo carga paralela) y `tts::translate_force_daemon_sin_daemon_exit5` (guard 180 s esperando `stopped` bajo la misma carga); bisect en base `ff9a9f9` (sin cambios) reproduce el rojo semilla idéntico (exit 5, 1589 ms): no hay regresión demostrada del diff.
 - **Relaciones**: alimentaba a H-05 (ahora diagnosticable con traza H-04 + reclamo H-01) · comparte zona con H-03 (siguiente del cluster: stdio del lanzamiento) · H-02 reduce su superficie (sin subprocess que re-lanzar) · H-04 lo vuelve detectable a tiempo.
 - **Decisión requerida**: resuelta — producto + harness; matar-y-rearrancar ante residual degradado; exit 130 preservado con limpieza acotada; `started` tras reclamo; kill por imagen solo como último recurso documentado (residente).
@@ -87,9 +87,9 @@
 
 ### H-04 — El motor de voz no deja traza observable
 
-- **Severidad**: 🟠 Alta · **Área**: observabilidad (lanzamiento del residente en `crates/avi-tts/src/lib.rs`, healthcheck `wait_health` en `:896-1018`)
+- **Severidad**: 🟠 Alta · **Área**: observabilidad (lanzamiento del residente en `crates/avi-tts/src/lib.rs`, healthcheck `wait_health` en `:987-1023`)
 - **Síntoma**: el motor arrancaba con stderr a `Stdio::null()`, silenciando el diagnóstico del motor C (20+ `fprintf(stderr)` en `vendor/qwen3-tts`); un atasco pre-audio no dejaba traza.
-- **Causa**: decisión de diseño (silencio del stderr para evitar herencia de handles). Demostrada en código (`:895-916`). Hipótesis A (eliminar `null`) descartada: el residente se lanza por el daemon (que ya tiene stdio a null) y no hereda el pipe del test; la regresión de `cli_golden` se resolvió con tempfile (`tests/cli_golden.rs:319-331`).
+- **Causa**: decisión de diseño (silencio del stderr para evitar herencia de handles). Demostrada en código (lanzamiento actual en `crates/avi-tts/src/lib.rs:780-808`). Hipótesis A (eliminar `null`) descartada: el residente se lanza por el daemon (que ya tiene stdio a null) y no hereda el pipe del test; la regresión de `cli_golden` se resolvió con tempfile (`tests/cli_golden.rs:648-665`, `open_atomic_tmp` en `:694`).
 - **Corrección (implementada)**: stderr del residente → `data_dir()/logs/qwen3-tts_<pid>_<ms>.log` (rotación por sesión); stdin/stdout conservan `null` + flags de no-herencia (`0x02000000|0x8`). `wait_health` agrega `child.try_wait()` para distinguir *crash* (exit code + path de log) de *hang* (timeout). Estado: ✅ Implementado (commit 865d236).
 - **Impacto resuelto**: H-02, H-05 y H-01 son ahora diagnosticables; el motor C deja trazas en stderr.
 - **Relaciones**: desbloquea a H-02 y H-05 · comparte zona con H-03 · cierra la ciega de H-01 (orphans visibles vía `try_wait` + log).
@@ -97,7 +97,7 @@
 
 ### H-05 — El daemon reutilizado degrada: sirve estado pero falla síntesis
 
-- **Severidad**: 🟠 Alta · **Área**: daemon (`DaemonState::new` en `crates/avi-daemon/src/lib.rs:116-128`, `translate_handler` `:594-708`, `dub_handler` `:977-988`)
+- **Severidad**: 🟠 Alta · **Área**: daemon (`DaemonState::new` en `crates/avi-daemon/src/lib.rs:102-106`, `translate_handler` `:605-719`, `dub_handler` `:866-1141`)
 - **Síntoma**: con daemon residual reutilizado, el `dub` vía daemon sale exit 5 (timeout de cliente `/dub` 10s) en 12s; con arranque fresco, exit 0 en ~10s. El daemon responde `status`/`warm` pero no sirve la petición.
 - **Causa**: no demostrada. H-04 (implementado) restaura la traza del residente, disponible para investigarla.
 - **Impacto**: la fixture de sesión reutiliza el daemon por diseño, por lo que un residual degradado envenena toda la sesión de tests.
@@ -107,7 +107,7 @@
 
 ### H-06 — `daemon start/serve` sin control de idioma ni STT
 
-- **Severidad**: 🟠 Alta · **Área**: CLI/daemon (`DaemonCommands::{Start,Serve}` en `src/main.rs:265-286`)
+- **Severidad**: 🟠 Alta · **Área**: CLI/daemon (`DaemonCommands::{Start,Serve}` en `src/main.rs:314-339`)
 - **Síntoma**: `daemon start/serve` solo aceptan `--auto-restart`/`--max-retries`; no hay `--language` (preload de modelos por idioma) ni `--with-stt` (precarga de transcripción), aunque el daemon tiene STT funcional. Falla con `unrecognized argument`.
 - **Causa**: migración que descartó flags funcionales. Demostrada contra el oráculo.
 - **Impacto**: sin control de preload; los consumidores que lo esperan no pueden usarlo.
@@ -117,7 +117,7 @@
 
 ### H-07 — `voice clone --daemon` promete precarga inexistente
 
-- **Severidad**: 🟠 Alta · **Área**: CLI/contrato (`docs/CLI/CONTRACT.md:238,241`, handler `voices_clone_handler`, `crates/avi-daemon/src/lib.rs:738` devuelve siempre `"precomputed": false`)
+- **Severidad**: 🟠 Alta · **Área**: CLI/contrato (`docs/CLI/commands/VOICE.md:136-143` documenta el flujo con precompute como fallback, handler `voices_clone_handler`, `crates/avi-daemon/src/lib.rs:860` devuelve siempre `"precomputed": false`)
 - **Síntoma**: el contrato promete que `--daemon` precarga los embeddings antes de clonar, pero el endpoint `POST /voices/precompute` no existe (purgado); el flag existe y el enrutado funciona, la feature no.
 - **Causa**: purga del endpoint sin actualizar contrato. Demostrada (el router no lo registra).
 - **Impacto**: clonado vía daemon sin la aceleración contratada; especificación falsa para integradores `--json`.
@@ -127,7 +127,7 @@
 
 ### H-08 — Panic con `--mic` sin `--duration` en terminal (validado 2026-09-10)
 
-- **Severidad**: 🟠 Alta · **Área**: CLI (`src/main.rs`, validación `:792-798` y `:1086-1094` frente a `duration.expect("validado arriba")` en `:846`, `:1157`, `:2576`, `:3014`)
+- **Severidad**: 🟠 Alta · **Área**: CLI (`src/main.rs`, validación `:859-875` y `:1163-1176` frente a `duration.expect("validado arriba")` en `:923`, `:1234`, `:2820`, `:3258`)
 - **Síntoma**: en TTY, `speech transcribe --mic` o `dub --mic` sin `--duration` (el caso push-to-talk que `USAGE.md` documenta como funcional) no pide Enter ni usa default: atraviesa la validación —que exime expresamente el TTY— y revienta en `Option::expect` con panic, fuera de toda disciplina de exit codes del contrato.
 - **Causa**: demostrada por lectura (2026-09-10): la exención TTY existe en la validación pero su implementación no existe en ningún path —no hay espera de Enter ni duración medida en `src/main.rs` (búsqueda de `Enter|push_to_talk` vacía salvo el comentario)—. Sin TTY el mismo caso sale limpio con exit 2; en TTY es panic en las 4 vías (transcribe/dub × directo/daemon). Nota: `capture_16k_mono_pcm` en sí (`crates/avi-audio/src/lib.rs:179-246`) no tiene panics alcanzables con dispositivos reales (solo `channels == 0` o mutex envenenado, teóricos); el defecto está aguas arriba, en el despacho.
 - **Impacto**: crash con stack trace en el flujo interactivo documentado; rompe el contrato de exit codes.
@@ -139,7 +139,7 @@
 
 ### H-09 — `setup` sin reinstalación forzada ni confirmación
 
-- **Severidad**: 🟡 Media · **Área**: CLI/setup (`src/main.rs:122-131`)
+- **Severidad**: 🟡 Media · **Área**: CLI/setup (`src/main.rs:151-158`)
 - **Síntoma**: sin `--force-update` no hay forma de re-descargar modelos sin purga manual (~14 GB); sin `--yes` no hay modo no interactivo; `--language` es texto libre sin choices (`es-latam|en|all`).
 - **Impacto**: la palanca operativa que faltó ante provisiones rotas; fricción en CI.
 - **Corrección propuesta**: restaurar `--force-update` (o equivalente), `--yes` y `value_parser` de `--language`.
@@ -148,7 +148,7 @@
 
 ### H-10 — `speech list` sin filtro por voz
 
-- **Severidad**: 🟡 Media · **Área**: CLI (`SpeechCommands::List` unitaria en `src/main.rs:188`, contrato `CONTRACT.md:170`)
+- **Severidad**: 🟡 Media · **Área**: CLI (`SpeechCommands::List` unitaria en `src/main.rs:216`, contrato `CONTRACT.md:170`)
 - **Síntoma**: `speech list --voice/-v` prometido en contrato es rechazado; imposible distinguir "voz mal escrita" de "sin resultados" (contrato §278).
 - **Impacto**: guion E2E y UX de filtrado rotos a nivel menor.
 - **Corrección propuesta**: restaurar `--voice/-v` con validación exit 3, o corregir el contrato.
@@ -159,7 +159,7 @@
 
 ### H-11 — `translate --from/--to` acepta cualquier texto
 
-- **Severidad**: ⚪ Baja · **Área**: CLI (`src/main.rs:102-105`, contrato `:596`)
+- **Severidad**: ⚪ Baja · **Área**: CLI (`src/main.rs:130-133`, contrato `:596`)
 - **Síntoma**: valores libres donde el contrato promete `es|en`; inválidos entran sin error temprano.
 - **Impacto**: menor; errores de tipeo llegan lejos sin diagnóstico.
 - **Corrección propuesta**: `value_parser = ["es", "en"]` o documentar texto libre.
@@ -168,7 +168,7 @@
 
 ### H-12 — `speech synthesize --play` sin flujo interactivo
 
-- **Severidad**: ⚪ Baja · **Área**: CLI/UX (contrato §4 `:185-203`, `src/main.rs:857-865` reproduce y guarda incondicionalmente)
+- **Severidad**: ⚪ Baja · **Área**: CLI/UX (contrato §4 `:185-203`, `src/main.rs:1049-1059` reproduce y guarda incondicionalmente)
 - **Síntoma**: el contrato promete bucle de 4 opciones (reproducir, aceptar, regenerar, descartar); el binario reproduce y guarda sin preguntar.
 - **Impacto**: UX documentada inexistente; cualquier cambio roza el humo de audio de los tests.
 - **Corrección propuesta**: implementar el loop o actualizar §4 a `play→save→done` con decisión explícita.
@@ -195,7 +195,7 @@
 
 ### H-15 — Marginalidad temporal de la suite y barrido Unix pendiente
 
-- **Severidad**: ⚪ Baja · **Área**: tests/ciclo de vida (guards en `tests/cli_golden.rs:47,52,134-153`, presupuesto CLI en `src/main.rs:3187`, reaper en `tests/cli_golden.rs:188-213`)
+- **Severidad**: ⚪ Baja · **Área**: tests/ciclo de vida (guards en `tests/cli_golden.rs:47,52,134-153`, presupuesto CLI en `src/main.rs:3184`, reaper en `tests/cli_golden.rs:211-236` + barrido `barrer_residente_por_puerto` en `:253-300`)
 - **Síntoma**: la dorada `cli_golden` queda 37/40 en esta máquina por 3 rojos clase-timeout, cero fallos de aserción de lógica: `tts::clone_con_daemon_delega` (exit 5 `daemon_unreachable`: el daemon clona bien pero tarda ~1,6 s contra el presupuesto CLI fijo de 1500 ms; en local el mismo clonado tarda ~0,5 s), `tts::h01_aborto_simulado` (guard 180 s esperando `running`: la máquina bajo carga paralela no calentó a tiempo, polls de 300-545 ms) y `tts::translate_force_daemon_sin_daemon_exit5` (guard 180 s esperando `stopped`: parada + sondeos lentos bajo la misma carga). El resto de la suite está verde (`cargo check` limpio, `--lib` 54/54, binario 4/4) y el cierre post-suite deja cero huérfanos a nivel SO.
 - **Causa**: marginalidad temporal pre-existente de la máquina bajo carga paralela, no regresión del diff: con el árbol en `stash` (base `ff9a9f9`, sin cambios D-01..D-05) `clone_con_daemon_delega` falla idéntico (exit 5, 1589 ms); los 2 guard-timeouts son colapso bajo carga paralela, nunca aserciones de conducta. El presupuesto de 1500 ms NO se toca en este cierre (decisión cerrada F0 §4/F5).
 - **Impacto**: suite completa 37/40 idéntica en base; sin cascada (D-03 contiene: 37 pasan con rojos dentro) y sin fuga (el rojo persiste pero ya sin huérfano del daemon). Ningún ✅ de este documento sobrestima: H-01 sigue ✅ por producto + harness, la suite se declara en 37/40 con rojos visibles.
