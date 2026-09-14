@@ -112,6 +112,12 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
+// Ceguera deliberada del harness (H-01, T7): `send`/`get`/`post_json` ejercen
+// el contrato JSON vía `oneshot` sin socket, spawn, señales, puertos ni
+// pidfile; nunca prueban ausencia de huérfanos (árbol/PID/puertos). La
+// ausencia real a nivel SO solo la verifica la serie pesada
+// (`tests/cli_golden.rs`: reaper ruidoso + `verificar_cero_huerfanos`).
+
 /// Modelos reales de STT (Parakeet TDT v3 int8: 4 archivos) presentes. Los snapshots
 /// bajo `hf_cache_dir()` están gitignoreados: en un checkout limpio (CI) estos tests
 /// dorados se saltan con aviso; en desarrollo corren completos.

@@ -46,7 +46,7 @@ native-translation = ["avi-translation/native-translation"]
 full = ["native-stt", "native-translation"]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
 winreg = "0.52"
 
 [dev-dependencies]

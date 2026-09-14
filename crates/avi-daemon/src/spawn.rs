@@ -14,10 +14,13 @@ use std::process::Command;
 /// `CREATE_NO_HANDLE_INHERIT (0x02000000)` fuerza `bInheritHandles=FALSE`. En Unix
 /// `fork/exec` con `Stdio::null` + `setsid` + `FD_CLOEXEC` ya logra lo análogo.
 ///
-/// NOTA: el shutdown del daemon se resolvió aparte en `lib.rs::shutdown_handler` vía
-/// `with_graceful_shutdown` + `tokio::sync::Notify` (el antiguo
-/// `tokio::spawn(async { process::exit(0) })` no terminaba el proceso dentro del
-/// runtime de `axum::serve`).
+/// NOTA (H-01, cierre garantizado): el apagado ya no depende solo de
+/// `lib.rs::shutdown_handler` vía `with_graceful_shutdown` + `tokio::sync::Notify`
+/// (el antiguo `tokio::spawn(async { process::exit(0) })` no terminaba el proceso
+/// dentro del runtime de `axum::serve`). El daemon escucha además señales del
+/// sistema por la misma ruta que POST `/shutdown`, el CLI reclama el residual
+/// degradado al arrancar (matar-y-rearrancar) y toda parada mata el árbol preciso
+/// por PID con deadline y verificación (`matar_arbol_por_pid` + `pid_vivo`).
 pub fn spawn_background(auto_restart: bool, max_retries: u32) -> anyhow::Result<u32> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
@@ -62,8 +65,115 @@ pub fn spawn_background(auto_restart: bool, max_retries: u32) -> anyhow::Result<
     }
 
     let child = cmd.spawn()?;
-    Ok(child.id())
+    let pid = child.id();
+    // Grupo propio ya garantizado por flags (Windows: CREATE_NEW_PROCESS_GROUP;
+    // Unix: setsid): el árbol es matable de forma precisa por PID con
+    // `matar_arbol_por_pid` (alternativa admitida: taskkill `/F /T` por PID con
+    // verificación posterior). El Job Object con cierre del árbol NO se crea
+    // aquí en el padre efímero (moriría con él y mataría al daemon recién
+    // lanzado): lo instala el daemon longevo al arrancar vía
+    // `instalar_job_con_cierre_de_arbol` (lado servidor).
+    Ok(pid)
 }
+
+/// Viveza real de un PID a nivel de sistema (sin probe HTTP ni pidfile).
+///
+/// Windows: `tasklist` con filtro exacto; Unix: `kill -0` (éxito = vivo).
+/// `0` nunca está vivo. Bloqueante y breve: apto para el handler de Ctrl+C y
+/// para los bucles de verificación con deadline de las paradas.
+pub fn pid_vivo(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        let salida = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output();
+        match salida {
+            Ok(o) if o.status.success() => {
+                let texto = String::from_utf8_lossy(&o.stdout);
+                texto.contains(&pid.to_string())
+            }
+            _ => false,
+        }
+    }
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+/// Mata el árbol preciso por PID con la alternativa admitida (sin Job en el
+/// padre): Windows `taskkill /F /T /PID` (mata el árbol); Unix `kill -9` al
+/// grupo (`-<pid>`, el daemon es líder de sesión por `setsid`) y luego al PID.
+/// No toca pidfile ni verifica: el llamante combina con `pid_vivo` y deadline.
+/// Nunca mata el PID 0; la guarda contra auto-muerte (`pid != proceso propio`
+/// para la imagen compartida CLI/daemon) vive en el llamante.
+pub fn matar_arbol_por_pid(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &format!("-{}", pid)])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+/// Espera bloqueante a la muerte del PID hasta el deadline (sondeo 100 ms).
+/// Para el handler de Ctrl+C y verificaciones síncronas; los caminos async
+/// usan su propio bucle con `tokio::time::sleep` + `pid_vivo`.
+pub fn esperar_muerte_pid(pid: u32, deadline: std::time::Duration) -> bool {
+    let inicio = std::time::Instant::now();
+    while inicio.elapsed() < deadline {
+        if !pid_vivo(pid) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    !pid_vivo(pid)
+}
+
+/// Instala en el proceso actual (lado daemon longevo) un Job Object con
+/// `KILL_ON_JOB_CLOSE`. La implementación vive en el binario (`src/main.rs`,
+/// rama `Serve`, que sí dispone de `windows-sys` vía el workspace): este crate
+/// no añade la dependencia para no exceder el alcance (alternativa admitida:
+/// `matar_arbol_por_pid` con verificación). Ver `instalar_job_con_cierre_de_arbol`
+/// en el CLI.
 
 /// Helper determinista de desinstalación en Windows (`H4`).
 ///

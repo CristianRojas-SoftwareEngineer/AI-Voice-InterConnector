@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 pub mod spawn;
-pub use spawn::{spawn_background, spawn_uninstall_helper};
+pub use spawn::{esperar_muerte_pid, matar_arbol_por_pid, pid_vivo, spawn_background, spawn_uninstall_helper};
 // `hilos_disponibles` y el trait `SttEngine` (`.transcribe`) solo los consume
 // la superficie STT, gateada tras `native-stt`.
 #[cfg(feature = "native-stt")]
@@ -1151,9 +1151,10 @@ async fn dub_handler(
 /// exit.
 async fn shutdown_handler(State(state): State<SharedState>) -> impl IntoResponse {
     // 1) Detener el residente qwen_tts. `Qwen3TtsEngine::shutdown` es NO BLOQUEANTE:
-    //    mata `qwen_tts.exe` por PID (sin tomar el `Mutex<resident>` que el hilo
+    //    mata el árbol preciso por PID (sin tomar el `Mutex<resident>` que el hilo
     //    `spawn_blocking(warmup)` retiene durante el spawn + healthcheck + síntesis,
-    //    causa raíz del deadlock anterior) y libera el residente con `try_lock`.
+    //    causa raíz del deadlock anterior) y libera el residente con `try_lock`;
+    //    el kill por imagen queda solo como último recurso documentado.
     //    Se mantiene sincrónico y breve para que las conexiones HTTP keep-alive del
     //    residente se liberen antes de notificar el cierre del servidor.
     state.tts_engine.shutdown();
@@ -1259,9 +1260,10 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
     // `spawn_blocking` para no bloquear el runtime async del servidor. El
     // `JoinHandle` se envuelve en un `timeout(WARMUP_DEADLINE)`: si expira, se
     // marca `warm_failed` con diagnóstico (posible cuelgue del motor C, ver log
-    // del motor en `data/logs/qwen3-tts_*.log`) y se termina al residente
-    // colgado con `shutdown()` (mata por imagen de proceso, sin tomar el mutex
-    // que el hilo del warmup retiene). Un fallo no aborta el arranque.
+    // del motor en `data/logs/qwen3-tts_*.log`) y se reclama el residente
+    // colgado con `shutdown()` (árbol preciso por PID, sin tomar el mutex
+    // que el hilo del warmup retiene; imagen solo como último recurso). Un
+    // fallo no aborta el arranque.
     let warm_state = state.clone();
     let handle = tokio::task::spawn_blocking(move || match warmup_tts(&warm_state) {
         Ok(()) => warm_state.set_warm(),
@@ -1279,15 +1281,46 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
         }
     });
 
-    // El shutdown se dispara desde `shutdown_handler`: `tts_engine.shutdown()`
-    // mata al residente qwen_tts (liberando sus conexiones HTTP keep-alive) y
-    // luego `notify_one()` despierta esta future. Al no quedar conexiones vivas
-    // del residente, `axum::serve` retorna de forma natural y el runtime termina
-    // cerrando los `Drop` del `Arc<DaemonState>` compartido → cierre limpio sin
-    // `process::exit` (que no termina fiablemente el proceso en Windows cuando
-    // el runtime está dentro de `axum::serve`).
+    // El shutdown se dispara por la misma ruta desde POST `/shutdown` y desde
+    // señales del sistema (Ctrl+C / SIGTERM): `tts_engine.shutdown()` mata el
+    // árbol preciso del residente (liberando sus conexiones HTTP keep-alive) y
+    // luego `notify_one()` despierta esta future (o la señal completa el
+    // select directamente tras el mismo `shutdown()`). Al no quedar conexiones
+    // vivas del residente, `axum::serve` retorna de forma natural y el runtime
+    // termina cerrando los `Drop` del `Arc<DaemonState>` compartido → cierre
+    // limpio sin `process::exit` (que no termina fiablemente el proceso en
+    // Windows cuando el runtime está dentro de `axum::serve`).
     let shutdown = async move {
-        state.shutdown_notify.notified().await;
+        #[cfg(unix)]
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("suscribir SIGTERM del sistema");
+        loop {
+            #[cfg(unix)]
+            {
+                tokio::select! {
+                    _ = state.shutdown_notify.notified() => break,
+                    _ = tokio::signal::ctrl_c() => {
+                        state.tts_engine.shutdown();
+                        break;
+                    }
+                    _ = sigterm.recv() => {
+                        state.tts_engine.shutdown();
+                        break;
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::select! {
+                    _ = state.shutdown_notify.notified() => break,
+                    _ = tokio::signal::ctrl_c() => {
+                        state.tts_engine.shutdown();
+                        break;
+                    }
+                }
+            }
+        }
     };
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
@@ -1299,8 +1332,13 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
 ///
 /// Si `auto_restart` es `false`, ejecuta `run_daemon_server` una sola vez.
 /// Si es `true`, reintenta hasta `max_retries` veces tras un fallo no graceful
-/// (crash) con backoff exponencial `500ms * 2^retries` capado a 4s. Un apagado
-/// graceful vía `shutdown_notify` (`daemon stop`) no reintenta y retorna `Ok`.
+/// (crash) con backoff exponencial `500ms * 2^retries` capado a 4s, precedido de
+/// reclamo del puerto y del árbol: antes de reintentar se verifica que el puerto
+/// quedó libre (el `Drop` de la iteración previa ya mató el árbol preciso del
+/// residente; sin kill global por imagen) y se registra si sigue ocupado.
+/// Un apagado graceful vía `shutdown_notify` (`daemon stop`) no reintenta y retorna `Ok`.
+/// El reclamo activo matar-y-rearrancar ante otra instancia vive en el CLI
+/// (`daemon start`): `serve` nunca mata a otra instancia sana.
 pub async fn run_supervised(
     addr: SocketAddr,
     auto_restart: bool,
@@ -1329,6 +1367,18 @@ pub async fn run_supervised(
                     retries, max_retries, e, backoff_ms
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                // Reclamo previo al reintento (C7): revalidar que el puerto quedó
+                // libre tras la caída; el árbol del residente de la iteración previa
+                // ya se reclamó vía `Drop` preciso (sin imagen global). Si el puerto
+                // sigue ocupado, se registra y el siguiente `bind` lo confirmará.
+                if std::net::TcpListener::bind(addr).is_ok() {
+                    // Puerto libre: el test-listener se cierra al dropearse.
+                } else {
+                    eprintln!(
+                        "Daemon: el puerto {} sigue ocupado tras la caída; se reintenta igualmente ({}/{})",
+                        addr, retries, max_retries
+                    );
+                }
             }
         }
     }

@@ -324,14 +324,24 @@ impl Qwen3TtsEngine {
     /// único camino, sin fallback), así que el hilo `spawn_blocking(warmup)`
     /// retorna y el runtime cierra el proceso limpio.
     ///
-    /// No bloqueante: el hilo del warmup retiene el `Mutex<resident>` durante el
-    /// spawn + `wait_health` + síntesis HTTP, así que `self.resident.lock()` se
-    /// colgaría. Por eso se mata el proceso sin tomar el lock y el drop del residente
-    /// se hace best-effort con `try_lock` (si el warmup lo tiene, no esperamos: el
-    /// proceso ya está muerto y su `Drop` recolectará el estado al liberarse).
+    /// No bloqueante ni dependiente del `Mutex<resident>`: el hilo del warmup lo
+    /// retiene durante el spawn + `wait_health` + síntesis HTTP, así que
+    /// `self.resident.lock()` se colgaría. Por eso se mata el árbol preciso por
+    /// PID (señal que no requiere el lock, con verificación inmediata sin espera)
+    /// y solo como último recurso documentado —si el PID sigue vivo o no hay
+    /// PID— se mata por imagen; la recolección del estado se hace best-effort
+    /// con `try_lock` (si el warmup lo tiene, no esperamos: el proceso ya está
+    /// muerto y su `Drop` recolectará el estado al liberarse). La verificación
+    /// con deadline la hace el llamante (graceful del daemon / parada del CLI).
     pub fn shutdown(&self) {
-        if self.resident_pid.load(Ordering::Relaxed) != 0 {
-            crate::resident::kill_resident_process();
+        let pid = self.resident_pid.load(Ordering::Relaxed);
+        if pid != 0 {
+            crate::resident::matar_arbol_residente_por_pid(pid);
+            // Verificación inmediata sin espera (no bloquea al runtime): si el
+            // árbol preciso no lo terminó, último recurso por imagen.
+            if crate::resident::pid_vivo_residente(pid) {
+                crate::resident::kill_resident_process();
+            }
         }
         if let Ok(mut guard) = self.resident.try_lock() {
             *guard = None;
@@ -775,6 +785,10 @@ pub mod resident {
             // esto el `Command::output()` del test se cuelga (el residente vive toda la
             // sesión). `Stdio::null` en stdin/stdout cierra la herencia de stdin/tty;
             // stderr va al log (Stdio::from marca el handle no-heredable).
+            // Árbol matable (H-01): a propósito SIN `CREATE_NEW_PROCESS_GROUP` ni
+            // breakaway, para que el residente permanezca en el grupo/Job del daemon
+            // y `taskkill /F /T /PID <daemon>` (o el Job con cierre) lo alcance.
+            // En Unix tampoco se hace `setsid` aquí: hereda el grupo del daemon.
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -835,24 +849,95 @@ pub mod resident {
     impl Drop for Qwen3TtsResident {
         fn drop(&mut self) {
             if let Some(mut child) = self.child.take() {
-                // En el apagado del daemon `kill_resident_process` ya terminó al
-                // servidor por nombre de imagen; aquí `kill+wait` recolecta el estado
-                // del `child` (ya muerto entonces, o vivo en un drop normal).
+                // Cierre por árbol con recolección: el `shutdown()` previo ya mató el
+                // árbol preciso por PID (imagen solo como último recurso); aquí
+                // `kill+wait` recolecta el estado del `child` (ya muerto entonces,
+                // o vivo en un drop normal).
                 let _ = child.kill();
                 let _ = child.wait();
             }
         }
     }
 
-    /// Mata el proceso residente del motor POR NOMBRE DE IMAGEN (`qwen_tts`), sin
-    /// tomar el `Mutex<resident>` que el `spawn_blocking(warmup)` retiene.
+    /// Viveza real de un PID a nivel de sistema (sin Mutex ni HTTP).
+    pub(crate) fn pid_vivo_residente(pid: u32) -> bool {
+        if pid == 0 {
+            return false;
+        }
+        #[cfg(windows)]
+        {
+            let salida = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .output();
+            match salida {
+                Ok(o) if o.status.success() => {
+                    String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())
+                }
+                _ => false,
+            }
+        }
+        #[cfg(unix)]
+        {
+            Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    }
+
+    /// Mata el árbol preciso del residente por PID (sin Mutex): Windows
+    /// `taskkill /F /T /PID`; Unix `kill -9` al grupo y al PID. No verifica:
+    /// el llamante combina con `pid_vivo_residente`.
+    pub(crate) fn matar_arbol_residente_por_pid(pid: u32) -> bool {
+        if pid == 0 {
+            return false;
+        }
+        #[cfg(windows)]
+        {
+            Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        #[cfg(unix)]
+        {
+            let _ = Command::new("kill")
+                .args(["-9", &format!("-{}", pid)])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    }
+
+    /// Mata el proceso residente del motor POR NOMBRE DE IMAGEN (`qwen_tts`).
     ///
-    /// No se mata por el PID de `child.id()`: el `qwen_tts` vendido desacopla su
-    /// proceso servidor real del `Child` que Rust captura (lo re-lanza/daemoniza),
-    /// de modo que `taskkill /PID <child>` retorna 0 pero deja vivo al servidor.
-    /// Matar por nombre de imagen alcanza al servidor real. Con el residente como
-    /// único camino de síntesis (sin fallback), el kill no puede desencadenar
-    /// re-lanzamientos: la síntesis en curso simplemente falla.
+    /// ÚLTIMO RECURSO DOCUMENTADO (H-01): solo se llama cuando el kill preciso
+    /// del árbol por PID falló o no hay PID (el `qwen_tts` vendido desacopla su
+    /// proceso servidor real del `Child` que Rust captura, de modo que el kill
+    /// por PID puede dejar vivo al servidor). Mata por nombre de imagen y alcanza
+    /// al servidor real. Con el residente como único camino de síntesis (sin
+    /// fallback), el kill no puede desencadenar re-lanzamientos: la síntesis en
+    /// curso simplemente falla. Sin tomar ningún `Mutex`.
     pub(crate) fn kill_resident_process() {
         #[cfg(windows)]
         {
@@ -930,7 +1015,9 @@ pub mod resident {
     }
 
     /// Simulador HTTP mínimo para tests: responde `200 OK` a `/v1/health` y
-    /// captura el body de un único `POST /v1/tts`.
+    /// captura el body de un único `POST /v1/tts`. Siempre sano: nunca cuelga
+    /// ni muere ni daemoniza (ceguera H-01, T7); la ausencia real de huérfanos
+    /// a nivel SO solo la verifica la serie pesada (`tests/cli_golden.rs`).
     #[cfg(test)]
     pub(crate) fn simular_servidor(
         body: std::sync::Arc<Mutex<String>>,
@@ -1383,7 +1470,11 @@ mod tests {
         assert_eq!(parsed["seed"], 7);
     }
 
-    /// Proceso que duerme para simular el hijo del residente en tests.
+    /// Proceso que duerme para simular el hijo del residente en tests. Hijo
+    /// directo bien portado (recolectable vía `Child`): no reproduce el
+    /// desacoplo del `qwen_tts` real ni la daemonización (ceguera H-01, T7);
+    /// el cierre preciso por árbol se cubre en
+    /// `residente_matar_arbol_por_pid_termina_al_hijo`.
     fn proceso_durmiente() -> std::process::Child {
         if cfg!(windows) {
             Command::new("powershell")
@@ -1402,27 +1493,44 @@ mod tests {
         }
     }
 
-    /// ¿Sigue vivo el proceso con `pid`?
+    /// ¿Sigue vivo el proceso con `pid`? Doble de test (H-01, T7): delega en
+    /// `resident::pid_vivo_residente`, la misma primitiva que el producto usa
+    /// para verificar el cierre por árbol, sin reproducir daemonización real.
     fn proceso_vivo(pid: u32) -> bool {
-        if cfg!(windows) {
-            let out = Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    &format!("Get-Process -Id {} -ErrorAction SilentlyContinue", pid),
-                ])
-                .output();
-            match out {
-                Ok(o) => !o.stdout.is_empty(),
-                Err(_) => true,
+        resident::pid_vivo_residente(pid)
+    }
+
+    /// H-01 (T7): el cierre preciso por árbol termina un hijo real a nivel SO
+    /// con verificación, sin daemonización (hijo directo, no el `qwen_tts`
+    /// desacoplado). Cubre `matar_arbol_residente_por_pid` +
+    /// `pid_vivo_residente` con recolección del estado (como el `Drop`).
+    #[test]
+    fn residente_matar_arbol_por_pid_termina_al_hijo() {
+        let mut child = proceso_durmiente();
+        let pid = child.id();
+        assert!(
+            resident::pid_vivo_residente(pid),
+            "el hijo debe estar vivo tras el spawn (pid {})",
+            pid
+        );
+        resident::matar_arbol_residente_por_pid(pid);
+        let inicio = std::time::Instant::now();
+        while inicio.elapsed() < std::time::Duration::from_secs(10) {
+            // Recolecta si ya murió (en Unix el zombi sin recolectar sigue
+            // respondiendo al sondeo de viveza hasta el `wait`).
+            let _ = child.try_wait();
+            if !resident::pid_vivo_residente(pid) {
+                break;
             }
-        } else {
-            Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(true)
+            thread::sleep(Duration::from_millis(100));
         }
+        assert!(
+            !resident::pid_vivo_residente(pid),
+            "el árbol preciso debe terminar al hijo (pid {})",
+            pid
+        );
+        // Recolección final del estado, como el `Drop` del residente.
+        let _ = child.wait();
     }
 
     /// T4: `resolve_binary` halla el binario junto al `current_exe` aunque `cwd` no tenga vendor.

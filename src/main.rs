@@ -35,6 +35,12 @@ const DAEMON_ADDR: &str = "127.0.0.1:8765";
 const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Intervalo entre reintentos del sondeo de readiness.
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// Deadline breve para la limpieza acotada ante Ctrl+C (H-01): mata el árbol
+/// preciso con verificación; vencido, sale igualmente con 130 sin colgarse.
+const CTRL_C_LIMPIEZA_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+/// Deadline global para la parada unificada del árbol daemon+residente
+/// (graceful + árbol preciso por PID + verificación a nivel de sistema).
+const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2` (`ct2_model_dir`) → `model.bin`
 /// más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` autocontenidos).
@@ -336,14 +342,72 @@ fn force_utf8() {
         .output();
 }
 
-/// Instalar handler de SIGINT → exit 130
+/// Instalar handler de SIGINT → limpieza acotada + exit 130.
+///
+/// Preserva el código 130 en todos los modos; antes de salir mata el árbol
+/// preciso del daemon residual por PID con deadline breve y verificación
+/// (`taskkill /F /T /PID` en Windows con `CREATE_NO_WINDOW`, `kill -9` al
+/// grupo en Unix). Vencido el deadline sale igualmente con 130 sin colgarse.
+/// Guarda anti-auto-muerte: si el PID de la pista es el propio proceso
+/// (`daemon serve` en foreground), no se auto-mata; el cierre lo hace la
+/// escucha de señales del servidor por la misma ruta que POST `/shutdown`.
+/// Instalado en `main` antes del despacho: cubre todos los modos.
 fn install_sigint_handler() {
     ctrlc::set_handler(move || {
+        if let Some(pid) = read_daemon_pid() {
+            let propio = std::process::id();
+            if pid != 0 && pid != propio {
+                daemon::matar_arbol_por_pid(pid);
+                daemon::esperar_muerte_pid(pid, CTRL_C_LIMPIEZA_DEADLINE);
+            }
+        }
         // Exit code 130 = interrumpido por usuario (Ctrl+C)
         eprintln!("\nInterrumpido por el usuario.");
         exit(130);
     })
     .expect("Error al instalar el handler de Ctrl+C");
+}
+
+/// Job Object con cierre del árbol para el daemon longevo (Windows).
+///
+/// Crea un Job con `KILL_ON_JOB_CLOSE` y asigna el proceso actual: al morir el
+/// daemon, el SO cierra el árbol (residente incluido, que hereda el Job).
+/// Best-effort silencioso: si falla, el cierre sigue garantizado por
+/// `matar_arbol_por_pid` con verificación (alternativa admitida). Se llama solo
+/// en la rama `Serve` (proceso longevo), nunca en el padre efímero de `Start`.
+#[cfg(windows)]
+fn instalar_job_con_cierre_de_arbol() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicLimitInformation,
+        SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job == 0 {
+            return;
+        }
+        let mut info: JOBOBJECT_BASIC_LIMIT_INFORMATION = std::mem::zeroed();
+        info.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectBasicLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_BASIC_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            CloseHandle(job);
+            return;
+        }
+        // Pseudo-handle del proceso actual (-1): evita necesitar OpenProcess.
+        let actual: isize = -1;
+        if AssignProcessToJobObject(job, actual) == 0 {
+            CloseHandle(job);
+            return;
+        }
+        // Fuga intencionada del handle del Job: vive hasta la muerte del daemon.
+    }
 }
 
 // ─── Punto de entrada ────────────────────────────────────────────────
@@ -1354,6 +1418,12 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     .map_err(|e: std::net::AddrParseError| {
                         CliError::new(ExitCode::Error, "invalid_address", e.to_string())
                     })?;
+            // Job con cierre del árbol en el proceso longevo (Windows, H-01).
+            // El handler SIGINT ya quedó instalado en `main` para todos los modos;
+            // la escucha de señales del servidor cierra por la misma ruta que
+            // POST `/shutdown`.
+            #[cfg(windows)]
+            instalar_job_con_cierre_de_arbol();
             daemon::run_supervised(addr, auto_restart, max_retries)
                 .await
                 .map_err(|e| CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string()))
@@ -1364,16 +1434,29 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
         } => {
             require_model_provisioned()?;
             let client = daemon_client();
-            if daemon_activo(&client).await {
-                let pid = read_daemon_pid().unwrap_or(0);
-                if json_mode {
-                    emit_raw_json(
-                        json!({ "status": "already_running", "daemon": "running", "pid": pid }),
-                    );
-                } else {
-                    println!("Daemon ya en ejecución (pid {}).", pid);
+            // Revalidación con reclamo matar-y-rearrancar (H-01): la vida del
+            // residual se comprueba por PID vivo más probe, no por probe solo ni
+            // pidfile solo. Sano → `already_running`; degradado → se reclama el
+            // árbol y se rearranca con salida 0 y payload `started`.
+            match clasificar_residual(&client).await {
+                EstadoResidual::Sano(pid) => {
+                    if json_mode {
+                        emit_raw_json(
+                            json!({ "status": "already_running", "daemon": "running", "pid": pid }),
+                        );
+                    } else {
+                        println!("Daemon ya en ejecución (pid {}).", pid);
+                    }
+                    return Ok(());
                 }
-                return Ok(());
+                EstadoResidual::Degradado { pid, motivo } => {
+                    eprintln!(
+                        "Daemon residual degradado ({}): se reclama el árbol y se rearranca.",
+                        motivo
+                    );
+                    reclamar_residual_degradado(&client, pid).await;
+                }
+                EstadoResidual::Parado => {}
             }
             let pid = daemon::spawn_background(auto_restart, max_retries).map_err(|e| {
                 CliError::new(
@@ -1411,73 +1494,42 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             Ok(())
         }
         DaemonCommands::Stop => {
+            // Parada unificada con deadline global (C1): graceful + árbol preciso
+            // por PID + verificación a nivel de sistema. El pidfile solo se borra
+            // tras muerte verificada (probe down + PID muerto/ausente); si el árbol
+            // sigue vivo se conserva la pista y se falla con exit 5.
             let client = daemon_client();
-            let fut = client.post(format!("http://{}/shutdown", DAEMON_ADDR)).send();
-            let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut).await;
-            match resp {
-                Ok(Ok(r)) if r.status().is_success() => {
-                    let _ = remove_daemon_pid_file();
-                    if json_mode {
-                        emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
-                    } else {
-                        println!("Señal de apagado enviada al daemon en {}.", DAEMON_ADDR);
-                    }
-                    Ok(())
+            stop_daemon_and_resident().await;
+            let pid = read_daemon_pid();
+            let vivo = pid.map(daemon::pid_vivo).unwrap_or(false);
+            let activo = daemon_activo(&client).await;
+            if !activo && !vivo {
+                let _ = remove_daemon_pid_file();
+                if json_mode {
+                    emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
+                } else {
+                    println!("Señal de apagado enviada al daemon en {}.", DAEMON_ADDR);
                 }
-                Ok(Ok(r)) => Err(CliError::new(
-                    ExitCode::Error,
-                    "daemon_error",
-                    format!("El daemon devolvió el código {}", r.status()),
-                )),
-                Ok(Err(_)) | Err(_) => {
-                    let _ = remove_daemon_pid_file();
-                    Err(CliError::new(
-                        ExitCode::DaemonUnreachable,
-                        "daemon_unreachable",
-                        format!("Daemon inalcanzable en {}", DAEMON_ADDR),
-                    ))
-                }
+                Ok(())
+            } else {
+                Err(CliError::new(
+                    ExitCode::DaemonUnreachable,
+                    "daemon_unreachable",
+                    format!(
+                        "El daemon no se apagó tras el deadline (pid {:?} sigue vivo en {})",
+                        pid, DAEMON_ADDR
+                    ),
+                ))
             }
         }
         DaemonCommands::Restart => {
-            // Restart determinista: Stop acotado + spawn + ready acotado con presupuesto global
-            // — sin heredar timeout 120s, sin let _ =, sin Ok falso
+            // Restart determinista sobre el ayudante único (C2/C3): sin doble techo
+            // `timeout(5s, wait_health_down(5s))` ni kill por PID duplicado; la
+            // parada unificada (deadline global) sirve a start/restart/cleanup/uninstall.
             let t_total = std::time::Instant::now();
             let budget = std::time::Duration::from_secs(12);
             let client = daemon_client();
-            let was_running = daemon_activo(&client).await;
-            if was_running {
-                // POST /shutdown acotado 1500ms (2*500ms probe + margen) — no hereda 120s
-                let shutdown_fut = client.post(format!("http://{}/shutdown", DAEMON_ADDR)).send();
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_millis(1500),
-                    shutdown_fut,
-                )
-                .await;
-                // wait_health_down 5s con kill determinista si no baja
-                let down_res =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), wait_health_down(&client, std::time::Duration::from_secs(5))).await;
-                let down_ok = matches!(down_res, Ok(Ok(())));
-                if !down_ok {
-                    if let Some(pid) = read_daemon_pid() {
-                        #[cfg(windows)]
-                        {
-                            let _ = std::process::Command::new("taskkill")
-                                .args(["/PID", &pid.to_string(), "/F"])
-                                .output();
-                        }
-                        #[cfg(unix)]
-                        {
-                            let _ = std::process::Command::new("kill")
-                                .args(["-9", &pid.to_string()])
-                                .output();
-                        }
-                    }
-                }
-                let _ = remove_daemon_pid_file();
-            } else {
-                let _ = remove_daemon_pid_file();
-            }
+            stop_daemon_and_resident().await;
             require_model_provisioned()?;
             let pid = daemon::spawn_background(false, 3).map_err(|e| {
                 CliError::new(
@@ -2043,14 +2095,88 @@ async fn handle_cleanup(
     Ok(())
 }
 
+/// Estado del residual al arrancar (H-01): vida real por PID vivo más probe,
+/// no por probe solo ni pidfile solo.
+enum EstadoResidual {
+    /// Probe responde y el PID de la pista está vivo: instancia sana única.
+    Sano(u32),
+    /// Probe y PID discrepan (colgado, pista rancia o sin pista): reclama y rearranca.
+    Degradado { pid: Option<u32>, motivo: &'static str },
+    /// Sin probe ni proceso: vía libre para arranque fresco.
+    Parado,
+}
+
+/// Clasifica el residual del daemon: sano, degradado o parado.
+async fn clasificar_residual(client: &reqwest::Client) -> EstadoResidual {
+    let pid = read_daemon_pid();
+    let probe = probe_health(client, DAEMON_ADDR).await;
+    match pid {
+        Some(p) if probe && daemon::pid_vivo(p) => EstadoResidual::Sano(p),
+        None if !probe => EstadoResidual::Parado,
+        Some(p) if !probe && !daemon::pid_vivo(p) => EstadoResidual::Parado,
+        _ => {
+            let motivo = if probe && pid.is_none() {
+                "probe responde sin pidfile"
+            } else if probe {
+                "probe responde con PID muerto"
+            } else {
+                "PID vivo sin probe (colgado)"
+            };
+            EstadoResidual::Degradado { pid, motivo }
+        }
+    }
+}
+
+/// Reclamo matar-y-rearrancar ante residual degradado (H-01): mata el árbol
+/// preciso por PID con verificación y deja vía libre para rearrancar desde cero.
+/// Sin kill por imagen para el daemon (comparte imagen con el CLI: se auto-mataría);
+/// el residente `qwen_tts` se reclama por su propio árbol preciso y, solo como
+/// último recurso documentado, por imagen en `avi-tts`. No emite payload.
+async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>) {
+    let inicio = std::time::Instant::now();
+    // 1) Graceful breve si el probe responde (no hereda el timeout de 120 s).
+    if probe_health(client, DAEMON_ADDR).await {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            client.post(format!("http://{}/shutdown", DAEMON_ADDR)).send(),
+        )
+        .await;
+        let restante = STOP_DEADLINE_GLOBAL
+            .checked_sub(inicio.elapsed())
+            .unwrap_or(std::time::Duration::from_millis(500));
+        let espera = std::cmp::min(restante, std::time::Duration::from_secs(3));
+        let _ = tokio::time::timeout(espera, wait_health_down(client, espera)).await;
+    }
+    // 2) Árbol preciso por PID con guarda anti-auto-muerte (imagen compartida).
+    if let Some(p) = pid {
+        if p != 0 && p != std::process::id() && daemon::pid_vivo(p) {
+            daemon::matar_arbol_por_pid(p);
+        }
+    }
+    // 3) Verificación con el restante del deadline global (probe down + PID muerto).
+    while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
+        let vivo = pid.map(daemon::pid_vivo).unwrap_or(false);
+        if !probe_health(client, DAEMON_ADDR).await && !vivo {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
 /// Fuente única de verdad para detener el daemon residente y `qwen_tts` huérfano,
-/// compartida por `handle_cleanup` y `handle_uninstall` (consolida el bloque 0 que
-/// ambas duplicaban con drift).
+/// al servicio de `start` (reclamo), `restart`, `cleanup` y `uninstall`.
 ///
-/// Secuencia: shutdown graceful (`POST /shutdown` + espera de `/health` down) si el
-/// daemon responde; fallback `#[cfg(windows)]` de kill por **PID** leído de
-/// `daemon.pid` cuando sigue vivo tras el intento graceful (daemon colgado que ignora
-/// `/shutdown`); kill de `qwen_tts.exe` por imagen; y `remove_daemon_pid_file()`.
+/// Parada unificada con deadline global (`STOP_DEADLINE_GLOBAL`): graceful
+/// (`POST /shutdown` acotado + espera de `/health` down) si el daemon responde;
+/// árbol preciso por PID (`taskkill /F /T /PID` en Windows, `kill -9` al grupo
+/// en Unix) con guarda anti-auto-muerte cuando sigue vivo; verificación posterior
+/// a nivel de sistema (probe + `pid_vivo`).
+///
+/// El pidfile solo se borra tras muerte verificada o pista rancia reconciliada
+/// (PID muerto + probe down); si el árbol sigue vivo se conserva la pista.
+/// Sin kill por imagen para el daemon (imagen compartida con el CLI); el
+/// residente `qwen_tts` (imagen distinta) se reclama en `avi-tts` con kill
+/// preciso primero e imagen solo como último recurso documentado.
 ///
 /// Por qué el fallback es por PID y nunca por imagen: daemon y CLI comparten la misma
 /// imagen `ai-voice-interconnector.exe` (el daemon es el mismo binario lanzado con
@@ -2059,36 +2185,48 @@ async fn handle_cleanup(
 /// `pid != process::id()` previene la auto-muerte incluso si el PID leído fuera el del
 /// propio proceso.
 async fn stop_daemon_and_resident() {
+    let inicio = std::time::Instant::now();
     let client = daemon_client();
+    // 1) Graceful acotado si responde (no hereda el timeout de 120 s).
     if daemon_activo(&client).await {
         let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(1500),
             client
                 .post(format!("http://{}/shutdown", DAEMON_ADDR))
                 .send(),
         )
         .await;
-        let _ = wait_health_down(&client, std::time::Duration::from_secs(5)).await;
+        let restante = STOP_DEADLINE_GLOBAL
+            .checked_sub(inicio.elapsed())
+            .unwrap_or(std::time::Duration::from_millis(500));
+        let espera = std::cmp::min(restante, std::time::Duration::from_secs(3));
+        let _ = tokio::time::timeout(espera, wait_health_down(&client, espera)).await;
     }
-    #[cfg(windows)]
-    {
-        // Fallback: daemon que ignora /shutdown. Kill por PID (nunca por imagen:
-        // compartida con el CLI), con guarda contra auto-muerte.
-        if daemon_activo(&client).await {
-            if let Some(pid) = read_daemon_pid() {
-                if pid != std::process::id() {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/F", "/T", "/PID", &pid.to_string()])
-                        .output();
-                }
+    // 2) Árbol preciso por PID si sigue vivo (ambas plataformas, con guarda).
+    let pid = read_daemon_pid();
+    let vivo = pid.map(daemon::pid_vivo).unwrap_or(false);
+    let sigue_activo = daemon_activo(&client).await;
+    if sigue_activo || vivo {
+        if let Some(p) = pid {
+            if p != 0 && p != std::process::id() {
+                daemon::matar_arbol_por_pid(p);
             }
         }
-        // qwen_tts tiene imagen distinta al CLI: kill por nombre es seguro.
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/T", "/IM", "qwen_tts.exe"])
-            .output();
     }
-    let _ = remove_daemon_pid_file();
+    // 3) Verificación con el restante del deadline global.
+    while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
+        let vivo_ahora = read_daemon_pid().map(daemon::pid_vivo).unwrap_or(false);
+        if !daemon_activo(&client).await && !vivo_ahora {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    // 4) Borrado solo tras muerte verificada o pista rancia reconciliada.
+    let pid_final = read_daemon_pid();
+    let vivo_final = pid_final.map(daemon::pid_vivo).unwrap_or(false);
+    if !daemon_activo(&client).await && !vivo_final {
+        let _ = remove_daemon_pid_file();
+    }
 }
 
 async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> {

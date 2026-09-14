@@ -128,8 +128,9 @@ fn ultimo_hito() -> String {
 }
 
 /// Guard genérico: falla en vez de colgarse. Se llama en los polls ya
-/// existentes (`esperar_estado_daemon`); al expirar hace `panic!` con test,
-/// fase, transcurrido, techo y último hito. Inactivo sin `hito_inicio`.
+/// existentes (`esperar_estado_daemon`); al expirar mata el árbol best-effort
+/// (`reaper_ante_fallo`, H-01) y hace `panic!` con test, fase, transcurrido,
+/// techo y último hito. Inactivo sin `hito_inicio`.
 fn comprobar_guard(fase: &str) {
     let nombre = TEST_NOMBRE.with(|n| n.borrow().clone());
     let limite = TEST_LIMITE.with(|c| *c.borrow());
@@ -138,6 +139,7 @@ fn comprobar_guard(fase: &str) {
         let elapsed = t.elapsed();
         if elapsed > lim {
             TEST_LIMITE.with(|c| *c.borrow_mut() = None);
+            reaper_ante_fallo(&format!("guard:{}", fase));
             panic!(
                 "guardia de tiempo: test '{}' superó techo {:?} en fase '{}' (transcurrido {:.1} s; último hito: {})",
                 nombre,
@@ -150,6 +152,93 @@ fn comprobar_guard(fase: &str) {
     }
 }
 
+// ─── Verificación a nivel de sistema y reaper ruidoso (H-01, T6) ──────
+//
+// El producto reclama el residual al arrancar (matar-y-rearrancar con payload
+// `started`) y para con deadline global y verificación (`src/main.rs`:
+// `clasificar_residual`, `reclamar_residual_degradado`,
+// `stop_daemon_and_resident`; ayudantes SO `avi_daemon::{pid_vivo,
+// matar_arbol_por_pid, esperar_muerte_pid}`). La fixture verifica esa conducta
+// a nivel de sistema en vez de suponerla por HTTP. Fuente única de
+// matar/verificar: `avi_daemon`, sin duplicar lógica SO en el harness.
+
+/// Lee el PID de `daemon.pid` (espejo de solo-lectura de `read_daemon_pid` del
+/// producto): `None` si no hay pista o es ilegible.
+fn leer_pid_daemon() -> Option<u32> {
+    let path = avi_store::data_dir().join("daemon.pid");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let v: Value = serde_json::from_str(&content).ok()?;
+    v.get("pid")?.as_u64().map(|n| n as u32)
+}
+
+/// ¿Hay algo escuchando en `127.0.0.1:port`? Sondeo TCP breve, sin HTTP.
+/// Puertos propios: 8765 (daemon) y 8766 (residente `qwen_tts`).
+fn puerto_abierto(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(300),
+    )
+    .is_ok()
+}
+
+/// Reaper best-effort ante fallo (H-01, T6): mata el árbol preciso por PID con
+/// verificación acotada (8 s, deadline global del producto) y lo registra como
+/// hito. Nunca falla: un reaper que fallara enmascararía la causa original del
+/// `panic!` que lo invocó.
+fn reaper_ante_fallo(fase: &str) {
+    match leer_pid_daemon() {
+        Some(pid) if avi_daemon::pid_vivo(pid) => {
+            hito(&format!(
+                "reaper({}): árbol residual pid {} vivo, matando",
+                fase, pid
+            ));
+            avi_daemon::matar_arbol_por_pid(pid);
+            let muerto =
+                avi_daemon::esperar_muerte_pid(pid, std::time::Duration::from_secs(8));
+            hito(&format!("reaper({}): pid {} muerto={}", fase, pid, muerto));
+        }
+        Some(pid) => {
+            hito(&format!(
+                "reaper({}): pid {} ya muerto, sin árbol que matar",
+                fase, pid
+            ));
+        }
+        None => {
+            hito(&format!(
+                "reaper({}): sin pidfile, nada que matar por PID",
+                fase
+            ));
+        }
+    }
+}
+
+/// Verificación ruidosa de cero huérfanos tras el apagado (H-01, T6): el árbol
+/// debe estar muerto, los puertos 8765/8766 cerrados y el pidfile sin PID vivo
+/// (el producto lo borra tras muerte verificada). Falla con `panic!` detallado
+/// si queda resto: la suite nunca pasa en verde con huérfanos vivos.
+fn verificar_cero_huerfanos(contexto: &str) {
+    let pid = leer_pid_daemon();
+    let pid_vivo = pid.map(avi_daemon::pid_vivo).unwrap_or(false);
+    let p_daemon = puerto_abierto(8765);
+    let p_residente = puerto_abierto(8766);
+    let pidfile = avi_store::data_dir().join("daemon.pid");
+    let pidfile_existe = pidfile.exists();
+    assert!(
+        !pid_vivo && !p_daemon && !p_residente && !pidfile_existe,
+        "quedaron huérfanos tras {}: pid={:?} vivo={} puerto8765={} puerto8766={} pidfile={} (el apagado debe dejar cero restos a nivel SO)",
+        contexto,
+        pid,
+        pid_vivo,
+        p_daemon,
+        p_residente,
+        pidfile.display()
+    );
+    hito(&format!(
+        "{}: cero huérfanos verificados a nivel SO",
+        contexto
+    ));
+}
+
 // ─── Fixture por sesión del daemon (Tarea 1) ──────────────────────────
 //
 // Dueña única del ciclo de vida del daemon en la corrida pesada serial: un
@@ -159,23 +248,33 @@ fn comprobar_guard(fase: &str) {
 // bloquear el bind en `crates/avi-daemon/src/lib.rs:1244-1248`) y elimina la
 // clase de huérfanos por ciclos interrumpidos a mitad.
 //
-// Semántica que respeta (solo lectura del producto, sin modificarlo):
-// - Adhesión: `daemon start` reutiliza el residente si `/health` responde
-//   (`src/main.rs:1359-1368`, exit 0 `already_running` sin rearranque ni
-//   calentamiento nuevo); la fixture nunca rearranca un daemon observado
-//   como `running`.
-// - Rancio: la adhesión es por probe HTTP, no por pidfile: pidfile rancio
-//   con daemon muerto → probe falso → spawn fresco (parte de cero).
+// Semántica que verifica (cierre H-01: producto + harness):
+// - Revalidación con reclamo: la vida del residual se comprueba por PID vivo
+//   más probe (`clasificar_residual` en `src/main.rs`), no por probe solo ni
+//   pidfile solo. Sano (probe + PID vivo) → la fixture reutiliza sin
+//   rearrancar; degradado (probe sin PID vivo, PID vivo sin probe, probe sin
+//   pidfile) → `daemon start` reclama el árbol y rearranca con salida 0 y
+//   payload `started`. La fixture exige `started` cuando partió de
+//   detenido/degradado, nunca `already_running` ciego.
+// - Rancio reconciliado: pidfile con PID muerto y probe falso → vía libre,
+//   `start` fresco con `started` y pidfile reescrito.
 // - Readiness observada (intento 2): `daemon start` solo espera bind-ready
 //   (deadline 10 s, poll 250 ms en `src/main.rs:35-37`, retorna en cuanto
 //   `/health` responde), pero el warmup TTS corre en segundo plano y la
 //   inferencia solo es fiable con `warm == "warm"` (`daemon status` propaga
-//   `warm` desde `/health` vía `status_body` en `src/main.rs:2397-2416`); la
+//   `warm` desde `/health` vía `status_body` en `src/main.rs`); la
 //   fixture exige `daemon == esperado` MÁS `warm == "warm"`, sin los sleeps
 //   fijos (300/500 ms) que los ciclos por test suponían.
-// - Apagado acotado: `daemon stop` envía POST /shutdown con timeout 1500 ms
-//   (`src/main.rs:1405-1432`); la fixture observa la ausencia por poll en vez
-//   de suponerla tras un sleep.
+// - Apagado con reaper ruidoso: `daemon stop` unificada con deadline global
+//   de 8 s (`stop_daemon_and_resident` en `src/main.rs`); la fixture observa
+//   `stopped` por poll MÁS cero huérfanos a nivel de sistema (árbol muerto,
+//   puertos 8765/8766 cerrados, pidfile sin PID vivo vía
+//   `verificar_cero_huerfanos`) y falla si queda resto, en vez de suponer la
+//   ausencia tras un sleep o un solo probe HTTP.
+// - Guards con reaper: `comprobar_guard` y los `panic!` de
+//   `esperar_estado_daemon` (timeout o warm fallido) matan el árbol
+//   best-effort (`reaper_ante_fallo`) antes de fallar, para no abandonar
+//   huérfanos en vías anormales.
 //
 // Presupuesto explícito por test (serie permanente, sin tocar el producto):
 // techo = timeout del cliente HTTP del daemon, 120 s por petición
@@ -235,6 +334,7 @@ fn esperar_estado_daemon(esperado: &str, reintentos: u32) -> Value {
                 return ultimo;
             }
             if ultimo["warm"] == Value::String("warm_failed".to_string()) {
+                reaper_ante_fallo("esperar_estado_daemon(warm_failed)");
                 panic!(
                     "el warmup del daemon falló (warm_error: {}) (último: {})",
                     ultimo.get("warm_error").unwrap_or(&Value::Null),
@@ -244,46 +344,66 @@ fn esperar_estado_daemon(esperado: &str, reintentos: u32) -> Value {
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
+    reaper_ante_fallo(&format!("esperar_estado_daemon({})-agotado", esperado));
     panic!(
         "el daemon no alcanzó el estado '{}' (con warm) tras {} reintentos (último: {})",
         esperado, reintentos, ultimo
     );
 }
 
-/// Asegura el daemon caliente de la sesión (idempotente). Adhesión solo si ya
-/// está `running` Y `warm`; si está `stopped`, arranca una vez y falla
-/// explícito si el arranque no deja `running` observado. En todo caso espera
-/// (poll acotado, panic al agotar) a `warm == "warm"` antes de retornar.
+/// Asegura el daemon caliente de la sesión (idempotente). Revalidación
+/// coherente con matar-y-rearrancar (H-01, T6): la adhesión exige vida real
+/// (probe + PID vivo), no solo probe. Sano (running+warm con PID vivo) →
+/// reutiliza sin rearrancar; sano en calentamiento (running con PID vivo pero
+/// sin warm) → espera el warm sin rearrancar; degradado o detenido (sin PID
+/// vivo) → `daemon start` reclama o parte de cero con salida 0 y payload
+/// `started`. En todo caso espera (poll acotado, panic al agotar) a
+/// `warm == "warm"` antes de retornar.
 fn ensure_session_daemon() {
     let actual = estado_daemon();
-    if actual["daemon"] == Value::String("running".to_string())
-        && actual["warm"] == Value::String("warm".to_string())
-    {
-        hito("ensure_session_daemon: reutilización (running+warm observado)");
+    let pid = leer_pid_daemon();
+    let vivo = pid.map(avi_daemon::pid_vivo).unwrap_or(false);
+    let running = actual["daemon"] == Value::String("running".to_string());
+    let warm = actual["warm"] == Value::String("warm".to_string());
+    if running && warm && vivo {
+        hito("ensure_session_daemon: reutilización (sano: probe + PID vivo)");
         return;
     }
-    if actual["daemon"] != Value::String("running".to_string()) {
+    if running && vivo {
+        hito("ensure_session_daemon: sano en calentamiento (PID vivo), esperando warm (50 reintentos)");
+    } else {
         hito(&format!(
-            "ensure_session_daemon: arranque (daemon observado: {})",
-            actual.get("daemon").unwrap_or(&Value::Null)
+            "ensure_session_daemon: residual degradado o detenido (daemon={}, warm={}, pid={:?} vivo={}), reclamo vía start",
+            actual.get("daemon").unwrap_or(&Value::Null),
+            actual.get("warm").unwrap_or(&Value::Null),
+            pid,
+            vivo
         ));
-        let (code, actual) = run_json(&["--json", "daemon", "start"]);
+        let (code, nuevo) = run_json(&["--json", "daemon", "start"]);
         assert_eq!(
             code, 0,
-            "el arranque de sesión debe salir 0 (fue {}): {}",
-            code, actual
+            "el reclamo/arranque de sesión debe salir 0 (fue {}): {}",
+            code, nuevo
         );
-        assert_eq!(actual["daemon"], Value::String("running".to_string()));
-        hito("ensure_session_daemon: start exit 0, esperando warm (50 reintentos)");
-    } else {
-        hito("ensure_session_daemon: running sin warm, esperando warm (50 reintentos)");
+        assert_eq!(nuevo["daemon"], Value::String("running".to_string()));
+        // Sin PID vivo previo solo cabe fresco o reclamo: el producto responde
+        // `started`, nunca `already_running` ciego.
+        assert_eq!(
+            nuevo["status"],
+            Value::String("started".to_string()),
+            "desde detenido/degradado el start debe reclamar o partir de cero (started): {}",
+            nuevo
+        );
+        hito("ensure_session_daemon: start exit 0 (started), esperando warm (50 reintentos)");
     }
     esperar_estado_daemon("running", 50);
 }
 
-/// Apagado único de la sesión (idempotente). Tolera exit 0 (`shutdown_sent`)
-/// y exit 5 (ya detenido); cualquier otro código falla explícito. La ausencia
-/// queda observada por poll, no supuesta tras un sleep.
+/// Apagado único de la sesión (idempotente) con reaper ruidoso (H-01, T6).
+/// Tolera exit 0 (`shutdown_sent`) y exit 5 (ya detenido); cualquier otro
+/// código falla explícito. La ausencia queda observada por poll (`stopped`)
+/// MÁS cero huérfanos a nivel de sistema (árbol, puertos 8765/8766, pidfile):
+/// `verificar_cero_huerfanos` falla si queda resto.
 fn shutdown_session_daemon() {
     let (code, actual) = run_json(&["--json", "daemon", "stop"]);
     assert!(
@@ -297,7 +417,8 @@ fn shutdown_session_daemon() {
         hito("shutdown_session_daemon: stop exit 5 tolerado (ya detenido), esperando stopped (75 reintentos)");
     }
     esperar_estado_daemon("stopped", 75);
-    hito("shutdown_session_daemon: apagado ok (stopped observado)");
+    verificar_cero_huerfanos("shutdown_session_daemon");
+    hito("shutdown_session_daemon: apagado ok (stopped + cero huérfanos SO)");
 }
 
 /// Carga una fixture dorada desde `tests/golden/`.
@@ -1436,11 +1557,12 @@ mod tts {
             hito_fin("tts::daemon_start_exito (skip sin provisión)");
             return;
         }
-        // Precondición observada (dueña: fixture de sesión): partir de detenido.
+        // Precondición observada (dueña: fixture de sesión): partir de detenido
+        // con cero huérfanos verificados a nivel SO.
         shutdown_session_daemon();
         let (code, actual) = run_json(&["--json", "daemon", "start"]);
-        // `start` con adhesión: exit 0 tanto en spawn fresco como en
-        // `already_running` (sin rearranque ni calentamiento nuevo).
+        // Desde detenido solo cabe fresco o reclamo: exit 0 con `started`
+        // (matar-y-rearrancar, H-01), nunca `already_running` ciego.
         assert!(
             code == 0,
             "daemon start debe salir 0, fue {} reason {:?}",
@@ -1448,10 +1570,23 @@ mod tts {
             actual
         );
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
+        assert_eq!(
+            actual["status"],
+            Value::String("started".to_string()),
+            "desde detenido el start debe partir de cero (started): {}",
+            actual
+        );
+        // Presencia a nivel de sistema, no solo probe: pidfile con PID vivo.
+        let pid = leer_pid_daemon();
+        assert!(
+            pid.map(avi_daemon::pid_vivo).unwrap_or(false),
+            "el daemon recién arrancado debe estar vivo a nivel SO (pid {:?})",
+            pid
+        );
         // Verificar status running (observado por la fixture, sin sleeps fijos).
         esperar_estado_daemon("running", 50);
-        // Cleanup garantizado por la fixture: apagado único con ausencia
-        // observada (convención de la sesión: sin huérfanos al cerrar).
+        // Cleanup garantizado por la fixture: apagado único con cero huérfanos
+        // verificados a nivel SO (convención de la sesión).
         shutdown_session_daemon();
         let (code3, actual3) = run_json(&["--json", "daemon", "status"]);
         assert_eq!(code3, 0);
@@ -1473,15 +1608,39 @@ mod tts {
             hito_fin("tts::daemon_restart_rearma (skip sin provisión)");
             return;
         }
-        // Base observada: daemon en ejecución (adhesión si la sesión ya arrancó).
+        // Base observada: daemon en ejecución (revalidado con reclamo por la
+        // fixture si el residual estuviera degradado).
         ensure_session_daemon();
+        let previo = leer_pid_daemon();
         let (code, actual) = run_json(&["--json", "daemon", "restart"]);
         assert_eq!(code, 0, "daemon restart debe salir 0");
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
         assert!(actual.get("pid").is_some() || actual.get("status").is_some());
+        // Rearme a nivel de sistema: el PID nuevo está vivo y el árbol previo,
+        // si cambió el PID, quedó muerto (sin huérfano del ciclo anterior).
+        let nuevo = actual
+            .get("pid")
+            .and_then(|p| p.as_u64())
+            .map(|n| n as u32)
+            .or_else(leer_pid_daemon);
+        assert!(
+            nuevo.map(avi_daemon::pid_vivo).unwrap_or(false),
+            "tras restart el daemon debe estar vivo a nivel SO (pid {:?})",
+            nuevo
+        );
+        if let (Some(p), Some(q)) = (previo, nuevo) {
+            if p != q {
+                assert!(
+                    !avi_daemon::pid_vivo(p),
+                    "tras restart el árbol previo no debe quedar vivo (pid {})",
+                    p
+                );
+            }
+        }
         // Status debe seguir running (observado, sin sleeps fijos).
         esperar_estado_daemon("running", 50);
-        // Restaurar detenido (convención de la sesión: sin huérfanos al cerrar).
+        // Restaurar detenido con cero huérfanos verificados a nivel SO
+        // (convención de la sesión).
         shutdown_session_daemon();
         hito_fin("tts::daemon_restart_rearma");
     }
@@ -1503,6 +1662,14 @@ mod tts {
         // Endurecida: antes condicional (pasaba sin verificar si no estaba
         // running); ahora el `running` se exige porque la fixture lo garantiza.
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
+        // Presencia a nivel de sistema además del probe: el PID de la pista
+        // está vivo (revalidación matar-y-rearrancar, H-01).
+        let pid = leer_pid_daemon();
+        assert!(
+            pid.map(avi_daemon::pid_vivo).unwrap_or(false),
+            "con status running el PID de la pista debe estar vivo (pid {:?})",
+            pid
+        );
         // Cuando está running, el fixture running debe coincidir (schema_version 3)
         assert_eq!(actual["schema_version"], Value::String("3".to_string()));
         let expected = fixture("cli_daemon_status_running.json");
@@ -1562,7 +1729,8 @@ mod tts {
             hito_fin("tts::daemon_start_con_auto_restart (skip sin provisión)");
             return;
         }
-        // Precondición observada (dueña: fixture de sesión): partir de detenido.
+        // Precondición observada (dueña: fixture de sesión): partir de detenido
+        // con cero huérfanos verificados a nivel SO.
         shutdown_session_daemon();
         // Start con supervisor habilitado y max 1 (no debe fallar en estado sano)
         let (code, actual) = run_json(&[
@@ -1575,8 +1743,22 @@ mod tts {
         ]);
         assert_eq!(code, 0, "daemon start --auto-restart debe salir 0");
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
+        // Desde detenido: fresco con `started` y PID vivo a nivel SO.
+        assert_eq!(
+            actual["status"],
+            Value::String("started".to_string()),
+            "desde detenido el start debe partir de cero (started): {}",
+            actual
+        );
+        let pid = leer_pid_daemon();
+        assert!(
+            pid.map(avi_daemon::pid_vivo).unwrap_or(false),
+            "el daemon recién arrancado debe estar vivo a nivel SO (pid {:?})",
+            pid
+        );
         esperar_estado_daemon("running", 50);
-        // Stop no debe reintentar (graceful): ausencia observada por la fixture.
+        // Stop no debe reintentar (graceful): ausencia observada por la fixture
+        // más cero huérfanos a nivel SO.
         shutdown_session_daemon();
         let (_, actual2) = run_json(&["--json", "daemon", "status"]);
         assert_eq!(
@@ -1585,6 +1767,92 @@ mod tts {
             "tras stop no debe reintentar"
         );
         hito_fin("tts::daemon_start_con_auto_restart");
+    }
+
+    /// Prueba pesada de limpieza de H-01 (T6): cero huérfanos tras aborto
+    /// simulado. Fase 1 (caída del padre: pidfile borrado con daemon vivo) →
+    /// `start` reclama el árbol (payload `started`, PID previo muerto). Fase 2
+    /// (timeout sin graceful: árbol matado sin POST /shutdown, pista rancia) →
+    /// `start` parte de cero con `started`. Cierra con cero huérfanos
+    /// verificados a nivel SO. H-07/clonado fuera de alcance: si la raíz roja
+    /// del baseline interfiere, se documenta sin arreglarla.
+    #[test]
+    fn h01_aborto_simulado_reclama_y_no_deja_huerfanos() {
+        hito_inicio_pesado("tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos");
+        let _guard = STATE_LOCK.lock().unwrap();
+        // Skip sin efectos: no tocar el ciclo si no hay provisión.
+        if !tts_modelo_registrado() {
+            eprintln!("[daemon] skip: sin modelo TTS provisionado para aborto simulado");
+            hito_fin("tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos (skip sin provisión)");
+            return;
+        }
+        // Precondición: detenido con cero huérfanos verificados.
+        shutdown_session_daemon();
+        // Fase 1 — caída del padre: daemon vivo sin pidfile (el dueño anterior
+        // murió sin limpiar). El próximo `start` debe reclamar, no adherirse.
+        ensure_session_daemon();
+        let pid_a = leer_pid_daemon().expect("tras ensure debe haber pidfile");
+        assert!(
+            avi_daemon::pid_vivo(pid_a),
+            "el daemon de sesión debe estar vivo (pid {})",
+            pid_a
+        );
+        std::fs::remove_file(avi_store::data_dir().join("daemon.pid"))
+            .expect("la caída simulada debe poder borrar el pidfile");
+        hito(&format!(
+            "aborto simulado (fase 1): pidfile borrado con daemon vivo (pid {})",
+            pid_a
+        ));
+        let (code, actual) = run_json(&["--json", "daemon", "start"]);
+        assert_eq!(
+            code, 0,
+            "el start tras caída del padre debe reclamar y salir 0: {}",
+            actual
+        );
+        assert_eq!(
+            actual["status"],
+            Value::String("started".to_string()),
+            "tras caída el start debe reclamar (started), no adherirse: {}",
+            actual
+        );
+        esperar_estado_daemon("running", 50);
+        assert!(
+            !avi_daemon::pid_vivo(pid_a),
+            "el reclamo debe haber matado el árbol residual (pid {} sigue vivo)",
+            pid_a
+        );
+        let pid_b = leer_pid_daemon().expect("tras reclamo debe haber pidfile fresco");
+        assert!(
+            avi_daemon::pid_vivo(pid_b),
+            "el daemon reclamado debe estar vivo (pid {})",
+            pid_b
+        );
+        hito("aborto simulado (fase 1): reclamo ok, residual muerto y fresco vivo");
+        // Fase 2 — timeout/aborto sin graceful: se mata el árbol sin POST
+        // /shutdown (la pista queda rancia a propósito). El próximo `start`
+        // parte de cero con `started`.
+        avi_daemon::matar_arbol_por_pid(pid_b);
+        avi_daemon::esperar_muerte_pid(pid_b, std::time::Duration::from_secs(8));
+        hito(&format!(
+            "aborto simulado (fase 2): árbol matado sin graceful (pid {})",
+            pid_b
+        ));
+        let (code2, actual2) = run_json(&["--json", "daemon", "start"]);
+        assert_eq!(
+            code2, 0,
+            "el start tras aborto sin graceful debe salir 0: {}",
+            actual2
+        );
+        assert_eq!(
+            actual2["status"],
+            Value::String("started".to_string()),
+            "tras aborto el start debe partir de cero (started): {}",
+            actual2
+        );
+        esperar_estado_daemon("running", 50);
+        // Cierre: cero huérfanos verificados a nivel SO.
+        shutdown_session_daemon();
+        hito_fin("tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos");
     }
 
     #[test]
@@ -1611,7 +1879,7 @@ mod tts {
             hito_fin("tts::translate_con_daemon_delega (skip sin provisión)");
             return;
         }
-        // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
+        // Daemon caliente de la sesión (revalidación con reclamo; sin ciclo propio ni sleeps).
         ensure_session_daemon();
         let (code, actual) = run_json(&[
             "--json",
@@ -1640,10 +1908,21 @@ mod tts {
         // Aislamiento total: la ausencia debe observarse sin carreras con
         // usuarios del daemon (serie de inferencia + ciclo de sesión).
         let _tts = lock_tts();
-        // Partición previa: fixture detenida con ausencia observada (sin
-        // sleeps). No se rearranca: el próximo `ensure_session_daemon` la
+        // Partición previa: fixture detenida con ausencia observada a nivel SO
+        // (sin sleeps). No se rearranca: el próximo `ensure_session_daemon` la
         // repara bajo demanda, así que el orden de ejecución no importa.
         shutdown_session_daemon();
+        // La ausencia es real a nivel SO (no solo HTTP): con matar-y-rearrancar
+        // el `start` solo ocurre explícito, nunca implícito en delegación, así
+        // que el exit 5 sigue observable.
+        assert!(
+            !puerto_abierto(8765),
+            "sin daemon el puerto 8765 debe estar cerrado a nivel SO"
+        );
+        assert!(
+            leer_pid_daemon().map(avi_daemon::pid_vivo).unwrap_or(false) == false,
+            "sin daemon no debe haber PID vivo en la pista"
+        );
         let (code, actual) = run_json(&[
             "--json",
             "--daemon",
@@ -1670,7 +1949,7 @@ mod tts {
             hito_fin("tts::clone_con_daemon_delega (skip sin Base)");
             return;
         }
-        // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
+        // Daemon caliente de la sesión (revalidación con reclamo; sin ciclo propio ni sleeps).
         ensure_session_daemon();
         let name = etiqueta_unica("clon_daemon");
         let (code, actual) = run_json(&[
@@ -1702,7 +1981,7 @@ mod tts {
             hito_fin("tts::dub_daemon_passthrough (skip sin modelos/audio)");
             return;
         }
-        // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
+        // Daemon caliente de la sesión (revalidación con reclamo; sin ciclo propio ni sleeps).
         ensure_session_daemon();
         let (code, actual) = run_json(&[
             "--json",
@@ -1762,7 +2041,7 @@ mod tts {
             hito_fin("tts::dub_daemon_con_traduccion (skip sin CT2)");
             return;
         }
-        // Daemon caliente de la sesión (adhesión; sin ciclo propio ni sleeps).
+        // Daemon caliente de la sesión (revalidación con reclamo; sin ciclo propio ni sleeps).
         ensure_session_daemon();
         let (code, actual) = run_json(&[
             "--json",
