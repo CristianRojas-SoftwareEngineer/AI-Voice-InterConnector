@@ -33,10 +33,13 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 |---|---|---|
 | `/health` | GET | `status:"ready"` + handshake de `schema_version` + estado de warmup `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla) |
 | `/synthesize` | POST | Síntesis con progreso streaming NDJSON, evento final `result` (`audio_b64`, WAV 24 kHz) |
-| `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), VAD para clips largos |
-| `/voices` | GET | Voces registradas |
-| `/voices/precompute` | POST | Clonado vía `clone_voice` |
-| `/shutdown` | POST | Apagado limpio |
+| `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), VAD para clips largos (feature `native-stt`) |
+| `/translate` | POST | Traducción CT2 residente (feature `native-translation`) |
+| `/voices/clone` | POST | Clonado (`{name, speech, precomputed:false}`, sin precompute) |
+| `/dub` | POST | Pipeline transcribe→translate→synthesize |
+| `/shutdown` | POST | Apagado limpio (misma ruta que Ctrl+C/SIGTERM: kill preciso del residente + `notify_one()`) |
+
+Son 7 rutas públicas (podados `GET /voices` y `POST /voices/precompute`; sin legado, ver `docs/CLI/commands/DAEMON.md`).
 
 El handshake es estricto: un daemon de otra `schema_version` se trata como no utilizable.
 
@@ -45,12 +48,14 @@ Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediat
 ## Comandos del Daemon
 
 ```bash
-ai-voice-interconnector daemon start     # inicio en segundo plano (spawn_background + daemon.pid)
-ai-voice-interconnector daemon serve     # primer plano
+ai-voice-interconnector daemon start     # revalida el residual (sano → already_running; degradado → reclama el árbol y rearranca con started)
+ai-voice-interconnector daemon serve     # primer plano (escucha Ctrl+C/SIGTERM por la misma ruta que POST /shutdown)
 ai-voice-interconnector daemon status    # GET /health → running/stopped, además del estado `warm` para diagnóstico
-ai-voice-interconnector daemon stop      # POST /shutdown (borra daemon.pid)
-ai-voice-interconnector daemon restart   # stop + spawn_background automático
+ai-voice-interconnector daemon stop      # parada unificada con deadline global de 8 s (graceful + árbol preciso + verificación; borra daemon.pid solo tras muerte verificada)
+ai-voice-interconnector daemon restart   # parada unificada + arranque fresco (presupuesto 12 s)
 ```
+
+Cierre H-01: Ctrl+C ejecuta limpieza acotada de 2 s y sale con 130 preservado; `serve` en Windows corre bajo Job `KILL_ON_JOB_CLOSE` (al morir el daemon el SO cierra el árbol, residente incluido); `stop`/`restart` comparten el ayudante único `stop_daemon_and_resident` y `stop` falla con exit 5 sin borrar la pista si el árbol sigue vivo.
 
 Despacho desde el CLI: `--daemon` fuerza IPC (exit 5 si no responde), `--no-daemon` fuerza proceso local, sin flags autodetecta.
 

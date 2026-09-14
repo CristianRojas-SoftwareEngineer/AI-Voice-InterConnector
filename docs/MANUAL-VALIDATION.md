@@ -155,6 +155,8 @@ ai-voice-interconnector daemon stop
 
 # Confirmar que se detuvo
 ai-voice-interconnector daemon status
+
+# Confirmar cero huérfanos a nivel SO (H-01): sin `ai-voice-interconnector` ni `qwen_tts` residuales, puertos 8765/8766 cerrados y `daemon.pid` sin PID vivo
 ```
 
 ## 9. Casos de error esperados

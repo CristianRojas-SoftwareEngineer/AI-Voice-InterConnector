@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 2 resueltos (H-04 ✅, H-02 ✅) — 12 pendientes
+- **Estado**: 3 resueltos (H-04 ✅, H-02 ✅, H-01 ✅) — 11 pendientes
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -53,13 +53,13 @@
 
 ### H-01 — Abortos y fallos dejan daemon + motor huérfanos
 
-- **Severidad**: 🔴 Crítica · **Área**: ciclo de vida (`crates/avi-daemon/src/spawn.rs`, apagado en `src/main.rs:1405-1433`)
-- **Síntoma**: toda vía anormal (aborto externo, timeout, panic del test antes del apagado) deja vivos a `ai-voice-interconnector` + `qwen_tts`, ociosos, ocupando puertos y ficheros. Observado en 4 ocasiones en un solo día; un antecedente consumió 8 horas de CPU.
-- **Causa**: el apagado solo corre en la vía feliz; ningún guard (`Drop`, watchdog, reaper) lo garantiza en vías anormales. Demostrado por eliminación (los procesos sobreviven a la muerte de su padre).
-- **Impacto**: quema de energía, puertos ocupados, y cada huérfano contamina la siguiente corrida (ver H-05).
-- **Corrección propuesta**: apagado garantizado (guard de scope + watchdog con deadline que mata el árbol) y verificación de limpieza al cierre de cada test pesado.
-- **Relaciones**: alimenta a H-05 · comparte zona de código con H-03 · H-04 lo vuelve indetectable a tiempo.
-- **Decisión requerida**: sí — ¿watchdog en producto, en harness, o en ambos?
+- **Severidad**: 🔴 Crítica · **Área**: ciclo de vida (`crates/avi-daemon/src/spawn.rs`, `crates/avi-daemon/src/lib.rs:1152-1342`, `crates/avi-tts/src/lib.rs:336`, `src/main.rs:355-411,1409-1572,2098-2230`)
+- **Síntoma**: toda vía anormal (aborto externo, timeout, panic del test antes del apagado) dejaba vivos a `ai-voice-interconnector` + `qwen_tts`, ociosos, ocupando puertos y ficheros. Observado en 4 ocasiones en un solo día; un antecedente consumió 8 horas de CPU.
+- **Causa**: demostrada por lectura y por eliminación: el apagado solo corría en la vía feliz —el handler Ctrl+C hacía `exit(130)` sin limpieza (`src/main.rs:355`), `Stop` borraba el pidfile aunque el proceso siguiera vivo, `Restart` acumulaba doble techo y kill por PID duplicado sin árbol del residente, `serve` no escuchaba señales, el residente se mataba por imagen global y la fixture se adhería por probe sin revalidar (`already_running` ciego)—. Los procesos sobrevivían a la muerte de su padre.
+- **Corrección (implementada)**: cierre estructural en producto + harness. Producto: handler Ctrl+C con limpieza acotada de 2 s y exit 130 preservado (`CTRL_C_LIMPIEZA_DEADLINE`); Job `KILL_ON_JOB_CLOSE` en la rama `Serve` (Windows) más árbol matable por PID con verificación (`matar_arbol_por_pid`: `taskkill /F /T` en Windows, `kill -9` al grupo en Unix); reclamo matar-y-rearrancar al arrancar (`clasificar_residual` por PID vivo + probe: sano → `already_running`, degradado → se reclama el árbol y se rearranca con salida 0 y payload `started`); parada unificada con deadline global de 8 s (`stop_daemon_and_resident` al servicio de reclamo, stop, restart, cleanup y uninstall: graceful 1,5 s + espera 3 s + árbol preciso + verificación, borrado del pidfile solo tras muerte verificada y exit 5 sin borrar pista si el árbol sigue vivo); `Restart` sobre el ayudante único sin doble techo ni kill duplicado; `serve` escucha Ctrl+C/SIGTERM por la misma ruta que `POST /shutdown` y `shutdown_handler` mata el árbol preciso del residente primero, con kill por imagen solo como último recurso documentado con verificación inmediata; residente sin breakaway y `Drop` como cierre por árbol. Harness: `verificar_cero_huerfanos` (árbol muerto + puertos 8765/8766 cerrados + pidfile sin PID vivo, `panic!` si queda resto), reaper ante techo, timeout o `warm_failed`, `ensure` que revalida y prueba pesada nueva `tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos` (reclamo con `started` + cero huérfanos a nivel SO). Estado: ✅ Implementado (commit a908ac6).
+- **Impacto resuelto**: suite `cargo test --all` en verde 112/0 sobre el baseline 96/14 (raíz `clone_con_daemon_delega` + cascada `STATE_LOCK`, sin tocar clonado) y verificación SO post-suite sin `qwen_tts.exe` ni `ai-voice-interconnector.exe` —cero huérfanos—; el residual degradado ya no contamina la siguiente corrida (reclamo con `started`).
+- **Relaciones**: alimentaba a H-05 (ahora diagnosticable con traza H-04 + reclamo H-01) · comparte zona con H-03 (siguiente del cluster: stdio del lanzamiento) · H-02 reduce su superficie (sin subprocess que re-lanzar) · H-04 lo vuelve detectable a tiempo.
+- **Decisión requerida**: resuelta — producto + harness; matar-y-rearrancar ante residual degradado; exit 130 preservado con limpieza acotada; `started` tras reclamo; kill por imagen solo como último recurso documentado (residente).
 
 ### H-02 — El warmup se cuelga sin deadline visible
 
@@ -196,10 +196,10 @@
 ```
 H-04 ✅ (traza del residente) — stderr → logs/qwen3-tts_*.log + try_wait en wait_health (commit 865d236)
  ├─ desbloquea ─> H-02 ✅ (deadline de warmup 40 s + fallback subprocess eliminado, commit 30f7cf1)
- ├─ desbloquea ─> H-05 (degradación por reutilización)
- └─ comparte zona ─> H-03 (streams del lanzamiento) ── H-01 (huérfanos)
-H-01 ── alimenta ──> H-05 (residual degradado)
-H-02 ✅ ── reduce superficie de ──> H-01 (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
+ ├─ desbloquea ─> H-05 (degradación por reutilización, ahora diagnosticable con H-01 ✅)
+ └─ comparte zona ─> H-03 (streams del lanzamiento, siguiente del cluster) ── H-01 ✅ (cierre estructural: reclamo + parada unificada + verificación SO)
+H-01 ✅ ── contenía ──> H-05 (residual degradado: ahora se reclama con `started`)
+H-02 ✅ ── reduce superficie de ──> H-01 ✅ (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
 H-02 ✅ estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos)
 H-09 · H-13 ── independientes (provisión/medición)
 H-10 · H-11 ── triviales aislados (relleno)
@@ -210,8 +210,9 @@ H-12 ── última (toca UX de audio + humo de tests)
 
 **Orden recomendado (con fundamento)**:
 
-1. **H-04 ✅** — traza del residente implementada (stderr→log + `try_wait`) — base observable e higiénica (misma zona: lanzamiento del daemon); **luego H-02 + H-05** con traza ya visible, **re-midiendo H-14**. Fundamento: sin traza no hay diagnóstico posible y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236) y H-02 ✅ (30f7cf1) implementados; H-05 y H-14 quedan habilitados.
-2. **H-09 + H-13** — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup.
-3. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
-4. **H-10 + H-11** — triviales aislados.
-5. **H-12 última** — requiere la decisión de H-08 ya resuelta y ciclo de vida estable.
+1. **H-04 ✅ — H-02 ✅ — H-01 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s y cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO) — base observable y sin huérfanos (misma zona: lanzamiento del daemon); **luego H-03 + H-05** con traza ya visible y reclamo, **re-midiendo H-14**. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1) y H-01 ✅ implementados; H-05 diagnosticable, H-03 siguiente del cluster y H-14 habilitado.
+2. **H-03 + H-05** — siguiente del cluster ciclo de vida: auditar los tres streams en el lanzamiento (H-03, misma zona `spawn.rs`) e investigar la degradación por reutilización con traza H-04 y reclamo H-01 ya disponibles (H-05 diagnosticable).
+3. **H-09 + H-13** — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup.
+4. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
+5. **H-10 + H-11** — triviales aislados.
+6. **H-12 última** — requiere la decisión de H-08 ya resuelta y ciclo de vida estable.

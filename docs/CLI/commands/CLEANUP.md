@@ -8,7 +8,7 @@ La investigación examinó la implementación Rust del comando `cleanup` explora
 
 **Diseño de `cleanup`:** Es un comando de borrado quirúrgico granular con banderas de selección combinables (`--voices`, `--synthetic-speech`, `--model`, `--all` como unión, `--dry-run`, `--yes/-y`). Nunca toca la caché completa de HuggingFace ni datos de otros proyectos, y **nunca borra binario ni PATH** — solo `uninstall` lo hace (`src/main.rs:318`). `cleanup` sin flags → `InvalidInput` exit 2 `usage_error` (`src/main.rs:1589`). Devuelve payload `--json` con `removed` + `dry_run` (`src/main.rs:1678`).
 
-**Implementación:** El handler `handle_cleanup` (`src/main.rs:1579`) calcula `do_voices/do_speech/do_model` a partir de los flags (`src/main.rs:1596`), construye la lista de candidatas existentes (defensa en profundidad por `MODEL_REVISIONS` + `hf_cache_dir()`/`xet_cache_dir()`/`ct2_cache_dir()`), gestiona gate `dry-run` (lista sin borrar), confirmación interactiva (`--yes` la omite), y ejecuta borrado selectivo por branch. `stop_daemon_and_resident()` (`src/main.rs:1847`) es el paso 0.
+**Implementación:** El handler `handle_cleanup` (`src/main.rs:1845`) calcula `do_voices/do_speech/do_model` a partir de los flags (`src/main.rs:1596`), construye la lista de candidatas existentes (defensa en profundidad por `MODEL_REVISIONS` + `hf_cache_dir()`/`xet_cache_dir()`/`ct2_cache_dir()`), gestiona gate `dry-run` (lista sin borrar), confirmación interactiva (`--yes` la omite), y ejecuta borrado selectivo por branch. `stop_daemon_and_resident()` (`src/main.rs:2187`, paso 0 en `src/main.rs:1983`) es parada unificada con deadline global de 8 s (graceful + árbol preciso + verificación).
 
 **Proceso de ejecución:** Gate `sin flags → 2` → resolución `--all` → construcción de candidatas (filtrado de existentes) → gate `dry-run` → confirmación (`--yes` o `y/yes/s/si/sí`) → branches `remove_hf_snapshot`/`remove_xet_cache`/`remove_ct2_cache`/`remove_dir_all` por categoría → emisión JSON `removed`/`dry_run`.
 
@@ -54,7 +54,7 @@ let do_model = model || all;
 2. **Cache `xet`** (`xet_cache_dir()` `crates/avi-store/src/lib.rs:517`): `~/.cache/huggingface/xet` + `.locks` limpiado atómicamente
 3. **Cache `ct2`** (`ct2_cache_dir()` `crates/avi-store/src/lib.rs:537`): `hf_cache_dir()/ct2` (`ct2_model_dir` por par)
 4. **Índice legado** (`data_dir()/models`): limpiado si existe
-5. Daemon detenido graceful (`stop_daemon_and_resident()` `src/main.rs:1847`) y temp huérfano `avi_*`/`ai-voice-interconnector-install-*` (`src/main.rs:1659`)
+5. Daemon detenido con parada unificada (`stop_daemon_and_resident()` `src/main.rs:2187`) y temp huérfano `avi_*`/`ai-voice-interconnector-install-*` (`src/main.rs:1926`)
 
 Cada ruta se filtra por existencia antes de borrar; `--model` nunca toca `voices/` ni `speech/`.
 
@@ -141,7 +141,7 @@ Nota de divergencia con oráculo `cli.py:2177`: el oráculo exigía `--json` con
 
 ### Integración con `handle_uninstall`
 
-`handle_uninstall` (`src/main.rs:1880`) es el **único** que borra binario y PATH. `cleanup --all` no lo invoca; expande a los tres flags y borra solo datos (`src/main.rs:327`). `uninstall` reutiliza `stop_daemon_and_resident()` y luego borra `data_dir()` entero + snapshots `MODEL_REVISIONS` + `xet` + temp + integración por SO (`windows_install_dir`/`remove_windows_user_path`/`spawn_uninstall_helper` en Windows, symlink/dir en Unix). Tolerancias del oráculo `CleanupResult`/`_uninstall_cleanup_data` no existen en Rust: `handle_cleanup` retorna `Result<(), CliError>` y `handle_uninstall` gestiona su propio flujo.
+`handle_uninstall` (`src/main.rs:2232`) es el **único** que borra binario y PATH. `cleanup --all` no lo invoca; expande a los tres flags y borra solo datos (`src/main.rs:327`). `uninstall` reutiliza la parada unificada `stop_daemon_and_resident()` (`src/main.rs:2254`, deadline 8 s con verificación) y luego borra `data_dir()` entero + snapshots `MODEL_REVISIONS` + `xet` + temp + integración por SO (`windows_install_dir`/`remove_windows_user_path`/`spawn_uninstall_helper` en Windows, symlink/dir en Unix). Tolerancias del oráculo `CleanupResult`/`_uninstall_cleanup_data` no existen en Rust: `handle_cleanup` retorna `Result<(), CliError>` y `handle_uninstall` gestiona su propio flujo.
 
 ---
 
