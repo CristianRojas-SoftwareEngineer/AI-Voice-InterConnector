@@ -42,6 +42,12 @@ const CTRL_C_LIMPIEZA_DEADLINE: std::time::Duration = std::time::Duration::from_
 /// (graceful + árbol preciso por PID + verificación a nivel de sistema).
 const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs(8);
 
+/// PID hijo en memoria desde el `spawn` (D-02): estrecha la ventana
+/// spawn→write del pidfile. El handler Ctrl+C lo reclama cuando aún no hay
+/// pidfile; se fija en la secuencia `Start` justo tras `spawn_background`.
+static PID_EN_MEMORIA: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
 /// CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2` (`ct2_model_dir`) → `model.bin`
 /// más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` autocontenidos).
 /// Incondicional cuando Marian está provisionado; idempotente por `mtime` solo sobre dirs
@@ -348,13 +354,20 @@ fn force_utf8() {
 /// preciso del daemon residual por PID con deadline breve y verificación
 /// (`taskkill /F /T /PID` en Windows con `CREATE_NO_WINDOW`, `kill -9` al
 /// grupo en Unix). Vencido el deadline sale igualmente con 130 sin colgarse.
+/// D-02: reclama el PID en memoria cuando aún no hay pidfile (ventana
+/// spawn→write), preservando 130 y el techo de 2 s.
 /// Guarda anti-auto-muerte: si el PID de la pista es el propio proceso
 /// (`daemon serve` en foreground), no se auto-mata; el cierre lo hace la
 /// escucha de señales del servidor por la misma ruta que POST `/shutdown`.
 /// Instalado en `main` antes del despacho: cubre todos los modos.
 fn install_sigint_handler() {
     ctrlc::set_handler(move || {
-        if let Some(pid) = read_daemon_pid() {
+        // D-02: pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
+        let pid = read_daemon_pid().or_else(|| {
+            let m = PID_EN_MEMORIA.load(std::sync::atomic::Ordering::Relaxed);
+            if m != 0 { Some(m) } else { None }
+        });
+        if let Some(pid) = pid {
             let propio = std::process::id();
             if pid != 0 && pid != propio {
                 daemon::matar_arbol_por_pid(pid);
@@ -1421,7 +1434,9 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // Job con cierre del árbol en el proceso longevo (Windows, H-01).
             // El handler SIGINT ya quedó instalado en `main` para todos los modos;
             // la escucha de señales del servidor cierra por la misma ruta que
-            // POST `/shutdown`.
+            // POST `/shutdown`. D-02: en Unix `serve` cierra por esa misma ruta
+            // sin pidfile ni auto-muerte del CLI (la guarda `pid != propio`
+            // protege al `serve` en foreground).
             #[cfg(windows)]
             instalar_job_con_cierre_de_arbol();
             daemon::run_supervised(addr, auto_restart, max_retries)
@@ -1465,6 +1480,10 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     format!("No se pudo lanzar el daemon: {}", e),
                 )
             })?;
+            // D-02: conservar el PID hijo en memoria desde el spawn para que el
+            // handler Ctrl+C lo reclame aunque aún no haya pidfile (ventana
+            // spawn → await → write).
+            PID_EN_MEMORIA.store(pid, std::sync::atomic::Ordering::Relaxed);
             await_daemon_ready(
                 &client,
                 DAEMON_ADDR,
@@ -2106,10 +2125,27 @@ enum EstadoResidual {
     Parado,
 }
 
+/// Predicado puro D-04 (testeable sin daemon): ante un `Parado` por probe/PID
+/// (sin probe ni proceso del daemon), hay residente-solo si el 8766 sigue
+/// abierto — entonces no hay vía libre, sino degradado para reclamo.
+#[allow(dead_code)]
+fn parado_con_residente_es_degradado(probe_daemon: bool, pid_vivo: bool, puerto8766_abierto: bool) -> bool {
+    !probe_daemon && !pid_vivo && puerto8766_abierto
+}
+
 /// Clasifica el residual del daemon: sano, degradado o parado.
+/// D-04: ante `Parado` se busca al residente (8766) antes de declarar vía
+/// libre; con residente vivo es degradado residente-solo para reclamo.
 async fn clasificar_residual(client: &reqwest::Client) -> EstadoResidual {
     let pid = read_daemon_pid();
     let probe = probe_health(client, DAEMON_ADDR).await;
+    // D-04: `Parado` con residente vivo no es vía libre.
+    if !probe && !pid.map(daemon::pid_vivo).unwrap_or(false) && puerto_residente_abierto() {
+        return EstadoResidual::Degradado {
+            pid,
+            motivo: "residente vivo sin daemon (Parado con 8766 abierto)",
+        };
+    }
     match pid {
         Some(p) if probe && daemon::pid_vivo(p) => EstadoResidual::Sano(p),
         None if !probe => EstadoResidual::Parado,
@@ -2127,11 +2163,41 @@ async fn clasificar_residual(client: &reqwest::Client) -> EstadoResidual {
     }
 }
 
-/// Reclamo matar-y-rearrancar ante residual degradado (H-01): mata el árbol
+/// ¿Hay algo escuchando en el puerto del residente (`127.0.0.1:8766`)?
+/// Sondeo TCP breve y síncrono, apto para verificaciones de reclamo sin async.
+#[allow(dead_code)]
+fn puerto_residente_abierto() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], 8766)),
+        std::time::Duration::from_millis(300),
+    )
+    .is_ok()
+}
+
+/// Predicado puro del reclamo Unix ante líder muerto (D-01, testeable sin
+/// plataforma): el reclamo queda verificado cuando el probe del daemon está
+/// caído, el PID del líder está muerto y el puerto 8766 está cerrado.
+#[allow(dead_code)]
+fn reclamo_unix_verificado(probe_daemon: bool, pid_vivo: bool, puerto8766_abierto: bool) -> bool {
+    !probe_daemon && !pid_vivo && !puerto8766_abierto
+}
+
+/// Reclamo matar-y-rearrancar ante residual degradado (H-01 + D-01 + D-04): mata el árbol
 /// preciso por PID con verificación y deja vía libre para rearrancar desde cero.
 /// Sin kill por imagen para el daemon (comparte imagen con el CLI: se auto-mataría);
 /// el residente `qwen_tts` se reclama por su propio árbol preciso y, solo como
-/// último recurso documentado, por imagen en `avi-tts`. No emite payload.
+/// último recurso documentado y verificado, por imagen en `avi-tts`. No emite payload.
+///
+/// D-01 (Unix): el daemon nace líder de sesión (`setsid`) y el residente hereda
+/// su grupo; muerto el líder, el grupo se disuelve y el residente reparentado
+/// sobrevive fuera del alcance del reclamo solo-por-PID-vivo. Ante líder muerto
+/// se reclama además por grupo (`kill -9 -<pgid>` vía `matar_arbol_por_pid`,
+/// que ya mata al grupo en Unix) con verificación por 8766 cerrado más PID sin
+/// viveza. Techo D-01: compilación + revisión lógica + unitarios
+/// no-plataformeros aquí; runtime Unix diferido a CI (prohibido simular Unix).
+/// D-04: ante `Parado` con residente vivo (PID, 8766 o imagen) se reclama su
+/// árbol antes de declarar fresco, con preciso-primero e imagen del residente
+/// solo como último recurso verificado (imagen del daemon prohibida).
 async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>) {
     let inicio = std::time::Instant::now();
     // 1) Graceful breve si el probe responde (no hereda el timeout de 120 s).
@@ -2153,11 +2219,38 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
             daemon::matar_arbol_por_pid(p);
         }
     }
-    // 3) Verificación con el restante del deadline global (probe down + PID muerto).
+    // 2b) D-01 (Unix): ante líder muerto con posible residente reparentado vivo,
+    // reclamar por grupo aunque el PID ya esté muerto (reutiliza la primitiva
+    // de grupo de `matar_arbol_por_pid`; la vía feliz Windows queda intacta).
+    #[cfg(unix)]
+    if let Some(p) = pid {
+        if p != 0 && p != std::process::id() && !daemon::pid_vivo(p) {
+            daemon::matar_arbol_por_pid(p);
+        }
+    }
+    // 2c) D-04: ante `Parado`/degradado residente-solo sin PID del daemon (o con
+    // residente que sobrevivió al árbol preciso), último recurso verificado por
+    // imagen del residente (nunca imagen del daemon). Preciso-primero ya se
+    // intentó arriba; solo si el 8766 sigue abierto se toca la imagen.
+    if puerto_residente_abierto() {
+        avi_tts::resident::kill_resident_process();
+    }
+    // 3) Verificación con el restante del deadline global (probe down + PID muerto;
+    // en Unix además 8766 cerrado ante líder muerto).
     while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
         let vivo = pid.map(daemon::pid_vivo).unwrap_or(false);
-        if !probe_health(client, DAEMON_ADDR).await && !vivo {
-            break;
+        let probe = probe_health(client, DAEMON_ADDR).await;
+        #[cfg(unix)]
+        {
+            if reclamo_unix_verificado(probe, vivo, puerto_residente_abierto()) {
+                break;
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if !probe && !vivo {
+                break;
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
@@ -2169,8 +2262,11 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
 /// Parada unificada con deadline global (`STOP_DEADLINE_GLOBAL`): graceful
 /// (`POST /shutdown` acotado + espera de `/health` down) si el daemon responde;
 /// árbol preciso por PID (`taskkill /F /T /PID` en Windows, `kill -9` al grupo
-/// en Unix) con guarda anti-auto-muerte cuando sigue vivo; verificación posterior
-/// a nivel de sistema (probe + `pid_vivo`).
+/// en Unix) con guarda anti-auto-muerte cuando sigue vivo; D-04: sin PID del
+/// daemon pero con residente vivo (8766 abierto) se reclama su árbol con
+/// preciso-primero e imagen del residente solo como último recurso verificado
+/// (imagen del daemon prohibida); verificación posterior
+/// a nivel de sistema (probe + `pid_vivo` + 8766 cerrado).
 ///
 /// El pidfile solo se borra tras muerte verificada o pista rancia reconciliada
 /// (PID muerto + probe down); si el árbol sigue vivo se conserva la pista.
@@ -2213,10 +2309,16 @@ async fn stop_daemon_and_resident() {
             }
         }
     }
+    // 2b) D-04: residente-solo sin PID del daemon (o superviviente al árbol
+    // preciso): último recurso verificado por imagen del residente, nunca del
+    // daemon. Preciso-primero ya se intentó arriba.
+    if puerto_residente_abierto() && !daemon_activo(&client).await && !pid.map(daemon::pid_vivo).unwrap_or(false) {
+        avi_tts::resident::kill_resident_process();
+    }
     // 3) Verificación con el restante del deadline global.
     while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
         let vivo_ahora = read_daemon_pid().map(daemon::pid_vivo).unwrap_or(false);
-        if !daemon_activo(&client).await && !vivo_ahora {
+        if !daemon_activo(&client).await && !vivo_ahora && !puerto_residente_abierto() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -2554,6 +2656,8 @@ fn daemon_pid_path() -> PathBuf {
     store::data_dir().join("daemon.pid")
 }
 
+/// Escribe el pidfile de forma atómica (D-02: sigue atómico pero tardío; el
+/// handler Ctrl+C ya no depende solo de él gracias al PID en memoria).
 fn write_daemon_pid(pid: u32) -> anyhow::Result<()> {
     let path = daemon_pid_path();
     if let Some(parent) = path.parent() {
@@ -2605,7 +2709,9 @@ async fn await_daemon_ready(
 }
 
 /// Construye el cuerpo JSON de `daemon status`. Función pura (testeable sin daemon):
-/// `stopped` cuando no es alcanzable (fixture intacta, sin campos extra); si es
+/// `stopped` cuando no es alcanzable (fixture intacta, sin campos extra; D-04: el
+/// `stopped` por probe incluye en `clasificar_residual` la búsqueda del residente
+/// por 8766 antes de declarar vía libre, sin cambiar este contrato); si es
 /// alcanzable, `running` con `engine` y `warm` (más `warm_error` cuando el warmup
 /// falló) leídos de `/health`. El `schema_version` lo añade `emit_raw_json`.
 fn status_body(
@@ -3482,5 +3588,25 @@ mod tests {
         );
         assert_eq!(failed["warm"], "warm_failed");
         assert_eq!(failed["warm_error"], "boom");
+    }
+
+    /// D-01: el predicado puro del reclamo Unix ante líder muerto solo verifica
+    /// con probe caído + PID muerto + 8766 cerrado (no-plataformero, hermético).
+    #[test]
+    fn reclamo_unix_verificado_exige_triple_cierre() {
+        assert!(reclamo_unix_verificado(false, false, false));
+        assert!(!reclamo_unix_verificado(true, false, false));
+        assert!(!reclamo_unix_verificado(false, true, false));
+        assert!(!reclamo_unix_verificado(false, false, true));
+    }
+
+    /// D-04: `Parado` con residente vivo (8766 abierto) es degradado para
+    /// reclamo, no vía libre (no-plataformero, hermético).
+    #[test]
+    fn parado_con_residente_vivo_es_degradado() {
+        assert!(parado_con_residente_es_degradado(false, false, true));
+        assert!(!parado_con_residente_es_degradado(false, false, false));
+        assert!(!parado_con_residente_es_degradado(true, false, true));
+        assert!(!parado_con_residente_es_degradado(false, true, true));
     }
 }

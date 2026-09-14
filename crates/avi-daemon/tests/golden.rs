@@ -112,9 +112,14 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
-// Ceguera deliberada del harness (H-01, T7): `send`/`get`/`post_json` ejercen
+// Ceguera deliberada del harness (H-01, T7 + D-03 + D-02 + D-05): `send`/`get`/`post_json` ejercen
 // el contrato JSON vía `oneshot` sin socket, spawn, señales, puertos ni
-// pidfile; nunca prueban ausencia de huérfanos (árbol/PID/puertos). La
+// pidfile; nunca prueban ausencia de huérfanos (árbol/PID/puertos) ni el
+// endurecimiento D-03 del harness (`STATE_LOCK` envenenado, reaper fuera de
+// polls, higiene de `TEST_LIMITE`) ni la ventana spawn→write ni señales/spawn
+// (D-02) ni crash con puerto ocupado y reclamo activo del árbol previo (D-05,
+// solo en `run_supervised`): sin campos nuevos en `DaemonState`, el
+// doble queda intacto y su límite es no reproducir el ciclo de vida real. La
 // ausencia real a nivel SO solo la verifica la serie pesada
 // (`tests/cli_golden.rs`: reaper ruidoso + `verificar_cero_huerfanos`).
 

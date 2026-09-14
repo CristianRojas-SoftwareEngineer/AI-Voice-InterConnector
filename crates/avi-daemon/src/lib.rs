@@ -1253,6 +1253,8 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
     let state = Arc::new(DaemonState::new()?);
     let app = build_router_with_state(state.clone());
 
+    // D-05: sin reclamo aquí; el reclamo activo del árbol propio previo con
+    // deadline y verificación vive solo en `run_supervised` (entre reintentos).
     let listener = TcpListener::bind(addr).await?;
     println!("Daemon nativo escuchando en http://{}", addr);
 
@@ -1290,6 +1292,10 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
     // termina cerrando los `Drop` del `Arc<DaemonState>` compartido → cierre
     // limpio sin `process::exit` (que no termina fiablemente el proceso en
     // Windows cuando el runtime está dentro de `axum::serve`).
+    // D-02: `serve` en Unix cierra por esta misma ruta sin pidfile ni
+    // auto-muerte del CLI (la guarda `pid != propio` del handler CLI protege al
+    // `serve` en foreground; la carrera con el handler CLI se resuelve porque
+    // ambos convergen en `tts_engine.shutdown()` + salida, sin pidfile).
     let shutdown = async move {
         #[cfg(unix)]
         let mut sigterm =
@@ -1333,9 +1339,11 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
 /// Si `auto_restart` es `false`, ejecuta `run_daemon_server` una sola vez.
 /// Si es `true`, reintenta hasta `max_retries` veces tras un fallo no graceful
 /// (crash) con backoff exponencial `500ms * 2^retries` capado a 4s, precedido de
-/// reclamo del puerto y del árbol: antes de reintentar se verifica que el puerto
-/// quedó libre (el `Drop` de la iteración previa ya mató el árbol preciso del
-/// residente; sin kill global por imagen) y se registra si sigue ocupado.
+/// reclamo activo del árbol propio previo con deadline y verificación: antes de
+/// reintentar se espera (hasta 5 s, sondeo 200 ms) a que el puerto quede libre
+/// (el `Drop` de la iteración previa ya mató el árbol preciso del residente;
+/// sin kill global por imagen ni otra instancia) y se registra muerte + puerto
+/// libre o sigue-ocupado; el siguiente `bind` lo confirma.
 /// Un apagado graceful vía `shutdown_notify` (`daemon stop`) no reintenta y retorna `Ok`.
 /// El reclamo activo matar-y-rearrancar ante otra instancia vive en el CLI
 /// (`daemon start`): `serve` nunca mata a otra instancia sana.
@@ -1367,17 +1375,31 @@ pub async fn run_supervised(
                     retries, max_retries, e, backoff_ms
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                // Reclamo previo al reintento (C7): revalidar que el puerto quedó
-                // libre tras la caída; el árbol del residente de la iteración previa
-                // ya se reclamó vía `Drop` preciso (sin imagen global). Si el puerto
-                // sigue ocupado, se registra y el siguiente `bind` lo confirmará.
-                if std::net::TcpListener::bind(addr).is_ok() {
-                    // Puerto libre: el test-listener se cierra al dropearse.
-                } else {
-                    eprintln!(
-                        "Daemon: el puerto {} sigue ocupado tras la caída; se reintenta igualmente ({}/{})",
-                        addr, retries, max_retries
-                    );
+                // Reclamo activo previo al reintento (D-05): esperar con deadline
+                // a que el árbol propio previo esté muerto y el puerto libre
+                // antes del siguiente `bind`. Solo árbol propio previo (vía
+                // `Drop` preciso, sin imagen global ni otra instancia sana).
+                {
+                    let inicio = std::time::Instant::now();
+                    let limite = std::time::Duration::from_secs(5);
+                    loop {
+                        if std::net::TcpListener::bind(addr).is_ok() {
+                            // Puerto libre: el test-listener se cierra al dropearse.
+                            eprintln!(
+                                "Daemon: árbol previo muerto y puerto {} libre antes del reintento ({}/{})",
+                                addr, retries, max_retries
+                            );
+                            break;
+                        }
+                        if inicio.elapsed() >= limite {
+                            eprintln!(
+                                "Daemon: el puerto {} sigue ocupado tras la caída (deadline 5 s); se reintenta igualmente ({}/{})",
+                                addr, retries, max_retries
+                            );
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
                 }
             }
         }

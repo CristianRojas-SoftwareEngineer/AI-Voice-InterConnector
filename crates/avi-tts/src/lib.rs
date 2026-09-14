@@ -789,6 +789,9 @@ pub mod resident {
             // breakaway, para que el residente permanezca en el grupo/Job del daemon
             // y `taskkill /F /T /PID <daemon>` (o el Job con cierre) lo alcance.
             // En Unix tampoco se hace `setsid` aquí: hereda el grupo del daemon.
+            // D-01: tras la muerte del líder el residente reparentado se verifica
+            // por PID y 8766 desde el CLI (`reclamar_residual_degradado`); los
+            // dobles de test nunca reproducen ese reparentado.
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -852,7 +855,10 @@ pub mod resident {
                 // Cierre por árbol con recolección: el `shutdown()` previo ya mató el
                 // árbol preciso por PID (imagen solo como último recurso); aquí
                 // `kill+wait` recolecta el estado del `child` (ya muerto entonces,
-                // o vivo en un drop normal).
+                // o vivo en un drop normal). D-05: insuficiente ante caída a medio
+                // `spawn` (sin `Child` que recolectar): por eso `run_supervised`
+                // reclama además el árbol propio previo con deadline y verificación
+                // antes del siguiente `bind`.
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -931,14 +937,16 @@ pub mod resident {
 
     /// Mata el proceso residente del motor POR NOMBRE DE IMAGEN (`qwen_tts`).
     ///
-    /// ÚLTIMO RECURSO DOCUMENTADO (H-01): solo se llama cuando el kill preciso
+    /// ÚLTIMO RECURSO DOCUMENTADO (H-01 + D-04): solo se llama cuando el kill preciso
     /// del árbol por PID falló o no hay PID (el `qwen_tts` vendido desacopla su
     /// proceso servidor real del `Child` que Rust captura, de modo que el kill
-    /// por PID puede dejar vivo al servidor). Mata por nombre de imagen y alcanza
-    /// al servidor real. Con el residente como único camino de síntesis (sin
+    /// por PID puede dejar vivo al servidor; D-04 lo reutiliza además ante
+    /// `Parado` con residente vivo sin PID del daemon). Mata por nombre de imagen
+    /// del residente y alcanza al servidor real (nunca imagen del daemon, que
+    /// comparte imagen con el CLI). Con el residente como único camino de síntesis (sin
     /// fallback), el kill no puede desencadenar re-lanzamientos: la síntesis en
     /// curso simplemente falla. Sin tomar ningún `Mutex`.
-    pub(crate) fn kill_resident_process() {
+    pub fn kill_resident_process() {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -1016,8 +1024,12 @@ pub mod resident {
 
     /// Simulador HTTP mínimo para tests: responde `200 OK` a `/v1/health` y
     /// captura el body de un único `POST /v1/tts`. Siempre sano: nunca cuelga
-    /// ni muere ni daemoniza (ceguera H-01, T7); la ausencia real de huérfanos
-    /// a nivel SO solo la verifica la serie pesada (`tests/cli_golden.rs`).
+    /// ni muere ni daemoniza (ceguera H-01, T7); nunca reproduce `panic!` con
+    /// lock retenido ni aborto externo (D-03, solo-harness) ni crash con puerto
+    /// ocupado (D-05, solo `run_supervised`); nunca usa imagen `qwen_tts` ni
+    /// deja resto sin puerto (D-04). La ausencia real
+    /// de huérfanos a nivel SO solo la verifica la serie pesada
+    /// (`tests/cli_golden.rs`).
     #[cfg(test)]
     pub(crate) fn simular_servidor(
         body: std::sync::Arc<Mutex<String>>,
@@ -1473,6 +1485,9 @@ mod tests {
     /// Proceso que duerme para simular el hijo del residente en tests. Hijo
     /// directo bien portado (recolectable vía `Child`): no reproduce el
     /// desacoplo del `qwen_tts` real ni la daemonización (ceguera H-01, T7);
+    /// nunca reproduce `panic!` con lock retenido ni aborto externo (D-03) ni
+    /// la ventana spawn→write ni señales (D-02, solo-harness/producto); nunca
+    /// usa imagen `qwen_tts` ni deja resto sin puerto (D-04);
     /// el cierre preciso por árbol se cubre en
     /// `residente_matar_arbol_por_pid_termina_al_hijo`.
     fn proceso_durmiente() -> std::process::Child {

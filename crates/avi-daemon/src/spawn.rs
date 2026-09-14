@@ -120,6 +120,10 @@ pub fn pid_vivo(pid: u32) -> bool {
 /// No toca pidfile ni verifica: el llamante combina con `pid_vivo` y deadline.
 /// Nunca mata el PID 0; la guarda contra auto-muerte (`pid != proceso propio`
 /// para la imagen compartida CLI/daemon) vive en el llamante.
+///
+/// D-01: reutilizada además para el reclamo por grupo ante líder muerto (el
+/// llamante la invoca aunque el PID ya esté muerto para alcanzar al residente
+/// reparentado del mismo grupo, con verificación por 8766).
 pub fn matar_arbol_por_pid(pid: u32) -> bool {
     if pid == 0 {
         return false;
