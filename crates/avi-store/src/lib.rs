@@ -535,10 +535,12 @@ pub fn xet_cache_dir() -> PathBuf {
 /// Layout: `hf_cache_dir()/ct2/opus-mt-es-en` y `opus-mt-en-es`, cada uno con
 /// `model.bin` CT2 más tokenizador utilizable por el loader (`tokenizer.json`,
 /// o `source.spm` más `target.spm` copiados desde el snapshot por `setup`).
-/// Invariante: provisionado equivale a cargable por `Translator::new` — el gate
-/// `is_ct2_provisioned` exige exactamente lo que el loader necesita, en el orden
-/// real de `auto::Tokenizer` en `ct2rs 0.10.0`; la idempotencia por `mtime` solo
-/// aplica a dirs sanos (un dir roto es no provisionado y fuerza reconversión).
+/// Invariante: provisionado equivale a lo que `setup` deposita y, por tanto, a
+/// cargable por `Translator::new` — el gate `is_ct2_provisioned` acepta
+/// exactamente los layouts que `convert_marian_to_ct2` produce (`src/main.rs`),
+/// no todo lo que `auto::Tokenizer` sabría cargar (ver H-13 en
+/// `ct2_dir_faltantes`); la idempotencia por `mtime` solo aplica a dirs sanos
+/// (un dir roto es no provisionado y fuerza reconversión).
 pub fn ct2_cache_dir() -> PathBuf {
     hf_cache_dir().join("ct2")
 }
@@ -548,6 +550,14 @@ pub fn ct2_model_dir(pair: &str) -> PathBuf {
 /// Ficheros ausentes del derivado CT2 en `dir`: vacío equivale a cargable por
 /// el loader (`model.bin` presente más tokenizador completo). Nombra cada
 /// candidato ausente para errores accionables.
+///
+/// H-13 — El tokenizador se da por válido con `tokenizer.json` (layout HF) o
+/// `source.spm`+`target.spm` (SentencePiece/Marian). El layout BPE
+/// `vocab.json`+`merges.txt` se rechaza a propósito: `convert_marian_to_ct2`
+/// fija la salida a `source.spm`+`target.spm` (`--copy_files`) y aborta si el
+/// snapshot no los trae (`src/main.rs`), así que ningún derivado de este
+/// pipeline lo usa. Admitir esa rama sería especulativo y podría enmascarar un
+/// dir incompleto; se añadiría solo si un pin de modelo futuro la exigiera.
 pub fn ct2_dir_faltantes(dir: &std::path::Path) -> Vec<String> {
     let mut faltan = Vec::new();
     if !dir.join("model.bin").is_file() {
@@ -1048,6 +1058,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// H-13: contrato del gate del derivado CT2. Acepta exactamente los layouts
+    /// que `setup` produce (`source.spm`+`target.spm`) o el snapshot HF
+    /// (`tokenizer.json`), y rechaza cualquier otro. El layout BPE
+    /// `vocab.json`+`merges.txt` NO se acepta: no lo genera `convert_marian_to_ct2`,
+    /// por lo que admitirlo sería especulativo y enmascararía dirs incompletos.
+    #[test]
+    fn ct2_dir_faltantes_contrato_del_gate() {
+        let dir = temp_dir("ct2_gate");
+        let touch = |nombre: &str| std::fs::write(dir.join(nombre), b"x").unwrap();
+        let limpiar = || {
+            for f in [
+                "model.bin",
+                "tokenizer.json",
+                "source.spm",
+                "target.spm",
+                "vocab.json",
+                "merges.txt",
+            ] {
+                let _ = std::fs::remove_file(dir.join(f));
+            }
+        };
+
+        // 1. Dir vacío: faltan model.bin + tokenizador completo.
+        limpiar();
+        assert_eq!(
+            ct2_dir_faltantes(&dir),
+            vec!["model.bin", "tokenizer.json", "source.spm", "target.spm"]
+        );
+
+        // 2. Layout SentencePiece (el que produce `setup`): completo.
+        limpiar();
+        touch("model.bin");
+        touch("source.spm");
+        touch("target.spm");
+        assert!(ct2_dir_faltantes(&dir).is_empty());
+
+        // 3. Layout HuggingFace (`tokenizer.json`): completo.
+        limpiar();
+        touch("model.bin");
+        touch("tokenizer.json");
+        assert!(ct2_dir_faltantes(&dir).is_empty());
+
+        // 4. Layout BPE (`vocab.json`+`merges.txt`): rechazado a propósito (H-13).
+        limpiar();
+        touch("model.bin");
+        touch("vocab.json");
+        touch("merges.txt");
+        assert_eq!(
+            ct2_dir_faltantes(&dir),
+            vec!["tokenizer.json", "source.spm", "target.spm"]
+        );
+
+        // 5. SentencePiece a medias (solo `source.spm`): incompleto.
+        limpiar();
+        touch("model.bin");
+        touch("source.spm");
+        assert_eq!(ct2_dir_faltantes(&dir), vec!["tokenizer.json", "target.spm"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// T4: normalización de mayúsculas en todas las operaciones del almacén

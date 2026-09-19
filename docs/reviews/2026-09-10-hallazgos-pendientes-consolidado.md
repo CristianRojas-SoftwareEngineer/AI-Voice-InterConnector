@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 5 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅) — 10 pendientes (H-06–H-15)
+- **Estado**: 6 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅) — 9 pendientes (H-06–H-12, H-14, H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -177,12 +177,13 @@
 
 ### H-13 — Rama alternativa del gate de traducción sin evidencia
 
-- **Severidad**: ⚪ Baja · **Área**: motor (gate `is_ct2_provisioned`, orden de `auto::Tokenizer` en `ct2rs`)
+- **Severidad**: ⚪ Baja · **Área**: motor (gate `is_ct2_provisioned` en `crates/avi-store/src/lib.rs:551-577`, conversor `convert_marian_to_ct2` en `src/main.rs:1822-1901`, loader `Translator<ct2rs::tokenizers::auto::Tokenizer>` en `crates/avi-translation/src/lib.rs:20`)
 - **Síntoma**: el gate acepta `tokenizer.json` o `source.spm`+`target.spm` pero rechaza `vocab.json`+`merges.txt` por falta de evidencia de que algún snapshot la satisfaga.
-- **Impacto**: ninguno mientras ningún snapshot la requiera; riesgo de falso negativo futuro.
-- **Corrección propuesta**: demostrarla contra modelos reales o mantener el rechazo.
-- **Relaciones**: pertenece a provisión (zona ya estable); cabe en cualquier orquestación de medición.
-- **Decisión requerida**: no — medir cuando se toque traducción.
+- **Causa (demostrada)**: la evidencia estaba en el propio pipeline, no en una corrida pesada: `convert_marian_to_ct2` es la única vía que crea un derivado CT2 y fija la salida a `source.spm`+`target.spm` vía `--copy_files` (`src/main.rs:1850-1852`), con fallback verificado que copia los `.spm` desde el snapshot y aborta si el snapshot no los trae (`:1869-1881`), revalidando con el propio gate antes del `rename` atómico (`:1883`). El layout BPE (`vocab.json`+`merges.txt`) no lo produce este pipeline; el gate era, además, más estricto que el loader `auto::Tokenizer` (superconjunto), de ahí el drift documental "gate == loader".
+- **Corrección (implementada)**: cierre por evidencia, sin ampliar superficie (opción "mantener el rechazo, demostrado"). Gate intacto (no se añade la rama BPE especulativa); documentado el invariante real en `ct2_dir_faltantes` y en el doc de `ct2_cache_dir` (gate == salida de `setup` ⊆ lo que el loader carga, con referencia a `convert_marian_to_ct2`); test unitario `ct2_dir_faltantes_contrato_del_gate` que fija el contrato (acepta `.spm` y `tokenizer.json`, rechaza BPE-only y layouts a medias). Drift documental saneado: `docs/CLI/commands/SETUP.md:72` y `docs/CLI/commands/TRANSLATE.md:92` corrigen la equivalencia imprecisa "gate == loader" a "gate == salida de `setup`, subconjunto de lo que el loader carga". Estado: ✅ Implementado.
+- **Impacto resuelto**: el riesgo de falso negativo queda cerrado por conocimiento y trazado en el sitio correcto; si un pin de modelo futuro publicara CT2 con layout BPE, la conversión fallaría en `convert_marian_to_ct2` (`:1872-1877`) antes del gate, señalizando la condición que justificaría añadir la rama.
+- **Relaciones**: pertenece a provisión (zona ya estable); independiente del resto.
+- **Decisión requerida**: resuelta — no ampliar el gate; cierre por evidencia del pipeline + test + saneo de drift.
 
 ### H-14 — Techos de guards de tests sin re-medir
 
@@ -214,7 +215,7 @@ H-01 ✅ ── contenía ──> H-05 ✅ (residual degradado: ahora se reclama
 H-02 ✅ ── reduce superficie de ──> H-01 ✅ (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
 H-02 ✅ estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos) · H-15 (marginalidad temporal + presupuesto de clonado + barrido Unix del reaper)
 H-01 ✅ ── contiene ──> H-15 (3 rojos clase-timeout sin cascada ni fuga; bisect en base sin regresión)
-H-09 · H-13 ── independientes (provisión/medición)
+H-09 ── independiente (provisión) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift)
 H-10 · H-11 ── triviales aislados (relleno)
 H-07 + H-06 ── mismo dilema implementar-vs-documentar (superficie daemon)
 H-08 ⇆ H-12 (UX interactiva de audio: decidir H-08 primero, diseñar H-12 después)
@@ -225,7 +226,7 @@ H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuest
 **Orden recomendado (con fundamento)**:
 
 1. **H-04 ✅ — H-02 ✅ — H-01 ✅ — H-05 ✅ — H-03 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s, cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO), salud observada por petición (revalidación + rearranque determinista del residente reutilizado) y corte de herencia de handles en la raíz (`SetHandleInformation` en `handle_daemon`) — cluster de lanzamiento/reutilización del daemon cerrado: base observable, sin huérfanos, sin degradación silenciosa y sin retención de stdio del lanzador. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1), H-01 ✅ (a908ac6+193eeac), H-05 ✅ (5d1dfca) y H-03 ✅ (131b109) implementados; **cluster ciclo de vida completo**, H-14 habilitado. H-15 queda como follow-up (marginalidad temporal de la suite + presupuesto 1500 ms intacto + crash vivo D-05 + runtime Unix D-01 y barrido Unix del reaper, todo pendiente de CI/entorno rápido).
-2. **H-09 + H-13** — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup.
+2. **H-09** (+ **H-13 ✅**) — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup. H-13 ✅ cerrado (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift documental).
 3. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
 4. **H-10 + H-11** — triviales aislados.
 5. **H-12 última** — requiere la decisión de H-08 ya resuelta y ciclo de vida estable.

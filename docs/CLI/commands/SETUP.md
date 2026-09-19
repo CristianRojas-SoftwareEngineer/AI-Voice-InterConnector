@@ -69,7 +69,7 @@ Descarga de Voice Encoder (si es-mx-latam) ← ve.safetensors desde BASE_MODEL_R
     │
     ▼
 _provision_translation_pairs()             ← solo si --language incluye en/all
-     │  opus-mt-es-en + opus-mt-en-es → conversión CT2 vía `ct2rs` con `--copy_files source.spm target.spm` + copia posterior verificada, escritura atómica (temporal hermano + rename) y reparación del dir roto por reconversión (gate `is_ct2_provisioned` == loader)
+     │  opus-mt-es-en + opus-mt-en-es → conversión CT2 vía `ct2rs` con `--copy_files source.spm target.spm` + copia posterior verificada, escritura atómica (temporal hermano + rename) y reparación del dir roto por reconversión (gate `is_ct2_provisioned` == salida de `setup`, un subconjunto de lo que el loader carga; ver H-13)
      ▼
 ParakeetEngine::ensure_downloaded           ← solo si --with-stt
      │  `parakeet-tdt-0.6b-v3` int8 (4 artefactos) → `ort` load-dynamic vía `hf_cache_dir()`

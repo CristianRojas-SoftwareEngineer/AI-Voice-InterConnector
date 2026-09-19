@@ -89,7 +89,7 @@ Cada nivel solo se aplica si el fragmento del nivel anterior excede `max_length`
 
 - **Carga:** importa `ctranslate2` y `sentencepiece` de forma diferida (dentro del `__init__`) para no arrastrar librerías pesadas en comandos que no traducen (`model_loader.py:90-93`)
 - **Tokenización:** `source.spm` para tokenizar la entrada, `target.spm` para detokenizar la salida (`model_loader.py:65-70`)
-- **Derivado exigido:** el dir CT2 queda provisionado solo con `model.bin` más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot por `setup` con `--copy_files` y copia posterior verificada); `setup` repara el dir roto por reconversión atómica (temporal + rename, gate `is_ct2_provisioned` == loader)
+- **Derivado exigido:** el dir CT2 queda provisionado solo con `model.bin` más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot por `setup` con `--copy_files` y copia posterior verificada); `setup` repara el dir roto por reconversión atómica (temporal + rename, gate `is_ct2_provisioned` == salida de `setup`, un subconjunto de lo que el loader carga; ver H-13)
 - **Token `</s>`:** Se añade manualmente al final de los tokens fuente (`model_loader.py:81`). Sin este token, el encoder nunca recibe marca de fin de secuencia y el decoder entra en loop de repetición (`model_loader.py:73-79`)
 - **Inferencia:** `translate_batch([tokens])` → `results[0].hypotheses[0]` → detokenización (`model_loader.py:82-84`)
 
