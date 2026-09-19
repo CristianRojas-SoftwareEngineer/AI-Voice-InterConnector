@@ -2493,6 +2493,11 @@ async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> 
                 })
                 .unwrap_or(false);
             if inside {
+                // Corta la herencia de los handles estándar antes de spawnear el
+                // helper (H-03): `spawn_uninstall_helper` vive fuera de
+                // `handle_daemon`, así que replica aquí el corte para que el `.ps1`
+                // no retenga el stdio del proceso que lanzó el uninstall.
+                desheredar_handles_estandar();
                 daemon::spawn_uninstall_helper(&install_dir, std::process::id()).map_err(|e| {
                     CliError::new(
                         ExitCode::Error,
