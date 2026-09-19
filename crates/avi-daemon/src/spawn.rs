@@ -175,12 +175,12 @@ pub fn esperar_muerte_pid(pid: u32, deadline: std::time::Duration) -> bool {
     !pid_vivo(pid)
 }
 
-/// Instala en el proceso actual (lado daemon longevo) un Job Object con
-/// `KILL_ON_JOB_CLOSE`. La implementación vive en el binario (`src/main.rs`,
-/// rama `Serve`, que sí dispone de `windows-sys` vía el workspace): este crate
-/// no añade la dependencia para no exceder el alcance (alternativa admitida:
-/// `matar_arbol_por_pid` con verificación). Ver `instalar_job_con_cierre_de_arbol`
-/// en el CLI.
+// Instala en el proceso actual (lado daemon longevo) un Job Object con
+// `KILL_ON_JOB_CLOSE`. La implementación vive en el binario (`src/main.rs`,
+// rama `Serve`, que sí dispone de `windows-sys` vía el workspace): este crate
+// no añade la dependencia para no exceder el alcance (alternativa admitida:
+// `matar_arbol_por_pid` con verificación). Ver `instalar_job_con_cierre_de_arbol`
+// en el CLI.
 
 /// Helper determinista de desinstalación en Windows (`H4`).
 ///

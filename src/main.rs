@@ -48,10 +48,10 @@ const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs
 static PID_EN_MEMORIA: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
-/// CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2` (`ct2_model_dir`) → `model.bin`
-/// más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` autocontenidos).
-/// Incondicional cuando Marian está provisionado; idempotente por `mtime` solo sobre dirs
-/// sanos (dir roto ⇒ reconversión); escritura atómica (temporal hermano + rename).
+// CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2` (`ct2_model_dir`) → `model.bin`
+// más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` autocontenidos).
+// Incondicional cuando Marian está provisionado; idempotente por `mtime` solo sobre dirs
+// sanos (dir roto ⇒ reconversión); escritura atómica (temporal hermano + rename).
 
 /// Resuelve un token de idioma de la CLI (`es-latam`/`en`) al código ISO que
 /// exige el motor STT: `es-latam` -> `es`; cualquier otro valor pasa verbatim
@@ -417,7 +417,6 @@ fn instalar_job_con_cierre_de_arbol() {
         let actual: isize = -1;
         if AssignProcessToJobObject(job, actual) == 0 {
             CloseHandle(job);
-            return;
         }
         // Fuga intencionada del handle del Job: vive hasta la muerte del daemon.
     }
@@ -3099,6 +3098,8 @@ async fn daemon_synthesize_wav(
 /// `synthesize` vía daemon: persiste el WAV en `SpeechStore` y respeta
 /// --label/--output/--play, devolviendo la ruta del WAV persistido (paralelo al
 /// handler local para que el envelope JSON de salida coincida).
+// Firma ancha deliberada: cada argumento mapea 1:1 a un flag de `speech synthesize`.
+#[allow(clippy::too_many_arguments)]
 async fn synthesize_via_daemon(
     client: &reqwest::Client,
     text: &str,
@@ -3281,6 +3282,8 @@ async fn clone_via_daemon(
     Ok(())
 }
 
+// Firma ancha deliberada: cada argumento mapea 1:1 a un flag de `speech dub`.
+#[allow(clippy::too_many_arguments)]
 async fn dub_via_daemon(
     json_mode: bool,
     client: &reqwest::Client,

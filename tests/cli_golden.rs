@@ -73,10 +73,10 @@ fn proceso_t0() -> Instant {
 }
 
 thread_local! {
-    static TEST_T0: RefCell<Option<Instant>> = RefCell::new(None);
-    static TEST_NOMBRE: RefCell<String> = RefCell::new(String::new());
-    static TEST_LIMITE: RefCell<Option<Duration>> = RefCell::new(None);
-    static ULTIMO_HITO: RefCell<String> = RefCell::new(String::new());
+    static TEST_T0: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    static TEST_NOMBRE: RefCell<String> = const { RefCell::new(String::new()) };
+    static TEST_LIMITE: RefCell<Option<Duration>> = const { RefCell::new(None) };
+    static ULTIMO_HITO: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// Transcurrido desde el inicio del test (o del proceso si no hay inicio).
@@ -2300,7 +2300,7 @@ mod tts {
             "sin daemon el puerto 8765 debe estar cerrado a nivel SO"
         );
         assert!(
-            leer_pid_daemon().map(avi_daemon::pid_vivo).unwrap_or(false) == false,
+            !leer_pid_daemon().map(avi_daemon::pid_vivo).unwrap_or(false),
             "sin daemon no debe haber PID vivo en la pista"
         );
         let (code, actual) = run_json(&[

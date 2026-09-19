@@ -164,7 +164,7 @@ mod tests {
         // emit_raw_json se ejecuta sin panicar y produce un Value válido
         // (no se redirige stdout en el test; sólo se verifica la construcción
         // del envelope, que es la lógica de dominio testeable)
-        let _ = emit_raw_json(input);
+        emit_raw_json(input);
     }
 
     #[test]

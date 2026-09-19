@@ -638,7 +638,7 @@ fn extract_resumen_cambios(body: &str) -> Option<String> {
                 if bullet.starts_with("- ") || bullet.starts_with("* ") {
                     return Some(
                         bullet
-                            .trim_start_matches(|c| c == '-' || c == '*' || c == ' ')
+                            .trim_start_matches(['-', '*', ' '])
                             .to_string(),
                     );
                 }

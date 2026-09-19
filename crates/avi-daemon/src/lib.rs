@@ -211,8 +211,6 @@ fn enrich_health_body(body: Value, state: &DaemonState) -> Value {
     let _ = state as &DaemonState;
     #[cfg(any(feature = "native-stt", feature = "native-translation"))]
     let mut body = body;
-    #[cfg(not(any(feature = "native-stt", feature = "native-translation")))]
-    let body = body;
     #[cfg(feature = "native-stt")]
     {
         body["stt"] = Value::String("warm".into());
@@ -267,7 +265,7 @@ async fn synthesize_handler(
     let source_raw = payload
         .get("source_language")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| target_raw.as_str())
+        .unwrap_or(target_raw.as_str())
         .to_string();
     let temperature = payload
         .get("temperature")
@@ -956,7 +954,7 @@ async fn dub_handler(
     #[cfg(not(feature = "native-stt"))]
     {
         let _ = (&state, &pcm, &voice, &source_iso, &target_iso, &temperature);
-        return (
+        (
             StatusCode::NOT_IMPLEMENTED,
             Json(with_sv(json!({
                 "status": "error",
@@ -964,7 +962,7 @@ async fn dub_handler(
                 "message": "Este binario se compiló sin soporte de transcripción (feature 'native-stt').",
             }))),
         )
-            .into_response();
+            .into_response()
     }
     #[cfg(feature = "native-stt")]
     let transcribed = {
@@ -1381,29 +1379,27 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                 .expect("suscribir SIGTERM del sistema");
-        loop {
-            #[cfg(unix)]
-            {
-                tokio::select! {
-                    _ = state.shutdown_notify.notified() => break,
-                    _ = tokio::signal::ctrl_c() => {
-                        state.tts_engine.shutdown();
-                        break;
-                    }
-                    _ = sigterm.recv() => {
-                        state.tts_engine.shutdown();
-                        break;
-                    }
+        // El `select!` resuelve al primer evento de cierre y no reintenta: cada
+        // brazo era terminal (rompía el `loop`), así que la espera es de un solo
+        // disparo sin bucle.
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = state.shutdown_notify.notified() => {}
+                _ = tokio::signal::ctrl_c() => {
+                    state.tts_engine.shutdown();
+                }
+                _ = sigterm.recv() => {
+                    state.tts_engine.shutdown();
                 }
             }
-            #[cfg(not(unix))]
-            {
-                tokio::select! {
-                    _ = state.shutdown_notify.notified() => break,
-                    _ = tokio::signal::ctrl_c() => {
-                        state.tts_engine.shutdown();
-                        break;
-                    }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::select! {
+                _ = state.shutdown_notify.notified() => {}
+                _ = tokio::signal::ctrl_c() => {
+                    state.tts_engine.shutdown();
                 }
             }
         }
@@ -1538,11 +1534,11 @@ mod tests {
     #[test]
     fn build_router_expone_nuevos_endpoints() {
         let state = Arc::new(DaemonState::new().expect("daemon state"));
-        let router = build_router_with_state(state);
-        // El router debe construirse sin panic; las rutas se verifican por existencia
-        // vía debug: contiene los paths registrados.
-        let debug = format!("{:?}", router);
-        assert!(debug.contains("health") || true);
+        // El router debe construirse sin panic con el estado del daemon; la
+        // existencia de cada ruta se ejercita en los tests de handlers (p. ej.
+        // `dub_handler_audio_missing`), no vía el `Debug` del `Router` — axum no
+        // expone ahí los paths registrados.
+        let _router = build_router_with_state(state);
     }
 
     /// Dub handler con audio_missing retorna error coherente sin panic

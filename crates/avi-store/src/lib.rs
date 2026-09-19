@@ -674,14 +674,12 @@ impl ModelStore {
                 // Modelos sin patrones: al menos un fichero con tamaño >0
                 match std::fs::read_dir(&snapshot) {
                     Ok(mut entries) => {
-                        for entry in entries.by_ref() {
-                            if let Ok(e) = entry {
-                                let path = e.path();
-                                if path.is_file() {
-                                    if let Ok(md) = std::fs::metadata(&path) {
-                                        if md.len() > 0 {
-                                            return true;
-                                        }
+                        for e in entries.by_ref().flatten() {
+                            let path = e.path();
+                            if path.is_file() {
+                                if let Ok(md) = std::fs::metadata(&path) {
+                                    if md.len() > 0 {
+                                        return true;
                                     }
                                 }
                             }
