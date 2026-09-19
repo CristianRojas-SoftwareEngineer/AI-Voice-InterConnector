@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 3 resueltos (H-04 ✅, H-02 ✅, H-01 ✅) — 12 pendientes (H-03, H-05–H-15)
+- **Estado**: 4 resueltos (H-05 ✅, H-04 ✅, H-02 ✅, H-01 ✅) — 11 pendientes (H-03, H-06–H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -97,13 +97,13 @@
 
 ### H-05 — El daemon reutilizado degrada: sirve estado pero falla síntesis
 
-- **Severidad**: 🟠 Alta · **Área**: daemon (`DaemonState::new` en `crates/avi-daemon/src/lib.rs:102-106`, `translate_handler` `:605-719`, `dub_handler` `:866-1141`)
+- **Severidad**: 🟠 Alta · **Área**: daemon (`synthesize_via_residente` en `crates/avi-tts/src/lib.rs:402-434`, `synthesize_handler`/`dub_handler` en `crates/avi-daemon/src/lib.rs`)
 - **Síntoma**: con daemon residual reutilizado, el `dub` vía daemon sale exit 5 (timeout de cliente `/dub` 10s) en 12s; con arranque fresco, exit 0 en ~10s. El daemon responde `status`/`warm` pero no sirve la petición.
-- **Causa**: no demostrada. H-04 (implementado) restaura la traza del residente, disponible para investigarla.
-- **Impacto**: la fixture de sesión reutiliza el daemon por diseño, por lo que un residual degradado envenena toda la sesión de tests.
-- **Corrección propuesta**: validar salud real (no solo `warm`) al reutilizar, o no reutilizar nunca un daemon ajeno a la sesión.
-- **Relaciones**: alimentado por H-01 · H-04 implementado: diagnóstico disponible.
-- **Decisión requerida**: sí — ¿revalidar al reutilizar o arranque fresco siempre?
+- **Causa**: demostrada por lectura de código: el flag `WarmState` (`crates/avi-daemon/src/lib.rs:43-66`) es append-only —se escribe una sola vez en el warmup de arranque y nunca refleja degradación posterior— y está desacoplado de la salud real del residente; `synthesize_via_residente` (`crates/avi-tts/src/lib.rs:402-434`) reutilizaba el residente por `voz_key` sin ningún chequeo de vida antes de la petición; ni `dub_handler` ni `synthesize_handler` tenían deadline propio, dependiendo enteramente del timeout de cliente de 10 s (`src/main.rs:3293`).
+- **Corrección (implementada)**: salud observada por petición (D-2): antes de reutilizar el residente por `voz_key`, `synthesize_via_residente` ejecuta un healthcheck real (`Qwen3TtsResident::health_check` → `wait_health`: `try_wait` del `Child` para detectar *crash* + `GET /v1/health` para detectar *hang*); si el residente está degradado, lo mata por árbol (`matar_arbol_residente_por_pid`) y rearranca uno fresco de forma determinista, sin fallback best-effort. Deadline de handler `SYNTH_DEADLINE = 8s` (`tokio::time::timeout` + `spawn_blocking`) en `synthesize_handler` y `dub_handler`; al vencer devuelve `synthesis_timeout` sin matar el residente (`translate_handler` no se tocó, fuera de alcance). Reality check (F5): un sumidero TCP real (acepta y no responde) se detecta en ~2 s, muy por debajo del timeout de cliente de 10 s. Estado: ✅ Implementado (commit pendiente en esta remediación).
+- **Impacto resuelto**: la reutilización por sesión ya no envenena la fixture ni la sesión: un residente degradado se detecta y se rearranca antes de servir la síntesis, y un cuelgue del motor C falla rápido y determinista en vez de agotar el timeout de cliente.
+- **Relaciones**: alimentado por H-01 · H-04 implementado: diagnóstico disponible · H-01 (`clasificar_residual`) cubre el residual *entre* sesiones/arranques; H-05 cierra el cuelgue *intra-sesión* que H-01 no cubría.
+- **Decisión requerida**: resuelta — revalidar al reutilizar (salud observada por petición), D-2; descartado el arranque fresco siempre.
 
 ### H-06 — `daemon start/serve` sin control de idioma ni STT
 

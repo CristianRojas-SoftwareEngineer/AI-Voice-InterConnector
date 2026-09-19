@@ -68,7 +68,7 @@ CLI (ai-voice-interconnector)
 
 - `synthesize`: NDJSON `application/x-ndjson` con `schema_version`.
 - `transcribe`: PCM `i16le 16kHz mono` base64 en `audio_b64`.
-- `health_body` (`lib.rs:183`): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`. `GET /health` puede incluir `ct2`/`stt` aditivas `warm/warming/warm_failed` cuando residentes, sin bump `schema_version`.
+- `health_body` (`lib.rs:183`): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`. `GET /health` puede incluir `ct2`/`stt` aditivas `warm/warming/warm_failed` cuando residentes, sin bump `schema_version`. Esta máquina de estados describe el *warmup de arranque*; no refleja una degradación posterior del residente ya `Warm`. La salud de síntesis se observa *por petición* (antes de reutilizar el residente en `synthesize_via_residente`, `crates/avi-tts/src/lib.rs`) y puede detectar un residente degradado aunque `warm` siga en `Warm`.
 - `translate`/`dub` (etapa de traducción) exigen el derivado sano vía `is_ct2_provisioned` (`model.bin` más `tokenizer.json` o `source.spm`+`target.spm`); sin él responden `model_missing` (exit 4 en CLI) con los ficheros faltantes.
 
 ## Gestión del ciclo de vida
@@ -79,7 +79,7 @@ CLI (ai-voice-interconnector)
 
 **`restart` (`src/main.rs:1525`):** parada unificada sobre el ayudante único (sin doble techo `timeout(5s, wait_health_down(5s))` ni kill por PID duplicado) → `spawn_background` fresco → `await ready` acotado al restante del presupuesto de 12 s (nunca más de 10 s) → `write pid` con payload `restarted` (sin `/restart` dedicado).
 
-**`status` (`src/main.rs:1573`):** `GET /health 500ms` + JSON 800ms → `status_body(true, engine, warm)` o `status_body(false)` (`stopped`) con `schema_version="3"` (fixture `tests/golden/cli_daemon_status.json`). Solo probe en display (contrato intacto); D-04: el `stopped` por probe incluye en `clasificar_residual` la búsqueda del residente por 8766 antes de declarar vía libre (ver H-05).
+**`status` (`src/main.rs:1573`):** `GET /health 500ms` + JSON 800ms → `status_body(true, engine, warm)` o `status_body(false)` (`stopped`) con `schema_version="3"` (fixture `tests/golden/cli_daemon_status.json`). Solo probe en display (contrato intacto); D-04: el `stopped` por probe incluye en `clasificar_residual` la búsqueda del residente por 8766 antes de declarar vía libre (ver H-01/D-04). Esto es la detección de residual *al arrancar*; es un mecanismo distinto de la salud observada *por petición* dentro de una sesión ya viva que resuelve H-05 (healthcheck antes de reutilizar en `synthesize_via_residente`) — no debe leerse como que H-05 ya estaba resuelto por esta vía.
 
 ## Foreground vs background
 

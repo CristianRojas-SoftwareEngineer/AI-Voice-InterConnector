@@ -31,7 +31,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 
 | Ruta | Método | Función |
 |---|---|---|
-| `/health` | GET | `status:"ready"` + handshake de `schema_version` + estado de warmup `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla) |
+| `/health` | GET | `status:"ready"` + handshake de `schema_version` + estado de warmup `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla; no certifica síntesis futura, ver salud observada por petición abajo) |
 | `/synthesize` | POST | Síntesis con progreso streaming NDJSON, evento final `result` (`audio_b64`, WAV 24 kHz) |
 | `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), VAD para clips largos (feature `native-stt`) |
 | `/translate` | POST | Traducción CT2 residente (feature `native-translation`) |
@@ -43,7 +43,7 @@ Son 7 rutas públicas (podados `GET /voices` y `POST /voices/precompute`; sin le
 
 El handshake es estricto: un daemon de otra `schema_version` se trata como no utilizable.
 
-Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediato en cuanto el puerto está enlazado y el motor construido; warm indica si el precalentamiento en segundo plano ya terminó.
+Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediato en cuanto el puerto está enlazado y el motor construido; warm indica si el precalentamiento en segundo plano ya terminó. `warm` es append-only (se fija una sola vez en el warmup de arranque y no refleja ninguna degradación posterior del residente): no certifica que una síntesis futura vaya a completarse. La salud efectiva de síntesis se observa por petición — antes de reutilizar el residente, el daemon ejecuta un healthcheck real (`synthesize_via_residente`, `crates/avi-tts/src/lib.rs`) y rearranca uno fresco si está degradado.
 
 ## Comandos del Daemon
 

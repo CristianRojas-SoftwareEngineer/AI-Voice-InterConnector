@@ -295,6 +295,14 @@ pub struct Qwen3TtsEngine {
     resident_pid: AtomicU32,
 }
 
+/// Ventana de la salud observada por petición (H-05): `retries=1`,
+/// `interval_ms=2000` acotan el healthcheck a ~2 s por petición. Generoso
+/// para un `GET /v1/health` sano en loopback (responde en ms) y suficiente
+/// para fallar rápido ante un sumidero TCP que acepta y no responde, muy por
+/// debajo del deadline de handler de 8 s (`avi-daemon`).
+const HEALTH_OBS_RETRIES: usize = 1;
+const HEALTH_OBS_INTERVAL_MS: u64 = 2000;
+
 /// Estado del servidor residente: se indexa por voz (decisión e3) — al cambiar
 /// de voz se termina el residente anterior y se arranca otro con `--load-voice`.
 struct ResidentState {
@@ -397,8 +405,49 @@ impl Qwen3TtsEngine {
         }
     }
 
+    /// Arranca un residente fresco para `voz` (Tarea 3): construye
+    /// `load_voice`, hace `spawn` (que ya trae su propio `wait_health` de
+    /// arranque, por lo que nace sano o falla con diagnóstico), actualiza
+    /// `resident_pid` y ensambla el `ResidentState`. Compartido por el camino
+    /// de cambio de voz y por el rearranque ante degradación (H-05).
+    fn arrancar_residente(
+        &self,
+        model_dir: &Path,
+        voz: &VozMotor,
+        voz_key: String,
+    ) -> Result<ResidentState> {
+        let load_voice = match voz {
+            VozMotor::Clonada(p) => Some(p.as_path()),
+            VozMotor::Preset(_) => None,
+        };
+        let port = default_port();
+        let spawned = resident::Qwen3TtsResident::spawn(model_dir, port, load_voice)?;
+        self.resident_pid.store(spawned.pid(), Ordering::Relaxed);
+        Ok(ResidentState {
+            resident: spawned,
+            voz_key,
+        })
+    }
+
     /// Síntesis vía servidor residente: arranca (o reutiliza) el residente de
     /// la voz solicitada y hace `POST /v1/tts`.
+    ///
+    /// H-05: la reutilización por `voz_key` no bastaba — un residente colgado
+    /// tras el warmup se reutilizaba indefinidamente y todo `POST /v1/tts`
+    /// se colgaba. Antes de reusar se verifica la salud real
+    /// (`health_check`, `try_wait` + `GET /v1/health`); si está degradado se
+    /// rearranca de forma determinista (mata el árbol por PID, suelta el
+    /// estado viejo, `spawn` fresco). Sin fallback: si el `spawn` falla, el
+    /// error se propaga y la petición falla con diagnóstico.
+    ///
+    /// Consideración 5 (narrowing del lock): el `guard` cubre solo la
+    /// decisión reutilizar/arrancar, la salud observada, el eventual
+    /// rearranque y la lectura del puerto (`u16` copiable); se suelta antes
+    /// del `POST /v1/tts`, que corre sin lock. La serialización del uso del
+    /// residente ya la da la capa superior (`synthesis_lock` en el daemon,
+    /// secuencialidad en el CLI directo), así que la siguiente petición
+    /// reclama el residente de inmediato en vez de esperar tras un hilo
+    /// huérfano reteniendo el lock durante 30 s.
     fn synthesize_via_residente(
         &self,
         text: &str,
@@ -414,22 +463,25 @@ impl Qwen3TtsEngine {
             VozMotor::Preset(n) => format!("preset:{}", n),
             VozMotor::Clonada(p) => format!("clone:{}", p.display()),
         };
-        let mut guard = self.resident.lock().unwrap();
-        if guard.as_ref().map(|s| s.voz_key.as_str()) != Some(voz_key.as_str()) {
-            let load_voice = match voz {
-                VozMotor::Clonada(p) => Some(p.as_path()),
-                VozMotor::Preset(_) => None,
-            };
-            let port = default_port();
-            let spawned = resident::Qwen3TtsResident::spawn(model_dir, port, load_voice)?;
-            self.resident_pid.store(spawned.pid(), Ordering::Relaxed);
-            *guard = Some(ResidentState {
-                resident: spawned,
-                voz_key,
-            });
-        }
-        let state = guard.as_ref().expect("residente recién arrancado");
-        let url = format!("http://127.0.0.1:{}", state.resident.port);
+        let url = {
+            let mut guard = self.resident.lock().unwrap();
+            if guard.as_ref().map(|s| s.voz_key.as_str()) != Some(voz_key.as_str()) {
+                *guard = Some(self.arrancar_residente(model_dir, voz, voz_key)?);
+            } else if let Err(_e) = guard
+                .as_mut()
+                .expect("reutilización verificada arriba")
+                .resident
+                .health_check(HEALTH_OBS_RETRIES, HEALTH_OBS_INTERVAL_MS)
+            {
+                // Residente degradado (crash o hang): rearranque determinista.
+                let pid = guard.as_ref().expect("residente reutilizado").resident.pid();
+                resident::matar_arbol_residente_por_pid(pid);
+                *guard = None;
+                *guard = Some(self.arrancar_residente(model_dir, voz, voz_key)?);
+            }
+            let state = guard.as_ref().expect("residente arrancado o reutilizado sano");
+            format!("http://127.0.0.1:{}", state.resident.port)
+        };
         self.synthesize_via_http(&url, text, voz, options, None, None, out_path)
     }
 }
@@ -846,6 +898,19 @@ pub mod resident {
         /// evitando el deadlock con el warmup que lo retiene.
         pub fn pid(&self) -> u32 {
             self.child.as_ref().map(|c| c.id()).unwrap_or(0)
+        }
+
+        /// Salud observada por petición (H-05): reutiliza `wait_health` (combina
+        /// `try_wait` para detectar *crash* y `GET /v1/health` para detectar
+        /// *hang*) sobre el `child` del residente ya arrancado. Un healthcheck
+        /// solo-HTTP perdería el diagnóstico de crash sin ganar nada.
+        pub(crate) fn health_check(&mut self, retries: usize, interval_ms: u64) -> Result<()> {
+            match self.child.as_mut() {
+                Some(child) => wait_health(child, self.port, retries, interval_ms, &self.log_path),
+                None => Err(anyhow!(
+                    "El residente Qwen3-TTS no tiene proceso hijo asociado."
+                )),
+            }
         }
     }
 
@@ -1378,6 +1443,41 @@ mod tests {
             30,
         );
         assert!(result.is_err(), "sin servidor el healthcheck debe fallar");
+    }
+
+    /// T5.1 (H-05): un sumidero TCP que acepta la conexión y nunca responde
+    /// (a diferencia del crash de `wait_health_distingue_crash_de_hang`, aquí
+    /// el proceso hijo sigue vivo) debe hacer que `wait_health(1, 2000)`
+    /// devuelva `Err` en `≲` 3 s, sin colgarse — reproduce el cuelgue del
+    /// motor C que motivó la salud observada por petición.
+    #[test]
+    fn wait_health_detecta_sumidero_tcp_sin_colgarse() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            // Acepta y retiene la conexión sin leer ni escribir: sumidero puro.
+            if let Ok((stream, _)) = listener.accept() {
+                thread::sleep(Duration::from_secs(3));
+                drop(stream);
+            }
+        });
+        let mut child = proceso_durmiente();
+        let log_path = resident::resident_log_path();
+        let inicio = std::time::Instant::now();
+        let result = resident::wait_health(&mut child, port, 1, 2000, log_path.as_path());
+        let transcurrido = inicio.elapsed();
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(handle);
+        assert!(
+            result.is_err(),
+            "el sumidero TCP no debe pasar el healthcheck"
+        );
+        assert!(
+            transcurrido < Duration::from_secs(3),
+            "wait_health no debe colgarse ante un sumidero TCP: tardó {:?}",
+            transcurrido
+        );
     }
 
     /// T5: `resident_log_path()` crea el directorio `logs/` bajo `data_dir()` y

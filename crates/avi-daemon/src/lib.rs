@@ -442,13 +442,20 @@ async fn synthesize_handler(
         // se sobrescribe la temperatura ya validada.
         let options = GenerationOptions::con_temperatura(temperature);
         let tmp = std::env::temp_dir().join(format!("avi_daemon_synth_{}.wav", std::process::id()));
-        match state.tts_engine.synthesize_with_options(
-            &text_final,
-            &profile,
-            &options,
-            Some(&tmp),
-        ) {
-            Ok(path) => {
+        // H-05: la síntesis sobre el residente es síncrona y puede colgarse
+        // (motor C atascado); se acota con `timeout(SYNTH_DEADLINE)` sobre
+        // `spawn_blocking` (mismo patrón del warmup). Al vencer se emite
+        // `synthesis_timeout` propio, SIN matar/reclamar el residente (evita
+        // livelock con un rearranque legítimo en curso; la reclamación es de
+        // la salud observada de la siguiente petición).
+        let state_synth = state.clone();
+        let synth_handle = tokio::task::spawn_blocking(move || {
+            state_synth
+                .tts_engine
+                .synthesize_with_options(&text_final, &profile, &options, Some(&tmp))
+        });
+        match tokio::time::timeout(SYNTH_DEADLINE, synth_handle).await {
+            Ok(Ok(Ok(path))) => {
                 match std::fs::read(&path) {
                     Ok(wav_bytes) => {
                         emit_ndjson(
@@ -478,13 +485,38 @@ async fn synthesize_handler(
                 }
                 let _ = std::fs::remove_file(&path);
             }
-            Err(e) => {
+            Ok(Ok(Err(e))) => {
                 emit_ndjson(
                     &tx,
                     json!({
                         "event": "error",
                         "reason": "synthesis_failed",
                         "message": e.to_string(),
+                    }),
+                )
+                .await;
+            }
+            Ok(Err(join_err)) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "synthesis_failed",
+                        "message": format!("El hilo de síntesis falló: {}", join_err),
+                    }),
+                )
+                .await;
+            }
+            Err(_elapsed) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "synthesis_timeout",
+                        "message": format!(
+                            "La síntesis venció el deadline de {} s.",
+                            SYNTH_DEADLINE.as_secs()
+                        ),
                     }),
                 )
                 .await;
@@ -1093,12 +1125,50 @@ async fn dub_handler(
         qvoice_path: state.voice_store.find_reference(&voice),
     };
     let tmp = std::env::temp_dir().join(format!("avi_daemon_dub_{}.wav", std::process::id()));
-    let synth_res = state.tts_engine.synthesize_with_options(
-        &final_text,
-        &profile,
-        &GenerationOptions::con_temperatura(temperature),
-        Some(&tmp),
-    );
+    // H-05: mismo deadline que `synthesize_handler` — acota la síntesis
+    // síncrona con `timeout(SYNTH_DEADLINE)` sobre `spawn_blocking`; al vencer
+    // devuelve `synthesis_timeout` propio SIN matar/reclamar el residente
+    // (evita livelock con un rearranque legítimo en curso).
+    let state_synth = state.clone();
+    let text_for_synth = final_text.clone();
+    let profile_for_synth = profile.clone();
+    let options_for_synth = GenerationOptions::con_temperatura(temperature);
+    let synth_handle = tokio::task::spawn_blocking(move || {
+        state_synth.tts_engine.synthesize_with_options(
+            &text_for_synth,
+            &profile_for_synth,
+            &options_for_synth,
+            Some(&tmp),
+        )
+    });
+    let synth_res = match tokio::time::timeout(SYNTH_DEADLINE, synth_handle).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(join_err)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": "synthesis_failed",
+                    "message": format!("El hilo de síntesis falló: {}", join_err),
+                }))),
+            )
+                .into_response();
+        }
+        Err(_elapsed) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": "synthesis_timeout",
+                    "message": format!(
+                        "La síntesis venció el deadline de {} s.",
+                        SYNTH_DEADLINE.as_secs()
+                    ),
+                }))),
+            )
+                .into_response();
+        }
+    };
     match synth_res {
         Ok(path) => {
             match std::fs::read(&path) {
@@ -1204,6 +1274,16 @@ pub fn build_router() -> Router {
 /// de spawn + healthcheck + síntesis), muy por debajo del hang histórico del
 /// motor C (150 s+ quemando CPU sin llegar al audio).
 const WARMUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// Deadline de la síntesis por petición (H-05): acota `synthesize_handler` y
+/// `dub_handler` para que el daemon emita su propio diagnóstico
+/// (`synthesis_timeout`) ante un cuelgue intra-`POST` del residente, en vez
+/// de ceder al corte ciego del cliente a los 10 s (`src/main.rs:3293`). Debe
+/// ser `< 10 s` para que el daemon gane la carrera, y `≥` la síntesis feliz
+/// sobre un residente ya caliente (muy inferior a los ~18-20 s del TTFN de
+/// warmup, dominado por spawn + carga, ausentes aquí). 8 s deja ~2 s de
+/// margen para que viaje la respuesta HTTP del daemon.
+const SYNTH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Warmup del motor TTS de pre-calentamiento.
 ///
