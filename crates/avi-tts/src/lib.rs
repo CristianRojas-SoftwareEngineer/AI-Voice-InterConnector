@@ -831,12 +831,13 @@ pub mod resident {
                 ))?;
             use std::process::Stdio;
             // Windows: `qwen_tts.exe` NO debe heredar handles ni abrir terminal del
-            // padre. `CREATE_NO_WINDOW (0x8)` evita la ventana de consola independiente;
-            // `CREATE_NO_HANDLE_INHERIT (0x02000000)` fuerza bInheritHandles=FALSE para
-            // que el pipe (write-end) del proceso abuelo (test CLI) no se herede. Sin
-            // esto el `Command::output()` del test se cuelga (el residente vive toda la
-            // sesión). `Stdio::null` en stdin/stdout cierra la herencia de stdin/tty;
-            // stderr va al log (Stdio::from marca el handle no-heredable).
+            // padre. `DETACHED_PROCESS (0x8)` evita la ventana de consola independiente.
+            // La herencia del pipe (write-end) del proceso abuelo (test CLI) se corta
+            // en la raíz: el daemon que spawnea este motor ya desheredó sus STD vía
+            // `SetHandleInformation` (`main::desheredar_handles_estandar`); no existe
+            // una creation flag que desactive la herencia. `Stdio::null` en stdin/stdout
+            // cierra la herencia de stdin/tty; stderr va al log (Stdio::from marca el
+            // handle no-heredable, H-04).
             // Árbol matable (H-01): a propósito SIN `CREATE_NEW_PROCESS_GROUP` ni
             // breakaway, para que el residente permanezca en el grupo/Job del daemon
             // y `taskkill /F /T /PID <daemon>` (o el Job con cierre) lo alcance.
@@ -850,7 +851,7 @@ pub mod resident {
                 cmd.stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::from(log_file))
-                    .creation_flags(0x02000000 | 0x00000008);
+                    .creation_flags(0x00000008);
             }
             #[cfg(unix)]
             {
@@ -1015,14 +1016,14 @@ pub mod resident {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            // `CREATE_NO_HANDLE_INHERIT (0x02000000)` evita heredar handles del padre
-            // (p. ej. pipes del test); `CREATE_NO_WINDOW (0x8)`, sin ventana.
+            // `DETACHED_PROCESS (0x8)`: sin ventana de consola. `Stdio::null` en los
+            // tres STD evita heredar/exponer handles del padre (p. ej. pipes del test).
             let _ = Command::new("cmd")
                 .args(["/C", "taskkill /F /T /IM qwen_tts.exe"])
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .creation_flags(0x02000000 | 0x00000008)
+                .creation_flags(0x00000008)
                 .status();
         }
         #[cfg(unix)]

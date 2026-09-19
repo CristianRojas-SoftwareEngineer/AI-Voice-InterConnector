@@ -423,6 +423,41 @@ fn instalar_job_con_cierre_de_arbol() {
     }
 }
 
+/// Desactiva la herencia de los 3 handles estándar del proceso actual (Windows).
+///
+/// Causa raíz (H-03): en Rust estable `Command::spawn` llama a `CreateProcessW`
+/// con `bInheritHandles=TRUE` sin posibilidad de forzarlo a FALSE (no expuesto en
+/// estable). Con ese flag TODO handle heredable de la tabla del padre se duplica
+/// al hijo, no solo sus 3 handles estándar. Cuando el CLI corre bajo un pipe
+/// heredable del lanzador (p. ej. `Command::output()`), su stdout es justamente
+/// ese write-end: se re-hereda al daemon y de ahí al motor, y el lanzador no ve
+/// EOF hasta que todos lo cierren. NO existe una creation flag para desactivar la
+/// herencia (el histórico `0x02000000` es `CREATE_PRESERVE_CODE_AUTHZ_LEVEL`,
+/// no-op); la herencia se controla por handle con `SetHandleInformation`.
+///
+/// Se quita `HANDLE_FLAG_INHERIT` de STD_IN/OUT/ERROR: corta la propagación en la
+/// raíz sin matar el árbol. H-04 no se ve afectado: el stderr del motor va al
+/// fichero de log vía `Stdio::from` (handle explícito con mecanismo aparte).
+/// Best-effort silencioso: salta handles nulos / `INVALID_HANDLE_VALUE`.
+#[cfg(windows)]
+fn desheredar_handles_estandar() {
+    use windows_sys::Win32::Foundation::{
+        SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    unsafe {
+        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let h = GetStdHandle(id);
+            if h == 0 || h == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+        }
+    }
+}
+
 // ─── Punto de entrada ────────────────────────────────────────────────
 
 #[tokio::main]
@@ -1420,6 +1455,11 @@ async fn handle_speech(
 // ─── Daemon ──────────────────────────────────────────────────────────
 
 async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), CliError> {
+    // H-03: corta en la raíz la herencia de los handles estándar antes de spawnear
+    // ningún hijo del rol daemon. Cubre el CLI (`Start`/`Restart` → `spawn_background`)
+    // y el propio daemon (`Serve` → motor), incluido `serve` lanzado bajo un pipe.
+    #[cfg(windows)]
+    desheredar_handles_estandar();
     match action {
         DaemonCommands::Serve {
             auto_restart,

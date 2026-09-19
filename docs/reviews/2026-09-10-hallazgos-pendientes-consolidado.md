@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 4 resueltos (H-05 ✅, H-04 ✅, H-02 ✅, H-01 ✅) — 11 pendientes (H-03, H-06–H-15)
+- **Estado**: 5 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅) — 10 pendientes (H-06–H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -77,20 +77,20 @@
 
 ### H-03 — El daemon retiene el stdio del proceso que lo lanzó
 
-- **Severidad**: 🟠 Alta · **Área**: ciclo de vida (`crates/avi-daemon/src/spawn.rs:21-66`)
-- **Síntoma**: matar el motor no libera el log del lanzador; matar el daemon sí (dos ocasiones). El daemon mantiene ocupados archivos del spawner y puede atar su consola.
-- **Causa**: no demostrada del todo (hipótesis: se hereda `stderr` pese a anular stdio). La anulación actual es necesaria pero insuficiente.
-- **Impacto**: ficheros bloqueados, consolas atadas, misma familia que H-01.
-- **Corrección propuesta**: auditar los tres streams en el lanzamiento y en el respawn de supervisión + regresión con tempfile.
-- **Relaciones**: misma zona que H-01 y H-04 (los tres se resuelven en el lanzamiento del daemon).
-- **Decisión requerida**: sí — ¿en qué scope se agenda?
+- **Severidad**: 🟠 Alta · **Área**: ciclo de vida (`src/main.rs` `desheredar_handles_estandar` + llamada en `handle_daemon`, `crates/avi-daemon/src/spawn.rs:24-71,193-235`, `crates/avi-tts/src/lib.rs:847-854,1014-1027`)
+- **Síntoma**: matar el motor no libera el log del lanzador; matar el daemon sí (dos ocasiones). El daemon mantiene ocupados archivos del spawner y puede atar su consola. Reproducido empíricamente por `tts::h03_pipe_stdio_no_debe_quedar_retenido`: bajo `Command::output()` (write-end de pipe heredable), el daemon —y transitivamente `qwen_tts.exe`— heredaban ese handle; `output()` no retornaba hasta que **todos** los holders lo cerraran (matar solo el motor no bastaba; matar el árbol del daemon sí).
+- **Causa (demostrada)**: verificada contra docs de Microsoft y rust#146407. En Rust estable `Command::spawn` llama a `CreateProcessW` con `bInheritHandles=TRUE` sin exponer ponerlo en FALSE; con ese flag **todo** handle heredable del padre —incluido el `stdout` = write-end del pipe del lanzador— se duplica al hijo, no solo los 3 STD. NO existe una creation flag `CREATE_NO_HANDLE_INHERIT`: el `0x02000000` que el código usaba con ese nombre es en realidad `CREATE_PRESERVE_CODE_AUTHZ_LEVEL` (no-op para herencia). `Stdio::null` fija los STD del hijo pero no impide heredar otros handles del padre; la herencia se controla por handle con `SetHandleInformation(HANDLE_FLAG_INHERIT, 0)`.
+- **Corrección (implementada)**: corte de la herencia en la raíz. Nuevo helper `desheredar_handles_estandar()` (`#[cfg(windows)]`, modelado sobre `instalar_job_con_cierre_de_arbol`) que quita `HANDLE_FLAG_INHERIT` de `STD_INPUT/OUTPUT/ERROR_HANDLE` del proceso vía `SetHandleInformation`, llamado al inicio de `handle_daemon` (antes del `match action`): cubre el CLI (`Start`/`Restart` → `spawn_background`) y el propio daemon (`Serve` → motor), incluido `serve` lanzado directamente bajo un pipe. Eliminado el bit inerte `0x02000000` en los 4 sitios de spawn (`spawn_background`, `spawn_uninstall_helper`, `Qwen3TtsResident::spawn`, `kill_resident_process`), dejando solo flags con efecto real (`DETACHED_PROCESS 0x8`, `CREATE_NEW_PROCESS_GROUP 0x200`) y corregidos los comentarios que nombraban el flag inexistente. Cero dependencias nuevas (`windows-sys` ya trae `Win32_System_Console` + `Win32_Foundation`) y cero cambios en `Cargo.toml`. Respeta H-04: el stderr del motor sigue yendo al fichero de log vía `Stdio::from` (handle explícito, mecanismo aparte, no afectado). Sin cambios en la ruta Unix (`Stdio::null` + `setsid` + `FD_CLOEXEC` ya resolvían el análogo). Estado: ✅ Implementado (commit <hash>).
+- **Impacto resuelto**: el CLI y el daemon dejan de exponer sus STD a los procesos hijos; el pipe del lanzador se libera al terminar el CLI, sin necesidad de matar el árbol. Verificado por la regresión `tts::h03_pipe_stdio_no_debe_quedar_retenido` en aislado (pasa por el camino "H-03 no reproduce", pipe liberado en ~1-2 s sin matar nada; ~24 s con modelo provisionado); `cargo check --all-targets` limpio. Nota: la suite completa conserva la marginalidad temporal de H-15 (guards de 180 s vs. espera del lock global de estado bajo carga; los tests afectados pasan en aislado), no relacionada con este fix.
+- **Relaciones**: cierra el cluster de lanzamiento del daemon junto a H-01 ✅ y H-04 ✅ (los tres se resolvían en el lanzamiento) · el corte de herencia por handle es ortogonal al log del motor (H-04) y al cierre del árbol por Job/PID (H-01).
+- **Decisión requerida**: resuelta — opción (c) `SetHandleInformation`, huella mínima sin dependencias nuevas, elegida por el usuario. Nota abierta (menor): `spawn_uninstall_helper` (rama `Uninstall`, fuera de `handle_daemon`) no aplica el corte; misma clase de exposición pero **preexistente** (su `0x02000000` siempre fue inerte, sin regresión) y de bajo impacto (helper powershell efímero, fire-and-forget), pendiente de decisión aparte.
 
 ### H-04 — El motor de voz no deja traza observable
 
 - **Severidad**: 🟠 Alta · **Área**: observabilidad (lanzamiento del residente en `crates/avi-tts/src/lib.rs`, healthcheck `wait_health` en `:987-1023`)
 - **Síntoma**: el motor arrancaba con stderr a `Stdio::null()`, silenciando el diagnóstico del motor C (20+ `fprintf(stderr)` en `vendor/qwen3-tts`); un atasco pre-audio no dejaba traza.
 - **Causa**: decisión de diseño (silencio del stderr para evitar herencia de handles). Demostrada en código (lanzamiento actual en `crates/avi-tts/src/lib.rs:780-808`). Hipótesis A (eliminar `null`) descartada: el residente se lanza por el daemon (que ya tiene stdio a null) y no hereda el pipe del test; la regresión de `cli_golden` se resolvió con tempfile (`tests/cli_golden.rs:648-665`, `open_atomic_tmp` en `:694`).
-- **Corrección (implementada)**: stderr del residente → `data_dir()/logs/qwen3-tts_<pid>_<ms>.log` (rotación por sesión); stdin/stdout conservan `null` + flags de no-herencia (`0x02000000|0x8`). `wait_health` agrega `child.try_wait()` para distinguir *crash* (exit code + path de log) de *hang* (timeout). Estado: ✅ Implementado (commit 865d236).
+- **Corrección (implementada)**: stderr del residente → `data_dir()/logs/qwen3-tts_<pid>_<ms>.log` (rotación por sesión); stdin/stdout conservan `null` + `DETACHED_PROCESS` (`0x8`); la no-herencia del pipe la garantiza el corte en la raíz (`desheredar_handles_estandar`, H-03), no una creation flag. `wait_health` agrega `child.try_wait()` para distinguir *crash* (exit code + path de log) de *hang* (timeout). Estado: ✅ Implementado (commit 865d236).
 - **Impacto resuelto**: H-02, H-05 y H-01 son ahora diagnosticables; el motor C deja trazas en stderr.
 - **Relaciones**: desbloquea a H-02 y H-05 · comparte zona con H-03 · cierra la ciega de H-01 (orphans visibles vía `try_wait` + log).
 - **Decisión requerida**: resuelta — fichero siempre activo (rotación por sesión), no flag. Fundamento: H-01/H-02 son fallas de prod, requieren visibilidad continua.
@@ -208,9 +208,9 @@
 ```
 H-04 ✅ (traza del residente) — stderr → logs/qwen3-tts_*.log + try_wait en wait_health (commit 865d236)
  ├─ desbloquea ─> H-02 ✅ (deadline de warmup 40 s + fallback subprocess eliminado, commit 30f7cf1)
- ├─ desbloquea ─> H-05 (degradación por reutilización, ahora diagnosticable con H-01 ✅)
- └─ comparte zona ─> H-03 (streams del lanzamiento, siguiente del cluster) ── H-01 ✅ (cierre estructural: reclamo + parada unificada + verificación SO)
-H-01 ✅ ── contenía ──> H-05 (residual degradado: ahora se reclama con `started`)
+ ├─ desbloquea ─> H-05 ✅ (degradación por reutilización, cerrada con salud observada por petición, commit 5d1dfca)
+ └─ comparte zona ─> H-03 ✅ (herencia de handles cortada en la raíz: SetHandleInformation en handle_daemon; 0x02000000 inerte eliminado) ── H-01 ✅ (cierre estructural: reclamo + parada unificada + verificación SO)
+H-01 ✅ ── contenía ──> H-05 ✅ (residual degradado: ahora se reclama con `started`; H-05 cierra el cuelgue intra-sesión)
 H-02 ✅ ── reduce superficie de ──> H-01 ✅ (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
 H-02 ✅ estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos) · H-15 (marginalidad temporal + presupuesto de clonado + barrido Unix del reaper)
 H-01 ✅ ── contiene ──> H-15 (3 rojos clase-timeout sin cascada ni fuga; bisect en base sin regresión)
@@ -224,9 +224,8 @@ H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuest
 
 **Orden recomendado (con fundamento)**:
 
-1. **H-04 ✅ — H-02 ✅ — H-01 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s y cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO) — base observable y sin huérfanos (misma zona: lanzamiento del daemon); **luego H-03 + H-05** con traza ya visible y reclamo, **re-midiendo H-14**. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1) y H-01 ✅ implementados; H-05 diagnosticable, H-03 siguiente del cluster y H-14 habilitado. H-15 queda como follow-up (suite 37/40 por marginalidad temporal + presupuesto 1500 ms intacto + crash vivo D-05 + runtime Unix D-01 y barrido Unix del reaper, todo pendiente de CI/entorno rápido).
-2. **H-03 + H-05** — siguiente del cluster ciclo de vida: auditar los tres streams en el lanzamiento (H-03, misma zona `spawn.rs`) e investigar la degradación por reutilización con traza H-04 y reclamo H-01 ya disponibles (H-05 diagnosticable).
-3. **H-09 + H-13** — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup.
-4. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
-5. **H-10 + H-11** — triviales aislados.
-6. **H-12 última** — requiere la decisión de H-08 ya resuelta y ciclo de vida estable.
+1. **H-04 ✅ — H-02 ✅ — H-01 ✅ — H-05 ✅ — H-03 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s, cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO), salud observada por petición (revalidación + rearranque determinista del residente reutilizado) y corte de herencia de handles en la raíz (`SetHandleInformation` en `handle_daemon`) — cluster de lanzamiento/reutilización del daemon cerrado: base observable, sin huérfanos, sin degradación silenciosa y sin retención de stdio del lanzador. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1), H-01 ✅ (a908ac6+193eeac), H-05 ✅ (5d1dfca) y H-03 ✅ (commit \<hash\>) implementados; **cluster ciclo de vida completo**, H-14 habilitado. H-15 queda como follow-up (marginalidad temporal de la suite + presupuesto 1500 ms intacto + crash vivo D-05 + runtime Unix D-01 y barrido Unix del reaper, todo pendiente de CI/entorno rápido).
+2. **H-09 + H-13** — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup.
+3. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
+4. **H-10 + H-11** — triviales aislados.
+5. **H-12 última** — requiere la decisión de H-08 ya resuelta y ciclo de vida estable.

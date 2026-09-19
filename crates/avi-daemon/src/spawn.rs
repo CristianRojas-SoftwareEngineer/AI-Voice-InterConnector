@@ -6,13 +6,16 @@ use std::process::Command;
 /// ser el CLI raíz, pero en los E2E de `cli_golden` el CLI a su vez es hijo de
 /// `cargo test` capturando su salida vía `Command::output()` (un *pipe*).
 /// `DETACHED_PROCESS (0x8)` no deshabilita la herencia de handles: con
-/// `bInheritHandles=TRUE` (default de `CreateProcessW` cuando Rust no lo fuerza a
-/// FALSE) el daemon hijo —y `qwen_tts.exe`— heredan el handle de escritura del pipe.
-/// Como `output()` solo retorna cuando todos los holders del pipe lo cierran, el
-/// daemon (que vive ~10 s en graceful shutdown) colgaba el test. La técnica original
-/// (`Stdio::null` + `creation_flags 0x8 | 0x200`) es necesaria pero **no suficiente**:
-/// `CREATE_NO_HANDLE_INHERIT (0x02000000)` fuerza `bInheritHandles=FALSE`. En Unix
-/// `fork/exec` con `Stdio::null` + `setsid` + `FD_CLOEXEC` ya logra lo análogo.
+/// `bInheritHandles=TRUE` (default de `CreateProcessW`, no forzable a FALSE en Rust
+/// estable) el daemon hijo —y `qwen_tts.exe`— heredan el handle de escritura del
+/// pipe. Como `output()` solo retorna cuando todos los holders del pipe lo cierran,
+/// el daemon (que vive ~10 s en graceful shutdown) colgaba el test. `Stdio::null`
+/// aquí no basta (fija los STD del hijo pero no impide heredar OTROS handles
+/// heredables del padre): la protección real es cortar la herencia en la raíz con
+/// `SetHandleInformation(HANDLE_FLAG_INHERIT, 0)` sobre los STD del proceso que
+/// spawnea (`main::desheredar_handles_estandar`, llamado en `handle_daemon`). No
+/// existe una creation flag que desactive la herencia. En Unix `fork/exec` con
+/// `Stdio::null` + `setsid` + `FD_CLOEXEC` ya logra lo análogo.
 ///
 /// NOTA (H-01, cierre garantizado): el apagado ya no depende solo de
 /// `lib.rs::shutdown_handler` vía `with_graceful_shutdown` + `tokio::sync::Notify`
@@ -42,11 +45,11 @@ pub fn spawn_background(auto_restart: bool, max_retries: u32) -> anyhow::Result<
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        // CREATE_NO_HANDLE_INHERIT (0x02000000) fuerza bInheritHandles=FALSE en
-        // CreateProcessW: doble garantía de que el hijo no herede handles del padre.
-        // CREATE_NO_WINDOW (0x8) | CREATE_NEW_PROCESS_GROUP (0x200): no hereda
-        // consola/ventana del padre.
-        cmd.creation_flags(0x02000000 | 0x00000008 | 0x00000200);
+        // DETACHED_PROCESS (0x8): sin consola del padre.
+        // CREATE_NEW_PROCESS_GROUP (0x200): grupo propio.
+        // La herencia de handles se corta en la raíz vía `SetHandleInformation`
+        // (`main::desheredar_handles_estandar`), no con una creation flag.
+        cmd.creation_flags(0x00000008 | 0x00000200);
     }
 
     #[cfg(unix)]
@@ -225,7 +228,10 @@ pub fn spawn_uninstall_helper(install_dir: &std::path::Path, pid: u32) -> anyhow
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    cmd.creation_flags(0x02000000 | 0x00000008 | 0x00000200);
+    // DETACHED_PROCESS (0x8) | CREATE_NEW_PROCESS_GROUP (0x200): sin consola del
+    // padre, grupo propio. La herencia de handles se corta en la raíz vía
+    // `SetHandleInformation` (`main::desheredar_handles_estandar`), no con flag.
+    cmd.creation_flags(0x00000008 | 0x00000200);
     cmd.spawn()?;
     Ok(helper)
 }

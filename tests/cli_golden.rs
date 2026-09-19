@@ -637,9 +637,10 @@ fn d03_reaper_sin_pid_vivo_no_falla() {
 /// hijo (y este, a su vez, `qwen_tts.exe` vendido/precompilado) que heredan el pipe del
 /// test: `output()` no retorna hasta que **todos** los holders del write-end lo cierran —
 /// es decir, hasta el graceful shutdown del daemon (~10 s) — colgando el E2E en timeout
-/// (exit 124). El fix de `spawn_background` (`CREATE_NO_HANDLE_INHERIT` + `Stdio::null`)
-/// es necesario pero insuficiente: el binario vendido no respeta `creation_flags` y Rust
-/// std decide `bInheritHandles` de forma independiente al flag. Al redirigir `stdout` a
+/// (exit 124). El fix real (`desheredar_handles_estandar` en `handle_daemon`, corte de
+/// herencia vía `SetHandleInformation`) + `Stdio::null` no basta si se captura por pipe:
+/// Rust std deja `bInheritHandles=TRUE` y no hay creation flag que lo desactive. Al
+/// redirigir `stdout` a
 /// un tempfile **no hay pipe** para heredar: `spawn()`+`wait()` retorna en cuanto el CLI
 /// termina (~1.3 s tras `daemon start` con el bind-first).
 ///
@@ -2084,6 +2085,151 @@ mod tts {
         // Cierre: cero huérfanos verificados a nivel SO.
         shutdown_session_daemon();
         hito_fin("tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos");
+    }
+
+    /// Regresión H-03 (daemon retiene el stdio del proceso que lo lanzó):
+    /// reproduce la condición exacta que originó el hallazgo — captura de
+    /// `daemon start` vía **pipe** (`Stdio::piped()`, no tempfile) — porque
+    /// un tempfile nunca crea un handle heredable y no puede detectar la
+    /// retención. Si el daemon (o `qwen_tts` a través de él) heredan el
+    /// write-end pese a `desheredar_handles_estandar` (corte de herencia vía
+    /// `SetHandleInformation` en `handle_daemon`), la
+    /// lectura del pipe no verá EOF hasta que el holder cierre el handle —
+    /// exactamente el síntoma documentado: "matar el motor no libera el log
+    /// del lanzador; matar el daemon sí". Diferencial: mata primero solo el
+    /// motor (residente en 8766) y comprueba si el pipe sigue bloqueado;
+    /// luego mata el árbol del daemon y comprueba que se libera.
+    #[test]
+    fn h03_pipe_stdio_no_debe_quedar_retenido() {
+        hito_inicio_pesado("tts::h03_pipe_stdio_no_debe_quedar_retenido");
+        let _guard = bloquear_estado();
+        let _reaper = armar_reaper("h03_pipe_stdio_no_debe_quedar_retenido");
+        if !tts_modelo_registrado() {
+            eprintln!("[daemon] skip: sin modelo TTS provisionado para diagnóstico H-03");
+            hito_fin("tts::h03_pipe_stdio_no_debe_quedar_retenido (skip sin provisión)");
+            return;
+        }
+        shutdown_session_daemon();
+
+        // Localiza (sin matar) al PID que escucha 8766 (residente `qwen_tts`),
+        // igual patrón que `barrer_residente_por_puerto` pero solo lectura.
+        #[cfg(windows)]
+        fn pid_residente_en_8766() -> Option<u32> {
+            let o = std::process::Command::new("netstat")
+                .args(["-ano", "-p", "TCP"])
+                .output()
+                .ok()?;
+            for ln in String::from_utf8_lossy(&o.stdout).lines() {
+                let c: Vec<&str> = ln.split_whitespace().collect();
+                if c.len() >= 5 && c[0] == "TCP" && c[1].ends_with(":8766") && c[3] == "LISTENING" {
+                    if let Ok(p) = c[4].parse::<u32>() {
+                        if p != 0 {
+                            return Some(p);
+                        }
+                    }
+                }
+            }
+            None
+        }
+
+        // `daemon start` capturado vía PIPE en un hilo aparte: `output()` no
+        // retorna hasta que el proceso hijo termina Y todos los holders del
+        // write-end del pipe lo cierran. Sano: retorna en ~1-2 s (la vida del
+        // CLI lanzador). Retenido: no retorna hasta que muera quien heredó
+        // el handle.
+        let t0 = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let salida = std::process::Command::new(BIN)
+                .args(["--json", "daemon", "start"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .output();
+            let _ = tx.send(salida);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(salida) => {
+                let salida = salida.expect("`daemon start` debe poder ejecutarse");
+                assert!(
+                    salida.status.success(),
+                    "`daemon start` debe salir 0: {:?}",
+                    salida
+                );
+                hito(&format!(
+                    "h03: pipe liberado en {} ms sin intervención — H-03 no reproduce",
+                    t0.elapsed().as_millis()
+                ));
+                esperar_estado_daemon("running", 50);
+                shutdown_session_daemon();
+                hito_fin("tts::h03_pipe_stdio_no_debe_quedar_retenido");
+                return;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                hito(&format!(
+                    "h03: pipe SIGUE bloqueado tras {} ms (umbral sano ~1-2 s) — investigando retención",
+                    t0.elapsed().as_millis()
+                ));
+            }
+            Err(e) => fallo_con_reaper(
+                "h03_pipe_stdio_no_debe_quedar_retenido(canal)",
+                format!("canal del hilo lector cerrado inesperadamente: {}", e),
+            ),
+        }
+
+        // El pipe sigue retenido más allá de la vida del CLI lanzador: mata
+        // solo el motor primero (si se ubica) para replicar el orden exacto
+        // del síntoma documentado.
+        #[cfg(windows)]
+        if let Some(pid_motor) = pid_residente_en_8766() {
+            hito(&format!("h03: matando solo el motor (pid {})", pid_motor));
+            avi_daemon::matar_arbol_por_pid(pid_motor);
+            avi_daemon::esperar_muerte_pid(pid_motor, std::time::Duration::from_secs(8));
+            if let Ok(salida) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
+                let salida = salida.expect("`daemon start` debe poder ejecutarse");
+                hito(&format!(
+                    "h03: el pipe se liberó al matar SOLO el motor (inesperado vs. síntoma documentado, exit {:?})",
+                    salida.status.code()
+                ));
+                shutdown_session_daemon();
+                hito_fin("tts::h03_pipe_stdio_no_debe_quedar_retenido (liberado por motor)");
+                return;
+            }
+            hito("h03: matar solo el motor NO liberó el pipe (coincide con el síntoma documentado)");
+        }
+
+        // Mata el árbol completo del daemon: si el síntoma reproduce, esto
+        // debe liberar el pipe.
+        let pid_daemon = leer_pid_daemon();
+        if let Some(pid) = pid_daemon {
+            hito(&format!("h03: matando el árbol del daemon (pid {})", pid));
+            avi_daemon::matar_arbol_por_pid(pid);
+            avi_daemon::esperar_muerte_pid(pid, std::time::Duration::from_secs(8));
+        }
+
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(salida) => {
+                let salida = salida.expect("`daemon start` debe poder ejecutarse");
+                fallo_con_reaper(
+                    "h03_pipe_stdio_no_debe_quedar_retenido",
+                    format!(
+                        "H-03 reproduce: el pipe del lanzador solo se liberó al matar el daemon (no el motor), tras {} ms totales (exit {:?}). El daemon retiene el stdio del proceso que lo lanzó pese al corte de herencia por SetHandleInformation (desheredar_handles_estandar).",
+                        t0.elapsed().as_millis(),
+                        salida.status.code()
+                    ),
+                );
+            }
+            Err(_) => {
+                fallo_con_reaper(
+                    "h03_pipe_stdio_no_debe_quedar_retenido",
+                    format!(
+                        "el pipe del lanzador sigue bloqueado incluso tras matar el árbol del daemon (>{} ms): retención más allá de lo documentado en H-03",
+                        t0.elapsed().as_millis()
+                    ),
+                );
+            }
+        }
     }
 
     #[test]
