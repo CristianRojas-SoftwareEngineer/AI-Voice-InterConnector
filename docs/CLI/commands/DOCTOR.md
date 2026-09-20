@@ -1,273 +1,164 @@
-## Recorrido
+# `doctor`
 
-La investigación examinó la implementación completa de `doctor` explorando tres zonas del código: el handler CLI (`src/main.rs:531` `handle_doctor`), los helpers de verificación de snapshots HF (`crates/avi-store/src/lib.rs:550` `is_provisioned`, `hf_cache_dir`, `xet_cache_dir`) y el mecanismo de retorno entero en `src/main.rs` (`main`/`handle_*`). Se leyeron también los códigos de salida (`crates/avi-core/src/exit_codes.rs`) y los módulos auxiliares invocados (`avi-store`, `avi-translation`, `avi-stt`, `avi-tts`, `avi-audio`, `avi-core`). No hubo desviaciones del plan ni fuentes faltantes.
+Diagnóstico de entorno sin efectos secundarios: no descarga, no instala, no
+inicia procesos. Verifica que los modelos pinneados estén provisionados, que
+el directorio de datos exista y que el almacén de voces sea legible. Emite un
+veredicto (texto o JSON) y termina con exit code `1` si algún chequeo
+obligatorio falló.
 
----
-
-## Respuestas a los objetivos
-
-**Diseño de `doctor`:** Es un comando de diagnóstico sin subcomandos que ejecuta una batería de chequeos de entorno, modelos y plataforma. Emite un reporte (texto o JSON) y devuelve exit 1 si algún chequeo falló, sin que esto constituya un error de ejecución — es un **veredicto**, no una excepción.
-
-**Implementación:** `cmd_doctor` (`cli.py:1274`) compone una lista de tuplas `(status, name, detail)` invocando helpers especializados. El handler nunca lanza excepciones; cada chequeo está envuelto en `try/except` y degrada a SKIP o FAIL interno si falla. El retorno es `None` (éxito) o un entero `EXIT_ERROR` (1) que `main()` interpreta como `sys.exit(result)`.
-
-**Proceso de ejecución:** Acumulación de chequeos en lista mutable → conteo de FAIL/PASS → emisión de payload (texto o JSON) → retorno entero para veredicto.
-
-**Patrón de veredicto:** `doctor` es el único comando del CLI que usa el mecanismo de retorno entero de `main()`. No genera `CliError`; en su lugar, retorna `EXIT_ERROR` (1) cuando hay fallos y `main()` lo traduce a `sys.exit(1)` sin imprimir nada adicional. Esto permite que `--json` emita un único objeto JSON limpio sin contaminar stderr.
+Implementación: `handle_doctor` (`src/main.rs:2624`), apoyado en `avi-store`
+(`crates/avi-store/src/lib.rs`: `ModelStore::is_provisioned`, `is_ct2_provisioned`,
+`hf_cache_dir`, `data_dir`) y en `VoiceStore::list` (`crates/avi-store/src/lib.rs:122`).
 
 ---
 
-## Hallazgos por tema
-
-### Definición del parser CLI
-
-`cli.py:2653-2656` — registro del subcomando `doctor`:
-
-```python
-doctor_parser = subparsers.add_parser("doctor", help="Ejecuta diagnósticos")
-doctor_parser.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
-doctor_parser.set_defaults(func=cmd_doctor)
-```
-
-- **Subcomandos:** ninguno. Es un comando terminal (leaf command).
-- **Opciones:** solo `--json` (flag booleano).
-- **Handler:** `cmd_doctor` se vincula vía `set_defaults(func=...)`.
-
-### Handler: `cmd_doctor`
-
-Ubicación: `cli.py:1274-1400`.
-
-El handler ejecuta este flujo:
+## Superficie CLI
 
 ```
-checks = _environment_checks()          ← 2 chequeos base (Qwen3-TTS vía hf_cache_dir + Audio)
-checks += modelo Qwen3-TTS (`qwen3-tts-0.6b`)   ← verificación snapshot HF `hf_cache_dir()` + `MODEL_REVISIONS`
-checks += modelo de traducción           ← 1 chequeo par es<->en (derivado CT2 completo vía `is_ct2_provisioned`, no solo `model.bin`)
-checks += modelo de transcripción Parakeet        ← 1 chequeo `parakeet-tdt-0.6b-v3` (4 artefactos)
-checks += directorio de voces            ← 1 chequeo
-checks += RAM (advisory)                 ← 1 chequeo
-checks += AVX2 (advisory)               ← 1 chequeo
-checks += OneDrive (advisory)            ← 1 chequeo
-
-if --json → emit_json({...}) + return EXIT_ERROR si hay FAIL
-else      → print reporte + return EXIT_ERROR si hay FAIL
+ai-voice-interconnector doctor [--json]
 ```
 
-### Chequeos de entorno base: `_environment_checks`
+`Doctor` es una variante sin campos del enum `Commands` (`src/main.rs:189`): no
+admite subcomandos ni flags propias. Solo hereda el flag global `--json`
+(`src/main.rs:83-84`); los flags globales `--daemon`/`--no-daemon` no aplican
+porque `doctor` nunca dialoga con el daemon (`src/main.rs:505`
+`Some(Commands::Doctor) => handle_doctor(json_mode)`, llamada síncrona sin
+`daemon_mode`).
 
-Ubicación: `src/main.rs:531` (compartido con `setup`).
+---
 
-Función compartida. Devuelve la primera tanda de chequeos:
+## Flujo de chequeos
 
-| # | Check | Fuente | Éxito | Fallo |
-|---|---|---|---|---|
-| 1 | **Qwen3-TTS / Parakeet snapshot** | `hf_cache_dir()` + `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs:550` `is_provisioned`) | PASS + snapshot presente (`hf_cache_dir()`/ `models--Qwen--*`, `models--istupakov--*`) | FAIL: "no está en caché (ejecuta: ai-voice-interconnector setup)" |
-| 2 | **Audio library** | `avi-audio` (`crates/avi-audio/src/lib.rs`) | PASS: nombre lib + # dispositivos | FAIL: import faltante, sin dispositivos, o excepción |
-
-El chequeo de audio usa la enumeración real de dispositivos, reflejando el estado efectivo del subsistema: un host headless/RDP falla al enumerar → FAIL con detalle específico por plataforma.
-
-### Chequeo de modelo Qwen3-TTS / Parakeet (HF snapshots)
-
-Ubicación: `src/main.rs:531` + `crates/avi-store/src/lib.rs:550`.
-
-Verifica snapshots HF vía `hf_cache_dir()` y `MODEL_REVISIONS` (`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` `85e237c`, `istupakov/parakeet-tdt-0.6b-v3-onnx` `8f23f0c`):
-
-| Idioma | Modelo HF | Éxito | Fallo |
-|---|---|---|---|
-| `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | PASS: "presente en `hf_cache_dir()`" | FAIL: "no está en caché (ejecuta: ai-voice-interconnector setup)" |
-| `en` | `en` | PASS: "{model} presente en la caché" | FAIL: "{model} no está en caché (ejecuta: ai-voice-interconnector setup)" |
-
-Genera **2 chequeos** (uno por idioma), no uno consolidado.
-
-### Chequeo de modelo de traducción
-
-Ubicación: `cli.py:1295-1312`.
-
-Verifica los dos derivados CT2 (opus-mt) que se provisionan juntos, con el gate coincidente (`is_ct2_provisioned`: `model.bin` más `tokenizer.json` o `source.spm`+`target.spm`), listando los ficheros faltantes (`ct2_archivos_faltantes`, `src/main.rs:2220-2251`):
-
-```python
-missing = [
-    f"{source}->{target}" for source, target in (("es", "en"), ("en", "es"))
-    if not is_ct2_provisioned(f"{source}-{target}")
-]
+```
+handle_doctor
+    │
+    ▼
+data_dir() existe                              ← issue si falta (src/main.rs:2634-2637)
+    │
+    ▼
+is_provisioned("qwen3-tts-0.6b")               ← issue si falta (src/main.rs:2640-2642)
+is_provisioned("parakeet-tdt-v3")              ← issue si falta (src/main.rs:2643-2645)
+is_provisioned("marian-es-en")
+    │  false → issue "no provisionado"
+    │  true  → is_ct2_provisioned("es-en")      ← issue con ficheros faltantes si incompleto (src/main.rs:2646-2650)
+is_provisioned("marian-en-es")
+    │  false → issue "no provisionado"
+    │  true  → is_ct2_provisioned("en-es")      ← issue con ficheros faltantes si incompleto (src/main.rs:2651-2655)
+    │
+    ▼
+is_provisioned("qwen3-tts-0.6b-base")          ← opt-in, NUNCA genera issue (src/main.rs:2657-2662)
+    │  true  → base_status = "ready"
+    │  false → base_status = "missing_opt_in"
+    │
+    ▼
+voice_store.list()                             ← issue "Error al listar voces" si falla (src/main.rs:2665-2667)
+    │
+    ▼
+Salida (JSON o texto) + Ok(()) si issues vacío, Err(CliError) si no
 ```
 
-| Condición | Resultado |
-|---|---|
-| Ambas direcciones con derivado completo (`model.bin` + tokenizador) | PASS: "opus-mt presente en la caché" |
-| Falta una o ambas (incluido `model.bin` huérfano sin tokenizador) | FAIL: "falta(n) {lista} (faltan: {ficheros}; ejecuta: ai-voice-interconnector setup)" |
-| Excepción | FAIL con mensaje de error |
+Son **6 chequeos obligatorios** (directorio de datos, TTS, STT, CT2 es→en, CT2
+en→es, listado de voces) más **1 chequeo advisory** (modelo Base de clonado,
+opt-in). Solo los obligatorios acumulan en `issues`; el Base nunca lo hace, ni
+siquiera cuando falta.
 
-Es un **único chequeo lógico** — las dos direcciones se agrupan porque se provisionan juntas en `setup`.
+A diferencia de `setup`, `doctor` nunca llama a `ensure_downloaded` ni a
+`convert_marian_to_ct2`: solo lee el estado ya provisionado con las mismas
+funciones de verificación que usa `setup` para decidir si saltarse un modelo
+(`is_provisioned`, `is_ct2_provisioned`).
 
-### Chequeo de modelo de transcripción (Parakeet)
+---
 
-Ubicación: `src/main.rs:531` + `crates/avi-store/src/lib.rs:550`.
+## Chequeo CT2 de traducción
 
-Verifica el snapshot HF `parakeet-tdt-0.6b-v3` (4 artefactos) vía `hf_cache_dir()` + `MODEL_REVISIONS`:
+`is_ct2_provisioned(pair)` (`crates/avi-store/src/lib.rs:581`) exige el
+derivado completo, no solo el snapshot Marian: `model.bin` más un tokenizador
+válido (`tokenizer.json`, o el par `source.spm`+`target.spm` que produce
+`convert_marian_to_ct2`). Un `model.bin` huérfano sin tokenizador cuenta como
+incompleto. El mensaje de issue incluye la lista exacta de ficheros faltantes
+vía `ct2_archivos_faltantes(pair)` (`crates/avi-store/src/lib.rs:578`), por
+ejemplo:
 
-```rust
-let snap = ModelStore::new().model_snapshot_path("parakeet-tdt-v3").unwrap();
-if snap.is_dir() && snap.join("nemo128.onnx").is_file() { /* PASS */ }
+```
+Modelo CT2 es→en incompleto en 'hf_cache_dir/ct2/opus-mt-es-en' (exige model.bin
+más tokenizer.json o source.spm+target.spm) — ejecuta setup
 ```
 
-| Condición | Resultado |
-|---|---|
-| Directorio existe con 4 artefactos `size>0` | PASS: "parakeet-tdt-0.6b-v3 presente en `hf_cache_dir()`" |
-| Directorio no existe / incompleto | FAIL: "falta parakeet-tdt-0.6b-v3 (ejecuta: ai-voice-interconnector setup --with-stt)" |
-| Excepción | FAIL con mensaje de error |
+Nótese que este chequeo depende del snapshot Marian correspondiente: si
+`marian-es-en` no está provisionado, la issue reportada es la de snapshot
+ausente, no la de CT2 incompleto (son ramas mutuamente excluyentes por
+dirección, `src/main.rs:2646-2650`).
 
-### Chequeo de directorio de voces
+---
 
-Ubicación: `cli.py:1328-1334`.
+## Contrato `--json`
 
-```python
-voices_path = voices.voices_root()
-count = len(voices.list_voices())
-if os.path.exists(voices_path) or count:
-    checks.append(("PASS", "Voices directory", f"{count} voz(voces) disponible(s)"))
-else:
-    checks.append(("SKIP", "Voices directory", "sin voces de usuario aún (opcional)"))
-```
+Con `--json`, `handle_doctor` emite un único objeto vía `emit_raw_json`
+(`src/main.rs:2670-2676`), que inyecta `schema_version` automáticamente
+(`crates/avi-core/src/json_emitter.rs:26-36`):
 
-Es el único chequeo que puede retornar **SKIP** como valor normal (no por excepción). Las voces de usuario son opcionales — no having them is not a failure.
-
-### Chequeo de RAM (advisory)
-
-Ubicación: `cli.py:1336-1353`.
-
-Usa `psutil.virtual_memory().total` y compara contra `RECOMMENDED_RAM_BYTES = 8 GB` (`cli.py:103`):
-
-| Condición | Resultado |
-|---|---|
-| RAM ≥ 8 GB | PASS: "{X.X} GB" |
-| RAM < 8 GB | **WARN**: "{X.X} GB detectados; se recomiendan 8 GB..." |
-| `psutil` no disponible o error | **SKIP**: "no se pudo determinar ({error})" |
-
-**Clave:** WARN y SKIP **no cuentan como fallo** — solo FAIL altera el exit code (`cli.py:1368-1369`).
-
-### Chequeo de AVX2 (advisory)
-
-Ubicación: `cli.py:1177-1221` (`_check_avx2`).
-
-Detección best-effort sin dependencias nuevas:
-
-| Plataforma | Método | Éxito | Fallo |
-|---|---|---|---|
-| ARM (aarch64, arm64) | `platform.machine()` | SKIP: "no aplica en {machine}" | — |
-| Linux x86-64 | `/proc/cpuinfo` | PASS: "soportado" si "avx2" está en flags | WARN: "no detectado en /proc/cpuinfo" |
-| macOS x86-64 | `sysctl -n machdep.cpu.leaf7_features` | PASS: "soportado" si "AVX2" en output | WARN: "no detectado" |
-| Windows x86-64 | Sin vía estándar en stdlib | SKIP: "no verificable automáticamente en Windows" | — |
-| Cualquier error | `except Exception` | SKIP: "no se pudo determinar ({error})" | — |
-
-WARN y SKIP **no alteran el exit code**.
-
-### Chequeo de OneDrive (advisory)
-
-Ubicación: `cli.py:1224-1271` (`_check_onedrive`).
-
-Verifica si `data_root()` (`paths.data_root()`) cae bajo la sincronización de OneDrive en Windows:
-
-| Condición | Resultado |
-|---|---|
-| Fuera de Windows | SKIP: "no aplica fuera de Windows" |
-| `data_root()` bajo raíz OneDrive (env vars `OneDrive` / `OneDriveCommercial`) | **WARN**: exponer riesgo de file locks y placeholders |
-| `data_root()` contiene "onedrive" en la ruta (perfil corporativo sin env vars) | **WARN**: riesgo potencial |
-| Ninguna condición | PASS: "no detectado" |
-
-WARN **no altera el exit code**. Es puramente advisory (`cli.py:1362-1365`).
-
-### Patrón de veredicto (exit 1 sin error)
-
-Este es el diseño más distintivo de `doctor`. Dos mecanismos cooperan:
-
-**1. `cmd_doctor` retorna un entero** (`cli.py:1380-1384`, `cli.py:1396-1399`):
-
-```python
-if checks_failed > 0:
-    return EXIT_ERROR  # 1
-```
-
-Esto es diferente a todos los demás comandos, que retornan `None` (éxito implícito) o lanzan `CliError`.
-
-**2. `main()` interpreta el retorno entero** (`cli.py:2798-2804`):
-
-```python
-else:
-    if isinstance(result, int) and result != 0:
-        sys.exit(result)
-```
-
-El comentario en `cli.py:2799-2802` lo explica explícitamente:
-
-> "Salida por veredicto: el comando ya emitió su payload propio y pide salir con código ≠ 0 devolviendo un entero (p. ej. 'doctor' con FAIL). main() sigue siendo el único punto de salida no-cero; no se adjunta objeto 'error'."
-
-**Diferencia con `CliError`:** Cuando un comando lanza `CliError`, `_translate_cli_error` imprime el mensaje a stderr y adjunta un objeto JSON `{"error": {...}}`. Cuando `doctor` retorna `EXIT_ERROR`, `main()` solo hace `sys.exit(1)` — no imprime nada, no adjunta JSON, porque el reporte ya se emitió como payload propio.
-
-### Contrato JSON de `--json`
-
-Cuando se pasa `--json`, `cmd_doctor` emite un único objeto JSON vía `emit_json()` (`cli.py:69-80`):
-
-```json
-{
-  "schema_version": "3",
-  "platform": "Windows 10",
-  "checks": [
-    {"status": "PASS", "name": "Qwen3-TTS", "detail": "snapshot presente hf_cache_dir"},
-    {"status": "FAIL", "name": "Parakeet model", "detail": "no está en caché hf_cache_dir (setup)"},
-    ...
-  ],
-  "passed": 7,
-  "failed": 2
-}
-```
-
-| Campo | Tipo | Descripción |
+| Clave | Tipo | Significado |
 |---|---|---|
-| `schema_version` | string | `"3"` — inyectado automáticamente por `emit_json` |
-| `python` | string | `sys.version` completo |
-| `platform` | string | `"{system} {release}"` |
-| `checks` | array | Cada elemento: `{status, name, detail}` |
-| `passed` | int | Conteo de chequeos con `status == "PASS"` |
-| `failed` | int | Conteo de chequeos con `status == "FAIL"` |
+| `schema_version` | string | Inyectada por `emit_raw_json`/`with_schema_version` |
+| `status` | string | `"ok"` si `issues` está vacío, `"failed"` en otro caso |
+| `data_dir` | string | Ruta de `store::data_dir()` |
+| `hf_cache` | string | Ruta de `store::hf_cache_dir()` |
+| `issues` | array de strings | Mensajes de los chequeos obligatorios fallidos (vacío si todo pasa) |
+| `base_status` | string | `"ready"` o `"missing_opt_in"` — nunca afecta `status` ni exit code |
 
-**Nota:** WARN y SKIP no se cuentan en `passed` ni en `failed` — solo se cuentan PASS y FAIL.
+No hay array `checks` con entradas `{status, name, detail}`, ni contadores
+`passed`/`failed`, ni campos `platform`/`python`: el contrato real es plano,
+con `issues` como única fuente de detalle por chequeo.
 
-### Códigos de salida
-
-Ubicación: `exit_codes.py:1-51`.
-
-`doctor` solo usa dos códigos:
-
-| Código | Constante | Uso en doctor |
-|---|---|---|
-| `0` | `EXIT_OK` | Todos los chequeos PASS o con WARN/SKIP (sin FAIL) |
-| `1` | `EXIT_ERROR` | Al menos un chequeo FAIL |
-
-El comentario en `exit_codes.py:10` confirma: "1 error genérico (incluye chequeos fallidos de doctor)".
-
-### Tabla resumen de todos los chequeos
-
-| # | Nombre | Helper | Tipos posibles | Altera exit code |
-|---|---|---|---|---|
-| 1 | Qwen3-TTS / Parakeet snapshot | `_environment_checks` / `is_provisioned` (`crates/avi-store/src/lib.rs:550`) | PASS / FAIL | Sí (FAIL) |
-| 2 | Audio library | `_environment_checks` (`avi-audio`) | PASS / FAIL | Sí (FAIL) |
-| 3 | Qwen3-TTS model (qwen3-tts-0.6b) | `handle_doctor` (`src/main.rs:531`) vía `hf_cache_dir()` | PASS / FAIL | Sí (FAIL) |
-| 4 | Parakeet model (parakeet-tdt-0.6b-v3) | `handle_doctor` vía `hf_cache_dir()` + 4 artefactos | PASS / FAIL | Sí (FAIL) |
-| 5 | Translation model (es↔en, opus-mt) | `handle_doctor` (`src/main.rs:2220-2251`) vía `is_ct2_provisioned` (derivado completo, lista ficheros faltantes) | PASS / FAIL | Sí (FAIL) |
-| 6 | Transcription model (parakeet, mismo) | `handle_doctor` (`crates/avi-stt`) | PASS / FAIL | Sí (FAIL) |
-| 7 | Voices directory | `cmd_doctor` (`cli.py:1329-1334`) | PASS / SKIP | No |
-| 8 | RAM | `cmd_doctor` (`cli.py:1339-1353`) | PASS / WARN / SKIP | No |
-| 9 | CPU AVX2 | `_check_avx2` (`cli.py:1177-1221`) | PASS / WARN / SKIP | No |
-| 10 | OneDrive user-data-dir | `_check_onedrive` (`cli.py:1224-1271`) | PASS / WARN / SKIP | No |
+**Particularidad cuando hay fallos:** `handle_doctor` retorna `Err(CliError)`
+además de haber emitido su propio JSON a stdout. El bucle de `main`
+(`src/main.rs:509-520`) trata ese error igual que el de cualquier otro
+comando: con `--json` imprime un **segundo** objeto JSON en stdout,
+`{"error": "...", "reason": "doctor_checks_failed"}` (también con
+`schema_version` inyectado), antes de salir con `exit(1)`. Un consumidor de
+`--json doctor` que falla debe esperar **dos objetos JSON concatenados** en
+stdout, no uno solo.
 
 ---
 
-## Conclusiones
+## Salida en texto
 
-`doctor` es un comando de diagnóstico estático que ejecuta 10 chequeos sin modificar el sistema (no descarga, no instala, no inicia procesos). Su diseño se distingue por tres aspectos:
+Sin `--json` y sin issues:
 
-1. **Patrón de veredicto:** es el único comando del CLI que retorna un entero (`EXIT_ERROR`) en vez de lanzar `CliError`. `main()` detecta el retorno entero via `isinstance(result, int)` y ejecuta `sys.exit(result)` sin imprimir ni adjuntar un objeto de error. Esto permite que el reporte (texto o JSON) sea la única salida, limpio y sin contaminación de stderr — un diseño intencional para que orquestadores consuman el JSON y distingan entre "fallo de ejecución" (excepción) y "veredicto negativo" (chequeos fallidos).
+```
+Diagnóstico: todo correcto.
+Cache HF: <ruta>
+```
 
-2. **Separación FAIL/WARN/SKIP:** solo FAIL cuenta como fallo. Los chequeos advisory (RAM, AVX2, OneDrive) retornan WARN y son puramente informativos — reflejan la filosofía de que el sistema puede funcionar con RAM baja o sin AVX2 verificable, pero el usuario debe tener visibilidad. SKIP se usa para plataformas donde un chequeo no aplica.
+o, si el modelo Base de clonado no está provisionado:
 
-3. **Composición modular:** `_environment_checks` (`src/main.rs:531`) es compartida con `setup`, evitando duplicación. Cada chequeo de modelo delega a `avi-store` (`hf_cache_dir`, `xet_cache_dir`, `is_provisioned`), `avi-translation`, `avi-stt`, `avi-tts` sin importar su lógica interna — doctor solo verifica existencia de snapshot HF, nunca carga ni descarga.
+```
+Diagnóstico: todo correcto. [WARN] Modelo Base de clonado no provisionado (usa setup --with-voice-cloning).
+Cache HF: <ruta>
+```
+
+Con issues, cada una se imprime en stderr con prefijo `✗`, seguida del WARN
+del Base si aplica (prefijo `⚠`) y la línea de cache HF; luego `main` imprime
+`Error: Chequeos de entorno fallaron` en stderr y sale con `exit(1)`
+(`src/main.rs:2694-2707`).
+
+---
+
+## Errores
+
+| Reason | Código | Causa |
+|---|---|---|
+| `doctor_checks_failed` | Error (1) | Al menos un chequeo obligatorio (directorio de datos, TTS, STT, CT2 es→en, CT2 en→es, listado de voces) falló |
+
+`doctor` no define reasons propias adicionales: cualquier fallo obligatorio,
+sin importar cuál, colapsa al mismo `reason` con el detalle en `issues`
+(JSON) o en stderr (texto).
+
+---
+
+## Ejemplos
+
+```bash
+ai-voice-interconnector doctor                # reporte en texto, exit 0 o 1
+ai-voice-interconnector --json doctor         # payload legible por máquina
+```

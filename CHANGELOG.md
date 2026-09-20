@@ -135,6 +135,18 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   omite la confirmación destructiva (no-op sin `--force-update`) — `src/main.rs`;
   tests de contrato de `--help`/`--json` en `tests/cli_golden.rs`.
 
+### Documentación
+
+- docs(cli): sanear el drift Python heredado de la migración en los 7 docs de
+  comando restantes (`CLEANUP`, `DEVICES`, `DOCTOR`, `SPEECH`, `TRANSLATE`,
+  `VERSION`, `VOICE` en `docs/CLI/commands/`), que describían la implementación
+  como si fuera la CLI Python inexistente (`cli.py`, `cmd_*`, `emit_json`,
+  `psutil`, `miniaudio`, `pycaw`, `shutil`, etc.). Reescritura desde la
+  implementación Rust real tomando `SETUP.md`/`DAEMON.md` como exemplars, con
+  cada contrato `--json` verificado contra la serialización del handler y anclas
+  `archivo:línea` reales; se conservan solo las divergencias del oráculo
+  explícitamente etiquetadas. Cierra H-16; sin cambios de runtime.
+
 ## [0.18.26] — 2026-09-02
 
 En `v0.18.10–v0.18.25`, `uninstall --force` en Windows se auto-mataba: el

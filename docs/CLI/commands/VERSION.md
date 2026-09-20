@@ -1,108 +1,118 @@
-## Recorrido
+# `version`
 
-La investigación examinó la implementación completa de `version` explorando cuatro fuentes principales: la definición del parser CLI (`cli.py:2745-2747`), el handler `cmd_version` (`cli.py:1035-1042`), la constante `__version__` en `__init__.py:14`, y la tabla de códigos de salida (`exit_codes.py`). Se leyeron en paralelo las implementaciones del handler, el helper `emit_json` (`cli.py:69-80`), el módulo de bootstrap (`bootstrap.py`), y los casos de prueba (`test_cli.py:340-360`, `test_cli.py:2549-2557`). No hubo desviaciones del plan ni fuentes faltantes.
+Imprime el nombre y la versión del binario. Es el comando más simple de la
+CLI: un solo path de ejecución, sin dependencias externas, sin parámetros
+requeridos y sin ningún camino de error posible.
 
----
-
-## Respuestas a los objetivos
-
-**Diseño de `version`:** Es el comando más simple de la CLI — un solo path de ejecución sin dependencias externas, sin parámetros requeridos, y sin posibilidad de fallo. Su único option flag es `--json` para salida legible por máquina. No interactúa con el daemon, no carga modelos, y no requiere bootstrap más allá de la capa UTF-8.
-
-**Implementación:** El handler `cmd_version` (line 1035) importa `__version__` vía import perezoso dentro del handler (no a nivel de módulo), garantizando que `--help` y otros comandos rápidos no arrastren dependencias pesadas. Emite JSON a través del helper `emit_json` que inyecta automáticamente `schema_version`.
-
-**Proceso de ejecución:** Bootstrap UTF-8 → parseo de args → import de `__version__` → impresión a stdout (texto plano o JSON).
+Implementación: `handle_version` (`src/main.rs:525-532`).
 
 ---
 
-## Hallazgos por tema
+## Superficie CLI
 
-### Definición CLI
-
-`version_parser` se registra en `cli.py:2745-2747`:
-
-```python
-version_parser = subparsers.add_parser("version", help="Muestra la versión")
-version_parser.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
-version_parser.set_defaults(func=cmd_version)
+```
+ai-voice-interconnector version [--json]
+ai-voice-interconnector [--json]              # sin subcomando: mismo handler
 ```
 
-- Es un subparser directo bajo `subparsers` (no tiene sub-subcomandos).
-- El único flag es `--json` (store_true, default False).
-- `set_defaults(func=cmd_version)` vincula el handler sin lógica intermedia.
+| Flag | Tipo | Default | Descripción |
+|---|---|---|---|
+| `--json` | flag global | `false` | Emite JSON legible por máquina en stdout |
 
-### Handler: cmd_version
+`version` es una variante sin campos del enum `Commands` (`src/main.rs:120-123`).
+No tiene sub-subcomandos ni flags propios; `--json` es el flag global definido
+en `struct Cli` (`src/main.rs:83-84`), compartido por todos los comandos.
 
-`cmd_version` (`cli.py:1035-1042`):
+Cuando la CLI se invoca **sin ningún subcomando**, `Cli::command` es `None` y
+el despacho en `main` cae también en `handle_version(json_mode)`
+(`src/main.rs:506`) — mismo comportamiento que invocar `version` explícitamente.
 
-```python
-def cmd_version(args):
-    """Muestra la versión de ai-voice-interconnector."""
-    from . import __version__
+### Distinción con `-V`/`--version` de clap
 
-    if getattr(args, "json", False):
-        emit_json({"name": "ai-voice-interconnector", "version": __version__})
-    else:
-        print(f"ai-voice-interconnector {__version__}")
-```
+`#[command(version = VERSION)]` en `struct Cli` (`src/main.rs:80-81`) habilita
+además el flag estándar de clap `-V`/`--version`, generado automáticamente por
+el framework. Ese flag es un mecanismo **distinto** del subcomando `version`:
+imprime únicamente `{APP_NAME} {VERSION}` a stdout y termina el proceso vía la
+salida propia de clap, sin soportar `--json` ni pasar por `handle_version`.
 
-- Importa `__version__` localmente (no a nivel de módulo) — consistente con el patrón de imports perezosos del paquete.
-- Usa `getattr(args, "json", False)` en vez de `args.json`, tolerante a attrs faltantes.
-- Camino de texto plano: `ai-voice-interconnector {__version__}` a stdout.
-- Camino JSON: payload de dos claves (`name`, `version`) pasado a `emit_json`.
+---
 
-### Fuente de la versión
+## Implementación: `handle_version`
 
-`__init__.py:14`:
+`src/main.rs:525-532`:
 
-```python
-__version__ = "0.10.0"
-```
-
-- Literal de cadena, sin mecanismo dinámico (no usa `importlib.metadata` ni `setuptools-scm`).
-- `pyproject.toml:64` sincroniza la versión del paquete distribuible: `version = {attr = "ai_voice_interconnector.__version__"}`.
-- El autor es `Cristián Rojas Arredondo` (`__init__.py:15`), licencia `GPL-3.0-or-later` (`__init__.py:16`).
-
-### Payload JSON
-
-El helper `emit_json` (`cli.py:69-80`) serializa el dict y le inyecta `schema_version` automáticamente:
-
-```json
-{
-  "name": "ai-voice-interconnector",
-  "version": "0.10.0",
-  "schema_version": "3"
+```rust
+fn handle_version(json_mode: bool) -> Result<(), CliError> {
+    if json_mode {
+        emit_raw_json(json!({ "name": APP_NAME, "version": VERSION }));
+    } else {
+        println!("{} {}", APP_NAME, VERSION);
+    }
+    Ok(())
 }
 ```
 
-- `SCHEMA_VERSION = "3"` (`cli.py:66`) — contrato legible por máquina, campo aditivo.
-- `emit_json` usa `payload.setdefault("schema_version", SCHEMA_VERSION)` — no sobrescribe si el caller ya la trae.
-- Garantiza exactamente un objeto JSON por invocación (una sola llamada a `print(json.dumps(...))`).
+- Camino de texto plano: `{APP_NAME} {VERSION}` a stdout (p. ej.
+  `ai-voice-interconnector 0.18.26`).
+- Camino JSON: payload de dos claves (`name`, `version`) pasado a
+  `emit_raw_json`, que inyecta `schema_version` automáticamente.
+- Siempre retorna `Ok(())`: no hay ningún `CliError` posible en este handler.
 
-### Códigos de salida
+## Fuente de la versión
 
-`version` solo tiene path de éxito — no lanza `CliError` en ninguna circunstancia. El código de salida implícito es `EXIT_OK = 0` (`exit_codes.py:23`).
+`VERSION` y `APP_NAME` son constantes `&str` fijas en `src/main.rs:27-28`:
 
-No hay caminos de error posibles:
-- `__version__` es un literal, no puede fallar.
-- `getattr(args, "json", False)` es seguro ante attrs faltantes.
-- `print()` y `emit_json()` asumen stdout disponible.
+```rust
+const VERSION: &str = "0.18.26";
+const APP_NAME: &str = "ai-voice-interconnector";
+```
 
-### Bootstrap
+- Literales de cadena, sin mecanismo dinámico (no usan `env!("CARGO_PKG_VERSION")`
+  ni ningún build script).
+- `Cargo.toml:3` fija `version = "0.18.26"` para el paquete — debe mantenerse
+  sincronizado manualmente con la constante `VERSION`, ya que no hay
+  generación automática que los enlace.
 
-`main()` (`cli.py:2764-2766`) invoca `bootstrap.apply()` antes de construir el parser. Esto configura UTF-8 en stdout/stderr, silencia warnings selectivos, y configura variables de entorno para HuggingFace. Para `version`, el único efecto relevante es la reconfiguración UTF-8 — no hay imports pesados.
+## Contrato `--json`
 
-### Tests
+`emit_raw_json` (`crates/avi-core/src/json_emitter.rs:38-44`) serializa el
+`Value` e inyecta `schema_version` vía `with_schema_version`
+(`crates/avi-core/src/json_emitter.rs:26-36`), que usa
+`SCHEMA_VERSION = "3"` (`crates/avi-core/src/json_emitter.rs:5`). Salida real:
 
-| Test | Archivo:linea | Verificación |
+```json
+{
+  "schema_version": "3",
+  "name": "ai-voice-interconnector",
+  "version": "0.18.26"
+}
+```
+
+Fixture verificado por test: `tests/golden/cli_version.json`.
+
+## Códigos de salida
+
+`version` solo tiene camino de éxito: `EXIT_OK = 0`
+(`ExitCode::Ok`, `crates/avi-core/src/exit_codes.rs:6`). No existe ningún
+`CliError` que este handler pueda producir:
+
+- `APP_NAME`/`VERSION` son literales, no pueden fallar.
+- `println!`/`emit_raw_json` asumen stdout disponible (mismo supuesto que el
+  resto de la CLI).
+
+## Tests
+
+| Test | Archivo:línea | Verificación |
 |---|---|---|
-| `test_cmd_version_human` | `test_cli.py:341-347` | Salida contiene `"ai-voice-interconnector"` |
-| `test_cmd_version_json` | `test_cli.py:349-360` | JSON exacto: `{schema_version, name, version}` |
-| `test_version_json_includes_schema_version` | `test_cli.py:2549-2557` | `schema_version == SCHEMA_VERSION` y `name == "ai-voice-interconnector"` |
-
-Los tests usan `MockArgs(json=True)` y `capsys` de pytest para capturar stdout.
+| `version_coincide_con_fixture` | `tests/cli_golden.rs:743-748` | `ai-voice-interconnector --json version` produce exit `0` y el JSON coincide exactamente con `tests/golden/cli_version.json` |
 
 ---
 
-## Conclusiones
+## Ejemplos
 
-`version` es el comando más minimalista de la CLI: un handler de 7 líneas sin dependencias externas, sin interacción con el daemon, y sin caminos de error. Su diseño es notable por: (1) la coherencia con el patrón de imports perezosos — `__version__` se importa dentro del handler, no a nivel de módulo, evitando arrastre de dependencias incluso en este caso trivial; (2) la adherencia al contrato JSON global — emite `schema_version` automáticamente vía `emit_json`, igual que todos los comandos que aceptan `--json`; y (3) la sincronización de versión — `__version__` en `__init__.py` es la fuente única, referenciada tanto por el CLI como por `pyproject.toml` para el paquete distribuible.
+```bash
+ai-voice-interconnector version           # ai-voice-interconnector 0.18.26
+ai-voice-interconnector --json version    # payload legible por máquina con schema_version
+ai-voice-interconnector                   # sin subcomando: mismo handler que `version`
+ai-voice-interconnector -V                # flag nativo de clap; sin --json, ruta distinta a handle_version
+```

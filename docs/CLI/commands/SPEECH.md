@@ -1,184 +1,413 @@
-## Recorrido
+# `speech`
 
-La investigación examinó la implementación completa de `speech dub` explorando tres fuentes principales: el handler CLI (`cli.py:559-620`), el daemon FastAPI (`daemon/server.py`), y los subsistemas de transcripción, traducción y engine. Se leyeron en paralelo las implementaciones del handler principal, los helpers de despacho tri-modal (`_transcribe_stage`, `_dispatch_synthesis`), los endpoints del daemon, los protocolos compartidos (`protocol.py`), y los módulos de transcription/translation/engine/audio. No hubo desviaciones del plan ni fuentes faltantes.
+Síntesis, transcripción y doblaje voz→voz, más el CRUD de las locuciones
+persistidas. Es el comando más grande de la CLI: reúne siete subcomandos y es
+el único punto de la superficie donde conviven los tres motores nativos
+(`avi-tts`, `avi-stt`, `avi-translation`) y el despacho tri-modal contra el
+daemon.
+
+Implementación: `handle_speech` (`src/main.rs:846`), enum `SpeechCommands`
+(`src/main.rs:217-315`). Helpers de despacho al daemon: `route_to_daemon`
+(`src/main.rs:2875`), `transcribe_via_daemon` (`src/main.rs:2898`),
+`daemon_synthesize_wav` (`src/main.rs:3056`), `synthesize_via_daemon`
+(`src/main.rs:3152`), `say_via_daemon` (`src/main.rs:3202`), `dub_via_daemon`
+(`src/main.rs:3336`), `dub_compose_via_daemon` (`src/main.rs:3490`, fallback si
+el daemon responde 404 en `/dub`, es decir, un binario viejo sin esa ruta).
 
 ---
 
-## Respuestas a los objetivos
-
-**Diseño de `speech dub`:** Es un pipeline de cuatro etapas (transcribe → traduce → sintetiza → reproduce). El daemon expone `POST /dub` (`crates/avi-daemon/src/lib.rs` `dub_handler`) con CT2 residente y `synthesis_lock`; el CLI despacha en 3 modos (`--daemon`/`--no-daemon`/auto) vía `route_to_daemon` + `dub_via_daemon` (pipeline `POST /dub`) con fallback a composición `transcribe_via_daemon` + traducción local + `daemon_synthesize_wav`. La etapa de traducción exige el derivado CT2 sano vía `avi-translation` (`model.bin` más `tokenizer.json` o `source.spm`+`target.spm`); sin él, exit 4 con los ficheros faltantes.
-
-**Implementación:** El handler `handle_speech:Dub` (`src/main.rs:955`) valida `--audio`/`--mic` y delega a `dub_via_daemon` (timeout 10000ms) si `route_to_daemon` es true; si no, rama local transcribe→traduce→sintetiza. El despacho tri-modal cubre las tres etapas.
-
-**Proceso de ejecución:** Validación de inputs → captura de audio (archivo WAV o micrófono) → transcripción vía Parakeet TDT v3 (`ParakeetEngine::transcribe`, `crates/avi-stt`) → validación del texto transcrito → traducción condicional CT2 → síntesis con la voz target → reproducción del resultado.
-
----
-
-## Hallazgos por tema
-
-### Pipeline de ejecución
-
-`cmd_speech_dub` ejecuta este flujo exacto (`cli.py:559-620`):
+## Superficie CLI
 
 ```
-Entrada (archivo WAV o micrófono)
-    │
-    ▼
-_transcribe_stage(args)              ← 3 modos: --daemon / --no-daemon / auto
-    │                                  → POST /transcribe (daemon) o modo directo
-    ▼
-texto transcrito
-    │
-    ▼
-_validate_synthesis_text(text)       ← validación de longitud y contenido
-    │
-    ▼
-args.text = text                     ← reemplaza args.text con la transcripción
-_dispatch_synthesis(args, voice)     ← 3 modos: --daemon / --no-daemon / auto
-    │                                  → POST /synthesize (daemon) o modo directo
-    │                                  → traducción integrada si source ≠ target
-    ▼
-result (SynthesisResult: audio_bytes + metrics)
-    │
-    ▼
-_play_audio(result.audio_bytes)      ← reproducción inmediata
+ai-voice-interconnector [--daemon|--no-daemon] [--json] speech <subcomando> [flags]
 ```
 
-### Despacho tri-modal
+`--daemon`/`--no-daemon` son flags globales de `Cli` (`src/main.rs:83-96`,
+mutuamente excluyentes) que fijan el `DaemonMode` (`ForceDaemon`/`ForceDirect`/
+`Auto` sin ninguno de los dos). No son flags de `speech`; se anteponen al
+comando raíz.
 
-Tanto `_transcribe_stage` (`cli.py:451-513`) como `_dispatch_synthesis` (`cli.py:361-418`) implementan el mismo patrón de tres modos:
-
-| Flag | Comportamiento |
-|---|---|
-| `--daemon` | Exige daemon activo; si no responde, exit 5 |
-| `--no-daemon` | Fuerza modo directo, sin sondear daemon |
-| Sin flags | Autodetección: daemon si responde, directo si no |
-
-**Invariante:** la captura/lectura del audio SIEMPRE ocurre en el cliente. El daemon nunca recibe rutas de archivo; recibe muestras PCM int16 codificadas en base64 (`_transcribe_via_daemon`, `cli.py:421-448`).
-
-### Parámetros requeridos
-
-| Parámetro | Tipo | Descripción |
+| Subcomando | Delegable al daemon | Local-only |
 |---|---|---|
-| `--audio` **o** `--mic` | exclusive group | Archivo WAV o grabación desde micrófono (uno u otro, requerido) |
-| `--source-language` | `es-latam` \| `en` | Idioma hablado en el audio de entrada |
+| `speech list` | No | Sí (`require_local`) |
+| `speech transcribe` | Sí | — |
+| `speech synthesize` | Sí | — |
+| `speech say` | Sí | — |
+| `speech dub` | Sí | — |
+| `speech play` | No | Sí (`require_local`) |
+| `speech remove` | No | Sí (`require_local`) |
 
-### Parámetros opcionales
-
-| Parámetro | Tipo | Default | Descripción |
-|---|---|---|---|
-| `--duration` | int | None | Duración fija de grabación en segundos (solo con `--mic`) |
-| `--target-language` | `es-latam` \| `en` | `es-latam` | Idioma/modelo de síntesis; si difiere de source, se traduce |
-| `--voice, -v` | str | `default` | Nombre de la voz a usar |
-| `--temperature` | float | None | Override de temperatura (`0 < t <= 2.0`; sin el flag se usa la de producción) |
-| `--daemon` | flag | False | Exige daemon |
-| `--no-daemon` | flag | False | Fuerza modo directo |
-
-### Etapa 1: Captura de audio
-
-**Modo archivo** (`cli.py:573-576`): valida existencia del WAV con `Path.exists()`.
-
-**Modo micrófono** (`cli.py:568-571`): usa `AudioRecorder` (`audio.py`) que captura a 16 kHz mono int16 vía `miniaudio.CaptureDevice`. Dos modos:
-- `record_until_enter()`: push-to-talk, Enter para terminar (requiere TTY)
-- `record_fixed(seconds)`: grabación de duración fija
-
-**Restricción:** `--mic` sin TTY y sin `--duration` produce exit 2. `--duration` sin `--mic` también produce exit 2.
-
-### Etapa 2: Transcripción
-
-`_transcribe_stage` (`cli.py:451-513`) despacha a:
-
-- **Daemon:** transcribe vía `avi-daemon` → `POST /transcribe` (`src/main.rs:743`, `crates/avi-daemon/src/lib.rs:286-508`) → delega a `ParakeetEngine::transcribe` (`crates/avi-stt/src/parakeet.rs`) sobre `ort` load-dynamic con los 4 artefactos `MODEL_FILE_PATTERNS` → texto
-- **Directo:** instancia `ParakeetEngine` localmente (`crates/avi-stt/src/lib.rs:40`) → mismo pipeline sin HTTP vía `hf_cache_dir()` + `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs:381`)
-
-**Detalle clave:** `ParakeetEngine` solo transcribe, nunca traduce. La traducción es responsabilidad exclusiva de `avi-translation` vía `ct2rs` sobre el derivado sano (mismo gate `is_ct2_provisioned` que `translate`: exit 4 sin tokenizador, 9 solo con modelo cargado).
-
-### Etapa 3: Traducción (condicional)
-
-La traducción NO es una etapa separada en `cmd_speech_dub`. Está incrustada en `_dispatch_synthesis` → `_translate_stage` (`cli.py:192-223`) en modo directo, o dentro del endpoint `POST /synthesize` del daemon (`server.py:284-289`).
-
-**Condición:** solo se traduce si `source_language != target_language`. Si son iguales, el texto pasa sin modificar (shortcut en `TranslationService.translate`, `translation/service.py`).
-
-**Pipeline de traducción** (`translation/`):
-1. `SentenceSegmenter` divide en párrafos → oraciones → puntuación fuerte → tokens (4 niveles jerárquicos para el límite de ~512 tokens de MarianMT)
-2. `MarianTranslator` carga modelo CT2 (`opus-mt-{src}-{dst}`) y traduce por lotes, añadiendo `</s>` a los tokens fuente para evitar loops infinitos
-3. `SegmentAssembler` reconstruye el texto preservando saltos de párrafo
-
-**Idiomas soportados:** conjunto cerrado `{es, en}`.
-
-### Etapa 4: Síntesis
-
-`_dispatch_synthesis` (`cli.py:361-418`) despacha a:
-
-- **Daemon:** `_synthesize_via_daemon` → `POST /synthesize` con `SynthesizeRequest` → daemon selecciona engine por idioma, serializa con `_synthesis_lock`, emite NDJSON (progress events + result), limpieza de memoria post-síntesis
-- **Directo:** instancia `Qwen3TtsEngine` (`crates/avi-tts/src/lib.rs:279-811`, `src/main.rs:557-777` `clone_voice`/`synthesize_via_subprocess`) → `engine.synthesize(text, reference.qvoice, GenerationOptions::produccion())` (`crates/avi-tts/src/lib.rs:419` `synthesize_via_residente`); solo `hf-hub` + `ct2rs` + `ort` (stack Rust nativo)
-
-**Parámetros de síntesis del engine** (`engine.py`):
-
-| Parámetro | Default es-latam | Default en | Efecto |
-|---|---|---|---|
-| `exaggeration` | 0.75 | 0.65 | Expresividad emocional |
-| `cfg_weight` | 0.5 | 0.3 | Classifier-free guidance |
-| `temperature` | 0.8 | 0.7 | Muestreo |
-
-**Optimizaciones monkey-patch** (`engine.py:_apply_synthesis_optimizations`):
-- `tts.t3.inference` → inyecta `max_new_tokens=500` (vs default 1000), mide timing T3, limpia hooks de `AlignmentStreamAnalyzer` (previene memory leak)
-- `tts.s3gen.inference` → inyecta `n_cfm_timesteps=4` (vs default 10), mide timing S3Gen
-- `tts.tqdm` → wrapper con throttling (~10 eventos/s, cada 10 tokens) para progress callback
-
-**Watermark (PerthNet):** el motor Qwen3-TTS no incorpora watermarker (verificado por búsqueda
-`watermark|perthnet|perth` en `vendor/qwen3-tts/`; sin coincidencias más allá de identificadores
-de API CUDA/Metal). El audio sintetizado no es distinguible por medios técnicos de una grabación real.
-
-### Etapa 5: Reproducción
-
-`_play_audio` (`cli.py:126-138`) instancia `AudioPlayer` (vía `miniaudio`) y reproduce los bytes de audio resultantes. Fallo si la librería de audio no está disponible → exit 8.
-
-### Daemon: `POST /dub` y pipeline
-
-El daemon (`crates/avi-daemon/src/lib.rs:1080` `dub_handler`) expone 9 endpoints, incluido `POST /dub`:
-
-| Endpoint | Propósito |
-|---|---|
-| `GET /health` | Estado del daemon, modelos cargados, uptime |
-| `POST /synthesize` | Síntesis (NDJSON `audio_b64`) |
-| `POST /transcribe` | Transcripción Parakeet (`native-stt`) |
-| `POST /translate` | Traducción CT2 residente (`native-translation`) |
-| `GET /voices` | Lista de voces |
-| `POST /voices/precompute` | Precomputa conditionals |
-| `POST /voices/clone` | Clona voz desde `audio_b64` |
-| `POST /dub` | Pipeline transcribe→translate→synthesize (`audio_b64`) |
-| `POST /shutdown` | Apaga el daemon |
-
-`POST /dub` pipelinea `stt_engine.transcribe` → `ct2_engine` si `source!=target` → `tts_engine.synthesize_with_options` bajo `synthesis_lock`; el CLI también conserva fallback a composición `transcribe_via_daemon` + traducción local + `daemon_synthesize_wav`. `dub_handler` y la composición aplican `is_ct2_provisioned`; `ct2_engine: None` con `model.bin` huérfano (sin tokenizador) sale con 4 y los ficheros faltantes, no con 9.
-
-### Validaciones previas a la síntesis
-
-Antes de llegar a `_dispatch_synthesis`, `cmd_speech_dub` ejecuta (`cli.py:583-593`):
-
-1. `_validate_synthesis_text(text)` — texto no vacío, ≤ `MAX_TEXT_LENGTH` (5000 chars), warning si > 2000 chars
-2. `_validate_synthesis_params(args)` — `cfg_weight > 0.0`, `exaggeration >= 0.0`
-3. `_validate_identifier(voice_name)` — normaliza y valida el nombre de voz
-4. `is_provisioned(target_language)` (`crates/avi-store/src/lib.rs:550`) — verifica snapshot HF vía `hf_cache_dir()`
-5. `_require_voice_exists(voice_name)` — verifica que la voz exista (usuario o fábrica)
-
-### Manejo de errores
-
-| Excepción | Código exit | Razón |
-|---|---|---|
-| Archivo WAV no encontrado | 3 | `not_found` |
-| Modelo no descargado | 4 | `model_missing` |
-| Daemon inalcanzable | 5 | `daemon_unreachable` |
-| `cfg_weight <= 0.0` | 2 | `usage_error` |
-| `--duration` sin `--mic` | 2 | `usage_error` |
-| Modelo transcripción faltante | 4 | `model_missing` |
-| Fallo de transcripción | 10 | `transcription_failed` |
-| `DaemonIPCError` | 5 | `daemon_unreachable` |
-| Error genérico | 1 | `generic` |
+`require_local` (`src/main.rs:2884`) hace que `list`/`play`/`remove` con
+`--daemon` forzado fallen con `daemon_unreachable` (exit 5) en vez de
+ejecutarse localmente: son operaciones sobre `SpeechStore`, que el daemon no
+expone por HTTP.
 
 ---
 
-## Conclusiones
+## Despacho tri-modal (subcomandos delegables)
 
-`speech dub` es un pipeline de composición voz→voz que orquesta cuatro etapas (transcripción, traducción condicional, síntesis, reproducción) reutilizando los helpers compartidos de `speech transcribe` y `speech synthesize`. Su diseño es notable por: (1) no duplicar lógica — no existen `_dub_direct` ni `_dub_via_daemon`, el despacho tri-modal se reutiliza íntegramente; (2) el invariante sin-paths — el audio siempre se captura en el cliente y se envía como base64 PCM int16; (3) la traducción transparente — cuando `source_language != target_language`, la traducción ocurre automáticamente dentro de la etapa de síntesis sin intervención explícita del usuario; y (4) la separación de responsabilidades entre CLI (composición) y daemon (primitivas atómicas de transcripción y síntesis).
+`route_to_daemon` (`src/main.rs:2875`):
 
+| `DaemonMode` | Comportamiento |
+|---|---|
+| `ForceDaemon` (`--daemon`) | Siempre intenta el daemon; si el `POST` falla, exit 5 `daemon_unreachable` |
+| `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
+| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, `src/main.rs:2868`) con deadline corto; si responde, delega; si no, cae a directo |
+
+**Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
+lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
+o `avi_audio::load_wav_16k_mono_pcm`); el daemon nunca recibe una ruta de
+archivo, solo PCM `i16` little-endian 16 kHz mono codificado en base64 en
+`audio_b64`.
+
+---
+
+## `speech list`
+
+```
+ai-voice-interconnector speech list
+```
+
+Sin flags de filtrado. Lista todas las locuciones persistidas en
+`SpeechStore` (`crates/avi-store`), local-only (`src/main.rs:854-891`).
+
+**`speech list --voice/-v` NO existe.** El contrato histórico (`CONTRACT.md`)
+prometía un filtro por voz; el `enum SpeechCommands::List` es una variante
+unitaria sin campos (`src/main.rs:220`) y no acepta ningún flag. Es un drift
+pendiente (H-10, `docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`):
+no lo documentes como funcional ni lo invoques con `--voice`, fallaría con un
+error de parseo de `clap`.
+
+Salida humana: una línea por locución con voz, etiqueta, duración y texto.
+Salida `--json`: `{"speech": [{"label", "voice", "text", "created_at",
+"duration_secs"}, ...]}` (`src/main.rs:861-873`).
+
+---
+
+## `speech transcribe`
+
+```
+ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es-latam|en>
+```
+
+| Flag | Tipo | Default | Descripción |
+|---|---|---|---|
+| `--audio` | string | — | Ruta del WAV a transcribir. Mutuamente excluyente con `--mic` (`conflicts_with`, `src/main.rs:224`) |
+| `--mic` | flag | `false` | Captura desde el micrófono en vez de leer un archivo |
+| `--duration` | u64 | — | Duración fija de grabación en segundos. Solo tiene efecto con `--mic` |
+| `--source-language` | `es-latam`\|`en` | — | Obligatorio. Idioma hablado en el audio |
+
+Validaciones puras antes de despachar (`src/main.rs:898-914`):
+- Ni `--audio` ni `--mic`: exit 2 `usage_error`.
+- `--mic` sin `--duration` **y sin TTY** (`stdin().is_terminal()` es `false`,
+  p. ej. en un pipe o en CI): exit 2 `usage_error` ("`--mic` requiere
+  `--duration` en este host").
+- `--mic` sin `--duration` **con TTY**: la validación lo deja pasar (el
+  comentario en el código la llama "push-to-talk permitido en TTY"), pero
+  **no existe implementación de push-to-talk** — `AudioService::capture_16k_mono_pcm`
+  (`crates/avi-audio/src/lib.rs:179`) solo acepta una duración fija en
+  segundos, nunca "grabar hasta Enter". El camino llega a
+  `duration.expect("validado arriba")` (`src/main.rs:923` en la rama daemon,
+  y de nuevo en la rama directa) con `duration == None`, y **entra en panic**
+  con stack trace, no con un `CliError` disciplinado. Este es el hallazgo
+  H-08 (pendiente): documenta el comportamiento real — en TTY sin `--duration`
+  el proceso revienta — y no prometas grabación interactiva funcional.
+
+Despacho (`src/main.rs:916-1005`):
+1. `route_to_daemon` → si aplica, `transcribe_via_daemon` (`src/main.rs:2898`):
+   codifica el PCM a `audio_b64`, hace `POST /transcribe` y emite el mismo
+   envelope que la rama local.
+2. Rama directa: verifica que `parakeet-tdt-v3/nemo128.onnx` exista (si no,
+   exit 4 `model_missing` antes de instanciar nada); si el binario se compiló
+   sin el feature `native-stt`, exit 1 `stt_unsupported`; si el feature está
+   activo, instancia `ParakeetEngine` (`crates/avi-stt/src/lib.rs`) y llama
+   `engine.transcribe(&pcm, Some(language))`.
+
+`resolve_stt_language` (`src/main.rs:59-64`) mapea `es-latam` → `es`; `en`
+pasa verbatim. `ParakeetEngine` solo transcribe, nunca traduce.
+
+### Contrato `--json`
+
+```json
+{ "text": "<texto transcrito>", "source": "<source_language tal cual se pasó>" }
+```
+
+(`src/main.rs:1000` local, `src/main.rs:2961` vía daemon — mismo envelope en
+ambas rutas.)
+
+---
+
+## `speech synthesize`
+
+```
+ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--voice <nombre>] [--output <ruta>] [--force] [--play] [--source-language <es-latam|en>] [--target-language <es-latam|en>] [--temperature <0<t<=2.0>]
+```
+
+| Flag | Tipo | Default | Descripción |
+|---|---|---|---|
+| `--text`, `-t` | string | — | Obligatorio. Texto a sintetizar |
+| `--voice`, `-v` | string | `default` | Voz a usar |
+| `--output`, `-o` | string | — | Copia adicional del WAV persistido a esta ruta |
+| `--label`, `-l` | string | — | Obligatorio. Etiqueta bajo la que se persiste la locución (se normaliza a minúsculas) |
+| `--force`, `-f` | flag | `false` | Sobrescribe una locución existente con la misma etiqueta |
+| `--play` | flag | `false` | Reproduce el WAV tras sintetizar |
+| `--source-language` | `es-latam`\|`en` | = `target-language` | Idioma del texto de entrada |
+| `--target-language` | `es-latam`\|`en` | `es-latam` | Idioma/modelo de síntesis; si difiere del origen, el texto se traduce antes de sintetizar |
+| `--temperature` | f32 | producción (`0.35`) | Override de muestreo; rango `0 < t <= 2.0` |
+
+**`--play` NO tiene el bucle interactivo de 4 opciones que el contrato
+histórico prometía** (reproducir / aceptar / regenerar / descartar). El
+código real (`src/main.rs:1088-1099`) reproduce el WAV incondicionalmente
+—si `--play` está presente— y **siempre** persiste la locución en
+`SpeechStore` a continuación, sin preguntar nada. Es el hallazgo H-12
+(pendiente): documenta `--play` como "reproduce y guarda", no como un flujo
+interactivo.
+
+Validaciones y flujo local (`src/main.rs:1007-1114`):
+1. `validar_temperature` (`src/main.rs:67-78`): exit 2 si el override está
+   fuera de `(0, 2.0]`.
+2. Texto vacío tras `trim()`: exit 2 `empty_text`.
+3. `source_eff = source_language.unwrap_or(target_language)` — sin
+   `--source-language`, origen = destino (passthrough, no se traduce).
+4. Despacho: si aplica, `synthesize_via_daemon` (`src/main.rs:3152`); si no,
+   rama directa: `require_model_provisioned` (exit 4 si falta
+   `qwen3-tts-0.6b`) → la voz debe existir en `VoiceStore` (exit 3
+   `voice_not_found`) → `es_identificador_valido` sobre la etiqueta
+   normalizada (exit 2 `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) →
+   si ya existe una locución con esa etiqueta y no hay `--force`, exit 6
+   `label_exists` → `traducir_si_difiere` (`src/main.rs:643-676`, passthrough
+   si `source == target`; si no, exige el derivado CT2 sano, exit 4 si falta)
+   → `Qwen3TtsEngine::synthesize_with_temperature` → si `--play`, reproduce
+   → `SpeechStore::save` → si `--output`, copia el WAV persistido a esa ruta.
+
+La rama vía daemon (`synthesize_via_daemon`, `src/main.rs:3152-3199`) repite
+las mismas validaciones de etiqueta/duplicado en el cliente antes de llamar a
+`daemon_synthesize_wav` (`POST /synthesize`, consume el NDJSON y decodifica
+`audio_b64` del evento `result`), guarda el WAV temporal, reproduce si
+`--play`, persiste en `SpeechStore` y copia a `--output` si corresponde — el
+mismo contrato de salida que la rama local.
+
+### Contrato `--json`
+
+```json
+{ "status": "success", "audio_path": "<ruta del WAV persistido>", "voice": "<voz>" }
+```
+
+(`src/main.rs:1046-1051` vía daemon, `src/main.rs:1105-1110` local — idéntico.)
+
+---
+
+## `speech say`
+
+```
+ai-voice-interconnector speech say --text <texto> [--voice <nombre>] [--source-language <es-latam|en>] [--target-language <es-latam|en>] [--temperature <0<t<=2.0>]
+```
+
+Sintetiza y reproduce sin persistir en `SpeechStore` (no tiene `--label`).
+Mismas reglas de `--source-language`/`--target-language`/`--temperature` que
+`synthesize`. Escribe el WAV en un archivo temporal
+(`avi_say_<pid>.wav`) y siempre lo reproduce (`AudioService::play_wav`); a
+diferencia de `synthesize`, no hay flag `--play` porque la reproducción es
+incondicional (`src/main.rs:1116-1183`).
+
+Despacho: `say_via_daemon` (`src/main.rs:3202`) si aplica, o rama directa con
+`require_model_provisioned` + `VoiceStore::exists` + `traducir_si_difiere` +
+`Qwen3TtsEngine::synthesize_with_temperature` + `AudioService::play_wav`.
+
+### Contrato `--json`
+
+```json
+{ "status": "reproduced", "audio_path": "<ruta temporal del WAV>", "voice": "<voz>" }
+```
+
+(`src/main.rs:1174-1178` local, `src/main.rs:3224-3229` vía daemon.)
+
+---
+
+## `speech dub`
+
+```
+ai-voice-interconnector speech dub (--audio <archivo.wav>|--file <archivo.wav> | --mic) [--duration <segs>] --source-language <es-latam|en> [--target-language <es-latam|en>] [--voice <nombre>] [--temperature <0<t<=2.0>]
+```
+
+Pipeline voz→voz: transcribe → traduce (si `source != target`) → sintetiza →
+reproduce. `--file` es alias de `--audio` (`alias = "file"`, `src/main.rs:281`,
+paridad con el oráculo Python retirado).
+
+| Flag | Tipo | Default | Descripción |
+|---|---|---|---|
+| `--audio`, `-a` (alias `--file`) | string | — | Archivo de audio a doblar. Mutuamente excluyente con `--mic` |
+| `--voice`, `-v` | string | `default` | Voz destino de la síntesis |
+| `--source-language` | `es-latam`\|`en` | — | Obligatorio. Idioma hablado en el audio de entrada |
+| `--target-language` | `es-latam`\|`en` | `es-latam` | Idioma/modelo de síntesis; dispara traducción si difiere del origen |
+| `--temperature` | f32 | producción (`0.35`) | Override de muestreo |
+| `--mic` | flag | `false` | Captura desde micrófono. Mutuamente excluyente con `--audio` |
+| `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` |
+
+Validaciones puras (`src/main.rs:1193-1224`, en este orden):
+1. `validar_temperature`.
+2. `--duration` sin `--mic`: exit 2 `usage_error`.
+3. `--mic` sin `--duration` sin TTY: exit 2 `usage_error`. **Con TTY, mismo
+   panic que en `transcribe`** (H-08): la validación lo permite pero
+   `duration.expect("validado arriba")` revienta más adelante porque no hay
+   push-to-talk implementado.
+4. Ni `--audio` ni `--mic`: exit 2 `usage_error`.
+5. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
+
+Despacho: si aplica, `dub_via_daemon` (`src/main.rs:3336`) hace `POST /dub`
+con timeout de 10 s (`src/main.rs:3385`, "dub puede tardar por síntesis").
+Si el daemon responde `404` (binario viejo sin esa ruta), degrada
+automáticamente a `dub_compose_via_daemon` (`src/main.rs:3490`): transcribe
+vía `POST /transcribe`, traduce localmente con `avi_translation::translate` si
+`source != target`, y sintetiza vía `POST /synthesize` (`daemon_synthesize_wav`).
+
+Rama directa (`src/main.rs:1244-1406`, requiere feature `native-stt`; sin
+ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
+4) y el modelo de síntesis provisionado (`require_model_provisioned`) →
+captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito está
+vacío, exit 2 `empty_text` → si `source != target`, exige el par
+`{es-en, en-es}` (si no, exit 2 `unsupported_language_pair`) y el derivado CT2
+sano (exit 4 `model_missing` con los ficheros faltantes si no); sin el feature
+`native-translation`, exit 1 `translation_unsupported` → la voz debe existir
+(exit 3 `voice_not_found`) → `Qwen3TtsEngine::synthesize_with_temperature` →
+`AudioService::play_wav`.
+
+### `POST /dub` (daemon)
+
+Handler `dub_handler` (`crates/avi-daemon/src/lib.rs:896`). Acepta
+`{audio_b64, voice?, from|source_language?, to|target_language?, temperature?}`
+(`from`/`source_language` son alias del mismo campo, igual `to`/`target_language`;
+default `voice="default"`, default idiomas `"es"`). Pipeline interno:
+transcribe con `state.stt_engine` → traduce con el CT2 residente
+(`state.ct2_engine`) si está cargado, si no con `avi_translation::translate`
+como fallback → sintetiza bajo `state.synthesis_lock` con
+`GenerationOptions::con_temperatura` y un deadline `SYNTH_DEADLINE` sobre
+`spawn_blocking` (mismo mecanismo que `/synthesize`, emite `synthesis_timeout`
+sin matar el residente si vence). Respuesta de éxito:
+
+```json
+{ "status": "dubbed", "text": "<transcrito>", "translated": "<texto final tras traducir/passthrough>", "audio_b64": "<WAV base64>", "voice": "<voz>" }
+```
+
+En error, `{"status":"error", "reason": "<motivo>", "message": "..."}` con el
+código HTTP correspondiente (`audio_missing`/`audio_decode_error` → 400,
+`model_missing`/`voice_not_found` → 404, `transcription_failed`/
+`translation_failed`/`synthesis_failed`/`synthesis_timeout`/`io_error` → 500,
+`stt_unsupported`/`translation_unsupported` → 501 si el binario del daemon se
+compiló sin esos features).
+
+### Contrato `--json` (CLI)
+
+```json
+{ "status": "dubbed", "text": "<texto final, traducido o passthrough>", "audio_path": "<ruta temporal del WAV reproducido>" }
+```
+
+(`src/main.rs:1396-1401` local, `src/main.rs:3478-3483` vía `/dub`,
+`src/main.rs:3611-3616` vía composición — mismo envelope en las tres rutas;
+nótese que el campo del CLI se llama `text`, aunque el handler del daemon
+distingue internamente `text`/`translated`.)
+
+---
+
+## `speech play`
+
+```
+ai-voice-interconnector speech play --label <etiqueta> [--voice <nombre>]
+```
+
+Local-only (`require_local`). Busca la locución en `SpeechStore` por
+`(voice, label)` y reproduce el WAV persistido. Si no existe, exit 3
+`speech_not_found`. Valida los identificadores con `es_identificador_valido`
+antes de buscar (`src/main.rs:1408-1441`).
+
+### Contrato `--json`
+
+```json
+{ "status": "played", "label": "<etiqueta>", "voice": "<voz>" }
+```
+
+---
+
+## `speech remove`
+
+```
+ai-voice-interconnector speech remove --label <etiqueta> [--voice <nombre>]
+```
+
+Local-only. Elimina la locución de `SpeechStore`; si no existe, exit 3
+`speech_not_found` (`src/main.rs:1442-1455`).
+
+### Contrato `--json`
+
+```json
+{ "status": "removed", "label": "<etiqueta>", "voice": "<voz>" }
+```
+
+---
+
+## Idiomas soportados
+
+Conjunto cerrado `{es-latam, en}` en todos los flags de idioma (`value_parser`
+de `clap`); internamente se normalizan a `{es, en}` vía `resolve_stt_language`
+(`src/main.rs:59-64`, CLI) / `resolve_translation_language`
+(`crates/avi-daemon/src/lib.rs:626-631`, daemon) — ambas funciones mapean
+`es-latam` → `es` y pasan cualquier otro valor verbatim. Los únicos pares de
+traducción provisionados por `setup` son `es-en` y `en-es`
+(`crates/avi-store/src/lib.rs`, `MODEL_REVISIONS`); cualquier otro par
+resulta en exit 2 `unsupported_language_pair`.
+
+---
+
+## Errores
+
+| Reason | Exit | Origen |
+|---|---|---|
+| `usage_error` | 2 | Falta `--audio`/`--mic`, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango |
+| `empty_text` | 2 | Texto a sintetizar o transcripción resultante vacíos |
+| `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` |
+| `unsupported_language_pair` | 2 | Traducción fuera de `{es-en, en-es}` |
+| `audio_not_found` | 3 | `--audio` en `dub` apunta a un archivo inexistente |
+| `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` |
+| `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente |
+| `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el derivado CT2 del par de traducción |
+| `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo, o local-only (`list`/`play`/`remove`) con `--daemon` |
+| `label_exists` | 6 | `synthesize` sin `--force` sobre una etiqueta ya usada |
+| `stt_unsupported` | 1 | Binario compilado sin el feature `native-stt` (transcribe/dub) |
+| `translation_unsupported` | 1 | Binario compilado sin el feature `native-translation`, con par no-passthrough |
+| `transcription_error` / `transcription_failed` | 10 | Fallo de captura/lectura de audio o del motor Parakeet |
+| `translation_failed` | 9 | Fallo del motor CT2 |
+| `synthesis_error` / `playback_failed` | 1 | Fallo del motor Qwen3-TTS o de reproducción |
+| — (panic, sin `CliError`) | — | H-08: `--mic` sin `--duration` en TTY, en `transcribe` y `dub` |
+
+---
+
+## Hallazgos de drift pendientes (no implementar como funcional)
+
+Referencia: `docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`.
+
+- **H-08** — `--mic` sin `--duration` en TTY hace panic (`duration.expect(...)`)
+  en vez de fallar con un exit code disciplinado; no hay push-to-talk.
+- **H-10** — `speech list` no acepta `--voice`/`-v`; el filtro por voz
+  prometido en el contrato histórico no existe.
+- **H-12** — `speech synthesize --play` reproduce y guarda incondicionalmente;
+  no hay el bucle interactivo de 4 opciones (reproducir/aceptar/regenerar/
+  descartar) que el contrato histórico describía.
+
+---
+
+## Ejemplos
+
+```bash
+ai-voice-interconnector speech list
+ai-voice-interconnector speech transcribe --audio entrada.wav --source-language es-latam
+ai-voice-interconnector speech transcribe --mic --duration 5 --source-language en
+ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo --voice default
+ai-voice-interconnector speech synthesize --text "Hello" --label greeting --source-language en --target-language es-latam --play
+ai-voice-interconnector speech say --text "Probando" --voice default
+ai-voice-interconnector speech dub --audio entrevista.wav --source-language en --target-language es-latam --voice default
+ai-voice-interconnector --daemon speech synthesize --text "Vía daemon" --label demo
+ai-voice-interconnector --no-daemon speech transcribe --audio entrada.wav --source-language es-latam
+ai-voice-interconnector speech play --label saludo
+ai-voice-interconnector speech remove --label saludo
+ai-voice-interconnector --json speech list
+```

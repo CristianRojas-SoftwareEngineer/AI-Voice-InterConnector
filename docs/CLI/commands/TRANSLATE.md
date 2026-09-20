@@ -1,146 +1,184 @@
-## Recorrido
+# `translate`
 
-La investigación examinó la implementación completa de `translate` explorando seis fuentes principales: la definición del parser CLI (`cli.py:2750-2759`), el handler `cmd_translate` (`cli.py:1045-1096`), el orquestador `TranslationService` (`translation/service.py`), el traductor `MarianTranslator` (`translation/translator.py`), el segmentador `SentenceSegmenter` (`translation/segmenter.py`), el ensamblador `SegmentAssembler` (`translation/assembler.py`), el loader `TranslationModelLoader` con la resolución de idiomas (`translation/model_loader.py`), y los códigos de salida (`exit_codes.py`). Se leyeron también las excepciones de dominio (`exceptions.py`) y la función `emit_json` (`cli.py:69-80`). No hubo desviaciones del plan ni fuentes faltantes.
+Traducción de texto es↔en. Comando standalone texto→texto: no toca audio ni el
+motor TTS. Es delegable al daemon (CT2 residente) en 3 modos, o ejecuta el
+motor CT2 local si el daemon no está activo o `--no-daemon` lo fuerza.
 
----
-
-## Respuestas a los objetivos
-
-**Diseño de `translate`:** Es un comando standalone de texto→texto que orquesta un pipeline de cuatro etapas (validar → segmentar → traducir → ensamblar) con un atajo de passthrough cuando origen y destino coinciden. No invoca audio ni motor TTS; delega al daemon (`POST /translate` con CT2 residente, `crates/avi-daemon/src/lib.rs:553`) cuando está activo (3 modos, `src/main.rs:398`), o ejecuta CT2 local si no. Ambas vías exigen el derivado sano (`model.bin` más `tokenizer.json` o `source.spm`+`target.spm`); sin él, exit 4 con los ficheros faltantes (exit 9 solo con modelo cargado).
-
-**Implementación:** El handler `cmd_translate` (`cli.py:1045`) instancia el pipeline completo con colaboradores concretos (`TranslationModelLoader`, `SentenceSegmenter`, `MarianTranslator`, `SegmentAssembler`) y delega la traducción a `TranslationService.translate`. Las tres excepciones de dominio (`TranslationModelMissingError`, `UnsupportedLanguagePairError`, `TranslationFailedError`) se mapean a códigos de salida existentes.
-
-**Divergencia ISO vs CLI:** `translate` acepta códigos ISO (`es`/`en`), no la taxonomía CLI (`es-latam`/`en`). El resto de la CLI usa `es-latam`. Esta divergencia es deliberada (ratificada como D5): el traductor MarianMT solo entiende ISO 639-1, y `resolve_language` normaliza internamente.
+Implementación: `handle_translate` (`src/main.rs:553`), despacho al daemon vía
+`translate_via_daemon` (`src/main.rs:2968`) y `route_to_daemon`
+(`src/main.rs:2875`), motor CT2 local en `avi-translation`
+(`crates/avi-translation/src/lib.rs`), endpoint del daemon
+`translate_handler` (`crates/avi-daemon/src/lib.rs:635`).
 
 ---
 
-## Hallazgos por tema
-
-### Definición CLI
-
-El parser de `translate` se define en `cli.py:2750-2759` como subcomando de la CLI:
-
-| Parámetro | Tipo | Requerido | Descripción |
-|---|---|---|---|
-| `--text` | str | Sí | Texto a traducir |
-| `--from` | `es` \| `en` | Sí | Idioma de origen (ISO) |
-| `--to` | `es` \| `en` | Sí | Idioma destino (ISO) |
-| `--json` | flag | No | Emitir JSON legible por máquina |
-
-**Detalle de implementación:** `--from` se almacena como `from_lang` y `--to` como `to_lang` via `dest=` (`cli.py:2754, 2756`) para evitar colisión con la palabra reservada Python `from`.
-
-### Handler: cmd_translate
-
-El handler (`cli.py:1045-1096`) ejecuta este flujo:
-
-1. **Validación de entrada:** texto no vacío (exit 2) y longitud ≤ `MAX_TEXT_LENGTH` (5000 chars, exit 2) — `cli.py:1050-1060`
-2. **Construcción del pipeline:** instancia colaboradores concretos — `cli.py:1073-1076`
-3. **Traducción:** `service.translate(text, source, target)` — `cli.py:1079`
-4. **Salida:** `emit_json` si `--json`, `print` si no — `cli.py:1093-1096`
-
-### Pipeline de traducción
-
-`TranslationService.translate` (`translation/service.py:35-54`) orquesta cuatro etapas:
+## Superficie CLI
 
 ```
-Texto de entrada
+ai-voice-interconnector [--daemon|--no-daemon] [--json] translate --text <TEXTO> [--from <ISO>] [--to <ISO>]
+```
+
+Definición del subcomando: `src/main.rs:127` (`Commands::Translate`).
+
+| Flag | Tipo | Default | Descripción |
+|---|---|---|---|
+| `-t`, `--text` | string | (requerido) | Texto a traducir |
+| `--from` | string | `es` | Idioma origen (`es`/`en`; también acepta `es-latam`, normalizado a `es`) |
+| `--to` | string | `en` | Idioma destino (`es`/`en`; también acepta `es-latam`, normalizado a `es`) |
+| `--daemon` | flag global | `false` | Fuerza el uso exclusivo del daemon IPC (exit 5 `daemon_unreachable` si no responde) |
+| `--no-daemon` | flag global | `false` | Fuerza la ejecución local directa, sin daemon |
+| `--json` | flag global | `false` | Emite JSON legible por máquina en stdout |
+
+Sin `--daemon`/`--no-daemon` el modo es `Auto` (`DaemonMode::Auto`,
+`src/main.rs:99-106`): se hace un probe de `GET /health` con timeout de 500 ms
+(`daemon_activo`, `src/main.rs:2867-2870`) y, si responde, se delega al
+daemon; si no, se ejecuta local.
+
+---
+
+## Flujo del handler
+
+`handle_translate` (`src/main.rs:553-638`):
+
+```
+handle_translate
     │
     ▼
-origen == destino? ──sí──► return texto (passthrough, sin modelo)
+texto vacío (trim)? ──sí──► Err InvalidInput "empty_text" (exit 2)
     │ no
     ▼
-resolve_language(origen/destino)        ← normaliza "es-latam" → "es"
+resolve_stt_language(from/to)          ← normaliza "es-latam" → "es"; el resto pasa verbatim (src/main.rs:59-64)
     │
     ▼
-model_loader.load(cache_dir)           ← fail-fast: modelo existe?
-    │
+source == target? ──sí──► passthrough: devuelve el texto intacto, sin tocar el motor (exit 0)
+    │ no
     ▼
-segmenter.segment(texto, source)       ← list[list[str]]: párrafos → segmentos
-    │
+(source, target) ∈ {(es,en), (en,es)}? ──no──► Err InvalidInput "unsupported_language_pair" (exit 2)
+    │ sí
     ▼
-translator.translate(segment, ...)     ← por cada segmento, inferencia CT2
+route_to_daemon(daemon_mode, client)   ← Auto: probe /health; ForceDaemon: siempre; ForceDirect: nunca
     │
-    ▼
-assembler.assemble(translated)         ← reensambla texto destino
+    ├─ true  → translate_via_daemon: POST /translate (timeout 1500ms) al daemon
+    │
+    └─ false → rama local:
+                is_ct2_provisioned(pair)? ──no──► Err ModelMissing "model_missing" (exit 4)
+                    │ sí
+                    ▼
+                avi_translation::translate(text, source, target, ct2_dir)
+                    │
+                    ├─ Ok  → emitir {translated, source, target}
+                    └─ Err → Err TranslationFailed "translation_failed" (exit 9)
 ```
 
-### Passthrough: source == target
-
-Cuando `origen == destino`, `TranslationService.translate` devuelve el texto intacto sin cargar ningún modelo (`service.py:38-39`). Esto es explícito en el docstring del handler: "`--from == --to` es passthrough" (`cli.py:1047`).
-
-### Segmentación jerárquica (4 niveles)
-
-`SentenceSegmenter` (`segmenter.py:25-99`) particiona el texto en segmentos que no exceden `max_length` (default 512 caracteres) siguiendo una jerarquía de 4 niveles:
-
-| Nivel | Método | Descripción |
-|---|---|---|
-| 1 | `text.split("\n\n")` | Párrafos separados por línea en blanco |
-| 2 | `pysbd.Segmenter.segment()` | Oraciones (depende del idioma) |
-| 3 | `_STRONG_PUNCTUATION.split()` | Puntuación fuerte: `,;:` seguidos de espacio |
-| 4 | `text.split(" ")` o tokenizer inyectado | Tokens como último recurso |
-
-Cada nivel solo se aplica si el fragmento del nivel anterior excede `max_length` (`segmenter.py:49-50, 54-57`). Si un párrafo completo cabe en ≤ 512 chars, se deja intacto. Si una oración excede, se divide por puntuación fuerte. Si eso no basta, se agrupan tokens.
-
-**Detalle de implementación:** los segmentadores `pysbd` se cachean por idioma en `_pysbd_segmenters` (`segmenter.py:39, 61-64`). La función `_token_split` (`segmenter.py:81-98`) agrupa tokens sin perder texto, calculando longitud acumulada incluyendo espacios.
-
-### Modelo Marian CT2
-
-`_MarianCT2Model` (`model_loader.py:47-84`) envuelve `ctranslate2.Translator` con tokenización SentencePiece:
-
-- **Carga:** importa `ctranslate2` y `sentencepiece` de forma diferida (dentro del `__init__`) para no arrastrar librerías pesadas en comandos que no traducen (`model_loader.py:90-93`)
-- **Tokenización:** `source.spm` para tokenizar la entrada, `target.spm` para detokenizar la salida (`model_loader.py:65-70`)
-- **Derivado exigido:** el dir CT2 queda provisionado solo con `model.bin` más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot por `setup` con `--copy_files` y copia posterior verificada); `setup` repara el dir roto por reconversión atómica (temporal + rename, gate `is_ct2_provisioned` == salida de `setup`, un subconjunto de lo que el loader carga; ver H-13)
-- **Token `</s>`:** Se añade manualmente al final de los tokens fuente (`model_loader.py:81`). Sin este token, el encoder nunca recibe marca de fin de secuencia y el decoder entra en loop de repetición (`model_loader.py:73-79`)
-- **Inferencia:** `translate_batch([tokens])` → `results[0].hypotheses[0]` → detokenización (`model_loader.py:82-84`)
-
-### Caché de modelos
-
-`TranslationModelLoader` (`model_loader.py:98-132`) cachea modelos cargados en un diccionario interno (`_cache`). La clave es la ruta absoluta del directorio. La ruta por defecto es `{data_root}/translation-models/opus-mt-{source}-{target}` (`service.py:18-22`).
-
-### Divergencia ISO vs taxonomía CLI
-
-El resto de la CLI usa `es-latam` / `en` como identificadores de idioma. `translate` usa `es` / `en` (ISO 639-1). Esta divergencia se resuelve en la capa de carga del modelo:
-
-- `_LANGUAGE_ALIASES = {"es-latam": "es"}` (`model_loader.py:23`)
-- `resolve_language()` normaliza `es-latam` → `es`, cualquier otro valor se devuelve intacto (`model_loader.py:26-32`)
-
-La definición del parser acepta solo `["es", "en"]` como choices (`cli.py:2754, 2756`), por lo que `es-latam` no es válido como argumento de `--from`/`--to`. Esta es la divergencia deliberada D5: el traductor MarianMT solo opera con ISO 639-1.
-
-### Contrato JSON
-
-Cuando `--json` está activo, `emit_json` (`cli.py:69-80`) emite un único objeto JSON a stdout con:
-
-| Campo | Tipo | Descripción |
-|---|---|---|
-| `translated` | str | Texto traducido |
-| `source` | str | Idioma origen (ISO: `es` o `en`) |
-| `target` | str | Idioma destino (ISO: `es` o `en`) |
-| `schema_version` | str | Versión del schema (inyectada por `emit_json`) |
-
-**Contraste con `speech transcribe`:** este último emite `source` con el token CLI verbatim (`es-latam`), no el ISO resuelto (`cli.py:1120-1122`). `translate` emite el ISO porque así fue ratificado en D5.
-
-### Manejo de errores
-
-| Excepción | Código exit | Reason | Mensaje / Acción |
-|---|---|---|---|
-| Texto vacío | 2 | `usage_error` | "Error: --text no puede estar vacío." |
-| Texto > 5000 chars | 2 | `usage_error` | "Error: el texto tiene N caracteres; el máximo..." |
-| `TranslationModelMissingError` | 4 | `model_missing` | "Ejecuta 'ai-voice-interconnector setup' primero." |
-| `UnsupportedLanguagePairError` | 2 | `usage_error` | "Error: {e}" |
-| `TranslationFailedError` | 9 | `translation_failed` | "Error: {e}" |
-
-**Mapeo de códigos** (`exit_codes.py`): `EXIT_INVALID_INPUT=2`, `EXIT_MODEL_MISSING=4`, `EXIT_TRANSLATION_FAILED=9`.
-
-### Ensamblado
-
-`SegmentAssembler.assemble` (`assembler.py:16-20`) une los segmentos de cada párrafo con un espacio (`" ".join(segments)`) y los párrafos entre sí con una línea en blanco (`"\n\n".join(...)`), preservando exactamente el separador que `SentenceSegmenter` usa para partir el texto de entrada (`segmenter.py:45`).
+La validación de texto vacío, el passthrough y el chequeo de par soportado son
+comunes a ambas rutas (local y daemon): se resuelven antes del despacho, así
+que las invariantes de contrato no dependen de si el daemon está activo.
 
 ---
 
-### Despacho al daemon (T5)
+## Passthrough: source == target
 
-`translate` es delegable en 3 modos (`--daemon`/`--no-daemon`/auto) vía `handle_translate` (`src/main.rs:398`) + `translate_via_daemon` (timeout 1500ms) → `POST /translate` (`crates/avi-daemon/src/lib.rs:580` `translate_handler`) con CT2 residente (`DaemonState:ct2_engine` `Option<HashMap>`). Passthrough `source==target` sin motor; `unsupported_language_pair`/`empty_text` validaciones puras antes del despacho. Ambas ramas (local y `translate_handler`) aplican el gate `is_ct2_provisioned` (`model.bin` más tokenizador); exit 4 si falta el derivado, 9 solo con modelo cargado.
+Cuando `from` y `to` normalizan al mismo idioma ISO, `handle_translate`
+devuelve el texto de entrada intacto sin instanciar ningún motor
+(`src/main.rs:570-577`). Es el único caso donde no se exige el modelo CT2
+provisionado.
 
-## Conclusiones
+---
 
-`translate` es un comando standalone de texto→texto que implementa un pipeline de traducción `es<->en` sin dependencias de audio ni motor TTS, ahora delegable al daemon con CT2 residente. Su diseño es notable por: (1) la arquitectura de colaboradores inyectables — `TranslationService` recibe loader, segmenter, translator y assembler via constructor, lo que permite tests sin runtime CT2; (2) la segmentación jerárquica de 4 niveles (párrafos → oraciones → puntuación → tokens) que adapta dinámicamente textos largos al límite de ~512 tokens de MarianMT sin romper oraciones innecesariamente; (3) el manejo explícito del token `</s>` en el encoder que previene loops de repetición en el decoder; (4) la divergencia ISO vs taxonomía CLI como decisión deliberada (D5) — `translate` usa códigos ISO porque MarianMT solo opera con ISO 639-1, mientras el resto de la CLI usa `es-latam` para síntesis; y (5) el atajo de passthrough que evita cargar modelos cuando origen y destino coinciden, manteniendo la interfaz uniforme.
+## Motor CT2 local (`avi-translation`)
+
+Sin daemon activo (o con `--no-daemon`), la traducción corre en el propio
+proceso CLI:
+
+- `store::is_ct2_provisioned(pair)` (`crates/avi-store`) exige el derivado
+  sano: `model.bin` más tokenizador (`tokenizer.json`, o
+  `source.spm`+`target.spm`), el mismo gate documentado en `setup`
+  (`docs/CLI/commands/SETUP.md`).
+- `avi_translation::translate` (`crates/avi-translation/src/lib.rs:150-175`)
+  segmenta el texto jerárquicamente con `HierarchicalSegmenter`
+  (`avi-core::engine`), agrupa las oraciones de cada párrafo en lotes de a lo
+  sumo `MAX_ORACIONES_POR_LOTE = 10` (`crates/avi-translation/src/lib.rs:116`)
+  y traduce cada lote con una única llamada a `translate_batch`.
+- `Ct2TranslationEngine` (`crates/avi-translation/src/lib.rs:19-106`) envuelve
+  `ct2rs::Translator` sobre el modelo Marian/opus-mt convertido a CT2
+  (`ComputeType::INT8`); anexa manualmente el token `</s>` al origen de cada
+  oración (el encoder Marian lo exige y el conversor CT2 no lo añade) y sanea
+  la hipótesis del decoder quitando el `</s>` final.
+- El reensamblado une las oraciones de cada párrafo con espacio y los párrafos
+  entre sí con `"\n\n"`, preservando la separación de la entrada
+  (`crates/avi-translation/src/lib.rs:170-174`).
+
+Sin el feature de compilación `native-translation`, la rama local devuelve
+`Err(ExitCode::Error, "translation_unsupported", …)` sin intentar cargar
+ningún modelo (`src/main.rs:613-621`).
+
+---
+
+## Despacho al daemon
+
+`translate_via_daemon` (`src/main.rs:2968-3040`) hace `POST /translate` con
+`{text, from, to}` y timeout de 1500 ms; un timeout o fallo de conexión mapea
+a `ExitCode::DaemonUnreachable` (`daemon_unreachable`). El endpoint
+`translate_handler` (`crates/avi-daemon/src/lib.rs:635-747`) replica la misma
+validación (`empty_text` → 400, `unsupported_language_pair` → 400,
+`model_missing` → 404 si `is_ct2_provisioned` falla) y, si el motor CT2 del
+par ya está precargado en `DaemonState::ct2_engine`, traduce con el residente;
+si no, cae a carga bajo demanda con `avi_translation::translate` (misma
+función que la rama local). El CLI mapea el `reason` del cuerpo de error del
+daemon al mismo `ExitCode` que produciría la ruta local
+(`empty_text`/`unsupported_language_pair` → `InvalidInput`, `model_missing` →
+`ModelMissing`, `translation_failed` → `TranslationFailed`), preservando un
+contrato de salida idéntico entre ambas rutas.
+
+Ver `docs/CLI/commands/DAEMON.md` para el ciclo de vida del daemon y el detalle
+de `DaemonState::ct2_engine`.
+
+---
+
+## Contrato `--json`
+
+Éxito (traducción o passthrough), stdout:
+
+| Clave | Tipo | Significado |
+|---|---|---|
+| `schema_version` | string | `"3"`, inyectada por `with_schema_version`/`emit_raw_json` (`crates/avi-core/src/json_emitter.rs`) |
+| `translated` | string | Texto traducido (o el texto de entrada intacto en passthrough) |
+| `source` | string | Token de `--from` tal como se pasó (no el ISO normalizado) |
+| `target` | string | Token de `--to` tal como se pasó (no el ISO normalizado) |
+
+Error, stdout (vía el manejador genérico de `main`, `src/main.rs:509-520`):
+
+| Clave | Tipo | Significado |
+|---|---|---|
+| `schema_version` | string | `"3"` |
+| `error` | string | Mensaje humano del error |
+| `reason` | string | Código de motivo (`empty_text`, `unsupported_language_pair`, `model_missing`, `translation_failed`, `translation_unsupported`, `daemon_unreachable`, `daemon_error`) |
+
+No hay passthrough de idiomas normalizados en la salida: `source`/`target`
+reflejan literalmente `--from`/`--to`, incluso cuando internamente se
+normalizó `es-latam` → `es` para el enrutado y la validación.
+
+---
+
+## Errores
+
+| Reason | Exit code | Causa |
+|---|---|---|
+| `empty_text` | 2 (`InvalidInput`) | `--text` vacío o solo espacios |
+| `unsupported_language_pair` | 2 (`InvalidInput`) | Par distinto de `es→en`/`en→es` tras normalizar |
+| `model_missing` | 4 (`ModelMissing`) | Derivado CT2 no provisionado para el par (`is_ct2_provisioned` falla); ejecutar `setup` |
+| `translation_failed` | 9 (`TranslationFailed`) | El motor CT2 cargó pero la inferencia falló |
+| `translation_unsupported` | 1 (`Error`) | Binario compilado sin el feature `native-translation` (solo rama local) |
+| `daemon_unreachable` | 5 (`DaemonUnreachable`) | `--daemon` sin daemon activo, o timeout/fallo de conexión en la ruta `Auto`/`ForceDaemon` |
+| `daemon_error` | 1 (`Error`) | El daemon respondió con un cuerpo no JSON o un `reason` no reconocido |
+
+---
+
+## Ejemplos
+
+```bash
+ai-voice-interconnector translate --text "Hola, ¿cómo estás?" --from es --to en
+ai-voice-interconnector --json translate --text "Hola" --from es --to es   # passthrough, sin motor
+ai-voice-interconnector --no-daemon translate --text "Hello" --from en --to es
+ai-voice-interconnector --daemon --json translate --text "Buenos días" --from es --to en
+```

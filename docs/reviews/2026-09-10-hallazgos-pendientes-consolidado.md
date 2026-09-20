@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 7 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅) — 8 pendientes (H-06–H-08, H-10–H-12, H-14, H-15)
+- **Estado**: 8 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅) — 8 pendientes (H-06–H-08, H-10–H-12, H-14, H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -29,6 +29,7 @@
   - [H-13 — Rama alternativa del gate](#h-13--rama-alternativa-del-gate-de-traducción-sin-evidencia)
   - [H-14 — Techos de guards sin re-medir](#h-14--techos-de-guards-de-tests-sin-re-medir)
   - [H-15 — Marginalidad temporal de la suite y barrido Unix pendiente](#h-15--marginalidad-temporal-de-la-suite-y-barrido-unix-pendiente)
+  - [H-16 — Drift Python en los docs de comando](#h-16--drift-python-en-los-docs-de-comando)
 - [6. Grafo de relaciones y orden de ataque](#6-grafo-de-relaciones-y-orden-de-ataque)
 
 ## 1. Índice
@@ -50,6 +51,7 @@
 | H-13 | Rama alternativa del gate de traducción sin evidencia | ⚪ Baja | Motor |
 | H-14 | Techos de guards de tests sin re-medir | ⚪ Baja | Tests |
 | H-15 | Marginalidad temporal de la suite y barrido Unix pendiente | ⚪ Baja | Tests/Ciclo de vida |
+| H-16 | Drift Python en los docs de comando | ⚪ Baja | Documentación |
 
 ## 2. Críticos
 
@@ -205,6 +207,16 @@
 - **Relaciones**: cuelga de H-01 (invariantes intactos; el reaper contiene los rojos) · extiende a H-14 (re-medir techos con baseline real) · techos de D-01 (runtime Unix) y D-05 (crash vivo) · cobertura D-03 (8 tests con `ensure` + barrido 8766).
 - **Decisión requerida**: sí — ¿en qué scope se agenda este follow-up (CI rápido para re-medir guards/presupuesto + crash vivo D-05 + runtime Unix D-01 + barrido Unix del reaper), manteniendo intacto el presupuesto de 1500 ms hasta entonces?
 
+### H-16 — Drift Python en los docs de comando
+
+- **Severidad**: ⚪ Baja · **Área**: documentación (`docs/CLI/commands/{CLEANUP,DEVICES,DOCTOR,SPEECH,TRANSLATE,VERSION,VOICE}.md`)
+- **Síntoma**: tras la migración Python→Rust, siete docs de comando describían la implementación como si fuera la CLI Python inexistente (citaban `cli.py`, `audio.py`, `server.py`, `test_cli.py`, funciones `cmd_*`, `emit_json`, `psutil`, `miniaudio`, `pycaw`, `shutil.rmtree`, etc.): 107 ocurrencias de símbolos Python. Un lector concluiría que la herramienta es Python.
+- **Causa (demostrada)**: drift heredado de la migración. La reescritura de `SETUP.md`/`DAEMON.md` ancló solo esos dos docs a la implementación Rust real; los otros siete quedaron sin sincronizar. En el repo ya no queda ningún `.py` ni `src/ai_voice_interconnector/`.
+- **Corrección (implementada)**: reescritura desde la implementación Rust de los 7 docs (delegada a subagentes, uno por doc), tomando `SETUP.md`/`DAEMON.md` como exemplars de estructura, tono y nivel de detalle; cada contrato `--json` verificado contra la serialización real del handler y las fixtures `tests/golden/*`; anclas `archivo:línea` reales del árbol Rust. `CLEANUP.md` recibió corrección ligera (ya anclado a Rust; solo se retiró la mención Python del preámbulo, conservando la nota de divergencia deliberada `cli.py:2177`). Gate anti-drift repo-wide sobre `docs/CLI/commands/`: el único hit admisible restante es esa divergencia explícitamente etiquetada. Documentación pura, cero cambios de runtime. Estado: ✅ Implementado.
+- **Impacto resuelto**: los 7 docs describen la superficie y el flujo Rust reales; los gaps de contrato aún pendientes (H-07 precompute, H-08 `--mic` sin `--duration`, H-10 `list --voice`, H-12 `--play`) quedan documentados como comportamiento real, sin prometer features inexistentes ni confundirse con divergencias deliberadas.
+- **Relaciones**: continúa el saneo de drift documental iniciado en H-09 (`SETUP.md`) y H-13 (matiz del gate CT2 en `TRANSLATE.md`/`SETUP.md`, preservado en esta reescritura); independiente del resto.
+- **Decisión requerida**: resuelta — reescritura desde Rust; el oráculo Python solo se cita cuando está explícitamente etiquetado como divergencia deliberada (D1–D5).
+
 ## 6. Grafo de relaciones y orden de ataque
 
 ```
@@ -216,7 +228,7 @@ H-01 ✅ ── contenía ──> H-05 ✅ (residual degradado: ahora se reclama
 H-02 ✅ ── reduce superficie de ──> H-01 ✅ (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
 H-02 ✅ estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos) · H-15 (marginalidad temporal + presupuesto de clonado + barrido Unix del reaper)
 H-01 ✅ ── contiene ──> H-15 (3 rojos clase-timeout sin cascada ni fuga; bisect en base sin regresión)
-H-09 ✅ (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning`, `--force-update`/`--yes` implementados + tests + saneo de drift) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift)
+H-09 ✅ (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning`, `--force-update`/`--yes` implementados + tests + saneo de drift) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift) · H-16 ✅ (drift Python en los 7 docs de comando restantes: reescritura desde Rust delegada a subagentes + gate anti-drift; continúa el saneo de H-09/H-13)
 H-10 · H-11 ── triviales aislados (relleno)
 H-07 + H-06 ── mismo dilema implementar-vs-documentar (superficie daemon)
 H-08 ⇆ H-12 (UX interactiva de audio: decidir H-08 primero, diseñar H-12 después)

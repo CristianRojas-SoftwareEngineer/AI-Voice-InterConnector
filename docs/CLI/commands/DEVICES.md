@@ -1,150 +1,142 @@
-## Recorrido
+# `devices`
 
-La investigación examinó la implementación completa de `devices` explorando tres fuentes principales: el parser CLI (`cli.py:2648-2651`), el handler `cmd_devices` (`cli.py:1017-1033`), y las funciones de enumeración de dispositivos en `audio.py:184-250`. Se leyeron en paralelo el handler, las funciones `get_audio_devices` y `get_audio_devices_with_status`, el módulo de códigos de salida (`exit_codes.py`), y el helper `emit_json` (`cli.py:69-81`). No hubo desviaciones del plan ni fuentes faltantes.
+Enumera los dispositivos de salida de audio del sistema. Es un comando de
+inspección de mínima complejidad: sin subcomandos, sin argumentos
+posicionales, no modifica estado y no depende del daemon.
 
----
-
-## Respuestas a los objetivos
-
-**Diseño de `devices`:** Es un comando de inspección sin subcomandos que enumera los dispositivos de salida de audio del sistema. Su único parámetro es `--json` para salida estructurada. No modifica estado ni requiere argumentos posicionales.
-
-**Implementación:** El handler `cmd_devices` (`cli.py:1017`) delega la enumeración a `get_audio_devices()` (`audio.py:242`), que a su vez invoca `get_audio_devices_with_status()` (`audio.py:184`). Esta última implementa estrategias por plataforma: `pycaw` en Windows, `sounddevice` (PortAudio) en macOS/Linux, con fallback a un dispositivo genérico "Default" si la enumeración falla.
-
-**Proceso de ejecución:** Llamada a `get_audio_devices()` → selección de formato de salida (texto plano o JSON) → impresión a stdout. Errores de enumeración producen exit 1 con razón `generic`.
+Implementación: `handle_devices` (`src/main.rs:534`), que delega la
+enumeración real a `avi_audio::get_devices_json` (`crates/avi-audio/src/lib.rs:380`),
+apoyado en `AudioService::list_output_devices` (`crates/avi-audio/src/lib.rs:34`).
 
 ---
 
-## Hallazgos por tema
+## Superficie CLI
 
-### Definición CLI
-
-El parser se define en `cli.py:2648-2651`:
-
-```python
-devices_parser = subparsers.add_parser("devices", help="Lista los dispositivos de audio")
-devices_parser.add_argument("--json", action="store_true", help="Emitir JSON legible por máquina")
-devices_parser.set_defaults(func=cmd_devices)
+```
+ai-voice-interconnector devices [--json]
 ```
 
-| Parámetro | Tipo | Requerido | Descripción |
+| Flag | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--json` | flag (bool) | No | Emite salida en formato JSON con `schema_version` inyectado |
+| `--json` | flag global | `false` | Emite JSON legible por máquina en stdout |
 
-No existen subcomandos ni argumentos posicionales. Es el comando más simple del CLI en cuanto a interfaz.
+Definición del subcomando: `enum Commands::Devices` (`src/main.rs:125`),
+despachado en `src/main.rs:483` (`Some(Commands::Devices) => handle_devices(json_mode)`).
 
-### Handler: cmd_devices
+---
 
-`cmd_devices` (`cli.py:1017-1033`):
+## Backend de enumeración
 
-```python
-def cmd_devices(args):
-    """Lista los dispositivos de salida de audio."""
-    from .audio import get_audio_devices
+La enumeración usa un único backend multiplataforma: **`cpal`** (sin
+ramificación por sistema operativo).
 
-    try:
-        devices = get_audio_devices()
-    except Exception as e:
-        raise CliError(EXIT_ERROR, "generic", f"Error al enumerar los dispositivos de audio: {e}")
+`AudioService::list_output_devices` (`crates/avi-audio/src/lib.rs:34-60`):
 
-    if getattr(args, "json", False):
-        emit_json({"devices": devices})
-        return
+1. Obtiene el host por defecto de `cpal` (`cpal::default_host()`,
+   `crates/avi-audio/src/lib.rs:29`).
+2. Itera `host.output_devices()`; si la llamada falla, el `if let Ok(...)`
+   la ignora silenciosamente y `list_output_devices` devuelve `Ok(vec![])`
+   (lista vacía, no hay fallback a un dispositivo "Default" sintético).
+3. Para cada dispositivo, `name()` cae a `"Dispositivo {idx}"` si el
+   backend no puede leer el nombre.
+4. La latencia se **estima**, no se lee de un campo nativo del sistema: se
+   toma `buffer_size().min` de `default_output_config()` (o `512.0` si el
+   backend reporta `SupportedBufferSize::Unknown`) y se calcula
+   `(buffer_size / sample_rate) * 1000.0` para obtener milisegundos. Si
+   `default_output_config()` falla, la latencia por defecto es `10.0` ms.
 
-    print("Dispositivos de salida de audio:")
-    for dev in devices:
-        print(f"  [{dev['id']}] {dev['name']} (latencia: {dev['latency']*1000:.1f}ms)")
+No existe distinción `degraded`/no-degraded como en el oráculo Python: no hay
+segundo valor de retorno ni dispositivo sintético `"Default"` — una
+enumeración vacía o fallida simplemente produce una lista vacía o un error,
+según dónde falle.
+
+---
+
+## Flujo del handler
+
+```
+handle_devices(json_mode)
+    │
+    ▼
+avi_audio::get_devices_json()          ← crates/avi-audio/src/lib.rs:380
+    │  AudioService::new() → list_output_devices()
+    │  mapea cada AudioDevice a {"id", "name", "latency": latency_ms / 1000.0}
+    ▼
+Err → CliError(ExitCode::Error, "audio_enumeration_failed", e.to_string())
+Ok  → --json: emit_raw_json({"devices": devices})
+      sin --json: imprime línea por dispositivo
 ```
 
-Puntos clave:
-- Importa `get_audio_devices` de forma diferida (dentro de la función), evitando carga innecesaria de `pycaw`/`sounddevice` si el comando no se ejecuta.
-- Captura toda excepción y la envuelve en `CliError(EXIT_ERROR, "generic", ...)`.
-- El flag `--json` se lee con `getattr(args, "json", False)` por robustez.
+Fuente: `src/main.rs:534-551`.
 
-### Descubrimiento de dispositivos de audio
+---
 
-`get_audio_devices_with_status()` (`audio.py:184-239`) implementa la enumeración real. Devuelve una tupla `(list[dict], bool)` donde el segundo elemento indica si la enumeración fue degradada (fallback).
+## Contrato `--json`
 
-#### Windows (`audio.py:196-220`)
-
-Usa `pycaw.pycaw` con la API COM:
-1. `AudioUtilities.GetDeviceEnumerator()` obtiene el enumerador de dispositivos.
-2. `enumerator.EnumAudioEndpoints(EDataFlow.eRender.value, DEVICE_STATE.ACTIVE.value)` filtra solo endpoints de render (salida) activos, descartando micrófonos.
-3. Itera la colección creando dispositivos con `AudioUtilities.CreateDevice()`.
-4. Extrae `FriendlyName` y `Latency` de cada dispositivo.
-
-#### macOS / Linux (`audio.py:222-237`)
-
-Usa `sounddevice` (wrapper de PortAudio):
-1. `sd.query_devices()` lista todos los dispositivos del sistema.
-2. Filtra por `max_output_channels > 0` (solo dispositivos de salida).
-3. Extrae `name` y `default_low_output_latency` de cada dispositivo.
-
-#### Fallback degradado
-
-Si la enumeración falla en cualquier plataforma (no solo `ImportError`, también errores COM, fallos de PortAudio, etc.), se devuelve:
-
-```python
-[{"id": 0, "name": "Default", "latency": 0.1}]
-```
-
-con `degraded=True`. Esto permite que `doctor`/`setup` distingan un subsistema de audio real de uno degradado. `cmd_devices` no usa el flag `degraded` — lo descarta en `get_audio_devices()` (`audio.py:249`).
-
-#### Wrapper simplificado
-
-`get_audio_devices()` (`audio.py:242-250`) es un wrapper que descarta el flag `degraded` y devuelve solo la lista de dispositivos:
-
-```python
-def get_audio_devices() -> list[dict]:
-    devices, _degraded = get_audio_devices_with_status()
-    return devices
-```
-
-### Formato de contrato JSON
-
-Cuando se usa `--json`, `cmd_devices` llama a `emit_json({"devices": devices})` (`cli.py:1027`). `emit_json` (`cli.py:69-81`) inyecta `schema_version` y serializa a stdout:
+Con `--json`, `handle_devices` llama a `emit_raw_json(json!({ "devices": devices }))`
+(`src/main.rs:538`). `emit_raw_json` (`crates/avi-core/src/json_emitter.rs:38`)
+inyecta `schema_version` sobre el objeto antes de serializar
+(`with_schema_version`, `crates/avi-core/src/json_emitter.rs:26`).
 
 ```json
 {
-  "schema_version": "3",
   "devices": [
-    {"id": 0, "name": "Speakers (Realtek Audio)", "latency": 0.015},
-    {"id": 1, "name": "Headphones (USB)", "latency": 0.022}
-  ]
+    { "id": 0, "name": "Altavoces (Realtek Audio)", "latency": 0.0116 },
+    { "id": 1, "name": "Auriculares (USB)", "latency": 0.0102 }
+  ],
+  "schema_version": "3"
 }
 ```
 
-Cada elemento del array `devices` tiene esta estructura:
+| Clave | Tipo | Significado |
+|---|---|---|
+| `devices` | array de objetos | Lista de dispositivos de salida enumerados por `cpal` |
+| `devices[].id` | integer | Índice secuencial 0-based asignado durante la iteración de `host.output_devices()` (`crates/avi-audio/src/lib.rs:53`) |
+| `devices[].name` | string | Nombre del dispositivo reportado por `cpal`, o `"Dispositivo {idx}"` si el backend no expone el nombre |
+| `devices[].latency` | number | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs:389`); en salida texto se reconvierte a milisegundos para mostrarse |
+| `schema_version` | string | `"3"`, inyectado por `emit_raw_json`/`with_schema_version` — no forma parte del payload que construye el handler |
 
-| Campo | Tipo | Descripción | Fuente |
-|---|---|---|---|
-| `id` | int | Índice secuencial (0-based) asignado durante la enumeración | `audio.py:211,228` |
-| `name` | str | Nombre amigable del dispositivo (`FriendlyName` en Windows, `name` en PortAudio) | `audio.py:212,228` |
-| `latency` | float | Latencia en segundos (`Latency` en Windows, `default_low_output_latency` en PortAudio) | `audio.py:213,228` |
-
-**Nota sobre latencia:** El valor se almacena en segundos. En formato texto se imprime convertido a milisegundos (`*1000:.1f`), pero en JSON se conserva en segundos.
-
-### Formato de salida texto
-
-Sin `--json`, la salida es (`cli.py:1030-1032`):
-
-```
-Dispositivos de salida de audio:
-  [0] Speakers (Realtek Audio) (latency: 15.0ms)
-  [1] Headphones (USB) (latency: 22.0ms)
-```
-
-Cada línea muestra: `[id] name (latency: X.Xms)`.
-
-### Manejo de errores
-
-| Excepción | Código exit | Razón | Mensaje |
-|---|---|---|---|
-| Fallo de enumeración (cualquier Exception) | 1 (`EXIT_ERROR`) | `generic` | `"Error al enumerar los dispositivos de audio: {e}"` |
-
-El comando no tiene otros caminos de error: no valida argumentos, no verifica prerequisitos, y no interactúa con el daemon. La única causa de fallo es una excepción en `get_audio_devices()`.
+Nota de orden de claves: `with_schema_version` inserta `schema_version` en el
+mapa ya construido, por lo que en la salida serializada aparece **después**
+de `devices`. Es un detalle de serialización, no de contrato: el conjunto de
+claves es el mismo con independencia del orden.
 
 ---
 
-## Conclusiones
+## Formato de salida texto
 
-`devices` es un comando de inspección de mínima complejidad que cumple una única responsabilidad: listar dispositivos de audio de salida. Su diseño se distingue por: (1) delegación completa de la lógica de enumeración a `audio.py`, manteniendo el handler CLI trivial; (2) estrategia multiplataforma con fallback degradado — Windows usa la API COM vía `pycaw`, macOS/Linux usa PortAudio vía `sounddevice`, y ambos degradan gracefulmente a un dispositivo "Default" genérico; (3) contrato JSON consistente con `schema_version` inyectado centralmente por `emit_json`; y (4) ausencia total de dependencias del daemon o de otros subsistemas — es un comando completamente offline y autónomo.
+Sin `--json` (`src/main.rs:540-548`):
+
+```
+Dispositivos de salida de audio:
+  [0] Altavoces (Realtek Audio) (latencia: 11.6ms)
+  [1] Auriculares (USB) (latencia: 10.2ms)
+```
+
+Cada línea sigue el patrón `[id] name (latencia: X.Xms)`, con la latencia
+reconvertida de segundos a milisegundos (`* 1000.0`) solo para esta vista.
+
+---
+
+## Errores
+
+| Reason | Código | Causa |
+|---|---|---|
+| `audio_enumeration_failed` | 1 (`ExitCode::Error`) | `AudioService::list_output_devices` devolvió `Err` (fallo del host `cpal` al construir el stream/config; la ausencia de dispositivos por sí sola NO es un error, produce lista vacía) |
+
+El error se envuelve en `main` (`src/main.rs:509-519`): con `--json` emite
+`{"error": <mensaje>, "reason": "audio_enumeration_failed", "schema_version": "3"}`
+a stdout; sin `--json`, `Error: <mensaje>` a stderr. En ambos casos el
+proceso termina con exit code 1.
+
+`devices` no depende del daemon, no requiere modelos provisionados y no
+verifica prerequisitos: es completamente offline y autónomo.
+
+---
+
+## Ejemplos
+
+```bash
+ai-voice-interconnector devices          # lista en texto plano
+ai-voice-interconnector --json devices   # payload legible por máquina
+```

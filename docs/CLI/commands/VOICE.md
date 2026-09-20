@@ -1,221 +1,242 @@
-## Recorrido
+# `voice`
 
-La investigación examinó la implementación completa de `voice` (list, clone, remove) explorando siete fuentes principales: el parser CLI (`cli.py:2616-2646`), los tres handlers (`cmd_voice_clone` en `cli.py:839`, `cmd_voice_list` en `cli.py:991`, `cmd_voice_remove` en `cli.py:945`), los helpers de validación (`_validate_identifier` en `cli.py:332`, `_require_voice_exists` en `cli.py:346`, `_resolve_voice_paths` en `cli.py:109`), el módulo de almacenamiento (`voices.py` completo), el daemon FastAPI (`daemon/server.py:432-460`), el protocolo IPC (`daemon/protocol.py:176-189`), el cliente IPC (`daemon/ipc.py:310-343`), el engine (`engine.py:558-595`), y los códigos de salida (`exit_codes.py`). No hubo desviaciones del plan ni fuentes faltantes.
+Gestor del registro de voces (fábrica + clonadas): listar, clonar desde audio
+de referencia y eliminar. Es el único comando con despacho de 3 modos hacia el
+daemon para `clone` (delegable vía `POST /voices/clone`); `list` y `remove`
+son siempre locales (rechazan `--daemon` con `daemon_unreachable`, paridad con
+`speech dub`/`speech play`).
+
+Implementación: `handle_voice` (`src/main.rs:698`), apoyado en `avi-store`
+(`crates/avi-store/src/lib.rs`: `VoiceStore`, `FACTORY_VOICES`,
+`is_factory_name`) y, en la ruta daemon, `clone_via_daemon` (`src/main.rs:3237`)
+contra `voices_clone_handler` (`crates/avi-daemon/src/lib.rs:750`).
 
 ---
 
-## Respuestas a los objetivos
+## Superficie CLI
 
-**Diseño de `voice`:** Es un gestor de voces con tres operaciones atómicas (listar, clonar, eliminar) que opera sobre un registro de dos niveles (usuario escribible + fábrica solo lectura). El clonado es la operación más compleja: valida y copia audios, luego precomputa conditionals (con o sin daemon). Las otras dos operaciones son puros wrappers sobre el módulo `voices.py`, libre de modelo.
+```
+ai-voice-interconnector voice list
+ai-voice-interconnector voice clone --name NAME --speech-reference FILE [--timbre-reference FILE] [--force]
+ai-voice-interconnector voice remove --name NAME
+```
 
-**Implementación:** Los handlers CLI delegan en `voices.py` para todas las operaciones de filesystem (resolución, copia, eliminación). El precómputo de conditionals se despacha tri-modal (daemon explícito / autodetección / directo), idéntico al patrón de `speech synthesize`. El módulo `voices.py` es deliberadamente libre de torch/modelo: ningún import de engine o torch ocurre ahí.
+`enum VoiceCommands` (`src/main.rs:193`). Los flags `--daemon`/`--no-daemon`/`--json`
+son globales de `Cli` (`src/main.rs:86-93`), no propios de `voice`.
 
-**Proceso de ejecución:** `voice clone` → validar modelo en caché → `voices.clone_voice_files` (validar audios con librosa, validar duración ≥10s, copiar WAVs) → `_precompute_cloned_voice` (daemon o directo) → informar resultado. `voice list` → `voices.list_voices` → imprimir o JSON. `voice remove` → `voices.remove_voice` → informar (con manejo especial para voces de fábrica y archivos en uso).
+**`voice clone`** (`src/main.rs:197-209`):
+
+| Flag | Tipo | Requerido | Descripción |
+|---|---|---|---|
+| `--name, -n` | string | sí | Nombre de la voz; se normaliza a minúsculas y se valida contra `VoiceStore::validate_name` |
+| `--speech-reference, -s` | string (ruta) | sí | Audio de referencia de habla, obligatorio en toda ruta (local y daemon) |
+| `--timbre-reference, -t` | string (ruta) | no | Audio de timbre opcional; si se omite, la referencia de habla cubre ambos roles |
+| `--force, -f` | flag | no | Sobrescribe una voz existente con el mismo nombre |
+
+**`voice list`** y **`voice remove`** no tienen flags propios más allá de `--name` en `remove` (`-n`, obligatorio) y los globales.
+
+No existe `--daemon`/`--no-daemon` mutuamente excluyente propio de `voice`
+(son globales de `Cli`); no existen banderas `--yes`/`--force-update`; no hay
+subcomando `voice precompute` (el endpoint correspondiente fue purgado, ver
+más abajo).
 
 ---
 
-## Hallazgos por tema
-
-### Definición CLI y parámetros
-
-El parser se define en `cli.py:2616-2646`. `voice` es un subcomando de segundo nivel con tres sub-acciones:
+## Flujo de `voice clone`
 
 ```
-ai-voice-interconnector voice list [--json]
-ai-voice-interconnector voice clone --name NAME --speech-reference FILE [--timbre-reference FILE] [--force] [--daemon|--no-daemon] [--json]
-ai-voice-interconnector voice remove --name NAME [--json]
-```
-
-**Parámetros de `voice clone`:**
-
-| Parámetro | Tipo | Requerido | Descripción |
-|---|---|---|---|
-| `--name, -n` | str | sí | Nombre de la voz (validado contra regex `^[A-Za-z0-9._-]+$`) |
-| `--speech-reference, -s` | file | sí | Audio de habla para conditioning del T3 (≥10s, se valida duración) |
-| `--timbre-reference, -t` | file | no | Audio de timbre para el Voice Encoder (cualquier largo; si se omite, el habla cubre ambos) |
-| `--force, -f` | flag | no | Sobrescribe si la voz ya existe (usuario o fábrica homónima) |
-| `--daemon` | flag | no | Exige daemon para precómputo; exit 5 si no está activo |
-| `--no-daemon` | flag | no | Fuerza precómputo directo, sin sondear daemon |
-| `--json` | flag | no | Emite JSON legible por máquina |
-
-`--daemon` y `--no-daemon` son mutuamente excluyentes (`cli.py:2632`).
-
-**Parámetros de `voice list`:**
-
-| Parámetro | Tipo | Descripción |
-|---|---|---|
-| `--json` | flag | Emite JSON legible por máquina |
-
-**Parámetros de `voice remove`:**
-
-| Parámetro | Tipo | Requerido | Descripción |
-|---|---|---|---|
-| `--name, -n` | str | sí | Nombre de la voz a eliminar |
-| `--json` | flag | no | Emite JSON legible por máquina |
-
-### Implementación de handlers
-
-**`cmd_voice_clone`** (`cli.py:839-897`):
-
-```
-is_provisioned() (`crates/avi-store/src/lib.rs:550`)                          ← aborta si modelo no está en `hf_cache_dir()`
+handle_voice (Clone)
     │
     ▼
-voices.clone_voice_files(name, timbre, speech)   ← valida + copia audios
-    │                                               VoiceExistsError → exit 6
-    │                                               ValueError → exit 2
-    ▼
-_precompute_cloned_voice(args)                   ← 3 modos de despacho
+name.to_lowercase() + VoiceStore::validate_name(name)   ← exit 2 "invalid_voice_name" si falla
     │
     ▼
-informar resultado (texto o JSON)
+route_to_daemon(daemon_mode, client)?
+    │
+    ├─ Sí ──► clone_via_daemon (src/main.rs:3237)
+    │           lee speech/timbre a base64 → POST /voices/clone (timeout 1500ms)
+    │           timeout o conexión fallida → exit 5 "daemon_unreachable"
+    │           HTTP no-2xx → mapea `reason` del body a exit code (ver tabla de errores)
+    │           2xx → reemite {name, speech, timbre, precomputed} con schema_version
+    │
+    └─ No ──► require_model_provisioned()                ← exit 4 "model_missing" si falta qwen3-tts-0.6b
+                │
+                ▼
+              validar existencia de speech_reference (y timbre_reference si se dio)  ← exit 3 "audio_not_found"
+                │
+                ▼
+              !force && voice_store.exists(name)          ← exit 6 "voice_exists"
+                │
+                ▼
+              Qwen3TtsEngine::new(None).base_model_dir     ← exit 4 "model_missing" si el Base de clonado no está provisionado
+                │
+                ▼
+              avi_tts::clone_voice(model_dir, speech_path, tmp_qvoice, name, "es")
+                │
+                ▼
+              voice_store.save_reference(name, tmp_qvoice) → <voces>/<name>/reference.qvoice
+                │
+                ▼
+              copia speech_path → speech-reference.wav (y timbre si se dio) para compatibilidad de lectura
+                │
+                ▼
+              emitir {name, timbre, speech, precomputed:false}
 ```
 
-El handler captura tres excepciones específicas:
-- `VoiceExistsError` → exit 6 (`EXIT_STATE_CONFLICT`), razón `voice_exists`
-- `ValueError` → exit 2 (`EXIT_INVALID_INPUT`), razón `usage_error`
-- `Exception` genérica → exit 1 (`EXIT_ERROR`), razón `generic`
+`route_to_daemon` (`src/main.rs:2875`): `ForceDaemon` siempre delega (el POST
+falla con `daemon_unreachable` si no hay daemon corriendo); `ForceDirect`
+nunca delega; `Auto` delega solo si `GET /health` responde en ≤500 ms.
 
-**`cmd_voice_remove`** (`cli.py:945-988`):
+**No hay precómputo de conditionals en ningún camino.** El campo `precomputed`
+del envelope es siempre `false`: ni la ruta local ni la ruta daemon calculan
+conditionals por adelantado. El endpoint `POST /voices/precompute` que existía
+en versiones previas fue purgado del router (`crates/avi-daemon/src/lib.rs`
+expone 7 rutas públicas, sin `/voices/precompute` ni `GET /voices`; ver
+`docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`, hallazgo H-07).
+La primera síntesis (`speech synthesize --voice <nombre>`) es la que resuelve
+los conditionals bajo demanda a partir de `reference.qvoice`.
 
-Flujo con tres ramas:
-1. `voices.remove_voice` devuelve `True` → eliminación exitosa
-2. `voices._resolve_voice_dir` no es `None` pero `remove_voice` devuelve `False` → voz de fábrica, exit 6
-3. Ambos `False`/`None` → voz no encontrada, exit 3
+---
 
-Manejo especial para `PermissionError`/`OSError` (`cli.py:967-982`): en Windows, `shutil.rmtree` falla si los `.wav` están abiertos por otro proceso (daemon, reproductor, Explorador, antivirus). El error sugiere cerrar el proceso bloqueante. Exit 6.
+## Ruta daemon: `POST /voices/clone`
 
-**`cmd_voice_list`** (`cli.py:991-1014`):
+`clone_via_daemon` (`src/main.rs:3237`) codifica los audios a base64 y envía:
 
-Simple wrapper sobre `voices.list_voices()`. Si la lista está vacía, imprime un ejemplo de uso de `voice clone`. Captura `FileNotFoundError` (directorio de voces inexistente) → exit 3.
+```json
+{ "name": "...", "audio_b64": "...", "force": false, "timbre_b64": "..." }
+```
 
-### Almacenamiento de voces
+`voices_clone_handler` (`crates/avi-daemon/src/lib.rs:750`):
 
-`voices.py` implementa un modelo de dos niveles con precedencia **usuario → fábrica**:
+1. `VoiceStore::validate_name(name)` → `400` `invalid_voice_name` si falla.
+2. `!force && voice_store.exists(name)` → `409` `voice_exists`.
+3. Falta `audio_b64` → `400` `audio_missing`; no decodifica base64 → `400` `audio_decode_error`.
+4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
+5. Escribe el audio a un WAV temporal, `avi_tts::clone_voice(base_model_dir, tmp_wav, tmp_qvoice, name, "es")`
+   (constante `DEFAULT_CLONE_LANGUAGE = "es"`, `crates/avi-daemon/src/lib.rs:37`) → `500` `voice_clone_failed` si falla.
+6. `voice_store.save_reference(name, tmp_qvoice)` → `reference.qvoice`; copia `speech-reference.wav`; si vino `timbre_b64`, copia `timbre-reference.wav` (mejor esfuerzo, sin abortar si falla).
+7. Responde `200` con `{name, speech, precomputed:false}` + `schema_version`.
 
-| Nivel | Directorio | Escritura |
-|---|---|---|
-| Usuario | `data_root()/voices/<nombre>/` | Sí |
-| Fábrica | `bundled_voices_dir()/<nombre>/` | No (solo lectura) |
+El CLI (`clone_via_daemon`) mapea la `reason` del cuerpo de error a exit code:
 
-**Estructura de una voz:**
+| `reason` del daemon | Exit code |
+|---|---|
+| `invalid_voice_name` | 2 (`InvalidInput`) |
+| `voice_exists` | 6 (`StateConflict`) |
+| `model_missing` | 4 (`ModelMissing`) |
+| `audio_missing` / `audio_decode_error` | 2 (`InvalidInput`) |
+| otro / desconocido | 1 (`Error`) |
+
+---
+
+## `voice list`
+
+`require_local(daemon_mode)` rechaza `--daemon` explícito con exit 5 antes de
+tocar el store. Delega en `VoiceStore::list()` (`crates/avi-store/src/lib.rs:122`):
+escanea `<data_dir>/voices/`, marca `is_factory` con `is_factory_name` y
+ordena fábrica primero (`default`, `ryan`, `vivian`), luego clonadas
+alfabéticamente. `ensure_initialized()` materializa las voces de fábrica (y el
+`reference.qvoice` embebido de `default`) antes de listar, por lo que
+`default` siempre aparece.
+
+Salida humana: `Voces registradas:` con sufijo ` (fábrica)` para las tres
+voces base. Salida `--json`: `{ "voices": [...] }` (solo nombres, sin
+metadatos de ruta).
+
+---
+
+## `voice remove`
+
+`require_local(daemon_mode)` rechaza `--daemon` con exit 5. Flujo
+(`src/main.rs:818-840`):
+
+1. `VoiceStore::validate_name(name)` → exit 2 `invalid_voice_name`.
+2. `is_factory_name(name)` → exit 2 `cannot_remove_default` (nota: pese al
+   nombre de la razón, protege las tres voces de fábrica —`default`, `ryan`,
+   `vivian`—, no solo `default`).
+3. `voice_store.remove(name)` (`crates/avi-store/src/lib.rs:181`): normaliza a
+   minúsculas, vuelve a rechazar nombres de fábrica, y falla si el directorio
+   no existe → exit 3 `voice_not_found`. Si existe, `remove_dir_all`
+   incondicional (sin distinguir «archivo en uso»: en este árbol no hay una
+   rama de manejo específico para `PermissionError` de Windows).
+4. Salida `--json`: `{ "status": "removed", "voice": "<nombre>" }`.
+
+---
+
+## Contrato `--json`
+
+| Subcomando | Payload (más `schema_version`) |
+|---|---|
+| `voice list` | `{ "voices": ["default", "ryan", "vivian", ...] }` |
+| `voice clone` | `{ "name": "...", "timbre": "..."\|null, "speech": "<ruta a reference.qvoice>", "precomputed": false }` |
+| `voice remove` | `{ "status": "removed", "voice": "<nombre>" }` |
+
+`precomputed` es siempre `false`: no existe ninguna ruta (local o daemon) que
+la ponga en `true`. `schema_version` (`"3"`) lo añade `emit_raw_json`
+(`crates/avi-core/src/json_emitter.rs:5`) en el CLI, y `with_sv` en las
+respuestas del daemon.
+
+---
+
+## Almacenamiento
+
+`VoiceStore` (`crates/avi-store/src/lib.rs:66`) usa un único nivel físico en
+`<data_dir>/voices/<nombre>/`, sin separación fábrica/usuario en disco: las
+tres voces de fábrica (`FACTORY_VOICES = ["default", "ryan", "vivian"]`,
+`crates/avi-store/src/lib.rs:16`) se materializan como directorios normales en
+`ensure_initialized()`, y `is_factory_name` es lo único que las distingue de
+una voz clonada al listar o al intentar eliminarlas.
+
+**Estructura de una voz clonada:**
 
 ```
 <nombre>/
-├── speech-reference.wav    ← obligatorio (conditioning T3)
-├── timbre-reference.wav    ← opcional (Voice Encoder)
-└── conditionals.pt         ← precómputo (generado por clone o primera síntesis)
+├── reference.qvoice        ← graft binario (speaker embedding + pesos Base); usado por el motor
+├── speech-reference.wav    ← copia del audio de origen, solo para compatibilidad de lectura
+└── timbre-reference.wav    ← copia del audio de timbre, si se proporcionó
 ```
 
-**`_is_valid_voice_dir`** (`voices.py:90-111`): una voz es válida solo si tiene `speech-reference.wav` y ninguno de sus componentes es un symlink. Esta defensa anti-symlink cierra la ventana de ataque donde un enlace apunte a un `.wav` arbitrario.
+`reference.qvoice` es lo único que el motor de síntesis consulta
+(`VoiceStore::find_reference`, `crates/avi-store/src/lib.rs:197`): su presencia
+determina la rama «clonada» en `avi_tts::resolve_voice_motor`; sin él, la voz
+resuelve como preset del motor. `default` es una voz de fábrica *clonada*
+(trae su propio `reference.qvoice` embebido en el binario,
+`FACTORY_DEFAULT_QVOICE`) para garantizar una tasa de error de palabra baja en
+textos cortos; `ryan`/`vivian` son presets puros del motor Qwen3-TTS, sin
+`reference.qvoice`.
 
-**`voice_dir`** (`voices.py:66-75`): compone la ruta y ejecuta defensa en profundidad con `os.path.realpath` para garantizar que el directorio resuelto nunca escape del registro de voces.
-
-**`_resolve_voice_dir`** (`voices.py:114-121`): resolución con precedencia usuario→fábrica. Si el mismo nombre existe en ambos niveles, gana el de usuario.
-
-**`clone_voice_files`** (`voices.py:158-218`):
-
-1. Valida cargabilidad de audios con `librosa.load(path, sr=24000, duration=1.0)` — audio ilegible aborta antes de tocar el filesystem
-2. Valida duración del habla ≥10s con `librosa.get_duration(path=speech_reference)`
-3. Colisión de nombre con `VoiceExistsError` si no se pasó `--force`
-4. Crea el directorio destino con `os.makedirs`
-5. Copia `timbre-reference.wav` si se proporcionó; si no, limpia uno existente de clonado previo (incondicional a `--force`)
-6. Copia `speech-reference.wav`
-
-**`remove_voice`** (`voices.py:144-155`): solo elimina voces de usuario. Operación atómica: verifica que el directorio sea una voz válida antes de `shutil.rmtree`.
-
-**`list_voices`** (`voices.py:124-141`): iteración usuario→fábrica, alfabética dentro de cada raíz, deduplicación con `set` (precedencia usuario sobre fábrica).
-
-### Precómputo de conditionals
-
-**Ruta de despacho `voice clone` (3 modos, `POST /voices/clone`)** (`src/main.rs:519` `clone_via_daemon`):
-
-```
-Clone (3 modos, POST /voices/clone)
-    │
-    ├─ --daemon ──────────► route_to_daemon? → Sí → POST /voices/clone (timeout 1500ms) → {name,speech,precomputed:false} : exit 5
-    ├─ --no-daemon ───────► Qwen3TtsEngine::new + avi_tts::clone_voice → save_reference (local)
-    └─ sin flags ─────────► route_to_daemon? → Sí → POST /voices/clone : local
-```
-
-Precompute previo (`POST /voices/precompute`) se mantiene como fallback post-registro; `POST /voices/clone` (`crates/avi-daemon/src/lib.rs:669` `voices_clone_handler`) decodifica `audio_b64`, valida `VoiceStore::validate_name`, `exists`/`force`, `clone_voice` con `DEFAULT_CLONE_LANGUAGE` y `save_reference`.
-
-**Invariante de degradación:** salvo con `--daemon` caído (exit 5), cualquier fallo del precómputo se captura y devuelve `False` (`cli.py:935-941`). La voz queda registrada y el primer `speech synthesize --voice <nombre>` computa los conditionals on-the-fly.
-
-**Daemon-side** (`daemon/server.py:432-460`):
-
-- Endpoint síncrono `POST /voices/precompute` → FastAPI lo despacha al threadpool
-- Corre bajo `_synthesis_lock` para serializar con síntesis en vuelo (forward passes sobre `tts.ve/s3gen/t3`)
-- Lee audios desde el registro vía `voices.voice_paths` — nunca recibe rutas del cliente
-- Error 404 si la voz no existe, 500 si falla el precómputo
-
-**Protocolo IPC** (`daemon/protocol.py:176-189`):
-
-```python
-class PrecomputeVoiceRequest(ProtocolModel):
-    name: str  # Field(min_length=1, max_length=255)
-
-class PrecomputeVoiceResponse(ProtocolModel):
-    name: str
-    precomputed: bool
-```
-
-**Cliente IPC** (`daemon/ipc.py:310-343`): envía `POST /voices/precompute` con `json={"name": name}`, timeout `REQUEST_TIMEOUT`. Valida respuesta contra `PrecomputeVoiceResponse`. Eleva `DaemonIPCError` en caso de HTTP error, timeout, o cuerpo no conforme.
-
-### Validación
-
-**`_validate_identifier`** (`cli.py:332-343`): wrapper que delega en `voices._validate_path_segment` y convierte `ValueError` en `CliError` exit 2. Se usa para validar nombres de voz en comandos `speech`.
-
-**`_validate_path_segment`** (`voices.py:37-53`): validación robusta de nombre de voz:
-- Regex `^[A-Za-z0-9._-]+$` (`voices.py:25`)
-- Rechaza vacíos, `..`, `.`, separadores de ruta, rutas absolutas
-- Normaliza a minúsculas (previene colisiones en APFS/NTFS)
-- Parametrizable con `kind` para mensajes de error específicos
-
-**`_require_voice_exists`** (`cli.py:346-358`): verifica que la voz exista (usuario o fábrica); exit 3 si no. Se aplica en seis sub-acciones de `speech` (`synthesize`, `say`, `dub`, `play`, `remove` y `list` condicionalmente con `--voice`) para que «voz mal escrita» nunca se disfrace de «sin resultados».
-
-**`_resolve_voice_paths`** (`cli.py:109-123`): resuelve nombre de voz a rutas absolutas de audio. Resuelve contra CWD del cliente antes de que crucen la frontera hacia el daemon. Se usa en los handlers de `speech`.
-
-### Manejo de errores
-
-| Excepción / Condición | Subcomando | Código exit | Razón |
-|---|---|---|---|
-| Modelo no en caché | clone | 4 | `model_missing` (vía `is_provisioned` `hf_cache_dir`) |
-| Audio no cargable (librosa) | clone | 2 | `usage_error` |
-| Habla < 10s | clone | 2 | `usage_error` |
-| Voz ya existe (sin `--force`) | clone | 6 | `voice_exists` |
-| `--daemon` y daemon caído | clone | 5 | `daemon_unreachable` |
-| Precómputo falla (sin `--daemon`) | clone | — | aviso stderr, no aborta |
-| Voz es de fábrica | remove | 6 | `factory_voice` |
-| Voz no encontrada | remove | 3 | `voice_not_found` |
-| Archivo en uso (Windows) | remove | 6 | `voice_remove_io_error` |
-| Nombre ilegal | remove | 2 | `invalid_voice_name` |
-| Error genérico | remove | 1 | `voice_remove_error` |
-| Directorio voces inexistente | list | 3 | `not_found` |
-| Error genérico | list | 1 | `generic` |
-
-### Salida JSON
-
-Los tres subcomandos soportan `--json` para salida legible por máquina:
-
-- `voice clone --json`: `{"name": "...", "timbre": "..."|null, "speech": "...", "precomputed": true|false}`
-- `voice list --json`: `{"voices": ["voz1", "voz2", ...]}`
-- `voice remove --json`: `{"name": "...", "removed": true}`
+`voice_store.save_reference` (`crates/avi-store/src/lib.rs:213`) escribe con
+temporal + `rename` (sin dejar un `.qvoice` parcial ante fallo a mitad de
+copia).
 
 ---
 
-## Conclusiones
+## Errores
 
-`voice` es un gestor de registro de voces con separación clara de responsabilidades: `voices.py` maneja filesystem (libre de modelo), los handlers CLI orquestan validación y precómputo, y el daemon provee precómputo con modelo caliente. Las decisiones de diseño más notables son:
+| Condición | Subcomando | Exit code | `reason` |
+|---|---|---|---|
+| Nombre inválido (regex/longitud/`..`/separadores) | clone, remove | 2 | `invalid_voice_name` |
+| Audio de referencia (o timbre) inexistente | clone (ruta local) | 3 | `audio_not_found` |
+| Modelo de síntesis (`qwen3-tts-0.6b`) no provisionado | clone (ruta local) | 4 | `model_missing` |
+| Voz ya existe sin `--force` | clone | 6 | `voice_exists` |
+| Modelo Base de clonado no provisionado | clone (ruta local) | 4 | `model_missing` |
+| Falla `avi_tts::clone_voice` o `save_reference` | clone | 1 | `voice_clone_failed` |
+| Daemon inalcanzable (timeout 1500 ms) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
+| Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |
+| Voz de fábrica (`default`/`ryan`/`vivian`) | remove | 2 | `cannot_remove_default` |
+| Voz no encontrada | remove | 3 | `voice_not_found` |
+| `--daemon` explícito en `list`/`remove` | list, remove | 5 | `daemon_unreachable` |
 
-1. **Precómputo degradable:** el fallo del precómputo nunca aborta el clonado — la voz queda registrada y la primera síntesis computa on-the-fly. Solo `--daemon` explícito con daemon caído produce exit 5.
+---
 
-2. **Defensa anti-symlink en profundidad:** tanto `voice_dir` (realpath contra escape) como `_is_valid_voice_dir` (rechazo de symlinks en componente o `.wav`) cierran la ventana de ataque donde un enlace simbólico dentro del registro pudiera cargar un `.wav` arbitrario.
+## Ejemplos
 
-3. **Timbre fantasma:** cuando se clona sin `--timbre-reference`, se elimina activamente un `timbre-reference.wav` existente de clonado previo (`voices.py:213-216`), evitando que un audio quede huérfano y se use por error.
-
-4. **Normalización a minúsculas:** los nombres de voz se normalizan a minúsculas en `_validate_path_segment` (`voices.py:53`), previniendo colisiones en filesystems case-insensitive (macOS APFS, Docker volumes sobre NTFS).
-
-5. **Validación temprana con librosa:** `clone_voice_files` carga parcialmente los audios (`duration=1.0`) antes de copiarlos, asegurando que un audio corrupto no deje una voz rota en el registro (`voices.py:186-189`).
-
-6. **Precómputo serializado:** en el daemon, `_synthesis_lock` comparte exclusión mutua entre precómputo y síntesis, ya que ambos ejecutan forward passes sobre los mismos submodelos (`server.py:450`).
+```bash
+ai-voice-interconnector voice list
+ai-voice-interconnector --json voice list
+ai-voice-interconnector voice clone --name locutor --speech-reference ref.wav
+ai-voice-interconnector voice clone -n locutor -s ref.wav -t timbre.wav --force
+ai-voice-interconnector --daemon voice clone -n locutor -s ref.wav   # exige daemon vivo; exit 5 si no responde
+ai-voice-interconnector --no-daemon voice clone -n locutor -s ref.wav  # fuerza ruta local, sin sondear el daemon
+ai-voice-interconnector voice remove --name locutor
+```
