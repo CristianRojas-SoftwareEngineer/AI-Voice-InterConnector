@@ -28,7 +28,7 @@ Reglas comunes a ambas capacidades que garantizan una UX interactiva coherente:
 
 - **P1 — Validación previa pura.** Toda guarda (TTY, exclusión de flags, incompatibilidad `--json`) se evalúa **antes de abrir dispositivos, sintetizar o transcribir**. Un caso rechazado nunca produce efectos secundarios.
 - **P2 — Nunca panic por ruta alcanzable.** Ninguna precondición violada se manifiesta como `panic`; siempre es un `CliError` con exit code de dominio.
-- **P3 — Separación de canales.** Avisos, menús y prompts interactivos van **siempre a stderr**; stdout queda reservado al payload de datos (texto o JSON).
+- **P3 — Separación de canales.** Avisos, menús y prompts interactivos van **siempre a stderr**; stdout queda reservado al payload de datos (texto o JSON) y a los mensajes finales de confirmación en modo humano (p. ej. «Descartado.», «Voz clonada.»), que no son prompts sino el resultado de la invocación.
 - **P4 — TTY como guarda de interactividad.** La interactividad (push-to-talk, bucle `--play`) solo se habilita con stdin en terminal (`is_terminal()`); sin TTY el comportamiento es determinista o error explícito.
 - **P5 — Exit codes canónicos.** `InvalidInput = 2`, `NotFound = 3`, `StateConflict = 6`. Sin códigos nuevos.
 - **P6 — Captura siempre client-side.** El micrófono está en la máquina del cliente; incluso en modo daemon el CLI captura el PCM y lo envía. Push-to-talk **no toca el daemon**.
@@ -108,7 +108,7 @@ Aplica **por igual** a `speech transcribe` y `speech dub`, en sus rutas directa 
 | `3` | Regenera: nueva síntesis completa + reproduce | Sí | No | No | — |
 | `4` | Descarta | No | No | Sí | 0 |
 | otro | Aviso «Opción no válida; escribe 1, 2, 3 o 4.» (stderr) | No | No | No | — |
-| EOF (Ctrl-D) | Igual que `4`; aviso «Descartado: no se guardó nada.» (stderr) | No | No | Sí | 0 |
+| EOF (Ctrl-D) | Igual que `4`; imprime «Descartado.» (stdout) | No | No | Sí | 0 |
 
 ### 4.3 Revalidación de colisión de etiqueta (crítico)
 

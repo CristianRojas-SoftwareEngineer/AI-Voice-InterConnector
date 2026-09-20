@@ -389,7 +389,7 @@ remove` no tocan el modelo ni el daemon: no declaran estos flags.
 #### `speech synthesize`
 
 Sintetiza texto y lo guarda en el almacén de habla sintética
-(`data_root()/synthetic-speech/<voz>/<etiqueta>.wav`); a diferencia de
+(`data_dir()/speech/<voz>/<etiqueta>.wav`); a diferencia de
 `speech say`, persiste por defecto. La excepción es `--play`: su bucle
 interactivo permite rechazar y descartar la toma, en cuyo caso el comando
 termina con exit 0 sin guardar nada (ver «El bucle de `--play`» más abajo).
@@ -511,17 +511,20 @@ ai-voice-interconnector speech play --label saludo --voice mi_voz --json
 **Opciones:**
 - `--label, -l` (requerido): Etiqueta de la locución (normalizada a minúsculas)
 - `--voice, -v`: Nombre de la voz (default: `default`)
-- `--json`: Emite `{"voice", "label"}`
+- `--json`: Emite `{"status", "voice", "label"}`
 
 Una etiqueta inexistente para la voz sale con exit **3**.
 
 #### `speech list`
 
-Lista las locuciones guardadas, opcionalmente filtradas por voz.
+Lista todas las locuciones guardadas. **No filtra por voz**: `--voice/-v`
+NO existe en `speech list` (`SpeechCommands::List` es una variante unitaria
+sin campos, `src/main.rs:218-220`); es un drift de contrato pendiente
+(H-10, `docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`).
+Invocarlo con `--voice` falla con un error de parseo de `clap` (exit 2).
 
 ```bash
 ai-voice-interconnector speech list
-ai-voice-interconnector speech list --voice mi_voz
 ai-voice-interconnector speech list --json
 ```
 
@@ -533,15 +536,11 @@ ai-voice-interconnector speech list --json
 ```
 
 El texto se muestra truncado a 60 caracteres en la salida humana; el payload
-`--json` (`{"synthetic_speech": [...]}`) lleva el texto completo. Una locución
+`--json` (`{"speech": [...]}`) lleva el texto completo. Una locución
 sin sidecar de metadatos se muestra como `(sin metadatos)`.
 
 **Opciones:**
-- `--voice, -v`: Filtra por voz; sin él lista las locuciones de todas las voces
-- `--json`: Emite `{"synthetic_speech": [{"voice", "label", "text", "created_at"}]}`
-
-Con `--voice` apuntando a una voz inexistente, el comando sale con exit **3**
-(para que «voz mal escrita» no se confunda con «sin locuciones»).
+- `--json`: Emite `{"speech": [{"voice", "label", "text", "created_at"}]}`
 
 #### `speech remove`
 
@@ -555,7 +554,7 @@ ai-voice-interconnector speech remove --label saludo --voice mi_voz
 **Opciones:**
 - `--label, -l` (requerido): Etiqueta de la locución (normalizada a minúsculas)
 - `--voice, -v`: Nombre de la voz (default: `default`)
-- `--json`: Emite `{"voice", "label"}`
+- `--json`: Emite `{"status", "voice", "label"}`
 
 Una etiqueta inexistente sale con exit **3**. El borrado masivo es tarea de
 `cleanup --synthetic-speech` (ver más abajo).
@@ -1046,7 +1045,7 @@ desde el binario como desde el código fuente. En concreto:
   |--------|-------------|---------|
   | `0` | Éxito | Síntesis o comando completado |
   | `1` | Error genérico | Fallo inesperado; `doctor` con algún chequeo fallido |
-  | `2` | Entrada inválida | `--text` vacío; nombre de voz ilegal; uso incorrecto (argparse) |
+  | `2` | Entrada inválida | `--text` vacío; nombre de voz ilegal; uso incorrecto (clap) |
   | `3` | Voz o audio no encontrado | `--voice inexistente`; `voice remove` de una voz ausente |
   | `4` | Modelo no provisionado | `speech say`/`daemon start` sin ejecutar `setup` |
   | `5` | Daemon inalcanzable | `speech say --daemon` sin daemon; `daemon start/stop/restart` fallido |
@@ -1108,7 +1107,7 @@ usuario) puede caer bajo una jerarquía de **OneDrive**. Eso expone los archivos
 voz a *file locks* y a *placeholders* «a petición» (Files On-Demand), que causan
 fallos de lectura esporádicos e inatribuibles al cargar una voz.
 
-`doctor` emite `[WARN] OneDrive user-data-dir` cuando detecta que `data_root()`
+`doctor` emite `[WARN] OneDrive user-data-dir` cuando detecta que `data_dir()`
 está bajo la sincronización de OneDrive (vía las variables de entorno
 `OneDrive`/`OneDriveCommercial`, o por patrón de ruta). Es un aviso informativo:
 no bloquea nada ni cambia dónde se guardan las voces. Para mitigarlo:
