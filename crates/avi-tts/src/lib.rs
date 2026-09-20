@@ -263,7 +263,7 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
             }
         }
     }
-    // Capa HF: snapshot cacheado por setup --with-base
+    // Capa HF: snapshot cacheado por setup --with-voice-cloning
     if let Some(p) = avi_store::ModelStore::new().model_snapshot_path("qwen3-tts-0.6b-base") {
         if p.is_dir()
             && p.read_dir()

@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 6 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅) — 9 pendientes (H-06–H-12, H-14, H-15)
+- **Estado**: 7 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅) — 8 pendientes (H-06–H-08, H-10–H-12, H-14, H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -139,12 +139,13 @@
 
 ### H-09 — `setup` sin reinstalación forzada ni confirmación
 
-- **Severidad**: 🟡 Media · **Área**: CLI/setup (`src/main.rs:151-158`)
-- **Síntoma**: sin `--force-update` no hay forma de re-descargar modelos sin purga manual (~14 GB); sin `--yes` no hay modo no interactivo; `--language` es texto libre sin choices (`es-latam|en|all`).
-- **Impacto**: la palanca operativa que faltó ante provisiones rotas; fricción en CI.
-- **Corrección propuesta**: restaurar `--force-update` (o equivalente), `--yes` y `value_parser` de `--language`.
-- **Relaciones**: cierra el loop operativo de provisión; independiente del resto.
-- **Decisión requerida**: sí — política de confirmación y equivalencia exacta de `--force-update`.
+- **Severidad**: 🟡 Media · **Área**: CLI/setup (`src/main.rs`, variante `Setup` y `handle_setup`)
+- **Síntoma**: sin `--force-update` no había forma de re-descargar modelos sin purga manual (~9–11,5 GB); sin `--yes` no había modo no interactivo; `--language` era texto libre sin choices (default `"es"`, ajeno a la taxonomía documentada), ignorado salvo para imprimirse y emitirse en JSON; el flag de clonado `--with-base` nombraba el artefacto interno en vez de la capacidad.
+- **Causa (demostrada)**: la superficie del comando arrastraba deuda respecto a la implementación real: `--language` prometía una selección de modelos que `handle_setup` nunca aplicaba (el conjunto de `MODEL_REVISIONS` es fijo), y `--force-update`/`--yes` figuraban en la documentación heredada (`SETUP.md` describía la CLI Python `cli.py`) pero no existían en el parser Rust. `--yes` solo vivía en `cleanup`/`uninstall`.
+- **Corrección (implementada)**: eliminación total de `--language` (parser, dispatch, `handle_setup`, salida `--json` sin la clave `language`, mensaje humano); rename de `--with-base` a `--with-voice-cloning` sin alias (`--with-clone`/`--clone` retirados) — `src/main.rs`, comentarios de `avi-tts` y `doctor`; `--force-update` que purga los snapshots pinneados (mismo filtro de selección de clonado) más la caché xet vía `remove_hf_snapshot`/`remove_xet_cache` y re-provisiona (la re-conversión CT2 por `mtime` ocurre sola tras la re-descarga), con confirmación destructiva salvo `--yes`/no-TTY (patrón de `handle_cleanup`); `--yes`/`-y` no-op sin `--force-update`. Tests de contrato en `tests/cli_golden.rs` (`setup_help_lista_superficie_vigente`, `setup_json_sin_clave_language`). Documentación de usuario sincronizada: reescritura íntegra de `docs/CLI/commands/SETUP.md` desde la implementación Rust y saneo de drift en `DOCTOR.md`, `TRANSLATE.md`, `USAGE.md`, `README.md`, `DESIGN.md`, `DISTRIBUTION.md`, `MANUAL-VALIDATION.md`; entrada nueva en `CHANGELOG.md`. Estado: ✅ Implementado.
+- **Impacto resuelto**: la palanca operativa de re-descarga forzada queda disponible (fricción en CI resuelta con `--yes`), y la superficie de `setup` es coherente, auto-descriptiva y sincronizada extremo a extremo entre código, tests y documentación.
+- **Relaciones**: cerraba el loop operativo de provisión; independiente del resto.
+- **Decisión requerida**: resuelta — sin retrocompatibilidad (proyecto en desarrollo, sin dependientes externos): alias eliminados y `--language` retirado sin sinónimos; confirmación destructiva replicando el patrón TTY de `cleanup`.
 
 ### H-10 — `speech list` sin filtro por voz
 
@@ -215,7 +216,7 @@ H-01 ✅ ── contenía ──> H-05 ✅ (residual degradado: ahora se reclama
 H-02 ✅ ── reduce superficie de ──> H-01 ✅ (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
 H-02 ✅ estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos) · H-15 (marginalidad temporal + presupuesto de clonado + barrido Unix del reaper)
 H-01 ✅ ── contiene ──> H-15 (3 rojos clase-timeout sin cascada ni fuga; bisect en base sin regresión)
-H-09 ── independiente (provisión) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift)
+H-09 ✅ (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning`, `--force-update`/`--yes` implementados + tests + saneo de drift) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift)
 H-10 · H-11 ── triviales aislados (relleno)
 H-07 + H-06 ── mismo dilema implementar-vs-documentar (superficie daemon)
 H-08 ⇆ H-12 (UX interactiva de audio: decidir H-08 primero, diseñar H-12 después)
@@ -226,7 +227,7 @@ H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuest
 **Orden recomendado (con fundamento)**:
 
 1. **H-04 ✅ — H-02 ✅ — H-01 ✅ — H-05 ✅ — H-03 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s, cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO), salud observada por petición (revalidación + rearranque determinista del residente reutilizado) y corte de herencia de handles en la raíz (`SetHandleInformation` en `handle_daemon`) — cluster de lanzamiento/reutilización del daemon cerrado: base observable, sin huérfanos, sin degradación silenciosa y sin retención de stdio del lanzador. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1), H-01 ✅ (a908ac6+193eeac), H-05 ✅ (5d1dfca) y H-03 ✅ (131b109) implementados; **cluster ciclo de vida completo**, H-14 habilitado. H-15 queda como follow-up (marginalidad temporal de la suite + presupuesto 1500 ms intacto + crash vivo D-05 + runtime Unix D-01 y barrido Unix del reaper, todo pendiente de CI/entorno rápido).
-2. **H-09** (+ **H-13 ✅**) — independientes, pequeños, sin decisiones; rellenan mientras se mide el warmup. H-13 ✅ cerrado (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift documental).
+2. **H-09 ✅** (+ **H-13 ✅**) — independientes, pequeños, sin decisiones. H-09 ✅ cerrado (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning` sin alias, `--force-update`/`--yes` implementados, tests de contrato y saneo de drift documental). H-13 ✅ cerrado (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift documental).
 3. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
 4. **H-10 + H-11** — triviales aislados.
 5. **H-12 última** — requiere la decisión de H-08 ya resuelta y ciclo de vida estable.

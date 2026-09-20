@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.18.26 — 2026-09-02](#01826-20260902)
 - [0.18.25 — 2026-09-01](#01825-20260901)
 - [0.18.24 — 2026-09-01](#01824-20260901)
@@ -109,6 +110,30 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+Corrección estructural de la superficie de flags de `setup` (H-09): `--language`
+era texto libre inerte (ignorado salvo para imprimirse y emitirse en JSON), el
+flag de clonado `--with-base` nombraba el artefacto interno en vez de la
+capacidad, y `--force-update`/`--yes` estaban documentados pero no existían en la
+implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
+
+### Cambiado
+
+- **BREAKING** feat(setup): eliminar `--language` (parser, dispatch, handler,
+  salida `--json` y mensaje humano) — el conjunto de modelos provisionados es
+  fijo; el payload `--json` ya no incluye la clave `language`.
+- **BREAKING** feat(setup): renombrar `--with-base` a `--with-voice-cloning` sin
+  alias (`--with-clone`/`--clone` dejan de existir) — `src/main.rs`,
+  `crates/avi-tts/src/lib.rs`, documentación de usuario y tests de contrato.
+
+### Añadido
+
+- feat(setup): `--force-update` purga los snapshots pinneados (respetando la
+  selección de clonado) más la caché xet y re-provisiona desde cero; `--yes`/`-y`
+  omite la confirmación destructiva (no-op sin `--force-update`) — `src/main.rs`;
+  tests de contrato de `--help`/`--json` en `tests/cli_golden.rs`.
 
 ## [0.18.26] — 2026-09-02
 

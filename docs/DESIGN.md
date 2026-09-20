@@ -159,7 +159,7 @@ La referencia de comandos y flags vive en [USAGE.md](../USAGE.md) y el contrato 
 
 Principales:
 
-- `setup [--language es] [--with-stt]` — provisiona modelos
+- `setup [--with-voice-cloning] [--with-stt] [--force-update] [--yes]` — provisiona modelos
 - `voice clone/list/remove` — gestión de voces
 - `speech say/synthesize/transcribe/dub/play/list/remove` — síntesis y audio
 - `daemon start/stop/restart/status/serve` — daemon HTTP

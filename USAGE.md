@@ -125,9 +125,10 @@ Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
 
 ```bash
 ai-voice-interconnector setup                        # descarga los 4 base (idempotente)
-ai-voice-interconnector setup --with-base            # incluye Base para voice clone (~2,5 GB)
+ai-voice-interconnector setup --with-voice-cloning   # incluye Base para voice clone (~2,5 GB)
 ai-voice-interconnector setup --with-stt             # aceptado; redundante: STT ya va incluido
-ai-voice-interconnector setup --with-base --with-stt # ambos flags combinables
+ai-voice-interconnector setup --force-update         # purga los snapshots pinneados + xet y re-descarga
+ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación interactiva
 ```
 
 **Qué esperar:** barra de progreso por bytes con ETA, resume automático si se
@@ -255,10 +256,8 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `status` | string | `"completed"` |
-| `language` | string | El `--language` pedido (aceptado por compatibilidad; el set de modelos es fijo) |
 | `with_stt` | boolean | Espejo del flag `--with-stt` (redundante: STT ya va incluido) |
-| `with_base` | boolean | Espejo del flag `--with-base` (opt-in Base) |
-| `models_provisioned` | array de strings | Los 4 modelos base + 1 opt-in si `--with-base` (`qwen3-tts-0.6b`, `marian-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
+| `models_provisioned` | array de strings | Los 4 modelos base + 1 opt-in si `--with-voice-cloning` (`qwen3-tts-0.6b`, `marian-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
 
 **`cleanup --json` / `uninstall --json`**
 
@@ -679,11 +678,11 @@ Clona una voz a partir de un audio de referencia (requiere modelo Base).
 
 ```bash
 ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav
-# Si falta Base: ai-voice-interconnector setup --with-base
+# Si falta Base: ai-voice-interconnector setup --with-voice-cloning
 ```
 
 **Qué esperar:** el comando valida que el audio sea cargable, genera `reference.qvoice` vía
-`avi_tts::clone_voice` con el modelo Base, y confirma (error `model_missing` → `setup --with-base`):
+`avi_tts::clone_voice` con el modelo Base, y confirma (error `model_missing` → `setup --with-voice-cloning`):
 
 ```
 Iniciando voice_clone...
@@ -807,7 +806,7 @@ cargar ningún modelo. El derivado CT2 exigido es `model.bin` más tokenizador
 (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot por
 `setup`); si el dir está roto (sin tokenizador), `setup` lo reconvierte de
 forma atómica. Si el modelo de traducción no está provisionado, falla
-remitiendo a `ai-voice-interconnector setup --language en` (exit **4**); si la traducción falla con el
+remitiendo a `ai-voice-interconnector setup` (exit **4**); si la traducción falla con el
 modelo ya cargado, sale con exit **9**.
 
 ---

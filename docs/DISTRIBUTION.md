@@ -30,7 +30,7 @@ quedó 100 % Rust en su distribución.
 | **Publicación en CI** | `publish-release` → GitHub Release; `publish-metadata` → Cask del tap |
 | **Reversibilidad de la publicación** | El Release es público al publicarse: revertir implica borrar un Release ya público |
 
-`setup` (default `--language es`) provisiona los modelos en la caché de
+`setup` provisiona los modelos en la caché de
 HuggingFace del usuario (`~/.cache/huggingface/hub`): ningún modelo viaja
 dentro del archivo, se descargan en el primer `setup`.
 

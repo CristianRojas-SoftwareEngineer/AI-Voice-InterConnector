@@ -74,7 +74,7 @@ Verifica snapshots HF vía `hf_cache_dir()` y `MODEL_REVISIONS` (`Qwen/Qwen3-TTS
 | Idioma | Modelo HF | Éxito | Fallo |
 |---|---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | PASS: "presente en `hf_cache_dir()`" | FAIL: "no está en caché (ejecuta: ai-voice-interconnector setup)" |
-| `en` | `en` | PASS: "{model} presente en la caché" | FAIL: "{model} no está en caché (ejecuta: ai-voice-interconnector setup --language {lang})" |
+| `en` | `en` | PASS: "{model} presente en la caché" | FAIL: "{model} no está en caché (ejecuta: ai-voice-interconnector setup)" |
 
 Genera **2 chequeos** (uno por idioma), no uno consolidado.
 
@@ -94,10 +94,10 @@ missing = [
 | Condición | Resultado |
 |---|---|
 | Ambas direcciones con derivado completo (`model.bin` + tokenizador) | PASS: "opus-mt presente en la caché" |
-| Falta una o ambas (incluido `model.bin` huérfano sin tokenizador) | FAIL: "falta(n) {lista} (faltan: {ficheros}; ejecuta: ai-voice-interconnector setup --language en)" |
+| Falta una o ambas (incluido `model.bin` huérfano sin tokenizador) | FAIL: "falta(n) {lista} (faltan: {ficheros}; ejecuta: ai-voice-interconnector setup)" |
 | Excepción | FAIL con mensaje de error |
 
-Es un **único chequeo lógico** — las dos direcciones se agrupan porque se provisionan juntas en `setup --language en/all` (`cli.py:1295-1297`).
+Es un **único chequeo lógico** — las dos direcciones se agrupan porque se provisionan juntas en `setup`.
 
 ### Chequeo de modelo de transcripción (Parakeet)
 

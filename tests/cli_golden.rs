@@ -1637,7 +1637,7 @@ mod tts {
         if !tts_clone_provisioned() {
             eprintln!(
                 "[tts] skip: el clonado exige el modelo Base del motor Qwen3-TTS \
-                 (usa setup --with-base)"
+                 (usa setup --with-voice-cloning)"
             );
             return;
         }
@@ -1930,6 +1930,57 @@ mod tts {
             combined_serve.contains("--max-retries"),
             "daemon serve --help debe listar --max-retries, fue: {}",
             combined_serve
+        );
+    }
+
+    #[test]
+    fn setup_help_lista_superficie_vigente() {
+        // Fija el contrato de flags de `setup` tras H-09: presencia de la
+        // superficie vigente y ausencia de los flags eliminados/renombrados.
+        let out = Command::new(BIN)
+            .args(["setup", "--help"])
+            .output()
+            .expect("setup --help");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for flag in ["--force-update", "--yes", "--with-voice-cloning", "--with-stt"] {
+            assert!(
+                combined.contains(flag),
+                "setup --help debe listar {}, fue: {}",
+                flag,
+                combined
+            );
+        }
+        for flag in ["--language", "--with-base", "--with-clone", "--clone"] {
+            assert!(
+                !combined.contains(flag),
+                "setup --help no debe listar {}, fue: {}",
+                flag,
+                combined
+            );
+        }
+    }
+
+    #[test]
+    fn setup_json_sin_clave_language() {
+        // Contrato del payload --json: la clave `language` desaparece tras H-09.
+        // Idempotente sobre estado provisionado (no descarga); si no hay modelos,
+        // se omite para no forzar una descarga de ~9 GB en CI.
+        let _state = bloquear_estado();
+        if !tts_modelo_registrado() {
+            eprintln!("[setup] skip: runtime no provisionado (setup --json exigiría descarga)");
+            return;
+        }
+        let (code, payload) = run_json(&["--json", "setup"]);
+        assert_eq!(code, 0, "setup --json debe completar, payload: {}", payload);
+        assert_eq!(payload["status"], "completed");
+        assert!(
+            payload.get("language").is_none(),
+            "el payload de setup no debe contener la clave `language`, fue: {}",
+            payload
         );
     }
 

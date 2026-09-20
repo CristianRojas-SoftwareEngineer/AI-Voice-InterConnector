@@ -130,8 +130,8 @@ La firma Authenticode/Apple notarization es goal a largo plazo (`docs/GOAL.md`).
 ### Provisión del/los modelo(s) (`setup`)
 
 Cinco modelos pinneados (4 + 1 opt-in) no vienen en el binario: `qwen3-tts-0.6b` (~4,7 GB),
-`marian-es-en`/`marian-en-es` (~3 GB), `parakeet-tdt-v3` (~600 MB, int8) y `qwen3-tts-0.6b-base` (~2,5 GB, opt-in con `setup --with-base`). Se descargan a
-`~/.cache/huggingface/hub` vía `setup` (~9 GB base, ~11,5 GB con `--with-base`):
+`marian-es-en`/`marian-en-es` (~3 GB), `parakeet-tdt-v3` (~600 MB, int8) y `qwen3-tts-0.6b-base` (~2,5 GB, opt-in con `setup --with-voice-cloning`). Se descargan a
+`~/.cache/huggingface/hub` vía `setup` (~9 GB base, ~11,5 GB con `--with-voice-cloning`):
 
 ```bash
 ai-voice-interconnector setup
@@ -192,7 +192,7 @@ ai-voice-interconnector voice list / remove --name X
 ai-voice-interconnector translate --text "Hola" --from es --to en
 ai-voice-interconnector devices / doctor / version
 ai-voice-interconnector daemon start / status / stop / restart / serve
-ai-voice-interconnector setup [--with-base] [--with-stt] / cleanup [--voices|--synthetic-speech|--model|--all] [--dry-run] [-y|--yes] / uninstall --force
+ai-voice-interconnector setup [--with-voice-cloning] [--with-stt] [--force-update] [-y|--yes] / cleanup [--voices|--synthetic-speech|--model|--all] [--dry-run] [-y|--yes] / uninstall --force
 ```
 
 Contrato estable (`--json` `schema_version="3"`, exit codes `0-10/130`) en `docs/CLI/CONTRACT.md`.

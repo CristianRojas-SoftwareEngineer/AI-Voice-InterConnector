@@ -149,13 +149,17 @@ enum Commands {
     },
     /// Provisiona el runtime: chequeos + descarga de modelos
     Setup {
-        #[arg(long, default_value = "es")]
-        language: String,
         #[arg(long)]
         with_stt: bool,
         /// Incluye el modelo Base de clonado Qwen3-TTS (~2,5 GB)
-        #[arg(long, alias = "with-clone", alias = "clone")]
-        with_base: bool,
+        #[arg(long)]
+        with_voice_cloning: bool,
+        /// Purga los snapshots pinneados y la cache xet, luego re-descarga desde cero
+        #[arg(long)]
+        force_update: bool,
+        /// No pedir confirmación en la purga destructiva de --force-update
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Limpia datos provisionados de forma granular; --all = unión de --voices/--synthetic-speech/--model, sin binario ni PATH
     Cleanup {
@@ -484,10 +488,11 @@ async fn main() {
         Some(Commands::Speech { action }) => handle_speech(json_mode, daemon_mode, action).await,
         Some(Commands::Daemon { action }) => handle_daemon(json_mode, action).await,
         Some(Commands::Setup {
-            language,
             with_stt,
-            with_base,
-        }) => handle_setup(json_mode, &language, with_stt, with_base).await,
+            with_voice_cloning,
+            force_update,
+            yes,
+        }) => handle_setup(json_mode, with_stt, with_voice_cloning, force_update, yes).await,
         Some(Commands::Cleanup {
             voices,
             synthetic_speech,
@@ -1693,9 +1698,10 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
 
 async fn handle_setup(
     json_mode: bool,
-    language: &str,
     with_stt: bool,
-    with_base: bool,
+    with_voice_cloning: bool,
+    force_update: bool,
+    yes: bool,
 ) -> Result<(), CliError> {
     let model_store = ModelStore::new();
     let voice_store = VoiceStore::new();
@@ -1705,7 +1711,47 @@ async fn handle_setup(
         .ensure_initialized()
         .map_err(|e| CliError::new(ExitCode::Error, "voice_store_init_failed", e.to_string()))?;
 
-    // 2. Descargar y registrar modelos pinneados. Base es opt-in (--with-base).
+    // 1b. --force-update: purga incondicional de snapshots pinneados + cache xet
+    // antes de re-provisionar. Respeta la selección de clonado (mismo filtro que
+    // el bucle de provisión). Confirmación destructiva salvo --yes/no-TTY.
+    if force_update {
+        if !yes && std::io::stdin().is_terminal() {
+            eprint!(
+                "Esto purgará los modelos descargados (~9–11,5 GB) y los re-descargará. ¿Continuar? [y/N]: "
+            );
+            let _ = std::io::stderr().flush();
+            let mut input = String::new();
+            if std::io::stdin().read_line(&mut input).is_ok() {
+                let t = input.trim().to_ascii_lowercase();
+                if t != "y" && t != "yes" && t != "s" && t != "si" && t != "sí" {
+                    if json_mode {
+                        emit_raw_json(json!({ "status": "cancelled" }));
+                    } else {
+                        println!("Cancelado.");
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        for name in store::MODEL_REVISIONS
+            .iter()
+            .map(|(n, _, _)| *n)
+            .filter(|n| *n != "qwen3-tts-0.6b-base" || with_voice_cloning)
+        {
+            match model_store.remove_hf_snapshot(name) {
+                Ok(true) => eprintln!("Snapshot {} purgado.", name),
+                Ok(false) => {}
+                Err(e) => eprintln!("  ✗ No se pudo purgar {}: {}", name, e),
+            }
+        }
+        match store::ModelStore::remove_xet_cache() {
+            Ok(true) => eprintln!("Cache xet purgada."),
+            Ok(false) => {}
+            Err(e) => eprintln!("  ✗ No se pudo purgar cache xet: {}", e),
+        }
+    }
+
+    // 2. Descargar y registrar modelos pinneados. Base es opt-in (--with-voice-cloning).
     if with_stt {
         tracing::info!("--with-stt es redundante: parakeet-tdt-v3 ya está incluido en setup");
     }
@@ -1713,7 +1759,7 @@ async fn handle_setup(
     for name in store::MODEL_REVISIONS
         .iter()
         .map(|(n, _, _)| *n)
-        .filter(|n| *n != "qwen3-tts-0.6b-base" || with_base)
+        .filter(|n| *n != "qwen3-tts-0.6b-base" || with_voice_cloning)
     {
         // Idempotente: snapshot HF presente → solo registrar índice.
         if !model_store.is_provisioned(name) {
@@ -1805,15 +1851,13 @@ async fn handle_setup(
     if json_mode {
         emit_raw_json(json!({
             "status": "completed",
-            "language": language,
             "with_stt": with_stt,
             "models_provisioned": provisioned
         }));
     } else {
         println!(
-            "Setup completado: {} modelo(s) disponibles para idioma '{}'.",
-            provisioned.len(),
-            language
+            "Setup completado: {} modelo(s) disponibles.",
+            provisioned.len()
         );
     }
     Ok(())
@@ -2643,7 +2687,7 @@ fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
         if base_ready {
             println!("Diagnóstico: todo correcto.");
         } else {
-            println!("Diagnóstico: todo correcto. [WARN] Modelo Base de clonado no provisionado (usa setup --with-base).");
+            println!("Diagnóstico: todo correcto. [WARN] Modelo Base de clonado no provisionado (usa setup --with-voice-cloning).");
         }
         println!("Cache HF: {}", hf_cache.display());
         Ok(())
@@ -2652,7 +2696,7 @@ fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
             eprintln!("  ✗ {}", issue);
         }
         if !base_ready {
-            eprintln!("  ⚠ [WARN] Modelo Base de clonado no provisionado (usa setup --with-base).");
+            eprintln!("  ⚠ [WARN] Modelo Base de clonado no provisionado (usa setup --with-voice-cloning).");
         }
         eprintln!("Cache HF: {}", hf_cache.display());
         Err(CliError::new(
