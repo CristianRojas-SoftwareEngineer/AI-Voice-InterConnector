@@ -6,12 +6,12 @@ el único punto de la superficie donde conviven los tres motores nativos
 (`avi-tts`, `avi-stt`, `avi-translation`) y el despacho tri-modal contra el
 daemon.
 
-Implementación: `handle_speech` (`src/main.rs:969`), enum `SpeechCommands`
-(`src/main.rs:217-315`). Helpers de despacho al daemon: `route_to_daemon`
-(`src/main.rs:3022`), `transcribe_via_daemon` (`src/main.rs:3045`),
-`daemon_synthesize_wav` (`src/main.rs:3195`), `synthesize_via_daemon`
-(`src/main.rs:3291`), `say_via_daemon` (`src/main.rs:3384`), `dub_via_daemon`
-(`src/main.rs:3518`), `dub_compose_via_daemon` (`src/main.rs:3664`, fallback si
+Implementación: `handle_speech` (`src/main.rs:973`), enum `SpeechCommands`
+(`src/main.rs:218-319`). Helpers de despacho al daemon: `route_to_daemon`
+(`src/main.rs:3043`), `transcribe_via_daemon` (`src/main.rs:3066`),
+`daemon_synthesize_wav` (`src/main.rs:3216`), `synthesize_via_daemon`
+(`src/main.rs:3312`), `say_via_daemon` (`src/main.rs:3405`), `dub_via_daemon`
+(`src/main.rs:3539`), `dub_compose_via_daemon` (`src/main.rs:3685`, fallback si
 el daemon responde 404 en `/dub`, es decir, un binario viejo sin esa ruta).
 
 ---
@@ -22,7 +22,7 @@ el daemon responde 404 en `/dub`, es decir, un binario viejo sin esa ruta).
 ai-voice-interconnector [--daemon|--no-daemon] [--json] speech <subcomando> [flags]
 ```
 
-`--daemon`/`--no-daemon` son flags globales de `Cli` (`src/main.rs:83-96`,
+`--daemon`/`--no-daemon` son flags globales de `Cli` (`src/main.rs:82-92`,
 mutuamente excluyentes) que fijan el `DaemonMode` (`ForceDaemon`/`ForceDirect`/
 `Auto` sin ninguno de los dos). No son flags de `speech`; se anteponen al
 comando raíz.
@@ -37,7 +37,7 @@ comando raíz.
 | `speech play` | No | Sí (`require_local`) |
 | `speech remove` | No | Sí (`require_local`) |
 
-`require_local` (`src/main.rs:3031`) hace que `list`/`play`/`remove` con
+`require_local` (`src/main.rs:3052`) hace que `list`/`play`/`remove` con
 `--daemon` forzado fallen con `daemon_unreachable` (exit 5) en vez de
 ejecutarse localmente: son operaciones sobre `SpeechStore`, que el daemon no
 expone por HTTP.
@@ -46,13 +46,13 @@ expone por HTTP.
 
 ## Despacho tri-modal (subcomandos delegables)
 
-`route_to_daemon` (`src/main.rs:3022`):
+`route_to_daemon` (`src/main.rs:3043`):
 
 | `DaemonMode` | Comportamiento |
 |---|---|
 | `ForceDaemon` (`--daemon`) | Siempre intenta el daemon; si el `POST` falla, exit 5 `daemon_unreachable` |
 | `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
-| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, `src/main.rs:3015`) con deadline corto; si responde, delega; si no, cae a directo |
+| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, `src/main.rs:3036`) con deadline corto; si responde, delega; si no, cae a directo |
 
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
 lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
@@ -65,22 +65,26 @@ archivo, solo PCM `i16` little-endian 16 kHz mono codificado en base64 en
 ## `speech list`
 
 ```
-ai-voice-interconnector speech list
+ai-voice-interconnector speech list [--voice <nombre>]
 ```
 
-Sin flags de filtrado. Lista todas las locuciones persistidas en
-`SpeechStore` (`crates/avi-store`), local-only (`src/main.rs:977-1014`).
+Lista las locuciones persistidas en `SpeechStore`
+(`crates/avi-store`), local-only (brazo `List` en `src/main.rs:981-1035`).
 
-**`speech list --voice/-v` NO existe.** El contrato histórico (`CONTRACT.md`)
-prometía un filtro por voz; el `enum SpeechCommands::List` es una variante
-unitaria sin campos (`src/main.rs:220`) y no acepta ningún flag. Es un drift
-pendiente (H-10, `docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`):
-no lo documentes como funcional ni lo invoques con `--voice`, fallaría con un
-error de parseo de `clap`.
+| Flag | Tipo | Default | Descripción |
+|---|---|---|---|
+| `--voice`, `-v` | string | — (todas las voces) | Opcional, sin default. Con valor, acota la lectura al directorio de esa voz (`SpeechStore::list_by_voice`, `crates/avi-store/src/lib.rs:280-282`, filtro normalizado a minúsculas); sin el flag, lista todas (`SpeechStore::list`, `crates/avi-store/src/lib.rs:273-275`) |
+
+Definición: `SpeechCommands::List { voice: Option<String> }`
+(`src/main.rs:220-224`). Con `--voice`, el handler valida el identificador
+con `es_identificador_valido` (exit 2 `invalid_identifier`,
+`src/main.rs:2894`) y la existencia de la voz con `VoiceStore::exists`
+(exit 3 `voice_not_found`, `crates/avi-store/src/lib.rs:176`) antes de leer;
+sin `--voice` no valida nada y devuelve todo. (Cierre del drift H-10.)
 
 Salida humana: una línea por locución con voz, etiqueta, duración y texto.
 Salida `--json`: `{"speech": [{"label", "voice", "text", "created_at",
-"duration_secs"}, ...]}` (`src/main.rs:984-996`).
+"duration_secs"}, ...]}` (`src/main.rs:1004-1017`).
 
 ---
 
@@ -320,7 +324,7 @@ ai-voice-interconnector speech play --label <etiqueta> [--voice <nombre>]
 Local-only (`require_local`). Busca la locución en `SpeechStore` por
 `(voice, label)` y reproduce el WAV persistido. Si no existe, exit 3
 `speech_not_found`. Valida los identificadores con `es_identificador_valido`
-antes de buscar (`src/main.rs:1553-1586`).
+antes de buscar (`src/main.rs:1574-1607`).
 
 ### Contrato `--json`
 
@@ -337,7 +341,7 @@ ai-voice-interconnector speech remove --label <etiqueta> [--voice <nombre>]
 ```
 
 Local-only. Elimina la locución de `SpeechStore`; si no existe, exit 3
-`speech_not_found` (`src/main.rs:1587-1600`).
+`speech_not_found` (`src/main.rs:1608-1621`).
 
 ### Contrato `--json`
 
@@ -358,6 +362,13 @@ traducción provisionados por `setup` son `es-en` y `en-es`
 (`crates/avi-store/src/lib.rs`, `MODEL_REVISIONS`); cualquier otro par
 resulta en exit 2 `unsupported_language_pair`.
 
+**Divergencia deliberada con `translate`.** El conjunto `{es-latam, en}` es
+la taxonomía del grupo `speech`; el comando `translate` usa un alfabeto
+estricto `{es, en}` en `--from`/`--to` (`value_parser = ["es", "en"]`,
+`src/main.rs:130-133`) y rechaza `es-latam` por parser con exit 2. `es-latam`
+solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
+`es` (`crates/avi-daemon/src/lib.rs:626-631`).
+
 ---
 
 ## Errores
@@ -366,10 +377,10 @@ resulta en exit 2 `unsupported_language_pair`.
 |---|---|---|
 | `usage_error` | 2 | Falta `--audio`/`--mic`, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango |
 | `empty_text` | 2 | Texto a sintetizar o transcripción resultante vacíos |
-| `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` |
+| `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `speech list --voice` ilegal) |
 | `unsupported_language_pair` | 2 | Traducción fuera de `{es-en, en-es}` |
 | `audio_not_found` | 3 | `--audio` en `dub` apunta a un archivo inexistente |
-| `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` |
+| `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (incluye `speech list --voice` sobre voz inexistente) |
 | `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente |
 | `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el derivado CT2 del par de traducción |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo, o local-only (`list`/`play`/`remove`) con `--daemon` |
@@ -382,12 +393,14 @@ resulta en exit 2 `unsupported_language_pair`.
 
 ---
 
-## Hallazgos de drift pendientes (no implementar como funcional)
+## Hallazgos de drift (cerrados)
 
 Referencia: `docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`.
 
-- **H-10** — `speech list` no acepta `--voice`/`-v`; el filtro por voz
-  prometido en el contrato histórico no existe.
+- **H-10 (cerrado)** — `speech list` acepta `--voice`/`-v` opcional sin
+  default y filtra por voz (`src/main.rs:220-224`, `src/main.rs:981-1035`,
+  `crates/avi-store/src/lib.rs:280-282`); no queda drift pendiente en este
+  comando.
 
 ---
 
@@ -395,6 +408,7 @@ Referencia: `docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`.
 
 ```bash
 ai-voice-interconnector speech list
+ai-voice-interconnector speech list --voice mi_voz
 ai-voice-interconnector speech transcribe --audio entrada.wav --source-language es-latam
 ai-voice-interconnector speech transcribe --mic --duration 5 --source-language en
 ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo --voice default
@@ -406,4 +420,5 @@ ai-voice-interconnector --no-daemon speech transcribe --audio entrada.wav --sour
 ai-voice-interconnector speech play --label saludo
 ai-voice-interconnector speech remove --label saludo
 ai-voice-interconnector --json speech list
+ai-voice-interconnector --json speech list --voice mi_voz
 ```

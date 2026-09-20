@@ -1,8 +1,8 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Última actualización**: 2026-09-20 — cierre de H-08 (push-to-talk real con techo `AVI_PUSH_TO_TALK_MAX_SECS`) y H-12 (bucle interactivo de `--play`).
-- **Estado**: 12 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅, H-06 ✅, H-07 ✅, H-08 ✅, H-12 ✅) — 4 pendientes (H-10, H-11, H-14, H-15)
+- **Última actualización**: 2026-09-20 — cierre de H-08 (push-to-talk real con techo `AVI_PUSH_TO_TALK_MAX_SECS`) y H-12 (bucle interactivo de `--play`); cierre de H-10 (filtro `--voice` en `speech list`) y H-11 (alfabeto estricto en `translate --from/--to`).
+- **Estado**: 14 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅, H-06 ✅, H-07 ✅, H-08 ✅, H-12 ✅, H-10 ✅, H-11 ✅) — 2 pendientes (H-14, H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -149,25 +149,29 @@
 - **Relaciones**: cerraba el loop operativo de provisión; independiente del resto.
 - **Decisión requerida**: resuelta — sin retrocompatibilidad (proyecto en desarrollo, sin dependientes externos): alias eliminados y `--language` retirado sin sinónimos; confirmación destructiva replicando el patrón TTY de `cleanup`.
 
-### H-10 — `speech list` sin filtro por voz
+### H-10 — `speech list` sin filtro por voz (cerrado 2026-09-20)
+
+- **Severidad**: 🟡 Media · **Área**: CLI (`SpeechCommands::List` en `src/main.rs:217-224`, contrato `CONTRACT.md:170`) · **Estado**: ✅ resuelto por implementación (filtro `--voice` en el almacén, 2026-09-20)
 
 - **Severidad**: 🟡 Media · **Área**: CLI (`SpeechCommands::List` unitaria en `src/main.rs:218-220`, contrato `CONTRACT.md:170`)
 - **Síntoma**: `speech list` no admite `--voice/-v`; imposible distinguir "voz mal escrita" de "sin resultados" (contrato `CONTRACT.md:290`). `CONTRACT.md`/`SPEECH.md`/`USAGE.md` ya documentan la ausencia (no prometen el flag), pero el gap funcional sigue abierto.
 - **Impacto**: guion E2E y UX de filtrado rotos a nivel menor.
-- **Corrección propuesta**: restaurar `--voice/-v` con validación exit 3.
+- **Corrección aplicada**: filtro en el almacén — `SpeechCommands::List` acepta `--voice/-v` opcional sin default, `SpeechStore::list_by_voice` acota la lectura al directorio de la voz, el handler valida (ilegal → exit 2 `invalid_identifier`, inexistente → exit 3 `voice_not_found`); sin `--voice` lista todas y el envelope `--json` conserva su forma.
 - **Relaciones**: ninguna (aislado, una línea + validación).
-- **Decisión requerida**: no — implementar el flag.
+- **Decisión requerida**: resuelta — implementado el flag.
 
 ## 5. Bajos
 
-### H-11 — `translate --from/--to` acepta cualquier texto
+### H-11 — `translate --from/--to` acepta cualquier texto (cerrado 2026-09-20)
+
+- **Severidad**: ⚪ Baja · **Área**: CLI (`src/main.rs:130-133`, contrato `:596`) · **Estado**: ✅ resuelto por implementación (alfabeto estricto `es`/`en` en el parser, 2026-09-20)
 
 - **Severidad**: ⚪ Baja · **Área**: CLI (`src/main.rs:130-133`, contrato `:596`)
 - **Síntoma**: valores libres donde el contrato promete `es|en`; inválidos entran sin error temprano.
 - **Impacto**: menor; errores de tipeo llegan lejos sin diagnóstico.
-- **Corrección propuesta**: `value_parser = ["es", "en"]` o documentar texto libre.
+- **Corrección aplicada**: `value_parser = ["es", "en"]` en `from`/`to` conservando defaults y opcionales; las guardas del handler y del daemon se conservan como defensa de la vía programática/IPC (que sigue normalizando `es-latam`); salida deliberada de `es-latam` del alfabeto CLI documentada.
 - **Relaciones**: ninguna (aislado).
-- **Decisión requerida**: no.
+- **Decisión requerida**: resuelta.
 
 ### H-12 — `speech synthesize --play` sin flujo interactivo (cerrado 2026-09-20)
 
@@ -229,7 +233,7 @@ H-02 ✅ ── reduce superficie de ──> H-01 ✅ (sin subprocess que re-lan
 H-02 ✅ estable ── permite ──> H-14 (re-medir techos) · H-15 (marginalidad temporal + presupuesto de clonado + barrido Unix del reaper)
 H-01 ✅ ── contiene ──> H-15 (3 rojos clase-timeout sin cascada ni fuga; bisect en base sin regresión)
 H-09 ✅ (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning`, `--force-update`/`--yes` implementados + tests + saneo de drift) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift) · H-16 ✅ (drift Python en los 7 docs de comando restantes: reescritura desde Rust delegada a subagentes + gate anti-drift; continúa el saneo de H-09/H-13) · H-06 ✅ (purga documental: `--language`/`--with-stt` retirados del contrato de `daemon start/serve`, comportamiento eager real formalizado, mismo patrón que H-09)
-H-10 · H-11 ── triviales aislados (relleno)
+H-10 ✅ · H-11 ✅ ── triviales aislados (cerrados 2026-09-20: filtro `--voice` + alfabeto estricto)
 H-07 ✅ (precarga en caliente restaurada por adición: warm-on-clone `precomputed:true` + `--warm-voice` configurable con fail-fast; `precalentar_voz` compartida; comentario muerto saneado) ── cerrado sin reimplementar `/voices/precompute`
 H-08 ✅ ⇆ H-12 ✅ (UX interactiva de audio, cerrados juntos 2026-09-20: push-to-talk real + bucle interactivo de `--play`)
 H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuesto + crash vivo D-05 + runtime Unix D-01 + barrido Unix del reaper, todo en CI/entorno rápido
@@ -240,4 +244,4 @@ H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuest
 1. **H-04 ✅ — H-02 ✅ — H-01 ✅ — H-05 ✅ — H-03 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s, cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO), salud observada por petición (revalidación + rearranque determinista del residente reutilizado) y corte de herencia de handles en la raíz (`SetHandleInformation` en `handle_daemon`) — cluster de lanzamiento/reutilización del daemon cerrado: base observable, sin huérfanos, sin degradación silenciosa y sin retención de stdio del lanzador. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1), H-01 ✅ (a908ac6+193eeac), H-05 ✅ (5d1dfca) y H-03 ✅ (131b109) implementados; **cluster ciclo de vida completo**, H-14 habilitado. H-15 queda como follow-up (marginalidad temporal de la suite + presupuesto 1500 ms intacto + crash vivo D-05 + runtime Unix D-01 y barrido Unix del reaper, todo pendiente de CI/entorno rápido).
 2. **H-09 ✅** (+ **H-13 ✅** + **H-06 ✅**) — independientes, pequeños, sin decisiones pendientes. H-09 ✅ cerrado (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning` sin alias, `--force-update`/`--yes` implementados, tests de contrato y saneo de drift documental). H-13 ✅ cerrado (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift documental). H-06 ✅ cerrado (purga documental: `--language`/`--with-stt` retirados del contrato de `daemon start/serve`, sin reimplementación; comportamiento eager real —STT/TTS/CT2 precargados al arrancar, set fijo— formalizado, mismo patrón que H-09).
 3. **H-07 ✅** — cerrado por restauración de la optimización de hot-path (warm-on-clone A + `--warm-voice` configurable D), no por purga documental: `precomputed:true` en ruta daemon («precarga iniciada», completitud en `/health`), `false` en local; `precalentar_voz` compartida por arranque y clonado; comentario muerto de `/voices/precompute` saneado. **H-08 ✅ y H-12 ✅** —cerrados 2026-09-20— resolvieron la única sesión implementar-vs-documentar pendiente (push-to-talk real y bucle interactivo de `--play`).
-4. **H-10 + H-11** — triviales aislados.
+4. **H-10 ✅ + H-11 ✅** — triviales aislados, cerrados 2026-09-20.

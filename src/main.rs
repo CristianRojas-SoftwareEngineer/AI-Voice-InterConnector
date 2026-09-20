@@ -127,9 +127,9 @@ enum Commands {
     Translate {
         #[arg(short, long)]
         text: String,
-        #[arg(long, default_value = "es")]
+        #[arg(long, default_value = "es", value_parser = ["es", "en"])]
         from: String,
-        #[arg(long, default_value = "en")]
+        #[arg(long, default_value = "en", value_parser = ["es", "en"])]
         to: String,
     },
     /// Gestión de voces clonadas
@@ -217,7 +217,11 @@ enum VoiceCommands {
 #[derive(Subcommand)]
 enum SpeechCommands {
     /// Listar habla sintética persistida
-    List,
+    List {
+        /// Filtrar por voz (ausente = todas las voces)
+        #[arg(short, long)]
+        voice: Option<String>,
+    },
     /// Transcribir audio
     Transcribe {
         /// Ruta del archivo WAV a transcribir (mutuamente excluyente con --mic)
@@ -974,12 +978,29 @@ async fn handle_speech(
     let speech_store = SpeechStore::new();
 
     match action {
-        SpeechCommands::List => {
+        SpeechCommands::List { voice } => {
             // Listado de locuciones: local-only; el daemon no expone GET /speech.
             require_local(daemon_mode)?;
-            let items = speech_store
-                .list()
-                .map_err(|e| CliError::new(ExitCode::Error, "speech_list_failed", e.to_string()))?;
+            // Con --voice se valida el identificador (exit 2) y la existencia
+            // de la voz (exit 3) antes de acotar la lectura al almacén.
+            let items = match &voice {
+                Some(v) => {
+                    es_identificador_valido(Some(v), None)?;
+                    if !VoiceStore::new().exists(v) {
+                        return Err(CliError::new(
+                            ExitCode::NotFound,
+                            "voice_not_found",
+                            format!("La voz '{}' no existe.", v),
+                        ));
+                    }
+                    speech_store.list_by_voice(v).map_err(|e| {
+                        CliError::new(ExitCode::Error, "speech_list_failed", e.to_string())
+                    })?
+                }
+                None => speech_store.list().map_err(|e| {
+                    CliError::new(ExitCode::Error, "speech_list_failed", e.to_string())
+                })?,
+            };
             if json_mode {
                 let entries: Vec<serde_json::Value> = items
                     .iter()

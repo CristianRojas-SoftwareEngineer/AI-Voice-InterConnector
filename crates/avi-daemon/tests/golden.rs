@@ -397,3 +397,46 @@ async fn warm_voice_fail_fast_y_aceptacion() {
     );
     let _ = store.remove(&name);
 }
+
+/// H-11: par no soportado vía IPC → 400 con `unsupported_language_pair`.
+/// La guarda de par corre antes de tocar el modelo: sin CT2 ni TCP.
+#[tokio::test]
+#[allow(unreachable_code)]
+async fn translate_par_no_soportado_devuelve_400() {
+    #[cfg(not(feature = "native-translation"))]
+    {
+        eprintln!("[translate] skip: sin feature native-translation");
+        return;
+    }
+    let (status, bytes) = send(post_json(
+        "/translate",
+        serde_json::json!({ "text": "Bonjour", "from": "fr", "to": "de" }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(
+        actual["reason"],
+        Value::String("unsupported_language_pair".to_string())
+    );
+}
+
+/// H-10/H-11: la vía daemon conserva la normalización `es-latam`→`es`:
+/// passthrough con texto intacto aunque el CLI ya rechace ese token.
+#[tokio::test]
+#[allow(unreachable_code)]
+async fn translate_es_latam_passthrough_ipc_devuelve_texto_intacto() {
+    #[cfg(not(feature = "native-translation"))]
+    {
+        eprintln!("[translate] skip: sin feature native-translation");
+        return;
+    }
+    let (status, bytes) = send(post_json(
+        "/translate",
+        serde_json::json!({ "text": "Hola", "from": "es-latam", "to": "es" }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(actual["translated"], Value::String("Hola".to_string()));
+}

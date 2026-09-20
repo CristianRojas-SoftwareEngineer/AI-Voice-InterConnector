@@ -271,16 +271,39 @@ impl SpeechStore {
 
     /// Listar todas las locuciones persistidas
     pub fn list(&self) -> Result<Vec<SpeechEntry>> {
+        self.listar_con_filtro(None)
+    }
+
+    /// Listar las locuciones persistidas de una sola voz (H-10: lectura
+    /// acotada por voz; la voz se normaliza a minúsculas, paridad con
+    /// `voice_dir`). Voz sin locuciones → lista vacía, sin error.
+    pub fn list_by_voice(&self, voice: &str) -> Result<Vec<SpeechEntry>> {
+        self.listar_con_filtro(Some(voice))
+    }
+
+    /// Recorrido compartido del almacén con filtro opcional por voz: el mismo
+    /// bucle con `ensure_initialized` y descarte de corrupto/sin WAV que tenía
+    /// `list`; con filtro solo se lee el directorio de la voz pedida.
+    fn listar_con_filtro(&self, voice: Option<&str>) -> Result<Vec<SpeechEntry>> {
         self.ensure_initialized()?;
         let mut entries = Vec::new();
         if !self.base_dir.is_dir() {
             return Ok(entries);
         }
+        // Filtro normalizado a minúsculas, paridad con `voice_dir`.
+        let filtro = voice.map(|v| v.to_lowercase());
         // Iterar por directorio de voz
         for voice_dir in std::fs::read_dir(&self.base_dir)? {
             let voice_dir = voice_dir?;
             if !voice_dir.file_type()?.is_dir() {
                 continue;
+            }
+            // Con filtro, acotar la lectura al directorio de la voz pedida.
+            if let Some(f) = &filtro {
+                let nombre = voice_dir.file_name().to_string_lossy().to_lowercase();
+                if nombre != *f {
+                    continue;
+                }
             }
             for file in std::fs::read_dir(voice_dir.path())? {
                 let file = file?;
@@ -1168,6 +1191,34 @@ mod tests {
                 .to_string_lossy(),
             "reference.qvoice"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H-10: `list_by_voice` devuelve solo la voz pedida (insensible a
+    /// mayúsculas) y lista vacía para voz sin locuciones; `list` sin filtro
+    /// sigue devolviendo todo.
+    #[test]
+    fn list_by_voice_filtra_por_voz() {
+        let dir = temp_dir("list_voice");
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let wav_src = dir.join("src.wav");
+        std::fs::write(&wav_src, wav_minimo()).unwrap();
+        speech.save("ryan", "saludo", "Hola", &wav_src).unwrap();
+        speech
+            .save("vivian", "despedida", "Adiós", &wav_src)
+            .unwrap();
+
+        let ryan = speech.list_by_voice("RYAN").unwrap();
+        assert_eq!(ryan.len(), 1);
+        assert_eq!(ryan[0].metadata.voice, "ryan");
+        assert_eq!(ryan[0].metadata.label, "saludo");
+
+        let vivian = speech.list_by_voice("vivian").unwrap();
+        assert_eq!(vivian.len(), 1);
+        assert_eq!(vivian[0].metadata.label, "despedida");
+
+        assert!(speech.list_by_voice("inexistente").unwrap().is_empty());
+        assert_eq!(speech.list().unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

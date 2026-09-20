@@ -1234,26 +1234,55 @@ fn translate_passthrough_mismo_idioma_devuelve_texto_intacto() {
 
 #[test]
 fn translate_par_no_soportado_sale_con_codigo_2() {
-    // Par no soportado → ExitCode::InvalidInput (2), ruta de validación pura
-    // sin depender de ningún modelo.
-    let (code, actual) = run_json(&[
-        "--json",
-        "translate",
-        "--text",
-        "Bonjour",
-        "--from",
-        "fr",
-        "--to",
-        "de",
-    ]);
+    // H-11: el alfabeto estricto del parser (`es`/`en`) rechaza el par antes
+    // del handler → exit 2 de `clap`, sin envelope JSON que afirmar.
+    let output = Command::new(BIN)
+        .args([
+            "--json",
+            "translate",
+            "--text",
+            "Bonjour",
+            "--from",
+            "fr",
+            "--to",
+            "de",
+        ])
+        .output()
+        .expect("el binario debe ejecutarse");
+    let code = output
+        .status
+        .code()
+        .expect("el proceso debe terminar con un código");
     assert_eq!(
         code, 2,
-        "par no soportado debe mapear a ExitCode::InvalidInput"
+        "par fuera del alfabeto debe rechazarlo el parser con exit 2"
     );
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+}
+
+#[test]
+fn translate_es_latam_rechazado_en_parser_sale_con_codigo_2() {
+    // H-11 (cambio deliberado): `es-latam` no pertenece al alfabeto del
+    // parser (`es`/`en`) aunque la vía IPC lo siga normalizando → exit 2.
+    let output = Command::new(BIN)
+        .args([
+            "--json",
+            "translate",
+            "--text",
+            "Hola",
+            "--from",
+            "es-latam",
+            "--to",
+            "en",
+        ])
+        .output()
+        .expect("el binario debe ejecutarse");
+    let code = output
+        .status
+        .code()
+        .expect("el proceso debe terminar con un código");
     assert_eq!(
-        actual["reason"],
-        Value::String("unsupported_language_pair".to_string())
+        code, 2,
+        "`es-latam` vía CLI debe rechazarlo el parser con exit 2"
     );
 }
 
@@ -1668,6 +1697,150 @@ mod tts {
         );
         assert_eq!(actual["reason"], Value::String("label_exists".to_string()));
         let _ = store.remove("default", &label);
+    }
+
+    /// Fábrica de locuciones sin síntesis (H-10): sidecar + WAV mínimo en la
+    /// voz indicada, mismo patrón que `synthesize_colision_label_sale_con_6`.
+    fn fabricar_locucion(voz: &str, etiqueta: &str) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 24_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            w.write_sample(0i16).unwrap();
+            w.finalize().unwrap();
+        }
+        let src = std::env::temp_dir().join(format!("{}_min.wav", etiqueta));
+        std::fs::write(&src, cursor.into_inner()).unwrap();
+        avi_store::SpeechStore::new()
+            .save(voz, etiqueta, "fabricado", &src)
+            .expect("el sidecar fabricado debe guardarse");
+        let _ = std::fs::remove_file(&src);
+    }
+
+    /// H-10: `speech list --voice default` filtra por voz existente (exit 0,
+    /// solo esa voz).
+    #[test]
+    fn speech_list_filtra_por_voz_existente() {
+        let _guard = bloquear_estado();
+        avi_store::VoiceStore::new()
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label_def = etiqueta_unica("listdef");
+        let label_ryan = etiqueta_unica("listryan");
+        fabricar_locucion("default", &label_def);
+        fabricar_locucion("ryan", &label_ryan);
+        let (code, actual) = run_json(&[
+            "--json",
+            "--no-daemon",
+            "speech",
+            "list",
+            "--voice",
+            "default",
+        ]);
+        assert_eq!(code, 0);
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        let entries = actual["speech"]
+            .as_array()
+            .expect("`speech` debe ser un array");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["label"] == Value::String(label_def.clone())),
+            "la locución fabricada debe aparecer filtrada"
+        );
+        for e in entries {
+            assert_eq!(
+                e["voice"],
+                Value::String("default".to_string()),
+                "el filtro debe devolver solo la voz pedida"
+            );
+        }
+        let store = avi_store::SpeechStore::new();
+        let _ = store.remove("default", &label_def);
+        let _ = store.remove("ryan", &label_ryan);
+    }
+
+    /// H-10: `speech list --voice <inexistente>` sale con 3 (`voice_not_found`).
+    #[test]
+    fn speech_list_voz_inexistente_sale_con_codigo_3() {
+        let (code, actual) = run_json(&[
+            "--json",
+            "--no-daemon",
+            "speech",
+            "list",
+            "--voice",
+            "voz_inexistente_xyz",
+        ]);
+        assert_eq!(
+            code, 3,
+            "voz inexistente → ExitCode::NotFound (reason={:?})",
+            actual["reason"]
+        );
+        assert_eq!(
+            actual["reason"],
+            Value::String("voice_not_found".to_string())
+        );
+    }
+
+    /// H-10: `speech list --voice` con identificador ilegal sale con 2.
+    #[test]
+    fn speech_list_voz_ilegal_sale_con_codigo_2() {
+        let (code, actual) = run_json(&[
+            "--json",
+            "--no-daemon",
+            "speech",
+            "list",
+            "--voice",
+            "mi voz",
+        ]);
+        assert_eq!(
+            code, 2,
+            "identificador ilegal → ExitCode::InvalidInput (reason={:?})",
+            actual["reason"]
+        );
+        assert_eq!(
+            actual["reason"],
+            Value::String("invalid_identifier".to_string())
+        );
+    }
+
+    /// H-10: `speech list` sin `--voice` devuelve todas (exit 0).
+    #[test]
+    fn speech_list_sin_voice_devuelve_todas() {
+        let _guard = bloquear_estado();
+        avi_store::VoiceStore::new()
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label_def = etiqueta_unica("listalldef");
+        let label_ryan = etiqueta_unica("listallryan");
+        fabricar_locucion("default", &label_def);
+        fabricar_locucion("ryan", &label_ryan);
+        let (code, actual) = run_json(&["--json", "--no-daemon", "speech", "list"]);
+        assert_eq!(code, 0);
+        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        let entries = actual["speech"]
+            .as_array()
+            .expect("`speech` debe ser un array");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["label"] == Value::String(label_def.clone())),
+            "sin filtro debe aparecer la locución de default"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["label"] == Value::String(label_ryan.clone())),
+            "sin filtro debe aparecer la locución de ryan"
+        );
+        let store = avi_store::SpeechStore::new();
+        let _ = store.remove("default", &label_def);
+        let _ = store.remove("ryan", &label_ryan);
     }
 
     // ─── say ───────────────────────────────────────────────────────────

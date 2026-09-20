@@ -517,15 +517,17 @@ Una etiqueta inexistente para la voz sale con exit **3**.
 
 #### `speech list`
 
-Lista todas las locuciones guardadas. **No filtra por voz**: `--voice/-v`
-NO existe en `speech list` (`SpeechCommands::List` es una variante unitaria
-sin campos, `src/main.rs:218-220`); es un drift de contrato pendiente
-(H-10, `docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`).
-Invocarlo con `--voice` falla con un error de parseo de `clap` (exit 2).
+Lista las locuciones guardadas. `--voice/-v` es opcional, sin default:
+con valor, filtra por esa voz (`SpeechCommands::List { voice:
+Option<String> }`, `src/main.rs:220-224`; lectura acotada vía
+`SpeechStore::list_by_voice`, `crates/avi-store/src/lib.rs:280-282`); sin
+el flag, lista todas las voces.
 
 ```bash
 ai-voice-interconnector speech list
+ai-voice-interconnector speech list --voice mi_voz
 ai-voice-interconnector speech list --json
+ai-voice-interconnector --json speech list --voice mi_voz
 ```
 
 **Qué esperar:**
@@ -539,7 +541,12 @@ El texto se muestra truncado a 60 caracteres en la salida humana; el payload
 `--json` (`{"speech": [...]}`) lleva el texto completo. Una locución
 sin sidecar de metadatos se muestra como `(sin metadatos)`.
 
+Con `--voice`, el identificador se valida antes de leer: una voz con
+caracteres ilegales sale con exit **2** (`invalid_identifier`) y una voz
+inexistente con exit **3** (`voice_not_found`).
+
 **Opciones:**
+- `--voice, -v`: Filtra por voz (default: todas las voces)
 - `--json`: Emite `{"speech": [{"voice", "label", "text", "created_at"}]}`
 
 #### `speech remove`
@@ -789,8 +796,11 @@ eliminarse; el comando lo indica y termina con error si lo intentas.
 
 Traduce texto `es↔en`, aislado de la síntesis: sin voz ni modelo TTS de por
 medio. A diferencia de `--source-language`/`--target-language` en `speech
-say`/`speech synthesize` (opcionales, opt-in), aquí `--from` y `--to` son
-**ambos requeridos** — traducir es la única función del comando.
+say`/`speech synthesize` (taxonomía `es-latam`/`en`), aquí `--from` y `--to`
+son **opcionales con defaults** (`es` y `en`) y **estrictos**: solo aceptan
+`es` o `en` — no `es-latam` (el parser rechaza cualquier otro valor con
+exit 2 antes del handler; `es-latam` solo sigue vivo en la vía IPC del
+daemon).
 
 ```bash
 ai-voice-interconnector translate --text "Hola, ¿cómo estás?" --from es --to en
@@ -808,8 +818,8 @@ de esquemas) y nada por stdout salvo ese objeto.
 
 **Opciones:**
 - `--text` (requerido, sin alias `-t`): Texto a traducir (mismo límite de 5000 caracteres que `speech say`/`synthesize`)
-- `--from` (requerido): Idioma de origen del texto (`es` o `en`, códigos ISO — no `es-latam`)
-- `--to` (requerido): Idioma destino de la traducción (`es` o `en`)
+- `--from` (opcional, default `es`): Idioma de origen del texto (`es` o `en`; `es-latam` lo rechaza el parser)
+- `--to` (opcional, default `en`): Idioma destino de la traducción (`es` o `en`)
 - `--json`: Emite `{"translated", "source", "target"}`
 
 **Passthrough:** si `--from` y `--to` coinciden, devuelve el texto intacto sin

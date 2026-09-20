@@ -149,6 +149,20 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   `warmup_tts`→`precalentar_voz(state, voz)` como primitiva compartida por
   arranque y warm-on-clone — `src/main.rs`, `crates/avi-daemon/src/{lib,spawn}.rs`;
   test `warm_voice_fail_fast_y_aceptacion` en `crates/avi-daemon/tests/golden.rs`.
+- feat(cli): filtro por voz en `speech list` (H-10): `--voice/-v` opcional sin
+  default (ausente = todas las voces); identificador ilegal sale con exit 2
+  (`invalid_identifier`), voz inexistente con exit 3 (`voice_not_found`).
+  Lectura acotada en el almacén (`SpeechStore::list_by_voice` en
+  `crates/avi-store/src/lib.rs`, sin cambiar el contrato de `list()`); el
+  envelope `--json` conserva su forma — `src/main.rs`; tests nuevos en
+  `tests/cli_golden.rs` y unitario en `crates/avi-store`.
+- **BREAKING** feat(cli): alfabeto estricto `es`/`en` en `translate --from/--to`
+  (H-11): `value_parser = ["es", "en"]` en `src/main.rs` conservando defaults y
+  opcionales; cualquier otro valor —incluido `es-latam`— lo rechaza el parser
+  con exit 2. Las guardas del handler y del daemon se conservan como defensa de
+  la vía programática/IPC (que sigue normalizando `es-latam`); test migrado a
+  rechazo de parser más cobertura vía daemon en `tests/cli_golden.rs` y
+  `crates/avi-daemon/tests/golden.rs`.
 - feat(cli): implementar push-to-talk real en `speech transcribe --mic`/
   `speech dub --mic` (H-08) y el bucle interactivo de `speech synthesize
   --play` (H-12). Push-to-talk graba hasta que el usuario presiona Enter, con
@@ -196,7 +210,13 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   TTS (Qwen3) + el derivado CT2 de traducción (si está provisionado) de forma
   eager e incondicional al arrancar, sobre un set de modelos fijo;
   `native-stt`/`native-translation` son features de compilación, no flags de
-  ejecución. Mismo patrón que H-09. Sin cambios de runtime.
+   ejecución. Mismo patrón que H-09. Sin cambios de runtime.
+- docs(cli): cerrar H-10 y H-11 en `docs/CLI/CONTRACT.md`,
+  `docs/CLI/commands/SPEECH.md`, `docs/CLI/commands/TRANSLATE.md`, `USAGE.md` y
+  `docs/MANUAL-VALIDATION.md` — `speech list` documenta `--voice/-v` con exits
+  2/3 y `translate --from/--to` como opcionales con defaults y estrictos
+  (`es`/`en`, salida deliberada de `es-latam` del CLI), con anclas
+  `archivo:línea` re-ancladas al árbol. Sin cambios de runtime.
 
 ## [0.18.26] — 2026-09-02
 

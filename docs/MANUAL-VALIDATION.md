@@ -173,9 +173,15 @@ El almacén de locuciones (`speech synthesize` las persiste; estas sub-acciones
 operan sobre ellas sin re-sintetizar).
 
 ```bash
-# Listar locuciones guardadas (sin filtro por voz: --voice/-v NO existe en list, H-10)
+# Listar locuciones guardadas (todas las voces; --voice/-v opcional filtra por voz)
 ai-voice-interconnector speech list
 ai-voice-interconnector speech list --json
+ai-voice-interconnector speech list --voice mi_voz
+ai-voice-interconnector speech list --voice mi_voz --json
+
+# Sondas del filtro: identificador ilegal → exit 2, voz inexistente → exit 3
+ai-voice-interconnector speech list --voice 'mala voz!' ; echo "exit=$?"
+ai-voice-interconnector speech list --voice voz_que_no_existe ; echo "exit=$?"
 
 # Reproducir una locución guardada sin re-sintetizar
 ai-voice-interconnector speech play --label prueba

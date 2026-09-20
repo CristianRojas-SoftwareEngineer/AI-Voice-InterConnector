@@ -167,12 +167,12 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 | `speech synthesize` | `--text/-t` **requerido** · `--label/-l` **requerido** · `--voice/-v` · `--output/-o` · `--play` · `--force/-f` · `--source-language` · `--target-language` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
 | `speech say` | `--text/-t` **requerido** · `--voice/-v` · `--source-language` · `--target-language` · `--temperature` · `--json` · `--daemon`/`--no-daemon` |
 | `speech play` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
-| `speech list` | `--json` |
+| `speech list` | `--voice/-v` · `--json` |
 | `speech remove` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
 
-**`--voice/-v` es opcional en las cuatro que lo aceptan** (`synthesize`, `say`, `play`, `remove`) y, si falta, usa la voz de fábrica `default` (voz clonada de fábrica con `.qvoice` graft, `crates/avi-store/assets/default/reference.qvoice`, `crates/avi-store/src/lib.rs` `FACTORY_VOICES`). El catálogo de voces de fábrica es `default` (clonada), `ryan` y `vivian` (presets del motor `qwen_tts.c:spk_table`): todas entradas del registro `VoiceStore`. La distinción interna preset/clonada (`avi-tts/src/lib.rs` `resolve_voice_motor`, presencia de `reference.qvoice`) es detalle no-normativo; para el contrato toda voz es una entrada del registro. Las tres voces de fábrica sintetizan texto corto (2-4 palabras, p. ej. `Hola mundo`) con `WER ≤0.25`.
+**`--voice/-v` es opcional en las cinco que lo aceptan** (`synthesize`, `say`, `play`, `list`, `remove`) y, si falta, usa la voz de fábrica `default` (voz clonada de fábrica con `.qvoice` graft, `crates/avi-store/assets/default/reference.qvoice`, `crates/avi-store/src/lib.rs` `FACTORY_VOICES`). El catálogo de voces de fábrica es `default` (clonada), `ryan` y `vivian` (presets del motor `qwen_tts.c:spk_table`): todas entradas del registro `VoiceStore`. La distinción interna preset/clonada (`avi-tts/src/lib.rs` `resolve_voice_motor`, presencia de `reference.qvoice`) es detalle no-normativo; para el contrato toda voz es una entrada del registro. Las tres voces de fábrica sintetizan texto corto (2-4 palabras, p. ej. `Hola mundo`) con `WER ≤0.25`.
 
-**El namespace es obligatorio en la gestión.** Las etiquetas viven bajo una voz, así que `play` y `remove` toman `--voice` con el mismo default que `synthesize` y `say`. `speech list` no filtra por voz —`SpeechCommands::List` es una variante unitaria sin campos (`src/main.rs:218-220`) y recorre siempre todas las voces—, drift de contrato pendiente marcado como H-10 (`docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`). Es un segmento más que en `voice remove --name X`, inevitable dado el layout del almacén.
+**El namespace es obligatorio en la gestión.** Las etiquetas viven bajo una voz, así que `play`, `remove` y `list` toman `--voice` con el mismo default que `synthesize` y `say`. `speech list` filtra por voz cuando se pasa `--voice/-v` (`SpeechCommands::List { voice: Option<String> }`, `src/main.rs:217-224` con la variante en `:220-224`; brazo `List` en `src/main.rs:981-1035`, lectura acotada vía `SpeechStore::list_by_voice` en `crates/avi-store/src/lib.rs:280-282`); sin `--voice` recorre todas las voces (remediación del drift H-10). Es un segmento más que en `voice remove --name X`, inevitable dado el layout del almacén.
 
 **`--label` requerido en `synthesize` es lo que sostiene el reparto.** Elimina de raíz la invocación con efecto cero sin escribir ninguna regla —la rechaza el parser— y elimina la trampa de «previsualizo con un comando y guardo con otro»: como `synthesize` siempre persiste, nadie pierde la toma que acaba de oír.
 
@@ -282,12 +282,12 @@ El coste es que el mensaje lo formatea `clap` en inglés, igual que el de todas 
 |---|---|---|
 | Etiqueta con caracteres ilegales | `synthesize`, `play`, `remove` | **2** |
 | Nombre de voz con caracteres ilegales | Todas las que toman `--voice` | **2** |
-| Voz inexistente | **Las cuatro que toman `--voice`**: `synthesize`, `say`, `play`, `remove` (`speech list` no filtra por voz, H-10) | **3** |
+| Voz inexistente | **Las cinco que toman `--voice`**: `synthesize`, `say`, `play`, `list`, `remove` | **3** |
 | Etiqueta inexistente | `play`, `remove` | **3** |
 | Colisión de etiqueta sin `--force` | `synthesize` | **6** |
 | Colisión de nombre de voz sin `--force` | `voice clone` | **6** |
 
-**La voz se valida en las cuatro sub-acciones que toman `--voice` y sale 3 si no está** —el catálogo es el registro unificado `VoiceStore` (`crates/avi-store/src/lib.rs` `FACTORY_VOICES`): voces de fábrica (`default` —clonada con `reference.qvoice`—, `ryan`, `vivian`) más clonadas del usuario—, de modo que «voz mal escrita» nunca se disfrace de «sin resultados»: sin esa regla, `speech play --voice noexiste` devolvería un error de etiqueta inexistente y un usuario que se equivoca al escribir concluiría que sus locuciones se perdieron en vez de que escribió mal el nombre. Con `--voice` opcional en las cuatro, la pregunta es la misma en todas y la respuesta también. (`speech list` queda fuera: no toma `--voice`, ver H-10.)
+**La voz se valida en las cinco sub-acciones que toman `--voice` y sale 3 si no está** —el catálogo es el registro unificado `VoiceStore` (`crates/avi-store/src/lib.rs` `FACTORY_VOICES`): voces de fábrica (`default` —clonada con `reference.qvoice`—, `ryan`, `vivian`) más clonadas del usuario—, de modo que «voz mal escrita» nunca se disfrace de «sin resultados»: sin esa regla, `speech play --voice noexiste` devolvería un error de etiqueta inexistente y un usuario que se equivoca al escribir concluiría que sus locuciones se perdieron en vez de que escribió mal el nombre. Con `--voice` opcional en las cinco, la pregunta es la misma en todas y la respuesta también. (`speech list` valida igual que las demás cuando se pasa `--voice`: identificador ilegal → 2 `invalid_identifier` vía `es_identificador_valido` (`src/main.rs:2894`), voz inexistente → 3 `voice_not_found` vía `VoiceStore::exists` (`crates/avi-store/src/lib.rs:176`); sin `--voice` lista todas las voces.)
 
 La etiqueta inexistente sale **3** y no 2: la invocación está bien formada y el recurso no está, que es exactamente lo que el 3 significa.
 
@@ -589,11 +589,11 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 #### `translate`: texto→texto, aislado de la síntesis
 
-`translate` no pertenece a ningún grupo nominal: es texto→texto, sin voz ni modelo TTS de por medio. `--from {es, en}` y `--to {es, en}` son **ambos requeridos** — a diferencia de los flags opcionales de `speech`, aquí traducir es la única función del comando, así que no hay default que lo excuse. `--from == --to` es *passthrough*: devuelve el texto sin cargar el modelo.
+`translate` no pertenece a ningún grupo nominal: es texto→texto, sin voz ni modelo TTS de por medio. `--from` y `--to` son **opcionales con defaults** (`es` y `en`, `src/main.rs:130-133`) y **estrictos**: el parser solo acepta `es` o `en` (`value_parser = ["es", "en"]`, `src/main.rs:130-133`); cualquier otro valor —incluido `es-latam`— lo rechaza `clap` con exit 2 antes de llegar al handler. Es un cambio deliberado: `es-latam` queda fuera del alfabeto CLI y solo sigue vivo en la vía IPC del daemon, que lo normaliza a `es` (`resolve_translation_language`, `crates/avi-daemon/src/lib.rs:626-631`). `--from == --to` es *passthrough*: devuelve el texto sin cargar el modelo.
 
 | Parámetros | Payload `--json` |
 |---|---|
-| `--text` **requerido** (sin alias `-t`, a diferencia de `speech`) · `--from` **requerido** · `--to` **requerido** · `--json` | `{"translated", "source", "target"}` |
+| `--text` **requerido** (sin alias `-t`, a diferencia de `speech`) · `--from` (default `es`, solo `es`/`en`) · `--to` (default `en`, solo `es`/`en`) · `--json` | `{"translated", "source", "target"}` |
 
 #### Traducción opt-in en `speech say`/`speech synthesize`
 
