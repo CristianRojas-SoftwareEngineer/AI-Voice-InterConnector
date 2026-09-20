@@ -328,3 +328,72 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
         );
     }
 }
+
+/// Warm-on-clone (A): `POST /voices/clone` por daemon devuelve `precomputed: true`
+/// («precarga en caliente iniciada»; la completitud se refleja en `/health`).
+/// Gate: modelo base TTS provisionado (`base_model_dir`), sin el cual el handler
+/// retorna `model_missing` en vez de clonar.
+#[tokio::test]
+async fn voices_clone_daemon_precomputed_true() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        return;
+    }
+    if test_state().tts_engine.base_model_dir.is_none() {
+        eprintln!("[daemon] skip: modelo base TTS no provisionado — ejecuta setup --with-voice-cloning");
+        return;
+    }
+    let wav = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../avi-stt/tests/assets/parakeet_sample_16k.wav");
+    let audio_bytes = std::fs::read(&wav).expect("el WAV de muestra debe leerse");
+    let name = format!("clon_warm_{}", std::process::id());
+    let (status, bytes) = send(post_json(
+        "/voices/clone",
+        serde_json::json!({
+            "name": name,
+            "force": true,
+            "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
+        }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(actual["name"], Value::String(name.clone()));
+    assert_eq!(actual["precomputed"], Value::Bool(true));
+    let _ = VoiceStore::new().remove(&name);
+}
+
+/// Warm-voice configurable (D): `run_daemon_server` con una `--warm-voice`
+/// inexistente aborta fail-fast (Err antes del bind), y una voz existente pasa
+/// la validación de arranque. La rama de aceptación se verifica sobre el mismo
+/// predicado que usa la guarda (`find_reference(...).is_some()`): arrancar el
+/// servidor real con voz válida bloquearía sirviendo, así que no se invoca.
+#[tokio::test]
+async fn warm_voice_fail_fast_y_aceptacion() {
+    if !modelos_presentes() {
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        return;
+    }
+    // Fail-fast: voz inexistente → Err antes del bind.
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let voz_inexistente = format!("warm_inexistente_{}", std::process::id());
+    let res = avi_daemon::run_daemon_server(addr, voz_inexistente.clone()).await;
+    let err = res.expect_err("una --warm-voice inexistente debe abortar el arranque");
+    assert!(
+        err.to_string().contains("--warm-voice"),
+        "el error fail-fast debe mencionar --warm-voice: {err}"
+    );
+
+    // Aceptación: una voz existente satisface el predicado de la guarda.
+    let store = VoiceStore::new();
+    let tmp = std::env::temp_dir().join(format!("warm_ok_{}.qvoice", std::process::id()));
+    std::fs::write(&tmp, b"qvoice-fixture").expect("escribir fixture qvoice");
+    let name = format!("warm_ok_{}", std::process::id());
+    store.save_reference(&name, &tmp).expect("registrar voz de prueba");
+    let _ = std::fs::remove_file(&tmp);
+    assert!(
+        store.find_reference(&name).is_some(),
+        "la voz registrada debe pasar la validación de --warm-voice"
+    );
+    let _ = store.remove(&name);
+}

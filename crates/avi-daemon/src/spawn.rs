@@ -24,7 +24,7 @@ use std::process::Command;
 /// sistema por la misma ruta que POST `/shutdown`, el CLI reclama el residual
 /// degradado al arrancar (matar-y-rearrancar) y toda parada mata el árbol preciso
 /// por PID con deadline y verificación (`matar_arbol_por_pid` + `pid_vivo`).
-pub fn spawn_background(auto_restart: bool, max_retries: u32) -> anyhow::Result<u32> {
+pub fn spawn_background(auto_restart: bool, max_retries: u32, warm_voice: &str) -> anyhow::Result<u32> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
     cmd.arg("daemon").arg("serve");
@@ -32,6 +32,7 @@ pub fn spawn_background(auto_restart: bool, max_retries: u32) -> anyhow::Result<
         cmd.arg("--auto-restart");
     }
     cmd.arg("--max-retries").arg(max_retries.to_string());
+    cmd.arg("--warm-voice").arg(warm_voice);
 
     #[cfg(windows)]
     {

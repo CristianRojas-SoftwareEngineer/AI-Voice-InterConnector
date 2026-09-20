@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 9 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅, H-06 ✅) — 7 pendientes (H-07, H-08, H-10–H-12, H-14, H-15)
+- **Estado**: 10 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅, H-06 ✅, H-07 ✅) — 6 pendientes (H-08, H-10–H-12, H-14, H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -119,13 +119,12 @@
 
 ### H-07 — `voice clone --daemon` promete precarga inexistente
 
-- **Severidad**: 🟠 Alta · **Área**: CLI/contrato (`docs/CLI/commands/VOICE.md:136-143` documenta el flujo con precompute como fallback, handler `voices_clone_handler`, `crates/avi-daemon/src/lib.rs:860` devuelve siempre `"precomputed": false`)
-- **Síntoma**: el contrato promete que `--daemon` precarga los embeddings antes de clonar, pero el endpoint `POST /voices/precompute` no existe (purgado); el flag existe y el enrutado funciona, la feature no.
-- **Causa**: purga del endpoint sin actualizar contrato. Demostrada (el router no lo registra).
-- **Impacto**: clonado vía daemon sin la aceleración contratada; especificación falsa para integradores `--json`.
-- **Corrección propuesta**: implementar el endpoint o corregir el contrato a lo que realmente hace (`/voices/clone` sin precompute).
-- **Relaciones**: mismo router y documento que H-06; mismo dilema implementar-vs-documentar.
-- **Decisión requerida**: sí — ¿endpoint o contrato?
+- **Severidad**: 🟠 Alta · **Área**: CLI/contrato · **Estado**: ✅ resuelto por adición (restauración de la optimización de hot-path, 2026-09-20)
+- **Síntoma**: el contrato prometía que `--daemon` precargaba antes de clonar, pero el endpoint `POST /voices/precompute` fue purgado; `precomputed` quedó vestigial (siempre `false` en tres sitios) y sobrevivía un comentario muerto que lo referenciaba (con errata "carriba").
+- **Causa**: purga del endpoint sin restaurar la precarga en su nuevo hogar; la optimización (precalentar la voz para no pagar el cold-start del residente en la primera síntesis) quedó eliminada, no migrada.
+- **Corrección aplicada**: restaurada la precarga en caliente en dos ejes complementarios — **A (warm-on-clone)**: `voices_clone_handler` dispara el precalentamiento en segundo plano de la voz recién clonada y devuelve `precomputed: true` («precarga en caliente iniciada», completitud en `GET /health`); la ruta local mantiene `false` (motor efímero, sin residente que calentar). **D (warm-voice configurable)**: `daemon serve`/`start` aceptan `--warm-voice <nombre>` (default `default`), propagado `start`→`serve`, con validación *fail-fast* antes del bind. Se generalizó `warmup_tts`→`precalentar_voz(state, voz)` (primitiva compartida) y se saneó el comentario muerto de `DEFAULT_CLONE_LANGUAGE`.
+- **Impacto resuelto**: eliminado el cold-start en los flujos clonar→sintetizar y reinicio-y-reutilizar; `precomputed` y `/health` reportan la verdad; sin residuos del endpoint purgado. Cobertura: `voices_clone_daemon_precomputed_true` y `warm_voice_fail_fast_y_aceptacion` (`crates/avi-daemon/tests/golden.rs`).
+- **Decisión requerida**: resuelta — restaurar por adición (no reimplementar el endpoint `/voices/precompute`; la precarga vive en el handler de clonado y en el arranque configurable). `schema_version` sin bump (misma forma del envelope, solo se amplía el dominio de `precomputed`).
 
 ### H-08 — Panic con `--mic` sin `--duration` en terminal (validado 2026-09-10)
 
@@ -230,7 +229,7 @@ H-02 ✅ estable ── permite ──> H-14 (re-medir techos) · H-15 (marginal
 H-01 ✅ ── contiene ──> H-15 (3 rojos clase-timeout sin cascada ni fuga; bisect en base sin regresión)
 H-09 ✅ (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning`, `--force-update`/`--yes` implementados + tests + saneo de drift) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift) · H-16 ✅ (drift Python en los 7 docs de comando restantes: reescritura desde Rust delegada a subagentes + gate anti-drift; continúa el saneo de H-09/H-13) · H-06 ✅ (purga documental: `--language`/`--with-stt` retirados del contrato de `daemon start/serve`, comportamiento eager real formalizado, mismo patrón que H-09)
 H-10 · H-11 ── triviales aislados (relleno)
-H-07 ── dilema implementar-vs-documentar propio (superficie daemon); H-06 ya cerrado por purga documental, sin decisión compartida pendiente
+H-07 ✅ (precarga en caliente restaurada por adición: warm-on-clone `precomputed:true` + `--warm-voice` configurable con fail-fast; `precalentar_voz` compartida; comentario muerto saneado) ── cerrado sin reimplementar `/voices/precompute`
 H-08 ⇆ H-12 (UX interactiva de audio: decidir H-08 primero, diseñar H-12 después)
 H-12 ── última (toca UX de audio + humo de tests)
 H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuesto + crash vivo D-05 + runtime Unix D-01 + barrido Unix del reaper, todo en CI/entorno rápido
@@ -240,6 +239,6 @@ H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuest
 
 1. **H-04 ✅ — H-02 ✅ — H-01 ✅ — H-05 ✅ — H-03 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s, cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO), salud observada por petición (revalidación + rearranque determinista del residente reutilizado) y corte de herencia de handles en la raíz (`SetHandleInformation` en `handle_daemon`) — cluster de lanzamiento/reutilización del daemon cerrado: base observable, sin huérfanos, sin degradación silenciosa y sin retención de stdio del lanzador. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1), H-01 ✅ (a908ac6+193eeac), H-05 ✅ (5d1dfca) y H-03 ✅ (131b109) implementados; **cluster ciclo de vida completo**, H-14 habilitado. H-15 queda como follow-up (marginalidad temporal de la suite + presupuesto 1500 ms intacto + crash vivo D-05 + runtime Unix D-01 y barrido Unix del reaper, todo pendiente de CI/entorno rápido).
 2. **H-09 ✅** (+ **H-13 ✅** + **H-06 ✅**) — independientes, pequeños, sin decisiones pendientes. H-09 ✅ cerrado (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning` sin alias, `--force-update`/`--yes` implementados, tests de contrato y saneo de drift documental). H-13 ✅ cerrado (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift documental). H-06 ✅ cerrado (purga documental: `--language`/`--with-stt` retirados del contrato de `daemon start/serve`, sin reimplementación; comportamiento eager real —STT/TTS/CT2 precargados al arrancar, set fijo— formalizado, mismo patrón que H-09).
-3. **Sesión de decisiones H-07 + H-08** — ambas siguen siendo implementar-vs-documentar; decidirlas juntas evita dos rondas. Luego implementar lo decidido. (H-06 ya cerrado por purga, fuera de esta sesión.)
+3. **H-07 ✅** — cerrado por restauración de la optimización de hot-path (warm-on-clone A + `--warm-voice` configurable D), no por purga documental: `precomputed:true` en ruta daemon («precarga iniciada», completitud en `/health`), `false` en local; `precalentar_voz` compartida por arranque y clonado; comentario muerto de `/voices/precompute` saneado. Queda **H-08** como única sesión implementar-vs-documentar pendiente (decidir antes de diseñar H-12).
 4. **H-10 + H-11** — triviales aislados.
 5. **H-12 última** — requiere la decisión de H-08 ya resuelta y ciclo de vida estable.

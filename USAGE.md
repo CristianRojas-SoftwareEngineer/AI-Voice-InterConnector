@@ -274,7 +274,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `name` | string | Nombre de la voz registrada |
 | `timbre` | string | Ruta absoluta del `timbre-reference.wav` copiado |
 | `speech` | string | Ruta absoluta del `.qvoice` generado (`reference.qvoice`) |
-| `precomputed` | boolean | Siempre `false` (el clonado genera `.qvoice` bajo demanda) |
+| `precomputed` | boolean | Ruta local: siempre `false` (motor efímero, sin residente que calentar). Ruta daemon: `true` (warm-on-clone iniciado; completitud en `GET /health`) |
 
 **`voice remove --json`**
 
@@ -910,7 +910,7 @@ con `spawn_background` + PID file `data_dir()/daemon.pid` + poll `await_daemon_r
 
 Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^retries` capado a `4s`; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Sin `--auto-restart`, el daemon es `fail-stop`.
 
-Warmup: tras enlazar `127.0.0.1:8765`, el daemon precarga `default→ryan` vía `spawn_blocking(warmup_tts)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start).
+Warmup: tras enlazar `127.0.0.1:8765`, el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(precalentar_voz)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque (fail-fast, antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
 
 `daemon stop` responde `Daemon detenido` (borra `daemon.pid` incluso si ya estaba caído) y `daemon restart` orquesta `POST /shutdown` → espera caída `5s` → `spawn_background` → poll `running`.
 

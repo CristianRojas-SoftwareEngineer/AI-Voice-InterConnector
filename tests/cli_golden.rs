@@ -362,10 +362,9 @@ fn verificar_cero_huerfanos(contexto: &str) {
 //
 // Dueña única del ciclo de vida del daemon en la corrida pesada serial: un
 // solo arranque y un solo apagado por corrida, determinados por la fixture y
-// no por cada test. Suprime N-1 calentamientos (la síntesis de `warmup_tts`
-// en `crates/avi-daemon/src/lib.rs:1209-1227`, lanzada en segundo plano sin
-// bloquear el bind en `crates/avi-daemon/src/lib.rs:1244-1248`) y elimina la
-// clase de huérfanos por ciclos interrumpidos a mitad.
+// no por cada test. Suprime N-1 calentamientos (la síntesis de `precalentar_voz`
+// en `crates/avi-daemon/src/lib.rs`, lanzada en segundo plano sin bloquear el
+// bind) y elimina la clase de huérfanos por ciclos interrumpidos a mitad.
 //
 // Semántica que verifica (cierre H-01: producto + harness):
 // - Revalidación con reclamo: la vida del residual se comprueba por PID vivo

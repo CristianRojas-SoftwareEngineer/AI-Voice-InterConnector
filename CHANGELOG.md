@@ -134,6 +134,21 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   selección de clonado) más la caché xet y re-provisiona desde cero; `--yes`/`-y`
   omite la confirmación destructiva (no-op sin `--force-update`) — `src/main.rs`;
   tests de contrato de `--help`/`--json` en `tests/cli_golden.rs`.
+- feat(daemon): precarga en caliente al clonar por daemon (warm-on-clone, H-07):
+  `POST /voices/clone` dispara en segundo plano el precalentamiento de la voz
+  recién clonada y responde `precomputed: true` (semántica «precarga en caliente
+  iniciada»; la completitud se refleja en `GET /health`), eliminando el
+  cold-start del residente en el flujo clonar→sintetizar. La ruta local mantiene
+  `precomputed: false` (motor efímero, sin residente que calentar) —
+  `crates/avi-daemon/src/lib.rs`, `src/main.rs`; test
+  `voices_clone_daemon_precomputed_true` en `crates/avi-daemon/tests/golden.rs`.
+- feat(daemon): `--warm-voice <nombre>` (default `default`) en `daemon serve` y
+  `daemon start` selecciona qué voz precalienta el daemon al arranque en vez de
+  forzar `default`, propagado `start`→`serve`, con validación *fail-fast* (aborta
+  antes del bind si la voz no existe, sin degradar en silencio). Se generalizó
+  `warmup_tts`→`precalentar_voz(state, voz)` como primitiva compartida por
+  arranque y warm-on-clone — `src/main.rs`, `crates/avi-daemon/src/{lib,spawn}.rs`;
+  test `warm_voice_fail_fast_y_aceptacion` en `crates/avi-daemon/tests/golden.rs`.
 
 ### Documentación
 

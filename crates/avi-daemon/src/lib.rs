@@ -32,8 +32,8 @@ use avi_translation::Ct2TranslationEngine;
 // libres, por compatibilidad con el cliente raíz del CLI).
 use base64::Engine;
 
-/// Idioma por defecto para `clone_voice` cuando la petición no lo transporta
-/// (el contrato de /voices/precompute no carriba idioma).
+/// Idioma por defecto para `clone_voice` cuando la petición de clonado no
+/// transporta un idioma explícito.
 const DEFAULT_CLONE_LANGUAGE: &str = "es";
 
 /// Estado de pre-calentamiento (warmup) del motor TTS. Desacoplado del readiness:
@@ -83,7 +83,7 @@ pub struct DaemonState {
     /// el gate coincidente (`model.bin` más tokenizador); `None` significa motor
     /// ausente o roto (`model.bin` huérfano sin tokenizador: se registra el motivo
     /// y se arranca igual, sin derribar `run_daemon_server:614`).
-    /// El warmup CT2 no duplica `warmup_tts`: la primera petición paga frío si
+    /// El warmup CT2 no duplica `precalentar_voz`: la primera petición paga frío si
     /// el residente no estaba; documentado sin warmup separado.
     #[cfg(feature = "native-translation")]
     pub ct2_engine: Option<std::collections::HashMap<String, Ct2TranslationEngine>>,
@@ -884,10 +884,25 @@ async fn voices_clone_handler(
             let _ = std::fs::write(&dest, &timbre_bytes);
         }
     }
+    // Warm-on-clone (A): precalienta la voz recién clonada en segundo plano para
+    // eliminar el cold-start del residente en la primera síntesis del flujo
+    // clonar→sintetizar. El calentamiento (~18-40 s) no puede correr síncrono
+    // (`clone_via_daemon` acota el `.send()` a 1500 ms): se lanza en
+    // `spawn_blocking` y su completitud se refleja en `GET /health` (`warm`).
+    // Por eso `precomputed: true` significa «precarga en caliente iniciada».
+    let warm_state = state.clone();
+    let warm_name = name.clone();
+    tokio::task::spawn_blocking(move || {
+        *warm_state.warm.write().unwrap() = WarmState::Warming;
+        match precalentar_voz(&warm_state, &warm_name) {
+            Ok(()) => warm_state.set_warm(),
+            Err(e) => warm_state.set_warm_failed(e.to_string()),
+        }
+    });
     Json(with_sv(json!({
         "name": name,
         "speech": saved_qvoice.to_string_lossy().to_string(),
-        "precomputed": false,
+        "precomputed": true,
     })))
     .into_response()
 }
@@ -1266,7 +1281,7 @@ pub fn build_router() -> Router {
     build_router_with_state(state)
 }
 
-/// Deadline del warmup TTS (H-02): si `spawn_blocking(warmup_tts)` no termina en
+/// Deadline del warmup TTS (H-02): si `spawn_blocking(precalentar_voz)` no termina en
 /// este plazo, el daemon marca `warm_failed` con diagnóstico y termina al
 /// residente. Valor medido, no supuesto: ~2× el TTFN feliz observado (~18-20 s
 /// de spawn + healthcheck + síntesis), muy por debajo del hang histórico del
@@ -1283,30 +1298,39 @@ const WARMUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(40);
 /// margen para que viaje la respuesta HTTP del daemon.
 const SYNTH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
 
-/// Warmup del motor TTS de pre-calentamiento.
+/// Pre-calentamiento (warmup) del motor TTS parametrizado por voz.
 ///
-/// Precarga la voz `default`→preset `ryan` en el motor residente para que el
-/// modelo ya esté caliente. Corre en segundo plano tras el bind (no antes): es
-/// una optimización, no un requisito de correctitud, y un fallo no aborta el
-/// arranque —la primera petición paga el cold-start.
+/// Precarga la voz `voz` en el motor residente sintetizando un testigo
+/// desechable para que el modelo ya esté caliente. Lo usan tanto el arranque
+/// (voz configurable vía `--warm-voice`, por defecto `default`) como el
+/// warm-on-clone (voz recién clonada). Corre en segundo plano: es una
+/// optimización, no un requisito de correctitud, y un fallo no aborta el
+/// arranque ni el clonado —la primera petición paga el cold-start.
+///
+/// Adquiere `synthesis_lock` durante la síntesis-testigo (`blocking_lock`, pues
+/// corre en `spawn_blocking`): en warm-on-clone es obligatorio porque compite
+/// con tráfico vivo; en el arranque es no disputado.
 ///
 /// Riesgo heredado (R2): el residente enlaza en `INADDR_ANY`
 /// (`avi-tts/src/lib.rs:746-750`); el warmup lo mantiene vivo, extendiendo esa
 /// superficie de red. Documentado, NO corregido (fuera de alcance).
 ///
-/// Limitación estructural: solo la voz `default` queda precargada; el resto paga
-/// el cold-start de reemplazo de residente en su primera síntesis.
+/// Limitación estructural (inherente al residente, no a `default`): el residente
+/// TTS es de una sola voz, así que solo la última voz calentada queda precargada;
+/// calentar otra evicciona la previa y el resto paga el cold-start de reemplazo
+/// de residente en su primera síntesis.
 ///
-/// CT2: evaluado no duplicar `warmup_tts` para traducción — el motor CT2 INT8
+/// CT2: evaluado no duplicar `precalentar_voz` para traducción — el motor CT2 INT8
 /// (`ct2rs::Translator`) carga `model.bin` en `DaemonState::new` y no requiere
 /// warmup sintético; la primera traducción paga frío si el residente no estaba
 /// provisionado, sin impacto en `warm` (`Warming`→`Warm` solo refleja TTS).
-pub fn warmup_tts(state: &DaemonState) -> anyhow::Result<()> {
+pub fn precalentar_voz(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
     let profile = VoiceProfile {
-        name: "default".to_string(),
+        name: voz.to_string(),
         reference_audio: None,
-        qvoice_path: state.voice_store.find_reference("default"),
+        qvoice_path: state.voice_store.find_reference(voz),
     };
+    let _lock = state.synthesis_lock.blocking_lock();
     let tmp = std::env::temp_dir().join(format!("avi_daemon_warmup_{}.wav", std::process::id()));
     state
         .tts_engine
@@ -1327,9 +1351,18 @@ pub fn warmup_tts(state: &DaemonState) -> anyhow::Result<()> {
 /// bloquear el bind, acotado a `WARMUP_DEADLINE`. Readiness (enlazado + motor
 /// construido) queda así desacoplado del pre-calentamiento: un warmup fallido o
 /// vencido por el deadline degrada —pero no derriba— el daemon.
-pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
+pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::Result<()> {
     let state = Arc::new(DaemonState::new()?);
     let app = build_router_with_state(state.clone());
+
+    // Fail-fast (D): una `--warm-voice` inexistente aborta el arranque antes del
+    // bind, sin degradar en silencio ni caer a `default`.
+    if state.voice_store.find_reference(&warm_voice).is_none() {
+        return Err(anyhow::anyhow!(
+            "La voz de warmup '{}' no existe: clónala o elige otra con --warm-voice.",
+            warm_voice
+        ));
+    }
 
     // D-05: sin reclamo aquí; el reclamo activo del árbol propio previo con
     // deadline y verificación vive solo en `run_supervised` (entre reintentos).
@@ -1345,7 +1378,7 @@ pub async fn run_daemon_server(addr: SocketAddr) -> anyhow::Result<()> {
     // que el hilo del warmup retiene; imagen solo como último recurso). Un
     // fallo no aborta el arranque.
     let warm_state = state.clone();
-    let handle = tokio::task::spawn_blocking(move || match warmup_tts(&warm_state) {
+    let handle = tokio::task::spawn_blocking(move || match precalentar_voz(&warm_state, &warm_voice) {
         Ok(()) => warm_state.set_warm(),
         Err(e) => warm_state.set_warm_failed(e.to_string()),
     });
@@ -1427,13 +1460,14 @@ pub async fn run_supervised(
     addr: SocketAddr,
     auto_restart: bool,
     max_retries: u32,
+    warm_voice: String,
 ) -> anyhow::Result<()> {
     if !auto_restart {
-        return run_daemon_server(addr).await;
+        return run_daemon_server(addr, warm_voice).await;
     }
     let mut retries: u32 = 0;
     loop {
-        match run_daemon_server(addr).await {
+        match run_daemon_server(addr, warm_voice.clone()).await {
             Ok(()) => {
                 // Apagado graceful (stop) — no reintentar
                 return Ok(());

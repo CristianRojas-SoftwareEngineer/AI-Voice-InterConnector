@@ -87,14 +87,17 @@ route_to_daemon(daemon_mode, client)?
 falla con `daemon_unreachable` si no hay daemon corriendo); `ForceDirect`
 nunca delega; `Auto` delega solo si `GET /health` responde en ≤500 ms.
 
-**No hay precómputo de conditionals en ningún camino.** El campo `precomputed`
-del envelope es siempre `false`: ni la ruta local ni la ruta daemon calculan
-conditionals por adelantado. El endpoint `POST /voices/precompute` que existía
-en versiones previas fue purgado del router (`crates/avi-daemon/src/lib.rs`
-expone 7 rutas públicas, sin `/voices/precompute` ni `GET /voices`; ver
-`docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`, hallazgo H-07).
-La primera síntesis (`speech synthesize --voice <nombre>`) es la que resuelve
-los conditionals bajo demanda a partir de `reference.qvoice`.
+**Precarga en caliente (warm-on-clone), solo en la ruta daemon.** El campo
+`precomputed` del envelope depende de la ruta: la **ruta daemon** dispara, tras
+clonar, el precalentamiento en segundo plano de la voz recién clonada (evicciona
+la voz caliente previa; el residente TTS es de una sola voz) y responde
+`precomputed: true` con la semántica «precarga en caliente iniciada» —la
+completitud real se refleja en `GET /health` (`warm`). La **ruta local** responde
+siempre `precomputed: false`: su motor TTS es efímero por proceso, no hay
+residente persistente que calentar. El antiguo endpoint `POST /voices/precompute`
+fue purgado (`crates/avi-daemon/src/lib.rs` expone 7 rutas públicas, sin
+`/voices/precompute` ni `GET /voices`); la precarga vive ahora en el propio
+handler de clonado.
 
 ---
 
@@ -115,7 +118,7 @@ los conditionals bajo demanda a partir de `reference.qvoice`.
 5. Escribe el audio a un WAV temporal, `avi_tts::clone_voice(base_model_dir, tmp_wav, tmp_qvoice, name, "es")`
    (constante `DEFAULT_CLONE_LANGUAGE = "es"`, `crates/avi-daemon/src/lib.rs:37`) → `500` `voice_clone_failed` si falla.
 6. `voice_store.save_reference(name, tmp_qvoice)` → `reference.qvoice`; copia `speech-reference.wav`; si vino `timbre_b64`, copia `timbre-reference.wav` (mejor esfuerzo, sin abortar si falla).
-7. Responde `200` con `{name, speech, precomputed:false}` + `schema_version`.
+7. Lanza en segundo plano (`spawn_blocking`) el warm-on-clone de la voz recién clonada (`precalentar_voz`, marca `Warming`→`Warm`/`Failed` en `/health`) y responde `200` con `{name, speech, precomputed:true}` + `schema_version`. El calentamiento (~18-40 s) no bloquea la respuesta: `precomputed:true` significa «precarga en caliente iniciada».
 
 El CLI (`clone_via_daemon`) mapea la `reason` del cuerpo de error a exit code:
 
@@ -168,13 +171,14 @@ metadatos de ruta).
 | Subcomando | Payload (más `schema_version`) |
 |---|---|
 | `voice list` | `{ "voices": ["default", "ryan", "vivian", ...] }` |
-| `voice clone` | `{ "name": "...", "timbre": "..."\|null, "speech": "<ruta a reference.qvoice>", "precomputed": false }` |
+| `voice clone` | `{ "name": "...", "timbre": "..."\|null, "speech": "<ruta a reference.qvoice>", "precomputed": <bool> }` |
 | `voice remove` | `{ "status": "removed", "voice": "<nombre>" }` |
 
-`precomputed` es siempre `false`: no existe ninguna ruta (local o daemon) que
-la ponga en `true`. `schema_version` (`"3"`) lo añade `emit_raw_json`
-(`crates/avi-core/src/json_emitter.rs:5`) en el CLI, y `with_sv` en las
-respuestas del daemon.
+`precomputed` depende de la ruta: `true` en la ruta daemon (warm-on-clone
+iniciado; completitud en `GET /health`) y `false` en la ruta local (motor
+efímero, sin residente que calentar). `schema_version` (`"3"`) lo añade
+`emit_raw_json` (`crates/avi-core/src/json_emitter.rs:5`) en el CLI, y `with_sv`
+en las respuestas del daemon.
 
 ---
 

@@ -324,6 +324,9 @@ enum DaemonCommands {
         /// Número máximo de reintentos con reinicio automático (default 3)
         #[arg(long, default_value_t = 3)]
         max_retries: u32,
+        /// Voz a precalentar al arranque (fail-fast si no existe)
+        #[arg(long, default_value = "default")]
+        warm_voice: String,
     },
     /// Detener el daemon
     Stop,
@@ -339,6 +342,9 @@ enum DaemonCommands {
         /// Número máximo de reintentos con reinicio automático (default 3)
         #[arg(long, default_value_t = 3)]
         max_retries: u32,
+        /// Voz a precalentar al arranque (fail-fast si no existe)
+        #[arg(long, default_value = "default")]
+        warm_voice: String,
     },
 }
 
@@ -804,6 +810,10 @@ async fn handle_voice(
                 None => None,
             };
             if json_mode {
+                // La ruta local no tiene residente TTS persistente (el motor es
+                // efímero por proceso): no hay nada que precalentar en caliente,
+                // así que `precomputed` es siempre `false` aquí. El warm-on-clone
+                // (`precomputed: true`) solo aplica a la ruta daemon.
                 emit_raw_json(json!({
                     "name": name,
                     "timbre": timbre_saved.map(|p| p.to_string_lossy().to_string()),
@@ -1468,6 +1478,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
         DaemonCommands::Serve {
             auto_restart,
             max_retries,
+            warm_voice,
         } => {
             let addr: SocketAddr =
                 "127.0.0.1:8765"
@@ -1483,13 +1494,14 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // protege al `serve` en foreground).
             #[cfg(windows)]
             instalar_job_con_cierre_de_arbol();
-            daemon::run_supervised(addr, auto_restart, max_retries)
+            daemon::run_supervised(addr, auto_restart, max_retries, warm_voice)
                 .await
                 .map_err(|e| CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string()))
         }
         DaemonCommands::Start {
             auto_restart,
             max_retries,
+            warm_voice,
         } => {
             require_model_provisioned()?;
             let client = daemon_client();
@@ -1517,7 +1529,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                 }
                 EstadoResidual::Parado => {}
             }
-            let pid = daemon::spawn_background(auto_restart, max_retries).map_err(|e| {
+            let pid = daemon::spawn_background(auto_restart, max_retries, &warm_voice).map_err(|e| {
                 CliError::new(
                     ExitCode::Error,
                     "daemon_error",
@@ -1594,7 +1606,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let client = daemon_client();
             stop_daemon_and_resident().await;
             require_model_provisioned()?;
-            let pid = daemon::spawn_background(false, 3).map_err(|e| {
+            let pid = daemon::spawn_background(false, 3, "default").map_err(|e| {
                 CliError::new(
                     ExitCode::Error,
                     "daemon_error",

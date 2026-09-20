@@ -8,13 +8,15 @@ El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Q
 
 | Subcomando | Parámetros | Descripción |
 |---|---|---|
-| `daemon start` | `--json` `--auto-restart` `--max-retries` (default 3) | Revalida el residual (PID vivo + probe): sano → `already_running`, degradado → reclama el árbol y rearranca con `started`; si no, lanza en background (`spawn_background`, `await_daemon_ready`); con `--auto-restart` los reintentos parten de reclamo activo del árbol propio previo con deadline y verificación |
+| `daemon start` | `--json` `--auto-restart` `--max-retries` (default 3) `--warm-voice` (default `default`) | Revalida el residual (PID vivo + probe): sano → `already_running`, degradado → reclama el árbol y rearranca con `started`; si no, lanza en background (`spawn_background`, `await_daemon_ready`); con `--auto-restart` los reintentos parten de reclamo activo del árbol propio previo con deadline y verificación |
 | `daemon stop` | `--json` | Parada unificada con deadline global de 8 s (`stop_daemon_and_resident`: graceful + árbol preciso + verificación; borra `daemon.pid` solo tras muerte verificada, exit 5 sin borrar pista si sigue vivo) |
-| `daemon restart` | `--json` | Ayudante único de parada (sin doble techo ni kill duplicado) → `start` fresco con presupuesto de 12 s (sin flags de supervisión heredados) |
+| `daemon restart` | `--json` | Ayudante único de parada (sin doble techo ni kill duplicado) → `start` fresco con presupuesto de 12 s (sin flags de supervisión heredados; calienta `default`) |
 | `daemon status` | `--json` | `GET /health` → `running`/`stopped` + `warm` |
-| `daemon serve` | `--auto-restart` `--max-retries` (default 3) | Ejecuta servidor en foreground (`run_supervised` con escucha de Ctrl+C/SIGTERM por la misma ruta que `POST /shutdown`) |
+| `daemon serve` | `--auto-restart` `--max-retries` (default 3) `--warm-voice` (default `default`) | Ejecuta servidor en foreground (`run_supervised` con escucha de Ctrl+C/SIGTERM por la misma ruta que `POST /shutdown`) |
 
-`start`/`serve` aceptan `--auto-restart`/`--max-retries`; `start`/`stop`/`restart`/`status` aceptan `--json` ( `serve` sin `--json`). `start`/`restart` exigen modelo provisionado (`require_model_provisioned`), `stop`/`status` no.
+`start`/`serve` aceptan `--auto-restart`/`--max-retries`/`--warm-voice`; `start`/`stop`/`restart`/`status` aceptan `--json` ( `serve` sin `--json`). `start`/`restart` exigen modelo provisionado (`require_model_provisioned`), `stop`/`status` no.
+
+**`--warm-voice <nombre>` (default `default`):** selecciona qué voz precalienta el daemon al arranque en vez de forzar `default` (el residente TTS es de una sola voz). `start` lo propaga al `serve` que respawnea (`spawn_background` anexa `--warm-voice`); `restart` calienta siempre `default`. Validación *fail-fast*: si la voz no existe, `run_daemon_server` aborta con error **antes del bind** (no degrada en silencio ni cae a `default`).
 
 ## Despacho del handler
 
@@ -58,7 +60,7 @@ CLI (ai-voice-interconnector)
 | `/synthesize` | POST | `{text, voice}` | NDJSON `start → progress → result{audio_b64}` o `error` | Síntesis streaming 24 kHz |
 | `/transcribe` | POST | `{audio_b64, source_language}` | `{text}` o `error` | Transcripción Parakeet (feature `native-stt`) |
 | `/translate` | POST | `{text, from, to}` | `{translated, source, target}` o `error` | Traducción CT2 residente (feature `native-translation`) |
-| `/voices/clone` | POST | `{name, audio_b64, timbre_b64?, force?}` | `{name, speech, precomputed:false}` o `error` | Clonar voz (audio base64) |
+| `/voices/clone` | POST | `{name, audio_b64, timbre_b64?, force?}` | `{name, speech, precomputed:true}` o `error` | Clonar voz (audio base64) + warm-on-clone en segundo plano (`precomputed:true` = precarga iniciada) |
 | `/dub` | POST | `{audio_b64, from, to, voice}` | `{status:"dubbed", text, translated, audio_b64}` o `error` | Pipeline transcribe→translate→synthesize |
 | `/shutdown` | POST | — | `{status:"shutting_down"}` | `shutdown_handler`: mata el árbol preciso del residente por PID (kill por imagen solo como último recurso documentado) + `notify_one()` para cierre graceful sin `process::exit` |
 
