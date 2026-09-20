@@ -2,14 +2,17 @@
 
 ## Tabla de contenidos
 
-- [0. Language & Token Efficiency](#0-language--token-efficiency)
-- [1. Think Before Coding](#1-think-before-coding)
-- [2. Goal-Driven Execution](#2-goal-driven-execution)
-- [3. Simplicity First](#3-simplicity-first)
-- [4. Surgical Changes](#4-surgical-changes)
-- [5. Version Control](#5-version-control)
-- [6. Structural Code Intelligence (Codebase Memory MCP)](#6-structural-code-intelligence-codebase-memory-mcp)
-- [7. Ejecución de herramientas — Timeout](#7-ejecución-de-herramientas--timeout)
+- [AGENTS GUIDELINES](#agents-guidelines)
+  - [Tabla de contenidos](#tabla-de-contenidos)
+  - [0. Language \& Token Efficiency](#0-language--token-efficiency)
+  - [1. Think Before Coding](#1-think-before-coding)
+  - [2. Goal-Driven Execution](#2-goal-driven-execution)
+  - [3. Simplicity First](#3-simplicity-first)
+    - [No unapproved artifacts or automation](#no-unapproved-artifacts-or-automation)
+  - [4. Surgical Changes](#4-surgical-changes)
+  - [5. Version Control](#5-version-control)
+  - [6. Structural Code Intelligence (Codebase Memory MCP)](#6-structural-code-intelligence-codebase-memory-mcp)
+  - [7. Ejecución de herramientas — Timeout y Visibilidad en Tiempo Real](#7-ejecución-de-herramientas--timeout-y-visibilidad-en-tiempo-real)
 
 <!-- <language_efficiency> -->
 
@@ -183,8 +186,14 @@ This repository is indexed by the `codebase-memory-mcp` MCP server: a knowledge 
 
 <!-- <tool_execution> -->
 
-## 7. Ejecución de herramientas — Timeout
+## 7. Ejecución de herramientas — Timeout y Visibilidad en Tiempo Real
 
-**El tool `bash` (`default.bash`) tiene `timeout` por defecto `120000ms`.** Para suites largas como `cargo test --all` (`80 tests` `~120-150s` con `cli_golden` + `daemon` `cargo test --lib` `6s` es rápido pero `--all` no), el `timeout` debe subirse **por llamada** a `300000ms` vía parámetro `timeout` del tool — no es global ni persistible vía env. Política de repo: todo `cargo test --all` se ejecuta con `timeout: 300000`; `cargo test --lib`/`-p xtask` mantienen `120000ms`.
+**1. Política de Timeout:**
+El tool `bash` (`default.bash`) tiene `timeout` por defecto `120000ms`. Para suites largas como `cargo test --all` (`80 tests` `~120-150s` con `cli_golden` + `daemon` `cargo test --lib` `6s` es rápido pero `--all` no), el `timeout` debe subirse **por llamada** a `300000ms` vía parámetro `timeout` del tool — no es global ni persistible vía env. Política de repo: todo `cargo test --all` se ejecuta con `timeout: 300000`; `cargo test --lib`/`-p xtask` mantienen `120000ms`.
+
+**2. Prohibición estricta de buffering acumulativo en tuberías:**
+- **PROHIBIDO** usar tuberías de acumulación como `| Select-Object -Last N` o `| Select-Object -First N` en comandos interactivos de pruebas (`cargo test`) o compilación (`cargo build`/`cargo check`). Estas tuberías retienen la salida completa en memoria hasta el cierre del proceso (`EOF`), produciendo pausas silenciosas de 30+ segundos y bloqueando la visibilidad del operador.
+- **Uso de `--nocapture` y filtros nativos:** Ejecutar siempre los tests con `--nocapture` y utilizar el filtrado nativo de Cargo (`cargo test -- <filtro_exacto>`) para recibir emisiones inmediatas en tiempo real.
+- **Inspección de salidas extensas en dos pasos:** Cuando sea necesario limitar o analizar la salida de una suite completa, redirigir a un archivo temporal (`cargo test ... > run.log 2>&1`) y examinar el archivo resultante con herramientas dedicadas de lectura con offset (`Read`) o búsqueda (`Grep`), nunca mediante tuberías bloqueantes en vuelo.
 
 <!-- </tool_execution> -->

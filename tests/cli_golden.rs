@@ -8,8 +8,15 @@
 //! Se ubica como test de integración del paquete raíz (y no dentro de `src/main.rs`)
 //! porque capturar `stdout` + exit code con fidelidad exige ejecutar el binario real,
 //! y `CARGO_BIN_EXE_*` solo está disponible para tests de integración.
+//!
+//! ### Taxonomía de tests y filtros de ejecución rápida:
+//! - **Rendimiento y comandos rápidos (< 100 ms)**: `cargo test --test cli_golden -- perf_ --nocapture`
+//! - **Contratos de salida pura y ayuda CLI**: `cargo test --test cli_golden -- _help --nocapture`
+//! - **Validación de errores y flags**: `cargo test --test cli_golden -- _error --nocapture`
+//! - **Pruebas pesadas de inferencia (TTS/Dub/Clone)**: `cargo test --test cli_golden -- tts:: --nocapture` (serializadas bajo `STATE_LOCK`)
 
 use std::cell::RefCell;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -96,12 +103,13 @@ fn formato_mm_ss(d: Duration) -> String {
     format!("{:02}:{:02}.{:03}", ms / 60000, (ms / 1000) % 60, ms % 1000)
 }
 
-/// Hito único de progreso (stderr, sin buffer). Registra el último hito para
+/// Hito único de progreso (stderr, sin buffer y con vaciado forzado inmediato). Registra el último hito para
 /// el diagnóstico del guard.
 fn hito(mensaje: &str) {
     let ts = formato_mm_ss(elapsed_test());
     ULTIMO_HITO.with(|c| *c.borrow_mut() = mensaje.to_string());
     eprintln!("[hito][{}] {}", ts, mensaje);
+    let _ = std::io::stderr().flush();
 }
 
 /// Inicio de test pesado con techo explícito (R1-A). Debe llamarse tras
@@ -118,6 +126,7 @@ fn hito_inicio(nombre: &str, limite: Duration) {
         "[hito][{}] inicio {} (techo {:?})",
         ts, nombre, limite
     );
+    let _ = std::io::stderr().flush();
 }
 
 /// Inicio con techo estándar (3 min).
@@ -138,6 +147,7 @@ fn hito_inicio_dub(nombre: &str) {
 fn hito_fin(nombre: &str) {
     let ts = formato_mm_ss(elapsed_test());
     eprintln!("[hito][{}] fin {}", ts, nombre);
+    let _ = std::io::stderr().flush();
     TEST_LIMITE.with(|c| *c.borrow_mut() = None);
     TEST_T0.with(|c| *c.borrow_mut() = None);
     TEST_NOMBRE.with(|c| *c.borrow_mut() = String::new());
@@ -165,6 +175,7 @@ fn comprobar_guard(fase: &str) {
     if let (Some(lim), Some(t)) = (limite, t0) {
         let elapsed = t.elapsed();
         if elapsed > lim {
+            let _ = std::io::stderr().flush();
             TEST_LIMITE.with(|c| *c.borrow_mut() = None);
             reaper_ante_fallo(&format!("guard:{}", fase));
             panic!(
