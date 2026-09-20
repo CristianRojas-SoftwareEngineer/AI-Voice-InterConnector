@@ -38,7 +38,7 @@ mod tests {
         // El fixture ya está a la tasa de muestreo que exige el modelo (16 kHz).
         let wav_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/assets/whisper_sample_16k.wav"
+            "/tests/assets/parakeet_sample_16k.wav"
         );
         let pcm = avi_audio::load_wav_16k_mono_pcm(std::path::Path::new(wav_path))
             .expect("el WAV fixture debe cargarse");
@@ -74,7 +74,7 @@ mod tests {
     /// lados a minúsculas sin diacríticos ni puntuación (insensible a acentos y
     /// signos), y acepta WER ≤ 0.25 sobre el texto normalizado.
     ///
-    /// Hallazgo de F5 (reality check): `whisper_sample_16k` es un saludo corto
+    /// Hallazgo de F5 (reality check): `parakeet_sample_16k` es un saludo corto
     /// (2.96 s) que Parakeet emite en **inglés** ("Hello, how are you?") porque
     /// el TDT 0.6B v3 auto-detecta idioma y un saludo breve es fonéticamente
     /// ambiguo. Ese output activa la guardia `detectar_idioma`
@@ -82,7 +82,7 @@ mod tests {
     /// - los corpus en español (`corpus_watermark`, `corpus_sintesis`,
     ///   `corpus_respuestas`) validan WER ≤ 0.25 (el threshold estricto 0.05
     ///   del plan T2 fue refutado por F5: el modelo real alcanza 0.08–0.21);
-    /// - `whisper_sample` valida, por el contrario, que `detectar_idioma` marque
+    /// - `parakeet_sample` valida, por el contrario, que `detectar_idioma` marque
     ///   el output como `EN-SOSPECHOSO` (la guardia funciona sobre un fixture
     ///   real).
     #[cfg(feature = "native-stt")]
@@ -99,13 +99,13 @@ mod tests {
         let engine = ParakeetEngine::new(model_dir).expect("el modelo Parakeet debe cargar");
 
         // Pares (audio, fixture, ¿esperado en inglés?). El directorio
-        // `tests/assets/` de este crate. `whisper_sample_16k` es el fixture
+        // `tests/assets/` de este crate. `parakeet_sample_16k` es el fixture
         // canónico cuyo saludo breve el modelo emite en inglés; los corpus
         // restantes son español estable.
         let corpus: [(&str, &str, bool); 4] = [
             (
-                "whisper_sample_16k.wav",
-                "whisper_sample_16k.oraculo.txt",
+                "parakeet_sample_16k.wav",
+                "parakeet_sample_16k.oraculo.txt",
                 true,
             ),
             (
@@ -147,7 +147,7 @@ mod tests {
                 let (idioma, _) = detectar_idioma(&actual);
                 assert_eq!(
                     idioma, "EN-SOSPECHOSO",
-                    "whisper_sample debe disparar la guardia de idioma (obtenido: {:?}, output: {:?})",
+                    "parakeet_sample debe disparar la guardia de idioma (obtenido: {:?}, output: {:?})",
                     idioma, actual
                 );
                 continue;

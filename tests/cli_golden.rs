@@ -769,7 +769,7 @@ fn speech_transcribe_con_audio_cumple_contrato() {
         "speech",
         "transcribe",
         "--audio",
-        "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+        "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
         "--source-language",
         "es-latam",
     ]);
@@ -1593,7 +1593,7 @@ mod tts {
             "speech",
             "dub",
             "--audio",
-            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
             "--source-language",
             "es-latam",
             "--target-language",
@@ -1653,7 +1653,7 @@ mod tts {
             "--name",
             &name,
             "--speech-reference",
-            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
         ]);
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("3".to_string()));
@@ -1691,7 +1691,7 @@ mod tts {
             "--name",
             &name,
             "--speech-reference",
-            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
         ]);
         assert_eq!(code, 6, "voz existente → ExitCode::StateConflict");
         assert_eq!(actual["reason"], Value::String("voice_exists".to_string()));
@@ -1712,7 +1712,7 @@ mod tts {
             "--name",
             "voz invalida",
             "--speech-reference",
-            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
         ]);
         assert_eq!(code, 2, "nombre inválido → ExitCode::InvalidInput");
         assert_eq!(
@@ -2394,7 +2394,7 @@ mod tts {
             "--name",
             &name,
             "--speech-reference",
-            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
         ]);
         assert_eq!(code, 0, "voice clone --daemon debe delegar con exit 0");
         assert_eq!(actual["schema_version"], Value::String("3".to_string()));
@@ -2426,7 +2426,7 @@ mod tts {
             "speech",
             "dub",
             "--audio",
-            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
             "--source-language",
             "es-latam",
             "--target-language",
@@ -2489,7 +2489,7 @@ mod tts {
             "speech",
             "dub",
             "--audio",
-            "crates/avi-stt/tests/assets/whisper_sample_16k.wav",
+            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
             "--source-language",
             "es-latam",
             "--target-language",

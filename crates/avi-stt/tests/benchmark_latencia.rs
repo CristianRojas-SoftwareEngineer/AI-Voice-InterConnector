@@ -24,9 +24,9 @@ fn benchmark_latencia_calidad() {
     let assets = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/assets");
     let archivos = [
         (
-            "whisper_sample_16k.wav",
+            "parakeet_sample_16k.wav",
             "¡Hola! ¿Cómo estás?",
-            "whisper_sample_16k.oraculo.txt",
+            "parakeet_sample_16k.oraculo.txt",
         ),
         (
             "corpus_sintesis_16k.wav",

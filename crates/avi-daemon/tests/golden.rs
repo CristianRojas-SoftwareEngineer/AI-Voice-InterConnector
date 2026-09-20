@@ -287,7 +287,7 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
         "corpus_sintesis_16k.wav",
         "corpus_watermark_16k.wav",
         "corpus_respuestas_16k.wav",
-        "whisper_sample_16k.wav",
+        "parakeet_sample_16k.wav",
     ];
     let mut pcm: Vec<i16> = Vec::new();
     for wav in corpus {
@@ -315,7 +315,7 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
     let norm = text.to_lowercase();
     // Frases de cada corpus que el modelo transcribe bien (el sintético
     // `sintesis` tiene pronunciación defectuosa → se usan palabras estables).
-    // "hola" se descuenta: el fixture `whisper_sample` (saludo breve) se emite
+    // "hola" se descuenta: el fixture `parakeet_sample` (saludo breve) se emite
     // en inglés por el TDT (detectado en F5), por lo que no aparece en el texto
     // unido aunque el resto del audio (watermark/sintesis/respuestas) sí se
     // transcribe en español. "voz" no se exige estricta: "esténtesis" puede
