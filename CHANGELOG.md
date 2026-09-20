@@ -146,6 +146,18 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   cada contrato `--json` verificado contra la serialización del handler y anclas
   `archivo:línea` reales; se conservan solo las divergencias del oráculo
   explícitamente etiquetadas. Cierra H-16; sin cambios de runtime.
+- docs: extender el saneo del drift a la documentación transversal y a un
+  comentario de código: `USAGE.md` y `docs/CLI/CONTRACT.md` describían la
+  captura de micrófono con backend `miniaudio` «sin remuestreo», cuando el
+  backend real es `cpal` y ambas rutas (mic y `--audio`) normalizan a
+  16 kHz/mono/int16; `docs/CLI/CONTRACT.md` y `crates/avi-audio/src/lib.rs`
+  citaban `Whisper` (motor reemplazado por Parakeet); `docs/PARITY.md` y
+  `docs/GOAL.md` referían scripts Python inexistentes (`scripts/render_cask.py`,
+  `scripts/build_*.py`) en vez de `cargo xtask cask` y el pipeline de CI.
+  Además se retira el fallback de versión legado que leía
+  `src/ai_voice_interconnector/__init__.py` en `crates/xtask/src/main.rs` (código
+  muerto) y una mención Python en el comentario de `install-macos.sh`. Sin
+  cambios de runtime.
 
 ## [0.18.26] — 2026-09-02
 

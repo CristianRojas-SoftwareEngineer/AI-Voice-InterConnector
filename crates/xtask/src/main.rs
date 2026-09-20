@@ -380,19 +380,6 @@ fn build_engine(self_test: bool, simd: Option<String>, jobs: Option<usize>) -> R
 }
 
 fn get_version() -> Result<String> {
-    // Intento legado Python (por compatibilidad, aunque ya no existe)
-    let legacy = Path::new("src/ai_voice_interconnector/__init__.py");
-    if legacy.is_file() {
-        let text = std::fs::read_to_string(legacy)?;
-        for line in text.lines() {
-            let line = line.trim();
-            if line.starts_with("__version__") {
-                if let Some((_, v)) = line.split_once('=') {
-                    return Ok(v.trim().trim_matches(|c| c == '"' || c == '\'').to_string());
-                }
-            }
-        }
-    }
     // Rust: Cargo.toml
     let cargo = Path::new("Cargo.toml");
     if cargo.is_file() {

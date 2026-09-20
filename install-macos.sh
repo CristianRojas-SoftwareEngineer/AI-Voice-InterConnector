@@ -144,7 +144,7 @@ ln -sf "$target" "$link"
 log "Symlink creado: $link -> $target"
 
 # ~/.local/bin no está en el PATH por defecto de zsh en macOS: avisa sin mutar
-# los dotfiles del usuario (mismo patrón que cli.py::_integrate_linux_path).
+# los dotfiles del usuario.
 case ":${PATH:-}:" in
     *":$link_dir:"*)
         ;;

@@ -247,7 +247,7 @@ impl AudioService {
 }
 
 /// Cargar un WAV arbitrario (`hound`, cualquier tasa/canales/formato) y normalizarlo
-/// a PCM `i16` mono a 16 kHz, mismo formato que exige Whisper y que ya produce
+/// a PCM `i16` mono a 16 kHz, mismo formato que exige Parakeet y que ya produce
 /// `capture_16k_mono_pcm` para el micrófono.
 pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>> {
     let reader = hound::WavReader::open(path)?;

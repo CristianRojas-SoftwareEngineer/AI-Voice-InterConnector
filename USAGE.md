@@ -611,11 +611,13 @@ preserva el token de entrada.
 - `--daemon` / `--no-daemon`: igual que en `speech say` (despacho de tres modos; la captura del audio siempre ocurre en el cliente)
 - `--json`: Emite `{"text", "source"}`
 
-La captura de micrófono es directa a 16 kHz/mono/int16 (formato que Parakeet
-asume), sin remuestreo posterior; el backend de captura es `miniaudio`
-(único, sin ramas por sistema operativo). El WAV pasado con `--audio`, en
-cambio, sí se remuestrea internamente a esos mismos 16 kHz sin importar la
-frecuencia de origen del archivo — no requiere ninguna preparación previa.
+La captura de micrófono usa el backend multiplataforma `cpal` (único, sin
+ramas por sistema operativo): graba a la tasa y formato nativos del
+dispositivo de entrada y luego normaliza a mono, remuestrea a 16 kHz y
+convierte a int16 (el formato que Parakeet asume). El WAV pasado con
+`--audio` pasa por esa misma normalización a 16 kHz/mono/int16 sin importar
+la frecuencia de origen del archivo — ninguna de las dos rutas requiere
+preparación previa.
 
 `--duration` sin `--mic` sale con exit **2** (`EXIT_INVALID_INPUT`). Sin
 terminal interactiva (no TTY) y sin `--duration`, `--mic` también sale con

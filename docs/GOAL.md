@@ -157,7 +157,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 ## Criterios de aceptación
 
-<!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI + scripts/build_*.py) produce los instaladores y un smoke test automatizado del binario congelado (`ai-voice-interconnector version`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
+<!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado del binario congelado (`ai-voice-interconnector version`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
 1. [ ] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en Windows 10/11 sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo)
 2. [ ] El artefacto de Linux (`ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`) funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
