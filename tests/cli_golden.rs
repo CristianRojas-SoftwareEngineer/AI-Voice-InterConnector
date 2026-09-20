@@ -63,6 +63,8 @@ const GUARD_PESADO_SECS: u64 = 180;
 /// sin usar (permitido para mantener `cargo check --tests` limpio en ambas).
 #[allow(dead_code)]
 const GUARD_DUB_SECS: u64 = 360;
+/// Reintentos failsafe para warm (45 s a 200 ms/poll, p99 ~18-20 s + margen sobre WARMUP_DEADLINE 40 s).
+const REINTENTOS_WARM_FAILSAFE: u32 = 225;
 
 static PROCESO_T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
@@ -102,8 +104,10 @@ fn hito(mensaje: &str) {
     eprintln!("[hito][{}] {}", ts, mensaje);
 }
 
-/// Inicio de test pesado con techo explícito. Debe ser la primera línea del
-/// test (antes de locks) para que el guard incluya la contención.
+/// Inicio de test pesado con techo explícito (R1-A). Debe llamarse tras
+/// adquirir los locks de contención (`bloquear_estado()`, `lock_tts()`), para
+/// que el reloj mida el trabajo propio del test y la espera en cola no consuma
+/// el guard failsafe.
 fn hito_inicio(nombre: &str, limite: Duration) {
     TEST_T0.with(|c| *c.borrow_mut() = Some(Instant::now()));
     TEST_NOMBRE.with(|c| *c.borrow_mut() = nombre.to_string());
@@ -194,6 +198,25 @@ fn leer_pid_daemon() -> Option<u32> {
     v.get("pid")?.as_u64().map(|n| n as u32)
 }
 
+/// Lee el PID del residente de `daemon.pid` (espejo de `read_resident_pid` del
+/// producto, R3-A): 0/desconocido si el esquema es viejo, el fichero falta o el
+/// valor es inválido.
+fn leer_pid_residente() -> u32 {
+    let path = avi_store::data_dir().join("daemon.pid");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let v: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    v.get("resident_pid")
+        .and_then(|n| n.as_u64())
+        .map(|n| n as u32)
+        .unwrap_or(0)
+}
+
 /// ¿Hay algo escuchando en `127.0.0.1:port`? Sondeo TCP breve, sin HTTP.
 /// Puertos propios: 8765 (daemon) y 8766 (residente `qwen_tts`).
 fn puerto_abierto(port: u16) -> bool {
@@ -233,10 +256,10 @@ fn reaper_ante_fallo(fase: &str) {
             ));
         }
     }
-    // D-03 (cobertura total): el residente `qwen_tts` desacopla su servidor real
-    // del árbol del daemon, de modo que el kill por árbol puede dejarlo vivo con
-    // el 8766 abierto. Si el puerto sigue abierto tras el árbol, se barre al PID
-    // que lo escucha (preciso por puerto, sin kill por imagen).
+    // D-03 (cobertura total) + R3-A: el residente `qwen_tts` desacopla su servidor
+    // real del árbol del daemon, de modo que el kill por árbol puede dejarlo vivo
+    // con el 8766 abierto. Si el puerto sigue abierto tras el árbol, se reclama
+    // por PID registrado con verificación por puerto (sin `netstat` ni imagen).
     if puerto_abierto(8766) {
         hito(&format!(
             "reaper({}): 8766 abierto tras el árbol, barriendo residente",
@@ -246,54 +269,37 @@ fn reaper_ante_fallo(fase: &str) {
     }
 }
 
-/// Barrido preciso del residente por puerto 8766 (D-03): localiza el PID en
-/// LISTENING sobre el 8766 y mata su árbol con verificación de cierre.
-/// Preciso: solo quien ocupa el 8766 (el residente de la sesión o su resto);
-/// nunca kill por imagen (un `qwen_tts` local no ocupa el 8766).
+/// Barrido del residente por PID registrado (R3-A): mata el árbol preciso del
+/// PID de `daemon.pid` con verificación de cierre del 8766. Un solo camino
+/// portable: las primitivas por PID ya existen en ambas plataformas, sin
+/// `netstat`, sin rama Unix solo-log y sin kill por imagen (un `qwen_tts` local
+/// no ocupa el 8766 ni está registrado).
 fn barrer_residente_por_puerto(fase: &str) {
-    #[cfg(windows)]
-    {
-        let mut pids: Vec<u32> = Vec::new();
-        if let Ok(o) = std::process::Command::new("netstat")
-            .args(["-ano", "-p", "TCP"])
-            .output()
-        {
-            for ln in String::from_utf8_lossy(&o.stdout).lines() {
-                let c: Vec<&str> = ln.split_whitespace().collect();
-                // `TCP 127.0.0.1:8766 0.0.0.0:0 LISTENING 1234`
-                if c.len() >= 5 && c[0] == "TCP" && c[1].ends_with(":8766") && c[3] == "LISTENING" {
-                    if let Ok(p) = c[4].parse::<u32>() {
-                        if p != 0 && p != std::process::id() && !pids.contains(&p) {
-                            pids.push(p);
-                        }
-                    }
-                }
-            }
-        }
-        for p in pids {
-            hito(&format!(
-                "reaper({}): 8766 en PID {}, matando árbol",
-                fase, p
-            ));
-            avi_daemon::matar_arbol_por_pid(p);
-        }
-        let t0 = std::time::Instant::now();
-        while puerto_abierto(8766) && t0.elapsed() < std::time::Duration::from_secs(8) {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-        hito(&format!(
-            "reaper({}): 8766 cerrado={}",
-            fase,
-            !puerto_abierto(8766)
-        ));
-    }
-    #[cfg(not(windows))]
+    let residente = leer_pid_residente();
+    if residente != 0
+        && residente != std::process::id()
+        && avi_tts::resident::pid_vivo_residente(residente)
     {
         hito(&format!(
-            "reaper({}): 8766 abierto; barrido Unix pendiente (solo log)",
-            fase
+            "reaper({}): residente PID {} vivo, matando árbol",
+            fase, residente
+        ));
+        avi_tts::resident::matar_arbol_residente_por_pid(residente);
+    } else {
+        hito(&format!(
+            "reaper({}): sin residente registrado vivo (pid={}), solo verificación por puerto",
+            fase, residente
         ));
     }
+    let t0 = std::time::Instant::now();
+    while puerto_abierto(8766) && t0.elapsed() < std::time::Duration::from_secs(8) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    hito(&format!(
+        "reaper({}): 8766 cerrado={}",
+        fase,
+        !puerto_abierto(8766)
+    ));
 }
 
 /// Falla fuera de polls con reaper previo (D-03): ejecuta el reaper
@@ -334,18 +340,23 @@ impl Drop for GuardReaper {
 fn verificar_cero_huerfanos(contexto: &str) {
     let pid = leer_pid_daemon();
     let pid_vivo = pid.map(avi_daemon::pid_vivo).unwrap_or(false);
+    let residente = leer_pid_residente();
+    let residente_vivo =
+        residente != 0 && avi_tts::resident::pid_vivo_residente(residente);
     let p_daemon = puerto_abierto(8765);
     let p_residente = puerto_abierto(8766);
     let pidfile = avi_store::data_dir().join("daemon.pid");
     let pidfile_existe = pidfile.exists();
-    if pid_vivo || p_daemon || p_residente || pidfile_existe {
+    if pid_vivo || residente_vivo || p_daemon || p_residente || pidfile_existe {
         fallo_con_reaper(
             &format!("verificar_cero_huerfanos({})", contexto),
             format!(
-                "quedaron huérfanos tras {}: pid={:?} vivo={} puerto8765={} puerto8766={} pidfile={} (el apagado debe dejar cero restos a nivel SO)",
+                "quedaron huérfanos tras {}: pid={:?} vivo={} residente={} residente_vivo={} puerto8765={} puerto8766={} pidfile={} (el apagado debe dejar cero restos a nivel SO)",
                 contexto,
                 pid,
                 pid_vivo,
+                residente,
+                residente_vivo,
                 p_daemon,
                 p_residente,
                 pidfile.display()
@@ -485,6 +496,10 @@ fn esperar_estado_daemon(esperado: &str, reintentos: u32) -> Value {
 /// Fallos fuera de polls (D-03): todo `panic!` aquí lleva reaper best-effort
 /// previo vía `fallo_con_reaper`, para no abandonar huérfanos en vías anormales.
 fn ensure_session_daemon() {
+    // R2-A: la sesión está lista cuando el motor está caliente (probe + PID
+    // vivo + `warm`), no cuando termina una operación: los streams de clonado
+    // y dub son por-petición y no bloquean la sesión (sin espera de inferencia
+    // aquí; cada operación consume su propio stream hasta el evento final).
     let actual = estado_daemon();
     let pid = leer_pid_daemon();
     let vivo = pid.map(avi_daemon::pid_vivo).unwrap_or(false);
@@ -533,7 +548,7 @@ fn ensure_session_daemon() {
         }
         hito("ensure_session_daemon: start exit 0 (started), esperando warm (50 reintentos)");
     }
-    esperar_estado_daemon("running", 50);
+    esperar_estado_daemon("running", REINTENTOS_WARM_FAILSAFE);
 }
 
 /// Apagado único de la sesión (idempotente) con reaper ruidoso (H-01, T6 + D-03).
@@ -1482,7 +1497,14 @@ mod tts {
     #[cfg(feature = "native-stt")]
     #[test]
     fn synthesize_exito_con_label() {
+        // Serie + ciclo: excluye cleanup (STATE) y paradas del ciclo durante la
+        // vía caliente; el orden STATE→TTS coincide con el resto de la suite.
+        let _state = bloquear_estado();
+        let _guard = lock_tts();
         hito_inicio_pesado("tts::synthesize_exito_con_label");
+        // D-03: todo `panic!`/`assert!` fuera de polls ejecuta el reaper
+        // best-effort antes de fallar (vía `Drop` ante `panic!`).
+        let _reaper = armar_reaper("synthesize_exito_con_label");
         if !tts_provisioned() {
             eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
             hito_fin("tts::synthesize_exito_con_label (skip sin provisión)");
@@ -1493,13 +1515,6 @@ mod tts {
             hito_fin("tts::synthesize_exito_con_label (skip sin STT)");
             return;
         }
-        // Serie + ciclo: excluye cleanup (STATE) y paradas del ciclo durante la
-        // vía caliente; el orden STATE→TTS coincide con el resto de la suite.
-        let _state = bloquear_estado();
-        let _guard = lock_tts();
-        // D-03: todo `panic!`/`assert!` fuera de polls ejecuta el reaper
-        // best-effort antes de fallar (vía `Drop` ante `panic!`).
-        let _reaper = armar_reaper("synthesize_exito_con_label");
         let label = etiqueta_unica("golden");
         // Vía daemon caliente (Tarea 3): la sesión ya pagó la carga del motor
         // una sola vez; este test no recarga en frío. `--daemon` fuerza la ruta
@@ -2091,8 +2106,8 @@ mod tts {
 
     #[test]
     fn daemon_start_exito() {
-        hito_inicio_pesado("tts::daemon_start_exito");
         let _guard = bloquear_estado();
+        hito_inicio_pesado("tts::daemon_start_exito");
         // D-03: todo `panic!`/`assert!` fuera de polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         // D-02: la ventana spawn→write ya no ciega al handler (PID en memoria).
@@ -2133,7 +2148,7 @@ mod tts {
             pid
         );
         // Verificar status running (observado por la fixture, sin sleeps fijos).
-        esperar_estado_daemon("running", 50);
+        esperar_estado_daemon("running", REINTENTOS_WARM_FAILSAFE);
         // Cleanup garantizado por la fixture: apagado único con cero huérfanos
         // verificados a nivel SO (convención de la sesión).
         shutdown_session_daemon();
@@ -2149,8 +2164,8 @@ mod tts {
 
     #[test]
     fn daemon_restart_rearma() {
-        hito_inicio_pesado("tts::daemon_restart_rearma");
         let _guard = bloquear_estado();
+        hito_inicio_pesado("tts::daemon_restart_rearma");
         // D-03: reaper en todo `panic!` fuera de polls.
         let _reaper = armar_reaper("daemon_restart_rearma");
         // Skip sin efectos: no tocar el ciclo si no hay provisión.
@@ -2189,7 +2204,7 @@ mod tts {
             }
         }
         // Status debe seguir running (observado, sin sleeps fijos).
-        esperar_estado_daemon("running", 50);
+        esperar_estado_daemon("running", REINTENTOS_WARM_FAILSAFE);
         // Restaurar detenido con cero huérfanos verificados a nivel SO
         // (convención de la sesión).
         shutdown_session_daemon();
@@ -2198,8 +2213,8 @@ mod tts {
 
     #[test]
     fn daemon_status_running() {
-        hito_inicio_pesado("tts::daemon_status_running");
         let _guard = bloquear_estado();
+        hito_inicio_pesado("tts::daemon_status_running");
         // D-03: reaper en todo `panic!` fuera de polls.
         let _reaper = armar_reaper("daemon_status_running");
         // Skip sin efectos: no tocar el ciclo si no hay provisión.
@@ -2325,8 +2340,8 @@ mod tts {
 
     #[test]
     fn daemon_start_con_auto_restart() {
-        hito_inicio_pesado("tts::daemon_start_con_auto_restart");
         let _guard = bloquear_estado();
+        hito_inicio_pesado("tts::daemon_start_con_auto_restart");
         // D-03: reaper en todo `panic!` fuera de polls.
         let _reaper = armar_reaper("daemon_start_con_auto_restart");
         // Skip sin efectos: no tocar el ciclo si no hay provisión.
@@ -2365,7 +2380,7 @@ mod tts {
             "el daemon recién arrancado debe estar vivo a nivel SO (pid {:?})",
             pid
         );
-        esperar_estado_daemon("running", 50);
+        esperar_estado_daemon("running", REINTENTOS_WARM_FAILSAFE);
         // Stop no debe reintentar (graceful): ausencia observada por la fixture
         // más cero huérfanos a nivel SO.
         shutdown_session_daemon();
@@ -2387,8 +2402,8 @@ mod tts {
     /// del baseline interfiere, se documenta sin arreglarla.
     #[test]
     fn h01_aborto_simulado_reclama_y_no_deja_huerfanos() {
-        hito_inicio_pesado("tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos");
         let _guard = bloquear_estado();
+        hito_inicio_pesado("tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos");
         // D-03: reaper en todo `panic!` fuera de polls.
         // D-01 (tensado CI Unix): tras cada reclamo se exige además 8766
         // cerrado cuando el PID previo murió; en Windows local ese verde se
@@ -2430,7 +2445,7 @@ mod tts {
             "tras caída el start debe reclamar (started), no adherirse: {}",
             actual
         );
-        esperar_estado_daemon("running", 50);
+        esperar_estado_daemon("running", REINTENTOS_WARM_FAILSAFE);
         assert!(
             !avi_daemon::pid_vivo(pid_a),
             "el reclamo debe haber matado el árbol residual (pid {} sigue vivo)",
@@ -2471,7 +2486,7 @@ mod tts {
             "tras aborto el start debe partir de cero (started): {}",
             actual2
         );
-        esperar_estado_daemon("running", 50);
+        esperar_estado_daemon("running", REINTENTOS_WARM_FAILSAFE);
         // Cierre: cero huérfanos verificados a nivel SO.
         shutdown_session_daemon();
         hito_fin("tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos");
@@ -2491,8 +2506,8 @@ mod tts {
     /// luego mata el árbol del daemon y comprueba que se libera.
     #[test]
     fn h03_pipe_stdio_no_debe_quedar_retenido() {
-        hito_inicio_pesado("tts::h03_pipe_stdio_no_debe_quedar_retenido");
         let _guard = bloquear_estado();
+        hito_inicio_pesado("tts::h03_pipe_stdio_no_debe_quedar_retenido");
         let _reaper = armar_reaper("h03_pipe_stdio_no_debe_quedar_retenido");
         if !tts_modelo_registrado() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado para diagnóstico H-03");
@@ -2501,25 +2516,15 @@ mod tts {
         }
         shutdown_session_daemon();
 
-        // Localiza (sin matar) al PID que escucha 8766 (residente `qwen_tts`),
-        // igual patrón que `barrer_residente_por_puerto` pero solo lectura.
-        #[cfg(windows)]
-        fn pid_residente_en_8766() -> Option<u32> {
-            let o = std::process::Command::new("netstat")
-                .args(["-ano", "-p", "TCP"])
-                .output()
-                .ok()?;
-            for ln in String::from_utf8_lossy(&o.stdout).lines() {
-                let c: Vec<&str> = ln.split_whitespace().collect();
-                if c.len() >= 5 && c[0] == "TCP" && c[1].ends_with(":8766") && c[3] == "LISTENING" {
-                    if let Ok(p) = c[4].parse::<u32>() {
-                        if p != 0 {
-                            return Some(p);
-                        }
-                    }
-                }
+        // Localiza (sin matar) al residente por PID registrado en `daemon.pid`
+        // (R3-A): un solo camino portable, sin `netstat` ni rama por plataforma.
+        fn pid_residente_registrado() -> Option<u32> {
+            let pid = leer_pid_residente();
+            if pid != 0 && avi_tts::resident::pid_vivo_residente(pid) {
+                Some(pid)
+            } else {
+                None
             }
-            None
         }
 
         // `daemon start` capturado vía PIPE en un hilo aparte: `output()` no
@@ -2551,7 +2556,7 @@ mod tts {
                     "h03: pipe liberado en {} ms sin intervención — H-03 no reproduce",
                     t0.elapsed().as_millis()
                 ));
-                esperar_estado_daemon("running", 50);
+                esperar_estado_daemon("running", REINTENTOS_WARM_FAILSAFE);
                 shutdown_session_daemon();
                 hito_fin("tts::h03_pipe_stdio_no_debe_quedar_retenido");
                 return;
@@ -2569,10 +2574,9 @@ mod tts {
         }
 
         // El pipe sigue retenido más allá de la vida del CLI lanzador: mata
-        // solo el motor primero (si se ubica) para replicar el orden exacto
-        // del síntoma documentado.
-        #[cfg(windows)]
-        if let Some(pid_motor) = pid_residente_en_8766() {
+        // solo el motor primero (si hay PID registrado vivo) para replicar el
+        // orden exacto del síntoma documentado.
+        if let Some(pid_motor) = pid_residente_registrado() {
             hito(&format!("h03: matando solo el motor (pid {})", pid_motor));
             avi_daemon::matar_arbol_por_pid(pid_motor);
             avi_daemon::esperar_muerte_pid(pid_motor, std::time::Duration::from_secs(8));
@@ -2625,9 +2629,9 @@ mod tts {
     #[test]
     #[allow(unreachable_code)]
     fn translate_con_daemon_delega() {
-        hito_inicio_pesado("tts::translate_con_daemon_delega");
         let _guard = bloquear_estado();
         let _tts = lock_tts();
+        hito_inicio_pesado("tts::translate_con_daemon_delega");
         // D-03: todo `panic!`/`assert!` fuera de polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = armar_reaper("translate_con_daemon_delega");
@@ -2673,11 +2677,11 @@ mod tts {
 
     #[test]
     fn translate_force_daemon_sin_daemon_exit5() {
-        hito_inicio_pesado("tts::translate_force_daemon_sin_daemon_exit5");
         let _guard = bloquear_estado();
         // Aislamiento total: la ausencia debe observarse sin carreras con
         // usuarios del daemon (serie de inferencia + ciclo de sesión).
         let _tts = lock_tts();
+        hito_inicio_pesado("tts::translate_force_daemon_sin_daemon_exit5");
         // Partición previa: fixture detenida con ausencia observada a nivel SO
         // (sin sleeps). No se rearranca: el próximo `ensure_session_daemon` la
         // repara bajo demanda, así que el orden de ejecución no importa.
@@ -2711,9 +2715,9 @@ mod tts {
 
     #[test]
     fn clone_con_daemon_delega() {
-        hito_inicio_pesado("tts::clone_con_daemon_delega");
         let _guard = bloquear_estado();
         let _tts = lock_tts();
+        hito_inicio_pesado("tts::clone_con_daemon_delega");
         // D-03: todo `panic!`/`assert!` fuera de polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = armar_reaper("clone_con_daemon_delega");
@@ -2725,6 +2729,13 @@ mod tts {
         // Daemon caliente de la sesión (revalidación con reclamo; sin ciclo propio ni sleeps).
         ensure_session_daemon();
         let name = etiqueta_unica("clon_daemon");
+        // R2-A: el exit 0 ya no es «éxito inmediato» sino «secuencia completa
+        // hasta el evento final» (`started` → latidos → `result` con
+        // `precomputed: true` = precarga iniciada). El orden de eventos se
+        // afirma en `crates/avi-daemon/tests/golden.rs`
+        // (`voices_clone_daemon_precomputed_true`); aquí se verifica el
+        // contrato final a través del stream, sin cota de 1500 ms.
+        let t0 = std::time::Instant::now();
         let (code, actual) = run_json(&[
             "--json",
             "--daemon",
@@ -2735,9 +2746,18 @@ mod tts {
             "--speech-reference",
             "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
         ]);
+        hito(&format!(
+            "clone_con_daemon_delega: clon completado en {} ms (sin cota 1500ms)",
+            t0.elapsed().as_millis()
+        ));
         assert_eq!(code, 0, "voice clone --daemon debe delegar con exit 0");
         assert_eq!(actual["schema_version"], Value::String("3".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
+        assert_eq!(
+            actual["precomputed"],
+            Value::Bool(true),
+            "vía daemon el evento final trae precomputed:true (precarga iniciada)"
+        );
         let _ = avi_store::VoiceStore::new().remove(&name);
         // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
         hito_fin("tts::clone_con_daemon_delega");
@@ -2746,9 +2766,9 @@ mod tts {
     #[cfg(feature = "native-stt")]
     #[test]
     fn dub_daemon_passthrough() {
-        hito_inicio_dub("tts::dub_daemon_passthrough");
         let _guard = bloquear_estado();
         let _tts = lock_tts();
+        hito_inicio_dub("tts::dub_daemon_passthrough");
         // D-03: todo `panic!`/`assert!` fuera de polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = armar_reaper("dub_daemon_passthrough");
@@ -2759,6 +2779,11 @@ mod tts {
         }
         // Daemon caliente de la sesión (revalidación con reclamo; sin ciclo propio ni sleeps).
         ensure_session_daemon();
+        // R2-A: el exit 0 con `dubbed` verifica la secuencia completa hasta el
+        // evento final (`started` → latidos por fase → `result`), sin cota de
+        // 10 s. El orden de eventos se afirma en los dobles programados
+        // (unitarios del CLI) y en el router (`golden.rs`); aquí se verifica el
+        // contrato final a través del stream con inferencia real.
         let (code, actual) = run_json(&[
             "--json",
             "--daemon",
@@ -2797,9 +2822,9 @@ mod tts {
     #[test]
     #[allow(unreachable_code)]
     fn dub_daemon_con_traduccion() {
-        hito_inicio_dub("tts::dub_daemon_con_traduccion");
         let _guard = bloquear_estado();
         let _tts = lock_tts();
+        hito_inicio_dub("tts::dub_daemon_con_traduccion");
         // D-03: todo `panic!`/`assert!` fuera de polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = armar_reaper("dub_daemon_con_traduccion");
@@ -2822,6 +2847,9 @@ mod tts {
         }
         // Daemon caliente de la sesión (revalidación con reclamo; sin ciclo propio ni sleeps).
         ensure_session_daemon();
+        // R2-A: igual que `dub_daemon_passthrough` — el exit 0 con `dubbed`
+        // verifica la secuencia completa (transcribe→translate→sintetizar con
+        // latidos) hasta el evento final, sin cota de 10 s.
         let (code, actual) = run_json(&[
             "--json",
             "--daemon",
@@ -2854,6 +2882,33 @@ mod tts {
         assert!(!texto.is_empty(), "`text` no debe estar vacío");
         // Sin apagado: la sesión es dueña del ciclo (un solo apagado por corrida).
         hito_fin("tts::dub_daemon_con_traduccion");
+    }
+
+    /// Test de rendimiento dedicado (Tarea 7, R1-A): verifica que `daemon status`
+    /// sobre un daemon ya en ejecución responda holgadamente dentro del presupuesto
+    /// de 1500 ms (típico < 100 ms).
+    #[test]
+    fn perf_daemon_status_en_ejecucion() {
+        let _guard = bloquear_estado();
+        hito_inicio_pesado("tts::perf_daemon_status_en_ejecucion");
+        let _reaper = armar_reaper("perf_daemon_status_en_ejecucion");
+        if !tts_modelo_registrado() {
+            eprintln!("[daemon] skip: sin modelo TTS provisionado");
+            hito_fin("tts::perf_daemon_status_en_ejecucion (skip sin provisión)");
+            return;
+        }
+        ensure_session_daemon();
+        let t0 = Instant::now();
+        let (code, actual) = run_json(&["--json", "daemon", "status"]);
+        let elapsed = t0.elapsed();
+        assert_eq!(code, 0);
+        assert_eq!(actual["daemon"], Value::String("running".to_string()));
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "daemon status tomó {:?}, superando el presupuesto de 1500 ms",
+            elapsed
+        );
+        hito_fin("tts::perf_daemon_status_en_ejecucion");
     }
 }
 
@@ -3053,4 +3108,67 @@ fn hito_guard_expira_con_diagnostico() {
     hito("hito_guard_expira_con_diagnostico: hito previo al guard");
     std::thread::sleep(std::time::Duration::from_millis(120));
     comprobar_guard("fase-demostracion-guard");
+}
+
+// ─── Tests de rendimiento dedicados (Tarea 7, R1-A) ─────────────────
+//
+// Separan la señal de rendimiento de la señal de corrección: afirman
+// duraciones y presupuestos explícitamente sobre operaciones sin
+// contención ni inferencia pesada.
+
+#[test]
+fn perf_local_comandos_rapidos_bajo_presupuesto() {
+    // Los comandos locales de metadatos/ayuda deben responder de inmediato (< 1500 ms).
+    let t0 = Instant::now();
+    let (code_v, _) = run_json(&["--json", "version"]);
+    let d_v = t0.elapsed();
+    assert_eq!(code_v, 0);
+    assert!(
+        d_v < Duration::from_millis(1500),
+        "version --json tardó {:?} (presupuesto < 1500 ms)",
+        d_v
+    );
+
+    let t1 = Instant::now();
+    let (code_h, _) = run_text(&["speech", "synthesize", "--help"]);
+    let d_h = t1.elapsed();
+    assert_eq!(code_h, 0);
+    assert!(
+        d_h < Duration::from_millis(1500),
+        "speech synthesize --help tardó {:?} (presupuesto < 1500 ms)",
+        d_h
+    );
+}
+
+#[test]
+fn perf_rechazo_entradas_invalidas_fail_fast() {
+    // Validaciones baratas deben fallar inmediatamente sin pagar cold-start de inferencia.
+    let t0 = Instant::now();
+    let (code_say, _) = run_json(&["--json", "speech", "say", "--text", ""]);
+    let d_say = t0.elapsed();
+    assert_eq!(code_say, 2);
+    assert!(
+        d_say < Duration::from_millis(1500),
+        "say con texto vacío tardó {:?} (fail-fast esperado < 1500 ms)",
+        d_say
+    );
+
+    let t1 = Instant::now();
+    let (code_play, _) = run_json(&[
+        "--json",
+        "speech",
+        "synthesize",
+        "--text",
+        "hola",
+        "--label",
+        "x",
+        "--play",
+    ]);
+    let d_play = t1.elapsed();
+    assert_eq!(code_play, 2);
+    assert!(
+        d_play < Duration::from_millis(1500),
+        "synthesize --play --json tardó {:?} (fail-fast esperado < 1500 ms)",
+        d_play
+    );
 }

@@ -335,21 +335,16 @@ impl Qwen3TtsEngine {
     /// No bloqueante ni dependiente del `Mutex<resident>`: el hilo del warmup lo
     /// retiene durante el spawn + `wait_health` + síntesis HTTP, así que
     /// `self.resident.lock()` se colgaría. Por eso se mata el árbol preciso por
-    /// PID (señal que no requiere el lock, con verificación inmediata sin espera)
-    /// y solo como último recurso documentado —si el PID sigue vivo o no hay
-    /// PID— se mata por imagen; la recolección del estado se hace best-effort
-    /// con `try_lock` (si el warmup lo tiene, no esperamos: el proceso ya está
-    /// muerto y su `Drop` recolectará el estado al liberarse). La verificación
-    /// con deadline la hace el llamante (graceful del daemon / parada del CLI).
+    /// PID (señal que no requiere el lock, con verificación inmediata sin espera);
+    /// R3-A: sin kill por imagen del residente —si el árbol preciso no lo
+    /// termina, la verificación con deadline la hace el llamante (graceful del
+    /// daemon / parada del CLI) y el fallo es ruidoso. La recolección del estado
+    /// se hace best-effort con `try_lock` (si el warmup lo tiene, no esperamos:
+    /// el proceso ya está muerto y su `Drop` recolectará el estado al liberarse).
     pub fn shutdown(&self) {
         let pid = self.resident_pid.load(Ordering::Relaxed);
         if pid != 0 {
             crate::resident::matar_arbol_residente_por_pid(pid);
-            // Verificación inmediata sin espera (no bloquea al runtime): si el
-            // árbol preciso no lo terminó, último recurso por imagen.
-            if crate::resident::pid_vivo_residente(pid) {
-                crate::resident::kill_resident_process();
-            }
         }
         if let Ok(mut guard) = self.resident.try_lock() {
             *guard = None;
@@ -423,6 +418,10 @@ impl Qwen3TtsEngine {
         let port = default_port();
         let spawned = resident::Qwen3TtsResident::spawn(model_dir, port, load_voice)?;
         self.resident_pid.store(spawned.pid(), Ordering::Relaxed);
+        // R3-A: contabilidad en disco acoplada al store en memoria — actualiza
+        // `resident_pid` en `daemon.pid` sin fichero propio (best-effort: si el
+        // daemon corre en foreground sin pidfile, no hay nada que actualizar).
+        actualizar_resident_pid_en_pidfile(spawned.pid());
         Ok(ResidentState {
             resident: spawned,
             voz_key,
@@ -483,6 +482,28 @@ impl Qwen3TtsEngine {
             format!("http://127.0.0.1:{}", state.resident.port)
         };
         self.synthesize_via_http(&url, text, voz, options, None, None, out_path)
+    }
+}
+
+/// Actualiza `resident_pid` en `daemon.pid` preservando el resto del esquema
+/// (R3-A, D3: campo plano). Escritura atómica por tmp+rename; best-effort y
+/// silenciosa: si no hay pidfile (p. ej. `serve` en foreground) o no parsea,
+/// no hay nada que actualizar y se ignora. La lectura tolerante vive en el CLI
+/// (`read_resident_pid`: ausente = 0/desconocido).
+fn actualizar_resident_pid_en_pidfile(pid: u32) {
+    let path = avi_store::data_dir().join("daemon.pid");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut v: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    v["resident_pid"] = serde_json::Value::from(pid);
+    let tmp = path.with_extension("pid.tmp");
+    if std::fs::write(&tmp, serde_json::to_string_pretty(&v).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
     }
 }
 
@@ -932,7 +953,9 @@ pub mod resident {
     }
 
     /// Viveza real de un PID a nivel de sistema (sin Mutex ni HTTP).
-    pub(crate) fn pid_vivo_residente(pid: u32) -> bool {
+    /// `pub` para el camino de reclamo/parada del CLI (R3-A: muerte por PID
+    /// registrado + verificación por puerto, sin kill por imagen).
+    pub fn pid_vivo_residente(pid: u32) -> bool {
         if pid == 0 {
             return false;
         }
@@ -966,8 +989,9 @@ pub mod resident {
 
     /// Mata el árbol preciso del residente por PID (sin Mutex): Windows
     /// `taskkill /F /T /PID`; Unix `kill -9` al grupo y al PID. No verifica:
-    /// el llamante combina con `pid_vivo_residente`.
-    pub(crate) fn matar_arbol_residente_por_pid(pid: u32) -> bool {
+    /// el llamante combina con `pid_vivo_residente`. `pub` para el camino de
+    /// reclamo/parada del CLI (R3-A).
+    pub fn matar_arbol_residente_por_pid(pid: u32) -> bool {
         if pid == 0 {
             return false;
         }
@@ -998,39 +1022,6 @@ pub mod resident {
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false)
-        }
-    }
-
-    /// Mata el proceso residente del motor POR NOMBRE DE IMAGEN (`qwen_tts`).
-    ///
-    /// ÚLTIMO RECURSO DOCUMENTADO (H-01 + D-04): solo se llama cuando el kill preciso
-    /// del árbol por PID falló o no hay PID (el `qwen_tts` vendido desacopla su
-    /// proceso servidor real del `Child` que Rust captura, de modo que el kill
-    /// por PID puede dejar vivo al servidor; D-04 lo reutiliza además ante
-    /// `Parado` con residente vivo sin PID del daemon). Mata por nombre de imagen
-    /// del residente y alcanza al servidor real (nunca imagen del daemon, que
-    /// comparte imagen con el CLI). Con el residente como único camino de síntesis (sin
-    /// fallback), el kill no puede desencadenar re-lanzamientos: la síntesis en
-    /// curso simplemente falla. Sin tomar ningún `Mutex`.
-    pub fn kill_resident_process() {
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // `DETACHED_PROCESS (0x8)`: sin ventana de consola. `Stdio::null` en los
-            // tres STD evita heredar/exponer handles del padre (p. ej. pipes del test).
-            let _ = Command::new("cmd")
-                .args(["/C", "taskkill /F /T /IM qwen_tts.exe"])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .creation_flags(0x00000008)
-                .status();
-        }
-        #[cfg(unix)]
-        {
-            let _ = Command::new("sh")
-                .args(["-c", "pkill -9 -f 'qwen_tts.*--serve' || true"])
-                .status();
         }
     }
 

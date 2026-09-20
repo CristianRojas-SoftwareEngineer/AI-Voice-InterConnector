@@ -382,6 +382,8 @@ necesitan un modelo cargado):** tres modos, iguales a los de `voice clone`:
   degradar.
 - `--no-daemon`: fuerza el modo directo, sin sondear.
 
+En las operaciones pesadas (`synthesize`, `say`, `voice clone` y `dub`), la comunicación con el daemon opera mediante streaming NDJSON con latidos periódicos cada 500 ms y timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`), evitando cuelgues o timeouts prematuros en tareas de larga duración.
+
 `--daemon` y `--no-daemon` son mutuamente excluyentes: combinarlos sale con
 exit **2** antes de cualquier trabajo. `speech play`, `speech list` y `speech
 remove` no tocan el modelo ni el daemon: no declaran estos flags.
@@ -924,14 +926,14 @@ ai-voice-interconnector daemon serve --auto-restart --max-retries 3
 ```
 
 **Qué esperar:** `daemon start` verifica que los modelos estén provisionados, lanza el servidor en segundo plano
-con `spawn_background` + PID file `data_dir()/daemon.pid` + poll `await_daemon_ready` (`10s` deadline, `250ms` poll), y confirma con
+con `spawn_background` + PID file `data_dir()/daemon.pid` (incluyendo `resident_pid` plano) + poll `await_daemon_ready` (`10s` deadline, `250ms` poll), y confirma con
 `Daemon iniciado correctamente (pid ...)`. Luego `daemon status` muestra estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
 
-Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^retries` capado a `4s`; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Sin `--auto-restart`, el daemon es `fail-stop`.
+Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^retries` capado a `4s` y protección por watchdog de supervisión contra bucles de reinicio rápidos; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Sin `--auto-restart`, el daemon es `fail-stop`.
 
 Warmup: tras enlazar `127.0.0.1:8765`, el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(precalentar_voz)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque (fail-fast, antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
 
-`daemon stop` responde `Daemon detenido` (borra `daemon.pid` incluso si ya estaba caído) y `daemon restart` orquesta `POST /shutdown` → espera caída `5s` → `spawn_background` → poll `running`.
+`daemon stop` responde `Daemon detenido` (parada unificada de daemon y residente con verificación y borrado de `daemon.pid`) y `daemon restart` orquesta `stop_daemon_and_resident` → arranque fresco con `spawn_background` → poll `running`.
 
 ### Uso con daemon
 

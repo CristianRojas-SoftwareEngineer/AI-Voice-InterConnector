@@ -61,17 +61,32 @@ JSON:
 
 | Superficie | Qué consume el plugin | Compromiso de estabilidad |
 |------------|-----------------------|----------------------------|
-| `speech say --text "<msg>" --daemon` | Síntesis y reproducción de cada locución. Usa el daemon y falla si no está levantado (no lo arranca solo). | Mantener el flag `--daemon` y su semántica (usar el daemon, no auto-arrancarlo). |
-| `speech transcribe --audio <wav> --source-language <lang> --daemon` | No lo consume el plugin (registro de impacto de la Fase 5): transcripción con despacho al daemon de tres modos, forma nueva. | Mantener los tres modos (`--daemon`/`--no-daemon`/autodetección) y el shape `--json` `{"text", "source"}`. |
-| `speech dub --mic --from <lang> --to <lang> -v <voz>` | No lo consume el plugin (registro de impacto de la Fase 5): composición voz→voz (transcribe → traduce → sintetiza → reproduce), forma nueva. | Mantener `--audio`/`--mic` mutuamente excluyentes (exactamente una). |
+| `speech say --text "<msg>" --daemon` | Síntesis dinámica y reproducción de cada locución. Usa el daemon y falla si no está levantado (no lo arranca solo). | Mantener el flag `--daemon` y su semántica (usar el daemon, no auto-arrancarlo). |
+| `speech synthesize --text "<aviso>" --label <label>` | Pre-síntesis de avisos; se guarda en el SpeechStore bajo un `label`. | Mantener el flag `--label` y la colisión de label (exit `6`, ver abajo). |
+| `speech play --label <label>` | Reproducción de una locución pre-cacheada por `label`. | Mantener el subcomando `play` y el flag `--label`; exit `3`/`NotFound` si el label no existe. |
 | `doctor --json` | Verifica el entorno; lee `status` (`ok`/`failed`) y `issues[]`. | Mantener el campo `status` con esos valores y la lista de `issues`. |
-| `daemon status --json` | Lee `running` para saber si el daemon corre. | Mantener el campo booleano `running`. |
+| `daemon status --json` | Lee `running` (booleano) para saber si el daemon corre. | Mantener el campo booleano `running`. |
 | `daemon start` | Levanta el daemon para dejar los modelos en memoria. | Mantener el subcomando y su arranque desanclable. |
 
-Cambiar cualquiera de estos nombres, flags o campos **rompe la narración** sin
-que este repo tenga tests que lo detecten (el plugin vive fuera). Por eso esta
-tabla es el contrato a preservar; al tocar `src/main.rs` en `speech say`,
-`speech transcribe`, `speech dub`, `doctor` o `daemon`, revísala.
+Además de estas seis superficies, el plugin interpreta dos **exit codes
+semánticos** (definidos en `crates/avi-core/src/exit_codes.rs`) para tomar
+decisiones sin parsear stderr:
+
+- exit `5` = `DaemonUnreachable`: el daemon está caído o inalcanzable; el
+  plugin lo usa para saber que no responde.
+- exit `6` = `StateConflict`, emitido con reason `"label_exists"` cuando un
+  `--label` ya existe en `speech synthesize`; el plugin lo usa para no
+  re-sintetizar un aviso ya cacheado.
+
+Cambiar cualquiera de estos nombres, flags, campos o exit codes **rompe la
+narración** sin que este repo tenga tests que lo detecten (el plugin vive
+fuera). Por eso esta tabla es el contrato a preservar; al tocar `src/main.rs`
+en `speech say`, `speech synthesize`, `speech play`, `doctor`, `daemon` o
+`crates/avi-core/src/exit_codes.rs`, revísala.
+
+`speech transcribe` y `speech dub` existen en la CLI (registro de impacto de
+la Fase 5) pero **no** los consume el plugin; no forman parte de este
+contrato.
 
 ## Qué NO comparten los dos proyectos
 

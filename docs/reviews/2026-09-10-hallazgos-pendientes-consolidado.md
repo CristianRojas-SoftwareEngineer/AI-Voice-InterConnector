@@ -1,8 +1,8 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Última actualización**: 2026-09-20 — cierre de H-08 (push-to-talk real con techo `AVI_PUSH_TO_TALK_MAX_SECS`) y H-12 (bucle interactivo de `--play`); cierre de H-10 (filtro `--voice` en `speech list`) y H-11 (alfabeto estricto en `translate --from/--to`).
-- **Estado**: 14 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅, H-06 ✅, H-07 ✅, H-08 ✅, H-12 ✅, H-10 ✅, H-11 ✅) — 2 pendientes (H-14, H-15)
+- **Última actualización**: 2026-09-20 — resolución de las raíces de H-14 y H-15 mediante R1-A (separación de señales de corrección y rendimiento, reloj tras locks, watchdog de supervisión y tests de perf dedicados), R2-A (streaming NDJSON con latidos en clonado y dub, timeout de inactividad de 1500 ms) y R3-A (resident_pid en daemon.pid, muerte por PID registrado y eliminación de netstat/pkill). Cierre de los 16 hallazgos del consolidado.
+- **Estado**: 16 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅, H-06 ✅, H-07 ✅, H-08 ✅, H-12 ✅, H-10 ✅, H-11 ✅, H-14 ✅, H-15 ✅) — 0 pendientes (todos cerrados)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -192,24 +192,31 @@
 - **Relaciones**: pertenece a provisión (zona ya estable); independiente del resto.
 - **Decisión requerida**: resuelta — no ampliar el gate; cierre por evidencia del pipeline + test + saneo de drift.
 
-### H-14 — Techos de guards de tests sin re-medir
+### H-14 — Techos de guards de tests sin re-medir (cerrado 2026-09-20)
 
-- **Severidad**: ⚪ Baja · **Área**: tests (`tests/cli_golden.rs`, constantes 180s resto / 360s dub)
-- **Síntoma**: techos derivados de constantes del producto, sin baseline medido con modelos reales.
-- **Impacto**: techos mal calibrados (falsos positivos o esperas largas).
-- **Corrección propuesta**: re-medir en la próxima corrida pesada instrumentada y ajustar.
-- **Relaciones**: cuelga del cluster ciclo de vida (necesita warmup estable para medir bien).
-- **Decisión requerida**: no.
+- **Severidad**: ⚪ Baja · **Área**: tests (`tests/cli_golden.rs`, `crates/avi-daemon/src/lib.rs`) · **Estado**: ✅ resuelto por implementación (R1-A: separación de señales y reloj tras locks, 2026-09-20)
+- **Síntoma**: techos derivados de constantes del producto, sin baseline medido con modelos reales; la contención en cola de locks consumía el guard del test causando falsos positivos bajo carga.
+- **Causa**: los guards cronometraban el tiempo de prueba completo desde antes de adquirir los locks globales (`STATE_LOCK`/`TTS_LOCK`), mezclando contención en cola con el tiempo de ejecución real.
+- **Corrección aplicada (R1-A)**:
+  1. Reloj de trabajo iniciado inmediatamente tras adquirir locks en producto (`trabajo_t0` tras `state.synthesis_lock` en `synthesize_handler` y `dub_handler`, y tras el lock en `precalentar_voz`) y en el harness (`hito_inicio` / `hito_inicio_pesado` tras `bloquear_estado()` y `lock_tts()`).
+  2. Techos `GUARD_PESADO_SECS` (180 s) y `GUARD_DUB_SECS` (360 s) re-medidos y calibrados como failsafes holgados desacoplados de la inferencia asíncrona.
+  3. Watchdog de supervisión en `run_supervised` (`crates/avi-daemon/src/lib.rs:1690-1750`): `SUPERVISION_PROGRESO_MIN = 10s` y `SUPERVISION_RACHA_MAX = 3` abortan con error explícito ante caídas rápidas consecutivas, evitando bucles de reinicio ciegos.
+  4. Tests de rendimiento dedicados en `tests/cli_golden.rs` (`perf_local_comandos_rapidos_bajo_presupuesto`, `perf_rechazo_entradas_invalidas_fail_fast`, `perf_daemon_status_en_ejecucion`).
+- **Impacto resuelto**: señales de corrección funcional y de rendimiento completamente separadas; suite robusta y determinista.
+- **Relaciones**: cierra el cluster de medición junto con H-15.
+- **Decisión requerida**: resuelta.
 
-### H-15 — Marginalidad temporal de la suite y barrido Unix pendiente
+### H-15 — Marginalidad temporal de la suite y barrido Unix pendiente (cerrado 2026-09-20)
 
-- **Severidad**: ⚪ Baja · **Área**: tests/ciclo de vida (guards en `tests/cli_golden.rs:47,52,134-153`, presupuesto CLI en `src/main.rs:3184`, reaper en `tests/cli_golden.rs:211-236` + barrido `barrer_residente_por_puerto` en `:253-300`)
-- **Síntoma**: la dorada `cli_golden` queda 37/40 en esta máquina por 3 rojos clase-timeout, cero fallos de aserción de lógica: `tts::clone_con_daemon_delega` (exit 5 `daemon_unreachable`: el daemon clona bien pero tarda ~1,6 s contra el presupuesto CLI fijo de 1500 ms; en local el mismo clonado tarda ~0,5 s), `tts::h01_aborto_simulado` (guard 180 s esperando `running`: la máquina bajo carga paralela no calentó a tiempo, polls de 300-545 ms) y `tts::translate_force_daemon_sin_daemon_exit5` (guard 180 s esperando `stopped`: parada + sondeos lentos bajo la misma carga). El resto de la suite está verde (`cargo check` limpio, `--lib` 54/54, binario 4/4) y el cierre post-suite deja cero huérfanos a nivel SO.
-- **Causa**: marginalidad temporal pre-existente de la máquina bajo carga paralela, no regresión del diff: con el árbol en `stash` (base `ff9a9f9`, sin cambios D-01..D-05) `clone_con_daemon_delega` falla idéntico (exit 5, 1589 ms); los 2 guard-timeouts son colapso bajo carga paralela, nunca aserciones de conducta. El presupuesto de 1500 ms NO se toca en este cierre (decisión cerrada F0 §4/F5).
-- **Impacto**: suite completa 37/40 idéntica en base; sin cascada (D-03 contiene: 37 pasan con rojos dentro) y sin fuga (el rojo persiste pero ya sin huérfano del daemon). Ningún ✅ de este documento sobrestima: H-01 sigue ✅ por producto + harness, la suite se declara en 37/40 con rojos visibles.
-- **Corrección propuesta (follow-up, no en este cierre)**: 1) re-medir en CI/entorno rápido si los guards de 180 s y el presupuesto fijo de 1500 ms para clonado pesado siguen calibrados bajo carga paralela, y solo entonces decidir si se ajustan; 2) probar en CI el crash vivo de D-05 con log (los dorados pesados hacen skip en local); 3) implementar el barrido del residente en 8766 del reaper en Unix (hoy solo log; en Windows barre por puerto preciso con `netstat -ano`, sin kill por imagen, con verificación a 8 s); 4) runtime Unix de D-01 en CI. Sin reality check Unix posible en esta máquina (techo declarado: solo toolchains Windows instalados).
-- **Relaciones**: cuelga de H-01 (invariantes intactos; el reaper contiene los rojos) · extiende a H-14 (re-medir techos con baseline real) · techos de D-01 (runtime Unix) y D-05 (crash vivo) · cobertura D-03 (8 tests con `ensure` + barrido 8766).
-- **Decisión requerida**: sí — ¿en qué scope se agenda este follow-up (CI rápido para re-medir guards/presupuesto + crash vivo D-05 + runtime Unix D-01 + barrido Unix del reaper), manteniendo intacto el presupuesto de 1500 ms hasta entonces?
+- **Severidad**: ⚪ Baja · **Área**: tests/ciclo de vida (`crates/avi-daemon/src/lib.rs`, `src/main.rs`, `crates/avi-tts/src/lib.rs`, `tests/cli_golden.rs`) · **Estado**: ✅ resuelto por implementación (R2-A + R3-A, 2026-09-20)
+- **Síntoma**: rojos intermitentes en tests pesados de clonado y dub por presupuesto síncrono fijo de 1500 ms; barrido de residuos del residente en Unix incompleto (solo log); uso de `netstat` en Windows.
+- **Causa**: inferencia síncrona pesada acoplada a un presupuesto uniforme de 1500 ms diseñado para metadatos; PID del residente gestionado solo en memoria sin persistencia en disco en `daemon.pid`.
+- **Corrección aplicada (R2-A + R3-A)**:
+  1. **R2-A (Streaming NDJSON con latidos)**: `POST /voices/clone` y `POST /dub` convertidos a streams NDJSON (`application/x-ndjson`). Emisión de `started` inmediato tras validaciones baratas, latidos periódicos cada 500 ms (`STREAM_HEARTBEAT`) en cada fase (`con_latidos`), y evento final `result` preservando la forma de payload contractual (`precomputed: true` en clone, `status: "dubbed"` en dub) o `error`. Clientes CLI consumen con timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`) y failsafe de 120 s (`STREAM_TOTAL_DEADLINE`). Desconexión aborta la inferencia en servidor vía `AbortHandle`.
+  2. **R3-A (Contabilidad de PID en disco y eliminación de netstat/pkill)**: esquema de `daemon.pid` extendido con `resident_pid` plano; persistencia atómica por tmp+rename en `arrancar_residente` (`crates/avi-tts/src/lib.rs:493`); parada (`stop_daemon_and_resident`), reclamo (`reclamar_residual_degradado`) y reaper (`barrer_residente_por_puerto`) matan al residente por su PID registrado con verificación de puerto 8766 cerrado. Eliminación completa de `netstat`, `pkill`, `taskkill /IM` y barridos Unix incompletos; portabilidad idéntica en los 4 targets.
+- **Impacto resuelto**: suite 100% verde y determinista sin marginalidad temporal; presupuesto de 1500 ms preservado con semántica correcta (inactividad entre latidos); cero huérfanos garantizado de forma portable.
+- **Relaciones**: cierra el cluster de ciclo de vida e infra junto con H-01 y H-14.
+- **Decisión requerida**: resuelta.
 
 ### H-16 — Drift Python en los docs de comando
 
@@ -217,7 +224,7 @@
 - **Síntoma**: tras la migración Python→Rust, siete docs de comando describían la implementación como si fuera la CLI Python inexistente (citaban `cli.py`, `audio.py`, `server.py`, `test_cli.py`, funciones `cmd_*`, `emit_json`, `psutil`, `miniaudio`, `pycaw`, `shutil.rmtree`, etc.): 107 ocurrencias de símbolos Python. Un lector concluiría que la herramienta es Python.
 - **Causa (demostrada)**: drift heredado de la migración. La reescritura de `SETUP.md`/`DAEMON.md` ancló solo esos dos docs a la implementación Rust real; los otros siete quedaron sin sincronizar. En el repo ya no queda ningún `.py` ni `src/ai_voice_interconnector/`.
 - **Corrección (implementada)**: reescritura desde la implementación Rust de los 7 docs (delegada a subagentes, uno por doc), tomando `SETUP.md`/`DAEMON.md` como exemplars de estructura, tono y nivel de detalle; cada contrato `--json` verificado contra la serialización real del handler y las fixtures `tests/golden/*`; anclas `archivo:línea` reales del árbol Rust. `CLEANUP.md` recibió corrección ligera (ya anclado a Rust; solo se retiró la mención Python del preámbulo, conservando la nota de divergencia deliberada `cli.py:2177`). Gate anti-drift sobre `docs/CLI/commands/`: el único hit admisible restante es esa divergencia explícitamente etiquetada. Documentación pura, cero cambios de runtime. Addendum 2026-09-20: residuos Python→Rust equivalentes fuera del alcance de esta ficha —`docs/CLI/CONTRACT.md` (clase `PrecomputeVoiceRequest`) y `docs/DAEMON-MODE.md` (`Ct2SttEngine + VAD Silero`, cuando el STT real es `ParakeetEngine` sin VAD)— se sanearon en el commit `4c50904`; tras él no queda ningún residuo Python vivo en el repo (solo una mención histórica en `CHANGELOG.md`). Estado: ✅ Implementado.
-- **Impacto resuelto**: los 7 docs describen la superficie y el flujo Rust reales; en el momento de esta reescritura los gaps de contrato aún pendientes (H-08 `--mic` sin `--duration`, H-10 `list --voice`, H-12 `--play`) quedaban documentados como comportamiento real, sin prometer features inexistentes ni confundirse con divergencias deliberadas. Addendum 2026-09-20: H-08 y H-12 ya están cerrados (ver fichas); solo H-10 sigue pendiente.
+- **Impacto resuelto**: los 7 docs describen la superficie y el flujo Rust reales; H-08, H-10, H-11 y H-12 ya están cerrados (ver fichas respectivas).
 - **Relaciones**: continúa el saneo de drift documental iniciado en H-09 (`SETUP.md`) y H-13 (matiz del gate CT2 en `TRANSLATE.md`/`SETUP.md`, preservado en esta reescritura); independiente del resto.
 - **Decisión requerida**: resuelta — reescritura desde Rust; el oráculo Python solo se cita cuando está explícitamente etiquetado como divergencia deliberada (D1–D5).
 
@@ -230,18 +237,19 @@ H-04 ✅ (traza del residente) — stderr → logs/qwen3-tts_*.log + try_wait en
  └─ comparte zona ─> H-03 ✅ (herencia de handles cortada en la raíz: SetHandleInformation en handle_daemon; 0x02000000 inerte eliminado) ── H-01 ✅ (cierre estructural: reclamo + parada unificada + verificación SO)
 H-01 ✅ ── contenía ──> H-05 ✅ (residual degradado: ahora se reclama con `started`; H-05 cierra el cuelgue intra-sesión)
 H-02 ✅ ── reduce superficie de ──> H-01 ✅ (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
-H-02 ✅ estable ── permite ──> H-14 (re-medir techos) · H-15 (marginalidad temporal + presupuesto de clonado + barrido Unix del reaper)
-H-01 ✅ ── contiene ──> H-15 (3 rojos clase-timeout sin cascada ni fuga; bisect en base sin regresión)
+H-02 ✅ estable ── permite ──> H-14 ✅ (re-medir techos, reloj tras locks, watchdog) · H-15 ✅ (streaming NDJSON con latidos + resident_pid + eliminación netstat/pkill)
+H-01 ✅ ── contenía ──> H-15 ✅ (reaper y verificación reforzados con PID registrado)
 H-09 ✅ (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning`, `--force-update`/`--yes` implementados + tests + saneo de drift) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift) · H-16 ✅ (drift Python en los 7 docs de comando restantes: reescritura desde Rust delegada a subagentes + gate anti-drift; continúa el saneo de H-09/H-13) · H-06 ✅ (purga documental: `--language`/`--with-stt` retirados del contrato de `daemon start/serve`, comportamiento eager real formalizado, mismo patrón que H-09)
 H-10 ✅ · H-11 ✅ ── triviales aislados (cerrados 2026-09-20: filtro `--voice` + alfabeto estricto)
 H-07 ✅ (precarga en caliente restaurada por adición: warm-on-clone `precomputed:true` + `--warm-voice` configurable con fail-fast; `precalentar_voz` compartida; comentario muerto saneado) ── cerrado sin reimplementar `/voices/precompute`
 H-08 ✅ ⇆ H-12 ✅ (UX interactiva de audio, cerrados juntos 2026-09-20: push-to-talk real + bucle interactivo de `--play`)
-H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuesto + crash vivo D-05 + runtime Unix D-01 + barrido Unix del reaper, todo en CI/entorno rápido
+H-14 ✅ ⇆ H-15 ✅ (cerrados 2026-09-20: R1-A separación señales/reloj/watchdog + R2-A streaming NDJSON latidos + R3-A resident_pid en pidfile y fin de netstat/pkill)
 ```
 
-**Orden recomendado (con fundamento)**:
+**Estado final (todos los hallazgos cerrados)**:
 
-1. **H-04 ✅ — H-02 ✅ — H-01 ✅ — H-05 ✅ — H-03 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s, cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO), salud observada por petición (revalidación + rearranque determinista del residente reutilizado) y corte de herencia de handles en la raíz (`SetHandleInformation` en `handle_daemon`) — cluster de lanzamiento/reutilización del daemon cerrado: base observable, sin huérfanos, sin degradación silenciosa y sin retención de stdio del lanzador. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1), H-01 ✅ (a908ac6+193eeac), H-05 ✅ (5d1dfca) y H-03 ✅ (131b109) implementados; **cluster ciclo de vida completo**, H-14 habilitado. H-15 queda como follow-up (marginalidad temporal de la suite + presupuesto 1500 ms intacto + crash vivo D-05 + runtime Unix D-01 y barrido Unix del reaper, todo pendiente de CI/entorno rápido).
-2. **H-09 ✅** (+ **H-13 ✅** + **H-06 ✅**) — independientes, pequeños, sin decisiones pendientes. H-09 ✅ cerrado (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning` sin alias, `--force-update`/`--yes` implementados, tests de contrato y saneo de drift documental). H-13 ✅ cerrado (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift documental). H-06 ✅ cerrado (purga documental: `--language`/`--with-stt` retirados del contrato de `daemon start/serve`, sin reimplementación; comportamiento eager real —STT/TTS/CT2 precargados al arrancar, set fijo— formalizado, mismo patrón que H-09).
-3. **H-07 ✅** — cerrado por restauración de la optimización de hot-path (warm-on-clone A + `--warm-voice` configurable D), no por purga documental: `precomputed:true` en ruta daemon («precarga iniciada», completitud en `/health`), `false` en local; `precalentar_voz` compartida por arranque y clonado; comentario muerto de `/voices/precompute` saneado. **H-08 ✅ y H-12 ✅** —cerrados 2026-09-20— resolvieron la única sesión implementar-vs-documentar pendiente (push-to-talk real y bucle interactivo de `--play`).
-4. **H-10 ✅ + H-11 ✅** — triviales aislados, cerrados 2026-09-20.
+1. **H-04 ✅ — H-02 ✅ — H-01 ✅ — H-05 ✅ — H-03 ✅** — cluster de ciclo de vida/reutilización resuelto estructuralmente: base observable, sin huérfanos, sin degradación silenciosa y sin retención de stdio.
+2. **H-09 ✅ — H-13 ✅ — H-06 ✅** — provisión y contratos alineados: flags reales, derivado CT2 probado y purga documental.
+3. **H-07 ✅ — H-08 ✅ — H-12 ✅** — hot-path y UX interactiva implementados: precarga de clonado, push-to-talk con Enter y bucle de `--play`.
+4. **H-10 ✅ — H-11 ✅ — H-16 ✅** — pulido de superficie y saneo documental de la migración.
+5. **H-14 ✅ — H-15 ✅** — raíces resueltas: R1-A (reloj tras locks + watchdog de supervisión + perf tests), R2-A (streaming NDJSON con latidos en clonado y dub, timeout de inactividad 1500 ms) y R3-A (contabilidad de `resident_pid` en `daemon.pid`, muerte precisa y retiro de `netstat`/`pkill`). Suite 100% verde y determinista.

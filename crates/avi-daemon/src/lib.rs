@@ -183,6 +183,41 @@ async fn emit_ndjson(tx: &tokio::sync::mpsc::Sender<String>, event: Value) {
         .await;
 }
 
+/// Intervalo de latido de los streams NDJSON con trabajo pesado (R2-A): entre
+/// eventos de inferencia el servidor emite `heartbeat` para que el timeout de
+/// inactividad del cliente (1500 ms) solo dispare si el bucle está atascado,
+/// nunca por inferencia sana.
+const STREAM_HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Espera un trabajo pesado bloqueante emitiendo latidos NDJSON (R2-A).
+/// Retorna `Some(res)` al completar, o `None` si el cliente se desconectó: en
+/// ese caso el trabajo se aborta (`AbortHandle`) y el llamante debe retornar
+/// sin entregar ni persistir resultado (sin trabajo huérfano ni fuga de estado).
+/// Límite conocido: el aborto no puede preemptar código síncrono en curso (la
+/// inferencia nativa corre hasta su punto de retorno); lo que sí garantiza es
+/// que su resultado no se usa: ni eventos, ni persistencia, ni warmup derivado.
+async fn con_latidos<T>(
+    tx: &tokio::sync::mpsc::Sender<String>,
+    stage: &str,
+    handle: tokio::task::JoinHandle<T>,
+) -> Option<Result<T, tokio::task::JoinError>> {
+    let mut handle = handle;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(STREAM_HEARTBEAT) => {
+                emit_ndjson(tx, json!({ "event": "heartbeat", "stage": stage })).await;
+            }
+            _ = tx.closed() => {
+                handle.abort();
+                return None;
+            }
+            res = &mut handle => {
+                return Some(res);
+            }
+        }
+    }
+}
+
 // ─── Handlers ────────────────────────────────────────────────────────────
 
 /// Construye el cuerpo de `/health` a partir del estado de warmup. Función pura
@@ -295,6 +330,10 @@ async fn synthesize_handler(
         // spawn—, serializando síntesis concurrentes. No se añade semáforo de
         // admisión (fuera de alcance de esta rutina).
         let _lock = state.synthesis_lock.lock().await;
+        // R1-A: reloj de trabajo tras el lock — mide trabajo puro (excluye la
+        // espera en cola) para separar la señal de rendimiento de la de
+        // corrección; el techo sigue siendo el failsafe `SYNTH_DEADLINE`.
+        let trabajo_t0 = std::time::Instant::now();
 
         emit_ndjson(
             &tx,
@@ -465,6 +504,9 @@ async fn synthesize_handler(
                                 // existe y se reporta como 0.0 (verdad en F5).
                                 "t3_time": 0.0,
                                 "s3gen_time": 0.0,
+                                // R1-A (aditivo): ms de trabajo puro tras el lock
+                                // (excluye cola; lo consume T7 para separar señales).
+                                "work_ms": trabajo_t0.elapsed().as_millis() as u64,
                             }),
                         )
                         .await;
@@ -746,7 +788,11 @@ async fn translate_handler(
     }
 }
 
-/// POST /voices/clone — clonado de voz con audio base64
+/// POST /voices/clone — clonado de voz con audio base64, servido como stream
+/// NDJSON con latidos (R2-A): `started` tras las validaciones baratas (nombre,
+/// force/colisión, audio, modelo base, en JSON plano con los códigos de siempre),
+/// latidos `heartbeat` durante el clonado, y evento final `result` con la forma
+/// contractual actual (`precomputed: true` = precarga en caliente iniciada).
 async fn voices_clone_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
@@ -838,76 +884,160 @@ async fn voices_clone_handler(
         )
             .into_response();
     }
-    // timbre_b64 opcional — por ahora se ignora (paridad: timbre no transporte en este endpoint simple)
+    // timbre opcional (se transporta al worker para persistirlo tras el clonado)
+    let timbre_b64 = payload
+        .get("timbre_b64")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let tmp_qvoice = std::env::temp_dir().join(format!("{}.qvoice", name));
-    let clone_res = avi_tts::clone_voice(
-        &base_model_dir,
-        &tmp_wav,
-        &tmp_qvoice,
-        &name,
-        DEFAULT_CLONE_LANGUAGE,
-    );
-    let _ = std::fs::remove_file(&tmp_wav);
-    if let Err(e) = clone_res {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(with_sv(json!({
-                "name": name,
-                "reason": "voice_clone_failed",
-                "message": e.to_string(),
-            }))),
+    // R2-A: stream NDJSON — las validaciones baratas ya pasaron en JSON plano;
+    // `started` inmediato antes del trabajo pesado, latidos cada ~500 ms y
+    // evento final con la forma contractual actual (`precomputed: true` =
+    // «precarga en caliente iniciada»). Sin almacén de trabajos ni expiración.
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
+    tokio::spawn(async move {
+        emit_ndjson(&tx, json!({ "event": "started", "name": name })).await;
+        let nombre = name.clone();
+        let tmp_qvoice_limpiar = tmp_qvoice.clone();
+        let trabajo = tokio::task::spawn_blocking(move || {
+            let r = avi_tts::clone_voice(
+                &base_model_dir,
+                &tmp_wav,
+                &tmp_qvoice,
+                &name,
+                DEFAULT_CLONE_LANGUAGE,
+            );
+            let _ = std::fs::remove_file(&tmp_wav);
+            match r {
+                Ok(()) => Ok((tmp_qvoice, name)),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp_qvoice);
+                    Err(e)
+                }
+            }
+        });
+        let (tmp_qvoice, name) = match con_latidos(&tx, "clone", trabajo).await {
+            None => {
+                // Cliente desconectado: trabajo abortado; limpieza best-effort
+                // del parcial (el hilo bloqueante puede seguir hasta su retorno).
+                let _ = std::fs::remove_file(&tmp_qvoice_limpiar);
+                return;
+            }
+            Some(Ok(Ok(v))) => v,
+            Some(Ok(Err(e))) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "name": nombre,
+                        "reason": "voice_clone_failed",
+                        "message": e.to_string(),
+                    }),
+                )
+                .await;
+                return;
+            }
+            Some(Err(join_err)) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "name": nombre,
+                        "reason": "voice_clone_failed",
+                        "message": format!("El hilo de clonado falló: {}", join_err),
+                    }),
+                )
+                .await;
+                return;
+            }
+        };
+        // Sin entrega a cliente caído: no persistir (sin fuga de estado).
+        if tx.is_closed() {
+            let _ = std::fs::remove_file(&tmp_qvoice);
+            return;
+        }
+        let saved_qvoice = match state.voice_store.save_reference(&name, &tmp_qvoice) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp_qvoice);
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "name": name,
+                        "reason": "voice_clone_failed",
+                        "message": e.to_string(),
+                    }),
+                )
+                .await;
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&tmp_qvoice);
+        // Copia speech-reference.wav para compatibilidad
+        let speech_copy = state.voice_store.voice_dir(&name).join("speech-reference.wav");
+        let _ = std::fs::write(&speech_copy, &audio_bytes);
+        // timbre opcional
+        if let Some(timbre_b64) = timbre_b64 {
+            if let Ok(timbre_bytes) = base64::engine::general_purpose::STANDARD.decode(timbre_b64) {
+                let dest = state.voice_store.voice_dir(&name).join("timbre-reference.wav");
+                let _ = std::fs::write(&dest, &timbre_bytes);
+            }
+        }
+        // Warm-on-clone (A): precalienta la voz recién clonada en segundo plano
+        // para eliminar el cold-start del residente en la primera síntesis del
+        // flujo clonar→sintetizar. Se conserva en `spawn_blocking` y se anuncia
+        // por evento (por eso `precomputed: true` = precarga iniciada).
+        let warm_state = state.clone();
+        let warm_name = name.clone();
+        tokio::task::spawn_blocking(move || {
+            *warm_state.warm.write().unwrap() = WarmState::Warming;
+            match precalentar_voz(&warm_state, &warm_name) {
+                Ok(()) => warm_state.set_warm(),
+                Err(e) => warm_state.set_warm_failed(e.to_string()),
+            }
+        });
+        emit_ndjson(
+            &tx,
+            json!({
+                "event": "progress",
+                "stage": "warmup",
+                "message": "Precarga en caliente iniciada.",
+            }),
         )
-            .into_response();
-    }
-    let saved_qvoice = match state.voice_store.save_reference(&name, &tmp_qvoice) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(with_sv(json!({
-                    "name": name,
-                    "reason": "voice_clone_failed",
-                    "message": e.to_string(),
-                }))),
-            )
-                .into_response();
-        }
-    };
-    let _ = std::fs::remove_file(&tmp_qvoice);
-    // Copia speech-reference.wav para compatibilidad
-    let speech_copy = state.voice_store.voice_dir(&name).join("speech-reference.wav");
-    let _ = std::fs::write(&speech_copy, &audio_bytes);
-    // timbre opcional
-    if let Some(timbre_b64) = payload.get("timbre_b64").and_then(|v| v.as_str()) {
-        if let Ok(timbre_bytes) = base64::engine::general_purpose::STANDARD.decode(timbre_b64) {
-            let dest = state.voice_store.voice_dir(&name).join("timbre-reference.wav");
-            let _ = std::fs::write(&dest, &timbre_bytes);
-        }
-    }
-    // Warm-on-clone (A): precalienta la voz recién clonada en segundo plano para
-    // eliminar el cold-start del residente en la primera síntesis del flujo
-    // clonar→sintetizar. El calentamiento (~18-40 s) no puede correr síncrono
-    // (`clone_via_daemon` acota el `.send()` a 1500 ms): se lanza en
-    // `spawn_blocking` y su completitud se refleja en `GET /health` (`warm`).
-    // Por eso `precomputed: true` significa «precarga en caliente iniciada».
-    let warm_state = state.clone();
-    let warm_name = name.clone();
-    tokio::task::spawn_blocking(move || {
-        *warm_state.warm.write().unwrap() = WarmState::Warming;
-        match precalentar_voz(&warm_state, &warm_name) {
-            Ok(()) => warm_state.set_warm(),
-            Err(e) => warm_state.set_warm_failed(e.to_string()),
-        }
+        .await;
+        emit_ndjson(
+            &tx,
+            json!({
+                "event": "result",
+                "name": name,
+                "speech": saved_qvoice.to_string_lossy().to_string(),
+                "precomputed": true,
+            }),
+        )
+        .await;
     });
-    Json(with_sv(json!({
-        "name": name,
-        "speech": saved_qvoice.to_string_lossy().to_string(),
-        "precomputed": true,
-    })))
-    .into_response()
+
+    // Convertir el receptor en un stream NDJSON (mismo patrón que `synthesize_handler`).
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = Body::from_stream(tokio_stream::StreamExt::map(stream, |line| {
+        Ok::<_, std::convert::Infallible>(format!("{}\n", line))
+    }));
+
+    Response::builder()
+        .header("content-type", "application/x-ndjson")
+        .header("x-schema-version", json_emitter::SCHEMA_VERSION)
+        .body(body)
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// POST /dub — pipeline voz→voz (transcribe→translate→synthesize)
+/// POST /dub — pipeline voz→voz (transcribe→translate→synthesize), servido
+/// como stream NDJSON con latidos (R2-A): `started` tras las validaciones
+/// baratas (audio, par/CT2, modelo, voz y rama sin `native-stt`, en JSON plano
+/// con los códigos de siempre), latidos `heartbeat` durante cada fase pesada y
+/// evento final `result` con la forma contractual actual (`status: "dubbed"`).
+/// `SYNTH_DEADLINE` se conserva como cota de la fase de síntesis con evento de
+/// fallo explícito.
 async fn dub_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
@@ -979,43 +1109,20 @@ async fn dub_handler(
         )
             .into_response()
     }
+    // R2-A: validaciones baratas ANTES del stream (JSON plano con los códigos de
+    // siempre; `started` solo se emite cuando el trabajo pesado va a arrancar).
+    // Se adelantan aquí los chequeos por parámetros (par, CT2, feature, modelo,
+    // voz) que antes corrían tras transcribir: solo cambia la precedencia cuando
+    // varios fallos coinciden (barato-primero), nunca el código de cada fallo.
     #[cfg(feature = "native-stt")]
-    let transcribed = {
-        let lang = resolve_stt_language(from_raw);
-        match state.stt_engine.transcribe(&pcm, Some(lang)) {
-            Ok(t) => t,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(with_sv(json!({
-                        "status": "error",
-                        "reason": "transcription_failed",
-                        "message": e.to_string(),
-                    }))),
-                )
-                    .into_response();
-            }
-        }
-    };
+    let necesita_traduccion = source_iso != target_iso;
     #[cfg(feature = "native-stt")]
-    if transcribed.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(with_sv(json!({
-                "status": "error",
-                "reason": "empty_text",
-                "message": "El texto transcrito está vacío",
-            }))),
-        )
-            .into_response();
-    }
-    #[cfg(feature = "native-stt")]
-    let final_text = if source_iso == target_iso {
-        transcribed.clone()
+    let par_traduccion: Option<String> = if !necesita_traduccion {
+        None
     } else {
-        let pair = match (source_iso.as_str(), target_iso.as_str()) {
-            ("es", "en") => "es-en",
-            ("en", "es") => "en-es",
+        match (source_iso.as_str(), target_iso.as_str()) {
+            ("es", "en") => Some("es-en".to_string()),
+            ("en", "es") => Some("en-es".to_string()),
             _ => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -1027,89 +1134,37 @@ async fn dub_handler(
                 )
                     .into_response();
             }
-        };
-        let ct2_dir = avi_store::ct2_model_dir(pair);
-        if !avi_store::is_ct2_provisioned(pair) {
+        }
+    };
+    #[cfg(feature = "native-stt")]
+    if let Some(par) = par_traduccion.as_deref() {
+        let ct2_dir = avi_store::ct2_model_dir(par);
+        if !avi_store::is_ct2_provisioned(par) {
             return (
                 StatusCode::NOT_FOUND,
                 Json(with_sv(json!({
                     "status": "error",
                     "reason": "model_missing",
-                    "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_archivos_faltantes(pair).join(", ")),
+                    "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_archivos_faltantes(par).join(", ")),
                 }))),
             )
                 .into_response();
         }
-        #[cfg(not(feature = "native-translation"))]
-        {
-            let _ = &ct2_dir;
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(with_sv(json!({
-                    "status": "error",
-                    "reason": "translation_unsupported",
-                    "message": "Este binario se compiló sin soporte de traducción (feature 'native-translation').",
-                }))),
-            )
-                .into_response();
-        }
-        #[cfg(feature = "native-translation")]
-        {
-            if let Some(map) = state.ct2_engine.as_ref() {
-                if let Some(engine) = map.get(pair) {
-                    use avi_core::engine::TranslationEngine;
-                    match engine.translate(&transcribed, &source_iso, &target_iso) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            return (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(with_sv(json!({
-                                    "status": "error",
-                                    "reason": "translation_failed",
-                                    "message": e.to_string(),
-                                }))),
-                            )
-                                .into_response();
-                        }
-                    }
-                } else {
-                    match avi_translation::translate(&transcribed, &source_iso, &target_iso, &ct2_dir) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            return (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(with_sv(json!({
-                                    "status": "error",
-                                    "reason": "translation_failed",
-                                    "message": e.to_string(),
-                                }))),
-                            )
-                                .into_response();
-                        }
-                    }
-                }
-            } else {
-                match avi_translation::translate(&transcribed, &source_iso, &target_iso, &ct2_dir) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(with_sv(json!({
-                                "status": "error",
-                                "reason": "translation_failed",
-                                "message": e.to_string(),
-                            }))),
-                        )
-                            .into_response();
-                    }
-                }
-            }
-        }
-    };
-    // Síntesis bajo synthesis_lock — solo con `native-stt` (el caso `not(stt)` ya retornó)
+    }
+    #[cfg(all(feature = "native-stt", not(feature = "native-translation")))]
+    if necesita_traduccion {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(with_sv(json!({
+                "status": "error",
+                "reason": "translation_unsupported",
+                "message": "Este binario se compiló sin soporte de traducción (feature 'native-translation').",
+            }))),
+        )
+            .into_response();
+    }
     #[cfg(feature = "native-stt")]
-    {
-        if state.tts_engine.binary_path.is_none() || state.tts_engine.model_dir.is_none() {
+    if state.tts_engine.binary_path.is_none() || state.tts_engine.model_dir.is_none() {
         return (
             StatusCode::NOT_FOUND,
             Json(with_sv(json!({
@@ -1120,6 +1175,7 @@ async fn dub_handler(
         )
             .into_response();
     }
+    #[cfg(feature = "native-stt")]
     if !state.voice_store.exists(&voice) {
         return (
             StatusCode::NOT_FOUND,
@@ -1131,94 +1187,270 @@ async fn dub_handler(
         )
             .into_response();
     }
-    let _lock = state.synthesis_lock.lock().await;
-    let profile = VoiceProfile {
-        name: voice.clone(),
-        reference_audio: None,
-        qvoice_path: state.voice_store.find_reference(&voice),
-    };
-    let tmp = std::env::temp_dir().join(format!("avi_daemon_dub_{}.wav", std::process::id()));
-    // H-05: mismo deadline que `synthesize_handler` — acota la síntesis
-    // síncrona con `timeout(SYNTH_DEADLINE)` sobre `spawn_blocking`; al vencer
-    // devuelve `synthesis_timeout` propio SIN matar/reclamar el residente
-    // (evita livelock con un rearranque legítimo en curso).
-    let state_synth = state.clone();
-    let text_for_synth = final_text.clone();
-    let profile_for_synth = profile.clone();
-    let options_for_synth = GenerationOptions::con_temperatura(temperature);
-    let synth_handle = tokio::task::spawn_blocking(move || {
-        state_synth.tts_engine.synthesize_with_options(
-            &text_for_synth,
-            &profile_for_synth,
-            &options_for_synth,
-            Some(&tmp),
-        )
-    });
-    let synth_res = match tokio::time::timeout(SYNTH_DEADLINE, synth_handle).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(join_err)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(with_sv(json!({
-                    "status": "error",
-                    "reason": "synthesis_failed",
-                    "message": format!("El hilo de síntesis falló: {}", join_err),
-                }))),
-            )
-                .into_response();
-        }
-        Err(_elapsed) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(with_sv(json!({
-                    "status": "error",
-                    "reason": "synthesis_timeout",
-                    "message": format!(
-                        "La síntesis venció el deadline de {} s.",
-                        SYNTH_DEADLINE.as_secs()
-                    ),
-                }))),
-            )
-                .into_response();
-        }
-    };
-    match synth_res {
-        Ok(path) => {
-            match std::fs::read(&path) {
-                Ok(wav_bytes) => {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
-                    let _ = std::fs::remove_file(&path);
-                    let transcribed_clone = transcribed.clone();
-                    Json(with_sv(json!({
-                        "status": "dubbed",
-                        "text": transcribed_clone,
-                        "translated": final_text,
-                        "audio_b64": b64,
-                        "voice": voice,
-                    })))
-                    .into_response()
+    #[cfg(feature = "native-stt")]
+    {
+        // R2-A: stream NDJSON — `started` inmediato tras las validaciones
+        // baratas, latidos durante la inferencia, evento final con la forma
+        // contractual actual (`status: "dubbed"`). Sin almacén de trabajos.
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
+        let from_owned = from_raw.to_string();
+        tokio::spawn(async move {
+            emit_ndjson(&tx, json!({ "event": "started", "voice": voice })).await;
+            // Transcripción en `spawn_blocking` con latidos (fase pesada: STT
+            // sobre el audio completo).
+            let estado_stt = state.clone();
+            let trabajo_stt = tokio::task::spawn_blocking(move || {
+                let lang = resolve_stt_language(&from_owned);
+                estado_stt.stt_engine.transcribe(&pcm, Some(lang))
+            });
+            let transcribed = match con_latidos(&tx, "transcribe", trabajo_stt).await {
+                None => return,
+                Some(Ok(Ok(t))) => t,
+                Some(Ok(Err(e))) => {
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "reason": "transcription_failed",
+                            "message": e.to_string(),
+                        }),
+                    )
+                    .await;
+                    return;
                 }
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(with_sv(json!({
-                        "status": "error",
-                        "reason": "io_error",
-                        "message": format!("Error leyendo WAV de síntesis: {}", e),
-                    }))),
+                Some(Err(join_err)) => {
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "reason": "transcription_failed",
+                            "message": format!("El hilo de transcripción falló: {}", join_err),
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            if transcribed.trim().is_empty() {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "empty_text",
+                        "message": "El texto transcrito está vacío",
+                    }),
                 )
-                    .into_response(),
+                .await;
+                return;
             }
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(with_sv(json!({
-                "status": "error",
-                "reason": "synthesis_failed",
-                "message": e.to_string(),
-            }))),
-        )
-            .into_response(),
-        }
+            // Traducción o passthrough (la validación barata ya garantizó par
+            // soportado, CT2 provisionado y feature residente cuando toca).
+            let final_text = if source_iso == target_iso {
+                transcribed.clone()
+            } else {
+                #[cfg(not(feature = "native-translation"))]
+                {
+                    // Red de seguridad inalcanzable en la práctica (la validación
+                    // barata ya devolvió 501): fallo explícito, nunca silencioso.
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "reason": "translation_unsupported",
+                            "message": "Este binario se compiló sin soporte de traducción (feature 'native-translation').",
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+                #[cfg(feature = "native-translation")]
+                {
+                    let par = par_traduccion
+                        .clone()
+                        .expect("la validación barata garantizó el par");
+                    let dir = avi_store::ct2_model_dir(&par);
+                    let estado_ct2 = state.clone();
+                    let texto = transcribed.clone();
+                    let origen = source_iso.clone();
+                    let destino = target_iso.clone();
+                    let trabajo_ct2 = tokio::task::spawn_blocking(move || {
+                        if let Some(map) = estado_ct2.ct2_engine.as_ref() {
+                            if let Some(engine) = map.get(&par) {
+                                use avi_core::engine::TranslationEngine;
+                                engine.translate(&texto, &origen, &destino)
+                            } else {
+                                avi_translation::translate(&texto, &origen, &destino, &dir)
+                            }
+                        } else {
+                            avi_translation::translate(&texto, &origen, &destino, &dir)
+                        }
+                    });
+                    match con_latidos(&tx, "translate", trabajo_ct2).await {
+                        None => return,
+                        Some(Ok(Ok(t))) => t,
+                        Some(Ok(Err(e))) => {
+                            emit_ndjson(
+                                &tx,
+                                json!({
+                                    "event": "error",
+                                    "reason": "translation_failed",
+                                    "message": e.to_string(),
+                                }),
+                            )
+                            .await;
+                            return;
+                        }
+                        Some(Err(join_err)) => {
+                            emit_ndjson(
+                                &tx,
+                                json!({
+                                    "event": "error",
+                                    "reason": "translation_failed",
+                                    "message": format!("El hilo de traducción falló: {}", join_err),
+                                }),
+                            )
+                            .await;
+                            return;
+                        }
+                    }
+                }
+            };
+            // Sin entrega a cliente caído: no sintetizar (sin trabajo huérfano).
+            if tx.is_closed() {
+                return;
+            }
+            // Síntesis bajo synthesis_lock con SYNTH_DEADLINE como cota de fase:
+            // latidos durante la espera, aborto ante desconexión y evento de
+            // fallo explícito al vencer (nunca cierre silencioso). Sin
+            // matar/reclamar el residente (evita livelock con un rearranque
+            // legítimo en curso; la reclamación es de la salud observada de la
+            // siguiente petición).
+            let _lock = state.synthesis_lock.lock().await;
+            // R1-A: reloj de trabajo tras el lock (mide solo la fase de
+            // síntesis, no transcribe/translate; ver nota en T7).
+            let trabajo_t0 = std::time::Instant::now();
+            let profile = VoiceProfile {
+                name: voice.clone(),
+                reference_audio: None,
+                qvoice_path: state.voice_store.find_reference(&voice),
+            };
+            let tmp = std::env::temp_dir().join(format!("avi_daemon_dub_{}.wav", std::process::id()));
+            let texto_synth = final_text.clone();
+            let estado_synth = state.clone();
+            let opciones_synth = GenerationOptions::con_temperatura(temperature);
+            let mut synth_handle = tokio::task::spawn_blocking(move || {
+                estado_synth.tts_engine.synthesize_with_options(
+                    &texto_synth,
+                    &profile,
+                    &opciones_synth,
+                    Some(&tmp),
+                )
+            });
+            let cota_fase = tokio::time::sleep(SYNTH_DEADLINE);
+            tokio::pin!(cota_fase);
+            let synth_res = loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(STREAM_HEARTBEAT) => {
+                        emit_ndjson(&tx, json!({ "event": "heartbeat", "stage": "synthesis" })).await;
+                    }
+                    _ = tx.closed() => {
+                        synth_handle.abort();
+                        return;
+                    }
+                    res = &mut synth_handle => break Some(res),
+                    _ = &mut cota_fase => {
+                        synth_handle.abort();
+                        break None;
+                    }
+                }
+            };
+            match synth_res {
+                None => {
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "reason": "synthesis_timeout",
+                            "message": format!(
+                                "La síntesis venció el deadline de {} s.",
+                                SYNTH_DEADLINE.as_secs()
+                            ),
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+                Some(Ok(Ok(path))) => {
+                    match std::fs::read(&path) {
+                        Ok(wav_bytes) => {
+                            let b64 =
+                                base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
+                            let _ = std::fs::remove_file(&path);
+                            emit_ndjson(
+                                &tx,
+                                json!({
+                                    "event": "result",
+                                    "status": "dubbed",
+                                    "text": transcribed,
+                                    "translated": final_text,
+                                    "audio_b64": b64,
+                                    "voice": voice,
+                                    // R1-A (aditivo): ms de la fase de síntesis
+                                    // tras el lock (lo consume T7).
+                                    "work_ms": trabajo_t0.elapsed().as_millis() as u64,
+                                }),
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            emit_ndjson(
+                                &tx,
+                                json!({
+                                    "event": "error",
+                                    "reason": "io_error",
+                                    "message": format!("Error leyendo WAV de síntesis: {}", e),
+                                }),
+                            )
+                            .await;
+                        }
+                    }
+                }
+                Some(Ok(Err(e))) => {
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "reason": "synthesis_failed",
+                            "message": e.to_string(),
+                        }),
+                    )
+                    .await;
+                }
+                Some(Err(join_err)) => {
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "reason": "synthesis_failed",
+                            "message": format!("El hilo de síntesis falló: {}", join_err),
+                        }),
+                    )
+                    .await;
+                }
+            }
+        });
+
+        // Convertir el receptor en un stream NDJSON (mismo patrón que `synthesize_handler`).
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let body = Body::from_stream(tokio_stream::StreamExt::map(stream, |line| {
+            Ok::<_, std::convert::Infallible>(format!("{}\n", line))
+        }));
+
+        Response::builder()
+            .header("content-type", "application/x-ndjson")
+            .header("x-schema-version", json_emitter::SCHEMA_VERSION)
+            .body(body)
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
     }
 }
 
@@ -1331,8 +1563,12 @@ pub fn precalentar_voz(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
         qvoice_path: state.voice_store.find_reference(voz),
     };
     let _lock = state.synthesis_lock.blocking_lock();
+    // R1-A: reloj de trabajo tras el lock (mide warmup puro, excluye la espera
+    // en cola contra tráfico vivo; el techo sigue siendo el failsafe
+    // `WARMUP_DEADLINE` del llamante).
+    let trabajo_t0 = std::time::Instant::now();
     let tmp = std::env::temp_dir().join(format!("avi_daemon_warmup_{}.wav", std::process::id()));
-    state
+    let resultado = state
         .tts_engine
         .synthesize_with_options(
             "Calentamiento del daemon.",
@@ -1340,9 +1576,15 @@ pub fn precalentar_voz(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
             &GenerationOptions::produccion(),
             Some(&tmp),
         )
-        .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e));
     let _ = std::fs::remove_file(&tmp);
-    Ok(())
+    eprintln!(
+        "[daemon] precalentar_voz '{}': {:.1} s tras locks (éxito={}).",
+        voz,
+        trabajo_t0.elapsed().as_secs_f64(),
+        resultado.is_ok()
+    );
+    resultado.map(|_| ())
 }
 
 /// Inicia el daemon nativo escuchando en `addr`. Construye el estado (propagando
@@ -1443,6 +1685,14 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     Ok(())
 }
 
+/// Umbral de tiempo mínimo de ejecución antes de considerar que una iteración
+/// del daemon realizó progreso (R1-A watchdog de supervisión).
+const SUPERVISION_PROGRESO_MIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Número máximo de caídas rápidas consecutivas (sin progreso) antes de abortar
+/// el bucle de supervisión con fallo explícito.
+const SUPERVISION_RACHA_MAX: u32 = 3;
+
 /// Ejecuta el daemon con supervisión configurable de reinicios.
 ///
 /// Si `auto_restart` es `false`, ejecuta `run_daemon_server` una sola vez.
@@ -1465,8 +1715,18 @@ pub async fn run_supervised(
     if !auto_restart {
         return run_daemon_server(addr, warm_voice).await;
     }
+    // R1-A: watchdog del bucle de supervisión (acotado a este bucle, primitivas
+    // portables `Instant`): una vida del daemon menor a `SUPERVISION_PROGRESO_MIN`
+    // cuenta como caída rápida (sin progreso); `SUPERVISION_RACHA_MAX` caídas
+    // rápidas seguidas abortan con fallo ruidoso en vez de quemar `max_retries`
+    // en un crash-loop silencioso. Sin falsos positivos en el camino feliz: el
+    // apagado graceful retorna `Ok` antes de contar, y una vida larga resetea
+    // la racha (la patología de cola de los tests la corrige el reloj tras
+    // locks del harness, no este watchdog).
+    let mut racha_rapida: u32 = 0;
     let mut retries: u32 = 0;
     loop {
+        let inicio_iteracion = std::time::Instant::now();
         match run_daemon_server(addr, warm_voice.clone()).await {
             Ok(()) => {
                 // Apagado graceful (stop) — no reintentar
@@ -1475,6 +1735,19 @@ pub async fn run_supervised(
             Err(e) => {
                 if retries >= max_retries {
                     return Err(e);
+                }
+                if inicio_iteracion.elapsed() < SUPERVISION_PROGRESO_MIN {
+                    racha_rapida += 1;
+                } else {
+                    racha_rapida = 0;
+                }
+                if racha_rapida >= SUPERVISION_RACHA_MAX {
+                    return Err(anyhow::anyhow!(
+                        "Bucle de supervisión sin progreso: {} caídas con vida <{} s (último: {}). Revisa la causa raíz en vez de reintentar.",
+                        racha_rapida,
+                        SUPERVISION_PROGRESO_MIN.as_secs(),
+                        e
+                    ));
                 }
                 retries += 1;
                 // Backoff 500ms * 2^(retries-1) capado a 4000ms
@@ -1575,10 +1848,70 @@ mod tests {
         let _router = build_router_with_state(state);
     }
 
+    /// R2-A: `con_latidos` entrega el resultado del trabajo inmediato (sin
+    /// exigir latidos cuando el trabajo es más rápido que el intervalo).
+    #[tokio::test]
+    async fn con_latidos_entrega_resultado_inmediato() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(32);
+        let trabajo = tokio::task::spawn_blocking(|| 42u32);
+        let res = con_latidos(&tx, "test", trabajo)
+            .await
+            .expect("sin desconexión hay resultado");
+        assert_eq!(res.expect("join ok"), 42);
+    }
+
+    /// R2-A: ante desconexión del cliente (`rx` dropeado) el trabajo se aborta
+    /// y se retorna `None` sin esperar su completitud (sin reloj ajustado: el
+    /// trabajo dormiría 30 s y el retorno debe llegar muy antes).
+    #[tokio::test]
+    async fn con_latidos_aborta_ante_desconexion() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
+        drop(rx);
+        let trabajo =
+            tokio::task::spawn_blocking(|| {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                1u32
+            });
+        let inicio = std::time::Instant::now();
+        let res = con_latidos(&tx, "test", trabajo).await;
+        assert!(res.is_none(), "desconectado debe abortar con None");
+        assert!(
+            inicio.elapsed() < std::time::Duration::from_secs(10),
+            "el aborto no espera al trabajo: {:?}",
+            inicio.elapsed()
+        );
+    }
+
+    /// R2-A: durante un trabajo de 2 s se emite al menos un latido `heartbeat`
+    /// con la etapa (cota holgada: intervalo 500 ms; el margen absorbe
+    /// planificación lenta sin falsos positivos).
+    #[tokio::test]
+    async fn con_latidos_emite_latido_durante_trabajo_largo() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
+        let trabajo = tokio::task::spawn_blocking(|| {
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+            "hecho"
+        });
+        let res = con_latidos(&tx, "etapa_test", trabajo)
+            .await
+            .expect("sin desconexión hay resultado");
+        assert_eq!(res.expect("join ok"), "hecho");
+        drop(tx);
+        let mut latidos = 0;
+        while let Some(linea) = rx.recv().await {
+            let ev: Value =
+                serde_json::from_str(&linea).expect("cada evento es JSON");
+            if ev["event"] == "heartbeat" {
+                assert_eq!(ev["stage"], "etapa_test");
+                latidos += 1;
+            }
+        }
+        assert!(latidos >= 1, "trabajo de 2 s debe latir al menos una vez");
+    }
+
     /// Dub handler con audio_missing retorna error coherente sin panic
     #[tokio::test]
-    async fn dub_handler_audio_missing() {
-        use axum::body::Body;
+    async fn dub_handler_audio_missing() {        use axum::body::Body;
         use tower::ServiceExt;
         let state = Arc::new(DaemonState::new().expect("daemon state"));
         let app = build_router_with_state(state);

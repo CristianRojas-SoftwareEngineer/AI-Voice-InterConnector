@@ -177,6 +177,34 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   incompatible con `--json` (exit 2) y exige TTY (exit 2 sin ella) — captura
   siempre client-side, `crates/avi-audio`, `src/main.rs`; tests golden nuevos
   para ambos hallazgos en `tests/cli_golden.rs`.
+- feat(daemon): streaming NDJSON con latidos en clonado y doblaje (R2-A, H-15):
+  `POST /voices/clone` y `POST /dub` responden con stream NDJSON
+  (`application/x-ndjson`) emitiendo `started` inmediato tras validaciones
+  baratas, latidos periódicos cada 500 ms (`STREAM_HEARTBEAT`) vía `con_latidos`
+  en fases pesadas, y evento final `result` preservando el payload contractual
+  (`precomputed: true` en clone, `status: "dubbed"` en dub) o `error`. Clientes
+  CLI consumen con timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`)
+  y failsafe total de 120 s (`STREAM_TOTAL_DEADLINE`). `AbortHandle` en servidor
+  cancela la inferencia ante desconexión del cliente — `crates/avi-daemon/src/lib.rs`,
+  `src/main.rs`; tests invertidos en `tests/cli_golden.rs` y `crates/avi-daemon/tests/golden.rs`.
+- feat(daemon): contabilidad portable de PID del residente en `daemon.pid` y
+  retiro de `netstat`/`pkill` (R3-A, H-15): extensión de `daemon.pid` con el
+  campo `resident_pid` plano; persistencia atómica por tmp+rename en
+  `arrancar_residente` (`crates/avi-tts`); parada unificada (`stop_daemon_and_resident`),
+  reclamo degradado (`reclamar_residual_degradado`) y reaper del harness
+  (`barrer_residente_por_puerto`) liquidan al residente por su PID registrado
+  con verificación por puerto 8766 cerrado, eliminando dependencias de
+  `netstat`, `pkill` y `taskkill /IM` — `src/main.rs`, `crates/avi-tts/src/lib.rs`,
+  `tests/cli_golden.rs`.
+- feat(tests): reloj tras locks, watchdog de supervisión y tests de rendimiento
+  dedicados (R1-A, H-14): arranque del reloj de trabajo inmediatamente tras
+  adquirir locks en producto (`state.synthesis_lock`) y harness (`bloquear_estado`,
+  `lock_tts`), desacoplando la contención en cola de los techos failsafe
+  (`GUARD_PESADO_SECS` 180 s, `GUARD_DUB_SECS` 360 s); watchdog de supervisión en
+  `run_supervised` (`SUPERVISION_PROGRESO_MIN` 10 s, `SUPERVISION_RACHA_MAX` 3)
+  para aborto explícito ante caídas rápidas; tests de rendimiento dedicados
+  `perf_*` en `tests/cli_golden.rs` — `crates/avi-daemon/src/lib.rs`,
+  `tests/cli_golden.rs`.
 
 ### Documentación
 

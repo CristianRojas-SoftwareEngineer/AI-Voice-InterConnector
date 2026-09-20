@@ -35,9 +35,9 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 | `/synthesize` | POST | Síntesis con progreso streaming NDJSON, evento final `result` (`audio_b64`, WAV 24 kHz) |
 | `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), una sola pasada sin VAD (feature `native-stt`) |
 | `/translate` | POST | Traducción CT2 residente (feature `native-translation`) |
-| `/voices/clone` | POST | Clonado con warm-on-clone (`{name, speech, precomputed:true}` = precarga en caliente iniciada; sin endpoint `precompute` separado) |
-| `/dub` | POST | Pipeline transcribe→translate→synthesize |
-| `/shutdown` | POST | Apagado limpio (misma ruta que Ctrl+C/SIGTERM: kill preciso del residente + `notify_one()`) |
+| `/voices/clone` | POST | Clonado con streaming NDJSON y warm-on-clone (`{name, speech, precomputed:true}` = precarga en caliente iniciada; sin endpoint `precompute` separado) |
+| `/dub` | POST | Pipeline transcribe→translate→synthesize con streaming NDJSON y latidos |
+| `/shutdown` | POST | Apagado limpio (misma ruta que Ctrl+C/SIGTERM: kill preciso del residente por PID registrado + `notify_one()`) |
 
 Son 7 rutas públicas (podados `GET /voices` y `POST /voices/precompute`; sin legado, ver `docs/CLI/commands/DAEMON.md`).
 
@@ -61,10 +61,13 @@ Despacho desde el CLI: `--daemon` fuerza IPC (exit 5 si no responde), `--no-daem
 
 ## Streaming NDJSON
 
-`POST /synthesize` responde `Content-Type: application/x-ndjson`: eventos de
-progreso línea a línea y un objeto final `{"type":"result","audio_b64":…}` con el
-WAV en base64. El cliente del CLI reconstruye el WAV y lo persiste/reproduce según
-los flags.
+Las operaciones de síntesis (`POST /synthesize`), clonado (`POST /voices/clone`)
+y doblaje (`POST /dub`) responden con `Content-Type: application/x-ndjson`:
+1. Evento `started` inmediato tras validar parámetros y antes del trabajo pesado.
+2. Latidos periódicos `{"event":"heartbeat"}` cada 500 ms emitidos mientras la inferencia en segundo plano continúa (y eventos de `progress`).
+3. Evento final `{"event":"result", ...}` con la carga útil en su formato contractual (`audio_b64` para síntesis y dub; `name`, `speech`, `precomputed:true` para clonado) o `{"event":"error", ...}` ante fallos.
+
+El cliente del CLI consume el stream con un timeout de inactividad entre latidos de 1500 ms y un deadline failsafe de 120 s. Si el cliente se desconecta, el servidor aborta la inferencia en curso mediante `AbortHandle`.
 
 ## Resolución de binario y modelo
 
@@ -82,6 +85,6 @@ Este orden garantiza que `daemon start` calienta desde cualquier `CWD` sin neces
 - **Transporte HTTP (no stdio)**: mismo contrato que el canal Python previo; clientes externos no notan el cambio.
 - **Captura siempre de cliente**: el daemon recibe PCM base64, nunca rutas ni dispositivos.
 - **Sin multi-instancia**: puerto fijo; correr dos daemons no está soportado.
-- **Motores residentes**: el TTS habla además con su propio servidor Qwen3-TTS (`127.0.0.1:8766`) gestionado por `avi-tts` (D-04: ante `Parado` con 8766 abierto se reclama su árbol con preciso-primero e imagen solo como último recurso verificado).
+- **Motores residentes**: el TTS habla además con su propio servidor Qwen3-TTS (`127.0.0.1:8766`) gestionado por `avi-tts`. Su PID se persiste en `daemon.pid` (`resident_pid` plano), permitiendo que la parada, el reclamo y el reaper liquiden su proceso de forma precisa por PID registrado + verificación de puerto 8766 cerrado, sin recurrir a `netstat` ni `pkill`.
 
 Ver también [docs/DESIGN.md](DESIGN.md) y el contrato normativo [docs/CLI/CONTRACT.md](CLI/CONTRACT.md).

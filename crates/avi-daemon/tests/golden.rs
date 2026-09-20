@@ -329,8 +329,11 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
     }
 }
 
-/// Warm-on-clone (A): `POST /voices/clone` por daemon devuelve `precomputed: true`
-/// («precarga en caliente iniciada»; la completitud se refleja en `/health`).
+/// Warm-on-clone (A) + R2-A: `POST /voices/clone` por daemon sirve un stream
+/// NDJSON (`started` → latidos → `result`), y el evento final conserva
+/// `precomputed: true` («precarga en caliente iniciada»; la completitud se
+/// refleja en `/health`). Invierte el «éxito inmediato»: el test solo pasa si
+/// la secuencia completa llega hasta el final.
 /// Gate: modelo base TTS provisionado (`base_model_dir`), sin el cual el handler
 /// retorna `model_missing` en vez de clonar.
 #[tokio::test]
@@ -357,9 +360,50 @@ async fn voices_clone_daemon_precomputed_true() {
     ))
     .await;
     assert_eq!(status, StatusCode::OK);
-    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
-    assert_eq!(actual["name"], Value::String(name.clone()));
-    assert_eq!(actual["precomputed"], Value::Bool(true));
+    // El cuerpo es NDJSON: una línea JSON por evento.
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let eventos: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .collect();
+    assert!(!eventos.is_empty(), "debe haber al menos un evento");
+    // Invariante de envelope: schema_version=3 en todo evento.
+    for e in &eventos {
+        assert_eq!(
+            e["schema_version"],
+            Value::String("3".to_string()),
+            "todo evento NDJSON lleva schema_version"
+        );
+    }
+    // Aceptación inmediata: el primer evento es `started` con el nombre.
+    assert_eq!(
+        eventos.first().unwrap()["event"],
+        Value::String("started".to_string()),
+        "el stream debe comenzar con `started`"
+    );
+    assert_eq!(eventos.first().unwrap()["name"], Value::String(name.clone()));
+    // Evento final `result` con la forma contractual actual (`precomputed: true`).
+    let final_event = eventos.last().unwrap();
+    assert_eq!(
+        final_event["event"],
+        Value::String("result".to_string()),
+        "el stream debe terminar con `result`: {:?}",
+        final_event
+    );
+    assert_eq!(final_event["name"], Value::String(name.clone()));
+    assert_eq!(final_event["precomputed"], Value::Bool(true));
+    // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
+    if eventos.len() > 2 {
+        for e in &eventos[1..eventos.len() - 1] {
+            let ev = e["event"].as_str().unwrap_or("");
+            assert!(
+                ev == "heartbeat" || ev == "progress",
+                "evento intermedio debe ser latido o progreso: {:?}",
+                e
+            );
+        }
+    }
     let _ = VoiceStore::new().remove(&name);
 }
 

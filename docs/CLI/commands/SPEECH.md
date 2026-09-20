@@ -8,10 +8,10 @@ daemon.
 
 Implementación: `handle_speech` (`src/main.rs:973`), enum `SpeechCommands`
 (`src/main.rs:218-319`). Helpers de despacho al daemon: `route_to_daemon`
-(`src/main.rs:3043`), `transcribe_via_daemon` (`src/main.rs:3066`),
-`daemon_synthesize_wav` (`src/main.rs:3216`), `synthesize_via_daemon`
-(`src/main.rs:3312`), `say_via_daemon` (`src/main.rs:3405`), `dub_via_daemon`
-(`src/main.rs:3539`), `dub_compose_via_daemon` (`src/main.rs:3685`, fallback si
+(`src/main.rs:3072`), `transcribe_via_daemon` (`src/main.rs:3095`),
+`daemon_synthesize_wav` (`src/main.rs:3245`), `synthesize_via_daemon`
+(`src/main.rs:3458`), `say_via_daemon` (`src/main.rs:3551`), `dub_via_daemon`
+(`src/main.rs:3689`), `dub_compose_via_daemon` (`src/main.rs:3846`, fallback si
 el daemon responde 404 en `/dub`, es decir, un binario viejo sin esa ruta).
 
 ---
@@ -37,7 +37,7 @@ comando raíz.
 | `speech play` | No | Sí (`require_local`) |
 | `speech remove` | No | Sí (`require_local`) |
 
-`require_local` (`src/main.rs:3052`) hace que `list`/`play`/`remove` con
+`require_local` (`src/main.rs:3081`) hace que `list`/`play`/`remove` con
 `--daemon` forzado fallen con `daemon_unreachable` (exit 5) en vez de
 ejecutarse localmente: son operaciones sobre `SpeechStore`, que el daemon no
 expone por HTTP.
@@ -46,13 +46,13 @@ expone por HTTP.
 
 ## Despacho tri-modal (subcomandos delegables)
 
-`route_to_daemon` (`src/main.rs:3043`):
+`route_to_daemon` (`src/main.rs:3072`):
 
 | `DaemonMode` | Comportamiento |
 |---|---|
 | `ForceDaemon` (`--daemon`) | Siempre intenta el daemon; si el `POST` falla, exit 5 `daemon_unreachable` |
 | `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
-| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, `src/main.rs:3036`) con deadline corto; si responde, delega; si no, cae a directo |
+| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, `src/main.rs:3065`) con deadline corto; si responde, delega; si no, cae a directo |
 
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
 lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
@@ -78,7 +78,7 @@ Lista las locuciones persistidas en `SpeechStore`
 Definición: `SpeechCommands::List { voice: Option<String> }`
 (`src/main.rs:220-224`). Con `--voice`, el handler valida el identificador
 con `es_identificador_valido` (exit 2 `invalid_identifier`,
-`src/main.rs:2894`) y la existencia de la voz con `VoiceStore::exists`
+`src/main.rs:2901`) y la existencia de la voz con `VoiceStore::exists`
 (exit 3 `voice_not_found`, `crates/avi-store/src/lib.rs:176`) antes de leer;
 sin `--voice` no valida nada y devuelve todo. (Cierre del drift H-10.)
 
@@ -115,8 +115,8 @@ Validaciones puras antes de despachar:
   devuelve lo grabado hasta ese punto con exit **0** (no es un error). El
   panic previo por `duration` ausente (hallazgo H-08) ya no existe.
 
-Despacho (`src/main.rs:1039-1112`):
-1. `route_to_daemon` → si aplica, `transcribe_via_daemon` (`src/main.rs:3045`):
+Despacho (`src/main.rs:1036-1142`):
+1. `route_to_daemon` → si aplica, `transcribe_via_daemon` (`src/main.rs:3095`):
    codifica el PCM a `audio_b64`, hace `POST /transcribe` y emite el mismo
    envelope que la rama local.
 2. Rama directa: verifica que `parakeet-tdt-v3/nemo128.onnx` exista (si no,
@@ -134,7 +134,7 @@ pasa verbatim. `ParakeetEngine` solo transcribe, nunca traduce.
 { "text": "<texto transcrito>", "source": "<source_language tal cual se pasó>" }
 ```
 
-(`src/main.rs:1115` local, `src/main.rs:3100` vía daemon — mismo envelope en
+(`src/main.rs:1138` local, `src/main.rs:3129` vía daemon — mismo envelope en
 ambas rutas.)
 
 ---
@@ -260,14 +260,16 @@ Validaciones puras (`src/main.rs:1346-1377`, en este orden):
 4. Ni `--audio` ni `--mic`: exit 2 `usage_error`.
 5. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
 
-Despacho: si aplica, `dub_via_daemon` (`src/main.rs:3518`) hace `POST /dub`
-con timeout de 10 s (`src/main.rs:3559`, "dub puede tardar por síntesis").
+Despacho: si aplica, `dub_via_daemon` (`src/main.rs:3689`) hace `POST /dub`
+esperando cabeceras de respuesta en ≤1500 ms y consumiendo el stream NDJSON
+con un timeout de inactividad entre latidos de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`)
+y un deadline total failsafe de 120 s (`STREAM_TOTAL_DEADLINE`).
 Si el daemon responde `404` (binario viejo sin esa ruta), degrada
-automáticamente a `dub_compose_via_daemon` (`src/main.rs:3664`): transcribe
+automáticamente a `dub_compose_via_daemon` (`src/main.rs:3846`): transcribe
 vía `POST /transcribe`, traduce localmente con `avi_translation::translate` si
 `source != target`, y sintetiza vía `POST /synthesize` (`daemon_synthesize_wav`).
 
-Rama directa (`src/main.rs:1410-1551`, requiere feature `native-stt`; sin
+Rama directa (`src/main.rs:1418-1573`, requiere feature `native-stt`; sin
 ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
 4) y el modelo de síntesis provisionado (`require_model_provisioned`) →
 captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito está
@@ -280,27 +282,26 @@ sano (exit 4 `model_missing` con los ficheros faltantes si no); sin el feature
 
 ### `POST /dub` (daemon)
 
-Handler `dub_handler` (`crates/avi-daemon/src/lib.rs:911`). Acepta
+Handler `dub_handler` (`crates/avi-daemon/src/lib.rs:1041`). Acepta
 `{audio_b64, voice?, from|source_language?, to|target_language?, temperature?}`
 (`from`/`source_language` son alias del mismo campo, igual `to`/`target_language`;
-default `voice="default"`, default idiomas `"es"`). Pipeline interno:
-transcribe con `state.stt_engine` → traduce con el CT2 residente
-(`state.ct2_engine`) si está cargado, si no con `avi_translation::translate`
-como fallback → sintetiza bajo `state.synthesis_lock` con
-`GenerationOptions::con_temperatura` y un deadline `SYNTH_DEADLINE` sobre
-`spawn_blocking` (mismo mecanismo que `/synthesize`, emite `synthesis_timeout`
-sin matar el residente si vence). Respuesta de éxito:
+default `voice="default"`, default idiomas `"es"`). Tras validar barato en JSON
+plano (audio, formatos, modelos e idiomas), abre una respuesta streaming NDJSON
+(`application/x-ndjson`) emitiendo `{"event":"started", "voice":"..."}`.
+
+Pipeline interno con latidos (`con_latidos`, 500 ms entre `heartbeat` y `AbortHandle`
+ante desconexión):
+1. Transcribe en `spawn_blocking` con `state.stt_engine` (fase `"transcribe"`).
+2. Si `source != target`, traduce en `spawn_blocking` con el CT2 residente (`state.ct2_engine`) o `avi_translation::translate` (fase `"translate"`).
+3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::con_temperatura` y deadline `SYNTH_DEADLINE` (8 s) sobre `spawn_blocking` (fase `"synthesis"`). Si el deadline vence, emite evento `error` con `synthesis_timeout` sin derribar el residente.
+
+Al finalizar, emite el evento `result`:
 
 ```json
-{ "status": "dubbed", "text": "<transcrito>", "translated": "<texto final tras traducir/passthrough>", "audio_b64": "<WAV base64>", "voice": "<voz>" }
+{ "event": "result", "status": "dubbed", "text": "<transcrito>", "translated": "<texto final tras traducir/passthrough>", "audio_b64": "<WAV base64>", "voice": "<voz>", "work_ms": 1234 }
 ```
 
-En error, `{"status":"error", "reason": "<motivo>", "message": "..."}` con el
-código HTTP correspondiente (`audio_missing`/`audio_decode_error` → 400,
-`model_missing`/`voice_not_found` → 404, `transcription_failed`/
-`translation_failed`/`synthesis_failed`/`synthesis_timeout`/`io_error` → 500,
-`stt_unsupported`/`translation_unsupported` → 501 si el binario del daemon se
-compiló sin esos features).
+En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo>", "message": "..."}` con el mapeo contractual correspondiente (`audio_missing`/`audio_decode_error`/`empty_text`/`unsupported_language_pair` → exit 2, `model_missing` → exit 4, `voice_not_found` → exit 3, `transcription_failed` → exit 10, `translation_failed` → exit 9, `synthesis_failed`/`synthesis_timeout`/`stt_unsupported`/`translation_unsupported` → exit 1).
 
 ### Contrato `--json` (CLI)
 
@@ -308,8 +309,8 @@ compiló sin esos features).
 { "status": "dubbed", "text": "<texto final, traducido o passthrough>", "audio_path": "<ruta temporal del WAV reproducido>" }
 ```
 
-(`src/main.rs:1541-1546` local, `src/main.rs:3652-3657` vía `/dub`,
-`src/main.rs:3785-3790` vía composición — mismo envelope en las tres rutas;
+(`src/main.rs:1564-1569` local, `src/main.rs:3834-3840` vía `/dub`,
+`src/main.rs:3968-3974` vía composición — mismo envelope en las tres rutas;
 nótese que el campo del CLI se llama `text`, aunque el handler del daemon
 distingue internamente `text`/`translated`.)
 
