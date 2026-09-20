@@ -390,7 +390,9 @@ remove` no tocan el modelo ni el daemon: no declaran estos flags.
 
 Sintetiza texto y lo guarda en el almacén de habla sintética
 (`data_root()/synthetic-speech/<voz>/<etiqueta>.wav`); a diferencia de
-`speech say`, siempre persiste.
+`speech say`, persiste por defecto. La excepción es `--play`: su bucle
+interactivo permite rechazar y descartar la toma, en cuyo caso el comando
+termina con exit 0 sin guardar nada (ver «El bucle de `--play`» más abajo).
 
 ```bash
 ai-voice-interconnector speech synthesize --text "Bienvenido" --label saludo
@@ -574,7 +576,11 @@ necesitas el texto en otro idioma, encadena `translate` por separado.
 `--audio` y `--mic` son **mutuamente excluyentes y uno de los dos es
 obligatorio**. Con `--mic`, la grabación es **push-to-talk** por defecto
 (termina al presionar Enter); `--duration N` fuerza una grabación de duración
-fija en segundos y solo es válido junto a `--mic`.
+fija en segundos y solo es válido junto a `--mic`. El push-to-talk tiene un
+techo de seguridad configurable con la variable de entorno
+`AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s): al alcanzarlo, la grabación se
+detiene, se avisa por stderr y se devuelve lo grabado hasta ese punto con
+exit **0** (no es un error).
 
 ```bash
 ai-voice-interconnector speech transcribe --audio grabacion.wav --source-language es-latam
@@ -590,8 +596,9 @@ ai-voice-interconnector speech transcribe --mic --duration 5 --source-language e
 Hola, ¿cómo estás?
 ```
 
-Con `--mic` y sin `--duration`, el comando espera en silencio a que el
-usuario presione Enter antes de transcribir.
+Con `--mic` y sin `--duration`, el comando avisa por stderr al iniciar la
+grabación y captura en modo push-to-talk hasta que el usuario presiona Enter
+(o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS`) antes de transcribir.
 
 Con `--json`, emite `{"text", "source"}` y nada por stdout salvo ese objeto.
 `source` es el **token CLI verbatim** de `--source-language` (p. ej.
@@ -642,7 +649,9 @@ de síntesis; no guarda nada en el almacén (sin `--label` ni `--json`).
 `--audio` y `--mic` son **mutuamente excluyentes y exactamente una de las dos
 es requerida**. Con `--mic`, la grabación es **push-to-talk** por defecto
 (termina al presionar Enter); `--duration N` fuerza una grabación de duración
-fija en segundos y solo es válido junto a `--mic`.
+fija en segundos y solo es válido junto a `--mic`. El mismo techo
+`AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s) aplica aquí: al vencer, detiene la
+grabación, avisa por stderr y continúa con lo grabado (exit **0**).
 
 ```bash
 ai-voice-interconnector speech dub --mic --source-language es-latam --target-language en -v mi_voz
@@ -651,8 +660,9 @@ ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --
 
 **Qué esperar:** transcribe tu habla al texto, lo traduce si procede y
 reproduce la síntesis con la voz (`default` si no pasas `-v`). Con `--mic` y
-sin `--duration`, el comando espera en silencio a que presiones Enter antes de
-transcribir.
+sin `--duration`, el comando avisa por stderr al iniciar la grabación y
+captura en modo push-to-talk hasta que presiones Enter (o hasta el techo
+`AVI_PUSH_TO_TALK_MAX_SECS`) antes de transcribir.
 
 **Opciones:**
 - `--audio, -a`: Ruta del archivo WAV hablado (mutuamente excluyente con `--mic`; exactamente una de las dos es requerida; alias: `--file`)

@@ -1,8 +1,8 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Última actualización**: 2026-09-20 — cierre de H-07 (restauración de precarga) y saneo de residuos Python en `docs/CLI/CONTRACT.md` y `docs/DAEMON-MODE.md`.
-- **Estado**: 10 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅, H-06 ✅, H-07 ✅) — 6 pendientes (H-08, H-10–H-12, H-14, H-15)
+- **Última actualización**: 2026-09-20 — cierre de H-08 (push-to-talk real con techo `AVI_PUSH_TO_TALK_MAX_SECS`) y H-12 (bucle interactivo de `--play`).
+- **Estado**: 12 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅, H-06 ✅, H-07 ✅, H-08 ✅, H-12 ✅) — 4 pendientes (H-10, H-11, H-14, H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -127,15 +127,15 @@
 - **Impacto resuelto**: eliminado el cold-start en los flujos clonar→sintetizar y reinicio-y-reutilizar; `precomputed` y `/health` reportan la verdad; sin residuos del endpoint purgado. Cobertura: `voices_clone_daemon_precomputed_true` y `warm_voice_fail_fast_y_aceptacion` (`crates/avi-daemon/tests/golden.rs`).
 - **Decisión requerida**: resuelta — restaurar por adición (no reimplementar el endpoint `/voices/precompute`; la precarga vive en el handler de clonado y en el arranque configurable). `schema_version` sin bump (misma forma del envelope, solo se amplía el dominio de `precomputed`).
 
-### H-08 — Panic con `--mic` sin `--duration` en terminal (validado 2026-09-10)
+### H-08 — Panic con `--mic` sin `--duration` en terminal (cerrado 2026-09-20)
 
-- **Severidad**: 🟠 Alta · **Área**: CLI (`src/main.rs`, validación `:859-875` y `:1163-1176` frente a `duration.expect("validado arriba")` en `:923`, `:1234`, `:2820`, `:3258`)
-- **Síntoma**: en TTY, `speech transcribe --mic` o `dub --mic` sin `--duration` (el caso push-to-talk que `USAGE.md` documenta como funcional) no pide Enter ni usa default: atraviesa la validación —que exime expresamente el TTY— y revienta en `Option::expect` con panic, fuera de toda disciplina de exit codes del contrato.
-- **Causa**: demostrada por lectura (2026-09-10): la exención TTY existe en la validación pero su implementación no existe en ningún path —no hay espera de Enter ni duración medida en `src/main.rs` (búsqueda de `Enter|push_to_talk` vacía salvo el comentario)—. Sin TTY el mismo caso sale limpio con exit 2; en TTY es panic en las 4 vías (transcribe/dub × directo/daemon). Nota: `capture_16k_mono_pcm` en sí (`crates/avi-audio/src/lib.rs:179-246`) no tiene panics alcanzables con dispositivos reales (solo `channels == 0` o mutex envenenado, teóricos); el defecto está aguas arriba, en el despacho.
-- **Impacto**: crash con stack trace en el flujo interactivo documentado; rompe el contrato de exit codes.
-- **Corrección propuesta**: implementar el push-to-talk prometido (espera de Enter + duración medida) o exigir `--duration` también en TTY y corregir `USAGE.md`; convertir los 4 `expect` en error exit 2 como defensa.
-- **Relaciones**: roza H-12 (ambos tocan UX interactiva de audio); independiente del resto.
-- **Decisión requerida**: sí — ¿push-to-talk real o `--duration` obligatorio?
+- **Severidad**: 🟠 Alta · **Área**: CLI (`speech transcribe`/`speech dub`, captura en `crates/avi-audio`) · **Estado**: ✅ resuelto por implementación (push-to-talk real, 2026-09-20)
+- **Síntoma (original)**: en TTY, `speech transcribe --mic` o `dub --mic` sin `--duration` (el caso push-to-talk que `USAGE.md` documentaba como funcional) no pedía Enter ni usaba default: atravesaba la validación —que eximía expresamente el TTY— y reventaba en `Option::expect` con panic, fuera de toda disciplina de exit codes del contrato.
+- **Causa (original)**: la exención TTY existía en la validación pero su implementación no existía en ningún path —no había espera de Enter ni duración medida—; el defecto estaba aguas arriba, en el despacho, no en la primitiva de captura.
+- **Corrección aplicada**: implementado el push-to-talk real en `crates/avi-audio`: graba hasta que el usuario presiona Enter, con un techo de seguridad configurable por la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s) que, al vencer, detiene la grabación, avisa por stderr y devuelve lo grabado hasta ese punto con exit 0 (no es error); al iniciar la grabación se emite un aviso mínimo por stderr (nunca espera en silencio). El panic por `duration` ausente desapareció en las 4 vías (transcribe/dub × directo/daemon). La captura sigue ocurriendo siempre en el cliente.
+- **Impacto resuelto**: el flujo interactivo documentado ya no crashea; el contrato de exit codes se respeta (exit 0 normal, exit 0 al vencer el techo, exit 2 sin TTY y sin `--duration`).
+- **Relaciones**: cerrado junto con H-12 (ambos tocaban UX interactiva de audio).
+- **Decisión requerida**: resuelta — push-to-talk real con techo de seguridad (D-2), no `--duration` obligatorio.
 
 ## 4. Medios
 
@@ -169,14 +169,14 @@
 - **Relaciones**: ninguna (aislado).
 - **Decisión requerida**: no.
 
-### H-12 — `speech synthesize --play` sin flujo interactivo
+### H-12 — `speech synthesize --play` sin flujo interactivo (cerrado 2026-09-20)
 
-- **Severidad**: ⚪ Baja · **Área**: CLI/UX (contrato §4 `:185-203`, `src/main.rs:1049-1059` reproduce y guarda incondicionalmente)
-- **Síntoma**: el contrato promete bucle de 4 opciones (reproducir, aceptar, regenerar, descartar); el binario reproduce y guarda sin preguntar.
-- **Impacto**: UX documentada inexistente; cualquier cambio roza el humo de audio de los tests.
-- **Corrección propuesta**: implementar el loop o actualizar §4 a `play→save→done` con decisión explícita.
-- **Relaciones**: roza los tests de audio (el humo de `say`) y H-08 (UX interactiva) · requiere la decisión de H-08 antes: ambos definen la UX interactiva de audio y no deben diseñarse por separado · hacerlo tras estabilizar ciclo de vida.
-- **Decisión requerida**: sí — ¿loop o desdocumentar?
+- **Severidad**: ⚪ Baja · **Área**: CLI/UX (contrato §4, `speech synthesize --play`) · **Estado**: ✅ resuelto por implementación (bucle interactivo, 2026-09-20)
+- **Síntoma (original)**: el contrato prometía bucle de 4 opciones (reproducir, aceptar, regenerar, descartar); el binario reproducía y guardaba sin preguntar.
+- **Corrección aplicada**: implementado el bucle interactivo de 4 opciones (reproducir de nuevo / aceptar y guardar / rechazar y regenerar / rechazar y descartar), con menú y prompts por stderr, client-side. Al aceptar, recomprueba la colisión de etiqueta en el instante de guardar (exit 6 sin `--force`, por si quedó ocupada mientras el bucle esperaba respuesta). `--play` sigue siendo incompatible con `--json` (exit 2) y exige terminal interactiva en la entrada estándar (exit 2 sin TTY, antes de sintetizar).
+- **Impacto resuelto**: la UX documentada ahora existe y coincide con el contrato; «rechazar y descartar» y Ctrl-D son salidas de primera clase (exit 0, sin persistir).
+- **Relaciones**: cerrado junto con H-08 (ambos definían la UX interactiva de audio).
+- **Decisión requerida**: resuelta — se implementó el loop.
 
 ### H-13 — Rama alternativa del gate de traducción sin evidencia
 

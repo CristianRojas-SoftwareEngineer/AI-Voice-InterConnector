@@ -236,14 +236,112 @@ impl AudioService {
         drop(stream);
 
         let raw_samples = recorded_samples.lock().unwrap().clone();
-
-        // Convertir a Mono + Resample a 16kHz + convertir a int16
-        let mono_samples = to_mono(&raw_samples, channels);
-        let resampled = resample_linear(&mono_samples, sample_rate, 16000);
-        let pcm_i16 = f32_to_i16(&resampled);
-
-        Ok(pcm_i16)
+        Ok(finish(raw_samples, channels, sample_rate))
     }
+
+    /// Capturar audio del micrófono en modo push-to-talk: graba hasta que el
+    /// usuario pulse Enter, con un techo de seguridad configurable por
+    /// `AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s) que detiene la grabación y
+    /// devuelve lo capturado hasta ese punto (no es un error). Comparte
+    /// formato de salida (16 kHz, mono, int16) con `capture_16k_mono_pcm`.
+    pub fn capture_16k_mono_pcm_until_enter(&self) -> Result<Vec<i16>> {
+        let device = self
+            .host
+            .default_input_device()
+            .ok_or_else(|| anyhow!("No hay dispositivo de entrada predeterminado"))?;
+
+        let config = device.default_input_config()?;
+        let sample_rate = config.sample_rate().0;
+        let channels = config.channels() as usize;
+
+        let recorded_samples = Arc::new(Mutex::new(Vec::<f32>::new()));
+
+        let stream = match config.sample_format() {
+            SampleFormat::F32 => {
+                let rec = recorded_samples.clone();
+                device.build_input_stream(
+                    &config.config(),
+                    move |data: &[f32], _| {
+                        let mut buffer = rec.lock().unwrap();
+                        buffer.extend_from_slice(data);
+                    },
+                    |err| eprintln!("Error en captura de micrófono: {}", err),
+                    None,
+                )?
+            }
+            SampleFormat::I16 => {
+                let rec = recorded_samples.clone();
+                device.build_input_stream(
+                    &config.config(),
+                    move |data: &[i16], _| {
+                        let mut buffer = rec.lock().unwrap();
+                        buffer.extend(data.iter().map(|&s| s as f32 / 32768.0));
+                    },
+                    |err| eprintln!("Error en captura de micrófono: {}", err),
+                    None,
+                )?
+            }
+            SampleFormat::U16 => {
+                let rec = recorded_samples.clone();
+                device.build_input_stream(
+                    &config.config(),
+                    move |data: &[u16], _| {
+                        let mut buffer = rec.lock().unwrap();
+                        buffer.extend(
+                            data.iter()
+                                .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
+                        );
+                    },
+                    |err| eprintln!("Error en captura de micrófono: {}", err),
+                    None,
+                )?
+            }
+            _ => return Err(anyhow!("Formato de muestra no soportado para captura")),
+        };
+
+        let max_secs: u64 = std::env::var("AVI_PUSH_TO_TALK_MAX_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+
+        stream.play()?;
+        eprintln!("Grabando… pulsa Enter para detener.");
+
+        // Espera de una línea de stdin con límite temporal: se lee en un hilo
+        // aparte y se recibe con `recv_timeout` para poder aplicar el techo D-2
+        // sin bloquear indefinidamente en la lectura de stdin.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let mut linea = String::new();
+            let _ = std::io::stdin().read_line(&mut linea);
+            let _ = tx.send(());
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(max_secs)) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                eprintln!(
+                    "Límite de grabación alcanzado ({} s); deteniendo.",
+                    max_secs
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+        }
+
+        drop(stream);
+
+        let raw_samples = recorded_samples.lock().unwrap().clone();
+        Ok(finish(raw_samples, channels, sample_rate))
+    }
+}
+
+/// Post-procesado compartido de captura de micrófono: mono → resample a
+/// 16 kHz → int16. Usado por `capture_16k_mono_pcm` y
+/// `capture_16k_mono_pcm_until_enter` para no duplicar el pipeline.
+fn finish(recorded: Vec<f32>, channels: usize, sample_rate: u32) -> Vec<i16> {
+    let mono_samples = to_mono(&recorded, channels);
+    let resampled = resample_linear(&mono_samples, sample_rate, 16000);
+    f32_to_i16(&resampled)
 }
 
 /// Cargar un WAV arbitrario (`hound`, cualquier tasa/canales/formato) y normalizarlo

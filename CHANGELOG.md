@@ -149,6 +149,20 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   `warmup_tts`→`precalentar_voz(state, voz)` como primitiva compartida por
   arranque y warm-on-clone — `src/main.rs`, `crates/avi-daemon/src/{lib,spawn}.rs`;
   test `warm_voice_fail_fast_y_aceptacion` en `crates/avi-daemon/tests/golden.rs`.
+- feat(cli): implementar push-to-talk real en `speech transcribe --mic`/
+  `speech dub --mic` (H-08) y el bucle interactivo de `speech synthesize
+  --play` (H-12). Push-to-talk graba hasta que el usuario presiona Enter, con
+  un techo de seguridad configurable por la variable de entorno
+  `AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s: al vencer, detiene la
+  grabación, avisa por stderr y devuelve lo grabado con exit 0) y un aviso
+  mínimo por stderr al iniciar la captura — elimina el panic previo por
+  `duration` ausente en TTY. `--play` ofrece un menú de 4 opciones
+  (reproducir de nuevo / aceptar y guardar / rechazar y regenerar / rechazar
+  y descartar) por stderr; al aceptar, recomprueba la colisión de etiqueta en
+  el instante de guardar (exit 6 sin `--force`); `--play` sigue siendo
+  incompatible con `--json` (exit 2) y exige TTY (exit 2 sin ella) — captura
+  siempre client-side, `crates/avi-audio`, `src/main.rs`; tests golden nuevos
+  para ambos hallazgos en `tests/cli_golden.rs`.
 
 ### Documentación
 
@@ -463,6 +477,15 @@ La auditoría sistémica post-`v0.18.1` (pipeline #96 verde) reveló divergencia
 - `docs/CLI/CONTRACT.md:167` y `USAGE.md:177` corrigen contrato `speech synthesize/say` al payload real (`status/audio_path/voice`) y eliminan flags inexistentes.
 - `docs/CLI/commands/DAEMON.md` reescrito a `Axum` (5 subcomandos, `/health`, `spawn_background` con `CREATE_NO_HANDLE_INHERIT`).
 - `docs/MANUAL-VALIDATION.md:15` y `docs/GOAL.md:162` artefactos `setup.exe` → `zip/tar.gz`; `docs/BUILD.md:414` documenta `log on drift` de gcc (`v0.17.1`); `docs/CLI/README.md:34,79` y `CLAUDE.md:145` referencias muertas.
+
+> **Nota de corrección (hallazgo H-08, ver «[No publicado]»):** la entrada
+> anterior afirmaba que `push-to-talk` quedó «restaurado» en `--mic` sin
+> `--duration` con TTY. Eso era falso: la validación dejaba pasar el caso,
+> pero no existía implementación de push-to-talk y el proceso terminaba en
+> panic (`duration.expect(...)`). La implementación real de push-to-talk
+> —con el techo `AVI_PUSH_TO_TALK_MAX_SECS` y aviso mínimo por stderr— se
+> entrega recién en el cierre de H-08 documentado en «[No publicado]»; esta
+> entrada histórica no se reescribe.
 
 ## [0.18.1] — 2026-08-28
 

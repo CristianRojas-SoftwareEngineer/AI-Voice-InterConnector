@@ -6,12 +6,12 @@ el único punto de la superficie donde conviven los tres motores nativos
 (`avi-tts`, `avi-stt`, `avi-translation`) y el despacho tri-modal contra el
 daemon.
 
-Implementación: `handle_speech` (`src/main.rs:846`), enum `SpeechCommands`
+Implementación: `handle_speech` (`src/main.rs:969`), enum `SpeechCommands`
 (`src/main.rs:217-315`). Helpers de despacho al daemon: `route_to_daemon`
-(`src/main.rs:2875`), `transcribe_via_daemon` (`src/main.rs:2898`),
-`daemon_synthesize_wav` (`src/main.rs:3056`), `synthesize_via_daemon`
-(`src/main.rs:3152`), `say_via_daemon` (`src/main.rs:3202`), `dub_via_daemon`
-(`src/main.rs:3336`), `dub_compose_via_daemon` (`src/main.rs:3490`, fallback si
+(`src/main.rs:3022`), `transcribe_via_daemon` (`src/main.rs:3045`),
+`daemon_synthesize_wav` (`src/main.rs:3195`), `synthesize_via_daemon`
+(`src/main.rs:3291`), `say_via_daemon` (`src/main.rs:3384`), `dub_via_daemon`
+(`src/main.rs:3518`), `dub_compose_via_daemon` (`src/main.rs:3664`, fallback si
 el daemon responde 404 en `/dub`, es decir, un binario viejo sin esa ruta).
 
 ---
@@ -37,7 +37,7 @@ comando raíz.
 | `speech play` | No | Sí (`require_local`) |
 | `speech remove` | No | Sí (`require_local`) |
 
-`require_local` (`src/main.rs:2884`) hace que `list`/`play`/`remove` con
+`require_local` (`src/main.rs:3031`) hace que `list`/`play`/`remove` con
 `--daemon` forzado fallen con `daemon_unreachable` (exit 5) en vez de
 ejecutarse localmente: son operaciones sobre `SpeechStore`, que el daemon no
 expone por HTTP.
@@ -46,13 +46,13 @@ expone por HTTP.
 
 ## Despacho tri-modal (subcomandos delegables)
 
-`route_to_daemon` (`src/main.rs:2875`):
+`route_to_daemon` (`src/main.rs:3022`):
 
 | `DaemonMode` | Comportamiento |
 |---|---|
 | `ForceDaemon` (`--daemon`) | Siempre intenta el daemon; si el `POST` falla, exit 5 `daemon_unreachable` |
 | `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
-| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, `src/main.rs:2868`) con deadline corto; si responde, delega; si no, cae a directo |
+| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, `src/main.rs:3015`) con deadline corto; si responde, delega; si no, cae a directo |
 
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
 lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
@@ -69,7 +69,7 @@ ai-voice-interconnector speech list
 ```
 
 Sin flags de filtrado. Lista todas las locuciones persistidas en
-`SpeechStore` (`crates/avi-store`), local-only (`src/main.rs:854-891`).
+`SpeechStore` (`crates/avi-store`), local-only (`src/main.rs:977-1014`).
 
 **`speech list --voice/-v` NO existe.** El contrato histórico (`CONTRACT.md`)
 prometía un filtro por voz; el `enum SpeechCommands::List` es una variante
@@ -80,7 +80,7 @@ error de parseo de `clap`.
 
 Salida humana: una línea por locución con voz, etiqueta, duración y texto.
 Salida `--json`: `{"speech": [{"label", "voice", "text", "created_at",
-"duration_secs"}, ...]}` (`src/main.rs:861-873`).
+"duration_secs"}, ...]}` (`src/main.rs:984-996`).
 
 ---
 
@@ -97,24 +97,22 @@ ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--dur
 | `--duration` | u64 | — | Duración fija de grabación en segundos. Solo tiene efecto con `--mic` |
 | `--source-language` | `es-latam`\|`en` | — | Obligatorio. Idioma hablado en el audio |
 
-Validaciones puras antes de despachar (`src/main.rs:898-914`):
+Validaciones puras antes de despachar:
 - Ni `--audio` ni `--mic`: exit 2 `usage_error`.
 - `--mic` sin `--duration` **y sin TTY** (`stdin().is_terminal()` es `false`,
   p. ej. en un pipe o en CI): exit 2 `usage_error` ("`--mic` requiere
   `--duration` en este host").
-- `--mic` sin `--duration` **con TTY**: la validación lo deja pasar (el
-  comentario en el código la llama "push-to-talk permitido en TTY"), pero
-  **no existe implementación de push-to-talk** — `AudioService::capture_16k_mono_pcm`
-  (`crates/avi-audio/src/lib.rs:179`) solo acepta una duración fija en
-  segundos, nunca "grabar hasta Enter". El camino llega a
-  `duration.expect("validado arriba")` (`src/main.rs:923` en la rama daemon,
-  y de nuevo en la rama directa) con `duration == None`, y **entra en panic**
-  con stack trace, no con un `CliError` disciplinado. Este es el hallazgo
-  H-08 (pendiente): documenta el comportamiento real — en TTY sin `--duration`
-  el proceso revienta — y no prometas grabación interactiva funcional.
+- `--mic` sin `--duration` **con TTY**: graba en modo **push-to-talk**
+  (`crates/avi-audio`, primitiva de captura hasta Enter): al iniciar la
+  grabación emite un aviso mínimo por stderr (nunca espera en silencio) y
+  captura hasta que el usuario presiona Enter. Hay un techo de seguridad
+  configurable con la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS`
+  (default 300 s): al alcanzarlo, detiene la grabación, avisa por stderr y
+  devuelve lo grabado hasta ese punto con exit **0** (no es un error). El
+  panic previo por `duration` ausente (hallazgo H-08) ya no existe.
 
-Despacho (`src/main.rs:916-1005`):
-1. `route_to_daemon` → si aplica, `transcribe_via_daemon` (`src/main.rs:2898`):
+Despacho (`src/main.rs:1039-1112`):
+1. `route_to_daemon` → si aplica, `transcribe_via_daemon` (`src/main.rs:3045`):
    codifica el PCM a `audio_b64`, hace `POST /transcribe` y emite el mismo
    envelope que la rama local.
 2. Rama directa: verifica que `parakeet-tdt-v3/nemo128.onnx` exista (si no,
@@ -132,7 +130,7 @@ pasa verbatim. `ParakeetEngine` solo transcribe, nunca traduce.
 { "text": "<texto transcrito>", "source": "<source_language tal cual se pasó>" }
 ```
 
-(`src/main.rs:1000` local, `src/main.rs:2961` vía daemon — mismo envelope en
+(`src/main.rs:1115` local, `src/main.rs:3100` vía daemon — mismo envelope en
 ambas rutas.)
 
 ---
@@ -155,37 +153,41 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 | `--target-language` | `es-latam`\|`en` | `es-latam` | Idioma/modelo de síntesis; si difiere del origen, el texto se traduce antes de sintetizar |
 | `--temperature` | f32 | producción (`0.35`) | Override de muestreo; rango `0 < t <= 2.0` |
 
-**`--play` NO tiene el bucle interactivo de 4 opciones que el contrato
-histórico prometía** (reproducir / aceptar / regenerar / descartar). El
-código real (`src/main.rs:1088-1099`) reproduce el WAV incondicionalmente
-—si `--play` está presente— y **siempre** persiste la locución en
-`SpeechStore` a continuación, sin preguntar nada. Es el hallazgo H-12
-(pendiente): documenta `--play` como "reproduce y guarda", no como un flujo
-interactivo.
+**`--play` ofrece el bucle interactivo de 4 opciones** (reproducir de nuevo /
+aceptar y guardar / rechazar y regenerar / rechazar y descartar), con menú y
+prompts por stderr. Sin `--force`, la colisión de etiqueta se comprueba dos
+veces: antes de sintetizar (fast-fail, exit 6 sin gastar GPU) y de nuevo al
+aceptar (opción 2), por si la etiqueta quedó ocupada mientras el bucle
+esperaba respuesta — si colisiona en ese instante, también exit 6. Rechazar y
+descartar (opción 4) o Ctrl-D terminan con exit 0 sin persistir nada; solo
+aceptar (opción 2) persiste la toma que sonó. `--play` es incompatible con
+`--json` (exit 2 si se combinan) y exige terminal interactiva en la entrada
+estándar (exit 2 sin TTY, antes de sintetizar). Es el cierre del hallazgo
+H-12.
 
-Validaciones y flujo local (`src/main.rs:1007-1114`):
-1. `validar_temperature` (`src/main.rs:67-78`): exit 2 si el override está
-   fuera de `(0, 2.0]`.
+Validaciones y flujo local:
+1. `validar_temperature`: exit 2 si el override está fuera de `(0, 2.0]`.
 2. Texto vacío tras `trim()`: exit 2 `empty_text`.
 3. `source_eff = source_language.unwrap_or(target_language)` — sin
    `--source-language`, origen = destino (passthrough, no se traduce).
-4. Despacho: si aplica, `synthesize_via_daemon` (`src/main.rs:3152`); si no,
-   rama directa: `require_model_provisioned` (exit 4 si falta
-   `qwen3-tts-0.6b`) → la voz debe existir en `VoiceStore` (exit 3
-   `voice_not_found`) → `es_identificador_valido` sobre la etiqueta
-   normalizada (exit 2 `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) →
-   si ya existe una locución con esa etiqueta y no hay `--force`, exit 6
-   `label_exists` → `traducir_si_difiere` (`src/main.rs:643-676`, passthrough
-   si `source == target`; si no, exige el derivado CT2 sano, exit 4 si falta)
-   → `Qwen3TtsEngine::synthesize_with_temperature` → si `--play`, reproduce
-   → `SpeechStore::save` → si `--output`, copia el WAV persistido a esa ruta.
+4. Despacho: si aplica, vía daemon; si no, rama directa:
+   `require_model_provisioned` (exit 4 si falta `qwen3-tts-0.6b`) → la voz
+   debe existir en `VoiceStore` (exit 3 `voice_not_found`) →
+   `es_identificador_valido` sobre la etiqueta normalizada (exit 2
+   `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) → comprobación fast-fail
+   de colisión de etiqueta (exit 6 sin `--force`) → `traducir_si_difiere`
+   (passthrough si `source == target`; si no, exige el derivado CT2 sano,
+   exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_temperature` → sin
+   `--play`, persiste directamente; con `--play`, entra al bucle de 4
+   opciones y persiste solo al aceptar (con recomprobación de colisión) →
+   si `--output`, copia el WAV persistido a esa ruta.
 
-La rama vía daemon (`synthesize_via_daemon`, `src/main.rs:3152-3199`) repite
-las mismas validaciones de etiqueta/duplicado en el cliente antes de llamar a
-`daemon_synthesize_wav` (`POST /synthesize`, consume el NDJSON y decodifica
-`audio_b64` del evento `result`), guarda el WAV temporal, reproduce si
-`--play`, persiste en `SpeechStore` y copia a `--output` si corresponde — el
-mismo contrato de salida que la rama local.
+La rama vía daemon repite las mismas validaciones de etiqueta/duplicado en el
+cliente antes de despachar la síntesis al daemon (`POST /synthesize`, consume
+el NDJSON y decodifica `audio_b64` del evento `result`), guarda el WAV
+temporal, aplica el mismo bucle de `--play` (o persiste directo sin él) y
+copia a `--output` si corresponde — el mismo contrato de salida que la rama
+local.
 
 ### Contrato `--json`
 
@@ -193,7 +195,7 @@ mismo contrato de salida que la rama local.
 { "status": "success", "audio_path": "<ruta del WAV persistido>", "voice": "<voz>" }
 ```
 
-(`src/main.rs:1046-1051` vía daemon, `src/main.rs:1105-1110` local — idéntico.)
+(`src/main.rs:3371-3376` vía daemon, `src/main.rs:1258-1263` local — idéntico.)
 
 ---
 
@@ -208,9 +210,9 @@ Mismas reglas de `--source-language`/`--target-language`/`--temperature` que
 `synthesize`. Escribe el WAV en un archivo temporal
 (`avi_say_<pid>.wav`) y siempre lo reproduce (`AudioService::play_wav`); a
 diferencia de `synthesize`, no hay flag `--play` porque la reproducción es
-incondicional (`src/main.rs:1116-1183`).
+incondicional (`src/main.rs:1269-1336`).
 
-Despacho: `say_via_daemon` (`src/main.rs:3202`) si aplica, o rama directa con
+Despacho: `say_via_daemon` (`src/main.rs:3384`) si aplica, o rama directa con
 `require_model_provisioned` + `VoiceStore::exists` + `traducir_si_difiere` +
 `Qwen3TtsEngine::synthesize_with_temperature` + `AudioService::play_wav`.
 
@@ -220,7 +222,7 @@ Despacho: `say_via_daemon` (`src/main.rs:3202`) si aplica, o rama directa con
 { "status": "reproduced", "audio_path": "<ruta temporal del WAV>", "voice": "<voz>" }
 ```
 
-(`src/main.rs:1174-1178` local, `src/main.rs:3224-3229` vía daemon.)
+(`src/main.rs:1326-1331` local, `src/main.rs:3406-3411` vía daemon.)
 
 ---
 
@@ -244,24 +246,24 @@ paridad con el oráculo Python retirado).
 | `--mic` | flag | `false` | Captura desde micrófono. Mutuamente excluyente con `--audio` |
 | `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` |
 
-Validaciones puras (`src/main.rs:1193-1224`, en este orden):
+Validaciones puras (`src/main.rs:1346-1377`, en este orden):
 1. `validar_temperature`.
 2. `--duration` sin `--mic`: exit 2 `usage_error`.
 3. `--mic` sin `--duration` sin TTY: exit 2 `usage_error`. **Con TTY, mismo
-   panic que en `transcribe`** (H-08): la validación lo permite pero
-   `duration.expect("validado arriba")` revienta más adelante porque no hay
-   push-to-talk implementado.
+   push-to-talk que en `transcribe`**: aviso mínimo por stderr al iniciar,
+   captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (default
+   300 s, exit 0 al vencer). El panic previo (hallazgo H-08) ya no existe.
 4. Ni `--audio` ni `--mic`: exit 2 `usage_error`.
 5. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
 
-Despacho: si aplica, `dub_via_daemon` (`src/main.rs:3336`) hace `POST /dub`
-con timeout de 10 s (`src/main.rs:3385`, "dub puede tardar por síntesis").
+Despacho: si aplica, `dub_via_daemon` (`src/main.rs:3518`) hace `POST /dub`
+con timeout de 10 s (`src/main.rs:3559`, "dub puede tardar por síntesis").
 Si el daemon responde `404` (binario viejo sin esa ruta), degrada
-automáticamente a `dub_compose_via_daemon` (`src/main.rs:3490`): transcribe
+automáticamente a `dub_compose_via_daemon` (`src/main.rs:3664`): transcribe
 vía `POST /transcribe`, traduce localmente con `avi_translation::translate` si
 `source != target`, y sintetiza vía `POST /synthesize` (`daemon_synthesize_wav`).
 
-Rama directa (`src/main.rs:1244-1406`, requiere feature `native-stt`; sin
+Rama directa (`src/main.rs:1410-1551`, requiere feature `native-stt`; sin
 ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
 4) y el modelo de síntesis provisionado (`require_model_provisioned`) →
 captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito está
@@ -274,7 +276,7 @@ sano (exit 4 `model_missing` con los ficheros faltantes si no); sin el feature
 
 ### `POST /dub` (daemon)
 
-Handler `dub_handler` (`crates/avi-daemon/src/lib.rs:896`). Acepta
+Handler `dub_handler` (`crates/avi-daemon/src/lib.rs:911`). Acepta
 `{audio_b64, voice?, from|source_language?, to|target_language?, temperature?}`
 (`from`/`source_language` son alias del mismo campo, igual `to`/`target_language`;
 default `voice="default"`, default idiomas `"es"`). Pipeline interno:
@@ -302,8 +304,8 @@ compiló sin esos features).
 { "status": "dubbed", "text": "<texto final, traducido o passthrough>", "audio_path": "<ruta temporal del WAV reproducido>" }
 ```
 
-(`src/main.rs:1396-1401` local, `src/main.rs:3478-3483` vía `/dub`,
-`src/main.rs:3611-3616` vía composición — mismo envelope en las tres rutas;
+(`src/main.rs:1541-1546` local, `src/main.rs:3652-3657` vía `/dub`,
+`src/main.rs:3785-3790` vía composición — mismo envelope en las tres rutas;
 nótese que el campo del CLI se llama `text`, aunque el handler del daemon
 distingue internamente `text`/`translated`.)
 
@@ -318,7 +320,7 @@ ai-voice-interconnector speech play --label <etiqueta> [--voice <nombre>]
 Local-only (`require_local`). Busca la locución en `SpeechStore` por
 `(voice, label)` y reproduce el WAV persistido. Si no existe, exit 3
 `speech_not_found`. Valida los identificadores con `es_identificador_valido`
-antes de buscar (`src/main.rs:1408-1441`).
+antes de buscar (`src/main.rs:1553-1586`).
 
 ### Contrato `--json`
 
@@ -335,7 +337,7 @@ ai-voice-interconnector speech remove --label <etiqueta> [--voice <nombre>]
 ```
 
 Local-only. Elimina la locución de `SpeechStore`; si no existe, exit 3
-`speech_not_found` (`src/main.rs:1442-1455`).
+`speech_not_found` (`src/main.rs:1587-1600`).
 
 ### Contrato `--json`
 
@@ -377,7 +379,6 @@ resulta en exit 2 `unsupported_language_pair`.
 | `transcription_error` / `transcription_failed` | 10 | Fallo de captura/lectura de audio o del motor Parakeet |
 | `translation_failed` | 9 | Fallo del motor CT2 |
 | `synthesis_error` / `playback_failed` | 1 | Fallo del motor Qwen3-TTS o de reproducción |
-| — (panic, sin `CliError`) | — | H-08: `--mic` sin `--duration` en TTY, en `transcribe` y `dub` |
 
 ---
 
@@ -385,13 +386,8 @@ resulta en exit 2 `unsupported_language_pair`.
 
 Referencia: `docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`.
 
-- **H-08** — `--mic` sin `--duration` en TTY hace panic (`duration.expect(...)`)
-  en vez de fallar con un exit code disciplinado; no hay push-to-talk.
 - **H-10** — `speech list` no acepta `--voice`/`-v`; el filtro por voz
   prometido en el contrato histórico no existe.
-- **H-12** — `speech synthesize --play` reproduce y guarda incondicionalmente;
-  no hay el bucle interactivo de 4 opciones (reproducir/aceptar/regenerar/
-  descartar) que el contrato histórico describía.
 
 ---
 

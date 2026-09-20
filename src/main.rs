@@ -853,6 +853,119 @@ async fn handle_voice(
 
 // ─── Speech ──────────────────────────────────────────────────────────
 
+/// Captura PCM del micrófono en `spawn_blocking` (D-5): `duration` fija la
+/// captura por N segundos; `None` (solo alcanzable en TTY, ver guardas de
+/// `--duration`) dispara push-to-talk hasta Enter (`capture_16k_mono_pcm_until_enter`).
+/// Único punto de selección, reusado por las 4 vías de captura (directa y daemon,
+/// transcribe y dub) para no duplicar el `match` ni el manejo de `spawn_blocking`.
+async fn capture_mic_pcm(duration: Option<u64>) -> Result<Vec<i16>, CliError> {
+    tokio::task::spawn_blocking(move || {
+        let svc = audio::AudioService::new();
+        match duration {
+            Some(secs) => svc.capture_16k_mono_pcm(secs),
+            None => svc.capture_16k_mono_pcm_until_enter(),
+        }
+    })
+    .await
+    .map_err(|e| {
+        CliError::new(
+            ExitCode::TranscriptionFailed,
+            "transcription_error",
+            e.to_string(),
+        )
+    })?
+    .map_err(|e| {
+        CliError::new(
+            ExitCode::TranscriptionFailed,
+            "transcription_error",
+            e.to_string(),
+        )
+    })
+}
+
+/// Bucle interactivo `--play` (RF-12.3–12.5): reproduce la toma en memoria y
+/// ofrece 4 opciones a stderr — [1] mantener (reproducir de nuevo, sin
+/// re-síntesis), [2] guardar (recomprobando colisión de label al guardar,
+/// RF-12.4), [3] repetir con una síntesis nueva (misma vía, vía `resynthesize`)
+/// y reproducir, [4] descartar. EOF o error de lectura de stdin también
+/// descartan; una opción inválida avisa y repite el menú. Devuelve la ruta
+/// guardada si el usuario eligió [2], o `None` si descartó (RF-12.3, exit 0 en
+/// ambos casos). Reusado por la ruta directa y la daemon (P6, client-side); el
+/// menú y los prompts van a stderr, nunca a stdout (P3). No introduce exit
+/// codes nuevos.
+async fn synthesize_play_loop<F, Fut>(
+    voice: &str,
+    label: &str,
+    force: bool,
+    speech_store: &SpeechStore,
+    texto_final: &str,
+    mut tmp_wav: PathBuf,
+    mut resynthesize: F,
+) -> Result<Option<PathBuf>, CliError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<PathBuf, CliError>>,
+{
+    let reproducir = |wav: &PathBuf| -> Result<(), CliError> {
+        audio::AudioService::new().play_wav(wav).map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "playback_failed",
+                format!("Fallo al reproducir la locución '{}': {}", label, e),
+            )
+        })
+    };
+
+    // RF-12.5: reproducir al entrar al bucle.
+    reproducir(&tmp_wav)?;
+
+    loop {
+        eprintln!(
+            "Opciones: [1] mantener (reproducir de nuevo)  [2] guardar  [3] repetir (nueva síntesis)  [4] descartar"
+        );
+        eprint!("Opción [1-4]: ");
+        let _ = std::io::stderr().flush();
+
+        let mut linea = String::new();
+        let opcion = match std::io::stdin().read_line(&mut linea) {
+            Ok(0) | Err(_) => return Ok(None), // EOF o error de lectura → descartar
+            Ok(_) => linea.trim().to_string(),
+        };
+
+        match opcion.as_str() {
+            "1" => {
+                reproducir(&tmp_wav)?;
+            }
+            "2" => {
+                // RF-12.4: recomprobar colisión en el instante de guardar, no
+                // solo en el fast-fail previo a sintetizar.
+                if !force && speech_store.find(voice, label).is_some() {
+                    return Err(CliError::new(
+                        ExitCode::StateConflict,
+                        "label_exists",
+                        format!(
+                            "Ya existe una locución con la etiqueta '{}' (usa --force).",
+                            label
+                        ),
+                    ));
+                }
+                let saved = speech_store
+                    .save(voice, label, texto_final, &tmp_wav)
+                    .map_err(|e| {
+                        CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
+                    })?;
+                return Ok(Some(saved));
+            }
+            "3" => {
+                tmp_wav = resynthesize().await?;
+                reproducir(&tmp_wav)?;
+            }
+            "4" => return Ok(None),
+            _ => eprintln!("Opción inválida."),
+        }
+    }
+}
+
 async fn handle_speech(
     json_mode: bool,
     daemon_mode: DaemonMode,
@@ -968,15 +1081,7 @@ async fn handle_speech(
             #[cfg(feature = "native-stt")]
             {
                 let pcm = if mic {
-                    audio::AudioService::new()
-                        .capture_16k_mono_pcm(duration.expect("validado arriba"))
-                        .map_err(|e| {
-                            CliError::new(
-                                ExitCode::TranscriptionFailed,
-                                "transcription_error",
-                                e.to_string(),
-                            )
-                        })?
+                    capture_mic_pcm(duration).await?
                 } else {
                     avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(
                         |e| {
@@ -1025,6 +1130,22 @@ async fn handle_speech(
             target_language,
             temperature,
         } => {
+            // RF-12.1 / RF-12.2: precondiciones puras de --play, antes de
+            // cualquier síntesis (P1). No introducen exit codes nuevos.
+            if play && json_mode {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "usage_error",
+                    "--play es incompatible con --json.",
+                ));
+            }
+            if play && !std::io::stdin().is_terminal() {
+                return Err(CliError::new(
+                    ExitCode::InvalidInput,
+                    "usage_error",
+                    "--play requiere una terminal interactiva (TTY).",
+                ));
+            }
             validar_temperature(temperature)?;
             // Orden de validaciones del oráculo (cli.py:659-667).
             if text.trim().is_empty() {
@@ -1040,7 +1161,8 @@ async fn handle_speech(
             // T7 — dispatch 3 modos (Synthesize es delegable al daemon).
             let client = daemon_client();
             if route_to_daemon(daemon_mode, &client).await {
-                let saved = synthesize_via_daemon(
+                return synthesize_via_daemon(
+                    json_mode,
                     &client,
                     &text,
                     &voice,
@@ -1052,17 +1174,7 @@ async fn handle_speech(
                     &target_language,
                     temperature,
                 )
-                .await?;
-                if json_mode {
-                    emit_raw_json(json!({
-                        "status": "success",
-                        "audio_path": saved,
-                        "voice": voice,
-                    }));
-                } else {
-                    println!("Síntesis completada: {}", saved);
-                }
-                return Ok(());
+                .await;
             }
 
             require_model_provisioned()?;
@@ -1095,18 +1207,49 @@ async fn handle_speech(
             engine
                 .synthesize_with_temperature(&texto_final, &voice, temperature, Some(&tmp_wav))
                 .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
-            if play {
-                audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "playback_failed",
-                        format!("Fallo al reproducir la locución '{}': {}", label, e),
-                    )
-                })?;
-            }
-            let saved = speech_store
-                .save(&voice, &label, &texto_final, &tmp_wav)
-                .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
+
+            let saved = if play {
+                // RF-12.3–12.5: bucle interactivo, reemplaza la reproducción y
+                // el guardado incondicionales. Solo alcanzable en TTY (RF-12.2).
+                let resultado = synthesize_play_loop(
+                    &voice,
+                    &label,
+                    force,
+                    &speech_store,
+                    &texto_final,
+                    tmp_wav.clone(),
+                    || async {
+                        engine
+                            .synthesize_with_temperature(
+                                &texto_final,
+                                &voice,
+                                temperature,
+                                Some(&tmp_wav),
+                            )
+                            .map_err(|e| {
+                                CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
+                            })?;
+                        Ok(tmp_wav.clone())
+                    },
+                )
+                .await?;
+                match resultado {
+                    Some(saved) => saved,
+                    None => {
+                        // Opción 4 / EOF: descartado, exit 0 (RF-12.3).
+                        if json_mode {
+                            emit_raw_json(json!({ "status": "discarded", "voice": voice }));
+                        } else {
+                            println!("Descartado.");
+                        }
+                        return Ok(());
+                    }
+                }
+            } else {
+                speech_store
+                    .save(&voice, &label, &texto_final, &tmp_wav)
+                    .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?
+            };
             if let Some(out) = &output {
                 std::fs::copy(&saved, out).map_err(|e| {
                     CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
@@ -1279,15 +1422,7 @@ async fn handle_speech(
             #[cfg(feature = "native-stt")]
             {
                 let pcm = if mic {
-                    audio::AudioService::new()
-                        .capture_16k_mono_pcm(duration.expect("validado arriba"))
-                        .map_err(|e| {
-                            CliError::new(
-                                ExitCode::TranscriptionFailed,
-                                "transcription_error",
-                                e.to_string(),
-                            )
-                        })?
+                    capture_mic_pcm(duration).await?
                 } else {
                     avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(
                         |e| {
@@ -2916,15 +3051,7 @@ async fn transcribe_via_daemon(
     source_language: &str,
 ) -> Result<(), CliError> {
     let pcm: Vec<i16> = if mic {
-        audio::AudioService::new()
-            .capture_16k_mono_pcm(duration.expect("validado arriba"))
-            .map_err(|e| {
-                CliError::new(
-                    ExitCode::TranscriptionFailed,
-                    "transcription_error",
-                    e.to_string(),
-                )
-            })?
+        capture_mic_pcm(duration).await?
     } else {
         avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
             CliError::new(
@@ -3162,6 +3289,7 @@ async fn daemon_synthesize_wav(
 // Firma ancha deliberada: cada argumento mapea 1:1 a un flag de `speech synthesize`.
 #[allow(clippy::too_many_arguments)]
 async fn synthesize_via_daemon(
+    json_mode: bool,
     client: &reqwest::Client,
     text: &str,
     voice: &str,
@@ -3172,7 +3300,7 @@ async fn synthesize_via_daemon(
     source_language: &str,
     target_language: &str,
     temperature: Option<f32>,
-) -> Result<String, CliError> {
+) -> Result<(), CliError> {
     let speech_store = SpeechStore::new();
     let label_l = label.to_lowercase();
     es_identificador_valido(Some(&label_l), None)?;
@@ -3190,24 +3318,66 @@ async fn synthesize_via_daemon(
     let tmp = std::env::temp_dir().join(format!("avi_tts_{}.wav", label_l));
     std::fs::write(&tmp, &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-    if play {
-        audio::AudioService::new().play_wav(&tmp).map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "playback_failed",
-                format!("Fallo al reproducir la locución '{}': {}", label_l, e),
-            )
-        })?;
-    }
-    let saved = speech_store
-        .save(voice, &label_l, text, &tmp)
-        .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
+
+    let saved = if play {
+        // RF-12.3–12.5: bucle interactivo client-side (P6); la opción 3
+        // re-despacha la síntesis por la misma vía daemon.
+        let resultado = synthesize_play_loop(
+            voice,
+            &label_l,
+            force,
+            &speech_store,
+            text,
+            tmp.clone(),
+            || async {
+                let wav = daemon_synthesize_wav(
+                    client,
+                    text,
+                    voice,
+                    source_language,
+                    target_language,
+                    temperature,
+                )
+                .await?;
+                std::fs::write(&tmp, &wav)
+                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+                Ok(tmp.clone())
+            },
+        )
+        .await?;
+        match resultado {
+            Some(saved) => saved,
+            None => {
+                // Opción 4 / EOF: descartado, exit 0 (RF-12.3).
+                let _ = std::fs::remove_file(&tmp);
+                if json_mode {
+                    emit_raw_json(json!({ "status": "discarded", "voice": voice }));
+                } else {
+                    println!("Descartado.");
+                }
+                return Ok(());
+            }
+        }
+    } else {
+        speech_store
+            .save(voice, &label_l, text, &tmp)
+            .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?
+    };
     let _ = std::fs::remove_file(&tmp);
     if let Some(out) = output {
         std::fs::copy(&saved, out)
             .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
     }
-    Ok(saved.to_string_lossy().to_string())
+    if json_mode {
+        emit_raw_json(json!({
+            "status": "success",
+            "audio_path": saved.to_string_lossy(),
+            "voice": voice,
+        }));
+    } else {
+        println!("Síntesis completada: {}", saved.display());
+    }
+    Ok(())
 }
 
 /// `say` vía daemon: reproduce el WAV decodificado y expone una copia efímera.
@@ -3358,15 +3528,7 @@ async fn dub_via_daemon(
 ) -> Result<(), CliError> {
     // Captura/lectura PCM y encode a base64 para POST /dub
     let pcm: Vec<i16> = if mic {
-        audio::AudioService::new()
-            .capture_16k_mono_pcm(duration.expect("validado arriba"))
-            .map_err(|e| {
-                CliError::new(
-                    ExitCode::TranscriptionFailed,
-                    "transcription_error",
-                    e.to_string(),
-                )
-            })?
+        capture_mic_pcm(duration).await?
     } else {
         avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
             CliError::new(

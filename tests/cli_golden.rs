@@ -801,6 +801,172 @@ fn speech_transcribe_sin_audio_ni_mic_sale_con_codigo_2() {
     );
 }
 
+// ─── H-08: push-to-talk (guardas, no-TTY) ──────────────────────────────
+//
+// Solo se blindan las guardas de validación: la ruta interactiva real
+// (push-to-talk activo, techo D-2 al vencer) corre en TTY y no es
+// ejercitable por esta suite (todas las invocaciones fijan stdin a
+// `Stdio::null()`, garantía de no-TTY). CA-08.5 (techo D-2 al vencer, TTY)
+// queda como validación manual.
+
+/// CA-08.1: `transcribe --mic` sin `--duration` sin TTY sale con
+/// `ExitCode::InvalidInput` (2) sin iniciar ninguna captura — la guarda corta
+/// antes de tocar el micrófono.
+#[test]
+fn speech_transcribe_mic_sin_duration_no_tty_sale_con_2() {
+    let (code, actual) = run_json(&[
+        "--json",
+        "speech",
+        "transcribe",
+        "--mic",
+        "--source-language",
+        "es-latam",
+    ]);
+    assert_eq!(
+        code, 2,
+        "--mic sin --duration sin TTY debe mapear a ExitCode::InvalidInput (reason={:?})",
+        actual["reason"]
+    );
+}
+
+/// CA-08.2: `--duration` sin `--mic` (ni `--audio`) sale con
+/// `ExitCode::InvalidInput` (2) — la guarda de origen obligatorio corta antes
+/// de llegar a interpretar `--duration`.
+#[test]
+fn speech_transcribe_duration_sin_mic_sale_con_2() {
+    let (code, actual) = run_json(&[
+        "--json",
+        "speech",
+        "transcribe",
+        "--duration",
+        "3",
+        "--source-language",
+        "es-latam",
+    ]);
+    assert_eq!(
+        code, 2,
+        "--duration sin --mic (ni --audio) debe mapear a ExitCode::InvalidInput (reason={:?})",
+        actual["reason"]
+    );
+}
+
+/// CA-08.3: `--mic --duration N` sin TTY toma el selector de captura fija sin
+/// panicar, sea cual sea el desenlace real (falta de dispositivo, modelo no
+/// provisionado o feature STT ausente). El panic que cerraba H-08 era
+/// `duration.expect(...)` cuando `duration` era `None`; aquí es `Some`, así
+/// que nunca debía dispararse — esta prueba blinda que el `expect` no se
+/// reintrodujo en la rama fija del selector.
+#[test]
+fn speech_transcribe_mic_duration_no_tty_sin_panic() {
+    hito_inicio(
+        "speech_transcribe_mic_duration_no_tty_sin_panic",
+        Duration::from_secs(30),
+    );
+    let output = Command::new(BIN)
+        .args([
+            "--json",
+            "speech",
+            "transcribe",
+            "--mic",
+            "--duration",
+            "1",
+            "--source-language",
+            "es-latam",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("el binario debe ejecutarse");
+    assert!(
+        output.status.code().is_some(),
+        "el proceso no debe abortar/panicar: {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked at"),
+        "la rama de captura fija no debe panicar: {}",
+        stderr
+    );
+    hito_fin("speech_transcribe_mic_duration_no_tty_sin_panic");
+}
+
+/// CA-08.4: equivalente a CA-08.1–08.3 para `speech dub`, que comparte la
+/// misma guarda de argumentos y el mismo selector de captura.
+#[test]
+fn speech_dub_mic_sin_duration_no_tty_sale_con_2() {
+    let (code, actual) = run_json(&[
+        "--json",
+        "speech",
+        "dub",
+        "--mic",
+        "--source-language",
+        "es-latam",
+        "--target-language",
+        "es-latam",
+    ]);
+    assert_eq!(
+        code, 2,
+        "--mic sin --duration sin TTY debe mapear a ExitCode::InvalidInput (reason={:?})",
+        actual["reason"]
+    );
+}
+
+#[test]
+fn speech_dub_duration_sin_mic_sale_con_2() {
+    let (code, actual) = run_json(&[
+        "--json",
+        "speech",
+        "dub",
+        "--duration",
+        "3",
+        "--source-language",
+        "es-latam",
+        "--target-language",
+        "es-latam",
+    ]);
+    assert_eq!(
+        code, 2,
+        "--duration sin --mic debe mapear a ExitCode::InvalidInput (reason={:?})",
+        actual["reason"]
+    );
+}
+
+#[test]
+fn speech_dub_mic_duration_no_tty_sin_panic() {
+    hito_inicio(
+        "speech_dub_mic_duration_no_tty_sin_panic",
+        Duration::from_secs(30),
+    );
+    let output = Command::new(BIN)
+        .args([
+            "--json",
+            "speech",
+            "dub",
+            "--mic",
+            "--duration",
+            "1",
+            "--source-language",
+            "es-latam",
+            "--target-language",
+            "es-latam",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("el binario debe ejecutarse");
+    assert!(
+        output.status.code().is_some(),
+        "el proceso no debe abortar/panicar: {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked at"),
+        "la rama de captura fija no debe panicar: {}",
+        stderr
+    );
+    hito_fin("speech_dub_mic_duration_no_tty_sin_panic");
+}
+
 #[test]
 fn daemon_status_coincide_con_fixture() {
     // Desdoble por régimen (Tarea 5): con fixture de sesión en ejecución el
@@ -1583,9 +1749,10 @@ mod tts {
         // `--no-daemon` para que la sesión en ejecución no lo reenrute.
         // Verificación solo-archivo (Tarea 4): WAV válido + WER sobre el
         // archivo producido. El gate de audio se conserva porque `dub`
-        // reproduce siempre en ambas rutas (`src/main.rs:1265` y
-        // `src/main.rs:3059`): sin mezclador el comando falla con
-        // `playback_failed` y no hay archivo que verificar.
+        // reproduce siempre en ambas rutas (`src/main.rs:1534` directo y
+        // `src/main.rs:3645`/`:3778` daemon, passthrough/traducción): sin
+        // mezclador el comando falla con `playback_failed` y no hay archivo
+        // que verificar.
         let (code, actual) = run_json(&[
             "--json",
             "--no-daemon",
@@ -2606,6 +2773,67 @@ fn speech_dub_sin_origen_es_exit_2() {
         output.status.code().expect("el proceso debe terminar"),
         2,
         "dub sin --source-language debe salir 2"
+    );
+}
+
+// ─── H-12: precondiciones de `synthesize --play` (RF-12.1/RF-12.2) ────────
+//
+// Solo se blindan las precondiciones puras: el bucle interactivo de 4
+// opciones corre en TTY y no es ejercitable por esta suite (todas las
+// invocaciones fijan stdin a `Stdio::null()`, garantía de no-TTY). CA-12.3
+// (opción 1, mantener sin re-síntesis), CA-12.4 (opción 2, recomprobación de
+// colisión al guardar) y CA-12.5 (opción 3, re-síntesis; opción 4/EOF,
+// descarte) quedan como validación manual TTY.
+
+/// CA-12.1: `synthesize --play --json` es incompatible (RF-12.1) → sale con
+/// `ExitCode::InvalidInput` (2), validado antes de cualquier síntesis.
+#[test]
+fn speech_synthesize_play_con_json_sale_con_2() {
+    let (code, actual) = run_json(&[
+        "--json",
+        "speech",
+        "synthesize",
+        "--text",
+        "Hola",
+        "--label",
+        "x",
+        "--play",
+    ]);
+    assert_eq!(
+        code, 2,
+        "--play + --json debe mapear a ExitCode::InvalidInput (reason={:?})",
+        actual["reason"]
+    );
+}
+
+/// CA-12.2: `synthesize --play` sin TTY sale con `ExitCode::InvalidInput` (2)
+/// antes de sintetizar (RF-12.2). Se invoca sin `--json` (no vía `run_json`)
+/// porque añadir `--json` dispararía en su lugar la precondición RF-12.1
+/// (CA-12.1), enmascarando la guarda de TTY que este test aísla; en este
+/// arnés todas las invocaciones son no-TTY (`Stdio::null()`), así que la
+/// guarda RF-12.2 se ejercita con solo `--play`.
+#[test]
+fn speech_synthesize_play_sin_tty_sale_con_2() {
+    let output = Command::new(BIN)
+        .args([
+            "speech",
+            "synthesize",
+            "--text",
+            "Hola",
+            "--label",
+            "x",
+            "--play",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("el binario debe ejecutarse");
+    assert_eq!(
+        output
+            .status
+            .code()
+            .expect("el proceso debe terminar con un código"),
+        2,
+        "--play sin TTY debe mapear a ExitCode::InvalidInput"
     );
 }
 
