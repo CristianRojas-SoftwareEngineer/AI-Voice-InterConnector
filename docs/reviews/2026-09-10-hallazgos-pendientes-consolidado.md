@@ -1,7 +1,7 @@
 # Hallazgos pendientes — revisión consolidada
 
 - **Fecha**: 2026-09-10
-- **Estado**: 8 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅) — 8 pendientes (H-06–H-08, H-10–H-12, H-14, H-15)
+- **Estado**: 9 resueltos (H-05 ✅, H-04 ✅, H-03 ✅, H-02 ✅, H-01 ✅, H-13 ✅, H-09 ✅, H-16 ✅, H-06 ✅) — 7 pendientes (H-07, H-08, H-10–H-12, H-14, H-15)
 - **Alcance**: todos los defectos, gaps y deudas de medición pendientes del producto, unificados en un solo índice. Sin historia, sin referencias cruzadas a revisiones previas, sin identificadores heredados.
 - **Orden**: IDs secuenciales por severidad (críticos → bajos); dentro de cada sección, primero ciclo de vida, luego superficie CLI, luego medición.
 
@@ -111,11 +111,11 @@
 
 - **Severidad**: 🟠 Alta · **Área**: CLI/daemon (`DaemonCommands::{Start,Serve}` en `src/main.rs:314-339`)
 - **Síntoma**: `daemon start/serve` solo aceptan `--auto-restart`/`--max-retries`; no hay `--language` (preload de modelos por idioma) ni `--with-stt` (precarga de transcripción), aunque el daemon tiene STT funcional. Falla con `unrecognized argument`.
-- **Causa**: migración que descartó flags funcionales. Demostrada contra el oráculo.
-- **Impacto**: sin control de preload; los consumidores que lo esperan no pueden usarlo.
-- **Corrección propuesta**: reimplementar ambos flags mapeados al preload real, o purgarlos formalmente del contrato con motivo documentado.
-- **Relaciones**: altera el arranque/warmup → implementar después de estabilizar H-02 · mismo dilema implementar-vs-documentar que H-07 (resolver ambas decisiones en una sola sesión de diseño).
-- **Decisión requerida**: sí — ¿reimplementar o purgar?
+- **Causa (demostrada)**: ambos flags pertenecían al contrato heredado del oráculo de la CLI Python migrada, nunca al parser Rust (`DaemonCommands::{Start,Serve}` en `src/main.rs:318-343` solo declaran `--auto-restart`/`--max-retries`, default 3) — mismo patrón de deuda documental que cerró H-09 (superficie prometida por la documentación heredada, no por la implementación). `DaemonState::new` (`crates/avi-daemon/src/lib.rs:110`) construye `ParakeetEngine` (STT) siempre, de forma eager e incondicional, y precarga el derivado CT2 de traducción si ya está provisionado; el set de modelos (`MODEL_REVISIONS`) es fijo, sin gating por idioma ni por flag.
+- **Corrección (implementada)**: purga documental (Opción 1) — no se reimplementan los flags. Se formaliza en el contrato el comportamiento real: `daemon start`/`serve` precargan STT (Parakeet) + TTS (Qwen3) + el derivado CT2 de traducción (si está provisionado) de forma eager al arrancar, sobre un set de modelos fijo, sin control de idioma ni de STT por flag; `--language` queda como local a `translate`/`dub`/`say`/`synthesize`/`setup`/`doctor`, y `native-stt`/`native-translation` son features de compilación, no flags de ejecución. `docs/CLI/CONTRACT.md:606,610` y `docs/CLI/commands/DAEMON.md:3,94` ya declaraban esta ausencia (auditados y confirmados sin drift adicional en `docs/`, `USAGE.md`, `README.md`, `docs/DESIGN.md`); se deja constancia en esta ficha y en `CHANGELOG.md` para cerrar la brecha oráculo-Rust. Documentación pura, cero cambios de runtime. Estado: ✅ Implementado.
+- **Impacto resuelto**: el contrato queda alineado con la implementación Rust — ya no promete una palanca de preload que nunca existió en el parser; los integradores dejan de intentar `--language`/`--with-stt` contra `daemon start/serve` guiados por el oráculo Python.
+- **Relaciones**: espeja el precedente de H-09 (deuda del oráculo Python migrado, cerrada por saneo documental); H-07 conserva su propio dilema implementar-vs-documentar de forma independiente (ya no comparte sesión de decisión con H-06).
+- **Decisión requerida**: resuelta — purga documental (Opción 1); sin reimplementación de `--language`/`--with-stt` en `daemon start/serve`, comportamiento eager real formalizado en el contrato.
 
 ### H-07 — `voice clone --daemon` promete precarga inexistente
 
@@ -226,11 +226,11 @@ H-04 ✅ (traza del residente) — stderr → logs/qwen3-tts_*.log + try_wait en
  └─ comparte zona ─> H-03 ✅ (herencia de handles cortada en la raíz: SetHandleInformation en handle_daemon; 0x02000000 inerte eliminado) ── H-01 ✅ (cierre estructural: reclamo + parada unificada + verificación SO)
 H-01 ✅ ── contenía ──> H-05 ✅ (residual degradado: ahora se reclama con `started`; H-05 cierra el cuelgue intra-sesión)
 H-02 ✅ ── reduce superficie de ──> H-01 ✅ (sin subprocess que re-lanzar; el fail-fast elimina los abortos a ciegas del observador)
-H-02 ✅ estable ── permite ──> H-06 (flags de preload) · H-14 (re-medir techos) · H-15 (marginalidad temporal + presupuesto de clonado + barrido Unix del reaper)
+H-02 ✅ estable ── permite ──> H-14 (re-medir techos) · H-15 (marginalidad temporal + presupuesto de clonado + barrido Unix del reaper)
 H-01 ✅ ── contiene ──> H-15 (3 rojos clase-timeout sin cascada ni fuga; bisect en base sin regresión)
-H-09 ✅ (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning`, `--force-update`/`--yes` implementados + tests + saneo de drift) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift) · H-16 ✅ (drift Python en los 7 docs de comando restantes: reescritura desde Rust delegada a subagentes + gate anti-drift; continúa el saneo de H-09/H-13)
+H-09 ✅ (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning`, `--force-update`/`--yes` implementados + tests + saneo de drift) · H-13 ✅ (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift) · H-16 ✅ (drift Python en los 7 docs de comando restantes: reescritura desde Rust delegada a subagentes + gate anti-drift; continúa el saneo de H-09/H-13) · H-06 ✅ (purga documental: `--language`/`--with-stt` retirados del contrato de `daemon start/serve`, comportamiento eager real formalizado, mismo patrón que H-09)
 H-10 · H-11 ── triviales aislados (relleno)
-H-07 + H-06 ── mismo dilema implementar-vs-documentar (superficie daemon)
+H-07 ── dilema implementar-vs-documentar propio (superficie daemon); H-06 ya cerrado por purga documental, sin decisión compartida pendiente
 H-08 ⇆ H-12 (UX interactiva de audio: decidir H-08 primero, diseñar H-12 después)
 H-12 ── última (toca UX de audio + humo de tests)
 H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuesto + crash vivo D-05 + runtime Unix D-01 + barrido Unix del reaper, todo en CI/entorno rápido
@@ -239,7 +239,7 @@ H-15 ── follow-up de medición/infra (tras H-14): re-medir guards/presupuest
 **Orden recomendado (con fundamento)**:
 
 1. **H-04 ✅ — H-02 ✅ — H-01 ✅ — H-05 ✅ — H-03 ✅** — traza del residente implementada (stderr→log + `try_wait`), deadline de warmup de 40 s, cierre estructural (reclamo matar-y-rearrancar + parada unificada de 8 s + verificación SO), salud observada por petición (revalidación + rearranque determinista del residente reutilizado) y corte de herencia de handles en la raíz (`SetHandleInformation` en `handle_daemon`) — cluster de lanzamiento/reutilización del daemon cerrado: base observable, sin huérfanos, sin degradación silenciosa y sin retención de stdio del lanzador. Fundamento: sin traza no hay diagnóstico posible, sin cierre no hay corrida limpia y todo lo que toca el daemon depende de un arranque estable. Estado: H-04 ✅ (865d236), H-02 ✅ (30f7cf1), H-01 ✅ (a908ac6+193eeac), H-05 ✅ (5d1dfca) y H-03 ✅ (131b109) implementados; **cluster ciclo de vida completo**, H-14 habilitado. H-15 queda como follow-up (marginalidad temporal de la suite + presupuesto 1500 ms intacto + crash vivo D-05 + runtime Unix D-01 y barrido Unix del reaper, todo pendiente de CI/entorno rápido).
-2. **H-09 ✅** (+ **H-13 ✅**) — independientes, pequeños, sin decisiones. H-09 ✅ cerrado (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning` sin alias, `--force-update`/`--yes` implementados, tests de contrato y saneo de drift documental). H-13 ✅ cerrado (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift documental).
-3. **Sesión única de decisiones H-06 + H-07 + H-08** — las tres son implementar-vs-documentar/purgar; decidirlas juntas evita tres rondas. Luego implementar lo decidido.
+2. **H-09 ✅** (+ **H-13 ✅** + **H-06 ✅**) — independientes, pequeños, sin decisiones pendientes. H-09 ✅ cerrado (superficie de flags de `setup` saneada: `--language` eliminado, `--with-base`→`--with-voice-cloning` sin alias, `--force-update`/`--yes` implementados, tests de contrato y saneo de drift documental). H-13 ✅ cerrado (gate del derivado CT2: cierre por evidencia del pipeline + test + saneo de drift documental). H-06 ✅ cerrado (purga documental: `--language`/`--with-stt` retirados del contrato de `daemon start/serve`, sin reimplementación; comportamiento eager real —STT/TTS/CT2 precargados al arrancar, set fijo— formalizado, mismo patrón que H-09).
+3. **Sesión de decisiones H-07 + H-08** — ambas siguen siendo implementar-vs-documentar; decidirlas juntas evita dos rondas. Luego implementar lo decidido. (H-06 ya cerrado por purga, fuera de esta sesión.)
 4. **H-10 + H-11** — triviales aislados.
 5. **H-12 última** — requiere la decisión de H-08 ya resuelta y ciclo de vida estable.

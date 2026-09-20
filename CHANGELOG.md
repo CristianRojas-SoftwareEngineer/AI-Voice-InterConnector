@@ -158,6 +158,16 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   `src/ai_voice_interconnector/__init__.py` en `crates/xtask/src/main.rs` (código
   muerto) y una mención Python en el comentario de `install-macos.sh`. Sin
   cambios de runtime.
+- docs(daemon): cerrar H-06 por purga documental — `--language`/`--with-stt`
+  figuraban en el oráculo/contrato heredado de la CLI Python migrada para
+  `daemon start`/`serve`, pero nunca existieron en el parser Rust
+  (`DaemonCommands::{Start,Serve}` en `src/main.rs` solo aceptan
+  `--auto-restart`/`--max-retries`). Se formaliza en el contrato que ambos
+  flags no se reimplementan: `daemon start`/`serve` precargan STT (Parakeet) +
+  TTS (Qwen3) + el derivado CT2 de traducción (si está provisionado) de forma
+  eager e incondicional al arrancar, sobre un set de modelos fijo;
+  `native-stt`/`native-translation` son features de compilación, no flags de
+  ejecución. Mismo patrón que H-09. Sin cambios de runtime.
 
 ## [0.18.26] — 2026-09-02
 
