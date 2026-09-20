@@ -17,7 +17,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 ┌────────────────────┐   HTTP 127.0.0.1:8765   ┌──────────────────────────────┐
 │ src/main.rs        │ ───────────────────────▶ │ crates/avi-daemon (Axum)     │
 │ cliente reqwest    │ ◀─────────────────────── │ Qwen3TtsEngine residente     │
-│ 3 modos: auto/     │   JSON / NDJSON          │ Ct2SttEngine + VAD Silero    │
+│ 3 modos: auto/     │   JSON / NDJSON          │ ParakeetEngine (sin VAD)     │
 │ forzado/directo    │                          │ synthesis_lock (serializado) │
 └────────────────────┘                          └──────────────────────────────┘
 ```
@@ -25,7 +25,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 - **Servidor**: Axum sobre `127.0.0.1:8765` (loopback, puerto fijo por diseño).
 - **Warmup**: precarga de la voz elegida por `--warm-voice` (default `default`) en segundo plano (`spawn_blocking(precalentar_voz)`), tras el `bind` del puerto; no bloquea el arranque y el readiness es inmediato al enlazar. Un warmup fallido no derriba el daemon: sigue sirviendo (una `--warm-voice` inexistente sí aborta el arranque, fail-fast antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone).
 - **Serialización**: `synthesis_lock` — una síntesis a la vez; el resto espera.
-- **STT**: audio largo (>15 s) se segmenta con VAD Silero antes de transcribir.
+- **STT**: `ParakeetEngine` (Parakeet TDT 0.6B v3 int8) transcribe en una sola pasada, sin segmentación VAD (RTF lineal ~0.11).
 
 ## Contrato HTTP
 
@@ -33,7 +33,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 |---|---|---|
 | `/health` | GET | `status:"ready"` + handshake de `schema_version` + estado de warmup `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla; no certifica síntesis futura, ver salud observada por petición abajo) |
 | `/synthesize` | POST | Síntesis con progreso streaming NDJSON, evento final `result` (`audio_b64`, WAV 24 kHz) |
-| `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), VAD para clips largos (feature `native-stt`) |
+| `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), una sola pasada sin VAD (feature `native-stt`) |
 | `/translate` | POST | Traducción CT2 residente (feature `native-translation`) |
 | `/voices/clone` | POST | Clonado con warm-on-clone (`{name, speech, precomputed:true}` = precarga en caliente iniciada; sin endpoint `precompute` separado) |
 | `/dub` | POST | Pipeline transcribe→translate→synthesize |

@@ -32,7 +32,7 @@ Cinco criterios gobiernan el resto del diseño. No son conclusiones: son las reg
 
 El almacén de habla sintética no viola el invariante: su ruta se deriva de `(voz, etiqueta)`, que son identificadores del contrato y no rutas. El registro de voces resuelve las suyas igual, a partir del nombre de la voz.
 
-La consecuencia sobre el daemon es estructural y no una validación: `/synthesize` recibe `voice: str`, así que no hay nada que sanear. La superficie de ataque «leer un `.wav` de una ruta elegida por el llamador» se cierra en el protocolo, no en un comprobador. El patrón ya está establecido en el mismo módulo del protocolo por `PrecomputeVoiceRequest`, que lleva solo `name: str` y cuyo docstring enuncia el razonamiento.
+La consecuencia sobre el daemon es estructural y no una validación: `/synthesize` recibe `voice` como cadena, así que no hay nada que sanear. La superficie de ataque «leer un `.wav` de una ruta elegida por el llamador» se cierra en el protocolo, no en un comprobador. El patrón es uniforme en todo el protocolo: las demás superficies (p. ej. `/voices/clone`) llevan también el nombre de la voz como identificador, nunca una ruta.
 
 #### Una responsabilidad por sub-acción
 
