@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.19.0 — 2026-09-20](#0190-20260920)
 - [0.18.26 — 2026-09-02](#01826-20260902)
 - [0.18.25 — 2026-09-01](#01825-20260901)
 - [0.18.24 — 2026-09-01](#01824-20260901)
@@ -111,7 +111,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+## [0.19.0] — 2026-09-20
 
 Corrección estructural de la superficie de flags de `setup` (H-09): `--language`
 era texto libre inerte (ignorado salvo para imprimirse y emitirse en JSON), el
@@ -1767,3 +1767,4 @@ estado con el que nace el producto.
 [0.18.24]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.23...v0.18.24
 [0.18.25]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.24...v0.18.25
 [0.18.26]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.25...v0.18.26
+[0.19.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.26...v0.19.0
