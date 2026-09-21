@@ -901,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_heterogeneo_y_sccache_condicional() {
+    fn test_pipeline_heterogeneo_y_sccache_incondicional() {
         let candidates = [
             ".circleci/config.yml",
             "../../.circleci/config.yml",
@@ -925,54 +925,20 @@ mod tests {
             cfg.contains("cargo_restore_caches") && cfg.contains("cargo_restore_registry"),
             "debe existir ambos comandos cargo_restore_caches y cargo_restore_registry para modelo heterogéneo"
         );
-        // sccache_save_cache_conditional en config.yml:231 con umbral 85% estricto
+        // sccache se guarda de forma INCONDICIONAL: no existe comando condicional por hit-rate.
         assert!(
-            cfg.contains("sccache_save_cache_conditional") && cfg.contains("85"),
-            "debe existir sccache_save_cache_conditional con umbral 85"
+            !cfg.contains("sccache_save_cache_conditional"),
+            "no debe existir sccache_save_cache_conditional (guardado condicional por hit-rate eliminado)"
         );
-        // Referencia 231 validada contra docs/BUILD.md (config.yml no contiene literal ":231") + posición real en config
-        {
-            let docs_candidates = [
-                "docs/BUILD.md",
-                "../../docs/BUILD.md",
-                "C:/Users/Cristian/Desktop/Proyectos/Voices/AI-Voice-InterConnector/docs/BUILD.md",
-            ];
-            let mut docs_opt = None;
-            for p in docs_candidates {
-                if let Ok(t) = std::fs::read_to_string(p) {
-                    docs_opt = Some(t);
-                    break;
-                }
-            }
-            let docs = docs_opt.unwrap_or_else(|| {
-                let m = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/BUILD.md");
-                std::fs::read_to_string(&m).expect("no se pudo leer docs/BUILD.md")
-            });
-            assert!(
-                docs.contains("config.yml:231"),
-                "docs/BUILD.md debe referenciar config.yml:231 tras corrección"
-            );
-            assert!(
-                !docs.contains("config.yml:228"),
-                "docs/BUILD.md no debe referenciar config.yml:228 obsoleto"
-            );
-        }
-        // Verificar que la definición real de sccache_save_cache_conditional está en torno a línea 231
-        {
-            let line_num = cfg
-                .lines()
-                .enumerate()
-                .find(|(_, l)| {
-                    l.trim_start().starts_with("sccache_save_cache_conditional:")
-                })
-                .map(|(i, _)| i + 1)
-                .unwrap_or(0);
-            assert!(
-                (228..=235).contains(&line_num),
-                "sccache_save_cache_conditional debe estar en torno a línea 231, encontrado en {}",
-                line_num
-            );
-        }
+        // El guardado vigente es sccache_save_cache con clave rolling por {{ epoch }} y when: always.
+        assert!(
+            cfg.contains("sccache_save_cache:"),
+            "debe existir el comando sccache_save_cache (guardado incondicional)"
+        );
+        assert!(
+            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-{{ epoch }}"),
+            "sccache_save_cache debe usar clave rolling por epoch"
+        );
         // Secciones scoping por job (delimitadas por siguiente job header para evitar falso-positivo cross-job)
         let linux_section = cfg
             .split("  test-linux:")
@@ -1067,19 +1033,6 @@ mod tests {
         assert!(
             !macos_section.contains("cargo_save_target"),
             "test-macos no debe guardar target-v2"
-        );
-        // sccache condicional estricto: Hit $HIT% <85% y >=85% + rm -rf ~/.cache/sccache
-        assert!(
-            cfg.contains("Hit $HIT% <85%"),
-            "sccache condicional debe contener 'Hit $HIT% <85%'"
-        );
-        assert!(
-            cfg.contains(">=85%"),
-            "sccache condicional debe contener '>=85%'"
-        );
-        assert!(
-            cfg.contains("rm -rf ~/.cache/sccache"),
-            "sccache condicional debe vaciar ~/.cache/sccache cuando hit >=85%"
         );
         // build-* deben usar cargo_restore_caches con target-v2 full + cargo clean -p (heterogéneo con target en build-*)
         for job in [
