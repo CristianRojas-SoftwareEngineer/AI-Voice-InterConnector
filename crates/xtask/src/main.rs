@@ -623,11 +623,7 @@ fn extract_resumen_cambios(body: &str) -> Option<String> {
             {
                 let bullet = bullet.trim_start();
                 if bullet.starts_with("- ") || bullet.starts_with("* ") {
-                    return Some(
-                        bullet
-                            .trim_start_matches(['-', '*', ' '])
-                            .to_string(),
-                    );
+                    return Some(bullet.trim_start_matches(['-', '*', ' ']).to_string());
                 }
             }
         }

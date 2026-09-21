@@ -786,13 +786,8 @@ mod tests {
             .collect();
         let texto = oraciones.join(" ");
 
-        let translated = crate::translate(
-            &texto,
-            "es",
-            "en",
-            &avi_store::ct2_model_dir("es-en"),
-        )
-        .expect("el párrafo de 11 oraciones debe traducirse");
+        let translated = crate::translate(&texto, "es", "en", &avi_store::ct2_model_dir("es-en"))
+            .expect("el párrafo de 11 oraciones debe traducirse");
 
         assert!(
             !translated.trim().is_empty(),
@@ -854,13 +849,8 @@ mod tests {
             oraciones.join(" ")
         );
 
-        let translated = crate::translate(
-            &texto,
-            "es",
-            "en",
-            &avi_store::ct2_model_dir("es-en"),
-        )
-        .expect("el multipárrafo largo debe traducirse");
+        let translated = crate::translate(&texto, "es", "en", &avi_store::ct2_model_dir("es-en"))
+            .expect("el multipárrafo largo debe traducirse");
 
         assert!(
             !translated.trim().is_empty(),

@@ -22,7 +22,8 @@ mod tests {
     #[cfg(feature = "native-stt")]
     #[test]
     fn parakeet_carga_modelo_y_transcribe() {
-        let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3") else {
+        let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3")
+        else {
             eprintln!("[stt] skip: sin modelo Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
             return;
         };
@@ -88,7 +89,8 @@ mod tests {
     #[cfg(feature = "native-stt")]
     #[test]
     fn parakeet_engine_coincide_con_oraculo() {
-        let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3") else {
+        let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3")
+        else {
             eprintln!("[stt] skip: sin modelo Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
             return;
         };
