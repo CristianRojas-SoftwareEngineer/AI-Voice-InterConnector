@@ -10,7 +10,6 @@ pub struct AppConfig {
     pub default_language: String,
     pub default_voice: String,
     pub audio_device: Option<String>,
-    pub daemon_port: u16,
     pub sample_rate: u32,
 }
 
@@ -20,7 +19,6 @@ impl Default for AppConfig {
             default_language: "es".to_string(),
             default_voice: "default".to_string(),
             audio_device: None,
-            daemon_port: 8765,
             sample_rate: 16000,
         }
     }
@@ -74,10 +72,10 @@ mod tests {
         let config = crate::AppConfig::default();
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("default_language = \"es\""));
-        assert!(serialized.contains("daemon_port = 8765"));
+        assert!(serialized.contains("sample_rate = 16000"));
 
         let deserialized: crate::AppConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.default_language, "es");
-        assert_eq!(deserialized.daemon_port, 8765);
+        assert_eq!(deserialized.sample_rate, 16000);
     }
 }
