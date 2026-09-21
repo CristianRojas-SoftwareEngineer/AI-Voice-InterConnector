@@ -1737,7 +1737,6 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // El hijo publica su `addr` real en el fichero ready de la
             // instancia (ruta absoluta bajo el `data_dir` vigente); el padre
             // la espera, la verifica por probe y la persiste en el pidfile.
-            // Reversión: `None` en el spawn y literal en `write_daemon_pid`.
             let ready_path = ruta_fichero_ready();
             if let Some(parent) = ready_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
@@ -3129,7 +3128,6 @@ fn resolver_addr_cliente() -> String {
 /// habilita reclamar el árbol de un daemon efímero cuyo pidfile se perdió
 /// (padre caído sin limpiar), única pista de PID cuando `addr` ya no es
 /// descubrible. Tolerante: fichero ausente, ilegible, sin campo o `0` = `None`.
-/// Reversión: quitar esta función y su uso en `clasificar_residual`.
 fn leer_pid_ready(ruta: &std::path::Path) -> Option<u32> {
     let contenido = std::fs::read_to_string(ruta).ok()?;
     for linea in contenido.lines() {

@@ -434,9 +434,6 @@ impl Drop for GuardReaper {
 //
 // `run_json_env` queda intacto: la captura por tempfile (sin pipe para
 // heredar el write-end al hijo) sigue valiendo con instancias aisladas.
-//
-// Reversión: devolver a cada test su forma con sesión
-// (`daemon stop` + sleep + `daemon start` + sleep … `daemon stop` + sleep).
 
 /// Estado observado pasando envs extra al hijo (instancia aislada:
 /// las envs del sandbox, con `AVI_DATA_DIR` + `AVI_DAEMON_PORT=0`).
@@ -453,15 +450,15 @@ fn estado_daemon_env(envs: &[(&str, &str)]) -> Value {
 /// ante `warm_failed` falla explícito (panic con diagnóstico, tras reaper),
 /// nunca pasa en silencio. `stopped` no tiene señal de apagado por fichero:
 /// se observa la ausencia (poll de `daemon status` hasta `stopped`).
-/// Reversión: restaurar el poll de `estado_daemon_env` con sus constantes previas.
 /// Espera de estado con envs extra para el hijo (instancia aislada).
 fn esperar_estado_daemon_env(esperado: &str, reintentos: u32, envs: &[(&str, &str)]) -> Value {
     let timeout = Duration::from_millis(200 * reintentos as u64);
     if esperado == "running" {
         let ruta = avi_store::data_dir().join("daemon.ready");
         let inicio = Instant::now();
-        // 1) Publicación del bind con espera acotada (helper T1): al vencer,
-        // el `panic!` con diagnóstico ya incluye el último contenido.
+        // 1) Publicación del bind con espera acotada (vía el fichero ready
+        // de la instancia): al vencer, el `panic!` con diagnóstico ya
+        // incluye el último contenido.
         let (addr, _) = esperar_fichero_ready(&ruta, timeout);
         // 2) Warm publicado más verificación por estado observado, con el
         // restante del mismo presupuesto diagnóstico.
@@ -539,7 +536,6 @@ fn fixture(name: &str) -> Value {
 /// envenenado (hermético, sin daemon): un hilo hace panic con un lock local tomado (deliberadamente NO el
 /// `STATE_LOCK` global, para no contaminar la corrida) y el siguiente `lock()`
 /// retorna `Err` en vez de recuperar el guard envenenado.
-/// Reversión: restaurar la tolerancia al envenenado en ambos locks.
 #[test]
 fn d03_lock_envenenado_se_propaga() {
     let local: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -702,8 +698,6 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
 // `TMP_COUNTER` (misma fuente que el tempfile anti-cuelgue, que se preserva
 // intacto). El llamante bajo `STATE_LOCK` excluye a los pesados durante la
 // ventana en-proceso (ver `FijarDataDir`).
-//
-// Reversión: borrar este bloque y volver al `data_dir` compartido.
 
 /// Crea un directorio sandbox único y devuelve (ruta, envs para el hijo).
 fn sandbox_estado_unico(tag: &str) -> (PathBuf, Vec<(String, String)>) {
@@ -766,8 +760,6 @@ impl Drop for FijarDataDir {
 // escribir: contenido ausente o incompleto equivale a aún-no-listo (None),
 // nunca a error fatal. La ruta es absoluta dentro del sandbox (`AVI_DATA_DIR`)
 // para no depender de la unidad del proceso en Windows.
-//
-// Reversión: borrar este bloque y volver al sondeo puro.
 
 /// Lee el fichero ready de forma tolerante: ausente o a medio escribir =
 /// aún-no-listo (`None`), nunca error fatal. Retorna `(addr, warm)`; sin
@@ -2675,13 +2667,12 @@ mod tts {
         hito_fin("tts::daemon_start_con_auto_restart");
     }
 
-    /// Prueba pesada de limpieza: cero huérfanos tras aborto simulado (dos fases: caída del padre y timeout sin graceful).
-    /// simulado. Fase 1 (caída del padre: pidfile borrado con daemon vivo) →
+    /// Prueba pesada de limpieza: cero huérfanos tras aborto simulado, en dos
+    /// fases. Fase 1 (caída del padre: pidfile borrado con daemon vivo) →
     /// `start` reclama el árbol (payload `started`, PID previo muerto). Fase 2
     /// (timeout sin graceful: árbol matado sin POST /shutdown, pista rancia) →
     /// `start` parte de cero con `started`. Cierra con cero huérfanos
-    /// verificados a nivel SO. Clonado fuera de alcance: si la raíz roja
-    /// del baseline interfiere, se documenta sin arreglarla.
+    /// verificados a nivel SO.
     #[test]
     fn h01_aborto_simulado_reclama_y_no_deja_huerfanos() {
         let _guard = bloquear_estado();
@@ -2776,8 +2767,8 @@ mod tts {
         hito_fin("tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos");
     }
 
-    /// Regresión (daemon retiene el stdio del proceso que lo lanzó): captura vía pipe para detectar la retención.
-    /// reproduce la condición exacta que originó el hallazgo — captura de
+    /// Regresión (daemon retiene el stdio del proceso que lo lanzó): reproduce
+    /// la condición exacta observada, con captura de
     /// `daemon start` vía **pipe** (`Stdio::piped()`, no tempfile) — porque
     /// un tempfile nunca crea un handle heredable y no puede detectar la
     /// retención. Si el daemon (o `qwen_tts` a través de él) heredan el

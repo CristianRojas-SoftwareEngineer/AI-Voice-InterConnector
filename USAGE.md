@@ -40,7 +40,7 @@
   - ["OneDrive user-data-dir" [WARN] en doctor (Windows)](#onedrive-user-data-dir-warn-en-doctor-windows)
   - ["Voice 'x' not found"](#voice-x-not-found)
   - ["La voz 'x' ya existe"](#la-voz-x-ya-existe)
-  - ["timbre-reference.wav/speech-reference.wav not found"](#timbre-referencewavspeech-referencewav-not-found)
+  - ["El modelo Base de clonado TTS no está provisionado"](#el-modelo-base-de-clonado-tts-no-está-provisionado)
   - ["Voz 'x' es una voz de fábrica (solo lectura)"](#voz-x-es-una-voz-de-fábrica-solo-lectura)
   - [Error al eliminar una voz: "uno de sus archivos parece estar en uso"](#error-al-eliminar-una-voz-uno-de-sus-archivos-parece-estar-en-uso)
   - [Sin audio de salida](#sin-audio-de-salida)
@@ -272,7 +272,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `name` | string | Nombre de la voz registrada |
-| `timbre` | string | Ruta absoluta del `timbre-reference.wav` copiado |
+| `timbre` | string \| null | Solo ruta daemon: siempre `null` (el timbre queda fundido en `reference.qvoice`; no se persiste WAV de referencia separado). Ausente en ruta local |
 | `speech` | string | Ruta absoluta del `.qvoice` generado (`reference.qvoice`) |
 | `precomputed` | boolean | Ruta local: siempre `false` (motor efímero, sin residente que calentar). Ruta daemon: `true` (warm-on-clone iniciado; completitud en `GET /health`) |
 
@@ -705,13 +705,12 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.w
 `avi_tts::clone_voice` con el modelo Base, y confirma (error `model_missing` → `setup --with-voice-cloning`):
 
 ```
-Iniciando voice_clone...
-Voz 'mi_voz' clonada:
-  timbre (reference): <ruta>/voices/mi_voz/timbre-reference.wav
-  habla (conditioning): <ruta>/voices/mi_voz/speech-reference.wav
-  conditionals: precomputados
-Finalizado en 3.1s
+Voz 'mi_voz' clonada.
 ```
+
+Internamente el timbre y el habla quedan fundidos en un único
+`reference.qvoice` (bajo `data_dir()/voices/mi_voz/`); no se persisten WAV de
+referencia separados.
 
 A partir de ese momento la voz aparece en `voice list` y puede usarse con
 `speech say --voice mi_voz`.
@@ -1145,12 +1144,13 @@ ai-voice-interconnector voice list
 ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav --force
 ```
 
-### "timbre-reference.wav/speech-reference.wav not found"
+### "El modelo Base de clonado TTS no está provisionado"
 
-La voz no tiene los archivos necesarios. Puede que se registró con el formato
-antiguo. Vuelve a clonar:
+`voice clone` requiere el modelo Base (`--with-voice-cloning` en `setup`). Sin
+él, el comando falla con `model_missing` antes de tocar el store:
 
 ```bash
+ai-voice-interconnector setup --with-voice-cloning
 ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav --force
 ```
 

@@ -111,7 +111,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | CLI | Entrada de referencia de habla de `voice clone` (obligatoria, ≥10s) | `--speech-reference` (`-s`) |
 | CLI | Borrado masivo de la salida | `cleanup --synthetic-speech` |
 | Filesystem | Almacén de la salida generada | `<data_dir>/speech/<voz>/<etiqueta>.wav` (`crates/avi-store/src/lib.rs` `SpeechStore`) |
-| Filesystem | Archivos de referencia de una voz | `timbre-reference.wav`, `speech-reference.wav` (`crates/avi-store/src/lib.rs` `VoiceStore`) |
+| Filesystem | Graft persistido de una voz clonada | `reference.qvoice` (`crates/avi-store/src/lib.rs` `VoiceStore`); los WAV de entrada (`--timbre-reference`/`--speech-reference`) se consumen y no se copian al almacén |
 | Payload | Clave del listado | `synthetic_speech` |
 | Interno | Parámetro del timbre en el motor y el protocolo | `timbre` |
 
@@ -121,8 +121,7 @@ En disco los dos sentidos quedan separados por nombre y no por posición:
 
 ```
 <data_dir>/
-  voices/<voz>/timbre-reference.wav     ← entrada aportada (opcional) (`VoiceStore`)
-  voices/<voz>/speech-reference.wav     ← entrada aportada (obligatoria) (`VoiceStore`)
+  voices/<voz>/reference.qvoice         ← graft persistido, derivado de las entradas aportadas (`VoiceStore`)
   speech/<voz>/<etiqueta>.wav           ← salida generada (`SpeechStore`)
 ```
 
@@ -534,9 +533,9 @@ Ninguno emite ruta, por el criterio de la ruta en los payloads. Todos llevan ade
 - **`list`** emite el texto completo. La clave es el nombre del recurso en snake_case, siguiendo el precedente de `voice list --json`, que emite `{"voices": [...]}` — y evitando que un identificador del contrato legible por máquina contradiga el vocabulario de la superficie.
 - **`remove`** no lleva campo de resultado: el código de salida ya transporta la información (0 = se borró, 3 = no existía). Un campo `removed` chocaría además con `cleanup --json`, que emite `removed` como lista de rutas, y la misma clave con dos tipos bajo una sola versión de esquema es justo lo que un consumidor tipado no puede manejar.
 
-Los payloads de `daemon start`, `stop` y `restart` no llevan clave booleana propia: el fallo se reporta por el payload de error como en el resto de la CLI. `start` distingue sano de degradado sin bump: sano responde `already_running` y degradado reclama el árbol y rearranca con `started` (en Unix ante líder muerto por grupo con verificación por 8766 cerrado + PID sin viveza; ante `Parado` con residente vivo por 8766 reclama su árbol preciso por PID registrado e imagen solo como último recurso verificado; salida 0 en ambos); `stop` responde `shutdown_sent`/`stopped` tras muerte verificada y falla con exit 5 sin borrar la pista si el árbol sigue vivo. La dirección es `127.0.0.1:8765` por defecto con override `AVI_DAEMON_PORT` (`0` = efímero, el servidor publica `local_addr()`); el reclamo por colisión de puerto sigue vigente para degradados reales con puerto fijo, y pierde su objeto con puertos efímeros (descubrimiento por el cliente, diferido). Readiness: el sondeo por `/health` sigue vigente; el evento `avi-daemon-ready warm=<warm|warm_failed> addr=<real>` en stderr es el contrato de señal emitido (consumo por `recv` diferido).
+Los payloads de `daemon start`, `stop` y `restart` no llevan clave booleana propia: el fallo se reporta por el payload de error como en el resto de la CLI. `start` distingue sano de degradado sin bump: sano responde `already_running` y degradado reclama el árbol y rearranca con `started` (en Unix ante líder muerto por grupo con verificación por 8766 cerrado + PID sin viveza; ante `Parado` con residente vivo por 8766 reclama su árbol preciso por PID registrado e imagen solo como último recurso verificado; salida 0 en ambos); `stop` responde `shutdown_sent`/`stopped` tras muerte verificada y falla con exit 5 sin borrar la pista si el árbol sigue vivo. La dirección es `127.0.0.1:8765` por defecto con override `AVI_DAEMON_PORT` (`0` = efímero, el servidor publica `local_addr()`); el reclamo por colisión de puerto sigue vigente para degradados reales con puerto fijo, y con puertos efímeros el cliente descubre la `addr` real leyendo el campo `addr` del pidfile. Readiness: el sondeo por `/health` sigue vigente; el fichero designado por `--ready-file` (`addr`/`warm`/`pid`, escritura atómica) es el transporte que consumen los llamantes con espera acotada, y el evento `avi-daemon-ready warm=<warm|warm_failed> addr=<real>` en stderr queda como diagnóstico redundante.
 
-**Esquema de `daemon.pid` y contabilidad del residente:** el archivo `data_dir()/daemon.pid` persiste un objeto JSON con `{ "pid": u32, "resident_pid": u32, "addr": string, "started_at": string }`. El esquema persiste; con `AVI_DATA_DIR` el pidfile es por instancia (sin la variable, resolución idéntica a la de siempre). El campo `resident_pid` almacena el PID del proceso residente TTS como entero plano. La lectura es tolerante (ficheros previos sin el campo o con valor ausente se leen como `0`/desconocido). El ciclo de vida (`stop`, `reclamar_residual_degradado` y el `reaper` del harness) mata al residente por su PID registrado combinado con verificación de puerto 8766 cerrado, eliminando por completo cualquier dependencia de `netstat` o `pkill`. La tolerancia al envenenamiento del harness (`unwrap_or_else(|e| e.into_inner())`) sigue vigente como régimen transitorio hasta la migración a instancias aisladas; no se afirma su retirada.
+**Esquema de `daemon.pid` y contabilidad del residente:** el archivo `data_dir()/daemon.pid` persiste un objeto JSON con `{ "pid": u32, "resident_pid": u32, "addr": string, "started_at": string }`. El esquema persiste; con `AVI_DATA_DIR` el pidfile es por instancia (sin la variable, resolución idéntica a la de siempre). El campo `resident_pid` almacena el PID del proceso residente TTS como entero plano. La lectura es tolerante (ficheros previos sin el campo o con valor ausente se leen como `0`/desconocido). El ciclo de vida (`stop`, `reclamar_residual_degradado` y el `reaper` del harness) mata al residente por su PID registrado combinado con verificación de puerto 8766 cerrado, eliminando por completo cualquier dependencia de `netstat` o `pkill`. El harness ya no tolera el envenenamiento de sus locks: un panic bajo `STATE_LOCK` propaga `Err` en el siguiente `lock()` en vez de recuperar el guard envenenado, para no ocultar el fallo original.
 
 #### Las dos versiones de esquema
 
@@ -576,10 +575,10 @@ El chequeo de audio degrada a WARN en vez de FAIL, **con la premisa que lo sosti
 
 #### `voice`
 
-- **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime), y los archivos en disco se llaman `timbre-reference.wav` y `speech-reference.wav`. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
+- **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime); ambos WAV se consumen para producir el graft `reference.qvoice` y no se copian al almacén. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
 - **`voice clone` recibe el despacho al daemon en sus tres modos**, porque precomputa los conditionals de la voz al clonarla y necesita el modelo cargado igual que las dos sub-acciones que sintetizan.
 - **`voice clone` sobre un nombre tomado sin `--force` sale con 6**, y sobre un nombre libre `--force` es un no-op declarado.
-- `VoiceStore` (`crates/avi-store/src/lib.rs`) reconoce una voz clonada por `reference.qvoice` (o `speech-reference.wav` legado); `timbre-reference.wav` es legado. Las voces de fábrica son `default` (clonada, con `reference.qvoice` graft) y `ryan`/`vivian` (presets puros sin referencia); `voice remove` las protege a las tres (exit 2; `FACTORY_VOICES` del almacén de voces, `avi_store::is_factory_name` definida en el almacén de voces, invocada en el binario principal).
+- `VoiceStore` (`crates/avi-store/src/lib.rs`) reconoce una voz clonada únicamente por la presencia de `reference.qvoice`, sin fallback a WAV. Las voces de fábrica son `default` (clonada, con `reference.qvoice` graft) y `ryan`/`vivian` (presets puros sin referencia); `voice remove` las protege a las tres (exit 2; `FACTORY_VOICES` del almacén de voces, `avi_store::is_factory_name` definida en el almacén de voces, invocada en el binario principal).
 - `voice list` muestra las tres de fábrica (`is_factory=true`) más las clonadas del usuario; `voice remove` rechaza las de fábrica con exit 2.
 - En `voice list` y `voice remove`, `-n` es `--name`.
 

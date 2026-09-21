@@ -79,9 +79,6 @@ route_to_daemon(daemon_mode, client)?
               voice_store.save_reference(name, tmp_qvoice) → <voces>/<name>/reference.qvoice
                 │
                 ▼
-              copia speech_path → speech-reference.wav (y timbre si se dio) para compatibilidad de lectura
-                │
-                ▼
               emitir {name, timbre, speech, precomputed:false}
 ```
 
@@ -119,7 +116,7 @@ handler de clonado.
 4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
 5. Tras superar las validaciones baratas anteriores, el handler abre una respuesta streaming NDJSON (`application/x-ndjson`) emitiendo el evento inicial `{"event":"started", "name": "..."}`.
 6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `con_latidos`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) cada 500 ms (`STREAM_HEARTBEAT`). Si el cliente se desconecta, `AbortHandle` aborta la inferencia.
-7. Al completar el clonado, `voice_store.save_reference(name, tmp_qvoice)` persiste `reference.qvoice`, copia `speech-reference.wav` y opcionalmente `timbre-reference.wav`.
+7. Al completar el clonado, `voice_store.save_reference(name, tmp_qvoice)` persiste `reference.qvoice` (único archivo que el motor consulta; sin copia de los WAV de entrada).
 8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`precalentar_voz`, emitiendo `{"event":"progress", "stage":"warmup"}`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "timbre": ..., "precomputed": true}` + `schema_version`. El calentamiento (~18-40 s) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada». Si el clonado falla, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
 
 El cliente (`clone_via_daemon`) consume el stream mediante `consumir_stream_ndjson` con un timeout de inactividad entre latidos de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`) y un deadline failsafe de 120 s (`STREAM_TOTAL_DEADLINE`), mapeando `reason` a exit code:
@@ -198,12 +195,12 @@ una voz clonada al listar o al intentar eliminarlas.
 
 ```
 <nombre>/
-├── reference.qvoice        ← graft binario (speaker embedding + pesos Base); usado por el motor
-├── speech-reference.wav    ← copia del audio de origen, solo para compatibilidad de lectura
-└── timbre-reference.wav    ← copia del audio de timbre, si se proporcionó
+└── reference.qvoice        ← graft binario (speaker embedding + pesos Base); único archivo persistido
 ```
 
-`reference.qvoice` es lo único que el motor de síntesis consulta
+Los WAV de entrada (`--speech-reference`/`--timbre-reference`) se consumen
+para producir el graft y no se copian al almacén: `reference.qvoice` es lo
+único que el motor de síntesis consulta
 (`VoiceStore::find_reference`, `crates/avi-store/src/lib.rs:197`): su presencia
 determina la rama «clonada» en `avi_tts::resolve_voice_motor`; sin él, la voz
 resuelve como preset del motor. `default` es una voz de fábrica *clonada*

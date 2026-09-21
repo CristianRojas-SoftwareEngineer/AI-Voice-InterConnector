@@ -1596,7 +1596,7 @@ fn escribir_fichero_ready(ruta: &std::path::Path, addr: &SocketAddr, warm: &str)
     // Recuperación de reclamo: además de `addr`/`warm`, el hijo publica
     // su propio PID. Con puertos efímeros, `addr` y PID vivían solo en el
     // pidfile; si el padre cae sin limpiarlo, el ready es la única pista para
-    // reclamar el árbol huérfano por PID. Reversión: quitar el campo `pid=`.
+    // reclamar el árbol huérfano por PID.
     let contenido = format!("addr={}\nwarm={}\npid={}\n", addr, warm, std::process::id());
     if std::fs::write(&tmp, contenido).is_err() {
         eprintln!(
@@ -1628,7 +1628,7 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     // (sandbox de estado por instancia vía `AVI_DATA_DIR`) aborta el fail-fast
     // de `--warm-voice` antes del bind porque `default` aún no existe en
     // disco. Tras esto, una voz inexistente sigue abortando igual (no es de
-    // fábrica). Reversión: quitar estas líneas.
+    // fábrica).
     state
         .voice_store
         .ensure_initialized()
@@ -1647,8 +1647,7 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     // deadline y verificación vive solo en `run_supervised` (entre reintentos).
     let listener = TcpListener::bind(addr).await?;
     // Puerto efímero por instancia: publicar la dirección REALMENTE enlazada
-    // (con `:0` el SO asigna; hoy se imprimía el `addr` pedido). Reversión:
-    // imprimir `addr`.
+    // (con `:0` el SO asigna, nunca el literal pedido).
     let bound = listener.local_addr()?;
     println!("Daemon nativo escuchando en http://{}", bound);
 
@@ -1656,7 +1655,6 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     // (`--ready-file`), publicar la `addr` real tras el bind y el estado
     // warm tras el warmup. Escritura atómica; el evento en stderr se
     // conserva como diagnóstico redundante. Sin flag no se escribe nada.
-    // Reversión: quitar este bloque y sus escrituras en el warmup.
     let fichero_ready: Option<std::path::PathBuf> =
         std::env::var_os(READY_FILE_ENV).map(std::path::PathBuf::from);
     if let Some(ref ruta) = fichero_ready {
@@ -1672,11 +1670,11 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     // que el hilo del warmup retiene; imagen solo como último recurso). Un
     // fallo no aborta el arranque.
     // Readiness por señal: el arranque emite el evento "ligado + warm"
-    // (puerto real + estado) tras bind y warmup. Contrato consumible con `recv`
-    // acotado por el harness futuro: línea `avi-daemon-ready warm=<estado>
-    // addr=<real>` en stderr (stdout queda reservado al anuncio de ligado).
-    // Timeout = bug a diagnosticar, no flake a reintentar. Reversión: quitar
-    // los `eprintln!` de evento (el sondeo del harness sigue valiendo).
+    // (puerto real + estado) tras bind y warmup. El fichero ready (arriba) es
+    // el transporte que consumen los llamantes con espera acotada; la línea
+    // `avi-daemon-ready warm=<estado> addr=<real>` en stderr es diagnóstico
+    // redundante (stdout queda reservado al anuncio de ligado).
+    // Timeout = bug a diagnosticar, no flake a reintentar.
     let warm_state = state.clone();
     let ready_ok = fichero_ready.clone();
     let handle =

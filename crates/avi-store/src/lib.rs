@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Sandbox de estado por instancia: `AVI_DATA_DIR` desvía la base a un
 /// directorio propio por test. Sin la variable, resolución idéntica a la de
-/// siempre (sin cambios de lógica ni de fallback). Reversión: quitar el
-/// bloque del env.
+/// siempre (sin cambios de lógica ni de fallback).
 pub fn data_dir() -> PathBuf {
     if let Ok(ov) = std::env::var("AVI_DATA_DIR") {
         if !ov.trim().is_empty() {

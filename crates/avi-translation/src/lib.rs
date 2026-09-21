@@ -82,7 +82,7 @@ impl Ct2TranslationEngine {
                 // el oráculo lo elimina al decodificar con el SentencePiece
                 // destino (los símbolos de control decodifican a cadena vacía,
                 // `model_loader.py`). Se sanea aquí para preservar la paridad
-                // de salida (hallazgo observado).
+                // de salida.
                 translated.trim_end_matches("</s>").trim_end().to_string()
             })
             .collect())
