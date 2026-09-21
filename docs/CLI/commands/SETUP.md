@@ -43,9 +43,8 @@ VoiceStore::ensure_initialized        ← crea el directorio de datos y material
     │  remove_xet_cache() una vez
     ▼
 Bucle sobre MODEL_REVISIONS (filtrado por selección de clonado)
-    │  is_provisioned(name) == true  → solo registrar índice
+    │  is_provisioned(name) == true  → skip (snapshot HF ya presente)
     │  is_provisioned(name) == false → ensure_downloaded(name) (hf-hub, revisión fijada)
-    │  register_provisioned(name, "hf-snapshot")
     ▼
 Derivación CT2 de traducción (es-en, en-es)
     │  para cada par con Marian HF provisionado:

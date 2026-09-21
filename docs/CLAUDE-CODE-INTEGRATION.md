@@ -84,9 +84,8 @@ fuera). Por eso esta tabla es el contrato a preservar; al tocar `src/main.rs`
 en `speech say`, `speech synthesize`, `speech play`, `doctor`, `daemon` o
 `crates/avi-core/src/exit_codes.rs`, revísala.
 
-`speech transcribe` y `speech dub` existen en la CLI (registro de impacto de
-la Fase 5) pero **no** los consume el plugin; no forman parte de este
-contrato.
+`speech transcribe` y `speech dub` existen en la CLI pero **no** los consume
+el plugin; no forman parte de este contrato.
 
 ## Qué NO comparten los dos proyectos
 

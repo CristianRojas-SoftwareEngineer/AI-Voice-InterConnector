@@ -44,7 +44,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 - **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés (`--target-language`)
 - **Transcripción STT**: `speech transcribe` (Parakeet TDT 0.6B v3 int8, ONNX Runtime)
 - **Traducción**: `translate` es↔en (CTranslate2, opt-in)
-- **Daemon**: `daemon start/status/stop/restart/serve` (Axum, `127.0.0.1:8765`, streaming NDJSON)
+- **Daemon**: `daemon start/status/stop/restart/serve` (Axum, `127.0.0.1:8765` por defecto con override `AVI_DAEMON_PORT`, streaming NDJSON)
 - **100% offline**: Sin APIs externas ni conexiones a internet (modelos en `~/.cache/huggingface/hub`)
 - **Binario autocontenido por plataforma**: `tar.gz` (Linux/macOS) / `.zip` (Windows) con `LICENSE`/`THIRD-PARTY-LICENSES.md`/`SOURCE-OFFER.md`
 - **CLI universal**: `subprocess.run(["./ai-voice-interconnector", "speech", "say", "--text", "..."])`

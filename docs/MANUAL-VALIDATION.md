@@ -321,7 +321,9 @@ ai-voice-interconnector daemon status
 
 **Cero huérfanos tras `stop`** (comprobación a nivel de SO): sin procesos
 `ai-voice-interconnector` ni `qwen_tts` residuales, puertos `8765`/`8766` cerrados y
-`daemon.pid` sin PID vivo.
+`daemon.pid` sin PID vivo. El procedimiento usa los defaults (puerto 8765, `data_dir()` global);
+con `AVI_DAEMON_PORT=0` el puerto es efímero y con `AVI_DATA_DIR` el pidfile es por instancia
+(aislamiento de tests, no de este recorrido).
 
 > Nota de cobertura: algunas variantes del reclamo de puerto/PID (reclamo por
 > grupo ante líder muerto en Unix, barrido del puerto de control por el reaper)

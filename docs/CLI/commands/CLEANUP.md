@@ -60,8 +60,8 @@ Cada ruta se filtra por existencia antes de borrar; `--model` nunca toca `voices
 
 **`--voices`** (`src/main.rs:1628-1650`) — borra dos cosas:
 
-1. **Voces no-fábrica** (`FACTORY_VOICES` `crates/avi-store/src/lib.rs:16`): cada subdirectorio en `data_dir()/voices` excepto `default`/`ryan`/`vivian` (`is_factory_name`)
-2. **Arrastre de habla sintética** (`src/main.rs:1640`): para cada voz borrada, `data_dir()/speech/<voz>` **excepto `default`** y solo si `!do_speech` (si `do_speech` ya borrará la raíz entera, evita duplicado)
+1. **Voces no-fábrica** (`FACTORY_VOICES` `crates/avi-store/src/lib.rs:26`): cada subdirectorio en `data_dir()/voices` excepto `default`/`ryan`/`vivian` (`is_factory_name`)
+2. **Arrastre de habla sintética** (`src/main.rs:2192`): para cada voz borrada, `data_dir()/speech/<voz>` **excepto `default`** y solo si `!do_speech` (si `do_speech` ya borrará la raíz entera, evita duplicado)
 
 **`--synthetic-speech`** (`src/main.rs:1652-1657`) — borra:
 
@@ -69,7 +69,7 @@ Cada ruta se filtra por existencia antes de borrar; `--model` nunca toca `voices
 
 ### Interacción `--voices` / `--synthetic-speech`
 
-La lógica de arrastre es condicional (`src/main.rs:1640`):
+La lógica de arrastre es condicional (`src/main.rs:2192`):
 
 - Si `--synthetic-speech` (o `--all`) está activo, se borra la raíz completa (no hay iteración por namespace)
 - Si solo `--voices` está activo, se itera `voices/` y se arrastra cada `speech/<voz>` excepto `default`

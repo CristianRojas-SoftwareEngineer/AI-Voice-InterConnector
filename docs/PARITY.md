@@ -63,7 +63,7 @@ Nada pendiente en esta fase: las tres plataformas tienen one-liner sin prerequis
 
 ### Estado
 
-**Paridad completa.** Mismos comandos, mismo daemon (puerto 8765), mismos esquemas `--json` y exit codes, mismas voces de fábrica y de usuario (`data_root()` por SO), mismo fail-fast de `speech`/`daemon start` sin modelo. Las diferencias de backend de audio (por SO) son tecnologías equivalentes, no diferencias de experiencia.
+**Paridad completa.** Mismos comandos, mismo daemon (puerto 8765 por defecto), mismos esquemas `--json` y exit codes, mismas voces de fábrica y de usuario (`data_root()` por SO), mismo fail-fast de `speech`/`daemon start` sin modelo. Las diferencias de backend de audio (por SO) son tecnologías equivalentes, no diferencias de experiencia.
 
 Única salvedad, aceptada como limitación de toolchain y documentada en el README: la cobertura de arquitecturas no es simétrica (sin Windows ARM64, sin Mac Intel).
 

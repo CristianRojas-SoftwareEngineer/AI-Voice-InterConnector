@@ -155,7 +155,7 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 **`--play` ofrece el bucle interactivo de 4 opciones** (reproducir de nuevo /
 aceptar y guardar / rechazar y regenerar / rechazar y descartar), con menú y
 prompts por stderr. Sin `--force`, la colisión de etiqueta se comprueba dos
-veces: antes de sintetizar (fast-fail, exit 6 sin gastar GPU) y de nuevo al
+veces: antes de sintetizar (fast-fail, exit 6 sin pagar la síntesis) y de nuevo al
 aceptar (opción 2), por si la etiqueta quedó ocupada mientras el bucle
 esperaba respuesta — si colisiona en ese instante, también exit 6. Rechazar y
 descartar (opción 4) o Ctrl-D terminan con exit 0 sin persistir nada; solo

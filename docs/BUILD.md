@@ -304,8 +304,9 @@ fallback de `hf-hub`, que en Windows sin `HOME` caería en `<unidad>:\tmp`):
 `{home}/.cache/huggingface/hub` — la misma convención que `huggingface_hub`
 de Python en los tres SO. El cliente de descarga se construye con
 `.cache_dir()` explícito, garantizando convergencia lectura=escritura.
-`data_dir()/models/<name>/manifest.json` queda solo como índice de
-compatibilidad:
+La provisión se decide solo por presencia del snapshot HF; no hay índice
+`manifest.json` intermedio (los `manifest.json` de versiones previas que
+queden en disco son inertes y los barre `cleanup`):
 
 | SO | Cache HF (`hf_cache_dir()`) | Datos del usuario (`data_dir()`) |
 |----|------------------------------|----------------------------------|

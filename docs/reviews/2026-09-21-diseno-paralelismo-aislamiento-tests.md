@@ -49,6 +49,8 @@ Los candados que serializan el acceso (`STATE_LOCK`, `TTS_LOCK`) tienen alcance 
 
 Cuando esos dominios no coinciden, **ningún `Mutex` puede garantizar exclusión**: un `cargo test` abortado (Ctrl-C, timeout de CI) deja un daemon/residente zombi en 8765/8766 y un pidfile obsoleto, y la corrida siguiente los hereda. El harness lo reconoce implícitamente: existe `verificar_cero_huerfanos` precisamente para atrapar ese residuo heredado.
 
+> **Estado tras la remediación (addendum).** La parte **eliminable** de D-I quedó cerrada: el puerto del daemon pasó a efímero por instancia (Eje 1) y el estado a data-dir por instancia (Eje 2). El residente, que quedaba como último punto de D-I abierto, ya **no** usa `8766` como identidad ni faro de descubrimiento: su detección, limpieza y verificación se re-anclaron a su **identidad estable** —el `resident_pid` registrado en el pidfile por instancia y, como faro independiente del pidfile, un barrido por **imagen `qwen_tts`** (seguro porque el residente tiene imagen propia; el daemon comparte imagen con el CLI y por eso su kill-por-imagen sigue prohibido)—. El `8766` permanece **solo** como puerto de servicio real (`DEFAULT_PORT`/`default_port`/`resident.port`): el camino feliz daemon→residente le sigue hablando por ahí. Lo irreducible que queda es un **límite físico razonado**, no deuda: (a) el semáforo de capacidad de una única inferencia pesada residente y (b) una higiene por PID/imagen contra el huérfano que sobrevive a un aborto duro (Ctrl-C/`SIGKILL`), donde ningún `Drop` de Rust corre.
+
 ### D-II — Arranque sin señal de readiness
 
 `run_daemon_server` publica dos hechos en momentos distintos y sin evento consumible: primero liga el socket e imprime "escuchando", y **después** lanza el warmup del motor TTS en `spawn_blocking` de segundo plano, acotado por `WARMUP_DEADLINE` (40 s). El estado atraviesa `running-pero-frío → running+warm` de forma asíncrona, y la inferencia solo es fiable en caliente.
@@ -63,10 +65,10 @@ Cada mecanismo defensivo del harness compensa uno de los dos defectos:
 |---|---|---|
 | `REINTENTOS_WARM_FAILSAFE` (225 polls a 200 ms) | D-II readiness | reintento disfrazado |
 | `esperar_estado_daemon` (polls de 200 ms) | D-II readiness | best-effort |
-| `reaper_ante_fallo`, `barrer_residente_por_puerto`, `puerto_abierto` | D-I recurso global | limpieza defensiva |
+| `reaper_ante_fallo`, `barrer_residente_por_imagen`, `puerto_abierto` | D-I recurso global | limpieza defensiva |
 | `verificar_cero_huerfanos` | D-I residuo heredado | verificación de higiene |
 | `into_inner()` sobre `Mutex` envenenado (`bloquear_estado`, `TTS_LOCK`) | secuela de D-I (panic con lock tomado) | recuperación silenciosa |
-| Puertos fijos 8765/8766 | D-I falta de aislamiento por instancia | acoplamiento global |
+| Puertos fijos 8765/8766 | D-I falta de aislamiento por instancia | acoplamiento global (retirado: daemon a efímero; residente re-anclado a PID/imagen, 8766 solo como puerto de servicio) |
 
 ## 5. Hallazgos
 
@@ -95,7 +97,7 @@ Ver D-II. `esperar_estado_daemon` codifica la ausencia de señal como presupuest
 
 ### P-05 — Serialización que mezcla capacidad física con colisión de recurso · 🟡 Media
 
-`STATE_LOCK`/`TTS_LOCK` serializan por dos razones distintas fundidas en una: (a) evitar colisión de puerto/pidfile (síntoma de D-I) y (b) respetar que la GPU/VRAM no admite dos motores TTS de ~1.8 GB simultáneos (restricción física legítima). Al mezclarlas, la serialización parece intrínseca cuando en realidad la mitad es eliminable.
+`STATE_LOCK`/`TTS_LOCK` serializan por dos razones distintas fundidas en una: (a) evitar colisión de puerto/pidfile (síntoma de D-I) y (b) respetar que la máquina no admite dos motores TTS residentes de ~1.8 GB de RAM simultáneos sobre el puerto de servicio fijo (restricción física legítima). Al mezclarlas, la serialización parece intrínseca cuando en realidad la mitad es eliminable.
 
 ### P-06 — Clases de test sin segregar formalmente · ⚪ Baja
 
@@ -112,21 +114,22 @@ Ver D-II. `esperar_estado_daemon` codifica la ausencia de señal como presupuest
 - **Eje 1 — Puerto efímero por instancia (`:0`)**. Cablear `daemon_port`/env → `run_daemon_server` y ligar `:0`, dejando que el SO asigne; el binario imprime el puerto real. Ya hay precedente (`QWEN3_TTS_PORT` en el residente). Elimina la colisión de puertos y todo el barrido por puerto.
 - **Eje 2 — Directorio de estado por instancia**. Inyectar `LOCALAPPDATA`/`HOME`/data-dir a un tempdir único por test. El fontanero ya existe: `run_json_env(args, envs)` acepta envs y `TMP_COUNTER` provee unicidad. El pidfile deja de ser compartido → cero huérfanos heredados por construcción.
 - **Eje 3 — Readiness por señal, no por sondeo**. El arranque emite un evento explícito "ligado + warm" (puerto y estado en stdout/fichero) que el test espera con un `recv` acotado. La espera pasa de "reintentar hasta que no falle" a "esperar el evento; timeout = bug".
-- **Eje 4 — Serializar solo por capacidad física real**. Modelar la restricción de 1 GPU con un semáforo de capacidad para la clase pesada, documentado como límite de hardware. Serializar por VRAM es correcto; serializar por puerto/pidfile es un síntoma que desaparece con los ejes 1-2.
+- **Eje 4 — Serializar solo por capacidad física real**. Modelar la restricción de una única inferencia pesada residente con un semáforo de capacidad para la clase pesada, documentado como límite real de recursos. Serializar por capacidad de inferencia (RAM + puerto de servicio fijo) es correcto; serializar por puerto/pidfile es un síntoma que desaparece con los ejes 1-2.
 - **Eje 5 — Retirar la tolerancia al envenenamiento**. Con instancias aisladas y serialización solo por capacidad física, un panic debe propagarse como fallo. Se retira `into_inner()`; un `Mutex` envenenado vuelve a ser la señal de que un test reventó.
-- **Eje 6 — Segregar clases de test**. Declarar el contrato: contrato puro (paralelizable) vs E2E-con-proceso (aislado por instancia + serializado solo por GPU). Son garantías distintas y deben nombrarse como tales.
+- **Eje 6 — Segregar clases de test**. Declarar el contrato: contrato puro (paralelizable) vs E2E-con-proceso (aislado por instancia + serializado solo por capacidad de inferencia). Son garantías distintas y deben nombrarse como tales.
 
 ## 7. Qué parches se eliminan al corregir la raíz
 
 | Parche actual | Defecto que compensa | Eliminado por | Por qué desaparece |
 |---|---|---|---|
-| `barrer_residente_por_puerto`, `puerto_abierto`, sondeo de puertos fijos | D-I | Eje 1 | Con puerto asignado por el SO no hay colisión → nada que barrer por puerto. |
+| `puerto_abierto` sobre el puerto del daemon, sondeo del puerto fijo del daemon | D-I | Eje 1 | Con puerto asignado por el SO no hay colisión → nada que barrer por puerto. |
+| Sondeo/verificación del residente por `8766` (identidad, faro y cierre) | D-I | Re-anclaje a PID/imagen | El residente se gobierna por su identidad estable —`resident_pid` registrado + barrido por imagen `qwen_tts`—; `8766` queda solo como puerto de servicio real. `barrer_residente_por_imagen` sustituye al barrido por puerto como faro pidfile-independiente. |
 | `reaper_ante_fallo`, `GuardReaper`, `verificar_cero_huerfanos`, reclamo por PID como muleta | D-I | Eje 2 | Pidfile por instancia → ningún test hereda el zombi de otro → cero huérfanos por construcción. *(El reclamo por PID sigue siendo lógica de producto legítima; deja de ser andamiaje del harness.)* |
 | `REINTENTOS_WARM_FAILSAFE`, polls de `esperar_estado_daemon` | D-II | Eje 3 | La espera se ancla a un evento; el reintento pierde su razón de ser. |
 | `into_inner()` sobre `Mutex` envenenado | secuela de D-I | Ejes 2 + 5 | Sin contaminación cruzada, el envenenamiento vuelve a ser fallo legítimo. |
-| Serialización total bajo `STATE_LOCK`/`TTS_LOCK` | D-I + capacidad física | Ejes 1-2 + 4 | Se reduce al semáforo por GPU; la parte que compensaba colisión desaparece. |
+| Serialización total bajo `STATE_LOCK`/`TTS_LOCK` | D-I + capacidad física | Ejes 1-2 + 4 | Se reduce al semáforo por capacidad de inferencia; la parte que compensaba colisión desaparece. |
 
-**Resultado neto**: de los seis mecanismos defensivos, **cinco desaparecen**. El único que sobrevive es la serialización, reducida a su núcleo físico real (una GPU), documentada como límite de hardware y no como muleta.
+**Resultado neto**: de los seis mecanismos defensivos, **cinco desaparecen**. El único que sobrevive es la serialización, reducida a su núcleo físico real (una única inferencia pesada residente), documentada como límite real de recursos y no como muleta.
 
 ## 8. Orden de ejecución obligatorio
 

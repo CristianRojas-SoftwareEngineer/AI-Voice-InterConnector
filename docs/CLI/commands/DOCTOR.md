@@ -33,7 +33,7 @@ porque `doctor` nunca dialoga con el daemon (`src/main.rs:505`
 handle_doctor
     │
     ▼
-data_dir() existe                              ← issue si falta (src/main.rs:2634-2637)
+data_dir() existe                              ← issue si falta (src/main.rs:2824-2828)
     │
     ▼
 is_provisioned("qwen3-tts-0.6b")               ← issue si falta (src/main.rs:2640-2642)

@@ -51,7 +51,7 @@ AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 └─────────────────────────────────────────────────────────────┘
 ```
 
-El binario expone el CLI (`src/main.rs` + crates) y gestiona el daemon HTTP en `127.0.0.1:8765`. Los modelos se provisionan vía `ai-voice-interconnector setup` en `~/.cache/huggingface/hub` y `data_dir()` por SO.
+El binario expone el CLI (`src/main.rs` + crates) y gestiona el daemon HTTP en `127.0.0.1:8765` por defecto (`DAEMON_ADDR`, con override `AVI_DAEMON_PORT`, `0` = efímero). Los modelos se provisionan vía `ai-voice-interconnector setup` en `~/.cache/huggingface/hub` y `data_dir()` por SO (con override `AVI_DATA_DIR` por instancia; sin él, resolución idéntica).
 
 ## Estructura del proyecto
 

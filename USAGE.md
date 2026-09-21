@@ -131,10 +131,10 @@ ai-voice-interconnector setup --force-update         # purga los snapshots pinne
 ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación interactiva
 ```
 
-**Qué esperar:** barra de progreso por bytes con ETA, resume automático si se
-interrumpe, e índice de estado en `data_dir()/models/<name>/manifest.json`.
-Si lo vuelves a ejecutar con los snapshots presentes, termina al instante sin
-descargar nada. La limpieza posterior corresponde a `cleanup` (snapshots + datos)
+**Qué esperar:** barra de progreso por bytes con ETA y resume automático si se
+interrumpe. La provisión se decide solo por presencia del snapshot HF (no hay
+índice `manifest.json` que consultar): si lo vuelves a ejecutar con los
+snapshots presentes, termina al instante sin descargar nada. La limpieza posterior corresponde a `cleanup` (snapshots + datos)
 o `uninstall --force` (además binario + PATH).
 
 **Provisión por SO** (experiencia homóloga):
@@ -357,7 +357,7 @@ Dispositivos de salida de audio:
 
 ### El grupo `speech`
 
-Seis sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`), tres que gestionan el almacén de locuciones guardadas (`play`, `list`, `remove`) y una que compone el bucle voz→voz (`dub`). Cada una tiene una sola responsabilidad, y el nombre declara su costo: sintetizar paga GPU y puede exigir el modelo provisionado; gestionar el almacén no.
+Seis sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`), tres que gestionan el almacén de locuciones guardadas (`play`, `list`, `remove`) y una que compone el bucle voz→voz (`dub`). Cada una tiene una sola responsabilidad, y el nombre declara su costo: sintetizar paga una inferencia pesada (CPU + RAM) y puede exigir el modelo provisionado; gestionar el almacén no.
 
 | Sub-acción | Qué hace | Persiste | Necesita el modelo |
 |---|---|---|---|
@@ -421,8 +421,8 @@ Locución 'saludo' guardada (voz 'default').
 - `--json`: Emite `{status, audio_path, voice}`
 
 **Colisión de etiqueta:** sin `--force`, guardar sobre una etiqueta que ya
-existe para la voz sale con exit **6**, sin gastar GPU (la comprobación es
-previa a la síntesis). Con `--play`, la etiqueta se revalida también al
+existe para la voz sale con exit **6**, sin pagar la síntesis (la comprobación es
+previa). Con `--play`, la etiqueta se revalida también al
 aceptar, por si quedó ocupada mientras el bucle esperaba una respuesta;
 `--force` sobre una etiqueta libre es un no-op.
 
@@ -907,7 +907,7 @@ sintetizar varias veces seguidas.
 ### Gestión del daemon
 
 ```bash
-# Iniciar daemon (background; puerto fijo: 8765 en loopback, no configurable)
+# Iniciar daemon (background; puerto 8765 en loopback por defecto, desviable por instancia con `AVI_DAEMON_PORT`, `0` = efímero)
 ai-voice-interconnector daemon start
 
 # Ver estado
@@ -926,12 +926,12 @@ ai-voice-interconnector daemon serve --auto-restart --max-retries 3
 ```
 
 **Qué esperar:** `daemon start` verifica que los modelos estén provisionados, lanza el servidor en segundo plano
-con `spawn_background` + PID file `data_dir()/daemon.pid` (incluyendo `resident_pid` plano) + poll `await_daemon_ready` (`10s` deadline, `250ms` poll), y confirma con
+con `spawn_background` + PID file `data_dir()/daemon.pid` (incluyendo `resident_pid` plano; esquema conservado, el `addr` efímero en el pidfile queda diferido) + poll `await_daemon_ready` (`10s` deadline, `250ms` poll —sondeo vigente; el evento `avi-daemon-ready` en stderr es el contrato de señal, su consumo por `recv` queda diferido), y confirma con
 `Daemon iniciado correctamente (pid ...)`. Luego `daemon status` muestra estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
 
 Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^retries` capado a `4s` y protección por watchdog de supervisión contra bucles de reinicio rápidos; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Sin `--auto-restart`, el daemon es `fail-stop`.
 
-Warmup: tras enlazar `127.0.0.1:8765`, el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(precalentar_voz)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque (fail-fast, antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
+Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(precalentar_voz)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque (fail-fast, antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
 
 `daemon stop` responde `Daemon detenido` (parada unificada de daemon y residente con verificación y borrado de `daemon.pid`) y `daemon restart` orquesta `stop_daemon_and_resident` → arranque fresco con `spawn_background` → poll `running`.
 
