@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.19.0 — 2026-09-21](#0190-20260921)
 - [0.18.26 — 2026-09-02](#01826-20260902)
 - [0.18.25 — 2026-09-01](#01825-20260901)
@@ -110,6 +111,48 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+Cierre de la migración T7 (paralelismo y aislamiento de tests) y retiro de la
+deuda legacy que la remediación había dejado inerte. La suite E2E completa corre
+de verdad en entorno provisionado (CPU): **59/59 en verde, cero huérfanos**.
+
+### Eliminado
+
+- **BREAKING** refactor(store): retira el índice `manifest.json` y
+  `register_provisioned` — la provisión de modelos se decide **solo** por
+  presencia del snapshot HF pinneado (todos los modelos tienen pin en
+  `MODEL_REVISIONS`). `is_provisioned` ya no cae a `manifest.json`; `list` deja
+  de escanear índices legacy. Los `manifest.json` de versiones previas quedan
+  inertes y los barre `cleanup` (`data_dir()/models`) — `crates/avi-store/src/lib.rs`,
+  `src/main.rs`.
+- refactor(tts): elimina la conversión perezosa `reference.wav`→`.qvoice` (código
+  muerto inalcanzable) y el campo `reference_audio` de `VoiceProfile`; la voz
+  clonada resuelve solo por `reference.qvoice` — `crates/avi-tts/src/lib.rs`,
+  `crates/avi-daemon/src/lib.rs`.
+- refactor(store,daemon,cli): retira las escrituras de `speech-reference.wav`/
+  `timbre-reference.wav` (nadie las lee; `find_reference` solo consulta
+  `reference.qvoice`) y el barrido de limpieza legacy de `ensure_initialized`. El
+  JSON de clonado local deja de emitir la clave `timbre` (paridad con el evento
+  del daemon) — `crates/avi-store/src/lib.rs`, `crates/avi-daemon/src/lib.rs`,
+  `src/main.rs`.
+- chore(config): poda el campo muerto `daemon_port` de `AppConfig` (no se leía en
+  producto; el arranque usa el env `AVI_DAEMON_PORT`) — `crates/avi-config/src/lib.rs`.
+
+### Cambiado
+
+- refactor(tests): completa el aislamiento por instancia de los tests E2E de
+  ciclo (`AVI_DAEMON_PORT=0` efímero + `AVI_DATA_DIR` sandbox + readiness por
+  evento `daemon.ready`), re-ancla el residente `qwen_tts` a `resident_pid` +
+  barrido por imagen, y retira la tolerancia al envenenamiento del `Mutex`
+  (Eje 5): un `Mutex` envenenado vuelve a propagar fallo visible —
+  `tests/cli_golden.rs`.
+- docs: corrige el vocabulario impreciso «GPU/VRAM» al recurso real (una única
+  inferencia pesada residente: proceso + RAM + puerto de servicio fijo) en
+  nuestros archivos; se conservan las menciones legítimas al backend opcional del
+  motor (`vendor/`) y el `CHANGELOG` histórico no se reescribe — `docs/`, `USAGE.md`,
+  `tests/cli_golden.rs`.
 
 ## [0.19.0] — 2026-09-21
 
