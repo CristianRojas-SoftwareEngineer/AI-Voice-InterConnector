@@ -211,21 +211,39 @@ SmartScreen/Gatekeeper. Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md) y
 
 ## 4. CI/CD con CircleCI
 
-El pipeline de CircleCI ejecuta los tests y, si pasan, compila el proyecto para
-todas las plataformas. Los jobs `test-linux`, `test-windows` y `test-macos`
-actúan como **triple puerta simétrica**: cada build depende de los tres
-(`requires: [test-linux, test-windows, test-macos]`), de modo que la suite se
-ejercita en los tres SO nativos antes de compilar. A la triple puerta Rust se
-suman los tres smoke-tests de instaladores (`test-installer-linux` bats,
-`test-installer-windows` Pester, `test-installer-macos` bats) y los gates
-`coverage` (cargo-llvm-cov) y `validate-licenses` (SOURCE-OFFER/THIRD-PARTY).
+La CI se organiza en **dos pipelines** que reusan las mismas definiciones de
+jobs (sin duplicarlas), cada uno con su propio disparador y su propia carga:
 
-Un job `lint` (cargo fmt + clippy featureless) corre en `branch-checks` como
-señal temprana en cada push de rama; no participa del release tags-only.
+- **Pipeline de rama — `validate` (corrección).** Corre en cada push a `main`
+  (`branches: only main`, sin `filters.tags`) siguiendo un modelo **post-merge**:
+  el trabajo diario vive en `development` y, al integrar a `main`, se dispara la
+  **triple puerta simétrica** `test-linux` + `test-windows` + `test-macos` (cada
+  uno `cargo test --all` en su SO nativo). Es la señal temprana que atrapa las
+  rupturas específicas de plataforma (código tras `#[cfg]`, divergencias de
+  runtime del SO) **sin esperar al tag**. Los commits intermedios de
+  `development` no disparan CI.
+
+- **Pipeline de release — `build-all` (empaquetado + publicación).** Corre
+  **solo en tags `v*`** (todos sus jobs con `branches: ignore /.*/`). Está
+  **aligerado**: no re-corre `test-windows`/`test-macos` (ya cubiertos por
+  `validate` en el merge a `main`); conserva `test-linux` como **red de humo** y
+  suma `coverage` (cargo-llvm-cov, **solo aquí**), los tres smoke-tests de
+  instaladores (`test-installer-linux` bats, `test-installer-windows` Pester,
+  `test-installer-macos` bats) y los gates `validate-licenses`
+  (SOURCE-OFFER/THIRD-PARTY) y `validate-changelog`. Esos 7 gates son
+  `requires:` de los 4 builds nativos, que compilan las 4 plataformas en modo
+  release (validación de compilación por plataforma).
+
+La garantía "commit taggeado probado" descansa en una **disciplina**: taggear
+siempre el `HEAD` de `main` cuando `validate` esté verde. Sin *branch protection*
+airtight (decisión explícita para un flujo de un solo desarrollador), el humo
+`test-linux` + los builds ×plataforma en el tag son la red de seguridad
+residual; un merge malo puede dejar `main` roja unos minutos (fix-forward/revert).
 
 ### Simetría: 3 puertas de test vs. 4 targets de build
 
-Los tests (3) y los builds (4) responden a **ejes distintos**.
+Las 3 puertas de test (en `validate`) y los 4 builds (en `build-all`) responden
+a **ejes distintos**.
 
 - **Por qué 3 puertas de test y 4 builds.** Los tests son **por familia de SO**:
   validan lógica Rust por SO (Windows: winsound/tray; macOS: CoreAudio; Linux:
@@ -242,37 +260,50 @@ Los tests (3) y los builds (4) responden a **ejes distintos**.
 
 ### Arquitectura del Pipeline
 
+**Pipeline de rama `validate`** (cada push a `main`):
+
 ```
 ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
 │     test-linux     │  │    test-windows    │  │     test-macos     │
 │ (cargo test --all) │  │ (cargo test --all) │  │ (cargo test --all) │
-└─────────┬──────────┘  └─────────┬──────────┘  └─────────┬──────────┘
-          └──────────────────────┬┴───────────────────────┘
-        ┌───────────────┬────────┴──────┬───────────────┐──────────────┐
-        │   coverage    │ validate-     │ test-installer-* (×3)        │
-        │(cargo llvm-cov)│ licenses     │ (bats/Pester)                │
-        └───────┬───────┴──────┬────────┴──────┬───────────────────────┘
-                └──────────────┼───────────────┘
-         ┌───────────────┬────────┴──────┬───────────────┐
+└────────────────────┘  └────────────────────┘  └────────────────────┘
+        (triple puerta de corrección; no produce artefactos)
+```
+
+**Pipeline de release `build-all`** (solo en tags `v*`):
+
+```
+┌────────────────────┐
+│     test-linux     │  ← red de humo (test-windows/macos ya corrieron en `validate`)
+│ (cargo test --all) │
+└─────────┬──────────┘
+        ┌─┴─────────────┬───────────────┬───────────────┬──────────────┐
+        │   coverage    │ validate-     │ validate-     │ test-installer-* (×3)  │
+        │(cargo llvm-cov)│ licenses     │ changelog     │ (bats/Pester)          │
+        └───────┬───────┴──────┬────────┴──────┬────────┴──────┬────────────────┘
+                └──────────────┴───────┬───────┴───────────────┘
+         ┌───────────────┬─────────────┴─┬───────────────┐
          ▼               ▼               ▼               ▼
 ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌──────────────────┐
 │build-windows│ │build-linux- │ │build-linux- │ │ build-darwin-    │
 │ -x64        │ │    x64      │ │   arm64     │ │     arm64        │
 └─────────────┘ └─────────────┘ └─────────────┘ └──────────────────┘
      (cada build: cargo build --release --features full + smoke test version/voice list + staging tar.gz/zip)
+                              │
+                              ▼   publish-release → publish-metadata
 ```
 
 ### Jobs
 
-| Job | Plataforma | Executor | Notas |
-|-----|------------|----------|-------|
-| `test-linux` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo test --all --verbose` |
-| `test-windows` | Windows x64 | `win/server-2022` | `cargo test --all` en Windows nativo |
-| `test-macos` | macOS arm64 | macos `m4pro.medium` | `cargo test --all` en macOS nativo |
-| `coverage` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo llvm-cov --workspace --lcov` |
-| `lint` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo fmt --check` + `cargo clippy` |
-| `validate-licenses` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- source-offer --check` + `licenses --check` |
-| `test-installer-*` | por SO | bats/Pester | Smoke tests de one-liners (mock por PATH) |
+| Job | Pipeline | Plataforma | Executor | Notas |
+|-----|----------|------------|----------|-------|
+| `test-linux` | `validate` + `build-all` (humo) | Linux x64 | docker `cimg/rust:1.96.0` | `cargo test --all --verbose` |
+| `test-windows` | `validate` | Windows x64 | `win/server-2022` | `cargo test --all` en Windows nativo |
+| `test-macos` | `validate` | macOS arm64 | macos `m4pro.medium` | `cargo test --all` en macOS nativo |
+| `coverage` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo llvm-cov --workspace --lcov` (solo en el tag) |
+| `validate-licenses` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- source-offer --check` + `licenses --check` |
+| `validate-changelog` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- changelog --check` |
+| `test-installer-*` | `build-all` | por SO | bats/Pester | Smoke tests de one-liners (mock por PATH) |
 | `build-windows-x64` | Windows x64 | `win/server-2022` | `cargo build --release --features full` + staging `.zip` |
 | `build-linux-x64` | Linux x64 | docker `cimg/rust:1.96.0` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
 | `build-linux-arm64` | Linux ARM64 | docker `cimg/rust:1.96.0` (`arm.medium`) | idem, nativo aarch64 |

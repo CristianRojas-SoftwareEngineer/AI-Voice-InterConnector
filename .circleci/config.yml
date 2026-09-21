@@ -1,7 +1,11 @@
 # Pipeline CircleCI Tier 1 — Rust nativo 3 SO (Linux/Windows/macOS)
-# Triple puerta `cargo test --all` + `coverage` como gate de los 4 builds nativos.
-# Un único workflow `build-all` (release, SOLO en tags v*); no hay gates de rama
-# en CI: la validación previa al tag (fmt/clippy/test) se documenta en docs/BUILD.md.
+# DOS pipelines que reusan las mismas definiciones de jobs (ver `workflows:`):
+#   - `validate` (rama): triple puerta `cargo test --all` en cada push a `main`
+#     (post-merge) — corrección temprana por plataforma, cierra la brecha de
+#     detección-al-tag.
+#   - `build-all` (release, SOLO en tags v*): empaquetado + publicación, con
+#     `test-linux` de humo + `coverage` como gate de los 4 builds nativos.
+# El trabajo diario vive en `development`; sus commits no disparan CI.
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
 # licencia, versionados vía `persist_to_workspace` → `publish-release`.
 # Pines reproducibles: `rust_version` + `ort_version` + digest de `cimg/rust` (ver §Reproducibilidad).
@@ -1617,17 +1621,55 @@ jobs:
             fi
             echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
 
+# ══════════════════════════════════════════════════════════════════════
+# Modelo de DOS pipelines (misma definición de jobs, reusada sin duplicar):
+#
+#   1. `validate` (CORRECCIÓN) — corre en cada push a `main` (post-merge).
+#      Triple puerta de tests por plataforma (test-linux/windows/macos) que
+#      atrapa temprano las rupturas específicas de SO (compilación tras
+#      `#[cfg]`, divergencias de runtime) sin esperar al tag. No declara
+#      `filters.tags` → no corre en tags; `branches: only main` → no corre en
+#      `development` (el trabajo diario vive ahí y sus commits no gastan CI).
+#
+#   2. `build-all` (RELEASE) — corre SOLO en tags `v*`, nunca en pushes de
+#      rama (todos sus jobs declaran `branches: ignore /.*/`). Aligerado: NO
+#      re-corre test-windows/test-macos (ya cubiertos por `validate` en el
+#      merge a main); conserva `test-linux` como red de humo + `coverage`
+#      (solo aquí) + instaladores + licencias/changelog como gates de los 4
+#      builds nativos, que además compilan las 4 plataformas en modo release.
+#
+# Disciplina que sostiene la garantía "commit taggeado probado": taggear
+# siempre el HEAD de `main` cuando `validate` esté verde. Ver docs/BUILD.md §4.
+# ══════════════════════════════════════════════════════════════════════
 workflows:
+  # ── Pipeline de RAMA: corrección en cada push a `main` (post-merge) ──
+  validate:
+    jobs:
+      - test-linux:
+          filters:
+            branches:
+              only: main
+      - test-windows:
+          filters:
+            branches:
+              only: main
+      - test-macos:
+          filters:
+            branches:
+              only: main
+
+  # ── Pipeline de RELEASE: empaquetado + publicación en tags `v*` ──
   build-all:
     # CircleCI NO ejecuta un job en un tag salvo que el job Y todas sus
     # dependencias declaren `filters.tags`; por eso el filtro `v*` se propaga
     # por toda la cadena (gates Rust/instaladores → builds → publish-*).
     # Todos los jobs declaran además `branches: ignore /.*/`: este workflow de
-    # release corre SOLO en tags `v*`, nunca en pushes de rama. La validación
-    # completa previa al tag (fmt/clippy/test) se documenta en docs/BUILD.md.
+    # release corre SOLO en tags `v*`, nunca en pushes de rama. La corrección
+    # por plataforma la cubre el pipeline `validate` en el merge a main;
+    # `test-linux` queda aquí como red de humo. Ver docs/BUILD.md §4.
     jobs:
-      # ── Gates Rust (triple puerta) + cobertura + instaladores + licencias ──
-      # Los 4 builds requieren estos 8 gates verdes en la misma pipeline.
+      # ── Gate de humo (test-linux) + cobertura + instaladores + licencias ──
+      # Los 4 builds requieren estos 7 gates verdes en la misma pipeline.
       - validate-licenses:
           filters:
             tags:
@@ -1641,18 +1683,6 @@ workflows:
             branches:
               ignore: /.*/
       - test-linux:
-          filters:
-            tags:
-              only: /^v.*/
-            branches:
-              ignore: /.*/
-      - test-windows:
-          filters:
-            tags:
-              only: /^v.*/
-            branches:
-              ignore: /.*/
-      - test-macos:
           filters:
             tags:
               only: /^v.*/
@@ -1682,7 +1712,7 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
-      # ── Builds nativos Rust (requieren triple puerta + cobertura + instaladores) ──
+      # ── Builds nativos Rust (requieren humo test-linux + cobertura + instaladores) ──
       - build-windows-x64:
           filters:
             tags:
@@ -1691,8 +1721,6 @@ workflows:
               ignore: /.*/
           requires:
             - test-linux
-            - test-windows
-            - test-macos
             - test-installer-linux
             - test-installer-windows
             - test-installer-macos
@@ -1707,8 +1735,6 @@ workflows:
               ignore: /.*/
           requires:
             - test-linux
-            - test-windows
-            - test-macos
             - test-installer-linux
             - test-installer-windows
             - test-installer-macos
@@ -1723,8 +1749,6 @@ workflows:
               ignore: /.*/
           requires:
             - test-linux
-            - test-windows
-            - test-macos
             - test-installer-linux
             - test-installer-windows
             - test-installer-macos
@@ -1739,8 +1763,6 @@ workflows:
               ignore: /.*/
           requires:
             - test-linux
-            - test-windows
-            - test-macos
             - test-installer-linux
             - test-installer-windows
             - test-installer-macos

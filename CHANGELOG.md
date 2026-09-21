@@ -142,6 +142,22 @@ de verdad en entorno provisionado (CPU): **59/59 en verde, cero huérfanos**.
 
 ### Cambiado
 
+- ci: adopta un modelo de **dos pipelines** en `.circleci/config.yml` reusando
+  las mismas definiciones de jobs. Nuevo workflow `validate` (corrección) corre
+  en cada push a `main` (`branches: only main`, sin `filters.tags`) con la
+  triple puerta `test-linux`/`test-windows`/`test-macos`, cerrando la brecha de
+  detección-al-tag de rupturas específicas de plataforma (antes CI corría **solo**
+  al etiquetar `v*`). El workflow de release `build-all` se aligera: retira
+  `test-windows`/`test-macos` de sus entradas y de los `requires:` de los 4
+  `build-*` (de 9 gates a 7), dejando `test-linux` como red de humo + `coverage`
+  (solo en el tag) + instaladores + licencias/changelog. El trabajo diario pasa
+  a la rama `development` (sus commits no disparan CI); la garantía "commit
+  taggeado probado" descansa en taggear el `HEAD` de `main` con `validate` verde.
+- docs(reviews): pliega la estrategia de CI en `docs/BUILD.md §4` (modelo de dos
+  pipelines, simetría, arquitectura y tabla de jobs reconciliadas) y **retira**
+  `docs/reviews/cobertura-de-plataforma-en-ci.md` — la brecha que describía queda
+  cerrada por el pipeline `validate` (mismo patrón que el cierre T7: no dejar un
+  doc de "brecha abierta" ya remediada).
 - refactor(tests): completa el aislamiento por instancia de los tests E2E de
   ciclo (`AVI_DAEMON_PORT=0` efímero + `AVI_DATA_DIR` sandbox + readiness por
   evento `daemon.ready`), re-ancla el residente `qwen_tts` a `resident_pid` +
