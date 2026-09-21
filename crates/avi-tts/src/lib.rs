@@ -987,10 +987,14 @@ pub mod resident {
         }
     }
 
-    /// Mata el árbol preciso del residente por PID (sin Mutex): Windows
-    /// `taskkill /F /T /PID`; Unix `kill -9` al grupo y al PID. No verifica:
-    /// el llamante combina con `pid_vivo_residente`. `pub` para el camino de
-    /// reclamo/parada del CLI (R3-A).
+    /// Termina el residente por su PID (sin Mutex). Windows: `taskkill /F /T
+    /// /PID` cierra el árbol por parentesco real. Unix: `kill -9` al PID
+    /// directo — el residente se spawnea a propósito SIN grupo/sesión propia
+    /// (hereda el grupo del daemon para que su cierre lo arrastre), así que un
+    /// `kill` al grupo `-<pid>` apuntaría a un pgid nunca establecido; el
+    /// árbol/grupo lo cierra el daemon, aquí solo se termina el PID puntual del
+    /// camino de reclamo/parada del CLI (R3-A). No verifica: el llamante
+    /// combina con `pid_vivo_residente` o recolecta el estado vía `Child`.
     pub fn matar_arbol_residente_por_pid(pid: u32) -> bool {
         if pid == 0 {
             return false;
@@ -1008,12 +1012,6 @@ pub mod resident {
         }
         #[cfg(unix)]
         {
-            let _ = Command::new("kill")
-                .args(["-9", &format!("-{}", pid)])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
             Command::new("kill")
                 .args(["-9", &pid.to_string()])
                 .stdin(std::process::Stdio::null())
@@ -1607,10 +1605,14 @@ mod tests {
         resident::pid_vivo_residente(pid)
     }
 
-    /// H-01 (T7): el cierre preciso por árbol termina un hijo real a nivel SO
-    /// con verificación, sin daemonización (hijo directo, no el `qwen_tts`
-    /// desacoplado). Cubre `matar_arbol_residente_por_pid` +
-    /// `pid_vivo_residente` con recolección del estado (como el `Drop`).
+    /// H-01 (T7): la terminación por PID mata un hijo real a nivel SO, sin
+    /// daemonización (hijo directo, no el `qwen_tts` desacoplado). Cubre
+    /// `matar_arbol_residente_por_pid` + `pid_vivo_residente` con recolección
+    /// determinista del estado (como el `Drop`). Verificación SIN sondeo sobre
+    /// el singleton de PID del SO: un SIGKILL/`taskkill /F` es imparable, así
+    /// que `wait()` bloquea hasta la muerte real y no puede colgar por un hijo
+    /// que sobreviva (a diferencia de un bucle `kill -0`, cuya señal de grupo
+    /// mal dirigida colgaba solo en Linux/Docker).
     #[test]
     fn residente_matar_arbol_por_pid_termina_al_hijo() {
         let mut child = proceso_durmiente();
@@ -1620,24 +1622,20 @@ mod tests {
             "el hijo debe estar vivo tras el spawn (pid {})",
             pid
         );
-        resident::matar_arbol_residente_por_pid(pid);
-        let inicio = std::time::Instant::now();
-        while inicio.elapsed() < std::time::Duration::from_secs(10) {
-            // Recolecta si ya murió (en Unix el zombi sin recolectar sigue
-            // respondiendo al sondeo de viveza hasta el `wait`).
-            let _ = child.try_wait();
-            if !resident::pid_vivo_residente(pid) {
-                break;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
         assert!(
-            !resident::pid_vivo_residente(pid),
-            "el árbol preciso debe terminar al hijo (pid {})",
+            resident::matar_arbol_residente_por_pid(pid),
+            "la terminación por PID debe reportar éxito sobre un hijo vivo (pid {})",
             pid
         );
-        // Recolección final del estado, como el `Drop` del residente.
-        let _ = child.wait();
+        // Verificación determinista sin sondeo: `wait` bloquea hasta la muerte
+        // real y recolecta el estado (como el `Drop` del residente).
+        let status = child.wait().expect("wait sobre el hijo debe tener éxito");
+        assert!(
+            !status.success(),
+            "el hijo terminado por señal no debe reportar éxito (pid {}, status {:?})",
+            pid,
+            status
+        );
     }
 
     /// T4: `resolve_binary` halla el binario junto al `current_exe` aunque `cwd` no tenga vendor.
