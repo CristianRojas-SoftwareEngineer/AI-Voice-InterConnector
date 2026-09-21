@@ -1,5 +1,6 @@
 //! Harness de tests dorados del daemon.
 //!
+//! CLASE DECLARADA: contrato puro paralelizable sin restricción.
 //! Levanta el `Router` de Axum vía [`avi_daemon::build_router_with_state`] y lo
 //! ejerce con `tower::ServiceExt::oneshot` (sin abrir socket TCP real), comparando
 //! cada respuesta contra fixtures fijas en `tests/golden/` de la raíz del repo.
@@ -31,6 +32,12 @@ use avi_store::{SpeechStore, VoiceStore};
 /// Estado de test único: carga el motor STT real una sola vez (ruta relativa a
 /// `CARGO_MANIFEST_DIR`), reutilizable entre tests. El motor TTS se construye con
 /// resolución por defecto (no provisionado desde CWD → branch `model_missing`).
+///
+/// Divergencia aceptada frente al evento de readiness por señal (documentada, no corregida):
+/// `warm` nace en `Warming` eterno porque aquí no corre `run_daemon_server`
+/// (sin bind ni warmup real); los tests de contrato leen el estado tal cual y
+/// nunca esperan la señal `avi-daemon-ready`. La espera por señal solo aplica
+/// a la clase E2E-con-proceso (`tests/cli_golden.rs`).
 static TEST_STATE: OnceLock<Arc<DaemonState>> = OnceLock::new();
 
 fn test_state() -> Arc<DaemonState> {
@@ -160,7 +167,7 @@ async fn transcribe_coincide_con_fixture() {
         return;
     }
     // Payload `{}` (campo audio_b64 ausente) → rama de error de campo ausente
-    // diseñada en la Tarea 5 (no un stub `transcription_pending`).
+    // diseñada a propósito (no un stub `transcription_pending`).
     let (status, bytes) = send(post_json("/transcribe", serde_json::json!({}))).await;
     assert_eq!(status, StatusCode::OK);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
@@ -346,7 +353,9 @@ async fn voices_clone_daemon_precomputed_true() {
         return;
     }
     if test_state().tts_engine.base_model_dir.is_none() {
-        eprintln!("[daemon] skip: modelo base TTS no provisionado — ejecuta setup --with-voice-cloning");
+        eprintln!(
+            "[daemon] skip: modelo base TTS no provisionado — ejecuta setup --with-voice-cloning"
+        );
         return;
     }
     let wav = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -385,7 +394,10 @@ async fn voices_clone_daemon_precomputed_true() {
         Value::String("started".to_string()),
         "el stream debe comenzar con `started`"
     );
-    assert_eq!(eventos.first().unwrap()["name"], Value::String(name.clone()));
+    assert_eq!(
+        eventos.first().unwrap()["name"],
+        Value::String(name.clone())
+    );
     // Evento final `result` con la forma contractual actual (`precomputed: true`).
     let final_event = eventos.last().unwrap();
     assert_eq!(
@@ -436,7 +448,9 @@ async fn warm_voice_fail_fast_y_aceptacion() {
     let tmp = std::env::temp_dir().join(format!("warm_ok_{}.qvoice", std::process::id()));
     std::fs::write(&tmp, b"qvoice-fixture").expect("escribir fixture qvoice");
     let name = format!("warm_ok_{}", std::process::id());
-    store.save_reference(&name, &tmp).expect("registrar voz de prueba");
+    store
+        .save_reference(&name, &tmp)
+        .expect("registrar voz de prueba");
     let _ = std::fs::remove_file(&tmp);
     assert!(
         store.find_reference(&name).is_some(),

@@ -18,6 +18,16 @@ pub const DEFAULT_REP_PENALTY: f32 = 1.05;
 /// Puerto por defecto del servidor residente (el daemon del host ocupa el 8765).
 pub const DEFAULT_PORT: u16 = 8766;
 
+/// Nombre de imagen del proceso residente (`qwen_tts`). Fuente única para la
+/// resolución del binario y para el barrido por imagen de último recurso
+/// (`resident::barrer_residente_por_imagen`). El residente tiene imagen propia
+/// —a diferencia del daemon, que comparte imagen con el CLI—, así que el
+/// kill-por-imagen es seguro sólo para el residente.
+#[cfg(windows)]
+pub const RESIDENT_IMAGE_NAME: &str = "qwen_tts.exe";
+#[cfg(unix)]
+pub const RESIDENT_IMAGE_NAME: &str = "qwen_tts";
+
 /// Resuelve el puerto del servidor residente con override por `QWEN3_TTS_PORT`.
 pub fn default_port() -> u16 {
     std::env::var("QWEN3_TTS_PORT")
@@ -33,8 +43,8 @@ pub struct GenerationOptions {
     pub temperature: f32,
     pub top_k: u32,
     pub top_p: f32,
-    /// Penalización de repetición del motor (añadida en Fase 5; el motor la
-    /// usa por defecto a 1.05).
+    /// Penalización de repetición del motor (el motor la usa por defecto a
+    /// 1.05).
     pub rep_penalty: f32,
     pub seed: Option<u64>,
 }
@@ -105,7 +115,6 @@ pub struct EmotionOptions {
 #[derive(Debug, Clone)]
 pub struct VoiceProfile {
     pub name: String,
-    pub reference_audio: Option<PathBuf>,
     pub qvoice_path: Option<PathBuf>,
 }
 
@@ -144,7 +153,7 @@ pub fn resolve_voice_motor(voice: &str, qvoice: Option<&Path>) -> VozMotor {
     VozMotor::Preset(voice.to_string())
 }
 
-/// Resolución del binario del motor por capas (decisión e1):
+/// Resolución del binario del motor por capas:
 /// 1. `QWEN3_TTS_BIN`; 2. `<exe_dir>/vendor/qwen3-tts/qwen_tts(.exe)`; 3. `<cwd>/vendor/qwen3-tts/qwen_tts(.exe)`;
 /// 4. búsqueda en `PATH`.
 fn resolve_binary() -> Option<PathBuf> {
@@ -174,11 +183,7 @@ fn resolve_binary() -> Option<PathBuf> {
     if vendored.is_file() {
         return Some(vendored);
     }
-    let name = if cfg!(windows) {
-        "qwen_tts.exe"
-    } else {
-        "qwen_tts"
-    };
+    let name = RESIDENT_IMAGE_NAME;
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
             let cand = dir.join(name);
@@ -190,7 +195,7 @@ fn resolve_binary() -> Option<PathBuf> {
     None
 }
 
-/// Resolución del directorio de pesos por capas (decisión e1):
+/// Resolución del directorio de pesos por capas:
 /// 1. `QWEN3_TTS_MODEL_DIR`; 2. directorio hermano del binario
 ///    (`<dir del bin>/qwen3-tts-0.6b`); 3. `<exe_dir>/vendor/qwen3-tts/qwen3-tts-0.6b`;
 /// 4. snapshot HF `ModelStore::model_snapshot_path("qwen3-tts-0.6b")`; 5. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b`.
@@ -304,7 +309,7 @@ pub struct Qwen3TtsEngine {
 const HEALTH_OBS_RETRIES: usize = 1;
 const HEALTH_OBS_INTERVAL_MS: u64 = 2000;
 
-/// Estado del servidor residente: se indexa por voz (decisión e3) — al cambiar
+/// Estado del servidor residente: se indexa por voz — al cambiar
 /// de voz se termina el residente anterior y se arranca otro con `--load-voice`.
 struct ResidentState {
     resident: resident::Qwen3TtsResident,
@@ -337,9 +342,11 @@ impl Qwen3TtsEngine {
     /// retiene durante el spawn + `wait_health` + síntesis HTTP, así que
     /// `self.resident.lock()` se colgaría. Por eso se mata el árbol preciso por
     /// PID (señal que no requiere el lock, con verificación inmediata sin espera);
-    /// deliberadamente sin kill por imagen del residente —si el árbol preciso no lo
+    /// el `shutdown` mata por PID exacto, no por imagen —si el árbol preciso no lo
     /// termina, la verificación con deadline la hace el llamante (graceful del
-    /// daemon / parada del CLI) y el fallo es ruidoso. La recolección del estado
+    /// daemon / parada del CLI) y el fallo es ruidoso. El barrido por imagen
+    /// (`barrer_residente_por_imagen`) queda como último recurso del camino de
+    /// reclamo cuando no hay `resident_pid` registrado. La recolección del estado
     /// se hace best-effort con `try_lock` (si el warmup lo tiene, no esperamos:
     /// el proceso ya está muerto y su `Drop` recolectará el estado al liberarse).
     pub fn shutdown(&self) {
@@ -365,7 +372,6 @@ impl Qwen3TtsEngine {
         let qvoice_path = avi_store::VoiceStore::new().find_reference(voice);
         let profile = VoiceProfile {
             name: voice.to_string(),
-            reference_audio: None,
             qvoice_path,
         };
         self.synthesize_with_options(text, &profile, &options, output_path)
@@ -474,12 +480,18 @@ impl Qwen3TtsEngine {
                 .health_check(HEALTH_OBS_RETRIES, HEALTH_OBS_INTERVAL_MS)
             {
                 // Residente degradado (crash o hang): rearranque determinista.
-                let pid = guard.as_ref().expect("residente reutilizado").resident.pid();
+                let pid = guard
+                    .as_ref()
+                    .expect("residente reutilizado")
+                    .resident
+                    .pid();
                 resident::matar_arbol_residente_por_pid(pid);
                 *guard = None;
                 *guard = Some(self.arrancar_residente(model_dir, voz, voz_key)?);
             }
-            let state = guard.as_ref().expect("residente arrancado o reutilizado sano");
+            let state = guard
+                .as_ref()
+                .expect("residente arrancado o reutilizado sano");
             format!("http://127.0.0.1:{}", state.resident.port)
         };
         self.synthesize_via_http(&url, text, voz, options, None, None, out_path)
@@ -519,7 +531,6 @@ impl TtsEngine for Qwen3TtsEngine {
         let qvoice_path = avi_store::VoiceStore::new().find_reference(voice);
         let profile = VoiceProfile {
             name: voice.to_string(),
-            reference_audio: None,
             qvoice_path,
         };
         self.synthesize_with_options(text, &profile, &default_options, output_path)
@@ -536,28 +547,13 @@ impl TtsEngine for Qwen3TtsEngine {
             .cloned()
             .unwrap_or_else(|| PathBuf::from("output.wav"));
 
-        // Conversión perezosa del `reference.wav` legado → `.qvoice` (decisión e3):
-        // si la voz solo tiene un WAV de referencia, se clona una vez y se cachea
-        // junto a él como `reference.qvoice`.
-        let qvoice = match (
-            profile.qvoice_path.as_deref(),
-            profile.reference_audio.as_deref(),
-        ) {
-            (Some(q), _) if q.is_file() => Some(q.to_path_buf()),
-            (None, Some(r)) if r.is_file() => {
-                let dest = r.with_file_name("reference.qvoice");
-                if dest.is_file() {
-                    Some(dest)
-                } else {
-                    let model_dir = self.base_model_dir.as_ref().ok_or_else(|| {
-                        anyhow!("El modelo Base de clonado Qwen3-TTS no está provisionado.")
-                    })?;
-                    clone_voice(model_dir, r, &dest, &profile.name, &options.language)?;
-                    Some(dest)
-                }
-            }
-            _ => None,
-        };
+        // La voz clonada se resuelve por `reference.qvoice` (`qvoice_path`); una
+        // voz sin él resuelve como preset del motor.
+        let qvoice = profile
+            .qvoice_path
+            .as_deref()
+            .filter(|q| q.is_file())
+            .map(|q| q.to_path_buf());
         let voz = resolve_voice_motor(&profile.name, qvoice.as_deref());
 
         // 1. HTTP manual configurado (solo presets; la voz clonada exige un
@@ -777,7 +773,7 @@ pub fn clone_voice(
     }
 }
 
-/// Servidor residente del motor Qwen3-TTS (decisión e2): spawn perezoso con
+/// Servidor residente del motor Qwen3-TTS: spawn perezoso con
 /// `--serve <puerto> --int4 -j 4 --stream [--load-voice <qvoice> --icl-only]`, healthcheck
 /// `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
 pub mod resident {
@@ -848,11 +844,13 @@ pub mod resident {
                 .create(true)
                 .append(true)
                 .open(&log_path)
-                .map_err(|e| anyhow!(
-                    "No se pudo abrir el log de stderr del motor ({}): {}",
-                    log_path.display(),
-                    e
-                ))?;
+                .map_err(|e| {
+                    anyhow!(
+                        "No se pudo abrir el log de stderr del motor ({}): {}",
+                        log_path.display(),
+                        e
+                    )
+                })?;
             use std::process::Stdio;
             // Windows: `qwen_tts.exe` NO debe heredar handles ni abrir terminal del
             // padre. `DETACHED_PROCESS (0x8)` evita la ventana de consola independiente.
@@ -957,7 +955,8 @@ pub mod resident {
 
     /// Viveza real de un PID a nivel de sistema (sin Mutex ni HTTP).
     /// `pub` para el camino de reclamo/parada del CLI: muerte por PID
-    /// registrado + verificación por puerto, sin kill por imagen.
+    /// registrado + verificación de que ese PID quedó muerto; sin PID, el
+    /// último recurso es `barrer_residente_por_imagen` + ausencia por imagen.
     pub fn pid_vivo_residente(pid: u32) -> bool {
         if pid == 0 {
             return false;
@@ -1026,6 +1025,39 @@ pub mod resident {
         }
     }
 
+    /// Barrido por imagen del residente: termina todo proceso cuya imagen sea
+    /// `qwen_tts(.exe)` (`RESIDENT_IMAGE_NAME`). Faro de último recurso e
+    /// independiente del pidfile: se usa cuando no hay `resident_pid` registrado
+    /// (pidfile perdido tras un aborto duro) para no dejar huérfanos. Seguro
+    /// sólo porque el residente tiene imagen propia —el daemon comparte imagen
+    /// con el CLI y por eso su kill-por-imagen está prohibido—. Best-effort y
+    /// sin verificación interna: el llamante verifica la ausencia
+    /// (`pid_vivo_residente == false` y/o ausencia por imagen).
+    pub fn barrer_residente_por_imagen() -> bool {
+        #[cfg(windows)]
+        {
+            Command::new("taskkill")
+                .args(["/F", "/IM", RESIDENT_IMAGE_NAME])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        #[cfg(unix)]
+        {
+            Command::new("pkill")
+                .args(["-9", "-x", RESIDENT_IMAGE_NAME])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    }
+
     /// Ruta del fichero de log de stderr del motor residente. Crea el directorio
     /// `logs/` bajo `data_dir()` si no existe. El nombre incluye PID y timestamp
     /// para unicidad por sesión (rotación simple: un fichero por spawn).
@@ -1085,10 +1117,11 @@ pub mod resident {
     /// nunca muere ni daemoniza de verdad, por lo que no reproduce la
     /// terminación real de un árbol de procesos; nunca reproduce `panic!` con
     /// lock retenido ni aborto externo (solo el harness lo cubre) ni crash con
-    /// puerto ocupado (solo `run_supervised` lo cubre); nunca usa la imagen
-    /// real `qwen_tts` ni deja un residuo sin puerto asignado. La ausencia real
-    /// de huérfanos a nivel SO solo la verifica la serie pesada
-    /// (`tests/cli_golden.rs`).
+    /// puerto ocupado (solo `run_supervised` lo cubre); no corre bajo la imagen
+    /// real `qwen_tts`, así que queda ciego al reclamo por PID/imagen del
+    /// residente huérfano. La ausencia real de huérfanos a nivel SO —verificada
+    /// por `resident_pid` muerto más ausencia por imagen— solo la comprueba la
+    /// serie pesada (`tests/cli_golden.rs`).
     #[cfg(test)]
     pub(crate) fn simular_servidor(
         body: std::sync::Arc<Mutex<String>>,
@@ -1543,7 +1576,6 @@ mod tests {
         let engine = Qwen3TtsEngine::new(Some(format!("http://127.0.0.1:{}", port)));
         let profile = VoiceProfile {
             name: "default".to_string(),
-            reference_audio: None,
             qvoice_path: None,
         };
         let out = std::env::temp_dir().join("avi_tts_test_out.wav");
@@ -1582,8 +1614,8 @@ mod tests {
     /// desacoplo del `qwen_tts` real ni la daemonización, así que queda ciego
     /// a ese escenario; nunca reproduce `panic!` con lock retenido ni aborto
     /// externo (solo el harness lo cubre) ni la ventana spawn→write ni señales
-    /// (solo harness/producto lo cubren); nunca usa la imagen real `qwen_tts`
-    /// ni deja un residuo sin puerto asignado;
+    /// (solo harness/producto lo cubren); no corre bajo la imagen real
+    /// `qwen_tts`, así que queda ciego al barrido por imagen del residente;
     /// el cierre preciso por árbol se cubre en
     /// `residente_matar_arbol_por_pid_termina_al_hijo`.
     fn proceso_durmiente() -> std::process::Child {

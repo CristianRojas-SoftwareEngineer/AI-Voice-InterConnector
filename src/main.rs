@@ -28,12 +28,33 @@ const VERSION: &str = "0.19.0";
 const APP_NAME: &str = "ai-voice-interconnector";
 /// Dirección del daemon nativo; el cliente HTTP async apunta a este address.
 const DAEMON_ADDR: &str = "127.0.0.1:8765";
+/// Variable de entorno para desviar el puerto del daemon por instancia
+/// (permite aislamiento por instancia). Acepta `0` para puerto efímero (`:0`,
+/// el SO asigna y el servidor imprime el real vía `local_addr()`).
+const DAEMON_PORT_ENV: &str = "AVI_DAEMON_PORT";
+
+/// Resuelve la dirección de escucha del daemon: override por
+/// `AVI_DAEMON_PORT` (aislamiento por instancia) con fallback a `DAEMON_ADDR`.
+/// No lee `avi-config::daemon_port` a propósito: el arranque no debe acoplarse
+/// al `config.toml` del data_dir compartido (colisionaría entre instancias).
+fn resolver_addr_daemon() -> SocketAddr {
+    if let Ok(raw) = std::env::var(DAEMON_PORT_ENV) {
+        if let Ok(port) = raw.trim().parse::<u16>() {
+            return SocketAddr::from(([127, 0, 0, 1], port));
+        }
+    }
+    DAEMON_ADDR
+        .parse()
+        .expect("la dirección por defecto del daemon debe parsear")
+}
 /// Techo temporal para esperar que el daemon sea alcanzable en `daemon start/restart`.
 /// Dimensionado solo para spawn + bind del proceso (el warmup TTS corre en segundo
-/// plano, ya no bloquea el arranque); no es un tiempo de espera fijo: el sondeo
-/// retorna en cuanto `/health` responde.
+/// plano, ya no bloquea el arranque). Es el timeout diagnóstico de la espera
+/// del evento (fichero ready); el intervalo es la cadencia de lectura del fichero.
+/// Ningún timeout nuevo puede ser más corto que el `WARMUP_DEADLINE` (40 s) que
+/// acota el warmup real: este techo solo cubre bind+publicación (~1-2 s sanos).
 const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-/// Intervalo entre reintentos del sondeo de readiness.
+/// Cadencia de lectura del fichero ready (antes intervalo del sondeo).
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 /// Deadline breve para la limpieza acotada ante Ctrl+C: mata el árbol
 /// preciso con verificación; vencido, sale igualmente con 130 sin colgarse.
@@ -45,8 +66,7 @@ const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs
 /// PID hijo en memoria desde el `spawn`: estrecha la ventana
 /// spawn→write del pidfile. El handler Ctrl+C lo reclama cuando aún no hay
 /// pidfile; se fija en la secuencia `Start` justo tras `spawn_background`.
-static PID_EN_MEMORIA: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+static PID_EN_MEMORIA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 // CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2` (`ct2_model_dir`) → `model.bin`
 // más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` autocontenidos).
@@ -349,6 +369,11 @@ enum DaemonCommands {
         /// Voz a precalentar al arranque (fail-fast si no existe)
         #[arg(long, default_value = "default")]
         warm_voice: String,
+        /// Fichero donde el hijo publica su `addr` real tras el bind y su
+        /// estado warm tras el warmup (transporte del evento
+        /// `avi-daemon-ready`; el padre lo consume con espera acotada).
+        #[arg(long)]
+        ready_file: Option<PathBuf>,
     },
 }
 
@@ -379,7 +404,11 @@ fn install_sigint_handler() {
         // pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
         let pid = read_daemon_pid().or_else(|| {
             let m = PID_EN_MEMORIA.load(std::sync::atomic::Ordering::Relaxed);
-            if m != 0 { Some(m) } else { None }
+            if m != 0 {
+                Some(m)
+            } else {
+                None
+            }
         });
         if let Some(pid) = pid {
             let propio = std::process::id();
@@ -510,7 +539,18 @@ async fn main() {
             all,
             dry_run,
             yes,
-        }) => handle_cleanup(json_mode, voices, synthetic_speech, model, all, dry_run, yes).await,
+        }) => {
+            handle_cleanup(
+                json_mode,
+                voices,
+                synthetic_speech,
+                model,
+                all,
+                dry_run,
+                yes,
+            )
+            .await
+        }
         Some(Commands::Uninstall { force, yes }) => handle_uninstall(json_mode, force || yes).await,
         Some(Commands::Doctor) => handle_doctor(json_mode),
         None => handle_version(json_mode),
@@ -698,7 +738,11 @@ fn traducir_si_difiere(
     #[cfg(feature = "native-translation")]
     {
         translation::translate(texto, source, target, &ct2_dir).map_err(|e| {
-            CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
+            CliError::new(
+                ExitCode::TranslationFailed,
+                "translation_failed",
+                e.to_string(),
+            )
         })
     }
 }
@@ -799,20 +843,8 @@ async fn handle_voice(
             let saved_qvoice = voice_store
                 .save_reference(&name, &tmp_qvoice)
                 .map_err(|e| CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()))?;
-            // Copias con los nombres del oráculo para compatibilidad de lecturas.
-            let speech_copy = voice_store.voice_dir(&name).join("speech-reference.wav");
-            std::fs::copy(speech_path, &speech_copy)
-                .map_err(|e| CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()))?;
-            let timbre_saved = match &timbre_reference {
-                Some(t) => {
-                    let dest = voice_store.voice_dir(&name).join("timbre-reference.wav");
-                    std::fs::copy(t, &dest).map_err(|e| {
-                        CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string())
-                    })?;
-                    Some(dest)
-                }
-                None => None,
-            };
+            // El timbre y el habla quedan fundidos en `reference.qvoice` durante el
+            // clonado; no se persisten WAV de referencia separados (nadie los lee).
             if json_mode {
                 // La ruta local no tiene residente TTS persistente (el motor es
                 // efímero por proceso): no hay nada que precalentar en caliente,
@@ -820,7 +852,6 @@ async fn handle_voice(
                 // (`precomputed: true`) solo aplica a la ruta daemon.
                 emit_raw_json(json!({
                     "name": name,
-                    "timbre": timbre_saved.map(|p| p.to_string_lossy().to_string()),
                     "speech": saved_qvoice.to_string_lossy().to_string(),
                     "precomputed": false,
                 }));
@@ -842,9 +873,9 @@ async fn handle_voice(
                     format!("La voz '{}' no se puede eliminar.", name.to_lowercase()),
                 ));
             }
-            voice_store.remove(&name).map_err(|e| {
-                CliError::new(ExitCode::NotFound, "voice_not_found", e)
-            })?;
+            voice_store
+                .remove(&name)
+                .map_err(|e| CliError::new(ExitCode::NotFound, "voice_not_found", e))?;
             if json_mode {
                 emit_raw_json(json!({ "status": "removed", "voice": name }));
             } else {
@@ -1635,13 +1666,29 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             auto_restart,
             max_retries,
             warm_voice,
+            ready_file,
         } => {
-            let addr: SocketAddr =
-                "127.0.0.1:8765"
-                    .parse()
-                    .map_err(|e: std::net::AddrParseError| {
-                        CliError::new(ExitCode::Error, "invalid_address", e.to_string())
-                    })?;
+            // La dirección se resuelve por `AVI_DAEMON_PORT` (aislamiento por
+            // instancia) con fallback al literal (reversión: restaurar el
+            // literal directo).
+            let addr: SocketAddr = resolver_addr_daemon();
+            // Transporte flag+fichero: el flag designa el fichero de
+            // señalización y viaja intra-proceso por env hasta
+            // `run_daemon_server` (la firma del servidor queda intacta para
+            // no tocar `crates/avi-daemon/tests/golden.rs`, fuera del
+            // alcance). Ruta absoluta: las relativas dependen de la unidad
+            // del proceso en Windows y los limpiadores de `%TEMP%` pueden
+            // barrer ficheros fuera del sandbox.
+            if let Some(ruta) = ready_file.as_ref() {
+                let absoluta = if ruta.is_absolute() {
+                    ruta.clone()
+                } else {
+                    std::env::current_dir()
+                        .map(|c| c.join(ruta))
+                        .unwrap_or_else(|_| ruta.clone())
+                };
+                std::env::set_var(daemon::READY_FILE_ENV, &absoluta);
+            }
             // Job con cierre del árbol en el proceso longevo (Windows).
             // El handler SIGINT ya quedó instalado en `main` para todos los modos;
             // la escucha de señales del servidor cierra por la misma ruta que
@@ -1652,7 +1699,9 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             instalar_job_con_cierre_de_arbol();
             daemon::run_supervised(addr, auto_restart, max_retries, warm_voice)
                 .await
-                .map_err(|e| CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string()))
+                .map_err(|e| {
+                    CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string())
+                })
         }
         DaemonCommands::Start {
             auto_restart,
@@ -1685,20 +1734,49 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                 }
                 EstadoResidual::Parado => {}
             }
-            let pid = daemon::spawn_background(auto_restart, max_retries, &warm_voice).map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "daemon_error",
-                    format!("No se pudo lanzar el daemon: {}", e),
-                )
-            })?;
+            // El hijo publica su `addr` real en el fichero ready de la
+            // instancia (ruta absoluta bajo el `data_dir` vigente); el padre
+            // la espera, la verifica por probe y la persiste en el pidfile.
+            // Reversión: `None` en el spawn y literal en `write_daemon_pid`.
+            let ready_path = ruta_fichero_ready();
+            if let Some(parent) = ready_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "daemon_error",
+                        format!("No se pudo crear el dir del fichero ready: {}", e),
+                    )
+                })?;
+            }
+            // Invalidar la señal previa: el fichero es determinista por
+            // instancia y un contenido rancio se leería como evento válido.
+            let _ = std::fs::remove_file(&ready_path);
+            let pid =
+                daemon::spawn_background(auto_restart, max_retries, &warm_voice, Some(&ready_path))
+                    .map_err(|e| {
+                        CliError::new(
+                            ExitCode::Error,
+                            "daemon_error",
+                            format!("No se pudo lanzar el daemon: {}", e),
+                        )
+                    })?;
             // Conservar el PID hijo en memoria desde el spawn para que el
             // handler Ctrl+C lo reclame aunque aún no haya pidfile (ventana
             // spawn → await → write).
             PID_EN_MEMORIA.store(pid, std::sync::atomic::Ordering::Relaxed);
+            let addr_real = esperar_addr_fichero_ready(&ready_path, DAEMON_READY_DEADLINE)
+                .await
+                .map_err(|e| {
+                    CliError::new(
+                        ExitCode::DaemonUnreachable,
+                        "daemon_unreachable",
+                        e.to_string(),
+                    )
+                })?;
             await_daemon_ready(
                 &client,
-                DAEMON_ADDR,
+                &addr_real,
+                Some(&ready_path),
                 DAEMON_READY_DEADLINE,
                 DAEMON_POLL_INTERVAL,
             )
@@ -1710,7 +1788,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     e.to_string(),
                 )
             })?;
-            write_daemon_pid(pid, 0).map_err(|e| {
+            write_daemon_pid(pid, &addr_real, 0).map_err(|e| {
                 CliError::new(
                     ExitCode::Error,
                     "daemon_error",
@@ -1734,12 +1812,15 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let pid = read_daemon_pid();
             let vivo = pid.map(daemon::pid_vivo).unwrap_or(false);
             let activo = daemon_activo(&client).await;
+            // Los mensajes diagnostican la dirección descubierta (con
+            // pidfile efímero difiere del literal; sin pidfile es idéntica).
+            let addr_cli = resolver_addr_cliente();
             if !activo && !vivo {
                 let _ = remove_daemon_pid_file();
                 if json_mode {
                     emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
                 } else {
-                    println!("Señal de apagado enviada al daemon en {}.", DAEMON_ADDR);
+                    println!("Señal de apagado enviada al daemon en {}.", addr_cli);
                 }
                 Ok(())
             } else {
@@ -1748,7 +1829,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     "daemon_unreachable",
                     format!(
                         "El daemon no se apagó tras el deadline (pid {:?} sigue vivo en {})",
-                        pid, DAEMON_ADDR
+                        pid, addr_cli
                     ),
                 ))
             }
@@ -1762,20 +1843,48 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let client = daemon_client();
             stop_daemon_and_resident().await;
             require_model_provisioned()?;
-            let pid = daemon::spawn_background(false, 3, "default").map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "daemon_error",
-                    format!("No se pudo lanzar el daemon: {}", e),
-                )
-            })?;
+            // Igual que `Start`: fichero ready propio de la instancia,
+            // espera de la `addr` real y persistencia en el pidfile.
+            let ready_path = ruta_fichero_ready();
+            if let Some(parent) = ready_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "daemon_error",
+                        format!("No se pudo crear el dir del fichero ready: {}", e),
+                    )
+                })?;
+            }
+            // Invalidar la señal previa (ver `Start`): sin esto el
+            // `esperar` leería la `addr` de la instancia detenida.
+            let _ = std::fs::remove_file(&ready_path);
+            let pid =
+                daemon::spawn_background(false, 3, "default", Some(&ready_path)).map_err(|e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "daemon_error",
+                        format!("No se pudo lanzar el daemon: {}", e),
+                    )
+                })?;
             let elapsed = t_total.elapsed();
-            let remaining = budget.checked_sub(elapsed).unwrap_or(std::time::Duration::from_millis(800));
+            let remaining = budget
+                .checked_sub(elapsed)
+                .unwrap_or(std::time::Duration::from_millis(800));
             // ready acotado al restante del presupuesto global — nunca >10s vigente
             let ready_deadline = std::cmp::min(remaining, DAEMON_READY_DEADLINE);
+            let addr_real = esperar_addr_fichero_ready(&ready_path, ready_deadline)
+                .await
+                .map_err(|e| {
+                    CliError::new(
+                        ExitCode::DaemonUnreachable,
+                        "daemon_unreachable",
+                        e.to_string(),
+                    )
+                })?;
             let ready_res = await_daemon_ready(
                 &client,
-                DAEMON_ADDR,
+                &addr_real,
+                Some(&ready_path),
                 ready_deadline,
                 DAEMON_POLL_INTERVAL,
             )
@@ -1787,7 +1896,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     e.to_string(),
                 )
             })?;
-            write_daemon_pid(pid, 0).map_err(|e| {
+            write_daemon_pid(pid, &addr_real, 0).map_err(|e| {
                 CliError::new(
                     ExitCode::Error,
                     "daemon_error",
@@ -1804,10 +1913,13 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
         DaemonCommands::Status => {
             // GET /health → running; sin respuesta (timeout/conexión) → stopped
             // (exit 0), conservando el contrato de la fixture `cli_daemon_status.json`.
+            // El probe apunta a la dirección descubierta (fallback idéntico
+            // sin pidfile).
             let client = daemon_client();
+            let addr_cli = resolver_addr_cliente();
             match tokio::time::timeout(
                 std::time::Duration::from_millis(500),
-                client.get(format!("http://{}/health", DAEMON_ADDR)).send(),
+                client.get(format!("http://{}/health", addr_cli)).send(),
             )
             .await
             {
@@ -1821,7 +1933,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                         CliError::new(
                             ExitCode::DaemonUnreachable,
                             "daemon_unreachable",
-                            format!("Daemon inalcanzable en {} (timeout json)", DAEMON_ADDR),
+                            format!("Daemon inalcanzable en {} (timeout json)", addr_cli),
                         )
                     })?
                     .map_err(|e| {
@@ -1929,7 +2041,9 @@ async fn handle_setup(
         .map(|(n, _, _)| *n)
         .filter(|n| *n != "qwen3-tts-0.6b-base" || with_voice_cloning)
     {
-        // Idempotente: snapshot HF presente → solo registrar índice.
+        // Idempotente: la presencia del snapshot HF (`is_provisioned`) es el
+        // único criterio; `ensure_downloaded` resuelve desde cache sin red si ya
+        // está. No hay índice `manifest.json` que escribir.
         if !model_store.is_provisioned(name) {
             store::ModelStore::ensure_downloaded(name)
                 .await
@@ -1941,15 +2055,6 @@ async fn handle_setup(
                     )
                 })?;
         }
-        model_store
-            .register_provisioned(name, "hf-snapshot")
-            .map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "model_provision_failed",
-                    format!("{}: {}", name, e),
-                )
-            })?;
         provisioned.push(name.to_string());
     }
 
@@ -2067,10 +2172,10 @@ fn convert_marian_to_ct2(
                 .status()
         };
         match try_converter("python") {
-            Ok(s) if s.success() => {},
+            Ok(s) if s.success() => {}
             Ok(s) => anyhow::bail!("converter python exit {}", s),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => match try_converter("python3") {
-                Ok(s) if s.success() => {},
+                Ok(s) if s.success() => {}
                 Ok(s) => anyhow::bail!("converter python3 exit {}", s),
                 Err(e2) => anyhow::bail!("python no encontrado: {} / {}", e, e2),
             },
@@ -2197,7 +2302,8 @@ async fn handle_cleanup(
         if let Ok(entries) = std::fs::read_dir(&tmp) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-") {
+                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-")
+                {
                     candidates.push(entry.path());
                 }
             }
@@ -2331,7 +2437,8 @@ async fn handle_cleanup(
         if let Ok(entries) = std::fs::read_dir(&tmp) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-") {
+                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-")
+                {
                     let p = entry.path();
                     let disp = p.display().to_string();
                     if p.is_dir() {
@@ -2371,30 +2478,45 @@ enum EstadoResidual {
     /// Probe responde y el PID de la pista está vivo: instancia sana única.
     Sano(u32),
     /// Probe y PID discrepan (colgado, pista rancia o sin pista): reclama y rearranca.
-    Degradado { pid: Option<u32>, motivo: &'static str },
+    Degradado {
+        pid: Option<u32>,
+        motivo: &'static str,
+    },
     /// Sin probe ni proceso: vía libre para arranque fresco.
     Parado,
 }
 
 /// Predicado puro (testeable sin daemon): ante un `Parado` por probe/PID
-/// (sin probe ni proceso del daemon), hay residente-solo si el 8766 sigue
-/// abierto — entonces no hay vía libre, sino degradado para reclamo.
+/// (sin probe ni proceso del daemon), hay residente-solo si el residente sigue
+/// vivo (por su PID registrado) — entonces no hay vía libre, sino degradado
+/// para reclamo.
 #[allow(dead_code)]
-fn parado_con_residente_es_degradado(probe_daemon: bool, pid_vivo: bool, puerto8766_abierto: bool) -> bool {
-    !probe_daemon && !pid_vivo && puerto8766_abierto
+fn parado_con_residente_es_degradado(
+    probe_daemon: bool,
+    pid_vivo: bool,
+    residente_vivo: bool,
+) -> bool {
+    !probe_daemon && !pid_vivo && residente_vivo
 }
 
 /// Clasifica el residual del daemon: sano, degradado o parado.
-/// Ante `Parado` se busca al residente (8766) antes de declarar vía
-/// libre; con residente vivo es degradado residente-solo para reclamo.
+/// Ante `Parado` se busca al residente por su PID registrado antes de declarar
+/// vía libre; con residente vivo es degradado residente-solo para reclamo.
 async fn clasificar_residual(client: &reqwest::Client) -> EstadoResidual {
-    let pid = read_daemon_pid();
-    let probe = probe_health(client, DAEMON_ADDR).await;
+    // Recuperación de reclamo: con pidfile perdido (padre caído sin
+    // limpiar), el `daemon.ready` sobrevive y conserva el PID del árbol
+    // efímero. El fallback solo aplica sin pidfile; `pid_vivo` gatea después,
+    // así que un ready rancio con PID muerto sigue cayendo a `Parado`.
+    let pid = read_daemon_pid().or_else(|| leer_pid_ready(&ruta_fichero_ready()));
+    // El probe apunta a la dirección descubierta (fallback idéntico sin
+    // pidfile; vía nueva solo con pidfile vivo de addr efímera).
+    let addr_cli = resolver_addr_cliente();
+    let probe = probe_health(client, &addr_cli).await;
     // `Parado` con residente vivo no es vía libre.
-    if !probe && !pid.map(daemon::pid_vivo).unwrap_or(false) && puerto_residente_abierto() {
+    if !probe && !pid.map(daemon::pid_vivo).unwrap_or(false) && residente_vivo_por_pid() {
         return EstadoResidual::Degradado {
             pid,
-            motivo: "residente vivo sin daemon (Parado con 8766 abierto)",
+            motivo: "residente vivo sin daemon (Parado con resident_pid vivo)",
         };
     }
     match pid {
@@ -2414,49 +2536,53 @@ async fn clasificar_residual(client: &reqwest::Client) -> EstadoResidual {
     }
 }
 
-/// ¿Hay algo escuchando en el puerto del residente (`127.0.0.1:8766`)?
-/// Sondeo TCP breve y síncrono, apto para verificaciones de reclamo sin async.
-#[allow(dead_code)]
-fn puerto_residente_abierto() -> bool {
-    std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], 8766)),
-        std::time::Duration::from_millis(300),
-    )
-    .is_ok()
+/// ¿Sigue vivo el residente registrado en `daemon.pid`? Identidad estable del
+/// residente: el `resident_pid` del pidfile por instancia. Sin PID registrado
+/// (pidfile perdido tras aborto duro) devuelve `false`; en ese caso la
+/// ausencia se confirma con el barrido por imagen de último recurso
+/// (`avi_tts::resident::barrer_residente_por_imagen`), no con este predicado.
+fn residente_vivo_por_pid() -> bool {
+    let pid = read_resident_pid();
+    pid != 0 && avi_tts::resident::pid_vivo_residente(pid)
 }
 
 /// Predicado puro del reclamo Unix ante líder muerto (testeable sin
 /// plataforma): el reclamo queda verificado cuando el probe del daemon está
-/// caído, el PID del líder está muerto y el puerto 8766 está cerrado.
+/// caído, el PID del líder está muerto y el residente ya no está vivo (por su
+/// PID registrado, tras el barrido por imagen cuando no hay PID).
 #[allow(dead_code)]
-fn reclamo_unix_verificado(probe_daemon: bool, pid_vivo: bool, puerto8766_abierto: bool) -> bool {
-    !probe_daemon && !pid_vivo && !puerto8766_abierto
+fn reclamo_unix_verificado(probe_daemon: bool, pid_vivo: bool, residente_vivo: bool) -> bool {
+    !probe_daemon && !pid_vivo && !residente_vivo
 }
 
 /// Reclamo matar-y-rearrancar ante residual degradado: mata el árbol
 /// preciso por PID con verificación y deja vía libre para rearrancar desde cero.
 /// Sin kill por imagen para el daemon (comparte imagen con el CLI: se auto-mataría);
 /// el residente `qwen_tts` se reclama por su PID registrado en `daemon.pid`
-/// (árbol preciso + verificación por 8766), sin `netstat` ni kill por imagen.
+/// (árbol preciso + verificación por `resident_pid` muerto) y, sin PID
+/// registrado, por el barrido por imagen de último recurso
+/// (`barrer_residente_por_imagen`, seguro por imagen propia del residente).
 /// No emite payload.
 ///
 /// En Unix el daemon nace líder de sesión (`setsid`) y el residente hereda
 /// su grupo; muerto el líder, el grupo se disuelve y el residente reparentado
 /// sobrevive fuera del alcance del reclamo solo-por-PID-vivo. Ante líder muerto
 /// se reclama además por grupo (`kill -9 -<pgid>` vía `matar_arbol_por_pid`,
-/// que ya mata al grupo en Unix) con verificación por 8766 cerrado más PID sin
-/// viveza. El runtime Unix se verifica en CI; aquí quedan compilación, revisión
-/// lógica y unitarios no-plataformeros (prohibido simular Unix).
-/// Ante `Parado` con residente vivo (PID, 8766 o imagen) se reclama su
-/// árbol por PID registrado antes de declarar fresco (sin kill por imagen
-/// del residente; imagen del daemon prohibida).
+/// que ya mata al grupo en Unix) con verificación por residente muerto más PID
+/// sin viveza. El runtime Unix se verifica en CI; aquí quedan compilación,
+/// revisión lógica y unitarios no-plataformeros (prohibido simular Unix).
+/// Ante `Parado` con residente vivo (PID registrado o imagen) se reclama su
+/// árbol por PID registrado —o por imagen si no hay PID— antes de declarar
+/// fresco (imagen del daemon prohibida; sólo el residente tiene imagen propia).
 async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>) {
     let inicio = std::time::Instant::now();
+    // Graceful y verificación contra la dirección descubierta.
+    let addr_cli = resolver_addr_cliente();
     // 1) Graceful breve si el probe responde (no hereda el timeout de 120 s).
-    if probe_health(client, DAEMON_ADDR).await {
+    if probe_health(client, &addr_cli).await {
         let _ = tokio::time::timeout(
             std::time::Duration::from_millis(1500),
-            client.post(format!("http://{}/shutdown", DAEMON_ADDR)).send(),
+            client.post(format!("http://{}/shutdown", addr_cli)).send(),
         )
         .await;
         let restante = STOP_DEADLINE_GLOBAL
@@ -2480,24 +2606,27 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
             daemon::matar_arbol_por_pid(p);
         }
     }
-    // 2c) Residente por PID registrado + verificación por puerto (sin
-    // `netstat` ni kill por imagen). Si hay PID registrado vivo se mata su
-    // árbol preciso; la verificación por 8766 cerrado vive en el paso 3.
+    // 2c) Residente por identidad estable: si hay PID registrado vivo se mata
+    // su árbol preciso; sin PID (pidfile perdido) el último recurso es el
+    // barrido por imagen `qwen_tts` (seguro por imagen propia). La verificación
+    // por `resident_pid` muerto vive en el paso 3.
     let residente = read_resident_pid();
     if residente != 0
         && residente != std::process::id()
         && avi_tts::resident::pid_vivo_residente(residente)
     {
         avi_tts::resident::matar_arbol_residente_por_pid(residente);
+    } else if residente == 0 {
+        avi_tts::resident::barrer_residente_por_imagen();
     }
     // 3) Verificación con el restante del deadline global (probe down + PID muerto;
-    // en Unix además 8766 cerrado ante líder muerto).
+    // en Unix además residente muerto ante líder muerto).
     while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
         let vivo = pid.map(daemon::pid_vivo).unwrap_or(false);
-        let probe = probe_health(client, DAEMON_ADDR).await;
+        let probe = probe_health(client, &addr_cli).await;
         #[cfg(unix)]
         {
-            if reclamo_unix_verificado(probe, vivo, puerto_residente_abierto()) {
+            if reclamo_unix_verificado(probe, vivo, residente_vivo_por_pid()) {
                 break;
             }
         }
@@ -2518,15 +2647,16 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
 /// (`POST /shutdown` acotado + espera de `/health` down) si el daemon responde;
 /// árbol preciso por PID (`taskkill /F /T /PID` en Windows, `kill -9` al grupo
 /// en Unix) con guarda anti-auto-muerte cuando sigue vivo; sin PID del
-/// daemon pero con residente vivo (PID registrado o 8766 abierto) se reclama su
-/// árbol por PID registrado (nunca por imagen, ni del daemon ni del residente);
-/// verificación posterior a nivel de sistema (probe + `pid_vivo` + 8766 cerrado).
+/// daemon pero con residente vivo se reclama su árbol por PID registrado, o por
+/// imagen `qwen_tts` como último recurso sin PID (imagen del daemon prohibida:
+/// la comparte con el CLI); verificación posterior a nivel de sistema (probe +
+/// `pid_vivo` + `resident_pid` muerto).
 ///
 /// El pidfile solo se borra tras muerte verificada o pista rancia reconciliada
 /// (PID muerto + probe down); si el árbol sigue vivo se conserva la pista.
 /// Sin kill por imagen para el daemon (imagen compartida con el CLI); el
-/// residente `qwen_tts` (imagen distinta) se reclama en `avi-tts` por PID
-/// registrado, sin kill por imagen.
+/// residente `qwen_tts` (imagen propia) se reclama en `avi-tts` por PID
+/// registrado, con barrido por imagen como último recurso sin PID.
 ///
 /// Por qué el fallback es por PID y nunca por imagen: daemon y CLI comparten la misma
 /// imagen `ai-voice-interconnector.exe` (el daemon es el mismo binario lanzado con
@@ -2537,13 +2667,13 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
 async fn stop_daemon_and_resident() {
     let inicio = std::time::Instant::now();
     let client = daemon_client();
+    // Graceful contra la dirección descubierta.
+    let addr_cli = resolver_addr_cliente();
     // 1) Graceful acotado si responde (no hereda el timeout de 120 s).
     if daemon_activo(&client).await {
         let _ = tokio::time::timeout(
             std::time::Duration::from_millis(1500),
-            client
-                .post(format!("http://{}/shutdown", DAEMON_ADDR))
-                .send(),
+            client.post(format!("http://{}/shutdown", addr_cli)).send(),
         )
         .await;
         let restante = STOP_DEADLINE_GLOBAL
@@ -2563,20 +2693,23 @@ async fn stop_daemon_and_resident() {
             }
         }
     }
-    // 2b) Residente por PID registrado (nunca por imagen, ni del daemon
-    // ni del residente). Si el PID registrado sigue vivo se mata su árbol
-    // preciso; la verificación por 8766 cerrado vive en el paso 3.
+    // 2b) Residente por identidad estable. Si el PID registrado sigue vivo se
+    // mata su árbol preciso; sin PID (pidfile perdido) el último recurso es el
+    // barrido por imagen `qwen_tts` (seguro por imagen propia; imagen del daemon
+    // prohibida). La verificación por `resident_pid` muerto vive en el paso 3.
     let residente = read_resident_pid();
     if residente != 0
         && residente != std::process::id()
         && avi_tts::resident::pid_vivo_residente(residente)
     {
         avi_tts::resident::matar_arbol_residente_por_pid(residente);
+    } else if residente == 0 {
+        avi_tts::resident::barrer_residente_por_imagen();
     }
     // 3) Verificación con el restante del deadline global.
     while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
         let vivo_ahora = read_daemon_pid().map(daemon::pid_vivo).unwrap_or(false);
-        if !daemon_activo(&client).await && !vivo_ahora && !puerto_residente_abierto() {
+        if !daemon_activo(&client).await && !vivo_ahora && !residente_vivo_por_pid() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -2692,7 +2825,11 @@ async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> 
             CliError::new(
                 ExitCode::Error,
                 "path_cleanup_failed",
-                format!("No se pudo limpiar PATH de {}: {}", install_dir.display(), e),
+                format!(
+                    "No se pudo limpiar PATH de {}: {}",
+                    install_dir.display(),
+                    e
+                ),
             )
         })?;
         // H4 determinista: si el `exe` vivo está dentro de `install_dir`,
@@ -2924,7 +3061,9 @@ fn daemon_pid_path() -> PathBuf {
 /// El pidfile extiende el esquema plano con `resident_pid`. Al arrancar solo se
 /// conoce el PID del daemon y el residente es 0/desconocido; el daemon lo
 /// actualiza en disco al arrancar el residente (`arrancar_residente`).
-fn write_daemon_pid(pid: u32, resident_pid: u32) -> anyhow::Result<()> {
+/// `addr` es la dirección REAL publicada por el hijo en el fichero ready:
+/// con puerto efímero difiere del literal `DAEMON_ADDR`.
+fn write_daemon_pid(pid: u32, addr: &str, resident_pid: u32) -> anyhow::Result<()> {
     let path = daemon_pid_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -2932,7 +3071,7 @@ fn write_daemon_pid(pid: u32, resident_pid: u32) -> anyhow::Result<()> {
     let tmp = path.with_extension("pid.tmp");
     let content = serde_json::json!({
         "pid": pid,
-        "addr": DAEMON_ADDR,
+        "addr": addr,
         "started_at": chrono::Utc::now().to_rfc3339(),
         "resident_pid": resident_pid
     });
@@ -2966,6 +3105,91 @@ fn read_resident_pid() -> u32 {
         .unwrap_or(0)
 }
 
+/// Lee la `addr` publicada en el pidfile. Lectura tolerante: fichero
+/// ausente, ilegible o esquema viejo sin el campo = `None` (el llamante cae
+/// al default, nunca falla).
+fn leer_addr_pidfile() -> Option<String> {
+    let content = std::fs::read_to_string(daemon_pid_path()).ok()?;
+    let v: Value = serde_json::from_str(&content).ok()?;
+    let addr = v.get("addr")?.as_str()?.trim();
+    if addr.is_empty() {
+        return None;
+    }
+    Some(addr.to_string())
+}
+
+/// Resuelve la dirección del cliente CLI: `addr` del pidfile cuando existe; sin pidfile usa
+/// `DAEMON_ADDR` con comportamiento idéntico al actual. Solo el caso
+/// "pidfile vivo con addr efímera" toma la vía nueva.
+fn resolver_addr_cliente() -> String {
+    leer_addr_pidfile().unwrap_or_else(|| DAEMON_ADDR.to_string())
+}
+
+/// Lee el `pid` publicado en el fichero ready (recuperación de reclamo):
+/// habilita reclamar el árbol de un daemon efímero cuyo pidfile se perdió
+/// (padre caído sin limpiar), única pista de PID cuando `addr` ya no es
+/// descubrible. Tolerante: fichero ausente, ilegible, sin campo o `0` = `None`.
+/// Reversión: quitar esta función y su uso en `clasificar_residual`.
+fn leer_pid_ready(ruta: &std::path::Path) -> Option<u32> {
+    let contenido = std::fs::read_to_string(ruta).ok()?;
+    for linea in contenido.lines() {
+        if let Some(v) = linea.trim().strip_prefix("pid=") {
+            if let Ok(p) = v.trim().parse::<u32>() {
+                if p != 0 {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Ruta del fichero ready de esta instancia: absoluta bajo el
+/// `data_dir` vigente, de modo que cada sandbox (`AVI_DATA_DIR`) posee el
+/// suyo sin depender de la unidad del proceso ni de `%TEMP%`.
+fn ruta_fichero_ready() -> PathBuf {
+    store::data_dir().join("daemon.ready")
+}
+
+/// Lee la `addr` del fichero ready de forma tolerante (lado producto):
+/// ausente o a medio escribir = aún-no-listo (`None`), nunca error fatal.
+fn leer_addr_ready(ruta: &std::path::Path) -> Option<String> {
+    let contenido = std::fs::read_to_string(ruta).ok()?;
+    for linea in contenido.lines() {
+        if let Some(v) = linea.trim().strip_prefix("addr=") {
+            let v = v.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Espera async acotada de la `addr` en el fichero ready: poll con
+/// cadencia `DAEMON_POLL_INTERVAL`; al vencer el deadline falla con
+/// diagnóstico del último contenido (timeout = bug, no flake).
+async fn esperar_addr_fichero_ready(
+    ruta: &std::path::Path,
+    deadline: std::time::Duration,
+) -> anyhow::Result<String> {
+    let inicio = std::time::Instant::now();
+    let mut ultimo = String::new();
+    while inicio.elapsed() < deadline {
+        if let Some(addr) = leer_addr_ready(ruta) {
+            return Ok(addr);
+        }
+        ultimo = std::fs::read_to_string(ruta).unwrap_or_default();
+        tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
+    }
+    anyhow::bail!(
+        "el fichero ready {} no publicó addr válida tras {:?} (último contenido: {:?})",
+        ruta.display(),
+        deadline,
+        ultimo
+    )
+}
+
 fn remove_daemon_pid_file() -> std::io::Result<()> {
     let p = daemon_pid_path();
     if p.exists() {
@@ -2975,14 +3199,31 @@ fn remove_daemon_pid_file() -> std::io::Result<()> {
 }
 
 /// Espera acotada a que el daemon sea alcanzable (`/health` responde) tras el
-/// spawn+bind. Con el warmup movido a segundo plano, «alcanzable = listo»: el
-/// sondeo retorna en cuanto `probe_health` es `true` o falla al vencer el deadline.
+/// spawn+bind. Con fichero ready (`Some`) espera el evento (la `addr`
+/// publicada) y luego verifica por probe una sola vez — el timeout es bug a
+/// diagnosticar, no flake a reintentar. Sin fichero (`None`: `serve` manual sin
+/// flag o el unitario hermético) conserva el sondeo clásico como reversión
+/// declarada. Con el warmup en segundo plano, «alcanzable = listo».
 async fn await_daemon_ready(
     client: &reqwest::Client,
     addr: &str,
+    ready: Option<&std::path::Path>,
     deadline: std::time::Duration,
     interval: std::time::Duration,
 ) -> anyhow::Result<()> {
+    if let Some(ruta) = ready {
+        // Vía evento: la `addr` publicada manda (debe coincidir con `addr`;
+        // si difiere se diagnostica pero se verifica la publicada).
+        let publicada = esperar_addr_fichero_ready(ruta, deadline).await?;
+        let objetivo = if publicada == addr { addr } else { &publicada };
+        if probe_health(client, objetivo).await {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "el daemon publicó {} pero /health no responde tras el evento",
+            publicada
+        );
+    }
     let start = std::time::Instant::now();
     while start.elapsed() < deadline {
         if probe_health(client, addr).await {
@@ -2996,7 +3237,7 @@ async fn await_daemon_ready(
 /// Construye el cuerpo JSON de `daemon status`. Función pura (testeable sin daemon):
 /// `stopped` cuando no es alcanzable (fixture intacta, sin campos extra; el
 /// `stopped` por probe incluye en `clasificar_residual` la búsqueda del residente
-/// por 8766 antes de declarar vía libre, sin cambiar este contrato); si es
+/// por su PID registrado antes de declarar vía libre, sin cambiar este contrato); si es
 /// alcanzable, `running` con `engine` y `warm` (más `warm_error` cuando el warmup
 /// falló) leídos de `/health`. El `schema_version` lo añade `emit_raw_json`.
 fn status_body(
@@ -3036,9 +3277,10 @@ async fn wait_health_down(
 
 // ─── Cliente HTTP async del daemon ────────────────────────────────────────
 
-/// Cliente `reqwest` hacia el daemon en `DAEMON_ADDR` (HTTP, sin TLS: basta para
-/// localhost). Timeout de conexión breve para que el probe Auto→local sea rápido
-/// cuando el daemon no está en ejecución.
+/// Cliente `reqwest` hacia el daemon (HTTP, sin TLS: basta para
+/// localhost). La dirección destino la resuelve cada llamada con
+/// `resolver_addr_cliente()`. Timeout de conexión breve para que el probe
+/// Auto→local sea rápido cuando el daemon no está en ejecución.
 fn daemon_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_millis(500))
@@ -3061,9 +3303,11 @@ async fn probe_health(client: &reqwest::Client, addr: &str) -> bool {
     }
 }
 
-/// Probe de vida sobre `DAEMON_ADDR`; `false` habilita el fallback Auto→local.
+/// Probe de vida sobre la dirección descubierta (pidfile o fallback a
+/// `DAEMON_ADDR`); `false` habilita el fallback Auto→local.
 async fn daemon_activo(client: &reqwest::Client) -> bool {
-    probe_health(client, DAEMON_ADDR).await
+    let addr_cli = resolver_addr_cliente();
+    probe_health(client, &addr_cli).await
 }
 
 /// Decide si una acción delegable se despacha al daemon:
@@ -3083,7 +3327,7 @@ fn require_local(daemon_mode: DaemonMode) -> Result<(), CliError> {
         Err(CliError::new(
             ExitCode::DaemonUnreachable,
             "daemon_unreachable",
-            "Daemon inalcanzable en 127.0.0.1:8765",
+            format!("Daemon inalcanzable en {}", resolver_addr_cliente()),
         ))
     } else {
         Ok(())
@@ -3100,6 +3344,9 @@ async fn transcribe_via_daemon(
     duration: Option<u64>,
     source_language: &str,
 ) -> Result<(), CliError> {
+    // El POST apunta a la dirección descubierta (fallback idéntico sin
+    // pidfile).
+    let addr_cli = resolver_addr_cliente();
     let pcm: Vec<i16> = if mic {
         capture_mic_pcm(duration).await?
     } else {
@@ -3114,7 +3361,7 @@ async fn transcribe_via_daemon(
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let resp = client
-        .post(format!("http://{}/transcribe", DAEMON_ADDR))
+        .post(format!("http://{}/transcribe", addr_cli))
         .json(&serde_json::json!({ "audio_b64": audio_b64, "source_language": source_language }))
         .send()
         .await
@@ -3122,7 +3369,7 @@ async fn transcribe_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -3162,8 +3409,10 @@ async fn translate_via_daemon(
     to: &str,
 ) -> Result<(), CliError> {
     let payload = serde_json::json!({ "text": text, "from": from, "to": to });
+    // El POST apunta a la dirección descubierta.
+    let addr_cli = resolver_addr_cliente();
     let fut = client
-        .post(format!("http://{}/translate", DAEMON_ADDR))
+        .post(format!("http://{}/translate", addr_cli))
         .json(&payload)
         .send();
     let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
@@ -3172,14 +3421,14 @@ async fn translate_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout 1500ms)", DAEMON_ADDR),
+                format!("Daemon inalcanzable en {} (timeout 1500ms)", addr_cli),
             )
         })?
         .map_err(|e| {
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -3250,13 +3499,14 @@ async fn daemon_synthesize_wav(
     target_language: &str,
     temperature: Option<f32>,
 ) -> Result<Vec<u8>, CliError> {
-    let mut payload =
-        serde_json::json!({ "text": text, "voice": voice, "source_language": source_language, "target_language": target_language });
+    let mut payload = serde_json::json!({ "text": text, "voice": voice, "source_language": source_language, "target_language": target_language });
     if let Some(t) = temperature {
         payload["temperature"] = serde_json::json!(t);
     }
+    // El POST apunta a la dirección descubierta.
+    let addr_cli = resolver_addr_cliente();
     let resp = client
-        .post(format!("http://{}/synthesize", DAEMON_ADDR))
+        .post(format!("http://{}/synthesize", addr_cli))
         .json(&payload)
         .send()
         .await
@@ -3264,7 +3514,7 @@ async fn daemon_synthesize_wav(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -3354,6 +3604,8 @@ async fn consumir_stream_ndjson(
 ) -> Result<Value, CliError> {
     let inicio = std::time::Instant::now();
     let mut resto = String::new();
+    // Los diagnósticos nombran la dirección descubierta.
+    let addr_cli = resolver_addr_cliente();
     loop {
         if inicio.elapsed() >= STREAM_TOTAL_DEADLINE {
             return Err(CliError::new(
@@ -3361,7 +3613,7 @@ async fn consumir_stream_ndjson(
                 "daemon_unreachable",
                 format!(
                     "Daemon inalcanzable en {} (límite total 120s agotado en {})",
-                    DAEMON_ADDR, etapa
+                    addr_cli, etapa
                 ),
             ));
         }
@@ -3377,7 +3629,7 @@ async fn consumir_stream_ndjson(
                     "daemon_unreachable",
                     format!(
                         "Daemon inalcanzable en {} (sin eventos del daemon en 1500ms en {})",
-                        DAEMON_ADDR, etapa
+                        addr_cli, etapa
                     ),
                 )
             })?
@@ -3385,7 +3637,7 @@ async fn consumir_stream_ndjson(
                 CliError::new(
                     ExitCode::DaemonUnreachable,
                     "daemon_unreachable",
-                    format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+                    format!("Daemon inalcanzable en {}: {}", addr_cli, e),
                 )
             })?;
         let bytes = match chunk {
@@ -3402,7 +3654,10 @@ async fn consumir_stream_ndjson(
                 return Err(CliError::new(
                     ExitCode::Error,
                     "daemon_error",
-                    format!("El stream del daemon terminó sin evento final en {}.", etapa),
+                    format!(
+                        "El stream del daemon terminó sin evento final en {}.",
+                        etapa
+                    ),
                 ));
             }
         };
@@ -3481,7 +3736,15 @@ async fn synthesize_via_daemon(
             ),
         ));
     }
-    let wav = daemon_synthesize_wav(client, text, voice, source_language, target_language, temperature).await?;
+    let wav = daemon_synthesize_wav(
+        client,
+        text,
+        voice,
+        source_language,
+        target_language,
+        temperature,
+    )
+    .await?;
     let tmp = std::env::temp_dir().join(format!("avi_tts_{}.wav", label_l));
     std::fs::write(&tmp, &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
@@ -3557,9 +3820,15 @@ async fn say_via_daemon(
     target_language: &str,
     temperature: Option<f32>,
 ) -> Result<(), CliError> {
-    let wav =
-        daemon_synthesize_wav(client, text, voice, source_language, target_language, temperature)
-            .await?;
+    let wav = daemon_synthesize_wav(
+        client,
+        text,
+        voice,
+        source_language,
+        target_language,
+        temperature,
+    )
+    .await?;
     let tmp = std::env::temp_dir().join(format!("avi_say_{}.wav", std::process::id()));
     std::fs::write(&tmp, &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
@@ -3595,7 +3864,10 @@ async fn clone_via_daemon(
         CliError::new(
             ExitCode::NotFound,
             "audio_not_found",
-            format!("El audio de referencia '{}' no existe: {}", speech_reference, e),
+            format!(
+                "El audio de referencia '{}' no existe: {}",
+                speech_reference, e
+            ),
         )
     })?;
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&speech_bytes);
@@ -3622,8 +3894,10 @@ async fn clone_via_daemon(
     // El envío solo espera las cabeceras (el daemon valida barato y
     // responde 200 de inmediato); el trabajo pesado se consume como stream con
     // inactividad 1500 ms + failsafe 120 s hasta el evento final.
+    // El POST apunta a la dirección descubierta.
+    let addr_cli = resolver_addr_cliente();
     let fut = client
-        .post(format!("http://{}/voices/clone", DAEMON_ADDR))
+        .post(format!("http://{}/voices/clone", addr_cli))
         .json(&payload)
         .send();
     let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
@@ -3632,14 +3906,14 @@ async fn clone_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout 1500ms)", DAEMON_ADDR),
+                format!("Daemon inalcanzable en {} (timeout 1500ms)", addr_cli),
             )
         })?
         .map_err(|e| {
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -3661,7 +3935,11 @@ async fn clone_via_daemon(
             "audio_missing" | "audio_decode_error" => ExitCode::InvalidInput,
             _ => ExitCode::Error,
         };
-        return Err(CliError::new(code, reason, format!("{} (HTTP {})", msg, status)));
+        return Err(CliError::new(
+            code,
+            reason,
+            format!("{} (HTTP {})", msg, status),
+        ));
     }
     let val: Value = consumir_stream_ndjson(resp, "clone", |reason| match reason {
         "invalid_voice_name" => ExitCode::InvalidInput,
@@ -3725,8 +4003,10 @@ async fn dub_via_daemon(
     // El envío espera las cabeceras (respuesta 200 inmediata tras
     // validar barato); el pipeline se consume como stream con inactividad
     // 1500 ms + failsafe 120 s hasta el evento final.
+    // El POST apunta a la dirección descubierta.
+    let addr_cli = resolver_addr_cliente();
     let fut = client
-        .post(format!("http://{}/dub", DAEMON_ADDR))
+        .post(format!("http://{}/dub", addr_cli))
         .json(&payload)
         .send();
     let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
@@ -3735,14 +4015,14 @@ async fn dub_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout dub 1500ms)", DAEMON_ADDR),
+                format!("Daemon inalcanzable en {} (timeout dub 1500ms)", addr_cli),
             )
         })?
         .map_err(|e| {
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -3781,7 +4061,11 @@ async fn dub_via_daemon(
             "stt_unsupported" | "translation_unsupported" => ExitCode::Error,
             _ => ExitCode::Error,
         };
-        return Err(CliError::new(code, reason, format!("{} (HTTP {})", msg, status)));
+        return Err(CliError::new(
+            code,
+            reason,
+            format!("{} (HTTP {})", msg, status),
+        ));
     }
     // El evento final del stream trae la forma contractual
     // {status:"dubbed", text, translated, audio_b64, voice}; los mapeos
@@ -3856,8 +4140,10 @@ async fn dub_compose_via_daemon(
     let pcm = pcm_opt.expect("pcm ya capturado");
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    // El POST apunta a la dirección descubierta.
+    let addr_cli = resolver_addr_cliente();
     let fut = client
-        .post(format!("http://{}/transcribe", DAEMON_ADDR))
+        .post(format!("http://{}/transcribe", addr_cli))
         .json(&serde_json::json!({ "audio_b64": audio_b64, "source_language": from }))
         .send();
     let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
@@ -3866,14 +4152,14 @@ async fn dub_compose_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout 1500ms)", DAEMON_ADDR),
+                format!("Daemon inalcanzable en {} (timeout 1500ms)", addr_cli),
             )
         })?
         .map_err(|e| {
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", DAEMON_ADDR, e),
+                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -3890,13 +4176,16 @@ async fn dub_compose_via_daemon(
             format!("Respuesta del daemon no es JSON: {}", e),
         )
     })?;
-    let transcribed = val["text"].as_str().ok_or_else(|| {
-        CliError::new(
-            ExitCode::TranscriptionFailed,
-            "transcription_failed",
-            "El daemon no devolvió 'text'.",
-        )
-    })?.to_string();
+    let transcribed = val["text"]
+        .as_str()
+        .ok_or_else(|| {
+            CliError::new(
+                ExitCode::TranscriptionFailed,
+                "transcription_failed",
+                "El daemon no devolvió 'text'.",
+            )
+        })?
+        .to_string();
     if transcribed.trim().is_empty() {
         return Err(CliError::new(
             ExitCode::InvalidInput,
@@ -3916,7 +4205,10 @@ async fn dub_compose_via_daemon(
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
                     "unsupported_language_pair",
-                    format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source, target),
+                    format!(
+                        "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
+                        source, target
+                    ),
                 ));
             }
         };
@@ -3940,7 +4232,11 @@ async fn dub_compose_via_daemon(
         #[cfg(feature = "native-translation")]
         {
             translation::translate(&transcribed, source, target, &ct2_dir).map_err(|e| {
-                CliError::new(ExitCode::TranslationFailed, "translation_failed", e.to_string())
+                CliError::new(
+                    ExitCode::TranslationFailed,
+                    "translation_failed",
+                    e.to_string(),
+                )
             })?
         }
     };
@@ -3995,7 +4291,8 @@ mod tests {
         let deadline = std::time::Duration::from_millis(800);
         let interval = std::time::Duration::from_millis(100);
         let start = std::time::Instant::now();
-        let res = await_daemon_ready(&daemon_client(), &addr, deadline, interval).await;
+        // Sin fichero: ejercita el sondeo clásico (reversión declarada).
+        let res = await_daemon_ready(&daemon_client(), &addr, None, deadline, interval).await;
         let elapsed = start.elapsed();
 
         assert!(res.is_err(), "esperado Err contra puerto cerrado");
@@ -4039,7 +4336,7 @@ mod tests {
     }
 
     /// El predicado puro del reclamo Unix ante líder muerto solo verifica
-    /// con probe caído + PID muerto + 8766 cerrado (no-plataformero, hermético).
+    /// con probe caído + PID muerto + residente muerto (no-plataformero, hermético).
     #[test]
     fn reclamo_unix_verificado_exige_triple_cierre() {
         assert!(reclamo_unix_verificado(false, false, false));
@@ -4048,7 +4345,7 @@ mod tests {
         assert!(!reclamo_unix_verificado(false, false, true));
     }
 
-    /// `Parado` con residente vivo (8766 abierto) es degradado para
+    /// `Parado` con residente vivo (resident_pid vivo) es degradado para
     /// reclamo, no vía libre (no-plataformero, hermético).
     #[test]
     fn parado_con_residente_vivo_es_degradado() {
@@ -4107,10 +4404,7 @@ mod tests {
     /// retiene abierta ese tiempo (caso de atasco); si es `None`, se cierra
     /// (éxito, fallo o truncado según `lineas`). Sin `content-length`: cuerpo
     /// hasta cierre de conexión.
-    async fn servir_secuencia_programada(
-        lineas: Vec<String>,
-        retener_secs: Option<u64>,
-    ) -> String {
+    async fn servir_secuencia_programada(lineas: Vec<String>, retener_secs: Option<u64>) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind efímero");

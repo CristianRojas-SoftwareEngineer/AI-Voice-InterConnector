@@ -24,7 +24,16 @@ use std::process::Command;
 /// sistema por la misma ruta que POST `/shutdown`, el CLI reclama el residual
 /// degradado al arrancar (matar-y-rearrancar) y toda parada mata el árbol preciso
 /// por PID con deadline y verificación (`matar_arbol_por_pid` + `pid_vivo`).
-pub fn spawn_background(auto_restart: bool, max_retries: u32, warm_voice: &str) -> anyhow::Result<u32> {
+/// `ready_file` designa el fichero de señalización del evento
+/// `avi-daemon-ready` y viaja al hijo como flag `--ready-file` (transporte
+/// flag+fichero, nunca pipe heredable). `Stdio::null` en los tres flujos se
+/// mantiene: el evento ya no depende de stdio heredado.
+pub fn spawn_background(
+    auto_restart: bool,
+    max_retries: u32,
+    warm_voice: &str,
+    ready_file: Option<&std::path::Path>,
+) -> anyhow::Result<u32> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
     cmd.arg("daemon").arg("serve");
@@ -33,6 +42,9 @@ pub fn spawn_background(auto_restart: bool, max_retries: u32, warm_voice: &str) 
     }
     cmd.arg("--max-retries").arg(max_retries.to_string());
     cmd.arg("--warm-voice").arg(warm_voice);
+    if let Some(ruta) = ready_file {
+        cmd.arg("--ready-file").arg(ruta);
+    }
 
     #[cfg(windows)]
     {
@@ -191,7 +203,10 @@ pub fn esperar_muerte_pid(pid: u32, deadline: std::time::Duration) -> bool {
 /// sin best-effort: si crear el archivo o spawnear falla, retorna `Err` y
 /// `handle_uninstall` falla — no hay aviso `Bórralo manualmente`.
 #[cfg(windows)]
-pub fn spawn_uninstall_helper(install_dir: &std::path::Path, pid: u32) -> anyhow::Result<std::path::PathBuf> {
+pub fn spawn_uninstall_helper(
+    install_dir: &std::path::Path,
+    pid: u32,
+) -> anyhow::Result<std::path::PathBuf> {
     use std::os::windows::process::CommandExt;
     use std::process::Stdio;
 

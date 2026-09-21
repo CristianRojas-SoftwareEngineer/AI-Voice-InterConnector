@@ -3,7 +3,17 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Directorio base de datos del usuario (~/.ai-voice-interconnector)
+///
+/// Sandbox de estado por instancia: `AVI_DATA_DIR` desvía la base a un
+/// directorio propio por test. Sin la variable, resolución idéntica a la de
+/// siempre (sin cambios de lógica ni de fallback). Reversión: quitar el
+/// bloque del env.
 pub fn data_dir() -> PathBuf {
+    if let Ok(ov) = std::env::var("AVI_DATA_DIR") {
+        if !ov.trim().is_empty() {
+            return PathBuf::from(ov);
+        }
+    }
     directories::ProjectDirs::from("", "", "ai-voice-interconnector")
         .map(|d| d.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".ai-voice-interconnector"))
@@ -97,22 +107,6 @@ impl VoiceStore {
             // Validar que el asset sea un .qvoice graft válido (magic QVCE/QV3)
             if FACTORY_DEFAULT_QVOICE.len() > 4 {
                 let _ = std::fs::write(&default_qvoice, FACTORY_DEFAULT_QVOICE);
-            }
-        }
-        // Limpieza de materialización legada (12 MB embebidos de factoría anterior): si quedó
-        // `speech-reference.wav` / `timbre-reference.wav` de la factoria anterior,
-        // se eliminan para que `find_reference` no devuelva un legado como clonada.
-        // No borrar `reference.qvoice` de `default` (ahora es la fábrica con qvoice).
-        for name in FACTORY_VOICES {
-            let dir = self.base_dir.join(name);
-            let legacy_speech = dir.join("speech-reference.wav");
-            // Solo borrar en voces de fábrica; las clonadas del usuario conservan su legado.
-            if is_factory_name(name) && legacy_speech.is_file() {
-                let _ = std::fs::remove_file(&legacy_speech);
-            }
-            let legacy_timbre = dir.join("timbre-reference.wav");
-            if is_factory_name(name) && legacy_timbre.is_file() {
-                let _ = std::fs::remove_file(&legacy_timbre);
             }
         }
         Ok(())
@@ -615,9 +609,10 @@ pub fn remove_ct2_cache() -> Result<bool> {
 
 /// Almacén de modelos descargados.
 ///
-/// Fuente de verdad: snapshots de HuggingFace en `hf_cache_dir()` con layout
-/// `models--<org>--<repo>/snapshots/<hash>/`. `data_dir()/models/<name>/manifest.json`
-/// queda como índice de compatibilidad (doctor/estado), no como almacenamiento.
+/// Fuente de verdad única: snapshots de HuggingFace en `hf_cache_dir()` con
+/// layout `models--<org>--<repo>/snapshots/<hash>/`. Todos los modelos están
+/// pinneados en `MODEL_REVISIONS`, así que la provisión se decide solo por
+/// presencia del snapshot; no hay índice `manifest.json` intermedio.
 pub struct ModelStore {
     base_dir: PathBuf,
 }
@@ -676,8 +671,8 @@ impl ModelStore {
     }
 
     /// Verificar si un modelo está provisionado: snapshot HF presente con
-    /// integridad mínima (ficheros críticos con `size>0`). Si no hay pin,
-    /// cae al índice legacy `manifest.json`.
+    /// integridad mínima (ficheros críticos con `size>0`). Sin pin en
+    /// `MODEL_REVISIONS` no hay snapshot resoluble → no provisionado.
     pub fn is_provisioned(&self, model_name: &str) -> bool {
         match self.model_snapshot_path(model_name) {
             Some(snapshot) => {
@@ -721,19 +716,11 @@ impl ModelStore {
                     Err(_) => false,
                 }
             }
-            None => {
-                let manifest = self.base_dir.join(model_name).join("manifest.json");
-                if let Ok(content) = std::fs::read_to_string(&manifest) {
-                    if let Ok(entry) = serde_json::from_str::<ModelEntry>(&content) {
-                        return entry.status == ModelStatus::Ready;
-                    }
-                }
-                false
-            }
+            None => false,
         }
     }
 
-    /// Listar todos los modelos conocidos (pines + cualquier índice legacy).
+    /// Listar todos los modelos conocidos (pines de `MODEL_REVISIONS`).
     pub fn list(&self) -> Result<Vec<ModelEntry>> {
         self.ensure_initialized()?;
         let mut entries = Vec::new();
@@ -751,53 +738,14 @@ impl ModelStore {
                 size_bytes: None,
             });
         }
-        // Índices legacy sin pin (compatibilidad)
-        for dir in std::fs::read_dir(&self.base_dir)? {
-            let dir = dir?;
-            if !dir.file_type()?.is_dir() {
-                continue;
-            }
-            let name = dir.file_name().to_string_lossy().to_string();
-            if ModelStore::revision_of(&name).is_some() {
-                continue;
-            }
-            let manifest = dir.path().join("manifest.json");
-            if manifest.is_file() {
-                if let Ok(content) = std::fs::read_to_string(&manifest) {
-                    if let Ok(entry) = serde_json::from_str::<ModelEntry>(&content) {
-                        entries.push(entry);
-                    }
-                }
-            }
-        }
         Ok(entries)
     }
 
-    /// Directorio de un modelo: snapshot HF si hay pin, si no índice legacy.
+    /// Directorio de un modelo: snapshot HF pinneado; si no resuelve, cae al
+    /// directorio nominal bajo `data_dir()/models`.
     pub fn model_dir(&self, model_name: &str) -> PathBuf {
         self.model_snapshot_path(model_name)
             .unwrap_or_else(|| self.base_dir.join(model_name))
-    }
-
-    /// Registrar un modelo como provisionado escribiendo su manifest.json
-    pub fn register_provisioned(&self, model_name: &str, revision: &str) -> Result<ModelEntry> {
-        self.ensure_initialized()?;
-        let dir = self.base_dir.join(model_name);
-        std::fs::create_dir_all(&dir)?;
-
-        let entry = ModelEntry {
-            name: model_name.to_string(),
-            revision: revision.to_string(),
-            status: ModelStatus::Ready,
-            path: dir.clone(),
-            size_bytes: None,
-        };
-
-        let manifest_path = dir.join("manifest.json");
-        let content = serde_json::to_string_pretty(&entry)?;
-        std::fs::write(&manifest_path, content)?;
-
-        Ok(entry)
     }
 
     /// Borrar el snapshot HF de un modelo (cleanup/uninstall).
@@ -1138,7 +1086,10 @@ mod tests {
         limpiar();
         touch("model.bin");
         touch("source.spm");
-        assert_eq!(ct2_dir_faltantes(&dir), vec!["tokenizer.json", "target.spm"]);
+        assert_eq!(
+            ct2_dir_faltantes(&dir),
+            vec!["tokenizer.json", "target.spm"]
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1274,9 +1225,9 @@ mod tests {
     }
 
     /// `save_reference` escribe `reference.qvoice` con tmp+rename y
-    /// `find_reference` hace fallback a `speech-reference.wav`.
+    /// `find_reference` resuelve solo por `reference.qvoice` (sin fallback WAV).
     #[test]
-    fn save_reference_y_fallback_speech_reference() {
+    fn save_reference_qvoice_canonico_sin_fallback_wav() {
         let dir = temp_dir("ref");
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         let src = dir.join("clon.qvoice");
@@ -1356,13 +1307,24 @@ mod tests {
         std::fs::create_dir_all(&custom_dir).unwrap();
         std::fs::write(custom_dir.join("reference.qvoice"), b"QVCE").unwrap();
         voices.ensure_initialized().unwrap();
-        assert!(custom_dir.join("reference.qvoice").is_file(), "voz clonada preservada");
+        assert!(
+            custom_dir.join("reference.qvoice").is_file(),
+            "voz clonada preservada"
+        );
         for name in ["default", "ryan", "vivian"] {
-            assert!(voices.voice_dir(name).is_dir(), "fábrica '{}' preservada tras 2º init", name);
+            assert!(
+                voices.voice_dir(name).is_dir(),
+                "fábrica '{}' preservada tras 2º init",
+                name
+            );
         }
         // `list` debe ver las tres fábricas marcadas is_factory + la clonada
         let list = voices.list().unwrap();
-        let factory_names: Vec<String> = list.iter().filter(|v| v.is_factory).map(|v| v.name.clone()).collect();
+        let factory_names: Vec<String> = list
+            .iter()
+            .filter(|v| v.is_factory)
+            .map(|v| v.name.clone())
+            .collect();
         assert_eq!(factory_names.len(), 3, "tres voces de fábrica");
         assert!(factory_names.contains(&"default".to_string()));
         assert!(factory_names.contains(&"ryan".to_string()));
@@ -1375,17 +1337,7 @@ mod tests {
                 name
             );
         }
-        // Fábrica con speech-reference.wav no cae en Clonada (solo qvoice)
-        let legacy = voices.voice_dir("ryan").join("speech-reference.wav");
-        std::fs::write(&legacy, b"RIFF").unwrap();
-        assert!(
-            voices.find_reference("ryan").is_none(),
-            "fábrica con legado no debe resolver como clonada"
-        );
-        // Limpieza legada en siguiente ensure_initialized
-        voices.ensure_initialized().unwrap();
-        assert!(!legacy.is_file(), "ensure_initialized debe limpiar legado de fábrica");
-        // Voz sin qvoice no resuelve como clonada aunque tenga wav legado
+        // Voz sin qvoice no resuelve como clonada aunque tenga wav legado inerte
         let clon_dir = voices.voice_dir("otra");
         std::fs::create_dir_all(&clon_dir).unwrap();
         std::fs::write(clon_dir.join("speech-reference.wav"), b"RIFF").unwrap();

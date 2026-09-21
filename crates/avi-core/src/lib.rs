@@ -58,7 +58,8 @@ mod tests {
     fn test_texto_multi_oracion_se_particiona_en_en() {
         // Derivado de `test_multi_sentence_text_splits_by_sentence_via_pysbd_en`:
         // misma invariante estructural que el caso en español; el segmentador es
-        // agnóstico de idioma (limitación documentada en la Tarea 2 del plan).
+        // agnóstico de idioma (no detecta el idioma del texto de entrada, por lo
+        // que las mismas reglas de segmentación aplican sin distinción).
         let segmenter = HierarchicalSegmenter::new(35);
         let text = "Hello world. This is the second sentence. And a third one here.";
         let result = segmenter.segment(text);
