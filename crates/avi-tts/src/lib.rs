@@ -62,10 +62,11 @@ impl GenerationOptions {
     /// debe seguir coincidiendo con los defaults del motor) sino que es la
     /// superficie que cablea la síntesis de producción (`Qwen3TtsEngine::synthesize`).
     /// `seed 4` fijado por sweep 2026-08-24: 10 frases ES, bench.qvoice --int4 -j4
-    /// T0.35, WSL seed42 como oráculo, 3 oyentes → seed4 4/10 vs wsl 6/10 (C3 verde),
-    /// C1 WER max 0.000 y C2 SIM min 0.822 PASS (target/seed-sweep/wer.csv,
-    /// speaker_sim.csv). Seed 42 previo sigue verde pero seed4 iguala prosodia
-    /// nativa Windows sin WSL (docs/reviews/2026-08-14-tts-calidad-fase5.md §Cierre).
+    /// con temperature=0.35, usando WSL con seed 42 como oráculo, 3 oyentes
+    /// comparando seed 4 (4/10) contra WSL (6/10), con WER máximo 0.000 y
+    /// similitud de hablante mínima 0.822 en PASS (target/seed-sweep/wer.csv,
+    /// speaker_sim.csv). El seed 42 previo también pasa, pero seed 4 iguala la
+    /// prosodia nativa de Windows sin depender de WSL.
     pub fn produccion() -> Self {
         Self {
             temperature: 0.35,
@@ -295,7 +296,7 @@ pub struct Qwen3TtsEngine {
     resident_pid: AtomicU32,
 }
 
-/// Ventana de la salud observada por petición (H-05): `retries=1`,
+/// Ventana de la salud observada por petición: `retries=1`,
 /// `interval_ms=2000` acotan el healthcheck a ~2 s por petición. Generoso
 /// para un `GET /v1/health` sano en loopback (responde en ms) y suficiente
 /// para fallar rápido ante un sumidero TCP que acepta y no responde, muy por
@@ -336,7 +337,7 @@ impl Qwen3TtsEngine {
     /// retiene durante el spawn + `wait_health` + síntesis HTTP, así que
     /// `self.resident.lock()` se colgaría. Por eso se mata el árbol preciso por
     /// PID (señal que no requiere el lock, con verificación inmediata sin espera);
-    /// R3-A: sin kill por imagen del residente —si el árbol preciso no lo
+    /// deliberadamente sin kill por imagen del residente —si el árbol preciso no lo
     /// termina, la verificación con deadline la hace el llamante (graceful del
     /// daemon / parada del CLI) y el fallo es ruidoso. La recolección del estado
     /// se hace best-effort con `try_lock` (si el warmup lo tiene, no esperamos:
@@ -400,11 +401,11 @@ impl Qwen3TtsEngine {
         }
     }
 
-    /// Arranca un residente fresco para `voz` (Tarea 3): construye
+    /// Arranca un residente fresco para `voz`: construye
     /// `load_voice`, hace `spawn` (que ya trae su propio `wait_health` de
     /// arranque, por lo que nace sano o falla con diagnóstico), actualiza
     /// `resident_pid` y ensambla el `ResidentState`. Compartido por el camino
-    /// de cambio de voz y por el rearranque ante degradación (H-05).
+    /// de cambio de voz y por el rearranque ante degradación del residente.
     fn arrancar_residente(
         &self,
         model_dir: &Path,
@@ -418,7 +419,7 @@ impl Qwen3TtsEngine {
         let port = default_port();
         let spawned = resident::Qwen3TtsResident::spawn(model_dir, port, load_voice)?;
         self.resident_pid.store(spawned.pid(), Ordering::Relaxed);
-        // R3-A: contabilidad en disco acoplada al store en memoria — actualiza
+        // Contabilidad en disco acoplada al store en memoria — actualiza
         // `resident_pid` en `daemon.pid` sin fichero propio (best-effort: si el
         // daemon corre en foreground sin pidfile, no hay nada que actualizar).
         actualizar_resident_pid_en_pidfile(spawned.pid());
@@ -431,7 +432,7 @@ impl Qwen3TtsEngine {
     /// Síntesis vía servidor residente: arranca (o reutiliza) el residente de
     /// la voz solicitada y hace `POST /v1/tts`.
     ///
-    /// H-05: la reutilización por `voz_key` no bastaba — un residente colgado
+    /// La reutilización por `voz_key` no bastaba — un residente colgado
     /// tras el warmup se reutilizaba indefinidamente y todo `POST /v1/tts`
     /// se colgaba. Antes de reusar se verifica la salud real
     /// (`health_check`, `try_wait` + `GET /v1/health`); si está degradado se
@@ -486,7 +487,7 @@ impl Qwen3TtsEngine {
 }
 
 /// Actualiza `resident_pid` en `daemon.pid` preservando el resto del esquema
-/// (R3-A, D3: campo plano). Escritura atómica por tmp+rename; best-effort y
+/// como campo plano. Escritura atómica por tmp+rename; best-effort y
 /// silenciosa: si no hay pidfile (p. ej. `serve` en foreground) o no parsea,
 /// no hay nada que actualizar y se ignora. La lectura tolerante vive en el CLI
 /// (`read_resident_pid`: ausente = 0/desconocido).
@@ -571,7 +572,7 @@ impl TtsEngine for Qwen3TtsEngine {
             }
         }
 
-        // 2. Servidor residente gestionado por el host (decisión F0): único
+        // 2. Servidor residente gestionado por el host: único
         //    camino restante, con healthcheck (30 s) y POST (30 s) acotados.
         //    El texto viaja por body HTTP JSON, ruta segura para UTF-8 acentuado
         //    (a diferencia del argv de un subprocess en Windows).
@@ -580,7 +581,7 @@ impl TtsEngine for Qwen3TtsEngine {
     }
 }
 
-/// Construye el body HTTP de `POST /v1/tts` (Tarea 3): sin `format` (el
+/// Construye el body HTTP de `POST /v1/tts`: sin `format` (el
 /// servidor lo ignora), claves solo-si-`Some`, y `speaker`/`language` omitidos
 /// cuando la voz es clonada (el servidor conserva la voz y el idioma del
 /// arranque, `docs/server.md:28-34`).
@@ -800,7 +801,7 @@ pub mod resident {
         pub(crate) log_path: PathBuf,
     }
 
-    /// Construye el `Command` de arranque del residente (Tareas 2 y 3), sin
+    /// Construye el `Command` de arranque del residente, sin
     /// I/O real: `-d <model_dir> --serve <port> --int4 -j 4 --stream
     /// [--load-voice <qvoice> --icl-only]`.
     pub(crate) fn build_resident_command(
@@ -839,7 +840,9 @@ pub mod resident {
             // Redirige stderr del motor a un fichero de log (rotación por sesión).
             // stdin/stdout permanecen en null: el motor no necesita TTY ni stdin y su
             // stdout no se consume. stderr captura los ~20 `fprintf(stderr, *)` del
-            // motor C (cuyos mensajes se perdían a null, cegando H-02/H-05/H-01).
+            // motor C (cuyos mensajes se perdían a null, dejando ciego el
+            // diagnóstico del warmup, la síntesis por petición y la
+            // terminación del residente).
             let log_path = resident_log_path();
             let log_file = std::fs::OpenOptions::new()
                 .create(true)
@@ -858,12 +861,12 @@ pub mod resident {
             // `SetHandleInformation` (`main::desheredar_handles_estandar`); no existe
             // una creation flag que desactive la herencia. `Stdio::null` en stdin/stdout
             // cierra la herencia de stdin/tty; stderr va al log (Stdio::from marca el
-            // handle no-heredable, H-04).
-            // Árbol matable (H-01): a propósito SIN `CREATE_NEW_PROCESS_GROUP` ni
+            // handle no-heredable).
+            // Árbol matable: a propósito SIN `CREATE_NEW_PROCESS_GROUP` ni
             // breakaway, para que el residente permanezca en el grupo/Job del daemon
             // y `taskkill /F /T /PID <daemon>` (o el Job con cierre) lo alcance.
             // En Unix tampoco se hace `setsid` aquí: hereda el grupo del daemon.
-            // D-01: tras la muerte del líder el residente reparentado se verifica
+            // Tras la muerte del líder el residente reparentado se verifica
             // por PID y 8766 desde el CLI (`reclamar_residual_degradado`); los
             // dobles de test nunca reproducen ese reparentado.
             #[cfg(windows)]
@@ -922,7 +925,7 @@ pub mod resident {
             self.child.as_ref().map(|c| c.id()).unwrap_or(0)
         }
 
-        /// Salud observada por petición (H-05): reutiliza `wait_health` (combina
+        /// Salud observada por petición: reutiliza `wait_health` (combina
         /// `try_wait` para detectar *crash* y `GET /v1/health` para detectar
         /// *hang*) sobre el `child` del residente ya arrancado. Un healthcheck
         /// solo-HTTP perdería el diagnóstico de crash sin ganar nada.
@@ -942,7 +945,7 @@ pub mod resident {
                 // Cierre por árbol con recolección: el `shutdown()` previo ya mató el
                 // árbol preciso por PID (imagen solo como último recurso); aquí
                 // `kill+wait` recolecta el estado del `child` (ya muerto entonces,
-                // o vivo en un drop normal). D-05: insuficiente ante caída a medio
+                // o vivo en un drop normal). Insuficiente ante caída a medio
                 // `spawn` (sin `Child` que recolectar): por eso `run_supervised`
                 // reclama además el árbol propio previo con deadline y verificación
                 // antes del siguiente `bind`.
@@ -953,8 +956,8 @@ pub mod resident {
     }
 
     /// Viveza real de un PID a nivel de sistema (sin Mutex ni HTTP).
-    /// `pub` para el camino de reclamo/parada del CLI (R3-A: muerte por PID
-    /// registrado + verificación por puerto, sin kill por imagen).
+    /// `pub` para el camino de reclamo/parada del CLI: muerte por PID
+    /// registrado + verificación por puerto, sin kill por imagen.
     pub fn pid_vivo_residente(pid: u32) -> bool {
         if pid == 0 {
             return false;
@@ -993,7 +996,7 @@ pub mod resident {
     /// (hereda el grupo del daemon para que su cierre lo arrastre), así que un
     /// `kill` al grupo `-<pid>` apuntaría a un pgid nunca establecido; el
     /// árbol/grupo lo cierra el daemon, aquí solo se termina el PID puntual del
-    /// camino de reclamo/parada del CLI (R3-A). No verifica: el llamante
+    /// camino de reclamo/parada del CLI. No verifica: el llamante
     /// combina con `pid_vivo_residente` o recolecta el estado vía `Child`.
     pub fn matar_arbol_residente_por_pid(pid: u32) -> bool {
         if pid == 0 {
@@ -1078,11 +1081,12 @@ pub mod resident {
     }
 
     /// Simulador HTTP mínimo para tests: responde `200 OK` a `/v1/health` y
-    /// captura el body de un único `POST /v1/tts`. Siempre sano: nunca cuelga
-    /// ni muere ni daemoniza (ceguera H-01, T7); nunca reproduce `panic!` con
-    /// lock retenido ni aborto externo (D-03, solo-harness) ni crash con puerto
-    /// ocupado (D-05, solo `run_supervised`); nunca usa imagen `qwen_tts` ni
-    /// deja resto sin puerto (D-04). La ausencia real
+    /// captura el body de un único `POST /v1/tts`. Siempre sano: nunca cuelga,
+    /// nunca muere ni daemoniza de verdad, por lo que no reproduce la
+    /// terminación real de un árbol de procesos; nunca reproduce `panic!` con
+    /// lock retenido ni aborto externo (solo el harness lo cubre) ni crash con
+    /// puerto ocupado (solo `run_supervised` lo cubre); nunca usa la imagen
+    /// real `qwen_tts` ni deja un residuo sin puerto asignado. La ausencia real
     /// de huérfanos a nivel SO solo la verifica la serie pesada
     /// (`tests/cli_golden.rs`).
     #[cfg(test)]
@@ -1173,10 +1177,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    /// T1: los defaults del host deben coincidir con los defaults del motor
+    /// Los defaults del host deben coincidir con los defaults del motor
     /// (`docs/server.md:140-141`). Afirma los defaults del `struct`/motor sin
     /// cambios, no los valores de producción de `GenerationOptions::produccion()`
-    /// (Tarea 1) — este test queda intacto a propósito.
+    /// (config validada por oído) — este test queda intacto a propósito.
     #[test]
     fn default_generation_options_coinciden_con_motor() {
         let d = GenerationOptions::default();
@@ -1188,7 +1192,7 @@ mod tests {
         assert_eq!(d.seed, None);
     }
 
-    /// T1: `produccion()` fija temperatura y seed a la config validada por oído,
+    /// `produccion()` fija temperatura y seed a la config validada por oído,
     /// sin alterar el resto de campos respecto a `Default`.
     #[test]
     fn generation_options_produccion_fija_temperatura_y_seed() {
@@ -1218,8 +1222,9 @@ mod tests {
         assert_eq!(max.temperature, 2.0);
     }
 
-    /// T6: argv exacto de arranque del residente (preset y voz clonada), sin
-    /// I/O real de proceso — cierra el hueco de cobertura señalado por F1.
+    /// Argv exacto de arranque del residente (preset y voz clonada), sin
+    /// I/O real de proceso — cierra un hueco de cobertura que ningún test de
+    /// integración ejercitaba.
     #[test]
     fn build_resident_command_incluye_int4_hilos_stream() {
         let cmd = resident::build_resident_command(
@@ -1274,9 +1279,9 @@ mod tests {
         );
     }
 
-    /// T3: body HTTP con defaults → claves exactas; voz clonada → sin speaker/language.
+    /// Body HTTP con defaults → claves exactas; voz clonada → sin speaker/language.
     /// Afirma los defaults del `struct`/motor sin cambios, no los valores de
-    /// producción de `GenerationOptions::produccion()` (Tarea 1) — el body HTTP
+    /// producción de `GenerationOptions::produccion()` (config validada por oído) — el body HTTP
     /// no transporta `int4`/`-j`/`--stream` (son flags de arranque de proceso).
     #[test]
     fn construir_body_tts_defaults_y_voz_clonada() {
@@ -1323,7 +1328,7 @@ mod tests {
         assert_eq!(obj.get("emotion").and_then(|v| v.as_str()), Some("joy"));
     }
 
-    /// T6: tabla de resolución voz → motor (default resuelve como Preset(default)).
+    /// Tabla de resolución voz → motor (default resuelve como Preset(default)).
     #[test]
     fn resolve_voice_motor_tabla() {
         // default sin referencia resuelve como Preset("default"); con qvoice resuelve como Clonada.
@@ -1345,7 +1350,7 @@ mod tests {
         std::fs::remove_file(&q).ok();
     }
 
-    /// T5: el healthcheck responde cuando el listener simula `/v1/health`, y
+    /// El healthcheck responde cuando el listener simula `/v1/health`, y
     /// el `Drop` del gestor termina al hijo.
     #[test]
     fn residente_healthcheck_ok_y_drop_mata_al_hijo() {
@@ -1370,7 +1375,7 @@ mod tests {
         );
     }
 
-    /// T5: el healthcheck reintenta hasta que el servidor responde. El simulador
+    /// El healthcheck reintenta hasta que el servidor responde. El simulador
     /// cierra las dos primeras conexiones sin responder (fallo inmediato) y solo
     /// responde 200 a partir de la tercera (determinista, sin temporización).
     #[test]
@@ -1421,7 +1426,7 @@ mod tests {
         }
     }
 
-    /// T5: el healthcheck falla si el servidor nunca responde.
+    /// El healthcheck falla si el servidor nunca responde.
     #[test]
     fn residente_healthcheck_falla_sin_servidor() {
         let child = proceso_durmiente();
@@ -1435,7 +1440,7 @@ mod tests {
         assert!(result.is_err(), "sin servidor el healthcheck debe fallar");
     }
 
-    /// T5.1 (H-05): un sumidero TCP que acepta la conexión y nunca responde
+    /// Un sumidero TCP que acepta la conexión y nunca responde
     /// (a diferencia del crash de `wait_health_distingue_crash_de_hang`, aquí
     /// el proceso hijo sigue vivo) debe hacer que `wait_health(1, 2000)`
     /// devuelva `Err` en `≲` 3 s, sin colgarse — reproduce el cuelgue del
@@ -1470,7 +1475,7 @@ mod tests {
         );
     }
 
-    /// T5: `resident_log_path()` crea el directorio `logs/` bajo `data_dir()` y
+    /// `resident_log_path()` crea el directorio `logs/` bajo `data_dir()` y
     /// devuelve un filename con el patrón `qwen3-tts_<pid>_<ms>.log`.
     #[test]
     fn log_path_crea_directorio_y_filename() {
@@ -1492,7 +1497,7 @@ mod tests {
         );
     }
 
-    /// T5: `wait_health` distingue *crash* (el child muere inesperadamente) de
+    /// `wait_health` distingue *crash* (el child muere inesperadamente) de
     /// *hang* (timeout). Un proceso que sale inmediatamente produce un error que
     /// menciona "terminó inesperadamente" + código de salida + ruta del log.
     #[test]
@@ -1526,10 +1531,10 @@ mod tests {
         );
     }
 
-    /// T7: el body del POST contra un servidor simulado transporta los defaults
+    /// El body del POST contra un servidor simulado transporta los defaults
     /// del motor (e9) y sus overrides. Afirma los defaults del `struct`/motor sin
     /// cambios, no los valores de producción de `GenerationOptions::produccion()`
-    /// (Tarea 1) — este test invoca `synthesize_with_options` directamente con
+    /// (config validada por oído) — este test invoca `synthesize_with_options` directamente con
     /// `GenerationOptions::default()`, no `Qwen3TtsEngine::synthesize`.
     #[test]
     fn synthesize_http_envia_defaults_del_motor() {
@@ -1574,10 +1579,11 @@ mod tests {
 
     /// Proceso que duerme para simular el hijo del residente en tests. Hijo
     /// directo bien portado (recolectable vía `Child`): no reproduce el
-    /// desacoplo del `qwen_tts` real ni la daemonización (ceguera H-01, T7);
-    /// nunca reproduce `panic!` con lock retenido ni aborto externo (D-03) ni
-    /// la ventana spawn→write ni señales (D-02, solo-harness/producto); nunca
-    /// usa imagen `qwen_tts` ni deja resto sin puerto (D-04);
+    /// desacoplo del `qwen_tts` real ni la daemonización, así que queda ciego
+    /// a ese escenario; nunca reproduce `panic!` con lock retenido ni aborto
+    /// externo (solo el harness lo cubre) ni la ventana spawn→write ni señales
+    /// (solo harness/producto lo cubren); nunca usa la imagen real `qwen_tts`
+    /// ni deja un residuo sin puerto asignado;
     /// el cierre preciso por árbol se cubre en
     /// `residente_matar_arbol_por_pid_termina_al_hijo`.
     fn proceso_durmiente() -> std::process::Child {
@@ -1598,14 +1604,14 @@ mod tests {
         }
     }
 
-    /// ¿Sigue vivo el proceso con `pid`? Doble de test (H-01, T7): delega en
+    /// ¿Sigue vivo el proceso con `pid`? Doble de test: delega en
     /// `resident::pid_vivo_residente`, la misma primitiva que el producto usa
     /// para verificar el cierre por árbol, sin reproducir daemonización real.
     fn proceso_vivo(pid: u32) -> bool {
         resident::pid_vivo_residente(pid)
     }
 
-    /// H-01 (T7): la terminación por PID mata un hijo real a nivel SO, sin
+    /// La terminación por PID mata un hijo real a nivel SO, sin
     /// daemonización (hijo directo, no el `qwen_tts` desacoplado). Cubre
     /// `matar_arbol_residente_por_pid` + `pid_vivo_residente` con recolección
     /// determinista del estado (como el `Drop`). Verificación SIN sondeo sobre
@@ -1638,7 +1644,7 @@ mod tests {
         );
     }
 
-    /// T4: `resolve_binary` halla el binario junto al `current_exe` aunque `cwd` no tenga vendor.
+    /// `resolve_binary` halla el binario junto al `current_exe` aunque `cwd` no tenga vendor.
     #[test]
     fn resolve_binary_halla_exe_dir_vendor() {
         // Guardar env para no contaminar otros tests (serializados por --test-threads=1 en CI)

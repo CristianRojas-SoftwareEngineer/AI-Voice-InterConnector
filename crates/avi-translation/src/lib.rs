@@ -82,7 +82,7 @@ impl Ct2TranslationEngine {
                 // el oráculo lo elimina al decodificar con el SentencePiece
                 // destino (los símbolos de control decodifican a cadena vacía,
                 // `model_loader.py`). Se sanea aquí para preservar la paridad
-                // de salida (hallazgo del reality-check de F5).
+                // de salida (hallazgo observado).
                 translated.trim_end_matches("</s>").trim_end().to_string()
             })
             .collect())
@@ -107,7 +107,8 @@ impl TranslationEngine for Ct2TranslationEngine {
 
 /// Tope de oraciones por lote de traducción: un párrafo con más oraciones se
 /// parte en grupos de `MAX_ORACIONES_POR_LOTE` para acotar la memoria y la
-/// latencia de cada llamada a `translate_batch` (decisión cerrada de F0 §2.2).
+/// latencia de cada llamada a `translate_batch` (decisión cerrada:
+/// acotar memoria y latencia por lote).
 ///
 /// Lógica pura: se mantiene compilable/testeable sin el feature
 /// `native-translation`; `allow(dead_code)` evita el warning-as-error cuando su
@@ -305,8 +306,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Test de paridad funcional contra el oráculo Python (Decisión cerrada #2
-    /// de F0).
+    /// Test de paridad funcional contra el oráculo Python.
     ///
     /// El corpus de referencia son pares `{input, expected}` generados con el
     /// pipeline de traducción del oráculo Python (`TranslationService` de
@@ -481,8 +481,8 @@ mod tests {
         );
     }
 
-    /// Cobertura acordada del exit 9 (`TranslationFailed`, ver Tarea 9 del
-    /// plan): un `model_dir` inexistente hace fallar el pipeline con `Err`
+    /// Cobertura acordada del exit 9 (`TranslationFailed`): un `model_dir`
+    /// inexistente hace fallar el pipeline con `Err`
     /// (defensa en profundidad; no sustituye el chequeo `Path::exists` de la
     /// capa CLI).
     #[cfg(feature = "native-translation")]

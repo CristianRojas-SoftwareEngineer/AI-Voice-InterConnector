@@ -88,7 +88,7 @@ impl VoiceStore {
             let dir = self.base_dir.join(name);
             std::fs::create_dir_all(&dir)?;
         }
-        // Materializar `default` clonada de fábrica desde el asset embebido (T7).
+        // Materializar `default` clonada de fábrica desde el asset embebido.
         // Solo si no existe ya un `reference.qvoice` (preserva clonación del usuario
         // si re-inicializa, aunque `default` es fábrica y no debería ser sobreescrita
         // por el usuario; aun así, idempotente).
@@ -99,10 +99,10 @@ impl VoiceStore {
                 let _ = std::fs::write(&default_qvoice, FACTORY_DEFAULT_QVOICE);
             }
         }
-        // Limpieza de materialización legada (12 MB embebidos pre-T4): si quedó
+        // Limpieza de materialización legada (12 MB embebidos de factoría anterior): si quedó
         // `speech-reference.wav` / `timbre-reference.wav` de la factoria anterior,
         // se eliminan para que `find_reference` no devuelva un legado como clonada.
-        // No borrar `reference.qvoice` de `default` (ahora es la fábrica T7).
+        // No borrar `reference.qvoice` de `default` (ahora es la fábrica con qvoice).
         for name in FACTORY_VOICES {
             let dir = self.base_dir.join(name);
             let legacy_speech = dir.join("speech-reference.wav");
@@ -145,7 +145,7 @@ impl VoiceStore {
     }
 
     /// Validar un nombre de voz (regex del oráculo `^[A-Za-z0-9._-]+$` +
-    /// reglas de seguridad anti-escape; paridad de contrato, divergencia 3 de F1)
+    /// reglas de seguridad anti-escape; paridad de contrato)
     pub fn validate_name(name: &str) -> Result<(), String> {
         if name.is_empty() {
             return Err("El nombre de la voz no puede estar vacío.".into());
@@ -274,7 +274,7 @@ impl SpeechStore {
         self.listar_con_filtro(None)
     }
 
-    /// Listar las locuciones persistidas de una sola voz (H-10: lectura
+    /// Listar las locuciones persistidas de una sola voz (lectura
     /// acotada por voz; la voz se normaliza a minúsculas, paridad con
     /// `voice_dir`). Voz sin locuciones → lista vacía, sin error.
     pub fn list_by_voice(&self, voice: &str) -> Result<Vec<SpeechEntry>> {
@@ -536,7 +536,7 @@ pub fn hf_cache_dir() -> PathBuf {
 
 /// Directorio raíz de la cache xet (shard-cache) acoplada a `hf_cache_dir`.
 /// `hf-hub` con `xet` usa `~/.cache/huggingface/xet` además de `hub`; purgar
-/// solo `hub` deja `shard-cache` huérfano e incoherente (bug T2).
+/// solo `hub` deja `shard-cache` huérfano e incoherente (riesgo de coherencia).
 pub fn xet_cache_dir() -> PathBuf {
     // Deriva de `hf_cache_dir` reemplazando el último componente `hub` por `xet`
     // para honrar `HF_HUB_CACHE`/`HF_HOME` cuando apuntan a `hub`.
@@ -561,9 +561,8 @@ pub fn xet_cache_dir() -> PathBuf {
 /// Invariante: provisionado equivale a lo que `setup` deposita y, por tanto, a
 /// cargable por `Translator::new` — el gate `is_ct2_provisioned` acepta
 /// exactamente los layouts que `convert_marian_to_ct2` produce (`src/main.rs`),
-/// no todo lo que `auto::Tokenizer` sabría cargar (ver H-13 en
-/// `ct2_dir_faltantes`); la idempotencia por `mtime` solo aplica a dirs sanos
-/// (un dir roto es no provisionado y fuerza reconversión).
+/// no todo lo que `auto::Tokenizer` sabría cargar; la idempotencia por `mtime`
+/// solo aplica a dirs sanos (un dir roto es no provisionado y fuerza reconversión).
 pub fn ct2_cache_dir() -> PathBuf {
     hf_cache_dir().join("ct2")
 }
@@ -574,7 +573,7 @@ pub fn ct2_model_dir(pair: &str) -> PathBuf {
 /// el loader (`model.bin` presente más tokenizador completo). Nombra cada
 /// candidato ausente para errores accionables.
 ///
-/// H-13 — El tokenizador se da por válido con `tokenizer.json` (layout HF) o
+/// El tokenizador se da por válido con `tokenizer.json` (layout HF) o
 /// `source.spm`+`target.spm` (SentencePiece/Marian). El layout BPE
 /// `vocab.json`+`merges.txt` se rechaza a propósito: `convert_marian_to_ct2`
 /// fija la salida a `source.spm`+`target.spm` (`--copy_files`) y aborta si el
@@ -1083,7 +1082,7 @@ mod tests {
         dir
     }
 
-    /// H-13: contrato del gate del derivado CT2. Acepta exactamente los layouts
+    /// Contrato del gate del derivado CT2. Acepta exactamente los layouts
     /// que `setup` produce (`source.spm`+`target.spm`) o el snapshot HF
     /// (`tokenizer.json`), y rechaza cualquier otro. El layout BPE
     /// `vocab.json`+`merges.txt` NO se acepta: no lo genera `convert_marian_to_ct2`,
@@ -1125,7 +1124,7 @@ mod tests {
         touch("tokenizer.json");
         assert!(ct2_dir_faltantes(&dir).is_empty());
 
-        // 4. Layout BPE (`vocab.json`+`merges.txt`): rechazado a propósito (H-13).
+        // 4. Layout BPE (`vocab.json`+`merges.txt`): rechazado a propósito.
         limpiar();
         touch("model.bin");
         touch("vocab.json");
@@ -1144,7 +1143,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// T4: normalización de mayúsculas en todas las operaciones del almacén
+    /// Normalización de mayúsculas en todas las operaciones del almacén
     /// (paridad con `voices.py:37` y `synthetic_speech.py:51`).
     #[test]
     fn normalizacion_minusculas() {
@@ -1194,7 +1193,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// H-10: `list_by_voice` devuelve solo la voz pedida (insensible a
+    /// `list_by_voice` devuelve solo la voz pedida (insensible a
     /// mayúsculas) y lista vacía para voz sin locuciones; `list` sin filtro
     /// sigue devolviendo todo.
     #[test]
@@ -1222,7 +1221,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// T9: round-trip `save` → `find` con `duration_secs` calculada del WAV.
+    /// round-trip `save` → `find` con `duration_secs` calculada del WAV.
     #[test]
     fn save_find_round_trip_con_duration() {
         let dir = temp_dir("roundtrip");
@@ -1241,8 +1240,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// T4: sidecar ausente/corrupto es tolerable en `list` (conserva la
-    /// tolerancia previa del oráculo; divergencia 2 de F1).
+    /// sidecar ausente/corrupto es tolerable en `list` (conserva la
+    /// tolerancia previa del oráculo).
     #[test]
     fn sidecar_ausente_tolerable() {
         let dir = temp_dir("sidecar");
@@ -1260,7 +1259,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// T4: `validate_name` acepta el regex del oráculo y rechaza lo demás.
+    /// `validate_name` acepta el regex del oráculo y rechaza lo demás.
     #[test]
     fn validate_name_regex_oraculo() {
         assert!(VoiceStore::validate_name("Mi_Voz-2").is_ok());
@@ -1274,7 +1273,7 @@ mod tests {
         assert!(VoiceStore::validate_name("..").is_err());
     }
 
-    /// T8: `save_reference` escribe `reference.qvoice` con tmp+rename y
+    /// `save_reference` escribe `reference.qvoice` con tmp+rename y
     /// `find_reference` hace fallback a `speech-reference.wav`.
     #[test]
     fn save_reference_y_fallback_speech_reference() {
@@ -1301,7 +1300,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// T4+T7: `ensure_initialized` registra voces de fábrica (`default` clonada
+    /// `ensure_initialized` registra voces de fábrica (`default` clonada
     /// de fábrica con `.qvoice`, `ryan`/`vivian` presets) y `list`/`remove`/
     /// `find_reference` reflejan el registro unificado (--voice ryan alcanzable).
     #[test]
@@ -1333,7 +1332,7 @@ mod tests {
         // `default` clonada de fábrica debe tener `reference.qvoice` materializado
         assert!(
             voices.find_reference("default").is_some(),
-            "fábrica 'default' debe tener reference.qvoice (T7)"
+            "fábrica 'default' debe tener reference.qvoice"
         );
         assert_eq!(
             voices
@@ -1428,7 +1427,7 @@ mod tests {
         );
     }
 
-    /// T1: `revision_of("qwen3-tts-0.6b-base")` existe con repo público confirmado y hash
+    /// `revision_of("qwen3-tts-0.6b-base")` existe con repo público confirmado y hash
     /// real (40 hex), y `model_snapshot_path` resuelve bajo HF_HUB_CACHE temporal.
     #[test]
     fn revision_of_base_existe_y_snapshot_resuelve() {

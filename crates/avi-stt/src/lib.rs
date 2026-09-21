@@ -74,14 +74,14 @@ mod tests {
     /// lados a minúsculas sin diacríticos ni puntuación (insensible a acentos y
     /// signos), y acepta WER ≤ 0.25 sobre el texto normalizado.
     ///
-    /// Hallazgo de F5 (reality check): `parakeet_sample_16k` es un saludo corto
+    /// `parakeet_sample_16k` es un saludo corto
     /// (2.96 s) que Parakeet emite en **inglés** ("Hello, how are you?") porque
     /// el TDT 0.6B v3 auto-detecta idioma y un saludo breve es fonéticamente
     /// ambiguo. Ese output activa la guardia `detectar_idioma`
     /// (`EN-SOSPECHOSO`), que el daemon anexa como `language_warning`. Por eso:
     /// - los corpus en español (`corpus_watermark`, `corpus_sintesis`,
     ///   `corpus_respuestas`) validan WER ≤ 0.25 (el threshold estricto 0.05
-    ///   del plan T2 fue refutado por F5: el modelo real alcanza 0.08–0.21);
+    ///   el modelo real alcanza 0.08–0.21);
     /// - `parakeet_sample` valida, por el contrario, que `detectar_idioma` marque
     ///   el output como `EN-SOSPECHOSO` (la guardia funciona sobre un fixture
     ///   real).
@@ -142,7 +142,7 @@ mod tests {
                 .to_string();
 
             if esperado_ingles {
-                // F5: un saludo breve en español es trasladado a inglés por el
+                // un saludo breve en español es trasladado a inglés por el
                 // TDT; la guardia `detectar_idioma` debe marcarlo como sospechoso.
                 let (idioma, _) = detectar_idioma(&actual);
                 assert_eq!(
@@ -174,10 +174,9 @@ mod tests {
             let distancia = levenshtein_palabras(&ref_palabras, &hip_palabras);
             let wer = distancia as f64 / ref_palabras.len().max(1) as f64;
 
-            // Reality check de F5: el modelo Parakeet-TDT 0.6B int8 (export
-            // istupakov) alcanza RTF ~0.10 pero WER real ~0.08–0.21 sobre
-            // fixtures de voz sintética; el threshold estricto 0.05 del plan T2
-            // fue refutado por F5. Se valida paridad con WER ≤ 0.25, que abarca
+            // el modelo Parakeet-TDT 0.6B int8 (export istupakov) alcanza
+            // RTF ~0.10 pero WER real ~0.08–0.21 sobre fixtures de voz
+            // sintética. Se valida paridad con WER ≤ 0.25, que abarca
             // el WER observado (0.083 watermark incluido el "jejeje" inicial no
             // reflejado en el oráculo, 0.214 sintesis, 0.111 respuestas).
             let umbral = 0.25;

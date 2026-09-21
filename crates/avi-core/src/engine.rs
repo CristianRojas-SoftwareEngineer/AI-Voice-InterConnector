@@ -19,8 +19,9 @@ pub trait Segmenter: Send + Sync {
 ///
 /// El nivel de oración usa una regla determinista propia (escaneo manual de
 /// caracteres) en vez de `pysbd`: no maneja abreviaturas ni decimales
-/// (p. ej. "Sr.", "3.14"), brecha de fidelidad aceptada en el gate de plan
-/// (ver F3-plan-refinado.md, Consideraciones fundamentales).
+/// (p. ej. "Sr.", "3.14"). Esta es una brecha de fidelidad aceptada
+/// frente al comportamiento de `pysbd`, documentada como limitación
+/// conocida y no como defecto a corregir.
 pub struct HierarchicalSegmenter {
     max_length: usize,
 }

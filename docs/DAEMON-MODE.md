@@ -48,14 +48,14 @@ Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediat
 ## Comandos del Daemon
 
 ```bash
-ai-voice-interconnector daemon start     # revalida el residual (sano → already_running; degradado → reclama el árbol y rearranca con started —incluido Parado con residente vivo por 8766, D-04—; con --auto-restart los reintentos parten de reclamo activo del árbol propio previo con deadline y verificación —crash vivo con log pendiente de CI/entorno rápido, ver H-15—)
+ai-voice-interconnector daemon start     # revalida el residual (sano → already_running; degradado → reclama el árbol y rearranca con started —incluido Parado con residente vivo por 8766—; con --auto-restart los reintentos parten de reclamo activo del árbol propio previo con deadline y verificación —crash vivo con log pendiente de CI/entorno rápido, runtime diferido—)
 ai-voice-interconnector daemon serve     # primer plano (escucha Ctrl+C/SIGTERM por la misma ruta que POST /shutdown)
-ai-voice-interconnector daemon status    # GET /health → running/stopped, además del estado `warm` para diagnóstico (el stopped por probe incluye en el arranque la búsqueda del residente por 8766, D-04)
+ai-voice-interconnector daemon status    # GET /health → running/stopped, además del estado `warm` para diagnóstico (el stopped por probe incluye en el arranque la búsqueda del residente por 8766)
 ai-voice-interconnector daemon stop      # parada unificada con deadline global de 8 s (graceful + árbol preciso + verificación con 8766; borra daemon.pid solo tras muerte verificada)
 ai-voice-interconnector daemon restart   # parada unificada + arranque fresco (presupuesto 12 s)
 ```
 
-Cierre H-01 + D-01 + D-02: Ctrl+C ejecuta limpieza acotada de 2 s y sale con 130 preservado (con reclamo sin pidfile vía PID en memoria en la ventana spawn→write); `serve` en Windows corre bajo Job `KILL_ON_JOB_CLOSE` (al morir el daemon el SO cierra el árbol, residente incluido) y en Unix cierra por la misma ruta que `POST /shutdown` sin pidfile ni auto-muerte; en Unix el reclamo ante líder muerto mata además por grupo con verificación por 8766 cerrado + PID sin viveza (runtime diferido a CI, ver H-15); `stop`/`restart` comparten el ayudante único `stop_daemon_and_resident` y `stop` falla con exit 5 sin borrar la pista si el árbol sigue vivo.
+Cierre: Ctrl+C ejecuta limpieza acotada de 2 s y sale con 130 preservado (con reclamo sin pidfile vía PID en memoria en la ventana spawn→write); `serve` en Windows corre bajo Job `KILL_ON_JOB_CLOSE` (al morir el daemon el SO cierra el árbol, residente incluido) y en Unix cierra por la misma ruta que `POST /shutdown` sin pidfile ni auto-muerte; en Unix el reclamo ante líder muerto mata además por grupo con verificación por 8766 cerrado + PID sin viveza (runtime diferido a CI, verificación pendiente en CI); `stop`/`restart` comparten el ayudante único `stop_daemon_and_resident` y `stop` falla con exit 5 sin borrar la pista si el árbol sigue vivo.
 
 Despacho desde el CLI: `--daemon` fuerza IPC (exit 5 si no responde), `--no-daemon` fuerza proceso local, sin flags autodetecta.
 

@@ -1,4 +1,4 @@
-//! Harness de tests dorados del daemon (Tarea 8 del plan T2/T8).
+//! Harness de tests dorados del daemon.
 //!
 //! Levanta el `Router` de Axum vía [`avi_daemon::build_router_with_state`] y lo
 //! ejerce con `tower::ServiceExt::oneshot` (sin abrir socket TCP real), comparando
@@ -112,15 +112,18 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
-// Ceguera deliberada del harness (H-01, T7 + D-03 + D-02 + D-05): `send`/`get`/`post_json` ejercen
-// el contrato JSON vía `oneshot` sin socket, spawn, señales, puertos ni
-// pidfile; nunca prueban ausencia de huérfanos (árbol/PID/puertos) ni el
-// endurecimiento D-03 del harness (`STATE_LOCK` envenenado, reaper fuera de
-// polls, higiene de `TEST_LIMITE`) ni la ventana spawn→write ni señales/spawn
-// (D-02) ni crash con puerto ocupado y reclamo activo del árbol previo (D-05,
-// solo en `run_supervised`): sin campos nuevos en `DaemonState`, el
-// doble queda intacto y su límite es no reproducir el ciclo de vida real. La
-// ausencia real a nivel SO solo la verifica la serie pesada
+// Ceguera deliberada del harness: `send`/`get`/`post_json` ejercen el contrato
+// JSON vía `oneshot` sin abrir socket, sin spawn de procesos, sin señales, sin
+// puertos reales ni pidfile; por tanto nunca prueban la ausencia de huérfanos
+// (árbol de procesos, PID, puertos), ni el endurecimiento del harness frente a
+// `STATE_LOCK` envenenado o al reaper corriendo fuera de los polls, ni la
+// higiene de `TEST_LIMITE`, ni la ventana entre el spawn y la escritura del
+// pidfile, ni el manejo de señales durante el spawn, ni un crash con el
+// puerto ya ocupado y un reclamo activo del árbol previo (este último solo
+// aplica en `run_supervised`): al no añadir campos nuevos a `DaemonState`, el
+// doble de pruebas queda intacto, y su límite conocido es no reproducir el
+// ciclo de vida real del proceso. La ausencia real de huérfanos a nivel de
+// sistema operativo solo la verifica la serie de tests pesada
 // (`tests/cli_golden.rs`: reaper ruidoso + `verificar_cero_huerfanos`).
 
 /// Modelos reales de STT (Parakeet TDT v3 int8: 4 archivos) presentes. Los snapshots
@@ -263,8 +266,8 @@ async fn synthesize_emite_stream_ndjson_de_contrato() {
     // Invariante: evento final `result` con `audio_b64` no vacío, O `error`.
     // En este entorno de test el motor TTS no es localizable desde CWD
     // (crates/avi-daemon), por lo que el evento final esperado es `error` con
-    // `reason` `model_missing` — rama aceptada por el plan T8. La síntesis real
-    // con audio verdadero se verifica en F5 contra el motor.
+    // `reason` `model_missing` — rama aceptada en este entorno de test. La
+    // síntesis real con audio verdadero se verifica por separado contra el motor.
     let final_event = eventos.last().unwrap();
     let invariante = match final_event["event"].as_str() {
         Some("result") => !final_event["audio_b64"].as_str().unwrap_or("").is_empty(),
@@ -316,7 +319,7 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
     // Frases de cada corpus que el modelo transcribe bien (el sintético
     // `sintesis` tiene pronunciación defectuosa → se usan palabras estables).
     // "hola" se descuenta: el fixture `parakeet_sample` (saludo breve) se emite
-    // en inglés por el TDT (detectado en F5), por lo que no aparece en el texto
+    // en inglés por el TDT, por lo que no aparece en el texto
     // unido aunque el resto del audio (watermark/sintesis/respuestas) sí se
     // transcribe en español. "voz" no se exige estricta: "esténtesis" puede
     // dropearla.
@@ -329,7 +332,7 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
     }
 }
 
-/// Warm-on-clone (A) + R2-A: `POST /voices/clone` por daemon sirve un stream
+/// Warm-on-clone: `POST /voices/clone` por daemon sirve un stream
 /// NDJSON (`started` → latidos → `result`), y el evento final conserva
 /// `precomputed: true` («precarga en caliente iniciada»; la completitud se
 /// refleja en `/health`). Invierte el «éxito inmediato»: el test solo pasa si
@@ -442,7 +445,7 @@ async fn warm_voice_fail_fast_y_aceptacion() {
     let _ = store.remove(&name);
 }
 
-/// H-11: par no soportado vía IPC → 400 con `unsupported_language_pair`.
+/// Par de idiomas no soportado vía IPC → 400 con `unsupported_language_pair`.
 /// La guarda de par corre antes de tocar el modelo: sin CT2 ni TCP.
 #[tokio::test]
 #[allow(unreachable_code)]
@@ -465,7 +468,7 @@ async fn translate_par_no_soportado_devuelve_400() {
     );
 }
 
-/// H-10/H-11: la vía daemon conserva la normalización `es-latam`→`es`:
+/// La vía daemon conserva la normalización `es-latam`→`es`:
 /// passthrough con texto intacto aunque el CLI ya rechace ese token.
 #[tokio::test]
 #[allow(unreachable_code)]

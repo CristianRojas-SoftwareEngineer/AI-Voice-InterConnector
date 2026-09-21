@@ -113,7 +113,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [0.19.0] — 2026-09-21
 
-Corrección estructural de la superficie de flags de `setup` (H-09): `--language`
+Corrección estructural de la superficie de flags de `setup`: `--language`
 era texto libre inerte (ignorado salvo para imprimirse y emitirse en JSON), el
 flag de clonado `--with-base` nombraba el artefacto interno en vez de la
 capacidad, y `--force-update`/`--yes` estaban documentados pero no existían en la
@@ -134,7 +134,7 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   selección de clonado) más la caché xet y re-provisiona desde cero; `--yes`/`-y`
   omite la confirmación destructiva (no-op sin `--force-update`) — `src/main.rs`;
   tests de contrato de `--help`/`--json` en `tests/cli_golden.rs`.
-- feat(daemon): precarga en caliente al clonar por daemon (warm-on-clone, H-07):
+- feat(daemon): precarga en caliente al clonar por daemon (warm-on-clone):
   `POST /voices/clone` dispara en segundo plano el precalentamiento de la voz
   recién clonada y responde `precomputed: true` (semántica «precarga en caliente
   iniciada»; la completitud se refleja en `GET /health`), eliminando el
@@ -149,7 +149,7 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   `warmup_tts`→`precalentar_voz(state, voz)` como primitiva compartida por
   arranque y warm-on-clone — `src/main.rs`, `crates/avi-daemon/src/{lib,spawn}.rs`;
   test `warm_voice_fail_fast_y_aceptacion` en `crates/avi-daemon/tests/golden.rs`.
-- feat(cli): filtro por voz en `speech list` (H-10): `--voice/-v` opcional sin
+- feat(cli): filtro por voz en `speech list`: `--voice/-v` opcional sin
   default (ausente = todas las voces); identificador ilegal sale con exit 2
   (`invalid_identifier`), voz inexistente con exit 3 (`voice_not_found`).
   Lectura acotada en el almacén (`SpeechStore::list_by_voice` en
@@ -157,15 +157,15 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   envelope `--json` conserva su forma — `src/main.rs`; tests nuevos en
   `tests/cli_golden.rs` y unitario en `crates/avi-store`.
 - **BREAKING** feat(cli): alfabeto estricto `es`/`en` en `translate --from/--to`
-  (H-11): `value_parser = ["es", "en"]` en `src/main.rs` conservando defaults y
+  `value_parser = ["es", "en"]` en `src/main.rs` conservando defaults y
   opcionales; cualquier otro valor —incluido `es-latam`— lo rechaza el parser
   con exit 2. Las guardas del handler y del daemon se conservan como defensa de
   la vía programática/IPC (que sigue normalizando `es-latam`); test migrado a
   rechazo de parser más cobertura vía daemon en `tests/cli_golden.rs` y
   `crates/avi-daemon/tests/golden.rs`.
 - feat(cli): implementar push-to-talk real en `speech transcribe --mic`/
-  `speech dub --mic` (H-08) y el bucle interactivo de `speech synthesize
-  --play` (H-12). Push-to-talk graba hasta que el usuario presiona Enter, con
+  `speech dub --mic` y el bucle interactivo de `speech synthesize
+  --play`. Push-to-talk graba hasta que el usuario presiona Enter, con
   un techo de seguridad configurable por la variable de entorno
   `AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s: al vencer, detiene la
   grabación, avisa por stderr y devuelve lo grabado con exit 0) y un aviso
@@ -177,7 +177,7 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   incompatible con `--json` (exit 2) y exige TTY (exit 2 sin ella) — captura
   siempre client-side, `crates/avi-audio`, `src/main.rs`; tests golden nuevos
   para ambos hallazgos en `tests/cli_golden.rs`.
-- feat(daemon): streaming NDJSON con latidos en clonado y doblaje (R2-A, H-15):
+- feat(daemon): streaming NDJSON con latidos en clonado y doblaje:
   `POST /voices/clone` y `POST /dub` responden con stream NDJSON
   (`application/x-ndjson`) emitiendo `started` inmediato tras validaciones
   baratas, latidos periódicos cada 500 ms (`STREAM_HEARTBEAT`) vía `con_latidos`
@@ -188,7 +188,7 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   cancela la inferencia ante desconexión del cliente — `crates/avi-daemon/src/lib.rs`,
   `src/main.rs`; tests invertidos en `tests/cli_golden.rs` y `crates/avi-daemon/tests/golden.rs`.
 - feat(daemon): contabilidad portable de PID del residente en `daemon.pid` y
-  retiro de `netstat`/`pkill` (R3-A, H-15): extensión de `daemon.pid` con el
+  retiro de `netstat`/`pkill`: extensión de `daemon.pid` con el
   campo `resident_pid` plano; persistencia atómica por tmp+rename en
   `arrancar_residente` (`crates/avi-tts`); parada unificada (`stop_daemon_and_resident`),
   reclamo degradado (`reclamar_residual_degradado`) y reaper del harness
@@ -197,7 +197,7 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   `netstat`, `pkill` y `taskkill /IM` — `src/main.rs`, `crates/avi-tts/src/lib.rs`,
   `tests/cli_golden.rs`.
 - feat(tests): reloj tras locks, watchdog de supervisión y tests de rendimiento
-  dedicados (R1-A, H-14): arranque del reloj de trabajo inmediatamente tras
+  dedicados: arranque del reloj de trabajo inmediatamente tras
   adquirir locks en producto (`state.synthesis_lock`) y harness (`bloquear_estado`,
   `lock_tts`), desacoplando la contención en cola de los techos failsafe
   (`GUARD_PESADO_SECS` 180 s, `GUARD_DUB_SECS` 360 s); watchdog de supervisión en
@@ -238,7 +238,7 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   implementación Rust real tomando `SETUP.md`/`DAEMON.md` como exemplars, con
   cada contrato `--json` verificado contra la serialización del handler y anclas
   `archivo:línea` reales; se conservan solo las divergencias del oráculo
-  explícitamente etiquetadas. Cierra H-16; sin cambios de runtime.
+  explícitamente etiquetadas. Sin cambios de runtime.
 - docs: extender el saneo del drift a la documentación transversal y a un
   comentario de código: `USAGE.md` y `docs/CLI/CONTRACT.md` describían la
   captura de micrófono con backend `miniaudio` «sin remuestreo», cuando el
@@ -251,17 +251,18 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   `src/ai_voice_interconnector/__init__.py` en `crates/xtask/src/main.rs` (código
   muerto) y una mención Python en el comentario de `install-macos.sh`. Sin
   cambios de runtime.
-- docs(daemon): cerrar H-06 por purga documental — `--language`/`--with-stt`
-  figuraban en el oráculo/contrato heredado de la CLI Python migrada para
-  `daemon start`/`serve`, pero nunca existieron en el parser Rust
+- docs(daemon): purgar del contrato `--language`/`--with-stt` para `daemon
+  start`/`serve` — figuraban en el oráculo/contrato heredado de la CLI Python
+  migrada, pero nunca existieron en el parser Rust
   (`DaemonCommands::{Start,Serve}` en `src/main.rs` solo aceptan
   `--auto-restart`/`--max-retries`). Se formaliza en el contrato que ambos
   flags no se reimplementan: `daemon start`/`serve` precargan STT (Parakeet) +
   TTS (Qwen3) + el derivado CT2 de traducción (si está provisionado) de forma
   eager e incondicional al arrancar, sobre un set de modelos fijo;
   `native-stt`/`native-translation` son features de compilación, no flags de
-   ejecución. Mismo patrón que H-09. Sin cambios de runtime.
-- docs(cli): cerrar H-10 y H-11 en `docs/CLI/CONTRACT.md`,
+   ejecución. Sin cambios de runtime.
+- docs(cli): documentar `--voice/-v` opcional en `speech list` y el alfabeto
+  estricto `es`/`en` en `translate --from/--to` en `docs/CLI/CONTRACT.md`,
   `docs/CLI/commands/SPEECH.md`, `docs/CLI/commands/TRANSLATE.md`, `USAGE.md` y
   `docs/MANUAL-VALIDATION.md` — `speech list` documenta `--voice/-v` con exits
   2/3 y `translate --from/--to` como opcionales con defaults y estrictos
@@ -510,7 +511,7 @@ El daemon instalado quedaba en `warm_failed` con `No está provisionado` y simul
 ### Corregido
 
 - `tts`: resuelve `qwen_tts` y modelos `qwen3-tts-0.6b{,-base}` relativo a `current_exe` antes que `cwd` y añade fallback HF para `qwen3-tts-0.6b` — `crates/avi-tts/src/lib.rs:151-176,182-240,253-262`.
-- `skill`: corrige drift en `test-windows-e2e-as-final-user` — `T3` con `Start-Process` detached sin pipe y `RedirectStandardOutput` + poll `/health`, overview a `0.18.5` y constraint contra pipe capture — `.claude/skills/test-windows-e2e-as-final-user/SKILL.md`.
+- `skill`: corrige drift en `test-windows-e2e-as-final-user` — launch detached con `Start-Process` sin pipe y `RedirectStandardOutput` + poll `/health`, overview a `0.18.5` y constraint contra pipe capture — `.claude/skills/test-windows-e2e-as-final-user/SKILL.md`.
 
 ## [0.18.4] — 2026-08-30
 
@@ -548,14 +549,13 @@ La auditoría sistémica post-`v0.18.1` (pipeline #96 verde) reveló divergencia
 - `docs/CLI/commands/DAEMON.md` reescrito a `Axum` (5 subcomandos, `/health`, `spawn_background` con `CREATE_NO_HANDLE_INHERIT`).
 - `docs/MANUAL-VALIDATION.md:15` y `docs/GOAL.md:162` artefactos `setup.exe` → `zip/tar.gz`; `docs/BUILD.md:414` documenta `log on drift` de gcc (`v0.17.1`); `docs/CLI/README.md:34,79` y `CLAUDE.md:145` referencias muertas.
 
-> **Nota de corrección (hallazgo H-08, ver «[No publicado]»):** la entrada
-> anterior afirmaba que `push-to-talk` quedó «restaurado» en `--mic` sin
-> `--duration` con TTY. Eso era falso: la validación dejaba pasar el caso,
-> pero no existía implementación de push-to-talk y el proceso terminaba en
-> panic (`duration.expect(...)`). La implementación real de push-to-talk
-> —con el techo `AVI_PUSH_TO_TALK_MAX_SECS` y aviso mínimo por stderr— se
-> entrega recién en el cierre de H-08 documentado en «[No publicado]»; esta
-> entrada histórica no se reescribe.
+> **Nota de corrección:** la entrada anterior afirmaba que `push-to-talk`
+> quedó «restaurado» en `--mic` sin `--duration` con TTY. Eso era falso: la
+> validación dejaba pasar el caso, pero no existía implementación de
+> push-to-talk y el proceso terminaba en panic (`duration.expect(...)`). La
+> implementación real de push-to-talk —con el techo
+> `AVI_PUSH_TO_TALK_MAX_SECS` y aviso mínimo por stderr— se entrega recién en
+> «[No publicado]»; esta entrada histórica no se reescribe.
 
 ## [0.18.1] — 2026-08-28
 

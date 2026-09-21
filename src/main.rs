@@ -1,7 +1,7 @@
 use avi_audio as audio;
 // El trait STT y el motor real solo entran en scope con `native-stt` (off por
 // defecto); sin el feature, los subcomandos de transcripción devuelven un error
-// explícito de "compilado sin soporte" (ver plan R1/T6).
+// explícito de "compilado sin soporte".
 #[cfg(feature = "native-stt")]
 use avi_core::engine::SttEngine;
 use avi_core::exit_codes::{CliError, ExitCode};
@@ -26,7 +26,7 @@ use std::process::exit;
 
 const VERSION: &str = "0.19.0";
 const APP_NAME: &str = "ai-voice-interconnector";
-/// Dirección del daemon nativo (T7: cliente HTTP async contra este address).
+/// Dirección del daemon nativo; el cliente HTTP async apunta a este address.
 const DAEMON_ADDR: &str = "127.0.0.1:8765";
 /// Techo temporal para esperar que el daemon sea alcanzable en `daemon start/restart`.
 /// Dimensionado solo para spawn + bind del proceso (el warmup TTS corre en segundo
@@ -35,14 +35,14 @@ const DAEMON_ADDR: &str = "127.0.0.1:8765";
 const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Intervalo entre reintentos del sondeo de readiness.
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
-/// Deadline breve para la limpieza acotada ante Ctrl+C (H-01): mata el árbol
+/// Deadline breve para la limpieza acotada ante Ctrl+C: mata el árbol
 /// preciso con verificación; vencido, sale igualmente con 130 sin colgarse.
 const CTRL_C_LIMPIEZA_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 /// Deadline global para la parada unificada del árbol daemon+residente
 /// (graceful + árbol preciso por PID + verificación a nivel de sistema).
 const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs(8);
 
-/// PID hijo en memoria desde el `spawn` (D-02): estrecha la ventana
+/// PID hijo en memoria desde el `spawn`: estrecha la ventana
 /// spawn→write del pidfile. El handler Ctrl+C lo reclama cuando aún no hay
 /// pidfile; se fija en la secuencia `Start` justo tras `spawn_background`.
 static PID_EN_MEMORIA: std::sync::atomic::AtomicU32 =
@@ -368,7 +368,7 @@ fn force_utf8() {
 /// preciso del daemon residual por PID con deadline breve y verificación
 /// (`taskkill /F /T /PID` en Windows con `CREATE_NO_WINDOW`, `kill -9` al
 /// grupo en Unix). Vencido el deadline sale igualmente con 130 sin colgarse.
-/// D-02: reclama el PID en memoria cuando aún no hay pidfile (ventana
+/// Reclama el PID en memoria cuando aún no hay pidfile (ventana
 /// spawn→write), preservando 130 y el techo de 2 s.
 /// Guarda anti-auto-muerte: si el PID de la pista es el propio proceso
 /// (`daemon serve` en foreground), no se auto-mata; el cierre lo hace la
@@ -376,7 +376,7 @@ fn force_utf8() {
 /// Instalado en `main` antes del despacho: cubre todos los modos.
 fn install_sigint_handler() {
     ctrlc::set_handler(move || {
-        // D-02: pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
+        // pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
         let pid = read_daemon_pid().or_else(|| {
             let m = PID_EN_MEMORIA.load(std::sync::atomic::Ordering::Relaxed);
             if m != 0 { Some(m) } else { None }
@@ -438,7 +438,7 @@ fn instalar_job_con_cierre_de_arbol() {
 
 /// Desactiva la herencia de los 3 handles estándar del proceso actual (Windows).
 ///
-/// Causa raíz (H-03): en Rust estable `Command::spawn` llama a `CreateProcessW`
+/// Causa raíz: en Rust estable `Command::spawn` llama a `CreateProcessW`
 /// con `bInheritHandles=TRUE` sin posibilidad de forzarlo a FALSE (no expuesto en
 /// estable). Con ese flag TODO handle heredable de la tabla del padre se duplica
 /// al hijo, no solo sus 3 handles estándar. Cuando el CLI corre bajo un pipe
@@ -449,7 +449,7 @@ fn instalar_job_con_cierre_de_arbol() {
 /// no-op); la herencia se controla por handle con `SetHandleInformation`.
 ///
 /// Se quita `HANDLE_FLAG_INHERIT` de STD_IN/OUT/ERROR: corta la propagación en la
-/// raíz sin matar el árbol. H-04 no se ve afectado: el stderr del motor va al
+/// raíz sin matar el árbol. El stderr del motor no se ve afectado: va al
 /// fichero de log vía `Stdio::from` (handle explícito con mecanismo aparte).
 /// Best-effort silencioso: salta handles nulos / `INVALID_HANDLE_VALUE`.
 #[cfg(windows)]
@@ -597,7 +597,7 @@ async fn handle_translate(
             ),
         ));
     }
-    // Despacho 3 modos vía daemon_client + route_to_daemon (T5)
+    // Despacho 3 modos vía daemon_client + route_to_daemon
     let client = daemon_client();
     if route_to_daemon(daemon_mode, &client).await {
         return translate_via_daemon(json_mode, &client, text, from, to).await;
@@ -741,7 +741,7 @@ async fn handle_voice(
             let name = name.to_lowercase();
             VoiceStore::validate_name(&name)
                 .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
-            // Despacho 3 modos para Clone vía POST /voices/clone (T6)
+            // Despacho 3 modos para Clone vía POST /voices/clone
             {
                 let client = daemon_client();
                 if route_to_daemon(daemon_mode, &client).await {
@@ -857,7 +857,7 @@ async fn handle_voice(
 
 // ─── Speech ──────────────────────────────────────────────────────────
 
-/// Captura PCM del micrófono en `spawn_blocking` (D-5): `duration` fija la
+/// Captura PCM del micrófono en `spawn_blocking`: `duration` fija la
 /// captura por N segundos; `None` (solo alcanzable en TTY, ver guardas de
 /// `--duration`) dispara push-to-talk hasta Enter (`capture_16k_mono_pcm_until_enter`).
 /// Único punto de selección, reusado por las 4 vías de captura (directa y daemon,
@@ -1048,7 +1048,7 @@ async fn handle_speech(
                     "Debe especificarse --audio o --mic.",
                 ));
             }
-            // T4: push-to-talk sin --duration permitido en TTY (S2-01); sin TTY se exige --duration
+            // push-to-talk sin --duration se permite en TTY; sin TTY se exige --duration
             if mic && duration.is_none() && !std::io::stdin().is_terminal() {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
@@ -1057,7 +1057,7 @@ async fn handle_speech(
                 ));
             }
 
-            // T7 — dispatch 3 modos (Transcribe es delegable al daemon):
+            // Dispatch 3 modos (Transcribe es delegable al daemon):
             // ForceDaemon → daemon (error si no responde); Auto → daemon si
             // responde, si no cae a directo; ForceDirect → local. El probe de
             // vida usa un deadline corto para que el fallback Auto→directo sea
@@ -1179,7 +1179,7 @@ async fn handle_speech(
             // Origen por defecto = destino (sin traducir).
             let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
-            // T7 — dispatch 3 modos (Synthesize es delegable al daemon).
+            // Dispatch 3 modos (Synthesize es delegable al daemon).
             let client = daemon_client();
             if route_to_daemon(daemon_mode, &client).await {
                 return synthesize_via_daemon(
@@ -1305,7 +1305,7 @@ async fn handle_speech(
             // Origen por defecto = destino (sin traducir).
             let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
-            // T7 — dispatch 3 modos (Say es delegable al daemon).
+            // Dispatch 3 modos (Say es delegable al daemon).
             let client = daemon_client();
             if route_to_daemon(daemon_mode, &client).await {
                 return say_via_daemon(
@@ -1396,7 +1396,7 @@ async fn handle_speech(
                     ));
                 }
             }
-            // Despacho 3 modos: delega a POST /dub si daemon activo (T7)
+            // Despacho 3 modos: delega a POST /dub si daemon activo
             {
                 let client = daemon_client();
                 if route_to_daemon(daemon_mode, &client).await {
@@ -1625,7 +1625,7 @@ async fn handle_speech(
 // ─── Daemon ──────────────────────────────────────────────────────────
 
 async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), CliError> {
-    // H-03: corta en la raíz la herencia de los handles estándar antes de spawnear
+    // Corta en la raíz la herencia de los handles estándar antes de spawnear
     // ningún hijo del rol daemon. Cubre el CLI (`Start`/`Restart` → `spawn_background`)
     // y el propio daemon (`Serve` → motor), incluido `serve` lanzado bajo un pipe.
     #[cfg(windows)]
@@ -1642,10 +1642,10 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     .map_err(|e: std::net::AddrParseError| {
                         CliError::new(ExitCode::Error, "invalid_address", e.to_string())
                     })?;
-            // Job con cierre del árbol en el proceso longevo (Windows, H-01).
+            // Job con cierre del árbol en el proceso longevo (Windows).
             // El handler SIGINT ya quedó instalado en `main` para todos los modos;
             // la escucha de señales del servidor cierra por la misma ruta que
-            // POST `/shutdown`. D-02: en Unix `serve` cierra por esa misma ruta
+            // POST `/shutdown`. En Unix `serve` cierra por esa misma ruta
             // sin pidfile ni auto-muerte del CLI (la guarda `pid != propio`
             // protege al `serve` en foreground).
             #[cfg(windows)]
@@ -1661,7 +1661,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
         } => {
             require_model_provisioned()?;
             let client = daemon_client();
-            // Revalidación con reclamo matar-y-rearrancar (H-01): la vida del
+            // Revalidación con reclamo matar-y-rearrancar: la vida del
             // residual se comprueba por PID vivo más probe, no por probe solo ni
             // pidfile solo. Sano → `already_running`; degradado → se reclama el
             // árbol y se rearranca con salida 0 y payload `started`.
@@ -1692,7 +1692,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     format!("No se pudo lanzar el daemon: {}", e),
                 )
             })?;
-            // D-02: conservar el PID hijo en memoria desde el spawn para que el
+            // Conservar el PID hijo en memoria desde el spawn para que el
             // handler Ctrl+C lo reclame aunque aún no haya pidfile (ventana
             // spawn → await → write).
             PID_EN_MEMORIA.store(pid, std::sync::atomic::Ordering::Relaxed);
@@ -1802,7 +1802,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             Ok(())
         }
         DaemonCommands::Status => {
-            // T7: GET /health → running; sin respuesta (timeout/conexión) → stopped
+            // GET /health → running; sin respuesta (timeout/conexión) → stopped
             // (exit 0), conservando el contrato de la fixture `cli_daemon_status.json`.
             let client = daemon_client();
             match tokio::time::timeout(
@@ -2365,8 +2365,8 @@ async fn handle_cleanup(
     Ok(())
 }
 
-/// Estado del residual al arrancar (H-01): vida real por PID vivo más probe,
-/// no por probe solo ni pidfile solo.
+/// Estado del residual al arrancar: la vida real se determina por PID vivo más
+/// probe, no por probe solo ni pidfile solo.
 enum EstadoResidual {
     /// Probe responde y el PID de la pista está vivo: instancia sana única.
     Sano(u32),
@@ -2376,7 +2376,7 @@ enum EstadoResidual {
     Parado,
 }
 
-/// Predicado puro D-04 (testeable sin daemon): ante un `Parado` por probe/PID
+/// Predicado puro (testeable sin daemon): ante un `Parado` por probe/PID
 /// (sin probe ni proceso del daemon), hay residente-solo si el 8766 sigue
 /// abierto — entonces no hay vía libre, sino degradado para reclamo.
 #[allow(dead_code)]
@@ -2385,12 +2385,12 @@ fn parado_con_residente_es_degradado(probe_daemon: bool, pid_vivo: bool, puerto8
 }
 
 /// Clasifica el residual del daemon: sano, degradado o parado.
-/// D-04: ante `Parado` se busca al residente (8766) antes de declarar vía
+/// Ante `Parado` se busca al residente (8766) antes de declarar vía
 /// libre; con residente vivo es degradado residente-solo para reclamo.
 async fn clasificar_residual(client: &reqwest::Client) -> EstadoResidual {
     let pid = read_daemon_pid();
     let probe = probe_health(client, DAEMON_ADDR).await;
-    // D-04: `Parado` con residente vivo no es vía libre.
+    // `Parado` con residente vivo no es vía libre.
     if !probe && !pid.map(daemon::pid_vivo).unwrap_or(false) && puerto_residente_abierto() {
         return EstadoResidual::Degradado {
             pid,
@@ -2425,7 +2425,7 @@ fn puerto_residente_abierto() -> bool {
     .is_ok()
 }
 
-/// Predicado puro del reclamo Unix ante líder muerto (D-01, testeable sin
+/// Predicado puro del reclamo Unix ante líder muerto (testeable sin
 /// plataforma): el reclamo queda verificado cuando el probe del daemon está
 /// caído, el PID del líder está muerto y el puerto 8766 está cerrado.
 #[allow(dead_code)]
@@ -2433,22 +2433,22 @@ fn reclamo_unix_verificado(probe_daemon: bool, pid_vivo: bool, puerto8766_abiert
     !probe_daemon && !pid_vivo && !puerto8766_abierto
 }
 
-/// Reclamo matar-y-rearrancar ante residual degradado (H-01 + D-01 + D-04): mata el árbol
+/// Reclamo matar-y-rearrancar ante residual degradado: mata el árbol
 /// preciso por PID con verificación y deja vía libre para rearrancar desde cero.
 /// Sin kill por imagen para el daemon (comparte imagen con el CLI: se auto-mataría);
-/// R3-A: el residente `qwen_tts` se reclama por su PID registrado en `daemon.pid`
+/// el residente `qwen_tts` se reclama por su PID registrado en `daemon.pid`
 /// (árbol preciso + verificación por 8766), sin `netstat` ni kill por imagen.
 /// No emite payload.
 ///
-/// D-01 (Unix): el daemon nace líder de sesión (`setsid`) y el residente hereda
+/// En Unix el daemon nace líder de sesión (`setsid`) y el residente hereda
 /// su grupo; muerto el líder, el grupo se disuelve y el residente reparentado
 /// sobrevive fuera del alcance del reclamo solo-por-PID-vivo. Ante líder muerto
 /// se reclama además por grupo (`kill -9 -<pgid>` vía `matar_arbol_por_pid`,
 /// que ya mata al grupo en Unix) con verificación por 8766 cerrado más PID sin
-/// viveza. Techo D-01: compilación + revisión lógica + unitarios
-/// no-plataformeros aquí; runtime Unix diferido a CI (prohibido simular Unix).
-/// D-04: ante `Parado` con residente vivo (PID, 8766 o imagen) se reclama su
-/// árbol por PID registrado antes de declarar fresco (R3-A: sin kill por imagen
+/// viveza. El runtime Unix se verifica en CI; aquí quedan compilación, revisión
+/// lógica y unitarios no-plataformeros (prohibido simular Unix).
+/// Ante `Parado` con residente vivo (PID, 8766 o imagen) se reclama su
+/// árbol por PID registrado antes de declarar fresco (sin kill por imagen
 /// del residente; imagen del daemon prohibida).
 async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>) {
     let inicio = std::time::Instant::now();
@@ -2471,7 +2471,7 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
             daemon::matar_arbol_por_pid(p);
         }
     }
-    // 2b) D-01 (Unix): ante líder muerto con posible residente reparentado vivo,
+    // 2b) En Unix: ante líder muerto con posible residente reparentado vivo,
     // reclamar por grupo aunque el PID ya esté muerto (reutiliza la primitiva
     // de grupo de `matar_arbol_por_pid`; la vía feliz Windows queda intacta).
     #[cfg(unix)]
@@ -2480,7 +2480,7 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
             daemon::matar_arbol_por_pid(p);
         }
     }
-    // 2c) R3-A: residente por PID registrado + verificación por puerto (sin
+    // 2c) Residente por PID registrado + verificación por puerto (sin
     // `netstat` ni kill por imagen). Si hay PID registrado vivo se mata su
     // árbol preciso; la verificación por 8766 cerrado vive en el paso 3.
     let residente = read_resident_pid();
@@ -2517,7 +2517,7 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
 /// Parada unificada con deadline global (`STOP_DEADLINE_GLOBAL`): graceful
 /// (`POST /shutdown` acotado + espera de `/health` down) si el daemon responde;
 /// árbol preciso por PID (`taskkill /F /T /PID` en Windows, `kill -9` al grupo
-/// en Unix) con guarda anti-auto-muerte cuando sigue vivo; D-04/R3-A: sin PID del
+/// en Unix) con guarda anti-auto-muerte cuando sigue vivo; sin PID del
 /// daemon pero con residente vivo (PID registrado o 8766 abierto) se reclama su
 /// árbol por PID registrado (nunca por imagen, ni del daemon ni del residente);
 /// verificación posterior a nivel de sistema (probe + `pid_vivo` + 8766 cerrado).
@@ -2563,7 +2563,7 @@ async fn stop_daemon_and_resident() {
             }
         }
     }
-    // 2b) R3-A: residente por PID registrado (nunca por imagen, ni del daemon
+    // 2b) Residente por PID registrado (nunca por imagen, ni del daemon
     // ni del residente). Si el PID registrado sigue vivo se mata su árbol
     // preciso; la verificación por 8766 cerrado vive en el paso 3.
     let residente = read_resident_pid();
@@ -2713,7 +2713,7 @@ async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> 
                 .unwrap_or(false);
             if inside {
                 // Corta la herencia de los handles estándar antes de spawnear el
-                // helper (H-03): `spawn_uninstall_helper` vive fuera de
+                // helper: `spawn_uninstall_helper` vive fuera de
                 // `handle_daemon`, así que replica aquí el corte para que el `.ps1`
                 // no retenga el stdio del proceso que lanzó el uninstall.
                 desheredar_handles_estandar();
@@ -2897,7 +2897,7 @@ fn require_model_provisioned() -> Result<(), CliError> {
 }
 
 /// Valida identificadores de voz/etiqueta contra el regex del oráculo
-/// (`^[A-Za-z0-9._-]+$`; paridad, divergencia 3 de F1) → exit 2.
+/// (`^[A-Za-z0-9._-]+$`; paridad con el oráculo) → exit 2.
 fn es_identificador_valido(ids: Option<&str>, mas: Option<&str>) -> Result<(), CliError> {
     for id in ids.into_iter().chain(mas) {
         if id.is_empty()
@@ -2919,9 +2919,9 @@ fn daemon_pid_path() -> PathBuf {
     store::data_dir().join("daemon.pid")
 }
 
-/// Escribe el pidfile de forma atómica (D-02: sigue atómico pero tardío; el
-/// handler Ctrl+C ya no depende solo de él gracias al PID en memoria).
-/// R3-A: esquema extendido con `resident_pid` plano (D3). Al arrancar solo se
+/// Escribe el pidfile de forma atómica (escritura tardía pero atómica por
+/// rename); el handler Ctrl+C ya no depende solo de él gracias al PID en memoria.
+/// El pidfile extiende el esquema plano con `resident_pid`. Al arrancar solo se
 /// conoce el PID del daemon y el residente es 0/desconocido; el daemon lo
 /// actualiza en disco al arrancar el residente (`arrancar_residente`).
 fn write_daemon_pid(pid: u32, resident_pid: u32) -> anyhow::Result<()> {
@@ -2948,7 +2948,7 @@ fn read_daemon_pid() -> Option<u32> {
     v.get("pid")?.as_u64().map(|n| n as u32)
 }
 
-/// Lee el PID del residente registrado en el pidfile (R3-A). Lectura tolerante:
+/// Lee el PID del residente registrado en el pidfile. Lectura tolerante:
 /// esquema viejo sin el campo, fichero ausente o valor inválido = 0/desconocido.
 fn read_resident_pid() -> u32 {
     let path = daemon_pid_path();
@@ -2994,7 +2994,7 @@ async fn await_daemon_ready(
 }
 
 /// Construye el cuerpo JSON de `daemon status`. Función pura (testeable sin daemon):
-/// `stopped` cuando no es alcanzable (fixture intacta, sin campos extra; D-04: el
+/// `stopped` cuando no es alcanzable (fixture intacta, sin campos extra; el
 /// `stopped` por probe incluye en `clasificar_residual` la búsqueda del residente
 /// por 8766 antes de declarar vía libre, sin cambiar este contrato); si es
 /// alcanzable, `running` con `engine` y `warm` (más `warm_error` cuando el warmup
@@ -3034,7 +3034,7 @@ async fn wait_health_down(
     anyhow::bail!("El daemon no se apagó tras {:?}", timeout)
 }
 
-// ─── Cliente HTTP async del daemon (T7) ────────────────────────────────
+// ─── Cliente HTTP async del daemon ────────────────────────────────────────
 
 /// Cliente `reqwest` hacia el daemon en `DAEMON_ADDR` (HTTP, sin TLS: basta para
 /// localhost). Timeout de conexión breve para que el probe Auto→local sea rápido
@@ -3333,8 +3333,8 @@ async fn daemon_synthesize_wav(
     })
 }
 
-/// Timeout de inactividad entre eventos de un stream NDJSON (R2-A): 1500 ms, el
-/// presupuesto histórico reinterpretado — ya no acota la inferencia total, solo
+/// Timeout de inactividad entre eventos de un stream NDJSON: 1500 ms.
+/// Presupuesto histórico reinterpretado — ya no acota la inferencia total, solo
 /// dispara si el daemon deja de emitir (bucle atascado), nunca por inferencia sana
 /// (el servidor emite latidos cada ~500 ms).
 const STREAM_INACTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
@@ -3343,7 +3343,7 @@ const STREAM_INACTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from
 const STREAM_TOTAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Consume un stream NDJSON del daemon (`started` → latidos → `result`/`error`)
-/// con timeout de inactividad + failsafe total (R2-A). Retorna el evento final
+/// con timeout de inactividad + failsafe total. Retorna el evento final
 /// `result`; el evento `error` se mapea a `CliError` con `codigo_de(reason)`.
 /// Sin `result` (stream truncado, NDJSON inválido, inactividad o failsafe) el
 /// fallo es ruidoso: nunca se reemite un éxito parcial.
@@ -3619,7 +3619,7 @@ async fn clone_via_daemon(
     if let Some(tb) = timbre_b64 {
         payload["timbre_b64"] = Value::String(tb);
     }
-    // R2-A: el envío solo espera las cabeceras (el daemon valida barato y
+    // El envío solo espera las cabeceras (el daemon valida barato y
     // responde 200 de inmediato); el trabajo pesado se consume como stream con
     // inactividad 1500 ms + failsafe 120 s hasta el evento final.
     let fut = client
@@ -3722,7 +3722,7 @@ async fn dub_via_daemon(
     if let Some(t) = temperature {
         payload["temperature"] = serde_json::json!(t);
     }
-    // R2-A: el envío espera las cabeceras (respuesta 200 inmediata tras
+    // El envío espera las cabeceras (respuesta 200 inmediata tras
     // validar barato); el pipeline se consume como stream con inactividad
     // 1500 ms + failsafe 120 s hasta el evento final.
     let fut = client
@@ -3783,7 +3783,7 @@ async fn dub_via_daemon(
         };
         return Err(CliError::new(code, reason, format!("{} (HTTP {})", msg, status)));
     }
-    // R2-A: el evento final del stream trae la forma contractual
+    // El evento final del stream trae la forma contractual
     // {status:"dubbed", text, translated, audio_b64, voice}; los mapeos
     // reason→exit se preservan también para los eventos `error` del stream.
     let val: Value = consumir_stream_ndjson(resp, "dub", |reason| match reason {
@@ -4038,7 +4038,7 @@ mod tests {
         assert_eq!(failed["warm_error"], "boom");
     }
 
-    /// D-01: el predicado puro del reclamo Unix ante líder muerto solo verifica
+    /// El predicado puro del reclamo Unix ante líder muerto solo verifica
     /// con probe caído + PID muerto + 8766 cerrado (no-plataformero, hermético).
     #[test]
     fn reclamo_unix_verificado_exige_triple_cierre() {
@@ -4048,7 +4048,7 @@ mod tests {
         assert!(!reclamo_unix_verificado(false, false, true));
     }
 
-    /// D-04: `Parado` con residente vivo (8766 abierto) es degradado para
+    /// `Parado` con residente vivo (8766 abierto) es degradado para
     /// reclamo, no vía libre (no-plataformero, hermético).
     #[test]
     fn parado_con_residente_vivo_es_degradado() {
@@ -4058,7 +4058,7 @@ mod tests {
         assert!(!parado_con_residente_es_degradado(false, true, true));
     }
 
-    /// R2-A: `procesar_linea_stream` clasifica cada línea NDJSON sin reloj
+    /// `procesar_linea_stream` clasifica cada línea NDJSON sin reloj
     /// (determinista): `result` se entrega, `error` se mapea por reason,
     /// `started`/latidos se ignoran y el NDJSON inválido falla ruidoso.
     #[test]
@@ -4147,7 +4147,7 @@ mod tests {
         addr
     }
 
-    /// R2-A: el consumo entrega el evento final tras la secuencia
+    /// El consumo entrega el evento final tras la secuencia
     /// `started` → latidos → `result` (doble con secuencia de éxito).
     #[tokio::test]
     async fn consumir_stream_ndjson_devuelve_evento_final() {
@@ -4174,7 +4174,7 @@ mod tests {
         assert_eq!(val["precomputed"], true);
     }
 
-    /// R2-A: el evento de fallo del stream se mapea por reason (doble con
+    /// El evento de fallo del stream se mapea por reason (doble con
     /// secuencia de fallo), sin esperar al failsafe total.
     #[tokio::test]
     async fn consumir_stream_ndjson_mapea_evento_de_fallo() {
@@ -4208,7 +4208,7 @@ mod tests {
         );
     }
 
-    /// R2-A: el stream atascado (cabeceras sin eventos) dispara el timeout de
+    /// El stream atascado (cabeceras sin eventos) dispara el timeout de
     /// inactividad de 1500 ms (doble con secuencia de atasco), no el failsafe.
     #[tokio::test]
     async fn consumir_stream_ndjson_detecta_atasco_por_inactividad() {
@@ -4238,7 +4238,7 @@ mod tests {
         );
     }
 
-    /// R2-A: el stream truncado tras `started` (cierre sin evento final) falla
+    /// El stream truncado tras `started` (cierre sin evento final) falla
     /// ruidoso como `daemon_error`, nunca como éxito parcial.
     #[tokio::test]
     async fn consumir_stream_ndjson_falla_si_trunca_sin_final() {

@@ -521,8 +521,8 @@ Una etiqueta inexistente para la voz sale con exit **3**.
 
 Lista las locuciones guardadas. `--voice/-v` es opcional, sin default:
 con valor, filtra por esa voz (`SpeechCommands::List { voice:
-Option<String> }`, `src/main.rs:220-224`; lectura acotada vía
-`SpeechStore::list_by_voice`, `crates/avi-store/src/lib.rs:280-282`); sin
+Option<String> }`, del binario principal; lectura acotada vía
+`SpeechStore::list_by_voice`, del almacén de voces); sin
 el flag, lista todas las voces.
 
 ```bash
@@ -850,7 +850,7 @@ ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y
 
 **Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o snapshots HF de
 los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `Helsinki-NLP/opus-mt-*`,
-`istupakov/parakeet-tdt-0.6b-v3-onnx`) + `xet`/`ct2` (incluido el derivado CT2 completo: `model.bin` + tokenizador). `--all` es la unión de las tres categorías **sin binario ni PATH** — solo `uninstall` borra binario y PATH (`src/main.rs:318`). El borrado es quirúrgico: nunca toca modelos de otros
+`istupakov/parakeet-tdt-0.6b-v3-onnx`) + `xet`/`ct2` (incluido el derivado CT2 completo: `model.bin` + tokenizador). `--all` es la unión de las tres categorías **sin binario ni PATH** — solo `uninstall` borra binario y PATH (del binario principal). El borrado es quirúrgico: nunca toca modelos de otros
 proyectos en la caché. `--dry-run` lista candidatas sin borrar; `--yes/-y` omite la confirmación interactiva. Con `--json` emite `{"status":"cleanup_complete","removed":[...],"dry_run":bool}`. Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
 

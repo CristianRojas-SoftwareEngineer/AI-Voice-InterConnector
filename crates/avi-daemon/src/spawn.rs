@@ -17,7 +17,7 @@ use std::process::Command;
 /// existe una creation flag que desactive la herencia. En Unix `fork/exec` con
 /// `Stdio::null` + `setsid` + `FD_CLOEXEC` ya logra lo análogo.
 ///
-/// NOTA (H-01, cierre garantizado): el apagado ya no depende solo de
+/// NOTA (cierre garantizado): el apagado ya no depende solo de
 /// `lib.rs::shutdown_handler` vía `with_graceful_shutdown` + `tokio::sync::Notify`
 /// (el antiguo `tokio::spawn(async { process::exit(0) })` no terminaba el proceso
 /// dentro del runtime de `axum::serve`). El daemon escucha además señales del
@@ -125,9 +125,9 @@ pub fn pid_vivo(pid: u32) -> bool {
 /// Nunca mata el PID 0; la guarda contra auto-muerte (`pid != proceso propio`
 /// para la imagen compartida CLI/daemon) vive en el llamante.
 ///
-/// D-01: reutilizada además para el reclamo por grupo ante líder muerto (el
+/// Reutilizada además para el reclamo por grupo ante líder muerto: el
 /// llamante la invoca aunque el PID ya esté muerto para alcanzar al residente
-/// reparentado del mismo grupo, con verificación por 8766).
+/// reparentado del mismo grupo, con verificación por 8766.
 pub fn matar_arbol_por_pid(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -183,7 +183,7 @@ pub fn esperar_muerte_pid(pid: u32, deadline: std::time::Duration) -> bool {
 // `matar_arbol_por_pid` con verificación). Ver `instalar_job_con_cierre_de_arbol`
 // en el CLI.
 
-/// Helper determinista de desinstalación en Windows (`H4`).
+/// Helper determinista de desinstalación en Windows.
 ///
 /// No borra `install_dir` desde el proceso vivo (determinista: `PermissionDenied`
 /// si lo intentara). Escribe un `.ps1` en `%TEMP%` que espera la muerte del

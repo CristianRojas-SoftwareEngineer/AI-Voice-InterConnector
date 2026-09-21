@@ -6,12 +6,8 @@ el único punto de la superficie donde conviven los tres motores nativos
 (`avi-tts`, `avi-stt`, `avi-translation`) y el despacho tri-modal contra el
 daemon.
 
-Implementación: `handle_speech` (`src/main.rs:973`), enum `SpeechCommands`
-(`src/main.rs:218-319`). Helpers de despacho al daemon: `route_to_daemon`
-(`src/main.rs:3072`), `transcribe_via_daemon` (`src/main.rs:3095`),
-`daemon_synthesize_wav` (`src/main.rs:3245`), `synthesize_via_daemon`
-(`src/main.rs:3458`), `say_via_daemon` (`src/main.rs:3551`), `dub_via_daemon`
-(`src/main.rs:3689`), `dub_compose_via_daemon` (`src/main.rs:3846`, fallback si
+Implementación: `handle_speech`, enum `SpeechCommands`. Helpers de despacho al daemon: `route_to_daemon`, `transcribe_via_daemon`,
+`daemon_synthesize_wav`, `synthesize_via_daemon`, `say_via_daemon`, `dub_via_daemon`, `dub_compose_via_daemon` (fallback si
 el daemon responde 404 en `/dub`, es decir, un binario viejo sin esa ruta).
 
 ---
@@ -22,8 +18,7 @@ el daemon responde 404 en `/dub`, es decir, un binario viejo sin esa ruta).
 ai-voice-interconnector [--daemon|--no-daemon] [--json] speech <subcomando> [flags]
 ```
 
-`--daemon`/`--no-daemon` son flags globales de `Cli` (`src/main.rs:82-92`,
-mutuamente excluyentes) que fijan el `DaemonMode` (`ForceDaemon`/`ForceDirect`/
+`--daemon`/`--no-daemon` son flags globales de `Cli` (mutuamente excluyentes) que fijan el `DaemonMode` (`ForceDaemon`/`ForceDirect`/
 `Auto` sin ninguno de los dos). No son flags de `speech`; se anteponen al
 comando raíz.
 
@@ -37,7 +32,7 @@ comando raíz.
 | `speech play` | No | Sí (`require_local`) |
 | `speech remove` | No | Sí (`require_local`) |
 
-`require_local` (`src/main.rs:3081`) hace que `list`/`play`/`remove` con
+`require_local` hace que `list`/`play`/`remove` con
 `--daemon` forzado fallen con `daemon_unreachable` (exit 5) en vez de
 ejecutarse localmente: son operaciones sobre `SpeechStore`, que el daemon no
 expone por HTTP.
@@ -46,13 +41,13 @@ expone por HTTP.
 
 ## Despacho tri-modal (subcomandos delegables)
 
-`route_to_daemon` (`src/main.rs:3072`):
+`route_to_daemon`:
 
 | `DaemonMode` | Comportamiento |
 |---|---|
 | `ForceDaemon` (`--daemon`) | Siempre intenta el daemon; si el `POST` falla, exit 5 `daemon_unreachable` |
 | `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
-| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, `src/main.rs:3065`) con deadline corto; si responde, delega; si no, cae a directo |
+| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, ``) con deadline corto; si responde, delega; si no, cae a directo |
 
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
 lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
@@ -69,22 +64,21 @@ ai-voice-interconnector speech list [--voice <nombre>]
 ```
 
 Lista las locuciones persistidas en `SpeechStore`
-(`crates/avi-store`), local-only (brazo `List` en `src/main.rs:981-1035`).
+(`crates/avi-store`), local-only (brazo `List` en ``).
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--voice`, `-v` | string | — (todas las voces) | Opcional, sin default. Con valor, acota la lectura al directorio de esa voz (`SpeechStore::list_by_voice`, `crates/avi-store/src/lib.rs:280-282`, filtro normalizado a minúsculas); sin el flag, lista todas (`SpeechStore::list`, `crates/avi-store/src/lib.rs:273-275`) |
+| `--voice`, `-v` | string | — (todas las voces) | Opcional, sin default. Con valor, acota la lectura al directorio de esa voz (`SpeechStore::list_by_voice`, ``, filtro normalizado a minúsculas); sin el flag, lista todas (`SpeechStore::list`, ``) |
 
-Definición: `SpeechCommands::List { voice: Option<String> }`
-(`src/main.rs:220-224`). Con `--voice`, el handler valida el identificador
+Definición: `SpeechCommands::List { voice: Option<String> }`. Con `--voice`, el handler valida el identificador
 con `es_identificador_valido` (exit 2 `invalid_identifier`,
-`src/main.rs:2901`) y la existencia de la voz con `VoiceStore::exists`
-(exit 3 `voice_not_found`, `crates/avi-store/src/lib.rs:176`) antes de leer;
-sin `--voice` no valida nada y devuelve todo. (Cierre del drift H-10.)
+``) y la existencia de la voz con `VoiceStore::exists`
+(exit 3 `voice_not_found`, ``) antes de leer;
+sin `--voice` no valida nada y devuelve todo.
 
 Salida humana: una línea por locución con voz, etiqueta, duración y texto.
 Salida `--json`: `{"speech": [{"label", "voice", "text", "created_at",
-"duration_secs"}, ...]}` (`src/main.rs:1004-1017`).
+"duration_secs"}, ...]}`.
 
 ---
 
@@ -96,36 +90,36 @@ ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--dur
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--audio` | string | — | Ruta del WAV a transcribir. Mutuamente excluyente con `--mic` (`conflicts_with`, `src/main.rs:224`) |
+| `--audio` | string | — | Ruta del WAV a transcribir. Mutuamente excluyente con `--mic` (`conflicts_with`, ``) |
 | `--mic` | flag | `false` | Captura desde el micrófono en vez de leer un archivo |
 | `--duration` | u64 | — | Duración fija de grabación en segundos. Solo tiene efecto con `--mic` |
 | `--source-language` | `es-latam`\|`en` | — | Obligatorio. Idioma hablado en el audio |
 
 Validaciones puras antes de despachar:
 - Ni `--audio` ni `--mic`: exit 2 `usage_error`.
-- `--mic` sin `--duration` **y sin TTY** (`stdin().is_terminal()` es `false`,
-  p. ej. en un pipe o en CI): exit 2 `usage_error` ("`--mic` requiere
-  `--duration` en este host").
+- `--mic` sin `--duration` **y sin TTY** (`stdin.is_terminal` es `false`,
+ p. ej. en un pipe o en CI): exit 2 `usage_error` ("`--mic` requiere
+ `--duration` en este host").
 - `--mic` sin `--duration` **con TTY**: graba en modo **push-to-talk**
-  (`crates/avi-audio`, primitiva de captura hasta Enter): al iniciar la
-  grabación emite un aviso mínimo por stderr (nunca espera en silencio) y
-  captura hasta que el usuario presiona Enter. Hay un techo de seguridad
-  configurable con la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS`
-  (default 300 s): al alcanzarlo, detiene la grabación, avisa por stderr y
-  devuelve lo grabado hasta ese punto con exit **0** (no es un error). El
-  panic previo por `duration` ausente (hallazgo H-08) ya no existe.
+ (`crates/avi-audio`, primitiva de captura hasta Enter): al iniciar la
+ grabación emite un aviso mínimo por stderr (nunca espera en silencio) y
+ captura hasta que el usuario presiona Enter. Hay un techo de seguridad
+ configurable con la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS`
+ (default 300 s): al alcanzarlo, detiene la grabación, avisa por stderr y
+ devuelve lo grabado hasta ese punto con exit **0** (no es un error). No hay
+ panic por `duration` ausente: el modo push-to-talk cubre ese caso.
 
-Despacho (`src/main.rs:1036-1142`):
-1. `route_to_daemon` → si aplica, `transcribe_via_daemon` (`src/main.rs:3095`):
-   codifica el PCM a `audio_b64`, hace `POST /transcribe` y emite el mismo
-   envelope que la rama local.
+Despacho:
+1. `route_to_daemon` → si aplica, `transcribe_via_daemon`:
+ codifica el PCM a `audio_b64`, hace `POST /transcribe` y emite el mismo
+ envelope que la rama local.
 2. Rama directa: verifica que `parakeet-tdt-v3/nemo128.onnx` exista (si no,
-   exit 4 `model_missing` antes de instanciar nada); si el binario se compiló
-   sin el feature `native-stt`, exit 1 `stt_unsupported`; si el feature está
-   activo, instancia `ParakeetEngine` (`crates/avi-stt/src/lib.rs`) y llama
-   `engine.transcribe(&pcm, Some(language))`.
+ exit 4 `model_missing` antes de instanciar nada); si el binario se compiló
+ sin el feature `native-stt`, exit 1 `stt_unsupported`; si el feature está
+ activo, instancia `ParakeetEngine` (`crates/avi-stt/src/lib.rs`) y llama
+ `engine.transcribe(&pcm, Some(language))`.
 
-`resolve_stt_language` (`src/main.rs:59-64`) mapea `es-latam` → `es`; `en`
+`resolve_stt_language` mapea `es-latam` → `es`; `en`
 pasa verbatim. `ParakeetEngine` solo transcribe, nunca traduce.
 
 ### Contrato `--json`
@@ -134,7 +128,8 @@ pasa verbatim. `ParakeetEngine` solo transcribe, nunca traduce.
 { "text": "<texto transcrito>", "source": "<source_language tal cual se pasó>" }
 ```
 
-(`src/main.rs:1138` local, `src/main.rs:3129` vía daemon — mismo envelope en
+(`` local, `` vía daemon — mismo envelope en
+ambas rutas.) (`` local, `` vía daemon — mismo envelope en
 ambas rutas.)
 
 ---
@@ -166,25 +161,24 @@ esperaba respuesta — si colisiona en ese instante, también exit 6. Rechazar y
 descartar (opción 4) o Ctrl-D terminan con exit 0 sin persistir nada; solo
 aceptar (opción 2) persiste la toma que sonó. `--play` es incompatible con
 `--json` (exit 2 si se combinan) y exige terminal interactiva en la entrada
-estándar (exit 2 sin TTY, antes de sintetizar). Es el cierre del hallazgo
-H-12.
+estándar (exit 2 sin TTY, antes de sintetizar).
 
 Validaciones y flujo local:
 1. `validar_temperature`: exit 2 si el override está fuera de `(0, 2.0]`.
-2. Texto vacío tras `trim()`: exit 2 `empty_text`.
+2. Texto vacío tras `trim`: exit 2 `empty_text`.
 3. `source_eff = source_language.unwrap_or(target_language)` — sin
-   `--source-language`, origen = destino (passthrough, no se traduce).
+ `--source-language`, origen = destino (passthrough, no se traduce).
 4. Despacho: si aplica, vía daemon; si no, rama directa:
-   `require_model_provisioned` (exit 4 si falta `qwen3-tts-0.6b`) → la voz
-   debe existir en `VoiceStore` (exit 3 `voice_not_found`) →
-   `es_identificador_valido` sobre la etiqueta normalizada (exit 2
-   `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) → comprobación fast-fail
-   de colisión de etiqueta (exit 6 sin `--force`) → `traducir_si_difiere`
-   (passthrough si `source == target`; si no, exige el derivado CT2 sano,
-   exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_temperature` → sin
-   `--play`, persiste directamente; con `--play`, entra al bucle de 4
-   opciones y persiste solo al aceptar (con recomprobación de colisión) →
-   si `--output`, copia el WAV persistido a esa ruta.
+ `require_model_provisioned` (exit 4 si falta `qwen3-tts-0.6b`) → la voz
+ debe existir en `VoiceStore` (exit 3 `voice_not_found`) →
+ `es_identificador_valido` sobre la etiqueta normalizada (exit 2
+ `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) → comprobación fast-fail
+ de colisión de etiqueta (exit 6 sin `--force`) → `traducir_si_difiere`
+ (passthrough si `source == target`; si no, exige el derivado CT2 sano,
+ exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_temperature` → sin
+ `--play`, persiste directamente; con `--play`, entra al bucle de 4
+ opciones y persiste solo al aceptar (con recomprobación de colisión) →
+ si `--output`, copia el WAV persistido a esa ruta.
 
 La rama vía daemon repite las mismas validaciones de etiqueta/duplicado en el
 cliente antes de despachar la síntesis al daemon (`POST /synthesize`, consume
@@ -199,7 +193,7 @@ local.
 { "status": "success", "audio_path": "<ruta del WAV persistido>", "voice": "<voz>" }
 ```
 
-(`src/main.rs:3371-3376` vía daemon, `src/main.rs:1258-1263` local — idéntico.)
+(`` vía daemon, `` local — idéntico.) (`` vía daemon, `` local — idéntico.)
 
 ---
 
@@ -214,9 +208,9 @@ Mismas reglas de `--source-language`/`--target-language`/`--temperature` que
 `synthesize`. Escribe el WAV en un archivo temporal
 (`avi_say_<pid>.wav`) y siempre lo reproduce (`AudioService::play_wav`); a
 diferencia de `synthesize`, no hay flag `--play` porque la reproducción es
-incondicional (`src/main.rs:1269-1336`).
+incondicional.
 
-Despacho: `say_via_daemon` (`src/main.rs:3384`) si aplica, o rama directa con
+Despacho: `say_via_daemon` si aplica, o rama directa con
 `require_model_provisioned` + `VoiceStore::exists` + `traducir_si_difiere` +
 `Qwen3TtsEngine::synthesize_with_temperature` + `AudioService::play_wav`.
 
@@ -226,7 +220,7 @@ Despacho: `say_via_daemon` (`src/main.rs:3384`) si aplica, o rama directa con
 { "status": "reproduced", "audio_path": "<ruta temporal del WAV>", "voice": "<voz>" }
 ```
 
-(`src/main.rs:1326-1331` local, `src/main.rs:3406-3411` vía daemon.)
+(`` local, `` vía daemon.) (`` local, `` vía daemon.)
 
 ---
 
@@ -237,7 +231,7 @@ ai-voice-interconnector speech dub (--audio <archivo.wav>|--file <archivo.wav> |
 ```
 
 Pipeline voz→voz: transcribe → traduce (si `source != target`) → sintetiza →
-reproduce. `--file` es alias de `--audio` (`alias = "file"`, `src/main.rs:281`,
+reproduce. `--file` es alias de `--audio` (`alias = "file"`, ``,
 paridad con el oráculo Python retirado).
 
 | Flag | Tipo | Default | Descripción |
@@ -250,26 +244,26 @@ paridad con el oráculo Python retirado).
 | `--mic` | flag | `false` | Captura desde micrófono. Mutuamente excluyente con `--audio` |
 | `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` |
 
-Validaciones puras (`src/main.rs:1346-1377`, en este orden):
+Validaciones puras (en este orden):
 1. `validar_temperature`.
 2. `--duration` sin `--mic`: exit 2 `usage_error`.
 3. `--mic` sin `--duration` sin TTY: exit 2 `usage_error`. **Con TTY, mismo
-   push-to-talk que en `transcribe`**: aviso mínimo por stderr al iniciar,
-   captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (default
-   300 s, exit 0 al vencer). El panic previo (hallazgo H-08) ya no existe.
+ push-to-talk que en `transcribe`**: aviso mínimo por stderr al iniciar,
+ captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (default
+ 300 s, exit 0 al vencer). No hay panic por `duration` ausente en este caso.
 4. Ni `--audio` ni `--mic`: exit 2 `usage_error`.
 5. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
 
-Despacho: si aplica, `dub_via_daemon` (`src/main.rs:3689`) hace `POST /dub`
+Despacho: si aplica, `dub_via_daemon` hace `POST /dub`
 esperando cabeceras de respuesta en ≤1500 ms y consumiendo el stream NDJSON
 con un timeout de inactividad entre latidos de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`)
 y un deadline total failsafe de 120 s (`STREAM_TOTAL_DEADLINE`).
 Si el daemon responde `404` (binario viejo sin esa ruta), degrada
-automáticamente a `dub_compose_via_daemon` (`src/main.rs:3846`): transcribe
+automáticamente a `dub_compose_via_daemon`: transcribe
 vía `POST /transcribe`, traduce localmente con `avi_translation::translate` si
 `source != target`, y sintetiza vía `POST /synthesize` (`daemon_synthesize_wav`).
 
-Rama directa (`src/main.rs:1418-1573`, requiere feature `native-stt`; sin
+Rama directa (requiere feature `native-stt`; sin
 ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
 4) y el modelo de síntesis provisionado (`require_model_provisioned`) →
 captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito está
@@ -282,7 +276,7 @@ sano (exit 4 `model_missing` con los ficheros faltantes si no); sin el feature
 
 ### `POST /dub` (daemon)
 
-Handler `dub_handler` (`crates/avi-daemon/src/lib.rs:1041`). Acepta
+Handler `dub_handler`. Acepta
 `{audio_b64, voice?, from|source_language?, to|target_language?, temperature?}`
 (`from`/`source_language` son alias del mismo campo, igual `to`/`target_language`;
 default `voice="default"`, default idiomas `"es"`). Tras validar barato en JSON
@@ -309,8 +303,14 @@ En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo
 { "status": "dubbed", "text": "<texto final, traducido o passthrough>", "audio_path": "<ruta temporal del WAV reproducido>" }
 ```
 
-(`src/main.rs:1564-1569` local, `src/main.rs:3834-3840` vía `/dub`,
-`src/main.rs:3968-3974` vía composición — mismo envelope en las tres rutas;
+(`` local, `` vía `/dub`,
+`` vía composición — mismo envelope en las tres rutas;
+nótese que el campo del CLI se llama `text`, aunque el handler del daemon
+distingue internamente `text`/`translated`.) (`` local, `` vía `/dub`,
+`` vía composición — mismo envelope en las tres rutas;
+nótese que el campo del CLI se llama `text`, aunque el handler del daemon
+distingue internamente `text`/`translated`.) (`` local, `` vía `/dub`,
+`` vía composición — mismo envelope en las tres rutas;
 nótese que el campo del CLI se llama `text`, aunque el handler del daemon
 distingue internamente `text`/`translated`.)
 
@@ -325,7 +325,7 @@ ai-voice-interconnector speech play --label <etiqueta> [--voice <nombre>]
 Local-only (`require_local`). Busca la locución en `SpeechStore` por
 `(voice, label)` y reproduce el WAV persistido. Si no existe, exit 3
 `speech_not_found`. Valida los identificadores con `es_identificador_valido`
-antes de buscar (`src/main.rs:1574-1607`).
+antes de buscar.
 
 ### Contrato `--json`
 
@@ -342,7 +342,7 @@ ai-voice-interconnector speech remove --label <etiqueta> [--voice <nombre>]
 ```
 
 Local-only. Elimina la locución de `SpeechStore`; si no existe, exit 3
-`speech_not_found` (`src/main.rs:1608-1621`).
+`speech_not_found`.
 
 ### Contrato `--json`
 
@@ -356,8 +356,8 @@ Local-only. Elimina la locución de `SpeechStore`; si no existe, exit 3
 
 Conjunto cerrado `{es-latam, en}` en todos los flags de idioma (`value_parser`
 de `clap`); internamente se normalizan a `{es, en}` vía `resolve_stt_language`
-(`src/main.rs:59-64`, CLI) / `resolve_translation_language`
-(`crates/avi-daemon/src/lib.rs:626-631`, daemon) — ambas funciones mapean
+(CLI) / `resolve_translation_language`
+(daemon) — ambas funciones mapean
 `es-latam` → `es` y pasan cualquier otro valor verbatim. Los únicos pares de
 traducción provisionados por `setup` son `es-en` y `en-es`
 (`crates/avi-store/src/lib.rs`, `MODEL_REVISIONS`); cualquier otro par
@@ -366,9 +366,9 @@ resulta en exit 2 `unsupported_language_pair`.
 **Divergencia deliberada con `translate`.** El conjunto `{es-latam, en}` es
 la taxonomía del grupo `speech`; el comando `translate` usa un alfabeto
 estricto `{es, en}` en `--from`/`--to` (`value_parser = ["es", "en"]`,
-`src/main.rs:130-133`) y rechaza `es-latam` por parser con exit 2. `es-latam`
+``) y rechaza `es-latam` por parser con exit 2. `es-latam`
 solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
-`es` (`crates/avi-daemon/src/lib.rs:626-631`).
+`es`.
 
 ---
 
@@ -391,17 +391,6 @@ solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 | `transcription_error` / `transcription_failed` | 10 | Fallo de captura/lectura de audio o del motor Parakeet |
 | `translation_failed` | 9 | Fallo del motor CT2 |
 | `synthesis_error` / `playback_failed` | 1 | Fallo del motor Qwen3-TTS o de reproducción |
-
----
-
-## Hallazgos de drift (cerrados)
-
-Referencia: `docs/reviews/2026-09-10-hallazgos-pendientes-consolidado.md`.
-
-- **H-10 (cerrado)** — `speech list` acepta `--voice`/`-v` opcional sin
-  default y filtra por voz (`src/main.rs:220-224`, `src/main.rs:981-1035`,
-  `crates/avi-store/src/lib.rs:280-282`); no queda drift pendiente en este
-  comando.
 
 ---
 

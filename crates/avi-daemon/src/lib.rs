@@ -188,13 +188,13 @@ async fn emit_ndjson(tx: &tokio::sync::mpsc::Sender<String>, event: Value) {
         .await;
 }
 
-/// Intervalo de latido de los streams NDJSON con trabajo pesado (R2-A): entre
+/// Intervalo de latido de los streams NDJSON con trabajo pesado: entre
 /// eventos de inferencia el servidor emite `heartbeat` para que el timeout de
 /// inactividad del cliente (1500 ms) solo dispare si el bucle está atascado,
 /// nunca por inferencia sana.
 const STREAM_HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Espera un trabajo pesado bloqueante emitiendo latidos NDJSON (R2-A).
+/// Espera un trabajo pesado bloqueante emitiendo latidos NDJSON.
 /// Retorna `Some(res)` al completar, o `None` si el cliente se desconectó: en
 /// ese caso el trabajo se aborta (`AbortHandle`) y el llamante debe retornar
 /// sin entregar ni persistir resultado (sin trabajo huérfano ni fuga de estado).
@@ -331,11 +331,11 @@ async fn synthesize_handler(
     let target_owned = target_raw.clone();
 
     tokio::spawn(async move {
-        // T4: el lock envuelve completamente el trabajo de síntesis —incluido dentro del
+        // El lock envuelve completamente el trabajo de síntesis —incluido dentro del
         // spawn—, serializando síntesis concurrentes. No se añade semáforo de
         // admisión (fuera de alcance de esta rutina).
         let _lock = state.synthesis_lock.lock().await;
-        // R1-A: reloj de trabajo tras el lock — mide trabajo puro (excluye la
+        // Reloj de trabajo tomado tras el lock: mide trabajo puro (excluye la
         // espera en cola) para separar la señal de rendimiento de la de
         // corrección; el techo sigue siendo el failsafe `SYNTH_DEADLINE`.
         let trabajo_t0 = std::time::Instant::now();
@@ -351,8 +351,8 @@ async fn synthesize_handler(
         .await;
 
         // Provisionamiento del motor: si binario/modelo no se resolvieron, la rama
-        // `model_missing` es el contrato aceptado por el plan T8 en entornos sin
-        // motor (en el daemon real corre desde la raíz del repo, donde sí resuelve).
+        // `model_missing` es el contrato aceptado en entornos sin motor
+        // (en el daemon real corre desde la raíz del repo, donde sí resuelve).
         if state.tts_engine.binary_path.is_none() || state.tts_engine.model_dir.is_none() {
             emit_ndjson(
                 &tx,
@@ -484,7 +484,7 @@ async fn synthesize_handler(
         // se sobrescribe la temperatura ya validada.
         let options = GenerationOptions::con_temperatura(temperature);
         let tmp = std::env::temp_dir().join(format!("avi_daemon_synth_{}.wav", std::process::id()));
-        // H-05: la síntesis sobre el residente es síncrona y puede colgarse
+        // La síntesis sobre el residente es síncrona y puede colgarse
         // (motor C atascado); se acota con `timeout(SYNTH_DEADLINE)` sobre
         // `spawn_blocking` (mismo patrón del warmup). Al vencer se emite
         // `synthesis_timeout` propio, SIN matar/reclamar el residente (evita
@@ -506,11 +506,12 @@ async fn synthesize_handler(
                                 "event": "result",
                                 "audio_b64": base64::engine::general_purpose::STANDARD.encode(&wav_bytes),
                                 // El motor no expone tiempos; por contrato el campo
-                                // existe y se reporta como 0.0 (verdad en F5).
+                                // existe y se reporta como 0.0.
                                 "t3_time": 0.0,
                                 "s3gen_time": 0.0,
-                                // R1-A (aditivo): ms de trabajo puro tras el lock
-                                // (excluye cola; lo consume T7 para separar señales).
+                                // Ms de trabajo puro tras el lock (excluye la
+                                // espera en cola), como señal de rendimiento
+                                // separada de la de corrección.
                                 "work_ms": trabajo_t0.elapsed().as_millis() as u64,
                             }),
                         )
@@ -794,7 +795,7 @@ async fn translate_handler(
 }
 
 /// POST /voices/clone — clonado de voz con audio base64, servido como stream
-/// NDJSON con latidos (R2-A): `started` tras las validaciones baratas (nombre,
+/// NDJSON con latidos: `started` tras las validaciones baratas (nombre,
 /// force/colisión, audio, modelo base, en JSON plano con los códigos de siempre),
 /// latidos `heartbeat` durante el clonado, y evento final `result` con la forma
 /// contractual actual (`precomputed: true` = precarga en caliente iniciada).
@@ -895,7 +896,7 @@ async fn voices_clone_handler(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let tmp_qvoice = std::env::temp_dir().join(format!("{}.qvoice", name));
-    // R2-A: stream NDJSON — las validaciones baratas ya pasaron en JSON plano;
+    // Stream NDJSON: las validaciones baratas ya pasaron en JSON plano;
     // `started` inmediato antes del trabajo pesado, latidos cada ~500 ms y
     // evento final con la forma contractual actual (`precomputed: true` =
     // «precarga en caliente iniciada»). Sin almacén de trabajos ni expiración.
@@ -1037,7 +1038,7 @@ async fn voices_clone_handler(
 }
 
 /// POST /dub — pipeline voz→voz (transcribe→translate→synthesize), servido
-/// como stream NDJSON con latidos (R2-A): `started` tras las validaciones
+/// como stream NDJSON con latidos: `started` tras las validaciones
 /// baratas (audio, par/CT2, modelo, voz y rama sin `native-stt`, en JSON plano
 /// con los códigos de siempre), latidos `heartbeat` durante cada fase pesada y
 /// evento final `result` con la forma contractual actual (`status: "dubbed"`).
@@ -1114,7 +1115,7 @@ async fn dub_handler(
         )
             .into_response()
     }
-    // R2-A: validaciones baratas ANTES del stream (JSON plano con los códigos de
+    // Validaciones baratas ANTES del stream (JSON plano con los códigos de
     // siempre; `started` solo se emite cuando el trabajo pesado va a arrancar).
     // Se adelantan aquí los chequeos por parámetros (par, CT2, feature, modelo,
     // voz) que antes corrían tras transcribir: solo cambia la precedencia cuando
@@ -1194,7 +1195,7 @@ async fn dub_handler(
     }
     #[cfg(feature = "native-stt")]
     {
-        // R2-A: stream NDJSON — `started` inmediato tras las validaciones
+        // Stream NDJSON: `started` inmediato tras las validaciones
         // baratas, latidos durante la inferencia, evento final con la forma
         // contractual actual (`status: "dubbed"`). Sin almacén de trabajos.
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
@@ -1331,8 +1332,8 @@ async fn dub_handler(
             // legítimo en curso; la reclamación es de la salud observada de la
             // siguiente petición).
             let _lock = state.synthesis_lock.lock().await;
-            // R1-A: reloj de trabajo tras el lock (mide solo la fase de
-            // síntesis, no transcribe/translate; ver nota en T7).
+            // Reloj de trabajo tomado tras el lock: mide solo la fase de
+            // síntesis, no transcribe/translate.
             let trabajo_t0 = std::time::Instant::now();
             let profile = VoiceProfile {
                 name: voice.clone(),
@@ -1400,8 +1401,8 @@ async fn dub_handler(
                                     "translated": final_text,
                                     "audio_b64": b64,
                                     "voice": voice,
-                                    // R1-A (aditivo): ms de la fase de síntesis
-                                    // tras el lock (lo consume T7).
+                                    // Ms de la fase de síntesis tras el lock,
+                                    // como señal de rendimiento independiente.
                                     "work_ms": trabajo_t0.elapsed().as_millis() as u64,
                                 }),
                             )
@@ -1490,7 +1491,7 @@ async fn shutdown_handler(State(state): State<SharedState>) -> impl IntoResponse
 // ─── Servidor ────────────────────────────────────────────────────────────
 
 /// Construye el `Router` de Axum a partir de un `Arc<DaemonState>` ya construido
-/// externamente. Extraído de `build_router()` para testeabilidad (T8): permite
+/// externamente. Extraído de `build_router()` para testeabilidad: permite
 /// ejercer las rutas en tests de integración inyectando un estado con rutas de
 /// modelo apuntando a `CARGO_MANIFEST_DIR`.
 pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
@@ -1518,14 +1519,14 @@ pub fn build_router() -> Router {
     build_router_with_state(state)
 }
 
-/// Deadline del warmup TTS (H-02): si `spawn_blocking(precalentar_voz)` no termina en
+/// Deadline del warmup TTS: si `spawn_blocking(precalentar_voz)` no termina en
 /// este plazo, el daemon marca `warm_failed` con diagnóstico y termina al
 /// residente. Valor medido, no supuesto: ~2× el TTFN feliz observado (~18-20 s
 /// de spawn + healthcheck + síntesis), muy por debajo del hang histórico del
 /// motor C (150 s+ quemando CPU sin llegar al audio).
 const WARMUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(40);
 
-/// Deadline de la síntesis por petición (H-05): acota `synthesize_handler` y
+/// Deadline de la síntesis por petición: acota `synthesize_handler` y
 /// `dub_handler` para que el daemon emita su propio diagnóstico
 /// (`synthesis_timeout`) ante un cuelgue intra-`POST` del residente, en vez
 /// de ceder al corte ciego del cliente a los 10 s (`src/main.rs:3293`). Debe
@@ -1568,9 +1569,9 @@ pub fn precalentar_voz(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
         qvoice_path: state.voice_store.find_reference(voz),
     };
     let _lock = state.synthesis_lock.blocking_lock();
-    // R1-A: reloj de trabajo tras el lock (mide warmup puro, excluye la espera
+    // Reloj de trabajo tomado tras el lock: mide warmup puro, excluye la espera
     // en cola contra tráfico vivo; el techo sigue siendo el failsafe
-    // `WARMUP_DEADLINE` del llamante).
+    // `WARMUP_DEADLINE` del llamante.
     let trabajo_t0 = std::time::Instant::now();
     let tmp = std::env::temp_dir().join(format!("avi_daemon_warmup_{}.wav", std::process::id()));
     let resultado = state
@@ -1611,7 +1612,7 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
         ));
     }
 
-    // D-05: sin reclamo aquí; el reclamo activo del árbol propio previo con
+    // Sin reclamo aquí; el reclamo activo del árbol propio previo con
     // deadline y verificación vive solo en `run_supervised` (entre reintentos).
     let listener = TcpListener::bind(addr).await?;
     println!("Daemon nativo escuchando en http://{}", addr);
@@ -1650,7 +1651,7 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     // termina cerrando los `Drop` del `Arc<DaemonState>` compartido → cierre
     // limpio sin `process::exit` (que no termina fiablemente el proceso en
     // Windows cuando el runtime está dentro de `axum::serve`).
-    // D-02: `serve` en Unix cierra por esta misma ruta sin pidfile ni
+    // `serve` en Unix cierra por esta misma ruta sin pidfile ni
     // auto-muerte del CLI (la guarda `pid != propio` del handler CLI protege al
     // `serve` en foreground; la carrera con el handler CLI se resuelve porque
     // ambos convergen en `tts_engine.shutdown()` + salida, sin pidfile).
@@ -1691,7 +1692,7 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
 }
 
 /// Umbral de tiempo mínimo de ejecución antes de considerar que una iteración
-/// del daemon realizó progreso (R1-A watchdog de supervisión).
+/// del daemon realizó progreso, para el watchdog del bucle de supervisión.
 const SUPERVISION_PROGRESO_MIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Número máximo de caídas rápidas consecutivas (sin progreso) antes de abortar
@@ -1720,7 +1721,7 @@ pub async fn run_supervised(
     if !auto_restart {
         return run_daemon_server(addr, warm_voice).await;
     }
-    // R1-A: watchdog del bucle de supervisión (acotado a este bucle, primitivas
+    // Watchdog del bucle de supervisión (acotado a este bucle, primitivas
     // portables `Instant`): una vida del daemon menor a `SUPERVISION_PROGRESO_MIN`
     // cuenta como caída rápida (sin progreso); `SUPERVISION_RACHA_MAX` caídas
     // rápidas seguidas abortan con fallo ruidoso en vez de quemar `max_retries`
@@ -1763,7 +1764,7 @@ pub async fn run_supervised(
                     retries, max_retries, e, backoff_ms
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                // Reclamo activo previo al reintento (D-05): esperar con deadline
+                // Reclamo activo previo al reintento: esperar con deadline
                 // a que el árbol propio previo esté muerto y el puerto libre
                 // antes del siguiente `bind`. Solo árbol propio previo (vía
                 // `Drop` preciso, sin imagen global ni otra instancia sana).
@@ -1853,7 +1854,7 @@ mod tests {
         let _router = build_router_with_state(state);
     }
 
-    /// R2-A: `con_latidos` entrega el resultado del trabajo inmediato (sin
+    /// `con_latidos` entrega el resultado del trabajo inmediato (sin
     /// exigir latidos cuando el trabajo es más rápido que el intervalo).
     #[tokio::test]
     async fn con_latidos_entrega_resultado_inmediato() {
@@ -1865,7 +1866,7 @@ mod tests {
         assert_eq!(res.expect("join ok"), 42);
     }
 
-    /// R2-A: ante desconexión del cliente (`rx` dropeado) el trabajo se aborta
+    /// Ante desconexión del cliente (`rx` dropeado) el trabajo se aborta
     /// y se retorna `None` sin esperar su completitud (sin reloj ajustado: el
     /// trabajo dormiría 30 s y el retorno debe llegar muy antes).
     #[tokio::test]
@@ -1887,7 +1888,7 @@ mod tests {
         );
     }
 
-    /// R2-A: durante un trabajo de 2 s se emite al menos un latido `heartbeat`
+    /// Durante un trabajo de 2 s se emite al menos un latido `heartbeat`
     /// con la etapa (cota holgada: intervalo 500 ms; el margen absorbe
     /// planificación lenta sin falsos positivos).
     #[tokio::test]

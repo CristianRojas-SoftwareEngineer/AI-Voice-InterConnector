@@ -308,8 +308,8 @@ impl AudioService {
         eprintln!("Grabando… pulsa Enter para detener.");
 
         // Espera de una línea de stdin con límite temporal: se lee en un hilo
-        // aparte y se recibe con `recv_timeout` para poder aplicar el techo D-2
-        // sin bloquear indefinidamente en la lectura de stdin.
+        // aparte y se recibe con `recv_timeout` para poder aplicar el deadline
+        // de captura sin bloquear indefinidamente en la lectura de stdin.
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             let mut linea = String::new();

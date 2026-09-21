@@ -314,7 +314,7 @@ compatibilidad:
 | macOS | `~/.cache/huggingface/hub` | `~/Library/Application Support/ai-voice-interconnector/data` |
 
 `doctor` imprime la ruta resuelta (`Cache HF:` / campo `hf_cache` en `--json`)
-para auditoría. `cleanup --model/--voices/--synthetic-speech/--all` borra selectivamente snapshots HF + datos de usuario (sin binario ni PATH; `cleanup` sin flags → exit 2 `usage_error`; `src/main.rs:1589`); `uninstall` es el único que añade binario+PATH.
+para auditoría. `cleanup --model/--voices/--synthetic-speech/--all` borra selectivamente snapshots HF + datos de usuario (sin binario ni PATH; `cleanup` sin flags → exit 2 `usage_error`; (del binario principal); `uninstall` es el único que añade binario+PATH.
 
 ### Cacheo de dependencias y toolchain
 
@@ -383,7 +383,7 @@ plano (binario + 4 documentos en la raíz).
 
 ## 9. Build nativo del motor TTS (Rust/qwen_tts)
 
-> Esta sección documenta el toolchain C del motor Qwen3-TTS vigente (F4).
+> Esta sección documenta el toolchain C del motor Qwen3-TTS vigente.
 
 ### Interfaz uniforme: `xtask build-engine`
 
@@ -430,7 +430,7 @@ pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidenc
 > `-march=native` — que acoplaría el codegen a la microarquitectura del runner y
 > haría `SIGILL` en CPUs de campo más viejas. `SIMD=native` recupera `-march=native`
 > para el dev box (misma CPU build=run). macOS conserva `-march=native` (host
-> single-vendor). Cierra el hallazgo 3.1 de la revisión del pipeline.
+> single-vendor).
 
 En CI Windows el binario del motor (`vendor/qwen3-tts/qwen_tts.exe`) se cachea con
 clave `tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}` donde
