@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [0.19.0 — 2026-09-20](#0190-20260920)
+- [0.19.0 — 2026-09-21](#0190-20260921)
 - [0.18.26 — 2026-09-02](#01826-20260902)
 - [0.18.25 — 2026-09-01](#01825-20260901)
 - [0.18.24 — 2026-09-01](#01824-20260901)
@@ -111,7 +111,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [0.19.0] — 2026-09-20
+## [0.19.0] — 2026-09-21
 
 Corrección estructural de la superficie de flags de `setup` (H-09): `--language`
 era texto libre inerte (ignorado salvo para imprimirse y emitirse en JSON), el
@@ -205,6 +205,28 @@ implementación Rust, dejando sin forma no interactiva de re-descargar modelos.
   para aborto explícito ante caídas rápidas; tests de rendimiento dedicados
   `perf_*` en `tests/cli_golden.rs` — `crates/avi-daemon/src/lib.rs`,
   `tests/cli_golden.rs`.
+
+### Corregido
+
+- fix(tts): terminación del residente por PID directo en Unix. El cierre por
+  árbol usaba `kill -9 -<pid>` (matanza del grupo cuyo pgid es `<pid>`), lo que
+  exige que el residente sea líder de su propio grupo — invariante que el spawn
+  deliberadamente nunca establece (el residente se lanza **sin** grupo/sesión
+  propia para heredar el del daemon y que el cierre del daemon lo arrastre). En
+  Unix esa rama era un no-op silencioso y, bajo el namespace de PIDs de Docker
+  (pgid reciclados/bajos), rompía el reaping determinista: el test
+  `residente_matar_arbol_por_pid_termina_al_hijo` colgaba indefinidamente solo
+  en Linux/CI. Se elimina la matanza por grupo dejando SIGKILL al PID directo
+  (el árbol lo cierra el daemon vía grupo heredado; la verificación la hace el
+  llamante por puerto/deadline) y se reescribe el test sin sondeo `kill -0`
+  (señal al PID + `child.wait()` que reapea + `!status.success()`) —
+  `crates/avi-tts/src/lib.rs`.
+- fix(daemon): gatear el reexport `spawn_uninstall_helper` a `#[cfg(windows)]`
+  para igualar el gate de su definición en `spawn.rs`. El reexport no compartía
+  el `cfg`, así que los builds no-Windows del pipeline de release rompían con
+  E0432; el símbolo solo se consume en `src/main.rs` dentro de un bloque
+  `#[cfg(windows)]`. El `cargo test --all` nativo de Windows no lo detectaba
+  porque el símbolo sí existe bajo `cfg(windows)` — `crates/avi-daemon/src/lib.rs`.
 
 ### Documentación
 
