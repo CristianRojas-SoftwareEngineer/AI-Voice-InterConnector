@@ -13,7 +13,12 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 pub mod spawn;
-pub use spawn::{esperar_muerte_pid, matar_arbol_por_pid, pid_vivo, spawn_background, spawn_uninstall_helper};
+pub use spawn::{esperar_muerte_pid, matar_arbol_por_pid, pid_vivo, spawn_background};
+// `spawn_uninstall_helper` solo existe bajo `#[cfg(windows)]` en `spawn.rs`; el
+// reexport debe compartir el gate o el build no-Windows rompe con E0432 (el call
+// site en `src/main.rs` ya está dentro de un bloque `#[cfg(windows)]`).
+#[cfg(windows)]
+pub use spawn::spawn_uninstall_helper;
 // `hilos_disponibles` y el trait `SttEngine` (`.transcribe`) solo los consume
 // la superficie STT, gateada tras `native-stt`.
 #[cfg(feature = "native-stt")]
