@@ -352,16 +352,22 @@ para auditoría. `cleanup --model/--voices/--synthetic-speech/--all` borra selec
 
 ### Cacheo de dependencias y toolchain
 
-Modelo **heterogéneo** vigente desde 0.18.8 (ver `CHANGELOG.md:76-83` y la sección de `commands`/`jobs` de `.circleci/config.yml`): `test-windows` (`os: windows`, `variant: test`), `coverage` (`os: linux`, `variant: cov`) y los 4 `build-*` (`os: windows/linux/macos`, `variant: full`) usan `cargo_restore_caches` → restauran **registry + target-v2** (`cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}` y `target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}`); `test-linux` (`os: linux`) y `test-macos` (`os: macos`) usan `cargo_restore_registry` → restauran **solo registry** (`cargo-v2-...`) sin `target/`, reconstruyendo vía `sccache`. Todos los jobs Rust restauran/guardan `sccache` (`sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-`) y `toolchain` (`toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>`). La clave de `registry`/`target-v2` NO se deriva de `Cargo.lock` directo, sino de un **lock normalizado** (`Cargo.lock.cachekey`) que el primer step de `cargo_restore_caches` genera con un transform de texto (`perl -0777`, ejecutado en `shell: bash`): neutraliza la línea `version` del propio crate (`ai-voice-interconnector` → `0.0.0`) dejando el resto del lock intacto. Motivo: cada release bumpea esa versión, así que el checksum de `Cargo.lock` cambiaría en cada corte aunque las dependencias no varíen, invalidando la clave exacta y dejando todo al frágil fallback por prefijo. Con la normalización la clave exacta es estable entre releases y solo cambia ante cambios reales de dependencias. Generar la clave con un transform de texto (en vez de compilar `xtask` desde cero antes de restaurar caché) evita compilar el árbol de dependencias de cargo en cada job —incluido `windows-sys`/`dlltool`, ausente en `test-windows` antes de instalar MSYS2— y su correspondiente coste de red en frío.
+Modelo **homogéneo** de `target-v2` para los jobs de test/cov/build vigente desde
+la remediación de latencia de CI posterior a 0.20.2 (ver la sección de
+`commands`/`jobs` de `.circleci/config.yml`): `test-windows` (`os: windows`,
+`variant: test`), `test-linux` (`os: linux`, `variant: test`), `test-macos`
+(`os: macos`, `variant: test`), `coverage` (`os: linux`, `variant: cov`) y los 4
+`build-*` (`os: windows/linux/macos`, `variant: full`) usan `cargo_restore_caches`
+→ restauran **registry + target-v2** (`cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}` y `target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}`); los jobs pequeños **xtask/changelog-gate** (`validate-licenses`, `validate-changelog`, `publish-metadata`) usan `cargo_restore_registry` → restauran **solo registry** (`cargo-v2-...`) sin `target/`, donde `sccache` basta por el tamaño mínimo de esos jobs. `test-windows`, `coverage` y los `build-*` además restauran/guardan `sccache` (`sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-`); `test-linux`/`test-macos` ya no usan `sccache` (lo retiraron al pasar a `target-v2`). Todos los jobs Rust restauran/guardan `toolchain` (`toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>`). La clave de `registry`/`target-v2` NO se deriva de `Cargo.lock` directo, sino de un **lock normalizado** (`Cargo.lock.cachekey`) que el primer step de `cargo_restore_caches` genera con un transform de texto (`perl -0777`, ejecutado en `shell: bash`): neutraliza la línea `version` del propio crate (`ai-voice-interconnector` → `0.0.0`) dejando el resto del lock intacto. Motivo: cada release bumpea esa versión, así que el checksum de `Cargo.lock` cambiaría en cada corte aunque las dependencias no varíen, invalidando la clave exacta y dejando todo al frágil fallback por prefijo. Con la normalización la clave exacta es estable entre releases y solo cambia ante cambios reales de dependencias. Generar la clave con un transform de texto (en vez de compilar `xtask` desde cero antes de restaurar caché) evita compilar el árbol de dependencias de cargo en cada job —incluido `windows-sys`/`dlltool`, ausente en `test-windows` antes de instalar MSYS2— y su correspondiente coste de red en frío.
 
-`sccache_save_cache` guarda `~/.cache/sccache` de forma **incondicional** con clave *rolling* por `{{ epoch }}` (`when: always`): cada corrida escribe una entrada nueva y la restauración toma la más reciente por prefijo. No existe un guardado condicional por hit-rate, y a propósito: un umbral de ese tipo es incoherente en este pipeline. Todo hit &lt; 100 % implica *misses* que sccache **acaba de compilar y escribir** en el store, así que omitir el guardado descartaría esos objetos nuevos (la siguiente corrida los volvería a fallar); y vaciar el directorio para abaratar la subida envenenaría la caché restaurada. Como cada `build-*` bumpea la versión del crate —recompilándolo siempre— el store cambia en cada tag, de modo que cualquier dedup por contenido casi nunca se dispararía: el ahorro real se limita a re-ejecutar el mismo tag sin cambios, marginal frente al riesgo de tocar la ruta crítica del release. `test-windows` y `coverage` mantienen `target-v2` (`test-windows` 770 MiB restore / 831 MiB save, 235s NTFS; `coverage` análogo en linux); `test-linux` hoy no mantiene `target-v2` y reconstruye vía `sccache` (≈15% hit en frío). Medido tras `sccache --show-stats` (`Cache hits rate`).
+`sccache_save_cache` guarda `~/.cache/sccache` de forma **incondicional** con clave *rolling* por `{{ epoch }}` (`when: always`): cada corrida escribe una entrada nueva y la restauración toma la más reciente por prefijo. No existe un guardado condicional por hit-rate, y a propósito: un umbral de ese tipo es incoherente en este pipeline. Todo hit &lt; 100 % implica *misses* que sccache **acaba de compilar y escribir** en el store, así que omitir el guardado descartaría esos objetos nuevos (la siguiente corrida los volvería a fallar); y vaciar el directorio para abaratar la subida envenenaría la caché restaurada. Como cada `build-*` bumpea la versión del crate —recompilándolo siempre— el store cambia en cada tag, de modo que cualquier dedup por contenido casi nunca se dispararía: el ahorro real se limita a re-ejecutar el mismo tag sin cambios, marginal frente al riesgo de tocar la ruta crítica del release. `test-windows` y `coverage` combinan `target-v2` con `sccache` (`test-windows` 770 MiB restore / 831 MiB save, 235s NTFS; `coverage` análogo en linux). Las tasas de acierto de `sccache` medidas en los tres SO vía `sccache --show-stats` (`Cache hits rate`) resultaron prácticamente nulas — **Windows 0.00 %, Linux 3.21 %, macOS 3.04 %**; por eso `test-linux`/`test-macos` retiraron `sccache` y pasaron a mantener `target-v2` (`variant: test`) igual que `test-windows`, sin reconstruir vía `sccache`.
 
 Matriz de invalidación por familia de caché:
 
 | Caché | Namespace | Se invalida cuando… |
 |-------|-----------|---------------------|
 | `registry` (`cargo-v2`) | `v2` | cambian dependencias reales en `Cargo.lock` (no el bump de versión del crate) |
-| `target-v2` (`test-windows`/`coverage` `test`/`cov` + `build-*` `full`, `os: windows/linux/macos`) | `v2` | idem `registry`, variant-específico (`test`/`cov`/`full`) + `os`. `build-*` restaura `target-v2-full` y ejecuta `cargo clean -p ai-voice-interconnector` para determinismo del bump, ver determinismo debajo. |
+| `target-v2` (`test-windows`/`test-linux`/`test-macos`/`coverage` `test`/`test`/`test`/`cov` + `build-*` `full`, `os: windows/linux/macos`) | `v2` | idem `registry`, variant-específico (`test`/`cov`/`full`) + `os`. `build-*` restaura `target-v2-full` y ejecuta `cargo clean -p ai-voice-interconnector` para determinismo del bump, ver determinismo debajo. |
 | `toolchain` (`toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>`) | `v1` | cambia `rust_version` |
 | `msys2` | `v1` | cambian los pines de versión MSYS2 (release base + gcc/openblas/make) |
 | `sccache` (`sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-{{ epoch }}`, rolling) | `v1` | rolling por prefijo del mismo `arch`+`os`+toolchain; save **incondicional** (`when: always`), la restauración toma la entrada más reciente del prefijo |
@@ -388,6 +394,24 @@ Al pushear un tag `v*`, además de tests + builds corre `publish-release`
 `persist_to_workspace`/`attach_workspace`, genera `SHA256SUMS.txt`, extrae las
 notas de la sección `[X.Y.Z]` de `CHANGELOG.md` (fail-fast si no existe) y
 publica el GitHub Release directo (sin borrador).
+
+### Guardarraíles durables de la suite de tests (`tests/cli_golden.rs`)
+
+Dos invariantes de la suite dorada son fáciles de "optimizar" por error y
+quedan documentados aquí de forma autocontenida:
+
+- **Serialización de residentes TTS (`TTS_LOCK`/`lock_tts()`).** Cada
+  residente TTS activo ocupa un pico medido de ~2.7 GB de RAM. La suite
+  serializa deliberadamente sus tests pesados de inferencia con un mutex
+  global (`TTS_LOCK`, junto a `lock_tts()` en `tests/cli_golden.rs`) para
+  garantizar que nunca haya más de un residente TTS vivo a la vez. Quitar o
+  debilitar ese lock para paralelizar los tests pesados arriesga un OOM del
+  runner de CI, no solo una degradación de tiempo: el lock no se elimina.
+- **El warning de libtest ">60 seconds" no es un cuelgue.** Con la
+  serialización anterior, es esperable que `cargo test` reporte que un test
+  de la serie pesada "has been running for over 60 seconds" mientras espera
+  turno para adquirir `TTS_LOCK`. Es espera de mutex esperada, no trabajo
+  atascado: no se le añaden reintentos ni timeouts para silenciarlo.
 
 ---
 

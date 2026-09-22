@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.2 — 2026-09-22](#0202-20260922)
 - [0.20.1 — 2026-09-21](#0201-20260921)
 - [0.20.0 — 2026-09-21](#0200-20260921)
@@ -115,6 +116,49 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+Remedia las causas raíz de la latencia del triple gate de test en el pipeline de
+release: retira `sccache` (0–3 % de acierto) de `test-linux`/`test-macos` a favor
+de la caché `target-v2`, desacopla el readiness del daemon del warmup TTS en los
+tests de ciclo de vida y fija los guardarraíles durables de la suite.
+
+### Cambiado
+
+- perf(ci): **retira `sccache` de `test-linux`/`test-macos` y extiende la caché
+  `target-v2` (variant `test`)** a ambos jobs en `.circleci/config.yml`. Las tasas
+  reales de acierto de `sccache` eran inefectivas (Windows 0.00 %, Linux 3.21 %,
+  macOS 3.04 %): puro overhead sin beneficio, porque los jobs de test restauraban
+  la caché pero nunca la poblaban. Ahora restauran/guardan registry + `target-v2`
+  vía `cargo_restore_caches`/`cargo_save_target`; `test-windows` queda intacto
+  (mantiene `-C linker=rust-lld`). La validación de tiempos se difiere al próximo
+  release, con criterio de rollback documentado — `.circleci/config.yml`,
+  `docs/BUILD.md`.
+- test(perf): **desacopla el readiness del daemon del warmup TTS** en los tests de
+  ciclo de vida (start/restart/status) de `tests/cli_golden.rs`. Se añaden los
+  helpers `esperar_running_sin_warm`/`start_instancia_solo_running` y 8 tests
+  conmutan al camino «solo running», evitando ~18–20 s de síntesis TTS real por
+  arranque (el warmup es una optimización, no un requisito de correctitud). Cambio
+  **solo de tests**, sin efecto en producción — `tests/cli_golden.rs`.
+- docs: **fija los guardarraíles durables de la suite** en `docs/BUILD.md`: nunca
+  eliminar `TTS_LOCK`/`lock_tts()` (serialización deliberada por el techo de RAM,
+  ~2.7 GB por residente) y el warning de libtest ">60 seconds" no es un cuelgue
+  sino espera de mutex esperada. Se reconcilia la estrategia de cachés (cifras
+  reales de `sccache`, tabla `target-v2`) y se **retira**
+  `docs/reviews/LATENCIA-CI-TESTS.md`, la auditoría transitoria que motivó el
+  trabajo, ya propagada de forma autocontenida a `docs/BUILD.md §4` — mismo patrón
+  que el cierre de `cobertura-de-plataforma-en-ci`: no conservar narrativa
+  histórica una vez propagada la capacidad durable — `docs/BUILD.md`.
+
+### Corregido
+
+- test: **reancla `d03_reaper_sin_pid_vivo_no_falla` a su invariante propio** en
+  `tests/cli_golden.rs`, eliminando una carrera de muestreo global preexistente.
+  El test aseveraba quiescencia de máquina (`!puerto_abierto(8765) &&
+  !residente_presente_por_imagen()`), sensible a cualquier daemon test concurrente
+  en otro hilo de libtest; ahora asevera solo lo que d03 controla (el reaper
+  retorna sin panic y no borra el pidfile de su sandbox) — `tests/cli_golden.rs`.
 
 ## [0.20.2] — 2026-09-22
 
