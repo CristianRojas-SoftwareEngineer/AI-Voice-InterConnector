@@ -72,7 +72,7 @@ La locución tiene `(voz, etiqueta)`, y las cinco sub-acciones del grupo `speech
 
 El entero no puede llevar la causa fina y no debe intentarlo. Una misma reacción del consumidor puede corresponder a varias acciones distintas del destinatario humano: liberar disco, corregir permisos, renovar un token, desbloquear la red o instalar una dependencia inducen todas la misma siguiente llamada, y son cinco cosas distintas que hacer antes de repetirla.
 
-El proyecto tiene dos canales legibles por máquina y usa los dos: el entero, que es un espacio cerrado, y el payload JSON, que es **aditivo por contrato** y tiene un punto único de emisión, `emit_json()`. La distinción fina va por el canal abierto.
+El proyecto tiene dos canales legibles por máquina y usa los dos: el entero, que es un espacio cerrado, y el payload JSON, que es **aditivo por contrato** y tiene un punto único de emisión, `emit_raw_json()`. La distinción fina va por el canal abierto.
 
 **Tres reglas de compatibilidad**, que son lo que impide reabrir la misma brecha un nivel más allá:
 
@@ -483,7 +483,7 @@ La reexportación desde `src/main.rs` crea dos sitios donde *parecen* vivir las 
 
 El canal tiene **tres formatos**, y cada invocación emite **exactamente un objeto JSON**:
 
-1. **Éxito**: el payload propio del comando, vía `emit_json()`, con salida 0.
+1. **Éxito**: el payload propio del comando, vía `emit_raw_json()`, con salida 0.
 2. **Error**: el objeto `{"error": {…}}`, vía `CliError` traducido por `main()`, con salida ≠ 0.
 3. **Veredicto**: código ≠ 0 con el payload **propio** del comando ya emitido y **sin** objeto `error`. Es un dictamen, no un fallo: el comando corrió sin error pero su resultado es negativo. El único caso es **`doctor`**, cuyo exit 1 con FAIL (§9) emite solo el reporte (`checks`, `failed`) y sale con 1.
 

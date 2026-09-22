@@ -68,7 +68,6 @@ AI-Voice-InterConnector/
 │   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)
 │   ├── avi-stt/                        # ParakeetEngine (ort, load-dynamic)
 │   ├── avi-translation/                # MarianTranslator (CTranslate2)
-│   └── avi-config/                     # Configuración
 ├── vendor/
 │   └── qwen3-tts/                      # Binario y pesos Qwen3-TTS (no commiteados todos)
 └── crates/xtask/src/main.rs            # cask / source-offer / licenses (tooling Rust)

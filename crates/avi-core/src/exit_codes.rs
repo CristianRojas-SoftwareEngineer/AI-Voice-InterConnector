@@ -50,12 +50,4 @@ impl CliError {
             message: message.into(),
         }
     }
-
-    pub fn invalid_input(reason: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(ExitCode::InvalidInput, reason, message)
-    }
-
-    pub fn not_found(reason: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::new(ExitCode::NotFound, reason, message)
-    }
 }

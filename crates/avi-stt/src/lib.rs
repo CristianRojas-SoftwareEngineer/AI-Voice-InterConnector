@@ -3,7 +3,7 @@
 //!
 //! Reemplaza al anterior motor (whisper-rs/whisper.cpp, formato GGUF). Exige
 //! las features `native-stt` (y su dependencia `ort`) para compilar; sin
-//! ella el crate es una capa vacía (`DummySttEngine` de `avi-core`) y `cargo
+//! ella el crate es una capa vacía y `cargo
 //! test`/`cargo llvm-cov` no pagan el costo de compilar ONNX Runtime.
 
 #[cfg(feature = "native-stt")]

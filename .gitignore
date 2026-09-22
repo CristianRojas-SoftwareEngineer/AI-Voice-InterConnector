@@ -13,17 +13,10 @@ ai-voice-interconnector.png
 # Config de Claude Code: ignorar todo el contenido de .claude/ (incluido el prompt
 # de continuidad — se genera localmente y no se versiona).
 .claude/*
-__pycache__/
-*.pyc
-.pytest_cache/
-*.egg-info/
-# Artefactos de coverage: generados por `pytest --cov`, no se versionan.
+# Artefactos de coverage (lcov/cargo-llvm-cov), no se versionan.
 .coverage
 coverage.json
 coverage.xml
-
-# Lockfile de uv (proyecto usa requirements-lock.txt)
-uv.lock
 
 # Bus de orquestación (artefactos de proceso, nunca se commitean)
 .claude/orchestration/

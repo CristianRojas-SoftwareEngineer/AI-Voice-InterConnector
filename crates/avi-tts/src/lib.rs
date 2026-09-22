@@ -120,9 +120,6 @@ pub struct VoiceProfile {
 
 /// Trait público del motor de síntesis TTS
 pub trait TtsEngine: Send + Sync {
-    fn synthesize(&self, text: &str, voice: &str, output_path: Option<&PathBuf>)
-        -> Result<PathBuf>;
-
     fn synthesize_with_options(
         &self,
         text: &str,
@@ -521,21 +518,6 @@ fn actualizar_resident_pid_en_pidfile(pid: u32) {
 }
 
 impl TtsEngine for Qwen3TtsEngine {
-    fn synthesize(
-        &self,
-        text: &str,
-        voice: &str,
-        output_path: Option<&PathBuf>,
-    ) -> Result<PathBuf> {
-        let default_options = GenerationOptions::produccion();
-        let qvoice_path = avi_store::VoiceStore::new().find_reference(voice);
-        let profile = VoiceProfile {
-            name: voice.to_string(),
-            qvoice_path,
-        };
-        self.synthesize_with_options(text, &profile, &default_options, output_path)
-    }
-
     fn synthesize_with_options(
         &self,
         text: &str,

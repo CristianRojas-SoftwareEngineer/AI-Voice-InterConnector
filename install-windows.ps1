@@ -14,7 +14,7 @@
 #
 # La descarga por CLI (Invoke-WebRequest/Invoke-RestMethod) no aplica el
 # Mark-of-the-Web, así que el archivo descargado no dispara SmartScreen
-# (hallazgo verificado; solo la descarga por navegador marca ZoneId=3).
+# (comportamiento verificado; solo la descarga por navegador marca ZoneId=3).
 #
 # Alternativa inspeccionable a `irm | iex`:
 #   iwr https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-windows.ps1 -OutFile install-windows.ps1

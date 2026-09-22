@@ -208,7 +208,7 @@ Especificaciones **no comprometidas** para el goal inmediato. No se trabajan aho
 
 ## Firma de código y notarización
 
-**Motivación**: los binarios del canal nativo no están firmados, por lo que Windows SmartScreen y macOS Gatekeeper bloquean el primer arranque cuando el artefacto se descarga por navegador. El mecanismo y las mitigaciones ya vigentes (instaladores de una línea, canal PyPI) están explicados en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar); ninguna de ellas elimina el bloqueo para la descarga directa desde el navegador (ver también `docs/BUILD.md` §"Limitación conocida: firma de código y notarización").
+**Motivación**: los binarios del canal nativo no están firmados, por lo que Windows SmartScreen y macOS Gatekeeper bloquean el primer arranque cuando el artefacto se descarga por navegador. El mecanismo y la mitigación ya vigente (instaladores de una línea) están explicados en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar); no elimina el bloqueo para la descarga directa desde el navegador (ver también `docs/BUILD.md` §"Limitación conocida: firma de código y notarización").
 
 **Justificación del diferimiento**: la firma es un gate que solo vale la pena cuando el proyecto/producto esté **cristalizado y completo** — idealmente sin bugs y con funcionalidad completa y equivalente entre los 3 sistemas operativos ([docs/PARITY.md](PARITY.md) sin brechas abiertas). El producto aún está en desarrollo: firmar ahora significaría re-tramitar la confianza externa (aprobación de SignPath OSS, cuenta Apple Developer de pago) sobre artefactos que siguen cambiando de forma. Solo entonces se iniciará el proceso de firma.
 

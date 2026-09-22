@@ -152,30 +152,6 @@ fn split_tokens(text: &str, max_length: usize) -> Vec<String> {
     chunks
 }
 
-pub struct DummySttEngine;
-
-impl SttEngine for DummySttEngine {
-    fn transcribe(&self, _audio_pcm: &[i16], _language: Option<&str>) -> anyhow::Result<String> {
-        Ok("Transcripción de prueba".to_string())
-    }
-}
-
-pub struct DummyTranslationEngine;
-
-impl TranslationEngine for DummyTranslationEngine {
-    fn translate(
-        &self,
-        text: &str,
-        source_lang: &str,
-        target_lang: &str,
-    ) -> anyhow::Result<String> {
-        if source_lang == target_lang {
-            return Ok(text.to_string());
-        }
-        Ok(format!("[{}->{}] {}", source_lang, target_lang, text))
-    }
-}
-
 /// Núcleos físicos del equipo, para dimensionar el paralelismo de los motores
 /// (whisper.cpp/ggml y ct2rs). Se usan físicos y no lógicos a propósito: los
 /// hilos de ggml hacen busy-wait en las barreras de sincronización, y lanzar

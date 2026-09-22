@@ -48,9 +48,8 @@ impl Ct2TranslationEngine {
         _target_lang: &str,
     ) -> anyhow::Result<Vec<String>> {
         // El motor se instancia para una dirección fija según el `model_dir`
-        // con el que se construyó; `source_lang`/`target_lang` no se usan aquí
-        // (mismo patrón que `DummyTranslationEngine` ignorando parámetros no
-        // aplicables). Se anexa `</s>` manualmente al origen: el encoder
+        // con el que se construyó; `source_lang`/`target_lang` no se usan aquí.
+        // Se anexa `</s>` manualmente al origen: el encoder
         // Marian/opus-mt lo exige y `ct2-transformers-converter` no lo añade
         // automáticamente (ver nota técnica en el test
         // `ct2rs_carga_modelo_opus_mt_y_traduce` de este mismo archivo).

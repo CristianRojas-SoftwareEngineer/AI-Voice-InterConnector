@@ -35,8 +35,8 @@ const DAEMON_PORT_ENV: &str = "AVI_DAEMON_PORT";
 
 /// Resuelve la dirección de escucha del daemon: override por
 /// `AVI_DAEMON_PORT` (aislamiento por instancia) con fallback a `DAEMON_ADDR`.
-/// No lee `avi-config::daemon_port` a propósito: el arranque no debe acoplarse
-/// al `config.toml` del data_dir compartido (colisionaría entre instancias).
+/// Sin fichero de configuración a propósito: el arranque no debe acoplarse
+/// al data_dir compartido (colisionaría entre instancias).
 fn resolver_addr_daemon() -> SocketAddr {
     if let Ok(raw) = std::env::var(DAEMON_PORT_ENV) {
         if let Ok(port) = raw.trim().parse::<u16>() {
@@ -2489,7 +2489,7 @@ enum EstadoResidual {
 /// (sin probe ni proceso del daemon), hay residente-solo si el residente sigue
 /// vivo (por su PID registrado) — entonces no hay vía libre, sino degradado
 /// para reclamo.
-#[allow(dead_code)]
+#[cfg(test)]
 fn parado_con_residente_es_degradado(
     probe_daemon: bool,
     pid_vivo: bool,

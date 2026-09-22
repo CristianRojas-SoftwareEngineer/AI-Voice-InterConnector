@@ -420,27 +420,6 @@ impl SpeechStore {
 
 // ─── ModelStore ──────────────────────────────────────────────────────
 
-/// Estado de provisión de un modelo
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ModelStatus {
-    /// Modelo descargado y listo para uso
-    Ready,
-    /// Modelo parcialmente descargado o corrupto
-    Incomplete,
-    /// Modelo no descargado
-    Missing,
-}
-
-/// Entrada de un modelo en el almacén
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelEntry {
-    pub name: String,
-    pub revision: String,
-    pub status: ModelStatus,
-    pub path: PathBuf,
-    pub size_bytes: Option<u64>,
-}
-
 /// Pines de modelos: `(nombre_lógico, repo HF, revisión)`.
 /// La revisión es un **commit hash** de HuggingFace: mismo binario → mismos
 /// bytes (reproducibilidad); actualizar un pin es una acción deliberada y
@@ -628,11 +607,6 @@ impl ModelStore {
         Self { base_dir }
     }
 
-    pub fn ensure_initialized(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.base_dir)?;
-        Ok(())
-    }
-
     /// Resolución del repo HF y revisión pinneada de un modelo lógico.
     pub fn revision_of(model_name: &str) -> Option<(&'static str, &'static str)> {
         MODEL_REVISIONS
@@ -717,27 +691,6 @@ impl ModelStore {
             }
             None => false,
         }
-    }
-
-    /// Listar todos los modelos conocidos (pines de `MODEL_REVISIONS`).
-    pub fn list(&self) -> Result<Vec<ModelEntry>> {
-        self.ensure_initialized()?;
-        let mut entries = Vec::new();
-        for (name, repo, rev) in MODEL_REVISIONS {
-            let status = if self.is_provisioned(name) {
-                ModelStatus::Ready
-            } else {
-                ModelStatus::Missing
-            };
-            entries.push(ModelEntry {
-                name: name.to_string(),
-                revision: rev.to_string(),
-                status,
-                path: hf_cache_dir().join(format!("models--{}", repo.replace('/', "--"))),
-                size_bytes: None,
-            });
-        }
-        Ok(entries)
     }
 
     /// Directorio de un modelo: snapshot HF pinneado; si no resuelve, cae al

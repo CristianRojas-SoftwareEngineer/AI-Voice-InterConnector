@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.5 — 2026-09-22](#0205-20260922)
 - [0.20.4 — 2026-09-22](#0204-20260922)
 - [0.20.3 — 2026-09-22](#0203-20260922)
@@ -118,6 +119,43 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+Remediación de drift documental y código muerto: el repositorio acumulaba
+referencias a Python que ya no describen el estado vigente, un crate huérfano
+sin consumidores y funciones públicas sin llamadas. Se retira lo verificado
+como muerto sin cambiar comportamiento de producto; lo funcional o
+compatibilidad deliberada se conserva y documenta como intencional.
+
+### Cambiado
+
+- refactor: **retira código muerto verificado sin llamadas** (sin cambio de
+  comportamiento). Crate `avi-config` entero (ningún manifiesto depende de
+  él); constructores `CliError::invalid_input/not_found`; `JsonEnvelope`/
+  `emit_json` (el punto único de emisión real es `emit_raw_json`, se
+  actualiza `docs/CLI/CONTRACT.md`); `DummySttEngine`/
+  `DummyTranslationEngine` (existen implementaciones reales); método
+  `TtsEngine::synthesize` (toda la producción usa `synthesize_with_options`);
+  `ModelStore::list`/`ensure_initialized`/`ModelEntry`/`ModelStatus` (solo
+  se usaban entre sí). `parado_con_residente_es_degradado` pasa a `#[cfg(test)]`
+  (solo lo usan tests) — `crates/avi-core`, `crates/avi-store`,
+  `crates/avi-tts`, `src/main.rs`, `crates/avi-daemon`.
+- docs: **sanea referencias a Python que no describen el estado vigente**.
+  `THIRD-PARTY-LICENSES.md` ordenaba regenerar con un script Python
+  inexistente (ahora apunta a `xtask licenses --check` + `cargo-license`);
+  `.circleci/config.yml` planificaba un script `.py` inexistente;
+  `docs/GOAL.md` listaba el canal PyPI (retirado en Fase 7) como mitigación
+  vigente; `.gitignore` conservaba artefactos `pytest`/`uv`. El puente
+  funcional `python -m ctranslate2` de `setup` se conserva a propósito
+  (es comportamiento, no drift) — `THIRD-PARTY-LICENSES.md`,
+  `.circleci/config.yml`, `docs/GOAL.md`, `.gitignore`, `src/main.rs`.
+- docs: **limpia identificadores transitorios de auditorías**. Etiquetas
+  `(R1)`/`(R3)` en `.circleci/config.yml` (lenguaje plano);
+  `protocol.py` fantasma en comentarios del daemon (contrato vigente);
+  `hallazgo` en `install-windows.ps1`; promesa abierta de gate de coverage
+  (alcance estable sin gate de %); medición `v0.18.23` superada en
+  `docs/BUILD.md` (evidencia `v0.20.5`: wall `~25m`).
 
 ## [0.20.5] — 2026-09-22
 

@@ -100,7 +100,6 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 | `atomic-waker` | 1.1.2 | Apache-2.0 OR MIT | MIT |
 | `autocfg` | 1.5.1 | Apache-2.0 OR MIT | MIT |
 | `avi-audio` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-config` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-core` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-daemon` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-store` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
@@ -390,7 +389,6 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 | `serde_json` | 1.0.151 | MIT OR Apache-2.0 | MIT |
 | `serde_path_to_error` | 0.1.20 | MIT OR Apache-2.0 | MIT |
 | `serde_repr` | 0.1.21 | MIT OR Apache-2.0 | MIT |
-| `serde_spanned` | 0.6.9 | MIT OR Apache-2.0 | MIT |
 | `serde_urlencoded` | 0.7.1 | MIT/Apache-2.0 | MIT |
 | `sha2` | 0.11.0 | MIT OR Apache-2.0 | MIT |
 | `sharded-slab` | 0.1.7 | MIT | MIT |
@@ -436,11 +434,9 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 | `tokio-util` | 0.7.19 | MIT | MIT |
 | `tokio_with_wasm` | 0.8.8 | MIT | MIT |
 | `tokio_with_wasm_proc` | 0.8.8 | MIT | MIT |
-| `toml` | 0.8.23 | MIT OR Apache-2.0 | MIT |
 | `toml_datetime` | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | MIT |
 | `toml_edit` | 0.25.13+spec-1.1.0 | MIT OR Apache-2.0 | MIT |
 | `toml_parser` | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | MIT |
-| `toml_write` | 0.1.2 | MIT OR Apache-2.0 | MIT |
 | `tower` | 0.5.3 | MIT | MIT |
 | `tower-http` | 0.6.11 | MIT | MIT |
 | `tower-layer` | 0.3.3 | MIT | MIT |
@@ -543,9 +539,11 @@ Resumen por familia: Apache-2.0 17, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-lat
 Este inventario se regenera de forma **deliberada** tras actualizar `Cargo.lock`:
 
 ```bash
-cargo metadata --format-version 1 | python scripts/check_third_party_licenses.py
-python scripts/check_third_party_licenses.py  # verifica sincronía
+cargo run -p xtask -- licenses --check  # verifica sincronía
 ```
+
+Para regenerar tras altas/bajas de crates, reconstruir el inventario desde
+`Cargo.lock` con `cargo metadata` / `cargo-license`.
 
 Revisar el diff resultante para auditar altas/bajas de dependencias y cambios de licencia
 antes de commitear.

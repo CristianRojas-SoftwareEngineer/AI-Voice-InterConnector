@@ -19,10 +19,10 @@ pub use spawn::{esperar_muerte_pid, matar_arbol_por_pid, pid_vivo, spawn_backgro
 // site en `src/main.rs` ya está dentro de un bloque `#[cfg(windows)]`).
 #[cfg(windows)]
 pub use spawn::spawn_uninstall_helper;
-// `hilos_disponibles` y el trait `SttEngine` (`.transcribe`) solo los consume
-// la superficie STT, gateada tras `native-stt`.
+// El trait `SttEngine` (`.transcribe`) solo lo consume la superficie STT,
+// gateada tras `native-stt`.
 #[cfg(feature = "native-stt")]
-use avi_core::engine::{hilos_disponibles, SttEngine};
+use avi_core::engine::SttEngine;
 use avi_core::json_emitter;
 #[cfg(feature = "native-stt")]
 use avi_store::ModelStore;
@@ -118,8 +118,6 @@ impl DaemonState {
         // Los hilos lógicos del equipo del usuario dimensionan el paralelismo de
         // ONNX Runtime (heredado de `avi-stt::parakeet`); el runtime del daemon
         // serializa síntesis y STT fuera de esta construcción.
-        #[cfg(feature = "native-stt")]
-        let _ = hilos_disponibles();
         #[cfg(feature = "native-translation")]
         let ct2_engine = {
             let mut map = std::collections::HashMap::new();
@@ -280,7 +278,7 @@ async fn health_handler(State(state): State<SharedState>) -> Json<Value> {
 
 /// POST /synthesize — síntesis con streaming NDJSON de progreso
 ///
-/// Contrato NDJSON (fuente de verdad: `protocol.py`): `start` → `progress`(N)
+/// Contrato NDJSON vigente: `start` → `progress`(N)
 /// → `result`{`audio_b64`,`t3_time`,`s3gen_time`} OR `error`{`reason`,`message`}.
 /// El motor `TtsEngine` no expone callback de progreso, por lo que se emite un
 /// único marcador `progress` genérico antes de sintetizar.
@@ -589,7 +587,7 @@ async fn synthesize_handler(
 
 /// POST /transcribe — transcripción de audio (PCM int16 base64)
 ///
-/// Contrato (fuente de verdad: `protocol.py`): el campo es `audio_b64` (no
+/// Contrato vigente: el campo es `audio_b64` (no
 /// `audio_pcm_base64`); el audio es PCM i16 little-endian 16 kHz mono; la
 /// respuesta exitosa es `TranscribeResponse{text}`.
 #[cfg(feature = "native-stt")]

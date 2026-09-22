@@ -156,7 +156,7 @@ commands:
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-
 
-  # Caché de toolchain (R3): ~/.rustup (toolchain + componentes) y ~/.cargo/bin
+  # Caché de toolchain: ~/.rustup (toolchain + componentes) y ~/.cargo/bin
   # (binarios instalados: rustup, cargo, cargo-llvm-cov). Clave sin checksum —
   # solo depende de arch + rust_version — así que es inmutable y se reconstruye
   # al bumpear rust_version. Evita rustup-init (Win/macOS) y el `cargo install
@@ -392,7 +392,7 @@ jobs:
             # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
             # equivalente de $BASH_ENV).
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            # Idempotente (R3): si la caché de toolchain ya trae cargo, no
+            # Idempotente: si la caché de toolchain ya trae cargo, no
             # re-ejecutar rustup-init (ahorra ~2-3 min por corrida). rustup-init
             # estático oficial (pin exacto, no choco): reproducible e
             # independiente del repo de Chocolatey. Invoke-WebRequest no setea
@@ -476,7 +476,7 @@ jobs:
           name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
           command: |
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
-            # Idempotente (R3): si la caché de toolchain ya trae rustup, se omite
+            # Idempotente: si la caché de toolchain ya trae rustup, se omite
             # la instalación (ahorra ~2-3 min por corrida).
             if [ -x "$HOME/.cargo/bin/rustup" ]; then
               echo "Toolchain restaurado de caché; se omite rustup-init"
@@ -540,16 +540,15 @@ jobs:
     # Job de cobertura Rust (cargo-llvm-cov, LLVM instrumentation). Corre solo
     # en Linux x86_64: coverage es agnóstico de SO, duplicarlo triplicaría coste
     # sin señal nueva (ver docs/BUILD.md §4). Reemplaza a pytest-cov; genera
-    # lcov.info y resumen por líneas. Sin gate de % aún — solo valida que la
-    # instrumentación no rompa la suite; el gate por módulo se añadirá con
-    # `cargo llvm-cov --fail-under-lines` cuando se defina el umbral.
+    # lcov.info y resumen por líneas. Sin gate de % por diseño — solo valida
+    # que la instrumentación no rompa la suite.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: medium
     steps:
       - checkout
       - run:
-          # NOTA (R1): con native-stt/native-translation off por defecto,
+          # NOTA: con native-stt/native-translation off por defecto,
           # coverage compila la workspace SIN los stacks C++ (no aparece
           # ct2rs con C++); libclang-dev/cmake se conservan por simetría
           # con test-linux y por si un futuro umbral corre coverage con features.
@@ -739,8 +738,7 @@ jobs:
   # coverage + instaladores (ver workflow build-all).
   # ──────────────────────────────────────────────────────────────
   build-windows-x64:
-    # Windows x64: binario + smoke test nativo. No usa Inno Setup aún (el
-    # bundle nativo scripts/build_release_native.py se invocará en Fase 7.2).
+    # Windows x64: binario + smoke test nativo. No usa Inno Setup aún.
     executor: win/server-2022
     steps:
       - checkout
@@ -756,7 +754,7 @@ jobs:
             # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
             # equivalente de $BASH_ENV).
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            # Idempotente (R3): si la caché de toolchain ya trae cargo, se omite
+            # Idempotente: si la caché de toolchain ya trae cargo, se omite
             # rustup-init (ahorra ~2-3 min por corrida). Guarda por RUTA
             # específica del toolchain fijado (no Get-Command): el executor trae
             # Rust preinstalado en PATH y Get-Command saltaría rustup-init
@@ -1345,7 +1343,7 @@ jobs:
           no_output_timeout: 10m
           command: |
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
-            # Idempotente (R3): si la caché de toolchain ya trae rustup, se omite
+            # Idempotente: si la caché de toolchain ya trae rustup, se omite
             # la instalación (ahorra ~2-3 min por corrida).
             if [ -x "$HOME/.cargo/bin/rustup" ]; then
               echo "Toolchain restaurado de caché; se omite rustup-init"
