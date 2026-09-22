@@ -438,6 +438,16 @@ fn estado_daemon_env(envs: &[(&str, &str)]) -> Value {
 /// nunca pasa en silencio. `stopped` no tiene señal de apagado por fichero:
 /// se observa la ausencia (poll de `daemon status` hasta `stopped`).
 /// Espera de estado con envs extra para el hijo (instancia aislada).
+///
+/// Camino alterno «solo running»: para los tests que solo verifican ciclo de
+/// vida (start/restart/status) y no necesitan síntesis real, existe la
+/// hermana `esperar_running_sin_warm`, que asevera bind-ready + `daemon ==
+/// "running"` SIN exigir `warm == "warm"` ni abortar ante `warm_failed`. El
+/// warmup TTS en segundo plano es una optimización, no un requisito de
+/// correctitud del ciclo de vida: esta función (`esperar_estado_daemon_env`)
+/// y `start_instancia` quedan sin tocar por ese camino nuevo, así que los
+/// tests que sí validan contenido sintetizado (clone/dub) siguen pagando el
+/// warmup completo sin cambios de comportamiento.
 fn esperar_estado_daemon_env(esperado: &str, reintentos: u32, envs: &[(&str, &str)]) -> Value {
     let timeout = Duration::from_millis(200 * reintentos as u64);
     if esperado == "running" {
@@ -513,6 +523,49 @@ fn esperar_estado_daemon_env(esperado: &str, reintentos: u32, envs: &[(&str, &st
     );
 }
 
+/// Camino "solo running" (hermano de `esperar_estado_daemon_env`): espera el
+/// bind-ready (mismo fichero `daemon.ready`, vía `esperar_fichero_ready`) y
+/// luego sondea `daemon status` hasta `daemon == "running"`, SIN exigir
+/// `warm == "warm"` ni abortar ante `warm_failed`. Lo usan los tests que solo
+/// verifican ciclo de vida (start/restart/status): el warmup TTS en segundo
+/// plano es una optimización, no un requisito de correctitud del ciclo de
+/// vida, y esperar `warm` les hace pagar la síntesis real sin necesitarla.
+/// Conserva el mismo presupuesto/timeout diagnóstico y el `reaper_ante_fallo`
+/// al agotar que `esperar_estado_daemon_env`.
+fn esperar_running_sin_warm(reintentos: u32, envs: &[(&str, &str)]) -> Value {
+    let timeout = Duration::from_millis(200 * reintentos as u64);
+    let data_dir = envs
+        .iter()
+        .find(|(k, _)| *k == "AVI_DATA_DIR")
+        .map(|(_, v)| PathBuf::from(v))
+        .unwrap_or_else(avi_store::data_dir);
+    let ruta = data_dir.join("daemon.ready");
+    // Bind-ready: mismo mecanismo que la rama "running" de
+    // `esperar_estado_daemon_env`, pero sin exigir `warm == "warm"` después.
+    let _ = esperar_fichero_ready(&ruta, timeout);
+    // Sondeo de `daemon status` hasta `running` (patrón genérico, igual al de
+    // `esperado != "running"` en `esperar_estado_daemon_env`).
+    let mut ultimo = Value::Null;
+    for intento in 0..reintentos {
+        comprobar_guard("esperar_running_sin_warm(running)");
+        ultimo = estado_daemon_env(envs);
+        if ultimo["daemon"] == Value::String("running".to_string()) {
+            hito(&format!(
+                "esperar_running_sin_warm: 'running' observado en intento {}/{}",
+                intento + 1,
+                reintentos
+            ));
+            return ultimo;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    reaper_ante_fallo("esperar_running_sin_warm(running)-agotado");
+    panic!(
+        "el daemon no alcanzó el estado 'running' (sin exigir warm) tras {} reintentos (último: {})",
+        reintentos, ultimo
+    );
+}
+
 /// Carga una fixture dorada desde `tests/golden/`.
 fn fixture(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -546,10 +599,11 @@ fn d03_lock_envenenado_se_propaga() {
     TEST_LIMITE.with(|c| *c.borrow_mut() = None);
 }
 
-/// El reaper ante fallo fuera de polls con pidfile sin PID vivo y sin residente
-/// (daemon 8765 cerrado + sin proceso por imagen) no falla ni deja huérfanos
-/// (hermético, sin daemon real).
-/// Si hay daemon vivo o residente por imagen se salta sin efectos.
+/// El reaper ante fallo fuera de polls con pidfile sin PID vivo (daemon 8765
+/// cerrado a la entrada) no falla: retorna sin borrar el pidfile de su sandbox.
+/// Hermético (sin daemon real); su reaper solo mata un PID ya muerto, nunca abre
+/// el 8765 ni arranca un residente, así que no puede dejar huérfanos propios.
+/// La guarda de entrada salta el test si hay daemon/residente vivos al empezar.
 /// El pidfile rancio vive en un directorio de estado propio de la instancia
 /// (`AVI_DATA_DIR`), sin tocar el `data_dir` real (reversión: volver a
 /// `avi_store::data_dir()`).
@@ -570,9 +624,16 @@ fn d03_reaper_sin_pid_vivo_no_falla() {
     let path = sandbox.join("daemon.pid");
     std::fs::write(&path, format!("{{\"pid\": {}}}", pid_muerto))
         .expect("escribir pidfile rancio en el sandbox");
-    // El reaper best-effort no debe fallar con PID muerto y sin residente.
+    // El reaper best-effort no debe fallar con PID muerto y sin residente:
+    // llegar hasta aquí ya prueba que retornó sin hacer panic.
     reaper_ante_fallo("d03-prueba");
-    assert!(!puerto_abierto(8765) && !residente_presente_por_imagen());
+    // No aseveramos quiescencia global de máquina: el reaper de d03 solo mata un
+    // PID ya muerto —nunca abre el 8765 ni arranca un residente `qwen_tts`—, así
+    // que cualquier puerto/residente presente aquí proviene de un daemon test
+    // concurrente en otro hilo de libtest, no de un huérfano nuestro. Muestrear el
+    // singleton de máquina (`tasklist` por imagen) enrojecería el test por ese
+    // solapamiento legítimo (carrera, no fallo del reaper). El invariante propio
+    // de d03 —no borrar su pidfile de sandbox— se asevera abajo.
     assert!(
         path.is_file(),
         "el sandbox propio no debe borrar su pidfile"
@@ -903,6 +964,51 @@ fn start_instancia(inst: &InstanciaAislada, extra: &[&str]) -> Value {
         );
     }
     esperar_estado_daemon_env("running", REINTENTOS_WARM_FAILSAFE, &a);
+    actual
+}
+
+/// Hermana de `start_instancia`: arranca la instancia aislada (`daemon start`
+/// con sus envs más `extra`) y espera SOLO `running` (bind-ready) por evento,
+/// SIN exigir `warm == "warm"`. Mismas aserciones de arranque (exit 0,
+/// running+started, PID vivo a nivel SO) que `start_instancia`; la usan los
+/// tests de solo ciclo de vida que no necesitan síntesis real, para no pagar
+/// el warmup TTS en segundo plano.
+fn start_instancia_solo_running(inst: &InstanciaAislada, extra: &[&str]) -> Value {
+    let a = inst.args();
+    let mut cmd: Vec<&str> = vec!["--json", "daemon", "start"];
+    cmd.extend(extra);
+    let (code, actual) = run_json_env(&cmd, &a);
+    if code != 0 {
+        fallo_con_reaper(
+            "start_instancia_solo_running(start)",
+            format!(
+                "daemon start de la instancia debe salir 0 (fue {}): {}",
+                code, actual
+            ),
+        );
+    }
+    if actual["daemon"] != Value::String("running".to_string())
+        || actual["status"] != Value::String("started".to_string())
+    {
+        fallo_con_reaper(
+            "start_instancia_solo_running(daemon)",
+            format!(
+                "tras start la instancia debe estar running+started: {}",
+                actual
+            ),
+        );
+    }
+    let pid = inst.leer_pid_daemon();
+    if !pid.map(avi_daemon::pid_vivo).unwrap_or(false) {
+        fallo_con_reaper(
+            "start_instancia_solo_running(pid)",
+            format!(
+                "la instancia recién arrancada debe estar viva a nivel SO (pid {:?})",
+                pid
+            ),
+        );
+    }
+    esperar_running_sin_warm(REINTENTOS_WARM_FAILSAFE, &a);
     actual
 }
 
@@ -1632,11 +1738,32 @@ mod tts {
     /// límite real de recursos, no como
     /// muleta): `synthesis_lock` del producto (`avi-daemon`) y `HEALTH_OBS_*`
     /// (`avi-tts`) se conservan intactos. Sin tolerancia al envenenado.
+    ///
+    /// **Techo de RAM y prohibición de eliminar el lock.** ~2.7 GB por
+    /// residente TTS es el pico medido de UN solo proceso; los runners de CI
+    /// (y la máquina de desarrollo) no garantizan margen para sostener dos o
+    /// más residentes simultáneos. Paralelizar los tests pesados (quitar o
+    /// debilitar `TTS_LOCK`) arriesga OOM del runner, no una mera degradación
+    /// de rendimiento: un OOM mata el proceso de test a mitad de ciclo y deja
+    /// el diagnóstico (reaper, hitos) sin oportunidad de correr. Por tanto
+    /// **no se elimina `TTS_LOCK`/`lock_tts()`**, ni se reemplaza por un
+    /// esquema que permita concurrencia entre residentes TTS reales; cualquier
+    /// mejora de paralelismo de la suite debe respetar este techo (p. ej.
+    /// paralelizar únicamente los tests que NO adquieren `lock_tts()`).
     pub(crate) static TTS_LOCK: Mutex<()> = Mutex::new(());
 
     pub(crate) fn lock_tts() -> std::sync::MutexGuard<'static, ()> {
         TTS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    // Nota (libtest): con la serie de tests pesados bajo `TTS_LOCK`, es
+    // esperable que `cargo test` emita el warning de libtest "test tts::<x>
+    // has been running for over 60 seconds" para el/los test(s) que esperan
+    // turno en el mutex mientras otro test pesado sintetiza. Es espera de
+    // mutex esperada (serialización deliberada por el techo de RAM de
+    // arriba), NO un cuelgue: el test en cola no está atascado, solo hace
+    // fila. No se le añaden reintentos ni timeouts para "arreglarlo" — hacerlo
+    // enmascararía un cuelgue real si alguna vez ocurriera uno.
 
     /// Etiqueta/voz única por corrida (el oráculo normaliza a minúsculas).
     fn etiqueta_unica(prefix: &str) -> String {
@@ -2374,7 +2501,7 @@ mod tts {
         // Instancia aislada propia (puerto efímero + sandbox + evento);
         // sin precondición de sesión: el sandbox nace detenido y vacío.
         let inst = InstanciaAislada::nueva("start_exito");
-        let actual = start_instancia(&inst, &[]);
+        let actual = start_instancia_solo_running(&inst, &[]);
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
         assert_eq!(
             actual["status"],
@@ -2416,7 +2543,7 @@ mod tts {
         }
         // Instancia aislada propia; base observada en ejecución.
         let inst = InstanciaAislada::nueva("restart_rearma");
-        start_instancia(&inst, &[]);
+        start_instancia_solo_running(&inst, &[]);
         let previo = inst.leer_pid_daemon();
         let a = inst.args();
         let (code, actual) = run_json_env(&["--json", "daemon", "restart"], &a);
@@ -2444,8 +2571,8 @@ mod tts {
                 );
             }
         }
-        // Status debe seguir running (por evento, sin sleeps fijos).
-        esperar_estado_daemon_env("running", REINTENTOS_WARM_FAILSAFE, &a);
+        // Status debe seguir running (por evento, sin sleeps fijos, sin exigir warm).
+        esperar_running_sin_warm(REINTENTOS_WARM_FAILSAFE, &a);
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instancia(&inst, "daemon_restart_rearma");
         hito_fin("tts::daemon_restart_rearma");
@@ -2465,7 +2592,7 @@ mod tts {
         }
         // Instancia aislada propia; `status` contra daemon en ejecución.
         let inst = InstanciaAislada::nueva("status_running");
-        start_instancia(&inst, &[]);
+        start_instancia_solo_running(&inst, &[]);
         let a = inst.args();
         let (code, actual) = run_json_env(&["--json", "daemon", "status"], &a);
         assert_eq!(code, 0);
@@ -2602,7 +2729,7 @@ mod tts {
         // De semántica pasiva (`bind` de prueba) a reclamo activo del árbol propio previo con deadline y verificación.
         // propio previo con deadline y verificación (solo árbol propio, nunca
         // otra instancia ni imagen global; `Ok` graceful sin reintento intacto).
-        let actual = start_instancia(&inst, &["--auto-restart", "--max-retries", "1"]);
+        let actual = start_instancia_solo_running(&inst, &["--auto-restart", "--max-retries", "1"]);
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
         // Desde detenido: fresco con `started` y PID vivo a nivel SO.
         assert_eq!(
@@ -2657,7 +2784,7 @@ mod tts {
         let a = inst.args();
         // Fase 1 — caída del padre: daemon vivo sin pidfile (el dueño anterior
         // murió sin limpiar). El próximo `start` debe reclamar, no adherirse.
-        start_instancia(&inst, &[]);
+        start_instancia_solo_running(&inst, &[]);
         let pid_a = inst.leer_pid_daemon().expect("tras start debe haber pidfile");
         assert!(
             avi_daemon::pid_vivo(pid_a),
@@ -2682,7 +2809,7 @@ mod tts {
             "tras caída el start debe reclamar (started), no adherirse: {}",
             actual
         );
-        esperar_estado_daemon_env("running", REINTENTOS_WARM_FAILSAFE, &a);
+        esperar_running_sin_warm(REINTENTOS_WARM_FAILSAFE, &a);
         assert!(
             !avi_daemon::pid_vivo(pid_a),
             "el reclamo debe haber matado el árbol residual (pid {} sigue vivo)",
@@ -2724,7 +2851,7 @@ mod tts {
             "tras aborto el start debe partir de cero (started): {}",
             actual2
         );
-        esperar_estado_daemon_env("running", REINTENTOS_WARM_FAILSAFE, &a);
+        esperar_running_sin_warm(REINTENTOS_WARM_FAILSAFE, &a);
         // Cierre: cero huérfanos verificados a nivel SO.
         stop_instancia(&inst, "h01_aborto_simulado");
         hito_fin("tts::h01_aborto_simulado_reclama_y_no_deja_huerfanos");
@@ -2802,7 +2929,7 @@ mod tts {
                     t0.elapsed().as_millis()
                 ));
                 let a = inst.args();
-                esperar_estado_daemon_env("running", REINTENTOS_WARM_FAILSAFE, &a);
+                esperar_running_sin_warm(REINTENTOS_WARM_FAILSAFE, &a);
                 stop_instancia(&inst, "h03_pipe_stdio");
                 hito_fin("tts::h03_pipe_stdio_no_debe_quedar_retenido");
                 return;
@@ -2902,7 +3029,7 @@ mod tts {
         }
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
         let inst = InstanciaAislada::nueva("translate_delega");
-        start_instancia(&inst, &[]);
+        start_instancia_solo_running(&inst, &[]);
         let a = inst.args();
         let (code, actual) = run_json_env(
             &[
@@ -3177,7 +3304,7 @@ mod tts {
         }
         // Instancia aislada propia; `status` sobre daemon en ejecución.
         let inst = InstanciaAislada::nueva("perf_status");
-        start_instancia(&inst, &[]);
+        start_instancia_solo_running(&inst, &[]);
         let a = inst.args();
         let t0 = Instant::now();
         let (code, actual) = run_json_env(&["--json", "daemon", "status"], &a);
