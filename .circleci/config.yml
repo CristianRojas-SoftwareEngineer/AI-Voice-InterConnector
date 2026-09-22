@@ -126,10 +126,10 @@ commands:
     description: Guarda target/ siempre (when always) — el parcial acelera el re-run
     # `variant` debe coincidir con el pasado a cargo_restore_caches en el mismo job.
     # `os` debe coincidir también: target/ es OS-específico.
-    # Para test-windows/coverage (variant test/cov) y build-* (variant full); test-linux/macos
-    # reconstruyen vía sccache. build-* combina sccache (Rust por contenido) + target
+    # Usado por test-windows/test-linux/test-macos/coverage (variant test/test/test/cov)
+    # y build-* (variant full). build-* combina sccache (Rust por contenido) + target
     # (C++ OUT_DIR de ct2rs/oneDNN) y ejecuta `cargo clean -p ai-voice-interconnector`
-    # antes de `cargo build` para determinismo del bump VERSION sin perder C++. Ver docs/BUILD.md:326.
+    # antes de `cargo build` para determinismo del bump VERSION sin perder C++. Ver docs/BUILD.md §4.
     parameters:
       variant:
         type: string
@@ -145,7 +145,7 @@ commands:
           when: always
 
   cargo_restore_registry:
-    description: Restaura solo registry/git (sin target) — para test-linux/test-macos (sin target) donde sccache es suficiente; coverage, test-windows y build-* usan cargo_restore_caches con target-v2
+    description: Restaura solo registry/git (sin target) — para los jobs pequeños xtask/changelog-gate (validate-licenses, validate-changelog, publish-metadata); test-linux/test-macos/test-windows/coverage y build-* usan cargo_restore_caches con target-v2
     steps:
       - run:
           name: Generar Cargo.lock.cachekey (clave de caché normalizada)
@@ -299,8 +299,15 @@ jobs:
     # arch-independiente y mockea el engine (Parakeet/Qwen no se ejercitan),
     # así que re-correrla en ARM64 no aportaría señal (ver docs/BUILD.md §4).
     # Es la arquitectura más barata/rápida disponible.
-    # Caché heterogénea: test-linux usa cargo_restore_registry (sin target) y reconstruye vía sccache (~15% hit en frío);
-    # target-v2 375 MiB 8s (ext4) → 50s de compile aplica a test-windows/coverage (referencia histórica ext4 8s vs sccache 15%).
+    # Caché: registry + target-v2 (variant: test), igual que test-windows/coverage.
+    # Ensayo provisional: este job ahora restaura/guarda target-v2 (variant: test), igual
+    # que test-windows, en vez de restaurar solo el registry y reconstruir vía sccache.
+    # Baseline de comparación: duraciones de test-linux en v0.20.2. Evaluar el efecto real
+    # en el SEGUNDO release posterior a este cambio (caché tibia) — el namespace target-v2
+    # de variant test para este job nace frío en el primer release y solo paga el coste de
+    # guardado sin beneficiarse aún del restore. Revertir a cargo_restore_registry +
+    # sccache si en caché tibia el tiempo de pared no mejora, o empeora de forma
+    # atribuible al I/O de restore/save de target-v2.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: medium
@@ -319,7 +326,9 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_registry
+      - cargo_restore_caches:
+          os: linux
+          variant: test
       - run:
           name: Verificar toolchain Rust
           command: |
@@ -337,18 +346,15 @@ jobs:
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
-      - sccache_restore_cache:
-          os: linux
-      - sccache_setup_unix
       - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
             cargo test --all --verbose
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
-      - run:
-          name: Estadísticas de sccache (hit-rate)
-          command: sccache --show-stats
+      - cargo_save_target:
+          os: linux
+          variant: test
 
   test-windows:
     # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
@@ -433,7 +439,16 @@ jobs:
     # Suite Rust en macOS nativo (Apple Silicon, Xcode 26.4.0). Valida código
     # específico de macOS (afplay/CoreAudio, rutas POSIX, señales) — sin Mac
     # físico, este gate en CI es la única validación antes del usuario real.
-    # Caché: registry + sccache (sin target) — coherente con test-linux/windows.
+    # Caché: registry + target-v2 (variant: test), igual que test-linux/windows.
+    # Ensayo provisional: este job ahora restaura/guarda target-v2 (variant: test), igual
+    # que test-windows, en vez de restaurar solo el registry y reconstruir vía sccache.
+    # Baseline de comparación: duraciones de test-macos en v0.20.2. Evaluar el efecto real
+    # en el SEGUNDO release posterior a este cambio (caché tibia) — el namespace target-v2
+    # de variant test para este job nace frío en el primer release y solo paga el coste de
+    # guardado sin beneficiarse aún del restore. El coste de I/O de target-v2 en APFS/macOS
+    # no está medido y es la mayor incógnita del ensayo. Revertir a cargo_restore_registry +
+    # sccache si en caché tibia el tiempo de pared no mejora, o empeora de forma atribuible
+    # al I/O de restore/save de target-v2.
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
@@ -462,7 +477,9 @@ jobs:
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
       - toolchain_save_cache:
           os: macos
-      - cargo_restore_registry
+      - cargo_restore_caches:
+          os: macos
+          variant: test
       - run:
           name: Instalar dependencias de sistema (cmake, pkg-config)
           command: |
@@ -485,9 +502,6 @@ jobs:
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
-      - sccache_restore_cache:
-          os: macos
-      - sccache_setup_unix
       - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
@@ -495,9 +509,9 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo test --all --verbose
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
-      - run:
-          name: Estadísticas de sccache (hit-rate)
-          command: sccache --show-stats
+      - cargo_save_target:
+          os: macos
+          variant: test
 
   coverage:
     # Job de cobertura Rust (cargo-llvm-cov, LLVM instrumentation). Corre solo
@@ -606,7 +620,7 @@ jobs:
     # versión bumppeada antes del tag, evitando el fallo silencioso de
     # publish-release (~14 min de pipeline deshechos). Corre en tags v* como
     # gate de los builds (ver workflow build-all).
-    # Caché: registry + sccache (sin target) — coherente con test-*.
+    # Caché: registry + sccache (sin target) — coherente con los jobs pequeños/xtask.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
@@ -1556,7 +1570,7 @@ jobs:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
-      # Caché: registry + sccache (sin target xtask) — coherente con test-*/coverage.
+      # Caché: registry + sccache (sin target xtask) — coherente con los jobs pequeños/xtask.
       - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
