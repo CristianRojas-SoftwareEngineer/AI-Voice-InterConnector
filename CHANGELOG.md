@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.20.4 — 2026-09-22](#0204-20260922)
 - [0.20.3 — 2026-09-22](#0203-20260922)
 - [0.20.2 — 2026-09-22](#0202-20260922)
 - [0.20.1 — 2026-09-21](#0201-20260921)
@@ -118,7 +118,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+## [0.20.4] — 2026-09-22
 
 Redefine el corte de release de generación a **promoción** de la sección curada
 del CHANGELOG. Hasta ahora `xtask release` generaba una sección nueva desde
@@ -2003,3 +2003,4 @@ estado con el que nace el producto.
 [0.20.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.0...v0.20.1
 [0.20.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.1...v0.20.2
 [0.20.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.2...v0.20.3
+[0.20.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.3...v0.20.4
