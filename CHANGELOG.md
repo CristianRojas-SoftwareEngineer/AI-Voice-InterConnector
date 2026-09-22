@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.20.6 — 2026-09-22](#0206-20260922)
 - [0.20.5 — 2026-09-22](#0205-20260922)
 - [0.20.4 — 2026-09-22](#0204-20260922)
 - [0.20.3 — 2026-09-22](#0203-20260922)
@@ -120,7 +120,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+## [0.20.6] — 2026-09-22
 
 Remediación de drift documental y código muerto: el repositorio acumulaba
 referencias a Python que ya no describen el estado vigente, un crate huérfano
@@ -2068,3 +2068,4 @@ estado con el que nace el producto.
 [0.20.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.2...v0.20.3
 [0.20.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.3...v0.20.4
 [0.20.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.4...v0.20.5
+[0.20.6]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.5...v0.20.6
