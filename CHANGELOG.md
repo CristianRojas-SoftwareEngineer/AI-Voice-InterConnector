@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.20.2 — 2026-09-22](#0202-20260922)
 - [0.20.1 — 2026-09-21](#0201-20260921)
 - [0.20.0 — 2026-09-21](#0200-20260921)
 - [0.19.0 — 2026-09-21](#0190-20260921)
@@ -115,7 +115,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+
+## [0.20.2] — 2026-09-22
+
+Paraleliza la suite de pruebas de integración eliminando locks globales y acotando
+tiempos de sondeo en CI, optimiza el enlace con `rust-lld` en el gate de Windows y
+elimina residuos de código, advertencias de Clippy y drifts documentales.
 
 ### Cambiado
 
@@ -1909,3 +1914,4 @@ estado con el que nace el producto.
 [0.19.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.26...v0.19.0
 [0.20.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.19.0...v0.20.0
 [0.20.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.0...v0.20.1
+[0.20.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.1...v0.20.2
