@@ -241,12 +241,13 @@ completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
   **9 gates** son `requires:` de los 4 builds nativos, que compilan las 4
   plataformas en modo release (validación de compilación por plataforma).
 
-**Feedback pre-release.** El trabajo diario vive en `development`; sus commits no
-disparan CI (decisión explícita para un flujo de un solo desarrollador). La red
-de seguridad es el gate al taggear: si la triple suite falla, los builds no
-corren y **nada se publica** (fix-forward/revert y re-tag). No hay estado de
-`main` sin tag que publique, así que no se necesita *branch protection* airtight
-para sostener la garantía "commit taggeado probado".
+**Feedback pre-release.** El repo es trunk-based sobre `main` (flujo de un solo
+desarrollador, sin ramas de larga vida); los commits de rama **no** disparan CI
+(`build-all` es tags-only, `branches: ignore: /.*/`). La red de seguridad es el
+gate al taggear: si la triple suite falla, los builds no corren y **nada se
+publica** (fix-forward/revert y re-tag). No hay estado de `main` sin tag que
+publique, así que no se necesita *branch protection* airtight para sostener la
+garantía "commit taggeado probado".
 
 ### Simetría: 3 puertas de test vs. 4 targets de build
 

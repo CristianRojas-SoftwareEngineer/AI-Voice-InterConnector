@@ -90,6 +90,10 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
 
 ## 1. Corte: crear y publicar el tag
 
+El repo es **trunk-based sobre `main`**: el trabajo diario y el corte ocurren en
+`main`, no hay ramas de larga vida, y el tag `v*` se crea sobre `main`. El push
+del tag es el único disparador de CI (ver §2).
+
 ```bash
 cargo run -p xtask -- release X.Y.Z   # o /release X.Y.Z (skill orquestadora)
 # → cura los TODO: curar del CHANGELOG (párrafo + bullets)
