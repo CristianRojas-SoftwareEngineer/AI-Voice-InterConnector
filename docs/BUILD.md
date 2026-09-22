@@ -211,39 +211,47 @@ SmartScreen/Gatekeeper. Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md) y
 
 ## 4. CI/CD con CircleCI
 
-La CI se organiza en **dos pipelines** que reusan las mismas definiciones de
-jobs (sin duplicarlas), cada uno con su propio disparador y su propia carga:
+La CI es **un solo pipeline de release** (`build-all`), disparado **solo en
+tags `v*`** (todos sus jobs con `filters.tags: /^v.*/` y `branches: ignore /.*/`).
+La **triple puerta simétrica** `test-linux` + `test-windows` + `test-macos`
+(cada uno `cargo test --all` en su SO nativo) es `requires:` de los 4 builds, de
+modo que la publicación queda **mecánicamente condicionada** al resultado
+completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
 
-- **Pipeline de rama — `validate` (corrección).** Corre en cada push a `main`
-  (`branches: only main`, sin `filters.tags`) siguiendo un modelo **post-merge**:
-  el trabajo diario vive en `development` y, al integrar a `main`, se dispara la
-  **triple puerta simétrica** `test-linux` + `test-windows` + `test-macos` (cada
-  uno `cargo test --all` en su SO nativo). Es la señal temprana que atrapa las
-  rupturas específicas de plataforma (código tras `#[cfg]`, divergencias de
-  runtime del SO) **sin esperar al tag**. Los commits intermedios de
-  `development` no disparan CI.
+- **Por qué un pipeline y no dos.** La publicación (`publish-release`) es
+  irreversible, así que el release debe estar condicionado a los tests por una
+  dependencia real, no por confianza. CircleCI **no encadena pipelines
+  distintas**: un job solo puede depender de otro dentro del mismo workflow. La
+  única forma de que los tests **bloqueen** el release es tenerlos en el grafo
+  de `requires:` de los builds — es decir, en la misma pipeline. Por eso la
+  triple puerta vive aquí y no en un workflow de rama separado.
 
-- **Pipeline de release — `build-all` (empaquetado + publicación).** Corre
-  **solo en tags `v*`** (todos sus jobs con `branches: ignore /.*/`). Está
-  **aligerado**: no re-corre `test-windows`/`test-macos` (ya cubiertos por
-  `validate` en el merge a `main`); conserva `test-linux` como **red de humo** y
-  suma `coverage` (cargo-llvm-cov, **solo aquí**), los tres smoke-tests de
-  instaladores (`test-installer-linux` bats, `test-installer-windows` Pester,
-  `test-installer-macos` bats) y los gates `validate-licenses`
-  (SOURCE-OFFER/THIRD-PARTY) y `validate-changelog`. Esos 7 gates son
-  `requires:` de los 4 builds nativos, que compilan las 4 plataformas en modo
-  release (validación de compilación por plataforma).
+- **Por qué se descartó el pipeline de rama `validate`.** Como el corte empuja
+  commit+tag juntos (`git push origin main --tags`), un workflow `validate` en
+  `main` disparaba una **segunda** pipeline que re-ejecutaba la **misma** triple
+  suite sobre el **mismo** commit, en paralelo con `build-all`. Eso no adelantaba
+  la señal (corría en paralelo, no antes) ni aportaba cobertura única: era
+  duplicación pura. Al mover la triple puerta al pipeline de release, los tests
+  corren **una vez** por release y bloquean de verdad la publicación.
 
-La garantía "commit taggeado probado" descansa en una **disciplina**: taggear
-siempre el `HEAD` de `main` cuando `validate` esté verde. Sin *branch protection*
-airtight (decisión explícita para un flujo de un solo desarrollador), el humo
-`test-linux` + los builds ×plataforma en el tag son la red de seguridad
-residual; un merge malo puede dejar `main` roja unos minutos (fix-forward/revert).
+- **Gates completos.** Además de la triple puerta: `coverage` (cargo-llvm-cov,
+  **solo aquí**), los tres smoke-tests de instaladores (`test-installer-linux`
+  bats, `test-installer-windows` Pester, `test-installer-macos` bats) y los gates
+  `validate-licenses` (SOURCE-OFFER/THIRD-PARTY) y `validate-changelog`. Esos
+  **9 gates** son `requires:` de los 4 builds nativos, que compilan las 4
+  plataformas en modo release (validación de compilación por plataforma).
+
+**Feedback pre-release.** El trabajo diario vive en `development`; sus commits no
+disparan CI (decisión explícita para un flujo de un solo desarrollador). La red
+de seguridad es el gate al taggear: si la triple suite falla, los builds no
+corren y **nada se publica** (fix-forward/revert y re-tag). No hay estado de
+`main` sin tag que publique, así que no se necesita *branch protection* airtight
+para sostener la garantía "commit taggeado probado".
 
 ### Simetría: 3 puertas de test vs. 4 targets de build
 
-Las 3 puertas de test (en `validate`) y los 4 builds (en `build-all`) responden
-a **ejes distintos**.
+Las 3 puertas de test y los 4 builds (ambos en `build-all`) responden a **ejes
+distintos**.
 
 - **Por qué 3 puertas de test y 4 builds.** Los tests son **por familia de SO**:
   validan lógica Rust por SO (Windows: winsound/tray; macOS: CoreAudio; Linux:
@@ -260,28 +268,21 @@ a **ejes distintos**.
 
 ### Arquitectura del Pipeline
 
-**Pipeline de rama `validate`** (cada push a `main`):
+**Pipeline de release `build-all`** (único; solo en tags `v*`):
 
 ```
 ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
 │     test-linux     │  │    test-windows    │  │     test-macos     │
 │ (cargo test --all) │  │ (cargo test --all) │  │ (cargo test --all) │
-└────────────────────┘  └────────────────────┘  └────────────────────┘
-        (triple puerta de corrección; no produce artefactos)
-```
-
-**Pipeline de release `build-all`** (solo en tags `v*`):
-
-```
-┌────────────────────┐
-│     test-linux     │  ← red de humo (test-windows/macos ya corrieron en `validate`)
-│ (cargo test --all) │
-└─────────┬──────────┘
-        ┌─┴─────────────┬───────────────┬───────────────┬──────────────┐
+└─────────┬──────────┘  └─────────┬──────────┘  └─────────┬──────────┘
+          │        (triple puerta = gate mecánico)         │
+          └──────────────────────┬────────────────────────┘
+        ┌───────────────┬────────┴──────┬───────────────┬──────────────┐
         │   coverage    │ validate-     │ validate-     │ test-installer-* (×3)  │
         │(cargo llvm-cov)│ licenses     │ changelog     │ (bats/Pester)          │
         └───────┬───────┴──────┬────────┴──────┬────────┴──────┬────────────────┘
                 └──────────────┴───────┬───────┴───────────────┘
+                          (9 gates = requires: de cada build)
          ┌───────────────┬─────────────┴─┬───────────────┐
          ▼               ▼               ▼               ▼
 ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌──────────────────┐
@@ -297,9 +298,9 @@ a **ejes distintos**.
 
 | Job | Pipeline | Plataforma | Executor | Notas |
 |-----|----------|------------|----------|-------|
-| `test-linux` | `validate` + `build-all` (humo) | Linux x64 | docker `cimg/rust:1.96.0` | `cargo test --all --verbose` |
-| `test-windows` | `validate` | Windows x64 | `win/server-2022` | `cargo test --all` en Windows nativo |
-| `test-macos` | `validate` | macOS arm64 | macos `m4pro.medium` | `cargo test --all` en macOS nativo |
+| `test-linux` | `build-all` (gate) | Linux x64 | docker `cimg/rust:1.96.0` | `cargo test --all --verbose` |
+| `test-windows` | `build-all` (gate) | Windows x64 | `win/server-2022` | `cargo test --all` en Windows nativo |
+| `test-macos` | `build-all` (gate) | macOS arm64 | macos `m4pro.medium` | `cargo test --all` en macOS nativo |
 | `coverage` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo llvm-cov --workspace --lcov` (solo en el tag) |
 | `validate-licenses` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- source-offer --check` + `licenses --check` |
 | `validate-changelog` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- changelog --check` |

@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.0 — 2026-09-21](#0200-20260921)
 - [0.19.0 — 2026-09-21](#0190-20260921)
 - [0.18.26 — 2026-09-02](#01826-20260902)
@@ -111,6 +112,25 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+### Cambiado
+
+- ci: **colapsa el modelo de dos pipelines a un pipeline de release único** en
+  `.circleci/config.yml`. La triple puerta por plataforma
+  (`test-linux`/`test-windows`/`test-macos`) vuelve a ser `requires:` de los 4
+  `build-*` **dentro de `build-all`** (de 7 gates a 9), de modo que la
+  publicación queda **mecánicamente** condicionada al resultado completo de la
+  suite sobre el commit taggeado — CircleCI no encadena pipelines distintas, así
+  que la única garantía real es tener los tests en el grafo de dependencias del
+  release. Se **retira** el workflow de rama `validate`: como el corte empuja
+  commit+tag juntos, disparaba una segunda pipeline que re-ejecutaba la misma
+  triple suite sobre el mismo commit en paralelo (duplicación sin cobertura
+  única, y sin bloquear la publicación). Reemplaza la disciplina "taggear con
+  `validate` verde" por una dependencia efectiva; docs reconciliadas en
+  `docs/BUILD.md §4` y `docs/RELEASING.md` — `.circleci/config.yml`, `docs/BUILD.md`,
+  `docs/RELEASING.md`.
 
 ## [0.20.0] — 2026-09-21
 

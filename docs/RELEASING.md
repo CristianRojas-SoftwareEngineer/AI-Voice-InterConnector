@@ -49,22 +49,21 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
   verificar con `cargo run -p xtask -- licenses --check`. El gate
   `validate-licenses` falla ante faltantes/sobrantes.
 - La suite pasa (`cargo test --all`; incluye los tests de `xtask`) en el commit
-  a taggear. La **triple puerta por plataforma** (`test-linux`/`test-windows`/
-  `test-macos`) ya se ejercitó en el pipeline de rama `validate` al integrar a
-  `main` (modelo post-merge; ver [docs/BUILD.md §4](BUILD.md#4-cicd-con-circleci)),
-  así que el commit del tag debería llegar verde. La **disciplina** es taggear
-  el `HEAD` de `main` solo cuando `validate` esté en verde. En el pipeline de
-  release `build-all` (tags-only, `branches: ignore: /.*/`), la protección es el
-  grafo de dependencias, ya **aligerado**: los 4 builds (`build-windows-x64`,
-  `build-linux-x64`, `build-linux-arm64`, `build-darwin-arm64`) declaran
-  `requires` sobre `test-linux` (red de humo; ya **no** sobre
-  `test-windows`/`test-macos`, cubiertos por `validate`) **más** los tres
-  smoke-tests de instaladores (`test-installer-linux`, `test-installer-windows`,
-  `test-installer-macos`) **más** `coverage`, `validate-licenses` y
-  `validate-changelog`. `validate-changelog` verifica
+  a taggear. Conviene correrla en local antes del corte, pero la garantía es
+  **mecánica**: en el pipeline de release `build-all` (único, tags-only,
+  `branches: ignore: /.*/`) la **triple puerta por plataforma**
+  (`test-linux`/`test-windows`/`test-macos`, cada una `cargo test --all` en su
+  SO nativo) es `requires:` de los 4 builds
+  (`build-windows-x64`/`build-linux-x64`/`build-linux-arm64`/`build-darwin-arm64`),
+  junto con los tres smoke-tests de instaladores (`test-installer-linux`,
+  `test-installer-windows`, `test-installer-macos`), `coverage`,
+  `validate-licenses` y `validate-changelog` — **9 gates** en total (ver
+  [docs/BUILD.md §4](BUILD.md#4-cicd-con-circleci)). `validate-changelog` verifica
   `cargo run -p xtask -- changelog --check` antes de los builds, evitando el
   fallo silencioso de `publish-release`. Si cualquiera de esas puertas falla en
-  el pipeline del tag, los builds no llegan a ejecutarse.
+  el pipeline del tag, los builds no se ejecutan y **nada se publica**: la
+  publicación queda condicionada al resultado completo de la suite sobre el
+  commit taggeado, sin depender de disciplina humana.
 - **Revisiones fijadas de los modelos auditadas**: los modelos Qwen3-TTS y opus-mt
   se descargan vía `ai-voice-interconnector setup` (no se empaquetan). Si el
   release debe incorporar una versión nueva de alguno de los modelos: consultar el `sha`
@@ -102,17 +101,17 @@ git push origin main --tags       # --tags es obligatorio: sin él el tag no dis
 ```
 
 El push del tag dispara el workflow `build-all` en CircleCI sobre ese commit:
-`test-linux` de humo + `coverage` + 3 smoke-tests de instaladores + 4 builds
-**y además** el job `publish-release` (que solo corre en tags `v*`, nunca en
-ramas). Las puertas `test-windows`/`test-macos` **no** se re-ejecutan aquí: ya
-las corrió el pipeline de rama `validate` en el push a `main`.
+triple puerta `test-linux`/`test-windows`/`test-macos` + `coverage` + 3
+smoke-tests de instaladores + `validate-licenses`/`validate-changelog` como gates
+de los 4 builds, **y luego** el job `publish-release` (que solo corre en tags
+`v*`, nunca en ramas). Es un pipeline único: no hay workflow de rama en paralelo.
 
 ## 2. Automático: lo que hace el CI
 
 Una vez pushado el tag, el pipeline ejecuta sin intervención:
 
-1. **Tests + builds**: `test-linux` de humo (la cobertura por plataforma la dio
-   `validate` en rama), `coverage`, los smoke-tests de
+1. **Tests + builds**: la triple puerta por plataforma (`test-linux`,
+   `test-windows`, `test-macos`), `coverage`, los smoke-tests de
    instaladores (`test-installer-linux`, `test-installer-windows`,
    `test-installer-macos`) y los 4
    builds nativos (`build-windows-x64`, `build-linux-x64`, `build-linux-arm64`,
