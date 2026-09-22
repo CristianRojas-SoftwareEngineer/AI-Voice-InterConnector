@@ -5,7 +5,7 @@
 # publicación queda condicionada a los tests dentro de la MISMA pipeline
 # (CircleCI no encadena pipelines distintas). Empaquetado + publicación tras
 # los gates + `coverage` + instaladores + licencias/changelog.
-# El trabajo diario vive en `development`; sus commits no disparan CI.
+# El trabajo diario vive en `main` (trunk-based); sus commits no disparan CI.
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
 # licencia, versionados vía `persist_to_workspace` → `publish-release`.
 # Pines reproducibles: `rust_version` + `ort_version` + digest de `cimg/rust` (ver §Reproducibilidad).
@@ -1636,7 +1636,7 @@ jobs:
 #   Se descartó el pipeline de rama `validate`: al empujar commit+tag juntos
 #   disparaba una segunda pipeline que re-ejecutaba la MISMA triple suite sobre
 #   el mismo commit en paralelo (duplicación sin cobertura única). El feedback
-#   pre-release vive en `development` (el trabajo diario) y en este gate al
+#   pre-release vive en local sobre `main` (trunk-based) y en este gate al
 #   taggear: si los tests fallan, los builds no corren y nada se publica.
 #
 #   `coverage`, instaladores y licencias/changelog completan los gates de los 4

@@ -1374,7 +1374,6 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                         }),
                     )
                     .await;
-                    return;
                 }
                 Some(Ok(Ok(path))) => {
                     match std::fs::read(&path) {

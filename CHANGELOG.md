@@ -132,6 +132,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   para acelerar la fase de enlace de ejecutables de prueba, manteniendo `build-windows-x64`
   con su enlazador MSVC nativo para máxima fidelidad de distribución — `.circleci/config.yml`.
 
+### Corregido
+
+- refactor(clippy): **corrige advertencias del linter y elimina residuos de código y referencias obsoletas** en
+  `crates/avi-translation`, `crates/avi-daemon`, `tests/cli_golden.rs` y `.circleci/config.yml`.
+  Se eliminan préstamos redundantes en llamadas a `ct2_model_dir`, retornos sobrantes en streams
+  asíncronos, docstrings desalineados y menciones residuales de la rama `development` en los
+  comentarios de configuración de CircleCI — `crates/avi-translation/src/lib.rs`,
+  `crates/avi-daemon/src/lib.rs`, `tests/cli_golden.rs`, `.circleci/config.yml`.
+
 ## [0.20.1] — 2026-09-21
 
 Patch de procedimiento sin cambios funcionales respecto a v0.20.0: ejercita el

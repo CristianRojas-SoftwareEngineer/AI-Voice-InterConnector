@@ -29,10 +29,10 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Ruta al binario bajo test, inyectada por Cargo en tests de integración.
 const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
 
-/// Las pruebas operan con aislamiento total por instancia (`InstanciaAislada`)
-/// usando puertos efímeros (`AVI_DAEMON_PORT=0`, `QWEN3_TTS_PORT`) y directorios
-/// temporales aislados (`SANDBOX_ACTUAL_DIR`). Para la inferencia pesada residente
-/// (~2.7 GB de RAM), se mantiene el semáforo de capacidad de recursos `tts::lock_tts`.
+// Las pruebas operan con aislamiento total por instancia (`InstanciaAislada`)
+// usando puertos efímeros (`AVI_DAEMON_PORT=0`, `QWEN3_TTS_PORT`) y directorios
+// temporales aislados (`SANDBOX_ACTUAL_DIR`). Para la inferencia pesada residente
+// (~2.7 GB de RAM), se mantiene el semáforo de capacidad de recursos `tts::lock_tts`.
 
 // ─── Observabilidad de tests (solo instrumentación, sin cambios de comportamiento) ───
 //

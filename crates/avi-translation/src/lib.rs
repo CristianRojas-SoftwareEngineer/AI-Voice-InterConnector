@@ -467,7 +467,7 @@ mod tests {
             "Hola, ¿cómo estás?\n\nBuenos días, señor.",
             "es",
             "en",
-            &avi_store::ct2_model_dir("es-en"),
+            avi_store::ct2_model_dir("es-en"),
         );
 
         let translated = result.expect("la traducción multi-párrafo debe completarse");
@@ -786,7 +786,7 @@ mod tests {
             .collect();
         let texto = oraciones.join(" ");
 
-        let translated = crate::translate(&texto, "es", "en", &avi_store::ct2_model_dir("es-en"))
+        let translated = crate::translate(&texto, "es", "en", avi_store::ct2_model_dir("es-en"))
             .expect("el párrafo de 11 oraciones debe traducirse");
 
         assert!(
@@ -849,7 +849,7 @@ mod tests {
             oraciones.join(" ")
         );
 
-        let translated = crate::translate(&texto, "es", "en", &avi_store::ct2_model_dir("es-en"))
+        let translated = crate::translate(&texto, "es", "en", avi_store::ct2_model_dir("es-en"))
             .expect("el multipárrafo largo debe traducirse");
 
         assert!(
