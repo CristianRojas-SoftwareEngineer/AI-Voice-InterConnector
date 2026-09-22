@@ -916,7 +916,10 @@ mod tests {
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.circleci/config.yml");
             std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
         });
-        // Heterogeneidad vigente: test-windows y coverage usan cargo_restore_caches (registry+target-v2 + sccache); test-linux y test-macos usan cargo_restore_registry (solo registry + sccache)
+        // Modelo vigente (post Eje A): test-windows, test-linux, test-macos y coverage usan
+        // cargo_restore_caches (registry + target-v2). sccache queda solo en test-windows/coverage/build-*.
+        // Los jobs pequeños (validate-licenses/validate-changelog/publish-metadata) usan
+        // cargo_restore_registry (solo registry + sccache), por lo que ambos comandos coexisten.
         assert!(
             cfg.contains("cargo_restore_caches") && cfg.contains("cargo_restore_registry"),
             "debe existir ambos comandos cargo_restore_caches y cargo_restore_registry para modelo heterogéneo"
@@ -944,20 +947,20 @@ mod tests {
             .next()
             .unwrap_or("");
         assert!(
-            linux_section.contains("cargo_restore_registry"),
-            "test-linux debe usar cargo_restore_registry"
+            linux_section.contains("cargo_restore_caches"),
+            "test-linux debe usar cargo_restore_caches (registry + target-v2)"
         );
         assert!(
-            !linux_section.contains("cargo_restore_caches"),
-            "test-linux no debe usar cargo_restore_caches (usa solo registry + sccache)"
+            linux_section.contains("variant: test"),
+            "test-linux debe usar variant: test"
         );
         assert!(
-            !linux_section.contains("cargo_save_target"),
-            "test-linux no debe guardar target-v2"
+            linux_section.contains("cargo_save_target"),
+            "test-linux debe guardar target-v2 (cargo_save_target)"
         );
         assert!(
-            linux_section.contains("sccache_restore_cache"),
-            "test-linux debe usar sccache"
+            !linux_section.contains("sccache_restore_cache"),
+            "test-linux ya no usa sccache (retirado en Eje A por hit-rate ~3%)"
         );
         let windows_section = cfg
             .split("  test-windows:")
@@ -1010,7 +1013,7 @@ mod tests {
             coverage_section.contains("cargo_save_target"),
             "coverage debe guardar target-v2 (cargo_save_target)"
         );
-        // test-macos usa cargo_restore_registry (solo registry + sccache)
+        // test-macos usa cargo_restore_caches (registry + target-v2), sin sccache (retirado en Eje A)
         let macos_section = cfg
             .split("  test-macos:")
             .nth(1)
@@ -1019,16 +1022,20 @@ mod tests {
             .next()
             .unwrap_or("");
         assert!(
-            macos_section.contains("cargo_restore_registry"),
-            "test-macos debe usar cargo_restore_registry"
+            macos_section.contains("cargo_restore_caches"),
+            "test-macos debe usar cargo_restore_caches (registry + target-v2)"
         );
         assert!(
-            macos_section.contains("sccache_restore_cache"),
-            "test-macos debe usar sccache"
+            macos_section.contains("variant: test"),
+            "test-macos debe usar variant: test"
         );
         assert!(
-            !macos_section.contains("cargo_save_target"),
-            "test-macos no debe guardar target-v2"
+            !macos_section.contains("sccache_restore_cache"),
+            "test-macos ya no usa sccache (retirado en Eje A por hit-rate ~3%)"
+        );
+        assert!(
+            macos_section.contains("cargo_save_target"),
+            "test-macos debe guardar target-v2 (cargo_save_target)"
         );
         // build-* deben usar cargo_restore_caches con target-v2 full + cargo clean -p (heterogéneo con target en build-*)
         for job in [
