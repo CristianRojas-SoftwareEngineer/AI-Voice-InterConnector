@@ -890,10 +890,12 @@ mod tests {
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.circleci/config.yml");
             std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
         });
-        // Modelo vigente (post Eje A): test-windows, test-linux, test-macos y coverage usan
-        // cargo_restore_caches (registry + target-v2). sccache queda solo en test-windows/coverage/build-*.
+        // Modelo vigente (post remediación de caché): test-linux, test-windows, test-macos,
+        // coverage y build-* usan cargo_restore_caches (registry + target-v2) y sccache
+        // autoconsistente por variante (cada job pesado restaura y guarda su propio blob).
         // Los jobs pequeños (validate-licenses/validate-changelog/publish-metadata) usan
-        // cargo_restore_registry (solo registry + sccache), por lo que ambos comandos coexisten.
+        // cargo_restore_registry (solo registry + sccache restore-only), por lo que ambos
+        // comandos coexisten.
         assert!(
             cfg.contains("cargo_restore_caches") && cfg.contains("cargo_restore_registry"),
             "debe existir ambos comandos cargo_restore_caches y cargo_restore_registry para modelo heterogéneo"
@@ -909,8 +911,12 @@ mod tests {
             "debe existir el comando sccache_save_cache (guardado incondicional)"
         );
         assert!(
-            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-{{ epoch }}"),
-            "sccache_save_cache debe usar clave rolling por epoch"
+            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ epoch }}"),
+            "sccache_save_cache debe usar clave rolling por epoch segmentada por variante"
+        );
+        assert!(
+            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-"),
+            "sccache_restore_cache debe usar clave por prefijo segmentada por variante"
         );
         // Secciones scoping por job (delimitadas por siguiente job header para evitar falso-positivo cross-job)
         let linux_section = cfg
@@ -933,8 +939,12 @@ mod tests {
             "test-linux debe guardar target-v2 (cargo_save_target)"
         );
         assert!(
-            !linux_section.contains("sccache_restore_cache"),
-            "test-linux ya no usa sccache (retirado en Eje A por hit-rate ~3%)"
+            linux_section.contains("sccache_restore_cache"),
+            "test-linux debe restaurar sccache autoconsistente (variant: test)"
+        );
+        assert!(
+            linux_section.contains("sccache_save_cache"),
+            "test-linux debe guardar sccache (sccache_save_cache)"
         );
         let windows_section = cfg
             .split("  test-windows:")
@@ -963,6 +973,10 @@ mod tests {
             windows_section.contains("sccache_restore_cache"),
             "test-windows debe usar sccache"
         );
+        assert!(
+            windows_section.contains("sccache_save_cache"),
+            "test-windows debe guardar sccache (sccache_save_cache)"
+        );
         // coverage debe usar cargo_restore_caches con os: linux y variant: cov y guardar target-v2
         let coverage_section = cfg
             .split("  coverage:")
@@ -987,7 +1001,11 @@ mod tests {
             coverage_section.contains("cargo_save_target"),
             "coverage debe guardar target-v2 (cargo_save_target)"
         );
-        // test-macos usa cargo_restore_caches (registry + target-v2), sin sccache (retirado en Eje A)
+        assert!(
+            coverage_section.contains("sccache_save_cache"),
+            "coverage debe guardar sccache (sccache_save_cache)"
+        );
+        // test-macos usa cargo_restore_caches (registry + target-v2) y sccache autoconsistente (variant: test), igual que test-linux
         let macos_section = cfg
             .split("  test-macos:")
             .nth(1)
@@ -1004,8 +1022,12 @@ mod tests {
             "test-macos debe usar variant: test"
         );
         assert!(
-            !macos_section.contains("sccache_restore_cache"),
-            "test-macos ya no usa sccache (retirado en Eje A por hit-rate ~3%)"
+            macos_section.contains("sccache_restore_cache"),
+            "test-macos debe restaurar sccache autoconsistente (variant: test)"
+        );
+        assert!(
+            macos_section.contains("sccache_save_cache"),
+            "test-macos debe guardar sccache (sccache_save_cache)"
         );
         assert!(
             macos_section.contains("cargo_save_target"),
@@ -1040,6 +1062,10 @@ mod tests {
             assert!(
                 section.contains("cargo_save_target"),
                 "{job} debe guardar target-v2 (cargo_save_target)"
+            );
+            assert!(
+                section.contains("sccache_save_cache"),
+                "{job} debe guardar sccache (sccache_save_cache)"
             );
             assert!(
                 section.contains("cargo clean -p ai-voice-interconnector"),
