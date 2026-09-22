@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.4 — 2026-09-22](#0204-20260922)
 - [0.20.3 — 2026-09-22](#0203-20260922)
 - [0.20.2 — 2026-09-22](#0202-20260922)
@@ -117,6 +118,30 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+Unifica la arquitectura de caché de compilación del pipeline de release con
+`sccache` autoconsistente segmentado por variante. La evidencia del release
+v0.20.4 mostró que la retirada previa de `sccache` se basó en un diagnóstico
+erróneo (los jobs restauraban un blob de perfil ajeno sin guardar jamás el
+propio) y que `target-v2` solo no basta donde el `mtime` lo anula
+(`test-windows` 11m57s pese a hit exacto de 895 MiB). Cada job Rust pesado
+guarda y consume ahora su propio blob, generalizando el caso sano del 96 %
+sin alinear `RUSTFLAGS`.
+
+### Cambiado
+
+- perf(ci): **unifica `sccache` autoconsistente segmentado por variante en
+  todos los jobs Rust pesados** en `.circleci/config.yml`. La clave de
+  `sccache` lleva ahora `variant` (espejo de `target-v2`), así que cada perfil
+  (`test`/`cov`/`full`) solo restaura su propia familia; `test-windows` y
+  `coverage` pasan de restore-only a guardar su blob, y `test-linux`/
+  `test-macos` reintroducen `sccache` (la retirada previa queda supersedida
+  por evidencia nueva). `target-v2` queda para el `OUT_DIR` C++ que `sccache`
+  no envuelve. Se amplía el test de topología de cachés de `xtask` para
+  proteger la simetría y se corrige el error factual de `docs/BUILD.md` §4 —
+  `.circleci/config.yml`, `crates/xtask/src/main.rs`, `docs/BUILD.md`.
 
 ## [0.20.4] — 2026-09-22
 
