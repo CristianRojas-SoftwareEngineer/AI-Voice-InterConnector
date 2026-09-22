@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.20.1 — 2026-09-21](#0201-20260921)
 - [0.20.0 — 2026-09-21](#0200-20260921)
 - [0.19.0 — 2026-09-21](#0190-20260921)
 - [0.18.26 — 2026-09-02](#01826-20260902)
@@ -113,7 +113,13 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+
+## [0.20.1] — 2026-09-21
+
+Patch de procedimiento sin cambios funcionales respecto a v0.20.0: ejercita el
+corte end-to-end (bump atómico, tag y pipeline `build-all` en vivo) tras el
+colapso a un pipeline de release único y la adopción del modelo trunk-based
+sobre `main`.
 
 ### Cambiado
 
@@ -131,6 +137,11 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   `validate` verde" por una dependencia efectiva; docs reconciliadas en
   `docs/BUILD.md §4` y `docs/RELEASING.md` — `.circleci/config.yml`, `docs/BUILD.md`,
   `docs/RELEASING.md`.
+- docs: adopta el modelo **trunk-based sobre `main`** y retira la rama de
+  integración `development`: el trabajo diario y el corte ocurren en `main` y el
+  tag `v*` es el único disparador de CI. Se descarta `development` por ser
+  ceremonia ad hoc sin CI de rama que la justificara; docs reconciliadas en
+  `docs/BUILD.md` y `docs/RELEASING.md` — `docs/BUILD.md`, `docs/RELEASING.md`.
 
 ## [0.20.0] — 2026-09-21
 
@@ -1870,3 +1881,4 @@ estado con el que nace el producto.
 [0.18.26]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.25...v0.18.26
 [0.19.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.18.26...v0.19.0
 [0.20.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.19.0...v0.20.0
+[0.20.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.0...v0.20.1
