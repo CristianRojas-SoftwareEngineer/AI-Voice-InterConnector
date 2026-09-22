@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.3 — 2026-09-22](#0203-20260922)
 - [0.20.2 — 2026-09-22](#0202-20260922)
 - [0.20.1 — 2026-09-21](#0201-20260921)
@@ -116,6 +117,32 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+Redefine el corte de release de generación a **promoción** de la sección curada
+del CHANGELOG. Hasta ahora `xtask release` generaba una sección nueva desde
+`git log` que colisionaba con la sección `## [No publicado]` curada a mano,
+produciendo un CHANGELOG duplicado; se adopta el Modelo B (Keep a Changelog
+curado) como canónico y se ataca la raíz automatizando solo el paso mecánico.
+
+### Cambiado
+
+- build(xtask): **redefine el subcomando `release` de generación a promoción del
+  CHANGELOG.** `scaffold_changelog` (y sus helpers `extract_resumen_cambios`/
+  `parse_commit_header`) se retira a favor de `promote_changelog`, que renombra
+  `## [No publicado]` → `## [X.Y.Z] — fecha`, actualiza su entrada de tabla de
+  contenidos y añade su definición de enlace de comparación, conservando el bump
+  atómico y la pre-validación. Falla ruidosamente si no hay `## [No publicado]`,
+  si conserva marcadores `TODO: curar` o si `## [X.Y.Z]` ya existe. La lógica
+  vive en las funciones puras `promote_changelog_text`/`validate_changelog_text`
+  con tests inline — `crates/xtask/src/main.rs`.
+- build(xtask): **refuerza la puerta `changelog --check`** para exigir una
+  promoción completa (cabecera de versión, entrada de ToC, definición de enlace,
+  ausencia de `TODO: curar` y de una sección `[No publicado]` residual), cubriendo
+  el fallo silencioso de `publish-release` en el pipeline tags-only. Se actualiza
+  la documentación de release (`docs/RELEASING.md`, skill `/release`, `AGENTS.md`)
+  para describir promoción, no generación.
 
 ## [0.20.3] — 2026-09-22
 

@@ -23,26 +23,32 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
 
 - No hay hallazgos Bloqueantes ni Mayores abiertos (criterios de
   aceptación del release; ver `docs/GOAL.md` §"Criterios de Aceptación").
-- `CHANGELOG.md` tiene la sección `## [X.Y.Z]` de la versión a publicar (no
-  "No publicado"). **El job `publish-release` falla si no encuentra la sección
-  `[X.Y.Z]`** (X.Y.Z = tag sin la `v`), así que este corte es obligatorio antes
-  de taggear. Genera el borrador atómicamente con:
+- `CHANGELOG.md` mantiene una sección curada `## [No publicado]` en el tope,
+  escrita a mano de forma **continua durante el desarrollo** (Keep a Changelog):
+  ahí se documenta cada cambio notable a medida que ocurre. El corte no genera
+  contenido: **promueve** esa sección ya curada a la versión que se publica.
+  **El job `publish-release` falla si no encuentra la sección `[X.Y.Z]`** (X.Y.Z
+  = tag sin la `v`), así que la promoción es obligatoria antes de taggear.
+  Prerequisito: `## [No publicado]` está curada (sin marcadores `TODO: curar`).
+  Corta atómicamente con:
    ```bash
   cargo run -p xtask -- release X.Y.Z
   # o vía skill: /release X.Y.Z
   ```
   Este comando bumpea la versión en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
   `tests/golden/cli_version.json` y **`SOURCE-OFFER.md`** (oferta GPLv3 §6
-  versionada, antes paso manual separado), e inserta en `CHANGELOG.md` la
-  sección nueva con su entrada en la tabla de contenidos y su definición de
-  enlace al final, pre-rellenada desde `git log` agrupada por tipo de commit.
-  Cierra los marcadores `TODO: curar` (párrafo introductorio y bullets),
+  versionada, antes paso manual separado), y **promueve** en `CHANGELOG.md` la
+  sección `## [No publicado]` a `## [X.Y.Z] — <fecha>`, actualizando su entrada
+  en la tabla de contenidos y añadiendo su definición de enlace de comparación
+  al final. Falla ruidosamente si no existe `## [No publicado]`, si su cuerpo
+  conserva marcadores `TODO: curar` o si `## [X.Y.Z]` ya existe. Revisa el diff,
   commitea con `conventional-commits` y luego crea el tag. El job
   `validate-changelog` (`cargo run -p xtask -- changelog --check`) verifica en
-  CI que la sección existe antes de los builds. El gate `validate-licenses`
-  (`cargo run -p xtask -- source-offer --check`) verifica que `SOURCE-OFFER.md`
-  coincida con el renderizado para la versión bumpeada (ahora generado
-  atómicamente).
+  CI que la promoción quedó completa (cabecera, entrada de ToC, definición de
+  enlace, sin `TODO: curar` y sin `[No publicado]` residual) antes de los builds.
+  El gate `validate-licenses` (`cargo run -p xtask -- source-offer --check`)
+  verifica que `SOURCE-OFFER.md` coincida con el renderizado para la versión
+  bumpeada (ahora generado atómicamente).
 - `SOURCE-OFFER.md` viaja dentro de los 4 artefactos y ya queda en `X.Y.Z` tras el bump atómico; no requiere paso manual extra.
 - `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock` (Rust):
   ante altas/bajas de crates, regenerar el inventario (cargo-license) y
@@ -95,8 +101,9 @@ El repo es **trunk-based sobre `main`**: el trabajo diario y el corte ocurren en
 del tag es el único disparador de CI (ver §2).
 
 ```bash
+# Prerequisito: la sección ## [No publicado] del CHANGELOG está curada (sin TODO)
 cargo run -p xtask -- release X.Y.Z   # o /release X.Y.Z (skill orquestadora)
-# → cura los TODO: curar del CHANGELOG (párrafo + bullets)
+# → promueve ## [No publicado] → ## [X.Y.Z] — fecha (+ ToC + enlace de comparación)
 # → cargo test --all && cargo run -p xtask -- changelog --check -- source-offer --check -- licenses --check
 git add -A
 git commit -m "release: vX.Y.Z"  # conventional-commits

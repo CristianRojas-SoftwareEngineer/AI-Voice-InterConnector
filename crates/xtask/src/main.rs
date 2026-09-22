@@ -98,7 +98,7 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
-    /// Genera el borrador de release (bump de versión + CHANGELOG)
+    /// Corta una release: bump de versión + promoción de la sección [No publicado] del CHANGELOG
     Release {
         #[arg(value_name = "X.Y.Z")]
         version: String,
@@ -224,15 +224,15 @@ fn main() -> Result<()> {
                 }
             }
             bump_version(version)?;
-            scaffold_changelog(version)?;
-            println!("Borrador de release {} generado:", version);
+            promote_changelog(version)?;
+            println!("Release {} preparado:", version);
             println!("  - src/main.rs (VERSION)");
             println!("  - Cargo.toml (package.version)");
             println!("  - Cargo.lock (ai-voice-interconnector)");
             println!("  - tests/golden/cli_version.json");
             println!("  - SOURCE-OFFER.md (oferta GPLv3 §6 versionada)");
-            println!("  - CHANGELOG.md (sección + TOC + definición de enlace)");
-            println!("Cierra los TODO: curar del CHANGELOG, commitea con conventional-commits y crea el tag v{}", version);
+            println!("  - CHANGELOG.md (sección promovida desde [No publicado] + ToC + enlace)");
+            println!("Revisa el diff, commitea con conventional-commits y crea el tag v{}", version);
         }
         Commands::Changelog { check } => {
             if check {
@@ -473,175 +473,83 @@ fn last_tag() -> Result<String> {
     Ok(tag.trim().trim_start_matches('v').to_string())
 }
 
-/// Genera la sección del CHANGELOG pre-rellenada para `version`.
-fn scaffold_changelog(version: &str) -> Result<()> {
-    let last = last_tag()?;
-    let date = today_iso();
-
-    // Recopilar commits desde el último tag
-    let output = std::process::Command::new("git")
-        .args([
-            "log",
-            &format!("v{}..HEAD", last),
-            "--pretty=format:%H%x00%s%x00%B",
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        anyhow::bail!("no se pudo obtener el historial de commits");
-    }
-
-    let raw = String::from_utf8(output.stdout)?;
-    let records: Vec<&str> = raw.split("\u{00}").filter(|s| !s.is_empty()).collect();
-
-    // Cada commit: hash, subject, body (separados por \x00)
-    // records = [hash, subject, body, hash, subject, body, ...]
-    let mut added: Vec<String> = Vec::new();
-    let mut fixed: Vec<String> = Vec::new();
-    let mut changed: Vec<String> = Vec::new();
-    let mut breaking: Vec<String> = Vec::new();
-
-    let mut i = 0;
-    while i + 2 < records.len() {
-        let _hash = records[i];
-        let subject = records[i + 1].trim();
-        let body = records[i + 2].trim();
-        i += 3;
-
-        // Extraer el Resumen de cambios (primera línea del bloque si existe)
-        let summary = extract_resumen_cambios(body);
-
-        // Parsear tipo y breaking del subject
-        let (tipo, is_breaking) = parse_commit_header(subject);
-
-        let bullet = if let Some(resumen) = &summary {
-            format!("- {} — {}  <!-- TODO: curar -->", subject, resumen)
-        } else {
-            format!("- {}  <!-- TODO: curar -->", subject)
-        };
-
-        match (tipo.as_str(), is_breaking) {
-            ("feat", false) => added.push(bullet),
-            ("fix", false) => fixed.push(bullet),
-            (_, true) => breaking.push(bullet),
-            ("refactor", false) | ("perf", false) | ("build", false) => changed.push(bullet),
-            _ => changed.push(bullet),
-        }
-    }
-
-    if added.is_empty() && fixed.is_empty() && changed.is_empty() && breaking.is_empty() {
-        anyhow::bail!(
-            "no se encontraron commits desde el tag v{} — el rango está vacío",
-            last
-        );
-    }
-
-    // Construir la sección del CHANGELOG
-    let mut section = String::new();
-    section.push_str(&format!("## [{}] — {}\n\n", version, date));
-
-    // Párrafo introductorio: placeholder del humano
-    section.push_str("<!-- TODO: curar — escribe aquí el párrafo introductorio que\n");
-    section.push_str("   sintetice la necesidad observada y la propuesta de la release. -->\n\n");
-
-    if !changed.is_empty() {
-        section.push_str("### Cambiado\n\n");
-        section.push_str(&changed.join("\n"));
-        section.push_str("\n\n");
-    }
-    if !added.is_empty() {
-        section.push_str("### Añadido\n\n");
-        section.push_str(&added.join("\n"));
-        section.push_str("\n\n");
-    }
-    if !fixed.is_empty() {
-        section.push_str("### Corregido\n\n");
-        section.push_str(&fixed.join("\n"));
-        section.push_str("\n\n");
-    }
-    if !breaking.is_empty() {
-        section.push_str("### Notas de release\n\n");
-        section.push_str(&breaking.join("\n"));
-        section.push_str("\n\n");
-    }
-
-    // Insertar la sección en el CHANGELOG (después del TOC, antes de la primera sección)
+/// Promueve la sección curada `## [No publicado]` del CHANGELOG a `## [version]`.
+/// Envoltura de E/S: lee el archivo, resuelve el tag previo y la fecha, delega la
+/// transformación en `promote_changelog_text` y reescribe el archivo.
+fn promote_changelog(version: &str) -> Result<()> {
     let changelog_path = Path::new("CHANGELOG.md");
     let text = std::fs::read_to_string(changelog_path)?;
-
-    // Insertar después de la tabla de contenidos (línea "## Tabla de contenidos")
-    let toc_end = text
-        .find("## Tabla de contenidos")
-        .ok_or_else(|| anyhow::anyhow!("no se encontró la tabla de contenidos del CHANGELOG"))?;
-
-    // Buscar el final del TOC: la primera "## [" que sigue
-    let after_toc = &text[toc_end..];
-    let toc_close = after_toc.find("\n## [").ok_or_else(|| {
-        anyhow::anyhow!("no se encontró el inicio de la primera sección del CHANGELOG")
-    })?;
-
-    let insert_pos = toc_end + toc_close + 1; // posición del "\n" antes de "## ["
-    let mut new_text = text[..insert_pos].to_string();
-    new_text.push('\n');
-    new_text.push_str(&section);
-    new_text.push_str(&text[insert_pos..]);
-
-    // Añadir entrada al TOC (después del encabezado "## Tabla de contenidos")
-    let toc_marker = "## Tabla de contenidos\n\n";
-    let toc_pos = new_text
-        .find(toc_marker)
-        .ok_or_else(|| anyhow::anyhow!("no se encontró el marcador del TOC"))?
-        + toc_marker.len();
-    let toc_entry = format!("- [{} — {}](#{})\n", version, date, slug(version, &date));
-    let mut result = new_text[..toc_pos].to_string();
-    result.push_str(&toc_entry);
-    result.push_str(&new_text[toc_pos..]);
-
-    // Añadir definición de enlace al final del archivo
-    let link = format!(
-        "[{}]: https://github.com/{}/compare/v{}...v{}\n",
-        version, GITHUB_REPO, last, version
-    );
-    if !result.contains(&format!("[{}]: ", version)) {
-        result = result.trim_end().to_string();
-        result.push('\n');
-        result.push_str(&link);
-    }
-
-    std::fs::write(changelog_path, result)?;
+    let last = last_tag()?;
+    let date = today_iso();
+    let promoted = promote_changelog_text(&text, version, &last, &date)?;
+    std::fs::write(changelog_path, promoted)?;
     Ok(())
 }
 
-/// Extrae la primera línea del bloque "Resumen de cambios:" del cuerpo del commit.
-fn extract_resumen_cambios(body: &str) -> Option<String> {
-    for line in body.lines() {
-        if line.trim_start().starts_with("Resumen de cambios") {
-            // La primera bullet después del header
-            for bullet in body
-                .lines()
-                .skip_while(|l| !l.trim_start().starts_with("Resumen de cambios"))
-            {
-                let bullet = bullet.trim_start();
-                if bullet.starts_with("- ") || bullet.starts_with("* ") {
-                    return Some(bullet.trim_start_matches(['-', '*', ' ']).to_string());
-                }
-            }
-        }
+/// Transformación pura: renombra `## [No publicado]` → `## [version] — date`,
+/// actualiza su entrada de ToC y añade la definición de enlace de comparación.
+/// Falla ruidosamente si la sección ya fue promovida, si no existe `[No publicado]`
+/// o si su cuerpo conserva marcadores `<!-- TODO: curar -->`.
+fn promote_changelog_text(text: &str, version: &str, last: &str, date: &str) -> Result<String> {
+    // Invariante: no promover dos veces sobre la misma versión. Anclado a inicio
+    // de línea: una mención del literal en la prosa no debe contar como cabecera.
+    let version_heading = format!("## [{}]", version);
+    if find_heading_offset(text, &version_heading).is_some() {
+        anyhow::bail!(
+            "la sección ## [{}] ya existe en CHANGELOG.md — ¿la promoción ya se aplicó?",
+            version
+        );
     }
-    None
-}
 
-/// Parsea el tipo de commit y si es breaking change del subject.
-fn parse_commit_header(subject: &str) -> (String, bool) {
-    // feat(scope)!: ... o feat!: ...
-    let re = Regex::new(r"^(\w+)(\([^)]+\))?!?:.").unwrap();
-    if let Some(caps) = re.captures(subject) {
-        let tipo = caps[1].to_string();
-        let has_bang = subject.contains("!:");
-        let has_breaking_footer = subject.contains("BREAKING CHANGE");
-        return (tipo, has_bang || has_breaking_footer);
+    // Localizar la sección curada a promover (cabecera real, no menciones en prosa).
+    let unreleased_heading = "## [No publicado]";
+    let heading_pos = find_heading_offset(text, unreleased_heading).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no se encontró la sección ## [No publicado] en CHANGELOG.md — cura la sección antes del corte"
+        )
+    })?;
+
+    // Delimitar el cuerpo de [No publicado] hasta la siguiente sección de versión
+    // y exigir que esté curado (sin marcadores TODO).
+    let after_heading = &text[heading_pos + unreleased_heading.len()..];
+    let body_end = after_heading.find("\n## [").unwrap_or(after_heading.len());
+    if after_heading[..body_end].contains("<!-- TODO: curar") {
+        anyhow::bail!(
+            "la sección ## [No publicado] conserva marcadores `<!-- TODO: curar -->`: cúrala antes de promover"
+        );
     }
-    ("chore".to_string(), false)
+
+    // 1) Renombrar la cabecera cortando en el offset exacto de la cabecera real
+    // (no `replacen`, que sustituiría una mención del literal en la prosa si ésta
+    // precediera a la cabecera).
+    let new_heading = format!("## [{}] — {}", version, date);
+    let mut result = String::with_capacity(text.len() + new_heading.len());
+    result.push_str(&text[..heading_pos]);
+    result.push_str(&new_heading);
+    result.push_str(&text[heading_pos + unreleased_heading.len()..]);
+
+    // 2) Actualizar la línea del ToC.
+    let toc_line = "- [No publicado](#no-publicado)";
+    if !result.contains(toc_line) {
+        anyhow::bail!(
+            "no se encontró la entrada de ToC `- [No publicado](#no-publicado)` en CHANGELOG.md"
+        );
+    }
+    let new_toc_line = format!("- [{} — {}](#{})", version, date, slug(version, date));
+    result = result.replacen(toc_line, &new_toc_line, 1);
+
+    // 3) Insertar la definición de enlace tras la última definición existente
+    // (las definiciones viven al final del archivo, en orden ascendente).
+    let link_def = format!(
+        "[{}]: https://github.com/{}/compare/v{}...v{}",
+        version, GITHUB_REPO, last, version
+    );
+    result = result.trim_end().to_string();
+    result.push('\n');
+    result.push_str(&link_def);
+    result.push('\n');
+
+    Ok(result)
 }
 
 /// Formatea la fecha actual como YYYY-MM-DD usando el comando `date`.
@@ -675,16 +583,82 @@ fn slug(version: &str, date: &str) -> String {
     format!("{}-{}", v, d)
 }
 
+/// Byte offset de la cabecera `heading` en la primera línea que, tras `trim_start`,
+/// empieza con ella. Ancla la búsqueda a inicio de línea para ignorar menciones
+/// del literal en la prosa (p. ej. dentro de backticks), que `str::find`/`contains`
+/// confundirían con la cabecera real.
+fn find_heading_offset(text: &str, heading: &str) -> Option<usize> {
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        let indent = line.len() - line.trim_start().len();
+        if line.trim_start().starts_with(heading) {
+            return Some(offset + indent);
+        }
+        offset += line.len();
+    }
+    None
+}
+
 fn check_changelog() -> Result<()> {
     let version = get_version()?;
     let text = std::fs::read_to_string("CHANGELOG.md")?;
-    let marker = format!("## [{}]", version);
-    for line in text.lines() {
-        if line.starts_with(&marker) {
-            return Ok(());
-        }
+    validate_changelog_text(&text, &version)
+}
+
+/// Puerta de promoción completa: valida que la sección `[version]` esté cortada
+/// entera. Como es el único punto de control del pipeline tags-only, cubre el
+/// fallo silencioso de `publish-release` (que extrae las notas de `[version]`).
+/// Cada invariante incumplido emite un `bail!` accionable que nombra qué falta.
+fn validate_changelog_text(text: &str, version: &str) -> Result<()> {
+    // 1) Cabecera de la sección de versión (anclada a inicio de línea).
+    let heading = format!("## [{}]", version);
+    let heading_pos = find_heading_offset(text, &heading)
+        .ok_or_else(|| anyhow!("no se encontró la sección [{}] en CHANGELOG.md", version))?;
+
+    // 2) Entrada de la tabla de contenidos para la versión.
+    let toc_prefix = format!("- [{} —", version);
+    if !text
+        .lines()
+        .any(|l| l.trim_start().starts_with(&toc_prefix))
+    {
+        anyhow::bail!(
+            "falta la entrada de la tabla de contenidos para [{}] en CHANGELOG.md (esperado `- [{} — <fecha>](#…)`)",
+            version,
+            version
+        );
     }
-    anyhow::bail!("no se encontró la sección [{}] en CHANGELOG.md", version)
+
+    // 3) Definición de enlace de comparación de la versión.
+    let link_prefix = format!("[{}]: ", version);
+    if !text.lines().any(|l| l.starts_with(&link_prefix)) {
+        anyhow::bail!(
+            "falta la definición de enlace de comparación para [{}] en CHANGELOG.md (esperado `[{}]: …/compare/…`)",
+            version,
+            version
+        );
+    }
+
+    // 4) La sección de la versión no conserva marcadores TODO.
+    let after_heading = &text[heading_pos + heading.len()..];
+    let section_end = after_heading.find("\n## [").unwrap_or(after_heading.len());
+    if after_heading[..section_end].contains("<!-- TODO: curar") {
+        anyhow::bail!(
+            "la sección [{}] conserva marcadores `<!-- TODO: curar -->`: cúrala antes del corte",
+            version
+        );
+    }
+
+    // 5) No queda una sección `[No publicado]` sin promover. Anclado a inicio de
+    // línea: una mención del literal en la prosa (p. ej. dentro de backticks, como
+    // esta misma entrada del CHANGELOG) no es una sección residual.
+    if find_heading_offset(text, "## [No publicado]").is_some() {
+        anyhow::bail!(
+            "queda una sección `## [No publicado]` sin promover en CHANGELOG.md: el corte debe promoverla a [{}]",
+            version
+        );
+    }
+
+    Ok(())
 }
 
 fn parse_macos_sha256(sums_text: &str, version: &str) -> Result<String> {
@@ -1116,5 +1090,150 @@ mod tests {
         let dir = engine_dir();
         assert!(dir.ends_with("qwen3-tts"));
         assert!(dir.starts_with("vendor"));
+    }
+
+    /// CHANGELOG mínimo con ToC, sección curada `## [No publicado]`, una sección
+    /// de versión previa y el bloque de definiciones de enlace al final.
+    fn sample_changelog() -> String {
+        "\
+# Changelog
+
+## Tabla de contenidos
+
+- [No publicado](#no-publicado)
+- [0.20.3 — 2026-09-22](#0203-20260922)
+
+## [No publicado]
+
+### Cambiado
+
+- algo curado a mano durante el desarrollo.
+
+## [0.20.3] — 2026-09-22
+
+### Cambiado
+
+- release previa ya publicada.
+
+[0.20.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.2...v0.20.3
+"
+        .to_string()
+    }
+
+    #[test]
+    fn test_promote_changelog_camino_feliz() {
+        let out =
+            promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        // Cabecera renombrada; la sección [No publicado] desaparece.
+        assert!(out.contains("## [0.20.4] — 2026-09-24"));
+        assert!(!out.contains("## [No publicado]"));
+        // Entrada de ToC transformada (con slug sin puntos ni guiones).
+        assert!(out.contains("- [0.20.4 — 2026-09-24](#0204-20260924)"));
+        assert!(!out.contains("- [No publicado](#no-publicado)"));
+        // Definición de enlace de comparación añadida al final.
+        assert!(out.contains(
+            "[0.20.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.3...v0.20.4"
+        ));
+        // El cuerpo curado se conserva bajo la nueva cabecera.
+        assert!(out.contains("- algo curado a mano durante el desarrollo."));
+    }
+
+    #[test]
+    fn test_promote_changelog_falla_sin_no_publicado() {
+        // Un CHANGELOG ya promovido no tiene sección [No publicado] que promover.
+        let promovido =
+            promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        let err = promote_changelog_text(&promovido, "0.20.5", "0.20.4", "2026-09-25").unwrap_err();
+        assert!(err.to_string().contains("No publicado"));
+    }
+
+    #[test]
+    fn test_promote_changelog_falla_con_todo_residual() {
+        let con_todo = sample_changelog().replace(
+            "- algo curado a mano durante el desarrollo.",
+            "- algo a medias.  <!-- TODO: curar -->",
+        );
+        let err = promote_changelog_text(&con_todo, "0.20.4", "0.20.3", "2026-09-24").unwrap_err();
+        assert!(err.to_string().contains("TODO: curar"));
+    }
+
+    #[test]
+    fn test_promote_changelog_falla_si_version_ya_existe() {
+        // La versión objetivo coincide con una sección de versión ya presente.
+        let err = promote_changelog_text(&sample_changelog(), "0.20.3", "0.20.2", "2026-09-24")
+            .unwrap_err();
+        assert!(err.to_string().contains("ya existe"));
+    }
+
+    #[test]
+    fn test_validate_changelog_promovido_pasa() {
+        let promovido =
+            promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        assert!(validate_changelog_text(&promovido, "0.20.4").is_ok());
+    }
+
+    #[test]
+    fn test_validate_changelog_falla_sin_toc() {
+        let promovido =
+            promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        let sin_toc = promovido.replace("- [0.20.4 — 2026-09-24](#0204-20260924)\n", "");
+        let err = validate_changelog_text(&sin_toc, "0.20.4").unwrap_err();
+        assert!(err.to_string().contains("tabla de contenidos"));
+    }
+
+    #[test]
+    fn test_validate_changelog_falla_sin_enlace() {
+        let promovido =
+            promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        let sin_enlace = promovido.replace(
+            "[0.20.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.3...v0.20.4\n",
+            "",
+        );
+        let err = validate_changelog_text(&sin_enlace, "0.20.4").unwrap_err();
+        assert!(err.to_string().contains("enlace de comparación"));
+    }
+
+    #[test]
+    fn test_validate_changelog_falla_con_todo_residual() {
+        let promovido =
+            promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        let con_todo = promovido.replace(
+            "- algo curado a mano durante el desarrollo.",
+            "- algo a medias.  <!-- TODO: curar -->",
+        );
+        let err = validate_changelog_text(&con_todo, "0.20.4").unwrap_err();
+        assert!(err.to_string().contains("TODO: curar"));
+    }
+
+    #[test]
+    fn test_validate_changelog_falla_con_no_publicado_residual() {
+        let promovido =
+            promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        // Reintroducir una sección [No publicado] sin promover.
+        let con_residuo = promovido.replace(
+            "## [0.20.4] — 2026-09-24",
+            "## [No publicado]\n\n### Cambiado\n\n- nuevo trabajo.\n\n## [0.20.4] — 2026-09-24",
+        );
+        let err = validate_changelog_text(&con_residuo, "0.20.4").unwrap_err();
+        assert!(err.to_string().contains("No publicado"));
+    }
+
+    /// Regresión: una entrada de `[No publicado]` que menciona el literal
+    /// `## [No publicado]` en su prosa (dentro de backticks) no debe producir un
+    /// falso positivo. La promoción renombra solo la cabecera real y la validación
+    /// posterior pasa. Reproduce el defecto expuesto por el corte de v0.20.4.
+    #[test]
+    fn test_promocion_y_validacion_ignoran_menciones_en_prosa() {
+        let con_prosa = sample_changelog().replace(
+            "- algo curado a mano durante el desarrollo.",
+            "- redefine `release`: renombra la cabecera `## [No publicado]` a `## [X.Y.Z]`.",
+        );
+        let promovido =
+            promote_changelog_text(&con_prosa, "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        // La cabecera real se promovió; la mención en prosa se conserva intacta.
+        assert!(promovido.contains("## [0.20.4] — 2026-09-24"));
+        assert!(promovido.contains("renombra la cabecera `## [No publicado]`"));
+        // Y la validación NO da falso positivo por esa mención en backticks.
+        assert!(validate_changelog_text(&promovido, "0.20.4").is_ok());
     }
 }
