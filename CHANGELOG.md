@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.20.5 — 2026-09-22](#0205-20260922)
 - [0.20.4 — 2026-09-22](#0204-20260922)
 - [0.20.3 — 2026-09-22](#0203-20260922)
 - [0.20.2 — 2026-09-22](#0202-20260922)
@@ -119,7 +119,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+## [0.20.5] — 2026-09-22
 
 Unifica la arquitectura de caché de compilación del pipeline de release con
 `sccache` autoconsistente segmentado por variante. La evidencia del release
@@ -2029,3 +2029,4 @@ estado con el que nace el producto.
 [0.20.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.1...v0.20.2
 [0.20.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.2...v0.20.3
 [0.20.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.3...v0.20.4
+[0.20.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.4...v0.20.5
