@@ -4504,7 +4504,7 @@ mod tests {
     /// inactividad de 1500 ms (doble con secuencia de atasco), no el failsafe.
     #[tokio::test]
     async fn consumir_stream_ndjson_detecta_atasco_por_inactividad() {
-        let addr = servir_secuencia_programada(vec![], Some(30)).await;
+        let addr = servir_secuencia_programada(vec![], Some(3)).await;
         let client = daemon_client();
         let resp = client
             .post(format!("http://{}/voices/clone", addr))

@@ -1945,7 +1945,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
         drop(rx);
         let trabajo = tokio::task::spawn_blocking(|| {
-            std::thread::sleep(std::time::Duration::from_secs(30));
+            std::thread::sleep(std::time::Duration::from_secs(2));
             1u32
         });
         let inicio = std::time::Instant::now();
@@ -1958,14 +1958,14 @@ mod tests {
         );
     }
 
-    /// Durante un trabajo de 2 s se emite al menos un latido `heartbeat`
+    /// Durante un trabajo con duración suficiente se emite al menos un latido `heartbeat`
     /// con la etapa (cota holgada: intervalo 500 ms; el margen absorbe
     /// planificación lenta sin falsos positivos).
     #[tokio::test]
     async fn con_latidos_emite_latido_durante_trabajo_largo() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
         let trabajo = tokio::task::spawn_blocking(|| {
-            std::thread::sleep(std::time::Duration::from_millis(2000));
+            std::thread::sleep(std::time::Duration::from_millis(800));
             "hecho"
         });
         let res = con_latidos(&tx, "etapa_test", trabajo)

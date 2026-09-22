@@ -420,6 +420,7 @@ jobs:
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
             $env:CARGO_INCREMENTAL = "0"
+            $env:RUSTFLAGS = "-C linker=rust-lld"
             cargo test --all --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats

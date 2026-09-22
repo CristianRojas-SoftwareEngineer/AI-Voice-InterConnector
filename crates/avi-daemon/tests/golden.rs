@@ -123,7 +123,7 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 // JSON vía `oneshot` sin abrir socket, sin spawn de procesos, sin señales, sin
 // puertos reales ni pidfile; por tanto nunca prueban la ausencia de huérfanos
 // (árbol de procesos, PID, puertos), ni el endurecimiento del harness frente a
-// `STATE_LOCK` envenenado o al reaper corriendo fuera de los polls, ni la
+// fallos envenenados o al reaper corriendo fuera de los polls, ni la
 // higiene de `TEST_LIMITE`, ni la ventana entre el spawn y la escritura del
 // pidfile, ni el manejo de señales durante el spawn, ni un crash con el
 // puerto ya ocupado y un reclamo activo del árbol previo (este último solo

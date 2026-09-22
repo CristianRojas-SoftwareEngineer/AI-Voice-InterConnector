@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.1 — 2026-09-21](#0201-20260921)
 - [0.20.0 — 2026-09-21](#0200-20260921)
 - [0.19.0 — 2026-09-21](#0190-20260921)
@@ -113,6 +114,23 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+### Cambiado
+
+- test(perf): **paraleliza la suite de tests y reduce tiempos pasivos de sondeo** en
+  `tests/cli_golden.rs`. Se retira el mutex global `STATE_LOCK` (`bloquear_estado()`),
+  se aísla el estado por hilo con `thread_local!` (`SANDBOX_ACTUAL_DIR`) y se asignan
+  puertos efímeros automáticos tanto para el daemon (`AVI_DAEMON_PORT=0`) como para el
+  motor residente TTS (`QWEN3_TTS_PORT`), permitiendo a Cargo despachar las pruebas en
+  paralelo sin colisiones de red. Se reducen los intervalos de polling de 50–200 ms a
+  15 ms y se acotan las pausas en pruebas de latidos y simulación de inactividad —
+  `tests/cli_golden.rs`, `src/main.rs`, `crates/avi-daemon/src/lib.rs`.
+- ci(perf): **configura el enlazador `rust-lld` en el gate de Windows** en
+  `.circleci/config.yml`. El job `test-windows` inyecta `$env:RUSTFLAGS = "-C linker=rust-lld"`
+  para acelerar la fase de enlace de ejecutables de prueba, manteniendo `build-windows-x64`
+  con su enlazador MSVC nativo para máxima fidelidad de distribución — `.circleci/config.yml`.
 
 ## [0.20.1] — 2026-09-21
 
