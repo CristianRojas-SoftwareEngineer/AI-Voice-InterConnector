@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.20.3 — 2026-09-22](#0203-20260922)
 - [0.20.2 — 2026-09-22](#0202-20260922)
 - [0.20.1 — 2026-09-21](#0201-20260921)
 - [0.20.0 — 2026-09-21](#0200-20260921)
@@ -117,12 +117,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+## [0.20.3] — 2026-09-22
 
 Remedia las causas raíz de la latencia del triple gate de test en el pipeline de
 release: retira `sccache` (0–3 % de acierto) de `test-linux`/`test-macos` a favor
 de la caché `target-v2`, desacopla el readiness del daemon del warmup TTS en los
-tests de ciclo de vida y fija los guardarraíles durables de la suite.
+tests de ciclo de vida y fija los guardarraíles durables de la suite. Reconcilia
+además los residuos de drift que dejó la remediación: el test de topología de
+cachés de `xtask` y las citas `file:line` volátiles de la documentación.
 
 ### Cambiado
 
@@ -150,9 +152,23 @@ tests de ciclo de vida y fija los guardarraíles durables de la suite.
   trabajo, ya propagada de forma autocontenida a `docs/BUILD.md §4` — mismo patrón
   que el cierre de `cobertura-de-plataforma-en-ci`: no conservar narrativa
   histórica una vez propagada la capacidad durable — `docs/BUILD.md`.
+- docs: **desancla las citas `file:line` volátiles** que el desplazamiento de
+  líneas de la remediación dejó obsoletas: `docs/BUILD.md §4` (referencias a
+  `cargo_restore_caches`, al paso «Generar Cargo.lock.cachekey» y a un comentario
+  de `config.yml`) y `docs/CLI/commands/VERSION.md` (la fila de
+  `version_coincide_con_fixture`). Se sustituyen por referencias por nombre de
+  comando/símbolo, autocontenidas y estables ante futuras ediciones —
+  `docs/BUILD.md`, `docs/CLI/commands/VERSION.md`.
 
 ### Corregido
 
+- test: **reconcilia `test_pipeline_heterogeneo_y_sccache_incondicional` con la
+  topología de cachés vigente** en `crates/xtask/src/main.rs`. El test aseveraba
+  el modelo previo a la remediación (`test-linux`/`test-macos` con
+  `cargo_restore_registry` + `sccache`); tras retirar `sccache` de esos jobs a
+  favor de `cargo_restore_caches` + `target-v2` quedó rojo bajo `cargo test --all`.
+  Se actualizan las aserciones (incluidas las negativas con el comando exacto
+  `sccache_restore_cache`) al modelo actual — `crates/xtask/src/main.rs`.
 - test: **reancla `d03_reaper_sin_pid_vivo_no_falla` a su invariante propio** en
   `tests/cli_golden.rs`, eliminando una carrera de muestreo global preexistente.
   El test aseveraba quiescencia de máquina (`!puerto_abierto(8765) &&
@@ -1959,3 +1975,4 @@ estado con el que nace el producto.
 [0.20.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.19.0...v0.20.0
 [0.20.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.0...v0.20.1
 [0.20.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.1...v0.20.2
+[0.20.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.2...v0.20.3
