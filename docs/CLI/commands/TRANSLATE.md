@@ -4,9 +4,9 @@ Traducción de texto es↔en. Comando standalone texto→texto: no toca audio ni
 motor TTS. Es delegable al daemon (CT2 residente) en 3 modos, o ejecuta el
 motor CT2 local si el daemon no está activo o `--no-daemon` lo fuerza.
 
-Implementación: `handle_translate` (`src/main.rs:563`), despacho al daemon vía
-`translate_via_daemon` (`src/main.rs:3128`) y `route_to_daemon`
-(`src/main.rs:3043`), motor CT2 local en `avi-translation`
+Implementación: `handle_translate` (`src/main.rs:603`), despacho al daemon vía
+`translate_via_daemon` (`src/main.rs:3402`) y `route_to_daemon`
+(`src/main.rs:3314`), motor CT2 local en `avi-translation`
 (`crates/avi-translation/src/lib.rs`), endpoint del daemon
 `translate_handler` (`crates/avi-daemon/src/lib.rs:635-747`).
 
@@ -23,8 +23,8 @@ Definición del subcomando: `src/main.rs:127` (`Commands::Translate`).
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
 | `-t`, `--text` | string | (requerido) | Texto a traducir |
-| `--from` | `es`\|`en` | `es` | Opcional. Idioma origen, alfabeto estricto del parser (`value_parser = ["es", "en"]`, `src/main.rs:130`) |
-| `--to` | `es`\|`en` | `en` | Opcional. Idioma destino, mismo alfabeto estricto (`src/main.rs:132`) |
+| `--from` | `es`\|`en` | `es` | Opcional. Idioma origen, alfabeto estricto del parser (`value_parser = ["es", "en"]`, `src/main.rs:150`) |
+| `--to` | `es`\|`en` | `en` | Opcional. Idioma destino, mismo alfabeto estricto (`src/main.rs:152`) |
 | `--daemon` | flag global | `false` | Fuerza el uso exclusivo del daemon IPC (exit 5 `daemon_unreachable` si no responde) |
 | `--no-daemon` | flag global | `false` | Fuerza la ejecución local directa, sin daemon |
 | `--json` | flag global | `false` | Emite JSON legible por máquina en stdout |
@@ -33,23 +33,23 @@ Definición del subcomando: `src/main.rs:127` (`Commands::Translate`).
 `--from`/`--to`: `clap` lo rechaza con exit 2 antes de llegar al handler. El
 token solo sigue vivo en la vía IPC del daemon (`POST /translate` acepta
 `es-latam` y lo normaliza a `es` vía `resolve_translation_language`,
-`crates/avi-daemon/src/lib.rs:626-631`), y en la taxonomía del grupo `speech`,
+`crates/avi-daemon/src/lib.rs:676`), y en la taxonomía del grupo `speech`,
 que no es este comando.
 
 Sin `--daemon`/`--no-daemon` el modo es `Auto` (`DaemonMode::Auto`,
-`src/main.rs:99-117`): se hace un probe de `GET /health` con timeout de 500 ms
-(`probe_health`, `src/main.rs:3023-3033`, vía `daemon_activo` en
-`src/main.rs:3036-3038`) y, si responde, se delega al
+`src/main.rs:119-127`): se hace un probe de `GET /health` con timeout de 500 ms
+(`probe_health`, `src/main.rs:3292`, vía `daemon_activo` en
+`src/main.rs:3306`) y, si responde, se delega al
 daemon; si no, se ejecuta local.
 
 ---
 
 ## Flujo en dos carriles: parser primero, handler como defensa
 
-`handle_translate` (`src/main.rs:563-648`):
+`handle_translate` (`src/main.rs:603-748`):
 
 **Carril 1 — parser (`clap`, antes del handler).** `--from`/`--to` declaran
-`value_parser = ["es", "en"]` (`src/main.rs:130-133`): cualquier otro valor
+`value_parser = ["es", "en"]` (`src/main.rs:150-153`): cualquier otro valor
 (`fr`, `de`, `es-latam`, …) sale con exit 2 sin entrar al handler y, por
 tanto, sin payload de error con `reason` — el comando nunca corre. Es el
 rechazo efectivo para todo uso vía CLI.
@@ -65,7 +65,7 @@ handle_translate
 texto vacío (trim)? ──sí──► Err InvalidInput "empty_text" (exit 2)
     │ no
     ▼
-resolve_stt_language(from/to)          ← normaliza "es-latam" → "es" (vivo solo vía IPC); el resto pasa verbatim (src/main.rs:59-64)
+resolve_stt_language(from/to)          ← normaliza "es-latam" → "es" (vivo solo vía IPC); el resto pasa verbatim (src/main.rs:79)
     │
     ▼
 source == target? ──sí──► passthrough: devuelve el texto intacto, sin tocar el motor (exit 0)
@@ -98,7 +98,7 @@ que las invariantes de contrato no dependen de si el daemon está activo.
 
 Cuando `from` y `to` normalizan al mismo idioma ISO, `handle_translate`
 devuelve el texto de entrada intacto sin instanciar ningún motor
-(`src/main.rs:570-577`). Es el único caso donde no se exige el modelo CT2
+(`src/main.rs:619-627`). Es el único caso donde no se exige el modelo CT2
 provisionado.
 
 ---
@@ -128,16 +128,16 @@ proceso CLI:
 
 Sin el feature de compilación `native-translation`, la rama local devuelve
 `Err(ExitCode::Error, "translation_unsupported", …)` sin intentar cargar
-ningún modelo (`src/main.rs:613-621`).
+ningún modelo (`src/main.rs:663-672`).
 
 ---
 
 ## Despacho al daemon
 
-`translate_via_daemon` (`src/main.rs:3128-3212`) hace `POST /translate` con
+`translate_via_daemon` (`src/main.rs:3402`) hace `POST /translate` con
 `{text, from, to}` y timeout de 1500 ms; un timeout o fallo de conexión mapea
 a `ExitCode::DaemonUnreachable` (`daemon_unreachable`). El endpoint
-`translate_handler` (`crates/avi-daemon/src/lib.rs:635-747`) replica la misma
+`translate_handler` (`crates/avi-daemon/src/lib.rs:685`) replica la misma
 validación (`empty_text` → 400, `unsupported_language_pair` → 400,
 `model_missing` → 404 si `is_ct2_provisioned` falla) y, si el motor CT2 del
 par ya está precargado en `DaemonState::ct2_engine`, traduce con el residente;
@@ -164,7 +164,7 @@ de `DaemonState::ct2_engine`.
 | `source` | string | Token de `--from` tal como se pasó (no el ISO normalizado) |
 | `target` | string | Token de `--to` tal como se pasó (no el ISO normalizado) |
 
-Error, stdout (vía el manejador genérico de `main`, `src/main.rs:519-530`):
+Error, stdout (vía el manejador genérico de `main`, `src/main.rs:559-570`):
 
 | Clave | Tipo | Significado |
 |---|---|---|
@@ -177,7 +177,7 @@ reflejan literalmente `--from`/`--to`. Vía CLI solo pueden ser `es` o `en`
 (el parser rechaza el resto); `es-latam` es irrepresentable por CLI y solo
 aparece en `source`/`target` cuando la petición entra por la vía IPC del
 daemon, que lo normaliza internamente a `es` para el enrutado y la validación
-(`crates/avi-daemon/src/lib.rs:665-689`).
+(`crates/avi-daemon/src/lib.rs:676`).
 
 ---
 
@@ -185,7 +185,7 @@ daemon, que lo normaliza internamente a `es` para el enrutado y la validación
 
 | Reason | Exit code | Causa |
 |---|---|---|
-| valor fuera de alfabeto (`--from`/`--to` ∉ `{es, en}`) | 2 (rechazo del parser, sin `reason` de envelope) | `clap` rechaza el valor antes del handler (`value_parser`, `src/main.rs:130-133`); incluye `es-latam` vía CLI |
+| valor fuera de alfabeto (`--from`/`--to` ∉ `{es, en}`) | 2 (rechazo del parser, sin `reason` de envelope) | `clap` rechaza el valor antes del handler (`value_parser`, `src/main.rs:150-153`); incluye `es-latam` vía CLI |
 | `empty_text` | 2 (`InvalidInput`) | `--text` vacío o solo espacios |
 | `unsupported_language_pair` | 2 (`InvalidInput`) | Par distinto de `es→en`/`en→es` tras normalizar; solo alcanzable vía handler local programático o vía IPC del daemon (por CLI el parser rechaza primero) |
 | `model_missing` | 4 (`ModelMissing`) | Derivado CT2 no provisionado para el par (`is_ct2_provisioned` falla); ejecutar `setup` |

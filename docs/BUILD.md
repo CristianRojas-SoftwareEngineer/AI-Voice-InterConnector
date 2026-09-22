@@ -45,7 +45,8 @@ El step **«Preparar artefacto versionado (staging)»** de cada `build-*` en
 `CIRCLE_TAG`, fail-fast), monta un directorio de staging con **layout plano**
 —el binario renombrado a `ai-voice-interconnector[.exe]` (sin sufijo de
 arquitectura) más los 4 documentos de la raíz (`LICENSE`,
-`THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`, `README.md`)— y lo comprime al
+`THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`, `README.md`), el `ort-bundle`
+(ONNX Runtime + DLLs VC++ en Windows) y el `qwen_tts` vendido— y lo comprime al
 archivo del target. Los documentos GPLv3 viajan así **dentro del archivo** y
 quedan instalados junto al binario (cumplimiento §6 de la GPLv3 sin depender de
 un bundle).
@@ -108,7 +109,7 @@ con esas versiones exactas. Un reporte de fallo reabriría la decisión.
 cargo fmt --all --check
 cargo clippy --all-targets
 cargo test --all
-cargo test --all --verbose   # suite completa (≈58 tests)
+cargo test --all --verbose   # suite completa (≈70 tests en cli_golden)
 ```
 
 ### Build de distribución (binario autocontenido)
@@ -326,6 +327,7 @@ propio crate. No hay Python en la ruta de descarga.
 | `marian-es-en` | `Helsinki-NLP/opus-mt-es-en` | Traducción es→en (CT2) |
 | `marian-en-es` | `Helsinki-NLP/opus-mt-en-es` | Traducción en→es (CT2) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (~600 MB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
+| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz (opt-in `--with-voice-cloning`) |
 
 Los pines viven en `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs`): tuplas
 `(nombre_lógico, repo, revisión)`. Actualizar una revisión es una acción
@@ -358,7 +360,7 @@ la remediación de latencia de CI posterior a 0.20.2 (ver la sección de
 `variant: test`), `test-linux` (`os: linux`, `variant: test`), `test-macos`
 (`os: macos`, `variant: test`), `coverage` (`os: linux`, `variant: cov`) y los 4
 `build-*` (`os: windows/linux/macos`, `variant: full`) usan `cargo_restore_caches`
-→ restauran **registry + target-v2** (`cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}` y `target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}`); los jobs pequeños **xtask/changelog-gate** (`validate-licenses`, `validate-changelog`, `publish-metadata`) usan `cargo_restore_registry` → restauran **solo registry** (`cargo-v2-...`) sin `target/`, donde `sccache` basta por el tamaño mínimo de esos jobs. `test-windows`/`test-linux`/`test-macos` (`variant: test`), `coverage` (`variant: cov`) y los 4 `build-*` (`variant: full`) además restauran **y guardan** `sccache` autoconsistente por variante (`sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ epoch }}`, rolling con `when: always`): cada job solo restaura el blob de su propia variante, así que sus hits no dependen de otros perfiles. Los jobs pequeños **xtask/changelog-gate** restauran `sccache` sin guardarlo (excepción restore-only documentada: compilan solo `xtask`, impacto marginal). Todos los jobs Rust restauran/guardan `toolchain` (`toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>`). La clave de `registry`/`target-v2` NO se deriva de `Cargo.lock` directo, sino de un **lock normalizado** (`Cargo.lock.cachekey`) que el primer step de `cargo_restore_caches` genera con un transform de texto (`perl -0777`, ejecutado en `shell: bash`): neutraliza la línea `version` del propio crate (`ai-voice-interconnector` → `0.0.0`) dejando el resto del lock intacto. Motivo: cada release bumpea esa versión, así que el checksum de `Cargo.lock` cambiaría en cada corte aunque las dependencias no varíen, invalidando la clave exacta y dejando todo al frágil fallback por prefijo. Con la normalización la clave exacta es estable entre releases y solo cambia ante cambios reales de dependencias. Generar la clave con un transform de texto (en vez de compilar `xtask` desde cero antes de restaurar caché) evita compilar el árbol de dependencias de cargo en cada job —incluido `windows-sys`/`dlltool`, ausente en `test-windows` antes de instalar MSYS2— y su correspondiente coste de red en frío.
+→ restauran **registry + target-v2** (`cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}` y `target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}`); los jobs pequeños **xtask/changelog-gate** (`validate-licenses`, `validate-changelog`, `publish-metadata`) usan `cargo_restore_registry` → restauran **solo registry** (`cargo-v2-...`) sin `target/`, donde `sccache` basta por el tamaño mínimo de esos jobs. `test-windows`/`test-linux`/`test-macos` (`variant: test`), `coverage` (`variant: cov`) y los 4 `build-*` (`variant: full`) además restauran **y guardan** `sccache` autoconsistente por variante (`sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ epoch }}`, rolling con `when: always`): cada job solo restaura el blob de su propia variante, así que sus hits no dependen de otros perfiles. Los jobs pequeños **xtask/changelog-gate** restauran `sccache` sin guardarlo (excepción restore-only documentada: compilan solo `xtask`, impacto marginal). La caché de `toolchain` (`toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>`) la restauran/guardan `test-windows`, `test-macos`, `coverage`, `build-windows-x64` y `build-darwin-arm64`; los jobs sobre Docker-Linux (`test-linux`, `build-linux-*`, jobs pequeños) no la usan por diseño (la imagen ya trae Rust preinstalado). La clave de `registry`/`target-v2` NO se deriva de `Cargo.lock` directo, sino de un **lock normalizado** (`Cargo.lock.cachekey`) que el primer step de `cargo_restore_caches` genera con un transform de texto (`perl -0777`, ejecutado en `shell: bash`): neutraliza la línea `version` del propio crate (`ai-voice-interconnector` → `0.0.0`) dejando el resto del lock intacto. Motivo: cada release bumpea esa versión, así que el checksum de `Cargo.lock` cambiaría en cada corte aunque las dependencias no varíen, invalidando la clave exacta y dejando todo al frágil fallback por prefijo. Con la normalización la clave exacta es estable entre releases y solo cambia ante cambios reales de dependencias. Generar la clave con un transform de texto (en vez de compilar `xtask` desde cero antes de restaurar caché) evita compilar el árbol de dependencias de cargo en cada job —incluido `windows-sys`/`dlltool`, ausente en `test-windows` antes de instalar MSYS2— y su correspondiente coste de red en frío.
 
 `sccache_save_cache` guarda `~/.cache/sccache` de forma **incondicional** con clave *rolling* por `{{ epoch }}` (`when: always`): cada corrida escribe una entrada nueva y la restauración toma la más reciente por prefijo. No existe un guardado condicional por hit-rate, y a propósito: un umbral de ese tipo es incoherente en este pipeline. Todo hit &lt; 100 % implica *misses* que sccache **acaba de compilar y escribir** en el store, así que omitir el guardado descartaría esos objetos nuevos (la siguiente corrida los volvería a fallar); y vaciar el directorio para abaratar la subida envenenaría la caché restaurada. Como cada `build-*` bumpea la versión del crate —recompilándolo siempre— el store cambia en cada tag, de modo que cualquier dedup por contenido casi nunca se dispararía: el ahorro real se limita a re-ejecutar el mismo tag sin cambios, marginal frente al riesgo de tocar la ruta crítica del release. Cada job pesado combina `target-v2` con `sccache` autoconsistente por variante (`test-windows`/`test-linux`/`test-macos` con `variant: test`, `coverage` con `variant: cov`, `build-*` con `variant: full`); `sccache` computa sus hits por hash de contenido, así que es inmune al `mtime` y cubre la recompilación residual que `target-v2` no evita. Dos causas explican el coste previo (evidencia v0.20.4): (1) la clave de `sccache` no llevaba `variant`, de modo que `test-windows` y `coverage` restauraban un blob de perfil `full` ajeno —tasas medidas vía `sccache --show-stats` de **0.00 %** en ambos— y además nunca guardaban el suyo (0 % perpetuo, frente al 96.43 % de `build-windows-x64`, que sí guarda y consume su propio perfil); las tasas históricas de Linux 3.21 % / macOS 3.04 % se midieron bajo esa misma colisión de perfiles y quedan como dato histórico, no vigente. (2) `target-v2` se invalida por `mtime`: parcial en los tres SO (los crates propios del workspace, dependencias de ruta local, recompilan siempre) y total solo en Windows (0 `Fresh` / 154 `Compiling`, incluyendo dependencias externas con checksum estable que en Linux/macOS sobreviven: 264/290 y 287/313 `Fresh`).
 
@@ -374,7 +376,7 @@ Matriz de invalidación por familia de caché:
 | `ort-bundle` | `v1` | cambia `ort_version` (`1.28.0`) — sin `Cargo.toml` en la clave para no invalidar por bump del crate |
 | `tts` (`qwen_tts.exe`) | `v1` | cambia `vendor/qwen3-tts/.engine-cachekey` (agregado de `Makefile` + `*.c/*.h` + `third_party/ingot`) + `msys2_gcc_version`/`openblas` |
 
-> **Determinismo de releases (binary stale) — heterogéneo con `target` en `build-*`:** `build-*` restaura `target-v2-full` (`cargo_restore_caches` con `variant: full` + `cargo clean -p ai-voice-interconnector` antes de `cargo build`). `sccache` aporta Rust por hash de contenido, `target` aporta `OUT_DIR` C++ (`ct2rs`/`oneDNN`/`sentencepiece`) que `sccache` no cubre; `cargo clean -p` vacía solo el crate versionado para que `VERSION` bump no quede stale mientras se preserva `OUT_DIR` C++. El `perl` del paso «Generar Cargo.lock.cachekey» normalizado mantiene la clave estable y el smoke-test `version --json == CIRCLE_TAG` valida fail-fast. Medición `v0.18.23` con opción C pura: wall `50m50s`, `build-windows 40m31s` (`37m21s` `cargo build`, `87%` Rust hit pero `cmake` C++ recompilado). Medición `v0.20.5` con `sccache` por variante: wall `~25m` (`build-windows ~12m` en primer ciclo con familia `full` fría; los hits llegan desde el segundo release con las familias pobladas).
+> **Determinismo de releases (binary stale) — heterogéneo con `target` en `build-*`:** `build-*` restaura `target-v2-full` (`cargo_restore_caches` con `variant: full` + `cargo clean -p ai-voice-interconnector` antes de `cargo build`). `sccache` aporta Rust por hash de contenido, `target` aporta `OUT_DIR` C++ (`ct2rs`/`oneDNN`/`sentencepiece`) que `sccache` no cubre; `cargo clean -p` vacía solo el crate versionado para que `VERSION` bump no quede stale mientras se preserva `OUT_DIR` C++. El `perl` del paso «Generar Cargo.lock.cachekey» normalizado mantiene la clave estable y el smoke-test `version --json == CIRCLE_TAG` valida fail-fast. Medición `v0.18.23` con opción C pura: wall `50m50s`, `build-windows 40m31s` (`37m21s` `cargo build`, `87%` Rust hit pero `cmake` C++ recompilado). Medición `v0.20.5` con `sccache` por variante: wall `~25m` (`build-windows ~12m` en primer ciclo con familia `full` fría). Medición `v0.20.6`: wall `~23m` con las familias ya pobladas (`test-windows` 86,33 % de hits, `coverage` 76,92 %, `build-windows` 74,07 % — primer release con hits donde había 0,00 %).
 
 Ver `.circleci/config.yml` para claves exactas. `coverage` genera `lcov.info` en una sola corrida y el resumen con `cargo llvm-cov report` (sin re-ejecutar la suite).
 
@@ -418,7 +420,8 @@ quedan documentados aquí de forma autocontenida:
 ## 5. Distribución de artefactos
 
 El **deliverable** que se publica a usuarios es el **archivo comprimido** de
-cada target (binario Rust + los 4 documentos de licencia), con su nombre de
+cada target (binario Rust + los 4 documentos de licencia + `ort-bundle` +
+`qwen_tts` vendido), con su nombre de
 release **versionado y con arch** (p. ej.
 `ai-voice-interconnector-<ver>-x86_64-windows.zip`). Estos cuatro archivos llegan
 al GitHub Release a través de `persist_to_workspace` / `attach_workspace`.
@@ -435,7 +438,7 @@ artifacts/
 
 `publish-release` recoge estos cuatro archivos por `attach_workspace`, calcula
 `SHA256SUMS.txt` sobre ellos y crea el GitHub Release. Cada archivo tiene layout
-plano (binario + 4 documentos en la raíz).
+plano (binario + 4 documentos + `ort-bundle` + `qwen_tts` vendido, en la raíz).
 
 ---
 

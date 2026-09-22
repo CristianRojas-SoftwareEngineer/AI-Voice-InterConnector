@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.6 — 2026-09-22](#0206-20260922)
 - [0.20.5 — 2026-09-22](#0205-20260922)
 - [0.20.4 — 2026-09-22](#0204-20260922)
@@ -119,6 +120,29 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+Remediación de drift exclusivamente documental en `docs/`: citas `file:line`
+desplazadas por la evolución del código, símbolos renombrados o eliminados que
+los documentos aún nombraban, y cifras de arquitectura superadas. Cero cambios
+de código fuente: este release mide el pipeline con la caché tibia intacta.
+
+### Cambiado
+
+- docs: **reanclean citas `file:line` en los comandos CLI** (`DOCTOR`,
+  `DEVICES`, `TRANSLATE`, `VOICE`, `VERSION`) a las líneas vigentes y corrigen
+  el fichero cuando la cita apuntaba al módulo equivocado
+  (`get_devices_json` vive en `avi-audio`, no en `main`).
+- docs: **actualizan nombres que ya no existen** (`MarianTranslator` →
+  `Ct2TranslationEngine`, `EXIT_*` → `ExitCode::*`,
+  `synthetic-speech/` → `speech/`, `data_root()` → `data_dir()`,
+  `setup --with-stt` como opt-in → redundante documentado, versiones
+  `0.18.26` → `0.20.6` en `VERSION.md`) y corrigen contradicciones
+  (`--language` en `setup`/`doctor`, índice inexistente en `setup`,
+  toolchain para todos los jobs, layout sin `ort-bundle`/`qwen_tts`).
+- docs: **actualizan cifras a evidencia medida** (tests `≈70`, quinto pin
+  `qwen3-tts-0.6b-base`, wall `v0.20.6 ~23m` con hits donde había 0 %).
 
 ## [0.20.6] — 2026-09-22
 

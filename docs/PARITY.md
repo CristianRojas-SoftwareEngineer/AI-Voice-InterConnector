@@ -2,7 +2,7 @@
 
 Este documento registra el **estado de equivalencia funcional y de experiencia de usuario** del canal nativo entre Windows, Linux y macOS, y enumera **qué falta para cerrar la paridad completa**. El criterio no es la paridad tecnológica (cada SO usa sus mecanismos idiomáticos: `.zip`/`tar.gz`, symlink en `~/.local/bin`, PATH en HKCU, Cask de Homebrew — eso es aceptable por diseño), sino que el **usuario final recorra un ciclo de vida equivalente**: instalar, usar, actualizar y desinstalar con la misma cantidad de fricción, privilegios y residuo.
 
-Fecha de corte: **Fase 7** (canal Rust por archivos comprimidos). Cada brecha se identifica por un **nombre descriptivo** (no por número: la numeración secuencial se vuelve inconsistente a medida que se cierran brechas). Al cerrar una brecha, actualizar la tabla y la sección correspondiente.
+Fecha de corte: **v0.20.6 (Fase 8+)** (canal Rust por archivos comprimidos). Cada brecha se identifica por un **nombre descriptivo** (no por número: la numeración secuencial se vuelve inconsistente a medida que se cierran brechas). Al cerrar una brecha, actualizar la tabla y la sección correspondiente.
 
 ## Tabla de contenidos
 
@@ -63,7 +63,7 @@ Nada pendiente en esta fase: las tres plataformas tienen one-liner sin prerequis
 
 ### Estado
 
-**Paridad completa.** Mismos comandos, mismo daemon (puerto 8765 por defecto), mismos esquemas `--json` y exit codes, mismas voces de fábrica y de usuario (`data_root()` por SO), mismo fail-fast de `speech`/`daemon start` sin modelo. Las diferencias de backend de audio (por SO) son tecnologías equivalentes, no diferencias de experiencia.
+**Paridad completa.** Mismos comandos, mismo daemon (puerto 8765 por defecto), mismos esquemas `--json` y exit codes, mismas voces de fábrica y de usuario (`data_dir()` por SO), mismo fail-fast de `speech`/`daemon start` sin modelo. Las diferencias de backend de audio (por SO) son tecnologías equivalentes, no diferencias de experiencia.
 
 Única salvedad, aceptada como limitación de toolchain y documentada en el README: la cobertura de arquitecturas no es simétrica (sin Windows ARM64, sin Mac Intel).
 

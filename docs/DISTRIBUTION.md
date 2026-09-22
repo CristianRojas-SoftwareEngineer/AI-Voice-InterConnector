@@ -22,7 +22,7 @@ quedó 100 % Rust en su distribución.
 |---|---|
 | **Audiencia** | Cualquier usuario final (no requiere Python ni toolchain) |
 | **Instalación** | One-liner por SO (`curl \| sh` / `irm \| iex`) o Homebrew Cask (macOS) |
-| **Tamaño** | Binario pequeño y autocontenido (~13-42 MB; CTranslate2 (ct2rs) enlazado estático + Parakeet vía `ort` `load-dynamic` vía `crt-static`) |
+| **Tamaño** | Binario Rust pequeño y autocontenido (el archivo total suma además `ort-bundle` + `qwen_tts` vendido; CTranslate2 (ct2rs) enlazado estático + Parakeet vía `ort` `load-dynamic` vía `crt-static`) |
 | **Dependencias del sistema** | Ninguna (autocontenido) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
 | **Actualización** | Re-ejecutar el one-liner por SO con `--check` (reporta la transición sin instalar), `upgrade-ai-voice-interconnector.{sh,ps1}` (wrapper), o `brew upgrade --cask` |
@@ -37,7 +37,8 @@ dentro del archivo, se descargan en el primer `setup`.
 ## Formato de los artefactos
 
 Cada uno de los 4 targets se publica como un archivo comprimido con **layout
-plano** (binario + los 4 documentos de la raíz, todos en la raíz del archivo):
+plano** (binario + los 4 documentos de la raíz + `ort-bundle` + `qwen_tts`
+vendido, todos en la raíz del archivo):
 
 | Target | Asset del release | Binario interno |
 |---|---|---|

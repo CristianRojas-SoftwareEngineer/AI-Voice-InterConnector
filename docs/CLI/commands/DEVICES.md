@@ -4,8 +4,8 @@ Enumera los dispositivos de salida de audio del sistema. Es un comando de
 inspección de mínima complejidad: sin subcomandos, sin argumentos
 posicionales, no modifica estado y no depende del daemon.
 
-Implementación: `handle_devices` (`src/main.rs:534`), que delega la
-enumeración real a `avi_audio::get_devices_json` (`crates/avi-audio/src/lib.rs:380`),
+Implementación: `handle_devices` (`src/main.rs:584`), que delega la
+enumeración real a `avi_audio::get_devices_json` (`crates/avi-audio/src/lib.rs:478`),
 apoyado en `AudioService::list_output_devices` (`crates/avi-audio/src/lib.rs:34`).
 
 ---
@@ -20,8 +20,8 @@ ai-voice-interconnector devices [--json]
 |---|---|---|---|
 | `--json` | flag global | `false` | Emite JSON legible por máquina en stdout |
 
-Definición del subcomando: `enum Commands::Devices` (`src/main.rs:125`),
-despachado en `src/main.rs:483` (`Some(Commands::Devices) => handle_devices(json_mode)`).
+Definición del subcomando: `enum Commands::Devices` (`src/main.rs:145`),
+despachado en `src/main.rs:522` (`Some(Commands::Devices) => handle_devices(json_mode)`).
 
 ---
 
@@ -58,7 +58,7 @@ según dónde falle.
 handle_devices(json_mode)
     │
     ▼
-avi_audio::get_devices_json()          ← crates/avi-audio/src/lib.rs:380
+avi_audio::get_devices_json()          ← crates/avi-audio/src/lib.rs:478
     │  AudioService::new() → list_output_devices()
     │  mapea cada AudioDevice a {"id", "name", "latency": latency_ms / 1000.0}
     ▼
@@ -67,16 +67,16 @@ Ok  → --json: emit_raw_json({"devices": devices})
       sin --json: imprime línea por dispositivo
 ```
 
-Fuente: `src/main.rs:534-551`.
+Fuente: `src/main.rs:584-601`.
 
 ---
 
 ## Contrato `--json`
 
 Con `--json`, `handle_devices` llama a `emit_raw_json(json!({ "devices": devices }))`
-(`src/main.rs:538`). `emit_raw_json` (`crates/avi-core/src/json_emitter.rs:38`)
+(`src/main.rs:588`). `emit_raw_json` (`crates/avi-core/src/json_emitter.rs:19`)
 inyecta `schema_version` sobre el objeto antes de serializar
-(`with_schema_version`, `crates/avi-core/src/json_emitter.rs:26`).
+(`with_schema_version`, `crates/avi-core/src/json_emitter.rs:7`).
 
 ```json
 {
@@ -93,7 +93,7 @@ inyecta `schema_version` sobre el objeto antes de serializar
 | `devices` | array de objetos | Lista de dispositivos de salida enumerados por `cpal` |
 | `devices[].id` | integer | Índice secuencial 0-based asignado durante la iteración de `host.output_devices()` (`crates/avi-audio/src/lib.rs:53`) |
 | `devices[].name` | string | Nombre del dispositivo reportado por `cpal`, o `"Dispositivo {idx}"` si el backend no expone el nombre |
-| `devices[].latency` | number | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs:389`); en salida texto se reconvierte a milisegundos para mostrarse |
+| `devices[].latency` | number | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs:487`); en salida texto se reconvierte a milisegundos para mostrarse |
 | `schema_version` | string | `"3"`, inyectado por `emit_raw_json`/`with_schema_version` — no forma parte del payload que construye el handler |
 
 Nota de orden de claves: `with_schema_version` inserta `schema_version` en el
@@ -105,7 +105,7 @@ claves es el mismo con independencia del orden.
 
 ## Formato de salida texto
 
-Sin `--json` (`src/main.rs:540-548`):
+Sin `--json` (`src/main.rs:589-599`):
 
 ```
 Dispositivos de salida de audio:
@@ -124,7 +124,7 @@ reconvertida de segundos a milisegundos (`* 1000.0`) solo para esta vista.
 |---|---|---|
 | `audio_enumeration_failed` | 1 (`ExitCode::Error`) | `AudioService::list_output_devices` devolvió `Err` (fallo del host `cpal` al construir el stream/config; la ausencia de dispositivos por sí sola NO es un error, produce lista vacía) |
 
-El error se envuelve en `main` (`src/main.rs:509-519`): con `--json` emite
+El error se envuelve en `main` (`src/main.rs:559-570`): con `--json` emite
 `{"error": <mensaje>, "reason": "audio_enumeration_failed", "schema_version": "3"}`
 a stdout; sin `--json`, `Error: <mensaje>` a stderr. En ambos casos el
 proceso termina con exit code 1.

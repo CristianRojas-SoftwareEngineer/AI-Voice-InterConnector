@@ -409,18 +409,18 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 
 | Código | Constante | Significado |
 |---|---|---|
-| `0` | `EXIT_OK` | Éxito |
-| `1` | `EXIT_ERROR` | Error genérico |
-| `2` | `EXIT_INVALID_INPUT` | Uso incorrecto: la invocación está mal formada |
-| `3` | `EXIT_NOT_FOUND` | El recurso nombrado no existe |
-| `4` | `EXIT_MODEL_MISSING` | Modelo no provisionado |
-| `5` | `EXIT_DAEMON_UNREACHABLE` | Daemon inalcanzable |
-| `6` | `EXIT_STATE_CONFLICT` | El recurso existe o está ocupado; la operación no procede sin liberarlo o forzarla |
-| `7` | `EXIT_NOT_APPLICABLE` | La operación no aplica a este objetivo o entorno, y no aplicará reintentando |
-| `8` | `EXIT_PRECONDITION_FAILED` | Una precondición del entorno no se cumple; el remedio está fuera del programa y la operación es reintentable una vez corregida |
-| `9` | `EXIT_TRANSLATION_FAILED` | El pipeline de traducción falló con el modelo ya cargado |
-| `10` | `EXIT_TRANSCRIPTION_FAILED` | El pipeline de transcripción falló con el modelo ya cargado |
-| `130` | `EXIT_INTERRUPTED` | Interrupción del usuario (Ctrl+C con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria en la ventana spawn→write) |
+| `0` | `ExitCode::Ok` | Éxito |
+| `1` | `ExitCode::Error` | Error genérico |
+| `2` | `ExitCode::InvalidInput` | Uso incorrecto: la invocación está mal formada |
+| `3` | `ExitCode::NotFound` | El recurso nombrado no existe |
+| `4` | `ExitCode::ModelMissing` | Modelo no provisionado |
+| `5` | `ExitCode::DaemonUnreachable` | Daemon inalcanzable |
+| `6` | `ExitCode::StateConflict` | El recurso existe o está ocupado; la operación no procede sin liberarlo o forzarla |
+| `7` | `ExitCode::NotApplicable` | La operación no aplica a este objetivo o entorno, y no aplicará reintentando |
+| `8` | `ExitCode::PreconditionFailed` | Una precondición del entorno no se cumple; el remedio está fuera del programa y la operación es reintentable una vez corregida |
+| `9` | `ExitCode::TranslationFailed` | El pipeline de traducción falló con el modelo ya cargado |
+| `10` | `ExitCode::TranscriptionFailed` | El pipeline de transcripción falló con el modelo ya cargado |
+| `130` | `ExitCode::Interrupted` | Interrupción del usuario (Ctrl+C con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria en la ventana spawn→write) |
 
 #### Cómo se reparten los enteros
 
@@ -448,11 +448,11 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 
 El exit 2 es, en Unix y en `clap`, el código del error de invocación, y aquí significa exactamente eso. Como consecuencia, **todas las rutas de fallo de parseo son correctas sin escribir una línea de validación**: flag requerido ausente, valor fuera de `choices`, grupo mutuamente excluyente violado (`conflicts_with`), subcomando inválido en los tres niveles, y flag desconocido en cualquier comando.
 
-**Ausente = exploración (0), inválido = error (2).** `ai-voice-interconnector` a secas y `ai-voice-interconnector speech` a secas no son un error: imprimen la ayuda y salen con `EXIT_OK`, igual que `--help`, porque una invocación sin subcomando es exploratoria. La regla no es «ausente o inválido → 2».
+**Ausente = exploración (0), inválido = error (2).** `ai-voice-interconnector` a secas y `ai-voice-interconnector speech` a secas no son un error: imprimen la ayuda y salen con `ExitCode::Ok`, igual que `--help`, porque una invocación sin subcomando es exploratoria. La regla no es «ausente o inválido → 2».
 
 Dos pruebas de que la convención es la correcta:
 
-1. **La tabla la honra en otro punto**: `EXIT_INTERRUPTED = 130` es exactamente `128 + SIGINT`. Respetar 128+n y no respetar 2 sería incoherente dentro de la misma tabla.
+1. **La tabla la honra en otro punto**: `ExitCode::Interrupted = 130` es exactamente `128 + SIGINT`. Respetar 128+n y no respetar 2 sería incoherente dentro de la misma tabla.
 2. **El proyecto hermano aplica la misma convención**: `tts-sidecar-narrator` usa **2 = uso incorrecto** en sus tres casos —valor fuera de dominio, argumento vacío y comando desconocido— con **1 = error genérico**.
 
 #### Dónde viven las constantes, y por qué eso es parte del contrato
@@ -472,8 +472,8 @@ La reexportación desde `src/main.rs` crea dos sitios donde *parecen* vivir las 
 
 **Dos reglas transversales, y solo una es mecanizable.**
 
-- **Test**: ningún `ExitCode::Error` puede alcanzarse por una causa prevista con remedio declarado en su propio mensaje. Un `EXIT_ERROR` cuyo mensaje contenga «reintenta» es por construcción un olvido.
-- **Criterio de revisión, no test**: ningún `EXIT_INVALID_INPUT` puede alcanzarse con una invocación bien formada. «Bien formada» no tiene definición ejecutable, y escribirla como test produciría una aserción que no afirma nada. Su lugar es el comentario del módulo, junto al criterio generador.
+- **Test**: ningún `ExitCode::Error` puede alcanzarse por una causa prevista con remedio declarado en su propio mensaje. Un `ExitCode::Error` cuyo mensaje contenga «reintenta» es por construcción un olvido.
+- **Criterio de revisión, no test**: ningún `ExitCode::InvalidInput` puede alcanzarse con una invocación bien formada. «Bien formada» no tiene definición ejecutable, y escribirla como test produciría una aserción que no afirma nada. Su lugar es el comentario del módulo, junto al criterio generador.
 
 ## 10. El canal de error y los payloads
 
@@ -555,7 +555,7 @@ Son dos causas independientes que coinciden en el mismo hecho generador. Los pay
 | Flag | Qué borra / efecto |
 |---|---|
 | `--voices` | Las voces que puede borrar y, **con ellas, solo los namespaces de habla sintética de esas voces** (arrastre `speech/<voz>` excepto `default`) |
-| `--synthetic-speech` | La raíz `synthetic-speech/` entera (`speech/`), `default` incluida |
+| `--synthetic-speech` | La raíz `speech/` entera, `default` incluida |
 | `--model` | Snapshots HF pineados (`MODEL_REVISIONS` en `hf_cache_dir()`), `xet` + `.locks` y `ct2` (`hf_cache_dir/ct2`), y `data_dir()/models` legado |
 | `--all` | Unión Modelo + voces + habla sintética (**sin binario ni PATH**; solo datos) |
 | `--dry-run` | Lista sin borrar (exit 0); cubre los tres modos anteriores; con `--json` emite `removed` + `dry_run:true` |
@@ -563,7 +563,7 @@ Son dos causas independientes que coinciden en el mismo hecho generador. Los pay
 
 **Gate `sin flags → exit 2`:** `cleanup` sin ningún flag de categoría (`--voices`, `--synthetic-speech`, `--model`, `--all`) sale con `2` `usage_error` sin borrar (del binario principal). `--all` equivale a `--voices --synthetic-speech --model` (del binario principal).
 
-**`synthetic-speech/default/` (y `ryan`/`vivian`) sobrevive a `--voices` y cae únicamente con `--synthetic-speech` o `--all`.** El criterio es el del propio flag —las locuciones se van con su voz— y las voces de fábrica (`default`, `ryan`, `vivian`; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) no se van nunca: `voice remove` las protege (exit 2) y `--voices` no las borra. Importa declararlo porque `default` es la voz por defecto de `speech synthesize` y su namespace es probablemente el más poblado. Reparto con `speech remove`: el borrado individual es `speech remove --label`, el masivo es `cleanup --synthetic-speech` (`CONTRACT.md:183`).
+**`speech/default/` (y `ryan`/`vivian`) sobrevive a `--voices` y cae únicamente con `--synthetic-speech` o `--all`.** El criterio es el del propio flag —las locuciones se van con su voz— y las voces de fábrica (`default`, `ryan`, `vivian`; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) no se van nunca: `voice remove` las protege (exit 2) y `--voices` no las borra. Importa declararlo porque `default` es la voz por defecto de `speech synthesize` y su namespace es probablemente el más poblado. Reparto con `speech remove`: el borrado individual es `speech remove --label`, el masivo es `cleanup --synthetic-speech` (`CONTRACT.md:182`).
 
 `--all` es unión de limpiezas de datos; **no toca binario ni PATH** — solo `uninstall` borra binario y PATH (del binario principal). Con la raíz separada del registro de voces, el arrastre de `--voices` es código explícito y no un efecto del `rmtree`.
 
@@ -571,7 +571,12 @@ Son dos causas independientes que coinciden en el mismo hecho generador. Los pay
 
 El chequeo de audio degrada a WARN en vez de FAIL, **con la premisa que lo sostiene**: el sidecar es instalable en hosts headless, SSH y CI porque existe un sumidero que no necesita subsistema de sonido —`speech synthesize --text T --label L` sintetiza y persiste sin reproducir nada—. `setup` es provisión, no diagnóstico.
 
-**`--with-stt`** provisiona el modelo de transcripción (`parakeet-tdt-0.6b-v3` int8, runtime `ort` load-dynamic vía `ParakeetEngine`). Es **opt-in** (no se descarga por defecto) y **ortogonal a `--language`**: no cuelga de la taxonomía de idioma porque el modelo Parakeet no está partido por par de idiomas — un solo modelo cubre `es`/`en`. `setup --with-stt` sin más flags provisiona únicamente el modelo de transcripción; se combina libremente con `--language` para provisionar ambos en la misma invocación.
+**`--with-stt`** se acepta por compatibilidad pero es **redundante**:
+`parakeet-tdt-v3` (int8, runtime `ort` load-dynamic vía `ParakeetEngine`) ya se
+provisiona siempre en `setup` base; el flag solo emite un aviso informativo.
+No existe `--language` en `setup`: el conjunto provisionado es fijo (es+en
+offline completo desde el primer uso). `setup --with-stt` sin más flags no
+provisiona nada adicional.
 
 #### `voice`
 
@@ -608,23 +613,23 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 #### Traducción opt-in en `speech say`/`speech synthesize`
 
-`--source-language`/`--target-language` (§3) insertan una etapa de traducción **antes** de la síntesis cuando declaran idiomas distintos; el motor de síntesis no cambia, solo recibe el texto ya traducido. Ambos son opcionales en `say`/`synthesize`: `--target-language` vale `es-latam` por defecto y `--source-language` vale lo mismo que `--target-language` cuando se omite, por lo que sin flags no se traduce. Solo se admite `es-latam` o `en`; cualquier otro valor sale con **2**. El modelo de traducción ausente reutiliza el exit **4** (`EXIT_MODEL_MISSING`), remitiendo a `setup`, en vez de un código propio: es la misma precondición de entorno que el modelo TTS. Un fallo de la inferencia de traducción, con el modelo ya cargado, sale con **9** (`EXIT_TRANSLATION_FAILED`, §9) — código distinto del **1** genérico de síntesis, porque distingue en qué etapa falló la invocación.
+`--source-language`/`--target-language` (§3) insertan una etapa de traducción **antes** de la síntesis cuando declaran idiomas distintos; el motor de síntesis no cambia, solo recibe el texto ya traducido. Ambos son opcionales en `say`/`synthesize`: `--target-language` vale `es-latam` por defecto y `--source-language` vale lo mismo que `--target-language` cuando se omite, por lo que sin flags no se traduce. Solo se admite `es-latam` o `en`; cualquier otro valor sale con **2**. El modelo de traducción ausente reutiliza el exit **4** (`ExitCode::ModelMissing`), remitiendo a `setup`, en vez de un código propio: es la misma precondición de entorno que el modelo TTS. Un fallo de la inferencia de traducción, con el modelo ya cargado, sale con **9** (`ExitCode::TranslationFailed`, §9) — código distinto del **1** genérico de síntesis, porque distingue en qué etapa falló la invocación.
 
 `--temperature` es un override opcional del muestreo en `say`/`synthesize`/`dub`: sin el flag se usa la temperatura de producción (`0.35`); con el flag debe cumplirse `0 < t <= 2.0`, y fuera de ese rango sale con **2**.
 
 #### El rename `--language` → `--target-language`
 
-**Cambio incompatible y deliberado, sin alias de transición.** `speech say`/`speech synthesize` reemplazan `--language` por `--target-language`; `setup` y `doctor` **conservan** `--language` porque ahí no hay ambigüedad origen/destino (la provisión no traduce). `daemon` **no expone** `--language`/`--with-stt` (ver `docs/CLI/commands/DAEMON.md` — `native-stt`/`native-translation` son features de compilación, no flags de ejecución). El integrador de narración (§12) no se ve afectado: sus invocaciones nunca pasan `--language` en `speech say`, así que el rename no le rompe ningún flag en uso, aunque sí es parte del mismo contrato versionado.
+**Cambio incompatible y deliberado, sin alias de transición.** `speech say`/`speech synthesize` reemplazan `--language` por `--target-language`; ni `setup` ni `doctor` exponen `--language` (la provisión no traduce y el diagnóstico no filtra por idioma). `daemon` **no expone** `--language`/`--with-stt` (ver `docs/CLI/commands/DAEMON.md` — `native-stt`/`native-translation` son features de compilación, no flags de ejecución). El integrador de narración (§12) no se ve afectado: sus invocaciones nunca pasan `--language` en `speech say`, así que el rename no le rompe ningún flag en uso, aunque sí es parte del mismo contrato versionado.
 
 #### Provisión y daemon
 
-`setup` descarga `Marian` (`opus-mt-es-en`/`en-es`) y convierte incondicionalmente su derivado obligatorio `CT2` `INT8` en `hf_cache_dir/ct2/opus-mt-{es-en,en-es}/` (`crates/avi-store/src/lib.rs:ct2_model_dir`, idempotente por `mtime` solo sobre dirs sanos): `model.bin` más tokenizador utilizable por el loader (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot). Si el dir está roto (sin tokenizador), `setup` lo reconvierte de forma atómica (temporal hermano + rename, verificación con el criterio del gate `is_ct2_provisioned` == loader); `doctor` exige el derivado completo para ambas direcciones (Falla con `CT2 es→en/en→es no provisionado` si `Marian HF` está pero el `CT2` no pasa el gate); `cleanup` purga `hf_cache_dir/ct2` junto a `hub/xet`. Sin gating por `--language`: la provisión es determinista para la instalación por defecto. `daemon start`/`serve` aceptan `--auto-restart` y `--max-retries` (default `3`) — con `--auto-restart` el supervisor reintenta hasta `max_retries` con backoff `500ms*2^retries` capado a `4s` (cada reintento con reclamo activo del árbol propio previo con deadline de 5 s y verificación de muerte + puerto libre; el reclamo activo matar-y-rearrancar vive en `start` —en Unix ante líder muerto por grupo con verificación por 8766, runtime diferido a CI—, nunca en `serve`; con puertos efímeros el reclamo previo al reintento pierde su objeto, pendiente del descubrimiento por el cliente); un `daemon stop` graceful vía `shutdown_notify` no reintenta.
+`setup` descarga `Marian` (`opus-mt-es-en`/`en-es`) y convierte incondicionalmente su derivado obligatorio `CT2` `INT8` en `hf_cache_dir/ct2/opus-mt-{es-en,en-es}/` (`crates/avi-store/src/lib.rs:ct2_model_dir`, idempotente por `mtime` solo sobre dirs sanos): `model.bin` más tokenizador utilizable por el loader (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot). Si el dir está roto (sin tokenizador), `setup` lo reconvierte de forma atómica (temporal hermano + rename, verificación con el criterio del gate `is_ct2_provisioned` == loader); `doctor` exige el derivado completo para ambas direcciones (Falla con `CT2 es→en/en→es no provisionado` si `Marian HF` está pero el `CT2` no pasa el gate); `cleanup` purga `hf_cache_dir/ct2` junto a `hub/xet`. Sin gating por `--language`: la provisión es determinista para la instalación por defecto. `daemon start`/`serve` aceptan `--auto-restart` y `--max-retries` (default `3`) — con `--auto-restart` el supervisor reintenta hasta `max_retries` con backoff `500ms*2^retries` capado a `4s` (cada reintento con reclamo activo del árbol propio previo con deadline de 5 s y verificación de muerte + puerto libre; el reclamo activo matar-y-rearrancar vive en `start` —en Unix ante líder muerto por grupo con verificación por 8766, runtime diferido a CI—, nunca en `serve`; con puertos efímeros el reclamo previo al reintento pierde su objeto (el cliente ya descubre la `addr` real por el pidfile); un `daemon stop` graceful vía `shutdown_notify` no reintenta.
 
 #### `speech transcribe`: audio→texto, verificable sin traducir ni sintetizar
 
 `speech transcribe` es una **sub-acción del grupo `speech`** (no un comando aislado como `translate`): transcribe a texto con `parakeet-tdt-0.6b-v3` int8 vía `ort` load-dynamic (del módulo de transcripción STT, `ParakeetEngine::transcribe`), desde un archivo WAV (`--audio`) o desde el micrófono (`--mic`). La **captura corre siempre en el cliente** (al daemon viajan las muestras ya decodificadas en base64, nunca rutas); la transcripción en sí recibe el despacho al daemon en sus tres modos (§5): sin flags, transcribe por el daemon si está activo y en modo directo si no; `--daemon` exige el daemon y sale con **5** si no está; `--no-daemon` fuerza el modo directo. Es una operación **de un solo idioma por invocación** — a diferencia del par `--from`/`--to` de `translate`, aquí `--source-language` (requerido, `es-latam`/`en`, misma taxonomía que `speech say`/`synthesize`) declara el único idioma hablado en el audio. `ParakeetEngine` **solo transcribe**, nunca traduce: si el usuario necesita el texto en otro idioma, encadena `translate` por separado. No hay síntesis de por medio: `speech transcribe` es verificable de forma aislada, con audio de entrada y texto de salida, sin depender del motor TTS ni del subsistema de traducción.
 
-`--audio` y `--mic` forman un **grupo mutuamente excluyente `required=True`** (el mismo en `speech dub`), el único tipo de grupo excluyente del árbol de parsers que exige uno de sus flags: los demás — `--daemon`/`--no-daemon` en `speech synthesize`/`speech say`/`voice clone`/`speech transcribe`/`speech dub`, y el grupo de `setup` — son opcionales, sin exigir ninguno de los dos. Con `--mic`, la captura es **push-to-talk** por defecto (Enter para terminar); `--duration N` fuerza una grabación de duración fija en segundos y solo es válido junto a `--mic` — con `--audio`, o con `--mic` ausente, `--duration` sale con **2** (`EXIT_INVALID_INPUT`). Sin terminal interactiva (no TTY) y sin `--duration`, `--mic` también sale con **2**, porque no hay forma de detectar la pulsación de Enter que cierra el push-to-talk. El push-to-talk tiene un techo de seguridad configurable con la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s): al alcanzarlo, la grabación se detiene, se avisa por stderr y se continúa con lo grabado hasta ese punto — sale con **0**, no es un error. Al iniciar la grabación se emite además un aviso mínimo por stderr, nunca una espera silenciosa. La captura usa el backend multiplataforma `cpal` (único, sin ramas por sistema operativo): graba a la tasa y formato nativos del dispositivo de entrada y normaliza a 16 kHz/mono/int16 (formato que `ParakeetEngine` asume), la misma normalización que aplica el WAV de `--audio`; la inferencia es `ort` load-dynamic con los 4 artefactos `MODEL_FILE_PATTERNS` (`encoder-model.int8.onnx`, `decoder_joint-model.int8.onnx`, `nemo128.onnx`, `vocab.txt`), stack Rust nativo.
+`--audio` y `--mic` forman un **grupo mutuamente excluyente `required=True`** (el mismo en `speech dub`), el único tipo de grupo excluyente del árbol de parsers que exige uno de sus flags: los demás — `--daemon`/`--no-daemon` en `speech synthesize`/`speech say`/`voice clone`/`speech transcribe`/`speech dub`, y el grupo de `setup` — son opcionales, sin exigir ninguno de los dos. Con `--mic`, la captura es **push-to-talk** por defecto (Enter para terminar); `--duration N` fuerza una grabación de duración fija en segundos y solo es válido junto a `--mic` — con `--audio`, o con `--mic` ausente, `--duration` sale con **2** (`ExitCode::InvalidInput`). Sin terminal interactiva (no TTY) y sin `--duration`, `--mic` también sale con **2**, porque no hay forma de detectar la pulsación de Enter que cierra el push-to-talk. El push-to-talk tiene un techo de seguridad configurable con la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s): al alcanzarlo, la grabación se detiene, se avisa por stderr y se continúa con lo grabado hasta ese punto — sale con **0**, no es un error. Al iniciar la grabación se emite además un aviso mínimo por stderr, nunca una espera silenciosa. La captura usa el backend multiplataforma `cpal` (único, sin ramas por sistema operativo): graba a la tasa y formato nativos del dispositivo de entrada y normaliza a 16 kHz/mono/int16 (formato que `ParakeetEngine` asume), la misma normalización que aplica el WAV de `--audio`; la inferencia es `ort` load-dynamic con los 4 artefactos `MODEL_FILE_PATTERNS` (`encoder-model.int8.onnx`, `decoder_joint-model.int8.onnx`, `nemo128.onnx`, `vocab.txt`), stack Rust nativo.
 
 | Parámetros | Payload `--json` |
 |---|---|
@@ -632,7 +637,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 El shape `--json` no cambia con el despacho: emite `{"text", "source"}` en los tres modos, sin campo `daemon`.
 
-Si el modelo `parakeet-tdt-0.6b-v3` no está provisionado, sale con **4** (`EXIT_MODEL_MISSING`), remitiendo a `ai-voice-interconnector setup --with-stt`; un fallo de la inferencia con el modelo ya cargado sale con **10** (`EXIT_TRANSCRIPTION_FAILED`, §9) — mismo criterio de asignación que distingue **4** de **9** en `translate`. Un `--audio` inexistente sale con **3** (`EXIT_NOT_FOUND`); en la ruta daemon, un fallo de comunicación —daemon inactivo o de versión antigua sin `/transcribe` (404, skew de `schema_version` sin bump)— sale con **5** (`EXIT_DAEMON_UNREACHABLE`), sin degradación silenciosa a modo directo.
+Si el modelo `parakeet-tdt-0.6b-v3` no está provisionado, sale con **4** (`ExitCode::ModelMissing`), remitiendo a `ai-voice-interconnector setup`; un fallo de la inferencia con el modelo ya cargado sale con **10** (`ExitCode::TranscriptionFailed`, §9) — mismo criterio de asignación que distingue **4** de **9** en `translate`. Un `--audio` inexistente sale con **3** (`ExitCode::NotFound`); en la ruta daemon, un fallo de comunicación —daemon inactivo o de versión antigua sin `/transcribe` (404, skew de `schema_version` sin bump)— sale con **5** (`ExitCode::DaemonUnreachable`), sin degradación silenciosa a modo directo.
 
 **Divergencia deliberada del shape `--json` frente a `translate` (D5).** `translate --json` emite `source`/`target` como los códigos **ISO crudos** que recibieron `--from`/`--to` (`es`, `en`): ahí el ISO es exacto porque el parámetro mismo está restringido a `choices=["es","en"]`. `speech transcribe --json`, en cambio, emite `source` como el **token CLI verbatim** de `--source-language` (p. ej. `es-latam`, sin resolver a `es`) — no lo normaliza. La razón es de simetría con el resto de `speech`: `speech say`/`synthesize` aceptan y exponen `es-latam` en su propia taxonomía de idioma (nunca lo colapsan a ISO de cara al usuario), y `speech transcribe` es una sub-acción de ese mismo grupo, no un primo de `translate`. Colapsar `source` a ISO ahí introduciría una inconsistencia dentro del propio grupo `speech` a cambio de una consistencia superficial con un comando de otro grupo. La resolución a ISO (`resolve_language`) sigue ocurriendo internamente para seleccionar el idioma que `ParakeetEngine` recibe; solo la salida `--json` preserva el token de entrada.
 
@@ -646,7 +651,7 @@ Exige **exactamente una** de `{--audio, --mic}` (grupo mutuamente excluyente `re
 |---|---|
 | `--audio` **o** `--mic` (mutuamente excluyentes, uno requerido) · `--duration N` (solo con `--mic`) · `--source-language` **requerido** · `--target-language` (default `es-latam`) · `-v/--voice` · `--temperature` · `--daemon`/`--no-daemon` | transcribe → traduce (si `source != target`) → sintetiza → reproduce |
 
-Códigos de salida aplicables en la cadena: **4** (`EXIT_MODEL_MISSING`, modelo de transcripción no provisionado, remite a `setup --with-stt`), **5** (`EXIT_DAEMON_UNREACHABLE`, daemon exigido pero inactivo o de versión antigua sin `/transcribe`), **9** (`EXIT_TRANSLATION_FAILED`, fallo del pipeline de traducción con el modelo cargado) y **10** (`EXIT_TRANSCRIPTION_FAILED`, fallo del pipeline de transcripción con el modelo cargado); más **2** (uso inválido: `--duration` sin `--mic`, `--mic` sin TTY y sin `--duration`) y **3** (`--audio` inexistente).
+Códigos de salida aplicables en la cadena: **4** (`ExitCode::ModelMissing`, modelo de transcripción no provisionado, remite a `setup`), **5** (`ExitCode::DaemonUnreachable`, daemon exigido pero inactivo o de versión antigua sin `/transcribe`), **9** (`ExitCode::TranslationFailed`, fallo del pipeline de traducción con el modelo cargado) y **10** (`ExitCode::TranscriptionFailed`, fallo del pipeline de transcripción con el modelo cargado); más **2** (uso inválido: `--duration` sin `--mic`, `--mic` sin TTY y sin `--duration`) y **3** (`--audio` inexistente).
 
 ---
 

@@ -53,7 +53,7 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 |---|---|
 | `devices` | Lista dispositivos de audio del sistema |
 | `doctor` | Ejecuta diagnósticos del sistema (incluye ruta de caché HF resuelta) |
-| `setup` | Descarga los modelos pinneados vía HuggingFace Hub y registra el índice |
+| `setup` | Descarga los modelos pinneados vía HuggingFace Hub (sin índice: solo presencia de snapshot) |
 | `cleanup` | Borra selectivamente snapshots HF + datos de usuario (`--voices`/`--synthetic-speech`/`--model`/`--all` = unión sin binario ni PATH, `--dry-run`, `--yes/-y`; sin flags → exit 2) |
 | `uninstall` | Desinstalación en un comando: datos + PATH + binario |
 | `version` | Muestra la versión |
@@ -63,17 +63,17 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 
 | Código | Constante | Significado |
 |---|---|---|
-| 0 | `EXIT_OK` | Éxito |
-| 1 | `EXIT_ERROR` | Error genérico |
-| 2 | `EXIT_INVALID_INPUT` | Entrada inválida |
-| 3 | `EXIT_NOT_FOUND` | Recurso no encontrado |
-| 4 | `EXIT_MODEL_MISSING` | Modelo no provisionado |
-| 5 | `EXIT_DAEMON_UNREACHABLE` | Daemon inalcanzable |
-| 6 | `EXIT_STATE_CONFLICT` | Conflicto de estado |
-| 7 | `EXIT_NOT_APPLICABLE` | Operación no aplicable |
-| 8 | `EXIT_PRECONDITION_FAILED` | Precondición incumplida |
-| 9 | `EXIT_TRANSLATION_FAILED` | Fallo de traducción |
-| 10 | `EXIT_TRANSCRIPTION_FAILED` | Fallo de transcripción |
-| 130 | `EXIT_INTERRUPTED` | Interrupción por usuario (Ctrl+C, con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria) |
+| 0 | `ExitCode::Ok` | Éxito |
+| 1 | `ExitCode::Error` | Error genérico |
+| 2 | `ExitCode::InvalidInput` | Entrada inválida |
+| 3 | `ExitCode::NotFound` | Recurso no encontrado |
+| 4 | `ExitCode::ModelMissing` | Modelo no provisionado |
+| 5 | `ExitCode::DaemonUnreachable` | Daemon inalcanzable |
+| 6 | `ExitCode::StateConflict` | Conflicto de estado |
+| 7 | `ExitCode::NotApplicable` | Operación no aplicable |
+| 8 | `ExitCode::PreconditionFailed` | Precondición incumplida |
+| 9 | `ExitCode::TranslationFailed` | Fallo de traducción |
+| 10 | `ExitCode::TranscriptionFailed` | Fallo de transcripción |
+| 130 | `ExitCode::Interrupted` | Interrupción por usuario (Ctrl+C, con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria) |
 
 Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). `CliError` vive en `crates/avi-core/src/exit_codes.rs` y se traduce en `src/main.rs` (`ExitCode` + `reason`), sin herencia Python.

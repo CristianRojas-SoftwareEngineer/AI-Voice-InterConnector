@@ -67,7 +67,7 @@ AI-Voice-InterConnector/
 │   │   └── assets/default/             # speech-reference.wav + timbre-reference.wav embebidos
 │   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)
 │   ├── avi-stt/                        # ParakeetEngine (ort, load-dynamic)
-│   ├── avi-translation/                # MarianTranslator (CTranslate2)
+│   ├── avi-translation/                # Ct2TranslationEngine (CTranslate2/ct2rs)
 ├── vendor/
 │   └── qwen3-tts/                      # Binario y pesos Qwen3-TTS (no commiteados todos)
 └── crates/xtask/src/main.rs            # cask / source-offer / licenses (tooling Rust)
@@ -91,7 +91,7 @@ AI-Voice-InterConnector/
     └── SELF-HOSTED-INSTALL.md          # One-liners
 ```
 
-> Las voces de **fábrica** `default` están embebidas en el binario (`crates/avi-store/assets/default/`) y se materializan en `data_dir()/voices/default/` en `ensure_initialized()`. Las voces de **usuario** viven en `data_dir()/voices/<nombre>/` (user-data-dir por SO).
+> Las voces de **fábrica** `default` están embebidas en el binario (`crates/avi-store/assets/default/`) y se materializan en `data_dir()/voices/default/` en `VoiceStore::ensure_initialized()`. Las voces de **usuario** viven en `data_dir()/voices/<nombre>/` (user-data-dir por SO).
 
 ## Entry point `src/main.rs`
 
@@ -129,8 +129,9 @@ Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio�
 2. CLI parsea args y resuelve VoiceStore (default embebida o clonada)
                      │
                      ▼
-3. Qwen3TtsEngine::synthesize(text, voice) → resolve_voice_motor
-   - default → Preset "ryan" (sin necesidad de .wav, pero wavs embebidos para paridad)
+3. Qwen3TtsEngine::synthesize_with_temperature(...) → resolve_voice_motor
+   - default → Clonada (reference.qvoice embebido en el binario)
+   - ryan/vivian → Preset (voces puras del motor, sin qvoice)
    - clonada → Clonada(PathBuf) con reference.qvoice
                      │
                      ▼
@@ -147,7 +148,7 @@ Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio�
 
 Las voces se resuelven por nombre con precedencia **usuario→fábrica** (`avi-store/src/lib.rs`):
 
-- **Fábrica**: `voices/default/` embebida en el binario (`include_bytes!`); se materializa en `data_dir()/voices/default/` en `ensure_initialized()`. Solo lectura, protege `remove("default")`.
+- **Fábrica**: `voices/default/` embebida en el binario (`include_bytes!`); se materializa en `data_dir()/voices/default/` en `VoiceStore::ensure_initialized()`. Solo lectura, protege `remove("default")`.
 - **Usuario**: `data_dir()/voices/<nombre>/` (escribible), registradas con `voice clone`. Homónima sobrescribe a la de fábrica.
 
 Sin `--voice` la CLI usa `default`.
@@ -176,7 +177,7 @@ cargo build --release --features full
 ./target/release/ai-voice-interconnector voice list
 ```
 
-El pipeline CI ejecuta `cargo test --all` en Linux/Windows/macOS, `cargo llvm-cov`, `validate-licenses` y los smoke tests de one-liners, y luego 4 builds `cargo build --release --features full` con staging `tar.gz`/`.zip`. Ver `docs/BUILD.md`.
+El pipeline CI ejecuta `cargo test --all` en Linux/Windows/macOS, `cargo llvm-cov`, `validate-licenses`, `validate-changelog` y los 3 smoke tests de one-liners, y luego 4 builds `cargo build --release --features full` con staging `tar.gz`/`.zip`. Ver `docs/BUILD.md`.
 
 ## Extensibilidad
 
