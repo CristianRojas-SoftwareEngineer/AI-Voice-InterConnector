@@ -1163,6 +1163,72 @@ mod tests {
         }
     }
 
+    /// Regresión EPIPE (v0.20.9, build-linux-x64): un productor Rust seguido
+    /// de un consumidor que sale antes de leer toda la entrada (`grep -q`,
+    /// `head`) bajo `pipefail` es una condición de carrera — si el binario aún
+    /// tiene líneas por escribir cuando el consumidor cierra la tubería, la
+    /// escritura devuelve EPIPE y `println!` hace panic (Rust ignora SIGPIPE
+    /// por defecto). El patrón correcto es capturar la salida completa primero
+    /// (variable o `$(...)`) y solo entonces aplicar `grep -q`/`head` sobre esa
+    /// captura ya materializada.
+    #[test]
+    fn test_sin_tuberia_racy_grep_q_o_head_bajo_pipefail() {
+        let cfg = leer_config_ci();
+        // El patrón prohibido es "productor que aún puede estar escribiendo |
+        // consumidor que sale antes de leer todo". `printf '%s\n' "$var" |
+        // grep -q` SÍ es seguro (captura ya materializada, write() atómico) y
+        // es justo el patrón de reemplazo; se prohíbe solo el productor
+        // original: el binario en ejecución piped directo a `grep -q`.
+        assert!(
+            !cfg.contains("ai-voice-interconnector voice list | grep -q"),
+            "no debe existir `ai-voice-interconnector voice list | grep -q` directo: capturar la salida en variable antes de filtrar (regresión EPIPE v0.20.9)"
+        );
+        // `find ... | head -nN` tiene el mismo riesgo si `find` tiene más de una
+        // coincidencia: `head` cierra la tubería tras la primera línea y `find`
+        // puede recibir EPIPE mid-escritura. Nota: `printf '%s\n' "$var" | head`
+        // SÍ es seguro (la captura ya está materializada en `$var`, `printf`
+        // hace un único write() atómico) y es precisamente el patrón que
+        // reemplazó a `find | head`; por eso el test apunta al productor
+        // original (`find`), no a `| head` en general.
+        assert!(
+            !cfg.contains("-type f | head"),
+            "no debe existir `find ... | head` directo: materializar la salida (`ort_matches=\"$(find ...)\"`) antes de aplicar head (regresión EPIPE v0.20.9)"
+        );
+    }
+
+    /// `target-v2` usa clave inmutable (el primer `save_cache` gana): en
+    /// build-* (variant: full), guardar con `when: always` persistiría para
+    /// siempre un `target/` incompleto si `cargo build --release` falla a
+    /// medias (ya ocurrió con linux-x64 en v0.20.9). test-*/coverage sí
+    /// conservan `when: always` porque ahí un fallo del job suele ser un test
+    /// que falló, no una compilación incompleta.
+    #[test]
+    fn test_cargo_save_target_on_success_en_build_variant_full() {
+        let cfg = leer_config_ci();
+        // Cada bloque `cargo_save_target:` con `variant: full` debe traer
+        // `when: on_success` en las mismas 3 líneas siguientes.
+        let mut vistos_full = 0;
+        let lines: Vec<&str> = cfg.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim() != "- cargo_save_target:" {
+                continue;
+            }
+            let ventana = lines[i..(i + 5).min(lines.len())].join("\n");
+            if ventana.contains("variant: full") {
+                vistos_full += 1;
+                assert!(
+                    ventana.contains("when: on_success"),
+                    "cargo_save_target con variant: full debe pasar when: on_success (evita persistir target/ incompleto bajo clave inmutable); bloque:\n{ventana}"
+                );
+            }
+        }
+        // Los 4 build-* (windows-x64, linux-x64, linux-arm64, darwin-arm64).
+        assert_eq!(
+            vistos_full, 4,
+            "se esperaban 4 invocaciones de cargo_save_target con variant: full (una por build-*)"
+        );
+    }
+
     #[test]
     fn test_render_cask_from_tag_strips_v() {
         let sums = sample_sums();
