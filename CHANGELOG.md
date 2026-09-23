@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.9 — 2026-09-23](#0209-20260923)
 - [0.20.8 — 2026-09-23](#0208-20260923)
 - [0.20.7 — 2026-09-22](#0207-20260922)
@@ -122,6 +123,60 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+El smoke test de `build-*` (v0.20.9) reveló una condición de carrera: pipear
+el binario en ejecución directo a `grep -q`/`head` puede cerrar el pipe antes
+de que termine de escribir, y Rust ignora `SIGPIPE` por defecto, así que la
+escritura devuelve `EPIPE` y `println!` hace panic en vez de terminar en
+silencio. Se corrige en dos frentes — el CI ya no arma esas tuberías directas
+sobre el binario en ejecución, y el propio binario recupera el comportamiento
+estándar de un CLI Unix ante un lector que se va — más un ajuste de caché
+independiente: `target-v2` en `build-*` ya no persiste un `target/` a medio
+compilar bajo su clave inmutable si el build falla.
+
+### Corregido
+
+- fix(ci): elimina la tubería directa `binario en ejecución | grep -q`/`| head`
+  en los smoke tests y en la extracción de `ORT_LIB` de los 4 jobs `build-*`
+  (linux-x64, linux-arm64, darwin-arm64 para el smoke test; los tres más
+  windows-x64 para `ORT_LIB`, donde aplica). La salida se captura primero en
+  una variable (`$(...)`) y solo entonces se filtra con `printf '%s\n' "$var" |
+  grep -q ...`/`| head -n1`, que es seguro porque el `write()` de una captura
+  ya materializada y pequeña es atómico frente al tamaño del buffer del pipe,
+  a diferencia de un binario que aún puede tener líneas pendientes por
+  escribir.
+- fix(cli): restaura `SIGPIPE` a `SIG_DFL` en Unix al arrancar los modos CLI en
+  primer plano (no en `daemon serve`, que es el servidor de larga vida del
+  mismo binario relanzado vía `current_exe()`: un cliente que cierra su
+  socket no debe matarlo). Antes, un pipe cerrado a medio escribir causaba
+  panic (`failed printing to stdout: Broken pipe`, exit 101) en vez de la
+  terminación silenciosa por señal esperable de un CLI Unix (compárese con
+  `cat`/`ls`). Los sockets TCP del cliente hacia el daemon ya eran seguros sin
+  este cambio (`std`/`mio` fijan `MSG_NOSIGNAL` en Linux y `SO_NOSIGPIPE` en
+  macOS a nivel de socket), y los procesos hijos del CLI siempre reciben
+  `Stdio::null()` en su stdin, así que el alcance quedó acotado a stdout/stderr
+  del propio proceso en primer plano.
+- fix(ci): `target-v2` en los 4 `build-*` (`variant: full`) guarda con `when:
+  on_success` en vez de `when: always`. La clave de `target-v2` es inmutable
+  (`save_cache` solo escribe si la clave aún no existe), así que un
+  `cargo build --release` que falla a medio camino podía persistir para
+  siempre un `target/` incompleto bajo esa clave (ya ocurrido con linux-x64 en
+  v0.20.9). Los jobs de test/`coverage` conservan `when: always`: ahí un fallo
+  suele ser un test que falló, no una compilación incompleta.
+
+### Añadido
+
+- test: nuevo test de topología en `crates/xtask` que falla si
+  `.circleci/config.yml` vuelve a contener una tubería directa `binario en
+  ejecución | grep -q`/`find ... | head`, y otro que exige `when: on_success`
+  en las 4 invocaciones de `cargo_save_target` con `variant: full`.
+- test: regresión `#[cfg(unix)]` en `tests/cli_golden.rs` que lanza `voice
+  list` con el extremo de lectura de un pipe manual cerrado antes del spawn
+  (determinista, sin ventana de carrera) y verifica que el proceso no hace
+  panic: o muere en silencio por la señal `SIGPIPE`, o termina limpio si
+  alcanzó a escribir antes del cierre.
 
 ## [0.20.9] — 2026-09-23
 
