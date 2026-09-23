@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.20.8 — 2026-09-23](#0208-20260923)
 - [0.20.7 — 2026-09-22](#0207-20260922)
 - [0.20.6 — 2026-09-22](#0206-20260922)
 - [0.20.5 — 2026-09-22](#0205-20260922)
@@ -122,7 +122,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+## [0.20.8] — 2026-09-23
 
 El paso «Limpiar crate versionado para determinismo (`cargo clean -p
 ai-voice-interconnector`)» de los 4 jobs `build-*` era un no-op: sin
@@ -2150,3 +2150,4 @@ estado con el que nace el producto.
 [0.20.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.4...v0.20.5
 [0.20.6]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.5...v0.20.6
 [0.20.7]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.6...v0.20.7
+[0.20.8]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.7...v0.20.8
