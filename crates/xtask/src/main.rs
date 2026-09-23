@@ -1079,12 +1079,13 @@ mod tests {
     }
 
     #[test]
-    fn test_sello_vendor_cmake_en_caches_target() {
+    fn test_clave_target_v2_con_identidad_de_vendor_cmake() {
         let cfg = leer_config_ci();
-        // El sello de contenido del parche local de cmake evita que el mtime del
-        // checkout lo marque Dirty (cascada sobre la cadena nativa). Ambos pasos son
-        // necesarios: sin la comprobación se fijarían mtimes a ciegas sobre un parche
-        // editado; sin el guardado nunca habría sello y el mtime no se fijaría jamás.
+        // El parche local de cmake se fingerprintea por mtime: el checkout lo marca
+        // Dirty y arrastra la cadena nativa. La clave exacta de target-v2 lleva el
+        // tree hash git del parche y NO tiene fallback, de modo que un acierto
+        // garantiza que target/ corresponde al contenido actual y fijar el mtime es
+        // seguro. Reintroducir un fallback fijaría mtimes sobre snapshots ajenos.
         let restore_section = cfg
             .split("  cargo_restore_caches:")
             .nth(1)
@@ -1092,18 +1093,6 @@ mod tests {
             .split("\n  cargo_save_registry:")
             .next()
             .unwrap_or("");
-        assert!(
-            restore_section.contains("sha256_hex"),
-            "cargo_restore_caches debe calcular el SHA-256 del contenido de vendor/cmake-0.1.58"
-        );
-        assert!(
-            restore_section.contains("target/.vendor-cmake.sha256"),
-            "cargo_restore_caches debe comparar el sello con target/.vendor-cmake.sha256"
-        );
-        assert!(
-            restore_section.contains("touch -t 200001010000"),
-            "cargo_restore_caches debe fijar el mtime del parche cuando el sello coincide"
-        );
         let save_section = cfg
             .split("  cargo_save_target:")
             .nth(1)
@@ -1111,23 +1100,67 @@ mod tests {
             .split("\n  cargo_restore_registry:")
             .next()
             .unwrap_or("");
-        let copy = "cp .vendor-cmake.sha256 target/.vendor-cmake.sha256";
+
+        let hash_cmd = "git rev-parse HEAD:vendor/cmake-0.1.58";
         assert!(
-            save_section.contains(copy),
-            "cargo_save_target debe registrar el sello en target/.vendor-cmake.sha256"
+            restore_section.contains(hash_cmd),
+            "cargo_restore_caches debe calcular el tree hash git de vendor/cmake-0.1.58"
         );
-        // El paso de copia termina donde empieza el save_cache (que sí lleva when: always).
-        let copy_step = save_section
-            .split("- run:")
-            .find(|step| step.contains(copy))
-            .unwrap_or("")
-            .split("- save_cache:")
-            .next()
+        assert!(
+            restore_section.contains("set -euo pipefail"),
+            "el cálculo del tree hash debe fallar ruidosamente (set -euo pipefail)"
+        );
+        assert!(
+            restore_section.contains("^[0-9a-f]{40}$"),
+            "cargo_restore_caches debe validar que el tree hash tiene 40 caracteres hexadecimales"
+        );
+
+        let restore_keys: Vec<&str> = restore_section
+            .lines()
+            .map(str::trim)
+            .filter_map(|l| l.strip_prefix("- target-v2-"))
+            .collect();
+        assert_eq!(
+            restore_keys.len(),
+            1,
+            "target-v2 debe restaurarse con una única clave exacta, sin fallback por prefijo"
+        );
+        assert!(
+            restore_keys[0].contains(r#"checksum ".vendor-cmake.tree""#),
+            "la clave de target-v2 debe incluir el tree hash de vendor/cmake-0.1.58"
+        );
+        let save_key = save_section
+            .lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix("key: target-v2-"))
             .unwrap_or("");
-        assert!(
-            !copy_step.contains("when: always"),
-            "el registro del sello debe correr solo en éxito: un build fallido podría dejar cmake sin recompilar"
+        assert_eq!(
+            restore_keys[0], save_key,
+            "las claves de restauración y guardado de target-v2 deben ser idénticas"
         );
+
+        let pos_hash = restore_section.find(hash_cmd).unwrap();
+        let pos_restore = restore_section
+            .find("- target-v2-")
+            .expect("cargo_restore_caches debe restaurar target-v2");
+        let pos_touch = restore_section
+            .find("touch -t 200001010000")
+            .expect("cargo_restore_caches debe fijar el mtime del parche");
+        assert!(
+            pos_hash < pos_restore,
+            "el tree hash debe calcularse antes de restaurar target-v2"
+        );
+        assert!(
+            pos_restore < pos_touch,
+            "el mtime del parche debe fijarse después de restaurar target-v2"
+        );
+
+        for residuo in ["sort -z", "sha256_hex", "target/.vendor-cmake.sha256"] {
+            assert!(
+                !cfg.contains(residuo),
+                "la config no debe contener `{residuo}` (mecanismo de sello retirado)"
+            );
+        }
     }
 
     #[test]

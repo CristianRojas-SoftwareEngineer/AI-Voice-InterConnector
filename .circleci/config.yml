@@ -66,12 +66,16 @@ parameters:
 # del checksum de `Cargo.lock.cachekey`, un lock efímero que genera
 # `xtask cache-key` neutralizando la línea `version` del propio crate. Sin esto, el
 # checksum de `Cargo.lock` cambia en CADA release (bump de versión) aunque las deps
-# no varíen: nunca hay acierto exacto y todo cae al frágil fallback por prefijo. Con
-# la normalización la clave solo cambia ante cambios REALES de dependencias.
+# no varíen: nunca hay acierto exacto y registry (cargo-v2) cae al frágil fallback
+# por prefijo. Con la normalización la clave solo cambia ante cambios REALES de
+# dependencias.
 # Matriz de invalidación por familia de caché:
-#   - registry/target (v2): cambian solo con dependencias reales en Cargo.lock.
-#     El parche local vendor/cmake-0.1.58 se excluye del fingerprint por mtime
-#     mediante un sello de contenido guardado en target/, sin cambiar la clave.
+#   - registry (cargo-v2): cambia solo con dependencias reales en Cargo.lock;
+#     conserva fallback por prefijo.
+#   - target (v2): cambia con dependencias reales en Cargo.lock y con el tree hash
+#     git de vendor/cmake-0.1.58. Clave exacta SIN fallback: un acierto garantiza
+#     que lo compilado corresponde al parche actual, así que su mtime se fija tras
+#     restaurar y cargo no lo marca Dirty.
 #   - toolchain (v1): cambia con rust_version. NO se re-keya: su semántica no cambia.
 #   - msys2 (v1): cambia con los pines de versión MSYS2. NO se re-keya.
 #   - sccache (v1): rolling con epoch. NO se re-keya.
@@ -79,7 +83,7 @@ parameters:
 #   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey + msys2 gcc/openblas.
 commands:
   cargo_restore_caches:
-    description: Restaura caché de registry/git y de target/ (con fallback parcial)
+    description: Restaura caché de registry/git y de target/ (clave exacta, sin fallback)
     # `variant` discrimina el feature set del target/ (test featureless, full con
     # C++, cov instrumentado): sin él, jobs de distinta variante colisionan en una
     # clave inmutable (first-write-wins) y se envenenan mutuamente. El registry
@@ -88,16 +92,17 @@ commands:
     # (x86_64-unknown-linux-gnu vs x86_64-pc-windows-msvc vs aarch64-apple-darwin)
     # y sin él Linux/Windows/macOS se pisan mutuamente (0% sccache hits en Windows).
     #
-    # Sello de vendor/cmake-0.1.58: `[patch.crates-io]` apunta a una copia local,
-    # que cargo fingerprintea por mtime. El checkout le da mtime nuevo en cada
-    # corrida, la marca Dirty y arrastra la re-ejecución de toda la cadena nativa
-    # (aws-lc-sys, onednn-src, sentencepiece-sys, ct2rs…). El SHA-256 del
-    # contenido compilado vive DENTRO de target/ (target/.vendor-cmake.sha256,
-    # escrito por cargo_save_target solo en éxito), de modo que el mtime antiguo
-    # solo se fija cuando lo compilado corresponde al contenido actual; si el
-    # parche cambió, no se toca nada y cargo recompila. `perl` y `/usr/bin/find`
-    # se usan porque existen en los tres executors (Git-bash en Windows, donde
-    # `find` a secas resolvería al find.exe de Windows).
+    # Identidad de vendor/cmake-0.1.58: `[patch.crates-io]` apunta a una copia
+    # local, que cargo fingerprintea por mtime. El checkout le da mtime nuevo en
+    # cada corrida, la marca Dirty y arrastra la re-ejecución de toda la cadena
+    # nativa (aws-lc-sys, onednn-src, sentencepiece-sys, ct2rs…). Por eso la clave
+    # exacta de target-v2 incluye el tree hash git del parche y NO tiene fallback
+    # por prefijo: un acierto garantiza que lo compilado en target/ corresponde al
+    # contenido actual del parche, y fijar su mtime antiguo es seguro sin comparar
+    # nada. Un fallo de caché deja target/ vacío, donde la fijación es inocua. El
+    # hash se toma con `git rev-parse` y no con `find | sort`: en Windows el PATH
+    # resuelve `sort` al sort.exe de System32, que no entiende las opciones POSIX.
+    # `/usr/bin/find` se usa por la misma razón (el find.exe de Windows).
     parameters:
       variant:
         type: string
@@ -119,25 +124,31 @@ commands:
           name: Generar Cargo.lock.cachekey (clave de caché normalizada)
           shell: bash
           command: perl -0777 -pe 's/(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/' Cargo.lock > Cargo.lock.cachekey
+      - run:
+          name: Calcular identidad de contenido de vendor/cmake-0.1.58 (clave de target-v2)
+          shell: bash
+          command: |
+            set -euo pipefail
+            git rev-parse HEAD:vendor/cmake-0.1.58 > .vendor-cmake.tree
+            grep -Eq '^[0-9a-f]{40}$' .vendor-cmake.tree || { echo "tree hash inválido de vendor/cmake-0.1.58"; exit 1; }
+            echo "vendor/cmake-0.1.58 tree: $(cat .vendor-cmake.tree)"
       - restore_cache:
           keys:
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-
       - restore_cache:
           keys:
-            - target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}
-            - target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-
+            - target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
       - run:
-          name: Sellar y fijar mtime de vendor/cmake-0.1.58 (evita cascada Dirty)
+          name: Fijar mtime de vendor/cmake-0.1.58 (evita cascada Dirty)
           shell: bash
           command: |
-            /usr/bin/find vendor/cmake-0.1.58 -type f -print0 | LC_ALL=C sort -z | xargs -0 cat \
-              | perl -MDigest::SHA=sha256_hex -0777 -ne 'print sha256_hex($_)' > .vendor-cmake.sha256
-            if [ -f target/.vendor-cmake.sha256 ] && [ "$(cat .vendor-cmake.sha256)" = "$(cat target/.vendor-cmake.sha256)" ]; then
-              /usr/bin/find vendor/cmake-0.1.58 -exec touch -t 200001010000 {} +
-              echo "sello coincide: mtime fijado"
+            set -euo pipefail
+            /usr/bin/find vendor/cmake-0.1.58 -exec touch -t 200001010000 {} +
+            if [ -d target ]; then
+              echo "target/ restaurado por clave exacta: cmake Fresh esperado"
             else
-              echo "sello ausente o distinto: cargo recompilará cmake"
+              echo "target/ vacío (sin acierto): compilación en frío"
             fi
   cargo_save_registry:
     description: Guarda registry/git antes de compilar (un fallo de test no pierde descargas)
@@ -148,7 +159,7 @@ commands:
             - ~/.cargo/registry
             - ~/.cargo/git
   cargo_save_target:
-    description: Guarda target/ siempre (when always) — el parcial acelera el re-run
+    description: Guarda target/ (when always) — la clave es inmutable, solo se escribe si aún no existe
     # `variant` debe coincidir con el pasado a cargo_restore_caches en el mismo job.
     # `os` debe coincidir también: target/ es OS-específico.
     # Usado por test-windows/test-linux/test-macos/coverage (variant test/test/test/cov)
@@ -166,15 +177,8 @@ commands:
         type: string
         default: "linux"
     steps:
-      # Sin `when`: solo corre si el job tuvo éxito. Un build fallido podría haber
-      # dejado cmake sin recompilar; sellarlo fijaría mtimes sobre artefactos
-      # obsoletos en la siguiente corrida. Ante fallo se preserva el sello restaurado.
-      - run:
-          name: Registrar sello de vendor/cmake-0.1.58 en target/
-          shell: bash
-          command: '[ -f .vendor-cmake.sha256 ] && mkdir -p target && cp .vendor-cmake.sha256 target/.vendor-cmake.sha256 || true'
       - save_cache:
-          key: target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}
+          key: target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
           paths:
             - target
           when: always

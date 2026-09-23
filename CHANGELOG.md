@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.8 — 2026-09-23](#0208-20260923)
 - [0.20.7 — 2026-09-22](#0207-20260922)
 - [0.20.6 — 2026-09-22](#0206-20260922)
@@ -121,6 +122,37 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+El sello de contenido de `vendor/cmake-0.1.58` publicado en 0.20.8 nunca llegó
+a activarse, y en Windows además estaba roto. Se reemplaza por un mecanismo más
+simple: la identidad del parche viaja en la propia clave exacta de la caché de
+`target/`, sin fallback, y el mtime del parche se fija tras cada acierto.
+
+### Corregido
+
+- fix(ci): **identidad de `vendor/cmake-0.1.58` en la clave exacta de
+  `target-v2`, sin fallback por prefijo.** El sello de 0.20.8 fallaba por dos
+  causas: la clave de `target-v2` solo dependía del `Cargo.lock` normalizado,
+  inmutable entre tags, así que `save_cache` omitía el guardado («cache already
+  exists») y el sello escrito en `target/` nunca se persistía; y en Windows
+  `sort -z` resolvía al `sort.exe` de System32, que fallaba sin `pipefail` y
+  dejaba un hash constante (el de la entrada vacía). Ahora
+  `cargo_restore_caches` calcula el tree hash git del parche (`git rev-parse
+  HEAD:vendor/cmake-0.1.58`, validado como hash hexadecimal de 40 caracteres
+  con `set -euo pipefail`) y lo incorpora a la clave exacta de `target-v2`, que
+  `cargo_save_target` usa idéntica. Sin fallback, un acierto garantiza que lo
+  compilado corresponde al contenido actual del parche, y el mtime se fija
+  incondicionalmente; desaparecen el archivo de sello, el paso que lo
+  registraba y la comparación. El test de topología de `crates/xtask` exige la
+  clave única con el hash del parche, la igualdad entre restauración y
+  guardado y el orden de los pasos, y `docs/BUILD.md` §4 describe el mecanismo
+  vigente. Impacto: la primera corrida con la clave nueva (y cada futura
+  transición de dependencias o del parche) parte con `target/` frío, mitigado
+  por `sccache`; desde la segunda, la cadena nativa (`aws-lc-sys`,
+  `onednn-src`, `sentencepiece-sys`, `ct2rs`…) queda `Fresh` y solo recompilan
+  los crates del workspace.
 
 ## [0.20.8] — 2026-09-23
 
