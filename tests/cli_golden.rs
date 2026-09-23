@@ -1680,31 +1680,18 @@ mod tts {
     }
 
     /// Estado de provisión VERIFICADO AHORA (no cacheado): `doctor` consulta los
-    /// snapshots HF vigentes. Si falta, corre `setup` una sola vez bajo lock
-    /// (evita descargas paralelas) y re-verifica. No se cachea el resultado
-    /// porque `cleanup_coincide_con_fixture` puede borrar la provisión en otro
-    /// hilo entre tests: un caché obsoleto hacía que tests TTS posteriores a
-    /// cleanup confiaran en estado ya eliminado (`model_missing`).
+    /// snapshots HF vigentes. La guarda nunca aprovisiona: sin modelos, las
+    /// pruebas pesadas se omiten; para ejecutarlas hay que correr antes
+    /// `ai-voice-interconnector setup`. No se cachea el resultado porque
+    /// `cleanup_coincide_con_fixture` puede borrar la provisión en otro hilo
+    /// entre tests: un caché obsoleto hacía que tests TTS posteriores a cleanup
+    /// confiaran en estado ya eliminado (`model_missing`).
     fn tts_modelo_registrado() -> bool {
-        static SETUP_LOCK: Mutex<()> = Mutex::new(());
-        let doctor_ok = || {
-            Command::new(BIN)
-                .args(["doctor"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
-        if doctor_ok() {
-            return true;
-        }
-        let _guard = SETUP_LOCK.lock().unwrap();
-        if doctor_ok() {
-            return true;
-        }
-        matches!(
-            Command::new(BIN).args(["setup"]).output(),
-            Ok(o) if o.status.success()
-        )
+        Command::new(BIN)
+            .args(["doctor"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     /// Provisto = modelo registrado + binario + pesos.
