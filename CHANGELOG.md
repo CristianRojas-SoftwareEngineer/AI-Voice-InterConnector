@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.7 — 2026-09-22](#0207-20260922)
 - [0.20.6 — 2026-09-22](#0206-20260922)
 - [0.20.5 — 2026-09-22](#0205-20260922)
@@ -120,6 +121,34 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+El paso «Limpiar crate versionado para determinismo (`cargo clean -p
+ai-voice-interconnector`)» de los 4 jobs `build-*` era un no-op: sin
+`--release`/`--profile`, `cargo clean -p` solo limpia el perfil `dev`
+(`target/debug`), nunca `target/release`. El binario igual se recompilaba con
+la versión correcta en cada tag, pero por otro motivo: el bump de `VERSION`
+en el crate raíz invalida su propio fingerprint de cargo (mtime del checkout
++ `-C metadata` derivado de la versión del paquete), y `sccache` nunca cachea
+crates `--crate-type bin`, así que un binario stale servido por un hit de
+sccache es imposible por construcción. Se retira el paso íntegro y se
+corrigen los comentarios y la documentación que describían el mecanismo
+inexistente.
+
+### Corregido
+
+- fix(ci): **retira el paso no-op `cargo clean -p ai-voice-interconnector`**
+  de los 4 jobs `build-*` (`build-windows-x64`, `build-linux-x64`,
+  `build-linux-arm64`, `build-darwin-arm64`) en `.circleci/config.yml`; sin
+  `--release` limpiaba `target/debug`, no `target/release`, y por tanto no
+  aportaba nada al determinismo del bump de `VERSION` que ya garantiza el
+  fingerprint de cargo. Se reescribe el comentario de `cargo_save_target` y el
+  bloque de determinismo de `docs/BUILD.md` §4 para describir el mecanismo
+  real (fingerprint por mtime/`-C metadata` + `sccache` no cachea binarios),
+  se corrige el comentario del smoke-test de Windows que citaba ese escenario
+  imposible, y el test de topología de `crates/xtask` pasa de exigir el paso a
+  asertar su ausencia.
 
 ## [0.20.7] — 2026-09-22
 

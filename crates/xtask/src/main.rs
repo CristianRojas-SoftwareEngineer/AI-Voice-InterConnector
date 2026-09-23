@@ -1033,7 +1033,11 @@ mod tests {
             macos_section.contains("cargo_save_target"),
             "test-macos debe guardar target-v2 (cargo_save_target)"
         );
-        // build-* deben usar cargo_restore_caches con target-v2 full + cargo clean -p (heterogéneo con target en build-*)
+        // build-* deben usar cargo_restore_caches con target-v2 full (heterogéneo con target en build-*).
+        // NO deben ejecutar `cargo clean -p ai-voice-interconnector`: sin --release/--profile
+        // es un no-op sobre el perfil release (limpia solo target/debug), y aunque no lo fuera
+        // el bump de VERSION ya invalida el fingerprint de cargo por sí solo (mtime + -C
+        // metadata) y sccache nunca cachea crates --crate-type bin. Ver docs/BUILD.md §4.
         for job in [
             "build-windows-x64",
             "build-linux-x64",
@@ -1068,8 +1072,8 @@ mod tests {
                 "{job} debe guardar sccache (sccache_save_cache)"
             );
             assert!(
-                section.contains("cargo clean -p ai-voice-interconnector"),
-                "{job} debe ejecutar cargo clean -p ai-voice-interconnector para determinismo"
+                !section.contains("cargo clean -p"),
+                "{job} no debe ejecutar cargo clean -p: es un no-op sobre target/release sin --release"
             );
         }
     }

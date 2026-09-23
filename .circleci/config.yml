@@ -128,8 +128,11 @@ commands:
     # `os` debe coincidir también: target/ es OS-específico.
     # Usado por test-windows/test-linux/test-macos/coverage (variant test/test/test/cov)
     # y build-* (variant full). build-* combina sccache (Rust por contenido) + target
-    # (C++ OUT_DIR de ct2rs/oneDNN) y ejecuta `cargo clean -p ai-voice-interconnector`
-    # antes de `cargo build` para determinismo del bump VERSION sin perder C++. Ver docs/BUILD.md §4.
+    # (C++ OUT_DIR de ct2rs/oneDNN): el bump de VERSION en el crate raíz ya
+    # invalida su propio fingerprint de cargo (mtime del checkout + `-C metadata`
+    # derivado de la versión del paquete) sin necesidad de limpiarlo a mano, y
+    # sccache nunca cachea crates `--crate-type bin` (el binario final siempre
+    # pasa por `rustc` real). Ver docs/BUILD.md §4.
     parameters:
       variant:
         type: string
@@ -839,14 +842,6 @@ jobs:
           variant: full
       - sccache_setup_windows
       - run:
-          name: Limpiar crate versionado para determinismo (cargo clean -p)
-          command: |
-            Write-Host "[STEP] Limpiar crate versionado - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            cargo clean -p ai-voice-interconnector
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Limpiar crate versionado - FIN"
-      - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
@@ -876,8 +871,9 @@ jobs:
             # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
             # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
             # --json DEBE exponer name + version + schema_version. Sin este gate
-            # un binary stale por sccache hit sin cambios de *.rs (target/ vacío + sccache por contenido) pasa
-            # el smoke de texto pero viola el contrato JSON y rompe consumidores.
+            # un binario cuyo bump de VERSION no se propagó (p.ej. un `main.rs`
+            # editado a mano sin recompilar) pasa el smoke de texto pero viola
+            # el contrato JSON y rompe consumidores.
             $jsonRaw = & $Exe version --json | Out-String
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             try { $j = $jsonRaw | ConvertFrom-Json } catch { throw "version --json no es JSON válido: $jsonRaw : $_" }
@@ -1079,12 +1075,6 @@ jobs:
           variant: full
       - sccache_setup_unix
       - run:
-          name: Limpiar crate versionado para determinismo (cargo clean -p)
-          command: |
-            echo "[STEP] Limpiar crate versionado - INICIO"
-            cargo clean -p ai-voice-interconnector
-            echo "[STEP] Limpiar crate versionado - FIN"
-      - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
@@ -1219,12 +1209,6 @@ jobs:
           os: linux
           variant: full
       - sccache_setup_unix
-      - run:
-          name: Limpiar crate versionado para determinismo (cargo clean -p)
-          command: |
-            echo "[STEP] Limpiar crate versionado - INICIO"
-            cargo clean -p ai-voice-interconnector
-            echo "[STEP] Limpiar crate versionado - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1393,13 +1377,6 @@ jobs:
           os: macos
           variant: full
       - sccache_setup_unix
-      - run:
-          name: Limpiar crate versionado para determinismo (cargo clean -p)
-          command: |
-            echo "[STEP] Limpiar crate versionado - INICIO"
-            export PATH="$HOME/.cargo/bin:$PATH"
-            cargo clean -p ai-voice-interconnector
-            echo "[STEP] Limpiar crate versionado - FIN"
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
