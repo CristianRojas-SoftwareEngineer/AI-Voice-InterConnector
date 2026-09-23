@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.11 — 2026-09-23](#02011-20260923)
 - [0.20.10 — 2026-09-23](#02010-20260923)
 - [0.20.9 — 2026-09-23](#0209-20260923)
@@ -124,6 +125,17 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+Versión de mantenimiento sin cambios en el binario distribuido.
+
+### Cambiado
+
+- chore(vendor): `.gitignore` excluye `vendor/qwen3-tts/compile_commands.json`,
+  que se genera localmente con `compiledb` para dar soporte a clangd sobre las
+  fuentes C del motor TTS. Contiene rutas absolutas del entorno MSYS2 de cada
+  máquina, así que no se versiona ni interviene en el build ni en CI.
 
 ## [0.20.11] — 2026-09-23
 
