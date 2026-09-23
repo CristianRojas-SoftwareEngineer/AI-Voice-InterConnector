@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.20.9 — 2026-09-23](#0209-20260923)
 - [0.20.8 — 2026-09-23](#0208-20260923)
 - [0.20.7 — 2026-09-22](#0207-20260922)
 - [0.20.6 — 2026-09-22](#0206-20260922)
@@ -123,7 +123,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+## [0.20.9] — 2026-09-23
 
 El sello de contenido de `vendor/cmake-0.1.58` publicado en 0.20.8 nunca llegó
 a activarse, y en Windows además estaba roto. Se reemplaza por un mecanismo más
@@ -2183,3 +2183,4 @@ estado con el que nace el producto.
 [0.20.6]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.5...v0.20.6
 [0.20.7]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.6...v0.20.7
 [0.20.8]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.7...v0.20.8
+[0.20.9]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.8...v0.20.9
