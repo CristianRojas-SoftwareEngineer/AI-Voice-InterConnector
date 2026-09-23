@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.20.10 — 2026-09-23](#02010-20260923)
 - [0.20.9 — 2026-09-23](#0209-20260923)
 - [0.20.8 — 2026-09-23](#0208-20260923)
 - [0.20.7 — 2026-09-22](#0207-20260922)
@@ -124,7 +124,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+## [0.20.10] — 2026-09-23
 
 El smoke test de `build-*` (v0.20.9) reveló una condición de carrera: pipear
 el binario en ejecución directo a `grep -q`/`head` puede cerrar el pipe antes
@@ -2239,3 +2239,4 @@ estado con el que nace el producto.
 [0.20.7]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.6...v0.20.7
 [0.20.8]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.7...v0.20.8
 [0.20.9]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.8...v0.20.9
+[0.20.10]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.9...v0.20.10
