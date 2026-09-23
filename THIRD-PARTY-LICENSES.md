@@ -71,7 +71,7 @@ SOFTWARE.
 Solo crates permisivos y el propio proyecto (GPL-3.0-or-later) están presentes en el
 binario Rust. No hay componentes MPL/LGPL/GPL adicionales más allá del proyecto.
 Los pesos de modelos y OpenBLAS (BSD-3-Clause, GCC Runtime Exception) se documentan
-en `docs/BUILD.md` §9.
+en `docs/BUILD.md` §6.
 
 ---
 

@@ -18,7 +18,7 @@ Fecha de corte: **v0.20.6 (Fase 8+)** (canal Rust por archivos comprimidos). Cad
 
 | Fase | Windows | Linux | macOS | ¿Paridad? |
 |---|---|---|---|---|
-| Instalación de una línea sin prerequisitos | ✅ `irm \| iex` | ✅ `curl \| sh` | ✅ `curl \| sh` (`install-macos.sh`) | **Sí** |
+| Instalación de una línea sin prerrequisitos | ✅ `irm \| iex` | ✅ `curl \| sh` | ✅ `curl \| sh` (`install-macos.sh`) | **Sí** |
 | Instalación sin privilegios de admin | ✅ per-user, sin UAC | ✅ `~/.local` | ✅ `~/.local` (one-liner sin `sudo`) | **Sí** |
 | Modelo provisionado al terminar de instalar | ✅ encadena `setup` | ✅ encadena `setup` | ✅ one-liner encadena `setup` (Cask: *caveat*) | **Sí** |
 | Verificación de checksum automática | ✅ | ✅ | ✅ (one-liner con `shasum`; Cask sí) | **Sí** |
@@ -37,15 +37,15 @@ host) en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
 
 ### Estado
 
-- **Windows**: `install-windows.ps1` (`irm | iex`) resuelve el release, verifica el checksum, extrae el `.zip` en `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, registra ese directorio en el PATH de usuario (HKCU, sin UAC) de forma idempotente y encadena `ai-voice-interconnector setup`. Cero prerequisitos: PowerShell viene con el SO.
-- **Linux**: `install-linux.sh` (`curl | sh`) hace lo análogo: checksum, extrae el `tar.gz` en `~/.local/opt/ai-voice-interconnector/`, crea el symlink `~/.local/bin/ai-voice-interconnector` (con aviso de PATH) y encadena `setup`. Cero prerequisitos en la práctica (`curl` + coreutils).
+- **Windows**: `install-windows.ps1` (`irm | iex`) resuelve el release, verifica el checksum, extrae el `.zip` en `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, registra ese directorio en el PATH de usuario (HKCU, sin UAC) de forma idempotente y encadena `ai-voice-interconnector setup`. Cero prerrequisitos: PowerShell viene con el SO.
+- **Linux**: `install-linux.sh` (`curl | sh`) hace lo análogo: checksum, extrae el `tar.gz` en `~/.local/opt/ai-voice-interconnector/`, crea el symlink `~/.local/bin/ai-voice-interconnector` (con aviso de PATH) y encadena `setup`. Cero prerrequisitos en la práctica (`curl` + coreutils).
 - **macOS**: dos vías, ambas sin `sudo`:
-  - **One-liner** `install-macos.sh` (`curl | sh`): descarga el `tar.gz` de arm64, verifica el checksum con `shasum`, lo extrae en `~/.local/opt/ai-voice-interconnector/`, limpia la cuarentena de Gatekeeper del binario, crea el symlink per-user en `~/.local/bin` (con aviso de PATH) y encadena `setup`. Sin prerequisitos (ni Homebrew ni `sudo`).
+  - **One-liner** `install-macos.sh` (`curl | sh`): descarga el `tar.gz` de arm64, verifica el checksum con `shasum`, lo extrae en `~/.local/opt/ai-voice-interconnector/`, limpia la cuarentena de Gatekeeper del binario, crea el symlink per-user en `~/.local/bin` (con aviso de PATH) y encadena `setup`. Sin prerrequisitos (ni Homebrew ni `sudo`).
   - **Cask de Homebrew** (`brew tap … && brew install --cask ai-voice-interconnector`): automatiza checksum, PATH y cuarentena, pero **exige tener Homebrew instalado** — un prerequisito de terceros que la audiencia declarada del canal nativo ("usuario final sin toolchain", `docs/DISTRIBUTION.md`) no necesariamente tiene. Además **no provisiona el modelo**: Homebrew no permite post-install arbitrario, así que el Cask solo imprime un *caveat* remitiendo a `ai-voice-interconnector setup` (`cargo xtask cask`, `crates/xtask/src/main.rs`).
 
 ### Qué falta para la paridad
 
-Nada pendiente en esta fase: las tres plataformas tienen one-liner sin prerequisitos, sin admin, con checksum y provisión encadenada del modelo.
+Nada pendiente en esta fase: las tres plataformas tienen one-liner sin prerrequisitos, sin admin, con checksum y provisión encadenada del modelo.
 
 ## Fase 2 — Primer arranque (reputación del binario sin firmar)
 

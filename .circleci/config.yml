@@ -33,10 +33,10 @@ parameters:
       Versión exacta de Rust (toolchain) usada en todos los jobs Rust
       (cargo test/build). Espejo entre plataformas (Linux/Windows/macOS).
   # Pines del toolchain C del motor TTS en Windows (MSYS2 UCRT64). Fuente única,
-  # espejo de las versiones tabuladas en docs/BUILD.md §9. El release base fija un
+  # espejo de las versiones tabuladas en docs/BUILD.md §6. El release base fija un
   # snapshot reproducible; la caché de C:\msys64 (msys2_*_cache) es el mecanismo de
   # determinismo, y el assert de gcc en el bootstrap ataja el drift upstream en
-  # caché fría. Bump = editar aquí (invalida la caché por clave) + docs/BUILD.md §9.
+  # caché fría. Bump = editar aquí (invalida la caché por clave) + docs/BUILD.md §6.
   msys2_base_release:
     type: string
     default: "2026-06-11"

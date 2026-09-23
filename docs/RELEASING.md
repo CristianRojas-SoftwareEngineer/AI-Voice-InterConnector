@@ -13,16 +13,16 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
 
 ## Tabla de contenidos
 
-- [Prerequisitos](#prerequisitos)
+- [Prerrequisitos](#prerrequisitos)
 - [1. Corte: crear y publicar el tag](#1-corte-crear-y-publicar-el-tag)
 - [2. Automático: lo que hace el CI](#2-automático-lo-que-hace-el-ci)
 - [3. Verificación post-publicación](#3-verificación-post-publicación)
 - [4. Verificación del usuario final](#4-verificación-del-usuario-final)
 
-## Prerequisitos
+## Prerrequisitos
 
 - No hay hallazgos Bloqueantes ni Mayores abiertos (criterios de
-  aceptación del release; ver `docs/GOAL.md` §"Criterios de Aceptación").
+  aceptación del release; ver [GOAL.md](GOAL.md#criterios-de-aceptación)).
 - `CHANGELOG.md` mantiene una sección curada `## [No publicado]` en el tope,
   escrita a mano de forma **continua durante el desarrollo** (Keep a Changelog):
   ahí se documenta cada cambio notable a medida que ocurre. El corte no genera
@@ -79,7 +79,7 @@ hay publicación a PyPI. Solo `publish-release` publica en firme en cada tag.
   en CircleCI (Organization Settings → Contexts) con la variable `GH_TOKEN` = un
   fine-grained PAT con permiso `contents: write` sobre el repo. Está aislado al
   job `publish-release`; ningún otro job lo ve.
-- **Prerequisitos del canal Cask de macOS (una sola vez):** existe el
+- **Prerrequisitos del canal Cask de macOS (una sola vez):** existe el
   repositorio tap `homebrew-ai-voice-interconnector` (público), y el context de CircleCI
   `homebrew-tap` con la variable `HOMEBREW_TAP_PAT` (un PAT fine-grained con
   permiso `Contents:RW` solo sobre el tap). Está aislado al job

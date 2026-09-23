@@ -1,4 +1,4 @@
-# Daemon Mode
+# Modo daemon
 
 El daemon nativo (Rust, Axum) mantiene los motores calientes entre invocaciones del CLI: sirve en cuanto enlaza el puerto y el peso de la voz `default` se precarga en segundo plano, sin bloquear el arranque; las peticiones que lleguen antes de que el motor esté caliente pagan carga fría.
 
@@ -6,9 +6,10 @@ El daemon nativo (Rust, Axum) mantiene los motores calientes entre invocaciones 
 
 - [Arquitectura](#arquitectura)
 - [Contrato HTTP](#contrato-http)
-- [Comandos del Daemon](#comandos-del-daemon)
+- [Comandos del daemon](#comandos-del-daemon)
 - [Streaming NDJSON](#streaming-ndjson)
-- [Decisiones de Diseño](#decisiones-de-diseño)
+- [Resolución de binario y modelo](#resolución-de-binario-y-modelo)
+- [Decisiones de diseño](#decisiones-de-diseño)
 
 ## Arquitectura
 
@@ -22,7 +23,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 └────────────────────┘                          └──────────────────────────────┘
 ```
 
-- **Servidor**: Axum sobre `127.0.0.1:8765` por defecto en loopback (`DAEMON_ADDR`, `src/main.rs:30`), con override por instancia vía `AVI_DAEMON_PORT` (`0` = efímero, el servidor publica `local_addr()`).
+- **Servidor**: Axum sobre `127.0.0.1:8765` por defecto en loopback (`DAEMON_ADDR`, `src/main.rs`), con override por instancia vía `AVI_DAEMON_PORT` (`0` = efímero, el servidor publica `local_addr()`).
 - **Warmup**: precarga de la voz elegida por `--warm-voice` (default `default`) en segundo plano (`spawn_blocking(precalentar_voz)`), tras el `bind` del puerto; no bloquea el arranque y el readiness es inmediato al enlazar. Tras el warmup el servidor emite `avi-daemon-ready warm=<warm|warm_failed> addr=<real>` en stderr (contrato de señal emitido; el consumo por `recv` y el sondeo-por-evento quedan diferidos, el sondeo por `/health` sigue vigente). Un warmup fallido no derriba el daemon: sigue sirviendo (una `--warm-voice` inexistente sí aborta el arranque, fail-fast antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone).
 - **Serialización**: `synthesis_lock` — una síntesis a la vez; el resto espera.
 - **STT**: `ParakeetEngine` (Parakeet TDT 0.6B v3 int8) transcribe en una sola pasada, sin segmentación VAD (RTF lineal ~0.11).
@@ -45,7 +46,7 @@ El handshake es estricto: un daemon de otra `schema_version` se trata como no ut
 
 Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediato en cuanto el puerto está enlazado y el motor construido; warm indica si el precalentamiento en segundo plano ya terminó. `warm` es append-only (se fija una sola vez en el warmup de arranque y no refleja ninguna degradación posterior del residente): no certifica que una síntesis futura vaya a completarse. La salud efectiva de síntesis se observa por petición — antes de reutilizar el residente, el daemon ejecuta un healthcheck real (`synthesize_via_residente`, `crates/avi-tts/src/lib.rs`) y rearranca uno fresco si está degradado.
 
-## Comandos del Daemon
+## Comandos del daemon
 
 ```bash
 ai-voice-interconnector daemon start     # revalida el residual (sano → already_running; degradado → reclama el árbol y rearranca con started —incluido Parado con residente vivo por resident_pid—; con --auto-restart los reintentos parten de reclamo activo del árbol propio previo con deadline y verificación —crash vivo con log pendiente de CI/entorno rápido, runtime diferido—)
@@ -80,7 +81,7 @@ El motor `Qwen3-TTS` resuelve su binario y pesos en este orden:
 
 Este orden garantiza que `daemon start` calienta desde cualquier `CWD` sin necesidad de `QWEN3_TTS_BIN` cuando se usa el binario instalado.
 
-## Decisiones de Diseño
+## Decisiones de diseño
 
 - **Transporte HTTP (no stdio)**: mismo contrato que el canal Python previo; clientes externos no notan el cambio.
 - **Captura siempre de cliente**: el daemon recibe PCM base64, nunca rutas ni dispositivos.

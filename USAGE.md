@@ -1,14 +1,14 @@
-# Guía de Uso de AI Voice InterConnector
+# Guía de uso de AI Voice InterConnector
 
 ## Tabla de contenidos
 
 - [Instalación](#instalación)
+  - [Requisitos de hardware](#requisitos-de-hardware)
   - [Usuario del binario](#usuario-del-binario)
   - [Compilar desde el código fuente (Rust)](#compilar-desde-el-código-fuente-rust)
-  - [Desarrollador (desde el código fuente)](#desarrollador-desde-el-código-fuente)
-- [Primer uso: provisionar el modelo (`setup`)](#primer-uso-provisionar-el-modelo-setup)
+- [Primer uso: provisionar el/los modelo(s) (`setup`)](#primer-uso-provisionar-ellos-modelos-setup)
 - [Comandos](#comandos)
-  - [Referencia de esquemas `--json`](#referencia-de-esquemas-json)
+  - [Referencia de esquemas `--json`](#referencia-de-esquemas---json)
   - [`version`](#version)
   - [`doctor`](#doctor)
   - [`devices`](#devices)
@@ -20,29 +20,27 @@
     - [`speech remove`](#speech-remove)
     - [`speech transcribe`](#speech-transcribe)
     - [`speech dub`](#speech-dub)
-  - [`voice clone`](#voice-clone)
-  - [`voice list`](#voice-list)
-  - [`voice remove`](#voice-remove)
+  - [El grupo `voice`](#el-grupo-voice)
+    - [`voice clone`](#voice-clone)
+    - [`voice list`](#voice-list)
+    - [`voice remove`](#voice-remove)
   - [`translate`](#translate)
   - [`cleanup`](#cleanup)
 - [Desinstalación completa](#desinstalación-completa)
 - [Actualizar de versión](#actualizar-de-versión)
-- [Modo Daemon](#modo-daemon)
+- [Modo daemon](#modo-daemon)
   - [Gestión del daemon](#gestión-del-daemon)
   - [Uso con daemon](#uso-con-daemon)
-  - [Requisitos de hardware](#requisitos-de-hardware)
 - [Clonación de voz: recorrido completo](#clonación-de-voz-recorrido-completo)
 - [Experiencia unificada entre sistemas operativos](#experiencia-unificada-entre-sistemas-operativos)
-- [Formato de Audio](#formato-de-audio)
-- [Solución de Problemas](#solución-de-problemas)
-  - ["modelo ... no provisionado (exit 4)"](#modelo--no-provisionado-exit-4)
+- [Formato de audio](#formato-de-audio)
+- [Solución de problemas](#solución-de-problemas)
+  - ["El modelo … no está provisionado. Ejecuta 'setup' primero." (exit 4)](#el-modelo--no-está-provisionado-ejecuta-setup-primero-exit-4)
   - ["GLIBC_2.35 not found" (o similar) al ejecutar el binario en Linux](#glibc_235-not-found-o-similar-al-ejecutar-el-binario-en-linux)
-  - ["OneDrive user-data-dir" [WARN] en doctor (Windows)](#onedrive-user-data-dir-warn-en-doctor-windows)
-  - ["Voice 'x' not found"](#voice-x-not-found)
+  - ["La voz 'x' no existe." (exit 3)](#la-voz-x-no-existe-exit-3)
   - ["La voz 'x' ya existe"](#la-voz-x-ya-existe)
   - ["El modelo Base de clonado TTS no está provisionado"](#el-modelo-base-de-clonado-tts-no-está-provisionado)
-  - ["Voz 'x' es una voz de fábrica (solo lectura)"](#voz-x-es-una-voz-de-fábrica-solo-lectura)
-  - [Error al eliminar una voz: "uno de sus archivos parece estar en uso"](#error-al-eliminar-una-voz-uno-de-sus-archivos-parece-estar-en-uso)
+  - ["La voz 'x' no se puede eliminar." (exit 2)](#la-voz-x-no-se-puede-eliminar-exit-2)
   - [Sin audio de salida](#sin-audio-de-salida)
   - [El sistema bloquea el primer arranque (binarios sin firmar)](#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar)
 - [Uso ético y responsable](#uso-ético-y-responsable)
@@ -63,6 +61,22 @@ Hay dos flujos según la audiencia: el del **usuario del binario** (canal nativo
 one-liner o descarga desde Releases) y el del **desarrollador** (compila con
 `cargo` desde el código fuente). El canal PyPI fue retirado; detalle en
 [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
+
+### Requisitos de hardware
+
+La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
+
+- **CPU**: x86-64 o ARM64 moderna. Toda la inferencia corre en CPU, así que en
+  procesadores antiguos la síntesis es más lenta.
+- **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
+  funciona pero puede paginar (ralentizarse) en textos largos. `doctor` no mide
+  ni la CPU ni la RAM.
+- **Disco**: ~9 GB para los modelos descargados (Qwen3-TTS ~4,7 GB + Marian
+  es↔en ~3 GB + Parakeet TDT v3 ~0,6 GB). El binario instalado ocupa ~40 MB.
+- **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
+  funcionamiento.
+- **Linux — glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+ o equivalente):
+  ver la entrada correspondiente en «Solución de problemas» más abajo.
 
 ### Usuario del binario
 
@@ -312,8 +326,8 @@ ai-voice-interconnector X.Y.Z
 
 ### `doctor`
 
-Verifica que todos los componentes estén disponibles: la librería TTS, el
-subsistema de audio, los modelos descargados y las voces.
+Verifica el entorno local sin tocar el daemon ni el audio: el directorio de
+datos, los modelos provisionados y el almacén de voces.
 
 ```bash
 ai-voice-interconnector doctor
@@ -331,6 +345,11 @@ Cache HF: C:\Users\<tu-usuario>\.cache\huggingface\hub
 Qwen3-TTS, traducción Marian es→en y en→es, STT Parakeet TDT v3) y el almacén de
 voces. Si falta alguno, lista cada issue con `✗` y remite a
 `ai-voice-interconnector setup`.
+
+El modelo Base de clonado es opcional: si no está provisionado, `doctor` añade
+`[WARN] Modelo Base de clonado no provisionado (usa setup --with-voice-cloning).`
+sin fallar, y con `--json` lo informa en `base_status` (`ready` o
+`missing_opt_in`).
 
 Termina con código de salida 0 si todo pasa, y 1 si algún chequeo falla.
 
@@ -357,18 +376,19 @@ Dispositivos de salida de audio:
 
 ### El grupo `speech`
 
-Seis sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`), tres que gestionan el almacén de locuciones guardadas (`play`, `list`, `remove`) y una que compone el bucle voz→voz (`dub`). Cada una tiene una sola responsabilidad, y el nombre declara su costo: sintetizar paga una inferencia pesada (CPU + RAM) y puede exigir el modelo provisionado; gestionar el almacén no.
+Siete sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`), tres que gestionan el almacén de locuciones guardadas (`play`, `list`, `remove`), una que transcribe audio a texto (`transcribe`) y una que compone el bucle voz→voz (`dub`). Cada una tiene una sola responsabilidad, y el nombre declara su costo: sintetizar paga una inferencia pesada (CPU + RAM) y puede exigir el modelo provisionado; gestionar el almacén no.
 
 | Sub-acción | Qué hace | Persiste | Necesita el modelo |
 |---|---|---|---|
 | `speech synthesize` | Sintetiza y guarda una locución | sí | sí |
 | `speech say` | Sintetiza y reproduce, no guarda | no | sí |
+| `speech transcribe` | Transcribe audio a texto | no | sí |
 | `speech dub` | Composición voz→voz: transcribe, traduce si procede, sintetiza y reproduce | no | sí |
 | `speech play` | Reproduce una locución guardada | no | no |
 | `speech list` | Lista las locuciones guardadas | no | no |
 | `speech remove` | Borra una locución guardada | no | no |
 
-**En las seis, `--voice/-v` es opcional**; si se omite, usa la voz de fábrica
+**En las que aceptan voz, `--voice/-v` es opcional**; si se omite, usa la voz de fábrica
 `default`. **La voz y la etiqueta (`--label/-l`) se normalizan a minúsculas**
 antes de resolver rutas: `--label Saludo` y `--label saludo` son la misma
 locución (el archivo se llama `saludo.wav`), y lo mismo aplica al nombre de la
@@ -441,7 +461,7 @@ Opción [1-4]:
 
 - **Reproducir otra vez**: repite los mismos bytes en memoria, sin volver a sintetizar.
 - **Aceptar y guardar**: persiste la toma que acabas de oír y termina con exit 0.
-- **Rechazar y regenerar**: sintetiza otra toma (T3+S3Gen; los conditionals de una voz registrada ya están precomputados) y vuelve a preguntar.
+- **Rechazar y regenerar**: sintetiza otra toma y vuelve a preguntar.
 - **Rechazar y descartar**: termina con exit 0 sin guardar nada.
 
 Ctrl-D en la pregunta equivale a «rechazar y descartar». `speech synthesize
@@ -692,7 +712,14 @@ cargado) y **10** (fallo de transcripción con el modelo cargado).
 
 ---
 
-### `voice clone`
+### El grupo `voice`
+
+Tres sub-acciones sobre el registro de voces: `clone` registra una voz a partir
+de audio de referencia (requiere el modelo Base), `list` muestra las voces de
+fábrica y de usuario, y `remove` elimina una voz de usuario. Las voces de fábrica
+(`default`, `ryan`, `vivian`) no se pueden eliminar.
+
+#### `voice clone`
 
 Clona una voz a partir de un audio de referencia (requiere modelo Base).
 
@@ -715,22 +742,21 @@ referencia separados.
 A partir de ese momento la voz aparece en `voice list` y puede usarse con
 `speech say --voice mi_voz`.
 
-El clonado **precomputa los conditionals** en el momento de clonar, de modo que
-toda síntesis posterior con `speech synthesize --voice mi_voz` (o `speech say --voice mi_voz`) los carga desde disco en vez
-de recomputarlos (latencia estable, sin sobrecosto en la primera reproducción).
-Por eso `voice clone` requiere el modelo provisionado (`ai-voice-interconnector setup`): el
-precómputo ejecuta el modelo. Si hay un [daemon](#modo-daemon) activo, el
-precómputo aprovecha el modelo ya caliente y es casi inmediato; si no, el
-comando carga el modelo una vez (unos segundos) para precomputar.
+El clonado **extrae la representación de la voz** con el modelo Base y la guarda
+como `reference.qvoice`; toda síntesis posterior con `--voice mi_voz` la carga
+desde disco, sin volver a procesar los audios de referencia. Por eso `voice clone`
+requiere el modelo Base provisionado (`ai-voice-interconnector setup --with-voice-cloning`).
+Si hay un [daemon](#modo-daemon) activo, el clonado corre en él y además precalienta
+la voz nueva en segundo plano (`"precomputed": true` con `--json`); en modo directo
+`precomputed` es siempre `false`.
 
-Si el precómputo falla (por ejemplo, un audio problemático), el clonado **no se
-aborta**: la voz queda registrada con un aviso por stderr y sus conditionals se
-computarán en la primera síntesis.
+Si el clonado falla (por ejemplo, con un audio problemático), el comando termina
+con el código `voice_clone_failed` y no registra la voz.
 
 **Opciones:**
 - `--name, -n` (requerido): Nombre para la voz
 - `--timbre-reference, -t` (opcional): Audio para timbre (cualquier largo — el audio completo se usa para el embedding)
-- `--speech-reference, -s` (requerido): Audio para conditioning (10+ segundos de habla limpia)
+- `--speech-reference, -s` (requerido): Audio de habla (10+ segundos de habla limpia)
 - `--force, -f`: Sobrescribir la voz si ya existe (incluida una de fábrica homónima)
 - `--daemon` / `--no-daemon`: igual que en las sub-acciones de `speech`;
   con `--daemon` el precómputo aprovecha el modelo caliente; sin flags se
@@ -753,7 +779,7 @@ mejores resultados.
 
 ---
 
-### `voice list`
+#### `voice list`
 
 Lista las voces disponibles, tanto las de fábrica como las registradas por ti.
 
@@ -774,7 +800,7 @@ La voz `default` siempre está presente (viene de fábrica).
 
 ---
 
-### `voice remove`
+#### `voice remove`
 
 Elimina una voz registrada por el usuario.
 
@@ -897,7 +923,7 @@ no provisionada y descarga la requerida (la caché deduplica por contenido).
 
 ---
 
-## Modo Daemon
+## Modo daemon
 
 El daemon mantiene el modelo cargado en memoria, evitando el tiempo de carga en
 cada invocación (~15–30 s de overhead). Es el modo recomendado cuando vas a
@@ -955,55 +981,18 @@ ai-voice-interconnector speech say --text "Hola" --voice mi_voz --daemon
 ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 ```
 
-**Qué esperar** con el daemon activo: `speech say` omite la etapa de carga del modelo
-y la síntesis empieza de inmediato. Aunque la síntesis ocurre en el proceso del
-daemon, su **progreso real** viaja al cliente por el stream de `/synthesize`
-(etapa actual y conteo de tokens del T3 en vivo):
+**Qué esperar** con el daemon activo: `speech say` omite la carga del modelo y
+la síntesis empieza de inmediato. Mientras sintetiza, el daemon mantiene viva la
+conexión con latidos NDJSON (ver [docs/DAEMON-MODE.md](docs/DAEMON-MODE.md#streaming-ndjson));
+el cliente no muestra progreso intermedio. Al terminar la reproducción imprime
+la ruta del WAV temporal reproducido, igual que en modo directo:
 
 ```
-Iniciando speech say...
-[10:05:01] [Servidor] Enviando solicitud de síntesis...
-[10:05:19]    [Etapa 2a] T3 autoregresivo: 12.0s...
-[10:05:19]    [Etapa 2b] S3Gen vocoder:   6.0s...
-[10:05:19] [Servidor] Síntesis completada (18.0s)...
-[10:05:19] [Reproducción] Reproduciendo audio...
-[10:05:22] [Reproducción] Reproducción finalizada
-Finalizado en 21.3s
+Reproduciendo: <ruta del WAV temporal>
 ```
 
-Los tiempos de `[Etapa 2a]` (generación de tokens) y `[Etapa 2b]` (vocoder) se
-muestran con el **mismo formato en ambos modos** (directo y daemon), para que
-puedas comparar el rendimiento.
-
-**Progreso en vivo (solo en terminal interactiva):** en una TTY, mientras dura la
-síntesis `speech say` muestra sobre **stderr** un indicador giratorio que se actualiza
-con la etapa y el avance de tokens del T3 (p. ej. `Generando voz · 210 tokens`,
-subiendo), tanto en modo daemon como directo. Es un indicador de etapa y avance,
-**no un porcentaje** del total. Si la salida está redirigida a un archivo o pipe,
-o corre en CI, el indicador se desactiva por completo y stdout queda intacto
-(contrato del CLI: stdout = datos, stderr = progreso). Ver `docs/DAEMON-MODE.md`
-para el detalle del protocolo NDJSON que transporta estos eventos.
-
-### Requisitos de hardware
-
-La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
-
-- **CPU**: x86-64 (o ARM64) moderna con soporte **AVX2**. La mayoría de los
-  procesadores de escritorio/portátil desde ~2015 lo tienen; en CPUs muy antiguas
-  sin AVX2, PyTorch puede fallar al cargar o correr mucho más lento. *(`doctor`
-  lo detecta best-effort: en Linux por `/proc/cpuinfo` y en macOS Intel por
-  `sysctl`, con `[WARN]` si falta; en Windows no hay vía estándar de detección y
-  el chequeo se reporta como `[SKIP]` informativo — si tu CPU es de antes de
-  2015, verifícalo en las especificaciones del fabricante. En ARM64 no aplica.)*
-- **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
-  funciona pero puede paginar (ralentizarse) en textos largos. `doctor` emite un
-  `[WARN]` de RAM por debajo de 8 GB (no bloquea nada).
-- **Disco**: ~9 GB para los modelos descargados (Qwen3-TTS ~4,7 GB + Marian
-  es↔en ~3 GB + Parakeet TDT v3 ~0,6 GB). El binario instalado ocupa ~40 MB.
-- **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
-  funcionamiento.
-- **Linux — glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+ o equivalente):
-  ver la entrada correspondiente en «Solución de Problemas» más abajo.
+Con `--json`, en lugar de esa línea emite el payload
+`{"status":"reproduced","audio_path":…,"voice":…}` en stdout.
 
 ---
 
@@ -1086,12 +1075,12 @@ Las únicas diferencias son internas y no cambian la forma de usar la aplicació
 
 ---
 
-## Formato de Audio
+## Formato de audio
 
 - **Generación**: 24000 Hz, Mono
 - **Exportación WAV**: 16-bit PCM, 24000 Hz, Mono
 
-## Solución de Problemas
+## Solución de problemas
 
 ### "El modelo … no está provisionado. Ejecuta 'setup' primero." (exit 4)
 
@@ -1111,24 +1100,7 @@ Debian 11) el binario no arranca — `install-linux.sh` lo detecta y aborta ante
 Actualiza la distro o compila desde código fuente en tu distro actual (ver
 [docs/BUILD.md](docs/BUILD.md)).
 
-### "OneDrive user-data-dir" [WARN] en doctor (Windows)
-
-En perfiles corporativos, `LOCALAPPDATA` (donde `ai-voice-interconnector` guarda las voces de
-usuario) puede caer bajo una jerarquía de **OneDrive**. Eso expone los archivos de
-voz a *file locks* y a *placeholders* «a petición» (Files On-Demand), que causan
-fallos de lectura esporádicos e inatribuibles al cargar una voz.
-
-`doctor` emite `[WARN] OneDrive user-data-dir` cuando detecta que `data_dir()`
-está bajo la sincronización de OneDrive (vía las variables de entorno
-`OneDrive`/`OneDriveCommercial`, o por patrón de ruta). Es un aviso informativo:
-no bloquea nada ni cambia dónde se guardan las voces. Para mitigarlo:
-
-- **Excluye** la carpeta de datos de `ai-voice-interconnector` (`%LOCALAPPDATA%\ai-voice-interconnector`)
-  de la sincronización de OneDrive, o
-- **Deshabilita Files On-Demand** para esa carpeta, de modo que sus archivos se
-  descarguen siempre y no queden como marcadores bajo demanda.
-
-### "Voice 'x' not found"
+### "La voz 'x' no existe." (exit 3)
 
 Verifica que la voz existe:
 
@@ -1154,28 +1126,25 @@ ai-voice-interconnector setup --with-voice-cloning
 ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav --force
 ```
 
-### "Voz 'x' es una voz de fábrica (solo lectura)"
+### "La voz 'x' no se puede eliminar." (exit 2)
 
-Las voces empaquetadas (como `default`) no pueden eliminarse con `voice remove`.
+Las voces de fábrica (`default`, `ryan`, `vivian`) no pueden eliminarse con
+`voice remove`: el comando sale con exit 2 y el código `cannot_remove_default`.
 Si quieres reemplazar su sonido, clona una voz de usuario con el mismo nombre
 usando `voice clone --force`: la tuya toma precedencia.
-
-### Error al eliminar una voz: "uno de sus archivos parece estar en uso"
-
-Otro proceso (el daemon, un reproductor de audio) tiene abierto alguno de los
-archivos de la voz. Ciérralo (p. ej. `ai-voice-interconnector daemon stop`) y reintenta.
 
 ### Sin audio de salida
 
 1. Verifica que `ai-voice-interconnector devices` detecta tu dispositivo
 2. Comprueba que el volumen del sistema no está en mute
 3. Verifica que el dispositivo de audio predeterminado es correcto
-4. Ejecuta `ai-voice-interconnector doctor`: el chequeo "Audio library" falla si el host no
-   tiene un subsistema de audio funcional (p. ej. sesiones remotas o headless)
+4. Si la reproducción falla, la CLI termina con el código `playback_failed` y
+   el mensaje del sistema de audio indica la causa (p. ej. sesiones remotas o
+   headless sin dispositivo de salida)
 
 En un host sin audio puedes seguir usando la síntesis a archivo
-(`ai-voice-interconnector speech synthesize --text T --label L`); `setup` también funciona
-allí (degrada el chequeo de audio a `[WARN]` y provisiona igual).
+(`ai-voice-interconnector speech synthesize --text T --label L`); ni `setup` ni
+`doctor` dependen del audio.
 
 ### El sistema bloquea el primer arranque (binarios sin firmar)
 

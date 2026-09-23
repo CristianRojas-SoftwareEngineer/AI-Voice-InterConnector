@@ -1,4 +1,4 @@
-# Diseño del Sistema AI Voice InterConnector (Rust + Qwen3-TTS)
+# Diseño del sistema AI Voice InterConnector (Rust + Qwen3-TTS)
 
 ## Tabla de contenidos
 
@@ -8,6 +8,7 @@
 - [Entry point `src/main.rs`](#entry-point-srcmainrs)
 - [Motor Qwen3-TTS 0.6B (Rust)](#motor-qwen3-tts-06b-rust)
 - [Traducción cross-lingual (opus-mt / CTranslate2)](#traducción-cross-lingual-opus-mt--ctranslate2)
+- [Transcripción STT (Parakeet TDT v3 int8 / ort)](#transcripción-stt-parakeet-tdt-v3-int8--ort)
 - [Flujo de síntesis](#flujo-de-síntesis)
 - [Modelo de voces de dos niveles](#modelo-de-voces-de-dos-niveles)
 - [Comandos CLI](#comandos-cli)

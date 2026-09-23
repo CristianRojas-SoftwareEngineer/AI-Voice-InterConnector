@@ -237,7 +237,7 @@ ahí el job lo mantiene.
 
 `install-macos.sh` vive en la raíz del repo, servido desde
 `raw.githubusercontent.com/<owner>/AI-Voice-InterConnector/main/install-macos.sh`. Uso:
-`curl -fsSL <url> | sh`. Es la vía de una línea de macOS sin prerequisitos: ni
+`curl -fsSL <url> | sh`. Es la vía de una línea de macOS sin prerrequisitos: ni
 Homebrew (a diferencia del Cask) ni `sudo`.
 
 **Herramientas del host**: solo binarios del sistema base de macOS. No existe
@@ -266,7 +266,7 @@ cuarentena elimina la fricción de Gatekeeper para quien use el one-liner.
 
 ## Desinstalación
 
-`ai-voice-interconnector uninstall` (único con binario+PATH) y `ai-voice-interconnector cleanup --all` (unión Modelo+voces+habla sin binario ni PATH — `src/main.rs:2219/2724`, `docs/CLI/CONTRACT.md §11`) son el **desinstalador/limpieza en un comando** multiplataforma que cierra la paridad con el canal Python retirado. `cleanup` sin flags → exit 2 `usage_error` sin borrar. El flujo interno es parada de daemon primero (parada unificada `stop_daemon_and_resident` con deadline global de 8 s: graceful `POST /shutdown` + árbol preciso por PID con verificación; `stop` falla con exit 5 sin borrar la pista si el árbol sigue vivo), datos después (`data_dir()` con `daemon.pid`), `hub`+`xet` (`~/.cache/huggingface/hub` y `~/.cache/huggingface/xet` con `shard-cache`/`logs` y `.locks`) y `temp` (`avi_*`, `ai-voice-interconnector-install-*`), integración de PATH después y binario al final (solo `uninstall`), con confirmación interactiva (`--force`/`--yes` la omite; `cleanup` aporta `--dry-run`) e idempotencia:
+`ai-voice-interconnector uninstall` (único con binario+PATH) y `ai-voice-interconnector cleanup --all` (unión Modelo+voces+habla sin binario ni PATH — `handle_cleanup`/`handle_uninstall` (`src/main.rs`), `docs/CLI/CONTRACT.md §11`) son el **desinstalador/limpieza en un comando** multiplataforma que cierra la paridad con el canal Python retirado. `cleanup` sin flags → exit 2 `usage_error` sin borrar. El flujo interno es parada de daemon primero (parada unificada `stop_daemon_and_resident` con deadline global de 8 s: graceful `POST /shutdown` + árbol preciso por PID con verificación; `stop` falla con exit 5 sin borrar la pista si el árbol sigue vivo), datos después (`data_dir()` con `daemon.pid`), `hub`+`xet` (`~/.cache/huggingface/hub` y `~/.cache/huggingface/xet` con `shard-cache`/`logs` y `.locks`) y `temp` (`avi_*`, `ai-voice-interconnector-install-*`), integración de PATH después y binario al final (solo `uninstall`), con confirmación interactiva (`--force`/`--yes` la omite; `cleanup` aporta `--dry-run`) e idempotencia:
 
 - **Linux / macOS (one-liner)**: `ai-voice-interconnector uninstall --force` para el daemon, borra el symlink `~/.local/bin/ai-voice-interconnector`, el directorio `~/.local/opt/ai-voice-interconnector/`, los datos (`cleanup`) y `hub`+`xet`+`logs`.
 - **Windows**: `ai-voice-interconnector uninstall --force` para el daemon (`qwen_tts.exe` incluido), borra `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, quita esa entrada del PATH de usuario (`HKCU\Environment` + `WM_SETTINGCHANGE`), borra los datos y `hub`+`xet`+`logs`+`temp`. Si el binario está en uso, avisa y deja el borrado final para después de cerrar la terminal.

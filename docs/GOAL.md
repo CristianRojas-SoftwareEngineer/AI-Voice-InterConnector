@@ -50,7 +50,7 @@ Si la spec **no cumple ninguno** de los tres, va al **goal inmediato** y se trab
 
 ## Goal inmediato
 
-## Objetivo
+### Objetivo
 
 Obtener un sistema TTS **100% local** con audio nativo por sistema operativo, para transformar texto a audio en **español latino** de la mejor calidad disponible, distribuido bajo **licencia GPL-3.0-or-later** (con dependencias y modelo bajo licencias permisivas compatibles).
 
@@ -62,20 +62,20 @@ Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre 
 
 **La experiencia del usuario final debe ser equivalente en Windows, Linux y macOS**: instalar, usar, actualizar y desinstalar con la misma cantidad de fricción, privilegios y residuo en los tres SO. Las diferencias de empaquetado idiomáticas por SO (formatos `tar.gz`/`zip`/Cask) son aceptables; las diferencias de experiencia no. El estado de esta equivalencia y las brechas pendientes se registran en [docs/PARITY.md](PARITY.md).
 
-## Alcance
+### Alcance
 
 Implementar y validar la síntesis en español latinoamericano con voz propia del usuario usando Qwen3-TTS 0.6B, distribuida con **equivalencia funcional completa** entre Windows, Linux y macOS: el cierre de las brechas registradas en [docs/PARITY.md](PARITY.md) es parte del alcance del goal inmediato.
 
-## Restricciones
+### Restricciones
 
 - **100% local**: Sin APIs externas ni conexiones a internet para síntesis
 - **Instalador único por SO (canal nativo)**: Un archivo comprimido por plataforma (`tar.gz`/`.zip` con binario Rust); el canal PyPI fue retirado en la Fase 7 (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md))
 - **Sin dependencias externas (canal nativo)**: El usuario final no necesita instalar nada más (binario autocontenido)
 - **Licencia**: El código propio se distribuye bajo GPL-3.0-or-later; todas las dependencias y los modelos usados deben tener licencias compatibles con GPLv3 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible, como LGPL-2.1+/MPL-2.0). El par de traducción `opus-mt` (opt-in) se distribuye bajo CC-BY-4.0, con atribución registrada en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)
 
-## Especificación
+### Especificación
 
-### Instalador (canal nativo)
+#### Instalador (canal nativo)
 
 Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO), que es el único canal de distribución desde la Fase 7:
 
@@ -87,20 +87,20 @@ Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO)
 
 El **canal PyPI fue retirado en la Fase 7** (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)): la distribución es 100% Rust por archivos comprimidos. La mención histórica se conserva solo para auditoría.
 
-### Paridad de experiencia
+#### Paridad de experiencia
 
 El ideal de paridad que persigue el goal inmediato, por fase del ciclo de vida (el estado real y el registro de brechas viven en [docs/PARITY.md](PARITY.md)):
 
 | Fase | Ideal en los 3 SO |
 |---|---|
-| Instalación | Una línea, sin prerequisitos de terceros, sin privilegios de admin, checksum verificado |
+| Instalación | Una línea, sin prerrequisitos de terceros, sin privilegios de admin, checksum verificado |
 | Primer arranque | Sin advertencias de reputación en la vía de una línea |
 | Provisión | Modelo descargado al terminar la instalación (`setup` encadenado u ofrecido) |
 | Uso | CLI, daemon, voces y contratos `--json` idénticos |
 | Actualización | Reemplaza la versión anterior sin residuo ni pasos-trampa |
 | Desinstalación | Datos (`cleanup --all` = unión Modelo+voces+habla, sin binario ni PATH) + binario (`uninstall`), con residuo cero |
 
-### Comandos CLI
+#### Comandos CLI
 
 Los comandos están ordenados en secuencia de dependencia: cada paso solo requiere que los anteriores hayan funcionado. El daemon es el camino principal de uso: carga el modelo una sola vez y lo mantiene en memoria, eliminando el overhead de carga en cada invocación. Por eso su ciclo de vida envuelve toda la sesión: se arranca antes de sintetizar y se detiene al final.
 
@@ -141,9 +141,9 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 ./ai-voice-interconnector daemon stop
 ```
 
-### Desinstalación en un comando
+#### Desinstalación en un comando
 
-La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina binario, PATH integrado y datos (modelo y voces), con residuo cero, en los tres SO. `ai-voice-interconnector uninstall` es el único que borra binario y PATH (`cleanup --all` es unión Modelo+voces+habla sin binario ni PATH — `src/main.rs:2219/2724`, `docs/CLI/CONTRACT.md §11`). Ambos son multiplataforma y espejan la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación:
+La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina binario, PATH integrado y datos (modelo y voces), con residuo cero, en los tres SO. `ai-voice-interconnector uninstall` es el único que borra binario y PATH (`cleanup --all` es unión Modelo+voces+habla sin binario ni PATH — `handle_cleanup`/`handle_uninstall` (`src/main.rs`), `docs/CLI/CONTRACT.md §11`). Ambos son multiplataforma y espejan la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación:
 
 - **Linux**: el symlink `~/.local/bin/ai-voice-interconnector`, el directorio de instalación `~/.local/opt/ai-voice-interconnector/` y los datos (`cleanup`). Sin `sudo`. (`uninstall --force` omite confirmación)
 - **macOS**: análogo a Linux (`uninstall` limpia symlink + `~/.local/opt` + `cleanup`) en la vía one-liner; con **Homebrew Cask**, `brew uninstall --cask --zap ai-voice-interconnector` sigue siendo la vía idiomática (cubre también los datos). Sin `sudo`.
@@ -151,11 +151,11 @@ La desinstalación es **equivalente en esfuerzo a la instalación de una línea*
 
 Las vías idiomáticas por SO (`brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `uninstall` es la vía equivalente de un comando en las tres plataformas. El estado real de esta paridad vive en [docs/PARITY.md](PARITY.md). El binario gestiona PATH/dir directamente.
 
-### Estructura del proyecto
+#### Estructura del proyecto
 
 Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
-## Criterios de aceptación
+### Criterios de aceptación
 
 <!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado del binario congelado (`ai-voice-interconnector version`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
@@ -170,7 +170,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
 10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del registro de [docs/PARITY.md](PARITY.md) están cerradas a nivel de código/scripts/tests (one-liner macOS `install-macos.sh`, `.command` sin `sudo`, limpieza de artefactos en `install-linux.sh`, `zap` del Cask completo, README con las tres plataformas — cerradas en v0.5.0 — y `setup --uninstall` multiplataforma — brecha de *desinstalación en un comando*, cerrada a nivel de código/scripts/tests en v0.6.0). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
 
-### Validación E2E
+#### Validación E2E
 
 La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de Qwen3-TTS + Parakeet + descarga de ~9 GB base (~11,5 GB con `--with-voice-cloning`) + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** del binario congelado (`ai-voice-interconnector version`, exit 0) en los cuatro jobs de build, que detecta empaquetados rotos sin pagar el coste del modelo.
 
@@ -183,7 +183,7 @@ El recorrido concreto —la secuencia ordenada de comandos que ejercita toda la 
 
 Por tanto, los criterios 1-3 y 9 no son "pendientes" en el sentido de tareas olvidadas: son el **borde externo** del proceso de calidad, donde el propietario más el feedback de la comunidad reemplazan a un runner de CI que no podría ejercitar la matriz de hardware/SO real. Cualquier issue reportado en estos criterios se incorpora al ciclo de desarrollo como bug prioritario y motiva fixes versionados.
 
-## Condición de finalización
+### Condición de finalización
 
 La implementación está completa únicamente cuando:
 
@@ -206,9 +206,9 @@ La implementación está completa únicamente cuando:
 
 Especificaciones **no comprometidas** para el goal inmediato. No se trabajan ahora — cada una registra por qué se difiere (según el [criterio de clasificación](#clasificación-de-specs)) y qué condición la promueve al goal inmediato.
 
-## Firma de código y notarización
+### Firma de código y notarización
 
-**Motivación**: los binarios del canal nativo no están firmados, por lo que Windows SmartScreen y macOS Gatekeeper bloquean el primer arranque cuando el artefacto se descarga por navegador. El mecanismo y la mitigación ya vigente (instaladores de una línea) están explicados en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar); no elimina el bloqueo para la descarga directa desde el navegador (ver también `docs/BUILD.md` §"Limitación conocida: firma de código y notarización").
+**Motivación**: los binarios del canal nativo no están firmados, por lo que Windows SmartScreen y macOS Gatekeeper bloquean el primer arranque cuando el artefacto se descarga por navegador. El mecanismo y la mitigación ya vigente (instaladores de una línea) están explicados en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar); no elimina el bloqueo para la descarga directa desde el navegador (ver también [BUILD.md](BUILD.md#limitación-conocida-firma-de-código-y-notarización)).
 
 **Justificación del diferimiento**: la firma es un gate que solo vale la pena cuando el proyecto/producto esté **cristalizado y completo** — idealmente sin bugs y con funcionalidad completa y equivalente entre los 3 sistemas operativos ([docs/PARITY.md](PARITY.md) sin brechas abiertas). El producto aún está en desarrollo: firmar ahora significaría re-tramitar la confianza externa (aprobación de SignPath OSS, cuenta Apple Developer de pago) sobre artefactos que siguen cambiando de forma. Solo entonces se iniciará el proceso de firma.
 

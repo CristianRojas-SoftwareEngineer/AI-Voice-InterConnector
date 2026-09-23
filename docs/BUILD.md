@@ -1,4 +1,4 @@
-# Guía de Construcción
+# Guía de construcción
 
 `ai-voice-interconnector` se compila como un **binario Rust autocontenido**
 (`cargo build --release --features full`; CTranslate2 (ct2rs) compilado estático +
@@ -9,11 +9,32 @@ agrupa el binario con los documentos de licencia GPLv3.
 ## Tabla de contenidos
 
 - [1. Requisitos](#1-requisitos)
-- [2. Plataformas Soportadas](#2-plataformas-soportadas)
-- [3. Compilación Local](#3-compilación-local)
+- [2. Plataformas soportadas](#2-plataformas-soportadas)
+  - [Matriz de arquitecturas y brechas](#matriz-de-arquitecturas-y-brechas)
+  - [Matriz de SO probados y mínimos declarados](#matriz-de-so-probados-y-mínimos-declarados)
+- [3. Compilación local](#3-compilación-local)
+  - [Verificación rápida](#verificación-rápida)
+  - [Build de distribución (binario autocontenido)](#build-de-distribución-binario-autocontenido)
+  - [ONNX Runtime vía `load-dynamic` (sin build en compilación)](#onnx-runtime-vía-load-dynamic-sin-build-en-compilación)
+  - [Verificación post-build](#verificación-post-build)
 - [4. CI/CD con CircleCI](#4-cicd-con-circleci)
+  - [Arquitectura del pipeline](#arquitectura-del-pipeline)
+  - [Jobs](#jobs)
+  - [Simetría: 3 puertas de test vs. 4 targets de build](#simetría-3-puertas-de-test-vs-4-targets-de-build)
+  - [CD: publicación del GitHub Release (`publish-release`)](#cd-publicación-del-github-release-publish-release)
+  - [Cacheo de dependencias y toolchain](#cacheo-de-dependencias-y-toolchain)
+  - [Reproducibilidad: pines por digest y sus implicaciones](#reproducibilidad-pines-por-digest-y-sus-implicaciones)
+  - [Guardarraíles durables de la suite de tests (`tests/cli_golden.rs`)](#guardarraíles-durables-de-la-suite-de-tests-testscli_goldenrs)
 - [5. Distribución de artefactos](#5-distribución-de-artefactos)
-- [9. Build nativo del motor TTS (Rust/qwen_tts)](#9-build-nativo-del-motor-tts-rustqwen_tts)
+  - [Empaquetado por plataforma (archivos comprimidos)](#empaquetado-por-plataforma-archivos-comprimidos)
+  - [Integración con el SO](#integración-con-el-so)
+  - [Limitación conocida: firma de código y notarización](#limitación-conocida-firma-de-código-y-notarización)
+- [6. Build nativo del motor TTS (Rust/qwen_tts)](#6-build-nativo-del-motor-tts-rustqwen_tts)
+  - [Interfaz uniforme: `xtask build-engine`](#interfaz-uniforme-xtask-build-engine)
+  - [Toolchain y flags por plataforma](#toolchain-y-flags-por-plataforma)
+  - [Caché del motor en CI](#caché-del-motor-en-ci)
+- [7. Descarga nativa de modelos (`hf-hub`)](#7-descarga-nativa-de-modelos-hf-hub)
+  - [Ubicaciones en disco por SO](#ubicaciones-en-disco-por-so)
 
 ---
 
@@ -28,32 +49,9 @@ agrupa el binario con los documentos de licencia GPLv3.
 
 No se requiere Python, Node ni toolchain adicional para compilar o empaquetar.
 
-### Empaquetado por plataforma (archivos comprimidos)
-
-El binario Rust es autocontenido (`crt-static`; CTranslate2 (ct2rs) enlazado
-estático; Parakeet vía ort load-dynamic), así que el empaquetado **no requiere
-herramientas de terceros**: cada target se comprime con una utilidad del sistema base.
-
-| Plataforma | Formato | Utilidad de empaquetado |
-|------------|---------|-------------------------|
-| Linux x64 / ARM64 | `tar.gz` | `tar -czf` (coreutils) |
-| macOS arm64 | `tar.gz` | `tar -czf` (base del SO) |
-| Windows x64 | `.zip` | `Compress-Archive` (PowerShell) |
-
-El step **«Preparar artefacto versionado (staging)»** de cada `build-*` en
-`.circleci/config.yml` valida la versión (`const VERSION` de `src/main.rs` vs
-`CIRCLE_TAG`, fail-fast), monta un directorio de staging con **layout plano**
-—el binario renombrado a `ai-voice-interconnector[.exe]` (sin sufijo de
-arquitectura) más los 4 documentos de la raíz (`LICENSE`,
-`THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`, `README.md`), el `ort-bundle`
-(ONNX Runtime + DLLs VC++ en Windows) y el `qwen_tts` vendido— y lo comprime al
-archivo del target. Los documentos GPLv3 viajan así **dentro del archivo** y
-quedan instalados junto al binario (cumplimiento §6 de la GPLv3 sin depender de
-un bundle).
-
 ---
 
-## 2. Plataformas Soportadas
+## 2. Plataformas soportadas
 
 | Plataforma | Compilación | Artefacto (archivo comprimido) |
 |------------|-------------|-------------------------------|
@@ -101,7 +99,7 @@ con esas versiones exactas. Un reporte de fallo reabriría la decisión.
 
 ---
 
-## 3. Compilación Local
+## 3. Compilación local
 
 ### Verificación rápida
 
@@ -184,30 +182,6 @@ Queda **manual** (requiere modelo, audio real y hardware por SO): `doctor`,
 los instaladores por SO es por diseño **externa al pipeline** (ver
 `docs/GOAL.md` §Validación E2E).
 
-### Matriz de integración con el SO
-
-| Aspecto | Windows | Linux | macOS |
-|---------|---------|-------|-------|
-| PATH | El one-liner `install-windows.ps1` registra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` en HKCU (sin UAC); el binario `uninstall` lo revierte | `install-linux.sh` crea symlink `~/.local/bin/ai-voice-interconnector → ~/.local/opt/ai-voice-interconnector/ai-voice-interconnector`; `uninstall` lo borra | One-liner `install-macos.sh` análogo a Linux (`~/.local/bin`); Cask `brew install --cask` enlaza en `/opt/homebrew/bin` |
-| Guía hacia `setup` | El one-liner encadena `setup` tras instalar | Ídem | Ídem (Cask no encadena; caveat remite a `setup`) |
-| Desinstalación | `ai-voice-interconnector uninstall --force` (HKCU + dir + cleanup) o manual | `ai-voice-interconnector uninstall --force` (symlink + dir + cleanup) | `ai-voice-interconnector uninstall --force` o `brew uninstall --cask --zap` |
-| Datos provisionados | `ai-voice-interconnector cleanup --voices` / `--synthetic-speech` / `--model` / `--all` (unión sin binario/PATH; sin flags → exit 2) | Ídem | Ídem |
-
-### Limitación conocida: firma de código y notarización
-
-Los artefactos **no están firmados ni notarizados**: en macOS, Gatekeeper
-bloquea la primera apertura del binario descargado por navegador; en Windows,
-SmartScreen muestra advertencia de editor desconocido si el `.zip` se baja por
-navegador. El mecanismo (Mark-of-the-Web) y la firma como arreglo de fondo
-están en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar). Firmar requiere
-certificados de pago (Apple Developer ID, Authenticode vía SignPath OSS) y queda
-registrado como goal a largo plazo en [docs/GOAL.md](GOAL.md#goal-a-largo-plazo).
-
-Como mitigación, los **one-liners descargan por CLI** (`curl`/`Invoke-WebRequest`),
-que no aplica Mark-of-the-Web, así que el archivo extraído no dispara
-SmartScreen/Gatekeeper. Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md) y
-[docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
-
 ---
 
 ## 4. CI/CD con CircleCI
@@ -250,27 +224,11 @@ publica** (fix-forward/revert y re-tag). No hay estado de `main` sin tag que
 publique, así que no se necesita *branch protection* airtight para sostener la
 garantía "commit taggeado probado".
 
-### Simetría: 3 puertas de test vs. 4 targets de build
+### Arquitectura del pipeline
 
-Las 3 puertas de test y los 4 builds (ambos en `build-all`) responden a **ejes
-distintos**.
+#### Pipeline de release `build-all`
 
-- **Por qué 3 puertas de test y 4 builds.** Los tests son **por familia de SO**:
-  validan lógica Rust por SO (Windows: winsound/tray; macOS: CoreAudio; Linux:
-  ALSA). Los builds son **por target de distribución**, y Linux publica **dos**
-  arquitecturas. Son dos ejes ortogonales (SO × build-target).
-
-- **Por qué el runner de `test-linux` es x86_64.** Es el executor Docker más
-  barato/rápido. La suite es arch-independiente y mockea el engine, así que
-  basta la arquitectura más barata.
-
-- **Hueco de cobertura de ARM64 (divergencia aceptada).** `build-linux-arm64`
-  está *gated* por tests en x86_64; el smoke test `ai-voice-interconnector
-  version` (que importa el stack nativo en ARM) cubre el riesgo arch-específico.
-
-### Arquitectura del Pipeline
-
-**Pipeline de release `build-all`** (único; solo en tags `v*`):
+Único pipeline de release; solo se dispara con tags `v*`:
 
 ```
 ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
@@ -298,7 +256,9 @@ distintos**.
 
 Cada `build-*` compila con `cargo build --timings` y publica el desglose por crate como artefacto `cargo-timings` (`target/cargo-timings`).
 
-**Workflow de sonda `native-cache-probe`** (herramienta de diagnóstico; nunca publica). Mide los `build-*` en los executors reales sin cortar una release. Solo se activa por API, con el parámetro de pipeline `native_cache_probe`:
+#### Workflow de sonda `native-cache-probe`
+
+Herramienta de diagnóstico que nunca publica. Mide los `build-*` en los executors reales sin cortar una release. Solo se activa por API, con el parámetro de pipeline `native_cache_probe`:
 
 ```bash
 curl -X POST https://circleci.com/api/v2/project/gh/<org>/<repo>/pipeline \
@@ -326,50 +286,38 @@ Los tests de topología de `xtask` fallan si el workflow de sonda llega a conten
 | `validate-licenses` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- source-offer --check` + `licenses --check` |
 | `validate-changelog` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- changelog --check` |
 | `test-installer-*` | `build-all` | por SO | bats/Pester | Smoke tests de one-liners (mock por PATH) |
-| `build-windows-x64` | Windows x64 | `win/server-2022` | `cargo build --release --features full` + staging `.zip` |
-| `build-linux-x64` | Linux x64 | docker `cimg/rust:1.96.0` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
-| `build-linux-arm64` | Linux ARM64 | docker `cimg/rust:1.96.0` (`arm.medium`) | idem, nativo aarch64 |
-| `build-darwin-arm64` | macOS arm64 | macos `m4pro.medium` | idem, Xcode 26.4 |
-| `publish-release` | — (CD) | docker `cimg/base:current` | Solo en tags `v*`: recolecta 4 artefactos, genera `SHA256SUMS.txt`, publica GitHub Release |
-| `publish-metadata` | — (CD) | docker `cimg/base:current` | Solo en tags `v*`: renderiza Cask con `cargo xtask cask` y empuja al tap |
+| `build-windows-x64` | `build-all` | Windows x64 | `win/server-2022` | `cargo build --release --features full` + staging `.zip` |
+| `build-linux-x64` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
+| `build-linux-arm64` | `build-all` | Linux ARM64 | docker `cimg/rust:1.96.0` (`arm.medium`) | idem, nativo aarch64 |
+| `build-darwin-arm64` | `build-all` | macOS arm64 | macos `m4pro.medium` | idem, Xcode 26.4 |
+| `publish-release` | `build-all` (CD) | Linux x64 | docker `cimg/base:current` | Solo en tags `v*`: recolecta 4 artefactos, genera `SHA256SUMS.txt`, publica GitHub Release |
+| `publish-metadata` | `build-all` (CD) | Linux x64 | docker `cimg/base:current` | Solo en tags `v*`: renderiza Cask con `cargo xtask cask` y empuja al tap |
 
-### Descargador nativo de modelos (`hf-hub`)
+### Simetría: 3 puertas de test vs. 4 targets de build
 
-`setup` descarga los pesos de HuggingFace Hub de forma nativa vía el crate
-**`hf-hub`** (rustls, sin OpenSSL: compila igual en los 4 targets) con barra de
-progreso **`indicatif`**, resume por Range y validación ETag/commit-hash del
-propio crate. No hay Python en la ruta de descarga.
+Las 3 puertas de test y los 4 builds (ambos en `build-all`) responden a **ejes
+distintos**.
 
-| Modelo lógico | Repo HF | Contenido |
-|---|---|---|
-| `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Pesos TTS (síntesis) |
-| `marian-es-en` | `Helsinki-NLP/opus-mt-es-en` | Traducción es→en (CT2) |
-| `marian-en-es` | `Helsinki-NLP/opus-mt-en-es` | Traducción en→es (CT2) |
-| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (~600 MB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
-| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz (opt-in `--with-voice-cloning`) |
+- **Por qué 3 puertas de test y 4 builds.** Los tests son **por familia de SO**:
+  validan lógica Rust por SO (Windows: winsound/tray; macOS: CoreAudio; Linux:
+  ALSA). Los builds son **por target de distribución**, y Linux publica **dos**
+  arquitecturas. Son dos ejes ortogonales (SO × build-target).
 
-Los pines viven en `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs`): tuplas
-`(nombre_lógico, repo, revisión)`. Actualizar una revisión es una acción
-deliberada y auditable.
+- **Por qué el runner de `test-linux` es x86_64.** Es el executor Docker más
+  barato/rápido. La suite es arch-independiente y mockea el engine, así que
+  basta la arquitectura más barata.
 
-**Ubicaciones en disco por SO.** La aplicación decide su caché (no depende del
-fallback de `hf-hub`, que en Windows sin `HOME` caería en `<unidad>:\tmp`):
-`hf_cache_dir()` honra `HF_HUB_CACHE` > `HF_HOME/hub` y, si no existen, fija
-`{home}/.cache/huggingface/hub` — la misma convención que `huggingface_hub`
-de Python en los tres SO. El cliente de descarga se construye con
-`.cache_dir()` explícito, garantizando convergencia lectura=escritura.
-La provisión se decide solo por presencia del snapshot HF; no hay índice
-`manifest.json` intermedio (los `manifest.json` de versiones previas que
-queden en disco son inertes y los barre `cleanup`):
+- **Hueco de cobertura de ARM64 (divergencia aceptada).** `build-linux-arm64`
+  está *gated* por tests en x86_64; el smoke test `ai-voice-interconnector
+  version` (que importa el stack nativo en ARM) cubre el riesgo arch-específico.
 
-| SO | Cache HF (`hf_cache_dir()`) | Datos del usuario (`data_dir()`) |
-|----|------------------------------|----------------------------------|
-| Windows | `%USERPROFILE%\.cache\huggingface\hub` | `%APPDATA%\ai-voice-interconnector\data` |
-| Linux | `~/.cache/huggingface/hub` | `~/.local/share/ai-voice-interconnector/data` |
-| macOS | `~/.cache/huggingface/hub` | `~/Library/Application Support/ai-voice-interconnector/data` |
+### CD: publicación del GitHub Release (`publish-release`)
 
-`doctor` imprime la ruta resuelta (`Cache HF:` / campo `hf_cache` en `--json`)
-para auditoría. `cleanup --model/--voices/--synthetic-speech/--all` borra selectivamente snapshots HF + datos de usuario (sin binario ni PATH; `cleanup` sin flags → exit 2 `usage_error`; (del binario principal); `uninstall` es el único que añade binario+PATH.
+Al pushear un tag `v*`, además de tests + builds corre `publish-release`
+(estrategia GitHub Releases). Recolecta los 4 artefactos **versionados** por
+`persist_to_workspace`/`attach_workspace`, genera `SHA256SUMS.txt`, extrae las
+notas de la sección `[X.Y.Z]` de `CHANGELOG.md` (fail-fast si no existe) y
+publica el GitHub Release directo (sin borrador).
 
 ### Cacheo de dependencias y toolchain
 
@@ -381,11 +329,17 @@ la remediación de latencia de CI posterior a 0.20.2 (ver la sección de
 `build-*` (`os: windows/linux/macos`, `variant: full`) usan `cargo_restore_caches`
 → restauran **registry + target-v3** (`cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}` y `target-v3-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}`); los jobs pequeños **xtask/changelog-gate** (`validate-licenses`, `validate-changelog`, `publish-metadata`) usan `cargo_restore_registry` → restauran **solo registry** (`cargo-v2-...`) sin `target/`, donde `sccache` basta por el tamaño mínimo de esos jobs. `test-windows`/`test-linux`/`test-macos` (`variant: test`), `coverage` (`variant: cov`) y los 4 `build-*` (`variant: full`) además restauran **y guardan** `sccache` autoconsistente por variante (`sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ epoch }}`, rolling con `when: always`): cada job solo restaura el blob de su propia variante, así que sus hits no dependen de otros perfiles. Los jobs pequeños **xtask/changelog-gate** restauran `sccache` sin guardarlo (excepción restore-only documentada: compilan solo `xtask`, impacto marginal). La caché de `toolchain` (`toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>`) la restauran/guardan `test-windows`, `test-macos`, `coverage`, `build-windows-x64` y `build-darwin-arm64`; los jobs sobre Docker-Linux (`test-linux`, `build-linux-*`, jobs pequeños) no la usan por diseño (la imagen ya trae Rust preinstalado). La clave de `registry`/`target-v3` NO se deriva de `Cargo.lock` directo, sino de un **lock normalizado** (`Cargo.lock.cachekey`) que el primer step de `cargo_restore_caches` genera con un transform de texto (`perl -0777`, ejecutado en `shell: bash`): neutraliza la línea `version` del propio crate (`ai-voice-interconnector` → `0.0.0`) dejando el resto del lock intacto. Motivo: cada release bumpea esa versión, así que el checksum de `Cargo.lock` cambiaría en cada corte aunque las dependencias no varíen, invalidando la clave exacta: `registry` (`cargo-v2`) caería siempre a su frágil fallback por prefijo y `target-v3`, que no tiene fallback, partiría en frío. Con la normalización la clave exacta es estable entre releases y solo cambia ante cambios reales de dependencias. Generar la clave con un transform de texto (en vez de compilar `xtask` desde cero antes de restaurar caché) evita compilar el árbol de dependencias de cargo en cada job —incluido `windows-sys`/`dlltool`, ausente en `test-windows` antes de instalar MSYS2— y su correspondiente coste de red en frío.
 
-**Identidad de contenido de `vendor/cmake-0.1.58` en la clave de `target-v3`.** El `Cargo.toml` raíz sustituye el crate `cmake` por una copia parcheada local (`[patch.crates-io]`), y cargo fingerprintea los paquetes locales por `mtime`. Cada checkout le asigna `mtime` nuevo, lo que marca el parche `Dirty` y arrastra la re-ejecución en falso de toda la cadena nativa que depende de él (`aws-lc-sys`, `onednn-src`, `sentencepiece-sys`, `ct2rs`…) aunque su contenido no haya cambiado. Para evitarlo, `cargo_restore_caches` calcula antes de restaurar el tree hash git del parche (`git rev-parse HEAD:vendor/cmake-0.1.58`, escrito en `.vendor-cmake.tree`) y lo incorpora a la clave exacta de `target-v3` (`…-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}`), que `cargo_save_target` usa idéntica al guardar. `target-v3` **no tiene fallback por prefijo**: un acierto implica que el snapshot de `target/` se guardó desde un checkout con el mismo contenido del parche, así que tras restaurar se fija incondicionalmente un `mtime` antiguo (`touch -t 200001010000`) sobre todo el parche y cargo lo ve `Fresh`, sin comparar nada. Un fallo de caché deja `target/` vacío, donde fijar el `mtime` es inocuo. El costo aceptado es que cada transición de clave (cambio real de dependencias en `Cargo.lock` o edición del parche) parte con `target/` frío en los cuatro `build-*`: la recompilación completa, incluida la cadena nativa CMake (`oneDNN`, `CTranslate2`, `sentencepiece`, `aws-lc`), con tiempos de referencia (medición v0.20.9, todos en frío) `cargo build --release` de `956 s` en linux-x64, `1569 s` en linux-arm64, `1969 s` en windows-x64 y `149 s` en darwin-arm64, frente a `24–202 s` con acierto de `target-v3`. Esos tiempos son previos a `target-v3`, cuando `sccache` solo envolvía `rustc` y los nativos del crate `cc`; la cadena CMake ahora también pasa por `sccache` (ver «Cobertura de `sccache`» debajo), así que una transición de clave recompila en frío solo lo que `sccache` no tenga ya por contenido. El paso corre con `set -euo pipefail` y aborta si la salida no es un hash hexadecimal de 40 caracteres, de modo que nunca se cachea bajo una clave degenerada. Se usa git y no un recorrido `find | sort` del árbol porque en el executor de Windows el `PATH` resuelve `sort` al `sort.exe` de System32, que no entiende las opciones POSIX; el tree hash además es determinista en los tres executors e inmune a la conversión de fin de línea del checkout. Una clave inmutable no se sobrescribe: `save_cache` solo escribe cuando la clave aún no existe, por lo que la restauración siempre refleja la primera corrida que la creó — y esa primera corrida debe haber compilado con éxito. Por eso los 4 `build-*` (`variant: full`) guardan `target-v3` con `when: on_success`: si `cargo build --release` falla a mitad de camino, no se persiste un `target/` a medio compilar bajo una clave que ya no se puede volver a escribir (un job así reintentado en la siguiente corrida partiría en frío de todos modos, en vez de heredar un snapshot corrupto). `test-windows`/`test-linux`/`test-macos` (`variant: test`) y `coverage` (`variant: cov`) conservan `when: always`: ahí un fallo del job suele ser un test que falló, no una compilación incompleta, así que persistir el `target/` resultante sigue siendo útil para la siguiente corrida.
+#### Identidad de contenido de `vendor/cmake-0.1.58` en la clave de `target-v3`
+
+El `Cargo.toml` raíz sustituye el crate `cmake` por una copia parcheada local (`[patch.crates-io]`), y cargo fingerprintea los paquetes locales por `mtime`. Cada checkout le asigna `mtime` nuevo, lo que marca el parche `Dirty` y arrastra la re-ejecución en falso de toda la cadena nativa que depende de él (`aws-lc-sys`, `onednn-src`, `sentencepiece-sys`, `ct2rs`…) aunque su contenido no haya cambiado. Para evitarlo, `cargo_restore_caches` calcula antes de restaurar el tree hash git del parche (`git rev-parse HEAD:vendor/cmake-0.1.58`, escrito en `.vendor-cmake.tree`) y lo incorpora a la clave exacta de `target-v3` (`…-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}`), que `cargo_save_target` usa idéntica al guardar. `target-v3` **no tiene fallback por prefijo**: un acierto implica que el snapshot de `target/` se guardó desde un checkout con el mismo contenido del parche, así que tras restaurar se fija incondicionalmente un `mtime` antiguo (`touch -t 200001010000`) sobre todo el parche y cargo lo ve `Fresh`, sin comparar nada. Un fallo de caché deja `target/` vacío, donde fijar el `mtime` es inocuo. El costo aceptado es que cada transición de clave (cambio real de dependencias en `Cargo.lock` o edición del parche) parte con `target/` frío en los cuatro `build-*`: la recompilación completa, incluida la cadena nativa CMake (`oneDNN`, `CTranslate2`, `sentencepiece`, `aws-lc`), con tiempos de referencia (medición v0.20.9, todos en frío) `cargo build --release` de `956 s` en linux-x64, `1569 s` en linux-arm64, `1969 s` en windows-x64 y `149 s` en darwin-arm64, frente a `24–202 s` con acierto de `target-v3`. Esos tiempos son previos a `target-v3`, cuando `sccache` solo envolvía `rustc` y los nativos del crate `cc`; la cadena CMake ahora también pasa por `sccache` (ver [Cobertura de `sccache`](#cobertura-de-sccache)), así que una transición de clave recompila en frío solo lo que `sccache` no tenga ya por contenido. El paso corre con `set -euo pipefail` y aborta si la salida no es un hash hexadecimal de 40 caracteres, de modo que nunca se cachea bajo una clave degenerada. Se usa git y no un recorrido `find | sort` del árbol porque en el executor de Windows el `PATH` resuelve `sort` al `sort.exe` de System32, que no entiende las opciones POSIX; el tree hash además es determinista en los tres executors e inmune a la conversión de fin de línea del checkout. Una clave inmutable no se sobrescribe: `save_cache` solo escribe cuando la clave aún no existe, por lo que la restauración siempre refleja la primera corrida que la creó — y esa primera corrida debe haber compilado con éxito. Por eso los 4 `build-*` (`variant: full`) guardan `target-v3` con `when: on_success`: si `cargo build --release` falla a mitad de camino, no se persiste un `target/` a medio compilar bajo una clave que ya no se puede volver a escribir (un job así reintentado en la siguiente corrida partiría en frío de todos modos, en vez de heredar un snapshot corrupto). `test-windows`/`test-linux`/`test-macos` (`variant: test`) y `coverage` (`variant: cov`) conservan `when: always`: ahí un fallo del job suele ser un test que falló, no una compilación incompleta, así que persistir el `target/` resultante sigue siendo útil para la siguiente corrida.
+
+#### Guardado rolling de `sccache`
 
 `sccache_save_cache` guarda `~/.cache/sccache` de forma **incondicional** con clave *rolling* por `{{ epoch }}` (`when: always`): cada corrida escribe una entrada nueva y la restauración toma la más reciente por prefijo. No existe un guardado condicional por hit-rate, y a propósito: un umbral de ese tipo es incoherente en este pipeline. Todo hit &lt; 100 % implica *misses* que sccache **acaba de compilar y escribir** en el store, así que omitir el guardado descartaría esos objetos nuevos (la siguiente corrida los volvería a fallar); y vaciar el directorio para abaratar la subida envenenaría la caché restaurada. Como cada `build-*` bumpea la versión del crate —recompilándolo siempre— el store cambia en cada tag, de modo que cualquier dedup por contenido casi nunca se dispararía: el ahorro real se limita a re-ejecutar el mismo tag sin cambios, marginal frente al riesgo de tocar la ruta crítica del release. Cada job pesado combina `target-v3` con `sccache` autoconsistente por variante (`test-windows`/`test-linux`/`test-macos` con `variant: test`, `coverage` con `variant: cov`, `build-*` con `variant: full`); `sccache` computa sus hits por hash de contenido, así que es inmune al `mtime` y cubre la recompilación residual que `target-v3` no evita. Dos causas explican el coste previo (evidencia v0.20.4): (1) la clave de `sccache` no llevaba `variant`, de modo que `test-windows` y `coverage` restauraban un blob de perfil `full` ajeno —tasas medidas vía `sccache --show-stats` de **0.00 %** en ambos— y además nunca guardaban el suyo (0 % perpetuo, frente al 96.43 % de `build-windows-x64`, que sí guarda y consume su propio perfil); las tasas históricas de Linux 3.21 % / macOS 3.04 % se midieron bajo esa misma colisión de perfiles y quedan como dato histórico, no vigente. (2) `target-v2` se invalida por `mtime`: parcial en los tres SO (los crates propios del workspace, dependencias de ruta local, recompilan siempre) y total solo en Windows (0 `Fresh` / 154 `Compiling`, incluyendo dependencias externas con checksum estable que en Linux/macOS sobreviven: 264/290 y 287/313 `Fresh`). Este último dato es histórico: en las corridas actuales Windows también conserva las dependencias externas (274 `Fresh`) y la invalidación es parcial en los tres SO.
 
-**Cobertura de `sccache`.** `sccache` envuelve tres tipos de compilación: `rustc` (`RUSTC_WRAPPER=sccache`); los nativos que compila el crate `cc` (`aws-lc-sys`, `ring`, `blake3`…), que detecta `RUSTC_WRAPPER` y usa `sccache` como wrapper; y, en los 4 `build-*`, los proyectos CMake (`ct2rs`/CTranslate2, `onednn-src`, `sentencepiece-sys`), vía `CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER=sccache`. CMake ≥ 3.17 lee esas variables del entorno al configurar, así que no se toca ningún `build.rs`. En Linux y macOS el comando `native_sccache_setup_unix` las exporta a `$BASH_ENV`. En Windows hacen falta tres piezas más, todas en el paso de compilación de `build-windows-x64`:
+#### Cobertura de `sccache`
+
+`sccache` envuelve tres tipos de compilación: `rustc` (`RUSTC_WRAPPER=sccache`); los nativos que compila el crate `cc` (`aws-lc-sys`, `ring`, `blake3`…), que detecta `RUSTC_WRAPPER` y usa `sccache` como wrapper; y, en los 4 `build-*`, los proyectos CMake (`ct2rs`/CTranslate2, `onednn-src`, `sentencepiece-sys`), vía `CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER=sccache`. CMake ≥ 3.17 lee esas variables del entorno al configurar, así que no se toca ningún `build.rs`. En Linux y macOS el comando `native_sccache_setup_unix` las exporta a `$BASH_ENV`. En Windows hacen falta tres piezas más, todas en el paso de compilación de `build-windows-x64`:
 
 - **Ninja como generador** (`CMAKE_GENERATOR=Ninja`): el generador Visual Studio, el que el crate `cmake` elige por defecto con MSVC, ignora los launchers. `native_sccache_setup_windows` descarga en cada corrida la release oficial fijada por el parámetro `ninja_version` a un directorio temporal fuera de toda caché, y verifica su versión.
 - **Entorno de MSVC**: Ninja no carga `INCLUDE`/`LIB` por sí mismo (el generador Visual Studio sí), así que el paso localiza Visual Studio con `vswhere`, importa `vcvars64.bat` y solo después antepone Ninja y `.cargo\bin` al `PATH`.
@@ -393,7 +347,7 @@ la remediación de latencia de CI posterior a 0.20.2 (ver la sección de
 
 El parche `vendor/cmake-0.1.58` fija `CMAKE_<LANG>_FLAGS_RELEASE` con los flags que calcula el crate `cc` (runtime estático `/MT`) más `/O2 /Ob2 /DNDEBUG`, tanto sin generador explícito como con Ninja. Sin la rama de Ninja, los proyectos con la política CMP0091 en OLD (oneDNN) heredaban `/MD` del valor por defecto de CMake mientras Rust enlaza con `/MT`, y el enlace fallaba con `LNK2038`. Con la corrección, los objetos C++ de Windows se compilan con los mismos flags de optimización y runtime que con Visual Studio, lo que se verifica con el diagnóstico de la sonda (`CMakeCache.txt` y `build.ninja`). Medición en una compilación local del binario de Windows (`--features full`, 4 hilos, mismo MSVC 14.44 que el executor): `16 min` con `target/` y `sccache` fríos frente a `4 min 45 s` con `target/` frío y `sccache` caliente (809 de 825 unidades C/C++ servidas por `sccache`). El executor de Windows compila unas 2,35 veces más lento que esa máquina en frío, de modo que tras un cambio de clave de `target/` sin cambios nativos se espera `build-windows-x64` en torno a 11–15 min, frente a los ~43 previos. La primera corrida de cada executor tras adoptar el launcher siembra la caché y sigue siendo fría.
 
-Matriz de invalidación por familia de caché:
+#### Matriz de invalidación por familia de caché
 
 | Caché | Namespace | Se invalida cuando… |
 |-------|-----------|---------------------|
@@ -405,7 +359,30 @@ Matriz de invalidación por familia de caché:
 | `ort-bundle` | `v1` | cambia `ort_version` (`1.28.0`) — sin `Cargo.toml` en la clave para no invalidar por bump del crate |
 | `tts` (`qwen_tts.exe`) | `v1` | cambia `vendor/qwen3-tts/.engine-cachekey` (agregado de `Makefile` + `*.c/*.h` + `third_party/ingot`) + `msys2_gcc_version`/`openblas` |
 
-> **Determinismo de releases (binary stale) — heterogéneo con `target` en `build-*`:** `build-*` restaura `target-v3-full` (`cargo_restore_caches` con `variant: full`) y compila directo, sin ningún paso de limpieza manual: el bump de `VERSION` en el crate raíz basta por sí solo para invalidar su fingerprint de cargo (el checkout deja `src/main.rs`/`Cargo.toml` con `mtime` posterior al de cualquier artefacto restaurado, y el cambio de versión del paquete altera la `-C metadata` que cargo usa para nombrar la unidad de compilación), así que el binario siempre se recompila con la versión correcta aunque `target/` venga poblado de un release anterior. `sccache` aporta Rust y los objetos C/C++ (crate `cc` y proyectos CMake vía launcher) por hash de contenido, `target` aporta además los `OUT_DIR` ya enlazados (`ct2rs`/`oneDNN`/`sentencepiece`) y evita reconfigurar CMake; además `sccache` nunca cachea crates `--crate-type bin` (el binario final, los build scripts y `xtask` siempre pasan por `rustc` real, nunca por un hit de sccache), por lo que un "binario stale servido por sccache" es imposible por construcción. El `perl` del paso «Generar Cargo.lock.cachekey» normalizado mantiene la clave estable y el smoke-test `version --json == CIRCLE_TAG` valida fail-fast por si algún otro mecanismo dejara el binario desalineado. Medición `v0.18.23` con opción C pura: wall `50m50s`, `build-windows 40m31s` (`37m21s` `cargo build`, `87%` Rust hit pero `cmake` C++ recompilado). Medición `v0.20.5` con `sccache` por variante: wall `~25m` (`build-windows ~12m` en primer ciclo con familia `full` fría). Medición `v0.20.6`: wall `~23m` con las familias ya pobladas (`test-windows` 86,33 % de hits, `coverage` 76,92 %, `build-windows` 74,07 % — primer release con hits donde había 0,00 %).
+#### Escenarios de invalidación y su costo
+
+La matriz anterior se lee por familia; en la práctica importa qué cambio dispara qué recompilación. No existe un único disparador: cada familia tiene el suyo, y solo algunos alargan de forma notable los `build-*`. De mayor a menor costo:
+
+| Escenario | Cachés que se invalidan | Efecto en los `build-*` |
+|-----------|-------------------------|-------------------------|
+| Cambio de `rust_version` | `toolchain`, `registry`, `target-v3` y `sccache` (todas llevan la versión en la clave) | Frío total: se reinstala Rust y se recompila todo, Rust y C/C++, sin ayuda de `sccache`. Referencia de `cargo build --release` en frío: `1969 s` en windows-x64, `1569 s` en linux-arm64, `956 s` en linux-x64, `149 s` en darwin-arm64. |
+| Edición del parche `vendor/cmake-0.1.58` o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | `target-v3`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
+| Cambio real de dependencias Rust en `Cargo.lock` (añadir, quitar o actualizar crates sin tocar nativos) | `target-v3` (sin fallback) y `registry` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++. Medido en Unix: 2–5 min por job. Previsto en windows-x64: ~11–15 min. |
+| Cambio de fuentes del motor TTS (`vendor/qwen3-tts`, `third_party/ingot`) | `tts` | Solo se recompila el motor TTS; el resto acierta. |
+| Cambio de los pines de MSYS2, gcc, openblas o make | `msys2` y `tts` (solo Windows) | Reinstalación de MSYS2 y recompilación del motor TTS en `build-windows-x64` y `test-windows`. |
+| Cambio de `ort_version` | `ort-bundle` | Solo una descarga nueva de ONNX Runtime. |
+
+Lo que **no** invalida ninguna caché: el bump de versión de cada release (la clave usa `Cargo.lock.cachekey` normalizado y `ort-bundle` no incluye `Cargo.toml`), los cambios en el código propio del workspace (solo recompilan los crates del workspace, que cargo recompila siempre por `mtime`), la documentación, `CHANGELOG.md` y `.gitignore`. Una release de ese tipo acierta en todas las familias.
+
+Causas ajenas al repositorio, que invalidan sin que cambie ningún archivo:
+
+- **Cambio de `{{ arch }}` del executor.** Todas las claves llevan `{{ arch }}`, y en los executors Linux x86-64 ese valor incluye la familia y el modelo de CPU (por ejemplo `linux-amd64-6_85`). Si CircleCI asigna un hardware distinto, todas las familias de ese job fallan y la corrida es fría.
+- **Expiración por retención.** CircleCI borra las cachés según la política de retención de la organización (15 días por defecto). Tras un período sin corridas más largo que la retención, la siguiente es fría. Las familias rolling (`sccache`) se renuevan en cada corrida; las inmutables (`target-v3`) solo existen mientras no expiren.
+- **Actualización de la imagen del executor.** Una versión nueva del compilador (MSVC, Xcode/clang, gcc) cambia la identidad del compilador que `sccache` hashea: la clave restaura, pero la primera corrida no obtiene aciertos C/C++ y vuelve a sembrar la caché. Ninja no se cachea: se descarga en cada corrida con la versión fijada en `ninja_version`.
+
+#### Determinismo de releases (binario obsoleto)
+
+`build-*` restaura `target-v3-full` (`cargo_restore_caches` con `variant: full`) y compila directo, sin ningún paso de limpieza manual: el bump de `VERSION` en el crate raíz basta por sí solo para invalidar su fingerprint de cargo (el checkout deja `src/main.rs`/`Cargo.toml` con `mtime` posterior al de cualquier artefacto restaurado, y el cambio de versión del paquete altera la `-C metadata` que cargo usa para nombrar la unidad de compilación), así que el binario siempre se recompila con la versión correcta aunque `target/` venga poblado de un release anterior. `sccache` aporta Rust y los objetos C/C++ (crate `cc` y proyectos CMake vía launcher) por hash de contenido, `target` aporta además los `OUT_DIR` ya enlazados (`ct2rs`/`oneDNN`/`sentencepiece`) y evita reconfigurar CMake; además `sccache` nunca cachea crates `--crate-type bin` (el binario final, los build scripts y `xtask` siempre pasan por `rustc` real, nunca por un hit de sccache), por lo que un "binario stale servido por sccache" es imposible por construcción. El `perl` del paso «Generar Cargo.lock.cachekey» normalizado mantiene la clave estable y el smoke-test `version --json == CIRCLE_TAG` valida fail-fast por si algún otro mecanismo dejara el binario desalineado. Medición `v0.18.23` con opción C pura: wall `50m50s`, `build-windows 40m31s` (`37m21s` `cargo build`, `87%` Rust hit pero `cmake` C++ recompilado). Medición `v0.20.5` con `sccache` por variante: wall `~25m` (`build-windows ~12m` en primer ciclo con familia `full` fría). Medición `v0.20.6`: wall `~23m` con las familias ya pobladas (`test-windows` 86,33 % de hits, `coverage` 76,92 %, `build-windows` 74,07 % — primer release con hits donde había 0,00 %).
 
 Ver `.circleci/config.yml` para claves exactas. `coverage` genera `lcov.info` en una sola corrida y el resumen con `cargo llvm-cov report` (sin re-ejecutar la suite).
 
@@ -417,14 +394,6 @@ Ver `.circleci/config.yml` §Reproducibilidad para procedimiento de bump (bumpea
 `ort_version` invalida `ort-v1` en el siguiente tag).
 
 El archivo de configuración completo está en `.circleci/config.yml`.
-
-### CD: publicación del GitHub Release (`publish-release`)
-
-Al pushear un tag `v*`, además de tests + builds corre `publish-release`
-(estrategia GitHub Releases). Recolecta los 4 artefactos **versionados** por
-`persist_to_workspace`/`attach_workspace`, genera `SHA256SUMS.txt`, extrae las
-notas de la sección `[X.Y.Z]` de `CHANGELOG.md` (fail-fast si no existe) y
-publica el GitHub Release directo (sin borrador).
 
 ### Guardarraíles durables de la suite de tests (`tests/cli_golden.rs`)
 
@@ -475,9 +444,56 @@ artifacts/
 `SHA256SUMS.txt` sobre ellos y crea el GitHub Release. Cada archivo tiene layout
 plano (binario + 4 documentos + `ort-bundle` + `qwen_tts` vendido, en la raíz).
 
+### Empaquetado por plataforma (archivos comprimidos)
+
+El binario Rust es autocontenido (`crt-static`; CTranslate2 (ct2rs) enlazado
+estático; Parakeet vía ort load-dynamic), así que el empaquetado **no requiere
+herramientas de terceros**: cada target se comprime con una utilidad del sistema base.
+
+| Plataforma | Formato | Utilidad de empaquetado |
+|------------|---------|-------------------------|
+| Linux x64 / ARM64 | `tar.gz` | `tar -czf` (coreutils) |
+| macOS arm64 | `tar.gz` | `tar -czf` (base del SO) |
+| Windows x64 | `.zip` | `Compress-Archive` (PowerShell) |
+
+El step **«Preparar artefacto versionado (staging)»** de cada `build-*` en
+`.circleci/config.yml` valida la versión (`const VERSION` de `src/main.rs` vs
+`CIRCLE_TAG`, fail-fast), monta un directorio de staging con **layout plano**
+—el binario renombrado a `ai-voice-interconnector[.exe]` (sin sufijo de
+arquitectura) más los 4 documentos de la raíz (`LICENSE`,
+`THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`, `README.md`), el `ort-bundle`
+(ONNX Runtime + DLLs VC++ en Windows) y el `qwen_tts` vendido— y lo comprime al
+archivo del target. Los documentos GPLv3 viajan así **dentro del archivo** y
+quedan instalados junto al binario (cumplimiento §6 de la GPLv3 sin depender de
+un bundle).
+
+### Integración con el SO
+
+| Aspecto | Windows | Linux | macOS |
+|---------|---------|-------|-------|
+| PATH | El one-liner `install-windows.ps1` registra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` en HKCU (sin UAC); el binario `uninstall` lo revierte | `install-linux.sh` crea symlink `~/.local/bin/ai-voice-interconnector → ~/.local/opt/ai-voice-interconnector/ai-voice-interconnector`; `uninstall` lo borra | One-liner `install-macos.sh` análogo a Linux (`~/.local/bin`); Cask `brew install --cask` enlaza en `/opt/homebrew/bin` |
+| Guía hacia `setup` | El one-liner encadena `setup` tras instalar | Ídem | Ídem (Cask no encadena; caveat remite a `setup`) |
+| Desinstalación | `ai-voice-interconnector uninstall --force` (HKCU + dir + cleanup) o manual | `ai-voice-interconnector uninstall --force` (symlink + dir + cleanup) | `ai-voice-interconnector uninstall --force` o `brew uninstall --cask --zap` |
+| Datos provisionados | `ai-voice-interconnector cleanup --voices` / `--synthetic-speech` / `--model` / `--all` (unión sin binario/PATH; sin flags → exit 2) | Ídem | Ídem |
+
+### Limitación conocida: firma de código y notarización
+
+Los artefactos **no están firmados ni notarizados**: en macOS, Gatekeeper
+bloquea la primera apertura del binario descargado por navegador; en Windows,
+SmartScreen muestra advertencia de editor desconocido si el `.zip` se baja por
+navegador. El mecanismo (Mark-of-the-Web) y la firma como arreglo de fondo
+están en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar). Firmar requiere
+certificados de pago (Apple Developer ID, Authenticode vía SignPath OSS) y queda
+registrado como goal a largo plazo en [docs/GOAL.md](GOAL.md#goal-a-largo-plazo).
+
+Como mitigación, los **one-liners descargan por CLI** (`curl`/`Invoke-WebRequest`),
+que no aplica Mark-of-the-Web, así que el archivo extraído no dispara
+SmartScreen/Gatekeeper. Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md) y
+[docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
+
 ---
 
-## 9. Build nativo del motor TTS (Rust/qwen_tts)
+## 6. Build nativo del motor TTS (Rust/qwen_tts)
 
 > Esta sección documenta el toolchain C del motor Qwen3-TTS vigente.
 
@@ -501,9 +517,11 @@ kernels, sin pesos del modelo). El mismo comando sirve para CI, dev local y este
 doc. En dev local sin MSYS2, Windows falla con un mensaje que guía a instalar
 UCRT64 o definir `MSYS2_ROOT`.
 
+### Toolchain y flags por plataforma
+
 **Toolchain vigente (Windows):** MSYS2 UCRT64 **gcc 16.2.0** (Rev3),
 `mingw-w64-ucrt-x86_64-openblas 0.3.34-1`, `mingw32-make 4.4.1-5`
-(`vendor/qwen3-tts/Makefile:3-5,17-85`). En CI se **aprovisiona pineado**: el job
+(`vendor/qwen3-tts/Makefile`). En CI se **aprovisiona pineado**: el job
 `build-windows-x64` extrae el release base de MSYS2 (`msys2_base_release`,
 `2026-06-11`) y sincroniza las versiones pineadas (parámetros `msys2_*_version`
 del pipeline, espejo de esta tabla), cacheando `C:\msys64` por clave de versión
@@ -528,6 +546,8 @@ pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidenc
 > para el dev box (misma CPU build=run). macOS conserva `-march=native` (host
 > single-vendor).
 
+### Caché del motor en CI
+
 En CI Windows el binario del motor (`vendor/qwen3-tts/qwen_tts.exe`) se cachea con
 clave `tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}` donde
 `.engine-cachekey` es el agregado determinista de `Makefile` + `*.c/*.h` (incluye `vendor/lz4.*`) + `third_party/ingot/**/*.{c,h}`.
@@ -539,3 +559,44 @@ Ver `vendor/qwen3-tts/CLAUDE.md` y `crates/avi-tts/src/lib.rs` para el contrato
 de invocación (`--int4 -j 4 --stream`, `GenerationOptions::produccion()` temp
 0.35 seed 4).
 
+---
+
+## 7. Descarga nativa de modelos (`hf-hub`)
+
+`setup` descarga los pesos de HuggingFace Hub de forma nativa vía el crate
+**`hf-hub`** (rustls, sin OpenSSL: compila igual en los 4 targets) con barra de
+progreso **`indicatif`**, resume por Range y validación ETag/commit-hash del
+propio crate. No hay Python en la ruta de descarga.
+
+| Modelo lógico | Repo HF | Contenido |
+|---|---|---|
+| `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Pesos TTS (síntesis) |
+| `marian-es-en` | `Helsinki-NLP/opus-mt-es-en` | Traducción es→en (CT2) |
+| `marian-en-es` | `Helsinki-NLP/opus-mt-en-es` | Traducción en→es (CT2) |
+| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (~600 MB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
+| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz (opt-in `--with-voice-cloning`) |
+
+Los pines viven en `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs`): tuplas
+`(nombre_lógico, repo, revisión)`. Actualizar una revisión es una acción
+deliberada y auditable.
+
+### Ubicaciones en disco por SO
+
+La aplicación decide su caché (no depende del
+fallback de `hf-hub`, que en Windows sin `HOME` caería en `<unidad>:\tmp`):
+`hf_cache_dir()` honra `HF_HUB_CACHE` > `HF_HOME/hub` y, si no existen, fija
+`{home}/.cache/huggingface/hub` — la misma convención que `huggingface_hub`
+de Python en los tres SO. El cliente de descarga se construye con
+`.cache_dir()` explícito, garantizando convergencia lectura=escritura.
+La provisión se decide solo por presencia del snapshot HF; no hay índice
+`manifest.json` intermedio (los `manifest.json` de versiones previas que
+queden en disco son inertes y los barre `cleanup`):
+
+| SO | Cache HF (`hf_cache_dir()`) | Datos del usuario (`data_dir()`) |
+|----|------------------------------|----------------------------------|
+| Windows | `%USERPROFILE%\.cache\huggingface\hub` | `%APPDATA%\ai-voice-interconnector\data` |
+| Linux | `~/.cache/huggingface/hub` | `~/.local/share/ai-voice-interconnector/data` |
+| macOS | `~/.cache/huggingface/hub` | `~/Library/Application Support/ai-voice-interconnector/data` |
+
+`doctor` imprime la ruta resuelta (`Cache HF:` / campo `hf_cache` en `--json`)
+para auditoría. `cleanup --model/--voices/--synthetic-speech/--all` borra selectivamente snapshots HF + datos de usuario (sin binario ni PATH; sin flags sale con exit 2 `usage_error`); `uninstall` es el único que añade binario y PATH.

@@ -6,10 +6,10 @@ daemon para `clone` (delegable vía `POST /voices/clone`); `list` y `remove`
 son siempre locales (rechazan `--daemon` con `daemon_unreachable`, paridad con
 `speech dub`/`speech play`).
 
-Implementación: `handle_voice` (`src/main.rs:752`), apoyado en `avi-store`
+Implementación: `handle_voice` (`src/main.rs`), apoyado en `avi-store`
 (`crates/avi-store/src/lib.rs`: `VoiceStore`, `FACTORY_VOICES`,
-`is_factory_name`) y, en la ruta daemon, `clone_via_daemon` (`src/main.rs:3853`)
-contra `voices_clone_handler` (`crates/avi-daemon/src/lib.rs:804`).
+`is_factory_name`) y, en la ruta daemon, `clone_via_daemon` (`src/main.rs`)
+contra `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`).
 
 ---
 
@@ -21,10 +21,10 @@ ai-voice-interconnector voice clone --name NAME --speech-reference FILE [--timbr
 ai-voice-interconnector voice remove --name NAME
 ```
 
-`enum VoiceCommands` (`src/main.rs:213`). Los flags `--daemon`/`--no-daemon`/`--json`
-son globales de `Cli` (`src/main.rs:102-116`), no propios de `voice`.
+`enum VoiceCommands` (`src/main.rs`). Los flags `--daemon`/`--no-daemon`/`--json`
+son globales de `Cli` (`src/main.rs`), no propios de `voice`.
 
-**`voice clone`** (`src/main.rs:217-229`):
+**`voice clone`** (`src/main.rs`):
 
 | Flag | Tipo | Requerido | Descripción |
 |---|---|---|---|
@@ -53,7 +53,7 @@ name.to_lowercase() + VoiceStore::validate_name(name)   ← exit 2 "invalid_voic
     ▼
 route_to_daemon(daemon_mode, client)?
     │
-    ├─ Sí ──► clone_via_daemon (src/main.rs:3853)
+    ├─ Sí ──► clone_via_daemon
     │           lee speech/timbre a base64 → POST /voices/clone (cabeceras ≤1500ms)
     │           timeout o conexión fallida → exit 5 "daemon_unreachable"
     │           HTTP no-2xx → mapea `reason` del body a exit code (ver tabla de errores)
@@ -82,7 +82,7 @@ route_to_daemon(daemon_mode, client)?
               emitir {name, timbre, speech, precomputed:false}
 ```
 
-`route_to_daemon` (`src/main.rs:3314`): `ForceDaemon` siempre delega (el POST
+`route_to_daemon` (`src/main.rs`): `ForceDaemon` siempre delega (el POST
 falla con `daemon_unreachable` si no hay daemon corriendo); `ForceDirect`
 nunca delega; `Auto` delega solo si `GET /health` responde en ≤500 ms.
 
@@ -102,13 +102,13 @@ handler de clonado.
 
 ## Ruta daemon: `POST /voices/clone`
 
-`clone_via_daemon` (`src/main.rs:3853`) codifica los audios a base64 y envía:
+`clone_via_daemon` (`src/main.rs`) codifica los audios a base64 y envía:
 
 ```json
 { "name": "...", "audio_b64": "...", "force": false, "timbre_b64": "..." }
 ```
 
-`voices_clone_handler` (`crates/avi-daemon/src/lib.rs:804`):
+`voices_clone_handler` (`crates/avi-daemon/src/lib.rs`):
 
 1. `VoiceStore::validate_name(name)` → `400` `invalid_voice_name` si falla.
 2. `!force && voice_store.exists(name)` → `409` `voice_exists`.
@@ -135,7 +135,7 @@ El cliente (`clone_via_daemon`) consume el stream mediante `consumir_stream_ndjs
 ## `voice list`
 
 `require_local(daemon_mode)` rechaza `--daemon` explícito con exit 5 antes de
-tocar el store. Delega en `VoiceStore::list()` (`crates/avi-store/src/lib.rs:115`):
+tocar el store. Delega en `VoiceStore::list()` (`crates/avi-store/src/lib.rs`):
 escanea `<data_dir>/voices/`, marca `is_factory` con `is_factory_name` y
 ordena fábrica primero (`default`, `ryan`, `vivian`), luego clonadas
 alfabéticamente. `ensure_initialized()` materializa las voces de fábrica (y el
@@ -151,13 +151,13 @@ metadatos de ruta).
 ## `voice remove`
 
 `require_local(daemon_mode)` rechaza `--daemon` con exit 5. Flujo
-(`src/main.rs:863-885`):
+(`src/main.rs`):
 
 1. `VoiceStore::validate_name(name)` → exit 2 `invalid_voice_name`.
 2. `is_factory_name(name)` → exit 2 `cannot_remove_default` (nota: pese al
    nombre de la razón, protege las tres voces de fábrica —`default`, `ryan`,
    `vivian`—, no solo `default`).
-3. `voice_store.remove(name)` (`crates/avi-store/src/lib.rs:174`): normaliza a
+3. `voice_store.remove(name)` (`crates/avi-store/src/lib.rs`): normaliza a
    minúsculas, vuelve a rechazar nombres de fábrica, y falla si el directorio
    no existe → exit 3 `voice_not_found`. Si existe, `remove_dir_all`
    incondicional (sin distinguir «archivo en uso»: en este árbol no hay una
@@ -177,17 +177,17 @@ metadatos de ruta).
 `precomputed` depende de la ruta: `true` en la ruta daemon (warm-on-clone
 iniciado; completitud en `GET /health`) y `false` en la ruta local (motor
 efímero, sin residente que calentar). `schema_version` (`"3"`) lo añade
-`emit_raw_json` (`crates/avi-core/src/json_emitter.rs:5`) en el CLI, y `with_sv`
+`emit_raw_json` (`crates/avi-core/src/json_emitter.rs`) en el CLI, y `with_sv`
 en las respuestas del daemon.
 
 ---
 
 ## Almacenamiento
 
-`VoiceStore` (`crates/avi-store/src/lib.rs:75`) usa un único nivel físico en
+`VoiceStore` (`crates/avi-store/src/lib.rs`) usa un único nivel físico en
 `<data_dir>/voices/<nombre>/`, sin separación fábrica/usuario en disco: las
 tres voces de fábrica (`FACTORY_VOICES = ["default", "ryan", "vivian"]`,
-`crates/avi-store/src/lib.rs:25`) se materializan como directorios normales en
+`crates/avi-store/src/lib.rs`) se materializan como directorios normales en
 `ensure_initialized()`, y `is_factory_name` es lo único que las distingue de
 una voz clonada al listar o al intentar eliminarlas.
 
@@ -201,7 +201,7 @@ una voz clonada al listar o al intentar eliminarlas.
 Los WAV de entrada (`--speech-reference`/`--timbre-reference`) se consumen
 para producir el graft y no se copian al almacén: `reference.qvoice` es lo
 único que el motor de síntesis consulta
-(`VoiceStore::find_reference`, `crates/avi-store/src/lib.rs:190`): su presencia
+(`VoiceStore::find_reference`, `crates/avi-store/src/lib.rs`): su presencia
 determina la rama «clonada» en `avi_tts::resolve_voice_motor`; sin él, la voz
 resuelve como preset del motor. `default` es una voz de fábrica *clonada*
 (trae su propio `reference.qvoice` embebido en el binario,
@@ -209,7 +209,7 @@ resuelve como preset del motor. `default` es una voz de fábrica *clonada*
 textos cortos; `ryan`/`vivian` son presets puros del motor Qwen3-TTS, sin
 `reference.qvoice`.
 
-`voice_store.save_reference` (`crates/avi-store/src/lib.rs:206`) escribe con
+`voice_store.save_reference` (`crates/avi-store/src/lib.rs`) escribe con
 temporal + `rename` (sin dejar un `.qvoice` parcial ante fallo a mitad de
 copia).
 

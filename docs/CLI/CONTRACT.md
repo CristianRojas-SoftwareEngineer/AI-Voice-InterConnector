@@ -7,18 +7,68 @@ Este documento es la descripción normativa del contrato público de la CLI —c
 ## Tabla de contenidos
 
 - [1. Invariantes y criterios generadores](#1-invariantes-y-criterios-generadores)
+  - [Ninguna superficie acepta rutas del llamador](#ninguna-superficie-acepta-rutas-del-llamador)
+  - [Una responsabilidad por sub-acción](#una-responsabilidad-por-sub-acción)
+  - [El eje de dos preguntas que genera la tabla de códigos de salida](#el-eje-de-dos-preguntas-que-genera-la-tabla-de-códigos-de-salida)
+  - [Cuándo un payload transporta una ruta del filesystem](#cuándo-un-payload-transporta-una-ruta-del-filesystem)
+  - [El canal de la causa fina, y la regla que decide entre código y razón](#el-canal-de-la-causa-fina-y-la-regla-que-decide-entre-código-y-razón)
 - [2. La superficie y el vocabulario](#2-la-superficie-y-el-vocabulario)
+  - [Diez comandos de nivel superior](#diez-comandos-de-nivel-superior)
+  - [El qualifier `synthetic` y la resolución del vocabulario](#el-qualifier-synthetic-y-la-resolución-del-vocabulario)
+  - [Las decisiones de vocabulario de la superficie](#las-decisiones-de-vocabulario-de-la-superficie)
 - [3. El grupo `speech`](#3-el-grupo-speech)
+  - [Reparto de responsabilidades](#reparto-de-responsabilidades)
+  - [Parámetros](#parámetros)
 - [4. Síntesis y el bucle de `--play`](#4-síntesis-y-el-bucle-de---play)
+  - [Qué hace cada gemelo](#qué-hace-cada-gemelo)
+  - [El bucle de `--play`: cuatro opciones](#el-bucle-de---play-cuatro-opciones)
+  - [Cuándo persiste, y qué protege la colisión](#cuándo-persiste-y-qué-protege-la-colisión)
 - [5. El despacho al daemon](#5-el-despacho-al-daemon)
+  - [Tres modos](#tres-modos)
+  - [Qué superficies lo reciben](#qué-superficies-lo-reciben)
+  - [Transporte streaming NDJSON y presupuesto de inactividad](#transporte-streaming-ndjson-y-presupuesto-de-inactividad)
+  - [Por qué `--daemon` significa exigir y no seleccionar](#por-qué---daemon-significa-exigir-y-no-seleccionar)
+  - [Despacho y modo directo](#despacho-y-modo-directo)
 - [6. Reglas de validación](#6-reglas-de-validación)
+  - [Las cinco reglas, todas con exit 2](#las-cinco-reglas-todas-con-exit-2)
+  - [Un solo mecanismo para la exclusión mutua, y es el declarativo](#un-solo-mecanismo-para-la-exclusión-mutua-y-es-el-declarativo)
+  - [Validación de identificadores y de existencia](#validación-de-identificadores-y-de-existencia)
+  - [Ningún flag queda sin efecto sin que la CLI lo diga](#ningún-flag-queda-sin-efecto-sin-que-la-cli-lo-diga)
 - [7. Matrices de comportamiento](#7-matrices-de-comportamiento)
+  - [`speech synthesize`](#speech-synthesize)
+  - [El resto del grupo](#el-resto-del-grupo)
+  - [Qué añade `--json` a las matrices](#qué-añade---json-a-las-matrices)
 - [8. El almacén de habla sintética](#8-el-almacén-de-habla-sintética)
+  - [Ubicación y layout](#ubicación-y-layout)
+  - [El `.wav` es el recurso de registro](#el-wav-es-el-recurso-de-registro)
+  - [El sidecar de metadatos](#el-sidecar-de-metadatos)
+  - [Atomicidad de la escritura](#atomicidad-de-la-escritura)
+  - [Validación de identificadores](#validación-de-identificadores)
 - [9. Los códigos de salida](#9-los-códigos-de-salida)
+  - [La tabla](#la-tabla)
+  - [Cómo se reparten los enteros](#cómo-se-reparten-los-enteros)
+  - [El 2 significa lo que `clap` quiere decir con él](#el-2-significa-lo-que-clap-quiere-decir-con-él)
+  - [Dónde viven las constantes, y por qué eso es parte del contrato](#dónde-viven-las-constantes-y-por-qué-eso-es-parte-del-contrato)
 - [10. El canal de error y los payloads](#10-el-canal-de-error-y-los-payloads)
+  - [La invariante del canal](#la-invariante-del-canal)
+  - [El mecanismo: un solo punto de traducción](#el-mecanismo-un-solo-punto-de-traducción)
+  - [Los cinco payloads del grupo `speech`](#los-cinco-payloads-del-grupo-speech)
+  - [Las dos versiones de esquema](#las-dos-versiones-de-esquema)
 - [11. `cleanup`, `setup` y `voice`](#11-cleanup-setup-y-voice)
+  - [`cleanup`](#cleanup)
+  - [`setup`](#setup)
+  - [`voice`](#voice)
 - [12. Contratos externos](#12-contratos-externos)
-- [13. El comando `translate` y la síntesis cross-lingual](#13-el-comando-translate-y-la-síntesis-cross-lingual)
+  - [El integrador de narración](#el-integrador-de-narración)
+  - [La frontera del daemon](#la-frontera-del-daemon)
+- [13. `translate`, `speech transcribe`, `speech dub` y la síntesis cross-lingual](#13-translate-speech-transcribe-speech-dub-y-la-síntesis-cross-lingual)
+  - [`translate`: texto→texto, aislado de la síntesis](#translate-textotexto-aislado-de-la-síntesis)
+  - [Traducción opt-in en `speech say`/`speech synthesize`](#traducción-opt-in-en-speech-sayspeech-synthesize)
+  - [El rename `--language` → `--target-language`](#el-rename---language----target-language)
+  - [Provisión y daemon](#provisión-y-daemon)
+  - [`speech transcribe`: audio→texto, verificable sin traducir ni sintetizar](#speech-transcribe-audiotexto-verificable-sin-traducir-ni-sintetizar)
+  - [`speech dub`: el bucle voz→voz en un comando dedicado](#speech-dub-el-bucle-vozvoz-en-un-comando-dedicado)
+- [14. Documentación complementaria por comando](#14-documentación-complementaria-por-comando)
 
 ---
 
@@ -26,7 +76,7 @@ Este documento es la descripción normativa del contrato público de la CLI —c
 
 Cinco criterios gobiernan el resto del diseño. No son conclusiones: son las reglas con las que se resuelven las preguntas que el diseño todavía no ha visto.
 
-#### Ninguna superficie acepta rutas del llamador
+### Ninguna superficie acepta rutas del llamador
 
 **El sistema no lee ni escribe `.wav` en rutas elegidas por quien invoca.** Ni en escritura, ni en lectura, ni por el protocolo del daemon. Toda ruta de audio la computa el sistema.
 
@@ -34,7 +84,7 @@ El almacén de habla sintética no viola el invariante: su ruta se deriva de `(v
 
 La consecuencia sobre el daemon es estructural y no una validación: `/synthesize` recibe `voice` como cadena, así que no hay nada que sanear. La superficie de ataque «leer un `.wav` de una ruta elegida por el llamador» se cierra en el protocolo, no en un comprobador. El patrón es uniforme en todo el protocolo: las demás superficies (p. ej. `/voices/clone`) llevan también el nombre de la voz como identificador, nunca una ruta.
 
-#### Una responsabilidad por sub-acción
+### Una responsabilidad por sub-acción
 
 Un comando cuyo comportamiento lo deciden los flags no tiene una responsabilidad con opciones: tiene varias acciones disfrazadas de una. **Producir un artefacto** y **emitir sonido** son responsabilidades distintas, y cada una tiene su propia sub-acción.
 
@@ -42,7 +92,7 @@ De ahí sale la forma del grupo `speech`, y de ahí sale que no haya reglas que 
 
 Corolario de legibilidad: **el nombre de cada sub-acción declara su costo.** Sintetizar paga una inferencia pesada (residente TTS + RAM) y puede exigir provisión del modelo; reproducir paga una lectura de archivo. Desde fuera se sabe cuál se pagó sin leer los flags.
 
-#### El eje de dos preguntas que genera la tabla de códigos de salida
+### El eje de dos preguntas que genera la tabla de códigos de salida
 
 Son **dos preguntas encadenadas, no una**. La primera forma las clases; la segunda decide cuáles merecen un entero propio. Separarlas es lo que vuelve la tabla derivable: un eje único mezcla dos trabajos distintos —clasificar y repartir— y toda formulación que los funde acierta en una mitad y falla en la otra.
 
@@ -53,7 +103,7 @@ Son **dos preguntas encadenadas, no una**. La primera forma las clases; la segun
 
 **Corolario que gobierna toda clasificación: la ausencia de consumidor no valida ninguna clasificación.** Un código que nadie lee y que miente seguirá mintiendo cuando lo lean, y para entonces corregirlo será una ruptura en vez de un refinamiento. La tabla se define por el tipo de causa y por la siguiente llamada del consumidor, no por quién consume el código ni por si alguien lo consume.
 
-#### Cuándo un payload transporta una ruta del filesystem
+### Cuándo un payload transporta una ruta del filesystem
 
 **Un payload emite una ruta solo cuando el recurso no tiene otro nombre en el contrato.**
 
@@ -68,7 +118,7 @@ La locución tiene `(voz, etiqueta)`, y las cinco sub-acciones del grupo `speech
 
 **Coste declarado.** Ninguna superficie saca los bytes de una locución fuera de la CLI: `speech play` la reproduce y no hay ningún comando de exportación. Un orquestador que quiera el WAV no lo tiene. Eso es un hueco de la superficie de comandos; la respuesta, si la necesidad aparece, es un comando explícito con su propia decisión, no una clave en un listado.
 
-#### El canal de la causa fina, y la regla que decide entre código y razón
+### El canal de la causa fina, y la regla que decide entre código y razón
 
 El entero no puede llevar la causa fina y no debe intentarlo. Una misma reacción del consumidor puede corresponder a varias acciones distintas del destinatario humano: liberar disco, corregir permisos, renovar un token, desbloquear la red o instalar una dependencia inducen todas la misma siguiente llamada, y son cinco cosas distintas que hacer antes de repetirla.
 
@@ -82,7 +132,7 @@ El proyecto tiene dos canales legibles por máquina y usa los dos: el entero, qu
 
 ## 2. La superficie y el vocabulario
 
-#### Nueve comandos de nivel superior
+### Diez comandos de nivel superior
 
 | Comando | Sub-acciones | Propósito |
 |---|---|---|
@@ -95,12 +145,13 @@ El proyecto tiene dos canales legibles por máquina y usa los dos: el entero, qu
 | `cleanup` | — | Borrado de modelo, voces y/o habla sintética |
 | `daemon` | `start`, `stop`, `restart`, `status`, `serve` | Ciclo de vida del daemon |
 | `version` | — | Versión |
+| `uninstall` | — | Desinstalación completa: datos, integración de PATH y binario |
 
 **Tres de ellos son grupos nominales de gestión** —`speech`, `voice` y `daemon`—: tienen sub-acciones y ninguna acción propia.
 
 Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es mecánica: un test recorre el parser real para descubrir cuáles lo declaran, de modo que una sub-acción nueva sin `--json` lo hace fallar.
 
-#### El qualifier `synthetic` y la resolución del vocabulario
+### El qualifier `synthetic` y la resolución del vocabulario
 
 `speech` nombra el **género**: habla. El qualifier `synthetic` marca la dirección del flujo de datos —lo que el sistema produce frente a lo que el usuario aporta— y mantiene separadas las tres capas donde el término aparece.
 
@@ -127,7 +178,7 @@ En disco los dos sentidos quedan separados por nombre y no por posición:
 
 **En prosa española la unidad se llama «locución».** Nunca aparece como identificador.
 
-#### Las decisiones de vocabulario de la superficie
+### Las decisiones de vocabulario de la superficie
 
 - **El identificador de una locución es `--label/-l`, no `--name/-n`.** Por homología con `voice` correspondería `--name`, pero dentro del grupo `speech` sería ambiguo frente a `--voice` («¿nombre de qué?»). Se acepta la divergencia con `voice --name` a cambio de que el mismo concepto no tenga dos nombres en dos comandos.
 - **La voz se selecciona con `--voice/-v` en las cinco sub-acciones**, no con `--voice-profile`: el concepto ya se llama «voice» en `voice list`, `voice clone` y `voice remove`, y darle un segundo nombre en otro comando es la homonimia al revés —dos palabras para una cosa— con el mismo costo.
@@ -137,7 +188,7 @@ En disco los dos sentidos quedan separados por nombre y no por posición:
 
 ## 3. El grupo `speech`
 
-#### Reparto de responsabilidades
+### Reparto de responsabilidades
 
 | Sub-acción | Responsabilidad | Persiste | Necesita el modelo |
 |---|---|---|---|
@@ -159,7 +210,7 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 | — | `speech play` |
 | — | `speech say` |
 
-#### Parámetros
+### Parámetros
 
 | Sub-acción | Parámetros |
 |---|---|
@@ -183,7 +234,7 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 
 ## 4. Síntesis y el bucle de `--play`
 
-#### Qué hace cada gemelo
+### Qué hace cada gemelo
 
 Sin `--play`, `synthesize` sintetiza, guarda y termina. Con `--play`, reproduce la toma y pregunta antes de guardar.
 
@@ -191,13 +242,13 @@ Sin `--play`, `synthesize` sintetiza, guarda y termina. Con `--play`, reproduce 
 
 **Son dos usos que no se cruzan, y el diseño no supone que la síntesis sea determinista.** `say` es locución continua, generada al vuelo: cada mensaje es distinto del anterior y se descarta al sonar, así que persistir no tendría sentido. `synthesize` es para grabar un mensaje reutilizable —el caso de los mensajes por defecto— y reproducirlo después sin volver a sintetizarlo. No existe un recorrido que salte de `say` a `synthesize` para «quedarse» con una toma ya oída: quien quiere conservar usa `synthesize` desde el principio. Por eso la reproducción sin re-síntesis la garantiza **el almacén** —se guarda un WAV y se reproduce ese WAV—, y no una supuesta reproducibilidad del motor entre dos llamadas. Dentro de `synthesize`, la variación entre tomas es esperada y es justo lo que «rechazar y regenerar» aprovecha; «aceptar y guardar» persiste la toma que sonó, nunca una nueva.
 
-#### El bucle de `--play`: cuatro opciones
+### El bucle de `--play`: cuatro opciones
 
 | Opción | Efecto | Costo |
 |---|---|---|
 | Reproducir otra vez | Vuelve a sonar la misma toma | **Cero síntesis**: los bytes están en memoria |
 | Aceptar y guardar | Persiste la toma que acabas de oír, y termina con 0 | Cero |
-| Rechazar y regenerar | Sintetiza otra toma y vuelve a preguntar | T3+S3Gen, **nada** de la Etapa 1: los conditionals de una voz del registro están precomputados |
+| Rechazar y regenerar | Sintetiza otra toma y vuelve a preguntar | Una síntesis completa por toma |
 | Rechazar y descartar | Termina con 0 **sin guardar nada** | Cero |
 
 **«Descartar y salir» es una salida de primera clase**, con exit 0 y sin persistencia: el rechazo es un campo del resultado, no un error. Es el mismo modelado que `cleanup`, donde responder «n» a la confirmación termina con 0. Lo que el bucle no comparte con ese comando es la forma de la elección —allí es binaria— ni el destino de su prosa: la pregunta y sus avisos respetan la separación de canales (con `--json` la información humana va a stderr y stdout queda para el payload) y la cancelación viaja como campo del resultado.
@@ -206,7 +257,7 @@ Sin `--play`, `synthesize` sintetiza, guarda y termina. Con `--play`, reproduce 
 
 **Ctrl-D es el atajo de «descartar y salir».** Con terminal presente, cerrar la entrada en la pregunta es una forma legítima de abandonar y mapea exactamente sobre la cuarta opción: exit 0, sin persistir. Es el único fin de entrada alcanzable en el bucle, y tiene significado propio.
 
-#### Cuándo persiste, y qué protege la colisión
+### Cuándo persiste, y qué protege la colisión
 
 **Cuándo persiste.** Sin `--play`, inmediatamente después de sintetizar. Con `--play`, solo al aceptar. Así «descartar» nunca es un borrado: es no haber escrito.
 
@@ -217,7 +268,7 @@ Sin `--play`, `synthesize` sintetiza, guarda y termina. Con `--play`, reproduce 
 
 ## 5. El despacho al daemon
 
-#### Tres modos
+### Tres modos
 
 | Invocación | Qué hace |
 |---|---|
@@ -229,7 +280,7 @@ La autodetección es el único camino por defecto: un comportamiento especificad
 
 **No hay degradación silenciosa.** `--no-daemon` es un opt-out explícito del usuario, categóricamente distinto de una degradación automática que elude una restricción sin que nadie la pida.
 
-#### Qué superficies lo reciben
+### Qué superficies lo reciben
 
 | Comando | Delegable | Endpoint | Razón local-only |
 |---|---|---|---|
@@ -247,7 +298,7 @@ La autodetección es el único camino por defecto: un comportamiento especificad
 
 Delegables: 6 (`synthesize`, `say`, `transcribe`, `dub`, `clone`, `translate`). Local-only: 5 (`play`, `remove`, `list`, `voice list`/`remove`). `setup`/`cleanup`/`doctor`/`daemon`/`devices`/`version` fuera de alcance (provisión/diagnóstico/gestión, no usan modelo residente).
 
-#### Transporte streaming NDJSON y presupuesto de inactividad
+### Transporte streaming NDJSON y presupuesto de inactividad
 
 Las operaciones de síntesis (`POST /synthesize`), clonado (`POST /voices/clone`) y doblaje (`POST /dub`) utilizan transporte **streaming NDJSON** (`application/x-ndjson`). La disciplina de eventos es uniforme:
 
@@ -257,19 +308,19 @@ Las operaciones de síntesis (`POST /synthesize`), clonado (`POST /voices/clone`
 
 **Semántica del timeout en el cliente:** el timeout histórico de 1500 ms opera como **timeout de inactividad entre latidos** (`STREAM_INACTIVITY_TIMEOUT`), de modo que solo salta si el bucle del daemon se atasca sin emitir señal alguna; se complementa con un plazo total de seguridad failsafe de 120 s (`STREAM_TOTAL_DEADLINE`, paridad con el cliente HTTP). Ante una desconexión prematura del cliente, el servidor aborta la inferencia mediante `AbortHandle` sin dejar trabajo huérfano ni fugar recursos.
 
-#### Por qué `--daemon` significa exigir y no seleccionar
+### Por qué `--daemon` significa exigir y no seleccionar
 
 Con la autodetección por defecto, «usa el daemon» deja de ser algo que haya que pedir. Sin el flag, el llamador no tendría forma de exigir la ruta rápida y el código 5 **se quedaría sin ningún productor en la síntesis**: si la ausencia del daemon siempre degrada, nunca hay «daemon inalcanzable», solo una invocación más lenta. Un consumidor con presupuesto de latencia —el narrator es el caso previsto— necesita poder decir «prefiero fallar a esperar a que cargue el modelo».
 
 Con los dos flags declarados, la exclusión mutua entre ellos tiene sentido pleno: «exige daemon» y «prohíbe daemon» se contradicen.
 
-#### Despacho y modo directo
+### Despacho y modo directo
 
 Con el daemon activo, `speech synthesize`/`say`/`transcribe`/`dub` y `voice clone` pueden usar modelo caliente; `--no-daemon` fuerza ruta directa sin sondeo.
 
 ## 6. Reglas de validación
 
-#### Las cinco reglas, todas con exit 2
+### Las cinco reglas, todas con exit 2
 
 1. **`--daemon` y `--no-daemon` son excluyentes.** La resuelve el grupo mutuamente excluyente del parser, no una comprobación a mano. Aplica a `speech synthesize`, `speech say` y `voice clone`.
 2. **`--json` es incompatible con `--play`.** El bucle escribe la pregunta y lee la respuesta por los canales estándar, y contaminaría el payload. Aplica a `speech synthesize`.
@@ -279,13 +330,13 @@ Con el daemon activo, `speech synthesize`/`say`/`transcribe`/`dub` y `voice clon
 
 **La regla 5 es de otra clase que las cuatro anteriores**: las cuatro primeras miran los flags, la quinta mira el entorno. La comprobación no altera ningún default —`--play` es explícito, así que la misma línea de comandos no puede significar cosas distintas según dónde corra—; solo rechaza antes una invocación que iba a fallar igual. Lo único que queda fuera de alcance es alimentar las respuestas del bucle por una tubería, un caso marginal cuyo precio, de conservarlo, sería pagar una síntesis y una reproducción completas antes de fallar.
 
-#### Un solo mecanismo para la exclusión mutua, y es el declarativo
+### Un solo mecanismo para la exclusión mutua, y es el declarativo
 
 La exclusión mutua se declara con `clap` (`conflicts_with`) en `src/main.rs` (`Commands`/`VoiceCommands`/`SpeechCommands`/`DaemonCommands`), junto a los flags que restringe, en todos los sitios donde exista —el grupo de tres modos de `setup` incluido. **La garantía queda en un solo lugar, no repetida por convención en cada comando.** Una comprobación manual es esa convención repetida, y no escala: en un grupo de tres modos, un cuarto añadido a mano no rompe nada y deja de cubrir una combinación en silencio; el `if` vive lejos de los flags que restringe, donde nadie que añada uno lo va a leer.
 
 El coste es que el mensaje lo formatea `clap` en inglés, igual que el de todas las demás rutas de parseo, y ese mensaje entra íntegro en el payload de error.
 
-#### Validación de identificadores y de existencia
+### Validación de identificadores y de existencia
 
 | Situación | Superficies | Código |
 |---|---|---|
@@ -302,13 +353,13 @@ La etiqueta inexistente sale **3** y no 2: la invocación está bien formada y e
 
 **La colisión de etiqueta y la de nombre de voz son el mismo hecho** —el recurso está ocupado y hay que liberarlo o forzar— y comparten código. Con el almacén etiquetado, la colisión no es un caso esporádico: ocurre cada vez que se regenera una locución ya existente, que es flujo normal de trabajo.
 
-#### Ningún flag queda sin efecto sin que la CLI lo diga
+### Ningún flag queda sin efecto sin que la CLI lo diga
 
 La afirmación vale con una excepción declarada: **`--force` sobre una etiqueta libre es un no-op**, igual que `voice clone --force` sobre un nombre libre. Fuera de ese caso, toda combinación de flags tiene efecto declarado o sale con 2, 3 o 6.
 
 ## 7. Matrices de comportamiento
 
-#### `speech synthesize`
+### `speech synthesize`
 
 | Invocación | Genera | Reproduce | Guarda | Exit |
 |---|---|---|---|---|
@@ -330,7 +381,7 @@ La afirmación vale con una excepción declarada: **`--force` sobre una etiqueta
 
 La primera fila es el camino de automatización, y no necesita ningún flag: sintetizar y guardar **es** lo que el comando hace.
 
-#### El resto del grupo
+### El resto del grupo
 
 | Invocación | Genera | Reproduce | Exit |
 |---|---|---|---|
@@ -348,7 +399,7 @@ La primera fila es el camino de automatización, y no necesita ningún flag: sin
 
 `speech list` no toma `--label`, así que la fila de etiqueta ilegal no la alcanza.
 
-#### Qué añade `--json` a las matrices
+### Qué añade `--json` a las matrices
 
 `--json` no cambia ninguna fila de éxito: el comando hace lo mismo y además emite su payload por stdout. **Bajo `--json`, toda salida no-cero de las tablas anteriores emite además el payload de error** con su `code` y su `message`. El fallo tiene forma observable, y por tanto verificable, en cada fila.
 
@@ -356,7 +407,7 @@ La única interacción entre `--json` y el comportamiento es la regla 2: `--json
 
 ## 8. El almacén de habla sintética
 
-#### Ubicación y layout
+### Ubicación y layout
 
 `<data_dir>/speech/<voz>/<etiqueta>.wav` (`crates/avi-store/src/lib.rs` `SpeechStore`), **raíz hermana de `voices/`** (`VoiceStore`: `<data_dir>/voices/<nombre>/`; caché HF: `hf_cache_dir()`).
 
@@ -366,7 +417,7 @@ Coste aceptado de la raíz separada: el arrastre de las locuciones al borrar una
 
 El almacén lo escribe y lo lee **solo el cliente**: es salida de síntesis y el daemon jamás lo toca.
 
-#### El `.wav` es el recurso de registro
+### El `.wav` es el recurso de registro
 
 Cada locución son dos archivos, y **el `.wav` manda**. El `.json` son metadatos derivados.
 
@@ -379,7 +430,7 @@ Cada locución son dos archivos, y **el `.wav` manda**. El `.json` son metadatos
 
 **`speech remove` borra ambos archivos si están**, de modo que un sidecar huérfano sea removible por su etiqueta aunque `speech list` no lo muestre.
 
-#### El sidecar de metadatos
+### El sidecar de metadatos
 
 Junto a cada `<etiqueta>.wav` se escribe `<etiqueta>.json` con tres campos: `text`, `voice` y `created_at`. Sin él las etiquetas son opacas: pasadas unas semanas, `saludo2` no le dice nada a nadie.
 
@@ -388,13 +439,13 @@ Junto a cada `<etiqueta>.wav` se escribe `<etiqueta>.json` con tres campos: `tex
 - **Un lector que encuentre un campo desconocido lo ignora**, igual que hacen los modelos del protocolo IPC con `extra="ignore"`.
 - **`speech list` tolera un sidecar ausente** mostrando la locución sin metadatos, en vez de fallar. Muestra el texto **truncado** en la salida humana y **completo** en el payload `--json`.
 
-#### Atomicidad de la escritura
+### Atomicidad de la escritura
 
 Cada archivo se escribe a un temporal en el mismo directorio y se publica con `rename` atómico, de modo que una interrupción no deje un WAV truncado que `speech list` mostraría como válido y `speech play` intentaría reproducir.
 
 **El sidecar se publica antes del WAV**, así que la aparición del `.wav` implica que sus metadatos ya están completos. Combinado con que el WAV es el recurso de registro, una interrupción entre ambos `rename` deja basura inocua: el sidecar huérfano no ocupa la etiqueta, y `speech remove` lo alcanza.
 
-#### Validación de identificadores
+### Validación de identificadores
 
 La etiqueta y el nombre de voz son la misma clase de identificador: un segmento de ruta. Los valida **`crates/avi-store/src/lib.rs` `VoiceStore::validate_name`** (validador único parametrizado por `kind="voz" | "etiqueta"`), que `VoiceStore` y `SpeechStore` invocan en vez de duplicar la regla.
 
@@ -405,7 +456,7 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 
 ## 9. Los códigos de salida
 
-#### La tabla
+### La tabla
 
 | Código | Constante | Significado |
 |---|---|---|
@@ -422,7 +473,7 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 | `10` | `ExitCode::TranscriptionFailed` | El pipeline de transcripción falló con el modelo ya cargado |
 | `130` | `ExitCode::Interrupted` | Interrupción del usuario (Ctrl+C con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria en la ventana spawn→write) |
 
-#### Cómo se reparten los enteros
+### Cómo se reparten los enteros
 
 La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los enteros:
 
@@ -444,7 +495,7 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 
 **El 6 tiene un solo dueño.** «Puerto ya en uso» y «la voz ya existe» son el mismo hecho y llevan el mismo código; no hay una constante aparte para el conflicto del daemon.
 
-#### El 2 significa lo que `clap` quiere decir con él
+### El 2 significa lo que `clap` quiere decir con él
 
 El exit 2 es, en Unix y en `clap`, el código del error de invocación, y aquí significa exactamente eso. Como consecuencia, **todas las rutas de fallo de parseo son correctas sin escribir una línea de validación**: flag requerido ausente, valor fuera de `choices`, grupo mutuamente excluyente violado (`conflicts_with`), subcomando inválido en los tres niveles, y flag desconocido en cualquier comando.
 
@@ -455,7 +506,7 @@ Dos pruebas de que la convención es la correcta:
 1. **La tabla la honra en otro punto**: `ExitCode::Interrupted = 130` es exactamente `128 + SIGINT`. Respetar 128+n y no respetar 2 sería incoherente dentro de la misma tabla.
 2. **El proyecto hermano aplica la misma convención**: `tts-sidecar-narrator` usa **2 = uso incorrecto** en sus tres casos —valor fuera de dominio, argumento vacío y comando desconocido— con **1 = error genérico**.
 
-#### Dónde viven las constantes, y por qué eso es parte del contrato
+### Dónde viven las constantes, y por qué eso es parte del contrato
 
 **Las constantes viven en `crates/avi-core/src/exit_codes.rs` (`ExitCode`), sin dependencias circulares.** Un crate hoja sin imports del binario **no puede** cerrar un ciclo, así que la justificación que empujaría una constante a declararse fuera del módulo no está disponible ni siquiera como pretexto. `crates/avi-core/src/json_emitter.rs` (`emit_raw_json`) y `src/main.rs` (`Cli::parse`, `handle_*`) reexportan el contrato, de modo que `ExitCode::InvalidInput` es el nombre canónico.
 
@@ -477,7 +528,7 @@ La reexportación desde `src/main.rs` crea dos sitios donde *parecen* vivir las 
 
 ## 10. El canal de error y los payloads
 
-#### La invariante del canal
+### La invariante del canal
 
 **Bajo `--json`, toda salida no-cero emite el payload de error, salvo la salida por veredicto.** `code` y `message` son obligatorios; `reason` es opcional en cualquier código y se define donde la distinción **ya existe calculada** en el código.
 
@@ -497,7 +548,7 @@ El único código con `reason` poblado es el **8**: la clasificación de por qu�
 
 Las tres reglas de compatibilidad y la regla de promoción son contrato **de consumo** además de emisión: `USAGE.md` declara explícitamente que un `reason` desconocido se trata como ausente.
 
-#### El mecanismo: un solo punto de traducción
+### El mecanismo: un solo punto de traducción
 
 **La invariante no se sostiene con un `if` por sitio**, porque eso la deja en manos de que nadie olvide uno. Es la misma solución que la ruta de éxito ya tiene con `emit_raw_json` (`crates/avi-core/src/json_emitter.rs`), cuyo doc enuncia el motivo: *«la garantía queda en un solo lugar, no repetida por convención en cada comando»*. La ruta de fallo tiene la misma forma:
 
@@ -515,7 +566,7 @@ Las tres reglas de compatibilidad y la regla de promoción son contrato **de con
 
 **`daemon serve` queda fuera del mecanismo, y por una razón concreta: no acepta `--json`.** No hay payload que emitir, así que la invariante del canal no tiene alcance ahí y ese comando sale directamente. Esa es la condición que lo autoriza y ninguna otra: darle `--json` reabriría el hueco.
 
-#### Los cinco payloads del grupo `speech`
+### Los cinco payloads del grupo `speech`
 
 Ninguno emite ruta, por el criterio de la ruta en los payloads. Todos llevan además los campos transversales del sobre.
 
@@ -537,7 +588,7 @@ Los payloads de `daemon start`, `stop` y `restart` no llevan clave booleana prop
 
 **Esquema de `daemon.pid` y contabilidad del residente:** el archivo `data_dir()/daemon.pid` persiste un objeto JSON con `{ "pid": u32, "resident_pid": u32, "addr": string, "started_at": string }`. El esquema persiste; con `AVI_DATA_DIR` el pidfile es por instancia (sin la variable, resolución idéntica a la de siempre). El campo `resident_pid` almacena el PID del proceso residente TTS como entero plano. La lectura es tolerante (ficheros previos sin el campo o con valor ausente se leen como `0`/desconocido). El ciclo de vida (`stop`, `reclamar_residual_degradado` y el `reaper` del harness) mata al residente por su PID registrado combinado con verificación de puerto 8766 cerrado, eliminando por completo cualquier dependencia de `netstat` o `pkill`. Las pruebas del harness operan con aislamiento total por instancia (`InstanciaAislada`) y semáforo de capacidad para inferencia (`TTS_LOCK`).
 
-#### Las dos versiones de esquema
+### Las dos versiones de esquema
 
 Son **dos, independientes**, y ambas valen `"3"`:
 
@@ -550,7 +601,7 @@ Son dos causas independientes que coinciden en el mismo hecho generador. Los pay
 
 ## 11. `cleanup`, `setup` y `voice`
 
-#### `cleanup`
+### `cleanup`
 
 | Flag | Qué borra / efecto |
 |---|---|
@@ -563,11 +614,11 @@ Son dos causas independientes que coinciden en el mismo hecho generador. Los pay
 
 **Gate `sin flags → exit 2`:** `cleanup` sin ningún flag de categoría (`--voices`, `--synthetic-speech`, `--model`, `--all`) sale con `2` `usage_error` sin borrar (del binario principal). `--all` equivale a `--voices --synthetic-speech --model` (del binario principal).
 
-**`speech/default/` (y `ryan`/`vivian`) sobrevive a `--voices` y cae únicamente con `--synthetic-speech` o `--all`.** El criterio es el del propio flag —las locuciones se van con su voz— y las voces de fábrica (`default`, `ryan`, `vivian`; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) no se van nunca: `voice remove` las protege (exit 2) y `--voices` no las borra. Importa declararlo porque `default` es la voz por defecto de `speech synthesize` y su namespace es probablemente el más poblado. Reparto con `speech remove`: el borrado individual es `speech remove --label`, el masivo es `cleanup --synthetic-speech` (`CONTRACT.md:182`).
+**`speech/default/` (y `ryan`/`vivian`) sobrevive a `--voices` y cae únicamente con `--synthetic-speech` o `--all`.** El criterio es el del propio flag —las locuciones se van con su voz— y las voces de fábrica (`default`, `ryan`, `vivian`; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) no se van nunca: `voice remove` las protege (exit 2) y `--voices` no las borra. Importa declararlo porque `default` es la voz por defecto de `speech synthesize` y su namespace es probablemente el más poblado. Reparto con `speech remove`: el borrado individual es `speech remove --label`, el masivo es `cleanup --synthetic-speech` (ver «Reparto con `cleanup`» en [§3](#3-el-grupo-speech)).
 
 `--all` es unión de limpiezas de datos; **no toca binario ni PATH** — solo `uninstall` borra binario y PATH (del binario principal). Con la raíz separada del registro de voces, el arrastre de `--voices` es código explícito y no un efecto del `rmtree`.
 
-#### `setup`
+### `setup`
 
 El chequeo de audio degrada a WARN en vez de FAIL, **con la premisa que lo sostiene**: el sidecar es instalable en hosts headless, SSH y CI porque existe un sumidero que no necesita subsistema de sonido —`speech synthesize --text T --label L` sintetiza y persiste sin reproducir nada—. `setup` es provisión, no diagnóstico.
 
@@ -578,10 +629,10 @@ No existe `--language` en `setup`: el conjunto provisionado es fijo (es+en
 offline completo desde el primer uso). `setup --with-stt` sin más flags no
 provisiona nada adicional.
 
-#### `voice`
+### `voice`
 
 - **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime); ambos WAV se consumen para producir el graft `reference.qvoice` y no se copian al almacén. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
-- **`voice clone` recibe el despacho al daemon en sus tres modos**, porque precomputa los conditionals de la voz al clonarla y necesita el modelo cargado igual que las dos sub-acciones que sintetizan.
+- **`voice clone` recibe el despacho al daemon en sus tres modos**, porque el clonado ejecuta el modelo Base (y, con el daemon, precalienta la voz nueva) y necesita un modelo cargado igual que las dos sub-acciones que sintetizan.
 - **`voice clone` sobre un nombre tomado sin `--force` sale con 6**, y sobre un nombre libre `--force` es un no-op declarado.
 - `VoiceStore` (`crates/avi-store/src/lib.rs`) reconoce una voz clonada únicamente por la presencia de `reference.qvoice`, sin fallback a WAV. Las voces de fábrica son `default` (clonada, con `reference.qvoice` graft) y `ryan`/`vivian` (presets puros sin referencia); `voice remove` las protege a las tres (exit 2; `FACTORY_VOICES` del almacén de voces, `avi_store::is_factory_name` definida en el almacén de voces, invocada en el binario principal).
 - `voice list` muestra las tres de fábrica (`is_factory=true`) más las clonadas del usuario; `voice remove` rechaza las de fábrica con exit 2.
@@ -589,21 +640,21 @@ provisiona nada adicional.
 
 ## 12. Contratos externos
 
-#### El integrador de narración
+### El integrador de narración
 
 **`speech say --text "<msg>" --daemon`** es la invocación que sintetiza y reproduce, y es el contrato del integrador de narración: exige el daemon porque su presupuesto de latencia no admite cargar el modelo al vuelo. No hay alias de compatibilidad; esa es la única forma de la invocación.
 
 El integrador que quiera además conservar el audio usa `speech synthesize --text "<msg>" --label L`, que no reproduce.
 
-#### La frontera del daemon
+### La frontera del daemon
 
 `/synthesize` recibe `voice: str`. No hay lista de directorios de audio permitidos, ni validación de rutas de audio, ni directorio de sesión del daemon, porque no hay rutas que validar.
 
 **Riesgo conocido y declarado**: `data_dir()` / `hf_cache_dir()` (`crates/avi-store/src/lib.rs`) depende de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. Está atenuado porque `/voices` permite inspeccionar la vista del daemon. Con `AVI_DATA_DIR`, esa dependencia es además el mecanismo de aislamiento por instancia en tests (sandbox propio por test; en producción la resolución por defecto no cambia).
 
-## 13. El comando `translate`, `speech transcribe`, `speech dub` y la síntesis cross-lingual
+## 13. `translate`, `speech transcribe`, `speech dub` y la síntesis cross-lingual
 
-#### `translate`: texto→texto, aislado de la síntesis
+### `translate`: texto→texto, aislado de la síntesis
 
 `translate` no pertenece a ningún grupo nominal: es texto→texto, sin voz ni modelo TTS de por medio. `--from` y `--to` son **opcionales con defaults** (`es` y `en`, del binario principal) y **estrictos**: el parser solo acepta `es` o `en` (del binario principal); cualquier otro valor —incluido `es-latam`— lo rechaza `clap` con exit 2 antes de llegar al handler. Es un cambio deliberado: `es-latam` queda fuera del alfabeto CLI y solo sigue vivo en la vía IPC del daemon, que lo normaliza a `es` (`resolve_translation_language`, del daemon). `--from == --to` es *passthrough*: devuelve el texto sin cargar el modelo.
 
@@ -611,21 +662,21 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 |---|---|
 | `--text` **requerido** (sin alias `-t`, a diferencia de `speech`) · `--from` (default `es`, solo `es`/`en`) · `--to` (default `en`, solo `es`/`en`) · `--json` | `{"translated", "source", "target"}` |
 
-#### Traducción opt-in en `speech say`/`speech synthesize`
+### Traducción opt-in en `speech say`/`speech synthesize`
 
 `--source-language`/`--target-language` (§3) insertan una etapa de traducción **antes** de la síntesis cuando declaran idiomas distintos; el motor de síntesis no cambia, solo recibe el texto ya traducido. Ambos son opcionales en `say`/`synthesize`: `--target-language` vale `es-latam` por defecto y `--source-language` vale lo mismo que `--target-language` cuando se omite, por lo que sin flags no se traduce. Solo se admite `es-latam` o `en`; cualquier otro valor sale con **2**. El modelo de traducción ausente reutiliza el exit **4** (`ExitCode::ModelMissing`), remitiendo a `setup`, en vez de un código propio: es la misma precondición de entorno que el modelo TTS. Un fallo de la inferencia de traducción, con el modelo ya cargado, sale con **9** (`ExitCode::TranslationFailed`, §9) — código distinto del **1** genérico de síntesis, porque distingue en qué etapa falló la invocación.
 
 `--temperature` es un override opcional del muestreo en `say`/`synthesize`/`dub`: sin el flag se usa la temperatura de producción (`0.35`); con el flag debe cumplirse `0 < t <= 2.0`, y fuera de ese rango sale con **2**.
 
-#### El rename `--language` → `--target-language`
+### El rename `--language` → `--target-language`
 
 **Cambio incompatible y deliberado, sin alias de transición.** `speech say`/`speech synthesize` reemplazan `--language` por `--target-language`; ni `setup` ni `doctor` exponen `--language` (la provisión no traduce y el diagnóstico no filtra por idioma). `daemon` **no expone** `--language`/`--with-stt` (ver `docs/CLI/commands/DAEMON.md` — `native-stt`/`native-translation` son features de compilación, no flags de ejecución). El integrador de narración (§12) no se ve afectado: sus invocaciones nunca pasan `--language` en `speech say`, así que el rename no le rompe ningún flag en uso, aunque sí es parte del mismo contrato versionado.
 
-#### Provisión y daemon
+### Provisión y daemon
 
 `setup` descarga `Marian` (`opus-mt-es-en`/`en-es`) y convierte incondicionalmente su derivado obligatorio `CT2` `INT8` en `hf_cache_dir/ct2/opus-mt-{es-en,en-es}/` (`crates/avi-store/src/lib.rs:ct2_model_dir`, idempotente por `mtime` solo sobre dirs sanos): `model.bin` más tokenizador utilizable por el loader (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot). Si el dir está roto (sin tokenizador), `setup` lo reconvierte de forma atómica (temporal hermano + rename, verificación con el criterio del gate `is_ct2_provisioned` == loader); `doctor` exige el derivado completo para ambas direcciones (Falla con `CT2 es→en/en→es no provisionado` si `Marian HF` está pero el `CT2` no pasa el gate); `cleanup` purga `hf_cache_dir/ct2` junto a `hub/xet`. Sin gating por `--language`: la provisión es determinista para la instalación por defecto. `daemon start`/`serve` aceptan `--auto-restart` y `--max-retries` (default `3`) — con `--auto-restart` el supervisor reintenta hasta `max_retries` con backoff `500ms*2^retries` capado a `4s` (cada reintento con reclamo activo del árbol propio previo con deadline de 5 s y verificación de muerte + puerto libre; el reclamo activo matar-y-rearrancar vive en `start` —en Unix ante líder muerto por grupo con verificación por 8766, runtime diferido a CI—, nunca en `serve`; con puertos efímeros el reclamo previo al reintento pierde su objeto (el cliente ya descubre la `addr` real por el pidfile); un `daemon stop` graceful vía `shutdown_notify` no reintenta.
 
-#### `speech transcribe`: audio→texto, verificable sin traducir ni sintetizar
+### `speech transcribe`: audio→texto, verificable sin traducir ni sintetizar
 
 `speech transcribe` es una **sub-acción del grupo `speech`** (no un comando aislado como `translate`): transcribe a texto con `parakeet-tdt-0.6b-v3` int8 vía `ort` load-dynamic (del módulo de transcripción STT, `ParakeetEngine::transcribe`), desde un archivo WAV (`--audio`) o desde el micrófono (`--mic`). La **captura corre siempre en el cliente** (al daemon viajan las muestras ya decodificadas en base64, nunca rutas); la transcripción en sí recibe el despacho al daemon en sus tres modos (§5): sin flags, transcribe por el daemon si está activo y en modo directo si no; `--daemon` exige el daemon y sale con **5** si no está; `--no-daemon` fuerza el modo directo. Es una operación **de un solo idioma por invocación** — a diferencia del par `--from`/`--to` de `translate`, aquí `--source-language` (requerido, `es-latam`/`en`, misma taxonomía que `speech say`/`synthesize`) declara el único idioma hablado en el audio. `ParakeetEngine` **solo transcribe**, nunca traduce: si el usuario necesita el texto en otro idioma, encadena `translate` por separado. No hay síntesis de por medio: `speech transcribe` es verificable de forma aislada, con audio de entrada y texto de salida, sin depender del motor TTS ni del subsistema de traducción.
 
@@ -641,7 +692,7 @@ Si el modelo `parakeet-tdt-0.6b-v3` no está provisionado, sale con **4** (`Exit
 
 **Divergencia deliberada del shape `--json` frente a `translate` (D5).** `translate --json` emite `source`/`target` como los códigos **ISO crudos** que recibieron `--from`/`--to` (`es`, `en`): ahí el ISO es exacto porque el parámetro mismo está restringido a `choices=["es","en"]`. `speech transcribe --json`, en cambio, emite `source` como el **token CLI verbatim** de `--source-language` (p. ej. `es-latam`, sin resolver a `es`) — no lo normaliza. La razón es de simetría con el resto de `speech`: `speech say`/`synthesize` aceptan y exponen `es-latam` en su propia taxonomía de idioma (nunca lo colapsan a ISO de cara al usuario), y `speech transcribe` es una sub-acción de ese mismo grupo, no un primo de `translate`. Colapsar `source` a ISO ahí introduciría una inconsistencia dentro del propio grupo `speech` a cambio de una consistencia superficial con un comando de otro grupo. La resolución a ISO (`resolve_language`) sigue ocurriendo internamente para seleccionar el idioma que `ParakeetEngine` recibe; solo la salida `--json` preserva el token de entrada.
 
-#### `speech dub`: el bucle voz→voz en un comando dedicado
+### `speech dub`: el bucle voz→voz en un comando dedicado
 
 `speech dub` es la **composición voz→voz**: transcribe la entrada hablada (archivo o micrófono), traduce el texto si `--source-language` difiere de `--target-language`, sintetiza con la voz elegida y reproduce el resultado. En la ruta daemon, delega a `POST /dub` mediante streaming NDJSON (`started` → latidos → `result`), con degradación automática a composición (`POST /transcribe` + traducción + `POST /synthesize`) si el daemon responde 404 (binario antiguo). Reutiliza las máquinas existentes —la etapa de transcripción de `speech transcribe` (sus tres modos de despacho), la traducción opt-in de `say`/`synthesize` y el despacho de síntesis (§5)— sin modificarlas. `say`/`synthesize` **no cambian**: siguen siendo texto→voz con `--text` requerido; la entrada de audio del bucle vive solo en `dub`. No persiste nada: no declara `--label` ni `--json`.
 
@@ -655,9 +706,9 @@ Códigos de salida aplicables en la cadena: **4** (`ExitCode::ModelMissing`, mod
 
 ---
 
-## Documentación complementaria por comando
+## 14. Documentación complementaria por comando
 
-Cada comando principal de la CLI tiene un documento de investigación dedicado en [`commands/`](commands/) que cubre su diseño, implementación, flujo de ejecución y manejo de errores con citas a líneas del código fuente.
+Cada comando principal de la CLI tiene un documento de investigación dedicado en [`commands/`](commands/) que cubre su diseño, implementación, flujo de ejecución y manejo de errores con referencias a los símbolos del código fuente.
 
 | Comando | Documento | Subcomandos |
 |---|---|---|
@@ -670,3 +721,4 @@ Cada comando principal de la CLI tiene un documento de investigación dedicado e
 | `daemon` | [`commands/DAEMON.md`](commands/DAEMON.md) | `start`, `stop`, `restart`, `status`, `serve` |
 | `version` | [`commands/VERSION.md`](commands/VERSION.md) | — |
 | `translate` | [`commands/TRANSLATE.md`](commands/TRANSLATE.md) | — |
+| `uninstall` | [`../SELF-HOSTED-INSTALL.md`](../SELF-HOSTED-INSTALL.md#desinstalación) | — |

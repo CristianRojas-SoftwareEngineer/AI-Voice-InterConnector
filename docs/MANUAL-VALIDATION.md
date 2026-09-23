@@ -47,6 +47,7 @@ puede ejercitar y el núcleo de esta validación.
 
 ## Tabla de contenidos
 
+- [Cómo leer esta guía](#cómo-leer-esta-guía)
 - [1. Entorno y versión](#1-entorno-y-versión)
 - [2. Diagnóstico del entorno](#2-diagnóstico-del-entorno)
 - [3. Provisión del modelo](#3-provisión-del-modelo)
@@ -56,6 +57,8 @@ puede ejercitar y el núcleo de esta validación.
 - [7. Gestión de habla sintética](#7-gestión-de-habla-sintética)
 - [8. Transcripción y doblaje (no interactivos)](#8-transcripción-y-doblaje-no-interactivos)
 - [9. Rutas interactivas de audio (push-to-talk y `--play`)](#9-rutas-interactivas-de-audio-push-to-talk-y---play)
+  - [9.1 Push-to-talk (`speech transcribe --mic` / `speech dub --mic` sin `--duration`)](#91-push-to-talk-speech-transcribe---mic--speech-dub---mic-sin---duration)
+  - [9.2 Bucle interactivo de `speech synthesize --play`](#92-bucle-interactivo-de-speech-synthesize---play)
 - [10. Daemon](#10-daemon)
 - [11. Casos de error por exit code canónico](#11-casos-de-error-por-exit-code-canónico)
 

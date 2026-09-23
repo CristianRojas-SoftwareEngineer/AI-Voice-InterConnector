@@ -4,9 +4,9 @@ Enumera los dispositivos de salida de audio del sistema. Es un comando de
 inspección de mínima complejidad: sin subcomandos, sin argumentos
 posicionales, no modifica estado y no depende del daemon.
 
-Implementación: `handle_devices` (`src/main.rs:584`), que delega la
-enumeración real a `avi_audio::get_devices_json` (`crates/avi-audio/src/lib.rs:478`),
-apoyado en `AudioService::list_output_devices` (`crates/avi-audio/src/lib.rs:34`).
+Implementación: `handle_devices` (`src/main.rs`), que delega la
+enumeración real a `avi_audio::get_devices_json` (`crates/avi-audio/src/lib.rs`),
+apoyado en `AudioService::list_output_devices` (`crates/avi-audio/src/lib.rs`).
 
 ---
 
@@ -20,8 +20,8 @@ ai-voice-interconnector devices [--json]
 |---|---|---|---|
 | `--json` | flag global | `false` | Emite JSON legible por máquina en stdout |
 
-Definición del subcomando: `enum Commands::Devices` (`src/main.rs:145`),
-despachado en `src/main.rs:522` (`Some(Commands::Devices) => handle_devices(json_mode)`).
+Definición del subcomando: `enum Commands::Devices` (`src/main.rs`),
+despachado en `main` (`src/main.rs`) con `Some(Commands::Devices) => handle_devices(json_mode)`.
 
 ---
 
@@ -30,10 +30,10 @@ despachado en `src/main.rs:522` (`Some(Commands::Devices) => handle_devices(json
 La enumeración usa un único backend multiplataforma: **`cpal`** (sin
 ramificación por sistema operativo).
 
-`AudioService::list_output_devices` (`crates/avi-audio/src/lib.rs:34-60`):
+`AudioService::list_output_devices` (`crates/avi-audio/src/lib.rs`):
 
 1. Obtiene el host por defecto de `cpal` (`cpal::default_host()`,
-   `crates/avi-audio/src/lib.rs:29`).
+   `crates/avi-audio/src/lib.rs`).
 2. Itera `host.output_devices()`; si la llamada falla, el `if let Ok(...)`
    la ignora silenciosamente y `list_output_devices` devuelve `Ok(vec![])`
    (lista vacía, no hay fallback a un dispositivo "Default" sintético).
@@ -58,7 +58,7 @@ según dónde falle.
 handle_devices(json_mode)
     │
     ▼
-avi_audio::get_devices_json()          ← crates/avi-audio/src/lib.rs:478
+avi_audio::get_devices_json()          ← crates/avi-audio/src/lib.rs
     │  AudioService::new() → list_output_devices()
     │  mapea cada AudioDevice a {"id", "name", "latency": latency_ms / 1000.0}
     ▼
@@ -67,16 +67,16 @@ Ok  → --json: emit_raw_json({"devices": devices})
       sin --json: imprime línea por dispositivo
 ```
 
-Fuente: `src/main.rs:584-601`.
+Fuente: `handle_devices` (`src/main.rs`).
 
 ---
 
 ## Contrato `--json`
 
 Con `--json`, `handle_devices` llama a `emit_raw_json(json!({ "devices": devices }))`
-(`src/main.rs:588`). `emit_raw_json` (`crates/avi-core/src/json_emitter.rs:19`)
+(`src/main.rs`). `emit_raw_json` (`crates/avi-core/src/json_emitter.rs`)
 inyecta `schema_version` sobre el objeto antes de serializar
-(`with_schema_version`, `crates/avi-core/src/json_emitter.rs:7`).
+(`with_schema_version`, `crates/avi-core/src/json_emitter.rs`).
 
 ```json
 {
@@ -91,9 +91,9 @@ inyecta `schema_version` sobre el objeto antes de serializar
 | Clave | Tipo | Significado |
 |---|---|---|
 | `devices` | array de objetos | Lista de dispositivos de salida enumerados por `cpal` |
-| `devices[].id` | integer | Índice secuencial 0-based asignado durante la iteración de `host.output_devices()` (`crates/avi-audio/src/lib.rs:53`) |
+| `devices[].id` | integer | Índice secuencial 0-based asignado durante la iteración de `host.output_devices()` (`crates/avi-audio/src/lib.rs`) |
 | `devices[].name` | string | Nombre del dispositivo reportado por `cpal`, o `"Dispositivo {idx}"` si el backend no expone el nombre |
-| `devices[].latency` | number | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs:487`); en salida texto se reconvierte a milisegundos para mostrarse |
+| `devices[].latency` | number | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs`); en salida texto se reconvierte a milisegundos para mostrarse |
 | `schema_version` | string | `"3"`, inyectado por `emit_raw_json`/`with_schema_version` — no forma parte del payload que construye el handler |
 
 Nota de orden de claves: `with_schema_version` inserta `schema_version` en el
@@ -105,7 +105,7 @@ claves es el mismo con independencia del orden.
 
 ## Formato de salida texto
 
-Sin `--json` (`src/main.rs:589-599`):
+Sin `--json` (`src/main.rs`):
 
 ```
 Dispositivos de salida de audio:
@@ -124,13 +124,13 @@ reconvertida de segundos a milisegundos (`* 1000.0`) solo para esta vista.
 |---|---|---|
 | `audio_enumeration_failed` | 1 (`ExitCode::Error`) | `AudioService::list_output_devices` devolvió `Err` (fallo del host `cpal` al construir el stream/config; la ausencia de dispositivos por sí sola NO es un error, produce lista vacía) |
 
-El error se envuelve en `main` (`src/main.rs:559-570`): con `--json` emite
+El error se envuelve en `main` (`src/main.rs`): con `--json` emite
 `{"error": <mensaje>, "reason": "audio_enumeration_failed", "schema_version": "3"}`
 a stdout; sin `--json`, `Error: <mensaje>` a stderr. En ambos casos el
 proceso termina con exit code 1.
 
 `devices` no depende del daemon, no requiere modelos provisionados y no
-verifica prerequisitos: es completamente offline y autónomo.
+verifica prerrequisitos: es completamente offline y autónomo.
 
 ---
 
