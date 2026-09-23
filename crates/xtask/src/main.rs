@@ -576,11 +576,12 @@ fn today_iso() -> String {
     "0000-00-00".to_string()
 }
 
-/// Genera el slug de anclaje para el TOC (lowercase, sin puntos/special).
+/// Genera el ancla de GitHub para la cabecera `## [version] — date`: el slugger
+/// descarta corchetes, puntos y la raya, conserva los guiones de la fecha y
+/// convierte cada espacio en `-` (de ahí el doble guion).
 fn slug(version: &str, date: &str) -> String {
     let v = version.replace('.', "");
-    let d = date.replace('-', "");
-    format!("{}-{}", v, d)
+    format!("{}--{}", v, date)
 }
 
 /// Byte offset de la cabecera `heading` en la primera línea que, tras `trim_start`,
@@ -1595,7 +1596,7 @@ mod tests {
 ## Tabla de contenidos
 
 - [No publicado](#no-publicado)
-- [0.20.3 — 2026-09-22](#0203-20260922)
+- [0.20.3 — 2026-09-22](#0203--2026-09-22)
 
 ## [No publicado]
 
@@ -1615,14 +1616,21 @@ mod tests {
     }
 
     #[test]
+    fn test_slug_coincide_con_ancla_de_github() {
+        // GitHub ancla `## [0.20.12] — 2026-09-23` como `#02012--2026-09-23`.
+        assert_eq!(slug("0.20.12", "2026-09-23"), "02012--2026-09-23");
+        assert_eq!(slug("0.20.3", "2026-09-22"), "0203--2026-09-22");
+    }
+
+    #[test]
     fn test_promote_changelog_camino_feliz() {
         let out =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
         // Cabecera renombrada; la sección [No publicado] desaparece.
         assert!(out.contains("## [0.20.4] — 2026-09-24"));
         assert!(!out.contains("## [No publicado]"));
-        // Entrada de ToC transformada (con slug sin puntos ni guiones).
-        assert!(out.contains("- [0.20.4 — 2026-09-24](#0204-20260924)"));
+        // Entrada de ToC transformada, con el ancla que GitHub genera para la cabecera.
+        assert!(out.contains("- [0.20.4 — 2026-09-24](#0204--2026-09-24)"));
         assert!(!out.contains("- [No publicado](#no-publicado)"));
         // Definición de enlace de comparación añadida al final.
         assert!(out.contains(
@@ -1670,7 +1678,7 @@ mod tests {
     fn test_validate_changelog_falla_sin_toc() {
         let promovido =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
-        let sin_toc = promovido.replace("- [0.20.4 — 2026-09-24](#0204-20260924)\n", "");
+        let sin_toc = promovido.replace("- [0.20.4 — 2026-09-24](#0204--2026-09-24)\n", "");
         let err = validate_changelog_text(&sin_toc, "0.20.4").unwrap_err();
         assert!(err.to_string().contains("tabla de contenidos"));
     }
