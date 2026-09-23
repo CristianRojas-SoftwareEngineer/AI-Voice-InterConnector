@@ -870,26 +870,26 @@ mod tests {
         assert!(!c.contains("Chatterbox"));
     }
 
-    #[test]
-    fn test_pipeline_heterogeneo_y_sccache_incondicional() {
+    /// Texto de `.circleci/config.yml`, localizado desde la raíz o desde el crate.
+    fn leer_config_ci() -> String {
         let candidates = [
             ".circleci/config.yml",
             "../../.circleci/config.yml",
             "C:/Users/Cristian/Desktop/Proyectos/Voices/AI-Voice-InterConnector/.circleci/config.yml",
         ];
-        let mut cfg_opt = None;
         for p in candidates {
             if let Ok(t) = std::fs::read_to_string(p) {
-                cfg_opt = Some(t);
-                break;
+                return t;
             }
         }
         // Fallback via CARGO_MANIFEST_DIR
-        let cfg = cfg_opt.unwrap_or_else(|| {
-            let m =
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.circleci/config.yml");
-            std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
-        });
+        let m = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.circleci/config.yml");
+        std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
+    }
+
+    #[test]
+    fn test_pipeline_heterogeneo_y_sccache_incondicional() {
+        let cfg = leer_config_ci();
         // Modelo vigente (post remediación de caché): test-linux, test-windows, test-macos,
         // coverage y build-* usan cargo_restore_caches (registry + target-v2) y sccache
         // autoconsistente por variante (cada job pesado restaura y guarda su propio blob).
@@ -1076,6 +1076,58 @@ mod tests {
                 "{job} no debe ejecutar cargo clean -p: es un no-op sobre target/release sin --release"
             );
         }
+    }
+
+    #[test]
+    fn test_sello_vendor_cmake_en_caches_target() {
+        let cfg = leer_config_ci();
+        // El sello de contenido del parche local de cmake evita que el mtime del
+        // checkout lo marque Dirty (cascada sobre la cadena nativa). Ambos pasos son
+        // necesarios: sin la comprobación se fijarían mtimes a ciegas sobre un parche
+        // editado; sin el guardado nunca habría sello y el mtime no se fijaría jamás.
+        let restore_section = cfg
+            .split("  cargo_restore_caches:")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n  cargo_save_registry:")
+            .next()
+            .unwrap_or("");
+        assert!(
+            restore_section.contains("sha256_hex"),
+            "cargo_restore_caches debe calcular el SHA-256 del contenido de vendor/cmake-0.1.58"
+        );
+        assert!(
+            restore_section.contains("target/.vendor-cmake.sha256"),
+            "cargo_restore_caches debe comparar el sello con target/.vendor-cmake.sha256"
+        );
+        assert!(
+            restore_section.contains("touch -t 200001010000"),
+            "cargo_restore_caches debe fijar el mtime del parche cuando el sello coincide"
+        );
+        let save_section = cfg
+            .split("  cargo_save_target:")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n  cargo_restore_registry:")
+            .next()
+            .unwrap_or("");
+        let copy = "cp .vendor-cmake.sha256 target/.vendor-cmake.sha256";
+        assert!(
+            save_section.contains(copy),
+            "cargo_save_target debe registrar el sello en target/.vendor-cmake.sha256"
+        );
+        // El paso de copia termina donde empieza el save_cache (que sí lleva when: always).
+        let copy_step = save_section
+            .split("- run:")
+            .find(|step| step.contains(copy))
+            .unwrap_or("")
+            .split("- save_cache:")
+            .next()
+            .unwrap_or("");
+        assert!(
+            !copy_step.contains("when: always"),
+            "el registro del sello debe correr solo en éxito: un build fallido podría dejar cmake sin recompilar"
+        );
     }
 
     #[test]

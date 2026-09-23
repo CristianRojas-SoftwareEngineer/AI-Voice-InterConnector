@@ -70,6 +70,8 @@ parameters:
 # la normalización la clave solo cambia ante cambios REALES de dependencias.
 # Matriz de invalidación por familia de caché:
 #   - registry/target (v2): cambian solo con dependencias reales en Cargo.lock.
+#     El parche local vendor/cmake-0.1.58 se excluye del fingerprint por mtime
+#     mediante un sello de contenido guardado en target/, sin cambiar la clave.
 #   - toolchain (v1): cambia con rust_version. NO se re-keya: su semántica no cambia.
 #   - msys2 (v1): cambia con los pines de versión MSYS2. NO se re-keya.
 #   - sccache (v1): rolling con epoch. NO se re-keya.
@@ -85,6 +87,17 @@ commands:
     # `os` discrimina el sistema operativo: target/ es triple-específico
     # (x86_64-unknown-linux-gnu vs x86_64-pc-windows-msvc vs aarch64-apple-darwin)
     # y sin él Linux/Windows/macOS se pisan mutuamente (0% sccache hits en Windows).
+    #
+    # Sello de vendor/cmake-0.1.58: `[patch.crates-io]` apunta a una copia local,
+    # que cargo fingerprintea por mtime. El checkout le da mtime nuevo en cada
+    # corrida, la marca Dirty y arrastra la re-ejecución de toda la cadena nativa
+    # (aws-lc-sys, onednn-src, sentencepiece-sys, ct2rs…). El SHA-256 del
+    # contenido compilado vive DENTRO de target/ (target/.vendor-cmake.sha256,
+    # escrito por cargo_save_target solo en éxito), de modo que el mtime antiguo
+    # solo se fija cuando lo compilado corresponde al contenido actual; si el
+    # parche cambió, no se toca nada y cargo recompila. `perl` y `/usr/bin/find`
+    # se usan porque existen en los tres executors (Git-bash en Windows, donde
+    # `find` a secas resolvería al find.exe de Windows).
     parameters:
       variant:
         type: string
@@ -114,6 +127,18 @@ commands:
           keys:
             - target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}
             - target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-
+      - run:
+          name: Sellar y fijar mtime de vendor/cmake-0.1.58 (evita cascada Dirty)
+          shell: bash
+          command: |
+            /usr/bin/find vendor/cmake-0.1.58 -type f -print0 | LC_ALL=C sort -z | xargs -0 cat \
+              | perl -MDigest::SHA=sha256_hex -0777 -ne 'print sha256_hex($_)' > .vendor-cmake.sha256
+            if [ -f target/.vendor-cmake.sha256 ] && [ "$(cat .vendor-cmake.sha256)" = "$(cat target/.vendor-cmake.sha256)" ]; then
+              /usr/bin/find vendor/cmake-0.1.58 -exec touch -t 200001010000 {} +
+              echo "sello coincide: mtime fijado"
+            else
+              echo "sello ausente o distinto: cargo recompilará cmake"
+            fi
   cargo_save_registry:
     description: Guarda registry/git antes de compilar (un fallo de test no pierde descargas)
     steps:
@@ -141,6 +166,13 @@ commands:
         type: string
         default: "linux"
     steps:
+      # Sin `when`: solo corre si el job tuvo éxito. Un build fallido podría haber
+      # dejado cmake sin recompilar; sellarlo fijaría mtimes sobre artefactos
+      # obsoletos en la siguiente corrida. Ante fallo se preserva el sello restaurado.
+      - run:
+          name: Registrar sello de vendor/cmake-0.1.58 en target/
+          shell: bash
+          command: '[ -f .vendor-cmake.sha256 ] && mkdir -p target && cp .vendor-cmake.sha256 target/.vendor-cmake.sha256 || true'
       - save_cache:
           key: target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}
           paths:

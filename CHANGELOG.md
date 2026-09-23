@@ -136,6 +136,12 @@ sccache es imposible por construcción. Se retira el paso íntegro y se
 corrigen los comentarios y la documentación que describían el mecanismo
 inexistente.
 
+Además se recortan dos costes del pipeline de release: la guarda de provisión
+TTS de la suite dorada deja de descargar ~8.8 GiB de modelos en cada corrida
+de CI (solo consulta `doctor`), y un sello de contenido del parche local
+`vendor/cmake-0.1.58` evita que el mtime del checkout re-ejecute en falso la
+cadena de compilación nativa. Ahorro estimado: ~2 min en el camino crítico.
+
 ### Corregido
 
 - fix(ci): **retira el paso no-op `cargo clean -p ai-voice-interconnector`**
@@ -149,6 +155,27 @@ inexistente.
   se corrige el comentario del smoke-test de Windows que citaba ese escenario
   imposible, y el test de topología de `crates/xtask` pasa de exigir el paso a
   asertar su ausencia.
+
+### Cambiado
+
+- test(cli_golden): **la guarda de provisión TTS ya no invoca `setup`**.
+  `tts_modelo_registrado()` recurría a `setup` cuando `doctor` fallaba, lo que
+  en un runner sin modelos descargaba ~8.8 GiB de HuggingFace (~2 min de
+  `test-windows`) para terminar igualmente en `skip`, porque el runner no
+  tiene el binario del motor ni los pesos locales; en local disparaba la misma
+  descarga sin aviso. Ahora solo consulta `doctor`: sin modelos, las pruebas
+  pesadas se omiten, y para ejecutarlas hay que correr antes
+  `ai-voice-interconnector setup`. Se documenta como invariante en
+  `docs/BUILD.md` §4.
+- ci: **sello de contenido de `vendor/cmake-0.1.58` en `target/`**.
+  `cargo_restore_caches` compara el SHA-256 del contenido del parche con
+  `target/.vendor-cmake.sha256` (restaurado con la caché `target-v2`): cuando
+  coincide fija un mtime antiguo y cargo ve `cmake` `Fresh`, evitando la
+  re-ejecución en falso de la cadena nativa (`aws-lc-sys`, `onednn-src`,
+  `sentencepiece-sys`, `ct2rs`…); cuando difiere no toca nada y cargo
+  recompila. `cargo_save_target` escribe el sello solo en éxito. Sin cambios
+  de claves de caché; un test de topología de `crates/xtask` protege ambos
+  pasos.
 
 ## [0.20.7] — 2026-09-22
 
