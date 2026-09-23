@@ -141,50 +141,16 @@ fn main() -> Result<()> {
         }
         Commands::SourceOffer { check } => {
             let version = get_version()?;
-            let rendered = render_source_offer(&version);
             if check {
-                let dest = Path::new("SOURCE-OFFER.md");
-                if !dest.is_file() {
-                    eprintln!("SOURCE-OFFER.md no existe; esperado:\n{}", rendered);
-                    std::process::exit(1);
-                }
-                let current = std::fs::read_to_string(dest)?;
-                // Normalizar CRLF vs LF para comparar (git autocrlf, PowerShell)
-                let norm_current = current.replace("\r\n", "\n");
-                let norm_rendered = rendered.replace("\r\n", "\n");
-                if norm_current != norm_rendered {
-                    eprintln!("SOURCE-OFFER.md desincronizado: regenera con `cargo run -p xtask -- source-offer > SOURCE-OFFER.md`");
-                    // Diff mínimo
-                    for line in diff_lines(&norm_current, &norm_rendered) {
-                        eprintln!("{}", line);
-                    }
-                    std::process::exit(1);
-                }
+                check_source_offer(&version)?;
                 println!("SOURCE-OFFER.md en sincronía");
             } else {
-                print!("{}", rendered);
+                print!("{}", render_source_offer(&version));
             }
         }
         Commands::Licenses { check: _ } => {
-            let (missing, extra) = check_licenses()?;
-            if missing.is_empty() && extra.is_empty() {
-                println!("THIRD-PARTY-LICENSES.md está en sincronía con Cargo.lock");
-            } else {
-                if !missing.is_empty() {
-                    println!("Crates del lock SIN fila en THIRD-PARTY-LICENSES.md (atribución faltante):");
-                    for n in &missing {
-                        println!("  + {}", n);
-                    }
-                }
-                if !extra.is_empty() {
-                    println!("Filas de THIRD-PARTY-LICENSES.md sin crate en el lock (obsoletas):");
-                    for n in &extra {
-                        println!("  - {}", n);
-                    }
-                }
-                println!("\nRegenera el inventario (cargo metadata).");
-                std::process::exit(1);
-            }
+            check_licenses_gate()?;
+            println!("THIRD-PARTY-LICENSES.md está en sincronía con Cargo.lock");
         }
         Commands::Release { version } => {
             let version = version.trim();
@@ -194,9 +160,11 @@ fn main() -> Result<()> {
                     version
                 );
             }
-            // Pre-validación atómica: abortar antes de mutar si el árbol está sucio
-            // o no hay commits nuevos desde el último tag.
+            // Pre-validación atómica: abortar antes de mutar si las licencias están
+            // desincronizadas, si el árbol está sucio o si no hay commits nuevos
+            // desde el último tag.
             {
+                check_licenses_gate()?;
                 let last = last_tag()?;
                 let diff_status = std::process::Command::new("git")
                     .args(["diff", "--quiet"])
@@ -225,13 +193,28 @@ fn main() -> Result<()> {
             }
             bump_version(version)?;
             promote_changelog(version)?;
-            println!("Release {} preparado:", version);
+
+            // Post-comprobaciones: las mismas puertas que CI ejecuta sobre el tag,
+            // corridas antes de crearlo. Los archivos ya están mutados (sin rollback).
+            let post_check = |e: anyhow::Error| {
+                anyhow!(
+                    "los archivos del release ya fueron modificados, pero la verificación \
+                     falló: corrige a mano o revierte con `git checkout .` — {}",
+                    e
+                )
+            };
+            check_source_offer(version).map_err(post_check)?;
+            let changelog_text = std::fs::read_to_string("CHANGELOG.md")?;
+            validate_changelog_text(&changelog_text, version).map_err(post_check)?;
+
+            println!("Release {} preparado y verificado:", version);
             println!("  - src/main.rs (VERSION)");
             println!("  - Cargo.toml (package.version)");
             println!("  - Cargo.lock (ai-voice-interconnector)");
             println!("  - tests/golden/cli_version.json");
             println!("  - SOURCE-OFFER.md (oferta GPLv3 §6 versionada)");
             println!("  - CHANGELOG.md (sección promovida desde [No publicado] + ToC + enlace)");
+            println!("Comprobaciones: licencias, SOURCE-OFFER.md y CHANGELOG.md en sincronía");
             println!("Revisa el diff, commitea con conventional-commits y crea el tag v{}", version);
         }
         Commands::Changelog { check } => {
@@ -409,6 +392,39 @@ fn render_source_offer(version: &str) -> String {
     SOURCE_OFFER_TEMPLATE
         .replace("{version}", version)
         .replace("{repo}", GITHUB_REPO)
+}
+
+/// Compara `current` (contenido vigente de SOURCE-OFFER.md) contra `rendered`
+/// (lo que `render_source_offer` produciría para la versión activa), normalizando
+/// CRLF vs LF (git autocrlf, PowerShell). Pura: sin E/S, así se puede testear sin
+/// fixtures de archivo. `Ok(())` si coinciden; si no, un mensaje accionable con
+/// diff mínimo.
+fn diff_source_offer(current: &str, rendered: &str) -> Result<(), String> {
+    let norm_current = current.replace("\r\n", "\n");
+    let norm_rendered = rendered.replace("\r\n", "\n");
+    if norm_current == norm_rendered {
+        return Ok(());
+    }
+    let mut msg = String::from(
+        "SOURCE-OFFER.md desincronizado: regenera con `cargo run -p xtask -- source-offer > SOURCE-OFFER.md`\n",
+    );
+    for line in diff_lines(&norm_current, &norm_rendered) {
+        msg.push_str(&line);
+        msg.push('\n');
+    }
+    Err(msg)
+}
+
+/// Gate de `SOURCE-OFFER.md`: verifica que esté en sincronía con el renderizado
+/// para `version`. Envoltura de E/S sobre `diff_source_offer` (pura, testeable).
+fn check_source_offer(version: &str) -> Result<()> {
+    let rendered = render_source_offer(version);
+    let dest = Path::new("SOURCE-OFFER.md");
+    if !dest.is_file() {
+        anyhow::bail!("SOURCE-OFFER.md no existe; esperado:\n{}", rendered);
+    }
+    let current = std::fs::read_to_string(dest)?;
+    diff_source_offer(&current, &rendered).map_err(|msg| anyhow!(msg))
 }
 
 /// Reemplaza la versión en un archivo usando el regex con dos grupos de captura.
@@ -659,6 +675,59 @@ fn validate_changelog_text(text: &str, version: &str) -> Result<()> {
         );
     }
 
+    // 6) Las anclas del índice coinciden con las que GitHub asigna a cada cabecera.
+    validate_changelog_anchors(text)?;
+
+    Ok(())
+}
+
+/// Invariante de anclas: cada cabecera `## [X.Y.Z] — fecha` debe tener en la
+/// tabla de contenidos la línea exacta `- [X.Y.Z — fecha](#ancla)` con el ancla
+/// que GitHub asigna (`slug`), y cada entrada de ToC debe apuntar al ancla de su
+/// propia versión y fecha. Solo compara líneas completas, así que las menciones
+/// en prosa no cuentan. Independiente de los demás invariantes para poder
+/// aplicarla a un CHANGELOG que aún conserva `## [No publicado]`.
+fn validate_changelog_anchors(text: &str) -> Result<()> {
+    let heading_re = Regex::new(r"(?m)^## \[(\d+\.\d+\.\d+)\] — (\d{4}-\d{2}-\d{2})\s*$").unwrap();
+    let toc_re =
+        Regex::new(r"(?m)^- \[(\d+\.\d+\.\d+) — (\d{4}-\d{2}-\d{2})\]\(#([^)]+)\)\s*$").unwrap();
+
+    for caps in heading_re.captures_iter(text) {
+        let version = &caps[1];
+        let date = &caps[2];
+        let expected_anchor = slug(version, date);
+        let expected_toc_line = format!("- [{} — {}](#{})", version, date, expected_anchor);
+        if !text.lines().any(|l| l.trim_start() == expected_toc_line) {
+            anyhow::bail!(
+                "la tabla de contenidos de CHANGELOG.md no tiene la entrada `{}` para la sección \
+                 [{}] — {} (ancla esperada `#{}`, la que GitHub asigna a esa cabecera)",
+                expected_toc_line,
+                version,
+                date,
+                expected_anchor
+            );
+        }
+    }
+
+    for caps in toc_re.captures_iter(text) {
+        let version = &caps[1];
+        let date = &caps[2];
+        let anchor = &caps[3];
+        let expected_anchor = slug(version, date);
+        if anchor != expected_anchor.as_str() {
+            anyhow::bail!(
+                "la entrada de la tabla de contenidos para [{}] — {} usa el ancla `#{}`, pero \
+                 GitHub asignará `#{}` a la cabecera `## [{}] — {}`: corrige el enlace del índice",
+                version,
+                date,
+                anchor,
+                expected_anchor,
+                version,
+                date
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -806,6 +875,42 @@ fn check_licenses() -> Result<(Vec<String>, Vec<String>)> {
     missing.sort();
     extra.sort();
     Ok((missing, extra))
+}
+
+/// Mensaje accionable del gate de licencias a partir de las listas de
+/// faltantes/sobrantes ya calculadas por `check_licenses`. Pura: sin E/S, así
+/// se puede testear sin fixtures de archivo. `None` si está en sincronía.
+fn format_licenses_gate_message(missing: &[String], extra: &[String]) -> Option<String> {
+    if missing.is_empty() && extra.is_empty() {
+        return None;
+    }
+    let mut msg = String::new();
+    if !missing.is_empty() {
+        msg.push_str(
+            "Crates del lock SIN fila en THIRD-PARTY-LICENSES.md (atribución faltante):\n",
+        );
+        for n in missing {
+            msg.push_str(&format!("  + {}\n", n));
+        }
+    }
+    if !extra.is_empty() {
+        msg.push_str("Filas de THIRD-PARTY-LICENSES.md sin crate en el lock (obsoletas):\n");
+        for n in extra {
+            msg.push_str(&format!("  - {}\n", n));
+        }
+    }
+    msg.push_str("\nRegenera el inventario (cargo metadata).");
+    Some(msg)
+}
+
+/// Gate de licencias: falla con un mensaje accionable si `THIRD-PARTY-LICENSES.md`
+/// está desincronizado de `Cargo.lock` (crates faltantes o filas obsoletas).
+fn check_licenses_gate() -> Result<()> {
+    let (missing, extra) = check_licenses()?;
+    match format_licenses_gate_message(&missing, &extra) {
+        None => Ok(()),
+        Some(msg) => anyhow::bail!(msg),
+    }
 }
 
 #[cfg(test)]
@@ -1737,5 +1842,75 @@ mod tests {
         assert!(promovido.contains("renombra la cabecera `## [No publicado]`"));
         // Y la validación NO da falso positivo por esa mención en backticks.
         assert!(validate_changelog_text(&promovido, "0.20.4").is_ok());
+    }
+
+    #[test]
+    fn test_validate_changelog_anchors_pasa_sobre_promovido() {
+        let promovido =
+            promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        assert!(validate_changelog_anchors(&promovido).is_ok());
+    }
+
+    #[test]
+    fn test_validate_changelog_anchors_falla_con_ancla_vieja_sin_doble_guion() {
+        let promovido =
+            promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        // Ancla que no coincide con la que GitHub asigna a la cabecera.
+        let ancla_rota = promovido.replace(
+            "- [0.20.4 — 2026-09-24](#0204--2026-09-24)",
+            "- [0.20.4 — 2026-09-24](#0204-20260924)",
+        );
+        let err = validate_changelog_anchors(&ancla_rota).unwrap_err();
+        assert!(err.to_string().contains("0204--2026-09-24"));
+        // El invariante de anclas también se ejerce desde validate_changelog_text.
+        let err = validate_changelog_text(&ancla_rota, "0.20.4").unwrap_err();
+        assert!(err.to_string().contains("0204--2026-09-24"));
+    }
+
+    #[test]
+    fn test_validate_changelog_anchors_falla_si_falta_la_entrada_de_toc() {
+        // La cabecera de [0.20.3] existe pero su entrada de ToC no está (caso
+        // distinto de "ancla rota": aquí no hay ninguna línea para esa versión).
+        let sin_entrada =
+            sample_changelog().replace("- [0.20.3 — 2026-09-22](#0203--2026-09-22)\n", "");
+        let err = validate_changelog_anchors(&sin_entrada).unwrap_err();
+        assert!(err.to_string().contains("0203--2026-09-22"));
+    }
+
+    #[test]
+    fn test_diff_source_offer_coincide() {
+        let rendered = render_source_offer("1.2.3");
+        assert!(diff_source_offer(&rendered, &rendered).is_ok());
+    }
+
+    #[test]
+    fn test_diff_source_offer_normaliza_crlf() {
+        let rendered = render_source_offer("1.2.3");
+        let con_crlf = rendered.replace('\n', "\r\n");
+        assert!(diff_source_offer(&con_crlf, &rendered).is_ok());
+    }
+
+    #[test]
+    fn test_diff_source_offer_desincronizado() {
+        let rendered = render_source_offer("1.2.3");
+        let viejo = render_source_offer("1.2.2");
+        let err = diff_source_offer(&viejo, &rendered).unwrap_err();
+        assert!(err.contains("SOURCE-OFFER.md desincronizado"));
+    }
+
+    #[test]
+    fn test_format_licenses_gate_message_sincronizado() {
+        assert!(format_licenses_gate_message(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn test_format_licenses_gate_message_con_faltantes_y_sobrantes() {
+        let missing = vec!["crate-nuevo".to_string()];
+        let extra = vec!["crate-viejo".to_string()];
+        let msg = format_licenses_gate_message(&missing, &extra).unwrap();
+        assert!(msg.contains("crate-nuevo"));
+        assert!(msg.contains("atribución faltante"));
+        assert!(msg.contains("crate-viejo"));
+        assert!(msg.contains("obsoletas"));
     }
 }
