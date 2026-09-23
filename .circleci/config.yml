@@ -67,14 +67,6 @@ parameters:
     type: boolean
     default: false
     description: Activa el workflow de sonda native-cache-probe (solo por API; nunca publica).
-  # Launcher sccache para los proyectos CMake (CTranslate2, oneDNN,
-  # SentencePiece) de los build-*; en Windows fija además el generador Ninja,
-  # porque el generador Visual Studio ignora los launchers. Parámetro temporal
-  # de medición: con `false` el comportamiento es el previo.
-  native_sccache:
-    type: boolean
-    default: false
-    description: Envuelve con sccache los builds CMake de los build-* (Ninja en Windows).
   ninja_version:
     type: string
     default: "1.13.2"
@@ -94,10 +86,12 @@ parameters:
 # Matriz de invalidación por familia de caché:
 #   - registry (cargo-v2): cambia solo con dependencias reales en Cargo.lock;
 #     conserva fallback por prefijo.
-#   - target (v2): cambia con dependencias reales en Cargo.lock y con el tree hash
+#   - target (v3): cambia con dependencias reales en Cargo.lock y con el tree hash
 #     git de vendor/cmake-0.1.58. Clave exacta SIN fallback: un acierto garantiza
 #     que lo compilado corresponde al parche actual, así que su mtime se fija tras
-#     restaurar y cargo no lo marca Dirty.
+#     restaurar y cargo no lo marca Dirty. v2→v3: Windows pasó del generador
+#     Visual Studio a Ninja, y CMake rechaza reutilizar un directorio de build
+#     creado con otro generador; la familia nueva parte con target/ vacío.
 #   - toolchain (v1): cambia con rust_version. NO se re-keya: su semántica no cambia.
 #   - msys2 (v1): cambia con los pines de versión MSYS2. NO se re-keya.
 #   - sccache (v1): rolling con epoch. NO se re-keya.
@@ -118,7 +112,7 @@ commands:
     # local, que cargo fingerprintea por mtime. El checkout le da mtime nuevo en
     # cada corrida, la marca Dirty y arrastra la re-ejecución de toda la cadena
     # nativa (aws-lc-sys, onednn-src, sentencepiece-sys, ct2rs…). Por eso la clave
-    # exacta de target-v2 incluye el tree hash git del parche y NO tiene fallback
+    # exacta de target-v3 incluye el tree hash git del parche y NO tiene fallback
     # por prefijo: un acierto garantiza que lo compilado en target/ corresponde al
     # contenido actual del parche, y fijar su mtime antiguo es seguro sin comparar
     # nada. Un fallo de caché deja target/ vacío, donde la fijación es inocua. El
@@ -127,7 +121,7 @@ commands:
     # `/usr/bin/find` se usa por la misma razón (el find.exe de Windows).
     #
     # `target: false` (modo sonda de los build-*) omite la restauración de
-    # target-v2 y la fijación de mtime: cada corrida de sonda compila con
+    # target-v3 y la fijación de mtime: cada corrida de sonda compila con
     # target/ frío y nunca depende de una clave de producción.
     parameters:
       variant:
@@ -154,7 +148,7 @@ commands:
           shell: bash
           command: perl -0777 -pe 's/(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/' Cargo.lock > Cargo.lock.cachekey
       - run:
-          name: Calcular identidad de contenido de vendor/cmake-0.1.58 (clave de target-v2)
+          name: Calcular identidad de contenido de vendor/cmake-0.1.58 (clave de target-v3)
           shell: bash
           command: |
             set -euo pipefail
@@ -170,7 +164,7 @@ commands:
           steps:
             - restore_cache:
                 keys:
-                  - target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
+                  - target-v3-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
             - run:
                 name: Fijar mtime de vendor/cmake-0.1.58 (evita cascada Dirty)
                 shell: bash
@@ -206,7 +200,7 @@ commands:
     # ahí un fallo del job suele ser un test que falló, no una compilación
     # incompleta, así que guardar igual sigue siendo útil para acelerar la
     # próxima corrida. build-* (variant: full) pasa `when: on_success` de forma
-    # explícita: como la clave de `target-v2` es inmutable (el primer `save_cache`
+    # explícita: como la clave de `target-v3` es inmutable (el primer `save_cache`
     # gana), un build-* que falla a medio `cargo build --release` persistiría un
     # `target/` incompleto bajo esa clave para siempre — exactamente lo que
     # ocurrió con `target-v2` `full` de linux-x64 en v0.20.9.
@@ -222,13 +216,13 @@ commands:
         default: "always"
     steps:
       - save_cache:
-          key: target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
+          key: target-v3-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
           paths:
             - target
           when: << parameters.when >>
 
   cargo_restore_registry:
-    description: Restaura solo registry/git (sin target) — para los jobs pequeños xtask/changelog-gate (validate-licenses, validate-changelog, publish-metadata); test-linux/test-macos/test-windows/coverage y build-* usan cargo_restore_caches con target-v2
+    description: Restaura solo registry/git (sin target) — para los jobs pequeños xtask/changelog-gate (validate-licenses, validate-changelog, publish-metadata); test-linux/test-macos/test-windows/coverage y build-* usan cargo_restore_caches con target-v3
     steps:
       - run:
           name: Generar Cargo.lock.cachekey (clave de caché normalizada)
@@ -288,11 +282,12 @@ commands:
   # sccache (R2): envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
   # hash de contenido en ~/.cache/sccache. Cada variante (test/full/cov) guarda
   # y restaura solo su propio blob (clave segmentada por variant, espejo de
-  # target-v2), sobreviviendo a bumps de Cargo.lock que invalidan target/.
-  # Cobertura: `rustc` y los nativos compilados con el crate `cc` (que detecta
-  # RUSTC_WRAPPER=sccache y lo usa como wrapper). Los proyectos CMake
-  # (ct2rs/CTranslate2, onednn-src, sentencepiece-sys) solo pasan por sccache
-  # con `native_sccache: true` (launcher CMake; Ninja en Windows, ver
+  # target-v3), sobreviviendo a bumps de Cargo.lock que invalidan target/.
+  # Cobertura: `rustc`, los nativos compilados con el crate `cc` (que detecta
+  # RUSTC_WRAPPER=sccache y lo usa como wrapper; en Windows solo si CC/CXX es la
+  # ruta absoluta de cl.exe, ver build-windows-x64) y los proyectos CMake
+  # (ct2rs/CTranslate2, onednn-src, sentencepiece-sys) vía
+  # CMAKE_<LANG>_COMPILER_LAUNCHER, con el generador Ninja en Windows (ver
   # native_sccache_setup_*). Clave de caché rolling: guarda con {{ epoch }}
   # (siempre escribe) y restaura por prefijo (último estado de la misma
   # variante en el mismo arch+toolchain).
@@ -389,24 +384,22 @@ commands:
   # crate `cmake` fija CMAKE_<LANG>_COMPILER a la ruta real del compilador
   # (`cc` solo antepone sccache al invocar, no en la ruta de la herramienta).
   native_sccache_setup_unix:
-    description: Exporta sccache como launcher C/C++ de CMake (bash, tras native_sccache)
+    description: Exporta sccache como launcher C/C++ de CMake (bash)
     steps:
-      - when:
-          condition: << pipeline.parameters.native_sccache >>
-          steps:
-            - run:
-                name: Configurar sccache como launcher de CMake
-                command: |
-                  echo 'export CMAKE_C_COMPILER_LAUNCHER=sccache' >> "$BASH_ENV"
-                  echo 'export CMAKE_CXX_COMPILER_LAUNCHER=sccache' >> "$BASH_ENV"
-                  echo "CMAKE_{C,CXX}_COMPILER_LAUNCHER=sccache exportados a BASH_ENV"
+      - run:
+          name: Configurar sccache como launcher de CMake
+          command: |
+            echo 'export CMAKE_C_COMPILER_LAUNCHER=sccache' >> "$BASH_ENV"
+            echo 'export CMAKE_CXX_COMPILER_LAUNCHER=sccache' >> "$BASH_ENV"
+            echo "CMAKE_{C,CXX}_COMPILER_LAUNCHER=sccache exportados a BASH_ENV"
   # En Windows el generador Visual Studio (el que elige el crate `cmake` por
   # defecto con MSVC) ignora los launchers; con Ninja sí se aplican. Ninja se
   # descarga en cada corrida (≈300 KB) a un directorio temporal fuera de toda
   # caché, así ninguna caché puede aportar otra versión. El crate `cmake` lee
-  # CMAKE_GENERATOR del entorno y, con Ninja + MSVC, hereda el entorno de MSVC
-  # (PATH/INCLUDE/LIB) que resuelve `cc`, sin vcvars. PowerShell no tiene
-  # $BASH_ENV: el paso de compilación fija PATH y las variables inline.
+  # CMAKE_GENERATOR del entorno. Ninja no carga el entorno de MSVC por sí mismo
+  # (el generador Visual Studio sí): el paso de compilación importa vcvars64 y
+  # fija CC/CXX a la ruta de cl.exe. PowerShell no tiene $BASH_ENV: ese paso
+  # fija PATH y las variables inline.
   native_sccache_setup_windows:
     description: Instala Ninja (pin) en $env:TEMP\ninja para el generador CMake de Windows
     steps:
@@ -486,9 +479,9 @@ jobs:
     # arch-independiente y mockea el engine (Parakeet/Qwen no se ejercitan),
     # así que re-correrla en ARM64 no aportaría señal (ver docs/BUILD.md §4).
     # Es la arquitectura más barata/rápida disponible.
-    # Caché: registry + target-v2 + sccache autoconsistente (variant: test),
+    # Caché: registry + target-v3 + sccache autoconsistente (variant: test),
     # igual que test-windows/test-macos/coverage.
-    # target-v2 evita recompilar dependencias externas, pero los crates propios
+    # target-v3 evita recompilar dependencias externas, pero los crates propios
     # del workspace (path dependencies) recompilan siempre: el fingerprinting
     # de cargo para dependencias de ruta local es por mtime en los tres SO
     # (evidencia v0.20.4: 264/290 Fresh en Linux). sccache por contenido es
@@ -552,11 +545,11 @@ jobs:
     # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
     # test-linux/macos: valida código específico de Windows (winsound, tray)
     # antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
-    # Caché: registry + target-v2 + sccache autoconsistente (cargo_restore_caches
-    # os: windows variant: test; sccache os: windows variant: test). target-v2
+    # Caché: registry + target-v3 + sccache autoconsistente (cargo_restore_caches
+    # os: windows variant: test; sccache os: windows variant: test). target-v3
     # tiene coste de I/O NTFS significativo en restore/save, pero sin él la
     # recompilación en Windows es total (evidencia v0.20.4: 0 Fresh / 154
-    # Compiling con hit exacto de target-v2, incluyendo dependencias externas).
+    # Compiling con hit exacto de target-v3, incluyendo dependencias externas).
     executor: win/server-2022
     steps:
       - checkout
@@ -638,9 +631,9 @@ jobs:
     # Suite Rust en macOS nativo (Apple Silicon, Xcode 26.4.0). Valida código
     # específico de macOS (afplay/CoreAudio, rutas POSIX, señales) — sin Mac
     # físico, este gate en CI es la única validación antes del usuario real.
-    # Caché: registry + target-v2 + sccache autoconsistente (variant: test),
+    # Caché: registry + target-v3 + sccache autoconsistente (variant: test),
     # igual que test-linux/test-windows/coverage.
-    # target-v2 evita recompilar dependencias externas, pero los crates propios
+    # target-v3 evita recompilar dependencias externas, pero los crates propios
     # del workspace (path dependencies) recompilan siempre: el fingerprinting
     # de cargo para dependencias de ruta local es por mtime en los tres SO
     # (evidencia v0.20.4: 287/313 Fresh en macOS). sccache por contenido es
@@ -918,7 +911,7 @@ jobs:
   # coverage + instaladores (ver workflow build-all).
   # ──────────────────────────────────────────────────────────────
   # Parámetro `probe` (los 4 build-*): modo sonda del workflow
-  # `native-cache-probe`. Sin restaurar ni guardar target-v2 (target/ frío en
+  # `native-cache-probe`. Sin restaurar ni guardar target-v3 (target/ frío en
   # cada corrida), sin empaquetado (staging, SHA-256, persist_to_workspace:
   # exigen CIRCLE_TAG == const VERSION) y con el diagnóstico de CMake. Sigue
   # ejecutando smoke test y motor TTS, y guarda sccache en la variante `full`
@@ -1039,28 +1032,41 @@ jobs:
           os: windows
           variant: full
       - sccache_setup_windows
-      - when:
-          condition: << pipeline.parameters.native_sccache >>
-          steps:
-            - native_sccache_setup_windows
+      - native_sccache_setup_windows
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
             Write-Host "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # Entorno MSVC (vcvars64) importado ANTES de anteponer .cargo\bin y
+            # Ninja, para que vcvars no los desplace del PATH. Lo exige Ninja
+            # (el generador Visual Studio cargaba INCLUDE/LIB por su cuenta).
+            $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            $VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (-not $VsPath) { throw "vswhere no encontró una instalación con MSVC x64" }
+            $VcVars = "$VsPath\VC\Auxiliary\Build\vcvars64.bat"
+            cmd /c "call `"$VcVars`" >nul 2>&1 && set" | ForEach-Object {
+              if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
+            }
+            # CC/CXX = ruta absoluta de cl.exe: solo así el crate `cc` usa
+            # RUSTC_WRAPPER=sccache como wrapper en MSVC.
+            $Cl = (Get-Command cl.exe -ErrorAction Stop).Source
+            $env:CC = $Cl
+            $env:CXX = $Cl
+            $env:PATH = "$env:TEMP\ninja;$env:USERPROFILE\.cargo\bin;$env:PATH"
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
             $env:CARGO_INCREMENTAL = "0"
             # Launcher sccache para CMake: exige el generador Ninja (el de
             # Visual Studio ignora los launchers). Ver native_sccache_setup_windows.
-            if ("<< pipeline.parameters.native_sccache >>" -eq "true") {
-              $env:PATH = "$env:TEMP\ninja;$env:PATH"
-              $env:CMAKE_GENERATOR = "Ninja"
-              $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
-              $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
-            }
+            $env:CMAKE_GENERATOR = "Ninja"
+            $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
+            $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
+            Write-Host "cl: $Cl"
+            Write-Host "ninja: $((Get-Command ninja.exe -ErrorAction Stop).Source)"
+            Write-Host "cmake: $((Get-Command cmake.exe -ErrorAction Stop).Source)"
+            cmake --version
             # El crate `ort` usa `load-dynamic`: no enlaza ONNX Runtime en
             # build-time (no hay ORT_LIB_PATH). La librería dinámica se descarga
             # y empaqueta junto al binario en el step de bundling siguiente.
@@ -2182,8 +2188,7 @@ workflows:
 
   # ── Sonda de builds nativos (herramienta de diagnóstico, nunca publica) ──
   # Solo por API: POST /api/v2/project/gh/<org>/<repo>/pipeline con
-  # {"branch":"main","parameters":{"native_cache_probe":true}} (y opcionalmente
-  # "native_sccache":true). Ejecuta los 4 build-* en modo `probe`: sin puertas,
+  # {"branch":"main","parameters":{"native_cache_probe":true}}. Ejecuta los 4 build-* en modo `probe`: sin puertas,
   # sin publish-*, sin restaurar ni guardar target-*, sin empaquetado; con
   # --timings y el diagnóstico de CMake. Guarda sccache (por contenido). Sin
   # `requires` ni filtros de tags: corre en la rama indicada. Ver docs/BUILD.md §4.

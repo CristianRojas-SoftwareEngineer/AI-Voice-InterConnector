@@ -891,7 +891,7 @@ mod tests {
     fn test_pipeline_heterogeneo_y_sccache_incondicional() {
         let cfg = leer_config_ci();
         // Modelo vigente (post remediación de caché): test-linux, test-windows, test-macos,
-        // coverage y build-* usan cargo_restore_caches (registry + target-v2) y sccache
+        // coverage y build-* usan cargo_restore_caches (registry + target-v3) y sccache
         // autoconsistente por variante (cada job pesado restaura y guarda su propio blob).
         // Los jobs pequeños (validate-licenses/validate-changelog/publish-metadata) usan
         // cargo_restore_registry (solo registry + sccache restore-only), por lo que ambos
@@ -928,7 +928,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             linux_section.contains("cargo_restore_caches"),
-            "test-linux debe usar cargo_restore_caches (registry + target-v2)"
+            "test-linux debe usar cargo_restore_caches (registry + target-v3)"
         );
         assert!(
             linux_section.contains("variant: test"),
@@ -936,7 +936,7 @@ mod tests {
         );
         assert!(
             linux_section.contains("cargo_save_target"),
-            "test-linux debe guardar target-v2 (cargo_save_target)"
+            "test-linux debe guardar target-v3 (cargo_save_target)"
         );
         assert!(
             linux_section.contains("sccache_restore_cache"),
@@ -967,7 +967,7 @@ mod tests {
         );
         assert!(
             windows_section.contains("cargo_save_target"),
-            "test-windows debe guardar target-v2 (cargo_save_target)"
+            "test-windows debe guardar target-v3 (cargo_save_target)"
         );
         assert!(
             windows_section.contains("sccache_restore_cache"),
@@ -977,7 +977,7 @@ mod tests {
             windows_section.contains("sccache_save_cache"),
             "test-windows debe guardar sccache (sccache_save_cache)"
         );
-        // coverage debe usar cargo_restore_caches con os: linux y variant: cov y guardar target-v2
+        // coverage debe usar cargo_restore_caches con os: linux y variant: cov y guardar target-v3
         let coverage_section = cfg
             .split("  coverage:")
             .nth(1)
@@ -999,13 +999,13 @@ mod tests {
         );
         assert!(
             coverage_section.contains("cargo_save_target"),
-            "coverage debe guardar target-v2 (cargo_save_target)"
+            "coverage debe guardar target-v3 (cargo_save_target)"
         );
         assert!(
             coverage_section.contains("sccache_save_cache"),
             "coverage debe guardar sccache (sccache_save_cache)"
         );
-        // test-macos usa cargo_restore_caches (registry + target-v2) y sccache autoconsistente (variant: test), igual que test-linux
+        // test-macos usa cargo_restore_caches (registry + target-v3) y sccache autoconsistente (variant: test), igual que test-linux
         let macos_section = cfg
             .split("  test-macos:")
             .nth(1)
@@ -1015,7 +1015,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             macos_section.contains("cargo_restore_caches"),
-            "test-macos debe usar cargo_restore_caches (registry + target-v2)"
+            "test-macos debe usar cargo_restore_caches (registry + target-v3)"
         );
         assert!(
             macos_section.contains("variant: test"),
@@ -1031,9 +1031,9 @@ mod tests {
         );
         assert!(
             macos_section.contains("cargo_save_target"),
-            "test-macos debe guardar target-v2 (cargo_save_target)"
+            "test-macos debe guardar target-v3 (cargo_save_target)"
         );
-        // build-* deben usar cargo_restore_caches con target-v2 full (heterogéneo con target en build-*).
+        // build-* deben usar cargo_restore_caches con target-v3 full (heterogéneo con target en build-*).
         // NO deben ejecutar `cargo clean -p ai-voice-interconnector`: sin --release/--profile
         // es un no-op sobre el perfil release (limpia solo target/debug), y aunque no lo fuera
         // el bump de VERSION ya invalida el fingerprint de cargo por sí solo (mtime + -C
@@ -1057,7 +1057,7 @@ mod tests {
                 .unwrap_or("");
             assert!(
                 section.contains("cargo_restore_caches"),
-                "{job} debe usar cargo_restore_caches (con target-v2)"
+                "{job} debe usar cargo_restore_caches (con target-v3)"
             );
             assert!(
                 section.contains("variant: full"),
@@ -1065,7 +1065,7 @@ mod tests {
             );
             assert!(
                 section.contains("cargo_save_target"),
-                "{job} debe guardar target-v2 (cargo_save_target)"
+                "{job} debe guardar target-v3 (cargo_save_target)"
             );
             assert!(
                 section.contains("sccache_save_cache"),
@@ -1079,10 +1079,10 @@ mod tests {
     }
 
     #[test]
-    fn test_clave_target_v2_con_identidad_de_vendor_cmake() {
+    fn test_clave_target_v3_con_identidad_de_vendor_cmake() {
         let cfg = leer_config_ci();
         // El parche local de cmake se fingerprintea por mtime: el checkout lo marca
-        // Dirty y arrastra la cadena nativa. La clave exacta de target-v2 lleva el
+        // Dirty y arrastra la cadena nativa. La clave exacta de target-v3 lleva el
         // tree hash git del parche y NO tiene fallback, de modo que un acierto
         // garantiza que target/ corresponde al contenido actual y fijar el mtime es
         // seguro. Reintroducir un fallback fijaría mtimes sobre snapshots ajenos.
@@ -1118,41 +1118,41 @@ mod tests {
         let restore_keys: Vec<&str> = restore_section
             .lines()
             .map(str::trim)
-            .filter_map(|l| l.strip_prefix("- target-v2-"))
+            .filter_map(|l| l.strip_prefix("- target-v3-"))
             .collect();
         assert_eq!(
             restore_keys.len(),
             1,
-            "target-v2 debe restaurarse con una única clave exacta, sin fallback por prefijo"
+            "target-v3 debe restaurarse con una única clave exacta, sin fallback por prefijo"
         );
         assert!(
             restore_keys[0].contains(r#"checksum ".vendor-cmake.tree""#),
-            "la clave de target-v2 debe incluir el tree hash de vendor/cmake-0.1.58"
+            "la clave de target-v3 debe incluir el tree hash de vendor/cmake-0.1.58"
         );
         let save_key = save_section
             .lines()
             .map(str::trim)
-            .find_map(|l| l.strip_prefix("key: target-v2-"))
+            .find_map(|l| l.strip_prefix("key: target-v3-"))
             .unwrap_or("");
         assert_eq!(
             restore_keys[0], save_key,
-            "las claves de restauración y guardado de target-v2 deben ser idénticas"
+            "las claves de restauración y guardado de target-v3 deben ser idénticas"
         );
 
         let pos_hash = restore_section.find(hash_cmd).unwrap();
         let pos_restore = restore_section
-            .find("- target-v2-")
-            .expect("cargo_restore_caches debe restaurar target-v2");
+            .find("- target-v3-")
+            .expect("cargo_restore_caches debe restaurar target-v3");
         let pos_touch = restore_section
             .find("touch -t 200001010000")
             .expect("cargo_restore_caches debe fijar el mtime del parche");
         assert!(
             pos_hash < pos_restore,
-            "el tree hash debe calcularse antes de restaurar target-v2"
+            "el tree hash debe calcularse antes de restaurar target-v3"
         );
         assert!(
             pos_restore < pos_touch,
-            "el mtime del parche debe fijarse después de restaurar target-v2"
+            "el mtime del parche debe fijarse después de restaurar target-v3"
         );
 
         for residuo in ["sort -z", "sha256_hex", "target/.vendor-cmake.sha256"] {
@@ -1196,7 +1196,7 @@ mod tests {
         );
     }
 
-    /// `target-v2` usa clave inmutable (el primer `save_cache` gana): en
+    /// `target-v3` usa clave inmutable (el primer `save_cache` gana): en
     /// build-* (variant: full), guardar con `when: always` persistiría para
     /// siempre un `target/` incompleto si `cargo build --release` falla a
     /// medias (ya ocurrió con linux-x64 en v0.20.9). test-*/coverage sí
@@ -1336,7 +1336,7 @@ mod tests {
     }
 
     /// Modo sonda de los build-*: no restaura ni guarda la clave inmutable de
-    /// target-v2 (fijaría un target/ ajeno bajo una clave de producción) ni
+    /// target-v3 (fijaría un target/ ajeno bajo una clave de producción) ni
     /// empaqueta (el staging exige CIRCLE_TAG == const VERSION).
     #[test]
     fn test_modo_sonda_no_toca_target_v2() {
@@ -1344,7 +1344,7 @@ mod tests {
         let sonda = ("when".to_string(), "<< parameters.probe >>".to_string());
         let no_sonda = ("unless".to_string(), "<< parameters.probe >>".to_string());
 
-        // El comando solo restaura target-v2 (y fija mtime) con target: true.
+        // El comando solo restaura target-v3 (y fija mtime) con target: true.
         let cmd = cfg
             .split("\n  cargo_restore_caches:\n")
             .nth(1)
@@ -1354,14 +1354,14 @@ mod tests {
             .unwrap_or("");
         let cmd_lines: Vec<&str> = cmd.lines().collect();
         let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
-        for marca in ["- target-v2-", "name: Fijar mtime de vendor/cmake-0.1.58"] {
+        for marca in ["- target-v3-", "name: Fijar mtime de vendor/cmake-0.1.58"] {
             let i = cmd_lines
                 .iter()
                 .position(|l| l.trim().starts_with(marca))
                 .unwrap_or_else(|| panic!("cargo_restore_caches debe contener `{marca}`"));
             // El paso es el ítem de lista (`- restore_cache:`/`- run:`) que lo contiene.
             let item = (0..=i).rev().find(|&k| cmd_lines[k].trim().starts_with("- ")).unwrap();
-            let item = if cmd_lines[item].trim().starts_with("- target-v2-") { item - 2 } else { item };
+            let item = if cmd_lines[item].trim().starts_with("- target-v3-") { item - 2 } else { item };
             assert_eq!(
                 guarda_de(&cmd_lines, item),
                 Some(param_target.clone()),
@@ -1464,12 +1464,17 @@ mod tests {
         }
     }
 
-    /// Launcher sccache para los proyectos CMake de los build-*: en Unix vía
-    /// CMAKE_{C,CXX}_COMPILER_LAUNCHER exportados a $BASH_ENV; en Windows además
-    /// con el generador Ninja (el de Visual Studio ignora los launchers).
+    /// Launcher sccache para los proyectos CMake de los build-*, incondicional:
+    /// en Unix vía CMAKE_{C,CXX}_COMPILER_LAUNCHER exportados a $BASH_ENV; en
+    /// Windows además con el generador Ninja (el de Visual Studio ignora los
+    /// launchers), el entorno vcvars64 y CC/CXX con la ruta absoluta de cl.exe.
     #[test]
     fn test_launcher_cmake_en_builds() {
         let cfg = leer_config_ci();
+        assert!(
+            !cfg.contains("native_sccache:") && !cfg.contains("pipeline.parameters.native_sccache "),
+            "el launcher es incondicional: no debe existir el parámetro native_sccache"
+        );
         let unix = cfg
             .split("\n  native_sccache_setup_unix:\n")
             .nth(1)
@@ -1495,8 +1500,8 @@ mod tests {
         }
         let win = seccion_build(&cfg, "build-windows-x64");
         assert!(
-            win.contains("- native_sccache_setup_windows"),
-            "build-windows-x64 debe instalar Ninja (native_sccache_setup_windows)"
+            win.contains("      - sccache_setup_windows\n      - native_sccache_setup_windows\n"),
+            "build-windows-x64 debe instalar Ninja (native_sccache_setup_windows) sin condición"
         );
         let compilar = win
             .split("name: Compilar binario release (cargo build --release)")
@@ -1509,15 +1514,28 @@ mod tests {
             r#"$env:CMAKE_GENERATOR = "Ninja""#,
             r#"$env:CMAKE_C_COMPILER_LAUNCHER = "sccache""#,
             r#"$env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache""#,
-            r#"$env:PATH = "$env:TEMP\ninja;$env:PATH""#,
+            r#"$env:PATH = "$env:TEMP\ninja;$env:USERPROFILE\.cargo\bin;$env:PATH""#,
+            r#"$env:CC = $Cl"#,
+            r#"$env:CXX = $Cl"#,
+            r#"\VC\Auxiliary\Build\vcvars64.bat""#,
         ] {
             assert!(
                 compilar.contains(asignacion),
                 "el paso de compilación de Windows debe fijar `{asignacion}`"
             );
         }
+        assert!(
+            !compilar.contains("<< pipeline.parameters."),
+            "el entorno de compilación de Windows no debe depender de parámetros de pipeline"
+        );
+        let pos_vcvars = compilar.find("vcvars64.bat").unwrap();
+        let pos_path = compilar.find(r#"$env:PATH = "$env:TEMP\ninja"#).unwrap();
         let pos_launcher = compilar.find("$env:CMAKE_GENERATOR").unwrap();
         let pos_build = compilar.find("cargo build --release --features").unwrap();
+        assert!(
+            pos_vcvars < pos_path,
+            "vcvars64 debe importarse antes de anteponer Ninja y .cargo\\bin al PATH"
+        );
         assert!(
             pos_launcher < pos_build,
             "CMAKE_GENERATOR debe fijarse antes de cargo build"

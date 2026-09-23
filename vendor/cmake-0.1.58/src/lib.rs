@@ -750,7 +750,12 @@ impl Config {
                 //
                 // Note that for other generators, though, this *overrides*
                 // things like the optimization flags, which is bad.
-                if generator.is_none() && msvc {
+                //
+                // Patch: con Ninja + MSVC también se fijan (el CI de Windows usa
+                // Ninja para aplicar el launcher sccache). Sin esto, los
+                // proyectos con CMP0091 OLD (oneDNN) heredan `/MD` del valor por
+                // defecto de CMake mientras Rust enlaza con `/MT` (LNK2038).
+                if (generator.is_none() || is_ninja) && msvc {
                     let flag_var_alt = format!("CMAKE_{}_FLAGS_{}", kind, build_type_upcase);
                     if !self.defined(&flag_var_alt) {
                         let mut flagsflag = OsString::from("-D");

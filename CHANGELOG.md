@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.20.10 — 2026-09-23](#02010-20260923)
 - [0.20.9 — 2026-09-23](#0209-20260923)
 - [0.20.8 — 2026-09-23](#0208-20260923)
@@ -123,6 +124,47 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
+
+## [No publicado]
+
+Cada cambio real de dependencias en `Cargo.lock` cambia la clave exacta de
+`target/` en CI y obliga a recompilar en frío la cadena C++ de CTranslate2,
+oneDNN y SentencePiece, aunque ninguna dependencia nativa haya cambiado: unos
+43 minutos en `build-windows-x64`, 25 en `build-linux-arm64` y 14 en
+`build-linux-x64`. La causa es que esos proyectos se compilan con CMake, que no
+pasaba por `sccache`. Esta versión los hace pasar por `sccache` en los cuatro
+`build-*`, de modo que su caché queda direccionada por contenido e
+independiente de la clave de `target/`.
+
+### Cambiado
+
+- perf(ci): `sccache` como launcher C/C++ de CMake en los cuatro `build-*`
+  (`CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER`). En Windows el
+  generador Visual Studio ignora los launchers, así que `build-windows-x64`
+  compila los proyectos CMake con Ninja (release oficial fijada, descargada en
+  cada corrida), importa el entorno de MSVC con `vcvars64` y fija `CC`/`CXX` a
+  la ruta absoluta de `cl.exe`, condición para que el crate `cc` use también
+  `sccache` en MSVC. El parche local `vendor/cmake-0.1.58` fija ahora los flags
+  de Release de MSVC (runtime estático `/MT` y `/O2 /Ob2 /DNDEBUG`) también con
+  Ninja: sin ello, oneDNN heredaba `/MD` del valor por defecto de CMake y el
+  enlace fallaba por mezcla de runtimes. La caché de `target/` pasa a la
+  familia `target-v3`, porque CMake rechaza reutilizar un directorio de build
+  creado con otro generador; esta versión parte por eso con `target/` vacío en
+  todas las variantes. Medido en una compilación local del binario de Windows
+  (`--features full`, 4 hilos): 16 minutos con `target/` y `sccache` fríos
+  frente a 4 minutos 45 segundos con `target/` frío y `sccache` caliente, con
+  un 98 % de aciertos C/C++.
+
+### Añadido
+
+- ci: workflow de sonda `native-cache-probe`, activable solo por API con el
+  parámetro de pipeline `native_cache_probe: true`. Ejecuta los cuatro
+  `build-*` en modo sonda —sin puertas, sin `publish-*`, sin restaurar ni
+  guardar `target-*` y sin empaquetado— con un diagnóstico de cada proyecto
+  CMake (generador, compilador, launcher, runtime de MSVC y flags efectivos).
+  `build-all` queda excluido mientras el parámetro está activo.
+- ci: los cuatro `build-*` compilan con `cargo build --timings` y publican el
+  desglose por crate como artefacto `cargo-timings`.
 
 ## [0.20.10] — 2026-09-23
 
