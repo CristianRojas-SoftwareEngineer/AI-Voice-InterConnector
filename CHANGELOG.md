@@ -129,6 +129,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+El pipeline de release corre solo en tags, así que un inventario de licencias
+desalineado, una oferta de fuente desactualizada o un índice del CHANGELOG con
+enlaces rotos se descubrían con el tag ya publicado; además, ningún enlace del
+índice llevaba a su sección. Esta versión hace que `xtask release` ejecute las
+mismas comprobaciones que las puertas de CI antes de crear el tag, corrige las
+anclas del índice y valida que no vuelvan a romperse. También deja documentado
+el proceso de release vigente y la estrategia para generar el inventario de
+licencias. El binario distribuido no cambia.
+
 ### Cambiado
 
 - build(xtask): `xtask release` ejecuta las mismas comprobaciones que las
@@ -158,7 +167,6 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   por qué el inventario de licencias de terceros se desalinea de `Cargo.lock`
   sin que la puerta lo detecte, y la estrategia para generarlo desde
   `cargo metadata` con `xtask`.
-
 - docs: revisión de estructura, índices y drift de `docs/` y `USAGE.md`.
   Jerarquía de encabezados coherente en CONTRACT, GOAL y BUILD; índices
   regenerados con h2/h3 anidados; citas archivo:línea sustituidas por símbolo
