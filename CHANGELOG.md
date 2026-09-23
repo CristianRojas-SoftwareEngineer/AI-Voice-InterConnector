@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.21.0 — 2026-09-23](#0210--2026-09-23)
 - [0.20.12 — 2026-09-23](#02012--2026-09-23)
 - [0.20.11 — 2026-09-23](#02011--2026-09-23)
 - [0.20.10 — 2026-09-23](#02010--2026-09-23)
@@ -127,7 +127,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 
 
-## [No publicado]
+## [0.21.0] — 2026-09-23
 
 El pipeline de release corre solo en tags, así que un inventario de licencias
 desalineado, una oferta de fuente desactualizada o un índice del CHANGELOG con
@@ -2353,3 +2353,4 @@ estado con el que nace el producto.
 [0.20.10]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.9...v0.20.10
 [0.20.11]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.10...v0.20.11
 [0.20.12]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.11...v0.20.12
+[0.21.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.12...v0.21.0
