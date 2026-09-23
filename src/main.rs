@@ -500,6 +500,41 @@ fn desheredar_handles_estandar() {
     }
 }
 
+/// Restaura `SIGPIPE` a `SIG_DFL` en Unix para los modos CLI en primer plano.
+///
+/// Rust ignora `SIGPIPE` por defecto (`SIG_IGN`): una escritura a un pipe
+/// cerrado (p. ej. `voice list | head -n1`) devuelve `EPIPE` como error de
+/// I/O en lugar de matar el proceso por señal. `println!`/`writeln!` hacen
+/// `panic!` ante ese error ("failed printing to stdout: Broken pipe", exit
+/// 101), que es ruidoso y no es el comportamiento esperado de un CLI Unix
+/// (compárese con `cat`, `ls`: mueren en silencio por la señal). Restaurar
+/// `SIG_DFL` hace que el proceso termine por la señal, sin panic.
+///
+/// Alcance intencionalmente acotado a los modos CLI en primer plano
+/// (`main` decide no llamar a esta función para `daemon serve`): el
+/// servidor HTTP del daemon corre en el mismo binario vía re-exec
+/// (`avi-daemon::spawn_background` relanza `current_exe()` con
+/// `daemon serve`) y es un proceso longevo — no debe morir si un cliente
+/// cierra su socket a medio camino.
+///
+/// Es seguro para los sockets TCP del propio CLI (cliente HTTP hacia el
+/// daemon vía `reqwest`/`hyper`/`tokio`/`mio`): en Linux, `std::net::TcpStream`
+/// escribe con la flag `MSG_NOSIGNAL`; en macOS/BSD, `mio` replica a `libstd`
+/// y fija `SO_NOSIGPIPE` en el socket al crearlo (ver `mio::sys::unix::net`).
+/// Ambos mecanismos suprimen la señal a nivel de socket con independencia de
+/// la disposición global de `SIGPIPE`, así que las escrituras a un daemon
+/// que cerró la conexión siguen devolviendo `EPIPE` como error normal, no
+/// una señal. Los procesos hijos que lanza este binario (motor TTS/STT,
+/// helper de desinstalación, el propio daemon) siempre usan
+/// `Stdio::null()` para su stdin, así que no hay tubería de escritura hacia
+/// un hijo que pueda disparar la señal.
+#[cfg(unix)]
+fn restaurar_sigpipe_por_defecto() {
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 // ─── Punto de entrada ────────────────────────────────────────────────
 
 #[tokio::main]
@@ -516,6 +551,22 @@ async fn main() {
     let cli = Cli::parse();
     let json_mode = cli.json;
     let daemon_mode = cli.daemon_mode();
+
+    // SIGPIPE → SIG_DFL solo en modos CLI de primer plano; `daemon serve` (el
+    // servidor longevo, mismo binario) queda excluido a propósito (ver doc de
+    // `restaurar_sigpipe_por_defecto`).
+    #[cfg(unix)]
+    {
+        let es_daemon_serve = matches!(
+            cli.command,
+            Some(Commands::Daemon {
+                action: DaemonCommands::Serve { .. }
+            })
+        );
+        if !es_daemon_serve {
+            restaurar_sigpipe_por_defecto();
+        }
+    }
 
     let result = match cli.command {
         Some(Commands::Version) => handle_version(json_mode),

@@ -3568,3 +3568,84 @@ fn perf_rechazo_entradas_invalidas_fail_fast() {
         d_play
     );
 }
+
+// ─── Regresión SIGPIPE (v0.20.10): stdout cerrado no debe causar panic ──
+//
+// Rust ignora `SIGPIPE` por defecto (`SIG_IGN`): sin la restauración a
+// `SIG_DFL` hecha en `main()` (Unix, modos CLI en primer plano), una
+// escritura a un pipe cuyo extremo de lectura ya está cerrado devuelve
+// `EPIPE` como error de I/O y `println!`/`writeln!` hacen `panic!`
+// ("failed printing to stdout: Broken pipe", exit 101). Este test verifica
+// que, tras la restauración, el proceso muere en silencio por la señal (o
+// termina limpio si alcanzó a escribir todo antes del cierre) en lugar de
+// entrar en panic.
+//
+// Determinismo: se construye la tubería manualmente con `libc::pipe` y se
+// cierra el extremo de lectura con `libc::close` ANTES de lanzar el hijo
+// (no tras el `spawn`), de modo que la primera escritura del hijo a stdout
+// ya encuentra el pipe roto — sin ventana de carrera. Solo Unix: Windows no
+// tiene señales POSIX y este binario no restaura ningún manejador ahí.
+
+#[cfg(unix)]
+#[test]
+fn test_voice_list_no_panic_por_sigpipe_stdout_cerrado_antes_del_spawn() {
+    use std::os::unix::io::FromRawFd;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+
+    let (_dir, mut envs) = sandbox_estado_unico("sigpipe");
+    envs.push(("AVI_DAEMON_PORT".to_string(), "0".to_string()));
+
+    // (a) Tubería manual: extremo de lectura cerrado antes del spawn.
+    let mut fds: [libc::c_int; 2] = [0; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    assert_eq!(rc, 0, "libc::pipe falló: {}", std::io::Error::last_os_error());
+    let (read_fd, write_fd) = (fds[0], fds[1]);
+    let cerrado = unsafe { libc::close(read_fd) };
+    assert_eq!(
+        cerrado,
+        0,
+        "no se pudo cerrar el extremo de lectura del pipe: {}",
+        std::io::Error::last_os_error()
+    );
+
+    // (b) Lanzar `voice list` con stdout apuntando al extremo de escritura
+    // ya roto (write_fd sobrevive al close del otro extremo; Stdio adopta
+    // el fd y lo cierra al soltar el Child).
+    let stdout_roto = unsafe { Stdio::from_raw_fd(write_fd) };
+    let mut cmd = Command::new(BIN);
+    cmd.args(["voice", "list"])
+        .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdout(stdout_roto)
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("no se pudo lanzar el binario bajo test");
+
+    let mut stderr_buf = Vec::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        use std::io::Read;
+        let _ = stderr.read_to_end(&mut stderr_buf);
+    }
+    let status = child.wait().expect("esperar al hijo falló");
+    let stderr_txt = String::from_utf8_lossy(&stderr_buf);
+
+    assert!(
+        !stderr_txt.contains("panicked"),
+        "el proceso hizo panic en vez de morir por SIGPIPE en silencio; stderr: {}",
+        stderr_txt
+    );
+    assert_ne!(
+        status.code(),
+        Some(101),
+        "exit 101 es el código de panic de Rust; stderr: {}",
+        stderr_txt
+    );
+    let murio_por_sigpipe = status.signal() == Some(libc::SIGPIPE);
+    let salio_limpio = status.code() == Some(0);
+    assert!(
+        murio_por_sigpipe || salio_limpio,
+        "se esperaba muerte por SIGPIPE (señal {}) o salida limpia (0); status real: {:?}, stderr: {}",
+        libc::SIGPIPE,
+        status,
+        stderr_txt
+    );
+}
