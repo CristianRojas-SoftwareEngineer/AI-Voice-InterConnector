@@ -6,6 +6,8 @@
 # (CircleCI no encadena pipelines distintas). Empaquetado + publicación tras
 # los gates + `coverage` + instaladores + licencias/changelog.
 # El trabajo diario vive en `main` (trunk-based); sus commits no disparan CI.
+# Segundo punto de entrada, solo por API: el workflow `native-cache-probe`
+# (parámetro `native_cache_probe`) mide los 4 build-* sin publicar nunca.
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
 # licencia, versionados vía `persist_to_workspace` → `publish-release`.
 # Pines reproducibles: `rust_version` + `ort_version` + digest de `cimg/rust` (ver §Reproducibilidad).
@@ -57,6 +59,26 @@ parameters:
     type: string
     default: "1.28.0"
     description: Versión de ONNX Runtime (pareja de ort 2.0.0-rc.13) empaquetada en los 4 builds.
+  # Sonda de builds nativos: solo se activa por API (POST /pipeline con
+  # `native_cache_probe: true`). Ejecuta únicamente los 4 build-* en modo
+  # `probe` (sin target-*, sin empaquetado) y excluye `build-all`, así que
+  # NUNCA publica. Ver workflow `native-cache-probe` y docs/BUILD.md §4.
+  native_cache_probe:
+    type: boolean
+    default: false
+    description: Activa el workflow de sonda native-cache-probe (solo por API; nunca publica).
+  # Launcher sccache para los proyectos CMake (CTranslate2, oneDNN,
+  # SentencePiece) de los build-*; en Windows fija además el generador Ninja,
+  # porque el generador Visual Studio ignora los launchers. Parámetro temporal
+  # de medición: con `false` el comportamiento es el previo.
+  native_sccache:
+    type: boolean
+    default: false
+    description: Envuelve con sccache los builds CMake de los build-* (Ninja en Windows).
+  ninja_version:
+    type: string
+    default: "1.13.2"
+    description: Versión de Ninja (release oficial ninja-win.zip) usada como generador CMake en Windows.
 
 # Cachés duales compartidas por todos los jobs Rust (restore/save nativos,
 # idénticos en bash y PowerShell). Separadas porque invalidan distinto:
@@ -103,6 +125,10 @@ commands:
     # hash se toma con `git rev-parse` y no con `find | sort`: en Windows el PATH
     # resuelve `sort` al sort.exe de System32, que no entiende las opciones POSIX.
     # `/usr/bin/find` se usa por la misma razón (el find.exe de Windows).
+    #
+    # `target: false` (modo sonda de los build-*) omite la restauración de
+    # target-v2 y la fijación de mtime: cada corrida de sonda compila con
+    # target/ frío y nunca depende de una clave de producción.
     parameters:
       variant:
         type: string
@@ -110,6 +136,9 @@ commands:
       os:
         type: string
         default: "linux"
+      target:
+        type: boolean
+        default: true
     steps:
       # Genera Cargo.lock.cachekey ANTES de restore_cache: la clave de CircleCI se
       # forma en tiempo de config, así que el insumo del checksum debe existir en el
@@ -136,20 +165,23 @@ commands:
           keys:
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-
-      - restore_cache:
-          keys:
-            - target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
-      - run:
-          name: Fijar mtime de vendor/cmake-0.1.58 (evita cascada Dirty)
-          shell: bash
-          command: |
-            set -euo pipefail
-            /usr/bin/find vendor/cmake-0.1.58 -exec touch -t 200001010000 {} +
-            if [ -d target ]; then
-              echo "target/ restaurado por clave exacta: cmake Fresh esperado"
-            else
-              echo "target/ vacío (sin acierto): compilación en frío"
-            fi
+      - when:
+          condition: << parameters.target >>
+          steps:
+            - restore_cache:
+                keys:
+                  - target-v2-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
+            - run:
+                name: Fijar mtime de vendor/cmake-0.1.58 (evita cascada Dirty)
+                shell: bash
+                command: |
+                  set -euo pipefail
+                  /usr/bin/find vendor/cmake-0.1.58 -exec touch -t 200001010000 {} +
+                  if [ -d target ]; then
+                    echo "target/ restaurado por clave exacta: cmake Fresh esperado"
+                  else
+                    echo "target/ vacío (sin acierto): compilación en frío"
+                  fi
   cargo_save_registry:
     description: Guarda registry/git antes de compilar (un fallo de test no pierde descargas)
     steps:
@@ -257,8 +289,11 @@ commands:
   # hash de contenido en ~/.cache/sccache. Cada variante (test/full/cov) guarda
   # y restaura solo su propio blob (clave segmentada por variant, espejo de
   # target-v2), sobreviviendo a bumps de Cargo.lock que invalidan target/.
-  # NO acelera los builds CMake de CTranslate2 (ct2rs) (sccache no envuelve
-  # el C++), solo la parte Rust. Clave de caché rolling: guarda con {{ epoch }}
+  # Cobertura: `rustc` y los nativos compilados con el crate `cc` (que detecta
+  # RUSTC_WRAPPER=sccache y lo usa como wrapper). Los proyectos CMake
+  # (ct2rs/CTranslate2, onednn-src, sentencepiece-sys) solo pasan por sccache
+  # con `native_sccache: true` (launcher CMake; Ninja en Windows, ver
+  # native_sccache_setup_*). Clave de caché rolling: guarda con {{ epoch }}
   # (siempre escribe) y restaura por prefijo (último estado de la misma
   # variante en el mismo arch+toolchain).
   sccache_restore_cache:
@@ -347,6 +382,100 @@ commands:
             & $Dest --version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Configurar sccache - FIN"
+
+  # Launcher sccache para CMake. CMake >= 3.17 lee CMAKE_<LANG>_COMPILER_LAUNCHER
+  # del entorno al configurar, así que basta con exportarlo: no se toca ningún
+  # build.rs ni el parche de vendor/cmake-0.1.58. No hay doble envoltura: el
+  # crate `cmake` fija CMAKE_<LANG>_COMPILER a la ruta real del compilador
+  # (`cc` solo antepone sccache al invocar, no en la ruta de la herramienta).
+  native_sccache_setup_unix:
+    description: Exporta sccache como launcher C/C++ de CMake (bash, tras native_sccache)
+    steps:
+      - when:
+          condition: << pipeline.parameters.native_sccache >>
+          steps:
+            - run:
+                name: Configurar sccache como launcher de CMake
+                command: |
+                  echo 'export CMAKE_C_COMPILER_LAUNCHER=sccache' >> "$BASH_ENV"
+                  echo 'export CMAKE_CXX_COMPILER_LAUNCHER=sccache' >> "$BASH_ENV"
+                  echo "CMAKE_{C,CXX}_COMPILER_LAUNCHER=sccache exportados a BASH_ENV"
+  # En Windows el generador Visual Studio (el que elige el crate `cmake` por
+  # defecto con MSVC) ignora los launchers; con Ninja sí se aplican. Ninja se
+  # descarga en cada corrida (≈300 KB) a un directorio temporal fuera de toda
+  # caché, así ninguna caché puede aportar otra versión. El crate `cmake` lee
+  # CMAKE_GENERATOR del entorno y, con Ninja + MSVC, hereda el entorno de MSVC
+  # (PATH/INCLUDE/LIB) que resuelve `cc`, sin vcvars. PowerShell no tiene
+  # $BASH_ENV: el paso de compilación fija PATH y las variables inline.
+  native_sccache_setup_windows:
+    description: Instala Ninja (pin) en $env:TEMP\ninja para el generador CMake de Windows
+    steps:
+      - run:
+          name: Instalar Ninja << pipeline.parameters.ninja_version >> (generador CMake)
+          command: |
+            Write-Host "[STEP] Instalar Ninja - INICIO"
+            $ErrorActionPreference = "Stop"
+            $NinjaVersion = "<< pipeline.parameters.ninja_version >>"
+            $Dir = "$env:TEMP\ninja"
+            New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+            Invoke-WebRequest -Uri "https://github.com/ninja-build/ninja/releases/download/v$NinjaVersion/ninja-win.zip" -OutFile "$env:TEMP\ninja-win.zip"
+            Expand-Archive -Path "$env:TEMP\ninja-win.zip" -DestinationPath $Dir -Force
+            $Got = (& "$Dir\ninja.exe" --version).Trim()
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($Got -ne $NinjaVersion) { throw "ninja --version ($Got) != pin ($NinjaVersion)" }
+            Write-Host "Ninja $Got en $Dir"
+            Write-Host "[STEP] Instalar Ninja - FIN"
+
+  # Diagnóstico del modo sonda de los build-*: herramientas del executor y, por
+  # cada proyecto CMake compilado bajo target/release/build/*/out, el generador,
+  # compilador, launcher, tipo de build, runtime MSVC y flags efectivos, más una
+  # línea de flags de compilación real (build.ninja, flags.make o .vcxproj) y
+  # cuántos ficheros de build invocan sccache. Responde qué crates usan CMake
+  # (p. ej. aws-lc-sys) y si el launcher quedó aplicado. `when: always`: si la
+  # compilación falla, el diagnóstico sigue saliendo al log. Sin tuberías hacia
+  # consumidores que salgan antes (se capturan listas en variables).
+  cmake_probe_diagnostics:
+    description: Imprime el diagnóstico de los builds CMake (solo modo sonda)
+    steps:
+      - run:
+          name: Diagnóstico de builds CMake (sonda)
+          shell: bash
+          when: always
+          command: |
+            set -uo pipefail
+            echo "[STEP] Diagnóstico de builds CMake (sonda) - INICIO"
+            cmake --version
+            # En Windows, Ninja vive en $env:TEMP\ninja (solo en el PATH del paso de compilación).
+            if command -v ninja >/dev/null 2>&1; then echo "ninja $(ninja --version)"
+            elif [ -x "${TEMP:-/tmp}/ninja/ninja.exe" ]; then echo "ninja $("${TEMP:-/tmp}/ninja/ninja.exe" --version) (${TEMP:-/tmp}/ninja)"
+            else echo "ninja: no disponible"; fi
+            echo "CPU: $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-?}")"
+            caches="$(/usr/bin/find target/release/build -path '*/out/*' -name CMakeCache.txt 2>/dev/null)"
+            if [ -z "$caches" ]; then echo "Sin CMakeCache.txt bajo target/release/build"; fi
+            vars='^(CMAKE_GENERATOR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_LAUNCHER|CMAKE_CXX_COMPILER_LAUNCHER|CMAKE_BUILD_TYPE|CMAKE_MSVC_RUNTIME_LIBRARY|CMAKE_CXX_FLAGS|CMAKE_CXX_FLAGS_RELEASE)(:[A-Z]+)?='
+            printf '%s\n' "$caches" | while IFS= read -r cache; do
+              [ -n "$cache" ] || continue
+              dir="$(dirname "$cache")"
+              echo "=== ${dir#target/release/build/} ==="
+              grep -E "$vars" "$cache" || true
+              if [ -f "$dir/build.ninja" ]; then
+                echo "-- flags de compilación (build.ninja):"
+                grep -m2 -E '^ +FLAGS = ' "$dir/build.ninja" || true
+              else
+                makes="$(/usr/bin/find "$dir" -name flags.make 2>/dev/null)"
+                vcx="$(/usr/bin/find "$dir" -name '*.vcxproj' ! -name 'ALL_BUILD*' ! -name 'ZERO_CHECK*' ! -name 'INSTALL*' 2>/dev/null)"
+                if [ -n "$makes" ]; then
+                  echo "-- flags de compilación (${makes%%$'\n'*}):"
+                  grep -m2 -E '^(C|CXX)_FLAGS = ' "${makes%%$'\n'*}" || true
+                elif [ -n "$vcx" ]; then
+                  echo "-- propiedades de compilación (${vcx%%$'\n'*}):"
+                  grep -m12 -E '<(Optimization|InlineFunctionExpansion|RuntimeLibrary|DebugInformationFormat|PreprocessorDefinitions|AdditionalOptions)>' "${vcx%%$'\n'*}" || true
+                fi
+              fi
+              launched="$(grep -rlE 'sccache' "$dir" --include=build.ninja --include=build.make --include='*.vcxproj' 2>/dev/null)"
+              echo "-- ficheros de build que invocan sccache: $(printf '%s' "$launched" | grep -c . || true)"
+            done
+            echo "[STEP] Diagnóstico de builds CMake (sonda) - FIN"
 
 jobs:
   # ──────────────────────────────────────────────────────────────
@@ -788,9 +917,19 @@ jobs:
   # versionado al workspace para publish-release. Requieren triple puerta +
   # coverage + instaladores (ver workflow build-all).
   # ──────────────────────────────────────────────────────────────
+  # Parámetro `probe` (los 4 build-*): modo sonda del workflow
+  # `native-cache-probe`. Sin restaurar ni guardar target-v2 (target/ frío en
+  # cada corrida), sin empaquetado (staging, SHA-256, persist_to_workspace:
+  # exigen CIRCLE_TAG == const VERSION) y con el diagnóstico de CMake. Sigue
+  # ejecutando smoke test y motor TTS, y guarda sccache en la variante `full`
+  # (caché por contenido: sembrarla no contamina producción).
   build-windows-x64:
     # Windows x64: binario + smoke test nativo. No usa Inno Setup aún.
     executor: win/server-2022
+    parameters:
+      probe:
+        type: boolean
+        default: false
     steps:
       - checkout
       - toolchain_restore_cache:
@@ -873,9 +1012,20 @@ jobs:
             }
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - FIN"
       - msys2_save_cache
-      - cargo_restore_caches:
-          os: windows
-          variant: full
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_restore_caches:
+                os: windows
+                variant: full
+                target: true
+      - when:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_restore_caches:
+                os: windows
+                variant: full
+                target: false
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -889,6 +1039,10 @@ jobs:
           os: windows
           variant: full
       - sccache_setup_windows
+      - when:
+          condition: << pipeline.parameters.native_sccache >>
+          steps:
+            - native_sccache_setup_windows
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -899,13 +1053,29 @@ jobs:
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
             $env:CARGO_INCREMENTAL = "0"
+            # Launcher sccache para CMake: exige el generador Ninja (el de
+            # Visual Studio ignora los launchers). Ver native_sccache_setup_windows.
+            if ("<< pipeline.parameters.native_sccache >>" -eq "true") {
+              $env:PATH = "$env:TEMP\ninja;$env:PATH"
+              $env:CMAKE_GENERATOR = "Ninja"
+              $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
+              $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
+            }
             # El crate `ort` usa `load-dynamic`: no enlaza ONNX Runtime en
             # build-time (no hay ORT_LIB_PATH). La librería dinámica se descarga
             # y empaqueta junto al binario en el step de bundling siguiente.
-            cargo build --release --features full --verbose
+            # --timings: desglose por crate en target/cargo-timings (artefacto).
+            cargo build --release --features full --verbose --timings
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - store_artifacts:
+          path: target/cargo-timings
+          destination: cargo-timings
+      - when:
+          condition: << parameters.probe >>
+          steps:
+            - cmake_probe_diagnostics
       - run:
           name: Smoke test del binario (version + voces de fábrica)
           command: |
@@ -943,10 +1113,13 @@ jobs:
       - sccache_save_cache:
           os: windows
           variant: full
-      - cargo_save_target:
-          os: windows
-          variant: full
-          when: on_success
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_save_target:
+                os: windows
+                variant: full
+                when: on_success
       - run:
           name: Generar .engine-cachekey (clave TTS)
           shell: bash
@@ -988,106 +1161,109 @@ jobs:
           key: tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
           paths:
             - vendor/qwen3-tts/qwen_tts.exe
-      - restore_cache:
-          keys:
-            - ort-v1-win-x64-<< pipeline.parameters.ort_version >>
-      - run:
-          # Autocontención (requisito duro): el crate `ort` en `load-dynamic`
-          # busca onnxruntime.dll junto al ejecutable. Se empaqueta la librería
-          # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13) y sus
-          # 3 DLLs del runtime VC++ (la dll de MS es /MD), de modo que el usuario
-          # no necesite instalar el VC++ Redistributable ni nada previo.
-          # Cacheado: si onnxruntime.dll existe tras restore, se omite descarga.
-          name: Empaquetar ONNX Runtime + runtime VC++ (bundle load-dynamic)
-          command: |
-            Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - INICIO"
-            $ErrorActionPreference = "Stop"
-            $OrtVersion = "<< pipeline.parameters.ort_version >>"
-            $Bundle = "ort-bundle"
-            if (-not (Test-Path "$Bundle\onnxruntime.dll")) {
-              if (Test-Path $Bundle) { Remove-Item -Recurse -Force $Bundle }
-              New-Item -ItemType Directory -Force -Path $Bundle | Out-Null
-              # 1. Librería dinámica oficial de Microsoft (win-x64).
-              $Zip = "onnxruntime-win-x64-$OrtVersion.zip"
-              $Url = "https://github.com/microsoft/onnxruntime/releases/download/v$OrtVersion/$Zip"
-              Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\$Zip"
-              Expand-Archive -Path "$env:TEMP\$Zip" -DestinationPath "$env:TEMP\ort-extract" -Force
-              $Dll = Get-ChildItem -Path "$env:TEMP\ort-extract" -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
-              if (-not $Dll) { throw "onnxruntime.dll no encontrada en $Zip" }
-              Copy-Item $Dll.FullName "$Bundle\onnxruntime.dll"
-              # 2. Runtime VC++ (app-local): la dll de MS es /MD y depende de estas 3.
-              #    onnxruntime-win-x64-1.28.0.zip ya no las incluye.
-              #    Se obtienen de System32 (Windows Server 2022 -> VC++ 2022 CRT compatible).
-              $Vc = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
-              foreach ($Name in $Vc) {
-                $Found = Get-ChildItem -Path "C:\Windows\System32" -Filter $Name -ErrorAction SilentlyContinue |
-                         Select-Object -First 1
-                if (-not $Found) { throw "No se encontró $Name en System32" }
-                Copy-Item $Found.FullName "$Bundle\$Name"
-              }
-            } else {
-              Write-Host "Bundle ONNX Runtime restaurado de caché; se omite descarga"
-            }
-            Write-Host "Bundle ONNX Runtime + VC++:"
-            Get-ChildItem $Bundle | ForEach-Object { Write-Host "  $($_.Name)" }
-            Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - FIN"
-      - save_cache:
-          key: ort-v1-win-x64-<< pipeline.parameters.ort_version >>
-          paths:
-            - ort-bundle
-      - run:
-          # Nombre del artefacto con la versión REAL del CLI: la fuente de
-          # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
-          # que quedó en 0.1.0 tras la migración). Fail-fast: si difiere del tag
-          # v*, el release saldría con nombre inconsistente → abortar.
-          name: Preparar artefacto versionado (staging)
-          command: |
-            Write-Host "[STEP] Preparar artefacto versionado - INICIO"
-            $ErrorActionPreference = "Stop"
-            New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-            $Version = [regex]::Match((Get-Content src\main.rs -Raw), 'const VERSION: &str = "([^"]+)"').Groups[1].Value
-            if (-not $Version) { throw "No se pudo extraer const VERSION de src/main.rs" }
-            $TagVersion = $env:CIRCLE_TAG -replace '^v',''
-            if ($Version -ne $TagVersion) { throw "VERSION en main.rs ($Version) != tag ($TagVersion)" }
-            $Src = "target\release\ai-voice-interconnector.exe"
-            if (-not (Test-Path $Src)) { throw "Binario no encontrado: $Src" }
-            # Staging de layout plano: binario (sin sufijo de arch) + los 4
-            # documentos de la raíz + la librería ONNX Runtime y el runtime VC++
-            # empaquetados en el step anterior, comprimidos a .zip para que el
-            # one-liner de Windows extraiga todo junto al binario (GPLv3 +
-            # autocontención STT).
-            $Stage = "staging"
-            if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
-            New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-            Copy-Item $Src "$Stage\ai-voice-interconnector.exe"
-            foreach ($Doc in @("LICENSE", "THIRD-PARTY-LICENSES.md", "SOURCE-OFFER.md", "README.md")) {
-              Copy-Item $Doc "$Stage\$Doc"
-            }
-            # Librería ONNX Runtime + runtime VC++ (autocontención STT).
-            Copy-Item "ort-bundle\*" $Stage
-            # Motor TTS vendido (qwen_tts.exe): se incluye junto al binario para que
-            # la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts.exe) funcione
-            # en el instalador sin variables de entorno.
-            $VendoredTTS = "vendor\qwen3-tts\qwen_tts.exe"
-            if (-not (Test-Path $VendoredTTS)) { throw "qwen_tts.exe vendido no encontrado en $VendoredTTS" }
-            $VendoredDst = "$Stage\vendor\qwen3-tts"
-            New-Item -ItemType Directory -Force -Path $VendoredDst | Out-Null
-            Copy-Item $VendoredTTS "$VendoredDst\qwen_tts.exe"
-            $Dst = "artifacts\ai-voice-interconnector-$Version-x86_64-windows.zip"
-            Compress-Archive -Path "$Stage\*" -DestinationPath $Dst -Force
-            Write-Host "Artefacto: $Dst"
-            Write-Host "[STEP] Preparar artefacto versionado - FIN"
-      - run:
-          name: Emitir SHA-256 del artefacto
-          command: |
-            Write-Host "[STEP] Emitir SHA-256 del artefacto - INICIO"
-            Get-FileHash artifacts\ai-voice-interconnector-*-x86_64-windows.zip -Algorithm SHA256
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Emitir SHA-256 del artefacto - FIN"
-      - persist_to_workspace:
-          root: artifacts
-          paths:
-            - ai-voice-interconnector-*-x86_64-windows.zip
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - restore_cache:
+                keys:
+                  - ort-v1-win-x64-<< pipeline.parameters.ort_version >>
+            - run:
+                # Autocontención (requisito duro): el crate `ort` en `load-dynamic`
+                # busca onnxruntime.dll junto al ejecutable. Se empaqueta la librería
+                # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13) y sus
+                # 3 DLLs del runtime VC++ (la dll de MS es /MD), de modo que el usuario
+                # no necesite instalar el VC++ Redistributable ni nada previo.
+                # Cacheado: si onnxruntime.dll existe tras restore, se omite descarga.
+                name: Empaquetar ONNX Runtime + runtime VC++ (bundle load-dynamic)
+                command: |
+                  Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - INICIO"
+                  $ErrorActionPreference = "Stop"
+                  $OrtVersion = "<< pipeline.parameters.ort_version >>"
+                  $Bundle = "ort-bundle"
+                  if (-not (Test-Path "$Bundle\onnxruntime.dll")) {
+                    if (Test-Path $Bundle) { Remove-Item -Recurse -Force $Bundle }
+                    New-Item -ItemType Directory -Force -Path $Bundle | Out-Null
+                    # 1. Librería dinámica oficial de Microsoft (win-x64).
+                    $Zip = "onnxruntime-win-x64-$OrtVersion.zip"
+                    $Url = "https://github.com/microsoft/onnxruntime/releases/download/v$OrtVersion/$Zip"
+                    Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\$Zip"
+                    Expand-Archive -Path "$env:TEMP\$Zip" -DestinationPath "$env:TEMP\ort-extract" -Force
+                    $Dll = Get-ChildItem -Path "$env:TEMP\ort-extract" -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
+                    if (-not $Dll) { throw "onnxruntime.dll no encontrada en $Zip" }
+                    Copy-Item $Dll.FullName "$Bundle\onnxruntime.dll"
+                    # 2. Runtime VC++ (app-local): la dll de MS es /MD y depende de estas 3.
+                    #    onnxruntime-win-x64-1.28.0.zip ya no las incluye.
+                    #    Se obtienen de System32 (Windows Server 2022 -> VC++ 2022 CRT compatible).
+                    $Vc = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+                    foreach ($Name in $Vc) {
+                      $Found = Get-ChildItem -Path "C:\Windows\System32" -Filter $Name -ErrorAction SilentlyContinue |
+                               Select-Object -First 1
+                      if (-not $Found) { throw "No se encontró $Name en System32" }
+                      Copy-Item $Found.FullName "$Bundle\$Name"
+                    }
+                  } else {
+                    Write-Host "Bundle ONNX Runtime restaurado de caché; se omite descarga"
+                  }
+                  Write-Host "Bundle ONNX Runtime + VC++:"
+                  Get-ChildItem $Bundle | ForEach-Object { Write-Host "  $($_.Name)" }
+                  Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - FIN"
+            - save_cache:
+                key: ort-v1-win-x64-<< pipeline.parameters.ort_version >>
+                paths:
+                  - ort-bundle
+            - run:
+                # Nombre del artefacto con la versión REAL del CLI: la fuente de
+                # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
+                # que quedó en 0.1.0 tras la migración). Fail-fast: si difiere del tag
+                # v*, el release saldría con nombre inconsistente → abortar.
+                name: Preparar artefacto versionado (staging)
+                command: |
+                  Write-Host "[STEP] Preparar artefacto versionado - INICIO"
+                  $ErrorActionPreference = "Stop"
+                  New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+                  $Version = [regex]::Match((Get-Content src\main.rs -Raw), 'const VERSION: &str = "([^"]+)"').Groups[1].Value
+                  if (-not $Version) { throw "No se pudo extraer const VERSION de src/main.rs" }
+                  $TagVersion = $env:CIRCLE_TAG -replace '^v',''
+                  if ($Version -ne $TagVersion) { throw "VERSION en main.rs ($Version) != tag ($TagVersion)" }
+                  $Src = "target\release\ai-voice-interconnector.exe"
+                  if (-not (Test-Path $Src)) { throw "Binario no encontrado: $Src" }
+                  # Staging de layout plano: binario (sin sufijo de arch) + los 4
+                  # documentos de la raíz + la librería ONNX Runtime y el runtime VC++
+                  # empaquetados en el step anterior, comprimidos a .zip para que el
+                  # one-liner de Windows extraiga todo junto al binario (GPLv3 +
+                  # autocontención STT).
+                  $Stage = "staging"
+                  if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
+                  New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+                  Copy-Item $Src "$Stage\ai-voice-interconnector.exe"
+                  foreach ($Doc in @("LICENSE", "THIRD-PARTY-LICENSES.md", "SOURCE-OFFER.md", "README.md")) {
+                    Copy-Item $Doc "$Stage\$Doc"
+                  }
+                  # Librería ONNX Runtime + runtime VC++ (autocontención STT).
+                  Copy-Item "ort-bundle\*" $Stage
+                  # Motor TTS vendido (qwen_tts.exe): se incluye junto al binario para que
+                  # la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts.exe) funcione
+                  # en el instalador sin variables de entorno.
+                  $VendoredTTS = "vendor\qwen3-tts\qwen_tts.exe"
+                  if (-not (Test-Path $VendoredTTS)) { throw "qwen_tts.exe vendido no encontrado en $VendoredTTS" }
+                  $VendoredDst = "$Stage\vendor\qwen3-tts"
+                  New-Item -ItemType Directory -Force -Path $VendoredDst | Out-Null
+                  Copy-Item $VendoredTTS "$VendoredDst\qwen_tts.exe"
+                  $Dst = "artifacts\ai-voice-interconnector-$Version-x86_64-windows.zip"
+                  Compress-Archive -Path "$Stage\*" -DestinationPath $Dst -Force
+                  Write-Host "Artefacto: $Dst"
+                  Write-Host "[STEP] Preparar artefacto versionado - FIN"
+            - run:
+                name: Emitir SHA-256 del artefacto
+                command: |
+                  Write-Host "[STEP] Emitir SHA-256 del artefacto - INICIO"
+                  Get-FileHash artifacts\ai-voice-interconnector-*-x86_64-windows.zip -Algorithm SHA256
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  Write-Host "[STEP] Emitir SHA-256 del artefacto - FIN"
+            - persist_to_workspace:
+                root: artifacts
+                paths:
+                  - ai-voice-interconnector-*-x86_64-windows.zip
 
   build-linux-x64:
     # Linux x64: el más barato/rápido para la suite, pero el build necesita
@@ -1097,6 +1273,10 @@ jobs:
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: large
+    parameters:
+      probe:
+        type: boolean
+        default: false
     steps:
       - checkout
       - run:
@@ -1109,9 +1289,20 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches:
-          os: linux
-          variant: full
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_restore_caches:
+                os: linux
+                variant: full
+                target: true
+      - when:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_restore_caches:
+                os: linux
+                variant: full
+                target: false
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -1123,13 +1314,22 @@ jobs:
           os: linux
           variant: full
       - sccache_setup_unix
+      - native_sccache_setup_unix
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            cargo build --release --features full --verbose
+            # --timings: desglose por crate en target/cargo-timings (artefacto).
+            cargo build --release --features full --verbose --timings
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - store_artifacts:
+          path: target/cargo-timings
+          destination: cargo-timings
+      - when:
+          condition: << parameters.probe >>
+          steps:
+            - cmake_probe_diagnostics
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
@@ -1166,76 +1366,82 @@ jobs:
           # `--self-test` triplicado idéntico en los 3 jobs Unix.
           name: Compilar y verificar motor TTS
           command: cargo run -p xtask -- build-engine --self-test
-      - cargo_save_target:
-          os: linux
-          variant: full
-          when: on_success
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_save_target:
+                os: linux
+                variant: full
+                when: on_success
       - sccache_save_cache:
           os: linux
           variant: full
-      - run:
-          # Nombre del artefacto con la versión REAL del CLI: la fuente de
-          # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
-          # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
-          name: Preparar artefacto versionado (staging)
-          command: |
-            echo "[STEP] Preparar artefacto versionado - INICIO"
-            set -euo pipefail
-            mkdir -p artifacts
-            VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
-            if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
-            if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
-              echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
-              exit 1
-            fi
-            SRC="target/release/ai-voice-interconnector"
-            test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
-            # Staging de layout plano: binario (sin sufijo de arch) + los 4
-            # documentos de la raíz + la librería ONNX Runtime, comprimidos a
-            # tar.gz para que el one-liner extraiga y todo viaje junto al binario.
-            STAGE="$(mktemp -d)"
-            cp "$SRC" "$STAGE/ai-voice-interconnector"
-            chmod +x "$STAGE/ai-voice-interconnector"
-            cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
-            # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
-            # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
-            # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13) con el
-            # nombre por defecto que busca ort, sin que el usuario instale nada.
-            ORT_VERSION="<< pipeline.parameters.ort_version >>"
-            ORT_TGZ="onnxruntime-linux-x64-${ORT_VERSION}.tgz"
-            curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
-            ORT_EXTRACT="$(mktemp -d)"
-            tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
-            # Captura previa en variable en lugar de tubería directa a `head`:
-            # si `find` tiene más de una coincidencia, `head -n1` cierra la
-            # tubería tras la primera línea y `find` recibe EPIPE (mismo riesgo
-            # que `grep -q` en el smoke test, bajo `pipefail`).
-            ort_matches="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f)"
-            ORT_LIB="$(printf '%s\n' "$ort_matches" | head -n1)"
-            test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
-            cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
-            # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
-            # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
-            # tras extraer, sin variables de entorno (paridad con Windows).
-            VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
-            test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
-            mkdir -p "$STAGE/vendor/qwen3-tts"
-            cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
-            chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
-            DST="artifacts/ai-voice-interconnector-${VERSION}-x86_64-linux.tar.gz"
-            tar -czf "$DST" -C "$STAGE" .
-            echo "Artefacto: $DST"
-            echo "[STEP] Preparar artefacto versionado - FIN"
-      - run:
-          name: Emitir SHA-256 del artefacto
-          command: |
-            echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
-            sha256sum artifacts/ai-voice-interconnector-*-x86_64-linux.tar.gz
-            echo "[STEP] Emitir SHA-256 del artefacto - FIN"
-      - persist_to_workspace:
-          root: artifacts
-          paths:
-            - ai-voice-interconnector-*-x86_64-linux.tar.gz
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - run:
+                # Nombre del artefacto con la versión REAL del CLI: la fuente de
+                # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
+                # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
+                name: Preparar artefacto versionado (staging)
+                command: |
+                  echo "[STEP] Preparar artefacto versionado - INICIO"
+                  set -euo pipefail
+                  mkdir -p artifacts
+                  VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
+                  if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
+                  if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
+                    echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
+                    exit 1
+                  fi
+                  SRC="target/release/ai-voice-interconnector"
+                  test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
+                  # Staging de layout plano: binario (sin sufijo de arch) + los 4
+                  # documentos de la raíz + la librería ONNX Runtime, comprimidos a
+                  # tar.gz para que el one-liner extraiga y todo viaje junto al binario.
+                  STAGE="$(mktemp -d)"
+                  cp "$SRC" "$STAGE/ai-voice-interconnector"
+                  chmod +x "$STAGE/ai-voice-interconnector"
+                  cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
+                  # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
+                  # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
+                  # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13) con el
+                  # nombre por defecto que busca ort, sin que el usuario instale nada.
+                  ORT_VERSION="<< pipeline.parameters.ort_version >>"
+                  ORT_TGZ="onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+                  curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
+                  ORT_EXTRACT="$(mktemp -d)"
+                  tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
+                  # Captura previa en variable en lugar de tubería directa a `head`:
+                  # si `find` tiene más de una coincidencia, `head -n1` cierra la
+                  # tubería tras la primera línea y `find` recibe EPIPE (mismo riesgo
+                  # que `grep -q` en el smoke test, bajo `pipefail`).
+                  ort_matches="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f)"
+                  ORT_LIB="$(printf '%s\n' "$ort_matches" | head -n1)"
+                  test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
+                  cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
+                  # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
+                  # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
+                  # tras extraer, sin variables de entorno (paridad con Windows).
+                  VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
+                  test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
+                  mkdir -p "$STAGE/vendor/qwen3-tts"
+                  cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
+                  chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
+                  DST="artifacts/ai-voice-interconnector-${VERSION}-x86_64-linux.tar.gz"
+                  tar -czf "$DST" -C "$STAGE" .
+                  echo "Artefacto: $DST"
+                  echo "[STEP] Preparar artefacto versionado - FIN"
+            - run:
+                name: Emitir SHA-256 del artefacto
+                command: |
+                  echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
+                  sha256sum artifacts/ai-voice-interconnector-*-x86_64-linux.tar.gz
+                  echo "[STEP] Emitir SHA-256 del artefacto - FIN"
+            - persist_to_workspace:
+                root: artifacts
+                paths:
+                  - ai-voice-interconnector-*-x86_64-linux.tar.gz
 
   build-linux-arm64:
     # Linux ARM64 nativo (no cross-compile): Docker arm.medium ejecuta
@@ -1245,6 +1451,10 @@ jobs:
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: arm.medium
+    parameters:
+      probe:
+        type: boolean
+        default: false
     steps:
       - checkout
       - run:
@@ -1257,9 +1467,20 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
-      - cargo_restore_caches:
-          os: linux
-          variant: full
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_restore_caches:
+                os: linux
+                variant: full
+                target: true
+      - when:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_restore_caches:
+                os: linux
+                variant: full
+                target: false
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -1271,13 +1492,22 @@ jobs:
           os: linux
           variant: full
       - sccache_setup_unix
+      - native_sccache_setup_unix
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            cargo build --release --features full --verbose
+            # --timings: desglose por crate en target/cargo-timings (artefacto).
+            cargo build --release --features full --verbose --timings
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - store_artifacts:
+          path: target/cargo-timings
+          destination: cargo-timings
+      - when:
+          condition: << parameters.probe >>
+          steps:
+            - cmake_probe_diagnostics
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
@@ -1316,76 +1546,82 @@ jobs:
           # `--self-test` triplicado idéntico en los 3 jobs Unix.
           name: Compilar y verificar motor TTS
           command: cargo run -p xtask -- build-engine --self-test
-      - cargo_save_target:
-          os: linux
-          variant: full
-          when: on_success
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_save_target:
+                os: linux
+                variant: full
+                when: on_success
       - sccache_save_cache:
           os: linux
           variant: full
-      - run:
-          # Nombre del artefacto con la versión REAL del CLI: la fuente de
-          # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
-          # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
-          name: Preparar artefacto versionado (staging)
-          command: |
-            echo "[STEP] Preparar artefacto versionado - INICIO"
-            set -euo pipefail
-            mkdir -p artifacts
-            VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
-            if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
-            if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
-              echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
-              exit 1
-            fi
-            SRC="target/release/ai-voice-interconnector"
-            test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
-            # Staging de layout plano: binario (sin sufijo de arch) + los 4
-            # documentos de la raíz + la librería ONNX Runtime, comprimidos a
-            # tar.gz para que el one-liner extraiga y todo viaje junto al binario.
-            STAGE="$(mktemp -d)"
-            cp "$SRC" "$STAGE/ai-voice-interconnector"
-            chmod +x "$STAGE/ai-voice-interconnector"
-            cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
-            # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
-            # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
-            # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13, build
-            # aarch64) con el nombre por defecto que busca ort.
-            ORT_VERSION="<< pipeline.parameters.ort_version >>"
-            ORT_TGZ="onnxruntime-linux-aarch64-${ORT_VERSION}.tgz"
-            curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
-            ORT_EXTRACT="$(mktemp -d)"
-            tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
-            # Captura previa en variable en lugar de tubería directa a `head`:
-            # si `find` tiene más de una coincidencia, `head -n1` cierra la
-            # tubería tras la primera línea y `find` recibe EPIPE (mismo riesgo
-            # que `grep -q` en el smoke test, bajo `pipefail`).
-            ort_matches="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f)"
-            ORT_LIB="$(printf '%s\n' "$ort_matches" | head -n1)"
-            test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
-            cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
-            # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
-            # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
-            # tras extraer, sin variables de entorno (paridad con Windows).
-            VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
-            test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
-            mkdir -p "$STAGE/vendor/qwen3-tts"
-            cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
-            chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
-            DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-linux.tar.gz"
-            tar -czf "$DST" -C "$STAGE" .
-            echo "Artefacto: $DST"
-            echo "[STEP] Preparar artefacto versionado - FIN"
-      - run:
-          name: Emitir SHA-256 del artefacto
-          command: |
-            echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
-            sha256sum artifacts/ai-voice-interconnector-*-arm64-linux.tar.gz
-            echo "[STEP] Emitir SHA-256 del artefacto - FIN"
-      - persist_to_workspace:
-          root: artifacts
-          paths:
-            - ai-voice-interconnector-*-arm64-linux.tar.gz
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - run:
+                # Nombre del artefacto con la versión REAL del CLI: la fuente de
+                # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
+                # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
+                name: Preparar artefacto versionado (staging)
+                command: |
+                  echo "[STEP] Preparar artefacto versionado - INICIO"
+                  set -euo pipefail
+                  mkdir -p artifacts
+                  VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
+                  if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
+                  if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
+                    echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
+                    exit 1
+                  fi
+                  SRC="target/release/ai-voice-interconnector"
+                  test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
+                  # Staging de layout plano: binario (sin sufijo de arch) + los 4
+                  # documentos de la raíz + la librería ONNX Runtime, comprimidos a
+                  # tar.gz para que el one-liner extraiga y todo viaje junto al binario.
+                  STAGE="$(mktemp -d)"
+                  cp "$SRC" "$STAGE/ai-voice-interconnector"
+                  chmod +x "$STAGE/ai-voice-interconnector"
+                  cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
+                  # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
+                  # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
+                  # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13, build
+                  # aarch64) con el nombre por defecto que busca ort.
+                  ORT_VERSION="<< pipeline.parameters.ort_version >>"
+                  ORT_TGZ="onnxruntime-linux-aarch64-${ORT_VERSION}.tgz"
+                  curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
+                  ORT_EXTRACT="$(mktemp -d)"
+                  tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
+                  # Captura previa en variable en lugar de tubería directa a `head`:
+                  # si `find` tiene más de una coincidencia, `head -n1` cierra la
+                  # tubería tras la primera línea y `find` recibe EPIPE (mismo riesgo
+                  # que `grep -q` en el smoke test, bajo `pipefail`).
+                  ort_matches="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f)"
+                  ORT_LIB="$(printf '%s\n' "$ort_matches" | head -n1)"
+                  test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
+                  cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
+                  # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
+                  # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
+                  # tras extraer, sin variables de entorno (paridad con Windows).
+                  VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
+                  test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
+                  mkdir -p "$STAGE/vendor/qwen3-tts"
+                  cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
+                  chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
+                  DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-linux.tar.gz"
+                  tar -czf "$DST" -C "$STAGE" .
+                  echo "Artefacto: $DST"
+                  echo "[STEP] Preparar artefacto versionado - FIN"
+            - run:
+                name: Emitir SHA-256 del artefacto
+                command: |
+                  echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
+                  sha256sum artifacts/ai-voice-interconnector-*-arm64-linux.tar.gz
+                  echo "[STEP] Emitir SHA-256 del artefacto - FIN"
+            - persist_to_workspace:
+                root: artifacts
+                paths:
+                  - ai-voice-interconnector-*-arm64-linux.tar.gz
 
   build-darwin-arm64:
     # macOS ARM64 (Apple Silicon, Xcode 26.4.0): clang nativo, sin cross.
@@ -1393,6 +1629,10 @@ jobs:
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
+    parameters:
+      probe:
+        type: boolean
+        default: false
     steps:
       - checkout
       - toolchain_restore_cache:
@@ -1437,9 +1677,20 @@ jobs:
       # usa OPENMP_RUNTIME=NONE en macOS (features por target en
       # avi-translation/Cargo.toml): Apple clang no trae libomp y
       # find_package(OpenMP REQUIRED) fallaba (#2/#4).
-      - cargo_restore_caches:
-          os: macos
-          variant: full
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_restore_caches:
+                os: macos
+                variant: full
+                target: true
+      - when:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_restore_caches:
+                os: macos
+                variant: full
+                target: false
       - run:
           name: Precargar dependencias (cargo fetch)
           command: |
@@ -1452,14 +1703,23 @@ jobs:
           os: macos
           variant: full
       - sccache_setup_unix
+      - native_sccache_setup_unix
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
             export PATH="$HOME/.cargo/bin:$PATH"
-            cargo build --release --features full --verbose
+            # --timings: desglose por crate en target/cargo-timings (artefacto).
+            cargo build --release --features full --verbose --timings
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - store_artifacts:
+          path: target/cargo-timings
+          destination: cargo-timings
+      - when:
+          condition: << parameters.probe >>
+          steps:
+            - cmake_probe_diagnostics
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: |
@@ -1500,77 +1760,83 @@ jobs:
           command: |
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo run -p xtask -- build-engine --self-test
-      - cargo_save_target:
-          os: macos
-          variant: full
-          when: on_success
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - cargo_save_target:
+                os: macos
+                variant: full
+                when: on_success
       - sccache_save_cache:
           os: macos
           variant: full
-      - run:
-          # Nombre del artefacto con la versión REAL del CLI: la fuente de
-          # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
-          # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
-          name: Preparar artefacto versionado (staging)
-          command: |
-            echo "[STEP] Preparar artefacto versionado - INICIO"
-            set -euo pipefail
-            mkdir -p artifacts
-            VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
-            if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
-            if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
-              echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
-              exit 1
-            fi
-            SRC="target/release/ai-voice-interconnector"
-            test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
-            # Staging de layout plano: binario (sin sufijo de arch) + los 4
-            # documentos de la raíz + la librería ONNX Runtime, comprimidos a
-            # tar.gz. Homebrew autoextrae el tar.gz (binary stanza) y todo viaja
-            # junto al binario.
-            STAGE="$(mktemp -d)"
-            cp "$SRC" "$STAGE/ai-voice-interconnector"
-            chmod +x "$STAGE/ai-voice-interconnector"
-            cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
-            # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
-            # busca libonnxruntime.dylib junto al ejecutable. Se empaqueta la
-            # librería oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort
-            # rc.13, build osx-arm64) con el nombre por defecto que busca ort.
-            ORT_VERSION="<< pipeline.parameters.ort_version >>"
-            ORT_TGZ="onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
-            curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
-            ORT_EXTRACT="$(mktemp -d)"
-            tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
-            # Captura previa en variable en lugar de tubería directa a `head`:
-            # si `find` tiene más de una coincidencia, `head -n1` cierra la
-            # tubería tras la primera línea y `find` recibe EPIPE (mismo riesgo
-            # que `grep -q` en el smoke test, bajo `pipefail`).
-            ort_matches="$(find "$ORT_EXTRACT" -name 'libonnxruntime.*.dylib' -type f)"
-            ORT_LIB="$(printf '%s\n' "$ort_matches" | head -n1)"
-            test -n "$ORT_LIB" || (echo "libonnxruntime.dylib no encontrada en ${ORT_TGZ}" && exit 1)
-            cp "$ORT_LIB" "$STAGE/libonnxruntime.dylib"
-            # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
-            # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
-            # tras extraer, sin variables de entorno (paridad con Windows).
-            VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
-            test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
-            mkdir -p "$STAGE/vendor/qwen3-tts"
-            cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
-            chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
-            DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-macos.tar.gz"
-            tar -czf "$DST" -C "$STAGE" .
-            echo "Artefacto: $DST"
-            echo "[STEP] Preparar artefacto versionado - FIN"
-      - run:
-          name: Emitir SHA-256 del artefacto
-          command: |
-            echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
-            shasum -a 256 artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz
-            echo "[STEP] Emitir SHA-256 del artefacto - FIN"
-      - persist_to_workspace:
-          root: artifacts
-          paths:
-            - ai-voice-interconnector-*-arm64-macos.tar.gz
+      - unless:
+          condition: << parameters.probe >>
+          steps:
+            - run:
+                # Nombre del artefacto con la versión REAL del CLI: la fuente de
+                # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
+                # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
+                name: Preparar artefacto versionado (staging)
+                command: |
+                  echo "[STEP] Preparar artefacto versionado - INICIO"
+                  set -euo pipefail
+                  mkdir -p artifacts
+                  VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
+                  if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
+                  if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
+                    echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
+                    exit 1
+                  fi
+                  SRC="target/release/ai-voice-interconnector"
+                  test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
+                  # Staging de layout plano: binario (sin sufijo de arch) + los 4
+                  # documentos de la raíz + la librería ONNX Runtime, comprimidos a
+                  # tar.gz. Homebrew autoextrae el tar.gz (binary stanza) y todo viaja
+                  # junto al binario.
+                  STAGE="$(mktemp -d)"
+                  cp "$SRC" "$STAGE/ai-voice-interconnector"
+                  chmod +x "$STAGE/ai-voice-interconnector"
+                  cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
+                  # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
+                  # busca libonnxruntime.dylib junto al ejecutable. Se empaqueta la
+                  # librería oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort
+                  # rc.13, build osx-arm64) con el nombre por defecto que busca ort.
+                  ORT_VERSION="<< pipeline.parameters.ort_version >>"
+                  ORT_TGZ="onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
+                  curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
+                  ORT_EXTRACT="$(mktemp -d)"
+                  tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
+                  # Captura previa en variable en lugar de tubería directa a `head`:
+                  # si `find` tiene más de una coincidencia, `head -n1` cierra la
+                  # tubería tras la primera línea y `find` recibe EPIPE (mismo riesgo
+                  # que `grep -q` en el smoke test, bajo `pipefail`).
+                  ort_matches="$(find "$ORT_EXTRACT" -name 'libonnxruntime.*.dylib' -type f)"
+                  ORT_LIB="$(printf '%s\n' "$ort_matches" | head -n1)"
+                  test -n "$ORT_LIB" || (echo "libonnxruntime.dylib no encontrada en ${ORT_TGZ}" && exit 1)
+                  cp "$ORT_LIB" "$STAGE/libonnxruntime.dylib"
+                  # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
+                  # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
+                  # tras extraer, sin variables de entorno (paridad con Windows).
+                  VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
+                  test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
+                  mkdir -p "$STAGE/vendor/qwen3-tts"
+                  cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
+                  chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
+                  DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-macos.tar.gz"
+                  tar -czf "$DST" -C "$STAGE" .
+                  echo "Artefacto: $DST"
+                  echo "[STEP] Preparar artefacto versionado - FIN"
+            - run:
+                name: Emitir SHA-256 del artefacto
+                command: |
+                  echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
+                  shasum -a 256 artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz
+                  echo "[STEP] Emitir SHA-256 del artefacto - FIN"
+            - persist_to_workspace:
+                root: artifacts
+                paths:
+                  - ai-voice-interconnector-*-arm64-macos.tar.gz
 
   # ──────────────────────────────────────────────────────────────
   # CD — publicación del GitHub Release (Rust nativo, 4 binarios)
@@ -1763,6 +2029,9 @@ workflows:
     # por toda la cadena (tests/gates → builds → publish-*).
     # Todos los jobs declaran además `branches: ignore /.*/`: esta pipeline corre
     # SOLO en tags `v*`, nunca en pushes de rama. Ver docs/BUILD.md §4.
+    # Excluido explícitamente cuando se dispara la sonda (native_cache_probe).
+    when:
+      not: << pipeline.parameters.native_cache_probe >>
     jobs:
       # ── Triple suite (gate) + cobertura + instaladores + licencias ──
       # Los 4 builds requieren estos 9 gates verdes en la misma pipeline.
@@ -1910,3 +2179,22 @@ workflows:
               ignore: /.*/
           requires:
             - publish-release
+
+  # ── Sonda de builds nativos (herramienta de diagnóstico, nunca publica) ──
+  # Solo por API: POST /api/v2/project/gh/<org>/<repo>/pipeline con
+  # {"branch":"main","parameters":{"native_cache_probe":true}} (y opcionalmente
+  # "native_sccache":true). Ejecuta los 4 build-* en modo `probe`: sin puertas,
+  # sin publish-*, sin restaurar ni guardar target-*, sin empaquetado; con
+  # --timings y el diagnóstico de CMake. Guarda sccache (por contenido). Sin
+  # `requires` ni filtros de tags: corre en la rama indicada. Ver docs/BUILD.md §4.
+  native-cache-probe:
+    when: << pipeline.parameters.native_cache_probe >>
+    jobs:
+      - build-windows-x64:
+          probe: true
+      - build-linux-x64:
+          probe: true
+      - build-linux-arm64:
+          probe: true
+      - build-darwin-arm64:
+          probe: true

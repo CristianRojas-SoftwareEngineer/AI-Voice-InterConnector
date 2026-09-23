@@ -1229,6 +1229,301 @@ mod tests {
         );
     }
 
+    const BUILD_JOBS: [&str; 4] = [
+        "build-windows-x64",
+        "build-linux-x64",
+        "build-linux-arm64",
+        "build-darwin-arm64",
+    ];
+
+    /// Sección de la definición de un job build-* (hasta el siguiente job).
+    fn seccion_build<'a>(cfg: &'a str, job: &str) -> &'a str {
+        cfg.split(&format!("\n  {}:\n", job))
+            .nth(1)
+            .unwrap_or("")
+            .split("\n  build-")
+            .next()
+            .unwrap_or("")
+            .split("\n  # ──")
+            .next()
+            .unwrap_or("")
+    }
+
+    fn sangria(l: &str) -> usize {
+        l.len() - l.trim_start().len()
+    }
+
+    fn es_estructural(l: &str) -> bool {
+        !l.trim().is_empty() && !l.trim_start().starts_with('#')
+    }
+
+    /// Guarda condicional (`when`/`unless`, condición) bajo la que cae el paso
+    /// de la línea `idx`: sube al `steps:` que lo contiene y de ahí al `- when:`
+    /// o `- unless:` que lo abre. `None` si el paso no está anidado.
+    fn guarda_de(lines: &[&str], idx: usize) -> Option<(String, String)> {
+        let ind = sangria(lines[idx]);
+        let j = (0..idx)
+            .rev()
+            .find(|&j| es_estructural(lines[j]) && sangria(lines[j]) < ind)?;
+        if lines[j].trim() != "steps:" {
+            return None;
+        }
+        let k = (0..j)
+            .rev()
+            .find(|&k| es_estructural(lines[k]) && sangria(lines[k]) < sangria(lines[j]))?;
+        let tipo = lines[k].trim().strip_prefix("- ")?.strip_suffix(':')?.to_string();
+        let cond = lines[k + 1..j]
+            .iter()
+            .find_map(|l| l.trim().strip_prefix("condition: "))?
+            .to_string();
+        Some((tipo, cond))
+    }
+
+    /// Workflow de sonda: nunca publica, todos sus jobs van en modo `probe` y
+    /// es mutuamente excluyente con `build-all` (el release, que sí publica).
+    /// Un `publish-*` o un `context` aquí publicaría una release desde una rama.
+    #[test]
+    fn test_workflow_sonda_nunca_publica() {
+        let cfg = leer_config_ci();
+        let lines: Vec<&str> = cfg.lines().collect();
+        let ini = lines
+            .iter()
+            .position(|l| *l == "  native-cache-probe:")
+            .expect("debe existir el workflow native-cache-probe");
+        let fin = (ini + 1..lines.len())
+            .find(|&i| es_estructural(lines[i]) && sangria(lines[i]) <= 2)
+            .unwrap_or(lines.len());
+        let wf = lines[ini..fin].join("\n");
+        for prohibido in ["publish-release", "publish-metadata", "context:", "requires:", "filters:"] {
+            assert!(
+                !wf.contains(prohibido),
+                "el workflow native-cache-probe no debe contener `{prohibido}`:\n{wf}"
+            );
+        }
+        assert!(
+            wf.contains("when: << pipeline.parameters.native_cache_probe >>"),
+            "native-cache-probe debe activarse solo con native_cache_probe"
+        );
+        let jobs: Vec<&str> = lines[ini..fin]
+            .iter()
+            .filter_map(|l| l.trim().strip_prefix("- "))
+            .collect();
+        assert_eq!(
+            jobs,
+            BUILD_JOBS.iter().map(|j| format!("{j}:")).collect::<Vec<_>>(),
+            "native-cache-probe debe contener exactamente los 4 build-*"
+        );
+        assert_eq!(
+            wf.matches("probe: true").count(),
+            BUILD_JOBS.len(),
+            "cada job de native-cache-probe debe llevar probe: true"
+        );
+        let build_all = cfg
+            .split("\n  build-all:\n")
+            .nth(1)
+            .expect("debe existir el workflow build-all")
+            .split("\n    jobs:")
+            .next()
+            .unwrap_or("");
+        assert!(
+            build_all.contains("when:\n      not: << pipeline.parameters.native_cache_probe >>"),
+            "build-all debe excluirse cuando native_cache_probe es verdadero"
+        );
+        assert!(
+            cfg.contains("  native_cache_probe:\n    type: boolean\n    default: false"),
+            "native_cache_probe debe ser booleano con default false"
+        );
+    }
+
+    /// Modo sonda de los build-*: no restaura ni guarda la clave inmutable de
+    /// target-v2 (fijaría un target/ ajeno bajo una clave de producción) ni
+    /// empaqueta (el staging exige CIRCLE_TAG == const VERSION).
+    #[test]
+    fn test_modo_sonda_no_toca_target_v2() {
+        let cfg = leer_config_ci();
+        let sonda = ("when".to_string(), "<< parameters.probe >>".to_string());
+        let no_sonda = ("unless".to_string(), "<< parameters.probe >>".to_string());
+
+        // El comando solo restaura target-v2 (y fija mtime) con target: true.
+        let cmd = cfg
+            .split("\n  cargo_restore_caches:\n")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n  cargo_save_registry:")
+            .next()
+            .unwrap_or("");
+        let cmd_lines: Vec<&str> = cmd.lines().collect();
+        let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
+        for marca in ["- target-v2-", "name: Fijar mtime de vendor/cmake-0.1.58"] {
+            let i = cmd_lines
+                .iter()
+                .position(|l| l.trim().starts_with(marca))
+                .unwrap_or_else(|| panic!("cargo_restore_caches debe contener `{marca}`"));
+            // El paso es el ítem de lista (`- restore_cache:`/`- run:`) que lo contiene.
+            let item = (0..=i).rev().find(|&k| cmd_lines[k].trim().starts_with("- ")).unwrap();
+            let item = if cmd_lines[item].trim().starts_with("- target-v2-") { item - 2 } else { item };
+            assert_eq!(
+                guarda_de(&cmd_lines, item),
+                Some(param_target.clone()),
+                "`{marca}` debe ir bajo when: << parameters.target >> en cargo_restore_caches"
+            );
+        }
+
+        for job in BUILD_JOBS {
+            let section = seccion_build(&cfg, job);
+            let lines: Vec<&str> = section.lines().collect();
+            assert!(
+                section.contains("    parameters:\n      probe:\n        type: boolean\n        default: false"),
+                "{job} debe declarar el parámetro probe (boolean, default false)"
+            );
+
+            let guardados: Vec<usize> = (0..lines.len())
+                .filter(|&i| lines[i].trim() == "- cargo_save_target:")
+                .collect();
+            assert_eq!(guardados.len(), 1, "{job} debe invocar cargo_save_target una vez");
+            assert_eq!(
+                guarda_de(&lines, guardados[0]),
+                Some(no_sonda.clone()),
+                "{job}: cargo_save_target debe ir bajo unless: << parameters.probe >>"
+            );
+
+            let restauraciones: Vec<usize> = (0..lines.len())
+                .filter(|&i| lines[i].trim() == "- cargo_restore_caches:")
+                .collect();
+            assert_eq!(
+                restauraciones.len(),
+                2,
+                "{job} debe invocar cargo_restore_caches dos veces (excluyentes por probe)"
+            );
+            for &i in &restauraciones {
+                let args = lines[i + 1..(i + 4).min(lines.len())].join("\n");
+                match guarda_de(&lines, i) {
+                    Some(g) if g == sonda => assert!(
+                        args.contains("target: false"),
+                        "{job}: en modo sonda cargo_restore_caches debe llevar target: false"
+                    ),
+                    Some(g) if g == no_sonda => assert!(
+                        args.contains("target: true"),
+                        "{job}: fuera de sonda cargo_restore_caches debe llevar target: true"
+                    ),
+                    otra => panic!("{job}: cargo_restore_caches con guarda inesperada: {otra:?}"),
+                }
+            }
+
+            // Empaquetado: persist_to_workspace, staging y SHA-256 solo fuera de sonda.
+            let persist = lines
+                .iter()
+                .position(|l| l.trim() == "- persist_to_workspace:")
+                .unwrap_or_else(|| panic!("{job} debe persistir su artefacto"));
+            assert_eq!(
+                guarda_de(&lines, persist),
+                Some(no_sonda.clone()),
+                "{job}: persist_to_workspace debe ir bajo unless: << parameters.probe >>"
+            );
+            for nombre in [
+                "name: Preparar artefacto versionado (staging)",
+                "name: Emitir SHA-256 del artefacto",
+            ] {
+                let n = lines
+                    .iter()
+                    .position(|l| l.trim() == nombre)
+                    .unwrap_or_else(|| panic!("{job} debe contener `{nombre}`"));
+                let item = (0..n).rev().find(|&k| lines[k].trim() == "- run:").unwrap();
+                assert_eq!(
+                    guarda_de(&lines, item),
+                    Some(no_sonda.clone()),
+                    "{job}: `{nombre}` debe ir bajo unless: << parameters.probe >>"
+                );
+            }
+
+            // Diagnóstico de CMake solo en modo sonda.
+            let diag = lines
+                .iter()
+                .position(|l| l.trim() == "- cmake_probe_diagnostics")
+                .unwrap_or_else(|| panic!("{job} debe invocar cmake_probe_diagnostics"));
+            assert_eq!(
+                guarda_de(&lines, diag),
+                Some(sonda.clone()),
+                "{job}: cmake_probe_diagnostics debe ir bajo when: << parameters.probe >>"
+            );
+
+            // --timings y su artefacto, sin condición.
+            assert!(
+                section.contains("cargo build --release --features full --verbose --timings"),
+                "{job} debe compilar con --timings"
+            );
+            let timings = lines
+                .iter()
+                .position(|l| l.trim() == "path: target/cargo-timings")
+                .unwrap_or_else(|| panic!("{job} debe guardar target/cargo-timings como artefacto"));
+            assert_eq!(
+                guarda_de(&lines, timings - 1),
+                None,
+                "{job}: el artefacto cargo-timings debe publicarse sin condición"
+            );
+        }
+    }
+
+    /// Launcher sccache para los proyectos CMake de los build-*: en Unix vía
+    /// CMAKE_{C,CXX}_COMPILER_LAUNCHER exportados a $BASH_ENV; en Windows además
+    /// con el generador Ninja (el de Visual Studio ignora los launchers).
+    #[test]
+    fn test_launcher_cmake_en_builds() {
+        let cfg = leer_config_ci();
+        let unix = cfg
+            .split("\n  native_sccache_setup_unix:\n")
+            .nth(1)
+            .expect("debe existir el comando native_sccache_setup_unix")
+            .split("\n  native_sccache_setup_windows:")
+            .next()
+            .unwrap_or("");
+        for var in ["CMAKE_C_COMPILER_LAUNCHER=sccache", "CMAKE_CXX_COMPILER_LAUNCHER=sccache"] {
+            assert!(
+                unix.contains(&format!("echo 'export {var}' >> \"$BASH_ENV\"")),
+                "native_sccache_setup_unix debe exportar {var} a $BASH_ENV"
+            );
+        }
+        for job in ["build-linux-x64", "build-linux-arm64", "build-darwin-arm64"] {
+            let section = seccion_build(&cfg, job);
+            let setup = section
+                .find("      - sccache_setup_unix\n      - native_sccache_setup_unix\n")
+                .unwrap_or_else(|| panic!("{job} debe invocar native_sccache_setup_unix tras sccache_setup_unix"));
+            let build = section
+                .find("cargo build --release --features")
+                .unwrap_or_else(|| panic!("{job} debe compilar el binario release"));
+            assert!(setup < build, "{job}: el launcher debe configurarse antes de compilar");
+        }
+        let win = seccion_build(&cfg, "build-windows-x64");
+        assert!(
+            win.contains("- native_sccache_setup_windows"),
+            "build-windows-x64 debe instalar Ninja (native_sccache_setup_windows)"
+        );
+        let compilar = win
+            .split("name: Compilar binario release (cargo build --release)")
+            .nth(1)
+            .expect("build-windows-x64 debe tener el paso de compilación")
+            .split("\n      - ")
+            .next()
+            .unwrap_or("");
+        for asignacion in [
+            r#"$env:CMAKE_GENERATOR = "Ninja""#,
+            r#"$env:CMAKE_C_COMPILER_LAUNCHER = "sccache""#,
+            r#"$env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache""#,
+            r#"$env:PATH = "$env:TEMP\ninja;$env:PATH""#,
+        ] {
+            assert!(
+                compilar.contains(asignacion),
+                "el paso de compilación de Windows debe fijar `{asignacion}`"
+            );
+        }
+        let pos_launcher = compilar.find("$env:CMAKE_GENERATOR").unwrap();
+        let pos_build = compilar.find("cargo build --release --features").unwrap();
+        assert!(
+            pos_launcher < pos_build,
+            "CMAKE_GENERATOR debe fijarse antes de cargo build"
+        );
+    }
+
     #[test]
     fn test_render_cask_from_tag_strips_v() {
         let sums = sample_sums();
