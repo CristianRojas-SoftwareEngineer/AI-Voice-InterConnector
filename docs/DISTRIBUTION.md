@@ -124,7 +124,7 @@ persisten al workspace. Luego:
 1. `publish-release` recoge los 4 archivos, calcula `SHA256SUMS.txt` sobre ellos
    y crea el GitHub Release (`gh release create`) con los archivos + el checksum.
 2. `publish-metadata` (depende de `publish-release`) renderiza el Cask de
-   Homebrew con `cargo xtask cask` — `binary` stanza sobre el `tar.gz` de
+   Homebrew con `cargo run -p xtask -- cask` — `binary` stanza sobre el `tar.gz` de
    macOS, con el `sha256` extraído de `SHA256SUMS.txt` — y lo empuja al tap.
 
 No hay job de publicación a PyPI: fue retirado en la Fase 7 (ver arriba).

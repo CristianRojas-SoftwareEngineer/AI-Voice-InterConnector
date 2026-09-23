@@ -791,7 +791,7 @@ jobs:
     # Gate de licencias GPLv3: verifica que SOURCE-OFFER.md esté regenerado para
     # la versión vigente (cargo xtask source-offer --check) y que THIRD-PARTY-
     # LICENSES.md esté en sincronía con Cargo.lock (cargo xtask licenses --check).
-    # Corre en ramas y en tags v* como gate de los builds (ver workflows).
+    # Corre solo en tags v* como gate de los builds (ver workflow build-all).
     # Caché: registry + sccache (sin target) — xtask es pequeño, sccache basta.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463

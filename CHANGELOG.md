@@ -131,6 +131,34 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ### Cambiado
 
+- build(xtask): `xtask release` ejecuta las mismas comprobaciones que las
+  puertas de CI antes de que exista el tag. Antes de modificar archivos
+  verifica `THIRD-PARTY-LICENSES.md` contra `Cargo.lock`; después del bump y
+  la promoción verifica `SOURCE-OFFER.md` y la validación completa del
+  CHANGELOG. La pipeline de release corre solo en tags, así que antes una
+  falla aparecía con el tag ya publicado.
+- build(xtask): `changelog --check` exige que cada entrada del índice del
+  CHANGELOG apunte al ancla que GitHub asigna a su cabecera, y que cada
+  cabecera de versión tenga su entrada. Un enlace roto del índice hace fallar
+  la puerta en lugar de publicarse en silencio.
+- docs: `docs/RELEASING.md` y la skill `release` se reescribieron para
+  documentar solo el proceso vigente, sin narración histórica. Cubren las
+  pre-validaciones y comprobaciones de `xtask release` (incluido el árbol
+  limpio con la curación commiteada), las 9 puertas de `build-all`, los
+  contexts de CircleCI por job y la recuperación ante fallas. También se
+  corrigió este drift:
+  - el Cask se genera sobre el `tar.gz` de macOS;
+  - `publish-metadata` crea el Cask en el tap, así que no hace falta
+    prepararlo a mano la primera vez (también en `SELF-HOSTED-INSTALL.md`);
+  - `cargo xtask` no tiene alias y ahora figura como `cargo run -p xtask --`
+    (también en `BUILD.md`, `DISTRIBUTION.md` y `PARITY.md`);
+  - `BUILD.md` indica la imagen real del job `publish-metadata`;
+  - el comentario del job `validate-licenses` indica que corre solo en tags.
+- docs: `docs/reviews/generacion-inventario-licencias-terceros.md` documenta
+  por qué el inventario de licencias de terceros se desalinea de `Cargo.lock`
+  sin que la puerta lo detecte, y la estrategia para generarlo desde
+  `cargo metadata` con `xtask`.
+
 - docs: revisión de estructura, índices y drift de `docs/` y `USAGE.md`.
   Jerarquía de encabezados coherente en CONTRACT, GOAL y BUILD; índices
   regenerados con h2/h3 anidados; citas archivo:línea sustituidas por símbolo

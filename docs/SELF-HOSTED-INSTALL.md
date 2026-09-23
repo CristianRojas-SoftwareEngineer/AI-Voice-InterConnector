@@ -229,9 +229,8 @@ Toda la integración de PATH, la desinstalación (`--zap`) y la limpieza de cuar
 las resuelve Homebrew; solo el modelo queda pendiente (el Cask no puede correr
 post-install: lo remite a `setup` en las caveats).
 
-**Bootstrap**: el **primer** push del Cask al tap es manual (un paso de arranque
-único, porque `publish-metadata` actualiza un Cask que ya debe existir); a partir de
-ahí el job lo mantiene.
+`publish-metadata` crea o reescribe `Casks/ai-voice-interconnector.rb` en el tap en
+cada release; el único prerrequisito es que el repositorio tap exista.
 
 ## Instalador macOS (`curl | sh`)
 
