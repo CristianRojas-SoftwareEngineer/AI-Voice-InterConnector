@@ -1,7 +1,6 @@
 //! Motor STT real sobre Parakeet TDT 0.6B v3 int8 vía `ort`/ONNX Runtime.
 //!
-//! Pipeline portado del spike validado en disco
-//! (`%TEMP%\opencode\spike-parakeet\src\main.rs`):
+//! Pipeline portado de un prototipo previo ya validado:
 //! `nemo128.onnx` (extracción de features) → `encoder-model.int8.onnx`
 //! → `decoder_joint-model.int8.onnx` + decodificador **TDT greedy**.
 //!
@@ -43,7 +42,7 @@ pub struct ParakeetEngine {
     // `SttEngine::transcribe(&self)` es inmutable, los 3 `Session` se envuelven
     // en `Mutex` (interior mutability). La síntesis es por-request, por lo que
     // no hay paralelismo real dentro de un motor — el lock es efetivamente
-    // instantáneo en el uso del daemon (el spike usaba ownership por request,
+    // instantáneo en el uso del daemon (el prototipo previo usaba ownership por request,
     // equivalente semántico).
     pre: std::sync::Mutex<Session>,
     enc: std::sync::Mutex<Session>,
@@ -120,7 +119,7 @@ impl SttEngine for ParakeetEngine {
 
         // 1) Features: waveform [1,S] + lens [1] -> features [1,128,T], lens [1].
         // El preexport expone los outputs en orden: [0]=features [1,128,T],
-        // [1]=lengths; se asume por contrato del modelo (ver spike).
+        // [1]=lengths; se asume por contrato del modelo.
         let (t_frames, feats, feat_len) = {
             let t_wave =
                 ort::value::Tensor::from_array(([1i64, samples.len() as i64], samples.clone()))?;
@@ -161,7 +160,7 @@ impl SttEngine for ParakeetEngine {
         };
 
         // 3) TDT greedy sobre decoder_joint.
-        //    Nota: el spike indexa outputs por nombre ("outputs",
+        //    Nota: el prototipo previo indexaba outputs por nombre ("outputs",
         //    "output_states_1", "output_states_2"); aquí usamos posición para
         //    no depender del orden exacto de `outputs()` almacenado en `dj_in`.
         let states_shape = vec![PRED_LAYERS, 1, PRED_HIDDEN];
