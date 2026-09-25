@@ -47,7 +47,7 @@ expone por HTTP.
 |---|---|
 | `ForceDaemon` (`--daemon`) | Siempre intenta el daemon; si el `POST` falla, exit 5 `daemon_unreachable` |
 | `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
-| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`, ``) con deadline corto; si responde, delega; si no, cae a directo |
+| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`) con deadline corto; si responde, delega; si no, cae a directo |
 
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
 lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
@@ -64,16 +64,15 @@ ai-voice-interconnector speech list [--voice <nombre>]
 ```
 
 Lista las locuciones persistidas en `SpeechStore`
-(`crates/avi-store`), local-only (brazo `List` en ``).
+(`crates/avi-store`), local-only (brazo `List` de `SpeechCommands`).
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--voice`, `-v` | string | — (todas las voces) | Opcional, sin default. Con valor, acota la lectura al directorio de esa voz (`SpeechStore::list_by_voice`, ``, filtro normalizado a minúsculas); sin el flag, lista todas (`SpeechStore::list`, ``) |
+| `--voice`, `-v` | string | — (todas las voces) | Opcional, sin default. Con valor, acota la lectura al directorio de esa voz (`SpeechStore::list_by_voice`, filtro normalizado a minúsculas); sin el flag, lista todas (`SpeechStore::list`) |
 
 Definición: `SpeechCommands::List { voice: Option<String> }`. Con `--voice`, el handler valida el identificador
-con `es_identificador_valido` (exit 2 `invalid_identifier`,
-``) y la existencia de la voz con `VoiceStore::exists`
-(exit 3 `voice_not_found`, ``) antes de leer;
+con `es_identificador_valido` (exit 2 `invalid_identifier`) y la existencia
+de la voz con `VoiceStore::exists` (exit 3 `voice_not_found`) antes de leer;
 sin `--voice` no valida nada y devuelve todo.
 
 Salida humana: una línea por locución con voz, etiqueta, duración y texto.
@@ -90,7 +89,7 @@ ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--dur
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--audio` | string | — | Ruta del WAV a transcribir. Mutuamente excluyente con `--mic` (`conflicts_with`, ``) |
+| `--audio` | string | — | Ruta del WAV a transcribir. Mutuamente excluyente con `--mic` (`conflicts_with`) |
 | `--mic` | flag | `false` | Captura desde el micrófono en vez de leer un archivo |
 | `--duration` | u64 | — | Duración fija de grabación en segundos. Solo tiene efecto con `--mic` |
 | `--source-language` | `es-latam`\|`en` | — | Obligatorio. Idioma hablado en el audio |
@@ -128,9 +127,7 @@ pasa verbatim. `ParakeetEngine` solo transcribe, nunca traduce.
 { "text": "<texto transcrito>", "source": "<source_language tal cual se pasó>" }
 ```
 
-(`` local, `` vía daemon — mismo envelope en
-ambas rutas.) (`` local, `` vía daemon — mismo envelope en
-ambas rutas.)
+(Mismo envelope en la rama local y vía daemon.)
 
 ---
 
@@ -193,7 +190,7 @@ local.
 { "status": "success", "audio_path": "<ruta del WAV persistido>", "voice": "<voz>" }
 ```
 
-(`` vía daemon, `` local — idéntico.) (`` vía daemon, `` local — idéntico.)
+(Idéntico vía daemon y en la rama local.)
 
 ---
 
@@ -220,7 +217,7 @@ Despacho: `say_via_daemon` si aplica, o rama directa con
 { "status": "reproduced", "audio_path": "<ruta temporal del WAV>", "voice": "<voz>" }
 ```
 
-(`` local, `` vía daemon.) (`` local, `` vía daemon.)
+(Mismo envelope en la rama local y vía daemon.)
 
 ---
 
@@ -231,7 +228,7 @@ ai-voice-interconnector speech dub (--audio <archivo.wav>|--file <archivo.wav> |
 ```
 
 Pipeline voz→voz: transcribe → traduce (si `source != target`) → sintetiza →
-reproduce. `--file` es alias de `--audio` (`alias = "file"`, ``,
+reproduce. `--file` es alias de `--audio` (`alias = "file"`,
 paridad con el oráculo Python retirado).
 
 | Flag | Tipo | Default | Descripción |
@@ -303,14 +300,7 @@ En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo
 { "status": "dubbed", "text": "<texto final, traducido o passthrough>", "audio_path": "<ruta temporal del WAV reproducido>" }
 ```
 
-(`` local, `` vía `/dub`,
-`` vía composición — mismo envelope en las tres rutas;
-nótese que el campo del CLI se llama `text`, aunque el handler del daemon
-distingue internamente `text`/`translated`.) (`` local, `` vía `/dub`,
-`` vía composición — mismo envelope en las tres rutas;
-nótese que el campo del CLI se llama `text`, aunque el handler del daemon
-distingue internamente `text`/`translated`.) (`` local, `` vía `/dub`,
-`` vía composición — mismo envelope en las tres rutas;
+(Mismo envelope en las tres rutas —local, vía `/dub` y vía composición—;
 nótese que el campo del CLI se llama `text`, aunque el handler del daemon
 distingue internamente `text`/`translated`.)
 
@@ -365,8 +355,7 @@ resulta en exit 2 `unsupported_language_pair`.
 
 **Divergencia deliberada con `translate`.** El conjunto `{es-latam, en}` es
 la taxonomía del grupo `speech`; el comando `translate` usa un alfabeto
-estricto `{es, en}` en `--from`/`--to` (`value_parser = ["es", "en"]`,
-``) y rechaza `es-latam` por parser con exit 2. `es-latam`
+estricto `{es, en}` en `--from`/`--to` (`value_parser = ["es", "en"]`) y rechaza `es-latam` por parser con exit 2. `es-latam`
 solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 `es`.
 

@@ -650,7 +650,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 `/synthesize` recibe `voice: str`. No hay lista de directorios de audio permitidos, ni validación de rutas de audio, ni directorio de sesión del daemon, porque no hay rutas que validar.
 
-**Riesgo conocido y declarado**: `data_dir()` / `hf_cache_dir()` (`crates/avi-store/src/lib.rs`) depende de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. Está atenuado porque `/voices` permite inspeccionar la vista del daemon. Con `AVI_DATA_DIR`, esa dependencia es además el mecanismo de aislamiento por instancia en tests (sandbox propio por test; en producción la resolución por defecto no cambia).
+**Riesgo conocido y declarado**: `data_dir()` / `hf_cache_dir()` (`crates/avi-store/src/lib.rs`) depende de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. El daemon no expone un endpoint para inspeccionar su vista del almacén (`GET /voices` fue podado). Con `AVI_DATA_DIR`, esa dependencia es además el mecanismo de aislamiento por instancia en tests (sandbox propio por test; en producción la resolución por defecto no cambia).
 
 ## 13. `translate`, `speech transcribe`, `speech dub` y la síntesis cross-lingual
 

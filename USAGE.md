@@ -958,7 +958,7 @@ Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (defau
 
 Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(precalentar_voz)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque (fail-fast, antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
 
-`daemon stop` responde `Daemon detenido` (parada unificada de daemon y residente con verificación y borrado de `daemon.pid`) y `daemon restart` orquesta `stop_daemon_and_resident` → arranque fresco con `spawn_background` → poll `running`.
+`daemon stop` responde `Señal de apagado enviada al daemon en <addr>.` (parada unificada de daemon y residente con verificación y borrado de `daemon.pid`) y `daemon restart` orquesta `stop_daemon_and_resident` → arranque fresco con `spawn_background` → poll `running`.
 
 ### Uso con daemon
 

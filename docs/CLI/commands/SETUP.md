@@ -114,7 +114,6 @@ reservando stdout para el JSON.
 |---|---|---|
 | `voice_store_init_failed` | Error | No se pudo inicializar el `VoiceStore`/directorio de datos |
 | `model_download_failed` | Error | Falló la descarga de un snapshot HF (red, credenciales, disco) |
-| `model_provision_failed` | Error | Falló el registro del snapshot en el índice |
 | `ct2_conversion_failed` | Error | Snapshot Marian no resoluble/ausente, o falló la conversión CT2 (falta `ctranslate2`) |
 
 ---
