@@ -83,6 +83,8 @@ git push origin main --tags           # sin --tags el tag no dispara build-all
    falla:
    - la versión tiene formato `X.Y.Z`;
    - `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock`;
+   - el código pasa `cargo fmt --all --check`;
+   - `cargo clippy --all-targets -- -D warnings` no reporta avisos;
    - el árbol está limpio;
    - hay commits desde el último tag.
 2. **Bump.** Escribe `X.Y.Z` en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,

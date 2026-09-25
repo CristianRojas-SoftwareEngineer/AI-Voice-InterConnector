@@ -104,6 +104,11 @@ atribución publicada tenía versiones, licencias y totales incorrectos sin que
 nada lo señalara. Ahora `xtask` genera el inventario desde `Cargo.lock` y el
 metadato de cada crate, y la puerta verifica su contenido completo.
 
+Por último, `CONTRIBUTING.md` exigía que `cargo fmt` y `cargo clippy` pasaran
+sin diff ni avisos, pero nada lo verificaba y se había acumulado deuda de
+formato. Ahora la pre-validación de `xtask release` ejecuta ambas herramientas
+y aborta el corte antes de modificar archivos si alguna falla.
+
 ### Cambiado
 
 - docs: la sección de caché de `docs/BUILD.md` distingue los dos mecanismos:
@@ -146,6 +151,11 @@ metadato de cada crate, y la puerta verifica su contenido completo.
   familia asignada o un paquete sin licencia. `licenses --check` (usado por
   `xtask release` y el job `validate-licenses`) compara la región completa y
   muestra el diff, en lugar de comparar solo los nombres.
+- feat(xtask): la pre-validación de `cargo run -p xtask -- release` ejecuta
+  `cargo fmt --all --check` y `cargo clippy --all-targets -- -D warnings`
+  antes de modificar archivos, muestra la salida de la herramienta y aborta con
+  un mensaje que indica cómo corregirlo. El workspace se formateó con
+  `cargo fmt --all` para saldar la deuda existente.
 
 ## [0.21.0] — 2026-09-23
 

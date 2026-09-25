@@ -167,10 +167,11 @@ fn main() -> Result<()> {
                 );
             }
             // Pre-validación atómica: abortar antes de mutar si las licencias están
-            // desincronizadas, si el árbol está sucio o si no hay commits nuevos
-            // desde el último tag.
+            // desincronizadas, si el código no pasa `cargo fmt` o clippy, si el árbol
+            // está sucio o si no hay commits nuevos desde el último tag.
             {
                 check_licenses_gate()?;
+                check_code_quality_gate()?;
                 let last = last_tag()?;
                 let diff_status = std::process::Command::new("git")
                     .args(["diff", "--quiet"])
@@ -220,7 +221,9 @@ fn main() -> Result<()> {
             println!("  - tests/golden/cli_version.json");
             println!("  - SOURCE-OFFER.md (oferta GPLv3 §6 versionada)");
             println!("  - CHANGELOG.md (sección promovida desde [No publicado] + ToC + enlace)");
-            println!("Comprobaciones: licencias, SOURCE-OFFER.md y CHANGELOG.md en sincronía");
+            println!(
+                "Comprobaciones: formato (cargo fmt), clippy sin avisos; licencias, SOURCE-OFFER.md y CHANGELOG.md en sincronía"
+            );
             println!(
                 "Revisa el diff, commitea con conventional-commits y crea el tag v{}",
                 version
@@ -1053,6 +1056,29 @@ fn check_licenses_gate() -> Result<()> {
     let region = render_licenses_region()?;
     let current = std::fs::read_to_string(LICENSES_DOC)?;
     diff_licenses_inventory(&current, &region).map_err(|msg| anyhow!(msg))
+}
+
+/// Gate de calidad de código: `cargo fmt --all --check` y
+/// `cargo clippy --all-targets -- -D warnings`, con la salida heredada para que
+/// el diff o los avisos queden visibles.
+fn check_code_quality_gate() -> Result<()> {
+    let fmt_status = std::process::Command::new("cargo")
+        .args(["fmt", "--all", "--check"])
+        .status()?;
+    if !fmt_status.success() {
+        anyhow::bail!(
+            "código sin formatear: ejecuta `cargo fmt --all` y commitea el resultado antes de release"
+        );
+    }
+    let clippy_status = std::process::Command::new("cargo")
+        .args(["clippy", "--all-targets", "--", "-D", "warnings"])
+        .status()?;
+    if !clippy_status.success() {
+        anyhow::bail!(
+            "clippy reporta avisos: corrígelos y commitea antes de release (`cargo clippy --all-targets -- -D warnings`)"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

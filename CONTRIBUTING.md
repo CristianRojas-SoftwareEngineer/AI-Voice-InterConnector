@@ -115,7 +115,7 @@ El empaquetado de distribución (`tar.gz`/`.zip` con 4 docs GPLv3) lo hace el st
 
 - **Idioma**: código, comentarios, mensajes de commit y documentación en **español**, con ortografía correcta.
 - **Comentarios**: explican el *porqué*, no el *qué*; sigue la densidad del código circundante.
-- **Formato/lint**: `cargo fmt --all` y `cargo clippy --all-targets` deben pasar sin diff ni warnings nuevos.
+- **Formato/lint**: `cargo fmt --all` y `cargo clippy --all-targets` deben pasar sin diff ni warnings nuevos. `cargo run -p xtask -- release` lo verifica (`cargo fmt --all --check` y `cargo clippy --all-targets -- -D warnings`) y aborta el corte si no se cumple.
 - **Commits**: mensajes descriptivos en español, prefijo de tipo cuando aplique (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build:`), en imperativo.
 
 ## Flujo de Pull Request
