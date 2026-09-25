@@ -1149,7 +1149,7 @@ mod tests {
     }
 
     /// Texto de `.circleci/config.yml`, localizado desde la raíz o desde el crate.
-    fn leer_config_ci() -> String {
+    fn read_config_ci() -> String {
         let candidates = [
             ".circleci/config.yml",
             "../../.circleci/config.yml",
@@ -1166,8 +1166,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_heterogeneo_y_sccache_incondicional() {
-        let cfg = leer_config_ci();
+    fn test_pipeline_heterogeneous_and_unconditional_sccache() {
+        let cfg = read_config_ci();
         // Modelo vigente (post remediación de caché): test-linux, test-windows, test-macos,
         // coverage y build-* usan cargo_restore_caches (registry + target-v3) y sccache
         // autoconsistente por variante (cada job pesado restaura y guarda su propio blob).
@@ -1357,8 +1357,8 @@ mod tests {
     }
 
     #[test]
-    fn test_clave_target_v3_con_identidad_de_vendor_cmake() {
-        let cfg = leer_config_ci();
+    fn test_target_v3_key_with_vendor_cmake_identity() {
+        let cfg = read_config_ci();
         // El parche local de cmake se fingerprintea por mtime: el checkout lo marca
         // Dirty y arrastra la cadena nativa. La clave exacta de target-v3 lleva el
         // tree hash git del parche y NO tiene fallback, de modo que un acierto
@@ -1450,8 +1450,8 @@ mod tests {
     /// (variable o `$(...)`) y solo entonces aplicar `grep -q`/`head` sobre esa
     /// captura ya materializada.
     #[test]
-    fn test_sin_tuberia_racy_grep_q_o_head_bajo_pipefail() {
-        let cfg = leer_config_ci();
+    fn test_no_racy_pipe_grep_q_or_head_under_pipefail() {
+        let cfg = read_config_ci();
         // El patrón prohibido es "productor que aún puede estar escribiendo |
         // consumidor que sale antes de leer todo". `printf '%s\n' "$var" |
         // grep -q` SÍ es seguro (captura ya materializada, write() atómico) y
@@ -1481,8 +1481,8 @@ mod tests {
     /// conservan `when: always` porque ahí un fallo del job suele ser un test
     /// que falló, no una compilación incompleta.
     #[test]
-    fn test_cargo_save_target_on_success_en_build_variant_full() {
-        let cfg = leer_config_ci();
+    fn test_cargo_save_target_on_success_in_build_variant_full() {
+        let cfg = read_config_ci();
         // Cada bloque `cargo_save_target:` con `variant: full` debe traer
         // `when: on_success` en las mismas 3 líneas siguientes.
         let mut vistos_full = 0;
@@ -1515,7 +1515,7 @@ mod tests {
     ];
 
     /// Sección de la definición de un job build-* (hasta el siguiente job).
-    fn seccion_build<'a>(cfg: &'a str, job: &str) -> &'a str {
+    fn section_build<'a>(cfg: &'a str, job: &str) -> &'a str {
         cfg.split(&format!("\n  {}:\n", job))
             .nth(1)
             .unwrap_or("")
@@ -1527,28 +1527,28 @@ mod tests {
             .unwrap_or("")
     }
 
-    fn sangria(l: &str) -> usize {
+    fn indentation(l: &str) -> usize {
         l.len() - l.trim_start().len()
     }
 
-    fn es_estructural(l: &str) -> bool {
+    fn is_structural(l: &str) -> bool {
         !l.trim().is_empty() && !l.trim_start().starts_with('#')
     }
 
     /// Guarda condicional (`when`/`unless`, condición) bajo la que cae el paso
     /// de la línea `idx`: sube al `steps:` que lo contiene y de ahí al `- when:`
     /// o `- unless:` que lo abre. `None` si el paso no está anidado.
-    fn guarda_de(lines: &[&str], idx: usize) -> Option<(String, String)> {
-        let ind = sangria(lines[idx]);
+    fn guard_for(lines: &[&str], idx: usize) -> Option<(String, String)> {
+        let ind = indentation(lines[idx]);
         let j = (0..idx)
             .rev()
-            .find(|&j| es_estructural(lines[j]) && sangria(lines[j]) < ind)?;
+            .find(|&j| is_structural(lines[j]) && indentation(lines[j]) < ind)?;
         if lines[j].trim() != "steps:" {
             return None;
         }
         let k = (0..j)
             .rev()
-            .find(|&k| es_estructural(lines[k]) && sangria(lines[k]) < sangria(lines[j]))?;
+            .find(|&k| is_structural(lines[k]) && indentation(lines[k]) < indentation(lines[j]))?;
         let tipo = lines[k]
             .trim()
             .strip_prefix("- ")?
@@ -1565,15 +1565,15 @@ mod tests {
     /// es mutuamente excluyente con `build-all` (el release, que sí publica).
     /// Un `publish-*` o un `context` aquí publicaría una release desde una rama.
     #[test]
-    fn test_workflow_sonda_nunca_publica() {
-        let cfg = leer_config_ci();
+    fn test_probe_workflow_never_publishes() {
+        let cfg = read_config_ci();
         let lines: Vec<&str> = cfg.lines().collect();
         let ini = lines
             .iter()
             .position(|l| *l == "  native-cache-probe:")
             .expect("debe existir el workflow native-cache-probe");
         let fin = (ini + 1..lines.len())
-            .find(|&i| es_estructural(lines[i]) && sangria(lines[i]) <= 2)
+            .find(|&i| is_structural(lines[i]) && indentation(lines[i]) <= 2)
             .unwrap_or(lines.len());
         let wf = lines[ini..fin].join("\n");
         for prohibido in [
@@ -1630,8 +1630,8 @@ mod tests {
     /// target-v3 (fijaría un target/ ajeno bajo una clave de producción) ni
     /// empaqueta (el staging exige CIRCLE_TAG == const VERSION).
     #[test]
-    fn test_modo_sonda_no_toca_target_v2() {
-        let cfg = leer_config_ci();
+    fn test_probe_mode_does_not_touch_target_v2() {
+        let cfg = read_config_ci();
         let sonda = ("when".to_string(), "<< parameters.probe >>".to_string());
         let no_sonda = ("unless".to_string(), "<< parameters.probe >>".to_string());
 
@@ -1661,14 +1661,14 @@ mod tests {
                 item
             };
             assert_eq!(
-                guarda_de(&cmd_lines, item),
+                guard_for(&cmd_lines, item),
                 Some(param_target.clone()),
                 "`{marca}` debe ir bajo when: << parameters.target >> en cargo_restore_caches"
             );
         }
 
         for job in BUILD_JOBS {
-            let section = seccion_build(&cfg, job);
+            let section = section_build(&cfg, job);
             let lines: Vec<&str> = section.lines().collect();
             assert!(
                 section.contains(
@@ -1686,7 +1686,7 @@ mod tests {
                 "{job} debe invocar cargo_save_target una vez"
             );
             assert_eq!(
-                guarda_de(&lines, guardados[0]),
+                guard_for(&lines, guardados[0]),
                 Some(no_sonda.clone()),
                 "{job}: cargo_save_target debe ir bajo unless: << parameters.probe >>"
             );
@@ -1701,7 +1701,7 @@ mod tests {
             );
             for &i in &restauraciones {
                 let args = lines[i + 1..(i + 4).min(lines.len())].join("\n");
-                match guarda_de(&lines, i) {
+                match guard_for(&lines, i) {
                     Some(g) if g == sonda => assert!(
                         args.contains("target: false"),
                         "{job}: en modo sonda cargo_restore_caches debe llevar target: false"
@@ -1720,7 +1720,7 @@ mod tests {
                 .position(|l| l.trim() == "- persist_to_workspace:")
                 .unwrap_or_else(|| panic!("{job} debe persistir su artefacto"));
             assert_eq!(
-                guarda_de(&lines, persist),
+                guard_for(&lines, persist),
                 Some(no_sonda.clone()),
                 "{job}: persist_to_workspace debe ir bajo unless: << parameters.probe >>"
             );
@@ -1734,7 +1734,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("{job} debe contener `{nombre}`"));
                 let item = (0..n).rev().find(|&k| lines[k].trim() == "- run:").unwrap();
                 assert_eq!(
-                    guarda_de(&lines, item),
+                    guard_for(&lines, item),
                     Some(no_sonda.clone()),
                     "{job}: `{nombre}` debe ir bajo unless: << parameters.probe >>"
                 );
@@ -1746,7 +1746,7 @@ mod tests {
                 .position(|l| l.trim() == "- cmake_probe_diagnostics")
                 .unwrap_or_else(|| panic!("{job} debe invocar cmake_probe_diagnostics"));
             assert_eq!(
-                guarda_de(&lines, diag),
+                guard_for(&lines, diag),
                 Some(sonda.clone()),
                 "{job}: cmake_probe_diagnostics debe ir bajo when: << parameters.probe >>"
             );
@@ -1763,7 +1763,7 @@ mod tests {
                     panic!("{job} debe guardar target/cargo-timings como artefacto")
                 });
             assert_eq!(
-                guarda_de(&lines, timings - 1),
+                guard_for(&lines, timings - 1),
                 None,
                 "{job}: el artefacto cargo-timings debe publicarse sin condición"
             );
@@ -1775,8 +1775,8 @@ mod tests {
     /// Windows además con el generador Ninja (el de Visual Studio ignora los
     /// launchers), el entorno vcvars64 y CC/CXX con la ruta absoluta de cl.exe.
     #[test]
-    fn test_launcher_cmake_en_builds() {
-        let cfg = leer_config_ci();
+    fn test_launcher_cmake_in_builds() {
+        let cfg = read_config_ci();
         assert!(
             !cfg.contains("native_sccache:")
                 && !cfg.contains("pipeline.parameters.native_sccache "),
@@ -1799,7 +1799,7 @@ mod tests {
             );
         }
         for job in ["build-linux-x64", "build-linux-arm64", "build-darwin-arm64"] {
-            let section = seccion_build(&cfg, job);
+            let section = section_build(&cfg, job);
             let setup = section
                 .find("      - sccache_setup_unix\n      - native_sccache_setup_unix\n")
                 .unwrap_or_else(|| {
@@ -1813,7 +1813,7 @@ mod tests {
                 "{job}: el launcher debe configurarse antes de compilar"
             );
         }
-        let win = seccion_build(&cfg, "build-windows-x64");
+        let win = section_build(&cfg, "build-windows-x64");
         assert!(
             win.contains("      - sccache_setup_windows\n      - native_sccache_setup_windows\n"),
             "build-windows-x64 debe instalar Ninja (native_sccache_setup_windows) sin condición"
@@ -1871,7 +1871,7 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_bin_name_por_plataforma() {
+    fn test_engine_bin_name_by_platform() {
         if cfg!(windows) {
             assert_eq!(engine_bin_name(), "qwen_tts.exe");
         } else {
@@ -1880,7 +1880,7 @@ mod tests {
     }
 
     #[test]
-    fn test_make_program_por_plataforma() {
+    fn test_make_program_by_platform() {
         if cfg!(windows) {
             assert_eq!(make_program(), "mingw32-make");
         } else {
