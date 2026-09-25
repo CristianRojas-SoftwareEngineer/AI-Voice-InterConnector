@@ -58,7 +58,7 @@ const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 /// Deadline breve para la limpieza acotada ante Ctrl+C: mata el árbol
 /// preciso con verificación; vencido, sale igualmente con 130 sin colgarse.
-const CTRL_C_LIMPIEZA_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+const CTRL_C_CLEANUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 /// Deadline global para la parada unificada del árbol daemon+residente
 /// (graceful + árbol preciso por PID + verificación a nivel de sistema).
 const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs(8);
@@ -66,7 +66,7 @@ const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs
 /// PID hijo en memoria desde el `spawn`: estrecha la ventana
 /// spawn→write del pidfile. El handler Ctrl+C lo reclama cuando aún no hay
 /// pidfile; se fija en la secuencia `Start` justo tras `spawn_background`.
-static PID_EN_MEMORIA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static IN_MEMORY_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 // CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2` (`ct2_model_dir`) → `model.bin`
 // más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` autocontenidos).
@@ -403,7 +403,7 @@ fn install_sigint_handler() {
     ctrlc::set_handler(move || {
         // pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
         let pid = read_daemon_pid().or_else(|| {
-            let m = PID_EN_MEMORIA.load(std::sync::atomic::Ordering::Relaxed);
+            let m = IN_MEMORY_PID.load(std::sync::atomic::Ordering::Relaxed);
             if m != 0 {
                 Some(m)
             } else {
@@ -414,7 +414,7 @@ fn install_sigint_handler() {
             let propio = std::process::id();
             if pid != 0 && pid != propio {
                 daemon::kill_tree_by_pid(pid);
-                daemon::wait_for_pid_death(pid, CTRL_C_LIMPIEZA_DEADLINE);
+                daemon::wait_for_pid_death(pid, CTRL_C_CLEANUP_DEADLINE);
             }
         }
         // Exit code 130 = interrumpido por usuario (Ctrl+C)
@@ -1730,21 +1730,21 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // alcance). Ruta absoluta: las relativas dependen de la unidad
             // del proceso en Windows y los limpiadores de `%TEMP%` pueden
             // barrer ficheros fuera del sandbox.
-            if let Some(ruta) = ready_file.as_ref() {
-                let absoluta = if ruta.is_absolute() {
-                    ruta.clone()
+            if let Some(path) = ready_file.as_ref() {
+                let absolute_path = if path.is_absolute() {
+                    path.clone()
                 } else {
                     std::env::current_dir()
-                        .map(|c| c.join(ruta))
-                        .unwrap_or_else(|_| ruta.clone())
+                        .map(|c| c.join(path))
+                        .unwrap_or_else(|_| path.clone())
                 };
-                std::env::set_var(daemon::READY_FILE_ENV, &absoluta);
+                std::env::set_var(daemon::READY_FILE_ENV, &absolute_path);
             }
             // Job con cierre del árbol en el proceso longevo (Windows).
             // El handler SIGINT ya quedó instalado en `main` para todos los modos;
             // la escucha de señales del servidor cierra por la misma ruta que
             // POST `/shutdown`. En Unix `serve` cierra por esa misma ruta
-            // sin pidfile ni auto-muerte del CLI (la guarda `pid != propio`
+            // sin pidfile ni auto-muerte del CLI (la guarda `pid != own_pid`
             // protege al `serve` en foreground).
             #[cfg(windows)]
             install_job_with_tree_kill();
@@ -1766,7 +1766,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // pidfile solo. Sano → `already_running`; degradado → se reclama el
             // árbol y se rearranca con salida 0 y payload `started`.
             match classify_residual(&client).await {
-                EstadoResidual::Sano(pid) => {
+                ResidualState::Healthy(pid) => {
                     if json_mode {
                         emit_raw_json(
                             json!({ "status": "already_running", "daemon": "running", "pid": pid }),
@@ -1776,14 +1776,14 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     }
                     return Ok(());
                 }
-                EstadoResidual::Degradado { pid, motivo } => {
+                ResidualState::Degraded { pid, reason } => {
                     eprintln!(
                         "Daemon residual degradado ({}): se reclama el árbol y se rearranca.",
-                        motivo
+                        reason
                     );
                     reclaim_degraded_residual(&client, pid).await;
                 }
-                EstadoResidual::Parado => {}
+                ResidualState::Stopped => {}
             }
             // El hijo publica su `addr` real en el fichero ready de la
             // instancia (ruta absoluta bajo el `data_dir` vigente); el padre
@@ -1813,8 +1813,8 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // Conservar el PID hijo en memoria desde el spawn para que el
             // handler Ctrl+C lo reclame aunque aún no haya pidfile (ventana
             // spawn → await → write).
-            PID_EN_MEMORIA.store(pid, std::sync::atomic::Ordering::Relaxed);
-            let addr_real = wait_for_ready_file_addr(&ready_path, DAEMON_READY_DEADLINE)
+            IN_MEMORY_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
+            let addr_real = await_ready_file_addr(&ready_path, DAEMON_READY_DEADLINE)
                 .await
                 .map_err(|e| {
                     CliError::new(
@@ -1860,17 +1860,17 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let client = daemon_client();
             stop_daemon_and_resident().await;
             let pid = read_daemon_pid();
-            let vivo = pid.map(daemon::pid_alive).unwrap_or(false);
-            let activo = daemon_active(&client).await;
+            let alive = pid.map(daemon::pid_alive).unwrap_or(false);
+            let active = daemon_active(&client).await;
             // Los mensajes diagnostican la dirección descubierta (con
             // pidfile efímero difiere del literal; sin pidfile es idéntica).
-            let addr_cli = resolve_client_addr();
-            if !activo && !vivo {
+            let client_addr = resolve_client_addr();
+            if !active && !alive {
                 let _ = remove_daemon_pid_file();
                 if json_mode {
                     emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
                 } else {
-                    println!("Señal de apagado enviada al daemon en {}.", addr_cli);
+                    println!("Señal de apagado enviada al daemon en {}.", client_addr);
                 }
                 Ok(())
             } else {
@@ -1879,7 +1879,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     "daemon_unreachable",
                     format!(
                         "El daemon no se apagó tras el deadline (pid {:?} sigue vivo en {})",
-                        pid, addr_cli
+                        pid, client_addr
                     ),
                 ))
             }
@@ -1922,7 +1922,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                 .unwrap_or(std::time::Duration::from_millis(800));
             // ready acotado al restante del presupuesto global — nunca >10s vigente
             let ready_deadline = std::cmp::min(remaining, DAEMON_READY_DEADLINE);
-            let addr_real = wait_for_ready_file_addr(&ready_path, ready_deadline)
+            let addr_real = await_ready_file_addr(&ready_path, ready_deadline)
                 .await
                 .map_err(|e| {
                     CliError::new(
@@ -1966,10 +1966,10 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // El probe apunta a la dirección descubierta (fallback idéntico
             // sin pidfile).
             let client = daemon_client();
-            let addr_cli = resolve_client_addr();
+            let client_addr = resolve_client_addr();
             match tokio::time::timeout(
                 std::time::Duration::from_millis(500),
-                client.get(format!("http://{}/health", addr_cli)).send(),
+                client.get(format!("http://{}/health", client_addr)).send(),
             )
             .await
             {
@@ -1983,7 +1983,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                         CliError::new(
                             ExitCode::DaemonUnreachable,
                             "daemon_unreachable",
-                            format!("Daemon inalcanzable en {} (timeout json)", addr_cli),
+                            format!("Daemon inalcanzable en {} (timeout json)", client_addr),
                         )
                     })?
                     .map_err(|e| {
@@ -2524,19 +2524,19 @@ async fn handle_cleanup(
 
 /// Estado del residual al arrancar: la vida real se determina por PID vivo más
 /// probe, no por probe solo ni pidfile solo.
-enum EstadoResidual {
+enum ResidualState {
     /// Probe responde y el PID de la pista está vivo: instancia sana única.
-    Sano(u32),
+    Healthy(u32),
     /// Probe y PID discrepan (colgado, pista rancia o sin pista): reclama y rearranca.
-    Degradado {
+    Degraded {
         pid: Option<u32>,
-        motivo: &'static str,
+        reason: &'static str,
     },
     /// Sin probe ni proceso: vía libre para arranque fresco.
-    Parado,
+    Stopped,
 }
 
-/// Predicado puro (testeable sin daemon): ante un `Parado` por probe/PID
+/// Predicado puro (testeable sin daemon): ante un `Stopped` por probe/PID
 /// (sin probe ni proceso del daemon), hay residente-solo si el residente sigue
 /// vivo (por su PID registrado) — entonces no hay vía libre, sino degradado
 /// para reclamo.
@@ -2544,44 +2544,44 @@ enum EstadoResidual {
 fn stopped_with_resident_is_degraded(
     probe_daemon: bool,
     pid_alive: bool,
-    residente_vivo: bool,
+    resident_alive: bool,
 ) -> bool {
-    !probe_daemon && !pid_alive && residente_vivo
+    !probe_daemon && !pid_alive && resident_alive
 }
 
 /// Clasifica el residual del daemon: sano, degradado o parado.
-/// Ante `Parado` se busca al residente por su PID registrado antes de declarar
+/// Ante `Stopped` se busca al residente por su PID registrado antes de declarar
 /// vía libre; con residente vivo es degradado residente-solo para reclamo.
-async fn classify_residual(client: &reqwest::Client) -> EstadoResidual {
+async fn classify_residual(client: &reqwest::Client) -> ResidualState {
     // Recuperación de reclamo: con pidfile perdido (padre caído sin
     // limpiar), el `daemon.ready` sobrevive y conserva el PID del árbol
     // efímero. El fallback solo aplica sin pidfile; `pid_alive` gatea después,
-    // así que un ready rancio con PID muerto sigue cayendo a `Parado`.
+    // así que un ready rancio con PID muerto sigue cayendo a `Stopped`.
     let pid = read_daemon_pid().or_else(|| read_ready_pid(&ready_file_path()));
     // El probe apunta a la dirección descubierta (fallback idéntico sin
     // pidfile; vía nueva solo con pidfile vivo de addr efímera).
-    let addr_cli = resolve_client_addr();
-    let probe = probe_health(client, &addr_cli).await;
-    // `Parado` con residente vivo no es vía libre.
+    let client_addr = resolve_client_addr();
+    let probe = probe_health(client, &client_addr).await;
+    // `Stopped` con residente vivo no es vía libre.
     if !probe && !pid.map(daemon::pid_alive).unwrap_or(false) && resident_alive_by_pid() {
-        return EstadoResidual::Degradado {
+        return ResidualState::Degraded {
             pid,
-            motivo: "residente vivo sin daemon (Parado con resident_pid vivo)",
+            reason: "residente vivo sin daemon (Parado con resident_pid vivo)",
         };
     }
     match pid {
-        Some(p) if probe && daemon::pid_alive(p) => EstadoResidual::Sano(p),
-        None if !probe => EstadoResidual::Parado,
-        Some(p) if !probe && !daemon::pid_alive(p) => EstadoResidual::Parado,
+        Some(p) if probe && daemon::pid_alive(p) => ResidualState::Healthy(p),
+        None if !probe => ResidualState::Stopped,
+        Some(p) if !probe && !daemon::pid_alive(p) => ResidualState::Stopped,
         _ => {
-            let motivo = if probe && pid.is_none() {
+            let reason = if probe && pid.is_none() {
                 "probe responde sin pidfile"
             } else if probe {
                 "probe responde con PID muerto"
             } else {
                 "PID vivo sin probe (colgado)"
             };
-            EstadoResidual::Degradado { pid, motivo }
+            ResidualState::Degraded { pid, reason }
         }
     }
 }
@@ -2601,8 +2601,8 @@ fn resident_alive_by_pid() -> bool {
 /// caído, el PID del líder está muerto y el residente ya no está vivo (por su
 /// PID registrado, tras el barrido por imagen cuando no hay PID).
 #[allow(dead_code)]
-fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, residente_vivo: bool) -> bool {
-    !probe_daemon && !pid_alive && !residente_vivo
+fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, resident_alive: bool) -> bool {
+    !probe_daemon && !pid_alive && !resident_alive
 }
 
 /// Reclamo matar-y-rearrancar ante residual degradado: mata el árbol
@@ -2621,18 +2621,20 @@ fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, residente_vivo: bool
 /// que ya mata al grupo en Unix) con verificación por residente muerto más PID
 /// sin viveza. El runtime Unix se verifica en CI; aquí quedan compilación,
 /// revisión lógica y unitarios no-plataformeros (prohibido simular Unix).
-/// Ante `Parado` con residente vivo (PID registrado o imagen) se reclama su
+/// Ante `Stopped` con residente vivo (PID registrado o imagen) se reclama su
 /// árbol por PID registrado —o por imagen si no hay PID— antes de declarar
 /// fresco (imagen del daemon prohibida; sólo el residente tiene imagen propia).
 async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     let inicio = std::time::Instant::now();
     // Graceful y verificación contra la dirección descubierta.
-    let addr_cli = resolve_client_addr();
+    let client_addr = resolve_client_addr();
     // 1) Graceful breve si el probe responde (no hereda el timeout de 120 s).
-    if probe_health(client, &addr_cli).await {
+    if probe_health(client, &client_addr).await {
         let _ = tokio::time::timeout(
             std::time::Duration::from_millis(1500),
-            client.post(format!("http://{}/shutdown", addr_cli)).send(),
+            client
+                .post(format!("http://{}/shutdown", client_addr))
+                .send(),
         )
         .await;
         let restante = STOP_DEADLINE_GLOBAL
@@ -2673,7 +2675,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     // en Unix además residente muerto ante líder muerto).
     while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
         let vivo = pid.map(daemon::pid_alive).unwrap_or(false);
-        let probe = probe_health(client, &addr_cli).await;
+        let probe = probe_health(client, &client_addr).await;
         #[cfg(unix)]
         {
             if unix_claim_verified(probe, vivo, resident_alive_by_pid()) {
@@ -2718,12 +2720,14 @@ async fn stop_daemon_and_resident() {
     let inicio = std::time::Instant::now();
     let client = daemon_client();
     // Graceful contra la dirección descubierta.
-    let addr_cli = resolve_client_addr();
+    let client_addr = resolve_client_addr();
     // 1) Graceful acotado si responde (no hereda el timeout de 120 s).
     if daemon_active(&client).await {
         let _ = tokio::time::timeout(
             std::time::Duration::from_millis(1500),
-            client.post(format!("http://{}/shutdown", addr_cli)).send(),
+            client
+                .post(format!("http://{}/shutdown", client_addr))
+                .send(),
         )
         .await;
         let restante = STOP_DEADLINE_GLOBAL
@@ -3218,24 +3222,24 @@ fn read_ready_addr(ruta: &std::path::Path) -> Option<String> {
 /// Espera async acotada de la `addr` en el fichero ready: poll con
 /// cadencia `DAEMON_POLL_INTERVAL`; al vencer el deadline falla con
 /// diagnóstico del último contenido (timeout = bug, no flake).
-async fn wait_for_ready_file_addr(
-    ruta: &std::path::Path,
+async fn await_ready_file_addr(
+    path: &std::path::Path,
     deadline: std::time::Duration,
 ) -> anyhow::Result<String> {
-    let inicio = std::time::Instant::now();
-    let mut ultimo = String::new();
-    while inicio.elapsed() < deadline {
-        if let Some(addr) = read_ready_addr(ruta) {
+    let start = std::time::Instant::now();
+    let mut last = String::new();
+    while start.elapsed() < deadline {
+        if let Some(addr) = read_ready_addr(path) {
             return Ok(addr);
         }
-        ultimo = std::fs::read_to_string(ruta).unwrap_or_default();
+        last = std::fs::read_to_string(path).unwrap_or_default();
         tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
     }
     anyhow::bail!(
         "el fichero ready {} no publicó addr válida tras {:?} (último contenido: {:?})",
-        ruta.display(),
+        path.display(),
         deadline,
-        ultimo
+        last
     )
 }
 
@@ -3260,10 +3264,10 @@ async fn await_daemon_ready(
     deadline: std::time::Duration,
     interval: std::time::Duration,
 ) -> anyhow::Result<()> {
-    if let Some(ruta) = ready {
+    if let Some(path) = ready {
         // Vía evento: la `addr` publicada manda (debe coincidir con `addr`;
         // si difiere se diagnostica pero se verifica la publicada).
-        let publicada = wait_for_ready_file_addr(ruta, deadline).await?;
+        let publicada = await_ready_file_addr(path, deadline).await?;
         let objetivo = if publicada == addr { addr } else { &publicada };
         if probe_health(client, objetivo).await {
             return Ok(());
@@ -3355,8 +3359,8 @@ async fn probe_health(client: &reqwest::Client, addr: &str) -> bool {
 /// Probe de vida sobre la dirección descubierta (pidfile o fallback a
 /// `DAEMON_ADDR`); `false` habilita el fallback Auto→local.
 async fn daemon_active(client: &reqwest::Client) -> bool {
-    let addr_cli = resolve_client_addr();
-    probe_health(client, &addr_cli).await
+    let client_addr = resolve_client_addr();
+    probe_health(client, &client_addr).await
 }
 
 /// Decide si una acción delegable se despacha al daemon:
@@ -3395,7 +3399,7 @@ async fn transcribe_via_daemon(
 ) -> Result<(), CliError> {
     // El POST apunta a la dirección descubierta (fallback idéntico sin
     // pidfile).
-    let addr_cli = resolve_client_addr();
+    let client_addr = resolve_client_addr();
     let pcm: Vec<i16> = if mic {
         capture_mic_pcm(duration).await?
     } else {
@@ -3410,7 +3414,7 @@ async fn transcribe_via_daemon(
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let resp = client
-        .post(format!("http://{}/transcribe", addr_cli))
+        .post(format!("http://{}/transcribe", client_addr))
         .json(&serde_json::json!({ "audio_b64": audio_b64, "source_language": source_language }))
         .send()
         .await
@@ -3418,7 +3422,7 @@ async fn transcribe_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
+                format!("Daemon inalcanzable en {}: {}", client_addr, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -3459,9 +3463,9 @@ async fn translate_via_daemon(
 ) -> Result<(), CliError> {
     let payload = serde_json::json!({ "text": text, "from": from, "to": to });
     // El POST apunta a la dirección descubierta.
-    let addr_cli = resolve_client_addr();
+    let client_addr = resolve_client_addr();
     let fut = client
-        .post(format!("http://{}/translate", addr_cli))
+        .post(format!("http://{}/translate", client_addr))
         .json(&payload)
         .send();
     let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
@@ -3470,14 +3474,14 @@ async fn translate_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout 1500ms)", addr_cli),
+                format!("Daemon inalcanzable en {} (timeout 1500ms)", client_addr),
             )
         })?
         .map_err(|e| {
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
+                format!("Daemon inalcanzable en {}: {}", client_addr, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -3553,9 +3557,9 @@ async fn daemon_synthesize_wav(
         payload["temperature"] = serde_json::json!(t);
     }
     // El POST apunta a la dirección descubierta.
-    let addr_cli = resolve_client_addr();
+    let client_addr = resolve_client_addr();
     let resp = client
-        .post(format!("http://{}/synthesize", addr_cli))
+        .post(format!("http://{}/synthesize", client_addr))
         .json(&payload)
         .send()
         .await
@@ -3563,7 +3567,7 @@ async fn daemon_synthesize_wav(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
+                format!("Daemon inalcanzable en {}: {}", client_addr, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -3654,7 +3658,7 @@ async fn consumir_stream_ndjson(
     let inicio = std::time::Instant::now();
     let mut resto = String::new();
     // Los diagnósticos nombran la dirección descubierta.
-    let addr_cli = resolve_client_addr();
+    let client_addr = resolve_client_addr();
     loop {
         if inicio.elapsed() >= STREAM_TOTAL_DEADLINE {
             return Err(CliError::new(
@@ -3662,7 +3666,7 @@ async fn consumir_stream_ndjson(
                 "daemon_unreachable",
                 format!(
                     "Daemon inalcanzable en {} (límite total 120s agotado en {})",
-                    addr_cli, etapa
+                    client_addr, etapa
                 ),
             ));
         }
@@ -3678,7 +3682,7 @@ async fn consumir_stream_ndjson(
                     "daemon_unreachable",
                     format!(
                         "Daemon inalcanzable en {} (sin eventos del daemon en 1500ms en {})",
-                        addr_cli, etapa
+                        client_addr, etapa
                     ),
                 )
             })?
@@ -3686,7 +3690,7 @@ async fn consumir_stream_ndjson(
                 CliError::new(
                     ExitCode::DaemonUnreachable,
                     "daemon_unreachable",
-                    format!("Daemon inalcanzable en {}: {}", addr_cli, e),
+                    format!("Daemon inalcanzable en {}: {}", client_addr, e),
                 )
             })?;
         let bytes = match chunk {
@@ -3944,9 +3948,9 @@ async fn clone_via_daemon(
     // responde 200 de inmediato); el trabajo pesado se consume como stream con
     // inactividad 1500 ms + failsafe 120 s hasta el evento final.
     // El POST apunta a la dirección descubierta.
-    let addr_cli = resolve_client_addr();
+    let client_addr = resolve_client_addr();
     let fut = client
-        .post(format!("http://{}/voices/clone", addr_cli))
+        .post(format!("http://{}/voices/clone", client_addr))
         .json(&payload)
         .send();
     let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
@@ -3955,14 +3959,14 @@ async fn clone_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout 1500ms)", addr_cli),
+                format!("Daemon inalcanzable en {} (timeout 1500ms)", client_addr),
             )
         })?
         .map_err(|e| {
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
+                format!("Daemon inalcanzable en {}: {}", client_addr, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -4053,9 +4057,9 @@ async fn dub_via_daemon(
     // validar barato); el pipeline se consume como stream con inactividad
     // 1500 ms + failsafe 120 s hasta el evento final.
     // El POST apunta a la dirección descubierta.
-    let addr_cli = resolve_client_addr();
+    let client_addr = resolve_client_addr();
     let fut = client
-        .post(format!("http://{}/dub", addr_cli))
+        .post(format!("http://{}/dub", client_addr))
         .json(&payload)
         .send();
     let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
@@ -4064,14 +4068,17 @@ async fn dub_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout dub 1500ms)", addr_cli),
+                format!(
+                    "Daemon inalcanzable en {} (timeout dub 1500ms)",
+                    client_addr
+                ),
             )
         })?
         .map_err(|e| {
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
+                format!("Daemon inalcanzable en {}: {}", client_addr, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -4190,9 +4197,9 @@ async fn dub_compose_via_daemon(
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     // El POST apunta a la dirección descubierta.
-    let addr_cli = resolve_client_addr();
+    let client_addr = resolve_client_addr();
     let fut = client
-        .post(format!("http://{}/transcribe", addr_cli))
+        .post(format!("http://{}/transcribe", client_addr))
         .json(&serde_json::json!({ "audio_b64": audio_b64, "source_language": from }))
         .send();
     let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
@@ -4201,14 +4208,14 @@ async fn dub_compose_via_daemon(
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout 1500ms)", addr_cli),
+                format!("Daemon inalcanzable en {} (timeout 1500ms)", client_addr),
             )
         })?
         .map_err(|e| {
             CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", addr_cli, e),
+                format!("Daemon inalcanzable en {}: {}", client_addr, e),
             )
         })?;
     if !resp.status().is_success() {
@@ -4394,10 +4401,10 @@ mod tests {
         assert!(!unix_claim_verified(false, false, true));
     }
 
-    /// `Parado` con residente vivo (resident_pid vivo) es degradado para
+    /// `Stopped` con residente vivo (resident_pid vivo) es degradado para
     /// reclamo, no vía libre (no-plataformero, hermético).
     #[test]
-    fn parado_con_residente_vivo_es_degradado() {
+    fn stopped_with_resident_alive_is_degraded() {
         assert!(stopped_with_resident_is_degraded(false, false, true));
         assert!(!stopped_with_resident_is_degraded(false, false, false));
         assert!(!stopped_with_resident_is_degraded(true, false, true));
