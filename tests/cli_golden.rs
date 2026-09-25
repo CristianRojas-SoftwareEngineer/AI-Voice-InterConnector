@@ -881,10 +881,7 @@ impl InstanciaAislada {
         // provisionados; el sandbox solo aísla estado (pidfile/almacén).
         envs.retain(|(k, _)| k != "HF_HUB_CACHE" && k != "HF_HOME");
         SANDBOX_ACTUAL_DIR.with(|c| *c.borrow_mut() = Some(dir.clone()));
-        InstanciaAislada {
-            dir,
-            envs,
-        }
+        InstanciaAislada { dir, envs }
     }
 
     /// Envs como `&[(&str, &str)]` para `run_json_env` y `*_env`.
@@ -2008,7 +2005,7 @@ mod tts {
 
     #[test]
     fn synthesize_voz_inexistente_sale_con_3() {
-            if !tts_modelo_registrado() {
+        if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
         }
@@ -2042,7 +2039,7 @@ mod tts {
     /// sidecar + WAV mínimo (sin síntesis real).
     #[test]
     fn synthesize_colision_label_sale_con_6() {
-            if !tts_modelo_registrado() {
+        if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
         }
@@ -2114,7 +2111,7 @@ mod tts {
     /// solo esa voz).
     #[test]
     fn speech_list_filtra_por_voz_existente() {
-            avi_store::VoiceStore::new()
+        avi_store::VoiceStore::new()
             .ensure_initialized()
             .expect("voces de fábrica inicializadas");
         let label_def = etiqueta_unica("listdef");
@@ -2199,7 +2196,7 @@ mod tts {
     /// `speech list` sin `--voice` devuelve todas las locuciones (exit 0).
     #[test]
     fn speech_list_sin_voice_devuelve_todas() {
-            avi_store::VoiceStore::new()
+        avi_store::VoiceStore::new()
             .ensure_initialized()
             .expect("voces de fábrica inicializadas");
         let label_def = etiqueta_unica("listalldef");
@@ -2398,7 +2395,7 @@ mod tts {
     /// Clonado repetido → 6. La voz existente se fabrica con un `.qvoice` mínimo.
     #[test]
     fn voice_clone_repetido_sale_con_6() {
-            if !tts_modelo_registrado() {
+        if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
         }
@@ -2423,7 +2420,7 @@ mod tts {
 
     #[test]
     fn voice_clone_nombre_invalido_sale_con_2() {
-            if !tts_modelo_registrado() {
+        if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
         }
@@ -2449,7 +2446,7 @@ mod tts {
         // los E2E de daemon, al apagarse, matan `qwen_tts.exe` por nombre de imagen
         // (global), y sin este lock la síntesis de este test podría cruzarse con ese
         // kill en paralelo y salir con un código distinto de 3.
-            if !tts_modelo_registrado() {
+        if !tts_modelo_registrado() {
             eprintln!("[tts] skip: sin ModelStore escribible");
             return;
         }
@@ -2772,7 +2769,9 @@ mod tts {
         // Fase 1 — caída del padre: daemon vivo sin pidfile (el dueño anterior
         // murió sin limpiar). El próximo `start` debe reclamar, no adherirse.
         start_instancia_solo_running(&inst, &[]);
-        let pid_a = inst.leer_pid_daemon().expect("tras start debe haber pidfile");
+        let pid_a = inst
+            .leer_pid_daemon()
+            .expect("tras start debe haber pidfile");
         assert!(
             avi_daemon::pid_vivo(pid_a),
             "el daemon de la instancia debe estar vivo (pid {})",
@@ -2802,7 +2801,9 @@ mod tts {
             "el reclamo debe haber matado el árbol residual (pid {} sigue vivo)",
             pid_a
         );
-        let pid_b = inst.leer_pid_daemon().expect("tras reclamo debe haber pidfile fresco");
+        let pid_b = inst
+            .leer_pid_daemon()
+            .expect("tras reclamo debe haber pidfile fresco");
         assert!(
             avi_daemon::pid_vivo(pid_b),
             "el daemon reclamado debe estar vivo (pid {})",
@@ -2991,7 +2992,7 @@ mod tts {
     #[test]
     #[allow(unreachable_code)]
     fn translate_con_daemon_delega() {
-            let _tts = lock_tts();
+        let _tts = lock_tts();
         hito_inicio_pesado("tts::translate_con_daemon_delega");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
@@ -3044,7 +3045,7 @@ mod tts {
 
     #[test]
     fn translate_force_daemon_sin_daemon_exit5() {
-            // Aislamiento total: la ausencia debe observarse sin carreras con
+        // Aislamiento total: la ausencia debe observarse sin carreras con
         // usuarios del daemon (serie de inferencia).
         let _tts = lock_tts();
         hito_inicio_pesado("tts::translate_force_daemon_sin_daemon_exit5");
@@ -3065,7 +3066,10 @@ mod tts {
             "sin daemon el puerto 8765 debe estar cerrado a nivel SO"
         );
         assert!(
-            !inst.leer_pid_daemon().map(avi_daemon::pid_vivo).unwrap_or(false),
+            !inst
+                .leer_pid_daemon()
+                .map(avi_daemon::pid_vivo)
+                .unwrap_or(false),
             "sin daemon no debe haber PID vivo en la pista"
         );
         let (code, actual) = run_json_env(
@@ -3092,7 +3096,7 @@ mod tts {
 
     #[test]
     fn clone_con_daemon_delega() {
-            let _tts = lock_tts();
+        let _tts = lock_tts();
         hito_inicio_pesado("tts::clone_con_daemon_delega");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
@@ -3148,7 +3152,7 @@ mod tts {
     #[cfg(feature = "native-stt")]
     #[test]
     fn dub_daemon_passthrough() {
-            let _tts = lock_tts();
+        let _tts = lock_tts();
         hito_inicio_dub("tts::dub_daemon_passthrough");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
@@ -3209,7 +3213,7 @@ mod tts {
     #[test]
     #[allow(unreachable_code)]
     fn dub_daemon_con_traduccion() {
-            let _tts = lock_tts();
+        let _tts = lock_tts();
         hito_inicio_dub("tts::dub_daemon_con_traduccion");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
@@ -3599,7 +3603,12 @@ fn test_voice_list_no_panic_por_sigpipe_stdout_cerrado_antes_del_spawn() {
     // (a) Tubería manual: extremo de lectura cerrado antes del spawn.
     let mut fds: [libc::c_int; 2] = [0; 2];
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
-    assert_eq!(rc, 0, "libc::pipe falló: {}", std::io::Error::last_os_error());
+    assert_eq!(
+        rc,
+        0,
+        "libc::pipe falló: {}",
+        std::io::Error::last_os_error()
+    );
     let (read_fd, write_fd) = (fds[0], fds[1]);
     let cerrado = unsafe { libc::close(read_fd) };
     assert_eq!(

@@ -221,7 +221,10 @@ fn main() -> Result<()> {
             println!("  - SOURCE-OFFER.md (oferta GPLv3 §6 versionada)");
             println!("  - CHANGELOG.md (sección promovida desde [No publicado] + ToC + enlace)");
             println!("Comprobaciones: licencias, SOURCE-OFFER.md y CHANGELOG.md en sincronía");
-            println!("Revisa el diff, commitea con conventional-commits y crea el tag v{}", version);
+            println!(
+                "Revisa el diff, commitea con conventional-commits y crea el tag v{}",
+                version
+            );
         }
         Commands::Changelog { check } => {
             if check {
@@ -1516,7 +1519,11 @@ mod tests {
         let k = (0..j)
             .rev()
             .find(|&k| es_estructural(lines[k]) && sangria(lines[k]) < sangria(lines[j]))?;
-        let tipo = lines[k].trim().strip_prefix("- ")?.strip_suffix(':')?.to_string();
+        let tipo = lines[k]
+            .trim()
+            .strip_prefix("- ")?
+            .strip_suffix(':')?
+            .to_string();
         let cond = lines[k + 1..j]
             .iter()
             .find_map(|l| l.trim().strip_prefix("condition: "))?
@@ -1539,7 +1546,13 @@ mod tests {
             .find(|&i| es_estructural(lines[i]) && sangria(lines[i]) <= 2)
             .unwrap_or(lines.len());
         let wf = lines[ini..fin].join("\n");
-        for prohibido in ["publish-release", "publish-metadata", "context:", "requires:", "filters:"] {
+        for prohibido in [
+            "publish-release",
+            "publish-metadata",
+            "context:",
+            "requires:",
+            "filters:",
+        ] {
             assert!(
                 !wf.contains(prohibido),
                 "el workflow native-cache-probe no debe contener `{prohibido}`:\n{wf}"
@@ -1555,7 +1568,10 @@ mod tests {
             .collect();
         assert_eq!(
             jobs,
-            BUILD_JOBS.iter().map(|j| format!("{j}:")).collect::<Vec<_>>(),
+            BUILD_JOBS
+                .iter()
+                .map(|j| format!("{j}:"))
+                .collect::<Vec<_>>(),
             "native-cache-probe debe contener exactamente los 4 build-*"
         );
         assert_eq!(
@@ -1605,8 +1621,15 @@ mod tests {
                 .position(|l| l.trim().starts_with(marca))
                 .unwrap_or_else(|| panic!("cargo_restore_caches debe contener `{marca}`"));
             // El paso es el ítem de lista (`- restore_cache:`/`- run:`) que lo contiene.
-            let item = (0..=i).rev().find(|&k| cmd_lines[k].trim().starts_with("- ")).unwrap();
-            let item = if cmd_lines[item].trim().starts_with("- target-v3-") { item - 2 } else { item };
+            let item = (0..=i)
+                .rev()
+                .find(|&k| cmd_lines[k].trim().starts_with("- "))
+                .unwrap();
+            let item = if cmd_lines[item].trim().starts_with("- target-v3-") {
+                item - 2
+            } else {
+                item
+            };
             assert_eq!(
                 guarda_de(&cmd_lines, item),
                 Some(param_target.clone()),
@@ -1618,14 +1641,20 @@ mod tests {
             let section = seccion_build(&cfg, job);
             let lines: Vec<&str> = section.lines().collect();
             assert!(
-                section.contains("    parameters:\n      probe:\n        type: boolean\n        default: false"),
+                section.contains(
+                    "    parameters:\n      probe:\n        type: boolean\n        default: false"
+                ),
                 "{job} debe declarar el parámetro probe (boolean, default false)"
             );
 
             let guardados: Vec<usize> = (0..lines.len())
                 .filter(|&i| lines[i].trim() == "- cargo_save_target:")
                 .collect();
-            assert_eq!(guardados.len(), 1, "{job} debe invocar cargo_save_target una vez");
+            assert_eq!(
+                guardados.len(),
+                1,
+                "{job} debe invocar cargo_save_target una vez"
+            );
             assert_eq!(
                 guarda_de(&lines, guardados[0]),
                 Some(no_sonda.clone()),
@@ -1700,7 +1729,9 @@ mod tests {
             let timings = lines
                 .iter()
                 .position(|l| l.trim() == "path: target/cargo-timings")
-                .unwrap_or_else(|| panic!("{job} debe guardar target/cargo-timings como artefacto"));
+                .unwrap_or_else(|| {
+                    panic!("{job} debe guardar target/cargo-timings como artefacto")
+                });
             assert_eq!(
                 guarda_de(&lines, timings - 1),
                 None,
@@ -1717,7 +1748,8 @@ mod tests {
     fn test_launcher_cmake_en_builds() {
         let cfg = leer_config_ci();
         assert!(
-            !cfg.contains("native_sccache:") && !cfg.contains("pipeline.parameters.native_sccache "),
+            !cfg.contains("native_sccache:")
+                && !cfg.contains("pipeline.parameters.native_sccache "),
             "el launcher es incondicional: no debe existir el parámetro native_sccache"
         );
         let unix = cfg
@@ -1727,7 +1759,10 @@ mod tests {
             .split("\n  native_sccache_setup_windows:")
             .next()
             .unwrap_or("");
-        for var in ["CMAKE_C_COMPILER_LAUNCHER=sccache", "CMAKE_CXX_COMPILER_LAUNCHER=sccache"] {
+        for var in [
+            "CMAKE_C_COMPILER_LAUNCHER=sccache",
+            "CMAKE_CXX_COMPILER_LAUNCHER=sccache",
+        ] {
             assert!(
                 unix.contains(&format!("echo 'export {var}' >> \"$BASH_ENV\"")),
                 "native_sccache_setup_unix debe exportar {var} a $BASH_ENV"
@@ -1737,11 +1772,16 @@ mod tests {
             let section = seccion_build(&cfg, job);
             let setup = section
                 .find("      - sccache_setup_unix\n      - native_sccache_setup_unix\n")
-                .unwrap_or_else(|| panic!("{job} debe invocar native_sccache_setup_unix tras sccache_setup_unix"));
+                .unwrap_or_else(|| {
+                    panic!("{job} debe invocar native_sccache_setup_unix tras sccache_setup_unix")
+                });
             let build = section
                 .find("cargo build --release --features")
                 .unwrap_or_else(|| panic!("{job} debe compilar el binario release"));
-            assert!(setup < build, "{job}: el launcher debe configurarse antes de compilar");
+            assert!(
+                setup < build,
+                "{job}: el launcher debe configurarse antes de compilar"
+            );
         }
         let win = seccion_build(&cfg, "build-windows-x64");
         assert!(
