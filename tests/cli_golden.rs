@@ -1205,7 +1205,7 @@ fn speech_transcribe_duration_without_mic_exits_2() {
 #[test]
 fn speech_transcribe_mic_duration_no_tty_no_panic() {
     hit_start(
-        "speech_transcribe_mic_duration_no_tty_sin_panic",
+        "speech_transcribe_mic_duration_no_tty_no_panic",
         Duration::from_secs(30),
     );
     let output = Command::new(BIN)
@@ -1233,7 +1233,7 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
         "la rama de captura fija no debe panicar: {}",
         stderr
     );
-    hit_end("speech_transcribe_mic_duration_no_tty_sin_panic");
+    hit_end("speech_transcribe_mic_duration_no_tty_no_panic");
 }
 
 /// CA-08.4: equivalente a CA-08.1–08.3 para `speech dub`, que comparte la
@@ -1280,7 +1280,7 @@ fn speech_dub_duration_without_mic_exits_2() {
 #[test]
 fn speech_dub_mic_duration_no_tty_no_panic() {
     hit_start(
-        "speech_dub_mic_duration_no_tty_sin_panic",
+        "speech_dub_mic_duration_no_tty_no_panic",
         Duration::from_secs(30),
     );
     let output = Command::new(BIN)
@@ -1310,7 +1310,7 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
         "la rama de captura fija no debe panicar: {}",
         stderr
     );
-    hit_end("speech_dub_mic_duration_no_tty_sin_panic");
+    hit_end("speech_dub_mic_duration_no_tty_no_panic");
 }
 
 #[test]
@@ -1857,18 +1857,18 @@ mod tts {
         // Serie + ciclo: excluye cleanup (STATE) y paradas del ciclo durante la
         // vía caliente; el orden STATE→TTS coincide con el resto de la suite.
         let _guard = lock_tts();
-        hit_start_heavy("tts::synthesize_exito_con_label");
+        hit_start_heavy("tts::synthesize_ok_with_label");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
-        let _reaper = arm_reaper("synthesize_exito_con_label");
+        let _reaper = arm_reaper("synthesize_ok_with_label");
         if !tts_provisioned() {
             eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
-            hit_end("tts::synthesize_exito_con_label (skip sin provisión)");
+            hit_end("tts::synthesize_ok_with_label (skip sin provisión)");
             return;
         }
         if !parakeet_model_available() {
             eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
-            hit_end("tts::synthesize_exito_con_label (skip sin STT)");
+            hit_end("tts::synthesize_ok_with_label (skip sin STT)");
             return;
         }
         let label = unique_label("golden");
@@ -1917,8 +1917,8 @@ mod tts {
         );
         assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
         let _ = avi_store::SpeechStore::new().remove("default", &label);
-        stop_instance(&inst, "synthesize_exito_con_label");
-        hit_end("tts::synthesize_exito_con_label");
+        stop_instance(&inst, "synthesize_ok_with_label");
+        hit_end("tts::synthesize_ok_with_label");
     }
 
     /// Gate WER texto corto — verifica que síntesis breve (2-4 palabras) con voz `default` logra WER ≤ 0.25 vía Parakeet.
@@ -1926,7 +1926,7 @@ mod tts {
     /// Cubre el caso que la E2E `test-windows-e2e` sintetizaba sin veredicto:
     /// texto de 2-4 palabras (`"Hola mundo"`) con voz `default` (preset ryan).
     /// Verifica `WAV 24kHz mono 16-bit` y `WER ≤ 0.25` vía Parakeet (`native-stt`),
-    /// mismo patrón que `synthesize_exito_con_label` (11 palabras): requiere
+    /// mismo patrón que `synthesize_ok_with_label` (11 palabras): requiere
     /// `tts_provisioned()` + `parakeet_model_available()`, usa `valid_wav_24k`
     /// y `wer_vs_text`, falla la E2E/gate si `WER > 0.25`.
     #[cfg(feature = "native-stt")]
@@ -2471,20 +2471,20 @@ mod tts {
     #[test]
     fn daemon_start_ok() {
         let _tts = lock_tts();
-        hit_start_heavy("tts::daemon_start_exito");
+        hit_start_heavy("tts::daemon_start_ok");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         // La ventana spawn→write ya no ciega al handler (PID en memoria).
-        let _reaper = arm_reaper("daemon_start_exito");
+        let _reaper = arm_reaper("daemon_start_ok");
         // Skip sin efectos: no tocar el ciclo si no hay provisión.
         if !tts_model_registered() {
             eprintln!("[daemon] skip: sin modelo TTS provisionado para daemon start");
-            hit_end("tts::daemon_start_exito (skip sin provisión)");
+            hit_end("tts::daemon_start_ok (skip sin provisión)");
             return;
         }
         // Instancia aislada propia (puerto efímero + sandbox + evento);
         // sin precondición de sesión: el sandbox nace detenido y vacío.
-        let inst = IsolatedInstance::new("start_exito");
+        let inst = IsolatedInstance::new("start_ok");
         let actual = start_instance_running_only(&inst, &[]);
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
         assert_eq!(
@@ -2503,14 +2503,14 @@ mod tts {
             "tras start debe seguir running"
         );
         // Apagado propio con cero huérfanos verificados a nivel SO.
-        stop_instance(&inst, "daemon_start_exito");
+        stop_instance(&inst, "daemon_start_ok");
         let (_, actual4) = run_json_env(&["--json", "daemon", "status"], &a);
         assert_eq!(
             actual4["daemon"],
             Value::String("stopped".to_string()),
             "tras stop debe quedar stopped"
         );
-        hit_end("tts::daemon_start_exito");
+        hit_end("tts::daemon_start_ok");
     }
 
     #[test]
@@ -2870,12 +2870,12 @@ mod tts {
         // Instancia aislada propia (puerto efímero + sandbox); el sandbox
         // nace detenido y vacío, sin precondición de sesión.
         let inst = IsolatedInstance::new("h03_pipe");
-        let envs_hijo: Vec<(String, String)> = inst.envs.clone();
+        let child_envs: Vec<(String, String)> = inst.envs.clone();
 
         // Localiza (sin matar) al residente por PID registrado en `daemon.pid`
         // Un solo camino portable, sin `netstat` ni rama por plataforma.
         let dir_pipe = inst.dir.clone();
-        let pid_residente_registrado = move || -> Option<u32> {
+        let registered_resident_pid = move || -> Option<u32> {
             let pid = read_resident_pid_dir(&dir_pipe);
             if pid != 0 && avi_tts::resident::resident_pid_alive(pid) {
                 Some(pid)
@@ -2896,7 +2896,7 @@ mod tts {
         std::thread::spawn(move || {
             let output = std::process::Command::new(BIN)
                 .args(["--json", "daemon", "start"])
-                .envs(envs_hijo.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                .envs(child_envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
@@ -2937,7 +2937,7 @@ mod tts {
         // El pipe sigue retenido más allá de la vida del CLI lanzador: mata
         // solo el motor primero (si hay PID registrado vivo) para replicar el
         // orden exacto del síntoma documentado.
-        if let Some(engine_pid) = pid_residente_registrado() {
+        if let Some(engine_pid) = registered_resident_pid() {
             milestone(&format!("h03: matando solo el motor (pid {})", engine_pid));
             avi_daemon::kill_tree_by_pid(engine_pid);
             avi_daemon::wait_for_pid_death(engine_pid, std::time::Duration::from_secs(8));

@@ -38,7 +38,7 @@ que no es este comando.
 
 Sin `--daemon`/`--no-daemon` el modo es `Auto` (`DaemonMode::Auto`,
 `src/main.rs`): se hace un probe de `GET /health` con timeout de 500 ms
-(`probe_health`, `src/main.rs`, vía `daemon_activo` en
+(`probe_health`, `src/main.rs`, vía `daemon_active` en
 `src/main.rs`) y, si responde, se delega al
 daemon; si no, se ejecuta local.
 

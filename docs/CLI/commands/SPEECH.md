@@ -47,7 +47,7 @@ expone por HTTP.
 |---|---|
 | `ForceDaemon` (`--daemon`) | Siempre intenta el daemon; si el `POST` falla, exit 5 `daemon_unreachable` |
 | `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
-| `Auto` (sin flags) | Sondea `GET /health` (`daemon_activo`) con deadline corto; si responde, delega; si no, cae a directo |
+| `Auto` (sin flags) | Sondea `GET /health` (`daemon_active`) con deadline corto; si responde, delega; si no, cae a directo |
 
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
 lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
@@ -71,7 +71,7 @@ Lista las locuciones persistidas en `SpeechStore`
 | `--voice`, `-v` | string | — (todas las voces) | Opcional, sin default. Con valor, acota la lectura al directorio de esa voz (`SpeechStore::list_by_voice`, filtro normalizado a minúsculas); sin el flag, lista todas (`SpeechStore::list`) |
 
 Definición: `SpeechCommands::List { voice: Option<String> }`. Con `--voice`, el handler valida el identificador
-con `es_identificador_valido` (exit 2 `invalid_identifier`) y la existencia
+con `is_valid_identifier` (exit 2 `invalid_identifier`) y la existencia
 de la voz con `VoiceStore::exists` (exit 3 `voice_not_found`) antes de leer;
 sin `--voice` no valida nada y devuelve todo.
 
@@ -168,7 +168,7 @@ Validaciones y flujo local:
 4. Despacho: si aplica, vía daemon; si no, rama directa:
  `require_model_provisioned` (exit 4 si falta `qwen3-tts-0.6b`) → la voz
  debe existir en `VoiceStore` (exit 3 `voice_not_found`) →
- `es_identificador_valido` sobre la etiqueta normalizada (exit 2
+ `is_valid_identifier` sobre la etiqueta normalizada (exit 2
  `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) → comprobación fast-fail
  de colisión de etiqueta (exit 6 sin `--force`) → `traducir_si_difiere`
  (passthrough si `source == target`; si no, exige el derivado CT2 sano,
@@ -314,7 +314,7 @@ ai-voice-interconnector speech play --label <etiqueta> [--voice <nombre>]
 
 Local-only (`require_local`). Busca la locución en `SpeechStore` por
 `(voice, label)` y reproduce el WAV persistido. Si no existe, exit 3
-`speech_not_found`. Valida los identificadores con `es_identificador_valido`
+`speech_not_found`. Valida los identificadores con `is_valid_identifier`
 antes de buscar.
 
 ### Contrato `--json`
