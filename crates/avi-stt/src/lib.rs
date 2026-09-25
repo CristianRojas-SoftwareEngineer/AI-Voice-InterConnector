@@ -9,11 +9,11 @@
 #[cfg(feature = "native-stt")]
 pub mod parakeet;
 #[cfg(feature = "native-stt")]
-pub use parakeet::{detect_language, normalizar_texto, ParakeetEngine};
+pub use parakeet::{detect_language, normalize_text, ParakeetEngine};
 
 #[cfg(all(test, feature = "native-stt"))]
 mod tests {
-    use crate::{detect_language, normalizar_texto, ParakeetEngine};
+    use crate::{detect_language, normalize_text, ParakeetEngine};
     use avi_core::engine::SttEngine;
 
     /// Carga el modelo Parakeet (HF cache `hf_cache_dir()` vía `ModelStore`) vía
@@ -21,7 +21,7 @@ mod tests {
     /// que la salida no esté vacía.
     #[cfg(feature = "native-stt")]
     #[test]
-    fn parakeet_carga_modelo_y_transcribe() {
+    fn parakeet_loads_model_and_transcribes() {
         let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3")
         else {
             eprintln!("[stt] skip: sin modelo Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
@@ -44,11 +44,11 @@ mod tests {
         let pcm = avi_audio::load_wav_16k_mono_pcm(std::path::Path::new(wav_path))
             .expect("el WAV fixture debe cargarse");
 
-        let texto = engine
+        let text = engine
             .transcribe(&pcm, Some("es"))
             .expect("transcribe debe ejecutar sobre el modelo cargado");
         assert!(
-            !texto.trim().is_empty(),
+            !text.trim().is_empty(),
             "la transcripción no debe estar vacía"
         );
     }
@@ -58,7 +58,7 @@ mod tests {
     /// handler CLI mapea a `ExitCode::TranscriptionFailed` (10).
     #[cfg(feature = "native-stt")]
     #[test]
-    fn parakeet_engine_new_con_ruta_inexistente_devuelve_err() {
+    fn parakeet_engine_new_with_nonexistent_path_returns_err() {
         let result = ParakeetEngine::new("ruta/que/no/existe/parakeet");
         assert!(
             result.is_err(),
@@ -88,7 +88,7 @@ mod tests {
     ///   real).
     #[cfg(feature = "native-stt")]
     #[test]
-    fn parakeet_engine_coincide_con_oraculo() {
+    fn parakeet_engine_matches_oracle() {
         let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3")
         else {
             eprintln!("[stt] skip: sin modelo Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
@@ -127,7 +127,7 @@ mod tests {
             ),
         ];
 
-        for (wav, fixture, esperado_ingles) in corpus {
+        for (wav, fixture, expected_english) in corpus {
             let wav_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/assets")
                 .join(wav);
@@ -143,63 +143,63 @@ mod tests {
                 .trim()
                 .to_string();
 
-            if esperado_ingles {
+            if expected_english {
                 // un saludo breve en español es trasladado a inglés por el
                 // TDT; la guardia `detect_language` debe marcarlo como sospechoso.
-                let (idioma, _) = detect_language(&actual);
+                let (language, _) = detect_language(&actual);
                 assert_eq!(
-                    idioma, "EN-SOSPECHOSO",
+                    language, "EN-SOSPECHOSO",
                     "parakeet_sample debe disparar la guardia de idioma (obtenido: {:?}, output: {:?})",
-                    idioma, actual
+                    language, actual
                 );
                 continue;
             }
 
-            let esperado = std::fs::read_to_string(&fixture_path)
+            let expected = std::fs::read_to_string(&fixture_path)
                 .unwrap_or_else(|_| panic!("el fixture de referencia {fixture} debe existir"))
                 .trim()
                 .to_string();
 
             // Ambos lados normalizados: minúsculas, sin diacríticos ni
             // puntuación (el WER no debe penalizar acentos ni signos).
-            let esperado_norm = normalizar_texto(&esperado);
-            let actual_norm = normalizar_texto(&actual);
-            let ref_palabras: Vec<&str> = esperado_norm.split_whitespace().collect();
-            let hip_palabras: Vec<&str> = actual_norm.split_whitespace().collect();
+            let expected_normalized = normalize_text(&expected);
+            let actual_normalized = normalize_text(&actual);
+            let ref_words: Vec<&str> = expected_normalized.split_whitespace().collect();
+            let hyp_words: Vec<&str> = actual_normalized.split_whitespace().collect();
 
-            if ref_palabras == hip_palabras {
+            if ref_words == hyp_words {
                 continue;
             }
 
             // Igualdad normalizada no se cumple: umbral de paridad por WER a
             // nivel de palabra (distancia de Levenshtein entre secuencias).
-            let distancia = levenshtein_palabras(&ref_palabras, &hip_palabras);
-            let wer = distancia as f64 / ref_palabras.len().max(1) as f64;
+            let distance = levenshtein_words(&ref_words, &hyp_words);
+            let wer_value = distance as f64 / ref_words.len().max(1) as f64;
 
             // el modelo Parakeet-TDT 0.6B int8 (export istupakov) alcanza
             // RTF ~0.10 pero WER real ~0.08–0.21 sobre fixtures de voz
             // sintética. Se valida paridad con WER ≤ 0.25, que abarca
             // el WER observado (0.083 watermark incluido el "jejeje" inicial no
             // reflejado en el oráculo, 0.214 sintesis, 0.111 respuestas).
-            let umbral = 0.25;
+            let threshold = 0.25;
             assert!(
-                wer <= umbral,
+                wer_value <= threshold,
                 "WER {:.4} supera el umbral de paridad {} en {} (esperado: {:?}, obtenido: {:?})",
-                wer,
-                umbral,
+                wer_value,
+                threshold,
                 wav,
-                esperado_norm,
-                actual_norm
+                expected_normalized,
+                actual_normalized
             );
         }
     }
 
-    /// Distancia de Levenshtein a nivel de palabra entre `referencia` e
-    /// `hipotesis`, usada para calcular el WER de la prueba de paridad.
+    /// Distancia de Levenshtein a nivel de palabra entre `reference` e
+    /// `hypothesis`, usada para calcular el WER de la prueba de paridad.
     #[cfg(feature = "native-stt")]
-    fn levenshtein_palabras(referencia: &[&str], hipotesis: &[&str]) -> usize {
-        let n = referencia.len();
-        let m = hipotesis.len();
+    fn levenshtein_words(reference: &[&str], hypothesis: &[&str]) -> usize {
+        let n = reference.len();
+        let m = hypothesis.len();
         let mut dp = vec![vec![0usize; m + 1]; n + 1];
 
         for (i, row) in dp.iter_mut().enumerate() {
@@ -210,7 +210,7 @@ mod tests {
         }
         for i in 1..=n {
             for j in 1..=m {
-                if referencia[i - 1] == hipotesis[j - 1] {
+                if reference[i - 1] == hypothesis[j - 1] {
                     dp[i][j] = dp[i - 1][j - 1];
                 } else {
                     dp[i][j] = 1 + dp[i - 1][j - 1].min(dp[i - 1][j]).min(dp[i][j - 1]);
