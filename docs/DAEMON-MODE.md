@@ -44,7 +44,7 @@ Son 7 rutas públicas (podados `GET /voices` y `POST /voices/precompute`; sin le
 
 El handshake es estricto: un daemon de otra `schema_version` se trata como no utilizable.
 
-Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediato en cuanto el puerto está enlazado y el motor construido; warm indica si el precalentamiento en segundo plano ya terminó. `warm` es append-only (se fija una sola vez en el warmup de arranque y no refleja ninguna degradación posterior del residente): no certifica que una síntesis futura vaya a completarse. La salud efectiva de síntesis se observa por petición — antes de reutilizar el residente, el daemon ejecuta un healthcheck real (`synthesize_via_residente`, `crates/avi-tts/src/lib.rs`) y rearranca uno fresco si está degradado.
+Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediato en cuanto el puerto está enlazado y el motor construido; warm indica si el precalentamiento en segundo plano ya terminó. `warm` es append-only (se fija una sola vez en el warmup de arranque y no refleja ninguna degradación posterior del residente): no certifica que una síntesis futura vaya a completarse. La salud efectiva de síntesis se observa por petición — antes de reutilizar el residente, el daemon ejecuta un healthcheck real (`synthesize_via_resident`, `crates/avi-tts/src/lib.rs`) y rearranca uno fresco si está degradado.
 
 ## Comandos del daemon
 

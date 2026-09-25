@@ -132,22 +132,22 @@ pub trait TtsEngine: Send + Sync {
 /// Voz resuelta hacia la semántica del motor: preset del servidor o voz clonada
 /// cargada al arranque con `--load-voice <qvoice> --icl-only`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VozMotor {
+pub enum VoiceEngine {
     Preset(String),
-    Clonada(PathBuf),
+    Cloned(PathBuf),
 }
 
 /// Resolución voz → motor: una voz con `reference.qvoice` es clonada;
 /// cualquier otra es preset. `default` con `reference.qvoice` graft resuelve
-/// como `Clonada`; sin referencia resuelve como `Preset("default")` y el
+/// como `Cloned`; sin referencia resuelve como `Preset("default")` y el
 /// motor cae a `ryan` por `spk_table` sólo si el binario lo exige.
-pub fn resolve_voice_engine(voice: &str, qvoice: Option<&Path>) -> VozMotor {
+pub fn resolve_voice_engine(voice: &str, qvoice: Option<&Path>) -> VoiceEngine {
     if let Some(q) = qvoice {
         if q.is_file() {
-            return VozMotor::Clonada(q.to_path_buf());
+            return VoiceEngine::Cloned(q.to_path_buf());
         }
     }
-    VozMotor::Preset(voice.to_string())
+    VoiceEngine::Preset(voice.to_string())
 }
 
 /// Resolución del binario del motor por capas:
@@ -205,9 +205,9 @@ fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     }
     if let Some(b) = bin {
         if let Some(parent) = b.parent() {
-            let hermano = parent.join("qwen3-tts-0.6b");
-            if hermano.is_dir() {
-                return Some(hermano);
+            let sibling = parent.join("qwen3-tts-0.6b");
+            if sibling.is_dir() {
+                return Some(sibling);
             }
         }
     }
@@ -252,9 +252,9 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     }
     if let Some(b) = bin {
         if let Some(parent) = b.parent() {
-            let hermano = parent.join("qwen3-tts-0.6b-base");
-            if hermano.is_dir() {
-                return Some(hermano);
+            let sibling = parent.join("qwen3-tts-0.6b-base");
+            if sibling.is_dir() {
+                return Some(sibling);
             }
         }
     }
@@ -310,7 +310,7 @@ const HEALTH_OBS_INTERVAL_MS: u64 = 2000;
 /// de voz se termina el residente anterior y se arranca otro con `--load-voice`.
 struct ResidentState {
     resident: resident::Qwen3TtsResident,
-    voz_key: String,
+    voice_key: String,
 }
 
 impl Qwen3TtsEngine {
@@ -380,13 +380,13 @@ impl Qwen3TtsEngine {
         &self,
         server_url: &str,
         text: &str,
-        voz: &VozMotor,
+        voice: &VoiceEngine,
         options: &GenerationOptions,
         prosody: Option<&ProsodyOptions>,
         emotion: Option<&EmotionOptions>,
         out_path: &Path,
     ) -> Result<()> {
-        let body = construir_body_tts(text, voz, options, prosody, emotion).to_string();
+        let body = build_tts_body(text, voice, options, prosody, emotion).to_string();
         let (status, bytes) = http_exchange(
             &format!("{}/v1/tts", server_url),
             "POST",
@@ -404,7 +404,7 @@ impl Qwen3TtsEngine {
         }
     }
 
-    /// Arranca un residente fresco para `voz`: construye
+    /// Arranca un residente fresco para `voice`: construye
     /// `load_voice`, hace `spawn` (que ya trae su propio `wait_health` de
     /// arranque, por lo que nace sano o falla con diagnóstico), actualiza
     /// `resident_pid` y ensambla el `ResidentState`. Compartido por el camino
@@ -412,12 +412,12 @@ impl Qwen3TtsEngine {
     fn start_resident(
         &self,
         model_dir: &Path,
-        voz: &VozMotor,
-        voz_key: String,
+        voice: &VoiceEngine,
+        voice_key: String,
     ) -> Result<ResidentState> {
-        let load_voice = match voz {
-            VozMotor::Clonada(p) => Some(p.as_path()),
-            VozMotor::Preset(_) => None,
+        let load_voice = match voice {
+            VoiceEngine::Cloned(p) => Some(p.as_path()),
+            VoiceEngine::Preset(_) => None,
         };
         let port = default_port();
         let spawned = resident::Qwen3TtsResident::spawn(model_dir, port, load_voice)?;
@@ -425,17 +425,17 @@ impl Qwen3TtsEngine {
         // Contabilidad en disco acoplada al store en memoria — actualiza
         // `resident_pid` en `daemon.pid` sin fichero propio (best-effort: si el
         // daemon corre en foreground sin pidfile, no hay nada que actualizar).
-        actualizar_resident_pid_en_pidfile(spawned.pid());
+        update_resident_pid_in_pidfile(spawned.pid());
         Ok(ResidentState {
             resident: spawned,
-            voz_key,
+            voice_key,
         })
     }
 
     /// Síntesis vía servidor residente: arranca (o reutiliza) el residente de
     /// la voz solicitada y hace `POST /v1/tts`.
     ///
-    /// La reutilización por `voz_key` no bastaba — un residente colgado
+    /// La reutilización por `voice_key` no bastaba — un residente colgado
     /// tras el warmup se reutilizaba indefinidamente y todo `POST /v1/tts`
     /// se colgaba. Antes de reusar se verifica la salud real
     /// (`health_check`, `try_wait` + `GET /v1/health`); si está degradado se
@@ -451,10 +451,10 @@ impl Qwen3TtsEngine {
     /// secuencialidad en el CLI directo), así que la siguiente petición
     /// reclama el residente de inmediato en vez de esperar tras un hilo
     /// huérfano reteniendo el lock durante 30 s.
-    fn synthesize_via_residente(
+    fn synthesize_via_resident(
         &self,
         text: &str,
-        voz: &VozMotor,
+        voice: &VoiceEngine,
         options: &GenerationOptions,
         out_path: &Path,
     ) -> Result<()> {
@@ -462,14 +462,14 @@ impl Qwen3TtsEngine {
             .model_dir
             .as_ref()
             .ok_or_else(|| anyhow!("El modelo de síntesis Qwen3-TTS no está provisionado."))?;
-        let voz_key = match voz {
-            VozMotor::Preset(n) => format!("preset:{}", n),
-            VozMotor::Clonada(p) => format!("clone:{}", p.display()),
+        let voice_key = match voice {
+            VoiceEngine::Preset(n) => format!("preset:{}", n),
+            VoiceEngine::Cloned(p) => format!("clone:{}", p.display()),
         };
         let url = {
             let mut guard = self.resident.lock().unwrap();
-            if guard.as_ref().map(|s| s.voz_key.as_str()) != Some(voz_key.as_str()) {
-                *guard = Some(self.start_resident(model_dir, voz, voz_key)?);
+            if guard.as_ref().map(|s| s.voice_key.as_str()) != Some(voice_key.as_str()) {
+                *guard = Some(self.start_resident(model_dir, voice, voice_key)?);
             } else if let Err(_e) = guard
                 .as_mut()
                 .expect("reutilización verificada arriba")
@@ -484,14 +484,14 @@ impl Qwen3TtsEngine {
                     .pid();
                 resident::kill_tree_resident_by_pid(pid);
                 *guard = None;
-                *guard = Some(self.start_resident(model_dir, voz, voz_key)?);
+                *guard = Some(self.start_resident(model_dir, voice, voice_key)?);
             }
             let state = guard
                 .as_ref()
                 .expect("residente arrancado o reutilizado sano");
             format!("http://127.0.0.1:{}", state.resident.port)
         };
-        self.synthesize_via_http(&url, text, voz, options, None, None, out_path)
+        self.synthesize_via_http(&url, text, voice, options, None, None, out_path)
     }
 }
 
@@ -500,7 +500,7 @@ impl Qwen3TtsEngine {
 /// silenciosa: si no hay pidfile (p. ej. `serve` en foreground) o no parsea,
 /// no hay nada que actualizar y se ignora. La lectura tolerante vive en el CLI
 /// (`read_resident_pid`: ausente = 0/desconocido).
-fn actualizar_resident_pid_en_pidfile(pid: u32) {
+fn update_resident_pid_in_pidfile(pid: u32) {
     let path = avi_store::data_dir().join("daemon.pid");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
@@ -536,14 +536,14 @@ impl TtsEngine for Qwen3TtsEngine {
             .as_deref()
             .filter(|q| q.is_file())
             .map(|q| q.to_path_buf());
-        let voz = resolve_voice_engine(&profile.name, qvoice.as_deref());
+        let voice = resolve_voice_engine(&profile.name, qvoice.as_deref());
 
         // 1. HTTP manual configurado (solo presets; la voz clonada exige un
         //    servidor arrancado con su `--load-voice`, que solo gestiona el residente).
         if let Some(url) = &self.server_url {
-            if matches!(voz, VozMotor::Preset(_))
+            if matches!(voice, VoiceEngine::Preset(_))
                 && self
-                    .synthesize_via_http(url, text, &voz, options, None, None, &path)
+                    .synthesize_via_http(url, text, &voice, options, None, None, &path)
                     .is_ok()
             {
                 return Ok(path);
@@ -554,7 +554,7 @@ impl TtsEngine for Qwen3TtsEngine {
         //    camino restante, con healthcheck (30 s) y POST (30 s) acotados.
         //    El texto viaja por body HTTP JSON, ruta segura para UTF-8 acentuado
         //    (a diferencia del argv de un subprocess en Windows).
-        self.synthesize_via_residente(text, &voz, options, &path)?;
+        self.synthesize_via_resident(text, &voice, options, &path)?;
         Ok(path)
     }
 }
@@ -563,9 +563,9 @@ impl TtsEngine for Qwen3TtsEngine {
 /// servidor lo ignora), claves solo-si-`Some`, y `speaker`/`language` omitidos
 /// cuando la voz es clonada (el servidor conserva la voz y el idioma del
 /// arranque, `docs/server.md:28-34`).
-pub(crate) fn construir_body_tts(
+pub(crate) fn build_tts_body(
     text: &str,
-    voz: &VozMotor,
+    voice: &VoiceEngine,
     options: &GenerationOptions,
     prosody: Option<&ProsodyOptions>,
     emotion: Option<&EmotionOptions>,
@@ -575,8 +575,8 @@ pub(crate) fn construir_body_tts(
         "text".to_string(),
         serde_json::Value::String(text.to_string()),
     );
-    match voz {
-        VozMotor::Preset(speaker) => {
+    match voice {
+        VoiceEngine::Preset(speaker) => {
             obj.insert(
                 "speaker".to_string(),
                 serde_json::Value::String(speaker.clone()),
@@ -586,7 +586,7 @@ pub(crate) fn construir_body_tts(
                 serde_json::Value::String(options.language.clone()),
             );
         }
-        VozMotor::Clonada(_) => {}
+        VoiceEngine::Cloned(_) => {}
     }
     obj.insert(
         "temperature".to_string(),
@@ -691,9 +691,9 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String)> {
 /// clonado del motor —24 kHz / 16-bit / mono— escribiéndolo en un WAV temporal
 /// único y devolviendo su ruta. El motor rechaza referencias que no sean 24 kHz;
 /// el benchmark preprocesaba la referencia de la misma forma.
-fn referencia_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
+fn reference_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
     let pcm = avi_audio::load_wav_24k_mono_pcm(ref_audio)?;
-    let unico = format!(
+    let unique = format!(
         "avi_tts_ref24k_{}_{}.wav",
         std::process::id(),
         std::time::SystemTime::now()
@@ -701,7 +701,7 @@ fn referencia_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     );
-    let out_path = std::env::temp_dir().join(unico);
+    let out_path = std::env::temp_dir().join(unique);
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 24_000,
@@ -730,7 +730,7 @@ pub fn clone_voice(
 ) -> Result<()> {
     let bin = resolve_binary()
         .ok_or_else(|| anyhow!("El binario de clonado Qwen3-TTS no está provisionado."))?;
-    let ref_wav = referencia_24k_mono(ref_audio)?;
+    let ref_wav = reference_24k_mono(ref_audio)?;
     let status = Command::new(&bin)
         .arg("-d")
         .arg(model_dir.as_ref())
@@ -876,13 +876,13 @@ pub mod resident {
                     e
                 )
             })?;
-            Self::spawn_con_hijo(child, port, log_path, 60, 500)
+            Self::spawn_with_child(child, port, log_path, 60, 500)
         }
 
         /// Arranca el healthcheck sobre un hijo ya lanzado (retries/intervalo
         /// configurables para los tests de reintentos). `log_path` se guarda en el
         /// struct para incluirse en errores de `wait_health`.
-        pub(crate) fn spawn_con_hijo(
+        pub(crate) fn spawn_with_child(
             child: Child,
             port: u16,
             log_path: PathBuf,
@@ -945,13 +945,13 @@ pub mod resident {
         }
         #[cfg(windows)]
         {
-            let salida = Command::new("tasklist")
+            let output = Command::new("tasklist")
                 .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
                 .output();
-            match salida {
+            match output {
                 Ok(o) if o.status.success() => {
                     String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())
                 }
@@ -1105,7 +1105,7 @@ pub mod resident {
     /// por `resident_pid` muerto más ausencia por imagen— solo la comprueba la
     /// serie pesada (`tests/cli_golden.rs`).
     #[cfg(test)]
-    pub(crate) fn simular_servidor(
+    pub(crate) fn simulate_server(
         body: std::sync::Arc<Mutex<String>>,
     ) -> (u16, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("debe bindear un puerto libre");
@@ -1155,7 +1155,7 @@ pub mod resident {
                 let _ = stream.write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 46\r\n\r\n",
                 );
-                let _ = stream.write_all(&wav_minimo());
+                let _ = stream.write_all(&min_wav());
                 let _ = stream.flush();
             }
         });
@@ -1164,7 +1164,7 @@ pub mod resident {
 
     /// WAV mínimo válido (24 kHz, 1 muestra silenciosa) para respuestas simuladas.
     #[cfg(test)]
-    pub(crate) fn wav_minimo() -> Vec<u8> {
+    pub(crate) fn min_wav() -> Vec<u8> {
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 24_000,
@@ -1197,7 +1197,7 @@ mod tests {
     /// cambios, no los valores de producción de `GenerationOptions::production()`
     /// (config validada por oído) — este test queda intacto a propósito.
     #[test]
-    fn default_generation_options_coinciden_con_motor() {
+    fn default_generation_options_matches_engine() {
         let d = GenerationOptions::default();
         assert_eq!(d.temperature, 0.5);
         assert_eq!(d.top_k, 50);
@@ -1210,7 +1210,7 @@ mod tests {
     /// `production()` fija temperatura y seed a la config validada por oído,
     /// sin alterar el resto de campos respecto a `Default`.
     #[test]
-    fn generation_options_production_fija_temperatura_y_seed() {
+    fn generation_options_production_sets_temperature_and_seed() {
         let p = GenerationOptions::production();
         assert_eq!(p.temperature, 0.35);
         assert_eq!(p.seed, Some(4));
@@ -1223,7 +1223,7 @@ mod tests {
     /// `with_temperature(None)` equivale a `production()`; con `Some` solo
     /// cambia la temperatura (bordes del rango válido incluidos).
     #[test]
-    fn generation_options_with_temperature_resuelve_override() {
+    fn generation_options_with_temperature_resolves_override() {
         let p = GenerationOptions::with_temperature(None);
         assert_eq!(p.temperature, 0.35);
         assert_eq!(p.seed, Some(4));
@@ -1241,7 +1241,7 @@ mod tests {
     /// I/O real de proceso — cierra un hueco de cobertura que ningún test de
     /// integración ejercitaba.
     #[test]
-    fn build_resident_command_incluye_int4_hilos_stream() {
+    fn build_resident_command_includes_int4_threads_stream() {
         let cmd = resident::build_resident_command(
             Path::new("qwen_tts.exe"),
             Path::new("vendor/qwen3-tts/qwen3-tts-0.6b"),
@@ -1299,9 +1299,9 @@ mod tests {
     /// producción de `GenerationOptions::production()` (config validada por oído) — el body HTTP
     /// no transporta `int4`/`-j`/`--stream` (son flags de arranque de proceso).
     #[test]
-    fn construir_body_tts_defaults_y_voz_clonada() {
-        let voz = VozMotor::Preset("ryan".to_string());
-        let body = construir_body_tts("Hola", &voz, &GenerationOptions::default(), None, None);
+    fn build_tts_body_defaults_and_cloned_voice() {
+        let voice = VoiceEngine::Preset("ryan".to_string());
+        let body = build_tts_body("Hola", &voice, &GenerationOptions::default(), None, None);
         let obj = body.as_object().expect("body debe ser objeto");
         assert_eq!(obj.get("text").and_then(|v| v.as_str()), Some("Hola"));
         assert_eq!(obj.get("speaker").and_then(|v| v.as_str()), Some("ryan"));
@@ -1317,8 +1317,8 @@ mod tests {
         assert!(!obj.contains_key("rate"));
         assert!(!obj.contains_key("emotion"));
 
-        let clonada = VozMotor::Clonada(PathBuf::from("voz.qvoice"));
-        let body = construir_body_tts("Hola", &clonada, &GenerationOptions::default(), None, None);
+        let cloned = VoiceEngine::Cloned(PathBuf::from("voz.qvoice"));
+        let body = build_tts_body("Hola", &cloned, &GenerationOptions::default(), None, None);
         let obj = body.as_object().expect("body debe ser objeto");
         assert!(!obj.contains_key("speaker"), "voz clonada omite speaker");
         assert!(!obj.contains_key("language"), "voz clonada omite language");
@@ -1330,9 +1330,9 @@ mod tests {
         let emotion = EmotionOptions {
             emotion: Some("joy".to_string()),
         };
-        let body = construir_body_tts(
+        let body = build_tts_body(
             "Hola",
-            &voz,
+            &voice,
             &GenerationOptions::default(),
             Some(&prosody),
             Some(&emotion),
@@ -1345,22 +1345,22 @@ mod tests {
 
     /// Tabla de resolución voz → motor (default resuelve como Preset(default)).
     #[test]
-    fn resolve_voice_engine_tabla() {
+    fn resolve_voice_engine_table() {
         // default sin referencia resuelve como Preset("default"); con qvoice resuelve como Clonada.
         assert_eq!(
             resolve_voice_engine("default", None),
-            VozMotor::Preset("default".to_string())
+            VoiceEngine::Preset("default".to_string())
         );
         let q = std::env::temp_dir().join("avi_tts_test_referencia.qvoice");
         std::fs::write(&q, b"QVCE").unwrap();
         assert_eq!(
             resolve_voice_engine("mi_voz", Some(&q)),
-            VozMotor::Clonada(q.clone())
+            VoiceEngine::Cloned(q.clone())
         );
         // Sin referencia → preset con el nombre dado.
         assert_eq!(
             resolve_voice_engine("vivian", None),
-            VozMotor::Preset("vivian".to_string())
+            VoiceEngine::Preset("vivian".to_string())
         );
         std::fs::remove_file(&q).ok();
     }
@@ -1368,11 +1368,11 @@ mod tests {
     /// El healthcheck responde cuando el listener simula `/v1/health`, y
     /// el `Drop` del gestor termina al hijo.
     #[test]
-    fn residente_healthcheck_ok_y_drop_mata_al_hijo() {
-        let (port, handle) = resident::simular_servidor(Arc::new(Mutex::new(String::new())));
-        let child = proceso_durmiente();
+    fn resident_healthcheck_ok_and_drop_kills_child() {
+        let (port, handle) = resident::simulate_server(Arc::new(Mutex::new(String::new())));
+        let child = sleeping_process();
         let pid = child.id();
-        let resident = resident::Qwen3TtsResident::spawn_con_hijo(
+        let resident = resident::Qwen3TtsResident::spawn_with_child(
             child,
             port,
             resident::resident_log_path(),
@@ -1385,7 +1385,7 @@ mod tests {
         drop(handle);
         thread::sleep(Duration::from_millis(800));
         assert!(
-            !proceso_vivo(pid),
+            !process_alive(pid),
             "el Drop del gestor debe terminar al hijo"
         );
     }
@@ -1394,7 +1394,7 @@ mod tests {
     /// cierra las dos primeras conexiones sin responder (fallo inmediato) y solo
     /// responde 200 a partir de la tercera (determinista, sin temporización).
     #[test]
-    fn residente_healthcheck_reintenta_hasta_responder() {
+    fn resident_healthcheck_retries_until_responding() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let attempts = Arc::new(Mutex::new(0usize));
@@ -1414,8 +1414,8 @@ mod tests {
                 }
             }
         });
-        let child = proceso_durmiente();
-        let resultado = resident::Qwen3TtsResident::spawn_con_hijo(
+        let child = sleeping_process();
+        let result = resident::Qwen3TtsResident::spawn_with_child(
             child,
             port,
             resident::resident_log_path(),
@@ -1427,7 +1427,7 @@ mod tests {
         drop(handle);
         thread::sleep(Duration::from_millis(200));
         let n = *attempts.lock().unwrap();
-        if let Err(e) = resultado {
+        if let Err(e) = result {
             panic!(
                 "el healthcheck debe triunfar tras los reintentos ({} conexiones recibidas): {}",
                 n, e
@@ -1443,9 +1443,9 @@ mod tests {
 
     /// El healthcheck falla si el servidor nunca responde.
     #[test]
-    fn residente_healthcheck_falla_sin_servidor() {
-        let child = proceso_durmiente();
-        let result = resident::Qwen3TtsResident::spawn_con_hijo(
+    fn resident_healthcheck_fails_without_server() {
+        let child = sleeping_process();
+        let result = resident::Qwen3TtsResident::spawn_with_child(
             child,
             1,
             resident::resident_log_path(),
@@ -1456,12 +1456,12 @@ mod tests {
     }
 
     /// Un sumidero TCP que acepta la conexión y nunca responde
-    /// (a diferencia del crash de `wait_health_distingue_crash_de_hang`, aquí
+    /// (a diferencia del crash de `wait_health_distinguishes_crash_from_hang`, aquí
     /// el proceso hijo sigue vivo) debe hacer que `wait_health(1, 2000)`
     /// devuelva `Err` en `≲` 3 s, sin colgarse — reproduce el cuelgue del
     /// motor C que motivó la salud observada por petición.
     #[test]
-    fn wait_health_detecta_sumidero_tcp_sin_colgarse() {
+    fn wait_health_detects_tcp_sink_without_hanging() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let handle = thread::spawn(move || {
@@ -1471,11 +1471,11 @@ mod tests {
                 drop(stream);
             }
         });
-        let mut child = proceso_durmiente();
+        let mut child = sleeping_process();
         let log_path = resident::resident_log_path();
-        let inicio = std::time::Instant::now();
+        let start = std::time::Instant::now();
         let result = resident::wait_health(&mut child, port, 1, 2000, log_path.as_path());
-        let transcurrido = inicio.elapsed();
+        let elapsed = start.elapsed();
         let _ = child.kill();
         let _ = child.wait();
         drop(handle);
@@ -1484,16 +1484,16 @@ mod tests {
             "el sumidero TCP no debe pasar el healthcheck"
         );
         assert!(
-            transcurrido < Duration::from_secs(3),
+            elapsed < Duration::from_secs(3),
             "wait_health no debe colgarse ante un sumidero TCP: tardó {:?}",
-            transcurrido
+            elapsed
         );
     }
 
     /// `resident_log_path()` crea el directorio `logs/` bajo `data_dir()` y
     /// devuelve un filename con el patrón `qwen3-tts_<pid>_<ms>.log`.
     #[test]
-    fn log_path_crea_directorio_y_filename() {
+    fn log_path_creates_directory_and_filename() {
         let path = resident::resident_log_path();
         let parent = path.parent().expect("el log debe tener directorio padre");
         assert!(
@@ -1516,7 +1516,7 @@ mod tests {
     /// *hang* (timeout). Un proceso que sale inmediatamente produce un error que
     /// menciona "terminó inesperadamente" + código de salida + ruta del log.
     #[test]
-    fn wait_health_distingue_crash_de_hang() {
+    fn wait_health_distinguishes_crash_from_hang() {
         // Proceso que muere inmediatamente (exit 1) en lugar de servir.
         let mut child = if cfg!(windows) {
             Command::new("cmd")
@@ -1552,9 +1552,9 @@ mod tests {
     /// (config validada por oído) — este test invoca `synthesize_with_options` directamente con
     /// `GenerationOptions::default()`, no `Qwen3TtsEngine::synthesize`.
     #[test]
-    fn synthesize_http_envia_defaults_del_motor() {
+    fn synthesize_http_sends_engine_defaults() {
         let body = Arc::new(Mutex::new(String::new()));
-        let (port, handle) = resident::simular_servidor(body.clone());
+        let (port, handle) = resident::simulate_server(body.clone());
         let engine = Qwen3TtsEngine::new(Some(format!("http://127.0.0.1:{}", port)));
         let profile = VoiceProfile {
             name: "default".to_string(),
@@ -1582,7 +1582,7 @@ mod tests {
             ..Default::default()
         };
         let body = Arc::new(Mutex::new(String::new()));
-        let (port, handle) = resident::simular_servidor(body.clone());
+        let (port, handle) = resident::simulate_server(body.clone());
         let engine = Qwen3TtsEngine::new(Some(format!("http://127.0.0.1:{}", port)));
         let _ = engine.synthesize_with_options("Hola", &profile, &opts, Some(&out));
         drop(handle);
@@ -1599,8 +1599,8 @@ mod tests {
     /// (solo harness/producto lo cubren); no corre bajo la imagen real
     /// `qwen_tts`, así que queda ciego al barrido por imagen del residente;
     /// el cierre preciso por árbol se cubre en
-    /// `residente_matar_arbol_por_pid_termina_al_hijo`.
-    fn proceso_durmiente() -> std::process::Child {
+    /// `resident_kill_tree_by_pid_terminates_child`.
+    fn sleeping_process() -> std::process::Child {
         if cfg!(windows) {
             Command::new("powershell")
                 .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
@@ -1621,7 +1621,7 @@ mod tests {
     /// ¿Sigue vivo el proceso con `pid`? Doble de test: delega en
     /// `resident::resident_pid_alive`, la misma primitiva que el producto usa
     /// para verificar el cierre por árbol, sin reproducir daemonización real.
-    fn proceso_vivo(pid: u32) -> bool {
+    fn process_alive(pid: u32) -> bool {
         resident::resident_pid_alive(pid)
     }
 
@@ -1634,8 +1634,8 @@ mod tests {
     /// que sobreviva (a diferencia de un bucle `kill -0`, cuya señal de grupo
     /// mal dirigida colgaba solo en Linux/Docker).
     #[test]
-    fn residente_matar_arbol_por_pid_termina_al_hijo() {
-        let mut child = proceso_durmiente();
+    fn resident_kill_tree_by_pid_terminates_child() {
+        let mut child = sleeping_process();
         let pid = child.id();
         assert!(
             resident::resident_pid_alive(pid),
@@ -1660,7 +1660,7 @@ mod tests {
 
     /// `resolve_binary` halla el binario junto al `current_exe` aunque `cwd` no tenga vendor.
     #[test]
-    fn resolve_binary_halla_exe_dir_vendor() {
+    fn resolve_binary_finds_exe_dir_vendor() {
         // Guardar env para no contaminar otros tests (serializados por --test-threads=1 en CI)
         let orig = std::env::var_os("QWEN3_TTS_BIN");
         std::env::remove_var("QWEN3_TTS_BIN");
