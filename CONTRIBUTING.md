@@ -48,7 +48,7 @@ La suite es **100% Rust** (`cargo test --all`, incluye los tests del tooling en
 `crates/xtask`). Antes de abrir un PR, verifica:
 
 ```bash
-cargo test --all --verbose          # tests (avi-core/audio/tts/store/daemon/xtask/cli_golden)
+cargo test --all --verbose          # tests (avi-core/audio/tts/stt/translation/store/daemon/xtask/cli_golden)
 cargo fmt --all --check
 cargo clippy --all-targets
 
