@@ -41,9 +41,9 @@ impl Ct2TranslationEngine {
     /// replicando el pre/post procesamiento por ítem de `translate`: anexa
     /// `" </s>"` al origen de cada oración, construye las opciones una sola
     /// vez y sanea cada hipótesis (token EOS final + espacios).
-    fn translate_lote(
+    fn translate_sentence_batch(
         &self,
-        oraciones: &[String],
+        sentences: &[String],
         _source_lang: &str,
         _target_lang: &str,
     ) -> anyhow::Result<Vec<String>> {
@@ -52,10 +52,10 @@ impl Ct2TranslationEngine {
         // Se anexa `</s>` manualmente al origen: el encoder
         // Marian/opus-mt lo exige y `ct2-transformers-converter` no lo añade
         // automáticamente (ver nota técnica en el test
-        // `ct2rs_carga_modelo_opus_mt_y_traduce` de este mismo archivo).
-        let sources: Vec<String> = oraciones
+        // `ct2rs_loads_opus_mt_model_and_translates` de este mismo archivo).
+        let sources: Vec<String> = sentences
             .iter()
-            .map(|oracion| format!("{} </s>", oracion))
+            .map(|sentence| format!("{} </s>", sentence))
             .collect();
         // Mejora de calidad sobre el default de ct2rs: `disable_unk` suprime la
         // generación del token `<unk>` en la hipótesis (mismo default sano del
@@ -66,11 +66,11 @@ impl Ct2TranslationEngine {
             ..Default::default()
         };
         let results = self.translator.translate_batch(&sources, &options, None)?;
-        if results.len() != oraciones.len() {
+        if results.len() != sentences.len() {
             anyhow::bail!(
                 "translate_batch devolvió {} resultados para {} oraciones",
                 results.len(),
-                oraciones.len()
+                sentences.len()
             );
         }
         Ok(results
@@ -96,16 +96,17 @@ impl TranslationEngine for Ct2TranslationEngine {
         _source_lang: &str,
         _target_lang: &str,
     ) -> anyhow::Result<String> {
-        // El texto único se traduce como lote de una sola oración: `translate_lote`
+        // El texto único se traduce como lote de una sola oración: `translate_sentence_batch`
         // aplica el mismo pre/post procesamiento por ítem que el pipeline antiguo
         // (anexar `</s>`, opciones idénticas y saneo de la hipótesis).
-        let mut hipotesis = self.translate_lote(&[text.to_string()], _source_lang, _target_lang)?;
-        Ok(hipotesis.remove(0))
+        let mut hypothesis =
+            self.translate_sentence_batch(&[text.to_string()], _source_lang, _target_lang)?;
+        Ok(hypothesis.remove(0))
     }
 }
 
 /// Tope de oraciones por lote de traducción: un párrafo con más oraciones se
-/// parte en grupos de `MAX_ORACIONES_POR_LOTE` para acotar la memoria y la
+/// parte en grupos de `MAX_SENTENCES_PER_BATCH` para acotar la memoria y la
 /// latencia de cada llamada a `translate_batch` (decisión cerrada:
 /// acotar memoria y latencia por lote).
 ///
@@ -113,10 +114,10 @@ impl TranslationEngine for Ct2TranslationEngine {
 /// `native-translation`; `allow(dead_code)` evita el warning-as-error cuando su
 /// único consumidor de producción (`translate`) queda fuera del build.
 #[cfg_attr(not(feature = "native-translation"), allow(dead_code))]
-const MAX_ORACIONES_POR_LOTE: usize = 10;
+const MAX_SENTENCES_PER_BATCH: usize = 10;
 
 /// Traduce los párrafos agrupando sus oraciones en lotes de a lo sumo
-/// `MAX_ORACIONES_POR_LOTE`, una llamada a `traductor` por lote, y devuelve el
+/// `MAX_SENTENCES_PER_BATCH`, una llamada a `translator` por lote, y devuelve el
 /// mismo anidamiento de párrafos que la entrada. Las oraciones vacías (p. ej.
 /// los párrafos generados por `"\n\n"` consecutivos) no se traducen pero el
 /// párrafo conserva su posición como lista vacía para no alterar el
@@ -127,18 +128,18 @@ fn translate_batches_by_paragraph(
     paragraphs: Vec<Vec<String>>,
     source: &str,
     target: &str,
-    traductor: &dyn Fn(&[String], &str, &str) -> anyhow::Result<Vec<String>>,
+    translator: &dyn Fn(&[String], &str, &str) -> anyhow::Result<Vec<String>>,
 ) -> anyhow::Result<Vec<Vec<String>>> {
-    let mut resultado = Vec::with_capacity(paragraphs.len());
+    let mut result = Vec::with_capacity(paragraphs.len());
     for paragraph in paragraphs {
-        let oraciones: Vec<String> = paragraph.into_iter().filter(|s| !s.is_empty()).collect();
-        let mut traducidas = Vec::with_capacity(oraciones.len());
-        for lote in oraciones.chunks(MAX_ORACIONES_POR_LOTE) {
-            traducidas.extend(traductor(lote, source, target)?);
+        let sentences: Vec<String> = paragraph.into_iter().filter(|s| !s.is_empty()).collect();
+        let mut translated = Vec::with_capacity(sentences.len());
+        for batch in sentences.chunks(MAX_SENTENCES_PER_BATCH) {
+            translated.extend(translator(batch, source, target)?);
         }
-        resultado.push(traducidas);
+        result.push(translated);
     }
-    Ok(resultado)
+    Ok(result)
 }
 
 /// Traduce `text` de `source` a `target` segmentando jerárquicamente y
@@ -158,13 +159,15 @@ pub fn translate(
     let paragraphs = segmenter.segment(text);
 
     // Cada párrafo se traduce en una sola llamada al motor (partida en grupos
-    // de `MAX_ORACIONES_POR_LOTE` cuando excede el tope), en vez de una llamada
+    // de `MAX_SENTENCES_PER_BATCH` cuando excede el tope), en vez de una llamada
     // por oración: el reensamblado posterior es idéntico al anterior.
     let translated: Vec<Vec<String>> = translate_batches_by_paragraph(
         paragraphs,
         source,
         target,
-        &|oraciones: &[String], src: &str, dst: &str| engine.translate_lote(oraciones, src, dst),
+        &|sentences: &[String], src: &str, dst: &str| {
+            engine.translate_sentence_batch(sentences, src, dst)
+        },
     )?;
 
     Ok(translated
@@ -187,7 +190,7 @@ mod tests {
     /// Modelo CT2 derivado en HF cache `hf_cache_dir()/ct2` presente. Los snapshots
     /// y derivados están gitignoreados: en un checkout limpio (CI) los E2E se saltan.
     #[cfg(feature = "native-translation")]
-    fn modelo_ct2_disponible(subdir: &str) -> bool {
+    fn ct2_model_available(subdir: &str) -> bool {
         let pair = subdir.strip_prefix("opus-mt-").unwrap_or(subdir);
         avi_store::is_ct2_provisioned(pair)
     }
@@ -197,11 +200,11 @@ mod tests {
     /// resultado no esté vacío.
     #[cfg(feature = "native-translation")]
     #[test]
-    fn ct2translationengine_traduce_texto_real() {
+    fn ct2translationengine_translates_real_text() {
         use crate::Ct2TranslationEngine;
 
         let model_dir = avi_store::ct2_model_dir("es-en");
-        if !modelo_ct2_disponible("opus-mt-es-en") {
+        if !ct2_model_available("opus-mt-es-en") {
             eprintln!("[translate] skip: sin modelo CT2 es→en");
             return;
         }
@@ -236,11 +239,11 @@ mod tests {
     /// equivalente debe insertarlo).
     #[cfg(feature = "native-translation")]
     #[test]
-    fn ct2rs_carga_modelo_opus_mt_y_traduce() {
+    fn ct2rs_loads_opus_mt_model_and_translates() {
         use ct2rs::{Config, Translator};
 
         let model_dir = avi_store::ct2_model_dir("es-en");
-        if !modelo_ct2_disponible("opus-mt-es-en") {
+        if !ct2_model_available("opus-mt-es-en") {
             eprintln!("[translate] skip: sin modelo CT2 es→en");
             return;
         }
@@ -267,10 +270,10 @@ mod tests {
 
     /// `Ct2TranslationEngine::new` sobre una ruta de modelo inexistente debe
     /// devolver `Err`, mismo patrón que
-    /// `ct2sttengine_new_con_ruta_inexistente_devuelve_err` de `avi-stt`.
+    /// `parakeet_engine_new_with_nonexistent_path_returns_err` de `avi-stt`.
     #[cfg(feature = "native-translation")]
     #[test]
-    fn ct2translationengine_new_con_ruta_inexistente_devuelve_err() {
+    fn ct2translationengine_new_with_nonexistent_path_returns_err() {
         use crate::Ct2TranslationEngine;
 
         let result = Ct2TranslationEngine::new("ruta/que/no/existe/opus-mt-es-en");
@@ -285,7 +288,7 @@ mod tests {
     /// loader por construcción, sin depender de modelos reales.
     #[cfg(feature = "native-translation")]
     #[test]
-    fn ct2_dir_solo_con_model_bin_no_provisionado_y_loader_falla() {
+    fn ct2_dir_with_only_model_bin_not_provisioned_and_loader_fails() {
         use crate::Ct2TranslationEngine;
 
         let dir = std::env::temp_dir().join(format!("avi_ct2_roto_{}", std::process::id()));
@@ -325,10 +328,10 @@ mod tests {
     /// funcionales: salida no vacía, sin `</s>` ni `<unk>`.
     #[cfg(feature = "native-translation")]
     #[test]
-    fn ct2translationengine_coincide_con_oraculo_python() {
+    fn ct2translationengine_matches_python_oracle() {
         use crate::Ct2TranslationEngine;
 
-        if !modelo_ct2_disponible("opus-mt-es-en") || !modelo_ct2_disponible("opus-mt-en-es") {
+        if !ct2_model_available("opus-mt-es-en") || !ct2_model_available("opus-mt-en-es") {
             eprintln!("[translate] skip: sin modelos CT2 es↔en");
             return;
         }
@@ -352,15 +355,15 @@ mod tests {
 
             let engine =
                 Ct2TranslationEngine::new(model_dir).expect("el modelo opus-mt debe cargar");
-            let pares: Vec<ParOraculo> = serde_json::from_str(
+            let oracle_pairs: Vec<OraclePair> = serde_json::from_str(
                 &std::fs::read_to_string(fixture_path)
                     .expect("el corpus de referencia del oráculo debe existir"),
             )
             .expect("el corpus del oráculo debe ser JSON válido");
 
-            for par in &pares {
+            for oracle_pair in &oracle_pairs {
                 let actual = engine
-                    .translate(&par.input, "es", "en")
+                    .translate(&oracle_pair.input, "es", "en")
                     .expect("la traducción debe completarse")
                     .trim()
                     .to_string();
@@ -369,34 +372,34 @@ mod tests {
                     !actual.is_empty(),
                     "traducción vacía en {} para {:?}",
                     model,
-                    par.input
+                    oracle_pair.input
                 );
                 assert!(
                     !actual.contains("</s>"),
                     "el token EOS no debe filtrarse a la salida en {} para {:?}",
                     model,
-                    par.input
+                    oracle_pair.input
                 );
                 assert!(
                     !actual.contains("<unk>"),
                     "el token desconocido no debe filtrarse a la salida en {} para {:?}",
                     model,
-                    par.input
+                    oracle_pair.input
                 );
 
-                let esperado = par.expected.trim();
-                let ref_palabras: Vec<&str> = esperado.split_whitespace().collect();
-                let hip_palabras: Vec<&str> = actual.split_whitespace().collect();
-                let distancia = levenshtein_palabras(&ref_palabras, &hip_palabras);
-                let wer = distancia as f64 / ref_palabras.len().max(1) as f64;
+                let expected = oracle_pair.expected.trim();
+                let ref_words: Vec<&str> = expected.split_whitespace().collect();
+                let hyp_words: Vec<&str> = actual.split_whitespace().collect();
+                let distance = levenshtein_words(&ref_words, &hyp_words);
+                let wer = distance as f64 / ref_words.len().max(1) as f64;
 
                 assert!(
                     wer <= 0.6,
                     "WER por ítem {:.4} supera el tope 0.6 en {} ({:?}): esperado {:?}, obtenido {:?}",
                     wer,
                     model,
-                    par.input,
-                    esperado,
+                    oracle_pair.input,
+                    expected,
                     actual
                 );
 
@@ -404,16 +407,16 @@ mod tests {
                 n_items += 1;
                 eprintln!(
                     "[corpus] {} | WER {:.4} | {:?} -> {:?}",
-                    model, wer, par.input, actual
+                    model, wer, oracle_pair.input, actual
                 );
             }
         }
 
-        let wer_medio = wer_total / n_items.max(1) as f64;
+        let average_wer = wer_total / n_items.max(1) as f64;
         assert!(
-            wer_medio <= 0.35,
+            average_wer <= 0.35,
             "WER medio de corpus {:.4} supera el umbral 0.35 (motor degradado)",
-            wer_medio
+            average_wer
         );
     }
 
@@ -421,17 +424,17 @@ mod tests {
     /// referencia emitida por el oráculo Python.
     #[cfg(feature = "native-translation")]
     #[derive(serde::Deserialize)]
-    struct ParOraculo {
+    struct OraclePair {
         input: String,
         expected: String,
     }
 
-    /// Distancia de Levenshtein a nivel de palabra entre `referencia` e
-    /// `hipotesis`, usada para calcular el WER de la prueba de paridad.
+    /// Distancia de Levenshtein a nivel de palabra entre `reference` e
+    /// `hypothesis`, usada para calcular el WER de la prueba de paridad.
     #[cfg(feature = "native-translation")]
-    fn levenshtein_palabras(referencia: &[&str], hipotesis: &[&str]) -> usize {
-        let n = referencia.len();
-        let m = hipotesis.len();
+    fn levenshtein_words(reference: &[&str], hypothesis: &[&str]) -> usize {
+        let n = reference.len();
+        let m = hypothesis.len();
         let mut dp = vec![vec![0usize; m + 1]; n + 1];
 
         for (i, row) in dp.iter_mut().enumerate() {
@@ -442,7 +445,7 @@ mod tests {
         }
         for i in 1..=n {
             for j in 1..=m {
-                if referencia[i - 1] == hipotesis[j - 1] {
+                if reference[i - 1] == hypothesis[j - 1] {
                     dp[i][j] = dp[i - 1][j - 1];
                 } else {
                     dp[i][j] = 1 + dp[i - 1][j - 1].min(dp[i - 1][j]).min(dp[i][j - 1]);
@@ -457,8 +460,8 @@ mod tests {
     /// preservando la separación de párrafos en la salida.
     #[cfg(feature = "native-translation")]
     #[test]
-    fn translate_multi_parrafo_preserva_separadores() {
-        if !modelo_ct2_disponible("opus-mt-es-en") {
+    fn translate_multi_paragraph_preserves_separators() {
+        if !ct2_model_available("opus-mt-es-en") {
             eprintln!("[translate] skip: sin modelo CT2 es→en");
             return;
         }
@@ -486,7 +489,7 @@ mod tests {
     /// capa CLI).
     #[cfg(feature = "native-translation")]
     #[test]
-    fn translate_con_model_dir_inexistente_devuelve_err() {
+    fn translate_with_nonexistent_model_dir_returns_err() {
         let result = crate::translate(
             "Hola, ¿cómo estás?",
             "es",
@@ -496,50 +499,54 @@ mod tests {
         assert!(result.is_err(), "un model_dir inexistente debe fallar");
     }
 
-    /// Doble de traducción por lotes: `llamadas` cuenta las invocaciones y
-    /// `tamanos` acumula el número de oraciones de cada lote; las hipótesis se
+    /// Doble de traducción por lotes: `calls` cuenta las invocaciones y
+    /// `sizes` acumula el número de oraciones de cada lote; las hipótesis se
     /// derivan como `"T:<oración>"`, lo que permite verificar partición, orden
     /// y reensamblado sin depender de ningún modelo.
-    fn doble_traduccion<'a>(
-        llamadas: &'a Cell<usize>,
-        tamanos: &'a RefCell<Vec<usize>>,
+    fn translator_double<'a>(
+        calls: &'a Cell<usize>,
+        sizes: &'a RefCell<Vec<usize>>,
     ) -> impl for<'x, 'y, 'z> Fn(&'x [String], &'y str, &'z str) -> anyhow::Result<Vec<String>> + 'a
     {
-        move |lote: &[String], _source: &str, _target: &str| {
-            llamadas.set(llamadas.get() + 1);
-            tamanos.borrow_mut().push(lote.len());
-            Ok(lote
+        move |batch: &[String], _source: &str, _target: &str| {
+            calls.set(calls.get() + 1);
+            sizes.borrow_mut().push(batch.len());
+            Ok(batch
                 .iter()
-                .map(|oracion| format!("T:{}", oracion))
+                .map(|sentence| format!("T:{}", sentence))
                 .collect())
         }
     }
 
     /// Párrafo artificial de `n` oraciones distintas para las pruebas del lote.
-    fn parrafo_de_n_oraciones(n: usize) -> Vec<String> {
+    fn paragraph_of_n_sentences(n: usize) -> Vec<String> {
         (1..=n)
             .map(|i| format!("Oración número {} de la prueba.", i))
             .collect()
     }
 
     #[test]
-    fn lote_traduce_parrafo_de_5_oraciones_en_una_llamada() {
-        let llamadas = Cell::new(0usize);
-        let tamanos = RefCell::new(Vec::new());
-        let doble = doble_traduccion(&llamadas, &tamanos);
+    fn batch_translates_paragraph_of_5_sentences_in_one_call() {
+        let calls = Cell::new(0usize);
+        let sizes = RefCell::new(Vec::new());
+        let double = translator_double(&calls, &sizes);
 
-        let resultado =
-            super::translate_batches_by_paragraph(vec![parrafo_de_n_oraciones(5)], "es", "en", &doble)
-                .expect("un párrafo de 5 oraciones no debe fallar");
+        let result = super::translate_batches_by_paragraph(
+            vec![paragraph_of_n_sentences(5)],
+            "es",
+            "en",
+            &double,
+        )
+        .expect("un párrafo de 5 oraciones no debe fallar");
 
         assert_eq!(
-            llamadas.get(),
+            calls.get(),
             1,
             "5 oraciones deben traducirse en una sola llamada"
         );
-        assert_eq!(*tamanos.borrow(), vec![5], "el lote debe tener 5 oraciones");
+        assert_eq!(*sizes.borrow(), vec![5], "el lote debe tener 5 oraciones");
         assert_eq!(
-            resultado,
+            result,
             vec![(1..=5)
                 .map(|i| format!("T:Oración número {} de la prueba.", i))
                 .collect::<Vec<_>>()],
@@ -548,27 +555,31 @@ mod tests {
     }
 
     #[test]
-    fn lote_particiona_parrafo_de_11_oraciones_en_2_llamadas() {
-        let llamadas = Cell::new(0usize);
-        let tamanos = RefCell::new(Vec::new());
-        let doble = doble_traduccion(&llamadas, &tamanos);
+    fn batch_splits_paragraph_of_11_sentences_into_2_calls() {
+        let calls = Cell::new(0usize);
+        let sizes = RefCell::new(Vec::new());
+        let double = translator_double(&calls, &sizes);
 
-        let resultado =
-            super::translate_batches_by_paragraph(vec![parrafo_de_n_oraciones(11)], "es", "en", &doble)
-                .expect("un párrafo de 11 oraciones no debe fallar");
+        let result = super::translate_batches_by_paragraph(
+            vec![paragraph_of_n_sentences(11)],
+            "es",
+            "en",
+            &double,
+        )
+        .expect("un párrafo de 11 oraciones no debe fallar");
 
         assert_eq!(
-            llamadas.get(),
+            calls.get(),
             2,
             "11 oraciones deben partirse en 2 lotes por el tope de 10"
         );
         assert_eq!(
-            *tamanos.borrow(),
+            *sizes.borrow(),
             vec![10, 1],
             "los lotes deben ser de 10 y 1"
         );
         assert_eq!(
-            resultado,
+            result,
             vec![(1..=11)
                 .map(|i| format!("T:Oración número {} de la prueba.", i))
                 .collect::<Vec<_>>()],
@@ -577,23 +588,27 @@ mod tests {
     }
 
     #[test]
-    fn lote_particiona_parrafo_de_20_oraciones_en_2_llamadas() {
-        let llamadas = Cell::new(0usize);
-        let tamanos = RefCell::new(Vec::new());
-        let doble = doble_traduccion(&llamadas, &tamanos);
+    fn batch_splits_paragraph_of_20_sentences_into_2_calls() {
+        let calls = Cell::new(0usize);
+        let sizes = RefCell::new(Vec::new());
+        let double = translator_double(&calls, &sizes);
 
-        let resultado =
-            super::translate_batches_by_paragraph(vec![parrafo_de_n_oraciones(20)], "es", "en", &doble)
-                .expect("un párrafo de 20 oraciones no debe fallar");
+        let result = super::translate_batches_by_paragraph(
+            vec![paragraph_of_n_sentences(20)],
+            "es",
+            "en",
+            &double,
+        )
+        .expect("un párrafo de 20 oraciones no debe fallar");
 
         assert_eq!(
-            llamadas.get(),
+            calls.get(),
             2,
             "20 oraciones deben partirse en 2 lotes exactos de 10"
         );
-        assert_eq!(*tamanos.borrow(), vec![10, 10]);
+        assert_eq!(*sizes.borrow(), vec![10, 10]);
         assert_eq!(
-            resultado,
+            result,
             vec![(1..=20)
                 .map(|i| format!("T:Oración número {} de la prueba.", i))
                 .collect::<Vec<_>>()],
@@ -602,100 +617,94 @@ mod tests {
     }
 
     #[test]
-    fn lote_texto_de_una_oracion_hace_una_llamada() {
-        let llamadas = Cell::new(0usize);
-        let tamanos = RefCell::new(Vec::new());
-        let doble = doble_traduccion(&llamadas, &tamanos);
+    fn batch_text_of_one_sentence_makes_one_call() {
+        let calls = Cell::new(0usize);
+        let sizes = RefCell::new(Vec::new());
+        let double = translator_double(&calls, &sizes);
 
-        let resultado =
-            super::translate_batches_by_paragraph(vec![parrafo_de_n_oraciones(1)], "es", "en", &doble)
-                .expect("un párrafo de 1 oración no debe fallar");
+        let result = super::translate_batches_by_paragraph(
+            vec![paragraph_of_n_sentences(1)],
+            "es",
+            "en",
+            &double,
+        )
+        .expect("un párrafo de 1 oración no debe fallar");
 
-        assert_eq!(llamadas.get(), 1, "1 oración debe suponer 1 llamada");
-        assert_eq!(*tamanos.borrow(), vec![1]);
+        assert_eq!(calls.get(), 1, "1 oración debe suponer 1 llamada");
+        assert_eq!(*sizes.borrow(), vec![1]);
         assert_eq!(
-            resultado,
+            result,
             vec![vec!["T:Oración número 1 de la prueba.".to_string()]]
         );
     }
 
     #[test]
-    fn lote_texto_vacio_no_invoca_al_traductor() {
-        let llamadas = Cell::new(0usize);
-        let tamanos = RefCell::new(Vec::new());
-        let doble = doble_traduccion(&llamadas, &tamanos);
+    fn batch_empty_text_does_not_invoke_translator() {
+        let calls = Cell::new(0usize);
+        let sizes = RefCell::new(Vec::new());
+        let double = translator_double(&calls, &sizes);
 
         // `HierarchicalSegmenter` con `""` devuelve un párrafo con una única
         // oración vacía (comportamiento real observado del segmentador); la
         // oración vacía no debe invocar al traductor y el párrafo conserva su
         // posición para no alterar el reensamblado.
-        let parrafos = HierarchicalSegmenter::default().segment("");
-        let resultado = super::translate_batches_by_paragraph(parrafos, "es", "en", &doble)
+        let paragraphs = HierarchicalSegmenter::default().segment("");
+        let result = super::translate_batches_by_paragraph(paragraphs, "es", "en", &double)
             .expect("un texto vacío no debe fallar");
 
         assert_eq!(
-            llamadas.get(),
+            calls.get(),
             0,
             "un texto vacío no debe invocar al traductor"
         );
-        assert!(
-            tamanos.borrow().is_empty(),
-            "no debe registrarse ningún lote"
-        );
+        assert!(sizes.borrow().is_empty(), "no debe registrarse ningún lote");
         assert_eq!(
-            resultado,
+            result,
             vec![Vec::<String>::new()],
             "el párrafo vacío debe conservar su posición"
         );
     }
 
     #[test]
-    fn lote_parrafo_vacio_preserva_su_posicion_sin_invocar() {
-        let llamadas = Cell::new(0usize);
-        let tamanos = RefCell::new(Vec::new());
-        let doble = doble_traduccion(&llamadas, &tamanos);
+    fn batch_empty_paragraph_preserves_its_position_without_invoking() {
+        let calls = Cell::new(0usize);
+        let sizes = RefCell::new(Vec::new());
+        let double = translator_double(&calls, &sizes);
 
         // Los `"\n\n"` consecutivos producen párrafos vacíos intermedios
         // (comportamiento real de `HierarchicalSegmenter`); no deben invocar al
         // traductor ni alterar el reensamblado posterior.
-        let parrafos = HierarchicalSegmenter::default().segment("Hola.\n\n\n\nAdiós.");
-        let resultado = super::translate_batches_by_paragraph(parrafos, "es", "en", &doble)
+        let paragraphs = HierarchicalSegmenter::default().segment("Hola.\n\n\n\nAdiós.");
+        let result = super::translate_batches_by_paragraph(paragraphs, "es", "en", &double)
             .expect("párrafos con huecos vacíos no deben fallar");
 
+        assert_eq!(calls.get(), 2, "solo los párrafos no vacíos deben invocar");
         assert_eq!(
-            llamadas.get(),
-            2,
-            "solo los párrafos no vacíos deben invocar"
-        );
-        assert_eq!(
-            resultado.len(),
+            result.len(),
             3,
             "los 3 párrafos deben conservar su posición"
         );
-        assert!(
-            resultado[1].is_empty(),
-            "el párrafo vacío no debe traducirse"
-        );
+        assert!(result[1].is_empty(), "el párrafo vacío no debe traducirse");
     }
 
     #[test]
-    fn lote_preserva_orden_de_parrafos_y_oraciones_en_multiparrafo() {
-        let llamadas = Cell::new(0usize);
-        let tamanos = RefCell::new(Vec::new());
-        let doble = doble_traduccion(&llamadas, &tamanos);
+    fn batch_preserves_paragraph_and_sentence_order_in_multi_paragraph() {
+        let calls = Cell::new(0usize);
+        let sizes = RefCell::new(Vec::new());
+        let double = translator_double(&calls, &sizes);
 
-        let resultado = super::translate_batches_by_paragraph(
-            vec![parrafo_de_n_oraciones(5), parrafo_de_n_oraciones(11)],
+        let result = super::translate_batches_by_paragraph(
+            vec![paragraph_of_n_sentences(5), paragraph_of_n_sentences(11)],
             "es",
             "en",
-            &doble,
+            &double,
         )
         .expect("el multipárrafo no debe fallar");
 
-        assert_eq!(llamadas.get(), 3, "5 + 11 oraciones deben suponer 3 lotes");
-        assert_eq!(*tamanos.borrow(), vec![5, 10, 1], "lotes de 5, 10 y 1");
+        assert_eq!(calls.get(), 3, "5 + 11 oraciones deben suponer 3 lotes");
+        assert_eq!(*sizes.borrow(), vec![5, 10, 1], "lotes de 5, 10 y 1");
         assert_eq!(
-            resultado,
+            result,
             vec![
                 (1..=5)
                     .map(|i| format!("T:Oración número {} de la prueba.", i))
@@ -709,53 +718,53 @@ mod tests {
 
         // Reensamblado equivalente al del pipeline: oraciones con `" "` y
         // párrafos con `"\n\n"`.
-        let ensamblado: Vec<String> = resultado.iter().map(|p| p.join(" ")).collect();
-        let texto = ensamblado.join("\n\n");
+        let assembled: Vec<String> = result.iter().map(|p| p.join(" ")).collect();
+        let text = assembled.join("\n\n");
         assert_eq!(
-            texto.matches("\n\n").count(),
+            text.matches("\n\n").count(),
             1,
             "debe haber un separador de párrafos"
         );
         assert!(
-            texto.starts_with("T:Oración número 1 de la prueba. T:Oración número 2"),
+            text.starts_with("T:Oración número 1 de la prueba. T:Oración número 2"),
             "el primer párrafo debe encabezar el texto"
         );
         assert!(
-            texto.ends_with("T:Oración número 11 de la prueba."),
+            text.ends_with("T:Oración número 11 de la prueba."),
             "el último párrafo debe cerrar el texto"
         );
     }
 
     #[test]
-    fn lote_propaga_errores_del_traductor() {
-        let llamadas = Cell::new(0usize);
-        let tamanos = RefCell::new(Vec::new());
+    fn batch_propagates_translator_errors() {
+        let calls = Cell::new(0usize);
+        let sizes = RefCell::new(Vec::new());
 
         // Doble que falla en la segunda llamada: el error debe propagarse sin
         // pánico ni resultado parcial.
-        let doble = |lote: &[String], _source: &str, _target: &str| {
-            llamadas.set(llamadas.get() + 1);
-            tamanos.borrow_mut().push(lote.len());
-            if llamadas.get() == 2 {
+        let double = |batch: &[String], _source: &str, _target: &str| {
+            calls.set(calls.get() + 1);
+            sizes.borrow_mut().push(batch.len());
+            if calls.get() == 2 {
                 Err(anyhow::anyhow!("fallo deliberado de la segunda llamada"))
             } else {
-                Ok(lote
+                Ok(batch
                     .iter()
-                    .map(|oracion| format!("T:{}", oracion))
+                    .map(|sentence| format!("T:{}", sentence))
                     .collect())
             }
         };
 
-        let resultado = super::translate_batches_by_paragraph(
-            vec![parrafo_de_n_oraciones(5), parrafo_de_n_oraciones(11)],
+        let result = super::translate_batches_by_paragraph(
+            vec![paragraph_of_n_sentences(5), paragraph_of_n_sentences(11)],
             "es",
             "en",
-            &doble,
+            &double,
         );
 
-        assert!(resultado.is_err(), "el error del traductor debe propagarse");
+        assert!(result.is_err(), "el error del traductor debe propagarse");
         assert_eq!(
-            llamadas.get(),
+            calls.get(),
             2,
             "debe detenerse en la llamada que falla sin continuar"
         );
@@ -769,12 +778,12 @@ mod tests {
     /// eso esta cobertura del lote se añade aquí).
     #[cfg(feature = "native-translation")]
     #[test]
-    fn translate_parrafo_de_11_oraciones_particiona_sin_perder_texto() {
-        if !modelo_ct2_disponible("opus-mt-es-en") {
+    fn translate_paragraph_of_11_sentences_splits_without_losing_text() {
+        if !ct2_model_available("opus-mt-es-en") {
             eprintln!("[translate] skip: sin modelo CT2 es→en");
             return;
         }
-        let oraciones: Vec<String> = (1..=11)
+        let sentences: Vec<String> = (1..=11)
             .map(|i| {
                 format!(
                     "La reunión del día {} de la semana quedó programada para las diez \
@@ -783,9 +792,9 @@ mod tests {
                 )
             })
             .collect();
-        let texto = oraciones.join(" ");
+        let text = sentences.join(" ");
 
-        let translated = crate::translate(&texto, "es", "en", avi_store::ct2_model_dir("es-en"))
+        let translated = crate::translate(&text, "es", "en", avi_store::ct2_model_dir("es-en"))
             .expect("el párrafo de 11 oraciones debe traducirse");
 
         assert!(
@@ -803,24 +812,24 @@ mod tests {
         // Sin pérdida de contenido: la salida conserva al menos la mitad de las
         // palabras de la entrada (umbral laxo que tolera la paráfrasis del
         // modelo pero dispararía ante la pérdida de oraciones completas).
-        let palabras_entrada = texto.split_whitespace().count();
-        let palabras_salida = translated.split_whitespace().count();
+        let input_words = text.split_whitespace().count();
+        let output_words = translated.split_whitespace().count();
         assert!(
-            palabras_salida * 2 >= palabras_entrada,
+            output_words * 2 >= input_words,
             "la salida perdió contenido: {} palabras de entrada frente a {} de salida",
-            palabras_entrada,
-            palabras_salida
+            input_words,
+            output_words
         );
         // Y conserva la mayoría de las frases de la entrada (11 oraciones →
         // al menos 9 frases en la salida, tolerando fusiones del modelo).
-        let frases_salida = translated
+        let output_phrases = translated
             .split(['.', '!', '?'])
             .filter(|f| !f.trim().is_empty())
             .count();
         assert!(
-            frases_salida >= 9,
+            output_phrases >= 9,
             "la salida debe conservar la mayoría de las 11 oraciones, obtuvo {} frases",
-            frases_salida
+            output_phrases
         );
     }
 
@@ -829,12 +838,12 @@ mod tests {
     /// los dos separadores `"\n\n"` y sin filtrar `</s>`/`<unk>`.
     #[cfg(feature = "native-translation")]
     #[test]
-    fn translate_multiparrafo_largo_preserva_parrafos() {
-        if !modelo_ct2_disponible("opus-mt-es-en") {
+    fn translate_long_multi_paragraph_preserves_paragraphs() {
+        if !ct2_model_available("opus-mt-es-en") {
             eprintln!("[translate] skip: sin modelo CT2 es→en");
             return;
         }
-        let oraciones: Vec<String> = (1..=12)
+        let sentences: Vec<String> = (1..=12)
             .map(|i| {
                 format!(
                     "El equipo técnico del proyecto {} revisó los resultados \
@@ -843,12 +852,12 @@ mod tests {
                 )
             })
             .collect();
-        let texto = format!(
+        let text = format!(
             "Hola, buenos días.\n\n{}\n\nHasta luego.",
-            oraciones.join(" ")
+            sentences.join(" ")
         );
 
-        let translated = crate::translate(&texto, "es", "en", avi_store::ct2_model_dir("es-en"))
+        let translated = crate::translate(&text, "es", "en", avi_store::ct2_model_dir("es-en"))
             .expect("el multipárrafo largo debe traducirse");
 
         assert!(

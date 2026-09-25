@@ -115,7 +115,7 @@ proceso CLI:
 - `avi_translation::translate` (`crates/avi-translation/src/lib.rs`)
   segmenta el texto jerárquicamente con `HierarchicalSegmenter`
   (`avi-core::engine`), agrupa las oraciones de cada párrafo en lotes de a lo
-  sumo `MAX_ORACIONES_POR_LOTE = 10` (`crates/avi-translation/src/lib.rs`)
+  sumo `MAX_SENTENCES_PER_BATCH = 10` (`crates/avi-translation/src/lib.rs`)
   y traduce cada lote con una única llamada a `translate_batch`.
 - `Ct2TranslationEngine` (`crates/avi-translation/src/lib.rs`) envuelve
   `ct2rs::Translator` sobre el modelo Marian/opus-mt convertido a CT2
