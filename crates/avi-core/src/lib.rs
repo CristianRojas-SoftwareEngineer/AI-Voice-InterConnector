@@ -26,7 +26,7 @@ mod tests {
     }
 
     #[test]
-    fn test_texto_corto_devuelve_segmento_unico() {
+    fn test_short_text_returns_single_segment() {
         // Derivado de `test_short_text_returns_single_segment`
         // (`tests/test_translation_segmenter.py`): un texto que cabe entero se
         // devuelve como único párrafo con un único segmento igual al texto.
@@ -36,7 +36,7 @@ mod tests {
     }
 
     #[test]
-    fn test_texto_multi_oracion_se_particiona_en_es() {
+    fn test_multi_sentence_text_splits_in_es() {
         // Derivado de `test_multi_sentence_text_splits_by_sentence_via_pysbd_es`:
         // invariante estructural (el nivel de oración no es `pysbd`): un único
         // párrafo que excede `max_length` se parte en más de un segmento y
@@ -55,7 +55,7 @@ mod tests {
     }
 
     #[test]
-    fn test_texto_multi_oracion_se_particiona_en_en() {
+    fn test_multi_sentence_text_splits_in_en() {
         // Derivado de `test_multi_sentence_text_splits_by_sentence_via_pysbd_en`:
         // misma invariante estructural que el caso en español; el segmentador es
         // agnóstico de idioma (no detecta el idioma del texto de entrada, por lo
@@ -74,7 +74,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preserva_orden_de_parrafos() {
+    fn test_preserves_paragraph_order() {
         // Derivado de `test_preserves_paragraph_order`: un texto con `"\n\n"`
         // produce tantos párrafos como separadores + 1, en el mismo orden, con
         // el primer y último segmento reconocibles por prefijo.
@@ -87,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn test_oracion_larga_cae_a_puntuacion_fuerte() {
+    fn test_long_sentence_falls_back_to_strong_punctuation() {
         // Derivado de `test_exceptionally_long_sentence_falls_back_to_strong_punctuation`:
         // una "oración" sin punto final pero con comas que excede el límite cae
         // al fallback de puntuación fuerte (más de un segmento) sin perder texto.
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn test_caso_extremo_cae_a_tokens_sin_perder_texto() {
+    fn test_extreme_case_falls_back_to_tokenizer_without_losing_text() {
         // Derivado de `test_extreme_case_falls_back_to_tokenizer_without_losing_text`:
         // sin puntuación utilizable, cae al fallback por tokens; cada segmento
         // cumple el límite o es un único token que lo excede, y ninguna palabra
