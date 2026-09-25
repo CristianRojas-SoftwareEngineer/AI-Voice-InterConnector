@@ -280,7 +280,7 @@ default `voice="default"`, default idiomas `"es"`). Tras validar barato en JSON
 plano (audio, formatos, modelos e idiomas), abre una respuesta streaming NDJSON
 (`application/x-ndjson`) emitiendo `{"event":"started", "voice":"..."}`.
 
-Pipeline interno con latidos (`con_latidos`, 500 ms entre `heartbeat` y `AbortHandle`
+Pipeline interno con latidos (`with_heartbeats`, 500 ms entre `heartbeat` y `AbortHandle`
 ante desconexión):
 1. Transcribe en `spawn_blocking` con `state.stt_engine` (fase `"transcribe"`).
 2. Si `source != target`, traduce en `spawn_blocking` con el CT2 residente (`state.ct2_engine`) o `avi_translation::translate` (fase `"translate"`).

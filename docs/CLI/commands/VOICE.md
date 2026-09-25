@@ -115,9 +115,9 @@ handler de clonado.
 3. Falta `audio_b64` → `400` `audio_missing`; no decodifica base64 → `400` `audio_decode_error`.
 4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
 5. Tras superar las validaciones baratas anteriores, el handler abre una respuesta streaming NDJSON (`application/x-ndjson`) emitiendo el evento inicial `{"event":"started", "name": "..."}`.
-6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `con_latidos`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) cada 500 ms (`STREAM_HEARTBEAT`). Si el cliente se desconecta, `AbortHandle` aborta la inferencia.
+6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `with_heartbeats`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) cada 500 ms (`STREAM_HEARTBEAT`). Si el cliente se desconecta, `AbortHandle` aborta la inferencia.
 7. Al completar el clonado, `voice_store.save_reference(name, tmp_qvoice)` persiste `reference.qvoice` (único archivo que el motor consulta; sin copia de los WAV de entrada).
-8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`precalentar_voz`, emitiendo `{"event":"progress", "stage":"warmup"}`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "timbre": ..., "precomputed": true}` + `schema_version`. El calentamiento (~18-40 s) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada». Si el clonado falla, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
+8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`warm_voice_engine`, emitiendo `{"event":"progress", "stage":"warmup"}`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "timbre": ..., "precomputed": true}` + `schema_version`. El calentamiento (~18-40 s) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada». Si el clonado falla, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
 
 El cliente (`clone_via_daemon`) consume el stream mediante `consumir_stream_ndjson` con un timeout de inactividad entre latidos de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`) y un deadline failsafe de 120 s (`STREAM_TOTAL_DEADLINE`), mapeando `reason` a exit code:
 

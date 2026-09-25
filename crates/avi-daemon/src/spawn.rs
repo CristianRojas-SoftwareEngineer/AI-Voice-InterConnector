@@ -42,8 +42,8 @@ pub fn spawn_background(
     }
     cmd.arg("--max-retries").arg(max_retries.to_string());
     cmd.arg("--warm-voice").arg(warm_voice);
-    if let Some(ruta) = ready_file {
-        cmd.arg("--ready-file").arg(ruta);
+    if let Some(path) = ready_file {
+        cmd.arg("--ready-file").arg(path);
     }
 
     #[cfg(windows)]
@@ -103,16 +103,16 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        let salida = std::process::Command::new("tasklist")
+        let output = std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .output();
-        match salida {
+        match output {
             Ok(o) if o.status.success() => {
-                let texto = String::from_utf8_lossy(&o.stdout);
-                texto.contains(&pid.to_string())
+                let text = String::from_utf8_lossy(&o.stdout);
+                text.contains(&pid.to_string())
             }
             _ => false,
         }
@@ -178,8 +178,8 @@ pub fn kill_tree_by_pid(pid: u32) -> bool {
 /// Para el handler de Ctrl+C y verificaciones síncronas; los caminos async
 /// usan su propio bucle con `tokio::time::sleep` + `pid_alive`.
 pub fn wait_for_pid_death(pid: u32, deadline: std::time::Duration) -> bool {
-    let inicio = std::time::Instant::now();
-    while inicio.elapsed() < deadline {
+    let start = std::time::Instant::now();
+    while start.elapsed() < deadline {
         if !pid_alive(pid) {
             return true;
         }

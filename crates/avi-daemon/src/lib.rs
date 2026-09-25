@@ -162,8 +162,8 @@ impl DaemonState {
     }
 
     /// Marca el warmup como fallido conservando la causa (`Warming` → `Failed`).
-    pub fn set_warm_failed(&self, causa: String) {
-        *self.warm.write().unwrap() = WarmState::Failed(causa);
+    pub fn set_warm_failed(&self, cause: String) {
+        *self.warm.write().unwrap() = WarmState::Failed(cause);
     }
 
     /// Instantánea del estado de warmup: `(etiqueta, causa-de-fallo opcional)`.
@@ -203,7 +203,7 @@ const STREAM_HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(5
 /// Límite conocido: el aborto no puede preemptar código síncrono en curso (la
 /// inferencia nativa corre hasta su punto de retorno); lo que sí garantiza es
 /// que su resultado no se usa: ni eventos, ni persistencia, ni warmup derivado.
-async fn con_latidos<T>(
+async fn with_heartbeats<T>(
     tx: &tokio::sync::mpsc::Sender<String>,
     stage: &str,
     handle: tokio::task::JoinHandle<T>,
@@ -338,7 +338,7 @@ async fn synthesize_handler(
         // Reloj de trabajo tomado tras el lock: mide trabajo puro (excluye la
         // espera en cola) para separar la señal de rendimiento de la de
         // corrección; el techo sigue siendo el failsafe `SYNTH_DEADLINE`.
-        let trabajo_t0 = std::time::Instant::now();
+        let work_t0 = std::time::Instant::now();
 
         emit_ndjson(
             &tx,
@@ -514,7 +514,7 @@ async fn synthesize_handler(
                                 // Ms de trabajo puro tras el lock (excluye la
                                 // espera en cola), como señal de rendimiento
                                 // separada de la de corrección.
-                                "work_ms": trabajo_t0.elapsed().as_millis() as u64,
+                                "work_ms": work_t0.elapsed().as_millis() as u64,
                             }),
                         )
                         .await;
@@ -642,8 +642,8 @@ async fn transcribe_handler(
             // sospechoso en una sesión en español, se anexa el campo aditivo
             // `language_warning` al JSON de respuesta. El campo es opcional y
             // aditivo: clientes que lo ignoren no se ven afectados.
-            let (idioma, _ratio) = detect_language(&text);
-            let body = if idioma == "EN-SOSPECHOSO" {
+            let (detected_language, _ratio) = detect_language(&text);
+            let body = if detected_language == "EN-SOSPECHOSO" {
                 with_sv(json!({ "text": text, "language_warning": true }))
             } else {
                 with_sv(json!({ "text": text }))
@@ -904,9 +904,9 @@ async fn voices_clone_handler(
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
     tokio::spawn(async move {
         emit_ndjson(&tx, json!({ "event": "started", "name": name })).await;
-        let nombre = name.clone();
-        let tmp_qvoice_limpiar = tmp_qvoice.clone();
-        let trabajo = tokio::task::spawn_blocking(move || {
+        let event_name = name.clone();
+        let tmp_qvoice_cleanup = tmp_qvoice.clone();
+        let clone_work = tokio::task::spawn_blocking(move || {
             let r = avi_tts::clone_voice(
                 &base_model_dir,
                 &tmp_wav,
@@ -923,11 +923,11 @@ async fn voices_clone_handler(
                 }
             }
         });
-        let (tmp_qvoice, name) = match con_latidos(&tx, "clone", trabajo).await {
+        let (tmp_qvoice, name) = match with_heartbeats(&tx, "clone", clone_work).await {
             None => {
                 // Cliente desconectado: trabajo abortado; limpieza best-effort
                 // del parcial (el hilo bloqueante puede seguir hasta su retorno).
-                let _ = std::fs::remove_file(&tmp_qvoice_limpiar);
+                let _ = std::fs::remove_file(&tmp_qvoice_cleanup);
                 return;
             }
             Some(Ok(Ok(v))) => v,
@@ -936,7 +936,7 @@ async fn voices_clone_handler(
                     &tx,
                     json!({
                         "event": "error",
-                        "name": nombre,
+                        "name": event_name,
                         "reason": "voice_clone_failed",
                         "message": e.to_string(),
                     }),
@@ -949,7 +949,7 @@ async fn voices_clone_handler(
                     &tx,
                     json!({
                         "event": "error",
-                        "name": nombre,
+                        "name": event_name,
                         "reason": "voice_clone_failed",
                         "message": format!("El hilo de clonado falló: {}", join_err),
                     }),
@@ -1109,9 +1109,9 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
     // voz) que antes corrían tras transcribir: solo cambia la precedencia cuando
     // varios fallos coinciden (barato-primero), nunca el código de cada fallo.
     #[cfg(feature = "native-stt")]
-    let necesita_traduccion = source_iso != target_iso;
+    let needs_translation = source_iso != target_iso;
     #[cfg(feature = "native-stt")]
-    let par_traduccion: Option<String> = if !necesita_traduccion {
+    let translation_pair: Option<String> = if !needs_translation {
         None
     } else {
         match (source_iso.as_str(), target_iso.as_str()) {
@@ -1131,22 +1131,22 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
         }
     };
     #[cfg(feature = "native-stt")]
-    if let Some(par) = par_traduccion.as_deref() {
-        let ct2_dir = avi_store::ct2_model_dir(par);
-        if !avi_store::is_ct2_provisioned(par) {
+    if let Some(pair) = translation_pair.as_deref() {
+        let ct2_dir = avi_store::ct2_model_dir(pair);
+        if !avi_store::is_ct2_provisioned(pair) {
             return (
                 StatusCode::NOT_FOUND,
                 Json(with_sv(json!({
                     "status": "error",
                     "reason": "model_missing",
-                    "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_missing_files(par).join(", ")),
+                    "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_missing_files(pair).join(", ")),
                 }))),
             )
                 .into_response();
         }
     }
     #[cfg(all(feature = "native-stt", not(feature = "native-translation")))]
-    if necesita_traduccion {
+    if needs_translation {
         return (
             StatusCode::NOT_IMPLEMENTED,
             Json(with_sv(json!({
@@ -1192,12 +1192,12 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
             emit_ndjson(&tx, json!({ "event": "started", "voice": voice })).await;
             // Transcripción en `spawn_blocking` con latidos (fase pesada: STT
             // sobre el audio completo).
-            let estado_stt = state.clone();
-            let trabajo_stt = tokio::task::spawn_blocking(move || {
+            let stt_state = state.clone();
+            let stt_work = tokio::task::spawn_blocking(move || {
                 let lang = resolve_stt_language(&from_owned);
-                estado_stt.stt_engine.transcribe(&pcm, Some(lang))
+                stt_state.stt_engine.transcribe(&pcm, Some(lang))
             });
-            let transcribed = match con_latidos(&tx, "transcribe", trabajo_stt).await {
+            let transcribed = match with_heartbeats(&tx, "transcribe", stt_work).await {
                 None => return,
                 Some(Ok(Ok(t))) => t,
                 Some(Ok(Err(e))) => {
@@ -1259,27 +1259,27 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                 }
                 #[cfg(feature = "native-translation")]
                 {
-                    let par = par_traduccion
+                    let pair = translation_pair
                         .clone()
                         .expect("la validación barata garantizó el par");
-                    let dir = avi_store::ct2_model_dir(&par);
-                    let estado_ct2 = state.clone();
-                    let texto = transcribed.clone();
-                    let origen = source_iso.clone();
-                    let destino = target_iso.clone();
-                    let trabajo_ct2 = tokio::task::spawn_blocking(move || {
-                        if let Some(map) = estado_ct2.ct2_engine.as_ref() {
-                            if let Some(engine) = map.get(&par) {
+                    let dir = avi_store::ct2_model_dir(&pair);
+                    let ct2_state = state.clone();
+                    let text = transcribed.clone();
+                    let source = source_iso.clone();
+                    let target = target_iso.clone();
+                    let translation_work = tokio::task::spawn_blocking(move || {
+                        if let Some(map) = ct2_state.ct2_engine.as_ref() {
+                            if let Some(engine) = map.get(&pair) {
                                 use avi_core::engine::TranslationEngine;
-                                engine.translate(&texto, &origen, &destino)
+                                engine.translate(&text, &source, &target)
                             } else {
-                                avi_translation::translate(&texto, &origen, &destino, &dir)
+                                avi_translation::translate(&text, &source, &target, &dir)
                             }
                         } else {
-                            avi_translation::translate(&texto, &origen, &destino, &dir)
+                            avi_translation::translate(&text, &source, &target, &dir)
                         }
                     });
-                    match con_latidos(&tx, "translate", trabajo_ct2).await {
+                    match with_heartbeats(&tx, "translate", translation_work).await {
                         None => return,
                         Some(Ok(Ok(t))) => t,
                         Some(Ok(Err(e))) => {
@@ -1322,26 +1322,26 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
             let _lock = state.synthesis_lock.lock().await;
             // Reloj de trabajo tomado tras el lock: mide solo la fase de
             // síntesis, no transcribe/translate.
-            let trabajo_t0 = std::time::Instant::now();
+            let work_t0 = std::time::Instant::now();
             let profile = VoiceProfile {
                 name: voice.clone(),
                 qvoice_path: state.voice_store.find_reference(&voice),
             };
             let tmp =
                 std::env::temp_dir().join(format!("avi_daemon_dub_{}.wav", std::process::id()));
-            let texto_synth = final_text.clone();
-            let estado_synth = state.clone();
-            let opciones_synth = GenerationOptions::with_temperature(temperature);
+            let text_synth = final_text.clone();
+            let synth_state = state.clone();
+            let synth_options = GenerationOptions::with_temperature(temperature);
             let mut synth_handle = tokio::task::spawn_blocking(move || {
-                estado_synth.tts_engine.synthesize_with_options(
-                    &texto_synth,
+                synth_state.tts_engine.synthesize_with_options(
+                    &text_synth,
                     &profile,
-                    &opciones_synth,
+                    &synth_options,
                     Some(&tmp),
                 )
             });
-            let cota_fase = tokio::time::sleep(SYNTH_DEADLINE);
-            tokio::pin!(cota_fase);
+            let phase_deadline = tokio::time::sleep(SYNTH_DEADLINE);
+            tokio::pin!(phase_deadline);
             let synth_res = loop {
                 tokio::select! {
                     _ = tokio::time::sleep(STREAM_HEARTBEAT) => {
@@ -1352,7 +1352,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                         return;
                     }
                     res = &mut synth_handle => break Some(res),
-                    _ = &mut cota_fase => {
+                    _ = &mut phase_deadline => {
                         synth_handle.abort();
                         break None;
                     }
@@ -1389,7 +1389,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                                     "voice": voice,
                                     // Ms de la fase de síntesis tras el lock,
                                     // como señal de rendimiento independiente.
-                                    "work_ms": trabajo_t0.elapsed().as_millis() as u64,
+                                    "work_ms": work_t0.elapsed().as_millis() as u64,
                                 }),
                             )
                             .await;
@@ -1524,7 +1524,7 @@ const SYNTH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Pre-calentamiento (warmup) del motor TTS parametrizado por voz.
 ///
-/// Precarga la voz `voz` en el motor residente sintetizando un testigo
+/// Precarga la voz `voice` en el motor residente sintetizando un testigo
 /// desechable para que el modelo ya esté caliente. Lo usan tanto el arranque
 /// (voz configurable vía `--warm-voice`, por defecto `default`) como el
 /// warm-on-clone (voz recién clonada). Corre en segundo plano: es una
@@ -1548,18 +1548,18 @@ const SYNTH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
 /// (`ct2rs::Translator`) carga `model.bin` en `DaemonState::new` y no requiere
 /// warmup sintético; la primera traducción paga frío si el residente no estaba
 /// provisionado, sin impacto en `warm` (`Warming`→`Warm` solo refleja TTS).
-pub fn warm_voice_engine(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
+pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()> {
     let profile = VoiceProfile {
-        name: voz.to_string(),
-        qvoice_path: state.voice_store.find_reference(voz),
+        name: voice.to_string(),
+        qvoice_path: state.voice_store.find_reference(voice),
     };
     let _lock = state.synthesis_lock.blocking_lock();
     // Reloj de trabajo tomado tras el lock: mide warmup puro, excluye la espera
     // en cola contra tráfico vivo; el techo sigue siendo el failsafe
     // `WARMUP_DEADLINE` del llamante.
-    let trabajo_t0 = std::time::Instant::now();
+    let work_t0 = std::time::Instant::now();
     let tmp = std::env::temp_dir().join(format!("avi_daemon_warmup_{}.wav", std::process::id()));
-    let resultado = state
+    let result = state
         .tts_engine
         .synthesize_with_options(
             "Calentamiento del daemon.",
@@ -1571,11 +1571,11 @@ pub fn warm_voice_engine(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&tmp);
     eprintln!(
         "[daemon] warm_voice_engine '{}': {:.1} s tras locks (éxito={}).",
-        voz,
-        trabajo_t0.elapsed().as_secs_f64(),
-        resultado.is_ok()
+        voice,
+        work_t0.elapsed().as_secs_f64(),
+        result.is_ok()
     );
-    resultado.map(|_| ())
+    result.map(|_| ())
 }
 
 /// Nombre de la env interna que transporta la ruta del fichero ready dentro
@@ -1588,24 +1588,24 @@ pub const READY_FILE_ENV: &str = "AVI_READY_FILE";
 /// (temporal hermano + rename). Best-effort con diagnóstico: un fallo de
 /// señalización no derriba el daemon (el evento en stderr sigue valiendo
 /// como diagnóstico redundante).
-fn write_ready_file(ruta: &std::path::Path, addr: &SocketAddr, warm: &str) {
-    let tmp = ruta.with_extension("ready.tmp");
+fn write_ready_file(path: &std::path::Path, addr: &SocketAddr, warm: &str) {
+    let tmp = path.with_extension("ready.tmp");
     // Recuperación de reclamo: además de `addr`/`warm`, el hijo publica
     // su propio PID. Con puertos efímeros, `addr` y PID vivían solo en el
     // pidfile; si el padre cae sin limpiarlo, el ready es la única pista para
     // reclamar el árbol huérfano por PID.
-    let contenido = format!("addr={}\nwarm={}\npid={}\n", addr, warm, std::process::id());
-    if std::fs::write(&tmp, contenido).is_err() {
+    let content = format!("addr={}\nwarm={}\npid={}\n", addr, warm, std::process::id());
+    if std::fs::write(&tmp, content).is_err() {
         eprintln!(
             "aviso: no se pudo escribir el fichero ready {}",
-            ruta.display()
+            path.display()
         );
         return;
     }
-    if std::fs::rename(&tmp, ruta).is_err() {
+    if std::fs::rename(&tmp, path).is_err() {
         eprintln!(
             "aviso: no se pudo publicar el fichero ready {}",
-            ruta.display()
+            path.display()
         );
     }
 }
@@ -1652,10 +1652,10 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     // (`--ready-file`), publicar la `addr` real tras el bind y el estado
     // warm tras el warmup. Escritura atómica; el evento en stderr se
     // conserva como diagnóstico redundante. Sin flag no se escribe nada.
-    let fichero_ready: Option<std::path::PathBuf> =
+    let ready_file: Option<std::path::PathBuf> =
         std::env::var_os(READY_FILE_ENV).map(std::path::PathBuf::from);
-    if let Some(ref ruta) = fichero_ready {
-        write_ready_file(ruta, &bound, "warming");
+    if let Some(ref path) = ready_file {
+        write_ready_file(path, &bound, "warming");
     }
 
     // Warmup en segundo plano: `synthesize` es síncrono, por lo que corre en
@@ -1673,25 +1673,26 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     // redundante (stdout queda reservado al anuncio de ligado).
     // Timeout = bug a diagnosticar, no flake a reintentar.
     let warm_state = state.clone();
-    let ready_ok = fichero_ready.clone();
-    let handle = tokio::task::spawn_blocking(move || match warm_voice_engine(&warm_state, &warm_voice) {
-        Ok(()) => {
-            warm_state.set_warm();
-            eprintln!("avi-daemon-ready warm=warm addr={}", bound);
-            if let Some(ruta) = ready_ok.as_ref() {
-                write_ready_file(ruta, &bound, "warm");
+    let ready_ok = ready_file.clone();
+    let handle =
+        tokio::task::spawn_blocking(move || match warm_voice_engine(&warm_state, &warm_voice) {
+            Ok(()) => {
+                warm_state.set_warm();
+                eprintln!("avi-daemon-ready warm=warm addr={}", bound);
+                if let Some(path) = ready_ok.as_ref() {
+                    write_ready_file(path, &bound, "warm");
+                }
             }
-        }
-        Err(e) => {
-            warm_state.set_warm_failed(e.to_string());
-            eprintln!("avi-daemon-ready warm=warm_failed addr={}", bound);
-            if let Some(ruta) = ready_ok.as_ref() {
-                write_ready_file(ruta, &bound, "warm_failed");
+            Err(e) => {
+                warm_state.set_warm_failed(e.to_string());
+                eprintln!("avi-daemon-ready warm=warm_failed addr={}", bound);
+                if let Some(path) = ready_ok.as_ref() {
+                    write_ready_file(path, &bound, "warm_failed");
+                }
             }
-        }
-    });
+        });
     let timeout_state = state.clone();
-    let ready_deadline = fichero_ready.clone();
+    let ready_deadline = ready_file.clone();
     tokio::spawn(async move {
         if tokio::time::timeout(WARMUP_DEADLINE, handle).await.is_err() {
             timeout_state.set_warm_failed(format!(
@@ -1703,8 +1704,8 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
                 "avi-daemon-ready warm=warm_failed addr={} causa=deadline",
                 bound
             );
-            if let Some(ruta) = ready_deadline.as_ref() {
-                write_ready_file(ruta, &bound, "warm_failed");
+            if let Some(path) = ready_deadline.as_ref() {
+                write_ready_file(path, &bound, "warm_failed");
             }
             timeout_state.tts_engine.shutdown();
         }
@@ -1760,11 +1761,11 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
 
 /// Umbral de tiempo mínimo de ejecución antes de considerar que una iteración
 /// del daemon realizó progreso, para el watchdog del bucle de supervisión.
-const SUPERVISION_PROGRESO_MIN: std::time::Duration = std::time::Duration::from_secs(10);
+const SUPERVISION_PROGRESS_MIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Número máximo de caídas rápidas consecutivas (sin progreso) antes de abortar
 /// el bucle de supervisión con fallo explícito.
-const SUPERVISION_RACHA_MAX: u32 = 3;
+const SUPERVISION_STREAK_MAX: u32 = 3;
 
 /// Ejecuta el daemon con supervisión configurable de reinicios.
 ///
@@ -1789,17 +1790,17 @@ pub async fn run_supervised(
         return run_daemon_server(addr, warm_voice).await;
     }
     // Watchdog del bucle de supervisión (acotado a este bucle, primitivas
-    // portables `Instant`): una vida del daemon menor a `SUPERVISION_PROGRESO_MIN`
-    // cuenta como caída rápida (sin progreso); `SUPERVISION_RACHA_MAX` caídas
+    // portables `Instant`): una vida del daemon menor a `SUPERVISION_PROGRESS_MIN`
+    // cuenta como caída rápida (sin progreso); `SUPERVISION_STREAK_MAX` caídas
     // rápidas seguidas abortan con fallo ruidoso en vez de quemar `max_retries`
     // en un crash-loop silencioso. Sin falsos positivos en el camino feliz: el
     // apagado graceful retorna `Ok` antes de contar, y una vida larga resetea
     // la racha (la patología de cola de los tests la corrige el reloj tras
     // locks del harness, no este watchdog).
-    let mut racha_rapida: u32 = 0;
+    let mut fast_streak: u32 = 0;
     let mut retries: u32 = 0;
     loop {
-        let inicio_iteracion = std::time::Instant::now();
+        let iteration_start = std::time::Instant::now();
         match run_daemon_server(addr, warm_voice.clone()).await {
             Ok(()) => {
                 // Apagado graceful (stop) — no reintentar
@@ -1809,16 +1810,16 @@ pub async fn run_supervised(
                 if retries >= max_retries {
                     return Err(e);
                 }
-                if inicio_iteracion.elapsed() < SUPERVISION_PROGRESO_MIN {
-                    racha_rapida += 1;
+                if iteration_start.elapsed() < SUPERVISION_PROGRESS_MIN {
+                    fast_streak += 1;
                 } else {
-                    racha_rapida = 0;
+                    fast_streak = 0;
                 }
-                if racha_rapida >= SUPERVISION_RACHA_MAX {
+                if fast_streak >= SUPERVISION_STREAK_MAX {
                     return Err(anyhow::anyhow!(
                         "Bucle de supervisión sin progreso: {} caídas con vida <{} s (último: {}). Revisa la causa raíz en vez de reintentar.",
-                        racha_rapida,
-                        SUPERVISION_PROGRESO_MIN.as_secs(),
+                        fast_streak,
+                        SUPERVISION_PROGRESS_MIN.as_secs(),
                         e
                     ));
                 }
@@ -1836,8 +1837,8 @@ pub async fn run_supervised(
                 // antes del siguiente `bind`. Solo árbol propio previo (vía
                 // `Drop` preciso, sin imagen global ni otra instancia sana).
                 {
-                    let inicio = std::time::Instant::now();
-                    let limite = std::time::Duration::from_secs(5);
+                    let start = std::time::Instant::now();
+                    let limit = std::time::Duration::from_secs(5);
                     loop {
                         if std::net::TcpListener::bind(addr).is_ok() {
                             // Puerto libre: el test-listener se cierra al dropearse.
@@ -1847,7 +1848,7 @@ pub async fn run_supervised(
                             );
                             break;
                         }
-                        if inicio.elapsed() >= limite {
+                        if start.elapsed() >= limit {
                             eprintln!(
                                 "Daemon: el puerto {} sigue ocupado tras la caída (deadline 5 s); se reintenta igualmente ({}/{})",
                                 addr, retries, max_retries
@@ -1868,7 +1869,7 @@ mod tests {
 
     /// `Warming` → `Warm`: la etiqueta cambia y no hay causa de error.
     #[test]
-    fn warm_state_transiciona_a_warm() {
+    fn warm_state_transitions_to_warm() {
         let warm = std::sync::RwLock::new(WarmState::Warming);
         assert_eq!(warm.read().unwrap().label(), "warming");
         *warm.write().unwrap() = WarmState::Warm;
@@ -1878,7 +1879,7 @@ mod tests {
 
     /// `Warming` → `Failed(causa)`: la etiqueta es `warm_failed` y conserva la causa.
     #[test]
-    fn warm_state_transiciona_a_failed_con_causa() {
+    fn warm_state_transitions_to_failed_with_cause() {
         let warm = std::sync::RwLock::new(WarmState::Warming);
         *warm.write().unwrap() = WarmState::Failed("motor caído".to_string());
         let guard = warm.read().unwrap();
@@ -1888,7 +1889,7 @@ mod tests {
 
     /// `health_body` en warming: `status:ready`, sin `warm_error`, tolera aditivas.
     #[test]
-    fn health_body_warming_sin_warm_error() {
+    fn health_body_warming_without_warm_error() {
         let body = health_body("warming", None);
         assert_eq!(body["status"], "ready");
         assert!(["warming", "warm", "warm_failed"].contains(&body["warm"].as_str().unwrap()));
@@ -1901,7 +1902,7 @@ mod tests {
 
     /// `health_body` en fallo: incluye `warm_error` con la causa, tolera aditivas.
     #[test]
-    fn health_body_failed_incluye_warm_error() {
+    fn health_body_failed_includes_warm_error() {
         let body = health_body("warm_failed", Some("boom".to_string()));
         assert!(["warming", "warm", "warm_failed"].contains(&body["warm"].as_str().unwrap()));
         assert_eq!(body["warm"], "warm_failed");
@@ -1912,7 +1913,7 @@ mod tests {
 
     /// Router expone `/health` y endpoints `/translate`, `/voices/clone`, `/dub` (7 rutas públicas)
     #[test]
-    fn build_router_expone_nuevos_endpoints() {
+    fn build_router_exposes_new_endpoints() {
         let state = Arc::new(DaemonState::new().expect("daemon state"));
         // El router debe construirse sin panic con el estado del daemon; la
         // existencia de cada ruta se ejercita en los tests de handlers (p. ej.
@@ -1921,13 +1922,13 @@ mod tests {
         let _router = build_router_with_state(state);
     }
 
-    /// `con_latidos` entrega el resultado del trabajo inmediato (sin
+    /// `with_heartbeats` entrega el resultado del trabajo inmediato (sin
     /// exigir latidos cuando el trabajo es más rápido que el intervalo).
     #[tokio::test]
-    async fn con_latidos_entrega_resultado_inmediato() {
+    async fn with_heartbeats_delivers_immediate_result() {
         let (tx, _rx) = tokio::sync::mpsc::channel::<String>(32);
-        let trabajo = tokio::task::spawn_blocking(|| 42u32);
-        let res = con_latidos(&tx, "test", trabajo)
+        let work = tokio::task::spawn_blocking(|| 42u32);
+        let res = with_heartbeats(&tx, "test", work)
             .await
             .expect("sin desconexión hay resultado");
         assert_eq!(res.expect("join ok"), 42);
@@ -1937,20 +1938,20 @@ mod tests {
     /// y se retorna `None` sin esperar su completitud (sin reloj ajustado: el
     /// trabajo dormiría 30 s y el retorno debe llegar muy antes).
     #[tokio::test]
-    async fn con_latidos_aborta_ante_desconexion() {
+    async fn with_heartbeats_aborts_on_disconnect() {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
         drop(rx);
-        let trabajo = tokio::task::spawn_blocking(|| {
+        let work = tokio::task::spawn_blocking(|| {
             std::thread::sleep(std::time::Duration::from_secs(2));
             1u32
         });
-        let inicio = std::time::Instant::now();
-        let res = con_latidos(&tx, "test", trabajo).await;
+        let start = std::time::Instant::now();
+        let res = with_heartbeats(&tx, "test", work).await;
         assert!(res.is_none(), "desconectado debe abortar con None");
         assert!(
-            inicio.elapsed() < std::time::Duration::from_secs(10),
+            start.elapsed() < std::time::Duration::from_secs(10),
             "el aborto no espera al trabajo: {:?}",
-            inicio.elapsed()
+            start.elapsed()
         );
     }
 
@@ -1958,26 +1959,29 @@ mod tests {
     /// con la etapa (cota holgada: intervalo 500 ms; el margen absorbe
     /// planificación lenta sin falsos positivos).
     #[tokio::test]
-    async fn con_latidos_emite_latido_durante_trabajo_largo() {
+    async fn with_heartbeats_emits_heartbeat_during_long_work() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
-        let trabajo = tokio::task::spawn_blocking(|| {
+        let work = tokio::task::spawn_blocking(|| {
             std::thread::sleep(std::time::Duration::from_millis(800));
             "hecho"
         });
-        let res = con_latidos(&tx, "etapa_test", trabajo)
+        let res = with_heartbeats(&tx, "etapa_test", work)
             .await
             .expect("sin desconexión hay resultado");
         assert_eq!(res.expect("join ok"), "hecho");
         drop(tx);
-        let mut latidos = 0;
-        while let Some(linea) = rx.recv().await {
-            let ev: Value = serde_json::from_str(&linea).expect("cada evento es JSON");
+        let mut heartbeats = 0;
+        while let Some(line) = rx.recv().await {
+            let ev: Value = serde_json::from_str(&line).expect("cada evento es JSON");
             if ev["event"] == "heartbeat" {
                 assert_eq!(ev["stage"], "etapa_test");
-                latidos += 1;
+                heartbeats += 1;
             }
         }
-        assert!(latidos >= 1, "trabajo de 2 s debe latir al menos una vez");
+        assert!(
+            heartbeats >= 1,
+            "trabajo de 2 s debe latir al menos una vez"
+        );
     }
 
     /// Dub handler con audio_missing retorna error coherente sin panic

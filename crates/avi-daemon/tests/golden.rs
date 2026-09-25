@@ -136,7 +136,7 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 /// Modelos reales de STT (Parakeet TDT v3 int8: 4 archivos) presentes. Los snapshots
 /// bajo `hf_cache_dir()` están gitignoreados: en un checkout limpio (CI) estos tests
 /// dorados se saltan con aviso; en desarrollo corren completos.
-fn modelos_presentes() -> bool {
+fn models_present() -> bool {
     #[cfg(not(feature = "native-stt"))]
     return false;
     #[cfg(feature = "native-stt")]
@@ -144,8 +144,8 @@ fn modelos_presentes() -> bool {
 }
 
 #[tokio::test]
-async fn health_coincide_con_fixture() {
-    if !modelos_presentes() {
+async fn health_matches_fixture() {
+    if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
@@ -161,8 +161,8 @@ async fn health_coincide_con_fixture() {
 }
 
 #[tokio::test]
-async fn transcribe_coincide_con_fixture() {
-    if !modelos_presentes() {
+async fn transcribe_matches_fixture() {
+    if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
@@ -175,8 +175,8 @@ async fn transcribe_coincide_con_fixture() {
 }
 
 #[tokio::test]
-async fn synthesize_texto_vacio_es_error_de_contrato() {
-    if !modelos_presentes() {
+async fn synthesize_empty_text_is_contract_error() {
+    if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
@@ -189,8 +189,8 @@ async fn synthesize_texto_vacio_es_error_de_contrato() {
 /// Compatibilidad hacia atrás: un payload antiguo sin los campos opcionales de
 /// idioma y temperatura se comporta igual que antes (mismo error de contrato).
 #[tokio::test]
-async fn synthesize_payload_antiguo_sin_campos_nuevos() {
-    if !modelos_presentes() {
+async fn synthesize_old_payload_without_new_fields() {
+    if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
@@ -207,8 +207,8 @@ async fn synthesize_payload_antiguo_sin_campos_nuevos() {
 /// Temperatura fuera de rango (`0`): el stream NDJSON termina en error con
 /// motivo `usage_error`, sin llegar a la síntesis.
 #[tokio::test]
-async fn synthesize_temperatura_invalida_es_error_de_uso() {
-    if !modelos_presentes() {
+async fn synthesize_invalid_temperature_is_usage_error() {
+    if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
@@ -219,12 +219,12 @@ async fn synthesize_temperatura_invalida_es_error_de_uso() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
-    let eventos: Vec<Value> = text
+    let events: Vec<Value> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
         .collect();
-    let final_event = eventos.last().expect("debe haber al menos un evento");
+    let final_event = events.last().expect("debe haber al menos un evento");
     assert_eq!(final_event["event"], Value::String("error".to_string()));
     assert_eq!(
         final_event["reason"],
@@ -233,8 +233,8 @@ async fn synthesize_temperatura_invalida_es_error_de_uso() {
 }
 
 #[tokio::test]
-async fn synthesize_emite_stream_ndjson_de_contrato() {
-    if !modelos_presentes() {
+async fn synthesize_emits_contract_ndjson_stream() {
+    if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
@@ -247,15 +247,15 @@ async fn synthesize_emite_stream_ndjson_de_contrato() {
 
     // El cuerpo es NDJSON: una línea JSON por evento (start/progress/result|error).
     let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
-    let eventos: Vec<Value> = text
+    let events: Vec<Value> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
         .collect();
-    assert!(!eventos.is_empty(), "debe haber al menos un evento");
+    assert!(!events.is_empty(), "debe haber al menos un evento");
 
     // Invariante de envelope: schema_version=3 en todo evento.
-    for e in &eventos {
+    for e in &events {
         assert_eq!(
             e["schema_version"],
             Value::String("3".to_string()),
@@ -265,7 +265,7 @@ async fn synthesize_emite_stream_ndjson_de_contrato() {
 
     // Invariante: el primer evento es `start`.
     assert_eq!(
-        eventos.first().unwrap()["event"],
+        events.first().unwrap()["event"],
         Value::String("start".to_string()),
         "el stream NDJSON debe comenzar con `start`"
     );
@@ -275,20 +275,20 @@ async fn synthesize_emite_stream_ndjson_de_contrato() {
     // (crates/avi-daemon), por lo que el evento final esperado es `error` con
     // `reason` `model_missing` — rama aceptada en este entorno de test. La
     // síntesis real con audio verdadero se verifica por separado contra el motor.
-    let final_event = eventos.last().unwrap();
-    let invariante = match final_event["event"].as_str() {
+    let final_event = events.last().unwrap();
+    let invariant = match final_event["event"].as_str() {
         Some("result") => !final_event["audio_b64"].as_str().unwrap_or("").is_empty(),
         Some("error") => final_event.get("reason").is_some(),
         _ => false,
     };
-    assert!(invariante, "evento final insuficiente: {:?}", final_event);
+    assert!(invariant, "evento final insuficiente: {:?}", final_event);
 }
 
 /// Audio largo (~22 s, concatenación de 4 corpus): Parakeet no necesita chunking VAD
 /// (RTF ~0.11 lineal); se transcribe de una sola pasada y se verifica el texto unido.
 #[tokio::test]
-async fn transcribe_audio_largo_transcribe_de_una_pasada() {
-    if !modelos_presentes() {
+async fn transcribe_long_audio_transcribes_in_one_pass() {
+    if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
@@ -330,11 +330,11 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
     // unido aunque el resto del audio (watermark/sintesis/respuestas) sí se
     // transcribe en español. "voz" no se exige estricta: "esténtesis" puede
     // dropearla.
-    for frase in ["marca de agua", "usuario", "espajo"] {
+    for phrase in ["marca de agua", "usuario", "espajo"] {
         assert!(
-            norm.contains(frase),
+            norm.contains(phrase),
             "el texto unido debe contener {:?}: {text:?}",
-            frase
+            phrase
         );
     }
 }
@@ -348,7 +348,7 @@ async fn transcribe_audio_largo_transcribe_de_una_pasada() {
 /// retorna `model_missing` en vez de clonar.
 #[tokio::test]
 async fn voices_clone_daemon_precomputed_true() {
-    if !modelos_presentes() {
+    if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
@@ -374,14 +374,14 @@ async fn voices_clone_daemon_precomputed_true() {
     assert_eq!(status, StatusCode::OK);
     // El cuerpo es NDJSON: una línea JSON por evento.
     let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
-    let eventos: Vec<Value> = text
+    let events: Vec<Value> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
         .collect();
-    assert!(!eventos.is_empty(), "debe haber al menos un evento");
+    assert!(!events.is_empty(), "debe haber al menos un evento");
     // Invariante de envelope: schema_version=3 en todo evento.
-    for e in &eventos {
+    for e in &events {
         assert_eq!(
             e["schema_version"],
             Value::String("3".to_string()),
@@ -390,16 +390,13 @@ async fn voices_clone_daemon_precomputed_true() {
     }
     // Aceptación inmediata: el primer evento es `started` con el nombre.
     assert_eq!(
-        eventos.first().unwrap()["event"],
+        events.first().unwrap()["event"],
         Value::String("started".to_string()),
         "el stream debe comenzar con `started`"
     );
-    assert_eq!(
-        eventos.first().unwrap()["name"],
-        Value::String(name.clone())
-    );
+    assert_eq!(events.first().unwrap()["name"], Value::String(name.clone()));
     // Evento final `result` con la forma contractual actual (`precomputed: true`).
-    let final_event = eventos.last().unwrap();
+    let final_event = events.last().unwrap();
     assert_eq!(
         final_event["event"],
         Value::String("result".to_string()),
@@ -409,8 +406,8 @@ async fn voices_clone_daemon_precomputed_true() {
     assert_eq!(final_event["name"], Value::String(name.clone()));
     assert_eq!(final_event["precomputed"], Value::Bool(true));
     // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
-    if eventos.len() > 2 {
-        for e in &eventos[1..eventos.len() - 1] {
+    if events.len() > 2 {
+        for e in &events[1..events.len() - 1] {
             let ev = e["event"].as_str().unwrap_or("");
             assert!(
                 ev == "heartbeat" || ev == "progress",
@@ -428,15 +425,15 @@ async fn voices_clone_daemon_precomputed_true() {
 /// predicado que usa la guarda (`find_reference(...).is_some()`): arrancar el
 /// servidor real con voz válida bloquearía sirviendo, así que no se invoca.
 #[tokio::test]
-async fn warm_voice_fail_fast_y_aceptacion() {
-    if !modelos_presentes() {
+async fn warm_voice_fail_fast_and_acceptance() {
+    if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
         return;
     }
     // Fail-fast: voz inexistente → Err antes del bind.
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let voz_inexistente = format!("warm_inexistente_{}", std::process::id());
-    let res = avi_daemon::run_daemon_server(addr, voz_inexistente.clone()).await;
+    let nonexistent_voice = format!("warm_inexistente_{}", std::process::id());
+    let res = avi_daemon::run_daemon_server(addr, nonexistent_voice.clone()).await;
     let err = res.expect_err("una --warm-voice inexistente debe abortar el arranque");
     assert!(
         err.to_string().contains("--warm-voice"),
@@ -463,7 +460,7 @@ async fn warm_voice_fail_fast_y_aceptacion() {
 /// La guarda de par corre antes de tocar el modelo: sin CT2 ni TCP.
 #[tokio::test]
 #[allow(unreachable_code)]
-async fn translate_par_no_soportado_devuelve_400() {
+async fn translate_unsupported_pair_returns_400() {
     #[cfg(not(feature = "native-translation"))]
     {
         eprintln!("[translate] skip: sin feature native-translation");
@@ -486,7 +483,7 @@ async fn translate_par_no_soportado_devuelve_400() {
 /// passthrough con texto intacto aunque el CLI ya rechace ese token.
 #[tokio::test]
 #[allow(unreachable_code)]
-async fn translate_es_latam_passthrough_ipc_devuelve_texto_intacto() {
+async fn translate_es_latam_passthrough_ipc_returns_intact_text() {
     #[cfg(not(feature = "native-translation"))]
     {
         eprintln!("[translate] skip: sin feature native-translation");
