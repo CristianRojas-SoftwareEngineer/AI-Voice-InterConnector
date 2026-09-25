@@ -312,8 +312,8 @@ impl AudioService {
         // de captura sin bloquear indefinidamente en la lectura de stdin.
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
-            let mut linea = String::new();
-            let _ = std::io::stdin().read_line(&mut linea);
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
             let _ = tx.send(());
         });
 
@@ -502,18 +502,18 @@ mod tests {
     }
 
     #[test]
-    fn test_to_mono_downmix_estereo() {
+    fn test_to_mono_downmix_stereo() {
         let input = vec![1.0, 0.0, 0.5, 0.5, 0.0, 1.0];
         let mono = crate::to_mono(&input, 2);
         assert_eq!(mono, vec![0.5, 0.5, 0.5]);
 
-        let mono_directo = vec![0.1, 0.2, 0.3];
-        let resultado = crate::to_mono(&mono_directo, 1);
-        assert_eq!(resultado, mono_directo);
+        let direct_mono = vec![0.1, 0.2, 0.3];
+        let result = crate::to_mono(&direct_mono, 1);
+        assert_eq!(result, direct_mono);
     }
 
     #[test]
-    fn test_f32_to_i16_escala_y_clamp() {
+    fn test_f32_to_i16_scale_and_clamp() {
         let input = vec![0.0, 0.5, -0.5, 1.5, -2.0];
         let output = crate::f32_to_i16(&input);
         assert_eq!(output[0], (0.0f32 * 32767.0) as i16);
@@ -524,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_wav_16k_mono_pcm_normaliza_wav_sintetico() {
+    fn test_load_wav_16k_mono_pcm_normalizes_synthetic_wav() {
         // WAV sintético en memoria: 48 kHz estéreo, para verificar que
         // `load_wav_16k_mono_pcm` lo normaliza a 16 kHz mono.
         let spec = hound::WavSpec {
@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_wav_24k_mono_pcm_sobremuestrea_referencia_16k() {
+    fn test_load_wav_24k_mono_pcm_oversamples_reference_16k() {
         // WAV sintético en memoria: 16 kHz mono (el caso real de la referencia de
         // clonado), para verificar que `load_wav_24k_mono_pcm` lo sube a 24 kHz.
         let spec = hound::WavSpec {
@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn test_round_trip_conversion_48k_estereo_a_16k_mono_i16() {
+    fn test_round_trip_conversion_48k_stereo_to_16k_mono_i16() {
         // Onda de rampa determinista intercalada en 2 canales @ 48kHz
         let input: Vec<f32> = (0..300)
             .map(|i| ((i % 100) as f32 / 100.0) * 2.0 - 1.0)
@@ -599,12 +599,12 @@ mod tests {
         let resampled = crate::resample_linear(&mono, 48000, 16000);
         let pcm = crate::f32_to_i16(&resampled);
 
-        let esperado = mono.len() / 3;
+        let expected = mono.len() / 3;
         assert!(
-            (pcm.len() as i64 - esperado as i64).abs() <= 1,
+            (pcm.len() as i64 - expected as i64).abs() <= 1,
             "longitud inesperada: {} vs ~{}",
             pcm.len(),
-            esperado
+            expected
         );
     }
 }
