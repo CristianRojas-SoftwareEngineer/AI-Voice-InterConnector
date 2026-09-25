@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.21.0 — 2026-09-23](#0210--2026-09-23)
 - [0.20.12 — 2026-09-23](#02012--2026-09-23)
 - [0.20.11 — 2026-09-23](#02011--2026-09-23)
@@ -90,42 +91,29 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
+## [No publicado]
 
+`docs/BUILD.md` no dejaba claro si un cambio en el código fuente llega al
+binario publicado cuando las cachés de CI aciertan, y mezclaba el estado vigente
+con mediciones de versiones pasadas. La sección de caché ahora explica qué
+restaura CircleCI y qué recompila cargo, y documenta solo el estado vigente.
 
+### Cambiado
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+- docs: la sección de caché de `docs/BUILD.md` distingue los dos mecanismos:
+  la clave de CircleCI decide qué se restaura y no depende del código fuente;
+  el fingerprint de cargo decide qué se recompila, y los crates del workspace
+  se recompilan en cada corrida. Una tabla reúne las siete familias de caché
+  con su contenido, sus jobs y su clave, y la tabla de escenarios incluye el
+  cambio de código fuente, que no invalida ninguna caché. Se quitaron las
+  mediciones históricas y se corrigió este drift: MSYS2 y el motor TTS se
+  cachean solo en `build-windows-x64`, no también en `test-windows`;
+  `toolchain-v1` también conserva `cargo-llvm-cov` en `coverage`, y la tabla
+  de jobs vuelve a describir el reporte de cobertura. El comentario de
+  cabecera de `.circleci/config.yml` ya no afirma que `target` se invalida con
+  el código ni que la clave la genera `xtask cache-key` (la genera `perl`).
+- docs: se eliminaron las líneas en blanco sobrantes entre el índice y la
+  primera sección de este CHANGELOG.
 
 ## [0.21.0] — 2026-09-23
 

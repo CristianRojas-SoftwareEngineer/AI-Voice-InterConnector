@@ -72,31 +72,28 @@ parameters:
     default: "1.13.2"
     description: Versión de Ninja (release oficial ninja-win.zip) usada como generador CMake en Windows.
 
-# Cachés duales compartidas por todos los jobs Rust (restore/save nativos,
-# idénticos en bash y PowerShell). Separadas porque invalidan distinto:
-# registry solo cambia con Cargo.lock; target además con el código.
+# Cachés compartidas por los jobs Rust (restore/save nativos, idénticos en bash
+# y PowerShell). Ninguna clave depende del código fuente del workspace: editar
+# src/ o crates/* restaura el mismo target/, y cargo recompila los crates del
+# workspace (Dirty por mtime tras el checkout) con ayuda de sccache.
 #
-# Clave normalizada (namespace v2): la clave exacta de registry/target/ se computa
-# del checksum de `Cargo.lock.cachekey`, un lock efímero que genera
-# `xtask cache-key` neutralizando la línea `version` del propio crate. Sin esto, el
-# checksum de `Cargo.lock` cambia en CADA release (bump de versión) aunque las deps
-# no varíen: nunca hay acierto exacto y registry (cargo-v2) cae al frágil fallback
-# por prefijo. Con la normalización la clave solo cambia ante cambios REALES de
-# dependencias.
-# Matriz de invalidación por familia de caché:
-#   - registry (cargo-v2): cambia solo con dependencias reales en Cargo.lock;
+# Clave normalizada: la clave exacta de registry y target se computa del checksum
+# de `Cargo.lock.cachekey`, un lock efímero que genera `perl` neutralizando la
+# línea `version` del propio crate. Así el bump de cada release no cambia la
+# clave; solo la cambian dependencias reales.
+# Invalidación por familia de caché (detalle en docs/BUILD.md §4):
+#   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock;
 #     conserva fallback por prefijo.
 #   - target (v3): cambia con dependencias reales en Cargo.lock y con el tree hash
 #     git de vendor/cmake-0.1.58. Clave exacta SIN fallback: un acierto garantiza
 #     que lo compilado corresponde al parche actual, así que su mtime se fija tras
-#     restaurar y cargo no lo marca Dirty. v2→v3: Windows pasó del generador
-#     Visual Studio a Ninja, y CMake rechaza reutilizar un directorio de build
-#     creado con otro generador; la familia nueva parte con target/ vacío.
-#   - toolchain (v1): cambia con rust_version. NO se re-keya: su semántica no cambia.
-#   - msys2 (v1): cambia con los pines de versión MSYS2. NO se re-keya.
-#   - sccache (v1): rolling con epoch. NO se re-keya.
-#   - ort-bundle (v1): cambia con ort_version (<< pipeline.parameters.ort_version >>).
-#   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey + msys2 gcc/openblas.
+#     restaurar y cargo no lo marca Dirty.
+#   - toolchain (v1): cambia con rust_version.
+#   - msys2 (v1): cambia con los pines de versión MSYS2 (solo build-windows-x64).
+#   - sccache (v1): rolling con epoch, por variant.
+#   - ort-bundle (v1): cambia con ort_version (solo build-windows-x64).
+#   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey + msys2
+#     gcc/openblas (solo build-windows-x64).
 commands:
   cargo_restore_caches:
     description: Restaura caché de registry/git y de target/ (clave exacta, sin fallback)
