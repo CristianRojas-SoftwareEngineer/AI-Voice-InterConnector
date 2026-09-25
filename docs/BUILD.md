@@ -579,9 +579,8 @@ SmartScreen/Gatekeeper. Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md) y
 
 ### Interfaz uniforme: `xtask build-engine`
 
-El motor se **compila desde fuente en CI en las 4 plataformas** (antes Windows
-arrastraba un blob `qwen_tts.exe` de 33 MB versionado a mano; **ya no se
-versiona**). Los 4 jobs de build invocan una única interfaz:
+El motor se **compila desde fuente en CI en las 4 plataformas**; ningún
+binario del motor se versiona. Los 4 jobs de build invocan una única interfaz:
 
 ```bash
 cargo run -p xtask -- build-engine --self-test

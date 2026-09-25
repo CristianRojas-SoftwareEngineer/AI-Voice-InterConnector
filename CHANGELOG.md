@@ -129,6 +129,14 @@ y aborta el corte antes de modificar archivos si alguna falla.
   indican regenerar el inventario con `cargo run -p xtask -- licenses` cada vez
   que cambia `Cargo.lock`, y que la puerta compara el inventario completo. Se
   retiró la propuesta de `docs/reviews/`, ya implementada.
+- docs: `docs/DESIGN.md` describe el hardware real del motor distribuido (CPU
+  con BLAS: Accelerate en macOS, OpenBLAS en Linux y Windows), en lugar de
+  CUDA/MPS «vía ONNX/CTranslate2», y los 10 idiomas de Qwen3-TTS, en lugar de
+  «23+». `AGENTS.md` cuenta 5 archivos con versión que bumpea `xtask release`,
+  no 6. La cabecera de `.circleci/config.yml` ya no cita
+  `docs/proposals/progress.md`, que no existe, y los comentarios de la CI y
+  `docs/BUILD.md` describen la compilación del motor sin narrar el estado
+  anterior.
 
 ### Corregido
 

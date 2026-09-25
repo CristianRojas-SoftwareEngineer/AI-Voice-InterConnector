@@ -11,7 +11,7 @@
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
 # licencia, versionados vía `persist_to_workspace` → `publish-release`.
 # Pines reproducibles: `rust_version` + `ort_version` + digest de `cimg/rust` (ver §Reproducibilidad).
-# Ver docs/BUILD.md §4 para arquitectura completa y docs/proposals/progress.md:340-346 para Fase 7.
+# Ver docs/BUILD.md §4 para arquitectura completa.
 
 version: 2.1
 
@@ -1142,8 +1142,8 @@ jobs:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` compila el motor con
           # mingw32-make bajo el entorno MSYS2 UCRT64 (PATH ucrt64/bin + usr/bin,
           # MSYSTEM=UCRT64, leído de MSYS2_ROOT default C:\msys64) y verifica con
-          # --self-test. Produce vendor\qwen3-tts\qwen_tts.exe fresco desde fuente
-          # (antes: blob de 33 MB versionado). El staging de abajo lo consume.
+          # --self-test. Produce vendor\qwen3-tts\qwen_tts.exe fresco desde fuente.
+          # El staging de abajo lo consume.
           # Cacheado: si qwen_tts.exe existe tras restore (clave exacta sin fallback),
           # es fresco y solo se verifica; si no, build completo.
           name: Compilar y verificar motor TTS
@@ -1365,8 +1365,7 @@ jobs:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
           # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
           # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
-          # oráculo de kernels sin pesos) en un solo paso. Antes: bloque `make blas` +
-          # `--self-test` triplicado idéntico en los 3 jobs Unix.
+          # oráculo de kernels sin pesos) en un solo paso.
           name: Compilar y verificar motor TTS
           command: cargo run -p xtask -- build-engine --self-test
       - unless:
@@ -1545,8 +1544,7 @@ jobs:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
           # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
           # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
-          # oráculo de kernels sin pesos) en un solo paso. Antes: bloque `make blas` +
-          # `--self-test` triplicado idéntico en los 3 jobs Unix.
+          # oráculo de kernels sin pesos) en un solo paso.
           name: Compilar y verificar motor TTS
           command: cargo run -p xtask -- build-engine --self-test
       - unless:

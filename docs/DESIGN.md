@@ -21,10 +21,10 @@
 AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que usa **Qwen3-TTS 0.6B CustomVoice** para clonación de voz en español latinoamericano. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
 
 - **Licencia**: GPL-3.0-or-later (código del proyecto); modelo y dependencias conservan sus licencias permisivas (MIT/BSD/Apache), salvo traducción `opus-mt` (CC-BY-4.0)
-- **Idiomas**: 23+ incluyendo Español (es)
+- **Idiomas**: los 10 que soporta Qwen3-TTS, entre ellos Español (es)
 - **Clonación**: `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional
 - **Parámetros del modelo**: 0.6B (Qwen3-TTS)
-- **Hardware**: CPU, CUDA, MPS (Apple Silicon) — inferencia local sin APIs externas
+- **Hardware**: CPU con BLAS (Accelerate en macOS, OpenBLAS en Linux y Windows) — inferencia local sin APIs externas
 
 ---
 
@@ -108,7 +108,7 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Licencia** | MIT / Apache-2.0 |
 | **Parámetros** | 0.6B |
 | **Clonación de voz** | `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional |
-| **Inferencia** | CPU, CUDA, MPS (vía ONNX/CTranslate2) |
+| **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
 | **Opciones de generación** | `GenerationOptions::produccion()` temp 0.35 seed 4 |
 
 Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato de invocación (`--int4 -j 4 --stream`, residente HTTP).
