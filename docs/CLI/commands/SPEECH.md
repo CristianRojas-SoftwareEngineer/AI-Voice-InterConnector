@@ -284,7 +284,7 @@ Pipeline interno con latidos (`con_latidos`, 500 ms entre `heartbeat` y `AbortHa
 ante desconexión):
 1. Transcribe en `spawn_blocking` con `state.stt_engine` (fase `"transcribe"`).
 2. Si `source != target`, traduce en `spawn_blocking` con el CT2 residente (`state.ct2_engine`) o `avi_translation::translate` (fase `"translate"`).
-3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::con_temperatura` y deadline `SYNTH_DEADLINE` (8 s) sobre `spawn_blocking` (fase `"synthesis"`). Si el deadline vence, emite evento `error` con `synthesis_timeout` sin derribar el residente.
+3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::with_temperature` y deadline `SYNTH_DEADLINE` (8 s) sobre `spawn_blocking` (fase `"synthesis"`). Si el deadline vence, emite evento `error` con `synthesis_timeout` sin derribar el residente.
 
 Al finalizar, emite el evento `result`:
 

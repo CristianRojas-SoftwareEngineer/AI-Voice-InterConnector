@@ -76,7 +76,7 @@ derivado completo, no solo el snapshot Marian: `model.bin` más un tokenizador
 válido (`tokenizer.json`, o el par `source.spm`+`target.spm` que produce
 `convert_marian_to_ct2`). Un `model.bin` huérfano sin tokenizador cuenta como
 incompleto. El mensaje de issue incluye la lista exacta de ficheros faltantes
-vía `ct2_archivos_faltantes(pair)` (`crates/avi-store/src/lib.rs`), por
+vía `ct2_missing_files(pair)` (`crates/avi-store/src/lib.rs`), por
 ejemplo:
 
 ```

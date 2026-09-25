@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 pub mod spawn;
-pub use spawn::{esperar_muerte_pid, matar_arbol_por_pid, pid_vivo, spawn_background};
+pub use spawn::{wait_for_pid_death, kill_tree_by_pid, pid_alive, spawn_background};
 // `spawn_uninstall_helper` solo existe bajo `#[cfg(windows)]` en `spawn.rs`; el
 // reexport debe compartir el gate o el build no-Windows rompe con E0432 (el call
 // site en `src/main.rs` ya está dentro de un bloque `#[cfg(windows)]`).
@@ -28,7 +28,7 @@ use avi_core::json_emitter;
 use avi_store::ModelStore;
 use avi_store::{SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
-use avi_stt::{detectar_idioma, ParakeetEngine};
+use avi_stt::{detect_language, ParakeetEngine};
 #[cfg(feature = "native-translation")]
 use avi_translation::Ct2TranslationEngine;
 use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
@@ -132,7 +132,7 @@ impl DaemonState {
                         "[daemon] CT2 {} roto en '{}' (faltan: {}) — arranca sin residente, ejecuta setup",
                         pair,
                         dir.display(),
-                        avi_store::ct2_archivos_faltantes(pair).join(", ")
+                        avi_store::ct2_missing_files(pair).join(", ")
                     );
                 }
             }
@@ -424,7 +424,7 @@ async fn synthesize_handler(
                     json!({
                         "event": "error",
                         "reason": "model_missing",
-                        "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_archivos_faltantes(pair).join(", ")),
+                        "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_missing_files(pair).join(", ")),
                     }),
                 )
                 .await;
@@ -474,14 +474,14 @@ async fn synthesize_handler(
         };
 
         // Perfil de voz: .qvoice si la voz está clonada; el motor resuelve el
-        // preset vía `resolve_voice_motor` a partir del nombre.
+        // preset vía `resolve_voice_engine` a partir del nombre.
         let profile = VoiceProfile {
             name: voice_owned.clone(),
             qvoice_path: state.voice_store.find_reference(&voice_owned),
         };
         // Sin flag se usa la config de producción (temperature=0.35); con flag
         // se sobrescribe la temperatura ya validada.
-        let options = GenerationOptions::con_temperatura(temperature);
+        let options = GenerationOptions::with_temperature(temperature);
         let tmp = std::env::temp_dir().join(format!("avi_daemon_synth_{}.wav", std::process::id()));
         // La síntesis sobre el residente es síncrona y puede colgarse
         // (motor C atascado); se acota con `timeout(SYNTH_DEADLINE)` sobre
@@ -642,7 +642,7 @@ async fn transcribe_handler(
             // sospechoso en una sesión en español, se anexa el campo aditivo
             // `language_warning` al JSON de respuesta. El campo es opcional y
             // aditivo: clientes que lo ignoren no se ven afectados.
-            let (idioma, _ratio) = detectar_idioma(&text);
+            let (idioma, _ratio) = detect_language(&text);
             let body = if idioma == "EN-SOSPECHOSO" {
                 with_sv(json!({ "text": text, "language_warning": true }))
             } else {
@@ -744,7 +744,7 @@ async fn translate_handler(
             Json(with_sv(json!({
                 "error": "model_missing",
                 "reason": "model_missing",
-                "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_archivos_faltantes(pair).join(", ")),
+                "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_missing_files(pair).join(", ")),
             }))),
         )
             .into_response();
@@ -1139,7 +1139,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                 Json(with_sv(json!({
                     "status": "error",
                     "reason": "model_missing",
-                    "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_archivos_faltantes(par).join(", ")),
+                    "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_missing_files(par).join(", ")),
                 }))),
             )
                 .into_response();
@@ -1331,7 +1331,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                 std::env::temp_dir().join(format!("avi_daemon_dub_{}.wav", std::process::id()));
             let texto_synth = final_text.clone();
             let estado_synth = state.clone();
-            let opciones_synth = GenerationOptions::con_temperatura(temperature);
+            let opciones_synth = GenerationOptions::with_temperature(temperature);
             let mut synth_handle = tokio::task::spawn_blocking(move || {
                 estado_synth.tts_engine.synthesize_with_options(
                     &texto_synth,
@@ -1564,7 +1564,7 @@ pub fn precalentar_voz(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
         .synthesize_with_options(
             "Calentamiento del daemon.",
             &profile,
-            &GenerationOptions::produccion(),
+            &GenerationOptions::production(),
             Some(&tmp),
         )
         .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e));

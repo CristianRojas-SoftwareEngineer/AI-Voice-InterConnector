@@ -109,7 +109,7 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Parámetros** | 0.6B |
 | **Clonación de voz** | `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional |
 | **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
-| **Opciones de generación** | `GenerationOptions::produccion()` temp 0.35 seed 4 |
+| **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 |
 
 Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato de invocación (`--int4 -j 4 --stream`, residente HTTP).
 
@@ -130,7 +130,7 @@ Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio�
 2. CLI parsea args y resuelve VoiceStore (default embebida o clonada)
                      │
                      ▼
-3. Qwen3TtsEngine::synthesize_with_temperature(...) → resolve_voice_motor
+3. Qwen3TtsEngine::synthesize_with_temperature(...) → resolve_voice_engine
    - default → Clonada (reference.qvoice embebido en el binario)
    - ryan/vivian → Preset (voces puras del motor, sin qvoice)
    - clonada → Clonada(PathBuf) con reference.qvoice

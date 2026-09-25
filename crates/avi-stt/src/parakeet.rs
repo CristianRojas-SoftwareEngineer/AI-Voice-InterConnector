@@ -25,7 +25,7 @@ use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 
-use avi_core::engine::{hilos_disponibles, SttEngine};
+use avi_core::engine::{available_threads, SttEngine};
 
 /// Dimensiones de la red de predicción del FastConformer-TDT 0.6B (capas LSTM × oculto).
 const PRED_LAYERS: i64 = 2;
@@ -273,7 +273,7 @@ fn session(path: impl AsRef<Path>) -> anyhow::Result<Session> {
         .with_optimization_level(GraphOptimizationLevel::Level1)
         .map_err(|e| anyhow::anyhow!("opt level: {e}"))?;
     let mut b = b
-        .with_intra_threads(hilos_disponibles() as usize)
+        .with_intra_threads(available_threads() as usize)
         .map_err(|e| anyhow::anyhow!("intra threads: {e}"))?;
     let s = b
         .commit_from_file(path.as_ref())
@@ -285,7 +285,7 @@ fn session(path: impl AsRef<Path>) -> anyhow::Result<Session> {
 /// el total. Si supera el umbral, la transcripción probablemente salió en inglés
 /// aunque la sesión sea en español (riesgo conocido de la auto-detección del
 /// decoder Parakeet). Se expone públicamente para reutilizarlo en el daemon.
-pub fn detectar_idioma(texto: &str) -> (&'static str, f64) {
+pub fn detect_language(texto: &str) -> (&'static str, f64) {
     const INGLES: &[&str] = &[
         "the", "and", "you", "how", "are", "is", "what", "of", "to", "in", "that", "it", "with",
         "for", "on", "this", "be", "have", "from", "not", "my", "your", "we", "can", "will", "do",

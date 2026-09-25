@@ -21,7 +21,7 @@ pub fn data_dir() -> PathBuf {
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (`qwen_tts.c:spk_table`)
 /// sin audio; `default` es voz clonada de fábrica (`.qvoice` graft vía Base) para
 /// garantizar `WER ≤0.25` en texto corto. La distinción preset/clonada vive
-/// en `avi-tts::resolve_voice_motor` (presencia de `reference.qvoice`).
+/// en `avi-tts::resolve_voice_engine` (presencia de `reference.qvoice`).
 pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
 
 /// Asset embebido: `.qvoice` de fábrica para `default` (16 MB graft, speaker
@@ -186,7 +186,7 @@ impl VoiceStore {
 
     /// Buscar el archivo de referencia de una voz: `reference.qvoice`.
     /// Solo `reference.qvoice` determina la rama clonada; los presets no
-    /// tienen referencia y resuelven como `Preset` en `resolve_voice_motor`.
+    /// tienen referencia y resuelven como `Preset` en `resolve_voice_engine`.
     pub fn find_reference(&self, name: &str) -> Option<PathBuf> {
         let dir = self.base_dir.join(name.to_lowercase());
         let path = dir.join("reference.qvoice");
@@ -552,7 +552,7 @@ pub fn ct2_model_dir(pair: &str) -> PathBuf {
 /// snapshot no los trae (`src/main.rs`), así que ningún derivado de este
 /// pipeline lo usa. Admitir esa rama sería especulativo y podría enmascarar un
 /// dir incompleto; se añadiría solo si un pin de modelo futuro la exigiera.
-pub fn ct2_dir_faltantes(dir: &std::path::Path) -> Vec<String> {
+pub fn ct2_dir_missing_files(dir: &std::path::Path) -> Vec<String> {
     let mut faltan = Vec::new();
     if !dir.join("model.bin").is_file() {
         faltan.push("model.bin".to_string());
@@ -569,11 +569,11 @@ pub fn ct2_dir_faltantes(dir: &std::path::Path) -> Vec<String> {
     faltan
 }
 /// Ficheros ausentes del derivado CT2 del par (`es-en`/`en-es`).
-pub fn ct2_archivos_faltantes(pair: &str) -> Vec<String> {
-    ct2_dir_faltantes(&ct2_model_dir(pair))
+pub fn ct2_missing_files(pair: &str) -> Vec<String> {
+    ct2_dir_missing_files(&ct2_model_dir(pair))
 }
 pub fn is_ct2_provisioned(pair: &str) -> bool {
-    ct2_archivos_faltantes(pair).is_empty()
+    ct2_missing_files(pair).is_empty()
 }
 /// Purga determinista del derivado CT2 en `hf_cache_dir/ct2`, simétrica a `remove_xet_cache`.
 pub fn remove_ct2_cache() -> Result<bool> {
@@ -988,7 +988,7 @@ mod tests {
     /// `vocab.json`+`merges.txt` NO se acepta: no lo genera `convert_marian_to_ct2`,
     /// por lo que admitirlo sería especulativo y enmascararía dirs incompletos.
     #[test]
-    fn ct2_dir_faltantes_contrato_del_gate() {
+    fn ct2_dir_missing_files_contrato_del_gate() {
         let dir = temp_dir("ct2_gate");
         let touch = |nombre: &str| std::fs::write(dir.join(nombre), b"x").unwrap();
         let limpiar = || {
@@ -1007,7 +1007,7 @@ mod tests {
         // 1. Dir vacío: faltan model.bin + tokenizador completo.
         limpiar();
         assert_eq!(
-            ct2_dir_faltantes(&dir),
+            ct2_dir_missing_files(&dir),
             vec!["model.bin", "tokenizer.json", "source.spm", "target.spm"]
         );
 
@@ -1016,13 +1016,13 @@ mod tests {
         touch("model.bin");
         touch("source.spm");
         touch("target.spm");
-        assert!(ct2_dir_faltantes(&dir).is_empty());
+        assert!(ct2_dir_missing_files(&dir).is_empty());
 
         // 3. Layout HuggingFace (`tokenizer.json`): completo.
         limpiar();
         touch("model.bin");
         touch("tokenizer.json");
-        assert!(ct2_dir_faltantes(&dir).is_empty());
+        assert!(ct2_dir_missing_files(&dir).is_empty());
 
         // 4. Layout BPE (`vocab.json`+`merges.txt`): rechazado a propósito.
         limpiar();
@@ -1030,7 +1030,7 @@ mod tests {
         touch("vocab.json");
         touch("merges.txt");
         assert_eq!(
-            ct2_dir_faltantes(&dir),
+            ct2_dir_missing_files(&dir),
             vec!["tokenizer.json", "source.spm", "target.spm"]
         );
 
@@ -1039,7 +1039,7 @@ mod tests {
         touch("model.bin");
         touch("source.spm");
         assert_eq!(
-            ct2_dir_faltantes(&dir),
+            ct2_dir_missing_files(&dir),
             vec!["tokenizer.json", "target.spm"]
         );
 

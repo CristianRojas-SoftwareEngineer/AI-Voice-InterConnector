@@ -413,8 +413,8 @@ fn install_sigint_handler() {
         if let Some(pid) = pid {
             let propio = std::process::id();
             if pid != 0 && pid != propio {
-                daemon::matar_arbol_por_pid(pid);
-                daemon::esperar_muerte_pid(pid, CTRL_C_LIMPIEZA_DEADLINE);
+                daemon::kill_tree_by_pid(pid);
+                daemon::wait_for_pid_death(pid, CTRL_C_LIMPIEZA_DEADLINE);
             }
         }
         // Exit code 130 = interrumpido por usuario (Ctrl+C)
@@ -429,10 +429,10 @@ fn install_sigint_handler() {
 /// Crea un Job con `KILL_ON_JOB_CLOSE` y asigna el proceso actual: al morir el
 /// daemon, el SO cierra el árbol (residente incluido, que hereda el Job).
 /// Best-effort silencioso: si falla, el cierre sigue garantizado por
-/// `matar_arbol_por_pid` con verificación (alternativa admitida). Se llama solo
+/// `kill_tree_by_pid` con verificación (alternativa admitida). Se llama solo
 /// en la rama `Serve` (proceso longevo), nunca en el padre efímero de `Start`.
 #[cfg(windows)]
-fn instalar_job_con_cierre_de_arbol() {
+fn install_job_with_tree_kill() {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicLimitInformation,
@@ -482,7 +482,7 @@ fn instalar_job_con_cierre_de_arbol() {
 /// fichero de log vía `Stdio::from` (handle explícito con mecanismo aparte).
 /// Best-effort silencioso: salta handles nulos / `INVALID_HANDLE_VALUE`.
 #[cfg(windows)]
-fn desheredar_handles_estandar() {
+fn disinherit_standard_handles() {
     use windows_sys::Win32::Foundation::{
         SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
     };
@@ -707,7 +707,7 @@ async fn handle_translate(
             format!(
                 "El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.",
                 ct2_dir.display(),
-                store::ct2_archivos_faltantes(pair).join(", "),
+                store::ct2_missing_files(pair).join(", "),
             ),
         ));
     }
@@ -773,7 +773,7 @@ fn traducir_si_difiere(
             format!(
                 "El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.",
                 ct2_dir.display(),
-                store::ct2_archivos_faltantes(pair).join(", "),
+                store::ct2_missing_files(pair).join(", "),
             ),
         ));
     }
@@ -1590,7 +1590,7 @@ async fn handle_speech(
                             format!(
                                 "El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.",
                                 ct2_dir.display(),
-                                store::ct2_archivos_faltantes(pair).join(", "),
+                                store::ct2_missing_files(pair).join(", "),
                             ),
                         ));
                     }
@@ -1711,7 +1711,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
     // ningún hijo del rol daemon. Cubre el CLI (`Start`/`Restart` → `spawn_background`)
     // y el propio daemon (`Serve` → motor), incluido `serve` lanzado bajo un pipe.
     #[cfg(windows)]
-    desheredar_handles_estandar();
+    disinherit_standard_handles();
     match action {
         DaemonCommands::Serve {
             auto_restart,
@@ -1747,7 +1747,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // sin pidfile ni auto-muerte del CLI (la guarda `pid != propio`
             // protege al `serve` en foreground).
             #[cfg(windows)]
-            instalar_job_con_cierre_de_arbol();
+            install_job_with_tree_kill();
             daemon::run_supervised(addr, auto_restart, max_retries, warm_voice)
                 .await
                 .map_err(|e| {
@@ -1765,7 +1765,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // residual se comprueba por PID vivo más probe, no por probe solo ni
             // pidfile solo. Sano → `already_running`; degradado → se reclama el
             // árbol y se rearranca con salida 0 y payload `started`.
-            match clasificar_residual(&client).await {
+            match classify_residual(&client).await {
                 EstadoResidual::Sano(pid) => {
                     if json_mode {
                         emit_raw_json(
@@ -1781,7 +1781,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                         "Daemon residual degradado ({}): se reclama el árbol y se rearranca.",
                         motivo
                     );
-                    reclamar_residual_degradado(&client, pid).await;
+                    reclaim_degraded_residual(&client, pid).await;
                 }
                 EstadoResidual::Parado => {}
             }
@@ -1860,7 +1860,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let client = daemon_client();
             stop_daemon_and_resident().await;
             let pid = read_daemon_pid();
-            let vivo = pid.map(daemon::pid_vivo).unwrap_or(false);
+            let vivo = pid.map(daemon::pid_alive).unwrap_or(false);
             let activo = daemon_activo(&client).await;
             // Los mensajes diagnostican la dirección descubierta (con
             // pidfile efímero difiere del literal; sin pidfile es idéntica).
@@ -2247,7 +2247,7 @@ fn convert_marian_to_ct2(
             }
         }
         // Verificación con el mismo criterio del gate antes de declarar éxito.
-        let faltan = store::ct2_dir_faltantes(&tmp_dir);
+        let faltan = store::ct2_dir_missing_files(&tmp_dir);
         if !faltan.is_empty() {
             anyhow::bail!(
                 "derivado CT2 incompleto (faltan: {}) — limpia la cache HF y reintenta setup",
@@ -2543,19 +2543,19 @@ enum EstadoResidual {
 #[cfg(test)]
 fn parado_con_residente_es_degradado(
     probe_daemon: bool,
-    pid_vivo: bool,
+    pid_alive: bool,
     residente_vivo: bool,
 ) -> bool {
-    !probe_daemon && !pid_vivo && residente_vivo
+    !probe_daemon && !pid_alive && residente_vivo
 }
 
 /// Clasifica el residual del daemon: sano, degradado o parado.
 /// Ante `Parado` se busca al residente por su PID registrado antes de declarar
 /// vía libre; con residente vivo es degradado residente-solo para reclamo.
-async fn clasificar_residual(client: &reqwest::Client) -> EstadoResidual {
+async fn classify_residual(client: &reqwest::Client) -> EstadoResidual {
     // Recuperación de reclamo: con pidfile perdido (padre caído sin
     // limpiar), el `daemon.ready` sobrevive y conserva el PID del árbol
-    // efímero. El fallback solo aplica sin pidfile; `pid_vivo` gatea después,
+    // efímero. El fallback solo aplica sin pidfile; `pid_alive` gatea después,
     // así que un ready rancio con PID muerto sigue cayendo a `Parado`.
     let pid = read_daemon_pid().or_else(|| leer_pid_ready(&ruta_fichero_ready()));
     // El probe apunta a la dirección descubierta (fallback idéntico sin
@@ -2563,16 +2563,16 @@ async fn clasificar_residual(client: &reqwest::Client) -> EstadoResidual {
     let addr_cli = resolver_addr_cliente();
     let probe = probe_health(client, &addr_cli).await;
     // `Parado` con residente vivo no es vía libre.
-    if !probe && !pid.map(daemon::pid_vivo).unwrap_or(false) && residente_vivo_por_pid() {
+    if !probe && !pid.map(daemon::pid_alive).unwrap_or(false) && residente_vivo_por_pid() {
         return EstadoResidual::Degradado {
             pid,
             motivo: "residente vivo sin daemon (Parado con resident_pid vivo)",
         };
     }
     match pid {
-        Some(p) if probe && daemon::pid_vivo(p) => EstadoResidual::Sano(p),
+        Some(p) if probe && daemon::pid_alive(p) => EstadoResidual::Sano(p),
         None if !probe => EstadoResidual::Parado,
-        Some(p) if !probe && !daemon::pid_vivo(p) => EstadoResidual::Parado,
+        Some(p) if !probe && !daemon::pid_alive(p) => EstadoResidual::Parado,
         _ => {
             let motivo = if probe && pid.is_none() {
                 "probe responde sin pidfile"
@@ -2590,10 +2590,10 @@ async fn clasificar_residual(client: &reqwest::Client) -> EstadoResidual {
 /// residente: el `resident_pid` del pidfile por instancia. Sin PID registrado
 /// (pidfile perdido tras aborto duro) devuelve `false`; en ese caso la
 /// ausencia se confirma con el barrido por imagen de último recurso
-/// (`avi_tts::resident::barrer_residente_por_imagen`), no con este predicado.
+/// (`avi_tts::resident::sweep_resident_by_image`), no con este predicado.
 fn residente_vivo_por_pid() -> bool {
     let pid = read_resident_pid();
-    pid != 0 && avi_tts::resident::pid_vivo_residente(pid)
+    pid != 0 && avi_tts::resident::resident_pid_alive(pid)
 }
 
 /// Predicado puro del reclamo Unix ante líder muerto (testeable sin
@@ -2601,8 +2601,8 @@ fn residente_vivo_por_pid() -> bool {
 /// caído, el PID del líder está muerto y el residente ya no está vivo (por su
 /// PID registrado, tras el barrido por imagen cuando no hay PID).
 #[allow(dead_code)]
-fn reclamo_unix_verificado(probe_daemon: bool, pid_vivo: bool, residente_vivo: bool) -> bool {
-    !probe_daemon && !pid_vivo && !residente_vivo
+fn reclamo_unix_verificado(probe_daemon: bool, pid_alive: bool, residente_vivo: bool) -> bool {
+    !probe_daemon && !pid_alive && !residente_vivo
 }
 
 /// Reclamo matar-y-rearrancar ante residual degradado: mata el árbol
@@ -2611,20 +2611,20 @@ fn reclamo_unix_verificado(probe_daemon: bool, pid_vivo: bool, residente_vivo: b
 /// el residente `qwen_tts` se reclama por su PID registrado en `daemon.pid`
 /// (árbol preciso + verificación por `resident_pid` muerto) y, sin PID
 /// registrado, por el barrido por imagen de último recurso
-/// (`barrer_residente_por_imagen`, seguro por imagen propia del residente).
+/// (`sweep_resident_by_image`, seguro por imagen propia del residente).
 /// No emite payload.
 ///
 /// En Unix el daemon nace líder de sesión (`setsid`) y el residente hereda
 /// su grupo; muerto el líder, el grupo se disuelve y el residente reparentado
 /// sobrevive fuera del alcance del reclamo solo-por-PID-vivo. Ante líder muerto
-/// se reclama además por grupo (`kill -9 -<pgid>` vía `matar_arbol_por_pid`,
+/// se reclama además por grupo (`kill -9 -<pgid>` vía `kill_tree_by_pid`,
 /// que ya mata al grupo en Unix) con verificación por residente muerto más PID
 /// sin viveza. El runtime Unix se verifica en CI; aquí quedan compilación,
 /// revisión lógica y unitarios no-plataformeros (prohibido simular Unix).
 /// Ante `Parado` con residente vivo (PID registrado o imagen) se reclama su
 /// árbol por PID registrado —o por imagen si no hay PID— antes de declarar
 /// fresco (imagen del daemon prohibida; sólo el residente tiene imagen propia).
-async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>) {
+async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     let inicio = std::time::Instant::now();
     // Graceful y verificación contra la dirección descubierta.
     let addr_cli = resolver_addr_cliente();
@@ -2643,17 +2643,17 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
     }
     // 2) Árbol preciso por PID con guarda anti-auto-muerte (imagen compartida).
     if let Some(p) = pid {
-        if p != 0 && p != std::process::id() && daemon::pid_vivo(p) {
-            daemon::matar_arbol_por_pid(p);
+        if p != 0 && p != std::process::id() && daemon::pid_alive(p) {
+            daemon::kill_tree_by_pid(p);
         }
     }
     // 2b) En Unix: ante líder muerto con posible residente reparentado vivo,
     // reclamar por grupo aunque el PID ya esté muerto (reutiliza la primitiva
-    // de grupo de `matar_arbol_por_pid`; la vía feliz Windows queda intacta).
+    // de grupo de `kill_tree_by_pid`; la vía feliz Windows queda intacta).
     #[cfg(unix)]
     if let Some(p) = pid {
-        if p != 0 && p != std::process::id() && !daemon::pid_vivo(p) {
-            daemon::matar_arbol_por_pid(p);
+        if p != 0 && p != std::process::id() && !daemon::pid_alive(p) {
+            daemon::kill_tree_by_pid(p);
         }
     }
     // 2c) Residente por identidad estable: si hay PID registrado vivo se mata
@@ -2663,16 +2663,16 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
     let residente = read_resident_pid();
     if residente != 0
         && residente != std::process::id()
-        && avi_tts::resident::pid_vivo_residente(residente)
+        && avi_tts::resident::resident_pid_alive(residente)
     {
-        avi_tts::resident::matar_arbol_residente_por_pid(residente);
+        avi_tts::resident::kill_tree_resident_by_pid(residente);
     } else if residente == 0 {
-        avi_tts::resident::barrer_residente_por_imagen();
+        avi_tts::resident::sweep_resident_by_image();
     }
     // 3) Verificación con el restante del deadline global (probe down + PID muerto;
     // en Unix además residente muerto ante líder muerto).
     while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
-        let vivo = pid.map(daemon::pid_vivo).unwrap_or(false);
+        let vivo = pid.map(daemon::pid_alive).unwrap_or(false);
         let probe = probe_health(client, &addr_cli).await;
         #[cfg(unix)]
         {
@@ -2700,7 +2700,7 @@ async fn reclamar_residual_degradado(client: &reqwest::Client, pid: Option<u32>)
 /// daemon pero con residente vivo se reclama su árbol por PID registrado, o por
 /// imagen `qwen_tts` como último recurso sin PID (imagen del daemon prohibida:
 /// la comparte con el CLI); verificación posterior a nivel de sistema (probe +
-/// `pid_vivo` + `resident_pid` muerto).
+/// `pid_alive` + `resident_pid` muerto).
 ///
 /// El pidfile solo se borra tras muerte verificada o pista rancia reconciliada
 /// (PID muerto + probe down); si el árbol sigue vivo se conserva la pista.
@@ -2734,12 +2734,12 @@ async fn stop_daemon_and_resident() {
     }
     // 2) Árbol preciso por PID si sigue vivo (ambas plataformas, con guarda).
     let pid = read_daemon_pid();
-    let vivo = pid.map(daemon::pid_vivo).unwrap_or(false);
+    let vivo = pid.map(daemon::pid_alive).unwrap_or(false);
     let sigue_activo = daemon_activo(&client).await;
     if sigue_activo || vivo {
         if let Some(p) = pid {
             if p != 0 && p != std::process::id() {
-                daemon::matar_arbol_por_pid(p);
+                daemon::kill_tree_by_pid(p);
             }
         }
     }
@@ -2750,15 +2750,15 @@ async fn stop_daemon_and_resident() {
     let residente = read_resident_pid();
     if residente != 0
         && residente != std::process::id()
-        && avi_tts::resident::pid_vivo_residente(residente)
+        && avi_tts::resident::resident_pid_alive(residente)
     {
-        avi_tts::resident::matar_arbol_residente_por_pid(residente);
+        avi_tts::resident::kill_tree_resident_by_pid(residente);
     } else if residente == 0 {
-        avi_tts::resident::barrer_residente_por_imagen();
+        avi_tts::resident::sweep_resident_by_image();
     }
     // 3) Verificación con el restante del deadline global.
     while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
-        let vivo_ahora = read_daemon_pid().map(daemon::pid_vivo).unwrap_or(false);
+        let vivo_ahora = read_daemon_pid().map(daemon::pid_alive).unwrap_or(false);
         if !daemon_activo(&client).await && !vivo_ahora && !residente_vivo_por_pid() {
             break;
         }
@@ -2766,7 +2766,7 @@ async fn stop_daemon_and_resident() {
     }
     // 4) Borrado solo tras muerte verificada o pista rancia reconciliada.
     let pid_final = read_daemon_pid();
-    let vivo_final = pid_final.map(daemon::pid_vivo).unwrap_or(false);
+    let vivo_final = pid_final.map(daemon::pid_alive).unwrap_or(false);
     if !daemon_activo(&client).await && !vivo_final {
         let _ = remove_daemon_pid_file();
     }
@@ -2903,7 +2903,7 @@ async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> 
                 // helper: `spawn_uninstall_helper` vive fuera de
                 // `handle_daemon`, así que replica aquí el corte para que el `.ps1`
                 // no retenga el stdio del proceso que lanzó el uninstall.
-                desheredar_handles_estandar();
+                disinherit_standard_handles();
                 daemon::spawn_uninstall_helper(&install_dir, std::process::id()).map_err(|e| {
                     CliError::new(
                         ExitCode::Error,
@@ -3110,7 +3110,7 @@ fn daemon_pid_path() -> PathBuf {
 /// rename); el handler Ctrl+C ya no depende solo de él gracias al PID en memoria.
 /// El pidfile extiende el esquema plano con `resident_pid`. Al arrancar solo se
 /// conoce el PID del daemon y el residente es 0/desconocido; el daemon lo
-/// actualiza en disco al arrancar el residente (`arrancar_residente`).
+/// actualiza en disco al arrancar el residente (`start_resident`).
 /// `addr` es la dirección REAL publicada por el hijo en el fichero ready:
 /// con puerto efímero difiere del literal `DAEMON_ADDR`.
 fn write_daemon_pid(pid: u32, addr: &str, resident_pid: u32) -> anyhow::Result<()> {
@@ -3285,7 +3285,7 @@ async fn await_daemon_ready(
 
 /// Construye el cuerpo JSON de `daemon status`. Función pura (testeable sin daemon):
 /// `stopped` cuando no es alcanzable (fixture intacta, sin campos extra; el
-/// `stopped` por probe incluye en `clasificar_residual` la búsqueda del residente
+/// `stopped` por probe incluye en `classify_residual` la búsqueda del residente
 /// por su PID registrado antes de declarar vía libre, sin cambiar este contrato); si es
 /// alcanzable, `running` con `engine` y `warm` (más `warm_error` cuando el warmup
 /// falló) leídos de `/health`. El `schema_version` lo añade `emit_raw_json`.
@@ -4266,7 +4266,7 @@ async fn dub_compose_via_daemon(
             return Err(CliError::new(
                 ExitCode::ModelMissing,
                 "model_missing",
-                format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), store::ct2_archivos_faltantes(pair).join(", ")),
+                format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), store::ct2_missing_files(pair).join(", ")),
             ));
         }
         #[cfg(not(feature = "native-translation"))]

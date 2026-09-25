@@ -10,7 +10,7 @@
 // `translate`), gateado tras `native-translation`; sin el feature quedarían sin
 // uso, por eso el import se gatea junto con ellos.
 #[cfg(feature = "native-translation")]
-use avi_core::engine::{hilos_disponibles, HierarchicalSegmenter, Segmenter, TranslationEngine};
+use avi_core::engine::{available_threads, HierarchicalSegmenter, Segmenter, TranslationEngine};
 #[cfg(feature = "native-translation")]
 use ct2rs::{ComputeType, Config, Translator};
 
@@ -30,7 +30,7 @@ impl Ct2TranslationEngine {
                 compute_type: ComputeType::INT8,
                 // Hilos lógicos del equipo del usuario, no una máquina fija de
                 // desarrollo (mismo criterio que el STT).
-                num_threads_per_replica: hilos_disponibles(),
+                num_threads_per_replica: available_threads(),
                 ..Default::default()
             },
         )?;
@@ -123,7 +123,7 @@ const MAX_ORACIONES_POR_LOTE: usize = 10;
 /// reensamblado posterior.
 #[cfg_attr(not(feature = "native-translation"), allow(dead_code))]
 #[allow(clippy::type_complexity)]
-fn traducir_lotes_por_parrafo(
+fn translate_batches_by_paragraph(
     paragraphs: Vec<Vec<String>>,
     source: &str,
     target: &str,
@@ -160,7 +160,7 @@ pub fn translate(
     // Cada párrafo se traduce en una sola llamada al motor (partida en grupos
     // de `MAX_ORACIONES_POR_LOTE` cuando excede el tope), en vez de una llamada
     // por oración: el reensamblado posterior es idéntico al anterior.
-    let translated: Vec<Vec<String>> = traducir_lotes_por_parrafo(
+    let translated: Vec<Vec<String>> = translate_batches_by_paragraph(
         paragraphs,
         source,
         target,
@@ -295,7 +295,7 @@ mod tests {
             .expect("escribir model.bin señuelo");
 
         assert!(
-            !avi_store::ct2_dir_faltantes(&dir).is_empty(),
+            !avi_store::ct2_dir_missing_files(&dir).is_empty(),
             "un dir sin tokenizador no debe pasar el gate"
         );
         assert!(
@@ -529,7 +529,7 @@ mod tests {
         let doble = doble_traduccion(&llamadas, &tamanos);
 
         let resultado =
-            super::traducir_lotes_por_parrafo(vec![parrafo_de_n_oraciones(5)], "es", "en", &doble)
+            super::translate_batches_by_paragraph(vec![parrafo_de_n_oraciones(5)], "es", "en", &doble)
                 .expect("un párrafo de 5 oraciones no debe fallar");
 
         assert_eq!(
@@ -554,7 +554,7 @@ mod tests {
         let doble = doble_traduccion(&llamadas, &tamanos);
 
         let resultado =
-            super::traducir_lotes_por_parrafo(vec![parrafo_de_n_oraciones(11)], "es", "en", &doble)
+            super::translate_batches_by_paragraph(vec![parrafo_de_n_oraciones(11)], "es", "en", &doble)
                 .expect("un párrafo de 11 oraciones no debe fallar");
 
         assert_eq!(
@@ -583,7 +583,7 @@ mod tests {
         let doble = doble_traduccion(&llamadas, &tamanos);
 
         let resultado =
-            super::traducir_lotes_por_parrafo(vec![parrafo_de_n_oraciones(20)], "es", "en", &doble)
+            super::translate_batches_by_paragraph(vec![parrafo_de_n_oraciones(20)], "es", "en", &doble)
                 .expect("un párrafo de 20 oraciones no debe fallar");
 
         assert_eq!(
@@ -608,7 +608,7 @@ mod tests {
         let doble = doble_traduccion(&llamadas, &tamanos);
 
         let resultado =
-            super::traducir_lotes_por_parrafo(vec![parrafo_de_n_oraciones(1)], "es", "en", &doble)
+            super::translate_batches_by_paragraph(vec![parrafo_de_n_oraciones(1)], "es", "en", &doble)
                 .expect("un párrafo de 1 oración no debe fallar");
 
         assert_eq!(llamadas.get(), 1, "1 oración debe suponer 1 llamada");
@@ -630,7 +630,7 @@ mod tests {
         // oración vacía no debe invocar al traductor y el párrafo conserva su
         // posición para no alterar el reensamblado.
         let parrafos = HierarchicalSegmenter::default().segment("");
-        let resultado = super::traducir_lotes_por_parrafo(parrafos, "es", "en", &doble)
+        let resultado = super::translate_batches_by_paragraph(parrafos, "es", "en", &doble)
             .expect("un texto vacío no debe fallar");
 
         assert_eq!(
@@ -659,7 +659,7 @@ mod tests {
         // (comportamiento real de `HierarchicalSegmenter`); no deben invocar al
         // traductor ni alterar el reensamblado posterior.
         let parrafos = HierarchicalSegmenter::default().segment("Hola.\n\n\n\nAdiós.");
-        let resultado = super::traducir_lotes_por_parrafo(parrafos, "es", "en", &doble)
+        let resultado = super::translate_batches_by_paragraph(parrafos, "es", "en", &doble)
             .expect("párrafos con huecos vacíos no deben fallar");
 
         assert_eq!(
@@ -684,7 +684,7 @@ mod tests {
         let tamanos = RefCell::new(Vec::new());
         let doble = doble_traduccion(&llamadas, &tamanos);
 
-        let resultado = super::traducir_lotes_por_parrafo(
+        let resultado = super::translate_batches_by_paragraph(
             vec![parrafo_de_n_oraciones(5), parrafo_de_n_oraciones(11)],
             "es",
             "en",
@@ -746,7 +746,7 @@ mod tests {
             }
         };
 
-        let resultado = super::traducir_lotes_por_parrafo(
+        let resultado = super::translate_batches_by_paragraph(
             vec![parrafo_de_n_oraciones(5), parrafo_de_n_oraciones(11)],
             "es",
             "en",

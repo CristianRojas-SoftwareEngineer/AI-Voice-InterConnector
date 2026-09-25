@@ -202,7 +202,7 @@ Los WAV de entrada (`--speech-reference`/`--timbre-reference`) se consumen
 para producir el graft y no se copian al almacén: `reference.qvoice` es lo
 único que el motor de síntesis consulta
 (`VoiceStore::find_reference`, `crates/avi-store/src/lib.rs`): su presencia
-determina la rama «clonada» en `avi_tts::resolve_voice_motor`; sin él, la voz
+determina la rama «clonada» en `avi_tts::resolve_voice_engine`; sin él, la voz
 resuelve como preset del motor. `default` es una voz de fábrica *clonada*
 (trae su propio `reference.qvoice` embebido en el binario,
 `FACTORY_DEFAULT_QVOICE`) para garantizar una tasa de error de palabra baja en

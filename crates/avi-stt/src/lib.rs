@@ -9,11 +9,11 @@
 #[cfg(feature = "native-stt")]
 pub mod parakeet;
 #[cfg(feature = "native-stt")]
-pub use parakeet::{detectar_idioma, normalizar_texto, ParakeetEngine};
+pub use parakeet::{detect_language, normalizar_texto, ParakeetEngine};
 
 #[cfg(all(test, feature = "native-stt"))]
 mod tests {
-    use crate::{detectar_idioma, normalizar_texto, ParakeetEngine};
+    use crate::{detect_language, normalizar_texto, ParakeetEngine};
     use avi_core::engine::SttEngine;
 
     /// Carga el modelo Parakeet (HF cache `hf_cache_dir()` vía `ModelStore`) vía
@@ -78,12 +78,12 @@ mod tests {
     /// `parakeet_sample_16k` es un saludo corto
     /// (2.96 s) que Parakeet emite en **inglés** ("Hello, how are you?") porque
     /// el TDT 0.6B v3 auto-detecta idioma y un saludo breve es fonéticamente
-    /// ambiguo. Ese output activa la guardia `detectar_idioma`
+    /// ambiguo. Ese output activa la guardia `detect_language`
     /// (`EN-SOSPECHOSO`), que el daemon anexa como `language_warning`. Por eso:
     /// - los corpus en español (`corpus_watermark`, `corpus_sintesis`,
     ///   `corpus_respuestas`) validan WER ≤ 0.25 (el threshold estricto 0.05
     ///   el modelo real alcanza 0.08–0.21);
-    /// - `parakeet_sample` valida, por el contrario, que `detectar_idioma` marque
+    /// - `parakeet_sample` valida, por el contrario, que `detect_language` marque
     ///   el output como `EN-SOSPECHOSO` (la guardia funciona sobre un fixture
     ///   real).
     #[cfg(feature = "native-stt")]
@@ -145,8 +145,8 @@ mod tests {
 
             if esperado_ingles {
                 // un saludo breve en español es trasladado a inglés por el
-                // TDT; la guardia `detectar_idioma` debe marcarlo como sospechoso.
-                let (idioma, _) = detectar_idioma(&actual);
+                // TDT; la guardia `detect_language` debe marcarlo como sospechoso.
+                let (idioma, _) = detect_language(&actual);
                 assert_eq!(
                     idioma, "EN-SOSPECHOSO",
                     "parakeet_sample debe disparar la guardia de idioma (obtenido: {:?}, output: {:?})",

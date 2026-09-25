@@ -651,7 +651,7 @@ si no, se compila. El bundle ONNX Runtime (`ort-bundle/`) se cachea con
 `ort-v1-win-x64-<< pipeline.parameters.ort_version >>` y guarda tras el bundling.
 
 Ver `vendor/qwen3-tts/CLAUDE.md` y `crates/avi-tts/src/lib.rs` para el contrato
-de invocación (`--int4 -j 4 --stream`, `GenerationOptions::produccion()` temp
+de invocación (`--int4 -j 4 --stream`, `GenerationOptions::production()` temp
 0.35 seed 4).
 
 ---

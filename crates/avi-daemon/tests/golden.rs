@@ -124,7 +124,7 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 // puertos reales ni pidfile; por tanto nunca prueban la ausencia de huérfanos
 // (árbol de procesos, PID, puertos), ni el endurecimiento del harness frente a
 // fallos envenenados o al reaper corriendo fuera de los polls, ni la
-// higiene de `TEST_LIMITE`, ni la ventana entre el spawn y la escritura del
+// higiene de `TEST_LIMIT`, ni la ventana entre el spawn y la escritura del
 // pidfile, ni el manejo de señales durante el spawn, ni un crash con el
 // puerto ya ocupado y un reclamo activo del árbol previo (este último solo
 // aplica en `run_supervised`): al no añadir campos nuevos a `DaemonState`, el

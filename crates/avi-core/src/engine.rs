@@ -159,6 +159,6 @@ fn split_tokens(text: &str, max_length: usize) -> Vec<String> {
 /// unidades SIMD y degrada el throughput manteniendo el 100% de CPU. Los
 /// motores usan los recursos del equipo del usuario, no una máquina de
 /// desarrollo fija.
-pub fn hilos_disponibles() -> usize {
+pub fn available_threads() -> usize {
     num_cpus::get_physical().max(1)
 }

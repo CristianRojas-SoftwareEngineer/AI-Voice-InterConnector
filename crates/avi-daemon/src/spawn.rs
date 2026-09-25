@@ -13,7 +13,7 @@ use std::process::Command;
 /// aquí no basta (fija los STD del hijo pero no impide heredar OTROS handles
 /// heredables del padre): la protección real es cortar la herencia en la raíz con
 /// `SetHandleInformation(HANDLE_FLAG_INHERIT, 0)` sobre los STD del proceso que
-/// spawnea (`main::desheredar_handles_estandar`, llamado en `handle_daemon`). No
+/// spawnea (`main::disinherit_standard_handles`, llamado en `handle_daemon`). No
 /// existe una creation flag que desactive la herencia. En Unix `fork/exec` con
 /// `Stdio::null` + `setsid` + `FD_CLOEXEC` ya logra lo análogo.
 ///
@@ -23,7 +23,7 @@ use std::process::Command;
 /// dentro del runtime de `axum::serve`). El daemon escucha además señales del
 /// sistema por la misma ruta que POST `/shutdown`, el CLI reclama el residual
 /// degradado al arrancar (matar-y-rearrancar) y toda parada mata el árbol preciso
-/// por PID con deadline y verificación (`matar_arbol_por_pid` + `pid_vivo`).
+/// por PID con deadline y verificación (`kill_tree_by_pid` + `pid_alive`).
 /// `ready_file` designa el fichero de señalización del evento
 /// `avi-daemon-ready` y viaja al hijo como flag `--ready-file` (transporte
 /// flag+fichero, nunca pipe heredable). `Stdio::null` en los tres flujos se
@@ -61,7 +61,7 @@ pub fn spawn_background(
         // DETACHED_PROCESS (0x8): sin consola del padre.
         // CREATE_NEW_PROCESS_GROUP (0x200): grupo propio.
         // La herencia de handles se corta en la raíz vía `SetHandleInformation`
-        // (`main::desheredar_handles_estandar`), no con una creation flag.
+        // (`main::disinherit_standard_handles`), no con una creation flag.
         cmd.creation_flags(0x00000008 | 0x00000200);
     }
 
@@ -84,11 +84,11 @@ pub fn spawn_background(
     let pid = child.id();
     // Grupo propio ya garantizado por flags (Windows: CREATE_NEW_PROCESS_GROUP;
     // Unix: setsid): el árbol es matable de forma precisa por PID con
-    // `matar_arbol_por_pid` (alternativa admitida: taskkill `/F /T` por PID con
+    // `kill_tree_by_pid` (alternativa admitida: taskkill `/F /T` por PID con
     // verificación posterior). El Job Object con cierre del árbol NO se crea
     // aquí en el padre efímero (moriría con él y mataría al daemon recién
     // lanzado): lo instala el daemon longevo al arrancar vía
-    // `instalar_job_con_cierre_de_arbol` (lado servidor).
+    // `install_job_with_tree_kill` (lado servidor).
     Ok(pid)
 }
 
@@ -97,7 +97,7 @@ pub fn spawn_background(
 /// Windows: `tasklist` con filtro exacto; Unix: `kill -0` (éxito = vivo).
 /// `0` nunca está vivo. Bloqueante y breve: apto para el handler de Ctrl+C y
 /// para los bucles de verificación con deadline de las paradas.
-pub fn pid_vivo(pid: u32) -> bool {
+pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
@@ -133,14 +133,14 @@ pub fn pid_vivo(pid: u32) -> bool {
 /// Mata el árbol preciso por PID con la alternativa admitida (sin Job en el
 /// padre): Windows `taskkill /F /T /PID` (mata el árbol); Unix `kill -9` al
 /// grupo (`-<pid>`, el daemon es líder de sesión por `setsid`) y luego al PID.
-/// No toca pidfile ni verifica: el llamante combina con `pid_vivo` y deadline.
+/// No toca pidfile ni verifica: el llamante combina con `pid_alive` y deadline.
 /// Nunca mata el PID 0; la guarda contra auto-muerte (`pid != proceso propio`
 /// para la imagen compartida CLI/daemon) vive en el llamante.
 ///
 /// Reutilizada además para el reclamo por grupo ante líder muerto: el
 /// llamante la invoca aunque el PID ya esté muerto para alcanzar al residente
 /// reparentado del mismo grupo, con verificación por 8766.
-pub fn matar_arbol_por_pid(pid: u32) -> bool {
+pub fn kill_tree_by_pid(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
@@ -176,23 +176,23 @@ pub fn matar_arbol_por_pid(pid: u32) -> bool {
 
 /// Espera bloqueante a la muerte del PID hasta el deadline (sondeo 100 ms).
 /// Para el handler de Ctrl+C y verificaciones síncronas; los caminos async
-/// usan su propio bucle con `tokio::time::sleep` + `pid_vivo`.
-pub fn esperar_muerte_pid(pid: u32, deadline: std::time::Duration) -> bool {
+/// usan su propio bucle con `tokio::time::sleep` + `pid_alive`.
+pub fn wait_for_pid_death(pid: u32, deadline: std::time::Duration) -> bool {
     let inicio = std::time::Instant::now();
     while inicio.elapsed() < deadline {
-        if !pid_vivo(pid) {
+        if !pid_alive(pid) {
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    !pid_vivo(pid)
+    !pid_alive(pid)
 }
 
 // Instala en el proceso actual (lado daemon longevo) un Job Object con
 // `KILL_ON_JOB_CLOSE`. La implementación vive en el binario (`src/main.rs`,
 // rama `Serve`, que sí dispone de `windows-sys` vía el workspace): este crate
 // no añade la dependencia para no exceder el alcance (alternativa admitida:
-// `matar_arbol_por_pid` con verificación). Ver `instalar_job_con_cierre_de_arbol`
+// `kill_tree_by_pid` con verificación). Ver `install_job_with_tree_kill`
 // en el CLI.
 
 /// Helper determinista de desinstalación en Windows.
@@ -246,7 +246,7 @@ pub fn spawn_uninstall_helper(
         .stderr(Stdio::null());
     // DETACHED_PROCESS (0x8) | CREATE_NEW_PROCESS_GROUP (0x200): sin consola del
     // padre, grupo propio. La herencia de handles se corta en la raíz vía
-    // `SetHandleInformation` (`main::desheredar_handles_estandar`), no con flag.
+    // `SetHandleInformation` (`main::disinherit_standard_handles`), no con flag.
     cmd.creation_flags(0x00000008 | 0x00000200);
     cmd.spawn()?;
     Ok(helper)

@@ -76,7 +76,7 @@ fn proceso_t0() -> Instant {
 thread_local! {
     static TEST_T0: RefCell<Option<Instant>> = const { RefCell::new(None) };
     static TEST_NOMBRE: RefCell<String> = const { RefCell::new(String::new()) };
-    static TEST_LIMITE: RefCell<Option<Duration>> = const { RefCell::new(None) };
+    static TEST_LIMIT: RefCell<Option<Duration>> = const { RefCell::new(None) };
     static ULTIMO_HITO: RefCell<String> = const { RefCell::new(String::new()) };
     static SANDBOX_ACTUAL_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
@@ -112,7 +112,7 @@ fn hito(mensaje: &str) {
 fn hito_inicio(nombre: &str, limite: Duration) {
     TEST_T0.with(|c| *c.borrow_mut() = Some(Instant::now()));
     TEST_NOMBRE.with(|c| *c.borrow_mut() = nombre.to_string());
-    TEST_LIMITE.with(|c| *c.borrow_mut() = Some(limite));
+    TEST_LIMIT.with(|c| *c.borrow_mut() = Some(limite));
     ULTIMO_HITO.with(|c| *c.borrow_mut() = format!("inicio {}", nombre));
     let ts = formato_mm_ss(Duration::from_millis(0));
     eprintln!("[hito][{}] inicio {} (techo {:?})", ts, nombre, limite);
@@ -138,7 +138,7 @@ fn hito_fin(nombre: &str) {
     let ts = formato_mm_ss(elapsed_test());
     eprintln!("[hito][{}] fin {}", ts, nombre);
     let _ = std::io::stderr().flush();
-    TEST_LIMITE.with(|c| *c.borrow_mut() = None);
+    TEST_LIMIT.with(|c| *c.borrow_mut() = None);
     TEST_T0.with(|c| *c.borrow_mut() = None);
     TEST_NOMBRE.with(|c| *c.borrow_mut() = String::new());
     ULTIMO_HITO.with(|c| *c.borrow_mut() = String::new());
@@ -154,19 +154,19 @@ fn ultimo_hito() -> String {
 /// (`reaper_ante_fallo`) y hace `panic!` con test, fase, transcurrido,
 /// techo y último hito. Inactivo sin `hito_inicio`.
 ///
-/// Higiene: `hito_inicio` siempre sobrescribe `TEST_T0`/`TEST_LIMITE`, así
+/// Higiene: `hito_inicio` siempre sobrescribe `TEST_T0`/`TEST_LIMIT`, así
 /// que un `panic!` previo sin `hito_fin` no hereda techos al siguiente test
 /// pesado; `hito_fin` y `GuardReaper` (en `Drop` ante `panic!`) limpian el
 /// límite para que los tests ligeros sin `hito_inicio` tampoco lo hereden.
 fn comprobar_guard(fase: &str) {
     let nombre = TEST_NOMBRE.with(|n| n.borrow().clone());
-    let limite = TEST_LIMITE.with(|c| *c.borrow());
+    let limite = TEST_LIMIT.with(|c| *c.borrow());
     let t0 = TEST_T0.with(|c| *c.borrow());
     if let (Some(lim), Some(t)) = (limite, t0) {
         let elapsed = t.elapsed();
         if elapsed > lim {
             let _ = std::io::stderr().flush();
-            TEST_LIMITE.with(|c| *c.borrow_mut() = None);
+            TEST_LIMIT.with(|c| *c.borrow_mut() = None);
             reaper_ante_fallo(&format!("guard:{}", fase));
             panic!(
                 "guardia de tiempo: test '{}' superó techo {:?} en fase '{}' (transcurrido {:.1} s; último hito: {})",
@@ -184,9 +184,9 @@ fn comprobar_guard(fase: &str) {
 //
 // El producto reclama el residual al arrancar (matar-y-rearrancar con payload
 // `started`) y para con deadline global y verificación (`src/main.rs`:
-// `clasificar_residual`, `reclamar_residual_degradado`,
-// `stop_daemon_and_resident`; ayudantes SO `avi_daemon::{pid_vivo,
-// matar_arbol_por_pid, esperar_muerte_pid}`). La fixture verifica esa conducta
+// `classify_residual`, `reclaim_degraded_residual`,
+// `stop_daemon_and_resident`; ayudantes SO `avi_daemon::{pid_alive,
+// kill_tree_by_pid, wait_for_pid_death}`). La fixture verifica esa conducta
 // a nivel de sistema en vez de suponerla por HTTP. Fuente única de
 // matar/verificar: `avi_daemon`, sin duplicar lógica SO en el harness.
 
@@ -289,13 +289,13 @@ fn residente_presente_por_imagen() -> bool {
 /// `panic!` que lo invocó.
 fn reaper_ante_fallo(fase: &str) {
     match leer_pid_daemon() {
-        Some(pid) if avi_daemon::pid_vivo(pid) => {
+        Some(pid) if avi_daemon::pid_alive(pid) => {
             hito(&format!(
                 "reaper({}): árbol residual pid {} vivo, matando",
                 fase, pid
             ));
-            avi_daemon::matar_arbol_por_pid(pid);
-            let muerto = avi_daemon::esperar_muerte_pid(pid, std::time::Duration::from_secs(8));
+            avi_daemon::kill_tree_by_pid(pid);
+            let muerto = avi_daemon::wait_for_pid_death(pid, std::time::Duration::from_secs(8));
             hito(&format!("reaper({}): pid {} muerto={}", fase, pid, muerto));
         }
         Some(pid) => {
@@ -316,7 +316,7 @@ fn reaper_ante_fallo(fase: &str) {
     // detecta por su identidad estable (PID registrado o imagen propia) y se
     // reclama por PID —o por imagen como último recurso—, sin puerto global.
     let residente = leer_pid_residente();
-    let residente_vivo = residente != 0 && avi_tts::resident::pid_vivo_residente(residente);
+    let residente_vivo = residente != 0 && avi_tts::resident::resident_pid_alive(residente);
     if residente_vivo || residente_presente_por_imagen() {
         hito(&format!(
             "reaper({}): residente vivo tras el árbol (pid={}), barriendo",
@@ -336,19 +336,19 @@ fn barrer_residente(fase: &str) {
     let residente = leer_pid_residente();
     if residente != 0
         && residente != std::process::id()
-        && avi_tts::resident::pid_vivo_residente(residente)
+        && avi_tts::resident::resident_pid_alive(residente)
     {
         hito(&format!(
             "reaper({}): residente PID {} vivo, matando árbol",
             fase, residente
         ));
-        avi_tts::resident::matar_arbol_residente_por_pid(residente);
+        avi_tts::resident::kill_tree_resident_by_pid(residente);
     } else if residente == 0 {
         hito(&format!(
             "reaper({}): sin resident_pid registrado, barriendo por imagen",
             fase
         ));
-        avi_tts::resident::barrer_residente_por_imagen();
+        avi_tts::resident::sweep_resident_by_image();
     } else {
         hito(&format!(
             "reaper({}): resident_pid {} ya muerto, verificando ausencia por imagen",
@@ -356,7 +356,7 @@ fn barrer_residente(fase: &str) {
         ));
     }
     let t0 = std::time::Instant::now();
-    let residente_vivo_reg = |pid: u32| pid != 0 && avi_tts::resident::pid_vivo_residente(pid);
+    let residente_vivo_reg = |pid: u32| pid != 0 && avi_tts::resident::resident_pid_alive(pid);
     while (residente_vivo_reg(residente) || residente_presente_por_imagen())
         && t0.elapsed() < std::time::Duration::from_secs(8)
     {
@@ -381,7 +381,7 @@ fn fallo_con_reaper(fase: &str, mensaje: String) -> ! {
 /// el test lo arma tras tomar el lock (`let _reaper =
 /// armar_reaper("...")`); en salida normal no hace nada, y si el hilo está en
 /// `panic!` al dropearse ejecuta el reaper best-effort y restaura la higiene
-/// de `TEST_LIMITE` para no heredar techos al siguiente test del mismo hilo.
+/// de `TEST_LIMIT` para no heredar techos al siguiente test del mismo hilo.
 struct GuardReaper {
     fase: &'static str,
 }
@@ -394,7 +394,7 @@ impl Drop for GuardReaper {
     fn drop(&mut self) {
         if std::thread::panicking() {
             reaper_ante_fallo(self.fase);
-            TEST_LIMITE.with(|c| *c.borrow_mut() = None);
+            TEST_LIMIT.with(|c| *c.borrow_mut() = None);
         }
     }
 }
@@ -596,7 +596,7 @@ fn d03_lock_envenenado_se_propaga() {
         "el envenenado debe propagarse como fallo visible, no recuperarse"
     );
     // Higiene: no heredar techo al siguiente test del mismo hilo.
-    TEST_LIMITE.with(|c| *c.borrow_mut() = None);
+    TEST_LIMIT.with(|c| *c.borrow_mut() = None);
 }
 
 /// El reaper ante fallo fuera de polls con pidfile sin PID vivo (daemon 8765
@@ -618,7 +618,7 @@ fn d03_reaper_sin_pid_vivo_no_falla() {
     // Pidfile rancio: PID garantizado muerto, solo en el sandbox.
     let pid_muerto = 2_000_000_000u32;
     assert!(
-        !avi_daemon::pid_vivo(pid_muerto),
+        !avi_daemon::pid_alive(pid_muerto),
         "el PID de prueba debe estar muerto"
     );
     let path = sandbox.join("daemon.pid");
@@ -641,7 +641,7 @@ fn d03_reaper_sin_pid_vivo_no_falla() {
     SANDBOX_ACTUAL_DIR.with(|c| *c.borrow_mut() = None);
     let _ = std::fs::remove_dir_all(&sandbox);
     // Higiene: no heredar techo al siguiente test del mismo hilo.
-    TEST_LIMITE.with(|c| *c.borrow_mut() = None);
+    TEST_LIMIT.with(|c| *c.borrow_mut() = None);
 }
 
 /// Ejecuta el binario con `args` y envs extra, devolviendo (código de salida, stdout
@@ -654,7 +654,7 @@ fn d03_reaper_sin_pid_vivo_no_falla() {
 /// hijo (y este, a su vez, `qwen_tts.exe` vendido/precompilado) que heredan el pipe del
 /// test: `output()` no retorna hasta que **todos** los holders del write-end lo cierran —
 /// es decir, hasta el graceful shutdown del daemon (~10 s) — colgando el E2E en timeout
-/// (exit 124). El fix real (`desheredar_handles_estandar` en `handle_daemon`, corte de
+/// (exit 124). El fix real (`disinherit_standard_handles` en `handle_daemon`, corte de
 /// herencia vía `SetHandleInformation`) + `Stdio::null` no basta si se captura por pipe:
 /// Rust std deja `bInheritHandles=TRUE` y no hay creation flag que lo desactive. Al
 /// redirigir `stdout` a
@@ -951,7 +951,7 @@ fn start_instancia(inst: &InstanciaAislada, extra: &[&str]) -> Value {
         );
     }
     let pid = inst.leer_pid_daemon();
-    if !pid.map(avi_daemon::pid_vivo).unwrap_or(false) {
+    if !pid.map(avi_daemon::pid_alive).unwrap_or(false) {
         fallo_con_reaper(
             "start_instancia(pid)",
             format!(
@@ -996,7 +996,7 @@ fn start_instancia_solo_running(inst: &InstanciaAislada, extra: &[&str]) -> Valu
         );
     }
     let pid = inst.leer_pid_daemon();
-    if !pid.map(avi_daemon::pid_vivo).unwrap_or(false) {
+    if !pid.map(avi_daemon::pid_alive).unwrap_or(false) {
         fallo_con_reaper(
             "start_instancia_solo_running(pid)",
             format!(
@@ -1037,21 +1037,21 @@ fn stop_instancia(inst: &InstanciaAislada, contexto: &str) {
 /// con huérfanos vivos ni los abandona en la vía de fallo.
 fn verificar_cero_huerfanos_instancia(contexto: &str, inst: &InstanciaAislada, puerto: u16) {
     let pid = inst.leer_pid_daemon();
-    let pid_vivo = pid.map(avi_daemon::pid_vivo).unwrap_or(false);
+    let pid_alive = pid.map(avi_daemon::pid_alive).unwrap_or(false);
     let residente = inst.leer_pid_residente();
-    let residente_vivo = residente != 0 && avi_tts::resident::pid_vivo_residente(residente);
+    let residente_vivo = residente != 0 && avi_tts::resident::resident_pid_alive(residente);
     let p_instancia = puerto_abierto(puerto);
     let residente_por_imagen = residente_presente_por_imagen();
     let pidfile = inst.dir.join("daemon.pid");
     let pidfile_existe = pidfile.exists();
-    if pid_vivo || residente_vivo || p_instancia || residente_por_imagen || pidfile_existe {
+    if pid_alive || residente_vivo || p_instancia || residente_por_imagen || pidfile_existe {
         fallo_con_reaper(
             &format!("verificar_cero_huerfanos_instancia({})", contexto),
             format!(
                 "quedaron huérfanos tras {}: pid={:?} vivo={} residente={} residente_vivo={} puerto_instancia={} abierto={} residente_por_imagen={} pidfile={} (el apagado debe dejar cero restos a nivel SO)",
                 contexto,
                 pid,
-                pid_vivo,
+                pid_alive,
                 residente,
                 residente_vivo,
                 puerto,
@@ -2542,14 +2542,14 @@ mod tts {
             .map(|n| n as u32)
             .or_else(|| inst.leer_pid_daemon());
         assert!(
-            nuevo.map(avi_daemon::pid_vivo).unwrap_or(false),
+            nuevo.map(avi_daemon::pid_alive).unwrap_or(false),
             "tras restart el daemon debe estar vivo a nivel SO (pid {:?})",
             nuevo
         );
         if let (Some(p), Some(q)) = (previo, nuevo) {
             if p != q {
                 assert!(
-                    !avi_daemon::pid_vivo(p),
+                    !avi_daemon::pid_alive(p),
                     "tras restart el árbol previo no debe quedar vivo (pid {})",
                     p
                 );
@@ -2587,7 +2587,7 @@ mod tts {
         // está vivo (revalidación matar-y-rearrancar).
         let pid = inst.leer_pid_daemon();
         assert!(
-            pid.map(avi_daemon::pid_vivo).unwrap_or(false),
+            pid.map(avi_daemon::pid_alive).unwrap_or(false),
             "con status running el PID de la pista debe estar vivo (pid {:?})",
             pid
         );
@@ -2724,7 +2724,7 @@ mod tts {
         );
         let pid = inst.leer_pid_daemon();
         assert!(
-            pid.map(avi_daemon::pid_vivo).unwrap_or(false),
+            pid.map(avi_daemon::pid_alive).unwrap_or(false),
             "el daemon recién arrancado debe estar vivo a nivel SO (pid {:?})",
             pid
         );
@@ -2773,7 +2773,7 @@ mod tts {
             .leer_pid_daemon()
             .expect("tras start debe haber pidfile");
         assert!(
-            avi_daemon::pid_vivo(pid_a),
+            avi_daemon::pid_alive(pid_a),
             "el daemon de la instancia debe estar vivo (pid {})",
             pid_a
         );
@@ -2797,7 +2797,7 @@ mod tts {
         );
         esperar_running_sin_warm(REINTENTOS_WARM_FAILSAFE, &a);
         assert!(
-            !avi_daemon::pid_vivo(pid_a),
+            !avi_daemon::pid_alive(pid_a),
             "el reclamo debe haber matado el árbol residual (pid {} sigue vivo)",
             pid_a
         );
@@ -2805,7 +2805,7 @@ mod tts {
             .leer_pid_daemon()
             .expect("tras reclamo debe haber pidfile fresco");
         assert!(
-            avi_daemon::pid_vivo(pid_b),
+            avi_daemon::pid_alive(pid_b),
             "el daemon reclamado debe estar vivo (pid {})",
             pid_b
         );
@@ -2813,8 +2813,8 @@ mod tts {
         // Fase 2 — timeout/aborto sin graceful: se mata el árbol sin POST
         // /shutdown (la pista queda rancia a propósito). El próximo `start`
         // parte de cero con `started`.
-        avi_daemon::matar_arbol_por_pid(pid_b);
-        avi_daemon::esperar_muerte_pid(pid_b, std::time::Duration::from_secs(8));
+        avi_daemon::kill_tree_by_pid(pid_b);
+        avi_daemon::wait_for_pid_death(pid_b, std::time::Duration::from_secs(8));
         // (tensado CI Unix, sin simular Unix en local): tras matar el
         // árbol sin graceful, el residente no debe seguir vivo por imagen antes
         // del rearranque (el kill de grupo Unix arrastra al residente).
@@ -2850,7 +2850,7 @@ mod tts {
     /// `daemon start` vía **pipe** (`Stdio::piped()`, no tempfile) — porque
     /// un tempfile nunca crea un handle heredable y no puede detectar la
     /// retención. Si el daemon (o `qwen_tts` a través de él) heredan el
-    /// write-end pese a `desheredar_handles_estandar` (corte de herencia vía
+    /// write-end pese a `disinherit_standard_handles` (corte de herencia vía
     /// `SetHandleInformation` en `handle_daemon`), la
     /// lectura del pipe no verá EOF hasta que el holder cierre el handle —
     /// exactamente el síntoma documentado: "matar el motor no libera el log
@@ -2877,7 +2877,7 @@ mod tts {
         let dir_pipe = inst.dir.clone();
         let pid_residente_registrado = move || -> Option<u32> {
             let pid = leer_pid_residente_dir(&dir_pipe);
-            if pid != 0 && avi_tts::resident::pid_vivo_residente(pid) {
+            if pid != 0 && avi_tts::resident::resident_pid_alive(pid) {
                 Some(pid)
             } else {
                 None
@@ -2939,8 +2939,8 @@ mod tts {
         // orden exacto del síntoma documentado.
         if let Some(pid_motor) = pid_residente_registrado() {
             hito(&format!("h03: matando solo el motor (pid {})", pid_motor));
-            avi_daemon::matar_arbol_por_pid(pid_motor);
-            avi_daemon::esperar_muerte_pid(pid_motor, std::time::Duration::from_secs(8));
+            avi_daemon::kill_tree_by_pid(pid_motor);
+            avi_daemon::wait_for_pid_death(pid_motor, std::time::Duration::from_secs(8));
             if let Ok(salida) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
                 let salida = salida.expect("`daemon start` debe poder ejecutarse");
                 hito(&format!(
@@ -2961,8 +2961,8 @@ mod tts {
         let pid_daemon = inst.leer_pid_daemon();
         if let Some(pid) = pid_daemon {
             hito(&format!("h03: matando el árbol del daemon (pid {})", pid));
-            avi_daemon::matar_arbol_por_pid(pid);
-            avi_daemon::esperar_muerte_pid(pid, std::time::Duration::from_secs(8));
+            avi_daemon::kill_tree_by_pid(pid);
+            avi_daemon::wait_for_pid_death(pid, std::time::Duration::from_secs(8));
         }
 
         match rx.recv_timeout(std::time::Duration::from_secs(10)) {
@@ -2971,7 +2971,7 @@ mod tts {
                 fallo_con_reaper(
                     "h03_pipe_stdio_no_debe_quedar_retenido",
                     format!(
-                        "Reproduce: el pipe del lanzador solo se liberó al matar el daemon (no el motor), tras {} ms totales (exit {:?}). El daemon retiene el stdio del proceso que lo lanzó pese al corte de herencia por SetHandleInformation (desheredar_handles_estandar).",
+                        "Reproduce: el pipe del lanzador solo se liberó al matar el daemon (no el motor), tras {} ms totales (exit {:?}). El daemon retiene el stdio del proceso que lo lanzó pese al corte de herencia por SetHandleInformation (disinherit_standard_handles).",
                         t0.elapsed().as_millis(),
                         salida.status.code()
                     ),
@@ -3068,7 +3068,7 @@ mod tts {
         assert!(
             !inst
                 .leer_pid_daemon()
-                .map(avi_daemon::pid_vivo)
+                .map(avi_daemon::pid_alive)
                 .unwrap_or(false),
             "sin daemon no debe haber PID vivo en la pista"
         );

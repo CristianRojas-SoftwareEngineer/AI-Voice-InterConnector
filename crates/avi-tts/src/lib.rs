@@ -20,7 +20,7 @@ pub const DEFAULT_PORT: u16 = 8766;
 
 /// Nombre de imagen del proceso residente (`qwen_tts`). Fuente única para la
 /// resolución del binario y para el barrido por imagen de último recurso
-/// (`resident::barrer_residente_por_imagen`). El residente tiene imagen propia
+/// (`resident::sweep_resident_by_image`). El residente tiene imagen propia
 /// —a diferencia del daemon, que comparte imagen con el CLI—, así que el
 /// kill-por-imagen es seguro sólo para el residente.
 #[cfg(windows)]
@@ -77,7 +77,7 @@ impl GenerationOptions {
     /// similitud de hablante mínima 0.822 en PASS (target/seed-sweep/wer.csv,
     /// speaker_sim.csv). El seed 42 previo también pasa, pero seed 4 iguala la
     /// prosodia nativa de Windows sin depender de WSL.
-    pub fn produccion() -> Self {
+    pub fn production() -> Self {
         Self {
             temperature: 0.35,
             seed: Some(4),
@@ -87,8 +87,8 @@ impl GenerationOptions {
 
     /// Resuelve la temperatura opcional del CLI a opciones efectivas: sin flag
     /// se usa la config de producción; con flag se sobrescribe la temperatura.
-    pub fn con_temperatura(temperature: Option<f32>) -> Self {
-        let mut opts = Self::produccion();
+    pub fn with_temperature(temperature: Option<f32>) -> Self {
+        let mut opts = Self::production();
         if let Some(t) = temperature {
             opts.temperature = t;
         }
@@ -141,7 +141,7 @@ pub enum VozMotor {
 /// cualquier otra es preset. `default` con `reference.qvoice` graft resuelve
 /// como `Clonada`; sin referencia resuelve como `Preset("default")` y el
 /// motor cae a `ryan` por `spk_table` sólo si el binario lo exige.
-pub fn resolve_voice_motor(voice: &str, qvoice: Option<&Path>) -> VozMotor {
+pub fn resolve_voice_engine(voice: &str, qvoice: Option<&Path>) -> VozMotor {
     if let Some(q) = qvoice {
         if q.is_file() {
             return VozMotor::Clonada(q.to_path_buf());
@@ -342,14 +342,14 @@ impl Qwen3TtsEngine {
     /// el `shutdown` mata por PID exacto, no por imagen —si el árbol preciso no lo
     /// termina, la verificación con deadline la hace el llamante (graceful del
     /// daemon / parada del CLI) y el fallo es ruidoso. El barrido por imagen
-    /// (`barrer_residente_por_imagen`) queda como último recurso del camino de
+    /// (`sweep_resident_by_image`) queda como último recurso del camino de
     /// reclamo cuando no hay `resident_pid` registrado. La recolección del estado
     /// se hace best-effort con `try_lock` (si el warmup lo tiene, no esperamos:
     /// el proceso ya está muerto y su `Drop` recolectará el estado al liberarse).
     pub fn shutdown(&self) {
         let pid = self.resident_pid.load(Ordering::Relaxed);
         if pid != 0 {
-            crate::resident::matar_arbol_residente_por_pid(pid);
+            crate::resident::kill_tree_resident_by_pid(pid);
         }
         if let Ok(mut guard) = self.resident.try_lock() {
             *guard = None;
@@ -365,7 +365,7 @@ impl Qwen3TtsEngine {
         temperature: Option<f32>,
         output_path: Option<&PathBuf>,
     ) -> Result<PathBuf> {
-        let options = GenerationOptions::con_temperatura(temperature);
+        let options = GenerationOptions::with_temperature(temperature);
         let qvoice_path = avi_store::VoiceStore::new().find_reference(voice);
         let profile = VoiceProfile {
             name: voice.to_string(),
@@ -409,7 +409,7 @@ impl Qwen3TtsEngine {
     /// arranque, por lo que nace sano o falla con diagnóstico), actualiza
     /// `resident_pid` y ensambla el `ResidentState`. Compartido por el camino
     /// de cambio de voz y por el rearranque ante degradación del residente.
-    fn arrancar_residente(
+    fn start_resident(
         &self,
         model_dir: &Path,
         voz: &VozMotor,
@@ -469,7 +469,7 @@ impl Qwen3TtsEngine {
         let url = {
             let mut guard = self.resident.lock().unwrap();
             if guard.as_ref().map(|s| s.voz_key.as_str()) != Some(voz_key.as_str()) {
-                *guard = Some(self.arrancar_residente(model_dir, voz, voz_key)?);
+                *guard = Some(self.start_resident(model_dir, voz, voz_key)?);
             } else if let Err(_e) = guard
                 .as_mut()
                 .expect("reutilización verificada arriba")
@@ -482,9 +482,9 @@ impl Qwen3TtsEngine {
                     .expect("residente reutilizado")
                     .resident
                     .pid();
-                resident::matar_arbol_residente_por_pid(pid);
+                resident::kill_tree_resident_by_pid(pid);
                 *guard = None;
-                *guard = Some(self.arrancar_residente(model_dir, voz, voz_key)?);
+                *guard = Some(self.start_resident(model_dir, voz, voz_key)?);
             }
             let state = guard
                 .as_ref()
@@ -536,7 +536,7 @@ impl TtsEngine for Qwen3TtsEngine {
             .as_deref()
             .filter(|q| q.is_file())
             .map(|q| q.to_path_buf());
-        let voz = resolve_voice_motor(&profile.name, qvoice.as_deref());
+        let voz = resolve_voice_engine(&profile.name, qvoice.as_deref());
 
         // 1. HTTP manual configurado (solo presets; la voz clonada exige un
         //    servidor arrancado con su `--load-voice`, que solo gestiona el residente).
@@ -838,7 +838,7 @@ pub mod resident {
             // padre. `DETACHED_PROCESS (0x8)` evita la ventana de consola independiente.
             // La herencia del pipe (write-end) del proceso abuelo (test CLI) se corta
             // en la raíz: el daemon que spawnea este motor ya desheredó sus STD vía
-            // `SetHandleInformation` (`main::desheredar_handles_estandar`); no existe
+            // `SetHandleInformation` (`main::disinherit_standard_handles`); no existe
             // una creation flag que desactive la herencia. `Stdio::null` en stdin/stdout
             // cierra la herencia de stdin/tty; stderr va al log (Stdio::from marca el
             // handle no-heredable).
@@ -847,7 +847,7 @@ pub mod resident {
             // y `taskkill /F /T /PID <daemon>` (o el Job con cierre) lo alcance.
             // En Unix tampoco se hace `setsid` aquí: hereda el grupo del daemon.
             // Tras la muerte del líder el residente reparentado se verifica
-            // por PID y 8766 desde el CLI (`reclamar_residual_degradado`); los
+            // por PID y 8766 desde el CLI (`reclaim_degraded_residual`); los
             // dobles de test nunca reproducen ese reparentado.
             #[cfg(windows)]
             {
@@ -938,8 +938,8 @@ pub mod resident {
     /// Viveza real de un PID a nivel de sistema (sin Mutex ni HTTP).
     /// `pub` para el camino de reclamo/parada del CLI: muerte por PID
     /// registrado + verificación de que ese PID quedó muerto; sin PID, el
-    /// último recurso es `barrer_residente_por_imagen` + ausencia por imagen.
-    pub fn pid_vivo_residente(pid: u32) -> bool {
+    /// último recurso es `sweep_resident_by_image` + ausencia por imagen.
+    pub fn resident_pid_alive(pid: u32) -> bool {
         if pid == 0 {
             return false;
         }
@@ -978,8 +978,8 @@ pub mod resident {
     /// `kill` al grupo `-<pid>` apuntaría a un pgid nunca establecido; el
     /// árbol/grupo lo cierra el daemon, aquí solo se termina el PID puntual del
     /// camino de reclamo/parada del CLI. No verifica: el llamante
-    /// combina con `pid_vivo_residente` o recolecta el estado vía `Child`.
-    pub fn matar_arbol_residente_por_pid(pid: u32) -> bool {
+    /// combina con `resident_pid_alive` o recolecta el estado vía `Child`.
+    pub fn kill_tree_resident_by_pid(pid: u32) -> bool {
         if pid == 0 {
             return false;
         }
@@ -1014,8 +1014,8 @@ pub mod resident {
     /// sólo porque el residente tiene imagen propia —el daemon comparte imagen
     /// con el CLI y por eso su kill-por-imagen está prohibido—. Best-effort y
     /// sin verificación interna: el llamante verifica la ausencia
-    /// (`pid_vivo_residente == false` y/o ausencia por imagen).
-    pub fn barrer_residente_por_imagen() -> bool {
+    /// (`resident_pid_alive == false` y/o ausencia por imagen).
+    pub fn sweep_resident_by_image() -> bool {
         #[cfg(windows)]
         {
             Command::new("taskkill")
@@ -1194,7 +1194,7 @@ mod tests {
 
     /// Los defaults del host deben coincidir con los defaults del motor
     /// (`docs/server.md:140-141`). Afirma los defaults del `struct`/motor sin
-    /// cambios, no los valores de producción de `GenerationOptions::produccion()`
+    /// cambios, no los valores de producción de `GenerationOptions::production()`
     /// (config validada por oído) — este test queda intacto a propósito.
     #[test]
     fn default_generation_options_coinciden_con_motor() {
@@ -1207,11 +1207,11 @@ mod tests {
         assert_eq!(d.seed, None);
     }
 
-    /// `produccion()` fija temperatura y seed a la config validada por oído,
+    /// `production()` fija temperatura y seed a la config validada por oído,
     /// sin alterar el resto de campos respecto a `Default`.
     #[test]
-    fn generation_options_produccion_fija_temperatura_y_seed() {
-        let p = GenerationOptions::produccion();
+    fn generation_options_production_fija_temperatura_y_seed() {
+        let p = GenerationOptions::production();
         assert_eq!(p.temperature, 0.35);
         assert_eq!(p.seed, Some(4));
         assert_eq!(p.top_k, DEFAULT_TOP_K);
@@ -1220,20 +1220,20 @@ mod tests {
         assert_eq!(p.language, "es");
     }
 
-    /// `con_temperatura(None)` equivale a `produccion()`; con `Some` solo
+    /// `with_temperature(None)` equivale a `production()`; con `Some` solo
     /// cambia la temperatura (bordes del rango válido incluidos).
     #[test]
-    fn generation_options_con_temperatura_resuelve_override() {
-        let p = GenerationOptions::con_temperatura(None);
+    fn generation_options_with_temperature_resuelve_override() {
+        let p = GenerationOptions::with_temperature(None);
         assert_eq!(p.temperature, 0.35);
         assert_eq!(p.seed, Some(4));
-        let o = GenerationOptions::con_temperatura(Some(0.9));
+        let o = GenerationOptions::with_temperature(Some(0.9));
         assert_eq!(o.temperature, 0.9);
         assert_eq!(o.seed, Some(4));
         assert_eq!(o.top_k, DEFAULT_TOP_K);
-        let min = GenerationOptions::con_temperatura(Some(f32::MIN_POSITIVE));
+        let min = GenerationOptions::with_temperature(Some(f32::MIN_POSITIVE));
         assert!(min.temperature > 0.0);
-        let max = GenerationOptions::con_temperatura(Some(2.0));
+        let max = GenerationOptions::with_temperature(Some(2.0));
         assert_eq!(max.temperature, 2.0);
     }
 
@@ -1296,7 +1296,7 @@ mod tests {
 
     /// Body HTTP con defaults → claves exactas; voz clonada → sin speaker/language.
     /// Afirma los defaults del `struct`/motor sin cambios, no los valores de
-    /// producción de `GenerationOptions::produccion()` (config validada por oído) — el body HTTP
+    /// producción de `GenerationOptions::production()` (config validada por oído) — el body HTTP
     /// no transporta `int4`/`-j`/`--stream` (son flags de arranque de proceso).
     #[test]
     fn construir_body_tts_defaults_y_voz_clonada() {
@@ -1345,21 +1345,21 @@ mod tests {
 
     /// Tabla de resolución voz → motor (default resuelve como Preset(default)).
     #[test]
-    fn resolve_voice_motor_tabla() {
+    fn resolve_voice_engine_tabla() {
         // default sin referencia resuelve como Preset("default"); con qvoice resuelve como Clonada.
         assert_eq!(
-            resolve_voice_motor("default", None),
+            resolve_voice_engine("default", None),
             VozMotor::Preset("default".to_string())
         );
         let q = std::env::temp_dir().join("avi_tts_test_referencia.qvoice");
         std::fs::write(&q, b"QVCE").unwrap();
         assert_eq!(
-            resolve_voice_motor("mi_voz", Some(&q)),
+            resolve_voice_engine("mi_voz", Some(&q)),
             VozMotor::Clonada(q.clone())
         );
         // Sin referencia → preset con el nombre dado.
         assert_eq!(
-            resolve_voice_motor("vivian", None),
+            resolve_voice_engine("vivian", None),
             VozMotor::Preset("vivian".to_string())
         );
         std::fs::remove_file(&q).ok();
@@ -1548,7 +1548,7 @@ mod tests {
 
     /// El body del POST contra un servidor simulado transporta los defaults
     /// del motor (e9) y sus overrides. Afirma los defaults del `struct`/motor sin
-    /// cambios, no los valores de producción de `GenerationOptions::produccion()`
+    /// cambios, no los valores de producción de `GenerationOptions::production()`
     /// (config validada por oído) — este test invoca `synthesize_with_options` directamente con
     /// `GenerationOptions::default()`, no `Qwen3TtsEngine::synthesize`.
     #[test]
@@ -1619,15 +1619,15 @@ mod tests {
     }
 
     /// ¿Sigue vivo el proceso con `pid`? Doble de test: delega en
-    /// `resident::pid_vivo_residente`, la misma primitiva que el producto usa
+    /// `resident::resident_pid_alive`, la misma primitiva que el producto usa
     /// para verificar el cierre por árbol, sin reproducir daemonización real.
     fn proceso_vivo(pid: u32) -> bool {
-        resident::pid_vivo_residente(pid)
+        resident::resident_pid_alive(pid)
     }
 
     /// La terminación por PID mata un hijo real a nivel SO, sin
     /// daemonización (hijo directo, no el `qwen_tts` desacoplado). Cubre
-    /// `matar_arbol_residente_por_pid` + `pid_vivo_residente` con recolección
+    /// `kill_tree_resident_by_pid` + `resident_pid_alive` con recolección
     /// determinista del estado (como el `Drop`). Verificación SIN sondeo sobre
     /// el singleton de PID del SO: un SIGKILL/`taskkill /F` es imparable, así
     /// que `wait()` bloquea hasta la muerte real y no puede colgar por un hijo
@@ -1638,12 +1638,12 @@ mod tests {
         let mut child = proceso_durmiente();
         let pid = child.id();
         assert!(
-            resident::pid_vivo_residente(pid),
+            resident::resident_pid_alive(pid),
             "el hijo debe estar vivo tras el spawn (pid {})",
             pid
         );
         assert!(
-            resident::matar_arbol_residente_por_pid(pid),
+            resident::kill_tree_resident_by_pid(pid),
             "la terminación por PID debe reportar éxito sobre un hijo vivo (pid {})",
             pid
         );
