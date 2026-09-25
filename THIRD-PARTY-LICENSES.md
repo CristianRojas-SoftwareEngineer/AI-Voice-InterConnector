@@ -85,7 +85,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 |---------|---------|---------------------|--------|
 | `ahash` | 0.8.12 | MIT OR Apache-2.0 | MIT |
 | `aho-corasick` | 1.1.5 | Unlicense OR MIT | MIT |
-| `ai-voice-interconnector` | 0.23.0 | GPL-3.0-or-later | GPL-3.0-or-later |
+| `ai-voice-interconnector` | 0.23.1 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `alsa` | 0.9.1 | Apache-2.0/MIT | MIT |
 | `alsa-sys` | 0.3.1 | MIT | MIT |
 | `android_system_properties` | 0.1.6 | MIT OR Apache-2.0 | MIT |
