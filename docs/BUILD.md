@@ -508,7 +508,7 @@ quedan documentados aquí de forma autocontenida:
   de la serie pesada "has been running for over 60 seconds" mientras espera
   turno para adquirir `TTS_LOCK`. Es espera de mutex esperada, no trabajo
   atascado: no se le añaden reintentos ni timeouts para silenciarlo.
-- **La guarda de provisión TTS no aprovisiona.** `tts_modelo_registrado()`
+- **La guarda de provisión TTS no aprovisiona.** `tts_model_registered()`
   solo consulta `doctor`; si faltan modelos, las pruebas pesadas se omiten.
   Para ejecutarlas hay que correr antes `ai-voice-interconnector setup`.
   Reintroducir `setup` en la guarda descargaría ~9 GB en cada corrida de CI

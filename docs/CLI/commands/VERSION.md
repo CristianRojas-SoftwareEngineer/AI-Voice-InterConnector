@@ -105,7 +105,7 @@ Fixture verificado por test: `tests/golden/cli_version.json`.
 
 | Test | Archivo:línea | Verificación |
 |---|---|---|
-| `version_coincide_con_fixture` | `tests/cli_golden.rs` | `ai-voice-interconnector --json version` produce exit `0` y el JSON coincide exactamente con `tests/golden/cli_version.json` |
+| `version_matches_fixture` | `tests/cli_golden.rs` | `ai-voice-interconnector --json version` produce exit `0` y el JSON coincide exactamente con `tests/golden/cli_version.json` |
 
 ---
 
