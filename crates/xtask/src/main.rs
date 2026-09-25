@@ -199,6 +199,8 @@ fn main() -> Result<()> {
                 }
             }
             bump_version(version)?;
+            // El inventario incluye la versión del crate raíz: regenerarlo tras el bump.
+            write_licenses_inventory()?;
             promote_changelog(version)?;
 
             // Post-comprobaciones: las mismas puertas que CI ejecuta sobre el tag,
@@ -210,6 +212,7 @@ fn main() -> Result<()> {
                     e
                 )
             };
+            check_licenses_gate().map_err(post_check)?;
             check_source_offer(version).map_err(post_check)?;
             let changelog_text = std::fs::read_to_string("CHANGELOG.md")?;
             validate_changelog_text(&changelog_text, version).map_err(post_check)?;
@@ -219,6 +222,7 @@ fn main() -> Result<()> {
             println!("  - Cargo.toml (package.version)");
             println!("  - Cargo.lock (ai-voice-interconnector)");
             println!("  - tests/golden/cli_version.json");
+            println!("  - THIRD-PARTY-LICENSES.md (inventario regenerado)");
             println!("  - SOURCE-OFFER.md (oferta GPLv3 §6 versionada)");
             println!("  - CHANGELOG.md (sección promovida desde [No publicado] + ToC + enlace)");
             println!(

@@ -147,7 +147,7 @@ The test: Every changed line should trace directly to the user's request.
 **Make every commit self-explanatory and descriptive.**
 
 - The `conventional-commits` skill is the authority on commit message format and structure. Follow it.
-- For releases (`bump`/`tag`/`publish`), the `release` skill (`.claude/skills/release/SKILL.md`, `cargo run -p xtask -- release X.Y.Z`) is the source of truth: it bumps the 5 version carriers and **promotes** the hand-curated `## [No publicado]` CHANGELOG section to `## [X.Y.Z]` (it does not generate notes from `git log`; curate `[No publicado]` continuously during development). See `docs/RELEASING.md`.
+- For releases (`bump`/`tag`/`publish`), the `release` skill (`.claude/skills/release/SKILL.md`, `cargo run -p xtask -- release X.Y.Z`) is the source of truth: it bumps the 5 version carriers, regenerates the `THIRD-PARTY-LICENSES.md` inventory and **promotes** the hand-curated `## [No publicado]` CHANGELOG section to `## [X.Y.Z]` (it does not generate notes from `git log`; curate `[No publicado]` continuously during development). See `docs/RELEASING.md`.
 <!-- </version_control> -->
 
 ---

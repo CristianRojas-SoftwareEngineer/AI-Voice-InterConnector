@@ -90,14 +90,16 @@ git push origin main --tags           # sin --tags el tag no dispara build-all
 2. **Bump.** Escribe `X.Y.Z` en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
    `tests/golden/cli_version.json` y `SOURCE-OFFER.md`. `SOURCE-OFFER.md` es la
    oferta de código fuente GPLv3 §6 que viaja dentro de los 4 artefactos.
+   Después regenera el inventario de `THIRD-PARTY-LICENSES.md`, que incluye la
+   versión del propio crate.
 3. **Promoción.** Convierte `## [No publicado]` de `CHANGELOG.md` en
    `## [X.Y.Z] — AAAA-MM-DD` y reemplaza su entrada del índice por una que apunta
    al ancla que GitHub asigna a la cabecera. También agrega la definición del
    enlace de comparación con el tag anterior. Falla si no existe
    `## [No publicado]`, si quedan marcadores `TODO: curar` o si `## [X.Y.Z]` ya
    existe.
-4. **Post-comprobación.** Verifica `SOURCE-OFFER.md` y el CHANGELOG completo con
-   las mismas funciones que usan las puertas de CI. Si algo falla en este paso,
+4. **Post-comprobación.** Verifica `THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`
+   y el CHANGELOG completo con las mismas funciones que usan las puertas de CI. Si algo falla en este paso,
    los archivos ya quedaron modificados: corrígelos a mano o revierte con
    `git checkout .` y reintenta.
 

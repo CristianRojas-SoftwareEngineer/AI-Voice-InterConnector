@@ -140,6 +140,11 @@ y aborta el corte antes de modificar archivos si alguna falla.
 
 ### Corregido
 
+- fix(xtask): `cargo run -p xtask -- release` regenera el inventario de
+  `THIRD-PARTY-LICENSES.md` después del bump y lo verifica en la
+  post-comprobación. El inventario incluye la versión de
+  `ai-voice-interconnector`, así que sin este paso el tag fallaba en el job
+  `validate-licenses`.
 - fix: la atribución de `THIRD-PARTY-LICENSES.md` coincide con `Cargo.lock` y
   el metadato de cada crate. Se añadieron 49 filas de crates con más de una
   versión resuelta (496 paquetes de 447 crates); se corrigieron 20 licencias
