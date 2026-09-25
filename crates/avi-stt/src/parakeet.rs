@@ -268,7 +268,8 @@ fn argmax(v: &[f32]) -> usize {
 
 fn session(path: impl AsRef<Path>) -> anyhow::Result<Session> {
     // rc.13: `Session::builder()` y cada `.with_*` devuelven `Result<SessionBuilder>`.
-    let b = Session::builder().map_err(|e| anyhow::anyhow!("construcción de la sesión ONNX: {e}"))?;
+    let b =
+        Session::builder().map_err(|e| anyhow::anyhow!("construcción de la sesión ONNX: {e}"))?;
     let b = b
         .with_optimization_level(GraphOptimizationLevel::Level1)
         .map_err(|e| anyhow::anyhow!("nivel de optimización: {e}"))?;

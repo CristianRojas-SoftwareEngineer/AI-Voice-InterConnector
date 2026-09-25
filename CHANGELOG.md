@@ -124,6 +124,29 @@ cualquier error, y los tests de upgrade forman parte de las puertas.
   lugar de `apt-get` y `brew`; `cimg/base` queda pineada por digest en
   `test-installer-linux` y `publish-release`.
 - ci: `test-installer-linux` ejecuta también `tests/installer/upgrade-linux.bats`.
+- cli: la ayuda (`--help`) y los errores de parseo de la CLI del producto y de
+  `xtask` se muestran en español (`Uso:`, `Opciones:`, `Argumentos:`,
+  `Comandos:`, anotaciones `[por defecto: …]`/`[valores posibles: …]`
+  derivadas de los valores reales). Los errores comunes (`argumento
+  inesperado`, `valor inválido`, `subcomando no reconocido`…) salen como
+  `Error: …` + `Uso: …` + sugerencia cuando la hay, conservando el exit code 2.
+
+### Eliminado
+
+- **BREAKING** cli: el subcomando automático `help` (`help <subcomando>`)
+  queda deshabilitado en la CLI del producto y en `xtask`; se reemplaza por
+  `<subcomando> --help`, que muestra la misma ayuda localizada.
+
+### Interno
+
+- cli: identificadores de código renombrados al inglés en `src/main.rs`,
+  `tests/cli_golden.rs` y los crates `avi-core`, `avi-audio`, `avi-store`,
+  `avi-stt`, `avi-translation`, `avi-tts`, `avi-daemon` y `xtask` (sin cambio
+  de comportamiento ni de superficie pública); el target de test
+  `benchmark_latencia` pasa a `benchmark_latency`.
+- docs: `AGENTS.md` §0 define la responsabilidad de cada idioma por capa
+  (identificadores en inglés; comentarios, documentación, mensajes y ayudas
+  en español), y la documentación vigente cita los nombres nuevos.
 
 ### Corregido
 

@@ -84,7 +84,7 @@ fn resolve_stt_language(token: &str) -> &str {
 }
 
 /// Valida el override de temperatura (`0 < t <= 2.0`); exit 2 si no calza.
-fn validar_temperature(temperature: Option<f32>) -> Result<(), CliError> {
+fn validate_temperature(temperature: Option<f32>) -> Result<(), CliError> {
     if let Some(t) = temperature {
         if !(t > 0.0 && t <= 2.0) {
             return Err(CliError::new(
@@ -953,14 +953,14 @@ async fn handle_translate(
 /// coinciden tras normalizar; exit 2 si el par no es soportado, exit 4 si
 /// falta el modelo, exit 9 si falla la traducción.
 fn translate_if_different(
-    texto: &str,
+    text: &str,
     source_token: &str,
     target_token: &str,
 ) -> Result<String, CliError> {
     let source = resolve_stt_language(source_token);
     let target = resolve_stt_language(target_token);
     if source == target {
-        return Ok(texto.to_string());
+        return Ok(text.to_string());
     }
     let pair = match (source, target) {
         ("es", "en") => "es-en",
@@ -999,7 +999,7 @@ fn translate_if_different(
     }
     #[cfg(feature = "native-translation")]
     {
-        translation::translate(texto, source, target, &ct2_dir).map_err(|e| {
+        translation::translate(text, source, target, &ct2_dir).map_err(|e| {
             CliError::new(
                 ExitCode::TranslationFailed,
                 "translation_failed",
@@ -1203,7 +1203,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<PathBuf, CliError>>,
 {
-    let reproducir = |wav: &PathBuf| -> Result<(), CliError> {
+    let play_back = |wav: &PathBuf| -> Result<(), CliError> {
         audio::AudioService::new().play_wav(wav).map_err(|e| {
             CliError::new(
                 ExitCode::Error,
@@ -1214,7 +1214,7 @@ where
     };
 
     // RF-12.5: reproducir al entrar al bucle.
-    reproducir(&tmp_wav)?;
+    play_back(&tmp_wav)?;
 
     loop {
         eprintln!(
@@ -1223,15 +1223,15 @@ where
         eprint!("Opción [1-4]: ");
         let _ = std::io::stderr().flush();
 
-        let mut linea = String::new();
-        let opcion = match std::io::stdin().read_line(&mut linea) {
+        let mut line = String::new();
+        let choice = match std::io::stdin().read_line(&mut line) {
             Ok(0) | Err(_) => return Ok(None), // EOF o error de lectura → descartar
-            Ok(_) => linea.trim().to_string(),
+            Ok(_) => line.trim().to_string(),
         };
 
-        match opcion.as_str() {
+        match choice.as_str() {
             "1" => {
-                reproducir(&tmp_wav)?;
+                play_back(&tmp_wav)?;
             }
             "2" => {
                 // RF-12.4: recomprobar colisión en el instante de guardar, no
@@ -1255,7 +1255,7 @@ where
             }
             "3" => {
                 tmp_wav = resynthesize().await?;
-                reproducir(&tmp_wav)?;
+                play_back(&tmp_wav)?;
             }
             "4" => return Ok(None),
             _ => eprintln!("Opción inválida."),
@@ -1460,7 +1460,7 @@ async fn handle_speech(
                     "--play requiere una terminal interactiva (TTY).",
                 ));
             }
-            validar_temperature(temperature)?;
+            validate_temperature(temperature)?;
             // Orden de validaciones del oráculo (cli.py:659-667).
             if text.trim().is_empty() {
                 return Err(CliError::new(
@@ -1587,7 +1587,7 @@ async fn handle_speech(
             target_language,
             temperature,
         } => {
-            validar_temperature(temperature)?;
+            validate_temperature(temperature)?;
             if text.trim().is_empty() {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
@@ -1657,7 +1657,7 @@ async fn handle_speech(
             target_language,
             temperature,
         } => {
-            validar_temperature(temperature)?;
+            validate_temperature(temperature)?;
             // Validaciones puras del oráculo (cli.py:562-624) — antes del despacho
             if duration.is_some() && !mic {
                 return Err(CliError::new(
@@ -2446,23 +2446,23 @@ fn convert_marian_to_ct2(
         // (versión sin `--copy_files`), se copian desde el snapshot pinneado.
         for spm in ["source.spm", "target.spm"] {
             if !tmp_dir.join(spm).is_file() {
-                let origen = hf_snapshot.join(spm);
-                if !origen.is_file() {
+                let source = hf_snapshot.join(spm);
+                if !source.is_file() {
                     anyhow::bail!(
                         "el snapshot {} no contiene {} (revisión inesperada) — limpia la cache HF y reintenta setup",
                         hf_snapshot.display(),
                         spm
                     );
                 }
-                std::fs::copy(&origen, tmp_dir.join(spm))?;
+                std::fs::copy(&source, tmp_dir.join(spm))?;
             }
         }
         // Verificación con el mismo criterio del gate antes de declarar éxito.
-        let faltan = store::ct2_dir_missing_files(&tmp_dir);
-        if !faltan.is_empty() {
+        let missing = store::ct2_dir_missing_files(&tmp_dir);
+        if !missing.is_empty() {
             anyhow::bail!(
                 "derivado CT2 incompleto (faltan: {}) — limpia la cache HF y reintenta setup",
-                faltan.join(", ")
+                missing.join(", ")
             );
         }
         Ok(())
@@ -2836,7 +2836,7 @@ fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, resident_alive: bool
 /// árbol por PID registrado —o por imagen si no hay PID— antes de declarar
 /// fresco (imagen del daemon prohibida; sólo el residente tiene imagen propia).
 async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
-    let inicio = std::time::Instant::now();
+    let start = std::time::Instant::now();
     // Graceful y verificación contra la dirección descubierta.
     let client_addr = resolve_client_addr();
     // 1) Graceful breve si el probe responde (no hereda el timeout de 120 s).
@@ -2848,11 +2848,11 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
                 .send(),
         )
         .await;
-        let restante = STOP_DEADLINE_GLOBAL
-            .checked_sub(inicio.elapsed())
+        let remaining = STOP_DEADLINE_GLOBAL
+            .checked_sub(start.elapsed())
             .unwrap_or(std::time::Duration::from_millis(500));
-        let espera = std::cmp::min(restante, std::time::Duration::from_secs(3));
-        let _ = tokio::time::timeout(espera, wait_health_down(client, espera)).await;
+        let wait = std::cmp::min(remaining, std::time::Duration::from_secs(3));
+        let _ = tokio::time::timeout(wait, wait_health_down(client, wait)).await;
     }
     // 2) Árbol preciso por PID con guarda anti-auto-muerte (imagen compartida).
     if let Some(p) = pid {
@@ -2873,29 +2873,29 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     // su árbol preciso; sin PID (pidfile perdido) el último recurso es el
     // barrido por imagen `qwen_tts` (seguro por imagen propia). La verificación
     // por `resident_pid` muerto vive en el paso 3.
-    let residente = read_resident_pid();
-    if residente != 0
-        && residente != std::process::id()
-        && avi_tts::resident::resident_pid_alive(residente)
+    let resident = read_resident_pid();
+    if resident != 0
+        && resident != std::process::id()
+        && avi_tts::resident::resident_pid_alive(resident)
     {
-        avi_tts::resident::kill_tree_resident_by_pid(residente);
-    } else if residente == 0 {
+        avi_tts::resident::kill_tree_resident_by_pid(resident);
+    } else if resident == 0 {
         avi_tts::resident::sweep_resident_by_image();
     }
     // 3) Verificación con el restante del deadline global (probe down + PID muerto;
     // en Unix además residente muerto ante líder muerto).
-    while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
-        let vivo = pid.map(daemon::pid_alive).unwrap_or(false);
+    while start.elapsed() < STOP_DEADLINE_GLOBAL {
+        let alive = pid.map(daemon::pid_alive).unwrap_or(false);
         let probe = probe_health(client, &client_addr).await;
         #[cfg(unix)]
         {
-            if unix_claim_verified(probe, vivo, resident_alive_by_pid()) {
+            if unix_claim_verified(probe, alive, resident_alive_by_pid()) {
                 break;
             }
         }
         #[cfg(not(unix))]
         {
-            if !probe && !vivo {
+            if !probe && !alive {
                 break;
             }
         }
@@ -2928,7 +2928,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
 /// `pid != process::id()` previene la auto-muerte incluso si el PID leído fuera el del
 /// propio proceso.
 async fn stop_daemon_and_resident() {
-    let inicio = std::time::Instant::now();
+    let start = std::time::Instant::now();
     let client = daemon_client();
     // Graceful contra la dirección descubierta.
     let client_addr = resolve_client_addr();
@@ -2941,17 +2941,17 @@ async fn stop_daemon_and_resident() {
                 .send(),
         )
         .await;
-        let restante = STOP_DEADLINE_GLOBAL
-            .checked_sub(inicio.elapsed())
+        let remaining = STOP_DEADLINE_GLOBAL
+            .checked_sub(start.elapsed())
             .unwrap_or(std::time::Duration::from_millis(500));
-        let espera = std::cmp::min(restante, std::time::Duration::from_secs(3));
-        let _ = tokio::time::timeout(espera, wait_health_down(&client, espera)).await;
+        let wait = std::cmp::min(remaining, std::time::Duration::from_secs(3));
+        let _ = tokio::time::timeout(wait, wait_health_down(&client, wait)).await;
     }
     // 2) Árbol preciso por PID si sigue vivo (ambas plataformas, con guarda).
     let pid = read_daemon_pid();
-    let vivo = pid.map(daemon::pid_alive).unwrap_or(false);
-    let sigue_activo = daemon_active(&client).await;
-    if sigue_activo || vivo {
+    let alive = pid.map(daemon::pid_alive).unwrap_or(false);
+    let still_active = daemon_active(&client).await;
+    if still_active || alive {
         if let Some(p) = pid {
             if p != 0 && p != std::process::id() {
                 daemon::kill_tree_by_pid(p);
@@ -2962,27 +2962,27 @@ async fn stop_daemon_and_resident() {
     // mata su árbol preciso; sin PID (pidfile perdido) el último recurso es el
     // barrido por imagen `qwen_tts` (seguro por imagen propia; imagen del daemon
     // prohibida). La verificación por `resident_pid` muerto vive en el paso 3.
-    let residente = read_resident_pid();
-    if residente != 0
-        && residente != std::process::id()
-        && avi_tts::resident::resident_pid_alive(residente)
+    let resident = read_resident_pid();
+    if resident != 0
+        && resident != std::process::id()
+        && avi_tts::resident::resident_pid_alive(resident)
     {
-        avi_tts::resident::kill_tree_resident_by_pid(residente);
-    } else if residente == 0 {
+        avi_tts::resident::kill_tree_resident_by_pid(resident);
+    } else if resident == 0 {
         avi_tts::resident::sweep_resident_by_image();
     }
     // 3) Verificación con el restante del deadline global.
-    while inicio.elapsed() < STOP_DEADLINE_GLOBAL {
-        let vivo_ahora = read_daemon_pid().map(daemon::pid_alive).unwrap_or(false);
-        if !daemon_active(&client).await && !vivo_ahora && !resident_alive_by_pid() {
+    while start.elapsed() < STOP_DEADLINE_GLOBAL {
+        let alive_now = read_daemon_pid().map(daemon::pid_alive).unwrap_or(false);
+        if !daemon_active(&client).await && !alive_now && !resident_alive_by_pid() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
     // 4) Borrado solo tras muerte verificada o pista rancia reconciliada.
     let pid_final = read_daemon_pid();
-    let vivo_final = pid_final.map(daemon::pid_alive).unwrap_or(false);
-    if !daemon_active(&client).await && !vivo_final {
+    let final_alive = pid_final.map(daemon::pid_alive).unwrap_or(false);
+    if !daemon_active(&client).await && !final_alive {
         let _ = remove_daemon_pid_file();
     }
 }
@@ -3300,8 +3300,8 @@ fn require_model_provisioned() -> Result<(), CliError> {
 
 /// Valida identificadores de voz/etiqueta contra el regex del oráculo
 /// (`^[A-Za-z0-9._-]+$`; paridad con el oráculo) → exit 2.
-fn is_valid_identifier(ids: Option<&str>, mas: Option<&str>) -> Result<(), CliError> {
-    for id in ids.into_iter().chain(mas) {
+fn is_valid_identifier(ids: Option<&str>, more: Option<&str>) -> Result<(), CliError> {
+    for id in ids.into_iter().chain(more) {
         if id.is_empty()
             || !id
                 .chars()
@@ -3394,10 +3394,10 @@ fn resolve_client_addr() -> String {
 /// habilita reclamar el árbol de un daemon efímero cuyo pidfile se perdió
 /// (padre caído sin limpiar), única pista de PID cuando `addr` ya no es
 /// descubrible. Tolerante: fichero ausente, ilegible, sin campo o `0` = `None`.
-fn read_ready_pid(ruta: &std::path::Path) -> Option<u32> {
-    let contenido = std::fs::read_to_string(ruta).ok()?;
-    for linea in contenido.lines() {
-        if let Some(v) = linea.trim().strip_prefix("pid=") {
+fn read_ready_pid(path: &std::path::Path) -> Option<u32> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        if let Some(v) = line.trim().strip_prefix("pid=") {
             if let Ok(p) = v.trim().parse::<u32>() {
                 if p != 0 {
                     return Some(p);
@@ -3417,10 +3417,10 @@ fn ready_file_path() -> PathBuf {
 
 /// Lee la `addr` del fichero ready de forma tolerante (lado producto):
 /// ausente o a medio escribir = aún-no-listo (`None`), nunca error fatal.
-fn read_ready_addr(ruta: &std::path::Path) -> Option<String> {
-    let contenido = std::fs::read_to_string(ruta).ok()?;
-    for linea in contenido.lines() {
-        if let Some(v) = linea.trim().strip_prefix("addr=") {
+fn read_ready_addr(path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        if let Some(v) = line.trim().strip_prefix("addr=") {
             let v = v.trim();
             if !v.is_empty() {
                 return Some(v.to_string());
@@ -3478,14 +3478,14 @@ async fn await_daemon_ready(
     if let Some(path) = ready {
         // Vía evento: la `addr` publicada manda (debe coincidir con `addr`;
         // si difiere se diagnostica pero se verifica la publicada).
-        let publicada = await_ready_file_addr(path, deadline).await?;
-        let objetivo = if publicada == addr { addr } else { &publicada };
-        if probe_health(client, objetivo).await {
+        let published = await_ready_file_addr(path, deadline).await?;
+        let target = if published == addr { addr } else { &published };
+        if probe_health(client, target).await {
             return Ok(());
         }
         anyhow::bail!(
             "el daemon publicó {} pero /health no responde tras el evento",
-            publicada
+            published
         );
     }
     let start = std::time::Instant::now();
@@ -3858,34 +3858,34 @@ const STREAM_TOTAL_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 
 /// Consume un stream NDJSON del daemon (`started` → latidos → `result`/`error`)
 /// con timeout de inactividad + failsafe total. Retorna el evento final
-/// `result`; el evento `error` se mapea a `CliError` con `codigo_de(reason)`.
+/// `result`; el evento `error` se mapea a `CliError` con `code_for(reason)`.
 /// Sin `result` (stream truncado, NDJSON inválido, inactividad o failsafe) el
 /// fallo es ruidoso: nunca se reemite un éxito parcial.
-async fn consumir_stream_ndjson(
+async fn consume_ndjson_stream(
     mut resp: reqwest::Response,
-    etapa: &str,
-    codigo_de: impl Fn(&str) -> ExitCode,
+    stage: &str,
+    code_for: impl Fn(&str) -> ExitCode,
 ) -> Result<Value, CliError> {
-    let inicio = std::time::Instant::now();
-    let mut resto = String::new();
+    let start = std::time::Instant::now();
+    let mut rest = String::new();
     // Los diagnósticos nombran la dirección descubierta.
     let client_addr = resolve_client_addr();
     loop {
-        if inicio.elapsed() >= STREAM_TOTAL_DEADLINE {
+        if start.elapsed() >= STREAM_TOTAL_DEADLINE {
             return Err(CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
                 format!(
                     "Daemon inalcanzable en {} (límite total 120s agotado en {})",
-                    client_addr, etapa
+                    client_addr, stage
                 ),
             ));
         }
-        let espera = std::cmp::min(
+        let wait = std::cmp::min(
             STREAM_INACTIVITY_TIMEOUT,
-            STREAM_TOTAL_DEADLINE - inicio.elapsed(),
+            STREAM_TOTAL_DEADLINE - start.elapsed(),
         );
-        let chunk = tokio::time::timeout(espera, resp.chunk())
+        let chunk = tokio::time::timeout(wait, resp.chunk())
             .await
             .map_err(|_| {
                 CliError::new(
@@ -3893,7 +3893,7 @@ async fn consumir_stream_ndjson(
                     "daemon_unreachable",
                     format!(
                         "Daemon inalcanzable en {} (sin eventos del daemon en 1500ms en {})",
-                        client_addr, etapa
+                        client_addr, stage
                     ),
                 )
             })?
@@ -3909,9 +3909,9 @@ async fn consumir_stream_ndjson(
             None => {
                 // Fin de stream: procesar el resto buffered (línea sin `\n`
                 // final) y exigir el evento final.
-                let linea = std::mem::take(&mut resto);
-                if !linea.trim().is_empty() {
-                    if let Some(v) = procesar_linea_stream(&linea, &codigo_de)? {
+                let line = std::mem::take(&mut rest);
+                if !line.trim().is_empty() {
+                    if let Some(v) = process_stream_line(&line, &code_for)? {
                         return Ok(v);
                     }
                 }
@@ -3920,15 +3920,15 @@ async fn consumir_stream_ndjson(
                     "daemon_error",
                     format!(
                         "El stream del daemon terminó sin evento final en {}.",
-                        etapa
+                        stage
                     ),
                 ));
             }
         };
-        resto.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(pos) = resto.find('\n') {
-            let linea: String = resto.drain(..=pos).collect();
-            if let Some(v) = procesar_linea_stream(linea.trim(), &codigo_de)? {
+        rest.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(pos) = rest.find('\n') {
+            let line: String = rest.drain(..=pos).collect();
+            if let Some(v) = process_stream_line(line.trim(), &code_for)? {
                 return Ok(v);
             }
         }
@@ -3937,15 +3937,15 @@ async fn consumir_stream_ndjson(
 
 /// Procesa una línea del stream: `result` → `Some(evento)`, `error` → `Err`
 /// mapeado, resto (`started`/latidos/desconocidos) → `Some` nada (`Ok(None)`).
-fn procesar_linea_stream(
-    linea: &str,
-    codigo_de: &impl Fn(&str) -> ExitCode,
+fn process_stream_line(
+    line: &str,
+    code_for: &impl Fn(&str) -> ExitCode,
 ) -> Result<Option<Value>, CliError> {
-    let linea = linea.trim();
-    if linea.is_empty() {
+    let line = line.trim();
+    if line.is_empty() {
         return Ok(None);
     }
-    let ev: Value = serde_json::from_str(linea).map_err(|e| {
+    let ev: Value = serde_json::from_str(line).map_err(|e| {
         CliError::new(
             ExitCode::Error,
             "daemon_error",
@@ -3963,7 +3963,7 @@ fn procesar_linea_stream(
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("error del daemon");
-            Err(CliError::new(codigo_de(reason), reason, msg.to_string()))
+            Err(CliError::new(code_for(reason), reason, msg.to_string()))
         }
         _ => Ok(None),
     }
@@ -3988,15 +3988,15 @@ async fn synthesize_via_daemon(
     temperature: Option<f32>,
 ) -> Result<(), CliError> {
     let speech_store = SpeechStore::new();
-    let label_l = label.to_lowercase();
-    is_valid_identifier(Some(&label_l), None)?;
-    if !force && speech_store.find(voice, &label_l).is_some() {
+    let label_lower = label.to_lowercase();
+    is_valid_identifier(Some(&label_lower), None)?;
+    if !force && speech_store.find(voice, &label_lower).is_some() {
         return Err(CliError::new(
             ExitCode::StateConflict,
             "label_exists",
             format!(
                 "Ya existe una locución con la etiqueta '{}' (usa --force).",
-                label_l
+                label_lower
             ),
         ));
     }
@@ -4009,7 +4009,7 @@ async fn synthesize_via_daemon(
         temperature,
     )
     .await?;
-    let tmp = std::env::temp_dir().join(format!("avi_tts_{}.wav", label_l));
+    let tmp = std::env::temp_dir().join(format!("avi_tts_{}.wav", label_lower));
     std::fs::write(&tmp, &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
 
@@ -4018,7 +4018,7 @@ async fn synthesize_via_daemon(
         // re-despacha la síntesis por la misma vía daemon.
         let resultado = synthesize_play_loop(
             voice,
-            &label_l,
+            &label_lower,
             force,
             &speech_store,
             text,
@@ -4054,7 +4054,7 @@ async fn synthesize_via_daemon(
         }
     } else {
         speech_store
-            .save(voice, &label_l, text, &tmp)
+            .save(voice, &label_lower, text, &tmp)
             .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?
     };
     let _ = std::fs::remove_file(&tmp);
@@ -4205,7 +4205,7 @@ async fn clone_via_daemon(
             format!("{} (HTTP {})", msg, status),
         ));
     }
-    let val: Value = consumir_stream_ndjson(resp, "clone", |reason| match reason {
+    let val: Value = consume_ndjson_stream(resp, "clone", |reason| match reason {
         "invalid_voice_name" => ExitCode::InvalidInput,
         "voice_exists" => ExitCode::StateConflict,
         "model_missing" => ExitCode::ModelMissing,
@@ -4337,7 +4337,7 @@ async fn dub_via_daemon(
     // El evento final del stream trae la forma contractual
     // {status:"dubbed", text, translated, audio_b64, voice}; los mapeos
     // reason→exit se preservan también para los eventos `error` del stream.
-    let val: Value = consumir_stream_ndjson(resp, "dub", |reason| match reason {
+    let val: Value = consume_ndjson_stream(resp, "dub", |reason| match reason {
         "audio_missing" | "audio_decode_error" | "empty_text" | "unsupported_language_pair" => {
             ExitCode::InvalidInput
         }
@@ -4622,22 +4622,19 @@ mod tests {
         assert!(!stopped_with_resident_is_degraded(false, true, true));
     }
 
-    /// `procesar_linea_stream` clasifica cada línea NDJSON sin reloj
+    /// `process_stream_line` clasifica cada línea NDJSON sin reloj
     /// (determinista): `result` se entrega, `error` se mapea por reason,
     /// `started`/latidos se ignoran y el NDJSON inválido falla ruidoso.
     #[test]
-    fn procesar_linea_stream_clasifica_eventos() {
-        let codigo = |reason: &str| match reason {
+    fn process_stream_line_classifies_events() {
+        let code = |reason: &str| match reason {
             "voice_exists" => ExitCode::StateConflict,
             _ => ExitCode::Error,
         };
-        let r = procesar_linea_stream(
-            r#"{"event":"result","name":"v","precomputed":true}"#,
-            &codigo,
-        )
-        .expect("result no falla");
+        let r = process_stream_line(r#"{"event":"result","name":"v","precomputed":true}"#, &code)
+            .expect("result no falla");
         assert_eq!(r.expect("result se entrega")["name"], "v");
-        for linea in [
+        for line in [
             r#"{"event":"started","name":"v"}"#,
             r#"{"event":"heartbeat","stage":"clone"}"#,
             r#"{"event":"progress","stage":"warmup"}"#,
@@ -4645,33 +4642,33 @@ mod tests {
             "   ",
         ] {
             assert!(
-                procesar_linea_stream(linea, &codigo)
+                process_stream_line(line, &code)
                     .expect("no-final no falla")
                     .is_none(),
                 "línea no-final se ignora: {:?}",
-                linea
+                line
             );
         }
-        let e = procesar_linea_stream(
+        let e = process_stream_line(
             r#"{"event":"error","reason":"voice_exists","message":"existe"}"#,
-            &codigo,
+            &code,
         )
         .expect_err("error debe fallar");
         assert_eq!(e.code, ExitCode::StateConflict);
         assert_eq!(e.reason, "voice_exists");
         assert!(
-            procesar_linea_stream("{no json", &codigo).is_err(),
+            process_stream_line("{no json", &code).is_err(),
             "NDJSON inválido falla ruidoso"
         );
     }
 
     /// Sirve una secuencia NDJSON programada sobre HTTP plano en loopback para
-    /// ejercitar `consumir_stream_ndjson` sin daemon (doble determinista).
-    /// `retener_secs`: si es `Some`, tras escribir `lineas` la conexión se
+    /// ejercitar `consume_ndjson_stream` sin daemon (doble determinista).
+    /// `hold_secs`: si es `Some`, tras escribir `lines` la conexión se
     /// retiene abierta ese tiempo (caso de atasco); si es `None`, se cierra
-    /// (éxito, fallo o truncado según `lineas`). Sin `content-length`: cuerpo
+    /// (éxito, fallo o truncado según `lines`). Sin `content-length`: cuerpo
     /// hasta cierre de conexión.
-    async fn servir_secuencia_programada(lineas: Vec<String>, retener_secs: Option<u64>) -> String {
+    async fn serve_programmed_sequence(lines: Vec<String>, hold_secs: Option<u64>) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind efímero");
@@ -4682,26 +4679,26 @@ mod tests {
             };
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let mut buf = vec![0u8; 8192];
-            let mut leido = 0;
+            let mut read = 0;
             loop {
-                let n = sock.read(&mut buf[leido..]).await.unwrap_or(0);
+                let n = sock.read(&mut buf[read..]).await.unwrap_or(0);
                 if n == 0 {
                     break;
                 }
-                leido += n;
-                if buf[..leido].windows(4).any(|w| w == b"\r\n\r\n") || leido >= buf.len() {
+                read += n;
+                if buf[..read].windows(4).any(|w| w == b"\r\n\r\n") || read >= buf.len() {
                     break;
                 }
             }
-            let cuerpo: String = lineas.iter().map(|l| format!("{}\n", l)).collect();
-            let cabecera = "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
-            if sock.write_all(cabecera.as_bytes()).await.is_err() {
+            let body: String = lines.iter().map(|l| format!("{}\n", l)).collect();
+            let header = "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
+            if sock.write_all(header.as_bytes()).await.is_err() {
                 return;
             }
-            if sock.write_all(cuerpo.as_bytes()).await.is_err() {
+            if sock.write_all(body.as_bytes()).await.is_err() {
                 return;
             }
-            if let Some(s) = retener_secs {
+            if let Some(s) = hold_secs {
                 tokio::time::sleep(std::time::Duration::from_secs(s)).await;
             }
         });
@@ -4711,8 +4708,8 @@ mod tests {
     /// El consumo entrega el evento final tras la secuencia
     /// `started` → latidos → `result` (doble con secuencia de éxito).
     #[tokio::test]
-    async fn consumir_stream_ndjson_devuelve_evento_final() {
-        let addr = servir_secuencia_programada(
+    async fn consume_ndjson_stream_returns_final_event() {
+        let addr = serve_programmed_sequence(
             vec![
                 r#"{"event":"started","name":"v"}"#.to_string(),
                 r#"{"event":"heartbeat","stage":"clone"}"#.to_string(),
@@ -4727,7 +4724,7 @@ mod tests {
             .send()
             .await
             .expect("el doble debe responder");
-        let val = consumir_stream_ndjson(resp, "clone", |_| ExitCode::Error)
+        let val = consume_ndjson_stream(resp, "clone", |_| ExitCode::Error)
             .await
             .expect("la secuencia de éxito entrega el final");
         assert_eq!(val["event"], "result");
@@ -4738,8 +4735,8 @@ mod tests {
     /// El evento de fallo del stream se mapea por reason (doble con
     /// secuencia de fallo), sin esperar al failsafe total.
     #[tokio::test]
-    async fn consumir_stream_ndjson_mapea_evento_de_fallo() {
-        let addr = servir_secuencia_programada(
+    async fn consume_ndjson_stream_maps_failure_event() {
+        let addr = serve_programmed_sequence(
             vec![
                 r#"{"event":"started","name":"v"}"#.to_string(),
                 r#"{"event":"error","reason":"voice_exists","message":"existe"}"#.to_string(),
@@ -4753,8 +4750,8 @@ mod tests {
             .send()
             .await
             .expect("el doble debe responder");
-        let inicio = std::time::Instant::now();
-        let e = consumir_stream_ndjson(resp, "clone", |reason| match reason {
+        let start = std::time::Instant::now();
+        let e = consume_ndjson_stream(resp, "clone", |reason| match reason {
             "voice_exists" => ExitCode::StateConflict,
             _ => ExitCode::Error,
         })
@@ -4763,58 +4760,56 @@ mod tests {
         assert_eq!(e.code, ExitCode::StateConflict);
         assert_eq!(e.reason, "voice_exists");
         assert!(
-            inicio.elapsed() < std::time::Duration::from_secs(10),
+            start.elapsed() < std::time::Duration::from_secs(10),
             "el fallo explícito no espera techos: {:?}",
-            inicio.elapsed()
+            start.elapsed()
         );
     }
 
     /// El stream atascado (cabeceras sin eventos) dispara el timeout de
     /// inactividad de 1500 ms (doble con secuencia de atasco), no el failsafe.
     #[tokio::test]
-    async fn consumir_stream_ndjson_detecta_atasco_por_inactividad() {
-        let addr = servir_secuencia_programada(vec![], Some(3)).await;
+    async fn consume_ndjson_stream_detects_stall_by_inactivity() {
+        let addr = serve_programmed_sequence(vec![], Some(3)).await;
         let client = daemon_client();
         let resp = client
             .post(format!("http://{}/voices/clone", addr))
             .send()
             .await
             .expect("el doble debe responder cabeceras");
-        let inicio = std::time::Instant::now();
-        let e = consumir_stream_ndjson(resp, "clone", |_| ExitCode::Error)
+        let start = std::time::Instant::now();
+        let e = consume_ndjson_stream(resp, "clone", |_| ExitCode::Error)
             .await
             .expect_err("el atasco debe fallar");
         assert_eq!(e.code, ExitCode::DaemonUnreachable);
         assert_eq!(e.reason, "daemon_unreachable");
-        let transcurrido = inicio.elapsed();
+        let elapsed = start.elapsed();
         assert!(
-            transcurrido >= std::time::Duration::from_millis(1500),
+            elapsed >= std::time::Duration::from_millis(1500),
             "debe agotar la inactividad: {:?}",
-            transcurrido
+            elapsed
         );
         assert!(
-            transcurrido < std::time::Duration::from_secs(30),
+            elapsed < std::time::Duration::from_secs(30),
             "no debe llegar al failsafe ni al retén: {:?}",
-            transcurrido
+            elapsed
         );
     }
 
     /// El stream truncado tras `started` (cierre sin evento final) falla
     /// ruidoso como `daemon_error`, nunca como éxito parcial.
     #[tokio::test]
-    async fn consumir_stream_ndjson_falla_si_trunca_sin_final() {
-        let addr = servir_secuencia_programada(
-            vec![r#"{"event":"started","name":"v"}"#.to_string()],
-            None,
-        )
-        .await;
+    async fn consume_ndjson_stream_fails_if_truncated_without_final() {
+        let addr =
+            serve_programmed_sequence(vec![r#"{"event":"started","name":"v"}"#.to_string()], None)
+                .await;
         let client = daemon_client();
         let resp = client
             .post(format!("http://{}/voices/clone", addr))
             .send()
             .await
             .expect("el doble debe responder");
-        let e = consumir_stream_ndjson(resp, "clone", |_| ExitCode::Error)
+        let e = consume_ndjson_stream(resp, "clone", |_| ExitCode::Error)
             .await
             .expect_err("el truncado debe fallar");
         assert_eq!(e.code, ExitCode::Error);

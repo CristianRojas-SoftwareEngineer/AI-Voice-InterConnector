@@ -161,7 +161,7 @@ aceptar (opción 2) persiste la toma que sonó. `--play` es incompatible con
 estándar (exit 2 sin TTY, antes de sintetizar).
 
 Validaciones y flujo local:
-1. `validar_temperature`: exit 2 si el override está fuera de `(0, 2.0]`.
+1. `validate_temperature`: exit 2 si el override está fuera de `(0, 2.0]`.
 2. Texto vacío tras `trim`: exit 2 `empty_text`.
 3. `source_eff = source_language.unwrap_or(target_language)` — sin
  `--source-language`, origen = destino (passthrough, no se traduce).
@@ -242,7 +242,7 @@ paridad con el oráculo Python retirado).
 | `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` |
 
 Validaciones puras (en este orden):
-1. `validar_temperature`.
+1. `validate_temperature`.
 2. `--duration` sin `--mic`: exit 2 `usage_error`.
 3. `--mic` sin `--duration` sin TTY: exit 2 `usage_error`. **Con TTY, mismo
  push-to-talk que en `transcribe`**: aviso mínimo por stderr al iniciar,
