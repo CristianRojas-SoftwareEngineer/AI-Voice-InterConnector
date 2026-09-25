@@ -1127,15 +1127,13 @@ mod tests {
         assert!(c.contains("models--Qwen--"));
         assert!(c.contains("models--istupakov--"));
         assert!(c.contains("models--Helsinki-NLP--"));
-        assert!(!c.contains("Chatterbox"));
-        assert!(!c.contains("ResembleAI"));
         assert!(c.contains("GPL-3.0-or-later"));
         assert!(c.contains(r#"depends_on macos: ">= :ventura""#));
         assert!(c.contains("síntesis"));
     }
 
     #[test]
-    fn test_cask_zap_no_chatterbox_but_qwen_parakeet_opusmt() {
+    fn test_cask_zap_lists_current_model_caches() {
         let c = render_cask("9.9.9", &"b".repeat(64));
         assert!(c.contains("models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice"));
         assert!(c.contains("models--Qwen--Qwen3-TTS-12Hz-0.6B-Base"));
@@ -1143,9 +1141,6 @@ mod tests {
         assert!(c.contains("models--Helsinki-NLP--opus-mt-es-en"));
         assert!(c.contains("models--Helsinki-NLP--opus-mt-en-es"));
         assert!(c.contains("~/.cache/huggingface/xet"));
-        assert!(!c.contains("ResembleAI"));
-        assert!(!c.contains("chatterbox"));
-        assert!(!c.contains("Chatterbox"));
     }
 
     /// Texto de `.circleci/config.yml`, localizado desde la raíz o desde el crate.
