@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use regex::Regex;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 const GITHUB_REPO: &str = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector";
@@ -93,7 +94,7 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
-    /// Verifica THIRD-PARTY-LICENSES.md vs Cargo.lock
+    /// Genera o verifica el inventario de THIRD-PARTY-LICENSES.md
     Licenses {
         #[arg(long)]
         check: bool,
@@ -148,9 +149,14 @@ fn main() -> Result<()> {
                 print!("{}", render_source_offer(&version));
             }
         }
-        Commands::Licenses { check: _ } => {
-            check_licenses_gate()?;
-            println!("THIRD-PARTY-LICENSES.md está en sincronía con Cargo.lock");
+        Commands::Licenses { check } => {
+            if check {
+                check_licenses_gate()?;
+                println!("THIRD-PARTY-LICENSES.md está en sincronía con Cargo.lock");
+            } else {
+                write_licenses_inventory()?;
+                println!("Inventario de THIRD-PARTY-LICENSES.md regenerado: revisa el diff");
+            }
         }
         Commands::Release { version } => {
             let version = version.trim();
@@ -820,97 +826,230 @@ mod diff {
     }
 }
 
-fn normalize(name: &str) -> String {
-    let mut out = String::new();
-    let mut last_dash = false;
-    for c in name.chars() {
-        if c == '-' || c == '_' || c == '.' {
-            if !last_dash {
-                out.push('-');
-                last_dash = true;
-            }
-        } else {
-            out.push(c.to_ascii_lowercase());
-            last_dash = false;
-        }
-    }
-    out
+const LICENSES_DOC: &str = "THIRD-PARTY-LICENSES.md";
+const INVENTORY_START: &str = "<!-- inventario:inicio -->";
+const INVENTORY_END: &str = "<!-- inventario:fin -->";
+
+/// Licencias de paquetes de `Cargo.lock` que `cargo metadata` no reporta (p. ej.,
+/// `cxxbridge-cmd`, dependencia de artefacto de `cxx`). Solo se consultan para
+/// paquetes ausentes del metadato.
+const LICENSE_OVERRIDES: &[(&str, &str)] = &[("cxxbridge-cmd", "MIT OR Apache-2.0")];
+
+/// Paquetes `(nombre, versión)` de `Cargo.lock`, en el orden del lock (una
+/// entrada por versión resuelta).
+fn cargo_lock_entries(text: &str) -> Vec<(String, String)> {
+    let re =
+        Regex::new(r#"\[\[package\]\]\s+name\s*=\s*"([^"]+)"\s+version\s*=\s*"([^"]+)""#).unwrap();
+    re.captures_iter(text)
+        .map(|c| (c[1].to_string(), c[2].to_string()))
+        .collect()
 }
 
-fn cargo_lock_packages(text: &str) -> std::collections::HashSet<String> {
-    let re = Regex::new(r#"\[\[package\]\]\s+name\s*=\s*"([^"]+)""#).unwrap();
-    re.captures_iter(text).map(|c| normalize(&c[1])).collect()
+/// Familia de una expresión de licencia: `MIT` si MIT (o su variante MIT-0) es
+/// alternativa o componente; `Apache-2.0` si no hay MIT pero sí Apache; `BSD`
+/// para BSD-2/3-Clause; la propia licencia en los demás casos. Tabla explícita:
+/// `None` ante una expresión desconocida, que exige decidir su familia a mano.
+fn license_family(expr: &str) -> Option<&'static str> {
+    let family = match expr {
+        "MIT"
+        | "MIT OR Apache-2.0"
+        | "Apache-2.0 OR MIT"
+        | "MIT/Apache-2.0"
+        | "Apache-2.0/MIT"
+        | "Apache-2.0 / MIT"
+        | "Unlicense/MIT"
+        | "Unlicense OR MIT"
+        | "Unlicense OR MIT OR Apache-2.0 OR CC0-1.0"
+        | "MIT AND BSD-3-Clause"
+        | "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+        | "MIT OR Apache-2.0 OR Zlib"
+        | "Apache-2.0 OR MIT OR Zlib"
+        | "Zlib OR Apache-2.0 OR MIT"
+        | "Apache-2.0 OR BSL-1.0 OR MIT"
+        | "Apache-2.0 OR ISC OR MIT"
+        | "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+        | "BSD-2-Clause OR Apache-2.0 OR MIT"
+        | "BSD-2-Clause OR MIT OR Apache-2.0"
+        | "BSD-3-Clause OR MIT OR Apache-2.0"
+        | "(Apache-2.0 OR MIT) AND BSD-3-Clause"
+        | "(MIT OR Apache-2.0) AND Unicode-3.0"
+        | "CC0-1.0 OR MIT-0 OR Apache-2.0"
+        | "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)" => "MIT",
+        "Apache-2.0"
+        | "Apache-2.0 AND ISC"
+        | "Apache-2.0 OR BSL-1.0"
+        | "ISC AND (Apache-2.0 OR ISC)"
+        | "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception" => "Apache-2.0",
+        "BSD-2-Clause" | "BSD-3-Clause" => "BSD",
+        "ISC" => "ISC",
+        "Zlib" => "Zlib",
+        "MPL-2.0" => "MPL-2.0",
+        "Unicode-3.0" => "Unicode-3.0",
+        "CDLA-Permissive-2.0" => "CDLA-Permissive-2.0",
+        "GPL-3.0-or-later" => "GPL-3.0-or-later",
+        _ => return None,
+    };
+    Some(family)
 }
 
-fn licenses_doc_packages(text: &str) -> std::collections::HashSet<String> {
-    let header = "| Paquete | Versión |";
-    let lines = text.lines();
-    let mut start = None;
-    for (idx, line) in lines.clone().enumerate() {
-        if line.starts_with(header) {
-            start = Some(idx);
-            break;
-        }
+/// Región del inventario (conteo, resumen por familia y tabla) a partir de los
+/// paquetes del lock y de las licencias de `cargo metadata` por `(nombre,
+/// versión)`; `None` como licencia = el paquete no declara `license`. Pura: falla
+/// nombrando el paquete si no hay licencia o si su familia es desconocida.
+fn render_licenses_inventory(
+    entries: &[(String, String)],
+    licenses: &HashMap<(String, String), Option<String>>,
+) -> Result<String> {
+    let mut rows = String::new();
+    let mut families: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut names = HashSet::new();
+    for (name, version) in entries {
+        let license = match licenses.get(&(name.clone(), version.clone())) {
+            Some(Some(license)) => license.as_str(),
+            Some(None) => anyhow::bail!(
+                "{} {} no declara `license` en su Cargo.toml: no hay licencia que registrar",
+                name,
+                version
+            ),
+            None => LICENSE_OVERRIDES
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, l)| *l)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "{} {} está en Cargo.lock pero no en cargo metadata: añade su licencia a LICENSE_OVERRIDES",
+                        name,
+                        version
+                    )
+                })?,
+        };
+        let family = license_family(license).ok_or_else(|| {
+            anyhow!(
+                "{} {}: expresión de licencia sin familia `{}`: añádela a license_family",
+                name,
+                version,
+                license
+            )
+        })?;
+        *families.entry(family).or_default() += 1;
+        names.insert(name.as_str());
+        rows.push_str(&format!(
+            "| `{}` | {} | {} | {} |\n",
+            name, version, license, family
+        ));
     }
-    let start = start.expect("No se encontró la tabla de inventario");
-    let mut set = std::collections::HashSet::new();
-    let re = Regex::new(r"^\|\s*`([^`]+)`\s*\|").unwrap();
-    for line in text.lines().skip(start + 2) {
-        if let Some(caps) = re.captures(line) {
-            set.insert(normalize(&caps[1]));
-        } else {
-            break;
-        }
-    }
-    set
+    let summary: Vec<String> = families
+        .iter()
+        .map(|(family, count)| format!("{} {}", family, count))
+        .collect();
+    Ok(format!(
+        "Generado desde `Cargo.lock` ({} paquetes resueltos, {} crates únicos, directos y transitivos).\n\
+         Resumen por familia (paquetes resueltos): {}.\n\
+         \n\
+         | Paquete | Versión | Licencia (metadato) | Familia |\n\
+         |---------|---------|---------------------|--------|\n\
+         {}",
+        entries.len(),
+        names.len(),
+        summary.join(", "),
+        rows
+    ))
 }
 
-fn check_licenses() -> Result<(Vec<String>, Vec<String>)> {
-    let lock_text = std::fs::read_to_string("Cargo.lock")?;
-    let doc_text = std::fs::read_to_string("THIRD-PARTY-LICENSES.md")?;
-    let lock = cargo_lock_packages(&lock_text);
-    let doc = licenses_doc_packages(&doc_text);
-    let mut missing: Vec<String> = lock.difference(&doc).cloned().collect();
-    let mut extra: Vec<String> = doc.difference(&lock).cloned().collect();
-    missing.sort();
-    extra.sort();
-    Ok((missing, extra))
+/// Reemplaza el contenido entre `INVENTORY_START` e `INVENTORY_END` por `region`,
+/// conservando el texto exterior. Falla si falta alguno de los marcadores.
+fn replace_inventory_region(doc: &str, region: &str) -> Result<String> {
+    let start = doc.find(INVENTORY_START).ok_or_else(|| {
+        anyhow!(
+            "{} no tiene el marcador `{}`",
+            LICENSES_DOC,
+            INVENTORY_START
+        )
+    })? + INVENTORY_START.len();
+    let end = doc[start..]
+        .find(INVENTORY_END)
+        .map(|i| start + i)
+        .ok_or_else(|| anyhow!("{} no tiene el marcador `{}`", LICENSES_DOC, INVENTORY_END))?;
+    Ok(format!("{}\n{}{}", &doc[..start], region, &doc[end..]))
 }
 
-/// Mensaje accionable del gate de licencias a partir de las listas de
-/// faltantes/sobrantes ya calculadas por `check_licenses`. Pura: sin E/S, así
-/// se puede testear sin fixtures de archivo. `None` si está en sincronía.
-fn format_licenses_gate_message(missing: &[String], extra: &[String]) -> Option<String> {
-    if missing.is_empty() && extra.is_empty() {
-        return None;
+/// Compara `current` (contenido vigente de THIRD-PARTY-LICENSES.md) contra el
+/// documento con la región `region` recién generada, normalizando CRLF vs LF.
+/// Pura. `Ok(())` si coinciden; si no, un mensaje accionable con diff.
+fn diff_licenses_inventory(current: &str, region: &str) -> Result<(), String> {
+    let norm_current = current.replace("\r\n", "\n");
+    let expected = replace_inventory_region(&norm_current, region).map_err(|e| e.to_string())?;
+    if norm_current == expected {
+        return Ok(());
     }
-    let mut msg = String::new();
-    if !missing.is_empty() {
-        msg.push_str(
-            "Crates del lock SIN fila en THIRD-PARTY-LICENSES.md (atribución faltante):\n",
+    let mut msg = format!(
+        "{} desincronizado: regenera con `cargo run -p xtask -- licenses` y revisa el diff\n",
+        LICENSES_DOC
+    );
+    for line in diff_lines(&norm_current, &expected) {
+        msg.push_str(&line);
+        msg.push('\n');
+    }
+    Err(msg)
+}
+
+/// Licencia declarada de cada paquete de `cargo metadata --all-features` (sin
+/// `--all-features` se omiten los crates que solo entran por features opcionales).
+fn metadata_licenses() -> Result<HashMap<(String, String), Option<String>>> {
+    let out = std::process::Command::new("cargo")
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--locked",
+            "--all-features",
+        ])
+        .output()
+        .map_err(|e| anyhow!("no se pudo invocar cargo metadata: {}", e))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "cargo metadata falló: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
-        for n in missing {
-            msg.push_str(&format!("  + {}\n", n));
-        }
     }
-    if !extra.is_empty() {
-        msg.push_str("Filas de THIRD-PARTY-LICENSES.md sin crate en el lock (obsoletas):\n");
-        for n in extra {
-            msg.push_str(&format!("  - {}\n", n));
-        }
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let packages = json["packages"]
+        .as_array()
+        .ok_or_else(|| anyhow!("cargo metadata no devolvió `packages`"))?;
+    let mut licenses = HashMap::new();
+    for p in packages {
+        let (Some(name), Some(version)) = (p["name"].as_str(), p["version"].as_str()) else {
+            anyhow::bail!("cargo metadata devolvió un paquete sin nombre o versión");
+        };
+        licenses.insert(
+            (name.to_string(), version.to_string()),
+            p["license"].as_str().map(str::to_string),
+        );
     }
-    msg.push_str("\nRegenera el inventario (cargo metadata).");
-    Some(msg)
+    Ok(licenses)
 }
 
-/// Gate de licencias: falla con un mensaje accionable si `THIRD-PARTY-LICENSES.md`
-/// está desincronizado de `Cargo.lock` (crates faltantes o filas obsoletas).
+/// Región del inventario generada desde `Cargo.lock` y `cargo metadata`.
+fn render_licenses_region() -> Result<String> {
+    let lock_text = std::fs::read_to_string("Cargo.lock")?;
+    render_licenses_inventory(&cargo_lock_entries(&lock_text), &metadata_licenses()?)
+}
+
+/// Reescribe la región del inventario de THIRD-PARTY-LICENSES.md.
+fn write_licenses_inventory() -> Result<()> {
+    let region = render_licenses_region()?;
+    let doc = std::fs::read_to_string(LICENSES_DOC)?.replace("\r\n", "\n");
+    std::fs::write(LICENSES_DOC, replace_inventory_region(&doc, &region)?)?;
+    Ok(())
+}
+
+/// Gate de licencias: falla con el diff si la región del inventario de
+/// `THIRD-PARTY-LICENSES.md` difiere de la generada (nombre, versión, licencia,
+/// familia o totales). Envoltura de E/S sobre `diff_licenses_inventory`.
 fn check_licenses_gate() -> Result<()> {
-    let (missing, extra) = check_licenses()?;
-    match format_licenses_gate_message(&missing, &extra) {
-        None => Ok(()),
-        Some(msg) => anyhow::bail!(msg),
-    }
+    let region = render_licenses_region()?;
+    let current = std::fs::read_to_string(LICENSES_DOC)?;
+    diff_licenses_inventory(&current, &region).map_err(|msg| anyhow!(msg))
 }
 
 #[cfg(test)]
@@ -1662,12 +1801,6 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize() {
-        assert_eq!(normalize("My_Package.Name"), "my-package-name");
-        assert_eq!(normalize("a--b__c..d"), "a-b-c-d");
-    }
-
-    #[test]
     fn test_engine_bin_name_por_plataforma() {
         if cfg!(windows) {
             assert_eq!(engine_bin_name(), "qwen_tts.exe");
@@ -1898,19 +2031,171 @@ mod tests {
         assert!(err.contains("SOURCE-OFFER.md desincronizado"));
     }
 
-    #[test]
-    fn test_format_licenses_gate_message_sincronizado() {
-        assert!(format_licenses_gate_message(&[], &[]).is_none());
+    /// Lock mínimo con dos versiones de `cfg-if` y un paquete ausente del metadato.
+    const SAMPLE_LOCK: &str = r#"version = 4
+
+[[package]]
+name = "cfg-if"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "cfg-if"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "cxxbridge-cmd"
+version = "1.0.199"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "foldhash"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+
+    fn sample_licenses() -> HashMap<(String, String), Option<String>> {
+        [
+            ("cfg-if", "0.1.10", "MIT/Apache-2.0"),
+            ("cfg-if", "1.0.4", "MIT OR Apache-2.0"),
+            ("foldhash", "0.1.5", "Zlib"),
+        ]
+        .into_iter()
+        .map(|(n, v, l)| ((n.to_string(), v.to_string()), Some(l.to_string())))
+        .collect()
+    }
+
+    fn sample_region() -> String {
+        render_licenses_inventory(&cargo_lock_entries(SAMPLE_LOCK), &sample_licenses()).unwrap()
+    }
+
+    fn sample_licenses_doc() -> String {
+        format!(
+            "# Licencias\n\nProsa a mano.\n\n{}\n{}{}\n\n## Regeneración\n",
+            INVENTORY_START,
+            sample_region(),
+            INVENTORY_END
+        )
     }
 
     #[test]
-    fn test_format_licenses_gate_message_con_faltantes_y_sobrantes() {
-        let missing = vec!["crate-nuevo".to_string()];
-        let extra = vec!["crate-viejo".to_string()];
-        let msg = format_licenses_gate_message(&missing, &extra).unwrap();
-        assert!(msg.contains("crate-nuevo"));
-        assert!(msg.contains("atribución faltante"));
-        assert!(msg.contains("crate-viejo"));
-        assert!(msg.contains("obsoletas"));
+    fn test_cargo_lock_entries_una_por_version_en_orden() {
+        let entries = cargo_lock_entries(SAMPLE_LOCK);
+        let esperado: Vec<(String, String)> = [
+            ("cfg-if", "0.1.10"),
+            ("cfg-if", "1.0.4"),
+            ("cxxbridge-cmd", "1.0.199"),
+            ("foldhash", "0.1.5"),
+        ]
+        .iter()
+        .map(|(n, v)| (n.to_string(), v.to_string()))
+        .collect();
+        assert_eq!(entries, esperado);
+    }
+
+    #[test]
+    fn test_license_family() {
+        assert_eq!(license_family("MIT OR Apache-2.0"), Some("MIT"));
+        assert_eq!(license_family("Apache-2.0 / MIT"), Some("MIT"));
+        assert_eq!(license_family("Apache-2.0 AND ISC"), Some("Apache-2.0"));
+        assert_eq!(license_family("BSD-3-Clause"), Some("BSD"));
+        assert_eq!(license_family("Zlib"), Some("Zlib"));
+        assert_eq!(license_family("GPL-3.0-or-later"), Some("GPL-3.0-or-later"));
+        assert_eq!(license_family("WTFPL"), None);
+    }
+
+    #[test]
+    fn test_render_inventario_dos_versiones_y_override() {
+        let region = sample_region();
+        assert!(region.contains("| `cfg-if` | 0.1.10 | MIT/Apache-2.0 | MIT |\n"));
+        assert!(region.contains("| `cfg-if` | 1.0.4 | MIT OR Apache-2.0 | MIT |\n"));
+        // cxxbridge-cmd no está en el metadato: su licencia sale de LICENSE_OVERRIDES.
+        assert!(region.contains("| `cxxbridge-cmd` | 1.0.199 | MIT OR Apache-2.0 | MIT |\n"));
+        assert!(region.contains("| `foldhash` | 0.1.5 | Zlib | Zlib |\n"));
+    }
+
+    #[test]
+    fn test_render_inventario_conteo_y_resumen() {
+        let region = sample_region();
+        assert!(region.starts_with(
+            "Generado desde `Cargo.lock` (4 paquetes resueltos, 3 crates únicos, directos y transitivos).\n\
+             Resumen por familia (paquetes resueltos): MIT 3, Zlib 1.\n"
+        ));
+    }
+
+    #[test]
+    fn test_render_inventario_falla_con_expresion_desconocida() {
+        let mut licenses = sample_licenses();
+        licenses.insert(
+            ("foldhash".to_string(), "0.1.5".to_string()),
+            Some("WTFPL".to_string()),
+        );
+        let err =
+            render_licenses_inventory(&cargo_lock_entries(SAMPLE_LOCK), &licenses).unwrap_err();
+        assert!(err.to_string().contains("foldhash"));
+        assert!(err.to_string().contains("WTFPL"));
+    }
+
+    #[test]
+    fn test_render_inventario_falla_sin_licencia() {
+        let mut licenses = sample_licenses();
+        licenses.insert(("foldhash".to_string(), "0.1.5".to_string()), None);
+        let err =
+            render_licenses_inventory(&cargo_lock_entries(SAMPLE_LOCK), &licenses).unwrap_err();
+        assert!(err.to_string().contains("foldhash"));
+        // Ausente del metadato y sin override: también falla nombrando el paquete.
+        let mut licenses = sample_licenses();
+        licenses.remove(&("cfg-if".to_string(), "1.0.4".to_string()));
+        let err =
+            render_licenses_inventory(&cargo_lock_entries(SAMPLE_LOCK), &licenses).unwrap_err();
+        assert!(err.to_string().contains("cfg-if 1.0.4"));
+    }
+
+    #[test]
+    fn test_replace_inventory_region_preserva_texto_exterior() {
+        let doc = format!(
+            "antes\n{}\nviejo\n{}\ndespués\n",
+            INVENTORY_START, INVENTORY_END
+        );
+        let out = replace_inventory_region(&doc, "nuevo\n").unwrap();
+        assert_eq!(
+            out,
+            format!(
+                "antes\n{}\nnuevo\n{}\ndespués\n",
+                INVENTORY_START, INVENTORY_END
+            )
+        );
+    }
+
+    #[test]
+    fn test_replace_inventory_region_falla_sin_marcadores() {
+        assert!(replace_inventory_region("sin marcadores\n", "x\n").is_err());
+        let solo_inicio = format!("{}\nx\n", INVENTORY_START);
+        let err = replace_inventory_region(&solo_inicio, "x\n").unwrap_err();
+        assert!(err.to_string().contains(INVENTORY_END));
+    }
+
+    #[test]
+    fn test_diff_licenses_inventory_sincronizado_y_crlf() {
+        let doc = sample_licenses_doc();
+        assert!(diff_licenses_inventory(&doc, &sample_region()).is_ok());
+        let con_crlf = doc.replace('\n', "\r\n");
+        assert!(diff_licenses_inventory(&con_crlf, &sample_region()).is_ok());
+    }
+
+    #[test]
+    fn test_diff_licenses_inventory_detecta_version_y_licencia() {
+        let doc = sample_licenses_doc();
+        let version_vieja = doc.replace("| `foldhash` | 0.1.5 |", "| `foldhash` | 0.1.4 |");
+        let err = diff_licenses_inventory(&version_vieja, &sample_region()).unwrap_err();
+        assert!(err.contains("desincronizado"));
+        assert!(err.contains("+| `foldhash` | 0.1.5 | Zlib | Zlib |"));
+        let licencia_mal = doc.replace(
+            "| `foldhash` | 0.1.5 | Zlib | Zlib |",
+            "| `foldhash` | 0.1.5 | MIT OR Apache-2.0 | MIT |",
+        );
+        let err = diff_licenses_inventory(&licencia_mal, &sample_region()).unwrap_err();
+        assert!(err.contains("-| `foldhash` | 0.1.5 | MIT OR Apache-2.0 | MIT |"));
     }
 }

@@ -47,11 +47,11 @@ la integridad se verifica cotejando los checksums SHA-256.
 - **Árbol de trabajo limpio y al menos un commit desde el último tag.** La
   curación del CHANGELOG también debe estar commiteada; `xtask release` aborta
   en cualquier otro caso.
-- **`THIRD-PARTY-LICENSES.md` en sincronía con `Cargo.lock`.** Cuando se agregan
-  o quitan crates, hay que actualizar a mano el inventario de la tabla y
-  comprobarlo con `cargo run -p xtask -- licenses --check`. La comprobación
-  compara los nombres de los crates; las versiones y las licencias de cada fila
-  dependen del cuidado al actualizarla.
+- **`THIRD-PARTY-LICENSES.md` en sincronía con `Cargo.lock`.** Cada vez que
+  cambia `Cargo.lock`, hay que regenerar el inventario con
+  `cargo run -p xtask -- licenses` y revisar el diff. La comprobación
+  `cargo run -p xtask -- licenses --check` compara el inventario completo:
+  nombre, versión, licencia y familia de cada fila, y los totales.
 - **Revisiones de los modelos auditadas.** Los modelos Qwen3-TTS y opus-mt se
   descargan con `ai-voice-interconnector setup` y no se empaquetan. Para
   incorporar una revisión nueva de alguno:

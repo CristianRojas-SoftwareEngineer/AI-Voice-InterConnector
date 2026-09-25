@@ -98,6 +98,12 @@ binario publicado cuando las cachés de CI aciertan, y mezclaba el estado vigent
 con mediciones de versiones pasadas. La sección de caché ahora explica qué
 restaura CircleCI y qué recompila cargo, y documenta solo el estado vigente.
 
+Además, el inventario de `THIRD-PARTY-LICENSES.md`, que viaja en cada
+artefacto, se transcribía a mano y la puerta solo comparaba nombres, así que la
+atribución publicada tenía versiones, licencias y totales incorrectos sin que
+nada lo señalara. Ahora `xtask` genera el inventario desde `Cargo.lock` y el
+metadato de cada crate, y la puerta verifica su contenido completo.
+
 ### Cambiado
 
 - docs: la sección de caché de `docs/BUILD.md` distingue los dos mecanismos:
@@ -114,6 +120,32 @@ restaura CircleCI y qué recompila cargo, y documenta solo el estado vigente.
   el código ni que la clave la genera `xtask cache-key` (la genera `perl`).
 - docs: se eliminaron las líneas en blanco sobrantes entre el índice y la
   primera sección de este CHANGELOG.
+- docs: `THIRD-PARTY-LICENSES.md`, `docs/RELEASING.md` y `CONTRIBUTING.md`
+  indican regenerar el inventario con `cargo run -p xtask -- licenses` cada vez
+  que cambia `Cargo.lock`, y que la puerta compara el inventario completo. Se
+  retiró la propuesta de `docs/reviews/`, ya implementada.
+
+### Corregido
+
+- fix: la atribución de `THIRD-PARTY-LICENSES.md` coincide con `Cargo.lock` y
+  el metadato de cada crate. Se añadieron 49 filas de crates con más de una
+  versión resuelta (496 paquetes de 447 crates); se corrigieron 20 licencias
+  registradas como `MIT OR Apache-2.0` que el crate declara de otra forma (p.
+  ej., `tokenizers` y `prost` son `Apache-2.0`, `foldhash` es `Zlib`) y la
+  versión de `ai-voice-interconnector` (0.18.26 → 0.21.0). Los 9 manifiestos
+  del workspace declaran `license = "GPL-3.0-or-later"`, incluido `xtask`, que
+  figuraba como `MIT OR Apache-2.0`. El conteo y el resumen por familia se
+  recalculan desde las filas.
+
+### Añadido
+
+- feat(xtask): `cargo run -p xtask -- licenses` genera el inventario de
+  `THIRD-PARTY-LICENSES.md` entre marcadores, con una fila por versión resuelta
+  de `Cargo.lock`, la licencia de `cargo metadata --all-features` y el conteo y
+  el resumen por familia calculados. Falla ante una expresión de licencia sin
+  familia asignada o un paquete sin licencia. `licenses --check` (usado por
+  `xtask release` y el job `validate-licenses`) compara la región completa y
+  muestra el diff, en lugar de comparar solo los nombres.
 
 ## [0.21.0] — 2026-09-23
 

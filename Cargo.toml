@@ -2,6 +2,7 @@
 name = "ai-voice-interconnector"
 version = "0.21.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
 # `cargo run` sin --bin: el binario canónico es el CLI (xtask es tooling).
 default-run = "ai-voice-interconnector"
 

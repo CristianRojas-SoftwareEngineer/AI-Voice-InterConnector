@@ -92,7 +92,7 @@ cargo update          # regenera Cargo.lock
 cargo test --all      # verifica
 ```
 
-Revisa el diff de `Cargo.lock` antes de commitear. Si cambian crates empaquetados, actualiza `THIRD-PARTY-LICENSES.md` (ver su §Regeneración; `cargo-license` o `cargo metadata`).
+Revisa el diff de `Cargo.lock` antes de commitear. Si cambia, regenera el inventario de `THIRD-PARTY-LICENSES.md` con `cargo run -p xtask -- licenses` y revisa su diff (ver su §Regeneración).
 
 `THIRD-PARTY-LICENSES.md` y `SOURCE-OFFER.md` viajan dentro de los `tar.gz`/`.zip`; el gate `validate-licenses` falla si divergen.
 
