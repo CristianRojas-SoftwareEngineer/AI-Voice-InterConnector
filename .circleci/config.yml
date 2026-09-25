@@ -71,6 +71,13 @@ parameters:
     type: string
     default: "1.13.2"
     description: Versión de Ninja (release oficial ninja-win.zip) usada como generador CMake en Windows.
+  sccache_cache_size:
+    type: string
+    default: "3G"
+    description: >
+      Tamaño máximo de la caché local de sccache (SCCACHE_CACHE_SIZE) en todos
+      los jobs que la activan. Al superarlo, sccache desaloja por LRU los objetos
+      sin uso; debe holgar sobre el working set de la variante más grande.
 
 # Cachés compartidas por los jobs Rust (restore/save nativos, idénticos en bash
 # y PowerShell). Ninguna clave depende del código fuente del workspace: editar
@@ -345,6 +352,11 @@ commands:
             # CARGO_INCREMENTAL=0: sccache no cachea con compilación incremental.
             echo 'export RUSTC_WRAPPER=sccache' >> "$BASH_ENV"
             echo 'export SCCACHE_DIR=$HOME/.cache/sccache' >> "$BASH_ENV"
+            # Límite de la caché rolling: sin él rige el máximo por defecto (10 GiB)
+            # y cada cambio de Cargo.lock acumula objetos que ya nadie usa. Al
+            # superarlo, sccache desaloja por LRU (un acierto refresca el mtime de
+            # la entrada, también tras restaurar la caché desde el tar).
+            echo 'export SCCACHE_CACHE_SIZE=<< pipeline.parameters.sccache_cache_size >>' >> "$BASH_ENV"
             echo 'export CARGO_INCREMENTAL=0' >> "$BASH_ENV"
             sccache --version
             echo "[STEP] Configurar sccache - FIN"
@@ -548,6 +560,10 @@ jobs:
     # recompilación en Windows es total (evidencia v0.20.4: 0 Fresh / 154
     # Compiling con hit exacto de target-v3, incluyendo dependencias externas).
     executor: win/server-2022
+    # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
+    # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
+    environment:
+      SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     steps:
       - checkout
       - toolchain_restore_cache:
@@ -916,6 +932,10 @@ jobs:
   build-windows-x64:
     # Windows x64: binario + smoke test nativo. No usa Inno Setup aún.
     executor: win/server-2022
+    # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
+    # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
+    environment:
+      SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     parameters:
       probe:
         type: boolean
@@ -1055,6 +1075,13 @@ jobs:
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
             $env:CARGO_INCREMENTAL = "0"
+            # Solo en modo sonda (target/ frío): el servidor sccache, que arranca
+            # con la primera compilación de este step, registra sus errores en un
+            # log publicado como artefacto (cargo oculta la salida de los build scripts).
+            if ("<< parameters.probe >>" -eq "true") {
+              $env:SCCACHE_ERROR_LOG = "$PWD\sccache-error.log"
+              $env:SCCACHE_LOG = "debug"
+            }
             # Launcher sccache para CMake: exige el generador Ninja (el de
             # Visual Studio ignora los launchers). Ver native_sccache_setup_windows.
             $env:CMAKE_GENERATOR = "Ninja"
@@ -1079,6 +1106,9 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - cmake_probe_diagnostics
+            - store_artifacts:
+                path: sccache-error.log
+                destination: sccache-error-log
       - run:
           name: Smoke test del binario (version + voces de fábrica)
           command: |
@@ -1323,6 +1353,12 @@ jobs:
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
+            # Solo en modo sonda (target/ frío): el servidor sccache, que arranca
+            # con la primera compilación de este step, registra sus errores en un
+            # log publicado como artefacto (cargo oculta la salida de los build scripts).
+            if [ "<< parameters.probe >>" = "true" ]; then
+              export SCCACHE_ERROR_LOG="$PWD/sccache-error.log" SCCACHE_LOG=debug
+            fi
             # --timings: desglose por crate en target/cargo-timings (artefacto).
             cargo build --release --features full --verbose --timings
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
@@ -1333,6 +1369,9 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - cmake_probe_diagnostics
+            - store_artifacts:
+                path: sccache-error.log
+                destination: sccache-error-log
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
@@ -1500,6 +1539,12 @@ jobs:
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
+            # Solo en modo sonda (target/ frío): el servidor sccache, que arranca
+            # con la primera compilación de este step, registra sus errores en un
+            # log publicado como artefacto (cargo oculta la salida de los build scripts).
+            if [ "<< parameters.probe >>" = "true" ]; then
+              export SCCACHE_ERROR_LOG="$PWD/sccache-error.log" SCCACHE_LOG=debug
+            fi
             # --timings: desglose por crate en target/cargo-timings (artefacto).
             cargo build --release --features full --verbose --timings
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
@@ -1510,6 +1555,9 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - cmake_probe_diagnostics
+            - store_artifacts:
+                path: sccache-error.log
+                destination: sccache-error-log
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
@@ -1711,6 +1759,12 @@ jobs:
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
             export PATH="$HOME/.cargo/bin:$PATH"
+            # Solo en modo sonda (target/ frío): el servidor sccache, que arranca
+            # con la primera compilación de este step, registra sus errores en un
+            # log publicado como artefacto (cargo oculta la salida de los build scripts).
+            if [ "<< parameters.probe >>" = "true" ]; then
+              export SCCACHE_ERROR_LOG="$PWD/sccache-error.log" SCCACHE_LOG=debug
+            fi
             # --timings: desglose por crate en target/cargo-timings (artefacto).
             cargo build --release --features full --verbose --timings
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
@@ -1721,6 +1775,9 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - cmake_probe_diagnostics
+            - store_artifacts:
+                path: sccache-error.log
+                destination: sccache-error-log
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: |

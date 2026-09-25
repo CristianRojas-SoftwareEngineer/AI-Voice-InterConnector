@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.22.0 — 2026-09-25](#0220--2026-09-25)
 - [0.21.0 — 2026-09-23](#0210--2026-09-23)
 - [0.20.12 — 2026-09-23](#02012--2026-09-23)
@@ -90,6 +91,28 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+La caché `sccache-v1` de CI crecía sin límite efectivo (en Windows pasó de
+602 MiB en v0.20.9 a 1,4 GiB en v0.22.0), porque cada cambio de `Cargo.lock` deja
+objetos que ya nadie usa y alargan su guardado y restauración. Además,
+`sccache` reporta fallos deterministas en cada build que arranca sin `target/`,
+y su causa no se podía identificar porque cargo oculta la salida de los build
+scripts. Ahora la caché tiene un tamaño acotado que desaloja lo que no se usa, y
+la sonda `native-cache-probe` publica el log de errores de `sccache` para
+diagnosticar esos fallos sin cortar una release.
+
+### Cambiado
+
+- ci: el parámetro de pipeline `sccache_cache_size` (3 GiB) fija
+  `SCCACHE_CACHE_SIZE` en todos los jobs que activan `sccache`. Al superarlo,
+  `sccache` desaloja por LRU los objetos sin uso; se comprobó con `sccache`
+  0.8.2 que un acierto refresca el orden de una entrada restaurada desde el tar
+  de la caché, así que no se desalojan objetos vigentes.
+- ci: en modo sonda, los 4 `build-*` arrancan `sccache` con `SCCACHE_ERROR_LOG`
+  y `SCCACHE_LOG=debug` y publican el log como artefacto `sccache-error-log`.
+  Los builds de release no cambian.
 
 ## [0.22.0] — 2026-09-25
 

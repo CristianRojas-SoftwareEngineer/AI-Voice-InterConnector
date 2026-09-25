@@ -271,7 +271,8 @@ Ejecuta los 4 `build-*` con `probe: true`, sin `requires` ni filtros de tags, y 
 - no restaura ni guarda `target-*`: compila siempre con `target/` frío y nunca escribe una clave inmutable de producción;
 - omite el staging versionado, el SHA-256 y `persist_to_workspace` (exigen `CIRCLE_TAG`);
 - ejecuta el smoke test y guarda `sccache` en la variante `full` (por contenido, sin riesgo de contaminar la producción, y así siembra la caché para la siguiente release);
-- imprime el diagnóstico de CMake: versiones de `cmake`/`ninja`, número de CPU y, por cada `CMakeCache.txt`, generador, compilador, launcher, tipo de build, runtime de MSVC y flags efectivos (en Windows, además, una línea de compilación real de `onednn-src` y de `ct2rs`).
+- imprime el diagnóstico de CMake: versiones de `cmake`/`ninja`, número de CPU y, por cada `CMakeCache.txt`, generador, compilador, launcher, tipo de build, runtime de MSVC y flags efectivos (en Windows, además, una línea de compilación real de `onednn-src` y de `ct2rs`);
+- arranca el servidor `sccache` con `SCCACHE_ERROR_LOG` y `SCCACHE_LOG=debug` y publica ese log como artefacto `sccache-error-log`: identifica las unidades que `sccache` no puede compilar o cachear con `target/` frío, cuya salida cargo oculta dentro de los build scripts. Los builds de release no activan el log.
 
 Los tests de topología de `xtask` fallan si el workflow de sonda llega a contener un `publish-*`, si el modo sonda toca `target-*` o si `build-all` puede correr junto a la sonda.
 
@@ -361,7 +362,7 @@ externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 |-------|------------|------|------------------------------------|
 | `cargo-v2` (registry) | `~/.cargo/registry` y `~/.cargo/git`: las fuentes descargadas de crates | todos los que compilan | `arch`, `rust_version` y el checksum de `Cargo.lock.cachekey`. Tiene fallback por prefijo. |
 | `target-v3` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_version`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58`. Sin fallback. |
-| `sccache-v1` | objetos Rust, C y C++ indexados por contenido | los mismos jobs que `target-v3`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_version` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
+| `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (3 GiB) | los mismos jobs que `target-v3`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_version` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
 | `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_version`. |
 | `msys2-v1` | la instalación de MSYS2 | `build-windows-x64` | los pines de MSYS2: release base, gcc, openblas y make. |
 | `tts-v1` | el motor `qwen_tts.exe` compilado | `build-windows-x64` | `vendor/qwen3-tts/.engine-cachekey` (`Makefile`, `*.c`/`*.h` y `third_party/ingot`) y los pines de gcc y openblas. |
@@ -416,7 +417,13 @@ además inmune a la conversión de fin de línea del checkout.
   corrida (`when: always`), y la restauración toma la más reciente. No hay
   guardado condicional: los fallos de una corrida son objetos que `sccache`
   acaba de compilar, y omitir el guardado haría que la siguiente corrida los
-  volviera a fallar.
+  volviera a fallar. Cada cambio de `Cargo.lock` agrega objetos que ya nadie
+  usa, así que el tamaño se acota con `SCCACHE_CACHE_SIZE`, fijado por el
+  parámetro de pipeline `sccache_cache_size` (3 GiB, más del doble del working
+  set de `build-windows-x64`, la variante más grande). Al superarlo, `sccache`
+  desaloja por LRU: un acierto actualiza el `mtime` de la entrada, también en
+  una caché recién restaurada desde el tar de CircleCI, así que se desalojan los
+  objetos sin uso y no los vigentes (comprobado con `sccache` 0.8.2).
 
 #### Cobertura de `sccache`
 
@@ -425,6 +432,8 @@ además inmune a la conversión de fin de línea del checkout.
 - **Ninja como generador** (`CMAKE_GENERATOR=Ninja`): el generador Visual Studio, el que el crate `cmake` elige por defecto con MSVC, ignora los launchers. `native_sccache_setup_windows` descarga en cada corrida la release oficial fijada por el parámetro `ninja_version` a un directorio temporal fuera de toda caché, y verifica su versión.
 - **Entorno de MSVC**: Ninja no carga `INCLUDE`/`LIB` por sí mismo (el generador Visual Studio sí), así que el paso localiza Visual Studio con `vswhere`, importa `vcvars64.bat` y solo después antepone Ninja y `.cargo\bin` al `PATH`.
 - **`CC`/`CXX` con la ruta absoluta de `cl.exe`**: el crate `cc` solo usa `RUSTC_WRAPPER` como wrapper en MSVC cuando el compilador es la ruta de un ejecutable existente.
+
+El entorno de `sccache` (`RUSTC_WRAPPER`, `SCCACHE_DIR` y el límite `SCCACHE_CACHE_SIZE`) lo exporta `sccache_setup_unix` a `$BASH_ENV` en Linux y macOS; en Windows, sin `$BASH_ENV`, `RUSTC_WRAPPER` y `SCCACHE_DIR` se definen inline en los pasos de compilación de `test-windows` y `build-windows-x64`, y `SCCACHE_CACHE_SIZE` en el `environment:` de ambos jobs. `sccache --show-stats` muestra el límite vigente como `Max cache size`.
 
 El parche `vendor/cmake-0.1.58` fija `CMAKE_<LANG>_FLAGS_RELEASE` con los flags que calcula el crate `cc` (runtime estático `/MT`) más `/O2 /Ob2 /DNDEBUG`, tanto sin generador explícito como con Ninja. La rama de Ninja es necesaria porque los proyectos con la política CMP0091 en OLD (oneDNN) heredarían `/MD` del valor por defecto de CMake mientras Rust enlaza con `/MT`, y el enlace fallaría con `LNK2038`. Así, los objetos C++ de Windows se compilan con los mismos flags de optimización y runtime que con Visual Studio, lo que se verifica con el diagnóstico de la sonda (`CMakeCache.txt` y `build.ninja`). Medición en una compilación local del binario de Windows (`--features full`, 4 hilos, mismo MSVC 14.44 que el executor): `16 min` con `target/` y `sccache` fríos frente a `4 min 45 s` con `target/` frío y `sccache` caliente (809 de 825 unidades C/C++ servidas por `sccache`). El executor de Windows compila unas 2,35 veces más lento que esa máquina, de modo que tras un cambio de clave de `target/` sin cambios nativos se espera `build-windows-x64` en torno a 11–15 min.
 
