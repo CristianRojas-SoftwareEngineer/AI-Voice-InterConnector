@@ -716,18 +716,23 @@ impl ModelStore {
     /// Se usa en `cleanup`/`uninstall` para evitar incoherencia `hub` purgado + `xet` vivo.
     pub fn remove_xet_cache() -> Result<bool> {
         let xet = xet_cache_dir();
-        let mut removed = false;
         if xet.is_dir() {
             std::fs::remove_dir_all(&xet)?;
-            removed = true;
+            return Ok(true);
         }
-        // Limpiar locks huérfanos de hub si quedaron
+        Ok(false)
+    }
+
+    /// Borrar los locks de descarga de `hub` (`hf_cache_dir()/.locks`). Paso
+    /// explícito de `cleanup`/`uninstall`/`setup --force-update`, separado de
+    /// `remove_xet_cache` para que el borrado se reporte y su error se propague.
+    pub fn remove_hf_locks() -> Result<bool> {
         let locks = hf_cache_dir().join(".locks");
         if locks.is_dir() {
-            // Intentar borrar, ignorar error si no está vacío por otro proceso
-            let _ = std::fs::remove_dir_all(&locks);
+            std::fs::remove_dir_all(&locks)?;
+            return Ok(true);
         }
-        Ok(removed)
+        Ok(false)
     }
 
     /// Descarga nativa de un modelo pinneado vía HuggingFace Hub.

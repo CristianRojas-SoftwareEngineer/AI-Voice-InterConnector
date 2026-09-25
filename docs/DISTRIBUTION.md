@@ -26,7 +26,7 @@ quedó 100 % Rust en su distribución.
 | **Dependencias del sistema** | Ninguna (autocontenido) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
 | **Actualización** | Re-ejecutar el one-liner por SO con `--check` (reporta la transición sin instalar), `upgrade-ai-voice-interconnector.{sh,ps1}` (wrapper), o `brew upgrade --cask` |
-| **Desinstalación** | Eliminar el directorio de instalación + la entrada de PATH; `ai-voice-interconnector cleanup` para los modelos; en Homebrew `brew uninstall --cask --zap` |
+| **Desinstalación** | Eliminar el directorio de instalación + la entrada de PATH; `ai-voice-interconnector cleanup --model` para los modelos (o `uninstall` para todo); en Homebrew `brew uninstall --cask --zap` |
 | **Publicación en CI** | `publish-release` → GitHub Release; `publish-metadata` → Cask del tap |
 | **Reversibilidad de la publicación** | El Release es público al publicarse: revertir implica borrar un Release ya público |
 

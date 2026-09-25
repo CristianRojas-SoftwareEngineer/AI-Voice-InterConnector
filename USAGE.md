@@ -103,9 +103,9 @@ irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-In
 ```
 
 **Desinstalación limpia**, en **un comando** en los tres SO: `ai-voice-interconnector
-uninstall` encadena la limpieza de datos (`data_dir()` + snapshots HF), revierte la
-integración de PATH y borra el binario, en ese orden. Usa `uninstall --force` (o
-`cleanup --all`) para omitir la confirmación. Con Homebrew Cask, la vía idiomática es
+uninstall` encadena la limpieza de datos (`data_dir()` + snapshots HF + cachés
+`xet`/`ct2`/`.locks`), revierte la integración de PATH y borra el binario, en ese
+orden. Usa `uninstall --force` para omitir la confirmación. Con Homebrew Cask, la vía idiomática es
 `brew uninstall --cask --zap`. Ver «Desinstalación completa» más abajo.
 
 ### Compilar desde el código fuente (Rust)
@@ -884,8 +884,8 @@ proyectos en la caché. `--dry-run` lista candidatas sin borrar; `--yes/-y` omit
 ## Desinstalación completa
 
 **Canal nativo (los tres SO), en un comando**: `ai-voice-interconnector uninstall`
-(encadena limpieza de datos vía `cleanup --all` como unión sin binario/PATH + borrado de binario/PATH) encadena la limpieza de datos (snapshots HF +
-`data_dir()`), revierte la integración de PATH y borra el binario, **en ese
+encadena la limpieza de datos (el mismo alcance que `cleanup --all`: snapshots HF,
+cachés `xet`/`ct2`/`.locks` y `data_dir()`), revierte la integración de PATH y borra el binario, **en ese
 orden**. Pide confirmación interactiva salvo con `--force`/`--yes`; cancelar
 aborta sin borrar nada (`{"status":"cancelled"}`, exit 0). Con `--json` emite
 `{"schema_version","status"}`.
@@ -896,8 +896,8 @@ aborta sin borrar nada (`{"status":"cancelled"}`, exit 0). Con `--json` emite
   idiomática es `brew uninstall --cask --zap ai-voice-interconnector`.
 - **Windows**: borra los datos y el directorio
   `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, quita esa entrada del PATH
-  de usuario (`HKCU\Environment`) y notifica el cambio al sistema. Si el binario
-  está en uso, avisa y deja el borrado final para después de cerrar la terminal.
+  de usuario (`HKCU\Environment`) y notifica el cambio al sistema. El directorio
+  del binario en uso lo borra un proceso auxiliar al terminar el comando.
 
 ---
 

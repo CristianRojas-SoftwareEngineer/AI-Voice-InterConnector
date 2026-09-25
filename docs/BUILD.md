@@ -35,6 +35,7 @@ agrupa el binario con los documentos de licencia GPLv3.
   - [Caché del motor en CI](#caché-del-motor-en-ci)
 - [7. Descarga nativa de modelos (`hf-hub`)](#7-descarga-nativa-de-modelos-hf-hub)
   - [Ubicaciones en disco por SO](#ubicaciones-en-disco-por-so)
+- [8. Limpieza del entorno de desarrollo](#8-limpieza-del-entorno-de-desarrollo)
 
 ---
 
@@ -695,3 +696,31 @@ queden en disco son inertes y los barre `cleanup`):
 
 `doctor` imprime la ruta resuelta (`Cache HF:` / campo `hf_cache` en `--json`)
 para auditoría. `cleanup --model/--voices/--synthetic-speech/--all` borra selectivamente snapshots HF + datos de usuario (sin binario ni PATH; sin flags sale con exit 2 `usage_error`); `uninstall` es el único que añade binario y PATH.
+
+## 8. Limpieza del entorno de desarrollo
+
+Compilar, probar e instalar deja artefactos en dos capas que crecen sin límite.
+Cada capa tiene su comando:
+
+| Capa | Qué contiene | Comando |
+|------|--------------|---------|
+| Proyecto (repo) | `target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario/objetos/`output.wav` del motor y pesos locales obsoletos en `vendor/qwen3-tts` | `cargo run -p xtask -- clean` |
+| App (perfil de usuario) | Instalación, `data_dir()`, snapshots HF pineados, `hub/ct2`, `hub/.locks`, `xet`, temporales `avi_*`/`avi-*`/`*.qvoice` | `cargo run -p xtask -- clean` (o `ai-voice-interconnector uninstall` sin repo) |
+| Global compartida | `~/.cargo/registry`, `~/.cargo/git`, caché de `sccache`, paquetes `pip` del conversor CTranslate2 | Manual: la comparten otros proyectos |
+
+```bash
+# Ver qué se borraría y cuánto ocupa, sin borrar nada
+cargo run -p xtask -- clean --dry-run
+
+# Borrar (pide confirmación [s/N]; --yes la omite, obligatorio sin TTY)
+cargo run -p xtask -- clean --yes
+```
+
+`clean` se ejecuta desde la raíz del repo. Antes de borrar, desinstala el
+binario instalado (`uninstall --force`) y detiene el daemon lanzado desde
+`target/`. Nunca borra código fuente versionado. En Windows, el propio
+`xtask.exe` en ejecución se borra con un proceso auxiliar al terminar.
+
+Tras `clean`, el entorno arranca de cero: `cargo build` recompila todo (con
+`sccache` el costo baja), `cargo run -p xtask -- build-engine` reconstruye el
+motor y `setup` vuelve a descargar los modelos pineados.

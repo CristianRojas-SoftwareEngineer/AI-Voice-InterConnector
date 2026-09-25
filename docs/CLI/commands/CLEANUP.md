@@ -61,7 +61,7 @@ independientes y combinables. `--all` **no delega** en `handle_uninstall`
 **`--model`** — borra vía `hf_cache_dir()`/`xet_cache_dir()`/`ct2_cache_dir()` (`avi-store`):
 
 1. **Snapshots HF** (`MODEL_REVISIONS`): `models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice`, `models--Qwen--Qwen3-TTS-12Hz-0.6B-Base`, `models--istupakov--parakeet-tdt-0.6b-v3-onnx`, `models--Helsinki-NLP--opus-mt-es-en`, `models--Helsinki-NLP--opus-mt-en-es` dentro de `hf_cache_dir()`
-2. **Cache `xet`** (`xet_cache_dir()`): `~/.cache/huggingface/xet` + `.locks` limpiado atómicamente
+2. **Cache `xet`** (`xet_cache_dir()`): `~/.cache/huggingface/xet`, y los locks de descarga `hf_cache_dir()/.locks`
 3. **Cache `ct2`** (`ct2_cache_dir()`): `hf_cache_dir()/ct2` (`ct2_model_dir` por par)
 4. **Índice legado** (`data_dir()/models`): limpiado si existe
 5. Daemon detenido con parada unificada (`stop_daemon_and_resident()`) y temp huérfano `avi_*`/`ai-voice-interconnector-install-*`
@@ -158,7 +158,7 @@ contaminar stdout (stderr para prompt, stdout para JSON).
 no lo invoca; expande a los tres flags y borra solo datos. `uninstall`
 reutiliza la parada unificada `stop_daemon_and_resident()` (deadline 8 s con
 verificación) y luego borra `data_dir()` entero + snapshots
-`MODEL_REVISIONS` + `xet` + temp + integración por SO
+`MODEL_REVISIONS` + `xet` + `.locks` + `ct2` + temp + integración por SO
 (`windows_install_dir`/`remove_windows_user_path`/`spawn_uninstall_helper` en
 Windows, symlink/dir en Unix).
 

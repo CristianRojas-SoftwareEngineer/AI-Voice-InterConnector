@@ -896,7 +896,11 @@ async fn voices_clone_handler(
         )
             .into_response();
     }
-    let tmp_qvoice = std::env::temp_dir().join(format!("{}.qvoice", name));
+    let tmp_qvoice = std::env::temp_dir().join(format!(
+        "avi_daemon_clone_{}_{}.qvoice",
+        name,
+        std::process::id()
+    ));
     // Stream NDJSON: las validaciones baratas ya pasaron en JSON plano;
     // `started` inmediato antes del trabajo pesado, latidos cada ~500 ms y
     // evento final con la forma contractual actual (`precomputed: true` =

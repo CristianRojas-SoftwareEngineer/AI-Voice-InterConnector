@@ -1416,6 +1416,87 @@ fn cleanup_dry_run_matches_fixture() {
     assert_eq!(actual["dry_run"], expected["dry_run"]);
 }
 
+/// `cleanup --model` real en sandbox: `removed` lista rutas (las mismas que
+/// `--dry-run`), incluye `.locks` y `ct2`, y los directorios desaparecen.
+/// `hub` como hoja (el `xet` hermano queda dentro del sandbox) y temp propio
+/// (el barrido de `avi_*` no toca el temp real).
+#[test]
+fn cleanup_model_real_run_reports_paths() {
+    // Sin pidfile, `cleanup` apaga el daemon de 127.0.0.1:8765: no tocar el del usuario.
+    let (_, status) = run_json(&["--json", "daemon", "status"]);
+    if status["daemon"] == Value::String("running".to_string()) {
+        eprintln!("[cleanup] skip: daemon activo en 127.0.0.1:8765");
+        return;
+    }
+    let sandbox = std::env::temp_dir().join(format!(
+        "cleanup_sandbox_{}_{}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
+    ));
+    let hf_home = sandbox.join("hf");
+    let hub = hf_home.join("hub");
+    let snapshot = hub.join("models--Helsinki-NLP--opus-mt-es-en");
+    let ct2 = hub.join("ct2").join("opus-mt-es-en");
+    let tmp = sandbox.join("tmp");
+    for d in [
+        &snapshot,
+        &ct2,
+        &hub.join(".locks"),
+        &hf_home.join("xet"),
+        &tmp,
+    ] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(ct2.join("model.bin"), b"marker").unwrap();
+    std::fs::write(tmp.join("avi_clone_x_1.qvoice"), b"marker").unwrap();
+    let data = sandbox.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let envs = [
+        ("AVI_DATA_DIR", data.to_str().unwrap()),
+        ("AVI_DAEMON_PORT", "0"),
+        ("HF_HUB_CACHE", hub.to_str().unwrap()),
+        ("HF_HOME", hf_home.to_str().unwrap()),
+        ("TMP", tmp.to_str().unwrap()),
+        ("TEMP", tmp.to_str().unwrap()),
+        ("TMPDIR", tmp.to_str().unwrap()),
+    ];
+
+    let (code, dry) = run_json_env(&["--json", "cleanup", "--model", "--dry-run"], &envs);
+    assert_eq!(code, 0, "{}", dry);
+    let (code, real) = run_json_env(&["--json", "cleanup", "--model", "--yes"], &envs);
+    assert_eq!(code, 0, "{}", real);
+
+    let as_set = |v: &Value| -> std::collections::BTreeSet<String> {
+        v["removed"]
+            .as_array()
+            .expect("removed debe ser array")
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        as_set(&dry),
+        as_set(&real),
+        "real y dry-run deben listar lo mismo"
+    );
+    for p in [
+        &snapshot,
+        &hub.join("ct2"),
+        &hub.join(".locks"),
+        &hf_home.join("xet"),
+    ] {
+        assert!(
+            as_set(&real).contains(&p.display().to_string()),
+            "falta {} en removed",
+            p.display()
+        );
+        assert!(!p.exists(), "{} debe borrarse", p.display());
+    }
+    assert!(!tmp.join("avi_clone_x_1.qvoice").exists());
+
+    let _ = std::fs::remove_dir_all(&sandbox);
+}
+
 /// Regresión del self-kill de `uninstall --force` en Windows (v0.18.10–v0.18.25):
 /// el fallback `taskkill /F /IM ai-voice-interconnector.exe` mataba al propio CLI
 /// (daemon y CLI comparten la imagen del binario) antes de borrar PATH/install_dir,
@@ -1457,8 +1538,15 @@ fn uninstall_force_no_self_kill() {
         .unwrap_or_else(|e| panic!("no se pudo crear install_dir falso: {}", e));
     std::fs::write(programs.join("ai-voice-interconnector.exe"), b"marker")
         .unwrap_or_else(|e| panic!("no se pudo escribir el marcador: {}", e));
-    let hf = sandbox.join("hf");
-    std::fs::create_dir_all(&hf).unwrap();
+    // `hub` como hoja: `xet_cache_dir` deriva su hermano `xet` solo si la ruta
+    // termina en `hub`; si no, cae al `~/.cache/huggingface/xet` real.
+    let hf_home = sandbox.join("hf");
+    let hf = hf_home.join("hub");
+    let ct2_model = hf.join("ct2").join("opus-mt-es-en");
+    std::fs::create_dir_all(&ct2_model).unwrap();
+    std::fs::write(ct2_model.join("model.bin"), b"marker").unwrap();
+    std::fs::create_dir_all(hf.join(".locks")).unwrap();
+    std::fs::create_dir_all(hf_home.join("xet")).unwrap();
 
     let data_sandbox = sandbox.join("data");
     std::fs::create_dir_all(&data_sandbox).unwrap();
@@ -1470,9 +1558,17 @@ fn uninstall_force_no_self_kill() {
             ("LOCALAPPDATA", local.to_str().unwrap()),
             ("AVI_DATA_DIR", data_sandbox.to_str().unwrap()),
             ("HF_HUB_CACHE", hf.to_str().unwrap()),
-            ("HF_HOME", hf.to_str().unwrap()),
+            ("HF_HOME", hf_home.to_str().unwrap()),
         ],
     );
+
+    // Derivados de modelo: `uninstall` borra CT2, `.locks` y xet (paridad `cleanup --model`).
+    assert!(!hf.join("ct2").exists(), "uninstall debe borrar hub/ct2");
+    assert!(
+        !hf.join(".locks").exists(),
+        "uninstall debe borrar hub/.locks"
+    );
+    assert!(!hf_home.join("xet").exists(), "uninstall debe borrar xet");
 
     // (d) Invariante crítico: no auto-muerte, contrato JSON intacto.
     // H2+H4 atómicos: `PATH` canónico sin residuo y helper desacoplado

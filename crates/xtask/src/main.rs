@@ -4,6 +4,8 @@ use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+mod clean;
+
 const GITHUB_REPO: &str = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector";
 const CASK_NAME: &str = "ai-voice-interconnector";
 
@@ -32,6 +34,8 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
     "~/.cache/huggingface/hub/models--istupakov--parakeet-tdt-0.6b-v3-onnx",
     "~/.cache/huggingface/hub/models--Helsinki-NLP--opus-mt-es-en",
     "~/.cache/huggingface/hub/models--Helsinki-NLP--opus-mt-en-es",
+    "~/.cache/huggingface/hub/ct2",
+    "~/.cache/huggingface/hub/.locks",
     "~/.cache/huggingface/xet",
   ]
 
@@ -313,6 +317,15 @@ enum Commands {
         #[arg(long)]
         jobs: Option<usize>,
     },
+    /// Limpia el entorno de desarrollo: artefactos del repo y estado de la app
+    Clean {
+        /// Lista rutas y tamaños sin borrar nada
+        #[arg(long)]
+        dry_run: bool,
+        /// Omite la confirmación interactiva
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -444,6 +457,7 @@ fn main() -> Result<()> {
         } => {
             build_engine(self_test, simd, jobs)?;
         }
+        Commands::Clean { dry_run, yes } => clean::run(dry_run, yes)?,
     }
     Ok(())
 }
@@ -1337,6 +1351,8 @@ mod tests {
         assert!(c.contains("models--Helsinki-NLP--opus-mt-es-en"));
         assert!(c.contains("models--Helsinki-NLP--opus-mt-en-es"));
         assert!(c.contains("~/.cache/huggingface/xet"));
+        assert!(c.contains("~/.cache/huggingface/hub/ct2"));
+        assert!(c.contains("~/.cache/huggingface/hub/.locks"));
     }
 
     /// Texto de `.circleci/config.yml`, localizado desde la raíz o desde el crate.

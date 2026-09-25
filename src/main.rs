@@ -1099,11 +1099,17 @@ async fn handle_voice(
                     "El modelo Base de clonado TTS no está provisionado. Ejecuta 'setup' primero.",
                 )
             })?;
-            let tmp_qvoice = std::env::temp_dir().join(format!("{}.qvoice", name));
-            avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name, "es")
-                .map_err(|e| CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()))?;
-            let saved_qvoice = voice_store
-                .save_reference(&name, &tmp_qvoice)
+            // Prefijo `avi_` para que el barrido de temp de `cleanup`/`uninstall`
+            // lo alcance si el proceso muere antes del borrado explícito.
+            let tmp_qvoice = std::env::temp_dir().join(format!(
+                "avi_clone_{}_{}.qvoice",
+                name,
+                std::process::id()
+            ));
+            let cloned = avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name, "es")
+                .and_then(|()| voice_store.save_reference(&name, &tmp_qvoice));
+            let _ = std::fs::remove_file(&tmp_qvoice);
+            let saved_qvoice = cloned
                 .map_err(|e| CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()))?;
             // El timbre y el habla quedan fundidos en `reference.qvoice` durante el
             // clonado; no se persisten WAV de referencia separados (nadie los lee).
@@ -2290,6 +2296,9 @@ async fn handle_setup(
             Ok(false) => {}
             Err(e) => eprintln!("  ✗ No se pudo purgar cache xet: {}", e),
         }
+        if let Err(e) = store::ModelStore::remove_hf_locks() {
+            eprintln!("  ✗ No se pudo purgar .locks de hub: {}", e);
+        }
     }
 
     // 2. Descargar y registrar modelos pinneados. Base es opt-in (--with-voice-cloning).
@@ -2624,11 +2633,14 @@ async fn handle_cleanup(
     // Branch --model
     if do_model {
         let model_store = ModelStore::new();
-        for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
+        for (name, repo, _) in store::MODEL_REVISIONS {
             match model_store.remove_hf_snapshot(name) {
                 Ok(true) => {
                     eprintln!("Snapshot {} eliminado.", name);
-                    actually_removed.push(format!("hf:{}", name));
+                    // Misma ruta que lista `--dry-run` (contrato: `removed` son rutas)
+                    let p =
+                        store::hf_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
+                    actually_removed.push(p.display().to_string());
                 }
                 Ok(false) => {}
                 Err(e) => eprintln!("  ✗ No se pudo borrar {}: {}", name, e),
@@ -2641,6 +2653,13 @@ async fn handle_cleanup(
             }
             Ok(false) => {}
             Err(e) => eprintln!("  ✗ No se pudo borrar cache xet: {}", e),
+        }
+        match store::ModelStore::remove_hf_locks() {
+            Ok(true) => {
+                actually_removed.push(store::hf_cache_dir().join(".locks").display().to_string());
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("  ✗ No se pudo borrar .locks de hub: {}", e),
         }
         match store::remove_ct2_cache() {
             Ok(true) => {
@@ -2715,16 +2734,12 @@ async fn handle_cleanup(
             }
         }
     }
-    // Si no hay payload previo de dry-run, emitir removed real o candidates como fallback
-    let final_removed = if actually_removed.is_empty() {
-        removed_display.clone()
-    } else {
-        actually_removed
-    };
+    // `removed` lista lo borrado en esta ejecución, sin fallback a las
+    // candidatas (vacío si no había nada o si todos los borrados fallaron).
     if json_mode {
         emit_raw_json(json!({
             "status": "cleanup_complete",
-            "removed": final_removed,
+            "removed": actually_removed,
             "dry_run": false
         }));
     } else {
@@ -3031,11 +3046,19 @@ async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> 
                 eprintln!("  ✗ No se pudo borrar snapshot {}: {}", name, e);
             }
         }
-        // 1c. Cache xet + locks
+        // 1c. Cache xet + locks + derivado CT2 (mismo alcance que `cleanup --model`)
         match store::ModelStore::remove_xet_cache() {
             Ok(true) => eprintln!("Cache xet eliminada."),
             Ok(false) => {}
             Err(e) => eprintln!("  ✗ No se pudo borrar cache xet: {}", e),
+        }
+        if let Err(e) = store::ModelStore::remove_hf_locks() {
+            eprintln!("  ✗ No se pudo borrar .locks de hub: {}", e);
+        }
+        match store::remove_ct2_cache() {
+            Ok(true) => eprintln!("Cache CT2 eliminada."),
+            Ok(false) => {}
+            Err(e) => eprintln!("  ✗ No se pudo borrar cache CT2: {}", e),
         }
         // Temp huérfano
         {

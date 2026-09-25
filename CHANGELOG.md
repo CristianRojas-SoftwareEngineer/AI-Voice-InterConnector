@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.23.1 — 2026-09-25](#0231--2026-09-25)
 - [0.23.0 — 2026-09-25](#0230--2026-09-25)
 - [0.22.0 — 2026-09-25](#0220--2026-09-25)
@@ -92,6 +93,39 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+El entorno de desarrollo acumulaba decenas de GB de artefactos que ningún
+comando limpiaba (`target/`, objetos C y pesos obsoletos del motor en
+`vendor/qwen3-tts`, `.qvoice` temporales filtrados por `voice clone`), y
+`uninstall` dejaba en el perfil del usuario el derivado CT2 y los locks de
+descarga de HuggingFace. Ahora `cargo run -p xtask -- clean` deja repo y perfil
+de usuario listos para compilar, instalar o usar solo artefactos nuevos, y
+`uninstall` borra lo mismo que `cleanup --all`.
+
+### Añadido
+
+- xtask: subcomando `clean [--dry-run] [--yes]`. Lista con tamaños y borra la
+  capa del proyecto (`target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura,
+  binario, objetos y pesos locales del motor en `vendor/qwen3-tts`) y la de la
+  app (instalación, `data_dir()`, snapshots HF pineados, `hub/ct2`,
+  `hub/.locks`, `xet` y temporales del producto). Detiene antes el daemon y
+  desinstala el binario instalado. No toca cachés globales compartidas
+  (`~/.cargo/registry`, `~/.cargo/git`, `sccache`).
+
+### Corregido
+
+- `uninstall` borra también el derivado CT2 (`hub/ct2`) y `hub/.locks`, con el
+  mismo alcance que `cleanup --model`.
+- `cleanup --model` borra `hub/.locks` y su `removed` informa rutas reales
+  (`models--*`) y solo lo efectivamente borrado.
+- `setup --force-update` limpia `hub/.locks` además de `xet`.
+- `voice clone` (local y vía daemon) ya no filtra el `.qvoice` temporal: usa
+  el prefijo `avi_` que barren `cleanup`/`uninstall` y lo borra al terminar.
+- El `zap` del Cask incluye `hub/ct2` y `hub/.locks`.
+- tests: el test de `uninstall` ya no podía purgar el `xet` real del
+  desarrollador (el sandbox HF no terminaba en `hub`).
 
 ## [0.23.1] — 2026-09-25
 
