@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cask_zap_no_chatterbox_sino_qwen_parakeet_opusmt() {
+    fn test_cask_zap_no_chatterbox_but_qwen_parakeet_opusmt() {
         let c = render_cask("9.9.9", &"b".repeat(64));
         assert!(c.contains("models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice"));
         assert!(c.contains("models--Qwen--Qwen3-TTS-12Hz-0.6B-Base"));
@@ -1149,7 +1149,7 @@ mod tests {
     }
 
     /// Texto de `.circleci/config.yml`, localizado desde la raíz o desde el crate.
-    fn read_config_ci() -> String {
+    fn read_ci_config() -> String {
         let candidates = [
             ".circleci/config.yml",
             "../../.circleci/config.yml",
@@ -1167,7 +1167,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_heterogeneous_and_unconditional_sccache() {
-        let cfg = read_config_ci();
+        let cfg = read_ci_config();
         // Modelo vigente (post remediación de caché): test-linux, test-windows, test-macos,
         // coverage y build-* usan cargo_restore_caches (registry + target-v3) y sccache
         // autoconsistente por variante (cada job pesado restaura y guarda su propio blob).
@@ -1358,7 +1358,7 @@ mod tests {
 
     #[test]
     fn test_target_v3_key_with_vendor_cmake_identity() {
-        let cfg = read_config_ci();
+        let cfg = read_ci_config();
         // El parche local de cmake se fingerprintea por mtime: el checkout lo marca
         // Dirty y arrastra la cadena nativa. La clave exacta de target-v3 lleva el
         // tree hash git del parche y NO tiene fallback, de modo que un acierto
@@ -1433,10 +1433,10 @@ mod tests {
             "el mtime del parche debe fijarse después de restaurar target-v3"
         );
 
-        for residuo in ["sort -z", "sha256_hex", "target/.vendor-cmake.sha256"] {
+        for leftover in ["sort -z", "sha256_hex", "target/.vendor-cmake.sha256"] {
             assert!(
-                !cfg.contains(residuo),
-                "la config no debe contener `{residuo}` (mecanismo de sello retirado)"
+                !cfg.contains(leftover),
+                "la config no debe contener `{leftover}` (mecanismo de sello retirado)"
             );
         }
     }
@@ -1451,7 +1451,7 @@ mod tests {
     /// captura ya materializada.
     #[test]
     fn test_no_racy_pipe_grep_q_or_head_under_pipefail() {
-        let cfg = read_config_ci();
+        let cfg = read_ci_config();
         // El patrón prohibido es "productor que aún puede estar escribiendo |
         // consumidor que sale antes de leer todo". `printf '%s\n' "$var" |
         // grep -q` SÍ es seguro (captura ya materializada, write() atómico) y
@@ -1482,27 +1482,27 @@ mod tests {
     /// que falló, no una compilación incompleta.
     #[test]
     fn test_cargo_save_target_on_success_in_build_variant_full() {
-        let cfg = read_config_ci();
+        let cfg = read_ci_config();
         // Cada bloque `cargo_save_target:` con `variant: full` debe traer
         // `when: on_success` en las mismas 3 líneas siguientes.
-        let mut vistos_full = 0;
+        let mut seen_full = 0;
         let lines: Vec<&str> = cfg.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if line.trim() != "- cargo_save_target:" {
                 continue;
             }
-            let ventana = lines[i..(i + 5).min(lines.len())].join("\n");
-            if ventana.contains("variant: full") {
-                vistos_full += 1;
+            let window = lines[i..(i + 5).min(lines.len())].join("\n");
+            if window.contains("variant: full") {
+                seen_full += 1;
                 assert!(
-                    ventana.contains("when: on_success"),
-                    "cargo_save_target con variant: full debe pasar when: on_success (evita persistir target/ incompleto bajo clave inmutable); bloque:\n{ventana}"
+                    window.contains("when: on_success"),
+                    "cargo_save_target con variant: full debe pasar when: on_success (evita persistir target/ incompleto bajo clave inmutable); bloque:\n{window}"
                 );
             }
         }
         // Los 4 build-* (windows-x64, linux-x64, linux-arm64, darwin-arm64).
         assert_eq!(
-            vistos_full, 4,
+            seen_full, 4,
             "se esperaban 4 invocaciones de cargo_save_target con variant: full (una por build-*)"
         );
     }
@@ -1515,7 +1515,7 @@ mod tests {
     ];
 
     /// Sección de la definición de un job build-* (hasta el siguiente job).
-    fn section_build<'a>(cfg: &'a str, job: &str) -> &'a str {
+    fn build_section<'a>(cfg: &'a str, job: &str) -> &'a str {
         cfg.split(&format!("\n  {}:\n", job))
             .nth(1)
             .unwrap_or("")
@@ -1527,7 +1527,7 @@ mod tests {
             .unwrap_or("")
     }
 
-    fn indentation(l: &str) -> usize {
+    fn indent(l: &str) -> usize {
         l.len() - l.trim_start().len()
     }
 
@@ -1538,27 +1538,27 @@ mod tests {
     /// Guarda condicional (`when`/`unless`, condición) bajo la que cae el paso
     /// de la línea `idx`: sube al `steps:` que lo contiene y de ahí al `- when:`
     /// o `- unless:` que lo abre. `None` si el paso no está anidado.
-    fn guard_for(lines: &[&str], idx: usize) -> Option<(String, String)> {
-        let ind = indentation(lines[idx]);
+    fn guard_of(lines: &[&str], idx: usize) -> Option<(String, String)> {
+        let indent_level = indent(lines[idx]);
         let j = (0..idx)
             .rev()
-            .find(|&j| is_structural(lines[j]) && indentation(lines[j]) < ind)?;
+            .find(|&j| is_structural(lines[j]) && indent(lines[j]) < indent_level)?;
         if lines[j].trim() != "steps:" {
             return None;
         }
         let k = (0..j)
             .rev()
-            .find(|&k| is_structural(lines[k]) && indentation(lines[k]) < indentation(lines[j]))?;
-        let tipo = lines[k]
+            .find(|&k| is_structural(lines[k]) && indent(lines[k]) < indent(lines[j]))?;
+        let kind = lines[k]
             .trim()
             .strip_prefix("- ")?
             .strip_suffix(':')?
             .to_string();
-        let cond = lines[k + 1..j]
+        let condition = lines[k + 1..j]
             .iter()
             .find_map(|l| l.trim().strip_prefix("condition: "))?
             .to_string();
-        Some((tipo, cond))
+        Some((kind, condition))
     }
 
     /// Workflow de sonda: nunca publica, todos sus jobs van en modo `probe` y
@@ -1566,17 +1566,17 @@ mod tests {
     /// Un `publish-*` o un `context` aquí publicaría una release desde una rama.
     #[test]
     fn test_probe_workflow_never_publishes() {
-        let cfg = read_config_ci();
+        let cfg = read_ci_config();
         let lines: Vec<&str> = cfg.lines().collect();
-        let ini = lines
+        let start = lines
             .iter()
             .position(|l| *l == "  native-cache-probe:")
             .expect("debe existir el workflow native-cache-probe");
-        let fin = (ini + 1..lines.len())
-            .find(|&i| is_structural(lines[i]) && indentation(lines[i]) <= 2)
+        let end = (start + 1..lines.len())
+            .find(|&i| is_structural(lines[i]) && indent(lines[i]) <= 2)
             .unwrap_or(lines.len());
-        let wf = lines[ini..fin].join("\n");
-        for prohibido in [
+        let workflow = lines[start..end].join("\n");
+        for forbidden in [
             "publish-release",
             "publish-metadata",
             "context:",
@@ -1584,15 +1584,15 @@ mod tests {
             "filters:",
         ] {
             assert!(
-                !wf.contains(prohibido),
-                "el workflow native-cache-probe no debe contener `{prohibido}`:\n{wf}"
+                !workflow.contains(forbidden),
+                "el workflow native-cache-probe no debe contener `{forbidden}`:\n{workflow}"
             );
         }
         assert!(
-            wf.contains("when: << pipeline.parameters.native_cache_probe >>"),
+            workflow.contains("when: << pipeline.parameters.native_cache_probe >>"),
             "native-cache-probe debe activarse solo con native_cache_probe"
         );
-        let jobs: Vec<&str> = lines[ini..fin]
+        let jobs: Vec<&str> = lines[start..end]
             .iter()
             .filter_map(|l| l.trim().strip_prefix("- "))
             .collect();
@@ -1605,7 +1605,7 @@ mod tests {
             "native-cache-probe debe contener exactamente los 4 build-*"
         );
         assert_eq!(
-            wf.matches("probe: true").count(),
+            workflow.matches("probe: true").count(),
             BUILD_JOBS.len(),
             "cada job de native-cache-probe debe llevar probe: true"
         );
@@ -1631,9 +1631,9 @@ mod tests {
     /// empaqueta (el staging exige CIRCLE_TAG == const VERSION).
     #[test]
     fn test_probe_mode_does_not_touch_target_v2() {
-        let cfg = read_config_ci();
-        let sonda = ("when".to_string(), "<< parameters.probe >>".to_string());
-        let no_sonda = ("unless".to_string(), "<< parameters.probe >>".to_string());
+        let cfg = read_ci_config();
+        let probe = ("when".to_string(), "<< parameters.probe >>".to_string());
+        let not_probe = ("unless".to_string(), "<< parameters.probe >>".to_string());
 
         // El comando solo restaura target-v3 (y fija mtime) con target: true.
         let cmd = cfg
@@ -1645,11 +1645,11 @@ mod tests {
             .unwrap_or("");
         let cmd_lines: Vec<&str> = cmd.lines().collect();
         let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
-        for marca in ["- target-v3-", "name: Fijar mtime de vendor/cmake-0.1.58"] {
+        for marker in ["- target-v3-", "name: Fijar mtime de vendor/cmake-0.1.58"] {
             let i = cmd_lines
                 .iter()
-                .position(|l| l.trim().starts_with(marca))
-                .unwrap_or_else(|| panic!("cargo_restore_caches debe contener `{marca}`"));
+                .position(|l| l.trim().starts_with(marker))
+                .unwrap_or_else(|| panic!("cargo_restore_caches debe contener `{marker}`"));
             // El paso es el ítem de lista (`- restore_cache:`/`- run:`) que lo contiene.
             let item = (0..=i)
                 .rev()
@@ -1661,14 +1661,14 @@ mod tests {
                 item
             };
             assert_eq!(
-                guard_for(&cmd_lines, item),
+                guard_of(&cmd_lines, item),
                 Some(param_target.clone()),
-                "`{marca}` debe ir bajo when: << parameters.target >> en cargo_restore_caches"
+                "`{marker}` debe ir bajo when: << parameters.target >> en cargo_restore_caches"
             );
         }
 
         for job in BUILD_JOBS {
-            let section = section_build(&cfg, job);
+            let section = build_section(&cfg, job);
             let lines: Vec<&str> = section.lines().collect();
             assert!(
                 section.contains(
@@ -1677,40 +1677,40 @@ mod tests {
                 "{job} debe declarar el parámetro probe (boolean, default false)"
             );
 
-            let guardados: Vec<usize> = (0..lines.len())
+            let saves: Vec<usize> = (0..lines.len())
                 .filter(|&i| lines[i].trim() == "- cargo_save_target:")
                 .collect();
             assert_eq!(
-                guardados.len(),
+                saves.len(),
                 1,
                 "{job} debe invocar cargo_save_target una vez"
             );
             assert_eq!(
-                guard_for(&lines, guardados[0]),
-                Some(no_sonda.clone()),
+                guard_of(&lines, saves[0]),
+                Some(not_probe.clone()),
                 "{job}: cargo_save_target debe ir bajo unless: << parameters.probe >>"
             );
 
-            let restauraciones: Vec<usize> = (0..lines.len())
+            let restores: Vec<usize> = (0..lines.len())
                 .filter(|&i| lines[i].trim() == "- cargo_restore_caches:")
                 .collect();
             assert_eq!(
-                restauraciones.len(),
+                restores.len(),
                 2,
                 "{job} debe invocar cargo_restore_caches dos veces (excluyentes por probe)"
             );
-            for &i in &restauraciones {
+            for &i in &restores {
                 let args = lines[i + 1..(i + 4).min(lines.len())].join("\n");
-                match guard_for(&lines, i) {
-                    Some(g) if g == sonda => assert!(
+                match guard_of(&lines, i) {
+                    Some(g) if g == probe => assert!(
                         args.contains("target: false"),
                         "{job}: en modo sonda cargo_restore_caches debe llevar target: false"
                     ),
-                    Some(g) if g == no_sonda => assert!(
+                    Some(g) if g == not_probe => assert!(
                         args.contains("target: true"),
                         "{job}: fuera de sonda cargo_restore_caches debe llevar target: true"
                     ),
-                    otra => panic!("{job}: cargo_restore_caches con guarda inesperada: {otra:?}"),
+                    other => panic!("{job}: cargo_restore_caches con guarda inesperada: {other:?}"),
                 }
             }
 
@@ -1720,23 +1720,23 @@ mod tests {
                 .position(|l| l.trim() == "- persist_to_workspace:")
                 .unwrap_or_else(|| panic!("{job} debe persistir su artefacto"));
             assert_eq!(
-                guard_for(&lines, persist),
-                Some(no_sonda.clone()),
+                guard_of(&lines, persist),
+                Some(not_probe.clone()),
                 "{job}: persist_to_workspace debe ir bajo unless: << parameters.probe >>"
             );
-            for nombre in [
+            for name in [
                 "name: Preparar artefacto versionado (staging)",
                 "name: Emitir SHA-256 del artefacto",
             ] {
                 let n = lines
                     .iter()
-                    .position(|l| l.trim() == nombre)
-                    .unwrap_or_else(|| panic!("{job} debe contener `{nombre}`"));
+                    .position(|l| l.trim() == name)
+                    .unwrap_or_else(|| panic!("{job} debe contener `{name}`"));
                 let item = (0..n).rev().find(|&k| lines[k].trim() == "- run:").unwrap();
                 assert_eq!(
-                    guard_for(&lines, item),
-                    Some(no_sonda.clone()),
-                    "{job}: `{nombre}` debe ir bajo unless: << parameters.probe >>"
+                    guard_of(&lines, item),
+                    Some(not_probe.clone()),
+                    "{job}: `{name}` debe ir bajo unless: << parameters.probe >>"
                 );
             }
 
@@ -1746,8 +1746,8 @@ mod tests {
                 .position(|l| l.trim() == "- cmake_probe_diagnostics")
                 .unwrap_or_else(|| panic!("{job} debe invocar cmake_probe_diagnostics"));
             assert_eq!(
-                guard_for(&lines, diag),
-                Some(sonda.clone()),
+                guard_of(&lines, diag),
+                Some(probe.clone()),
                 "{job}: cmake_probe_diagnostics debe ir bajo when: << parameters.probe >>"
             );
 
@@ -1763,7 +1763,7 @@ mod tests {
                     panic!("{job} debe guardar target/cargo-timings como artefacto")
                 });
             assert_eq!(
-                guard_for(&lines, timings - 1),
+                guard_of(&lines, timings - 1),
                 None,
                 "{job}: el artefacto cargo-timings debe publicarse sin condición"
             );
@@ -1775,8 +1775,8 @@ mod tests {
     /// Windows además con el generador Ninja (el de Visual Studio ignora los
     /// launchers), el entorno vcvars64 y CC/CXX con la ruta absoluta de cl.exe.
     #[test]
-    fn test_launcher_cmake_in_builds() {
-        let cfg = read_config_ci();
+    fn test_cmake_launcher_in_builds() {
+        let cfg = read_ci_config();
         assert!(
             !cfg.contains("native_sccache:")
                 && !cfg.contains("pipeline.parameters.native_sccache "),
@@ -1799,7 +1799,7 @@ mod tests {
             );
         }
         for job in ["build-linux-x64", "build-linux-arm64", "build-darwin-arm64"] {
-            let section = section_build(&cfg, job);
+            let section = build_section(&cfg, job);
             let setup = section
                 .find("      - sccache_setup_unix\n      - native_sccache_setup_unix\n")
                 .unwrap_or_else(|| {
@@ -1813,19 +1813,19 @@ mod tests {
                 "{job}: el launcher debe configurarse antes de compilar"
             );
         }
-        let win = section_build(&cfg, "build-windows-x64");
+        let win = build_section(&cfg, "build-windows-x64");
         assert!(
             win.contains("      - sccache_setup_windows\n      - native_sccache_setup_windows\n"),
             "build-windows-x64 debe instalar Ninja (native_sccache_setup_windows) sin condición"
         );
-        let compilar = win
+        let compile_step = win
             .split("name: Compilar binario release (cargo build --release)")
             .nth(1)
             .expect("build-windows-x64 debe tener el paso de compilación")
             .split("\n      - ")
             .next()
             .unwrap_or("");
-        for asignacion in [
+        for assignment in [
             r#"$env:CMAKE_GENERATOR = "Ninja""#,
             r#"$env:CMAKE_C_COMPILER_LAUNCHER = "sccache""#,
             r#"$env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache""#,
@@ -1835,18 +1835,22 @@ mod tests {
             r#"\VC\Auxiliary\Build\vcvars64.bat""#,
         ] {
             assert!(
-                compilar.contains(asignacion),
-                "el paso de compilación de Windows debe fijar `{asignacion}`"
+                compile_step.contains(assignment),
+                "el paso de compilación de Windows debe fijar `{assignment}`"
             );
         }
         assert!(
-            !compilar.contains("<< pipeline.parameters."),
+            !compile_step.contains("<< pipeline.parameters."),
             "el entorno de compilación de Windows no debe depender de parámetros de pipeline"
         );
-        let pos_vcvars = compilar.find("vcvars64.bat").unwrap();
-        let pos_path = compilar.find(r#"$env:PATH = "$env:TEMP\ninja"#).unwrap();
-        let pos_launcher = compilar.find("$env:CMAKE_GENERATOR").unwrap();
-        let pos_build = compilar.find("cargo build --release --features").unwrap();
+        let pos_vcvars = compile_step.find("vcvars64.bat").unwrap();
+        let pos_path = compile_step
+            .find(r#"$env:PATH = "$env:TEMP\ninja"#)
+            .unwrap();
+        let pos_launcher = compile_step.find("$env:CMAKE_GENERATOR").unwrap();
+        let pos_build = compile_step
+            .find("cargo build --release --features")
+            .unwrap();
         assert!(
             pos_vcvars < pos_path,
             "vcvars64 debe importarse antes de anteponer Ninja y .cargo\\bin al PATH"
@@ -1924,14 +1928,14 @@ mod tests {
     }
 
     #[test]
-    fn test_slug_coincide_con_ancla_de_github() {
+    fn test_slug_matches_github_anchor() {
         // GitHub ancla `## [0.20.12] — 2026-09-23` como `#02012--2026-09-23`.
         assert_eq!(slug("0.20.12", "2026-09-23"), "02012--2026-09-23");
         assert_eq!(slug("0.20.3", "2026-09-22"), "0203--2026-09-22");
     }
 
     #[test]
-    fn test_promote_changelog_camino_feliz() {
+    fn test_promote_changelog_happy_path() {
         let out =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
         // Cabecera renombrada; la sección [No publicado] desaparece.
@@ -1949,26 +1953,26 @@ mod tests {
     }
 
     #[test]
-    fn test_promote_changelog_falla_sin_no_publicado() {
+    fn test_promote_changelog_fails_without_unreleased() {
         // Un CHANGELOG ya promovido no tiene sección [No publicado] que promover.
-        let promovido =
+        let promoted =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
-        let err = promote_changelog_text(&promovido, "0.20.5", "0.20.4", "2026-09-25").unwrap_err();
+        let err = promote_changelog_text(&promoted, "0.20.5", "0.20.4", "2026-09-25").unwrap_err();
         assert!(err.to_string().contains("No publicado"));
     }
 
     #[test]
-    fn test_promote_changelog_falla_con_todo_residual() {
-        let con_todo = sample_changelog().replace(
+    fn test_promote_changelog_fails_with_leftover_todo() {
+        let with_todo = sample_changelog().replace(
             "- algo curado a mano durante el desarrollo.",
             "- algo a medias.  <!-- TODO: curar -->",
         );
-        let err = promote_changelog_text(&con_todo, "0.20.4", "0.20.3", "2026-09-24").unwrap_err();
+        let err = promote_changelog_text(&with_todo, "0.20.4", "0.20.3", "2026-09-24").unwrap_err();
         assert!(err.to_string().contains("TODO: curar"));
     }
 
     #[test]
-    fn test_promote_changelog_falla_si_version_ya_existe() {
+    fn test_promote_changelog_fails_if_version_already_exists() {
         // La versión objetivo coincide con una sección de versión ya presente.
         let err = promote_changelog_text(&sample_changelog(), "0.20.3", "0.20.2", "2026-09-24")
             .unwrap_err();
@@ -1976,55 +1980,55 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_changelog_promovido_pasa() {
-        let promovido =
+    fn test_validate_changelog_promoted_passes() {
+        let promoted =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
-        assert!(validate_changelog_text(&promovido, "0.20.4").is_ok());
+        assert!(validate_changelog_text(&promoted, "0.20.4").is_ok());
     }
 
     #[test]
-    fn test_validate_changelog_falla_sin_toc() {
-        let promovido =
+    fn test_validate_changelog_fails_without_toc() {
+        let promoted =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
-        let sin_toc = promovido.replace("- [0.20.4 — 2026-09-24](#0204--2026-09-24)\n", "");
-        let err = validate_changelog_text(&sin_toc, "0.20.4").unwrap_err();
+        let without_toc = promoted.replace("- [0.20.4 — 2026-09-24](#0204--2026-09-24)\n", "");
+        let err = validate_changelog_text(&without_toc, "0.20.4").unwrap_err();
         assert!(err.to_string().contains("tabla de contenidos"));
     }
 
     #[test]
-    fn test_validate_changelog_falla_sin_enlace() {
-        let promovido =
+    fn test_validate_changelog_fails_without_link() {
+        let promoted =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
-        let sin_enlace = promovido.replace(
+        let without_link = promoted.replace(
             "[0.20.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.20.3...v0.20.4\n",
             "",
         );
-        let err = validate_changelog_text(&sin_enlace, "0.20.4").unwrap_err();
+        let err = validate_changelog_text(&without_link, "0.20.4").unwrap_err();
         assert!(err.to_string().contains("enlace de comparación"));
     }
 
     #[test]
-    fn test_validate_changelog_falla_con_todo_residual() {
-        let promovido =
+    fn test_validate_changelog_fails_with_leftover_todo() {
+        let promoted =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
-        let con_todo = promovido.replace(
+        let with_todo = promoted.replace(
             "- algo curado a mano durante el desarrollo.",
             "- algo a medias.  <!-- TODO: curar -->",
         );
-        let err = validate_changelog_text(&con_todo, "0.20.4").unwrap_err();
+        let err = validate_changelog_text(&with_todo, "0.20.4").unwrap_err();
         assert!(err.to_string().contains("TODO: curar"));
     }
 
     #[test]
-    fn test_validate_changelog_falla_con_no_publicado_residual() {
-        let promovido =
+    fn test_validate_changelog_fails_with_leftover_unreleased() {
+        let promoted =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
         // Reintroducir una sección [No publicado] sin promover.
-        let con_residuo = promovido.replace(
+        let with_leftover = promoted.replace(
             "## [0.20.4] — 2026-09-24",
             "## [No publicado]\n\n### Cambiado\n\n- nuevo trabajo.\n\n## [0.20.4] — 2026-09-24",
         );
-        let err = validate_changelog_text(&con_residuo, "0.20.4").unwrap_err();
+        let err = validate_changelog_text(&with_leftover, "0.20.4").unwrap_err();
         assert!(err.to_string().contains("No publicado"));
     }
 
@@ -2033,71 +2037,71 @@ mod tests {
     /// falso positivo. La promoción renombra solo la cabecera real y la validación
     /// posterior pasa. Reproduce el defecto expuesto por el corte de v0.20.4.
     #[test]
-    fn test_promocion_y_validacion_ignoran_menciones_en_prosa() {
-        let con_prosa = sample_changelog().replace(
+    fn test_promotion_and_validation_ignore_prose_mentions() {
+        let with_prose = sample_changelog().replace(
             "- algo curado a mano durante el desarrollo.",
             "- redefine `release`: renombra la cabecera `## [No publicado]` a `## [X.Y.Z]`.",
         );
-        let promovido =
-            promote_changelog_text(&con_prosa, "0.20.4", "0.20.3", "2026-09-24").unwrap();
+        let promoted =
+            promote_changelog_text(&with_prose, "0.20.4", "0.20.3", "2026-09-24").unwrap();
         // La cabecera real se promovió; la mención en prosa se conserva intacta.
-        assert!(promovido.contains("## [0.20.4] — 2026-09-24"));
-        assert!(promovido.contains("renombra la cabecera `## [No publicado]`"));
+        assert!(promoted.contains("## [0.20.4] — 2026-09-24"));
+        assert!(promoted.contains("renombra la cabecera `## [No publicado]`"));
         // Y la validación NO da falso positivo por esa mención en backticks.
-        assert!(validate_changelog_text(&promovido, "0.20.4").is_ok());
+        assert!(validate_changelog_text(&promoted, "0.20.4").is_ok());
     }
 
     #[test]
-    fn test_validate_changelog_anchors_pasa_sobre_promovido() {
-        let promovido =
+    fn test_validate_changelog_anchors_passes_on_promoted() {
+        let promoted =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
-        assert!(validate_changelog_anchors(&promovido).is_ok());
+        assert!(validate_changelog_anchors(&promoted).is_ok());
     }
 
     #[test]
-    fn test_validate_changelog_anchors_falla_con_ancla_vieja_sin_doble_guion() {
-        let promovido =
+    fn test_validate_changelog_anchors_fails_with_old_anchor_without_double_dash() {
+        let promoted =
             promote_changelog_text(&sample_changelog(), "0.20.4", "0.20.3", "2026-09-24").unwrap();
         // Ancla que no coincide con la que GitHub asigna a la cabecera.
-        let ancla_rota = promovido.replace(
+        let broken_anchor = promoted.replace(
             "- [0.20.4 — 2026-09-24](#0204--2026-09-24)",
             "- [0.20.4 — 2026-09-24](#0204-20260924)",
         );
-        let err = validate_changelog_anchors(&ancla_rota).unwrap_err();
+        let err = validate_changelog_anchors(&broken_anchor).unwrap_err();
         assert!(err.to_string().contains("0204--2026-09-24"));
         // El invariante de anclas también se ejerce desde validate_changelog_text.
-        let err = validate_changelog_text(&ancla_rota, "0.20.4").unwrap_err();
+        let err = validate_changelog_text(&broken_anchor, "0.20.4").unwrap_err();
         assert!(err.to_string().contains("0204--2026-09-24"));
     }
 
     #[test]
-    fn test_validate_changelog_anchors_falla_si_falta_la_entrada_de_toc() {
+    fn test_validate_changelog_anchors_fails_if_toc_entry_missing() {
         // La cabecera de [0.20.3] existe pero su entrada de ToC no está (caso
         // distinto de "ancla rota": aquí no hay ninguna línea para esa versión).
-        let sin_entrada =
+        let without_entry =
             sample_changelog().replace("- [0.20.3 — 2026-09-22](#0203--2026-09-22)\n", "");
-        let err = validate_changelog_anchors(&sin_entrada).unwrap_err();
+        let err = validate_changelog_anchors(&without_entry).unwrap_err();
         assert!(err.to_string().contains("0203--2026-09-22"));
     }
 
     #[test]
-    fn test_diff_source_offer_coincide() {
+    fn test_diff_source_offer_matches() {
         let rendered = render_source_offer("1.2.3");
         assert!(diff_source_offer(&rendered, &rendered).is_ok());
     }
 
     #[test]
-    fn test_diff_source_offer_normaliza_crlf() {
+    fn test_diff_source_offer_normalizes_crlf() {
         let rendered = render_source_offer("1.2.3");
-        let con_crlf = rendered.replace('\n', "\r\n");
-        assert!(diff_source_offer(&con_crlf, &rendered).is_ok());
+        let with_crlf = rendered.replace('\n', "\r\n");
+        assert!(diff_source_offer(&with_crlf, &rendered).is_ok());
     }
 
     #[test]
-    fn test_diff_source_offer_desincronizado() {
+    fn test_diff_source_offer_out_of_sync() {
         let rendered = render_source_offer("1.2.3");
-        let viejo = render_source_offer("1.2.2");
-        let err = diff_source_offer(&viejo, &rendered).unwrap_err();
+        let old = render_source_offer("1.2.2");
+        let err = diff_source_offer(&old, &rendered).unwrap_err();
         assert!(err.contains("SOURCE-OFFER.md desincronizado"));
     }
 
@@ -2150,9 +2154,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     }
 
     #[test]
-    fn test_cargo_lock_entries_una_por_version_en_orden() {
+    fn test_cargo_lock_entries_one_per_version_in_order() {
         let entries = cargo_lock_entries(SAMPLE_LOCK);
-        let esperado: Vec<(String, String)> = [
+        let expected: Vec<(String, String)> = [
             ("cfg-if", "0.1.10"),
             ("cfg-if", "1.0.4"),
             ("cxxbridge-cmd", "1.0.199"),
@@ -2161,7 +2165,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         .iter()
         .map(|(n, v)| (n.to_string(), v.to_string()))
         .collect();
-        assert_eq!(entries, esperado);
+        assert_eq!(entries, expected);
     }
 
     #[test]
@@ -2176,7 +2180,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     }
 
     #[test]
-    fn test_render_inventario_dos_versiones_y_override() {
+    fn test_render_inventory_two_versions_and_override() {
         let region = sample_region();
         assert!(region.contains("| `cfg-if` | 0.1.10 | MIT/Apache-2.0 | MIT |\n"));
         assert!(region.contains("| `cfg-if` | 1.0.4 | MIT OR Apache-2.0 | MIT |\n"));
@@ -2186,7 +2190,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     }
 
     #[test]
-    fn test_render_inventario_conteo_y_resumen() {
+    fn test_render_inventory_count_and_summary() {
         let region = sample_region();
         assert!(region.starts_with(
             "Generado desde `Cargo.lock` (4 paquetes resueltos, 3 crates únicos, directos y transitivos).\n\
@@ -2195,7 +2199,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     }
 
     #[test]
-    fn test_render_inventario_falla_con_expresion_desconocida() {
+    fn test_render_inventory_fails_with_unknown_expression() {
         let mut licenses = sample_licenses();
         licenses.insert(
             ("foldhash".to_string(), "0.1.5".to_string()),
@@ -2208,7 +2212,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     }
 
     #[test]
-    fn test_render_inventario_falla_sin_licencia() {
+    fn test_render_inventory_fails_without_license() {
         let mut licenses = sample_licenses();
         licenses.insert(("foldhash".to_string(), "0.1.5".to_string()), None);
         let err =
@@ -2223,7 +2227,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     }
 
     #[test]
-    fn test_replace_inventory_region_preserva_texto_exterior() {
+    fn test_replace_inventory_region_preserves_outer_text() {
         let doc = format!(
             "antes\n{}\nviejo\n{}\ndespués\n",
             INVENTORY_START, INVENTORY_END
@@ -2239,33 +2243,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     }
 
     #[test]
-    fn test_replace_inventory_region_falla_sin_marcadores() {
+    fn test_replace_inventory_region_fails_without_markers() {
         assert!(replace_inventory_region("sin marcadores\n", "x\n").is_err());
-        let solo_inicio = format!("{}\nx\n", INVENTORY_START);
-        let err = replace_inventory_region(&solo_inicio, "x\n").unwrap_err();
+        let only_start = format!("{}\nx\n", INVENTORY_START);
+        let err = replace_inventory_region(&only_start, "x\n").unwrap_err();
         assert!(err.to_string().contains(INVENTORY_END));
     }
 
     #[test]
-    fn test_diff_licenses_inventory_sincronizado_y_crlf() {
+    fn test_diff_licenses_inventory_synced_and_crlf() {
         let doc = sample_licenses_doc();
         assert!(diff_licenses_inventory(&doc, &sample_region()).is_ok());
-        let con_crlf = doc.replace('\n', "\r\n");
-        assert!(diff_licenses_inventory(&con_crlf, &sample_region()).is_ok());
+        let with_crlf = doc.replace('\n', "\r\n");
+        assert!(diff_licenses_inventory(&with_crlf, &sample_region()).is_ok());
     }
 
     #[test]
-    fn test_diff_licenses_inventory_detecta_version_y_licencia() {
+    fn test_diff_licenses_inventory_detects_version_and_license() {
         let doc = sample_licenses_doc();
-        let version_vieja = doc.replace("| `foldhash` | 0.1.5 |", "| `foldhash` | 0.1.4 |");
-        let err = diff_licenses_inventory(&version_vieja, &sample_region()).unwrap_err();
+        let old_version = doc.replace("| `foldhash` | 0.1.5 |", "| `foldhash` | 0.1.4 |");
+        let err = diff_licenses_inventory(&old_version, &sample_region()).unwrap_err();
         assert!(err.contains("desincronizado"));
         assert!(err.contains("+| `foldhash` | 0.1.5 | Zlib | Zlib |"));
-        let licencia_mal = doc.replace(
+        let bad_license = doc.replace(
             "| `foldhash` | 0.1.5 | Zlib | Zlib |",
             "| `foldhash` | 0.1.5 | MIT OR Apache-2.0 | MIT |",
         );
-        let err = diff_licenses_inventory(&licencia_mal, &sample_region()).unwrap_err();
+        let err = diff_licenses_inventory(&bad_license, &sample_region()).unwrap_err();
         assert!(err.contains("-| `foldhash` | 0.1.5 | MIT OR Apache-2.0 | MIT |"));
     }
 }
