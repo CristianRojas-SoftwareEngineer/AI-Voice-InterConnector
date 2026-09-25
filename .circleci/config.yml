@@ -550,6 +550,9 @@ jobs:
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
             cargo test --all --verbose
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: sccache --show-stats
       - sccache_save_cache:
           os: linux
           variant: test
@@ -722,6 +725,9 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo test --all --verbose
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: sccache --show-stats
       - sccache_save_cache:
           os: macos
           variant: test

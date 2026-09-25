@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.23.0 — 2026-09-25](#0230--2026-09-25)
 - [0.22.0 — 2026-09-25](#0220--2026-09-25)
 - [0.21.0 — 2026-09-23](#0210--2026-09-23)
@@ -91,6 +92,21 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Los jobs `test-linux` y `test-macos` eran los únicos jobs pesados del pipeline
+sin publicar las estadísticas de `sccache`, así que su hit-rate no se podía
+vigilar corrida a corrida como en el resto de jobs. Ahora ambos imprimen
+`sccache --show-stats` en el paso dedicado `Estadísticas de sccache
+(hit-rate)`, entre la suite y el guardado de la caché, igual que `coverage`
+y los builds Unix.
+
+### Cambiado
+
+- ci: `test-linux` y `test-macos` publican `sccache --show-stats` en un paso
+  dedicado, entre `cargo test --all` y `sccache_save_cache`. Los jobs Windows
+  lo conservan inline porque PowerShell no tiene `$BASH_ENV`.
 
 ## [0.23.0] — 2026-09-25
 
