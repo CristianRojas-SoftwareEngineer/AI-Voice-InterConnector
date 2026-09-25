@@ -3494,6 +3494,177 @@ fn speech_contract_matches_help() {
     }
 }
 
+// ─── Ayuda y errores de clap en español (T17) ─────────────────────────────
+
+/// Ejecuta el binario con `args` capturando stdout+stderr como texto plano.
+fn run_text_with_stderr(args: &[&str]) -> (i32, String, String) {
+    let output = Command::new(BIN)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("el binario debe ejecutarse");
+    let code = output
+        .status
+        .code()
+        .expect("el proceso debe terminar con un código");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (code, stdout, stderr)
+}
+
+/// Todo `--help` de la CLI sale en español: contiene `Uso:` y `Opciones:`
+/// y no contiene los textos en inglés que generaba clap.
+#[test]
+fn help_output_is_spanish_for_every_command() {
+    let nodes: Vec<Vec<&str>> = vec![
+        vec![],
+        vec!["version"],
+        vec!["devices"],
+        vec!["translate"],
+        vec!["voice"],
+        vec!["voice", "list"],
+        vec!["voice", "clone"],
+        vec!["voice", "remove"],
+        vec!["speech"],
+        vec!["speech", "list"],
+        vec!["speech", "transcribe"],
+        vec!["speech", "synthesize"],
+        vec!["speech", "say"],
+        vec!["speech", "dub"],
+        vec!["speech", "play"],
+        vec!["speech", "remove"],
+        vec!["daemon"],
+        vec!["daemon", "start"],
+        vec!["daemon", "stop"],
+        vec!["daemon", "restart"],
+        vec!["daemon", "status"],
+        vec!["daemon", "serve"],
+        vec!["setup"],
+        vec!["cleanup"],
+        vec!["uninstall"],
+        vec!["doctor"],
+    ];
+    for node in &nodes {
+        let mut args = node.clone();
+        args.push("--help");
+        let (code, help) = run_text(&args);
+        assert_eq!(code, 0, "{:?} --help debe salir 0", node);
+        assert!(
+            help.contains("Uso:"),
+            "{:?} --help debe contener 'Uso:'",
+            node
+        );
+        assert!(
+            help.contains("Opciones:"),
+            "{:?} --help debe contener 'Opciones:'",
+            node
+        );
+        for forbidden in [
+            "Usage:",
+            "Options:",
+            "Arguments:",
+            "Commands:",
+            "Print help",
+            "Print version",
+            "[default:",
+            "[possible values:",
+        ] {
+            assert!(
+                !help.contains(forbidden),
+                "{:?} --help no debe contener '{}'",
+                node,
+                forbidden
+            );
+        }
+    }
+}
+
+/// Las anotaciones de valores se derivan en español de los valores reales:
+/// `translate` muestra defecto y posibles; ningún flag booleano muestra
+/// defecto `false`.
+#[test]
+fn help_annotations_are_spanish() {
+    let (_, help) = run_text(&["translate", "--help"]);
+    assert!(
+        help.contains("[por defecto: es]"),
+        "translate --help debe mostrar '[por defecto: es]'"
+    );
+    assert!(
+        help.contains("[valores posibles: es, en]"),
+        "translate --help debe mostrar '[valores posibles: es, en]'"
+    );
+    let (_, help) = run_text(&["setup", "--help"]);
+    assert!(
+        !help.contains("[por defecto: false]"),
+        "setup --help no debe anotar defecto en flags booleanos"
+    );
+}
+
+/// El subcomando automático `help` está deshabilitado: `help speech` falla
+/// con 2 y `speech --help` sale con 0.
+#[test]
+fn help_subcommand_is_disabled() {
+    let (code, _, _) = run_text_with_stderr(&["help", "speech"]);
+    assert_eq!(code, 2, "help speech debe salir 2");
+    let (code, _, _) = run_text_with_stderr(&["speech", "--help"]);
+    assert_eq!(code, 0, "speech --help debe salir 0");
+}
+
+/// Argumento desconocido: exit 2 con error en español en stderr.
+#[test]
+fn unknown_argument_error_is_spanish() {
+    let (code, _, stderr) =
+        run_text_with_stderr(&["speech", "say", "--text", "Hola", "--flag-inexistente"]);
+    assert_eq!(code, 2, "flag inexistente debe salir 2");
+    assert!(
+        stderr.starts_with("Error:"),
+        "stderr debe empezar con 'Error:': {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Uso:"),
+        "stderr debe contener 'Uso:': {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("error: unexpected argument"),
+        "stderr no debe estar en inglés: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("invalid value"),
+        "stderr no debe estar en inglés: {}",
+        stderr
+    );
+}
+
+/// Valor inválido: exit 2 con error en español en stderr.
+#[test]
+fn invalid_value_error_is_spanish() {
+    let (code, _, stderr) = run_text_with_stderr(&["translate", "--text", "Hola", "--from", "fr"]);
+    assert_eq!(code, 2, "valor inválido debe salir 2");
+    assert!(
+        stderr.starts_with("Error:"),
+        "stderr debe empezar con 'Error:': {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Uso:"),
+        "stderr debe contener 'Uso:': {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("error: unexpected argument"),
+        "stderr no debe estar en inglés: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("invalid value"),
+        "stderr no debe estar en inglés: {}",
+        stderr
+    );
+}
+
 /// Demostración del guard de tiempo F4b (prueba rápida, sin daemons ni minutos):
 /// fija un techo diminuto a propósito y exige `panic!` con diagnóstico
 /// (último hito + fase exacta). `#[should_panic]` mantiene la suite en verde

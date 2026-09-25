@@ -16,7 +16,7 @@ use avi_tts::Qwen3TtsEngine;
 #[cfg(feature = "native-translation")]
 use avi_translation as translation;
 use base64::Engine;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::{json, Value};
 use std::io::IsTerminal;
 use std::io::Write;
@@ -113,6 +113,213 @@ struct Cli {
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+/// Localiza el árbol de comandos de clap al español: plantilla con `Uso:`,
+/// encabezados `Opciones`/`Argumentos`/`Comandos`, flags propios `-h/--help`
+/// y `-V/--version` en español, subcomando `help` deshabilitado y
+/// anotaciones `[por defecto: …]`/`[valores posibles: …]` derivadas de los
+/// valores reales. Se aplica recursivamente a cada subcomando.
+fn localize_command(cmd: clap::Command) -> clap::Command {
+    localize_command_node(cmd, true)
+}
+
+/// Nodo de `localize_command`: `is_root` solo agrega el flag propio de versión.
+fn localize_command_node(cmd: clap::Command, is_root: bool) -> clap::Command {
+    let mut cmd = cmd
+        .help_template("{before-help}{about-with-newline}\nUso: {usage}\n\n{all-args}{after-help}")
+        .subcommand_help_heading("Comandos")
+        .subcommand_value_name("COMANDO")
+        .disable_help_subcommand(true)
+        .disable_help_flag(true)
+        .arg(
+            clap::Arg::new("help")
+                .short('h')
+                .long("help")
+                .action(clap::ArgAction::Help)
+                .help("Muestra la ayuda"),
+        );
+    if is_root {
+        cmd = cmd.disable_version_flag(true).arg(
+            clap::Arg::new("version")
+                .short('V')
+                .long("version")
+                .action(clap::ArgAction::Version)
+                .help("Muestra la versión"),
+        );
+    }
+    cmd.mut_args(localize_arg)
+        .mut_subcommands(|sub| localize_command_node(sub, false))
+}
+
+/// Localiza un argumento de clap: encabezado `Argumentos`/`Opciones` salvo
+/// encabezado propio, y anotaciones en español derivadas de los valores
+/// reales (solo si recibe valor y no las ocultaba ya).
+fn localize_arg(arg: clap::Arg) -> clap::Arg {
+    let mut arg = arg;
+    if arg.get_help_heading().is_none() {
+        if arg.is_positional() {
+            arg = arg.help_heading("Argumentos");
+        } else {
+            arg = arg.help_heading("Opciones");
+        }
+    }
+    if arg.get_action().takes_values()
+        && !arg.is_hide_default_value_set()
+        && !arg.is_hide_possible_values_set()
+    {
+        let defaults: Vec<String> = arg
+            .get_default_values()
+            .iter()
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect();
+        let possible: Vec<String> = arg
+            .get_possible_values()
+            .iter()
+            .filter(|pv| !pv.is_hide_set())
+            .map(|pv| pv.get_name().to_string())
+            .collect();
+        if !defaults.is_empty() || !possible.is_empty() {
+            let mut help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
+            if !defaults.is_empty() {
+                if !help.is_empty() {
+                    help.push(' ');
+                }
+                help.push_str(&format!("[por defecto: {}]", defaults.join(", ")));
+            }
+            if !possible.is_empty() {
+                if !help.is_empty() {
+                    help.push(' ');
+                }
+                help.push_str(&format!("[valores posibles: {}]", possible.join(", ")));
+            }
+            arg = arg
+                .hide_default_value(true)
+                .hide_possible_values(true)
+                .help(help);
+        }
+    }
+    arg
+}
+
+/// Traduce los errores comunes de parseo de clap al español conservando el
+/// exit code. Ayuda/versión y los tipos sin mapear conservan el render
+/// original de clap.
+fn render_clap_error(err: clap::Error) -> ! {
+    use clap::error::{ContextKind, ErrorKind};
+    let kind = err.kind();
+    let mapped = matches!(
+        kind,
+        ErrorKind::UnknownArgument
+            | ErrorKind::InvalidValue
+            | ErrorKind::ValueValidation
+            | ErrorKind::MissingRequiredArgument
+            | ErrorKind::InvalidSubcommand
+            | ErrorKind::MissingSubcommand
+            | ErrorKind::ArgumentConflict
+            | ErrorKind::TooManyValues
+            | ErrorKind::WrongNumberOfValues
+            | ErrorKind::NoEquals
+    );
+    if !mapped {
+        err.exit();
+    }
+    let param = |k: ContextKind| err.get(k).map(|v| v.to_string()).unwrap_or_default();
+    let message = match kind {
+        ErrorKind::UnknownArgument => {
+            format!("argumento inesperado '{}'", param(ContextKind::InvalidArg))
+        }
+        ErrorKind::InvalidValue => {
+            let base = format!(
+                "valor inválido '{}' para '{}'",
+                param(ContextKind::InvalidValue),
+                param(ContextKind::InvalidArg)
+            );
+            let valid = param(ContextKind::ValidValue);
+            if valid.is_empty() {
+                base
+            } else {
+                format!("{base}, valores posibles: {valid}")
+            }
+        }
+        ErrorKind::ValueValidation => {
+            let cause = std::error::Error::source(&err)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            if cause.is_empty() {
+                format!(
+                    "valor inválido '{}' para '{}'",
+                    param(ContextKind::InvalidValue),
+                    param(ContextKind::InvalidArg)
+                )
+            } else {
+                format!(
+                    "valor inválido '{}' para '{}': {cause}",
+                    param(ContextKind::InvalidValue),
+                    param(ContextKind::InvalidArg)
+                )
+            }
+        }
+        ErrorKind::MissingRequiredArgument => {
+            format!(
+                "faltan argumentos obligatorios: {}",
+                param(ContextKind::InvalidArg)
+            )
+        }
+        ErrorKind::InvalidSubcommand => {
+            format!(
+                "subcomando no reconocido '{}'",
+                param(ContextKind::InvalidSubcommand)
+            )
+        }
+        ErrorKind::MissingSubcommand => "falta un subcomando".to_string(),
+        ErrorKind::ArgumentConflict => {
+            format!(
+                "el argumento '{}' no se puede usar junto con '{}'",
+                param(ContextKind::InvalidArg),
+                param(ContextKind::PriorArg)
+            )
+        }
+        ErrorKind::TooManyValues | ErrorKind::WrongNumberOfValues => {
+            format!(
+                "cantidad de valores incorrecta para '{}'",
+                param(ContextKind::InvalidArg)
+            )
+        }
+        ErrorKind::NoEquals => {
+            format!(
+                "'{}' requiere '=' para asignar su valor",
+                param(ContextKind::InvalidArg)
+            )
+        }
+        _ => unreachable!("tipos sin mapear delegan en err.exit()"),
+    };
+    let mut lines = vec![format!("Error: {message}")];
+    for k in [
+        ContextKind::SuggestedArg,
+        ContextKind::SuggestedSubcommand,
+        ContextKind::SuggestedValue,
+    ] {
+        if let Some(s) = err.get(k) {
+            lines.push(format!("sugerencia: {s}"));
+        }
+    }
+    if let Some(usage) = err.get(ContextKind::Usage) {
+        let text = usage.to_string();
+        let text = text.strip_prefix("Usage: ").unwrap_or(&text);
+        lines.push(format!("Uso: {text}"));
+    } else {
+        // `InvalidValue` y `ValueValidation` no traen uso del subcomando que
+        // falló: se muestra el uso de la raíz como orientación mínima, para
+        // que todo error en español incluya su línea `Uso:`.
+        let mut root = localize_command(Cli::command());
+        let text = root.render_usage().to_string();
+        let text = text.strip_prefix("Usage: ").unwrap_or(&text);
+        lines.push(format!("Uso: {text}"));
+    }
+    lines.push("Para más información, ejecuta '--help'.".to_string());
+    eprintln!("{}", lines.join("\n"));
+    std::process::exit(err.exit_code())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -548,7 +755,11 @@ async fn main() {
         .init();
     install_sigint_handler();
 
-    let cli = Cli::parse();
+    let cmd = localize_command(Cli::command());
+    let matches = cmd
+        .try_get_matches()
+        .unwrap_or_else(|e| render_clap_error(e));
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| render_clap_error(e));
     let json_mode = cli.json;
     let daemon_mode = cli.daemon_mode();
 
