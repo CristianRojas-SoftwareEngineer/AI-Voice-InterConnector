@@ -136,6 +136,12 @@ Describe "Find-LegacyMachinePathEntry" {
 }
 
 Describe "modo -Check" {
+    BeforeAll {
+        # Pester 5 solo mockea comandos existentes y el binario no esta
+        # instalado en el runner: un stub da al Mock un comando que interceptar.
+        function ai-voice-interconnector {}
+    }
+
     BeforeEach {
         Mock Resolve-LatestRelease { New-FakeRelease }
         Mock Expand-ArchiveToInstallDir {}

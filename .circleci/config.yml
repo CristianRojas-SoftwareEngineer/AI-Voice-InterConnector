@@ -898,17 +898,23 @@ jobs:
           name: Instalar Pester (pineado 5.8.0)
           command: |
             Write-Host "[STEP] Instalar Pester (pineado 5.8.0) - INICIO"
-            Install-Module Pester -RequiredVersion 5.8.0 -Force -SkipPublisherCheck -Scope CurrentUser
-            if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # Los errores de cmdlet no fijan $LASTEXITCODE: sin Stop, un fallo de
+            # instalación dejaba el paso en verde. -Repository desambigua el
+            # módulo, que el executor expone también en un repositorio Nuget.
+            $ErrorActionPreference = "Stop"
+            Install-Module Pester -RequiredVersion 5.8.0 -Repository PSGallery -Force -SkipPublisherCheck -Scope CurrentUser
             Write-Host "[STEP] Instalar Pester (pineado 5.8.0) - FIN"
       - run:
-          name: Ejecutar smoke-test install-windows.ps1 (Pester)
+          name: Ejecutar smoke-tests install-windows.ps1 y upgrade (Pester)
           command: |
-            Write-Host "[STEP] Ejecutar smoke-test install-windows.ps1 (Pester) - INICIO"
+            Write-Host "[STEP] Ejecutar smoke-tests install-windows.ps1 y upgrade (Pester) - INICIO"
+            $ErrorActionPreference = "Stop"
             Import-Module Pester -RequiredVersion 5.8.0
             Invoke-Pester tests/installer/install-windows.tests.ps1 -CI
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Ejecutar smoke-test install-windows.ps1 (Pester) - FIN"
+            Invoke-Pester tests/installer/upgrade-windows.tests.ps1 -CI
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "[STEP] Ejecutar smoke-tests install-windows.ps1 y upgrade (Pester) - FIN"
 
   test-installer-macos:
     # Smoke-test de install-macos.sh en el executor macOS real (bats): única

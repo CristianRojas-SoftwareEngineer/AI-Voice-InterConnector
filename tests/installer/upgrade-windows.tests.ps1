@@ -35,6 +35,10 @@ Describe "upgrade-ai-voice-interconnector.ps1" {
         # para que las funciones (Expand-ArchiveToInstallDir, etc.) existan en
         # sesion y los mocks de BeforeEach las intercepten.
         . (Join-Path $PSScriptRoot "..\..\install-windows.ps1")
+
+        # Pester 5 solo mockea comandos existentes y el binario no esta
+        # instalado en el runner: un stub da al Mock un comando que interceptar.
+        function ai-voice-interconnector {}
     }
 
     # Mocks de funciones de install-windows.ps1 que tocan el disco/registro reales.

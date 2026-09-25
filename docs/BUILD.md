@@ -218,8 +218,10 @@ completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
   Los runners bats están pineados: bats-core se instala desde el tag de git
   según el parámetro `bats_version` (1.14.0, verificado con `bats --version`),
   la misma versión en Linux y macOS, y `test-installer-linux` corre sobre
-  `cimg/base` pineada por digest. `test-installer-linux` ejecuta también el
-  smoke test del wrapper `upgrade-ai-voice-interconnector.sh`.
+  `cimg/base` pineada por digest. `test-installer-windows` instala Pester 5.8.0
+  desde PSGallery con `$ErrorActionPreference = "Stop"`, de modo que un fallo de
+  instalación o de importación hace fallar el paso. Linux y Windows ejecutan
+  también el smoke test de su wrapper `upgrade-ai-voice-interconnector.*`.
 
 **Feedback pre-release.** El repo es trunk-based sobre `main` (flujo de un solo
 desarrollador, sin ramas de larga vida); los commits de rama **no** disparan CI

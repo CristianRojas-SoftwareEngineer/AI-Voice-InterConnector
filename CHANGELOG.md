@@ -103,9 +103,11 @@ scripts. Ahora la caché tiene un tamaño acotado que desaloja lo que no se usa,
 la sonda `native-cache-probe` publica el log de errores de `sccache` para
 diagnosticar esos fallos sin cortar una release. Por otro lado, los runners de
 los smoke tests de instaladores no eran reproducibles (bats sin pin y distinto
-por SO, imagen `cimg/base:current` flotante) y el smoke test del wrapper de
-upgrade de Linux nunca corría en CI; ahora los runners están pineados y ese
-test forma parte de la puerta.
+por SO, imagen `cimg/base:current` flotante), la puerta de Windows terminaba en
+verde sin ejecutar ningún test porque Pester 5.8.0 no llegaba a instalarse, y
+los smoke tests de los wrappers de upgrade nunca corrían en CI. Ahora los
+runners están pineados, la puerta de Windows ejecuta sus tests y falla ante
+cualquier error, y los tests de upgrade forman parte de las puertas.
 
 ### Cambiado
 
@@ -122,6 +124,17 @@ test forma parte de la puerta.
   lugar de `apt-get` y `brew`; `cimg/base` queda pineada por digest en
   `test-installer-linux` y `publish-release`.
 - ci: `test-installer-linux` ejecuta también `tests/installer/upgrade-linux.bats`.
+
+### Corregido
+
+- ci: `test-installer-windows` instala Pester 5.8.0 con `-Repository PSGallery`
+  (el módulo también aparecía en un repositorio Nuget y la instalación fallaba)
+  y corre con `$ErrorActionPreference = "Stop"`, así que un error de cmdlet ya
+  no deja el paso en verde. Ahora ejecuta también
+  `tests/installer/upgrade-windows.tests.ps1`.
+- test: los smoke tests Pester definen un stub de `ai-voice-interconnector`,
+  porque Pester 5 solo mockea comandos existentes y el binario no está
+  instalado en el runner.
 
 ## [0.22.0] — 2026-09-25
 
