@@ -78,6 +78,13 @@ parameters:
       Tamaño máximo de la caché local de sccache (SCCACHE_CACHE_SIZE) en todos
       los jobs que la activan. Al superarlo, sccache desaloja por LRU los objetos
       sin uso; debe holgar sobre el working set de la variante más grande.
+  bats_version:
+    type: string
+    default: "1.14.0"
+    description: >
+      Versión de bats-core de los smoke tests de instaladores (Linux y macOS).
+      Se instala desde el tag de git en $HOME/.local y la instalación aborta si
+      `bats --version` no coincide: misma versión en ambos SO, sin apt/brew.
 
 # Cachés compartidas por los jobs Rust (restore/save nativos, idénticos en bash
 # y PowerShell). Ninguna clave depende del código fuente del workspace: editar
@@ -857,22 +864,29 @@ jobs:
     # por PATH (tests/installer/). Decisión consciente: el flujo real se
     # valida en el proceso de release y en los smoke tests de los builds.
     docker:
-      - image: cimg/base:current
+      # Digest del índice multi-arch de cimg/base:2026.09 (pin reproducible;
+      # el mismo que publish-release). Renovar a mano junto con su tag.
+      - image: cimg/base:2026.09@sha256:668174490adc470cd34eb3aa178939d65f817bc13ef657a94ff0278338f7d8da
     steps:
       - checkout
       - run:
-          name: Instalar bats-core
+          name: Instalar bats-core (pineado << pipeline.parameters.bats_version >>)
           command: |
             echo "[STEP] Instalar bats-core - INICIO"
-            sudo apt-get update
-            sudo apt-get install -y bats
+            BATS_VERSION="<< pipeline.parameters.bats_version >>"
+            git -c advice.detachedHead=false clone -q --depth 1 --branch "v${BATS_VERSION}" https://github.com/bats-core/bats-core.git /tmp/bats-core
+            /tmp/bats-core/install.sh "$HOME/.local" >/dev/null
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
+            . "$BASH_ENV"
+            test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
             echo "[STEP] Instalar bats-core - FIN"
       - run:
-          name: Ejecutar smoke-test install-linux.sh (bats)
+          name: Ejecutar smoke-tests install-linux.sh y upgrade (bats)
           command: |
-            echo "[STEP] Ejecutar smoke-test install-linux.sh (bats) - INICIO"
+            echo "[STEP] Ejecutar smoke-tests install-linux.sh y upgrade (bats) - INICIO"
             bats tests/installer/install-linux.bats
-            echo "[STEP] Ejecutar smoke-test install-linux.sh (bats) - FIN"
+            bats tests/installer/upgrade-linux.bats
+            echo "[STEP] Ejecutar smoke-tests install-linux.sh y upgrade (bats) - FIN"
 
   test-installer-windows:
     # Smoke-test de install-windows.ps1 con Pester v5 pineado (el executor
@@ -905,10 +919,15 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Instalar bats-core
+          name: Instalar bats-core (pineado << pipeline.parameters.bats_version >>)
           command: |
             echo "[STEP] Instalar bats-core - INICIO"
-            brew install bats-core
+            BATS_VERSION="<< pipeline.parameters.bats_version >>"
+            git -c advice.detachedHead=false clone -q --depth 1 --branch "v${BATS_VERSION}" https://github.com/bats-core/bats-core.git /tmp/bats-core
+            /tmp/bats-core/install.sh "$HOME/.local" >/dev/null
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
+            . "$BASH_ENV"
+            test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
             echo "[STEP] Instalar bats-core - FIN"
       - run:
           name: Ejecutar smoke-test install-macos.sh (bats)
@@ -1905,7 +1924,8 @@ jobs:
     # y publica el GitHub Release directo (sin borrador). Solo en tags v*.
     # Requiere context `github-release` con GH_TOKEN (contents:write).
     docker:
-      - image: cimg/base:current
+      # Mismo pin por digest que test-installer-linux (cimg/base:2026.09).
+      - image: cimg/base:2026.09@sha256:668174490adc470cd34eb3aa178939d65f817bc13ef657a94ff0278338f7d8da
     steps:
       - checkout
       - attach_workspace:

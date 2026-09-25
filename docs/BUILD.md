@@ -215,6 +215,11 @@ completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
   `validate-licenses` (SOURCE-OFFER/THIRD-PARTY) y `validate-changelog`. Esos
   **9 gates** son `requires:` de los 4 builds nativos, que compilan las 4
   plataformas en modo release (validación de compilación por plataforma).
+  Los runners bats están pineados: bats-core se instala desde el tag de git
+  según el parámetro `bats_version` (1.14.0, verificado con `bats --version`),
+  la misma versión en Linux y macOS, y `test-installer-linux` corre sobre
+  `cimg/base` pineada por digest. `test-installer-linux` ejecuta también el
+  smoke test del wrapper `upgrade-ai-voice-interconnector.sh`.
 
 **Feedback pre-release.** El repo es trunk-based sobre `main` (flujo de un solo
 desarrollador, sin ramas de larga vida); los commits de rama **no** disparan CI
@@ -291,7 +296,7 @@ Los tests de topología de `xtask` fallan si el workflow de sonda llega a conten
 | `build-linux-x64` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
 | `build-linux-arm64` | `build-all` | Linux ARM64 | docker `cimg/rust:1.96.0` (`arm.medium`) | idem, nativo aarch64 |
 | `build-darwin-arm64` | `build-all` | macOS arm64 | macos `m4pro.medium` | idem, Xcode 26.4 |
-| `publish-release` | `build-all` (CD) | Linux x64 | docker `cimg/base:current` | Solo en tags `v*`: recolecta 4 artefactos, genera `SHA256SUMS.txt`, publica GitHub Release |
+| `publish-release` | `build-all` (CD) | Linux x64 | docker `cimg/base:2026.09` (pineada por digest) | Solo en tags `v*`: recolecta 4 artefactos, genera `SHA256SUMS.txt`, publica GitHub Release |
 | `publish-metadata` | `build-all` (CD) | Linux x64 | docker `cimg/rust` | Solo en tags `v*`: renderiza Cask con `cargo run -p xtask -- cask` y empuja al tap |
 
 ### Simetría: 3 puertas de test vs. 4 targets de build
