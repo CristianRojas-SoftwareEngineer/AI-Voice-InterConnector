@@ -24,11 +24,19 @@
 - All user-facing responses MUST be in Spanish.
 - Comments generated or modified in source code MUST also be in Spanish.
 - Messages generated for `git commit` MUST also be in Spanish.
+- Language responsibility by layer:
+
+  | Layer | Language |
+  |---|---|
+  | Code identifiers: variables, parameters, functions, tests, types, enum variants, fields, constants, modules, code file names and Cargo target names | English |
+  | Comments, documentation, commit messages, user-facing messages and help texts, string test descriptions (bats `@test`, Pester `It`/`Describe`) | Spanish |
+  | Literal test data and machine contracts: JSON keys, `reason` codes, CLI flags, environment variables, events and protocol lines | Keep their current form (do not translate) |
+
 - Exception: keep highly standardized technical terms in English when:
   - translating them adds no value, or
   - translation introduces ambiguity (e.g., "prompt", "token", "runtime", "framework", "API").
 - This exception applies equally to user responses and code comments.
-- Do not mix languages unnecessarily. Default to Spanish unless there is a clear technical reason not to.
+- Do not mix languages unnecessarily: decide the language of each element with the layer table above; for anything it does not cover, default to Spanish unless there is a clear technical reason not to.
 <!-- </language_efficiency> -->
 
 ---
