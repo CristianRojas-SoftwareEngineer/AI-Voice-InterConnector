@@ -264,27 +264,27 @@ impl SpeechStore {
 
     /// Listar todas las locuciones persistidas
     pub fn list(&self) -> Result<Vec<SpeechEntry>> {
-        self.listar_con_filtro(None)
+        self.list_with_filter(None)
     }
 
     /// Listar las locuciones persistidas de una sola voz (lectura
     /// acotada por voz; la voz se normaliza a minúsculas, paridad con
     /// `voice_dir`). Voz sin locuciones → lista vacía, sin error.
     pub fn list_by_voice(&self, voice: &str) -> Result<Vec<SpeechEntry>> {
-        self.listar_con_filtro(Some(voice))
+        self.list_with_filter(Some(voice))
     }
 
     /// Recorrido compartido del almacén con filtro opcional por voz: el mismo
     /// bucle con `ensure_initialized` y descarte de corrupto/sin WAV que tenía
     /// `list`; con filtro solo se lee el directorio de la voz pedida.
-    fn listar_con_filtro(&self, voice: Option<&str>) -> Result<Vec<SpeechEntry>> {
+    fn list_with_filter(&self, voice: Option<&str>) -> Result<Vec<SpeechEntry>> {
         self.ensure_initialized()?;
         let mut entries = Vec::new();
         if !self.base_dir.is_dir() {
             return Ok(entries);
         }
         // Filtro normalizado a minúsculas, paridad con `voice_dir`.
-        let filtro = voice.map(|v| v.to_lowercase());
+        let filter = voice.map(|v| v.to_lowercase());
         // Iterar por directorio de voz
         for voice_dir in std::fs::read_dir(&self.base_dir)? {
             let voice_dir = voice_dir?;
@@ -292,9 +292,9 @@ impl SpeechStore {
                 continue;
             }
             // Con filtro, acotar la lectura al directorio de la voz pedida.
-            if let Some(f) = &filtro {
-                let nombre = voice_dir.file_name().to_string_lossy().to_lowercase();
-                if nombre != *f {
+            if let Some(f) = &filter {
+                let name = voice_dir.file_name().to_string_lossy().to_lowercase();
+                if name != *f {
                     continue;
                 }
             }
@@ -553,20 +553,20 @@ pub fn ct2_model_dir(pair: &str) -> PathBuf {
 /// pipeline lo usa. Admitir esa rama sería especulativo y podría enmascarar un
 /// dir incompleto; se añadiría solo si un pin de modelo futuro la exigiera.
 pub fn ct2_dir_missing_files(dir: &std::path::Path) -> Vec<String> {
-    let mut faltan = Vec::new();
+    let mut missing = Vec::new();
     if !dir.join("model.bin").is_file() {
-        faltan.push("model.bin".to_string());
+        missing.push("model.bin".to_string());
     }
-    let tokenizador_ok = dir.join("tokenizer.json").is_file()
+    let tokenizer_ok = dir.join("tokenizer.json").is_file()
         || (dir.join("source.spm").is_file() && dir.join("target.spm").is_file());
-    if !tokenizador_ok {
-        for candidato in ["tokenizer.json", "source.spm", "target.spm"] {
-            if !dir.join(candidato).is_file() {
-                faltan.push(candidato.to_string());
+    if !tokenizer_ok {
+        for candidate in ["tokenizer.json", "source.spm", "target.spm"] {
+            if !dir.join(candidate).is_file() {
+                missing.push(candidate.to_string());
             }
         }
     }
-    faltan
+    missing
 }
 /// Ficheros ausentes del derivado CT2 del par (`es-en`/`en-es`).
 pub fn ct2_missing_files(pair: &str) -> Vec<String> {
@@ -914,7 +914,7 @@ mod tests {
     /// T-descargador: `hf_cache_dir()` honra `HF_HUB_CACHE`, luego `HF_HOME/hub`,
     /// y cae en `{home}/.cache/huggingface/hub` — nunca en `/tmp`.
     #[test]
-    fn hf_cache_dir_precedencia_env_y_fallback() {
+    fn hf_cache_dir_precedence_env_and_fallback() {
         let _guard = ENV_LOCK.lock().unwrap();
         let hf_hub_cache = std::env::var("HF_HUB_CACHE").ok();
         let hf_home = std::env::var("HF_HOME").ok();
@@ -958,7 +958,7 @@ mod tests {
         }
     }
 
-    fn wav_minimo() -> Vec<u8> {
+    fn min_wav() -> Vec<u8> {
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 24_000,
@@ -988,10 +988,10 @@ mod tests {
     /// `vocab.json`+`merges.txt` NO se acepta: no lo genera `convert_marian_to_ct2`,
     /// por lo que admitirlo sería especulativo y enmascararía dirs incompletos.
     #[test]
-    fn ct2_dir_missing_files_contrato_del_gate() {
+    fn ct2_dir_missing_files_contract_of_gate() {
         let dir = temp_dir("ct2_gate");
-        let touch = |nombre: &str| std::fs::write(dir.join(nombre), b"x").unwrap();
-        let limpiar = || {
+        let touch = |name: &str| std::fs::write(dir.join(name), b"x").unwrap();
+        let clean = || {
             for f in [
                 "model.bin",
                 "tokenizer.json",
@@ -1005,27 +1005,27 @@ mod tests {
         };
 
         // 1. Dir vacío: faltan model.bin + tokenizador completo.
-        limpiar();
+        clean();
         assert_eq!(
             ct2_dir_missing_files(&dir),
             vec!["model.bin", "tokenizer.json", "source.spm", "target.spm"]
         );
 
         // 2. Layout SentencePiece (el que produce `setup`): completo.
-        limpiar();
+        clean();
         touch("model.bin");
         touch("source.spm");
         touch("target.spm");
         assert!(ct2_dir_missing_files(&dir).is_empty());
 
         // 3. Layout HuggingFace (`tokenizer.json`): completo.
-        limpiar();
+        clean();
         touch("model.bin");
         touch("tokenizer.json");
         assert!(ct2_dir_missing_files(&dir).is_empty());
 
         // 4. Layout BPE (`vocab.json`+`merges.txt`): rechazado a propósito.
-        limpiar();
+        clean();
         touch("model.bin");
         touch("vocab.json");
         touch("merges.txt");
@@ -1035,7 +1035,7 @@ mod tests {
         );
 
         // 5. SentencePiece a medias (solo `source.spm`): incompleto.
-        limpiar();
+        clean();
         touch("model.bin");
         touch("source.spm");
         assert_eq!(
@@ -1049,11 +1049,11 @@ mod tests {
     /// Normalización de mayúsculas en todas las operaciones del almacén
     /// (paridad con `voices.py:37` y `synthetic_speech.py:51`).
     #[test]
-    fn normalizacion_minusculas() {
+    fn normalization_lowercase() {
         let dir = temp_dir("norm");
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
-        std::fs::write(&wav_src, wav_minimo()).unwrap();
+        std::fs::write(&wav_src, min_wav()).unwrap();
 
         let saved = speech
             .save("VIVIAN", "SaludoDePrueba", "Hola", &wav_src)
@@ -1100,11 +1100,11 @@ mod tests {
     /// mayúsculas) y lista vacía para voz sin locuciones; `list` sin filtro
     /// sigue devolviendo todo.
     #[test]
-    fn list_by_voice_filtra_por_voz() {
+    fn list_by_voice_filters_by_voice() {
         let dir = temp_dir("list_voice");
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
-        std::fs::write(&wav_src, wav_minimo()).unwrap();
+        std::fs::write(&wav_src, min_wav()).unwrap();
         speech.save("ryan", "saludo", "Hola", &wav_src).unwrap();
         speech
             .save("vivian", "despedida", "Adiós", &wav_src)
@@ -1126,11 +1126,11 @@ mod tests {
 
     /// round-trip `save` → `find` con `duration_secs` calculada del WAV.
     #[test]
-    fn save_find_round_trip_con_duration() {
+    fn save_find_round_trip_with_duration() {
         let dir = temp_dir("roundtrip");
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
-        std::fs::write(&wav_src, wav_minimo()).unwrap();
+        std::fs::write(&wav_src, min_wav()).unwrap();
 
         let path = speech.save("ryan", "saludo", "Hola", &wav_src).unwrap();
         assert!(path.is_file());
@@ -1146,11 +1146,11 @@ mod tests {
     /// sidecar ausente/corrupto es tolerable en `list` (conserva la
     /// tolerancia previa del oráculo).
     #[test]
-    fn sidecar_ausente_tolerable() {
+    fn sidecar_missing_tolerable() {
         let dir = temp_dir("sidecar");
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
-        std::fs::write(&wav_src, wav_minimo()).unwrap();
+        std::fs::write(&wav_src, min_wav()).unwrap();
         speech.save("ryan", "saludo", "Hola", &wav_src).unwrap();
         // Sidecar corrupto → la locución se omite, pero no se cae el listado.
         std::fs::write(speech.voice_dir("ryan").join("saludo.json"), b"{roto").unwrap();
@@ -1164,7 +1164,7 @@ mod tests {
 
     /// `validate_name` acepta el regex del oráculo y rechaza lo demás.
     #[test]
-    fn validate_name_regex_oraculo() {
+    fn validate_name_regex_oracle() {
         assert!(VoiceStore::validate_name("Mi_Voz-2").is_ok());
         assert!(
             VoiceStore::validate_name("mi voz").is_err(),
@@ -1179,7 +1179,7 @@ mod tests {
     /// `save_reference` escribe `reference.qvoice` con tmp+rename y
     /// `find_reference` resuelve solo por `reference.qvoice` (sin fallback WAV).
     #[test]
-    fn save_reference_qvoice_canonico_sin_fallback_wav() {
+    fn save_reference_qvoice_canonical_without_fallback_wav() {
         let dir = temp_dir("ref");
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         let src = dir.join("clon.qvoice");
@@ -1207,7 +1207,7 @@ mod tests {
     /// de fábrica con `.qvoice`, `ryan`/`vivian` presets) y `list`/`remove`/
     /// `find_reference` reflejan el registro unificado (--voice ryan alcanzable).
     #[test]
-    fn ensure_initialized_registra_voces_factory() {
+    fn ensure_initialized_registers_voices_factory() {
         let dir = temp_dir("factory");
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         voices.ensure_initialized().unwrap();
@@ -1290,9 +1290,9 @@ mod tests {
             );
         }
         // Voz sin qvoice no resuelve como clonada aunque tenga wav legado inerte
-        let clon_dir = voices.voice_dir("otra");
-        std::fs::create_dir_all(&clon_dir).unwrap();
-        std::fs::write(clon_dir.join("speech-reference.wav"), b"RIFF").unwrap();
+        let clone_dir = voices.voice_dir("otra");
+        std::fs::create_dir_all(&clone_dir).unwrap();
+        std::fs::write(clone_dir.join("speech-reference.wav"), b"RIFF").unwrap();
         assert!(
             voices.find_reference("OTRA").is_none(),
             "sin qvoice no resuelve como clonada"
@@ -1301,7 +1301,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_install_dir_y_canonical_path_key_deterministas() {
+    fn windows_install_dir_and_canonical_path_key_deterministic() {
         // windows_install_dir usa dos join — no mixto — y canonical_path_key
         // normaliza \ vs / , case y trailing.
         #[cfg(windows)]
@@ -1334,7 +1334,7 @@ mod tests {
     /// `revision_of("qwen3-tts-0.6b-base")` existe con repo público confirmado y hash
     /// real (40 hex), y `model_snapshot_path` resuelve bajo HF_HUB_CACHE temporal.
     #[test]
-    fn revision_of_base_existe_y_snapshot_resuelve() {
+    fn revision_of_base_exists_and_snapshot_resolves() {
         let _guard = ENV_LOCK.lock().unwrap();
         // Pin debe existir
         let (repo, rev) = ModelStore::revision_of("qwen3-tts-0.6b-base")
