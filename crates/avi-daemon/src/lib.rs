@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 pub mod spawn;
-pub use spawn::{wait_for_pid_death, kill_tree_by_pid, pid_alive, spawn_background};
+pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_death};
 // `spawn_uninstall_helper` solo existe bajo `#[cfg(windows)]` en `spawn.rs`; el
 // reexport debe compartir el gate o el build no-Windows rompe con E0432 (el call
 // site en `src/main.rs` ya está dentro de un bloque `#[cfg(windows)]`).
@@ -88,7 +88,7 @@ pub struct DaemonState {
     /// el gate coincidente (`model.bin` más tokenizador); `None` significa motor
     /// ausente o roto (`model.bin` huérfano sin tokenizador: se registra el motivo
     /// y se arranca igual, sin derribar `run_daemon_server:614`).
-    /// El warmup CT2 no duplica `precalentar_voz`: la primera petición paga frío si
+    /// El warmup CT2 no duplica `warm_voice_engine`: la primera petición paga frío si
     /// el residente no estaba; documentado sin warmup separado.
     #[cfg(feature = "native-translation")]
     pub ct2_engine: Option<std::collections::HashMap<String, Ct2TranslationEngine>>,
@@ -989,7 +989,7 @@ async fn voices_clone_handler(
         let warm_name = name.clone();
         tokio::task::spawn_blocking(move || {
             *warm_state.warm.write().unwrap() = WarmState::Warming;
-            match precalentar_voz(&warm_state, &warm_name) {
+            match warm_voice_engine(&warm_state, &warm_name) {
                 Ok(()) => warm_state.set_warm(),
                 Err(e) => warm_state.set_warm_failed(e.to_string()),
             }
@@ -1505,7 +1505,7 @@ pub fn build_router() -> Router {
     build_router_with_state(state)
 }
 
-/// Deadline del warmup TTS: si `spawn_blocking(precalentar_voz)` no termina en
+/// Deadline del warmup TTS: si `spawn_blocking(warm_voice_engine)` no termina en
 /// este plazo, el daemon marca `warm_failed` con diagnóstico y termina al
 /// residente. Valor medido, no supuesto: ~2× el TTFN feliz observado (~18-20 s
 /// de spawn + healthcheck + síntesis), muy por debajo del hang histórico del
@@ -1544,11 +1544,11 @@ const SYNTH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
 /// calentar otra evicciona la previa y el resto paga el cold-start de reemplazo
 /// de residente en su primera síntesis.
 ///
-/// CT2: evaluado no duplicar `precalentar_voz` para traducción — el motor CT2 INT8
+/// CT2: evaluado no duplicar `warm_voice_engine` para traducción — el motor CT2 INT8
 /// (`ct2rs::Translator`) carga `model.bin` en `DaemonState::new` y no requiere
 /// warmup sintético; la primera traducción paga frío si el residente no estaba
 /// provisionado, sin impacto en `warm` (`Warming`→`Warm` solo refleja TTS).
-pub fn precalentar_voz(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
+pub fn warm_voice_engine(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
     let profile = VoiceProfile {
         name: voz.to_string(),
         qvoice_path: state.voice_store.find_reference(voz),
@@ -1570,7 +1570,7 @@ pub fn precalentar_voz(state: &DaemonState, voz: &str) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e));
     let _ = std::fs::remove_file(&tmp);
     eprintln!(
-        "[daemon] precalentar_voz '{}': {:.1} s tras locks (éxito={}).",
+        "[daemon] warm_voice_engine '{}': {:.1} s tras locks (éxito={}).",
         voz,
         trabajo_t0.elapsed().as_secs_f64(),
         resultado.is_ok()
@@ -1588,7 +1588,7 @@ pub const READY_FILE_ENV: &str = "AVI_READY_FILE";
 /// (temporal hermano + rename). Best-effort con diagnóstico: un fallo de
 /// señalización no derriba el daemon (el evento en stderr sigue valiendo
 /// como diagnóstico redundante).
-fn escribir_fichero_ready(ruta: &std::path::Path, addr: &SocketAddr, warm: &str) {
+fn write_ready_file(ruta: &std::path::Path, addr: &SocketAddr, warm: &str) {
     let tmp = ruta.with_extension("ready.tmp");
     // Recuperación de reclamo: además de `addr`/`warm`, el hijo publica
     // su propio PID. Con puertos efímeros, `addr` y PID vivían solo en el
@@ -1655,7 +1655,7 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     let fichero_ready: Option<std::path::PathBuf> =
         std::env::var_os(READY_FILE_ENV).map(std::path::PathBuf::from);
     if let Some(ref ruta) = fichero_ready {
-        escribir_fichero_ready(ruta, &bound, "warming");
+        write_ready_file(ruta, &bound, "warming");
     }
 
     // Warmup en segundo plano: `synthesize` es síncrono, por lo que corre en
@@ -1674,23 +1674,22 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
     // Timeout = bug a diagnosticar, no flake a reintentar.
     let warm_state = state.clone();
     let ready_ok = fichero_ready.clone();
-    let handle =
-        tokio::task::spawn_blocking(move || match precalentar_voz(&warm_state, &warm_voice) {
-            Ok(()) => {
-                warm_state.set_warm();
-                eprintln!("avi-daemon-ready warm=warm addr={}", bound);
-                if let Some(ruta) = ready_ok.as_ref() {
-                    escribir_fichero_ready(ruta, &bound, "warm");
-                }
+    let handle = tokio::task::spawn_blocking(move || match warm_voice_engine(&warm_state, &warm_voice) {
+        Ok(()) => {
+            warm_state.set_warm();
+            eprintln!("avi-daemon-ready warm=warm addr={}", bound);
+            if let Some(ruta) = ready_ok.as_ref() {
+                write_ready_file(ruta, &bound, "warm");
             }
-            Err(e) => {
-                warm_state.set_warm_failed(e.to_string());
-                eprintln!("avi-daemon-ready warm=warm_failed addr={}", bound);
-                if let Some(ruta) = ready_ok.as_ref() {
-                    escribir_fichero_ready(ruta, &bound, "warm_failed");
-                }
+        }
+        Err(e) => {
+            warm_state.set_warm_failed(e.to_string());
+            eprintln!("avi-daemon-ready warm=warm_failed addr={}", bound);
+            if let Some(ruta) = ready_ok.as_ref() {
+                write_ready_file(ruta, &bound, "warm_failed");
             }
-        });
+        }
+    });
     let timeout_state = state.clone();
     let ready_deadline = fichero_ready.clone();
     tokio::spawn(async move {
@@ -1705,7 +1704,7 @@ pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::
                 bound
             );
             if let Some(ruta) = ready_deadline.as_ref() {
-                escribir_fichero_ready(ruta, &bound, "warm_failed");
+                write_ready_file(ruta, &bound, "warm_failed");
             }
             timeout_state.tts_engine.shutdown();
         }
