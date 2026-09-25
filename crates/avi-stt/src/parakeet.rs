@@ -268,16 +268,16 @@ fn argmax(v: &[f32]) -> usize {
 
 fn session(path: impl AsRef<Path>) -> anyhow::Result<Session> {
     // rc.13: `Session::builder()` y cada `.with_*` devuelven `Result<SessionBuilder>`.
-    let b = Session::builder().map_err(|e| anyhow::anyhow!("builder: {e}"))?;
+    let b = Session::builder().map_err(|e| anyhow::anyhow!("construcción de la sesión ONNX: {e}"))?;
     let b = b
         .with_optimization_level(GraphOptimizationLevel::Level1)
-        .map_err(|e| anyhow::anyhow!("opt level: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("nivel de optimización: {e}"))?;
     let mut b = b
         .with_intra_threads(available_threads() as usize)
-        .map_err(|e| anyhow::anyhow!("intra threads: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("hilos intra-op: {e}"))?;
     let s = b
         .commit_from_file(path.as_ref())
-        .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("carga del modelo: {e}"))?;
     Ok(s)
 }
 

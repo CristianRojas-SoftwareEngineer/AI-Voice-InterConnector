@@ -14,7 +14,7 @@ use avi_core::engine::SttEngine;
 /// max sobre 5 medidas tras 2 warmups), RTF vs duración del audio y WER
 /// normalizado contra el texto correcto verificado.
 ///
-/// Ejecutar con: `cargo test -p avi-stt --test benchmark_latencia -- --ignored --nocapture`
+/// Ejecutar con: `cargo test -p avi-stt --test benchmark_latency -- --ignored --nocapture`
 #[test]
 #[ignore]
 fn benchmark_latency_quality() {

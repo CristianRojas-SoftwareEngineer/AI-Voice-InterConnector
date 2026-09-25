@@ -2223,10 +2223,10 @@ fn convert_marian_to_ct2(
         };
         match try_converter("python") {
             Ok(s) if s.success() => {}
-            Ok(s) => anyhow::bail!("converter python exit {}", s),
+            Ok(s) => anyhow::bail!("el conversor python terminó con {}", s),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => match try_converter("python3") {
                 Ok(s) if s.success() => {}
-                Ok(s) => anyhow::bail!("converter python3 exit {}", s),
+                Ok(s) => anyhow::bail!("el conversor python3 terminó con {}", s),
                 Err(e2) => anyhow::bail!("python no encontrado: {} / {}", e, e2),
             },
             Err(e) => anyhow::bail!("fallo al ejecutar converter: {}", e),
