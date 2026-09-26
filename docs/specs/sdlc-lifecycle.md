@@ -2,7 +2,7 @@
 
 > **Estado**: aprobada; en implementación · **Versión base**: v0.23.1 · **Fecha**: 2026-09-25
 
-> **Directiva de no retrocompatibilidad.** El proyecto es pre-1.0 y no requiere ningún tipo de retrocompatibilidad con el ciclo de vida anterior. No hay aliases ni flags deprecados, ni adopción de instalaciones sin recibo, ni migración de datos cuando cambien las rutas, ni scripts puente en las URLs antiguas. Las instalaciones existentes siguen un procedimiento manual de una sola vez, publicado en `CHANGELOG.md` ([§14.3](#143-procedimiento-manual-para-instalaciones-previas)).
+> **Directiva de no retrocompatibilidad.** El proyecto es pre-1.0 y no requiere ningún tipo de retrocompatibilidad con el ciclo de vida anterior. No hay aliases ni flags deprecados, ni adopción de instalaciones sin recibo, ni migración de datos cuando cambien las rutas, ni scripts puente en las URLs antiguas. El proyecto no está distribuido: no hay instalaciones previas, de modo que no se concede ningún mecanismo de transición ([§14.3](#143-audiencia-previa-nula)).
 
 Este documento especifica cómo se **instala, actualiza, desinstala y limpia** `ai-voice-interconnector` en el entorno del usuario final, y cómo se **prepara, actualiza y limpia** el entorno del desarrollador, con el mismo comportamiento en los cuatro targets de compilación. Evalúa las alternativas de implementación y fija una arquitectura única que reemplaza a los scripts de ciclo de vida de la raíz del repositorio.
 
@@ -733,7 +733,7 @@ La implementación se organiza en cinco ciclos, cada uno con su propio plan apro
 | 2. Actualización | `self update` (consulta, resolución, descarga, verificación, traspaso), recuperación y borrado diferido, `setup` con selección persistida y poda | C2 |
 | 3. Empaquetado y bootstrap | `cargo xtask package` adoptado por los 4 jobs de build; `packaging/bootstrap/install.{sh,ps1}` publicados como assets con versión estampada y en `SHA256SUMS.txt`; pruebas nuevas; sustitución de los jobs de pruebas de instaladores | C3 |
 | 4. Entorno de desarrollo | `rust-toolchain.toml`, alias `cargo xtask`, `doctor`, `bootstrap`, `install` y capas de `clean` con delegación de la capa de aplicación | C4 |
-| 5. Corte y consolidación | Eliminación de los 5 scripts de la raíz y de sus pruebas, de los wrappers de actualización y del comando `uninstall` de nivel superior (cada uno en el ciclo que lo reemplaza); consolidación documental; barrido de restos; entrada en el CHANGELOG con el procedimiento manual de una sola vez | C1–C4, cierre en C5 |
+| 5. Corte y consolidación | Eliminación de los 5 scripts de la raíz y de sus pruebas, de los wrappers de actualización y del comando `uninstall` de nivel superior (cada uno en el ciclo que lo reemplaza); consolidación documental; barrido de restos; entrada en el CHANGELOG con la declaración del cambio incompatible | C1–C4, cierre en C5 |
 | 6. Firma (diferida) | Firma de `SHA256SUMS.txt` con ed25519/minisign y verificación en `self update` | Fuera de esta implementación ([§12](#12-seguridad)) |
 
 ### 14.2 Eliminación sin transición
@@ -746,14 +746,13 @@ El proyecto es pre-1.0 y no requiere retrocompatibilidad. La eliminación de las
 - **No hay scripts puente** en las URLs `raw.githubusercontent.com/…/main/install-*.sh` e `install-windows.ps1`, que se retiran en el corte.
 - **Las secciones ya publicadas del `CHANGELOG.md`** son registro histórico y no se reescriben.
 
-### 14.3 Procedimiento manual para instalaciones previas
+### 14.3 Audiencia previa nula
 
-Único mecanismo de transición, publicado en la sección `[No publicado]` del `CHANGELOG.md` y ejecutado una sola vez por el usuario, antes de instalar la versión nueva:
+El proyecto no está distribuido: no hay instalaciones del ciclo de vida anterior en máquinas de usuarios. La primera versión publicada de este ciclo de vida es la primera instalación para todo el mundo, de modo que no hay nadie a quien迁移 haya que acompañar.
 
-1. Desinstalar con la versión anterior: `ai-voice-interconnector uninstall --force` (o el equivalente específico del sistema operativo).
-2. Instalar la versión nueva con su bootstrap: `curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.sh | sh` en Linux y macOS, o `irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex` en Windows.
-
-El estado en las rutas antiguas (modelos, voces, habla sintetizada) no se borra automáticamente; `cleanup` de la versión nueva actúa sobre las rutas vigentes, y el usuario puede borrar las anteriores a mano.
+- **No hay procedimiento de migración** que documentar, ni nota de transición en el `CHANGELOG.md`.
+- `CHANGELOG.md` registra en su sección `[No publicado]` el cambio incompatible y su carácter pre-1.0, sin más.
+- Cualquier instalación creada con los scripts anteriores desde `main` se trata, por la regla de [§14.2](#142-eliminación-sin-transición), como no instalada: `self install` no la reconoce. Sus datos en las rutas antiguas no se borran ni se migran.
 
 ### 14.4 Consolidación documental
 
