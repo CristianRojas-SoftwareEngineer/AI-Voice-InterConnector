@@ -37,18 +37,18 @@ pub const BLOCK_END: &str = "# <<< ai-voice-interconnector <<<";
 /// decide si hace falta el bloque comparando contra lo que el bloque escribiría, y con
 /// dos formas distintas la comparación falla justo en el caso que quiere cubrir —un
 /// `PATH` que ya trae `$HOME/.local/bin`— y el bloque se duplica.
-fn entrada_del_bloque(bin_dir: &Path, home: &Path) -> String {
+fn block_entry(bin_dir: &Path, home: &Path) -> String {
     match bin_dir.strip_prefix(home) {
-        Ok(relativo) if relativo == Path::new(".local/bin") => "$HOME/.local/bin".to_string(),
+        Ok(relative) if relative == Path::new(".local/bin") => "$HOME/.local/bin".to_string(),
         _ => bin_dir.display().to_string(),
     }
 }
 
 pub fn block_text(bin_dir: &Path, home: &Path) -> String {
-    let entrada = entrada_del_bloque(bin_dir, home);
+    let entry = block_entry(bin_dir, home);
     format!(
-        "{BLOCK_BEGIN}\ncase \":${{PATH}}:\" in *\":{entrada}:\"*) ;; *) export \
-         PATH=\"{entrada}:$PATH\" ;; esac\n{BLOCK_END}"
+        "{BLOCK_BEGIN}\ncase \":${{PATH}}:\" in *\":{entry}:\"*) ;; *) export \
+         PATH=\"{entry}:$PATH\" ;; esac\n{BLOCK_END}"
     )
 }
 
@@ -66,8 +66,8 @@ impl Shell {
     /// `$SHELL`". Desconocido se trata como `sh`, que es el caso más restrictivo
     /// y del que los demás heredan.
     pub fn from_env(shell: Option<&str>) -> Self {
-        let nombre = shell.and_then(|ruta| ruta.rsplit('/').next());
-        match nombre {
+        let name = shell.and_then(|path| path.rsplit('/').next());
+        match name {
             Some("zsh") => Self::Zsh,
             Some("fish") => Self::Fish,
             Some("bash") => Self::Bash,
@@ -121,15 +121,15 @@ pub fn needs_block(path_env: &str, bin_dir: &Path, home: &Path) -> bool {
     // Las dos formas admitidas: la que escribe el bloque (`$HOME/.local/bin` cuando el
     // directorio del enlace está bajo `$HOME`) y la expandida, que es lo que queda en el
     // `PATH` de una sesión donde alguien ya la expandió a mano.
-    let forma_bloque = entrada_del_bloque(bin_dir, home);
-    let forma_lit = format!("{}/.local/bin", home.display());
+    let block_form = block_entry(bin_dir, home);
+    let literal_form = format!("{}/.local/bin", home.display());
     !std::env::split_paths(path_env)
-        .filter(|entrada| !entrada.as_os_str().is_empty())
-        .any(|entrada| {
-            let raw = entrada.to_string_lossy().to_string();
-            raw == forma_bloque
-                || raw == forma_lit
-                || crate::canonical_path_entry_matches(&entrada, bin_dir)
+        .filter(|entry| !entry.as_os_str().is_empty())
+        .any(|entry| {
+            let raw = entry.to_string_lossy().to_string();
+            raw == block_form
+                || raw == literal_form
+                || crate::canonical_path_entry_matches(&entry, bin_dir)
         })
 }
 
@@ -140,17 +140,17 @@ pub fn needs_block(path_env: &str, bin_dir: &Path, home: &Path) -> bool {
 /// **sufijo** que se añadiría ya está, porque un usuario puede tener su propio
 /// bloque con los mismos delimitadores y ese no es el nuestro.
 pub fn write_block(path: &Path, bin_dir: &Path, home: &Path) -> std::io::Result<bool> {
-    let contenido = match std::fs::read_to_string(path) {
-        Ok(contenido) => contenido,
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    let bloque = block_text(bin_dir, home);
-    if contenido.ends_with(&bloque) {
+    let block = block_text(bin_dir, home);
+    if content.ends_with(&block) {
         return Ok(false);
     }
-    let nuevo = añadir(&contenido, &bloque);
-    escribir(path, &nuevo)?;
+    let new = añadir(&content, &block);
+    write(path, &new)?;
     Ok(true)
 }
 
@@ -162,24 +162,24 @@ pub fn write_block(path: &Path, bin_dir: &Path, home: &Path) -> std::io::Result<
 /// el recibo permite revertir y que `doctor` puede señalar— antes que borrar
 /// contenido suyo.
 pub fn remove_block(path: &Path, bin_dir: &Path, home: &Path) -> std::io::Result<bool> {
-    let contenido = match std::fs::read_to_string(path) {
-        Ok(contenido) => contenido,
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
     };
-    let bloque = block_text(bin_dir, home);
+    let block = block_text(bin_dir, home);
     // `añadir` pone un separador antes del bloque salvo cuando el archivo estaba
     // vacío, así que el sufijo a quitar depende de si queda algo delante. Los dos
     // casos son excluyentes, y por eso basta con probar el largo primero.
-    let con_separador = format!("\n{bloque}");
-    let antes = match contenido.strip_suffix(&con_separador) {
-        Some(antes) if !antes.is_empty() => antes,
-        _ => match contenido.strip_suffix(&bloque) {
-            Some(antes) => antes,
+    let with_separator = format!("\n{block}");
+    let before = match content.strip_suffix(&with_separator) {
+        Some(before) if !before.is_empty() => before,
+        _ => match content.strip_suffix(&block) {
+            Some(before) => before,
             None => return Ok(false),
         },
     };
-    escribir(path, antes)?;
+    write(path, before)?;
     Ok(true)
 }
 
@@ -191,19 +191,19 @@ pub fn remove_block(path: &Path, bin_dir: &Path, home: &Path) -> std::io::Result
 /// la reversión no podría saber cuál de los dos había que devolver. El coste es una
 /// línea en blanco extra cuando el perfil ya acababa en salto de línea, que es
 /// cosmetics y no de contrato.
-fn añadir(contenido: &str, bloque: &str) -> String {
-    if contenido.is_empty() {
-        bloque.to_string()
+fn añadir(content: &str, block: &str) -> String {
+    if content.is_empty() {
+        block.to_string()
     } else {
-        format!("{contenido}\n{bloque}")
+        format!("{content}\n{block}")
     }
 }
 
-fn escribir(path: &Path, contenido: &str) -> std::io::Result<()> {
+fn write(path: &Path, content: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, contenido)
+    std::fs::write(path, content)
 }
 
 /// Qué hay en la ruta del enlace (§9.3.1). La clasificación va aparte de la
@@ -247,17 +247,17 @@ pub fn decide_existing(
 #[cfg(unix)]
 pub fn classify_existing(link: &Path, program_exe: &Path) -> Existing {
     match std::fs::read_link(link) {
-        Ok(destino) => {
+        Ok(dest) => {
             // Se comparan las dos formas del destino: un enlace puede llevar la
             // ruta absoluta o la relativa al directorio del enlace, y ninguna de
             // las dos es culpa de quien lo creó.
-            let absoluto = if destino.is_absolute() {
-                destino
+            let absolute = if dest.is_absolute() {
+                dest
             } else {
-                link.parent().unwrap_or(Path::new(".")).join(destino)
+                link.parent().unwrap_or(Path::new(".")).join(dest)
             };
-            if crate::canonical_path_entry_matches(&absoluto, program_exe) {
-                Existing::Ours(absoluto)
+            if crate::canonical_path_entry_matches(&absolute, program_exe) {
+                Existing::Ours(absolute)
             } else {
                 Existing::Foreign
             }
@@ -301,15 +301,15 @@ pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<()
             LifecycleError::new("path_conflict", 14, format!("{}: {e}", parent.display()))
         })?;
     }
-    let temporal = link.with_extension(format!("avi-link-{}", std::process::id()));
-    let _ = std::fs::remove_file(&temporal);
-    std::os::unix::fs::symlink(program_exe, &temporal).map_err(|e| {
+    let temp = link.with_extension(format!("avi-link-{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    std::os::unix::fs::symlink(program_exe, &temp).map_err(|e| {
         LifecycleError::new(
             "path_conflict",
             14,
             format!(
                 "no se pudo crear el enlace temporal {}: {e}",
-                temporal.display()
+                temp.display()
             ),
         )
     })?;
@@ -321,10 +321,10 @@ pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<()
             let _ = std::fs::remove_file(link);
         }
     }
-    match std::fs::rename(&temporal, link) {
+    match std::fs::rename(&temp, link) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = std::fs::remove_file(&temporal);
+            let _ = std::fs::remove_file(&temp);
             Err(LifecycleError::new(
                 "path_conflict",
                 14,
@@ -366,23 +366,23 @@ mod tests {
     fn profile_block_is_idempotent() {
         let home = sandbox("idempotente");
         let bin = home.join(".local/bin");
-        let perfil = home.join(".profile");
+        let profile = home.join(".profile");
         let original = "# mi perfil\nexport LANG=es_ES.UTF-8\n";
-        write_file(&perfil, original);
+        write_file(&profile, original);
 
         assert!(
-            write_block(&perfil, &bin, &home).unwrap(),
+            write_block(&profile, &bin, &home).unwrap(),
             "la primera escritura cambia el archivo"
         );
-        let una = std::fs::read_to_string(&perfil).unwrap();
-        let bloque = block_text(&bin, &home);
+        let body = std::fs::read_to_string(&profile).unwrap();
+        let block = block_text(&bin, &home);
         assert_eq!(
-            una,
-            format!("{original}\n{bloque}"),
+            body,
+            format!("{original}\n{block}"),
             "el contenido es el original más el bloque de §9.3.1, con `$HOME` sin expandir"
         );
         assert_eq!(
-            bloque,
+            block,
             format!(
                 "{BLOCK_BEGIN}\ncase \":${{PATH}}:\" in *\":$HOME/.local/bin:\"*) ;; *) \
                  export PATH=\"$HOME/.local/bin:$PATH\" ;; esac\n{BLOCK_END}"
@@ -392,36 +392,36 @@ mod tests {
 
         // Las dos formas de idempotencia: repetir y volver a pedir el bloque.
         assert!(
-            !write_block(&perfil, &bin, &home).unwrap(),
+            !write_block(&profile, &bin, &home).unwrap(),
             "repetir no cambia el archivo"
         );
         assert!(
-            !write_block(&perfil, &bin, &home).unwrap(),
+            !write_block(&profile, &bin, &home).unwrap(),
             "y una tercera vez tampoco"
         );
         assert_eq!(
-            std::fs::read_to_string(&perfil).unwrap(),
-            una,
+            std::fs::read_to_string(&profile).unwrap(),
+            body,
             "el contenido es idéntico"
         );
         assert_eq!(
-            una.matches(BLOCK_BEGIN).count(),
+            body.matches(BLOCK_BEGIN).count(),
             1,
             "un solo bloque, no uno por intento"
         );
 
         // Un bloque nuestro con la ruta reubicada lleva la ruta absoluta, no
         // `$HOME`: es la misma integración con otro destino.
-        let reubicada = sandbox("reubicada");
-        let otro = reubicada.join("bin-personalizado");
-        let bloque = block_text(&otro, &reubicada);
+        let relocated = sandbox("reubicada");
+        let other = relocated.join("bin-personalizado");
+        let block = block_text(&other, &relocated);
         assert!(
-            bloque.contains(&otro.display().to_string()),
-            "con `AVI_BIN_DIR` el bloque lleva la ruta real: {bloque}"
+            block.contains(&other.display().to_string()),
+            "con `AVI_BIN_DIR` el bloque lleva la ruta real: {block}"
         );
-        assert!(!bloque.contains("$HOME/.local/bin"));
+        assert!(!block.contains("$HOME/.local/bin"));
         std::fs::remove_dir_all(&home).ok();
-        std::fs::remove_dir_all(&reubicada).ok();
+        std::fs::remove_dir_all(&relocated).ok();
     }
 
     /// La reversión deja el perfil **exactamente** como estaba, incluido el caso
@@ -431,7 +431,7 @@ mod tests {
     fn profile_block_revert_restores_exactly() {
         let home = sandbox("revierte");
         let bin = home.join(".local/bin");
-        let perfil = home.join(".profile");
+        let profile = home.join(".profile");
 
         // Tres originales distintos, para los tres caminos del separador.
         for original in [
@@ -440,34 +440,34 @@ mod tests {
             "export PATH=/usr/bin",
             "",
         ] {
-            write_file(&perfil, original);
-            write_block(&perfil, &bin, &home).unwrap();
+            write_file(&profile, original);
+            write_block(&profile, &bin, &home).unwrap();
             assert!(
-                remove_block(&perfil, &bin, &home).unwrap(),
+                remove_block(&profile, &bin, &home).unwrap(),
                 "el bloque se quita: {original:?}"
             );
             assert_eq!(
-                std::fs::read_to_string(&perfil).unwrap(),
+                std::fs::read_to_string(&profile).unwrap(),
                 original,
                 "el perfil vuelve a ser byte a byte lo que era: {original:?}"
             );
             assert!(
-                !remove_block(&perfil, &bin, &home).unwrap(),
+                !remove_block(&profile, &bin, &home).unwrap(),
                 "quitar un bloque ausente es un no-op"
             );
-            assert_eq!(std::fs::read_to_string(&perfil).unwrap(), original);
+            assert_eq!(std::fs::read_to_string(&profile).unwrap(), original);
         }
 
         // Un perfil con un bloque ajeno no se toca: hay un `PATH` exportado a mano
         // que no es nuestro y borrarlo sería perder configuración del usuario.
         let bashrc = home.join(".bashrc");
-        let ajeno = "export PATH=\"$HOME/.local/bin:$PATH\"\n";
-        write_file(&bashrc, ajeno);
+        let foreign = "export PATH=\"$HOME/.local/bin:$PATH\"\n";
+        write_file(&bashrc, foreign);
         assert!(
             !remove_block(&bashrc, &bin, &home).unwrap(),
             "un bloque ajeno no se quita"
         );
-        assert_eq!(std::fs::read_to_string(&bashrc).unwrap(), ajeno);
+        assert_eq!(std::fs::read_to_string(&bashrc).unwrap(), foreign);
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -494,9 +494,9 @@ mod tests {
 
         // Enlace nuestro: repetir no es conflicto.
         let exe = home.join("opt/ai-voice-interconnector/ai-voice-interconnector");
-        let nuestro = Existing::Ours(exe.clone());
-        assert!(decide_existing(&nuestro, &link, false).is_ok());
-        assert!(decide_existing(&nuestro, &link, true).is_ok());
+        let our = Existing::Ours(exe.clone());
+        assert!(decide_existing(&our, &link, false).is_ok());
+        assert!(decide_existing(&our, &link, true).is_ok());
 
         // Algo ajeno: conflicto con `path_conflict` y el entero 14.
         let err = decide_existing(&Existing::Foreign, &link, false)
@@ -545,15 +545,15 @@ mod tests {
         // El enlace propio que hay en `link` se quita antes: `symlink` no sobrescribe
         // un destino existente, y sin quitarlo la prueba falla con `AlreadyExists` antes
         // de llegar a la clasificación.
-        let otro = home.join("opt/otra-cosa/ai-voice-interconnector");
-        write_file(&otro, "otro binario");
+        let other = home.join("opt/otra-cosa/ai-voice-interconnector");
+        write_file(&other, "otro binario");
         std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(&otro, &link).unwrap();
+        std::os::unix::fs::symlink(&other, &link).unwrap();
         assert_eq!(classify_existing(&link, &exe), Existing::Foreign);
         assert!(create_symlink(&link, &exe, false).is_err());
         assert_eq!(
             std::fs::read_link(&link).unwrap(),
-            otro,
+            other,
             "sin `--force` el enlace ajeno no se toca"
         );
         create_symlink(&link, &exe, true).expect("`--force` sustituye el enlace ajeno");
@@ -562,7 +562,7 @@ mod tests {
         // La reversión solo toca lo nuestro: un enlace a otra cosa sobrevive.
         assert!(revert_symlink(&link, &exe), "el enlace nuestro se quita");
         assert!(link.symlink_metadata().is_err(), "y desaparece");
-        std::os::unix::fs::symlink(&otro, &link).unwrap();
+        std::os::unix::fs::symlink(&other, &link).unwrap();
         assert!(
             !revert_symlink(&link, &exe),
             "un enlace ajeno no lo revierte la instalación"
@@ -577,22 +577,22 @@ mod tests {
     #[test]
     fn profile_targets_follow_the_shell_table() {
         let home = sandbox("shells");
-        let existe = |p: &Path| p == home.join(".bashrc");
+        let exists = |p: &Path| p == home.join(".bashrc");
         let zdotdir = home.join("cfg/zsh");
         let zdot = Some(zdotdir.as_path());
 
         assert_eq!(
-            profile_targets(&home, zdot, Shell::Bash, existe),
+            profile_targets(&home, zdot, Shell::Bash, exists),
             vec![home.join(".profile"), home.join(".bashrc")],
             "bash: `.profile` y el `.bashrc` que existe"
         );
         assert_eq!(
-            profile_targets(&home, zdot, Shell::Sh, existe),
+            profile_targets(&home, zdot, Shell::Sh, exists),
             vec![home.join(".profile"), home.join(".bashrc")],
             "sh hereda la fila de bash"
         );
         assert_eq!(
-            profile_targets(&home, zdot, Shell::Zsh, existe),
+            profile_targets(&home, zdot, Shell::Zsh, exists),
             vec![
                 home.join(".profile"),
                 home.join(".bashrc"),
@@ -601,7 +601,7 @@ mod tests {
             "zsh: `$ZDOTDIR` manda sobre `$HOME`"
         );
         assert_eq!(
-            profile_targets(&home, None, Shell::Zsh, existe),
+            profile_targets(&home, None, Shell::Zsh, exists),
             vec![
                 home.join(".profile"),
                 home.join(".bashrc"),
@@ -610,7 +610,7 @@ mod tests {
             "sin `ZDOTDIR`, el `.zshrc` cae en `$HOME`"
         );
         assert_eq!(
-            profile_targets(&home, zdot, Shell::Fish, existe),
+            profile_targets(&home, zdot, Shell::Fish, exists),
             vec![
                 home.join(".profile"),
                 home.join(".bashrc"),
@@ -640,21 +640,21 @@ mod tests {
         // El `PATH` se compone con `join_paths`, que usa el separador de cada
         // plataforma: en Windows la letra de la unidad lleva `:` y trocear por `:`
         // partiría cada entrada en dos.
-        let componer = |entradas: &[PathBuf]| {
-            std::env::join_paths(entradas)
+        let join_paths = |entries: &[PathBuf]| {
+            std::env::join_paths(entries)
                 .expect("se compone el PATH")
                 .to_string_lossy()
                 .to_string()
         };
-        let ruta = |relativo: &str| home.join(relativo);
+        let path = |relative: &str| home.join(relative);
 
         assert!(
-            needs_block(&componer(&[ruta("usr/bin"), ruta("bin")]), &bin, &home),
+            needs_block(&join_paths(&[path("usr/bin"), path("bin")]), &bin, &home),
             "sin el directorio del enlace, hace falta"
         );
         assert!(
             !needs_block(
-                &componer(&[ruta("usr/bin"), bin.clone(), ruta("bin")]),
+                &join_paths(&[path("usr/bin"), bin.clone(), path("bin")]),
                 &bin,
                 &home
             ),
@@ -662,7 +662,7 @@ mod tests {
         );
         assert!(
             needs_block(
-                &componer(&[ruta("usr/bin"), ruta(".local/bin2"), ruta("bin")]),
+                &join_paths(&[path("usr/bin"), path(".local/bin2"), path("bin")]),
                 &bin,
                 &home
             ),
@@ -670,7 +670,7 @@ mod tests {
         );
         assert!(
             needs_block(
-                &componer(&[ruta("usr/bin"), ruta("bin"), ruta("bin")]),
+                &join_paths(&[path("usr/bin"), path("bin"), path("bin")]),
                 &bin,
                 &home
             ),

@@ -188,11 +188,11 @@ pub(crate) mod test_support {
     }
 
     /// Escribe un fichero con `contenido`, creando los directorios intermedios.
-    pub fn write_file(path: &std::path::Path, contenido: &str) {
+    pub fn write_file(path: &std::path::Path, content: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("se puede crear el directorio padre");
         }
-        std::fs::write(path, contenido).expect("se puede escribir el fichero");
+        std::fs::write(path, content).expect("se puede escribir el fichero");
     }
 
     /// Lista recursivamente `(ruta relativa, tamaño)` de un directorio, para

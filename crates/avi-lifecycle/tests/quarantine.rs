@@ -31,13 +31,13 @@ use std::sync::Mutex;
 
 /// Registro de todo lo que se le pregunta, para poder afirmar el alcance.
 #[derive(Debug, Default)]
-struct Registro {
+struct Registry {
     /// Archivos a los que se les quitó el atributo.
-    limpiar: BTreeSet<PathBuf>,
+    clear: BTreeSet<PathBuf>,
     /// Archivos por los que se preguntó si lo tenían.
-    preguntar: BTreeSet<PathBuf>,
+    ask: BTreeSet<PathBuf>,
     /// Archivos en los que `clear` falla, para probar que el recorrido no se corta.
-    fallar_en: BTreeSet<PathBuf>,
+    fail_at: BTreeSet<PathBuf>,
 }
 
 /// Implementación falsa de atributos: marca un conjunto de archivos como «en
@@ -45,75 +45,75 @@ struct Registro {
 ///
 /// No toca el disco. Es lo que permite ejercitar el recorrido en Windows y en Linux, y
 /// lo que hace que las pruebas del recorrido no dependan de `xattr`.
-struct Falso {
+struct Fake {
     /// Archivos que están «en cuarentena», y que `clear` vacía.
-    en_cuarentena: Mutex<BTreeSet<PathBuf>>,
-    registro: Mutex<Registro>,
+    in_quarantine: Mutex<BTreeSet<PathBuf>>,
+    registry: Mutex<Registry>,
 }
 
-impl Falso {
+impl Fake {
     fn new() -> Self {
         Self {
-            en_cuarentena: Mutex::new(BTreeSet::new()),
-            registro: Mutex::new(Registro::default()),
+            in_quarantine: Mutex::new(BTreeSet::new()),
+            registry: Mutex::new(Registry::default()),
         }
     }
 
     /// Declara un archivo en cuarentena, como si lo hubiera puesto el navegador.
-    fn marcar(&self, path: &Path) {
-        self.en_cuarentena
+    fn mark(&self, path: &Path) {
+        self.in_quarantine
             .lock()
             .expect("el registro no se envenena")
             .insert(path.to_path_buf());
     }
 
     /// Declara que `clear` fallará en ese archivo.
-    fn fallar_en(&self, path: &Path) {
-        self.registro
+    fn fail_at(&self, path: &Path) {
+        self.registry
             .lock()
             .expect("el registro no se envenena")
-            .fallar_en
+            .fail_at
             .insert(path.to_path_buf());
     }
 
     /// Declara que va a fallar el primer archivo de la lista y devuelve su ruta.
-    fn fallar_el_primero(&self, archivos: &[PathBuf]) -> PathBuf {
-        let falla = archivos[0].clone();
-        self.fallar_en(&falla);
-        falla
+    fn fail_first(&self, files: &[PathBuf]) -> PathBuf {
+        let failure = files[0].clone();
+        self.fail_at(&failure);
+        failure
     }
 
     /// A qué se le preguntó, sin importar el orden.
-    fn preguntado(&self) -> BTreeSet<PathBuf> {
-        self.registro
+    fn asked(&self) -> BTreeSet<PathBuf> {
+        self.registry
             .lock()
             .expect("el registro no se envenena")
-            .preguntar
+            .ask
             .clone()
     }
 
     /// Qué se limpió, sin importar el orden.
-    fn limpiado(&self) -> BTreeSet<PathBuf> {
-        self.registro
+    fn cleared(&self) -> BTreeSet<PathBuf> {
+        self.registry
             .lock()
             .expect("el registro no se envenena")
-            .limpiar
+            .clear
             .clone()
     }
 
     /// Cuántos archivos siguen «en cuarentena».
-    fn restantes(&self) -> usize {
-        self.en_cuarentena
+    fn remaining(&self) -> usize {
+        self.in_quarantine
             .lock()
             .expect("el registro no se envenena")
             .len()
     }
 }
 
-impl Quarantine for Falso {
+impl Quarantine for Fake {
     fn has(&self, path: &Path) -> std::io::Result<bool> {
         Ok(self
-            .en_cuarentena
+            .in_quarantine
             .lock()
             .expect("sin veneno")
             .contains(path))
@@ -125,51 +125,51 @@ impl Quarantine for Falso {
         // El cerrojo se toma y se suelta en cada aserción porque `Mutex` no es
         // reentrante.
         {
-            let mut registro = self.registro.lock().expect("sin veneno");
-            registro.preguntar.insert(path.to_path_buf());
-            if registro.fallar_en.contains(path) {
+            let mut registry = self.registry.lock().expect("sin veneno");
+            registry.ask.insert(path.to_path_buf());
+            if registry.fail_at.contains(path) {
                 // Un fallo que la operación **no** confunde con un «no lo tenía»: es
                 // lo que la distingue, y por eso se propaga como `Err` y no como
                 // `Ok(false)`.
                 return Err(std::io::Error::other("no se pudo quitar el atributo"));
             }
         }
-        if !self.en_cuarentena.lock().expect("sin veneno").remove(path) {
+        if !self.in_quarantine.lock().expect("sin veneno").remove(path) {
             return Ok(false);
         }
-        self.registro
+        self.registry
             .lock()
             .expect("sin veneno")
-            .limpiar
+            .clear
             .insert(path.to_path_buf());
         Ok(true)
     }
 
     fn put(&self, path: &Path) -> std::io::Result<()> {
-        self.marcar(path);
+        self.mark(path);
         Ok(())
     }
 }
 
 /// Directorio único por etiqueta y por nanosegundo, para que dos pruebas simultáneas —o
 /// dos ejecuciones del mismo binario— no se pisen.
-fn unico(tag: &str) -> PathBuf {
+fn unique(tag: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or_default();
-    let raiz =
+    let root =
         std::env::temp_dir().join(format!("quarantine-e2e-{}-{tag}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&raiz);
-    std::fs::create_dir_all(&raiz).expect("se crea la raíz del sandbox");
-    raiz
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("se crea la raíz del sandbox");
+    root
 }
 
 /// Une un fragmento del manifiesto con la raíz del bundle.
-fn aviar(destino: &Path, relativa: &str) -> PathBuf {
-    let mut path = destino.to_path_buf();
-    for parte in relativa.split('/') {
-        path.push(parte);
+fn place(dest: &Path, relative: &str) -> PathBuf {
+    let mut path = dest.to_path_buf();
+    for part in relative.split('/') {
+        path.push(part);
     }
     path
 }
@@ -177,20 +177,20 @@ fn aviar(destino: &Path, relativa: &str) -> PathBuf {
 /// Escribe un bundle completo con la lista de `packaging/bundle-manifest.json`, que es
 /// la misma que valida `self install`. Los nombres no se escriben a mano: si el
 /// manifiesto cambiara, la seguiría exercising lo que el manifiesto dice.
-fn escribir_bundle(destino: &Path) -> Vec<PathBuf> {
-    let seccion = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
+fn write_bundle(dest: &Path) -> Vec<PathBuf> {
+    let section = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
         .expect("el target del host tiene sección en el manifiesto");
-    let mut archivos = Vec::new();
-    for relativa in &seccion.required {
-        let completa = aviar(destino, relativa);
-        if let Some(parent) = completa.parent() {
+    let mut files = Vec::new();
+    for relative in &section.required {
+        let complete = place(dest, relative);
+        if let Some(parent) = complete.parent() {
             std::fs::create_dir_all(parent).expect("se crea el directorio del archivo");
         }
-        std::fs::write(&completa, format!("contenido de {relativa}\n"))
+        std::fs::write(&complete, format!("contenido de {relative}\n"))
             .expect("se escribe el archivo del bundle");
-        archivos.push(completa);
+        files.push(complete);
     }
-    archivos
+    files
 }
 
 /// Sandbox con un árbol con la forma de un bundle: ejecutable y documentos en la raíz,
@@ -199,40 +199,40 @@ fn escribir_bundle(destino: &Path) -> Vec<PathBuf> {
 /// El bundle se escribe primero en el **staging** —que es donde el bootstrap de §9.2 lo
 /// deja— y [`Arbol::colocados`] lo traslada al directorio de programa, que es donde el
 /// paso 6 de §9.3 lo coloca y donde la limpieza se ejecuta.
-struct Arbol {
+struct Tree {
     /// Raíz del sandbox, para borrarla entera.
-    raiz: PathBuf,
+    root: PathBuf,
     /// Staging hermano del directorio de programa, con el prefijo de §7.
     staging: PathBuf,
     /// Directorio de programa de §7.
-    programa: PathBuf,
+    program: PathBuf,
     /// Archivos del bundle, en la ruta en la que están ahora: el staging.
-    archivos: Vec<PathBuf>,
+    files: Vec<PathBuf>,
 }
 
-impl Arbol {
-    fn nuevo(tag: &str) -> Self {
-        let raiz = unico(tag);
-        let opt = raiz.join("opt");
+impl Tree {
+    fn new(tag: &str) -> Self {
+        let root = unique(tag);
+        let opt = root.join("opt");
         let staging = opt.join(format!("{}test", avi_lifecycle::STAGING_DIR_PREFIX));
-        let programa = opt.join("ai-voice-interconnector");
-        let archivos = escribir_bundle(&staging);
+        let program = opt.join("ai-voice-interconnector");
+        let files = write_bundle(&staging);
         Self {
-            raiz,
+            root,
             staging,
-            programa,
-            archivos,
+            program,
+            files,
         }
     }
 
     /// Los archivos del bundle **en el directorio de programa**. Es la traducción de
     /// "mover lo que hay en el staging al directorio de programa", que es el paso 6 de
     /// §9.3.
-    fn colocados(&self) -> Vec<PathBuf> {
-        self.archivos
+    fn placed(&self) -> Vec<PathBuf> {
+        self.files
             .iter()
             .map(|a| {
-                self.programa.join(
+                self.program.join(
                     a.strip_prefix(&self.staging)
                         .expect("el archivo está en el staging"),
                 )
@@ -243,37 +243,37 @@ impl Arbol {
     /// Los mismos archivos, pero **escritos en disco**: el recorrido empieza por un
     /// `read_dir` del directorio de programa, así que sin un árbol real no preguntaría
     /// por nada. Es el estado en el que está el directorio después del paso 6.
-    fn materializar(&self) -> Vec<PathBuf> {
-        let colocados = self.colocados();
-        for archivo in &colocados {
-            std::fs::create_dir_all(archivo.parent().expect("el archivo tiene padre"))
+    fn materialize(&self) -> Vec<PathBuf> {
+        let placed = self.placed();
+        for file in &placed {
+            std::fs::create_dir_all(file.parent().expect("el archivo tiene padre"))
                 .expect("se crea el directorio del archivo colocado");
-            std::fs::write(archivo, "contenido colocado\n").expect("se escribe el archivo");
+            std::fs::write(file, "contenido colocado\n").expect("se escribe el archivo");
         }
-        colocados
+        placed
     }
 }
 
 /// Contenido de un directorio, para afirmar que nada se ha tocado.
-fn contenido(raiz: &Path) -> Vec<String> {
+fn content(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    let mut pila = vec![raiz.to_path_buf()];
-    while let Some(dir) = pila.pop() {
-        let Ok(entradas) = std::fs::read_dir(&dir) else {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entrada in entradas.flatten() {
-            let ruta = entrada.path();
-            let relativa = ruta
-                .strip_prefix(raiz)
-                .unwrap_or(&ruta)
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if entrada.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                out.push(format!("{relativa}/"));
-                pila.push(ruta);
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                out.push(format!("{relative}/"));
+                stack.push(path);
             } else {
-                out.push(relativa);
+                out.push(relative);
             }
         }
     }
@@ -283,12 +283,12 @@ fn contenido(raiz: &Path) -> Vec<String> {
 
 /// `true` si entre lo preguntado está el derivado del motor (`vendor/…`), que es el caso
 /// que motiva que la limpieza sea sobre todo el directorio y no solo el ejecutable.
-fn pregunta_por_el_derivado(preguntado: &BTreeSet<PathBuf>) -> bool {
-    let separador = if cfg!(windows) { '\\' } else { '/' };
-    let marca = format!("{separador}vendor{separador}");
-    preguntado
+fn asks_about_derived(asked: &BTreeSet<PathBuf>) -> bool {
+    let separator = if cfg!(windows) { '\\' } else { '/' };
+    let marker = format!("{separator}vendor{separator}");
+    asked
         .iter()
-        .any(|ruta| ruta.to_string_lossy().contains(&marca))
+        .any(|path| path.to_string_lossy().contains(&marker))
 }
 
 // ─── El criterio 9: instalar no deja nada en cuarentena ───────────────────────────
@@ -318,30 +318,30 @@ fn pregunta_por_el_derivado(preguntado: &BTreeSet<PathBuf>) -> bool {
 /// lo que se crea dentro, así que un bundle extraído con el Finder llega con el atributo
 /// en cada archivo y en cada directorio intermedio. Plantarlo solo en los archivos sería
 /// una versión más fácil del criterio.
-fn plantar_cuarentena(raiz: &Path) -> Vec<PathBuf> {
-    let mut plantados = Vec::new();
-    let mut directorios = Vec::new();
-    let mut pila = vec![raiz.to_path_buf()];
-    while let Some(dir) = pila.pop() {
-        if dir != raiz {
-            directorios.push(dir.clone());
+fn seed_quarantine(root: &Path) -> Vec<PathBuf> {
+    let mut planted = Vec::new();
+    let mut directories = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if dir != root {
+            directories.push(dir.clone());
         }
-        let Ok(entradas) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entrada in entradas.flatten() {
-            let ruta = entrada.path();
-            if entrada.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                pila.push(ruta);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                stack.push(path);
             } else {
-                plantados.push(ruta);
+                planted.push(path);
             }
         }
     }
-    for ruta in plantados.iter().chain(directorios.iter()) {
-        quarantine::put(ruta).expect("se pone la cuarentena de macOS");
+    for path in planted.iter().chain(directories.iter()) {
+        quarantine::put(path).expect("se pone la cuarentena de macOS");
     }
-    plantados
+    planted
 }
 
 /// Recorre el directorio de programa entero y devuelve las rutas relativas, en orden, de
@@ -352,25 +352,25 @@ fn plantar_cuarentena(raiz: &Path) -> Vec<PathBuf> {
 /// que es la implementación de `xattr`, y fuera se le puede pasar una implementación que
 /// registre. El recorrido —el código que el criterio 9 evalúa— es el mismo en los dos
 /// casos, así que un error de recorrido no puede esconderse hasta la puerta de macOS.
-fn conservan_cuarentena(raiz: &Path, atributos: &dyn quarantine::Quarantine) -> Vec<String> {
+fn keep_quarantine(root: &Path, attributes: &dyn quarantine::Quarantine) -> Vec<String> {
     let mut out = Vec::new();
-    let mut pila = vec![raiz.to_path_buf()];
-    while let Some(dir) = pila.pop() {
-        let Ok(entradas) = std::fs::read_dir(&dir) else {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entrada in entradas.flatten() {
-            let ruta = entrada.path();
-            let relativa = ruta
-                .strip_prefix(raiz)
-                .unwrap_or(&ruta)
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if atributos.has(&ruta).unwrap_or(false) {
-                out.push(relativa);
+            if attributes.has(&path).unwrap_or(false) {
+                out.push(relative);
             }
-            if entrada.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                pila.push(ruta);
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                stack.push(path);
             }
         }
     }
@@ -390,23 +390,20 @@ fn conservan_cuarentena(raiz: &Path, atributos: &dyn quarantine::Quarantine) -> 
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
-    let sandbox = Sandbox::nuevo("c9");
-    let exe = sandbox.escribir_bundle(&sandbox.staging);
-    let plantados = plantar_cuarentena(&sandbox.staging);
-    assert!(
-        !plantados.is_empty(),
-        "criterio 9: el bundle tiene archivos"
-    );
+    let sandbox = Sandbox::new("c9");
+    let exe = sandbox.write_bundle(&sandbox.staging);
+    let planted = seed_quarantine(&sandbox.staging);
+    assert!(!planted.is_empty(), "criterio 9: el bundle tiene archivos");
 
     // Un hermano del directorio de programa, en cuarentena, que no se debe tocar.
-    let hermano = sandbox.raiz.join("opt").join("hermano.txt");
-    std::fs::write(&hermano, "fuera del programa\n").expect("se escribe el hermano");
-    quarantine::put(&hermano).expect("se pone la cuarentena del hermano");
+    let sibling = sandbox.root.join("opt").join("hermano.txt");
+    std::fs::write(&sibling, "fuera del programa\n").expect("se escribe el hermano");
+    quarantine::put(&sibling).expect("se pone la cuarentena del hermano");
 
     // Punto de partida: **todo** el bundle está en cuarentena, archivos y directorios.
     assert_eq!(
-        conservan_cuarentena(&sandbox.staging, quarantine::plataforma()).len(),
-        plantados.len() + directorios_intermedios(&sandbox.staging),
+        keep_quarantine(&sandbox.staging, quarantine::platform()).len(),
+        planted.len() + intermediate_dirs(&sandbox.staging),
         "criterio 9: el bundle entero arranca en cuarentena"
     );
 
@@ -422,7 +419,7 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
             channel: None,
             with_voice_cloning: false,
         },
-        &Inerte,
+        &Inert,
     )
     .await
     .expect("criterio 9: la instalación se completa");
@@ -443,14 +440,14 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     );
 
     // Y el árbol entero, sin excepciones y sin apoyarse en el recibo.
-    let con_atributo = conservan_cuarentena(&sandbox.program_dir, quarantine::plataforma());
+    let with_attribute = keep_quarantine(&sandbox.program_dir, quarantine::platform());
     assert!(
-        con_atributo.is_empty(),
+        with_attribute.is_empty(),
         "criterio 9: ningún archivo ni directorio del directorio de programa conserva la \
-         cuarentena; conservan: {con_atributo:?}"
+         cuarentena; conservan: {with_attribute:?}"
     );
     assert!(
-        quarantine::has(&hermano),
+        quarantine::has(&sibling),
         "criterio 9: y el hermano, que está fuera, sigue con la suya"
     );
     assert!(
@@ -459,7 +456,7 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
             .is_some(),
         "criterio 9: la instalación dejó recibo, que es lo que la distingue de un copiado"
     );
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// **Criterio 9 fuera de macOS.** La mitad del criterio que se puede comprobar donde el
@@ -476,32 +473,29 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
-    let arbol = Arbol::nuevo("c9-otros");
-    let colocados = arbol.materializar();
-    let plantados = plantar_cuarentena(&arbol.staging);
-    assert!(
-        !plantados.is_empty(),
-        "criterio 9: el bundle tiene archivos"
-    );
+    let tree = Tree::new("c9-otros");
+    let placed = tree.materialize();
+    let planted = seed_quarantine(&tree.staging);
+    assert!(!planted.is_empty(), "criterio 9: el bundle tiene archivos");
 
     // El hermano, con su propio atributo, es el control del alcance.
-    let hermano = arbol.raiz.join("opt").join("hermano.txt");
-    std::fs::write(&hermano, "fuera del programa\n").expect("se escribe el hermano");
-    quarantine::put(&hermano).expect("`put` fuera de macOS no falla");
+    let sibling = tree.root.join("opt").join("hermano.txt");
+    std::fs::write(&sibling, "fuera del programa\n").expect("se escribe el hermano");
+    quarantine::put(&sibling).expect("`put` fuera de macOS no falla");
     assert!(
-        !quarantine::has(&hermano),
+        !quarantine::has(&sibling),
         "criterio 9: fuera de macOS `has` no encuentra nada, que es lo honesto: el punto de \
          partida del hermano es indistinguible del de cualquier otro"
     );
 
     // El recorrido con una implementación de atributos que registra: se pregunta por cada
     // archivo colocado y por los directorios intermedios, y por nada fuera.
-    let falso = Falso::new();
-    for colocado in &colocados {
-        falso.marcar(colocado);
+    let fake = Fake::new();
+    for placed in &placed {
+        fake.mark(placed);
     }
-    let outcome = quarantine::strip_bounded(&arbol.programa, MAX_DEPTH, &falso);
-    let preguntado = falso.preguntado();
+    let outcome = quarantine::strip_bounded(&tree.program, MAX_DEPTH, &fake);
+    let asked = fake.asked();
     assert!(
         outcome.is_clear(),
         "criterio 9: el recorrido no falla: {:?}",
@@ -509,112 +503,108 @@ fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     );
     assert_eq!(
         outcome.cleared.len(),
-        colocados.len(),
+        placed.len(),
         "criterio 9: el recorrido limpia cada archivo del directorio de programa"
     );
-    for colocado in &colocados {
+    for placed in &placed {
         assert!(
-            preguntado.contains(colocado),
+            asked.contains(placed),
             "criterio 9: se pregunta por {}",
-            colocado.display()
+            placed.display()
         );
     }
-    let directorios = preguntados_directorios(&preguntado);
+    let directories = asked_dirs(&asked);
     assert!(
-        !directorios.is_empty(),
+        !directories.is_empty(),
         "criterio 9: y por los directorios intermedios, que también heredan el atributo: \
-         {directorios:?}"
+         {directories:?}"
     );
-    for ruta in &preguntado {
+    for path in &asked {
         assert!(
-            ruta.starts_with(&arbol.programa),
+            path.starts_with(&tree.program),
             "criterio 9: nada fuera del directorio de programa: {}",
-            ruta.display()
+            path.display()
         );
     }
     assert!(
-        !preguntado.contains(&hermano),
+        !asked.contains(&sibling),
         "criterio 9: el hermano, que tiene su propio atributo, no se pregunta"
     );
 
     // Y ahora el mismo recorrido de la prueba de macOS, con un oráculo que registra y
     // que **nada ha limpiado todavía**: es la comprobación no vacía del alcance, y usa
     // exactamente el código que la puerta de macOS evalúa.
-    let cobertura = Falso::new();
-    for colocado in &colocados {
-        cobertura.marcar(colocado);
+    let oracle = Fake::new();
+    for placed in &placed {
+        oracle.mark(placed);
     }
-    cobertura.marcar(&hermano);
-    let con_atributo = conservan_cuarentena(&arbol.programa, &cobertura);
+    oracle.mark(&sibling);
+    let with_attribute = keep_quarantine(&tree.program, &oracle);
     assert_eq!(
-        con_atributo.len(),
-        colocados.len(),
-        "criterio 9: el recorrido del criterio 9 abarca cada archivo colocado: {con_atributo:?}"
+        with_attribute.len(),
+        placed.len(),
+        "criterio 9: el recorrido del criterio 9 abarca cada archivo colocado: {with_attribute:?}"
     );
     assert!(
-        !con_atributo
+        !with_attribute
             .iter()
             .any(|r| r.contains("..") || r.contains("hermano")),
         "criterio 9: y no incluye nada de fuera del directorio de programa"
     );
-    let limpio = conservan_cuarentena(&arbol.programa, &falso);
+    let clean = keep_quarantine(&tree.program, &fake);
     assert!(
-        limpio.is_empty(),
-        "criterio 9: después de limpiar, el árbol colocado queda sin cuarentena: {limpio:?}"
+        clean.is_empty(),
+        "criterio 9: después de limpiar, el árbol colocado queda sin cuarentena: {clean:?}"
     );
     assert!(
-        conserva_en(&cobertura, &hermano),
+        keeps_at(&oracle, &sibling),
         "criterio 9: y el hermano conserva el suyo, porque el recorrido nunca se sale"
     );
 
     // Y el `strip` real de la plataforma: en esta plataforma el atributo no existe, así que
     // informa de que no hay nada que quitar sin escribir nada. Ni dentro del directorio de
     // programa ni fuera.
-    let antes = contenido(&arbol.raiz);
-    let real = quarantine::strip(&arbol.programa);
+    let before = content(&tree.root);
+    let real = quarantine::strip(&tree.program);
     assert!(
         real.is_nothing_to_do(),
         "criterio 9: fuera de macOS no hay nada que quitar: {real:?}"
     );
     assert_eq!(
-        contenido(&arbol.raiz),
-        antes,
+        content(&tree.root),
+        before,
         "criterio 9: y el disco no cambia, ni dentro ni fuera"
     );
-    let _ = std::fs::remove_dir_all(&arbol.raiz);
+    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// `true` si el oráculo dice que la ruta conserva el atributo, para el control del hermano
 /// sin reconstruir el conjunto.
-fn conserva_en(atributos: &dyn quarantine::Quarantine, ruta: &Path) -> bool {
-    atributos.has(ruta).unwrap_or(false)
+fn keeps_at(attributes: &dyn quarantine::Quarantine, path: &Path) -> bool {
+    attributes.has(path).unwrap_or(false)
 }
 
 /// Directorios intermedios de entre lo preguntado, que es el caso que motiva que la
 /// limpieza sea sobre todo el directorio y no solo el ejecutable.
-fn preguntados_directorios(preguntado: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = preguntado
-        .iter()
-        .filter(|ruta| ruta.is_dir())
-        .cloned()
-        .collect();
+fn asked_dirs(asked: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = asked.iter().filter(|path| path.is_dir()).cloned().collect();
     out.sort();
     out
 }
 
 /// Cuántos directorios intermedios hay en un árbol, sin contar su raíz.
 #[cfg(target_os = "macos")]
-fn directorios_intermedios(raiz: &Path) -> usize {
+fn intermediate_dirs(root: &Path) -> usize {
     let mut total = 0;
-    let mut pila = vec![raiz.to_path_buf()];
-    while let Some(dir) = pila.pop() {
-        let Ok(entradas) = std::fs::read_dir(&dir) else {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entrada in entradas.flatten() {
-            if entrada.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 total += 1;
-                pila.push(entrada.path());
+                stack.push(entry.path());
             }
         }
     }
@@ -630,86 +620,86 @@ fn directorios_intermedios(raiz: &Path) -> usize {
 /// preguntando por ellos.
 #[test]
 fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
-    let arbol = Arbol::nuevo("recorrido");
-    let programa = arbol.programa.clone();
-    let colocados = arbol.materializar();
+    let tree = Tree::new("recorrido");
+    let program = tree.program.clone();
+    let placed = tree.materialize();
     // El sandbox tiene cosas **fuera** del directorio de programa: el staging hermano,
     // que tiene los mismos archivos, y el directorio raíz. Si el recorrido se saliera,
     // las preguntaría —o las tocaría.
     assert!(
-        arbol.staging.exists() && arbol.raiz.exists(),
+        tree.staging.exists() && tree.root.exists(),
         "el sandbox tiene hermanos que no son del directorio de programa"
     );
 
-    let falso = Falso::new();
-    for colocado in &colocados {
-        falso.marcar(colocado);
+    let fake = Fake::new();
+    for placed in &placed {
+        fake.mark(placed);
     }
 
-    let outcome = quarantine::strip_bounded(&programa, MAX_DEPTH, &falso);
+    let outcome = quarantine::strip_bounded(&program, MAX_DEPTH, &fake);
 
     // 1. Se limpió todo el bundle, incluido el derivado del motor tres niveles abajo.
     assert_eq!(
         outcome.cleared.len(),
-        colocados.len(),
+        placed.len(),
         "se limpió cada **archivo** del directorio de programa: {:?}",
         outcome.cleared
     );
     assert_eq!(
-        falso.limpiado(),
-        colocados.iter().cloned().collect::<BTreeSet<_>>(),
+        fake.cleared(),
+        placed.iter().cloned().collect::<BTreeSet<_>>(),
         "y son exactamente esos: los directorios de entrada se preguntan pero no tienen \
          el atributo, así que no se limpian"
     );
     assert!(outcome.is_clear(), "sin fallos: {:?}", outcome.failed);
-    assert_eq!(falso.restantes(), 0, "no queda nada en cuarentena");
+    assert_eq!(fake.remaining(), 0, "no queda nada en cuarentena");
 
     // 2. Se preguntó por todos los archivos, y **solo** por cosas del directorio de
     //    programa.
-    let preguntado = falso.preguntado();
-    for esperado in &colocados {
+    let asked = fake.asked();
+    for expected in &placed {
         assert!(
-            preguntado.contains(esperado),
+            asked.contains(expected),
             "se preguntó por {}",
-            esperado.display()
+            expected.display()
         );
     }
-    for ruta in &preguntado {
+    for path in &asked {
         assert!(
-            ruta.starts_with(&programa),
+            path.starts_with(&program),
             "nada fuera del directorio de programa: {}",
-            ruta.display()
+            path.display()
         );
     }
     // Se preguntó también por los **directorios** intermedios, y eso es lo correcto y no
     // un descuido: un directorio puede llevar él mismo el atributo, y macOS lo
     // heredan los archivos que se creen dentro. Limpiar solo los archivos dejaría que el
     // siguiente archivo escrito en `vendor/` volviera a heredarlo.
-    let directorios: Vec<&PathBuf> = preguntado
+    let directories: Vec<&PathBuf> = asked
         .iter()
         .filter(|r| r.is_dir())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
     assert_eq!(
-        directorios.len(),
+        directories.len(),
         2,
-        "los dos directorios intermedios del bundle se preguntan también: {directorios:?}"
+        "los dos directorios intermedios del bundle se preguntan también: {directories:?}"
     );
-    for ruta in &directorios {
+    for path in &directories {
         assert!(
-            ruta.starts_with(&programa),
+            path.starts_with(&program),
             "y están dentro del directorio de programa: {}",
-            ruta.display()
+            path.display()
         );
     }
 
     // 3. Y se preguntó por el derivado del motor, que es el caso que motiva el paso 7.
     assert!(
-        pregunta_por_el_derivado(&preguntado),
-        "el motor derivado se limpia también, no solo el ejecutable: {preguntado:?}"
+        asks_about_derived(&asked),
+        "el motor derivado se limpia también, no solo el ejecutable: {asked:?}"
     );
-    let _ = std::fs::remove_dir_all(&arbol.raiz);
+    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// Un fallo en un archivo **no corta** el recorrido: los demás también necesitan
@@ -719,15 +709,15 @@ fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
 /// limpiar, que es exactamente la información que el resumen de §9.3 muestra.
 #[test]
 fn quarantine_strip_reports_failures_and_keeps_going() {
-    let arbol = Arbol::nuevo("fallos");
-    let colocados = arbol.materializar();
-    let falso = Falso::new();
-    for colocado in &colocados {
-        falso.marcar(colocado);
+    let tree = Tree::new("fallos");
+    let placed = tree.materialize();
+    let fake = Fake::new();
+    for placed in &placed {
+        fake.mark(placed);
     }
-    let falla = falso.fallar_el_primero(&colocados);
+    let failure = fake.fail_first(&placed);
 
-    let outcome = quarantine::strip_bounded(&arbol.programa, MAX_DEPTH, &falso);
+    let outcome = quarantine::strip_bounded(&tree.program, MAX_DEPTH, &fake);
 
     assert_eq!(
         outcome.failed.len(),
@@ -735,7 +725,7 @@ fn quarantine_strip_reports_failures_and_keeps_going() {
         "un solo fallo declarado: {:?}",
         outcome.failed
     );
-    assert_eq!(outcome.failed[0].0, falla);
+    assert_eq!(outcome.failed[0].0, failure);
     assert!(
         outcome.failed[0].1.contains("no se pudo quitar"),
         "y el motivo se propaga: {:?}",
@@ -747,15 +737,11 @@ fn quarantine_strip_reports_failures_and_keeps_going() {
     );
     assert_eq!(
         outcome.cleared.len(),
-        colocados.len() - 1,
+        placed.len() - 1,
         "los demás se limpiaron igualmente: el fallo no cortó el recorrido"
     );
-    assert_eq!(
-        falso.restantes(),
-        1,
-        "solo queda en cuarentena el que falló"
-    );
-    let _ = std::fs::remove_dir_all(&arbol.raiz);
+    assert_eq!(fake.remaining(), 1, "solo queda en cuarentena el que falló");
+    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// El límite de profundidad se respeta, y es lo que evita que un directorio con un lazo
@@ -765,96 +751,96 @@ fn quarantine_strip_reports_failures_and_keeps_going() {
 /// directamente en el directorio de programa, y ni un nivel más adentro.
 #[test]
 fn quarantine_strip_respects_the_depth_limit() {
-    let arbol = Arbol::nuevo("profundidad");
-    let programa = arbol.programa.clone();
-    let colocados = arbol.materializar();
-    let en_raiz: Vec<&PathBuf> = colocados
+    let tree = Tree::new("profundidad");
+    let program = tree.program.clone();
+    let placed = tree.materialize();
+    let at_root: Vec<&PathBuf> = placed
         .iter()
-        .filter(|c| c.parent() == Some(&programa))
+        .filter(|c| c.parent() == Some(&program))
         .collect();
-    let anidados: Vec<&PathBuf> = colocados
+    let nested: Vec<&PathBuf> = placed
         .iter()
-        .filter(|c| c.parent() != Some(&programa))
+        .filter(|c| c.parent() != Some(&program))
         .collect();
     assert!(
-        !en_raiz.is_empty() && !anidados.is_empty(),
+        !at_root.is_empty() && !nested.is_empty(),
         "el bundle tiene archivos en la raíz ({}) y anidados ({}), que es lo que hace \
          la prueba significativa",
-        en_raiz.len(),
-        anidados.len()
+        at_root.len(),
+        nested.len()
     );
 
-    let falso = Falso::new();
-    for colocado in &colocados {
-        falso.marcar(colocado);
+    let fake = Fake::new();
+    for placed in &placed {
+        fake.mark(placed);
     }
 
-    let outcome = quarantine::strip_bounded(&programa, 0, &falso);
+    let outcome = quarantine::strip_bounded(&program, 0, &fake);
 
-    let preguntado = falso.preguntado();
-    for archivo in &en_raiz {
+    let asked = fake.asked();
+    for file in &at_root {
         assert!(
-            preguntado.contains(*archivo),
+            asked.contains(*file),
             "con límite cero sí se pregunta por {}",
-            archivo.display()
+            file.display()
         );
     }
-    for archivo in &anidados {
+    for file in &nested {
         assert!(
-            !preguntado.contains(*archivo),
+            !asked.contains(*file),
             "con límite cero no se baja a {}",
-            archivo.display()
+            file.display()
         );
     }
     assert_eq!(
         outcome.cleared.len(),
-        en_raiz.len(),
+        at_root.len(),
         "el resultado solo cuenta lo que sí se limpiaron, que es la raíz"
     );
     assert_eq!(
-        falso.restantes(),
-        anidados.len(),
+        fake.remaining(),
+        nested.len(),
         "y los anidados siguen en cuarentena, que es lo que el límite delimita"
     );
     assert!(outcome.is_clear(), "sin fallos: {:?}", outcome.failed);
-    let _ = std::fs::remove_dir_all(&arbol.raiz);
+    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// Limpiar dos veces no cambia nada, y la segunda pasada informa de que no hay nada que
 /// quitar. Es la idempotencia del mismo paso que la instalación repetida.
 #[test]
 fn quarantine_strip_is_idempotent() {
-    let arbol = Arbol::nuevo("idempotencia");
-    let colocados = arbol.materializar();
-    let falso = Falso::new();
-    for colocado in &colocados {
-        falso.marcar(colocado);
+    let tree = Tree::new("idempotencia");
+    let placed = tree.materialize();
+    let fake = Fake::new();
+    for placed in &placed {
+        fake.mark(placed);
     }
 
-    let primera = quarantine::strip_bounded(&arbol.programa, MAX_DEPTH, &falso);
+    let first = quarantine::strip_bounded(&tree.program, MAX_DEPTH, &fake);
     assert!(
-        !primera.is_nothing_to_do(),
-        "la primera pasada sí tenía trabajo: {primera:?}"
+        !first.is_nothing_to_do(),
+        "la primera pasada sí tenía trabajo: {first:?}"
     );
-    let limpiado_primera = falso.limpiado();
+    let first_cleared = fake.cleared();
     assert_eq!(
-        limpiado_primera.len(),
-        colocados.len(),
+        first_cleared.len(),
+        placed.len(),
         "y limpió el bundle entero"
     );
 
-    let segunda = quarantine::strip_bounded(&arbol.programa, MAX_DEPTH, &falso);
+    let second = quarantine::strip_bounded(&tree.program, MAX_DEPTH, &fake);
     assert!(
-        segunda.is_nothing_to_do(),
-        "la segunda pasada informa de que no hay nada que quitar: {segunda:?}"
+        second.is_nothing_to_do(),
+        "la segunda pasada informa de que no hay nada que quitar: {second:?}"
     );
-    assert!(segunda.is_clear(), "y no es un fallo: devuelve éxito");
+    assert!(second.is_clear(), "y no es un fallo: devuelve éxito");
     assert_eq!(
-        falso.limpiado(),
-        limpiado_primera,
+        fake.cleared(),
+        first_cleared,
         "y no se volvió a limpiar nada"
     );
-    let _ = std::fs::remove_dir_all(&arbol.raiz);
+    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// El resultado por defecto es «no hay nada que hacer», que es lo que la instalación
@@ -889,21 +875,21 @@ fn quarantine_attribute_name_is_the_one_the_spec_names() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn quarantine_outside_macos_has_nothing_to_do_and_touches_nothing() {
-    let arbol = Arbol::nuevo("sin-atributo");
-    let colocados = arbol.materializar();
+    let tree = Tree::new("sin-atributo");
+    let placed = tree.materialize();
     // Un hermano del directorio de programa, que es de la aplicación pero no es el
     // directorio de programa: si la limpieza se saliera, lo tocaría.
-    let hermano = arbol.raiz.join("opt").join("hermano.txt");
-    std::fs::write(&hermano, "no tocar\n").expect("se escribe el hermano");
+    let sibling = tree.root.join("opt").join("hermano.txt");
+    std::fs::write(&sibling, "no tocar\n").expect("se escribe el hermano");
 
     // Punto de partida: en esta plataforma ningún archivo tiene el atributo.
     assert!(
-        colocados.iter().all(|a| !quarantine::has(a)),
+        placed.iter().all(|a| !quarantine::has(a)),
         "punto de partida: ningún archivo del bundle tiene cuarentena"
     );
-    let antes = contenido(&arbol.raiz);
+    let before = content(&tree.root);
 
-    let outcome = quarantine::strip(&arbol.programa);
+    let outcome = quarantine::strip(&tree.program);
 
     assert!(
         outcome.is_nothing_to_do(),
@@ -913,16 +899,16 @@ fn quarantine_outside_macos_has_nothing_to_do_and_touches_nothing() {
     assert!(outcome.cleared.is_empty(), "no se limpió nada");
     assert!(outcome.failed.is_empty(), "y nada falló");
     assert_eq!(
-        contenido(&arbol.raiz),
-        antes,
+        content(&tree.root),
+        before,
         "el disco no ha cambiado: ni dentro del directorio de programa ni fuera"
     );
     assert_eq!(
-        std::fs::read_to_string(&hermano).expect("el hermano sigue"),
+        std::fs::read_to_string(&sibling).expect("el hermano sigue"),
         "no tocar\n",
         "el hermano del directorio de programa está intacto"
     );
-    let _ = std::fs::remove_dir_all(&arbol.raiz);
+    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// Fuera de macOS, `put` es un no-op y `has` es `false`: no hay atributo que poner, y una
@@ -931,26 +917,26 @@ fn quarantine_outside_macos_has_nothing_to_do_and_touches_nothing() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn quarantine_outside_macos_attributes_are_inert() {
-    let arbol = Arbol::nuevo("atributos-inertes");
-    let programados = arbol.materializar();
-    for archivo in &programados {
-        quarantine::put(archivo).expect("`put` fuera de macOS no falla");
+    let tree = Tree::new("atributos-inertes");
+    let scheduled = tree.materialize();
+    for file in &scheduled {
+        quarantine::put(file).expect("`put` fuera de macOS no falla");
         assert!(
-            !quarantine::has(archivo),
+            !quarantine::has(file),
             "y `has` sigue diciendo que no: no hay atributo que poner"
         );
     }
-    let _ = std::fs::remove_dir_all(&arbol.raiz);
+    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 // ─── Solo en macOS: el criterio 9 y `xattr` de verdad ─────────────────────────────
 
 /// Control de procesos inerte: no hay daemon en el sandbox.
 #[cfg(target_os = "macos")]
-struct Inerte;
+struct Inert;
 
 #[cfg(target_os = "macos")]
-impl ProcessControl for Inerte {
+impl ProcessControl for Inert {
     fn pid_alive(&self, _pid: u32) -> bool {
         false
     }
@@ -977,9 +963,9 @@ impl ProcessControl for Inerte {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn install_strips_quarantine_from_whole_program_dir() {
-    let arbol = Arbol::nuevo("criterio-9");
-    let exe = arbol
-        .archivos
+    let tree = Tree::new("criterio-9");
+    let exe = tree
+        .files
         .iter()
         .find(|a| {
             a.file_name()
@@ -987,26 +973,26 @@ async fn install_strips_quarantine_from_whole_program_dir() {
         })
         .expect("el bundle tiene ejecutable")
         .clone();
-    for archivo in &arbol.archivos {
-        quarantine::put(archivo).expect("se pone la cuarentena de macOS");
+    for file in &tree.files {
+        quarantine::put(file).expect("se pone la cuarentena de macOS");
     }
     // Punto de partida: **todos** los archivos del bundle están en cuarentena. Sin esta
     // comprobación, la prueba no afirmaría nada.
-    for archivo in &arbol.archivos {
+    for file in &tree.files {
         assert!(
-            quarantine::has(archivo),
+            quarantine::has(file),
             "{} arranca con cuarentena",
-            archivo.display()
+            file.display()
         );
     }
 
     let sandbox = Sandbox {
-        raiz: arbol.raiz.clone(),
-        program_dir: arbol.programa.clone(),
-        home: arbol.raiz.join("home/ana"),
-        data_dir: arbol.raiz.join("data"),
-        models_dir: arbol.raiz.join("models"),
-        temp_root: arbol.raiz.join("tmp"),
+        root: tree.root.clone(),
+        program_dir: tree.program.clone(),
+        home: tree.root.join("home/ana"),
+        data_dir: tree.root.join("data"),
+        models_dir: tree.root.join("models"),
+        temp_root: tree.root.join("tmp"),
     };
     let outcome = avi_lifecycle::install::install(
         &sandbox.env(&exe),
@@ -1020,7 +1006,7 @@ async fn install_strips_quarantine_from_whole_program_dir() {
             channel: None,
             with_voice_cloning: false,
         },
-        &Inerte,
+        &Inert,
     )
     .await
     .expect("la instalación se completa");
@@ -1041,18 +1027,18 @@ async fn install_strips_quarantine_from_whole_program_dir() {
     );
 
     // Y ninguno conserva el atributo.
-    let mut con_cuarentena = Vec::new();
-    for relativa in &outcome.receipt.files {
-        let ruta = aviar(&sandbox.program_dir, relativa);
-        assert!(ruta.exists(), "{relativa} se colocó");
-        if quarantine::has(&ruta) {
-            con_cuarentena.push(relativa.clone());
+    let mut in_quarantine = Vec::new();
+    for relative in &outcome.receipt.files {
+        let path = place(&sandbox.program_dir, relative);
+        assert!(path.exists(), "{relative} se colocó");
+        if quarantine::has(&path) {
+            in_quarantine.push(relative.clone());
         }
     }
     assert!(
-        con_cuarentena.is_empty(),
+        in_quarantine.is_empty(),
         "la instalación limpió la cuarentena de todo el bundle, no solo del ejecutable; \
-         siguen con ella: {con_cuarentena:?}"
+         siguen con ella: {in_quarantine:?}"
     );
     assert!(
         avi_lifecycle::receipt::read_from(&sandbox.program_dir)
@@ -1060,7 +1046,7 @@ async fn install_strips_quarantine_from_whole_program_dir() {
             .is_some(),
         "y dejó recibo, que es lo que distingue una instalación de un copiado"
     );
-    let _ = std::fs::remove_dir_all(&arbol.raiz);
+    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// El límite de profundidad contra un **lazo real** de directorios, que es el caso que lo
@@ -1070,26 +1056,26 @@ async fn install_strips_quarantine_from_whole_program_dir() {
 #[cfg(target_os = "macos")]
 #[test]
 fn quarantine_strip_survives_a_real_directory_loop() {
-    let raiz = unico("lazo");
-    let programa = raiz.join("opt/ai-voice-interconnector");
-    let dir = programa.join("vendor/qwen3-tts");
+    let root = unique("lazo");
+    let program = root.join("opt/ai-voice-interconnector");
+    let dir = program.join("vendor/qwen3-tts");
     std::fs::create_dir_all(&dir).expect("se crea el árbol");
-    let motor = dir.join("qwen_tts");
-    std::fs::write(&motor, "motor").expect("se escribe el derivado");
-    quarantine::put(&motor).expect("se pone la cuarentena");
-    std::os::unix::fs::symlink(&raiz, dir.join("vuelta")).expect("se crea el lazo");
+    let engine = dir.join("qwen_tts");
+    std::fs::write(&engine, "motor").expect("se escribe el derivado");
+    quarantine::put(&engine).expect("se pone la cuarentena");
+    std::os::unix::fs::symlink(&root, dir.join("vuelta")).expect("se crea el lazo");
 
-    let outcome = quarantine::strip(&programa);
+    let outcome = quarantine::strip(&program);
     assert!(
         outcome.is_clear(),
         "el lazo no produce fallos: {:?}",
         outcome.failed
     );
     assert!(
-        !quarantine::has(&motor),
+        !quarantine::has(&engine),
         "y la limpieza alcanzó al derivado antes de encontrarse con el lazo"
     );
-    let _ = std::fs::remove_dir_all(&raiz);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// La premisa de la puerta de macOS: `xattr` existe y responde. Si no, el criterio 9 no
@@ -1112,7 +1098,7 @@ fn quarantine_gate_needs_xattr() {
 /// Rutas de §7 de la prueba del criterio 9.
 #[cfg(target_os = "macos")]
 struct Sandbox {
-    raiz: PathBuf,
+    root: PathBuf,
     program_dir: PathBuf,
     home: PathBuf,
     data_dir: PathBuf,

@@ -105,7 +105,7 @@ mod tests {
     /// definición, sin depender de la plataforma donde corra la prueba.
     #[test]
     fn release_asset_name_per_target() {
-        let esperado = [
+        let expected = [
             (
                 "x86_64-pc-windows-msvc",
                 "0.24.0",
@@ -128,14 +128,14 @@ mod tests {
             ),
         ];
         assert_eq!(
-            esperado.len(),
+            expected.len(),
             SUPPORTED_TARGETS.len(),
             "la tabla de §3 tiene cuatro targets"
         );
-        for (triple, version, nombre) in esperado {
+        for (triple, version, name) in expected {
             assert_eq!(
                 release_asset_name(triple, version).unwrap(),
-                nombre,
+                name,
                 "nombre de release de {triple}"
             );
             assert!(
@@ -202,7 +202,7 @@ mod tests {
         );
         // La raíz del target y la etiqueta de sistema operativo son las que el
         // nombre de release usa, y ambas salen del mismo sitio.
-        let nombre = release_asset_name(triple, "0.0.0").unwrap();
-        assert!(nombre.starts_with(APP_NAME), "prefijo de {nombre}");
+        let name = release_asset_name(triple, "0.0.0").unwrap();
+        assert!(name.starts_with(APP_NAME), "prefijo de {name}");
     }
 }

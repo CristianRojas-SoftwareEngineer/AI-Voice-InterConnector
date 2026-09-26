@@ -336,8 +336,8 @@ impl Outcome {
 /// sistema y el directorio de programa por `AVI_INSTALL_DIR`— y una barra final de
 /// más daría un modo equivocado sin dar ningún error.
 pub fn detect_mode(exe: &Path, program_dir: &Path) -> Mode {
-    let directorio = exe.parent().unwrap_or(Path::new(""));
-    if crate::canonical_path_entry_matches(directorio, program_dir) {
+    let directory = exe.parent().unwrap_or(Path::new(""));
+    if crate::canonical_path_entry_matches(directory, program_dir) {
         Mode::Repair
     } else {
         Mode::Install
@@ -350,7 +350,7 @@ pub fn detect_mode(exe: &Path, program_dir: &Path) -> Mode {
 /// casos: instalar una versión menor es una degradación y se confirma como operación
 /// destructiva (§9.3, paso 4).
 pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    let numeros = |v: &str| -> Vec<u64> {
+    let numbers = |v: &str| -> Vec<u64> {
         v.split(['-', '+'])
             .next()
             .unwrap_or_default()
@@ -358,13 +358,13 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
             .map(|p| p.parse().unwrap_or(0))
             .collect()
     };
-    let (va, vb) = (numeros(a), numeros(b));
-    for i in 0..va.len().max(vb.len()) {
-        let ord = va
+    let (left, right) = (numbers(a), numbers(b));
+    for i in 0..left.len().max(right.len()) {
+        let ord = left
             .get(i)
             .copied()
             .unwrap_or(0)
-            .cmp(&vb.get(i).copied().unwrap_or(0));
+            .cmp(&right.get(i).copied().unwrap_or(0));
         if ord != std::cmp::Ordering::Equal {
             return ord;
         }
@@ -412,38 +412,38 @@ pub async fn install(
     let executable = manifest::target_section(&env.target)?.executable_path();
 
     // ── Paso 3. Detectar la instalación previa (§9.3) ───────────────────────────
-    let previo = receipt::read_from(&env.program_dir).ok().flatten();
-    let sustituye = previo.as_ref().map(|r| r.version.clone());
+    let previous = receipt::read_from(&env.program_dir).ok().flatten();
+    let replaces = previous.as_ref().map(|r| r.version.clone());
     // Una instalación ajena solo genera aviso de coexistencia y precedencia: §9.3
     // dice que no bloquea, y es T14 quien produce `externally_managed` para Homebrew.
-    let foreign_in_path = previo
+    let foreign_in_path = previous
         .as_ref()
         .filter(|r| r.install_dir != env.program_dir)
         .map(|r| r.install_dir.clone());
     // En una reparación, lo que hay en el directorio de programa es la instalación,
     // así que exigir recibo no añade nada y convertiría una reparación de una
     // instalación en canal `dev` sin recibo —que §10.5 sí genera— en un error.
-    let degradacion = previo
+    let degradation = previous
         .as_ref()
         .is_some_and(|r| compare_versions(&env.version, &r.version) == std::cmp::Ordering::Less);
 
     // ── Paso 4. Resumen previo y confirmación (§9.3) ────────────────────────────
     let pending = pending_models(options);
     let path_plan = plan_path(env, options);
-    let previo_resumen = compose_summary(env, options, mode, &sustituye, &path_plan, &pending);
+    let previous_summary = compose_summary(env, options, mode, &replaces, &path_plan, &pending);
     // Una degradación se confirma como operación destructiva (§9.3, paso 4), aunque
     // instalar no borre nada por sí mismo.
-    let kind = if degradacion {
+    let kind = if degradation {
         confirm::Kind::Destructive
     } else {
         confirm::Kind::NonDestructive
     };
-    let entries: Vec<confirm::PlanEntry> = if degradacion {
+    let entries: Vec<confirm::PlanEntry> = if degradation {
         vec![confirm::PlanEntry::of(&env.program_dir)]
     } else {
         Vec::new()
     };
-    let decision = confirmar(&previo_resumen, &entries, kind, options)?;
+    let decision = confirm(&previous_summary, &entries, kind, options)?;
     if decision == confirm::Decision::Cancelled {
         return Ok(Outcome::cancelled(env, mode));
     }
@@ -462,11 +462,11 @@ pub async fn install(
     // ── Paso 7. Cuarentena, en macOS (§9.3, paso 7) ─────────────────────────────
     // No es un fallo de la instalación: la cuarentena que no se quita degrada el
     // arranque, y el resumen lo informa.
-    let cuarentena = quarantine::strip(&env.program_dir);
-    for (ruta, motivo) in &cuarentena.failed {
+    let quarantine = quarantine::strip(&env.program_dir);
+    for (path, reason) in &quarantine.failed {
         eprintln!(
-            "  no se pudo limpiar la cuarentena de {}: {motivo}",
-            ruta.display()
+            "  no se pudo limpiar la cuarentena de {}: {reason}",
+            path.display()
         );
     }
 
@@ -484,7 +484,7 @@ pub async fn install(
     let receipt = InstallReceipt::new(
         &env.version,
         &env.target,
-        resolve_channel(options, previo.as_ref()),
+        resolve_channel(options, previous.as_ref()),
         &env.program_dir,
         files,
         path_integration.clone(),
@@ -492,7 +492,7 @@ pub async fn install(
             data_dir: env.data_dir.clone(),
             cache_dir: env.models_dir.clone(),
         },
-        source_of(env, previo.as_ref()),
+        source_of(env, previous.as_ref()),
     );
     receipt::write_to(&receipt, &env.program_dir)?;
     drop(lock);
@@ -510,13 +510,13 @@ pub async fn install(
         mode,
         &path_integration,
         path_rewritten,
-        &previo_resumen,
+        &previous_summary,
         &models,
         &daemon,
         &machine_warning,
         foreign_in_path.as_ref(),
         &recovery.kept,
-        !cuarentena.failed.is_empty(),
+        !quarantine.failed.is_empty(),
     );
 
     Ok(Outcome {
@@ -524,7 +524,7 @@ pub async fn install(
         mode,
         receipt,
         summary,
-        summary_before: previo_resumen,
+        summary_before: previous_summary,
         path_integration,
         path_rewritten,
         models,
@@ -537,24 +537,24 @@ pub async fn install(
 /// Aplica la tabla de §9.1. `stdin` y `stderr` se toman aquí porque son la única
 /// entrada y salida del prompt, y §9.1 exige que el prompt vaya a stderr para no
 /// contaminar el sobre `--json`.
-fn confirmar(
-    resumen: &[String],
+fn confirm(
+    summary: &[String],
     entries: &[confirm::PlanEntry],
     kind: confirm::Kind,
     options: &Options,
 ) -> anyhow::Result<confirm::Decision> {
     let stdin = std::io::stdin();
-    let mut entrada = stdin.lock();
+    let mut entry = stdin.lock();
     confirm::confirm(
         &confirm::Confirmation {
             kind,
-            summary: resumen,
+            summary,
             entries,
             assume_yes: options.assume_yes,
             dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
         },
-        &mut entrada,
+        &mut entry,
         &mut std::io::stderr(),
     )
 }
@@ -621,26 +621,26 @@ pub fn apply_path(
     }
     #[cfg(unix)]
     {
-        let enlace = env.bin_dir.join(crate::APP_NAME);
-        path_unix::create_symlink(&enlace, program_exe, options.force)?;
+        let link = env.bin_dir.join(crate::APP_NAME);
+        path_unix::create_symlink(&link, program_exe, options.force)?;
         let plan = plan_path(env, options);
-        let mut bloques = Vec::new();
-        let mut cambio = false;
-        if let Some(bloque) = plan.block_file {
-            if path_unix::write_block(&bloque, &env.bin_dir, &env.home).map_err(|e| {
+        let mut blocks = Vec::new();
+        let mut change = false;
+        if let Some(block) = plan.block_file {
+            if path_unix::write_block(&block, &env.bin_dir, &env.home).map_err(|e| {
                 LifecycleError::new(
                     "path_conflict",
                     14,
-                    format!("no se pudo escribir {}: {e}", bloque.display()),
+                    format!("no se pudo escribir {}: {e}", block.display()),
                 )
             })? {
-                cambio = true;
+                change = true;
             }
             // Se registra aunque no haya cambiado: el bloque está en el perfil, y
             // revertirlo es lo que hace `self uninstall`.
-            bloques.push(bloque);
+            blocks.push(block);
         }
-        Ok((PathIntegration::unix(enlace, bloques), cambio))
+        Ok((PathIntegration::unix(link, blocks), change))
     }
     #[cfg(windows)]
     {
@@ -679,13 +679,13 @@ fn machine_path_warning(env: &Env) -> Option<String> {
     if !cfg!(windows) {
         return None;
     }
-    let por_machine = env.path_env.split(';').any(|entrada| {
-        let entrada = entrada.to_lowercase();
-        !entrada.is_empty()
-            && entrada.contains("program files")
-            && entrada.contains("ai-voice-interconnector")
+    let per_machine = env.path_env.split(';').any(|entry| {
+        let entry = entry.to_lowercase();
+        !entry.is_empty()
+            && entry.contains("program files")
+            && entry.contains("ai-voice-interconnector")
     });
-    por_machine.then(|| {
+    per_machine.then(|| {
         format!(
             "  Aviso: el PATH del sistema parece llevar una instalación antigua de \
              {}. HKLM no se modifica nunca. Para quitarla, en una PowerShell de \
@@ -700,15 +700,15 @@ fn machine_path_warning(env: &Env) -> Option<String> {
 /// Canal del recibo nuevo: `--channel dev` (§10.5) solo si el recibo se crea por
 /// primera vez. Reparar una instalación existente conserva su canal, que es lo que
 /// hace que `self update` siga trato una instalación `dev` como tal.
-pub fn resolve_channel(options: &Options, previo: Option<&InstallReceipt>) -> Channel {
-    previo.map_or_else(|| options.channel.unwrap_or(Channel::Script), |r| r.channel)
+pub fn resolve_channel(options: &Options, previous: Option<&InstallReceipt>) -> Channel {
+    previous.map_or_else(|| options.channel.unwrap_or(Channel::Script), |r| r.channel)
 }
 
 /// Origen del bundle en el recibo: el de la instalación anterior si la había, y si no
 /// el que el bootstrap de §9.2 estampó. Un bundle extraído a mano no lo tiene, y ahí
 /// `source` queda vacío.
-fn source_of(env: &Env, previo: Option<&InstallReceipt>) -> Option<String> {
-    previo
+fn source_of(env: &Env, previous: Option<&InstallReceipt>) -> Option<String> {
+    previous
         .and_then(|r| r.source.clone())
         .or_else(|| env.source.clone())
 }
@@ -748,10 +748,10 @@ async fn provision(pending: &setup::Pending, options: &Options) -> ModelsState {
     }
     let store = avi_store::ModelStore::new();
     let mut count = 0usize;
-    for nombre in &pending.models {
-        if let Err(e) = avi_store::ModelStore::ensure_downloaded(nombre).await {
+    for name in &pending.models {
+        if let Err(e) = avi_store::ModelStore::ensure_downloaded(name).await {
             return ModelsState::Failed {
-                cause: setup::map_download_failure(nombre, &e),
+                cause: setup::map_download_failure(name, &e),
             };
         }
         count += 1;
@@ -780,8 +780,8 @@ async fn provision(pending: &setup::Pending, options: &Options) -> ModelsState {
 /// El código de este `reason` nunca es el código de salida del proceso: es un `reason`
 /// anidado, y el código de salida es el de la operación —`SetupFailed = 11`—. Anidarlo con
 /// un 11 haría que un consumidor leyera un 11 donde §9.1 no lo promises.
-fn ct2_failure(pair: &str, motivo: &str) -> LifecycleError {
-    LifecycleError::new("ct2_conversion_failed", 1, format!("CT2 {pair}: {motivo}"))
+fn ct2_failure(pair: &str, reason: &str) -> LifecycleError {
+    LifecycleError::new("ct2_conversion_failed", 1, format!("CT2 {pair}: {reason}"))
 }
 
 /// Prose de `setup_failed`, en las palabras de §9.1: el programa queda instalado y basta
@@ -805,21 +805,21 @@ fn compose_summary(
     env: &Env,
     options: &Options,
     mode: Mode,
-    sustituye: &Option<String>,
+    replaces: &Option<String>,
     path_plan: &PathPlan,
     pending: &setup::Pending,
 ) -> Vec<String> {
-    let verbo = match mode {
+    let verb = match mode {
         Mode::Install => "Se instalará",
         Mode::Repair => "Se reparará",
     };
     let mut out = vec![format!(
-        "{verbo} {} {} ({})",
+        "{verb} {} {} ({})",
         crate::APP_NAME,
         env.version,
         env.target
     )];
-    out.push(match (mode, sustituye) {
+    out.push(match (mode, replaces) {
         (Mode::Install, Some(v)) => {
             format!(
                 "  Programa:  {}   (reemplaza {v})",
@@ -845,11 +845,11 @@ fn compose_summary(
             "  PATH:      {} ya está en el PATH; no se modifica",
             env.bin_dir.display()
         )
-    } else if let Some(bloque) = &path_plan.block_file {
+    } else if let Some(block) = &path_plan.block_file {
         format!(
             "  PATH:      se añadirá {} en {}",
             env.bin_dir.display(),
-            bloque.display()
+            block.display()
         )
     } else if path_plan.registry {
         format!(
@@ -884,15 +884,15 @@ fn compose_summary(
 fn final_summary(
     env: &Env,
     mode: Mode,
-    integracion: &PathIntegration,
+    integration: &PathIntegration,
     path_rewritten: bool,
-    previo: &[String],
+    previous: &[String],
     models: &ModelsState,
     daemon: &StopOutcome,
     machine_warning: &Option<String>,
     foreign: Option<&PathBuf>,
     recovery_kept: &[PathBuf],
-    cuarentena_incompleta: bool,
+    incomplete_quarantine: bool,
 ) -> Vec<String> {
     let mut out = vec![
         format!(
@@ -927,15 +927,18 @@ fn final_summary(
              se encuentre.",
             env.bin_dir.display()
         ));
-    } else if integracion.modify_path {
+    } else if integration.modify_path {
         out.push(format!(
             "  PATH:      {} ya estaba integrado; no se ha modificado.",
             env.bin_dir.display()
         ));
-    } else if let Some(linea) = previo.iter().find(|l| l.trim_start().starts_with("PATH:")) {
+    } else if let Some(line) = previous
+        .iter()
+        .find(|l| l.trim_start().starts_with("PATH:"))
+    {
         out.push(format!(
             "  PATH:      {}",
-            linea.trim_start().trim_start_matches("PATH:").trim()
+            line.trim_start().trim_start_matches("PATH:").trim()
         ));
     }
     out.push(format!("  Modelos:   {}", models.as_str()));
@@ -951,12 +954,12 @@ fn final_summary(
     if let Some(warning) = machine_warning {
         out.push(warning.clone());
     }
-    if let Some(raiz) = foreign {
+    if let Some(root) = foreign {
         out.push(format!(
             "  Aviso: hay otra instalación de {} en {}; en el PATH tiene precedencia \
              la primera que aparezca.",
             crate::APP_NAME,
-            raiz.display()
+            root.display()
         ));
     }
     if !recovery_kept.is_empty() {
@@ -966,7 +969,7 @@ fn final_summary(
             recovery_kept.len()
         ));
     }
-    if cuarentena_incompleta {
+    if incomplete_quarantine {
         out.push(
             "  Aviso: la cuarentena de macOS no se pudo limpiar de todo el directorio \
              de programa."
@@ -1002,12 +1005,12 @@ mod tests {
     /// error.
     #[test]
     fn mode_depends_only_on_the_executable_position() {
-        let programa = Path::new("/home/ana/.local/opt/ai-voice-interconnector");
-        let dentro = programa.join("ai-voice-interconnector");
-        assert_eq!(detect_mode(&dentro, programa), Mode::Repair);
+        let program = Path::new("/home/ana/.local/opt/ai-voice-interconnector");
+        let inner = program.join("ai-voice-interconnector");
+        assert_eq!(detect_mode(&inner, program), Mode::Repair);
         assert_eq!(
             detect_mode(
-                &dentro,
+                &inner,
                 Path::new("/home/ana/.local/opt/ai-voice-interconnector/")
             ),
             Mode::Repair,
@@ -1015,7 +1018,7 @@ mod tests {
         );
         assert_eq!(
             detect_mode(
-                &dentro,
+                &inner,
                 Path::new("/home/ana/.local/opt/ai-voice-interconnector/./")
             ),
             Mode::Install,
@@ -1058,14 +1061,14 @@ mod tests {
             );
         }
         assert_eq!(
-            detect_mode(Path::new("/opt/staging/ai-voice-interconnector"), programa),
+            detect_mode(Path::new("/opt/staging/ai-voice-interconnector"), program),
             Mode::Install,
             "un staging hermano es instalación"
         );
         assert_eq!(
             detect_mode(
                 Path::new("/repo/target/release/ai-voice-interconnector"),
-                programa
+                program
             ),
             Mode::Install,
             "`target/release` no es el directorio de programa"
@@ -1073,8 +1076,8 @@ mod tests {
         assert_eq!(Mode::Install.as_str(), "installed");
         assert_eq!(Mode::Repair.as_str(), "repaired");
         assert_eq!(
-            bundle_dir(&dentro),
-            programa,
+            bundle_dir(&inner),
+            program,
             "el bundle es el directorio del exe"
         );
     }
@@ -1119,12 +1122,12 @@ mod tests {
         assert_eq!(resolve_channel(&dev, None), Channel::Dev);
         assert_eq!(resolve_channel(&Options::default(), None), Channel::Script);
 
-        for canal in [Channel::Dev, Channel::Script, Channel::Unmanaged] {
-            let recibo = recibo_de(canal);
+        for channel in [Channel::Dev, Channel::Script, Channel::Unmanaged] {
+            let receipt = receipt_from(channel);
             assert_eq!(
-                resolve_channel(&dev, Some(&recibo)),
-                canal,
-                "reparar conserva el canal {canal:?} aunque venga `--channel dev`"
+                resolve_channel(&dev, Some(&receipt)),
+                channel,
+                "reparar conserva el canal {channel:?} aunque venga `--channel dev`"
             );
         }
     }
@@ -1133,8 +1136,8 @@ mod tests {
     /// reparación: una reparación no cambia de dónde vino el bundle.
     #[test]
     fn receipt_source_is_preserved_across_repair() {
-        let env = env_de_prueba();
-        let previo = InstallReceipt::new(
+        let env = test_env();
+        let previous = InstallReceipt::new(
             "0.23.1",
             &env.target,
             Channel::Script,
@@ -1148,21 +1151,21 @@ mod tests {
             Some("https://example.invalid/bundle.tar.gz".to_string()),
         );
         assert_eq!(
-            source_of(&env, Some(&previo)),
-            previo.source,
+            source_of(&env, Some(&previous)),
+            previous.source,
             "el origen se conserva"
         );
 
-        let mut sin_origen = env.clone();
-        sin_origen.source = Some("https://otro.invalid/bundle.tar.gz".to_string());
+        let mut without_source = env.clone();
+        without_source.source = Some("https://otro.invalid/bundle.tar.gz".to_string());
         assert_eq!(
-            source_of(&sin_origen, Some(&previo)),
-            previo.source,
+            source_of(&without_source, Some(&previous)),
+            previous.source,
             "el del entorno no pisa el del recibo"
         );
         assert_eq!(
-            source_of(&sin_origen, None),
-            sin_origen.source,
+            source_of(&without_source, None),
+            without_source.source,
             "sin recibo previo, manda el del entorno"
         );
         assert_eq!(
@@ -1176,30 +1179,30 @@ mod tests {
     /// el archivo de arranque que se va a tocar: es la línea que el resumen anuncia.
     #[test]
     fn path_plan_respects_no_modify_path() {
-        let env = env_de_prueba();
-        let bloqueado = Options {
+        let env = test_env();
+        let locked = Options {
             no_modify_path: true,
             ..Options::default()
         };
         assert!(
-            plan_path(&env, &bloqueado).is_noop(),
+            plan_path(&env, &locked).is_noop(),
             "`--no-modify-path` no toca nada en ninguna plataforma"
         );
-        let (integracion, cambiado) = apply_path(&env, &bloqueado, Path::new("/x")).unwrap();
-        assert_eq!(integracion, PathIntegration::none());
+        let (integration, changed) = apply_path(&env, &locked, Path::new("/x")).unwrap();
+        assert_eq!(integration, PathIntegration::none());
         assert!(
-            !integracion.modify_path,
+            !integration.modify_path,
             "y el recibo dice que no se integró nada"
         );
-        assert!(!cambiado, "ni se reescribió nada");
+        assert!(!changed, "ni se reescribió nada");
     }
 
-    fn recibo_de(canal: Channel) -> InstallReceipt {
-        let env = env_de_prueba();
+    fn receipt_from(channel: Channel) -> InstallReceipt {
+        let env = test_env();
         InstallReceipt::new(
             "0.23.1",
             &env.target,
-            canal,
+            channel,
             &env.program_dir,
             vec!["ai-voice-interconnector".to_string()],
             PathIntegration::none(),
@@ -1214,7 +1217,7 @@ mod tests {
     /// `Env` de pruebas. Las rutas son de Unix a propósito: solo se usan en cálculos
     /// que no tocan el disco, y los valores absolutos no tienen que existir para que
     /// la comparación canónica funcione.
-    pub(crate) fn env_de_prueba() -> Env {
+    pub(crate) fn test_env() -> Env {
         Env {
             exe: PathBuf::from("/opt/staging/ai-voice-interconnector"),
             version: "0.24.0".to_string(),

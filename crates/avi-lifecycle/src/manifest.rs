@@ -145,7 +145,7 @@ mod tests {
     use crate::test_support::{scratch, write_file};
 
     /// Monta un bundle completo del target pedido y devuelve su raíz.
-    fn bundle_completo(tag: &str, triple: &str) -> std::path::PathBuf {
+    fn complete_bundle(tag: &str, triple: &str) -> std::path::PathBuf {
         let dir = scratch(tag);
         for relative in &target_section(triple).unwrap().required {
             write_file(&dir.join(relative_path(relative)), "contenido");
@@ -175,11 +175,11 @@ mod tests {
                 "{triple}: el ejecutable {} debe estar entre los obligatorios",
                 section.executable
             );
-            let mut unicos: Vec<&String> = section.required.iter().collect();
-            unicos.sort();
-            unicos.dedup();
+            let mut unique: Vec<&String> = section.required.iter().collect();
+            unique.sort();
+            unique.dedup();
             assert_eq!(
-                unicos.len(),
+                unique.len(),
                 section.required.len(),
                 "{triple}: sin duplicados"
             );
@@ -201,20 +201,20 @@ mod tests {
             }
             // Los cuatro documentos, el motor y la librería de ONNX Runtime con
             // el nombre que el crate `ort` busca en `load-dynamic`.
-            for documento in [
+            for document in [
                 "LICENSE",
                 "THIRD-PARTY-LICENSES.md",
                 "SOURCE-OFFER.md",
                 "README.md",
             ] {
                 assert!(
-                    section.required.iter().any(|r| r == documento),
-                    "{triple}: falta {documento} ({:?})",
+                    section.required.iter().any(|r| r == document),
+                    "{triple}: falta {document} ({:?})",
                     section.required
                 );
             }
             // El motor lleva la extensión del target: `qwen_tts.exe` en Windows.
-            let motor = format!(
+            let engine = format!(
                 "vendor/qwen3-tts/qwen_tts{}",
                 if section.executable.ends_with(".exe") {
                     ".exe"
@@ -223,8 +223,8 @@ mod tests {
                 }
             );
             assert!(
-                section.required.contains(&motor),
-                "{triple}: falta el motor {motor} ({:?})",
+                section.required.contains(&engine),
+                "{triple}: falta el motor {engine} ({:?})",
                 section.required
             );
             // La librería de ONNX Runtime con el nombre que el crate `ort` busca
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn manifest_validation_rejects_incomplete_bundle() {
         let triple = target::host_triple();
-        let dir = bundle_completo("manifest-incompleto", triple);
+        let dir = complete_bundle("manifest-incompleto", triple);
         let section = target_section(triple).unwrap();
         assert_eq!(
             validate_bundle(triple, &dir).unwrap(),
@@ -277,7 +277,7 @@ mod tests {
 
         // Cada entrada obligatoria es imprescindible: se quita una de cada
         // forma —plana y anidada— y la validación falla nombrándola.
-        let motor = format!(
+        let engine = format!(
             "vendor/qwen3-tts/qwen_tts{}",
             if section.executable.ends_with(".exe") {
                 ".exe"
@@ -285,26 +285,26 @@ mod tests {
                 ""
             }
         );
-        for ausente in [section.executable.clone(), motor] {
-            std::fs::remove_file(dir.join(relative_path(&ausente))).unwrap();
+        for missing in [section.executable.clone(), engine] {
+            std::fs::remove_file(dir.join(relative_path(&missing))).unwrap();
             let err = validate_bundle(triple, &dir).unwrap_err();
             assert_eq!(err.reason, "bundle_invalid");
             assert_eq!(err.exit_code, 15, "código de bundle_invalid");
             assert!(
-                err.message.contains(&ausente),
+                err.message.contains(&missing),
                 "el mensaje nombra la ruta ausente con `/`: {}",
                 err.message
             );
-            assert_eq!(missing_files(triple, &dir).unwrap(), vec![ausente.clone()]);
+            assert_eq!(missing_files(triple, &dir).unwrap(), vec![missing.clone()]);
             // Restaurar para probar la siguiente entrada.
-            write_file(&dir.join(relative_path(&ausente)), "contenido");
+            write_file(&dir.join(relative_path(&missing)), "contenido");
             assert!(validate_bundle(triple, &dir).is_ok());
         }
 
         // Un directorio que no existe es el caso de `target/release` sin bundle
         // alrededor: faltan todas las entradas, y el ejecutable entre ellas.
-        let vacio = scratch("manifest-vacio");
-        let err = validate_bundle(triple, &vacio).unwrap_err();
+        let empty = scratch("manifest-vacio");
+        let err = validate_bundle(triple, &empty).unwrap_err();
         assert_eq!(err.reason, "bundle_invalid");
         for relative in &section.required {
             assert!(
@@ -314,7 +314,7 @@ mod tests {
             );
         }
         assert_eq!(
-            missing_files(triple, &vacio).unwrap().len(),
+            missing_files(triple, &empty).unwrap().len(),
             section.required.len()
         );
 
@@ -327,6 +327,6 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
-        std::fs::remove_dir_all(&vacio).ok();
+        std::fs::remove_dir_all(&empty).ok();
     }
 }

@@ -161,12 +161,12 @@ pub fn recover(roots: Roots<'_>) -> Result<RecoveryOutcome> {
 /// anunciaba `xet` y `.locks` sin mirar si la raíz era compartida mientras el
 /// ejecutor devolvía `Ok(false)`, de modo que la simulación mentía.
 pub fn preview(roots: Roots<'_>) -> SweepPreview {
-    let padre = roots.program_dir.parent().unwrap_or(Path::new(""));
+    let parent = roots.program_dir.parent().unwrap_or(Path::new(""));
     SweepPreview {
         parked: entries_with_prefix(roots.program_dir, crate::PARKED_DIR_PREFIX),
-        stagings: entries_with_prefix(padre, crate::STAGING_DIR_PREFIX)
+        stagings: entries_with_prefix(parent, crate::STAGING_DIR_PREFIX)
             .into_iter()
-            .filter(|path| roots.in_use.is_none_or(|usando| usando != path))
+            .filter(|path| roots.in_use.is_none_or(|using| using != path))
             .collect(),
         temporaries: temporaries_decision(roots.temp_root).0,
         temporaries_kept: temporaries_decision(roots.temp_root).1,
@@ -216,12 +216,12 @@ fn sweep_stagings(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
 /// archivo, no el proceso.
 fn sweep_temporaries(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
     for path in &preview.temporaries {
-        let borrado = if path.is_dir() {
+        let removed = if path.is_dir() {
             std::fs::remove_dir_all(path)
         } else {
             std::fs::remove_file(path)
         };
-        match borrado {
+        match removed {
             Ok(()) => outcome.removed_temporaries.push(path.clone()),
             Err(_) => outcome.kept.push(path.clone()),
         }
@@ -234,11 +234,11 @@ fn sweep_temporaries(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
 /// Clasificación de los temporales propios: `(los que se barren, los que se
 /// conservan)`. Es la decisión única de la que salen el informe y el barrido.
 fn temporaries_decision(temp_root: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut borrar = Vec::new();
-    let mut conservar = Vec::new();
+    let mut remove_path = Vec::new();
+    let mut kept = Vec::new();
     let entries = match std::fs::read_dir(temp_root) {
         Ok(entries) => entries,
-        Err(_) => return (borrar, conservar),
+        Err(_) => return (remove_path, kept),
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -251,14 +251,14 @@ fn temporaries_decision(temp_root: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
         }
         match owner_pid(&name) {
             // Proceso vivo: no se toca.
-            Some(pid) if process_is_alive(pid) => conservar.push(path),
+            Some(pid) if process_is_alive(pid) => kept.push(path),
             // PID muerto, o sin PID: huérfano por definición.
-            _ => borrar.push(path),
+            _ => remove_path.push(path),
         }
     }
-    borrar.sort();
-    conservar.sort();
-    (borrar, conservar)
+    remove_path.sort();
+    kept.sort();
+    (remove_path, kept)
 }
 
 /// Entradas de `dir` cuyo nombre empieza por `prefix`, ordenadas.
@@ -293,9 +293,9 @@ fn owner_pid(name: &str) -> Option<u32> {
             while i < bytes.len() && bytes[i].is_ascii_digit() {
                 i += 1;
             }
-            let racha: String = bytes[start..i].iter().collect();
-            if racha.len() >= 3 {
-                return racha.parse().ok();
+            let run: String = bytes[start..i].iter().collect();
+            if run.len() >= 3 {
+                return run.parse().ok();
             }
         } else {
             i += 1;
@@ -353,7 +353,7 @@ mod tests {
     use crate::transaction::{Journal, JournalState};
 
     /// Escribe un diario como lo dejaría una operación que murió a mitad.
-    fn write_diario(program_dir: &std::path::Path, journal: &Journal) {
+    fn write_journal(program_dir: &std::path::Path, journal: &Journal) {
         std::fs::write(
             transaction::journal_path(program_dir),
             serde_json::to_string(journal).unwrap(),
@@ -392,26 +392,26 @@ mod tests {
     #[test]
     fn sweep_removes_orphans_and_keeps_the_rest() {
         let dir = scratch("recovery-sweep");
-        let programa = dir.join("programa");
-        std::fs::create_dir_all(&programa).unwrap();
+        let program = dir.join("programa");
+        std::fs::create_dir_all(&program).unwrap();
         let temp_root = dir.join("temp");
         std::fs::create_dir_all(&temp_root).unwrap();
 
-        let aparcado = programa.join(format!("{}12345", crate::PARKED_DIR_PREFIX));
-        write_file(&aparcado.join("viejo"), "v1");
+        let parked = program.join(format!("{}12345", crate::PARKED_DIR_PREFIX));
+        write_file(&parked.join("viejo"), "v1");
         let staging = dir.join(format!("{}999", crate::STAGING_DIR_PREFIX));
         write_file(&staging.join("descargado"), "bundle");
-        let temporal_muerto = temp_root.join("avi-uninstall-4294967000-1780000000000.ps1");
-        write_file(&temporal_muerto, "borrador");
-        let temporal_vivo = temp_root.join(format!("avi-uninstall-{}.ps1", std::process::id()));
-        write_file(&temporal_vivo, "en uso");
-        let nuestro = temp_root.join("lifecycle-test-de-otra-prueba.txt");
-        write_file(&nuestro, "ajeno");
-        let sin_pid = temp_root.join("avi_clone_x_1.qvoice");
-        write_file(&sin_pid, "audio");
+        let dead_temp = temp_root.join("avi-uninstall-4294967000-1780000000000.ps1");
+        write_file(&dead_temp, "borrador");
+        let live_temp = temp_root.join(format!("avi-uninstall-{}.ps1", std::process::id()));
+        write_file(&live_temp, "en uso");
+        let our = temp_root.join("lifecycle-test-de-otra-prueba.txt");
+        write_file(&our, "ajeno");
+        let without_pid = temp_root.join("avi_clone_x_1.qvoice");
+        write_file(&without_pid, "audio");
 
         let outcome = recover(Roots {
-            program_dir: &programa,
+            program_dir: &program,
             temp_root: &temp_root,
             in_use: None,
         })
@@ -421,26 +421,26 @@ mod tests {
             !outcome.rolled_back && !outcome.committed,
             "no había diario"
         );
-        assert_eq!(outcome.removed_parked, vec![aparcado.clone()]);
+        assert_eq!(outcome.removed_parked, vec![parked.clone()]);
         assert_eq!(outcome.removed_stagings, vec![staging.clone()]);
         assert_eq!(
             outcome.removed_temporaries,
-            vec![temporal_muerto.clone(), sin_pid.clone()],
+            vec![dead_temp.clone(), without_pid.clone()],
             "un temporal sin PID está tan huérfano como uno con PID muerto"
         );
-        assert!(!aparcado.exists() && !staging.exists() && !temporal_muerto.exists());
+        assert!(!parked.exists() && !staging.exists() && !dead_temp.exists());
         assert!(
-            !sin_pid.exists(),
+            !without_pid.exists(),
             "el temporal sin PID también se barre: §9.6 pide los huérfanos"
         );
         assert!(
-            temporal_vivo.exists(),
+            live_temp.exists(),
             "el temporal de este proceso se conserva"
         );
-        assert!(nuestro.exists(), "lo ajeno al producto no se toca");
+        assert!(our.exists(), "lo ajeno al producto no se toca");
         assert_eq!(
             outcome.kept,
-            vec![temporal_vivo],
+            vec![live_temp],
             "solo se queda el que pertenece a un proceso vivo, y no es un fallo"
         );
         assert!(!outcome.is_clean());
@@ -454,46 +454,46 @@ mod tests {
     #[test]
     fn preview_matches_the_sweep_and_touches_nothing() {
         let dir = scratch("recovery-preview");
-        let programa = dir.join("programa");
+        let program = dir.join("programa");
         let temp_root = dir.join("temp");
         std::fs::create_dir_all(&temp_root).unwrap();
-        let aparcado = programa.join(format!("{}1", crate::PARKED_DIR_PREFIX));
-        write_file(&aparcado.join("viejo"), "v1");
+        let parked = program.join(format!("{}1", crate::PARKED_DIR_PREFIX));
+        write_file(&parked.join("viejo"), "v1");
         let staging = dir.join(format!("{}2", crate::STAGING_DIR_PREFIX));
         write_file(&staging.join("descargado"), "bundle");
-        let mio = dir.join(format!("{}3", crate::STAGING_DIR_PREFIX));
-        let huerfano = temp_root.join("avi-huerfano.tmp");
-        write_file(&huerfano, "x");
-        let vivo = temp_root.join(format!("avi-vivo-{}.tmp", std::process::id()));
-        write_file(&vivo, "x");
+        let mine = dir.join(format!("{}3", crate::STAGING_DIR_PREFIX));
+        let orphan = temp_root.join("avi-huerfano.tmp");
+        write_file(&orphan, "x");
+        let alive = temp_root.join(format!("avi-vivo-{}.tmp", std::process::id()));
+        write_file(&alive, "x");
 
         let roots = Roots {
-            program_dir: &programa,
+            program_dir: &program,
             temp_root: &temp_root,
-            in_use: Some(&mio),
+            in_use: Some(&mine),
         };
-        let antes = crate::test_support::snapshot(&dir);
+        let before = crate::test_support::snapshot(&dir);
 
-        let informe = preview(roots);
-        assert_eq!(informe.parked, vec![aparcado.clone()]);
+        let findings = preview(roots);
+        assert_eq!(findings.parked, vec![parked.clone()]);
         assert_eq!(
-            informe.stagings,
+            findings.stagings,
             vec![staging.clone()],
             "el staging en uso no se anuncia ni se barre"
         );
-        assert_eq!(informe.temporaries, vec![huerfano.clone()]);
-        assert_eq!(informe.temporaries_kept, vec![vivo.clone()]);
+        assert_eq!(findings.temporaries, vec![orphan.clone()]);
+        assert_eq!(findings.temporaries_kept, vec![alive.clone()]);
         assert_eq!(
             crate::test_support::snapshot(&dir),
-            antes,
+            before,
             "el informe no modifica el disco"
         );
 
         let outcome = recover(roots).unwrap();
-        assert_eq!(outcome.removed_parked, informe.parked);
-        assert_eq!(outcome.removed_stagings, informe.stagings);
-        assert_eq!(outcome.removed_temporaries, informe.temporaries);
-        assert!(vivo.exists(), "lo que el informe conservaba se conserva");
+        assert_eq!(outcome.removed_parked, findings.parked);
+        assert_eq!(outcome.removed_stagings, findings.stagings);
+        assert_eq!(outcome.removed_temporaries, findings.temporaries);
+        assert!(alive.exists(), "lo que el informe conservaba se conserva");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -506,29 +506,29 @@ mod tests {
     #[test]
     fn staging_in_use_is_not_swept() {
         let dir = scratch("recovery-in-use");
-        let programa = dir.join("programa");
+        let program = dir.join("programa");
         let temp_root = dir.join("temp");
         std::fs::create_dir_all(&temp_root).unwrap();
-        let mio = dir.join(format!("{}yo", crate::STAGING_DIR_PREFIX));
-        let huerfano = dir.join(format!("{}otro", crate::STAGING_DIR_PREFIX));
-        write_file(&mio.join("descargado"), "bundle");
-        write_file(&huerfano.join("descargado"), "bundle");
+        let mine = dir.join(format!("{}yo", crate::STAGING_DIR_PREFIX));
+        let orphan = dir.join(format!("{}otro", crate::STAGING_DIR_PREFIX));
+        write_file(&mine.join("descargado"), "bundle");
+        write_file(&orphan.join("descargado"), "bundle");
 
         let outcome = recover(Roots {
-            program_dir: &programa,
+            program_dir: &program,
             temp_root: &temp_root,
-            in_use: Some(&mio),
+            in_use: Some(&mine),
         })
         .unwrap();
 
         assert!(
-            mio.exists(),
+            mine.exists(),
             "el staging del que se instala sobrevive a su propia recuperación"
         );
-        assert!(!huerfano.exists(), "el hermano huérfano sí se barre");
-        assert_eq!(outcome.removed_stagings, vec![huerfano]);
+        assert!(!orphan.exists(), "el hermano huérfano sí se barre");
+        assert_eq!(outcome.removed_stagings, vec![orphan]);
         assert!(
-            !outcome.kept.contains(&mio),
+            !outcome.kept.contains(&mine),
             "y el propio tampoco se reporta como pendiente"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -542,14 +542,14 @@ mod tests {
     fn journal_state_decides_commit_or_rollback() {
         // Confirmado: se completa el commit.
         let dir = scratch("recovery-commit");
-        let programa = dir.join("programa");
+        let program = dir.join("programa");
         let temp_root = dir.join("temp");
         std::fs::create_dir_all(&temp_root).unwrap();
-        let parked = programa.join(format!("{}77", crate::PARKED_DIR_PREFIX));
+        let parked = program.join(format!("{}77", crate::PARKED_DIR_PREFIX));
         write_file(&parked.join("anterior"), "v1");
-        write_file(&programa.join("nuevo"), "v2");
-        write_diario(
-            &programa,
+        write_file(&program.join("nuevo"), "v2");
+        write_journal(
+            &program,
             &Journal {
                 schema_version: transaction::JOURNAL_SCHEMA_VERSION,
                 txid: "77".to_string(),
@@ -561,7 +561,7 @@ mod tests {
         );
 
         let outcome = recover(Roots {
-            program_dir: &programa,
+            program_dir: &program,
             temp_root: &temp_root,
             in_use: None,
         })
@@ -569,9 +569,9 @@ mod tests {
         assert!(outcome.committed, "el diario confirmado se completa");
         assert!(!outcome.rolled_back);
         assert!(!parked.exists(), "el aparcado se borra en el commit");
-        assert!(programa.join("nuevo").is_file(), "lo colocado se conserva");
+        assert!(program.join("nuevo").is_file(), "lo colocado se conserva");
         assert!(
-            transaction::read_journal(&programa).unwrap().is_none(),
+            transaction::read_journal(&program).unwrap().is_none(),
             "el diario desaparece"
         );
         assert!(outcome.is_clean());
@@ -580,19 +580,19 @@ mod tests {
         // Sin confirmar: se revierte y la versión anterior vuelve a ser la
         // operativa, que es lo que promete §9.1.
         let dir = scratch("recovery-rollback");
-        let programa = dir.join("programa");
+        let program = dir.join("programa");
         let temp_root = dir.join("temp");
         let staging = dir.join("staging");
         std::fs::create_dir_all(&temp_root).unwrap();
-        let parked = programa.join(format!("{}88", crate::PARKED_DIR_PREFIX));
+        let parked = program.join(format!("{}88", crate::PARKED_DIR_PREFIX));
         write_file(&parked.join("anterior"), "v1");
         write_file(&parked.join("motor"), "motor v1");
         // Mitad colocada: el ejecutable nuevo ya está en el programa, el motor
         // sigue en el origen.
-        write_file(&programa.join("ejecutable"), "v2");
+        write_file(&program.join("ejecutable"), "v2");
         write_file(&staging.join("motor"), "motor v2");
-        write_diario(
-            &programa,
+        write_journal(
+            &program,
             &Journal {
                 schema_version: transaction::JOURNAL_SCHEMA_VERSION,
                 txid: "88".to_string(),
@@ -604,7 +604,7 @@ mod tests {
         );
 
         let outcome = recover(Roots {
-            program_dir: &programa,
+            program_dir: &program,
             temp_root: &temp_root,
             in_use: None,
         })
@@ -612,17 +612,17 @@ mod tests {
         assert!(outcome.rolled_back, "el diario sin confirmar se revierte");
         assert!(!outcome.committed);
         assert_eq!(
-            std::fs::read_to_string(programa.join("anterior")).unwrap(),
+            std::fs::read_to_string(program.join("anterior")).unwrap(),
             "v1",
             "la versión anterior vuelve al sitio"
         );
         assert_eq!(
-            std::fs::read_to_string(programa.join("motor")).unwrap(),
+            std::fs::read_to_string(program.join("motor")).unwrap(),
             "motor v1",
             "su motor también, y por fusión de árboles"
         );
         assert!(
-            !programa.join("ejecutable").exists(),
+            !program.join("ejecutable").exists(),
             "lo colocado se retira del directorio de programa"
         );
         assert_eq!(
@@ -631,7 +631,7 @@ mod tests {
             "y vuelve al origen, que es de donde la colocación lo movió"
         );
         assert!(!parked.exists(), "el aparcado desaparece tras restaurarlo");
-        assert!(transaction::read_journal(&programa).unwrap().is_none());
+        assert!(transaction::read_journal(&program).unwrap().is_none());
         assert!(outcome.is_clean());
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -275,15 +275,15 @@ fn relative_entries(source_dir: &Path) -> anyhow::Result<Vec<String>> {
 /// ejecutable en ejecución no se puede renombrar ni borrar, y el proceso que lo
 /// sustituye tiene que poder seguir vivo hasta que termine.
 fn place_entry(source_dir: &Path, program_dir: &Path, relative: &str) -> anyhow::Result<()> {
-    let origen = source_dir.join(to_platform_path(relative));
-    let destino = program_dir.join(to_platform_path(relative));
-    if let Some(parent) = destino.parent() {
+    let source = source_dir.join(to_platform_path(relative));
+    let dest = program_dir.join(to_platform_path(relative));
+    if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    if is_running_executable(&destino) {
-        std::fs::copy(&origen, &destino)?;
+    if is_running_executable(&dest) {
+        std::fs::copy(&source, &dest)?;
     } else {
-        std::fs::rename(&origen, &destino)?;
+        std::fs::rename(&source, &dest)?;
     }
     Ok(())
 }
@@ -305,7 +305,7 @@ fn is_running_executable(path: &Path) -> bool {
 fn fix_permissions(program_dir: &Path, placed: &[String]) {
     use crate::{manifest, target};
     use std::os::unix::fs::PermissionsExt;
-    let ejecutable = manifest::target_section(target::host_triple())
+    let executable = manifest::target_section(target::host_triple())
         .map(|section| section.executable)
         .unwrap_or_else(|_| crate::APP_NAME.to_string());
     for relative in placed {
@@ -313,12 +313,12 @@ fn fix_permissions(program_dir: &Path, placed: &[String]) {
         // `relative` es `&String` y `ejecutable` es `String`: sin el desreferenciado
         // `PartialEq` no se resuelve y el crate no compila en Unix. El defecto era
         // invisible en Windows, donde esta función no existe.
-        let permisos = if *relative == ejecutable || relative.starts_with("vendor/") {
+        let permissions = if *relative == executable || relative.starts_with("vendor/") {
             0o755
         } else {
             0o644
         };
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(permisos));
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(permissions));
     }
 }
 
@@ -349,19 +349,19 @@ fn leftovers_in(dir: &Path) -> Vec<PathBuf> {
 /// en ejecución, que se copió y no se movió— se borra la copia del programa.
 pub(crate) fn rollback(program_dir: &Path, journal: &Journal) -> anyhow::Result<()> {
     for relative in &journal.placed {
-        let colocado = program_dir.join(to_platform_path(relative));
+        let placed = program_dir.join(to_platform_path(relative));
         match journal
             .source_dir
             .as_ref()
             .map(|s| s.join(to_platform_path(relative)))
         {
-            Some(origen) if !origen.exists() => {
-                if let Some(parent) = origen.parent() {
+            Some(source) if !source.exists() => {
+                if let Some(parent) = source.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                std::fs::rename(&colocado, &origen)?;
+                std::fs::rename(&placed, &source)?;
             }
-            _ => match std::fs::remove_file(&colocado) {
+            _ => match std::fs::remove_file(&placed) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
@@ -387,36 +387,36 @@ pub(crate) fn rollback(program_dir: &Path, journal: &Journal) -> anyhow::Result<
 /// de `vendor/` se da en cada reversión: el motor de la versión nueva ya está
 /// colocado cuando se restaura el de la anterior. Fusionar hoja a hoja es lo que
 /// deja el directorio de programa con exactamente la versión anterior.
-fn restore_entry(origen: &Path, destino: &Path) -> anyhow::Result<()> {
-    if !destino.exists() {
-        return Ok(std::fs::rename(origen, destino)?);
+fn restore_entry(source: &Path, dest: &Path) -> anyhow::Result<()> {
+    if !dest.exists() {
+        return Ok(std::fs::rename(source, dest)?);
     }
-    if origen.is_dir() && destino.is_dir() {
-        for entry in std::fs::read_dir(origen)? {
+    if source.is_dir() && dest.is_dir() {
+        for entry in std::fs::read_dir(source)? {
             let entry = entry?;
-            restore_entry(&entry.path(), &destino.join(entry.file_name()))?;
+            restore_entry(&entry.path(), &dest.join(entry.file_name()))?;
         }
-        return Ok(std::fs::remove_dir(origen)?);
+        return Ok(std::fs::remove_dir(source)?);
     }
-    if destino.is_dir() {
-        std::fs::remove_dir_all(destino)?;
+    if dest.is_dir() {
+        std::fs::remove_dir_all(dest)?;
     } else {
-        std::fs::remove_file(destino)?;
+        std::fs::remove_file(dest)?;
     }
-    Ok(std::fs::rename(origen, destino)?)
+    Ok(std::fs::rename(source, dest)?)
 }
 
 /// Escribe el diario de forma atómica: temporal hermano y renombrado, porque un
 /// diario a medio escribir es peor que no tener diario.
 fn write_journal(program_dir: &Path, journal: &Journal) -> anyhow::Result<()> {
-    let destino = journal_path(program_dir);
-    let temporal = program_dir.join(format!("{JOURNAL_NAME}.tmp-{}", std::process::id()));
-    let texto = serde_json::to_string_pretty(journal)?;
-    std::fs::write(&temporal, texto.as_bytes())?;
-    match std::fs::rename(&temporal, &destino) {
+    let dest = journal_path(program_dir);
+    let temp = program_dir.join(format!("{JOURNAL_NAME}.tmp-{}", std::process::id()));
+    let text = serde_json::to_string_pretty(journal)?;
+    std::fs::write(&temp, text.as_bytes())?;
+    match std::fs::rename(&temp, &dest) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = std::fs::remove_file(&temporal);
+            let _ = std::fs::remove_file(&temp);
             Err(e.into())
         }
     }
@@ -450,17 +450,17 @@ mod tests {
     use crate::{manifest, target};
 
     /// Monta un bundle completo del target del host en `dir`.
-    fn bundle(dir: &Path, contenido: &str) {
+    fn bundle(dir: &Path, content: &str) {
         for relative in &manifest::target_section(target::host_triple())
             .unwrap()
             .required
         {
-            write_file(&dir.join(to_platform_path(relative)), contenido);
+            write_file(&dir.join(to_platform_path(relative)), content);
         }
     }
 
     /// Nombres de lo que hay en `dir` con el prefijo de aparcado, ordenados.
-    fn aparcados(program_dir: &Path) -> Vec<String> {
+    fn parked(program_dir: &Path) -> Vec<String> {
         let mut out: Vec<String> = std::fs::read_dir(program_dir)
             .map(|entries| {
                 entries
@@ -475,7 +475,7 @@ mod tests {
     }
 
     /// Nombres de todo lo que hay en `dir`, ordenados.
-    fn contenido(program_dir: &Path) -> Vec<String> {
+    fn content(program_dir: &Path) -> Vec<String> {
         let mut out: Vec<String> = std::fs::read_dir(program_dir)
             .map(|entries| {
                 entries
@@ -491,7 +491,7 @@ mod tests {
     /// Nombres de primer nivel que debe tener un directorio de programa con el
     /// bundle del target instalado: las entradas planas del manifiesto más el
     /// directorio `vendor` del motor.
-    fn contenido_esperado(triple: &str) -> Vec<String> {
+    fn expected_content(triple: &str) -> Vec<String> {
         let mut out: Vec<String> = manifest::target_section(triple)
             .unwrap()
             .required
@@ -507,9 +507,9 @@ mod tests {
     /// Rutas de relativo origen que quedan con un fichero, ordenadas. La
     /// colocación mueve ficheros, no directorios: los directorios vacíos que deja
     /// en el staging no importan, y el barrido se lleva el staging entero.
-    fn ficheros_en_origen(origen: &Path) -> Vec<String> {
+    fn files_in_source(source: &Path) -> Vec<String> {
         let mut out = Vec::new();
-        let mut stack = vec![origen.to_path_buf()];
+        let mut stack = vec![source.to_path_buf()];
         while let Some(dir) = stack.pop() {
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -531,43 +531,43 @@ mod tests {
     fn committed_replacement_leaves_no_residue() {
         let dir = scratch("txn-ok");
         let triple = target::host_triple();
-        let ejecutable = manifest::target_section(triple).unwrap().executable;
-        let programa = dir.join("programa");
-        let origen = dir.join("staging");
-        std::fs::create_dir_all(&programa).unwrap();
-        bundle(&origen, "v2");
-        write_file(&programa.join(&ejecutable), "v1");
-        write_file(&programa.join("LICENSE"), "licencia vieja");
+        let executable = manifest::target_section(triple).unwrap().executable;
+        let program = dir.join("programa");
+        let source = dir.join("staging");
+        std::fs::create_dir_all(&program).unwrap();
+        bundle(&source, "v2");
+        write_file(&program.join(&executable), "v1");
+        write_file(&program.join("LICENSE"), "licencia vieja");
 
-        let outcome = replace(&programa, &origen).unwrap();
+        let outcome = replace(&program, &source).unwrap();
         assert!(outcome.leftovers.is_empty(), "el SO no tiene nada en uso");
-        assert!(outcome.placed.contains(&ejecutable));
-        assert!(aparcados(&programa).is_empty(), "sin aparcados");
+        assert!(outcome.placed.contains(&executable));
+        assert!(parked(&program).is_empty(), "sin aparcados");
         assert_eq!(
-            std::fs::read_to_string(programa.join(&ejecutable)).unwrap(),
+            std::fs::read_to_string(program.join(&executable)).unwrap(),
             "v2",
             "el bundle nuevo está colocado"
         );
         assert_eq!(
-            std::fs::read_to_string(programa.join("LICENSE")).unwrap(),
+            std::fs::read_to_string(program.join("LICENSE")).unwrap(),
             "v2",
             "también los documentos, no solo el ejecutable"
         );
-        assert!(programa
+        assert!(program
             .join("vendor/qwen3-tts")
             .join(format!(
                 "qwen_tts{}",
-                if ejecutable.ends_with(".exe") {
+                if executable.ends_with(".exe") {
                     ".exe"
                 } else {
                     ""
                 }
             ))
             .is_file());
-        assert_eq!(contenido(&programa), contenido_esperado(triple));
-        assert!(read_journal(&programa).unwrap().is_none(), "sin diario");
+        assert_eq!(content(&program), expected_content(triple));
+        assert!(read_journal(&program).unwrap().is_none(), "sin diario");
         assert!(
-            ficheros_en_origen(&origen).is_empty(),
+            files_in_source(&source).is_empty(),
             "el origen se movió, no se copió"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -585,52 +585,52 @@ mod tests {
     #[cfg(feature = "faults")]
     fn interrupted_transaction_leaves_previous_version_usable() {
         let triple = target::host_triple();
-        let ejecutable = manifest::target_section(triple).unwrap().executable;
+        let executable = manifest::target_section(triple).unwrap().executable;
 
-        for punto in [
+        for point in [
             FaultPoint::BeforePark,
             FaultPoint::BeforePlace,
             FaultPoint::BeforeFixPermissions,
             FaultPoint::BeforeCommit,
         ] {
-            let dir = scratch(&format!("txn-interrumpida-{}", punto.as_str()));
-            let programa = dir.join("programa");
-            let origen = dir.join("staging");
-            std::fs::create_dir_all(&programa).unwrap();
-            bundle(&origen, "v2");
+            let dir = scratch(&format!("txn-interrumpida-{}", point.as_str()));
+            let program = dir.join("programa");
+            let source = dir.join("staging");
+            std::fs::create_dir_all(&program).unwrap();
+            bundle(&source, "v2");
             // Versión anterior completa: ejecutable, motor, librería y licencia.
-            bundle(&programa, "v1");
+            bundle(&program, "v1");
 
-            faults::arm(punto);
-            let err = replace(&programa, &origen).unwrap_err();
+            faults::arm(point);
+            let err = replace(&program, &source).unwrap_err();
             faults::disarm_all();
 
-            let le = err
+            let failure = err
                 .downcast_ref::<LifecycleError>()
-                .unwrap_or_else(|| panic!("{}: el fallo no es de contrato: {err}", punto.as_str()));
+                .unwrap_or_else(|| panic!("{}: el fallo no es de contrato: {err}", point.as_str()));
             assert_eq!(
-                le.reason,
+                failure.reason,
                 "rolled_back",
                 "{}: la versión anterior se restaura",
-                punto.as_str()
+                point.as_str()
             );
-            assert_eq!(le.exit_code, 13, "RolledBack = 13");
+            assert_eq!(failure.exit_code, 13, "RolledBack = 13");
 
             // La versión anterior sigue siendo la operativa: el ejecutable se
             // puede leer y ejecutar como antes de la interrupción.
-            let previo = std::fs::read_to_string(programa.join(&ejecutable)).unwrap();
+            let previous = std::fs::read_to_string(program.join(&executable)).unwrap();
             assert_eq!(
-                previo,
+                previous,
                 "v1",
                 "{}: la versión anterior sigue operativa",
-                punto.as_str()
+                point.as_str()
             );
             assert!(
-                programa
+                program
                     .join("vendor/qwen3-tts")
                     .join(format!(
                         "qwen_tts{}",
-                        if ejecutable.ends_with(".exe") {
+                        if executable.ends_with(".exe") {
                             ".exe"
                         } else {
                             ""
@@ -638,52 +638,52 @@ mod tests {
                     ))
                     .is_file(),
                 "{}: el motor anterior sigue en su sitio",
-                punto.as_str()
+                point.as_str()
             );
 
             // Cero residuo: ni diario ni aparcado.
             assert!(
-                read_journal(&programa).unwrap().is_none(),
+                read_journal(&program).unwrap().is_none(),
                 "{}: el diario se borra al revertir",
-                punto.as_str()
+                point.as_str()
             );
             assert!(
-                aparcados(&programa).is_empty(),
+                parked(&program).is_empty(),
                 "{}: no queda el aparcado, y el origen del bundle está intacto",
-                punto.as_str()
+                point.as_str()
             );
-            let installed = manifest::validate_bundle(triple, &programa);
+            let installed = manifest::validate_bundle(triple, &program);
             assert!(
                 installed.is_ok(),
                 "{}: el programa instalado sigue siendo un bundle válido",
-                punto.as_str()
+                point.as_str()
             );
 
             // La siguiente operación completa el reemplazo: mismo bundle, mismo
             // resultado final, sin residuos de la anterior.
             faults::disarm_all();
-            let outcome = replace(&programa, &origen).unwrap();
+            let outcome = replace(&program, &source).unwrap();
             assert!(outcome.leftovers.is_empty());
             assert_eq!(
-                std::fs::read_to_string(programa.join(&ejecutable)).unwrap(),
+                std::fs::read_to_string(program.join(&executable)).unwrap(),
                 "v2",
                 "{}: el reintento instala la versión nueva",
-                punto.as_str()
+                point.as_str()
             );
             assert_eq!(
-                contenido(&programa),
-                contenido_esperado(triple),
+                content(&program),
+                expected_content(triple),
                 "{}: solo queda el bundle",
-                punto.as_str()
+                point.as_str()
             );
             assert!(
-                ficheros_en_origen(&origen).is_empty(),
+                files_in_source(&source).is_empty(),
                 "{}: el reintento coloca el bundle entero",
-                punto.as_str()
+                point.as_str()
             );
-            assert!(read_journal(&programa).unwrap().is_none());
-            assert!(aparcados(&programa).is_empty());
-            assert!(origen.is_dir(), "el staging sigue existiendo");
+            assert!(read_journal(&program).unwrap().is_none());
+            assert!(parked(&program).is_empty());
+            assert!(source.is_dir(), "el staging sigue existiendo");
 
             std::fs::remove_dir_all(&dir).ok();
         }

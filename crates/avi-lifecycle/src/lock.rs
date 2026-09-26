@@ -153,8 +153,8 @@ mod tests {
         let path = dir.join(crate::LIFECYCLE_LOCK_NAME);
         assert!(!is_locked_at(&path), "sin operación no hay bloqueo");
 
-        let primera = acquire_at(&path).expect("la primera operación toma el bloqueo");
-        assert_eq!(primera.path(), path);
+        let first = acquire_at(&path).expect("la primera operación toma el bloqueo");
+        assert_eq!(first.path(), path);
         assert!(
             is_locked_at(&path),
             "con la primera en curso, el bloqueo está tomado"
@@ -165,13 +165,13 @@ mod tests {
         assert_eq!(err.exit_code, 17, "LifecycleLocked = 17");
         assert!(err.message.contains("en curso"), "{}", err.message);
 
-        drop(primera);
+        drop(first);
         assert!(
             !is_locked_at(&path),
             "al terminar la operación el bloqueo se libera solo"
         );
-        let segunda = acquire_at(&path).expect("el bloqueo vuelve a estar libre");
-        drop(segunda);
+        let second = acquire_at(&path).expect("el bloqueo vuelve a estar libre");
+        drop(second);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

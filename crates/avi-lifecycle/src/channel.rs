@@ -113,11 +113,11 @@ mod tests {
     use super::*;
     use crate::receipt::PathIntegration;
 
-    fn recibo(canal: Channel, install_dir: &str) -> InstallReceipt {
+    fn receipt(channel: Channel, install_dir: &str) -> InstallReceipt {
         InstallReceipt::new(
             "0.24.0",
             "x86_64-unknown-linux-gnu",
-            canal,
+            channel,
             Path::new(install_dir),
             vec!["ai-voice-interconnector".to_string()],
             PathIntegration::none(),
@@ -134,11 +134,11 @@ mod tests {
     /// registrada.
     #[test]
     fn channel_detection_covers_all_four() {
-        let script = recibo(
+        let script = receipt(
             Channel::Script,
             "/home/ana/.local/opt/ai-voice-interconnector",
         );
-        let dev = recibo(Channel::Dev, "/home/ana/.local/opt/ai-voice-interconnector");
+        let dev = receipt(Channel::Dev, "/home/ana/.local/opt/ai-voice-interconnector");
 
         // 1. `script`: recibo y ejecutable fuera de Homebrew.
         assert_eq!(
@@ -206,14 +206,14 @@ mod tests {
         );
 
         // Nombres de contrato y su ida y vuelta.
-        for canal in [
+        for channel in [
             Channel::Script,
             Channel::Dev,
             Channel::Homebrew,
             Channel::Unmanaged,
         ] {
-            assert_eq!(Channel::from_name(canal.as_str()), Some(canal));
-            assert_eq!(canal.to_string(), canal.as_str());
+            assert_eq!(Channel::from_name(channel.as_str()), Some(channel));
+            assert_eq!(channel.to_string(), channel.as_str());
         }
         assert_eq!(Channel::from_name("snap"), None, "canal desconocido");
 

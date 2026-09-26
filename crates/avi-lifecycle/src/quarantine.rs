@@ -88,14 +88,14 @@ pub trait Quarantine {
 /// limpieza colgando. La profundidad real de un bundle es de tres niveles
 /// (`vendor/qwen3-tts/qwen_tts`), así que el margen es amplio.
 pub fn strip(dir: &Path) -> Outcome {
-    strip_bounded(dir, MAX_DEPTH, plataforma())
+    strip_bounded(dir, MAX_DEPTH, platform())
 }
 
 /// [`strip`] con el límite de profundidad y la implementación de atributos como
 /// parámetros, que es lo que permite probar el recorrido en cualquier plataforma.
-pub fn strip_bounded(dir: &Path, max_depth: usize, atributos: &dyn Quarantine) -> Outcome {
+pub fn strip_bounded(dir: &Path, max_depth: usize, attributes: &dyn Quarantine) -> Outcome {
     let mut outcome = Outcome::default();
-    walk(dir, 0, max_depth, atributos, &mut outcome);
+    walk(dir, 0, max_depth, attributes, &mut outcome);
     outcome
 }
 
@@ -112,7 +112,7 @@ fn walk(
     dir: &Path,
     depth: usize,
     max_depth: usize,
-    atributos: &dyn Quarantine,
+    attributes: &dyn Quarantine,
     outcome: &mut Outcome,
 ) {
     if depth > max_depth {
@@ -132,7 +132,7 @@ fn walk(
             Ok(meta) => meta,
             Err(_) => continue,
         };
-        match atributos.clear(&path) {
+        match attributes.clear(&path) {
             Ok(true) => outcome.cleared.push(path.clone()),
             Ok(false) => {}
             // Un fallo **no** corta el recorrido: los otros archivos también necesitan
@@ -141,20 +141,20 @@ fn walk(
             Err(e) => outcome.failed.push((path.clone(), e.to_string())),
         }
         if meta.is_dir() {
-            walk(&path, depth + 1, max_depth, atributos, outcome);
+            walk(&path, depth + 1, max_depth, attributes, outcome);
         }
     }
 }
 
 /// Los atributos de la plataforma en la que corre el binario.
-pub fn plataforma() -> &'static dyn Quarantine {
+pub fn platform() -> &'static dyn Quarantine {
     #[cfg(target_os = "macos")]
     {
         &Xattr
     }
     #[cfg(not(target_os = "macos"))]
     {
-        &SinAtributos
+        &NoAttributes
     }
 }
 
@@ -170,30 +170,30 @@ impl Quarantine for Xattr {
         // `xattr -p` devuelve 1 cuando el atributo no está, y ese 1 no es un error: es
         // la respuesta. Por eso se consulta antes de borrar en lugar de interpretar el
         // fallo de `xattr -d` como "no lo tenía".
-        let salida = std::process::Command::new("xattr")
+        let output = std::process::Command::new("xattr")
             .arg("-p")
             .arg(BLOCK_MARKER)
             .arg(path)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()?;
-        Ok(salida.success())
+        Ok(output.success())
     }
 
     fn clear(&self, path: &Path) -> std::io::Result<bool> {
         if !self.has(path)? {
             return Ok(false);
         }
-        let salida = std::process::Command::new("xattr")
+        let output = std::process::Command::new("xattr")
             .arg("-d")
             .arg(BLOCK_MARKER)
             .arg(path)
             .output()?;
-        if salida.status.success() {
+        if output.status.success() {
             Ok(true)
         } else {
             Err(std::io::Error::other(
-                String::from_utf8_lossy(&salida.stderr).trim().to_string(),
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
             ))
         }
     }
@@ -201,17 +201,17 @@ impl Quarantine for Xattr {
     fn put(&self, path: &Path) -> std::io::Result<()> {
         // El valor es un sello de 16 dígitos hexadecimales, que es lo que pone el
         // navegador; a `xattr` le da igual el contenido, solo la existencia.
-        let salida = std::process::Command::new("xattr")
+        let output = std::process::Command::new("xattr")
             .arg("-w")
             .arg(BLOCK_MARKER)
             .arg("0000-0000-0000-0000")
             .arg(path)
             .output()?;
-        if salida.status.success() {
+        if output.status.success() {
             Ok(())
         } else {
             Err(std::io::Error::other(
-                String::from_utf8_lossy(&salida.stderr).trim().to_string(),
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
             ))
         }
     }
@@ -225,10 +225,10 @@ impl Quarantine for Xattr {
 /// fuera del directorio y se comprueba que no toca el disco. Un `cfg` que devolviera
 /// `Outcome::default()` no afirmaría nada de eso.
 #[cfg(not(target_os = "macos"))]
-pub struct SinAtributos;
+pub struct NoAttributes;
 
 #[cfg(not(target_os = "macos"))]
-impl Quarantine for SinAtributos {
+impl Quarantine for NoAttributes {
     fn has(&self, _path: &Path) -> std::io::Result<bool> {
         Ok(false)
     }
@@ -245,11 +245,11 @@ impl Quarantine for SinAtributos {
 /// ¿Tiene el archivo el atributo de cuarentena? Lo usan las pruebas para afirmar tanto
 /// el punto de partida como el punto de llegada, y para ponerlo, [`quarantine::put`].
 pub fn has(path: &Path) -> bool {
-    plataforma().has(path).unwrap_or(false)
+    platform().has(path).unwrap_or(false)
 }
 
 /// Pone el atributo de cuarentena en un archivo. **Solo para las pruebas del criterio
 /// 9**; ver [`Quarantine::put`].
 pub fn put(path: &Path) -> std::io::Result<()> {
-    plataforma().put(path)
+    platform().put(path)
 }

@@ -95,12 +95,12 @@ const PREFIX_TMP: &str = "contract-stdout_";
 /// estructura de la suite.
 fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
     let dir = std::env::temp_dir();
-    for intento in 0..64u32 {
+    for attempt in 0..64u32 {
         let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = dir.join(format!(
             "{PREFIX_TMP}{}_{}_{}_{}",
             std::process::id(),
-            intento,
+            attempt,
             n,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -123,7 +123,7 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
 /// Sandbox del contrato: un directorio con las raíces de §7 del hijo, un `tmp` aislado y un
 /// staging con el bundle completo alrededor de una copia del binario.
 struct Sandbox {
-    raiz: PathBuf,
+    root: PathBuf,
     /// Ejecutable a invocar: la **copia** del staging, que es la que tiene el bundle alrededor.
     exe: PathBuf,
     /// Entorno del hijo. `TEMP`/`TMP`/`TMPDIR` reubican su temporal, que §7 no permite
@@ -132,47 +132,47 @@ struct Sandbox {
 }
 
 impl Sandbox {
-    fn nuevo(tag: &str) -> Self {
+    fn new(tag: &str) -> Self {
         let n = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or_default();
-        let raiz =
+        let root =
             std::env::temp_dir().join(format!("{PREFIX_SANDBOX}{tag}_{}_{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&raiz);
-        let staging = raiz.join("opt").join(format!(
+        let _ = std::fs::remove_dir_all(&root);
+        let staging = root.join("opt").join(format!(
             "{}contract-{tag}",
             avi_lifecycle::STAGING_DIR_PREFIX
         ));
-        let install = raiz.join("opt").join(avi_lifecycle::APP_NAME);
-        let data = raiz.join("data");
-        let models = raiz.join("models");
-        let temp = raiz.join("tmp");
-        let hf = raiz.join("hf");
+        let install = root.join("opt").join(avi_lifecycle::APP_NAME);
+        let data = root.join("data");
+        let models = root.join("models");
+        let temp = root.join("tmp");
+        let hf = root.join("hf");
         for dir in [&staging, &data, &models, &temp, &hf] {
             std::fs::create_dir_all(dir).expect("crear raíces del sandbox");
         }
 
         // El bundle: la copia del ejecutable con el nombre del manifiesto y el resto de
         // archivos obligatorios con contenido de marcador. La lista no se escribe a mano.
-        let seccion = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
+        let section = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
             .expect("el target del host tiene sección en el manifiesto");
-        for relativa in &seccion.required {
-            let completa = staging.join(relativa.replace('/', std::path::MAIN_SEPARATOR_STR));
-            if let Some(padre) = completa.parent() {
-                std::fs::create_dir_all(padre).expect("crear directorio del archivo del bundle");
+        for relative in &section.required {
+            let complete = staging.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if let Some(parent) = complete.parent() {
+                std::fs::create_dir_all(parent).expect("crear directorio del archivo del bundle");
             }
-            if relativa == &seccion.executable {
-                std::fs::copy(BIN, &completa).expect("copiar el binario al staging del sandbox");
+            if relative == &section.executable {
+                std::fs::copy(BIN, &complete).expect("copiar el binario al staging del sandbox");
             } else {
-                std::fs::write(&completa, format!("contenido de {relativa}\n"))
+                std::fs::write(&complete, format!("contenido de {relative}\n"))
                     .expect("escribir el archivo del bundle");
             }
         }
 
         // La selección de modelos ya provisionada, para que la provisión no toque la red.
-        for (nombre, repo, rev) in avi_store::MODEL_REVISIONS {
-            if *nombre == avi_lifecycle::setup::CLONING_MODEL {
+        for (name, repo, rev) in avi_store::MODEL_REVISIONS {
+            if *name == avi_lifecycle::setup::CLONING_MODEL {
                 continue;
             }
             let snapshot = models
@@ -181,12 +181,12 @@ impl Sandbox {
                 .join(rev);
             match avi_store::MODEL_FILE_PATTERNS
                 .iter()
-                .find(|(n, _)| n == nombre)
+                .find(|(n, _)| n == name)
             {
-                Some((_, patrones)) => {
-                    for patron in *patrones {
+                Some((_, patterns)) => {
+                    for pattern in *patterns {
                         std::fs::create_dir_all(&snapshot).expect("crear snapshot del repo");
-                        std::fs::write(snapshot.join(patron), "pesos").expect("escribir el pin");
+                        std::fs::write(snapshot.join(pattern), "pesos").expect("escribir el pin");
                     }
                 }
                 None => {
@@ -197,33 +197,33 @@ impl Sandbox {
             }
         }
 
-        let exe = staging.join(seccion.executable_path());
-        let valor = |p: &Path| p.display().to_string();
+        let exe = staging.join(section.executable_path());
+        let value = |p: &Path| p.display().to_string();
         let mut envs = vec![
             // `AVI_CACHE_DIR` tiene precedencia sobre `HF_HUB_CACHE` en §7, así que la
             // raíz de modelos del sandbox es la **exclusiva** de la aplicación; las
             // variables de HuggingFace se fijan igualmente para que ninguna prueba que las
             // herede del entorno de la máquina escriba fuera del sandbox.
-            ("AVI_CACHE_DIR".to_string(), valor(&models)),
-            ("HF_HUB_CACHE".to_string(), valor(&hf)),
-            ("HF_HOME".to_string(), valor(&hf)),
-            ("AVI_INSTALL_DIR".to_string(), valor(&install)),
+            ("AVI_CACHE_DIR".to_string(), value(&models)),
+            ("HF_HUB_CACHE".to_string(), value(&hf)),
+            ("HF_HOME".to_string(), value(&hf)),
+            ("AVI_INSTALL_DIR".to_string(), value(&install)),
             // En Windows la entrada del `PATH` es el propio directorio de programa (§7).
-            ("AVI_BIN_DIR".to_string(), valor(&install)),
-            ("AVI_DATA_DIR".to_string(), valor(&data)),
+            ("AVI_BIN_DIR".to_string(), value(&install)),
+            ("AVI_DATA_DIR".to_string(), value(&data)),
             // El temporal del hijo, aislado: §7 no declara variable de reubicación para él.
-            ("TEMP".to_string(), valor(&temp)),
-            ("TMP".to_string(), valor(&temp)),
-            ("TMPDIR".to_string(), valor(&temp)),
+            ("TEMP".to_string(), value(&temp)),
+            ("TMP".to_string(), value(&temp)),
+            ("TMPDIR".to_string(), value(&temp)),
             // Puerto efímero: la parada del daemon no tiene que poder tocar nada.
             ("AVI_DAEMON_PORT".to_string(), "0".to_string()),
         ];
         envs.sort();
-        Self { exe, envs, raiz }
+        Self { exe, envs, root }
     }
 
     /// Ejecuta el hijo y devuelve su código de salida y su sobre.
-    fn correr(&self, args: &[&str]) -> (i32, Value) {
+    fn run(&self, args: &[&str]) -> (i32, Value) {
         let (tmp, file) = open_atomic_tmp();
         let mut cmd = Command::new(&self.exe);
         cmd.args(args)
@@ -249,7 +249,7 @@ impl Sandbox {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.raiz);
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -265,14 +265,14 @@ impl Drop for Sandbox {
 /// dos formas naturales colisionan, como demuestra el propio mensaje.
 #[test]
 fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
-    for (nombre, prefijo) in [
+    for (name, prefix) in [
         ("el sandbox", PREFIX_SANDBOX),
         ("el tempfile de salida", PREFIX_TMP),
     ] {
-        for producto in avi_store::TEMP_PREFIXES {
+        for product in avi_store::TEMP_PREFIXES {
             assert!(
-                !prefijo.starts_with(producto),
-                "el prefijo de {nombre} (`{prefijo}`) empieza por `{producto}`, que §7 reserva \
+                !prefix.starts_with(product),
+                "el prefijo de {name} (`{prefix}`) empieza por `{product}`, que §7 reserva \
                  a la aplicación: el barrido de §9.1 lo borraría como si fuera temporal nuestro"
             );
         }
@@ -289,9 +289,9 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
 
     // Y la segunda mitad: el temporal del hijo está dentro de su sandbox, así que el
     // barrido tiene el universo acotado aunque el prefijo volviera a colisionar.
-    let sandbox = Sandbox::nuevo("invarianteprefijo");
+    let sandbox = Sandbox::new("invarianteprefijo");
     for variable in ["TEMP", "TMP", "TMPDIR"] {
-        let valor = PathBuf::from(
+        let value = PathBuf::from(
             sandbox
                 .envs
                 .iter()
@@ -300,15 +300,15 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
                 .unwrap_or_else(|| panic!("el sandbox debe reubicar {variable}")),
         );
         assert!(
-            valor.starts_with(&sandbox.raiz),
-            "{variable} del hijo es {valor:?}, fuera del sandbox {:?}: el barrido de §9.1 \
+            value.starts_with(&sandbox.root),
+            "{variable} del hijo es {value:?}, fuera del sandbox {:?}: el barrido de §9.1 \
              alcanzaría el temporal de la máquina",
-            sandbox.raiz
+            sandbox.root
         );
     }
     assert!(
         sandbox
-            .raiz
+            .root
             .file_name()
             .unwrap()
             .to_string_lossy()
@@ -328,8 +328,8 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
 /// `reason` del ciclo 2.
 #[test]
 fn self_install_setup_failure_exits_11_with_partial_success() {
-    let sandbox = Sandbox::nuevo("setupfallido");
-    let (code, actual) = sandbox.correr(&[
+    let sandbox = Sandbox::new("setupfallido");
+    let (code, actual) = sandbox.run(&[
         "--json",
         "self",
         "install",
@@ -400,8 +400,8 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
 /// que el `reason` nuevo no se ha colado en las operaciones limpias.
 #[test]
 fn self_install_no_setup_exits_0_without_reason() {
-    let sandbox = Sandbox::nuevo("nosetup");
-    let (code, actual) = sandbox.correr(&[
+    let sandbox = Sandbox::new("nosetup");
+    let (code, actual) = sandbox.run(&[
         "--json",
         "self",
         "install",

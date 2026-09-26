@@ -346,16 +346,16 @@ fn pending(env: &Env) -> Pending {
 /// las instalaciones coexistentes. Recorrerlo tres veces era la forma de que una de
 /// las tres viera algo que las otras no.
 fn path_state(env: &Env, receipt: Option<&InstallReceipt>) -> PathState {
-    let integracion = receipt.map(|r| &r.path_integration);
-    let registradas = instalaciones_en_path(env, integracion, receipt);
+    let integration = receipt.map(|r| &r.path_integration);
+    let registered = installs_in_path(env, integration, receipt);
 
     // Entradas del `PATH` de la sesión que apuntan a una instalación de la aplicación.
-    let entradas: Vec<String> = env
+    let entries: Vec<String> = env
         .path_env
-        .split(separador_path())
+        .split(path_separator())
         .filter(|e| !e.trim().is_empty())
         .filter(|e| {
-            registradas
+            registered
                 .iter()
                 .any(|(dir, _, _)| crate::canonical_path_entry_matches(Path::new(e), dir))
         })
@@ -363,31 +363,31 @@ fn path_state(env: &Env, receipt: Option<&InstallReceipt>) -> PathState {
         .collect();
     // El comando resuelve a la instalación registrada si la **primera** coincidencia
     // del `PATH` es la de la instalación registrada (§8.2, orden de precedencia).
-    let resolves_to_this_install = entradas.first().is_some_and(|primera| {
-        registradas.iter().any(|(dir, _, propia)| {
-            *propia && crate::canonical_path_entry_matches(Path::new(primera), dir)
-        })
+    let resolves_to_this_install = entries.first().is_some_and(|first| {
+        registered
+            .iter()
+            .any(|(dir, _, own)| *own && crate::canonical_path_entry_matches(Path::new(first), dir))
     });
-    let duplicate_entries = if entradas.len() > 1 {
-        entradas
+    let duplicate_entries = if entries.len() > 1 {
+        entries
     } else {
         Vec::new()
     };
 
-    let mut coexisting: Vec<Coexistence> = registradas
+    let mut coexisting: Vec<Coexistence> = registered
         .iter()
         .enumerate()
-        .filter(|(_, (_, _, propia))| !*propia)
-        .map(|(indice, (path, channel, _))| Coexistence {
+        .filter(|(_, (_, _, own))| !*own)
+        .map(|(index, (path, channel, _))| Coexistence {
             path: path.clone(),
             channel: *channel,
-            takes_precedence: indice == 0,
+            takes_precedence: index == 0,
         })
         .collect();
     // El directorio de programa registrado puede no estar en el `PATH` de la sesión —
     // se invoca por su ruta completa— y aun así ser la instalación a la que se opera.
     // Se informa igualmente, y sin precedencia porque no está en el `PATH`.
-    if !registradas.iter().any(|(_, _, propia)| *propia) {
+    if !registered.iter().any(|(_, _, own)| *own) {
         coexisting.push(Coexistence {
             path: env.roots.program_dir.clone(),
             channel: channel::detect(&env.roots.program_dir, receipt),
@@ -398,13 +398,13 @@ fn path_state(env: &Env, receipt: Option<&InstallReceipt>) -> PathState {
     PathState {
         resolves_to_this_install,
         duplicate_entries,
-        integration: integration_state(env, integracion),
+        integration: integration_state(env, integration),
         coexisting,
     }
 }
 
 /// Separador de entradas del `PATH` de la plataforma.
-fn separador_path() -> char {
+fn path_separator() -> char {
     if cfg!(windows) {
         ';'
     } else {
@@ -418,8 +418,8 @@ fn separador_path() -> char {
 /// del proceso: el registro es lo que sobrevive a la sesión. Unix pregunta por el
 /// enlace, y `path_unix` no necesita el `PATH` porque la integración es el archivo de
 /// arranque.
-fn integration_state(env: &Env, integracion: Option<&PathIntegration>) -> &'static str {
-    if !integracion.is_some_and(|i| i.modify_path) {
+fn integration_state(env: &Env, integration: Option<&PathIntegration>) -> &'static str {
+    if !integration.is_some_and(|i| i.modify_path) {
         return "not_modified";
     }
     #[cfg(windows)]
@@ -429,16 +429,16 @@ fn integration_state(env: &Env, integracion: Option<&PathIntegration>) -> &'stat
         }
         // Se pregunta al registro por la entrada del **directorio de programa**, que es
         // lo que §9.3.1 añade: el directorio del enlace es el mismo en Windows.
-        let programa = env.roots.program_dir.display().to_string();
+        let program = env.roots.program_dir.display().to_string();
         match crate::path_windows::read_path(&env.registry_subkey) {
-            Ok(Some(raw)) if alguna_entrada_es_de(&raw.value, &[programa]) => "present",
+            Ok(Some(raw)) if any_entry_is_from(&raw.value, &[program]) => "present",
             _ => "absent",
         }
     }
     #[cfg(not(windows))]
     {
         let _ = env;
-        match integracion.and_then(|i| i.symlink.as_ref()) {
+        match integration.and_then(|i| i.symlink.as_ref()) {
             Some(symlink) if symlink.symlink_metadata().is_ok() => "present",
             _ => "absent",
         }
@@ -446,9 +446,9 @@ fn integration_state(env: &Env, integracion: Option<&PathIntegration>) -> &'stat
 }
 
 #[cfg(windows)]
-fn alguna_entrada_es_de(value: &str, candidatos: &[String]) -> bool {
+fn any_entry_is_from(value: &str, candidates: &[String]) -> bool {
     value.split(';').filter(|e| !e.trim().is_empty()).any(|e| {
-        candidatos
+        candidates
             .iter()
             .any(|c| crate::canonical_path_entry_matches(Path::new(e), Path::new(c)))
     })
@@ -464,66 +464,66 @@ fn alguna_entrada_es_de(value: &str, candidatos: &[String]) -> bool {
 ///
 /// El orden es el del `PATH` porque es el que decide la precedencia, que es lo que §9.8
 /// pide informar cuando conviven dos instalaciones.
-fn instalaciones_en_path(
+fn installs_in_path(
     env: &Env,
-    integracion: Option<&PathIntegration>,
+    integration: Option<&PathIntegration>,
     receipt: Option<&InstallReceipt>,
 ) -> Vec<(PathBuf, Channel, bool)> {
     let exe_name = crate::uninstall::executable_name_default();
-    let clave_registrada = receipt
+    let registered_key = receipt
         .map(|r| crate::canonical_path_key(&r.install_dir))
         .unwrap_or_else(|| crate::canonical_path_key(&env.roots.program_dir));
     // En Unix el bloque delimitado exporta el directorio del enlace, que es la ruta que
     // el usuario ve en el `PATH`; la instalación de ahí también se cuenta.
-    let directorio_del_enlace = integracion
+    let link_directory = integration
         .and_then(|i| i.symlink.clone())
         .and_then(|s| s.parent().map(Path::to_path_buf))
         .unwrap_or_else(crate::bin_dir);
 
-    let mut vistas: Vec<(PathBuf, Channel, bool)> = Vec::new();
-    for entrada in env
+    let mut views: Vec<(PathBuf, Channel, bool)> = Vec::new();
+    for entry in env
         .path_env
-        .split(separador_path())
+        .split(path_separator())
         .filter(|e| !e.trim().is_empty())
     {
-        let dir = PathBuf::from(entrada);
-        let parece_instalacion =
+        let dir = PathBuf::from(entry);
+        let looks_like_installation =
             dir.join(&exe_name).is_file() || receipt::receipt_path(&dir).is_file();
-        if !parece_instalacion {
+        if !looks_like_installation {
             continue;
         }
         let key = crate::canonical_path_key(&dir);
-        if vistas
+        if views
             .iter()
             .any(|(v, _, _)| crate::canonical_path_key(v) == key)
         {
             continue;
         }
-        let canal = channel::detect(&dir.join(&exe_name), None);
-        vistas.push((dir, canal, key == clave_registrada));
+        let channel = channel::detect(&dir.join(&exe_name), None);
+        views.push((dir, channel, key == registered_key));
     }
 
     // El directorio del enlace sin el ejecutable al lado —una instalación enlazada cuyo
     // programa se movió— sigue siendo una instalación visible, y sin ella el
     // diagnóstico no podría decir que el comando resuelve a ella.
     if cfg!(unix) {
-        let key = crate::canonical_path_key(&directorio_del_enlace);
-        let ya = vistas
+        let key = crate::canonical_path_key(&link_directory);
+        let already = views
             .iter()
             .any(|(v, _, _)| crate::canonical_path_key(v) == key);
-        if !ya && directorio_del_enlace.join(&exe_name).exists() {
-            vistas.insert(
+        if !already && link_directory.join(&exe_name).exists() {
+            views.insert(
                 0,
                 (
-                    directorio_del_enlace.clone(),
-                    channel::detect(&directorio_del_enlace.join(&exe_name), None),
-                    key == clave_registrada,
+                    link_directory.clone(),
+                    channel::detect(&link_directory.join(&exe_name), None),
+                    key == registered_key,
                 ),
             );
         }
     }
 
-    vistas
+    views
 }
 
 /// Fila `models` de §9.8.
@@ -574,14 +574,14 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or_default();
-        let raiz = std::env::temp_dir().join(format!("doctor-{}-{tag}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&raiz);
+        let root = std::env::temp_dir().join(format!("doctor-{}-{tag}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
         let roots = cleanup::Roots {
-            program_dir: raiz.join("opt/ai-voice-interconnector"),
-            data_dir: raiz.join("data"),
-            models_dir: raiz.join("models"),
-            temp_root: raiz.join("tmp"),
-            home: raiz.join("home/ana"),
+            program_dir: root.join("opt/ai-voice-interconnector"),
+            data_dir: root.join("data"),
+            models_dir: root.join("models"),
+            temp_root: root.join("tmp"),
+            home: root.join("home/ana"),
             models_shared: false,
         };
         for dir in [
@@ -599,9 +599,9 @@ mod tests {
         }
     }
 
-    fn claves(report: &Report) -> Vec<String> {
-        let valor = serde_json::to_value(report).expect("el reporte es JSON");
-        valor
+    fn keys(report: &Report) -> Vec<String> {
+        let value = serde_json::to_value(report).expect("el reporte es JSON");
+        value
             .as_object()
             .expect("el reporte es un objeto")
             .keys()
@@ -624,18 +624,18 @@ mod tests {
         let exe = env.roots.program_dir.join(exe_name());
         let report = report(&env, &exe);
 
-        let esperadas = [
+        let expected = [
             "version", "target", "channel", "install", "path", "pending", "models", "checks",
             "failed",
         ];
-        let claves = claves(&report);
-        for esperada in esperadas {
+        let keys = keys(&report);
+        for expected in expected {
             assert!(
-                claves.iter().any(|k| k == esperada),
-                "falta la clave `{esperada}`: {claves:?}"
+                keys.iter().any(|k| k == expected),
+                "falta la clave `{expected}`: {keys:?}"
             );
         }
-        assert_eq!(claves.len(), esperadas.len(), "y no hay más: {claves:?}");
+        assert_eq!(keys.len(), expected.len(), "y no hay más: {keys:?}");
 
         // La información que las claves retiradas tenían no se pierde: cambia de sitio.
         assert_eq!(report.version, env!("CARGO_PKG_VERSION"));
@@ -663,10 +663,10 @@ mod tests {
     #[test]
     fn doctor_reports_coexisting_installations() {
         let mut env = env("coexistence");
-        let registrada = env.roots.program_dir.clone();
-        write_file(&registrada.join(exe_name()), "binario");
-        let segunda = env.roots.temp_root.join("segunda-instalacion");
-        write_file(&segunda.join(exe_name()), "binario");
+        let registered = env.roots.program_dir.clone();
+        write_file(&registered.join(exe_name()), "binario");
+        let second = env.roots.temp_root.join("segunda-instalacion");
+        write_file(&second.join(exe_name()), "binario");
         // La del Cask va la primera, y no deja recibo: se reconoce por el prefijo.
         let cask = env
             .roots
@@ -677,13 +677,13 @@ mod tests {
         // producción, y con el equivocado el `PATH` entero se lee como una sola entrada y
         // la prueba mide otra cosa.
         let sep = if cfg!(windows) { ";" } else { ":" };
-        env.path_env = [cask.clone(), registrada.clone(), segunda]
+        env.path_env = [cask.clone(), registered.clone(), second]
             .iter()
             .map(|p| p.display().to_string())
             .collect::<Vec<String>>()
             .join(sep);
 
-        let report = report(&env, &registrada.join(exe_name()));
+        let report = report(&env, &registered.join(exe_name()));
         let coexisting = &report.path.coexisting;
         assert_eq!(coexisting.len(), 2, "solo las ajenas: {coexisting:?}");
         assert!(
@@ -708,11 +708,11 @@ mod tests {
     #[test]
     fn doctor_reports_pending_artifacts() {
         let env = env("pending");
-        let aparcado = env
+        let parked = env
             .roots
             .program_dir
             .join(format!("{}1234", crate::PARKED_DIR_PREFIX));
-        write_file(&aparcado.join("anterior"), "v1");
+        write_file(&parked.join("anterior"), "v1");
         let staging = env
             .roots
             .program_dir
@@ -720,17 +720,17 @@ mod tests {
             .unwrap()
             .join(format!("{}9999", crate::STAGING_DIR_PREFIX));
         write_file(&staging.join("descargado"), "bundle");
-        let temporal = env.roots.temp_root.join("avi-huerfano.tmp");
-        write_file(&temporal, "x");
+        let temp = env.roots.temp_root.join("avi-huerfano.tmp");
+        write_file(&temp, "x");
 
-        let informe = report(&env, &env.roots.program_dir.join(exe_name()));
-        let pending = &informe.pending;
+        let findings = report(&env, &env.roots.program_dir.join(exe_name()));
+        let pending = &findings.pending;
 
         assert!(
             pending
                 .parked
                 .iter()
-                .any(|p| p == &aparcado.display().to_string()),
+                .any(|p| p == &parked.display().to_string()),
             "el aparcado se informa: {:?}",
             pending.parked
         );
@@ -746,20 +746,20 @@ mod tests {
             pending
                 .temporaries
                 .iter()
-                .any(|p| p == &temporal.display().to_string()),
+                .any(|p| p == &temp.display().to_string()),
             "el temporal huérfano se informa: {:?}",
             pending.temporaries
         );
         assert!(!pending.is_clean());
-        assert!(informe.is_failure());
+        assert!(findings.is_failure());
 
         // Y el diario de transacción se informa cuando existe.
         write_file(
             &crate::transaction::journal_path(&env.roots.program_dir),
             "{}",
         );
-        let con_diario = report(&env, &env.roots.program_dir.join(exe_name()));
-        assert!(con_diario.pending.transaction_journal);
+        let with_journal = report(&env, &env.roots.program_dir.join(exe_name()));
+        assert!(with_journal.pending.transaction_journal);
 
         let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }

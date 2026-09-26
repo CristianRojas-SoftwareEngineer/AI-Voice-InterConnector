@@ -200,14 +200,14 @@ pub fn parse(text: &str) -> anyhow::Result<InstallReceipt> {
 /// Escribe el recibo de forma atómica: temporal hermano, escritura, renombrado
 /// sobre el destino. Un corte a mitad deja el recibo anterior intacto.
 pub fn write_to(receipt: &InstallReceipt, program_dir: &Path) -> anyhow::Result<()> {
-    let destino = receipt_path(program_dir);
-    let temporal = program_dir.join(format!("{RECEIPT_NAME}.tmp-{}", std::process::id()));
-    let texto = serde_json::to_string_pretty(receipt)?;
-    std::fs::write(&temporal, texto.as_bytes())?;
-    match std::fs::rename(&temporal, &destino) {
+    let dest = receipt_path(program_dir);
+    let temp = program_dir.join(format!("{RECEIPT_NAME}.tmp-{}", std::process::id()));
+    let text = serde_json::to_string_pretty(receipt)?;
+    std::fs::write(&temp, text.as_bytes())?;
+    match std::fs::rename(&temp, &dest) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = std::fs::remove_file(&temporal);
+            let _ = std::fs::remove_file(&temp);
             Err(e.into())
         }
     }
@@ -238,9 +238,9 @@ fn civil_from_unix(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
+    let day_of_year = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let d = day_of_year - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if m <= 2 { y + 1 } else { y };
     (
@@ -277,8 +277,8 @@ fn unix_from_rfc3339(text: &str) -> Option<i64> {
     } else {
         (month + 9) as i64
     };
-    let doy = (153 * mp + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let day_of_year = (153 * mp + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + day_of_year;
     let days = era * 146_097 + doe - 719_468;
     Some(days * 86_400 + hour * 3600 + minute * 60 + second)
 }
@@ -288,7 +288,7 @@ mod tests {
     use super::*;
     use crate::test_support::{scratch, ENV_LOCK};
 
-    fn recibo_de_ejemplo() -> InstallReceipt {
+    fn sample_receipt() -> InstallReceipt {
         InstallReceipt::new(
             "0.24.0",
             "x86_64-unknown-linux-gnu",
@@ -315,47 +315,47 @@ mod tests {
     #[test]
     fn receipt_roundtrip_is_atomic() {
         let dir = scratch("receipt-roundtrip");
-        let recibo = recibo_de_ejemplo();
-        write_to(&recibo, &dir).unwrap();
+        let receipt = sample_receipt();
+        write_to(&receipt, &dir).unwrap();
 
-        let leido = read_from(&dir)
+        let loaded = read_from(&dir)
             .unwrap()
             .expect("el recibo está donde se escribió");
         assert_eq!(
-            leido, recibo,
+            loaded, receipt,
             "el recibo sobrevive al viaje de ida y vuelta"
         );
-        assert_eq!(leido.schema_version, RECEIPT_SCHEMA_VERSION);
-        assert_eq!(leido.app, crate::APP_NAME);
-        assert_eq!(leido.channel, Channel::Script);
-        assert_eq!(leido.channel.as_str(), "script");
+        assert_eq!(loaded.schema_version, RECEIPT_SCHEMA_VERSION);
+        assert_eq!(loaded.app, crate::APP_NAME);
+        assert_eq!(loaded.channel, Channel::Script);
+        assert_eq!(loaded.channel.as_str(), "script");
 
         // El temporal no sobrevive al renombrado.
-        let contenidos: Vec<String> = std::fs::read_dir(&dir)
+        let contents: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
         assert_eq!(
-            contenidos,
+            contents,
             vec![RECEIPT_NAME.to_string()],
             "solo queda el recibo, ningún temporal hermano"
         );
 
         // Sobrescribir un recibo existente también es atómico: el temporal se
         // va y el destino queda con el contenido nuevo.
-        let mut otro = recibo.clone();
-        otro.version = "0.25.0".to_string();
-        write_to(&otro, &dir).unwrap();
+        let mut other = receipt.clone();
+        other.version = "0.25.0".to_string();
+        write_to(&other, &dir).unwrap();
         assert_eq!(read_from(&dir).unwrap().unwrap().version, "0.25.0");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 
         // La fecha escrita es RFC 3339 UTC y se puede releer como instante.
-        let ahora = unix_from_rfc3339(&leido.installed_at).expect("`installed_at` es RFC 3339");
-        let antes = std::time::SystemTime::now()
+        let now = unix_from_rfc3339(&loaded.installed_at).expect("`installed_at` es RFC 3339");
+        let before = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        assert!(ahora <= antes && antes - ahora < 60, "instante razonable");
+        assert!(now <= before && before - now < 60, "instante razonable");
 
         // Sin recibo no hay instalación: se distingue de un recibo ilegible.
         assert_eq!(read_from(&scratch("receipt-vacio")).unwrap(), None);
@@ -367,43 +367,43 @@ mod tests {
     #[test]
     fn receipt_ignores_unknown_fields() {
         let dir = scratch("receipt-desconocidos");
-        let mut texto =
-            serde_json::to_string_pretty(&recibo_de_ejemplo()).expect("el recibo se serializa");
+        let mut text =
+            serde_json::to_string_pretty(&sample_receipt()).expect("el recibo se serializa");
         // Campo nuevo en la raíz, en `path_integration` y en `roots`.
-        texto = texto.replacen(
+        text = text.replacen(
             "{",
             "{\n  \"campo_del_futuro\": {\"anidado\": [1, 2, 3]},",
             1,
         );
-        texto = texto.replacen(
+        text = text.replacen(
             "\"path_integration\": {",
             "\"path_integration\": {\n    \"future_field\": 42,",
             1,
         );
-        texto = texto.replacen(
+        text = text.replacen(
             "\"roots\": {",
             "\"roots\": {\n    \"future_root\": null,",
             1,
         );
-        std::fs::write(receipt_path(&dir), texto).unwrap();
+        std::fs::write(receipt_path(&dir), text).unwrap();
 
-        let mut leido = read_from(&dir).unwrap().expect("el recibo se lee");
-        let original = recibo_de_ejemplo();
+        let mut loaded = read_from(&dir).unwrap().expect("el recibo se lee");
+        let original = sample_receipt();
         // `installed_at` se afirma por separado: dos recibos construidos en el
         // mismo segundo tienen la misma fecha, y en el siguiente no, así que
         // compararlo aquí haría la prueba intermitente.
-        leido.installed_at = original.installed_at.clone();
-        assert_eq!(leido, original, "lo desconocido no altera lo conocido");
+        loaded.installed_at = original.installed_at.clone();
+        assert_eq!(loaded, original, "lo desconocido no altera lo conocido");
         assert_eq!(
-            leido.path_integration.symlink,
+            loaded.path_integration.symlink,
             original.path_integration.symlink
         );
 
         // Y en el otro sentido: un recibo sin `source` (campo opcional) también
         // se lee, porque es opcional por definición.
-        let mut sin_source = recibo_de_ejemplo();
-        sin_source.source = None;
-        write_to(&sin_source, &dir).unwrap();
+        let mut without_source = sample_receipt();
+        without_source.source = None;
+        write_to(&without_source, &dir).unwrap();
         assert_eq!(read_from(&dir).unwrap().unwrap().source, None);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -413,15 +413,14 @@ mod tests {
     #[test]
     fn receipt_rejects_newer_schema() {
         let dir = scratch("receipt-schema");
-        let mut texto =
-            serde_json::to_string(&recibo_de_ejemplo()).expect("el recibo se serializa");
-        texto = texto.replacen("\"schema_version\":1", "\"schema_version\":2", 1);
-        std::fs::write(receipt_path(&dir), texto).unwrap();
+        let mut text = serde_json::to_string(&sample_receipt()).expect("el recibo se serializa");
+        text = text.replacen("\"schema_version\":1", "\"schema_version\":2", 1);
+        std::fs::write(receipt_path(&dir), text).unwrap();
         let err = read_from(&dir).unwrap_err();
-        let mensaje = err.to_string();
+        let message = err.to_string();
         assert!(
-            mensaje.contains('2') && mensaje.contains("actualiza"),
-            "el mensaje nombra la versión y pide actualizar: {mensaje}"
+            message.contains('2') && message.contains("actualiza"),
+            "el mensaje nombra la versión y pide actualizar: {message}"
         );
         assert!(
             read_from(&dir).is_err(),
@@ -445,20 +444,16 @@ mod tests {
     fn receipt_roots_survive_missing_env() {
         let _guard = ENV_LOCK.lock().unwrap();
         let dir = scratch("receipt-roots");
-        let reubicadas = dir.join("reubicadas");
-        std::env::set_var("AVI_DATA_DIR", reubicadas.join("data"));
-        std::env::set_var("AVI_CACHE_DIR", reubicadas.join("cache"));
+        let relocated = dir.join("reubicadas");
+        std::env::set_var("AVI_DATA_DIR", relocated.join("data"));
+        std::env::set_var("AVI_CACHE_DIR", relocated.join("cache"));
         let roots = Roots {
             data_dir: crate::data_dir(),
             cache_dir: crate::models_cache_dir(),
         };
-        assert_eq!(
-            roots.data_dir,
-            reubicadas.join("data"),
-            "la raíz se reubicó"
-        );
+        assert_eq!(roots.data_dir, relocated.join("data"), "la raíz se reubicó");
 
-        let recibo = InstallReceipt::new(
+        let receipt = InstallReceipt::new(
             "0.24.0",
             crate::target::host_triple(),
             Channel::Dev,
@@ -468,7 +463,7 @@ mod tests {
             roots.clone(),
             None,
         );
-        write_to(&recibo, &dir).unwrap();
+        write_to(&receipt, &dir).unwrap();
 
         // La variable desaparece: es el caso de §7 cuando el usuario borra su
         // entorno o cambia de máquina el directorio de programa.
@@ -480,13 +475,13 @@ mod tests {
             "sin la variable, la raíz se resuelve en otro sitio"
         );
 
-        let leido = read_from(&dir).unwrap().expect("el recibo sigue ahí");
+        let loaded = read_from(&dir).unwrap().expect("el recibo sigue ahí");
         assert_eq!(
-            leido.roots, roots,
+            loaded.roots, roots,
             "el recibo conserva los valores efectivos"
         );
-        let efectivas = effective_roots(Some(&leido));
-        assert_eq!(efectivas, roots, "y son los que se usan para operar");
+        let effective = effective_roots(Some(&loaded));
+        assert_eq!(effective, roots, "y son los que se usan para operar");
         assert_ne!(
             effective_roots(None),
             roots,

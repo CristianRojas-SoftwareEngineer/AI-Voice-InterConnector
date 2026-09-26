@@ -88,18 +88,18 @@ pub fn write_pid(data_dir: &Path, pid: u32, addr: &str, resident_pid: u32) -> an
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let contenido = serde_json::to_string_pretty(&PidFile {
+    let content = serde_json::to_string_pretty(&PidFile {
         pid,
         addr: Some(addr.to_string()),
         started_at: Some(crate::receipt::now_rfc3339()),
         resident_pid,
     })?;
-    let temporal = path.with_extension("pid.tmp");
-    std::fs::write(&temporal, contenido.as_bytes())?;
-    match std::fs::rename(&temporal, &path) {
+    let temp = path.with_extension("pid.tmp");
+    std::fs::write(&temp, content.as_bytes())?;
+    match std::fs::rename(&temp, &path) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = std::fs::remove_file(&temporal);
+            let _ = std::fs::remove_file(&temp);
             Err(e.into())
         }
     }
@@ -109,8 +109,8 @@ pub fn write_pid(data_dir: &Path, pid: u32, addr: &str, resident_pid: u32) -> an
 /// esquema que no se entiende: lectura tolerante, el llamante cae al valor por
 /// defecto y nunca falla.
 pub fn read_pid_file(data_dir: &Path) -> Option<PidFile> {
-    let texto = std::fs::read_to_string(pid_path(data_dir)).ok()?;
-    serde_json::from_str(&texto).ok()
+    let text = std::fs::read_to_string(pid_path(data_dir)).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// PID del daemon registrado, o `None` si no hay pidfile, es ilegible o el esquema
@@ -233,21 +233,21 @@ pub async fn stop(
 ) -> StopOutcome {
     let start = std::time::Instant::now();
     let addr = resolve_addr(data_dir, default_addr);
-    let pid_previo = read_pid(data_dir);
+    let previous_pid = read_pid(data_dir);
     // "Estaba en ejecución" se decide antes de tocar nada: es lo que el resumen de
     // §9.4 necesita para decir cómo reiniciarlo, y no puede depender de si la
     // parada tuvo éxito.
-    let was_running = pid_previo.is_some_and(|pid| control.pid_alive(pid)) || probe(&addr).await;
+    let was_running = previous_pid.is_some_and(|pid| control.pid_alive(pid)) || probe(&addr).await;
     crate::faults::trip(crate::faults::FaultPoint::OnDaemonStop).ok();
 
     // 1) Graceful acotado si responde (no hereda el timeout largo del cliente).
     if probe(&addr).await {
         let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, post_shutdown(&addr)).await;
-        let restante = STOP_DEADLINE_GLOBAL
+        let remaining = STOP_DEADLINE_GLOBAL
             .checked_sub(start.elapsed())
             .unwrap_or(Duration::from_millis(500));
-        let espera = restante.min(Duration::from_secs(3));
-        let _ = tokio::time::timeout(espera, wait_health_down(&addr, espera)).await;
+        let wait = remaining.min(Duration::from_secs(3));
+        let _ = tokio::time::timeout(wait, wait_health_down(&addr, wait)).await;
     }
 
     // 2) Árbol preciso por PID si sigue vivo, en las dos plataformas, con la
@@ -276,9 +276,9 @@ pub async fn stop(
 
     // 3) Verificación con lo que queda del plazo global.
     while start.elapsed() < STOP_DEADLINE_GLOBAL {
-        let vivo = read_pid(data_dir).is_some_and(|pid| control.pid_alive(pid));
-        let residente_vivo = resident_alive_by_pid(data_dir, control);
-        if !probe(&addr).await && !vivo && !residente_vivo {
+        let alive = read_pid(data_dir).is_some_and(|pid| control.pid_alive(pid));
+        let resident_alive = resident_alive_by_pid(data_dir, control);
+        if !probe(&addr).await && !alive && !resident_alive {
             break;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -291,24 +291,24 @@ pub async fn stop(
     let remaining = if stopped {
         None
     } else {
-        let mut partes = Vec::new();
+        let mut parts = Vec::new();
         if let Some(pid) = pid_final {
-            partes.push(format!("daemon pid {pid}"));
+            parts.push(format!("daemon pid {pid}"));
         }
         if probe(&addr).await {
-            partes.push(format!("el daemon en {addr} responde"));
+            parts.push(format!("el daemon en {addr} responde"));
         }
         if resident_alive_by_pid(data_dir, control) {
-            partes.push(format!("residente pid {}", read_resident_pid(data_dir)));
+            parts.push(format!("residente pid {}", read_resident_pid(data_dir)));
         }
-        Some(partes.join("; "))
+        Some(parts.join("; "))
     };
     let pidfile_removed = stopped && remove_pid_file(data_dir).is_ok();
 
     StopOutcome {
         was_running,
         stopped,
-        pid: pid_previo,
+        pid: previous_pid,
         pidfile_removed,
         remaining,
     }
@@ -348,26 +348,25 @@ pub async fn post_shutdown(addr: &str) -> std::io::Result<()> {
 /// primer salto bastan para ambos usos. Con `Connection: close` el servidor cierra
 /// después de responder, así que una sola lectura alcanza para tener la línea de
 /// estado sin esperar a un cuerpo que puede no llegar.
-async fn request(addr: &str, metodo: &str, ruta: &str) -> std::io::Result<String> {
+async fn request(addr: &str, method: &str, path: &str) -> std::io::Result<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
     let mut stream = TcpStream::connect(addr).await?;
-    let peticion = format!(
-        "{metodo} {ruta} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
     );
-    stream.write_all(peticion.as_bytes()).await?;
+    stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
     let mut buf = vec![0u8; 1024];
-    let leidos = stream.read(&mut buf).await?;
-    let texto = String::from_utf8_lossy(&buf[..leidos]);
-    Ok(texto.lines().next().unwrap_or_default().to_string())
+    let bytes_read = stream.read(&mut buf).await?;
+    let text = String::from_utf8_lossy(&buf[..bytes_read]);
+    Ok(text.lines().next().unwrap_or_default().to_string())
 }
 
 /// `true` si la línea de estado es de la familia 2xx.
-fn status_is_success(linea: &str) -> bool {
-    linea
-        .split_whitespace()
+fn status_is_success(line: &str) -> bool {
+    line.split_whitespace()
         .nth(1)
         .and_then(|code| code.parse::<u16>().ok())
         .is_some_and(|code| (200..300).contains(&code))
@@ -393,7 +392,7 @@ mod tests {
     /// Puerto efímero que se enlaza y se suelta: garantiza que no hay nada
     /// escuchando, sin depender de que 8765 esté libre en la máquina que ejecuta la
     /// prueba.
-    fn puerto_muerto() -> String {
+    fn dead_port() -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("se enlaza un puerto");
         let addr = listener.local_addr().expect("dirección local");
         drop(listener);
@@ -403,12 +402,12 @@ mod tests {
     /// Control de procesos que no hace nada: `pid_alive` dice que no vive nadie, y
     /// se cuentan las llamadas para poder afirmar que el protocolo ni siquiera
     /// llegó a reclamar.
-    struct Inerte {
+    struct Inert {
         killed: AtomicU32,
         swept: AtomicU32,
     }
 
-    impl Inerte {
+    impl Inert {
         fn new() -> Self {
             Self {
                 killed: AtomicU32::new(0),
@@ -417,7 +416,7 @@ mod tests {
         }
     }
 
-    impl ProcessControl for Inerte {
+    impl ProcessControl for Inert {
         fn pid_alive(&self, _pid: u32) -> bool {
             false
         }
@@ -440,11 +439,11 @@ mod tests {
 
     /// Control que dice que un PID dado vive siempre: sirve para el caso del
     /// pidfile rancio, donde la parada no puede concluir.
-    struct Vivo {
+    struct Alive {
         pid: u32,
     }
 
-    impl ProcessControl for Vivo {
+    impl ProcessControl for Alive {
         fn pid_alive(&self, pid: u32) -> bool {
             pid == self.pid
         }
@@ -482,8 +481,8 @@ mod tests {
     #[tokio::test]
     async fn stop_is_noop_without_pidfile() {
         let data = scratch("noop");
-        let control = Inerte::new();
-        let outcome = stop(&data, &puerto_muerto(), &control).await;
+        let control = Inert::new();
+        let outcome = stop(&data, &dead_port(), &control).await;
 
         assert!(!outcome.was_running, "no había daemon en ejecución");
         assert!(outcome.stopped, "parar nada es parar bien");
@@ -509,7 +508,7 @@ mod tests {
         // salvo que ahora sí hubo un PID: es lo que permite al resumen decir que
         // no hace falta reiniciar nada.
         write_pid(&data, 999_999, "127.0.0.1:1", 0).unwrap();
-        let outcome = stop(&data, &puerto_muerto(), &control).await;
+        let outcome = stop(&data, &dead_port(), &control).await;
         assert!(!outcome.was_running, "el PID registrado no está vivo");
         assert_eq!(
             outcome.pid,
@@ -531,12 +530,12 @@ mod tests {
     #[test]
     fn pidfile_survives_partial_write() {
         let data = scratch("pidfile");
-        let ruta = pid_path(&data);
-        let control = Inerte::new();
+        let path = pid_path(&data);
+        let control = Inert::new();
 
         // 1. Un pidfile truncado —el caso que deja un corte a mitad de escritura—
         //    se lee como ausente, no como un error ni como un PID de basura.
-        crate::test_support::write_file(&ruta, "{\"pid\": 4242, \"addr\": \"127.0.0.1:876");
+        crate::test_support::write_file(&path, "{\"pid\": 4242, \"addr\": \"127.0.0.1:876");
         assert_eq!(read_pid(&data), None, "un JSON truncado no da PID");
         assert_eq!(read_resident_pid(&data), 0, "ni PID de residente");
         assert_eq!(read_addr(&data), None, "ni dirección");
@@ -551,30 +550,30 @@ mod tests {
         );
 
         // 2. Un esquema viejo sin `resident_pid` ni `addr` se lee igual.
-        crate::test_support::write_file(&ruta, r#"{"pid": 4242}"#);
+        crate::test_support::write_file(&path, r#"{"pid": 4242}"#);
         assert_eq!(read_pid(&data), Some(4242));
         assert_eq!(read_resident_pid(&data), 0, "sin el campo, desconocido");
         assert_eq!(read_addr(&data), None);
         assert_eq!(resolve_client_addr(&data), DEFAULT_ADDR);
 
         // 3. Un `pid` inválido no se interpreta.
-        for basura in ["{}", r#"{"pid": "x"}"#, "[]", "no soy json", ""] {
-            crate::test_support::write_file(&ruta, basura);
-            assert_eq!(read_pid(&data), None, "basura: {basura:?}");
+        for garbage in ["{}", r#"{"pid": "x"}"#, "[]", "no soy json", ""] {
+            crate::test_support::write_file(&path, garbage);
+            assert_eq!(read_pid(&data), None, "basura: {garbage:?}");
         }
 
         // 4. La escritura es atómica: temporal hermano y renombrado, sin residuo.
         write_pid(&data, 4242, "127.0.0.1:8765", 77).unwrap();
-        let escrito = std::fs::read_to_string(&ruta).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
         assert!(
-            serde_json::from_str::<PidFile>(&escrito).is_ok(),
-            "lo que hay en disco es JSON completo, nunca medio: {escrito}"
+            serde_json::from_str::<PidFile>(&written).is_ok(),
+            "lo que hay en disco es JSON completo, nunca medio: {written}"
         );
         assert_eq!(read_pid(&data), Some(4242));
         assert_eq!(read_resident_pid(&data), 77);
         assert_eq!(read_addr(&data).as_deref(), Some("127.0.0.1:8765"));
-        let temporal = ruta.with_extension("pid.tmp");
-        assert!(!temporal.exists(), "el temporal no sobrevive al renombrado");
+        let temp = path.with_extension("pid.tmp");
+        assert!(!temp.exists(), "el temporal no sobrevive al renombrado");
         assert_eq!(
             std::fs::read_dir(&data).unwrap().count(),
             1,
@@ -583,23 +582,23 @@ mod tests {
 
         // 5. Intercalar muchas escrituras y lecturas: cada lectura devuelve un
         //    estado completo y coherente, nunca una mezcla de dos escrituras.
-        for ronda in 0..64u32 {
-            let pid = 1000 + ronda;
-            write_pid(&data, pid, "127.0.0.1:9", ronda).unwrap();
-            if let (Some(leido), Some(addr)) = (read_pid(&data), read_addr(&data)) {
-                assert_eq!(leido, pid, "el PID leído es el último escrito");
+        for round in 0..64u32 {
+            let pid = 1000 + round;
+            write_pid(&data, pid, "127.0.0.1:9", round).unwrap();
+            if let (Some(loaded), Some(addr)) = (read_pid(&data), read_addr(&data)) {
+                assert_eq!(loaded, pid, "el PID leído es el último escrito");
                 assert_eq!(
                     addr, "127.0.0.1:9",
                     "la dirección leída es la última escrita"
                 );
-                assert_eq!(read_resident_pid(&data), ronda, "el residente también");
+                assert_eq!(read_resident_pid(&data), round, "el residente también");
             }
         }
 
         // 6. Con el pidfile truncado, la parada sigue siendo un no-op: es el
         //    contrato de "nada modificado" del que depende `daemon_stop_failed`.
-        crate::test_support::write_file(&ruta, "{\"pid\": 4242, \"add");
-        let outcome = runtime().block_on(stop(&data, &puerto_muerto(), &control));
+        crate::test_support::write_file(&path, "{\"pid\": 4242, \"add");
+        let outcome = runtime().block_on(stop(&data, &dead_port(), &control));
         assert!(!outcome.was_running);
         assert!(
             outcome.stopped,
@@ -615,14 +614,14 @@ mod tests {
     #[tokio::test]
     async fn stop_never_kills_its_own_process() {
         let data = scratch("autoguardia");
-        let control = Inerte::new();
-        let propio = std::process::id();
-        write_pid(&data, propio, &puerto_muerto(), propio).unwrap();
+        let control = Inert::new();
+        let own = std::process::id();
+        write_pid(&data, own, &dead_port(), own).unwrap();
 
-        let outcome = stop(&data, &puerto_muerto(), &control).await;
+        let outcome = stop(&data, &dead_port(), &control).await;
         assert_eq!(
             outcome.pid,
-            Some(propio),
+            Some(own),
             "el PID rancio se conserva en el desenlace"
         );
         assert!(
@@ -643,10 +642,10 @@ mod tests {
     async fn unstoppable_daemon_yields_daemon_stop_failed() {
         let data = scratch("falla");
         let pid = 424_242;
-        let control = Vivo { pid };
-        write_pid(&data, pid, &puerto_muerto(), 0).unwrap();
+        let control = Alive { pid };
+        write_pid(&data, pid, &dead_port(), 0).unwrap();
 
-        let outcome = stop(&data, &puerto_muerto(), &control).await;
+        let outcome = stop(&data, &dead_port(), &control).await;
         assert!(outcome.was_running, "el daemon seguía vivo");
         assert!(!outcome.stopped, "y no se pudo parar");
         assert!(
@@ -654,11 +653,11 @@ mod tests {
             "el pidfile se conserva como pista"
         );
         assert!(pid_path(&data).exists(), "el pidfile sigue en disco");
-        let restante = outcome
+        let remaining = outcome
             .remaining
             .as_deref()
             .expect("se nombra lo que quedó vivo");
-        assert!(restante.contains(&pid.to_string()), "{restante}");
+        assert!(remaining.contains(&pid.to_string()), "{remaining}");
 
         let err = require_stopped(&outcome).expect_err("sin parada no hay `self install`");
         assert_eq!(err.reason, "daemon_stop_failed");
@@ -675,20 +674,20 @@ mod tests {
     async fn resident_sweep_only_without_registered_pid() {
         let data = scratch("residente");
 
-        let sin_pid = Inerte::new();
-        write_pid(&data, 999_999, &puerto_muerto(), 0).unwrap();
-        stop(&data, &puerto_muerto(), &sin_pid).await;
+        let without_pid = Inert::new();
+        write_pid(&data, 999_999, &dead_port(), 0).unwrap();
+        stop(&data, &dead_port(), &without_pid).await;
         assert_eq!(
-            sin_pid.swept.load(Ordering::Relaxed),
+            without_pid.swept.load(Ordering::Relaxed),
             1,
             "sin PID de residente se barre por imagen propia"
         );
 
-        let con_pid = Inerte::new();
-        write_pid(&data, 999_999, &puerto_muerto(), 888_888).unwrap();
-        stop(&data, &puerto_muerto(), &con_pid).await;
+        let with_pid = Inert::new();
+        write_pid(&data, 999_999, &dead_port(), 888_888).unwrap();
+        stop(&data, &dead_port(), &with_pid).await;
         assert_eq!(
-            con_pid.swept.load(Ordering::Relaxed),
+            with_pid.swept.load(Ordering::Relaxed),
             0,
             "con PID de residente no se barre por imagen: se mata su árbol"
         );

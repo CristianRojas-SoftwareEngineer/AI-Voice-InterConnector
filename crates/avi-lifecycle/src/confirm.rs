@@ -234,7 +234,7 @@ mod tests {
     use crate::test_support::{scratch, snapshot, write_file};
     use std::io::Cursor;
 
-    fn peticion<'a>(
+    fn request<'a>(
         kind: Kind,
         summary: &'a [String],
         entries: &'a [PlanEntry],
@@ -257,16 +257,16 @@ mod tests {
     #[test]
     fn confirmation_matrix_covers_four_cells() {
         let dir = scratch("confirm-matriz");
-        let destino = dir.join("ai-voice-interconnector");
-        write_file(&destino, "contenido");
-        let entries = vec![PlanEntry::of(&destino)];
+        let dest = dir.join("ai-voice-interconnector");
+        write_file(&dest, "contenido");
+        let entries = vec![PlanEntry::of(&dest)];
         let summary = vec!["Se instalará ai-voice-interconnector 0.24.0".to_string()];
 
         // Columna "con terminal", fila no destructiva: se pregunta con `[S/n]` y
         // `Enter` acepta.
         let mut out = Vec::new();
         let decision = confirm(
-            &peticion(Kind::NonDestructive, &summary, &[], false, false, true),
+            &request(Kind::NonDestructive, &summary, &[], false, false, true),
             &mut Cursor::new("\n"),
             &mut out,
         )
@@ -280,7 +280,7 @@ mod tests {
         // `Enter` rechaza y una `s` explícita acepta.
         let mut out = Vec::new();
         let decision = confirm(
-            &peticion(Kind::Destructive, &summary, &entries, false, false, true),
+            &request(Kind::Destructive, &summary, &entries, false, false, true),
             &mut Cursor::new("\n"),
             &mut out,
         )
@@ -290,13 +290,13 @@ mod tests {
         assert!(out.contains("[s/N]"), "literal de la celda: {out}");
         assert!(out.contains("Cancelado."), "cancela sin error: {out}");
         assert!(
-            out.contains(&destino.display().to_string()) && out.contains("MB"),
+            out.contains(&dest.display().to_string()) && out.contains("MB"),
             "la celda destructiva lista rutas con tamaños: {out}"
         );
 
         let mut out = Vec::new();
         let decision = confirm(
-            &peticion(Kind::Destructive, &summary, &entries, false, false, true),
+            &request(Kind::Destructive, &summary, &entries, false, false, true),
             &mut Cursor::new("s\n"),
             &mut out,
         )
@@ -307,7 +307,7 @@ mod tests {
         // no lee stdin.
         let mut out = Vec::new();
         let decision = confirm(
-            &peticion(Kind::NonDestructive, &summary, &[], false, false, false),
+            &request(Kind::NonDestructive, &summary, &[], false, false, false),
             &mut Cursor::new(""),
             &mut out,
         )
@@ -322,20 +322,20 @@ mod tests {
         // matriz y la razón de que el predicado sea inyectable.
         let mut out = Vec::new();
         let err = confirm(
-            &peticion(Kind::Destructive, &summary, &entries, false, false, false),
+            &request(Kind::Destructive, &summary, &entries, false, false, false),
             &mut Cursor::new(""),
             &mut out,
         )
         .unwrap_err();
-        let le = err
+        let failure = err
             .downcast_ref::<LifecycleError>()
             .expect("reason de contrato");
-        assert_eq!(le.reason, "confirmation_required");
-        assert_eq!(le.exit_code, 2);
+        assert_eq!(failure.reason, "confirmation_required");
+        assert_eq!(failure.exit_code, 2);
         let mut out = Vec::new();
         assert_eq!(
             confirm(
-                &peticion(Kind::Destructive, &summary, &entries, true, false, false),
+                &request(Kind::Destructive, &summary, &entries, true, false, false),
                 &mut Cursor::new(""),
                 &mut out,
             )
@@ -353,10 +353,10 @@ mod tests {
         assert!(require_cleanup_category(&["model"]).is_ok());
         assert!(require_cleanup_category(&CLEANUP_CATEGORIES).is_ok());
         let err = require_cleanup_category(&[]).unwrap_err();
-        let le = err.downcast_ref::<LifecycleError>().unwrap();
-        assert_eq!(le.reason, "usage_error");
-        assert_eq!(le.exit_code, 2);
-        assert!(le.message.contains("model"), "{}", le.message);
+        let failure = err.downcast_ref::<LifecycleError>().unwrap();
+        assert_eq!(failure.reason, "usage_error");
+        assert_eq!(failure.exit_code, 2);
+        assert!(failure.message.contains("model"), "{}", failure.message);
 
         // Lectura de respuestas: `Enter` sigue el valor por defecto de cada
         // celda, y una respuesta que no sea un no cuenta como sí.
@@ -378,13 +378,13 @@ mod tests {
     #[test]
     fn destructive_without_tty_and_without_yes_exits_2() {
         let dir = scratch("confirm-sin-tty");
-        let datos = dir.join("datos");
-        let modelo = dir.join("modelos");
-        write_file(&datos.join("voz.wav"), "voz sintetizada");
-        write_file(&modelo.join("revision.bin"), &"pesado".repeat(1024));
-        let antes = snapshot(&dir);
+        let data = dir.join("datos");
+        let model = dir.join("modelos");
+        write_file(&data.join("voz.wav"), "voz sintetizada");
+        write_file(&model.join("revision.bin"), &"pesado".repeat(1024));
+        let before = snapshot(&dir);
 
-        let entries = vec![PlanEntry::of(&datos), PlanEntry::of(&modelo)];
+        let entries = vec![PlanEntry::of(&data), PlanEntry::of(&model)];
         let mut out = Vec::new();
         let err = confirm(
             &Confirmation {
@@ -400,16 +400,16 @@ mod tests {
         )
         .unwrap_err();
 
-        let le = err
+        let failure = err
             .downcast_ref::<LifecycleError>()
             .expect("reason de contrato");
-        assert_eq!(le.reason, "confirmation_required");
-        assert_eq!(le.exit_code, 2, "error de uso, no un error genérico");
+        assert_eq!(failure.reason, "confirmation_required");
+        assert_eq!(failure.exit_code, 2, "error de uso, no un error genérico");
         // Que la respuesta fuera `y` no cambia nada: sin terminal no hay a quién
         // preguntarle, y el criterio es exigir `--yes`.
-        assert_eq!(snapshot(&dir), antes, "no se borra nada sin `--yes`");
-        let impreso = String::from_utf8(out.clone()).unwrap();
-        assert!(impreso.contains("datos"), "el plan se imprime: {impreso}");
+        assert_eq!(snapshot(&dir), before, "no se borra nada sin `--yes`");
+        let printed = String::from_utf8(out.clone()).unwrap();
+        assert!(printed.contains("datos"), "el plan se imprime: {printed}");
 
         // Con `--yes` la misma operación procede, y tampoco borra: el borrado lo
         // hace quien ejecuta, después de la decisión.
@@ -429,7 +429,7 @@ mod tests {
             .unwrap(),
             Decision::Proceed
         );
-        assert_eq!(snapshot(&dir), antes);
+        assert_eq!(snapshot(&dir), before);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -438,13 +438,13 @@ mod tests {
     #[test]
     fn dry_run_does_not_touch_disk() {
         let dir = scratch("confirm-dry-run");
-        let destino = dir.join("ai-voice-interconnector");
-        let modelo = dir.join("models").join("revision.bin");
-        write_file(&destino, "contenido");
-        write_file(&modelo, &"x".repeat(2048));
-        let antes = snapshot(&dir);
+        let dest = dir.join("ai-voice-interconnector");
+        let model = dir.join("models").join("revision.bin");
+        write_file(&dest, "contenido");
+        write_file(&model, &"x".repeat(2048));
+        let before = snapshot(&dir);
 
-        let entries = vec![PlanEntry::of(&destino), PlanEntry::of(&modelo)];
+        let entries = vec![PlanEntry::of(&dest), PlanEntry::of(&model)];
         let summary = vec!["Se eliminará lo siguiente:".to_string()];
         let mut out = Vec::new();
         let decision = confirm(
@@ -461,20 +461,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(decision, Decision::DryRun);
-        assert_eq!(snapshot(&dir), antes, "el disco no se toca");
+        assert_eq!(snapshot(&dir), before, "el disco no se toca");
 
-        let impreso = String::from_utf8(out.clone()).unwrap();
+        let printed = String::from_utf8(out.clone()).unwrap();
         assert!(
-            impreso.contains("Simulación"),
-            "se anuncia la simulación: {impreso}"
+            printed.contains("Simulación"),
+            "se anuncia la simulación: {printed}"
         );
         assert!(
-            impreso.contains(&modelo.display().to_string()) && impreso.contains("0.0 MB"),
-            "el plan se imprime con rutas y tamaños: {impreso}"
+            printed.contains(&model.display().to_string()) && printed.contains("0.0 MB"),
+            "el plan se imprime con rutas y tamaños: {printed}"
         );
         assert!(
-            !impreso.contains('?'),
-            "en simulación no se pregunta, no hay nada que confirmar: {impreso}"
+            !printed.contains('?'),
+            "en simulación no se pregunta, no hay nada que confirmar: {printed}"
         );
 
         // La simulación gana a `--yes` y a la terminal: en las cuatro celdas el
@@ -499,7 +499,7 @@ mod tests {
         }
         assert_eq!(
             snapshot(&dir),
-            antes,
+            before,
             "tampoco al combinarla con otras banderas"
         );
         std::fs::remove_dir_all(&dir).ok();

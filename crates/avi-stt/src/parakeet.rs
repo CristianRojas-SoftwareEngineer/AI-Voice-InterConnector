@@ -76,12 +76,12 @@ impl ParakeetEngine {
         let mut tokens = Vec::new();
         let vocab =
             std::fs::read_to_string(base.join("vocab.txt")).context("fallo al leer vocab.txt")?;
-        for linea in vocab.lines() {
-            if linea.trim().is_empty() {
+        for line in vocab.lines() {
+            if line.trim().is_empty() {
                 continue;
             }
-            let (tok, idx) = linea.rsplit_once(' ').with_context(|| {
-                format!("vocab.txt mal formado (sin espacio separador): {linea}")
+            let (tok, idx) = line.rsplit_once(' ').with_context(|| {
+                format!("vocab.txt mal formado (sin espacio separador): {line}")
             })?;
             let idx: usize = idx.parse().context("índice de vocabulario no numérico")?;
             if idx >= tokens.len() {

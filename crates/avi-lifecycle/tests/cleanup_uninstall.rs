@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 
 /// Control de procesos inerte: no hay daemon en el sandbox, así que la parada es un
 /// no-op. Es el mismo `ProcessControl` que `daemon_stop` espera.
-struct Inerte;
+struct Inert;
 
-impl ProcessControl for Inerte {
+impl ProcessControl for Inert {
     fn pid_alive(&self, _pid: u32) -> bool {
         false
     }
@@ -41,9 +41,9 @@ impl ProcessControl for Inerte {
 
 /// Removedor que borra ya. El caso diferido de Windows se ejercita con [`Diferido`],
 /// que es el mismo mecanismo que implementa el binario.
-struct Ahora;
+struct Now;
 
-impl uninstall::ProgramDirRemover for Ahora {
+impl uninstall::ProgramDirRemover for Now {
     fn exe_lives_inside(&self, _program_dir: &Path) -> bool {
         false
     }
@@ -58,9 +58,9 @@ impl uninstall::ProgramDirRemover for Ahora {
 
 /// Removedor diferido: no borra nada y dice que lo programa. Es el caso de §9.5, paso 8,
 /// en Windows.
-struct Diferido;
+struct Deferred;
 
-impl uninstall::ProgramDirRemover for Diferido {
+impl uninstall::ProgramDirRemover for Deferred {
     fn exe_lives_inside(&self, _program_dir: &Path) -> bool {
         true
     }
@@ -70,14 +70,14 @@ impl uninstall::ProgramDirRemover for Diferido {
     fn schedule(&self, program_dir: &Path, pid: u32) -> anyhow::Result<bool> {
         // El helper real escribe un script en el temporal del sistema; aquí basta con
         // registrar que se pidió, que es lo que el motor decide.
-        escribir(&program_dir.join("borrado-programado"), &pid.to_string());
+        write(&program_dir.join("borrado-programado"), &pid.to_string());
         Ok(true)
     }
 }
 
 /// Sandbox con las cinco raíces de §7.
 struct Sandbox {
-    raiz: PathBuf,
+    root: PathBuf,
     program_dir: PathBuf,
     data_dir: PathBuf,
     models_dir: PathBuf,
@@ -88,22 +88,22 @@ struct Sandbox {
 }
 
 impl Sandbox {
-    fn nuevo(tag: &str) -> Self {
+    fn new(tag: &str) -> Self {
         let n = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or_default();
-        let raiz =
+        let root =
             std::env::temp_dir().join(format!("cleanup-e2e-{}-{tag}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&raiz);
+        let _ = std::fs::remove_dir_all(&root);
         let sandbox = Self {
-            program_dir: raiz.join("opt").join("ai-voice-interconnector"),
-            data_dir: raiz.join("data"),
-            models_dir: raiz.join("models"),
-            temp_root: raiz.join("tmp"),
-            home: raiz.join("home").join("ana"),
+            program_dir: root.join("opt").join("ai-voice-interconnector"),
+            data_dir: root.join("data"),
+            models_dir: root.join("models"),
+            temp_root: root.join("tmp"),
+            home: root.join("home").join("ana"),
             models_shared: false,
-            raiz,
+            root,
         };
         for dir in [
             &sandbox.program_dir,
@@ -132,7 +132,7 @@ impl Sandbox {
     /// nada.
     fn snapshot(&self) -> Vec<(String, u64)> {
         let mut out = Vec::new();
-        let mut stack = vec![self.raiz.clone()];
+        let mut stack = vec![self.root.clone()];
         while let Some(dir) = stack.pop() {
             let entries = match std::fs::read_dir(&dir) {
                 Ok(entries) => entries,
@@ -145,7 +145,7 @@ impl Sandbox {
                     Err(_) => continue,
                 };
                 let rel = path
-                    .strip_prefix(&self.raiz)
+                    .strip_prefix(&self.root)
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .replace('\\', "/");
@@ -163,16 +163,16 @@ impl Sandbox {
 
     /// Planta el estado de §9.6 completo: modelos, voces de fábrica y de usuario, habla
     /// sintetizada, configuración, logs y pidfile.
-    fn plantar_estado(&self) {
+    fn seed_state(&self) {
         // Modelos: un repo fijado, el derivado CT2, los locks, `xet` y un repo ajeno.
-        escribir(
+        write(
             &self
                 .models_dir
                 .join("models--Helsinki-NLP--opus-mt-es-en")
                 .join("model.safetensors"),
             "pesos",
         );
-        escribir(
+        write(
             &self
                 .models_dir
                 .join("ct2")
@@ -180,7 +180,7 @@ impl Sandbox {
                 .join("model.bin"),
             "ct2",
         );
-        escribir(
+        write(
             &self
                 .models_dir
                 .join(".locks")
@@ -188,8 +188,8 @@ impl Sandbox {
                 .join("lock"),
             "",
         );
-        escribir(&self.models_dir.join("xet").join("shard"), "xet");
-        escribir(
+        write(&self.models_dir.join("xet").join("shard"), "xet");
+        write(
             &self
                 .models_dir
                 .join("models--otra--herramienta")
@@ -197,30 +197,30 @@ impl Sandbox {
             "ajeno",
         );
         // Voces: dos de fábrica y una de usuario, con su namespace de habla.
-        for voz in ["default", "ryan", "mia"] {
-            escribir(
+        for voice in ["default", "ryan", "mia"] {
+            write(
                 &self
                     .data_dir
                     .join("voices")
-                    .join(voz)
+                    .join(voice)
                     .join("reference.qvoice"),
                 "voz",
             );
         }
-        for voz in ["default", "mia"] {
-            escribir(
-                &self.data_dir.join("speech").join(voz).join("hola.wav"),
+        for voice in ["default", "mia"] {
+            write(
+                &self.data_dir.join("speech").join(voice).join("hola.wav"),
                 "wav",
             );
         }
         // Configuración, logs y estado del daemon.
-        escribir(&self.data_dir.join("config.json"), "{}");
-        escribir(&self.data_dir.join("logs").join("daemon.log"), "log");
-        escribir(&self.data_dir.join("daemon.pid"), "{}");
+        write(&self.data_dir.join("config.json"), "{}");
+        write(&self.data_dir.join("logs").join("daemon.log"), "log");
+        write(&self.data_dir.join("daemon.pid"), "{}");
     }
 
     /// Recibo de una instalación registrada, con las raíces del sandbox.
-    fn recibo(&self) -> InstallReceipt {
+    fn receipt(&self) -> InstallReceipt {
         InstallReceipt::new(
             "0.24.0",
             avi_lifecycle::target::host_triple(),
@@ -237,9 +237,9 @@ impl Sandbox {
     }
 
     /// Instala: escribe el ejecutable y el recibo de §8.1.
-    fn instalar(&self) -> InstallReceipt {
-        let receipt = self.recibo();
-        escribir(
+    fn install(&self) -> InstallReceipt {
+        let receipt = self.receipt();
+        write(
             &self.program_dir.join(uninstall::executable_name_default()),
             "binario",
         );
@@ -249,15 +249,15 @@ impl Sandbox {
 }
 
 /// Escribe un fichero, creando los directorios intermedios.
-fn escribir(path: &Path, contenido: &str) {
-    if let Some(padre) = path.parent() {
-        std::fs::create_dir_all(padre).expect("se crea el directorio padre");
+fn write(path: &Path, content: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("se crea el directorio padre");
     }
-    std::fs::write(path, contenido).expect("se escribe el fichero");
+    std::fs::write(path, content).expect("se escribe el fichero");
 }
 
 /// Raíz de la unidad o del sistema de la plataforma, sin escribir nada en ella.
-fn raiz_del_sistema() -> PathBuf {
+fn system_root() -> PathBuf {
     if cfg!(windows) {
         std::env::var("SystemDrive")
             .map(|d| PathBuf::from(format!("{d}:\\")))
@@ -268,13 +268,13 @@ fn raiz_del_sistema() -> PathBuf {
 }
 
 /// `true` si la ruta existe, includedo como enlace roto.
-fn existe(path: &Path) -> bool {
+fn exists(path: &Path) -> bool {
     path.exists() || path.symlink_metadata().is_ok()
 }
 
 /// `--yes` para que la ejecución real no espere terminal: las pruebas affirmed el
 /// resultado, no el prompt.
-fn con_yes(options: CleanupOptions) -> CleanupOptions {
+fn with_yes(options: CleanupOptions) -> CleanupOptions {
     CleanupOptions {
         assume_yes: true,
         ..options
@@ -313,7 +313,7 @@ fn env_uninstall<'a>(
 }
 
 /// Las rutas del plan, como cadenas, que es la forma en que el sobre las publica.
-fn rutas(plan: &cleanup::DeletionPlan) -> Vec<String> {
+fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
     plan.targets
         .iter()
         .map(|t| t.path.display().to_string())
@@ -324,14 +324,14 @@ fn rutas(plan: &cleanup::DeletionPlan) -> Vec<String> {
 /// exclusiva borra el directorio entero con `xet` dentro.
 #[test]
 fn cleanup_categories_are_scoped() {
-    let sandbox = Sandbox::nuevo("scoped");
-    sandbox.plantar_estado();
+    let sandbox = Sandbox::new("scoped");
+    sandbox.seed_state();
     let roots = sandbox.roots();
-    let voces = sandbox.data_dir.join("voices");
-    let habla = sandbox.data_dir.join("speech");
+    let voices = sandbox.data_dir.join("voices");
+    let speech = sandbox.data_dir.join("speech");
 
     // --model: la raíz de modelos entera, y nada del estado.
-    let solo_modelo = cleanup::plan(
+    let model_only = cleanup::plan(
         &roots,
         &CleanupOptions {
             model: true,
@@ -339,31 +339,31 @@ fn cleanup_categories_are_scoped() {
         },
     );
     assert_eq!(
-        rutas(&solo_modelo),
+        paths(&model_only),
         vec![sandbox.models_dir.display().to_string()]
     );
     assert!(sandbox.models_dir.join("xet").exists(), "antes de borrar");
 
     // --voices: las voces de usuario y el arrastre de su habla, y nada más.
-    let solo_vozes = cleanup::plan(
+    let voices_only = cleanup::plan(
         &roots,
         &CleanupOptions {
             voices: true,
             ..Default::default()
         },
     );
-    let del_plan = rutas(&solo_vozes);
-    assert!(del_plan.contains(&voces.join("mia").display().to_string()));
+    let planned_removed = paths(&voices_only);
+    assert!(planned_removed.contains(&voices.join("mia").display().to_string()));
     assert!(
-        del_plan.contains(&habla.join("mia").display().to_string()),
-        "el arrastre de la locución de la voz: {del_plan:?}"
+        planned_removed.contains(&speech.join("mia").display().to_string()),
+        "el arrastre de la locución de la voz: {planned_removed:?}"
     );
     assert!(
-        !del_plan.contains(&voces.join("default").display().to_string()),
+        !planned_removed.contains(&voices.join("default").display().to_string()),
         "las voces de fábrica no se borran: van embebidas"
     );
     assert!(
-        !del_plan.contains(&habla.join("default").display().to_string()),
+        !planned_removed.contains(&speech.join("default").display().to_string()),
         "ni sus locuciones"
     );
 
@@ -375,7 +375,7 @@ fn cleanup_categories_are_scoped() {
             ..Default::default()
         },
     );
-    assert_eq!(rutas(&solo_speech), vec![habla.display().to_string()]);
+    assert_eq!(paths(&solo_speech), vec![speech.display().to_string()]);
 
     // --all: la unión más configuración, logs y pidfile, y **nunca** el programa.
     let todo = cleanup::plan(
@@ -385,22 +385,22 @@ fn cleanup_categories_are_scoped() {
             ..Default::default()
         },
     );
-    let del_plan = rutas(&todo);
-    for esperada in [
+    let planned_removed = paths(&todo);
+    for expected in [
         sandbox.models_dir.display().to_string(),
-        voces.join("mia").display().to_string(),
-        habla.display().to_string(),
+        voices.join("mia").display().to_string(),
+        speech.display().to_string(),
         sandbox.data_dir.join("config.json").display().to_string(),
         sandbox.data_dir.join("logs").display().to_string(),
         sandbox.data_dir.join("daemon.pid").display().to_string(),
     ] {
         assert!(
-            del_plan.contains(&esperada),
-            "falta {esperada} en {del_plan:?}"
+            planned_removed.contains(&expected),
+            "falta {expected} en {planned_removed:?}"
         );
     }
     assert!(
-        !del_plan.contains(&sandbox.program_dir.display().to_string()),
+        !planned_removed.contains(&sandbox.program_dir.display().to_string()),
         "el programa no lo borra `cleanup` (§9.6): eso es `self uninstall`"
     );
     assert!(
@@ -412,11 +412,11 @@ fn cleanup_categories_are_scoped() {
     let outcome = runtime()
         .block_on(cleanup::run(
             &roots,
-            &con_yes(CleanupOptions {
+            &with_yes(CleanupOptions {
                 all: true,
                 ..Default::default()
             }),
-            &Inerte,
+            &Inert,
         ))
         .expect("cleanup se ejecuta");
     assert_eq!(outcome.status, "cleanup_complete");
@@ -425,25 +425,25 @@ fn cleanup_categories_are_scoped() {
         "nada falló: {:?}",
         outcome.failed
     );
-    assert!(!existe(&sandbox.models_dir), "los modelos se van enteros");
-    assert!(!existe(&voces.join("mia")));
-    assert!(!existe(&habla));
-    assert!(!existe(&sandbox.data_dir.join("config.json")));
-    assert!(!existe(&sandbox.data_dir.join("logs")));
-    assert!(!existe(&sandbox.data_dir.join("daemon.pid")));
+    assert!(!exists(&sandbox.models_dir), "los modelos se van enteros");
+    assert!(!exists(&voices.join("mia")));
+    assert!(!exists(&speech));
+    assert!(!exists(&sandbox.data_dir.join("config.json")));
+    assert!(!exists(&sandbox.data_dir.join("logs")));
+    assert!(!exists(&sandbox.data_dir.join("daemon.pid")));
     // Lo que no está en el alcance sobrevive.
-    assert!(existe(&sandbox.program_dir), "el programa sobrevive");
-    assert!(existe(&voces.join("default")));
+    assert!(exists(&sandbox.program_dir), "el programa sobrevive");
+    assert!(exists(&voices.join("default")));
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// El gate sin categoría: `usage_error`, sin borrar nada (criterio 22).
 #[test]
 fn cleanup_without_category_is_usage_error() {
-    let sandbox = Sandbox::nuevo("gate");
-    sandbox.plantar_estado();
-    let antes = sandbox.snapshot();
+    let sandbox = Sandbox::new("gate");
+    sandbox.seed_state();
+    let before = sandbox.snapshot();
 
     let error = runtime()
         .block_on(cleanup::run(
@@ -452,7 +452,7 @@ fn cleanup_without_category_is_usage_error() {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Inerte,
+            &Inert,
         ))
         .expect_err("sin categoría es un error");
 
@@ -463,67 +463,67 @@ fn cleanup_without_category_is_usage_error() {
     assert_eq!(lifecycle.exit_code, 2, "error de uso (§9.1)");
     assert_eq!(
         sandbox.snapshot(),
-        antes,
+        before,
         "y no borra nada, ni siquiera el barrido"
     );
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// `--dry-run` lista rutas con tamaños y no modifica el disco (criterio 20), y la lista
 /// que anuncia es la misma que ejecutaría.
 #[test]
 fn dry_run_lists_paths_without_touching_disk() {
-    let sandbox = Sandbox::nuevo("dry-run");
-    sandbox.plantar_estado();
-    let antes = sandbox.snapshot();
+    let sandbox = Sandbox::new("dry-run");
+    sandbox.seed_state();
+    let before = sandbox.snapshot();
     let roots = sandbox.roots();
 
-    let opciones = con_yes(CleanupOptions {
+    let options = with_yes(CleanupOptions {
         model: true,
         voices: true,
         ..Default::default()
     });
-    let plan = cleanup::plan(&roots, &opciones);
-    let simulado = cleanup::simulate(&roots, &opciones);
+    let plan = cleanup::plan(&roots, &options);
+    let simulated = cleanup::simulate(&roots, &options);
 
     assert_eq!(
         sandbox.snapshot(),
-        antes,
+        before,
         "una simulación no deja ni el archivo de bloqueo detrás"
     );
-    assert!(simulado.dry_run);
+    assert!(simulated.dry_run);
     // El plan y la simulación vienen de la misma función, así que coinciden.
-    let del_plan = rutas(&plan);
-    for ruta in &del_plan {
+    let planned_removed = paths(&plan);
+    for path in &planned_removed {
         assert!(
-            simulado.removed.contains(ruta),
-            "la simulación anuncia {ruta}, que el plan tiene"
+            simulated.removed.contains(path),
+            "la simulación anuncia {path}, que el plan tiene"
         );
     }
     // Y los tamaños son los de la operación, no cero.
     assert!(
         plan.targets.iter().all(|t| t.size > 0),
         "todo destino tiene tamaño medido: {:?}",
-        rutas(&plan)
+        paths(&plan)
     );
 
     // Ahora sí, la ejecución real borra lo mismo que la simulación anunció.
     let real = runtime()
-        .block_on(cleanup::run(&roots, &opciones, &Inerte))
+        .block_on(cleanup::run(&roots, &options, &Inert))
         .expect("cleanup se ejecuta");
-    let del_real: Vec<String> = real
+    let real_removed: Vec<String> = real
         .removed
         .iter()
-        .filter(|r| del_plan.contains(r))
+        .filter(|r| planned_removed.contains(r))
         .cloned()
         .collect();
     assert_eq!(
-        del_real, del_plan,
+        real_removed, planned_removed,
         "la ejecución borra exactamente lo que el plan dice"
     );
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// Con la raíz de modelos compartida, R3 manda: se borran los repos propios, el
@@ -535,12 +535,12 @@ fn dry_run_lists_paths_without_touching_disk() {
 /// coincidieran bajo raíz compartida.
 #[test]
 fn shared_hf_cache_keeps_foreign_entries() {
-    let mut sandbox = Sandbox::nuevo("shared");
+    let mut sandbox = Sandbox::new("shared");
     sandbox.models_shared = true;
-    sandbox.plantar_estado();
+    sandbox.seed_state();
     let hub = sandbox.models_dir.clone();
-    let ajeno = hub.join("models--otra--herramienta");
-    escribir(
+    let foreign = hub.join("models--otra--herramienta");
+    write(
         &hub.join("models--Helsinki-NLP--opus-mt-es-en")
             .join("snapshots")
             .join("abc")
@@ -551,73 +551,76 @@ fn shared_hf_cache_keeps_foreign_entries() {
     let roots = sandbox.roots();
     assert!(roots.models_shared, "el sandbox declara la raíz compartida");
 
-    let opciones = con_yes(CleanupOptions {
+    let options = with_yes(CleanupOptions {
         model: true,
         ..Default::default()
     });
-    let plan = cleanup::plan(&roots, &opciones);
-    let del_plan = rutas(&plan);
+    let plan = cleanup::plan(&roots, &options);
+    let planned_removed = paths(&plan);
 
-    for no_borrable in [hub.join("xet"), hub.join(".locks"), ajeno.clone()] {
+    for not_removable in [hub.join("xet"), hub.join(".locks"), foreign.clone()] {
         assert!(
-            !del_plan.contains(&no_borrable.display().to_string()),
-            "R3: {} no puede estar en el plan: {del_plan:?}",
-            no_borrable.display()
+            !planned_removed.contains(&not_removable.display().to_string()),
+            "R3: {} no puede estar en el plan: {planned_removed:?}",
+            not_removable.display()
         );
     }
     assert!(
-        del_plan.contains(
+        planned_removed.contains(
             &hub.join("models--Helsinki-NLP--opus-mt-es-en")
                 .display()
                 .to_string()
         ),
-        "el repo propio sí está: {del_plan:?}"
+        "el repo propio sí está: {planned_removed:?}"
     );
     assert!(
-        del_plan.contains(&hub.join("ct2").display().to_string()),
+        planned_removed.contains(&hub.join("ct2").display().to_string()),
         "y el derivado CT2, que es atribuible a la aplicación"
     );
 
     // Lo que se conserva se anuncia **por regla**: la raíz compartida, `xet` y el
     // `.locks` completo. El repos ajeno no se anuncia uno a uno —una caché real tiene
     // cientos— sino que queda cubierto por la regla de la raíz.
-    for anunciado in [&hub, &hub.join("xet"), &hub.join(".locks")] {
+    for shared in [&hub, &hub.join("xet"), &hub.join(".locks")] {
         assert!(
             plan.preserved
                 .iter()
-                .any(|p| p.path.as_path() == anunciado.as_path()),
+                .any(|p| p.path.as_path() == shared.as_path()),
             "y {} se anuncia como compartido",
-            anunciado.display()
+            shared.display()
         );
     }
 
     // La simulación dice lo mismo.
-    let simulado = cleanup::simulate(&roots, &opciones);
-    for ruta in &del_plan {
-        assert!(simulado.removed.contains(ruta), "la simulación dice {ruta}");
+    let simulated = cleanup::simulate(&roots, &options);
+    for path in &planned_removed {
+        assert!(
+            simulated.removed.contains(path),
+            "la simulación dice {path}"
+        );
     }
 
     // Y la ejecución coincide con el plan bajo raíz compartida: este es el caso que
     // fallaba antes de este lote.
     let real = runtime()
-        .block_on(cleanup::run(&roots, &opciones, &Inerte))
+        .block_on(cleanup::run(&roots, &options, &Inert))
         .expect("cleanup se ejecuta");
     assert_eq!(
-        real.removed, del_plan,
+        real.removed, planned_removed,
         "el plan y la ejecución coinciden bajo raíz compartida"
     );
 
-    assert!(!existe(&hub.join("models--Helsinki-NLP--opus-mt-es-en")));
-    assert!(!existe(&hub.join("ct2")));
-    assert!(existe(&hub.join("xet")), "R3: `xet` sobrevive");
+    assert!(!exists(&hub.join("models--Helsinki-NLP--opus-mt-es-en")));
+    assert!(!exists(&hub.join("ct2")));
+    assert!(exists(&hub.join("xet")), "R3: `xet` sobrevive");
     assert!(
-        existe(&hub.join(".locks")),
+        exists(&hub.join(".locks")),
         "R3: el `.locks` completo sobrevive"
     );
-    assert!(existe(&ajeno), "el repo de otra herramienta sobrevive");
-    assert!(existe(&hub), "la raíz compartida no se borra entera");
+    assert!(exists(&foreign), "el repo de otra herramienta sobrevive");
+    assert!(exists(&hub), "la raíz compartida no se borra entera");
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// Un temporal propio sin PID se barre: §9.6 exige que cualquier invocación barra los
@@ -628,45 +631,45 @@ fn shared_hf_cache_keeps_foreign_entries() {
 /// clonación o una síntesis— no se recogía nunca.
 #[test]
 fn orphan_temporary_without_pid_is_swept() {
-    let sandbox = Sandbox::nuevo("temp");
-    let temporal = sandbox.temp_root.join("avi_clone_x_1.qvoice");
-    escribir(&temporal, "audio");
-    let ajeno = sandbox.temp_root.join("lifecycle-test-ajeno.txt");
-    escribir(&ajeno, "no es del producto");
+    let sandbox = Sandbox::new("temp");
+    let temp = sandbox.temp_root.join("avi_clone_x_1.qvoice");
+    write(&temp, "audio");
+    let foreign = sandbox.temp_root.join("lifecycle-test-ajeno.txt");
+    write(&foreign, "no es del producto");
 
     let outcome = runtime()
         .block_on(cleanup::run(
             &sandbox.roots(),
-            &con_yes(CleanupOptions {
+            &with_yes(CleanupOptions {
                 voices: true,
                 ..Default::default()
             }),
-            &Inerte,
+            &Inert,
         ))
         .expect("cleanup se ejecuta");
 
     assert!(
-        !existe(&temporal),
+        !exists(&temp),
         "el temporal propio sin PID se barre: {:?}",
         outcome.swept
     );
     assert!(
-        outcome.swept.contains(&temporal.display().to_string()),
+        outcome.swept.contains(&temp.display().to_string()),
         "y se informa como barrido: {:?}",
         outcome.swept
     );
-    assert!(existe(&ajeno), "lo ajeno al producto no se toca");
+    assert!(exists(&foreign), "lo ajeno al producto no se toca");
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// `self uninstall` deja residuo cero en las raíces de propiedad exclusiva y termina
 /// con éxito (criterio 17).
 #[test]
 fn uninstall_leaves_no_residue_in_exclusive_roots() {
-    let sandbox = Sandbox::nuevo("uninstall");
-    let receipt = sandbox.instalar();
-    sandbox.plantar_estado();
+    let sandbox = Sandbox::new("uninstall");
+    let receipt = sandbox.install();
+    sandbox.seed_state();
 
     let outcome = runtime()
         .block_on(uninstall::run(
@@ -675,8 +678,8 @@ fn uninstall_leaves_no_residue_in_exclusive_roots() {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Ahora,
-            &Inerte,
+            &Now,
+            &Inert,
         ))
         .expect("uninstall se ejecuta");
 
@@ -687,24 +690,24 @@ fn uninstall_leaves_no_residue_in_exclusive_roots() {
         outcome.failed
     );
     assert!(outcome.program_dir_removed);
-    assert!(!existe(&sandbox.program_dir), "programa: residuo cero");
-    assert!(!existe(&sandbox.models_dir), "modelos: residuo cero");
+    assert!(!exists(&sandbox.program_dir), "programa: residuo cero");
+    assert!(!exists(&sandbox.models_dir), "modelos: residuo cero");
     assert!(
-        !existe(&sandbox.data_dir),
+        !exists(&sandbox.data_dir),
         "datos: residuo cero, voces de fábrica incluidas: el programa ya no está para \
          re-materializarlas"
     );
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// `--keep-data` conserva modelos, voces y habla (criterio 18).
 #[test]
 fn uninstall_keep_data_preserves_models_voices_and_speech() {
-    let sandbox = Sandbox::nuevo("keep-data");
-    let receipt = sandbox.instalar();
-    sandbox.plantar_estado();
-    let voces = sandbox.data_dir.join("voices");
+    let sandbox = Sandbox::new("keep-data");
+    let receipt = sandbox.install();
+    sandbox.seed_state();
+    let voices = sandbox.data_dir.join("voices");
 
     let outcome = runtime()
         .block_on(uninstall::run(
@@ -714,90 +717,90 @@ fn uninstall_keep_data_preserves_models_voices_and_speech() {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Ahora,
-            &Inerte,
+            &Now,
+            &Inert,
         ))
         .expect("uninstall se ejecuta");
 
     assert_eq!(outcome.status, "uninstalled");
-    assert!(!existe(&sandbox.program_dir), "el programa sí se va");
+    assert!(!exists(&sandbox.program_dir), "el programa sí se va");
     assert!(
-        existe(&sandbox.models_dir.join("xet")),
+        exists(&sandbox.models_dir.join("xet")),
         "los modelos se quedan: {:?}",
         outcome.preserved
     );
-    assert!(existe(&voces.join("mia")), "las voces se quedan");
+    assert!(exists(&voices.join("mia")), "las voces se quedan");
     assert!(
-        existe(&sandbox.data_dir.join("speech").join("default")),
+        exists(&sandbox.data_dir.join("speech").join("default")),
         "el habla se queda"
     );
     assert!(
-        !existe(&sandbox.data_dir.join("logs")),
+        !exists(&sandbox.data_dir.join("logs")),
         "pero la configuración y los logs sí caen: son estado de ejecución, no datos"
     );
-    for motivo in ["modelos", "voces", "habla"] {
+    for reason in ["modelos", "voces", "habla"] {
         assert!(
-            outcome.preserved.iter().any(|p| p.reason.contains(motivo)),
-            "`{motivo}` se anuncia como conservado: {:?}",
+            outcome.preserved.iter().any(|p| p.reason.contains(reason)),
+            "`{reason}` se anuncia como conservado: {:?}",
             outcome.preserved
         );
     }
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// Repetido sobre un sistema limpio termina con éxito y `not_installed` (criterio 21).
 #[test]
 fn uninstall_is_idempotent() {
-    let sandbox = Sandbox::nuevo("idempotente");
-    let receipt = sandbox.instalar();
-    sandbox.plantar_estado();
+    let sandbox = Sandbox::new("idempotente");
+    let receipt = sandbox.install();
+    sandbox.seed_state();
     let runtime = runtime();
 
-    let primera = runtime
+    let first = runtime
         .block_on(uninstall::run(
             &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Ahora,
-            &Inerte,
+            &Now,
+            &Inert,
         ))
         .expect("la primera se ejecuta");
-    assert_eq!(primera.status, "uninstalled");
-    assert!(primera.program_dir_removed);
-    assert!(primera.failed.is_empty(), "{:?}", primera.failed);
+    assert_eq!(first.status, "uninstalled");
+    assert!(first.program_dir_removed);
+    assert!(first.failed.is_empty(), "{:?}", first.failed);
 
     // Sin recibo y sin estado: éxito con `not_installed`, que es un desenlace y no un
     // error.
-    let segunda = runtime
+    let second = runtime
         .block_on(uninstall::run(
             &env_uninstall(&sandbox, None, Channel::Unmanaged),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Ahora,
-            &Inerte,
+            &Now,
+            &Inert,
         ))
         .expect("la segunda no es un error");
     assert_eq!(
-        segunda.status, "not_installed",
+        second.status, "not_installed",
         "repetido sobre un sistema limpio termina en éxito con not_installed"
     );
-    assert!(segunda.removed.is_empty());
+    assert!(second.removed.is_empty());
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// El canal `homebrew` es `externally_managed` con el comando correcto, y nada se toca.
 #[test]
 fn uninstall_homebrew_is_externally_managed() {
-    let sandbox = Sandbox::nuevo("homebrew");
-    let receipt = sandbox.instalar();
-    sandbox.plantar_estado();
-    let antes = sandbox.snapshot();
+    let sandbox = Sandbox::new("homebrew");
+    let receipt = sandbox.install();
+    sandbox.seed_state();
+    let before = sandbox.snapshot();
 
     let error = runtime()
         .block_on(uninstall::run(
@@ -806,8 +809,8 @@ fn uninstall_homebrew_is_externally_managed() {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Ahora,
-            &Inerte,
+            &Now,
+            &Inert,
         ))
         .expect_err("homebrew es un error");
 
@@ -825,9 +828,9 @@ fn uninstall_homebrew_is_externally_managed() {
         lifecycle.message.contains("cleanup --all"),
         "y sugiere `cleanup --all` para el estado"
     );
-    assert_eq!(sandbox.snapshot(), antes, "nada se toca");
+    assert_eq!(sandbox.snapshot(), before, "nada se toca");
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// R2: el directorio de programa no se borra si no contiene recibo ni ejecutable, ni si
@@ -835,20 +838,20 @@ fn uninstall_homebrew_is_externally_managed() {
 /// reubicación ni un recibo manipulado pueden ampliar el alcance (§12).
 #[test]
 fn uninstall_refuses_unsafe_program_dir() {
-    let sandbox = Sandbox::nuevo("r2");
+    let sandbox = Sandbox::new("r2");
     let roots = sandbox.roots();
     let exe = uninstall::executable_name_default();
-    let recibo = sandbox.program_dir.join("install-receipt.json");
+    let receipt = sandbox.program_dir.join("install-receipt.json");
 
     // Con recibo: se puede borrar.
-    escribir(&recibo, "{}");
+    write(&receipt, "{}");
     assert!(
         uninstall::program_dir_is_removable(&roots, &sandbox.program_dir),
         "con recibo, sí"
     );
-    std::fs::remove_file(&recibo).ok();
+    std::fs::remove_file(&receipt).ok();
     // Con ejecutable: se puede borrar.
-    escribir(&sandbox.program_dir.join(&exe), "binario");
+    write(&sandbox.program_dir.join(&exe), "binario");
     assert!(
         uninstall::program_dir_is_removable(&roots, &sandbox.program_dir),
         "con ejecutable, también"
@@ -864,22 +867,22 @@ fn uninstall_refuses_unsafe_program_dir() {
     // sin escribir nada en ella —`program_dir_is_removable` rechaza por estructura,
     // antes de mirar el recibo— y las demás se prueban con el recibo plantado, que es
     // lo que un recibo manipulado intentaría.
-    for prohibido in [
+    for protected in [
         sandbox.home.clone(),
         sandbox.home.parent().unwrap().to_path_buf(),
         sandbox.data_dir.clone(),
         sandbox.models_dir.clone(),
         sandbox.temp_root.clone(),
     ] {
-        escribir(&prohibido.join("install-receipt.json"), "{}");
+        write(&protected.join("install-receipt.json"), "{}");
         assert!(
-            !uninstall::program_dir_is_removable(&roots, &prohibido),
+            !uninstall::program_dir_is_removable(&roots, &protected),
             "R2 impide borrar {}, aunque tenga recibo",
-            prohibido.display()
+            protected.display()
         );
     }
     assert!(
-        !uninstall::program_dir_is_removable(&roots, &raiz_del_sistema()),
+        !uninstall::program_dir_is_removable(&roots, &system_root()),
         "una raíz de unidad no se borra nunca"
     );
     assert!(
@@ -887,16 +890,16 @@ fn uninstall_refuses_unsafe_program_dir() {
         "una ruta vacía no es un directorio de programa"
     );
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// En Windows, con el ejecutable en uso dentro del directorio de programa, el borrado se
 /// programa y el desenlace es `removal_scheduled`, que es un éxito (§9.5, paso 8, §9.1).
 #[test]
 fn uninstall_schedules_removal_when_the_executable_is_inside() {
-    let sandbox = Sandbox::nuevo("diferido");
-    let receipt = sandbox.instalar();
-    sandbox.plantar_estado();
+    let sandbox = Sandbox::new("diferido");
+    let receipt = sandbox.install();
+    sandbox.seed_state();
 
     let outcome = runtime()
         .block_on(uninstall::run(
@@ -905,8 +908,8 @@ fn uninstall_schedules_removal_when_the_executable_is_inside() {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Diferido,
-            &Inerte,
+            &Deferred,
+            &Inert,
         ))
         .expect("uninstall se ejecuta");
 
@@ -924,18 +927,18 @@ fn uninstall_schedules_removal_when_the_executable_is_inside() {
         "el borrado quedó programado con el PID del proceso"
     );
     // El estado sí se borró: el programa es lo único que espera.
-    assert!(!existe(&sandbox.data_dir));
+    assert!(!exists(&sandbox.data_dir));
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// `--dry-run` de `self uninstall` imprime el plan y no modifica el disco (criterio 20).
 #[test]
 fn uninstall_dry_run_touches_nothing() {
-    let sandbox = Sandbox::nuevo("uninstall-dry");
-    let receipt = sandbox.instalar();
-    sandbox.plantar_estado();
-    let antes = sandbox.snapshot();
+    let sandbox = Sandbox::new("uninstall-dry");
+    let receipt = sandbox.install();
+    sandbox.seed_state();
+    let before = sandbox.snapshot();
 
     let outcome = runtime()
         .block_on(uninstall::run(
@@ -945,13 +948,13 @@ fn uninstall_dry_run_touches_nothing() {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Ahora,
-            &Inerte,
+            &Now,
+            &Inert,
         ))
         .expect("uninstall se ejecuta");
 
     assert!(outcome.dry_run);
-    assert_eq!(sandbox.snapshot(), antes, "no se modifica el disco");
+    assert_eq!(sandbox.snapshot(), before, "no se modifica el disco");
     assert!(
         outcome
             .removed
@@ -961,7 +964,7 @@ fn uninstall_dry_run_touches_nothing() {
         outcome.removed
     );
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// La reversión del `PATH` sale del recibo, no de donde esté el ejecutable (§9.5,
@@ -972,20 +975,20 @@ fn uninstall_dry_run_touches_nothing() {
 fn uninstall_reverts_path_from_the_receipt() {
     use std::os::unix::fs::symlink;
 
-    let sandbox = Sandbox::nuevo("path-unix");
+    let sandbox = Sandbox::new("path-unix");
     let bin_dir = sandbox.home.join(".local").join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let link = bin_dir.join(avi_lifecycle::APP_NAME);
     let program_exe = sandbox
         .program_dir
         .join(uninstall::executable_name_default());
-    sandbox.instalar();
-    escribir(&program_exe, "binario");
+    sandbox.install();
+    write(&program_exe, "binario");
     symlink(&program_exe, &link).unwrap();
 
-    let perfil = sandbox.home.join(".profile");
-    escribir(&perfil, "# inicio\n");
-    avi_lifecycle::path_unix::write_block(&perfil, &bin_dir, &sandbox.home).unwrap();
+    let profile = sandbox.home.join(".profile");
+    write(&profile, "# inicio\n");
+    avi_lifecycle::path_unix::write_block(&profile, &bin_dir, &sandbox.home).unwrap();
 
     let receipt = InstallReceipt::new(
         "0.24.0",
@@ -993,7 +996,7 @@ fn uninstall_reverts_path_from_the_receipt() {
         Channel::Script,
         &sandbox.program_dir,
         vec![uninstall::executable_name_default()],
-        PathIntegration::unix(link.clone(), vec![perfil.clone()]),
+        PathIntegration::unix(link.clone(), vec![profile.clone()]),
         receipt::Roots {
             data_dir: sandbox.data_dir.clone(),
             cache_dir: sandbox.models_dir.clone(),
@@ -1009,31 +1012,35 @@ fn uninstall_reverts_path_from_the_receipt() {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Ahora,
-            &Inerte,
+            &Now,
+            &Inert,
         ))
         .expect("uninstall se ejecuta");
 
     assert!(outcome.path_reverted);
-    assert!(!existe(&link), "el enlace se retira");
-    let texto = std::fs::read_to_string(&perfil).unwrap();
+    assert!(!exists(&link), "el enlace se retira");
+    let text = std::fs::read_to_string(&profile).unwrap();
     assert_eq!(
-        texto, "# inicio\n",
-        "el bloque delimitado se quita y el resto del perfil no se toca: {texto:?}"
+        text, "# inicio\n",
+        "el bloque delimitado se quita y el resto del perfil no se toca: {text:?}"
     );
 
     // Un enlace que apunta a otro sitio es de otra instalación y no se toca.
-    let otro = sandbox.raiz.join("otra-instalacion");
-    escribir(&otro.join(uninstall::executable_name_default()), "binario");
-    let link_ajena = bin_dir.join("ajeno");
-    symlink(otro.join(uninstall::executable_name_default()), &link_ajena).unwrap();
-    let receipt_ajeno = InstallReceipt::new(
+    let other = sandbox.root.join("otra-instalacion");
+    write(&other.join(uninstall::executable_name_default()), "binario");
+    let foreign_link = bin_dir.join("ajeno");
+    symlink(
+        other.join(uninstall::executable_name_default()),
+        &foreign_link,
+    )
+    .unwrap();
+    let foreign_receipt = InstallReceipt::new(
         "0.24.0",
         avi_lifecycle::target::host_triple(),
         Channel::Script,
         &sandbox.program_dir,
         vec![uninstall::executable_name_default()],
-        PathIntegration::unix(link_ajena.clone(), Vec::new()),
+        PathIntegration::unix(foreign_link.clone(), Vec::new()),
         receipt::Roots {
             data_dir: sandbox.data_dir.clone(),
             cache_dir: sandbox.models_dir.clone(),
@@ -1041,10 +1048,10 @@ fn uninstall_reverts_path_from_the_receipt() {
         None,
     );
     assert!(
-        !uninstall::revert_path(Some(&receipt_ajeno), &sandbox.home),
+        !uninstall::revert_path(Some(&foreign_receipt), &sandbox.home),
         "un enlace que no apunta al programa no se toca"
     );
-    assert!(link_ajena.symlink_metadata().is_ok());
+    assert!(foreign_link.symlink_metadata().is_ok());
 
-    let _ = std::fs::remove_dir_all(&sandbox.raiz);
+    let _ = std::fs::remove_dir_all(&sandbox.root);
 }

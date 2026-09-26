@@ -148,7 +148,7 @@ pub fn is_factory_name(name: &str) -> bool {
 /// El prefijo solo se quita en Windows: en Unix no existe, y una ruta que empiece por
 /// `\\` es ahí un nombre de archivo legítimo.
 pub fn canonical_path_key(p: &Path) -> String {
-    sin_prefijo_verbatim(&p.to_string_lossy())
+    without_prefix_verbatim(&p.to_string_lossy())
         .replace('/', "\\")
         .to_lowercase()
         .trim_end_matches('\\')
@@ -163,7 +163,7 @@ pub fn canonical_path_key(p: &Path) -> String {
 /// la distingue de una ruta local. Devolver laUNC sin barras haría que una ruta de red
 /// comparara igual a un directorio local del mismo nombre.
 #[cfg(windows)]
-fn sin_prefijo_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
+fn without_prefix_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
     if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
         return std::borrow::Cow::Owned(format!(r"\\{unc}"));
     }
@@ -172,7 +172,7 @@ fn sin_prefijo_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
 
 /// En Unix no hay prefijo verbatim, así que la ruta se devuelve tal cual.
 #[cfg(not(windows))]
-fn sin_prefijo_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
+fn without_prefix_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(raw)
 }
 
@@ -1062,8 +1062,8 @@ impl ModelStore {
                 .map(|mut d| {
                     d.any(|e| {
                         e.ok()
-                            .map(|en| {
-                                let p = en.path();
+                            .map(|entry| {
+                                let p = entry.path();
                                 p.is_file()
                                     && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
                             })
@@ -1477,18 +1477,19 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn canonical_path_key_strips_the_verbatim_prefix() {
-        let sin_prefijo = Path::new(r"C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector");
-        let con_prefijo =
+        let without_prefix =
+            Path::new(r"C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector");
+        let with_prefix =
             Path::new(r"\\?\C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector");
         assert_eq!(
-            canonical_path_key(con_prefijo),
-            canonical_path_key(sin_prefijo)
+            canonical_path_key(with_prefix),
+            canonical_path_key(without_prefix)
         );
         assert!(
-            canonical_path_entry_matches(con_prefijo, sin_prefijo),
+            canonical_path_entry_matches(with_prefix, without_prefix),
             "el comparador de entradas hereda la normalización"
         );
-        assert!(canonical_path_entry_matches(sin_prefijo, con_prefijo));
+        assert!(canonical_path_entry_matches(without_prefix, with_prefix));
 
         // Con separadores mixtos y barra final, que es como suele venir de verdad.
         assert_eq!(
@@ -1712,9 +1713,9 @@ mod tests {
         assert_eq!(ryan[0].metadata.voice, "ryan");
         assert_eq!(ryan[0].metadata.label, "saludo");
 
-        let vivian = speech.list_by_voice("vivian").unwrap();
-        assert_eq!(vivian.len(), 1);
-        assert_eq!(vivian[0].metadata.label, "despedida");
+        let were_alive = speech.list_by_voice("vivian").unwrap();
+        assert_eq!(were_alive.len(), 1);
+        assert_eq!(were_alive[0].metadata.label, "despedida");
 
         assert!(speech.list_by_voice("inexistente").unwrap().is_empty());
         assert_eq!(speech.list().unwrap().len(), 2);

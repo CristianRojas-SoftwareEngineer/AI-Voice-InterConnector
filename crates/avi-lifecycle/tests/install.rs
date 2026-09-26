@@ -26,9 +26,9 @@ use std::path::{Path, PathBuf};
 /// Control de procesos inerte: no hay daemon en el sandbox, así que la parada es un
 /// no-op. Es el mismo `ProcessControl` que `daemon_stop` espera y que T16 alimentará
 /// con `avi-daemon` y `avi-tts`.
-struct Inerte;
+struct Inert;
 
-impl ProcessControl for Inerte {
+impl ProcessControl for Inert {
     fn pid_alive(&self, _pid: u32) -> bool {
         false
     }
@@ -55,7 +55,7 @@ impl ProcessControl for Inerte {
 /// Sandbox con las siete raíces de §7 reubicadas.
 struct Sandbox {
     /// Raíz del sandbox, para borrarlo entero al terminar.
-    raiz: PathBuf,
+    root: PathBuf,
     /// Directorio de programa: hermano de `opt`, con el nombre de §7.
     program_dir: PathBuf,
     /// Staging hermano, con el prefijo hermano de §7. Tiene que estar en el mismo
@@ -74,28 +74,28 @@ struct Sandbox {
 
 impl Sandbox {
     /// Levanta un sandbox nuevo. `etiqueta` distingue los de una misma ejecución.
-    fn nuevo(tag: &str) -> Self {
+    fn new(tag: &str) -> Self {
         let n = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or_default();
-        let raiz =
+        let root =
             std::env::temp_dir().join(format!("install-e2e-{}-{tag}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&raiz);
-        let opt = raiz.join("opt");
+        let _ = std::fs::remove_dir_all(&root);
+        let opt = root.join("opt");
         let sandbox = Self {
             program_dir: opt.join("ai-voice-interconnector"),
             staging: opt.join(format!("{}test-{tag}", avi_lifecycle::STAGING_DIR_PREFIX)),
-            bin_dir: raiz.join("home/ana/.local/bin"),
-            home: raiz.join("home/ana"),
-            data_dir: raiz.join("data"),
-            models_dir: raiz.join("models"),
-            temp_root: raiz.join("tmp"),
+            bin_dir: root.join("home/ana/.local/bin"),
+            home: root.join("home/ana"),
+            data_dir: root.join("data"),
+            models_dir: root.join("models"),
+            temp_root: root.join("tmp"),
             registry_subkey: format!(
                 r"Software\AI-Voice-InterConnector\install-test-{}-{tag}",
                 std::process::id()
             ),
-            raiz,
+            root,
         };
         for dir in [
             &sandbox.program_dir,
@@ -124,18 +124,18 @@ impl Sandbox {
     /// Escribe un bundle sintético completo en `destino` y devuelve el ejecutable.
     /// Los nombres son los del manifiesto del target del host, así que la validación
     /// del paso 2 se ejercita de verdad y no con una lista recortada.
-    fn escribir_bundle(&self, destino: &Path) -> PathBuf {
-        let seccion = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
+    fn write_bundle(&self, dest: &Path) -> PathBuf {
+        let section = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
             .expect("el target del host tiene sección en el manifiesto");
-        for relativa in &seccion.required {
-            let completa = aviar(destino, relativa);
-            if let Some(parent) = completa.parent() {
+        for relative in &section.required {
+            let complete = place(dest, relative);
+            if let Some(parent) = complete.parent() {
                 std::fs::create_dir_all(parent).expect("se crea el directorio del archivo");
             }
-            std::fs::write(&completa, format!("contenido de {relativa}\n"))
+            std::fs::write(&complete, format!("contenido de {relative}\n"))
                 .expect("se escribe el archivo del bundle");
         }
-        destino.join(seccion.executable_path())
+        dest.join(section.executable_path())
     }
 
     /// `Env` de la operación, con el ejecutable que se invoca. `exe` es lo que decide
@@ -158,13 +158,13 @@ impl Sandbox {
             zdotdir: None,
             registry_subkey: self.registry_subkey.clone(),
             // Puerto donde no hay nada: la parada del daemon es un no-op.
-            daemon_addr: puerto_muerto(),
+            daemon_addr: dead_port(),
             source: None,
         }
     }
 
     /// Opciones de instalación desatendida sin provisión de modelos.
-    fn opciones() -> Options {
+    fn options() -> Options {
         Options {
             assume_yes: true,
             no_setup: true,
@@ -178,27 +178,27 @@ impl Sandbox {
     /// Borra la clave de registro de prueba y el árbol del sandbox. El directorio se
     /// borra aunque la prueba haya fallado antes, para que un sandbox huérfano en
     /// `%TEMP%` no se acumule.
-    fn limpiar(&self) {
+    fn clear(&self) {
         #[cfg(windows)]
         {
             let _ = avi_lifecycle::path_windows::delete_key(&self.registry_subkey);
         }
-        let _ = std::fs::remove_dir_all(&self.raiz);
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
 /// Une un fragmento del manifiesto con la raíz del bundle.
-fn aviar(destino: &Path, relativa: &str) -> PathBuf {
-    let mut path = destino.to_path_buf();
-    for parte in relativa.split('/') {
-        path.push(parte);
+fn place(dest: &Path, relative: &str) -> PathBuf {
+    let mut path = dest.to_path_buf();
+    for part in relative.split('/') {
+        path.push(part);
     }
     path
 }
 
 /// Puerto efímero que se enlaza y se suelta: garantiza que no hay nada escuchando,
 /// sin depender de que el puerto por defecto esté libre en la máquina que ejecuta.
-fn puerto_muerto() -> String {
+fn dead_port() -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("se enlaza un puerto");
     let addr = listener.local_addr().expect("dirección local");
     drop(listener);
@@ -209,74 +209,74 @@ fn puerto_muerto() -> String {
 /// mismo estado final, sin entradas de `PATH` ni bloques de perfil duplicados.
 #[tokio::test]
 async fn install_twice_is_idempotent() {
-    let sandbox = Sandbox::nuevo("doble");
-    let exe = sandbox.escribir_bundle(&sandbox.staging);
+    let sandbox = Sandbox::new("doble");
+    let exe = sandbox.write_bundle(&sandbox.staging);
     let env = sandbox.env(&exe);
-    let opciones = Sandbox::opciones();
+    let options = Sandbox::options();
 
     // ── Primera instalación ─────────────────────────────────────────────────────
-    let primera = install::install(&env, &opciones, &Inerte)
+    let first = install::install(&env, &options, &Inert)
         .await
         .expect("la primera instalación se completa");
-    assert_eq!(primera.mode, Mode::Install);
-    assert_eq!(primera.status, "installed");
-    assert_eq!(primera.models, avi_lifecycle::install::ModelsState::Skipped);
+    assert_eq!(first.mode, Mode::Install);
+    assert_eq!(first.status, "installed");
+    assert_eq!(first.models, avi_lifecycle::install::ModelsState::Skipped);
 
     // El bundle llegó al directorio de programa y el recibo está escrito.
-    let seccion = avi_lifecycle::manifest::target_section(&env.target).unwrap();
-    for relativa in &seccion.required {
+    let section = avi_lifecycle::manifest::target_section(&env.target).unwrap();
+    for relative in &section.required {
         assert!(
-            aviar(&sandbox.program_dir, relativa).is_file(),
-            "el bundle colocado tiene {relativa}"
+            place(&sandbox.program_dir, relative).is_file(),
+            "el bundle colocado tiene {relative}"
         );
     }
-    let recibo = receipt::read_from(&sandbox.program_dir)
+    let receipt = receipt::read_from(&sandbox.program_dir)
         .expect("se lee el recibo")
         .expect("el recibo existe tras instalar");
-    assert_eq!(recibo.version, "0.24.0");
-    assert_eq!(recibo.app, "ai-voice-interconnector");
-    assert_eq!(recibo.channel, avi_lifecycle::channel::Channel::Script);
-    assert_eq!(recibo.roots.data_dir, sandbox.data_dir);
-    assert_eq!(recibo.roots.cache_dir, sandbox.models_dir);
+    assert_eq!(receipt.version, "0.24.0");
+    assert_eq!(receipt.app, "ai-voice-interconnector");
+    assert_eq!(receipt.channel, avi_lifecycle::channel::Channel::Script);
+    assert_eq!(receipt.roots.data_dir, sandbox.data_dir);
+    assert_eq!(receipt.roots.cache_dir, sandbox.models_dir);
     assert_eq!(
-        recibo.files, seccion.required,
+        receipt.files, section.required,
         "el recibo lista lo colocado"
     );
     assert_eq!(
-        recibo.path_integration.modify_path,
-        !cfg!(windows) || primera.path_integration.modify_path,
+        receipt.path_integration.modify_path,
+        !cfg!(windows) || first.path_integration.modify_path,
         "el `PATH` se integra por defecto salvo `--no-modify-path`"
     );
 
     // La integración quedó registrada con lo que se hizo de verdad.
-    let integracion = primera.path_integration.clone();
+    let integration = first.path_integration.clone();
     if cfg!(unix) {
-        assert!(integracion.modify_path, "en Unix se modifica por D2");
-        let enlace = integracion.symlink.as_ref().expect("el enlace se registra");
-        assert_eq!(enlace, &sandbox.bin_dir.join("ai-voice-interconnector"));
-        let bloques = integracion
+        assert!(integration.modify_path, "en Unix se modifica por D2");
+        let link = integration.symlink.as_ref().expect("el enlace se registra");
+        assert_eq!(link, &sandbox.bin_dir.join("ai-voice-interconnector"));
+        let blocks = integration
             .profile_blocks
             .as_ref()
             .expect("los bloques se registran");
-        assert_eq!(bloques.len(), 1, "un solo archivo de arranque");
-        let perfil = sandbox.home.join(".profile");
-        assert_eq!(bloques[0], perfil);
-        let texto = std::fs::read_to_string(&perfil).expect("el perfil existe");
+        assert_eq!(blocks.len(), 1, "un solo archivo de arranque");
+        let profile = sandbox.home.join(".profile");
+        assert_eq!(blocks[0], profile);
+        let text = std::fs::read_to_string(&profile).expect("el perfil existe");
         assert_eq!(
-            texto.matches(avi_lifecycle::path_unix::BLOCK_BEGIN).count(),
+            text.matches(avi_lifecycle::path_unix::BLOCK_BEGIN).count(),
             1,
-            "un solo bloque delimitado: {texto}"
+            "un solo bloque delimitado: {text}"
         );
     } else {
         assert!(
-            integracion.modify_path,
-            "en Windows la entrada del registro queda registrada: {integracion:?}"
+            integration.modify_path,
+            "en Windows la entrada del registro queda registrada: {integration:?}"
         );
-        assert!(integracion.registry_entry.is_some());
-        assert!(integracion.symlink.is_none());
+        assert!(integration.registry_entry.is_some());
+        assert!(integration.symlink.is_none());
     }
     assert!(
-        primera.needs_new_terminal(),
+        first.needs_new_terminal(),
         "el `PATH` se tocó, así que el resumen pide terminal nueva"
     );
 
@@ -286,53 +286,53 @@ async fn install_twice_is_idempotent() {
     // vacío. Es también lo que hace el bootstrap de §9.2, que extrae en un staging
     // nuevo cada vez. El ejecutable vuelve a ser el del staging, que es el que la
     // primera pasada dejó de tener alrededor al mover el bundle.
-    let _exe = sandbox.escribir_bundle(&sandbox.staging);
-    let contenido_tras_primera = listar(&sandbox.program_dir);
-    let segunda = install::install(&env, &opciones, &Inerte)
+    let _exe = sandbox.write_bundle(&sandbox.staging);
+    let content_after_first = list(&sandbox.program_dir);
+    let second = install::install(&env, &options, &Inert)
         .await
         .expect("la segunda instalación se completa");
 
     // ── El estado final es el mismo ─────────────────────────────────────────────
     assert_eq!(
-        segunda.mode,
+        second.mode,
         Mode::Install,
         "sigue siendo instalación, no reparación"
     );
-    assert_eq!(segunda.status, "installed");
-    assert_eq!(segunda.receipt.version, primera.receipt.version);
+    assert_eq!(second.status, "installed");
+    assert_eq!(second.receipt.version, first.receipt.version);
     assert_eq!(
-        segunda.path_integration, integracion,
+        second.path_integration, integration,
         "la integración es la misma: ni entradas ni bloques nuevos"
     );
     assert!(
-        !segunda.path_changed(),
+        !second.path_changed(),
         "y la segunda pasada no reescribe el `PATH`: la entrada ya estaba"
     );
     assert!(
-        segunda.path_integrated(),
+        second.path_integrated(),
         "pero sigue registrada en el recibo, que es lo que permite revertirla"
     );
     // El resumen **final** no es idéntico entre las dos pasadas, y no debería: la
     // segunda no reescribe el `PATH` y decirlo sería mentir. Lo que tiene que ser
     // igual es el estado, que es lo que la idempotencia del criterio 2 afirma.
-    let lineas_de_estado = |resumen: &[String]| -> Vec<String> {
-        resumen
+    let state_lines = |summary: &[String]| -> Vec<String> {
+        summary
             .iter()
             .filter(|l| !l.trim_start().starts_with("PATH:"))
             .cloned()
             .collect()
     };
     assert_eq!(
-        lineas_de_estado(&segunda.summary),
-        lineas_de_estado(&primera.summary),
+        state_lines(&second.summary),
+        state_lines(&first.summary),
         "el estado final es el mismo"
     );
     assert!(
-        primera.path_changed() && !segunda.path_changed(),
+        first.path_changed() && !second.path_changed(),
         "pero la primera pasada sí reescribió el `PATH` y la segunda no"
     );
     assert!(
-        segunda.receipt.path_integration == primera.receipt.path_integration,
+        second.receipt.path_integration == first.receipt.path_integration,
         "y el recibo de la segunda pasada conserva la integración de la primera: si \
          registrara solo el diff de esta pasada, `self uninstall` no podría revertir \
          la entrada que puso la primera instalación"
@@ -340,39 +340,39 @@ async fn install_twice_is_idempotent() {
 
     // El directorio de programa tiene el mismo contenido que después de la primera.
     assert_eq!(
-        listar(&sandbox.program_dir),
-        contenido_tras_primera,
+        list(&sandbox.program_dir),
+        content_after_first,
         "el contenido del directorio de programa no cambió"
     );
     assert!(
-        contenido_tras_primera.contains(&"install-receipt.json".to_string()),
+        content_after_first.contains(&"install-receipt.json".to_string()),
         "y incluye el recibo, que es uno de los archivos que la operación escribe"
     );
-    for relativa in &seccion.required {
+    for relative in &section.required {
         assert!(
-            contenido_tras_primera.contains(relativa),
-            "el contenido incluye {relativa}, que es lo que el manifiesto exige"
+            content_after_first.contains(relative),
+            "el contenido incluye {relative}, que es lo que el manifiesto exige"
         );
     }
 
     if cfg!(unix) {
-        let texto = std::fs::read_to_string(sandbox.home.join(".profile")).unwrap();
+        let text = std::fs::read_to_string(sandbox.home.join(".profile")).unwrap();
         assert_eq!(
-            texto.matches(avi_lifecycle::path_unix::BLOCK_BEGIN).count(),
+            text.matches(avi_lifecycle::path_unix::BLOCK_BEGIN).count(),
             1,
-            "el bloque de perfil no se duplicó: {texto}"
+            "el bloque de perfil no se duplicó: {text}"
         );
     }
 
     // Y el recibo se relee con la misma forma.
-    let releido = receipt::read_from(&sandbox.program_dir).unwrap().unwrap();
-    assert_eq!(releido.files, primera.receipt.files);
+    let loaded = receipt::read_from(&sandbox.program_dir).unwrap().unwrap();
+    assert_eq!(loaded.files, first.receipt.files);
     assert_eq!(
-        releido.path_integration, integracion,
+        loaded.path_integration, integration,
         "el recibo de disco coincide con el que devolvió la operación"
     );
 
-    sandbox.limpiar();
+    sandbox.clear();
 }
 
 /// La reparación desde dentro del directorio de programa no copia archivos: reaplica
@@ -383,87 +383,87 @@ async fn install_twice_is_idempotent() {
 /// de programa se habría recreado y la marca de tiempo sería posterior.
 #[tokio::test]
 async fn repair_from_inside_program_dir_copies_nothing() {
-    let sandbox = Sandbox::nuevo("reparacion");
-    let exe = sandbox.escribir_bundle(&sandbox.staging);
-    let opciones = Sandbox::opciones();
+    let sandbox = Sandbox::new("reparacion");
+    let exe = sandbox.write_bundle(&sandbox.staging);
+    let options = Sandbox::options();
 
-    install::install(&sandbox.env(&exe), &opciones, &Inerte)
+    install::install(&sandbox.env(&exe), &options, &Inert)
         .await
         .expect("la instalación inicial se completa");
 
     // Se borra la integración: es exactamente lo que una reparación tiene que
     // reaplicar, y lo que un usuario ve cuando su perfil se sobrescribió.
-    let recibo = receipt::read_from(&sandbox.program_dir).unwrap().unwrap();
+    let receipt = receipt::read_from(&sandbox.program_dir).unwrap().unwrap();
     if cfg!(unix) {
-        for bloque in recibo.path_integration.profile_blocks.iter().flatten() {
-            std::fs::remove_file(bloque).expect("se borra el perfil");
+        for block in receipt.path_integration.profile_blocks.iter().flatten() {
+            std::fs::remove_file(block).expect("se borra el perfil");
         }
     }
     // Y se marca el bundle colocado para que un copiado se note.
-    let colocado = sandbox.program_dir.join(
+    let placed = sandbox.program_dir.join(
         avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
             .unwrap()
             .executable,
     );
-    let antes = std::fs::metadata(&colocado)
+    let before = std::fs::metadata(&placed)
         .and_then(|m| m.modified())
         .expect("el ejecutable colocado tiene fecha");
     std::thread::sleep(std::time::Duration::from_millis(1100));
 
     // Ahora se invoca **desde dentro** del directorio de programa.
-    let env = sandbox.env(&colocado);
+    let env = sandbox.env(&placed);
     assert_eq!(
         install::detect_mode(&env.exe, &env.program_dir),
         Mode::Repair,
         "dentro del directorio de programa, el modo es reparación"
     );
-    let reparacion = install::install(&env, &opciones, &Inerte)
+    let repair = install::install(&env, &options, &Inert)
         .await
         .expect("la reparación se completa");
 
-    assert_eq!(reparacion.mode, Mode::Repair);
-    assert_eq!(reparacion.status, "repaired");
+    assert_eq!(repair.mode, Mode::Repair);
+    assert_eq!(repair.status, "repaired");
     assert_eq!(
-        std::fs::metadata(&colocado)
+        std::fs::metadata(&placed)
             .and_then(|m| m.modified())
             .expect("el ejecutable sigue ahí"),
-        antes,
+        before,
         "la reparación no copió archivos: el ejecutable conserva su fecha"
     );
     assert!(
-        reparacion.receipt.path_integration.modify_path,
+        repair.receipt.path_integration.modify_path,
         "la reparación reaplicó la integración del `PATH`"
     );
     if cfg!(unix) {
-        let perfil = sandbox.home.join(".profile");
-        let texto = std::fs::read_to_string(&perfil).expect("el perfil se volvió a escribir");
+        let profile = sandbox.home.join(".profile");
+        let text = std::fs::read_to_string(&profile).expect("el perfil se volvió a escribir");
         assert_eq!(
-            texto.matches(avi_lifecycle::path_unix::BLOCK_BEGIN).count(),
+            text.matches(avi_lifecycle::path_unix::BLOCK_BEGIN).count(),
             1,
             "el bloque se reaplicó una sola vez"
         );
     }
     assert!(
-        reparacion.summary.iter().any(|l| l.contains("reparado")),
+        repair.summary.iter().any(|l| l.contains("reparado")),
         "el resumen final dice que fue una reparación: {:?}",
-        reparacion.summary
+        repair.summary
     );
     assert!(
-        reparacion
+        repair
             .summary_before
             .iter()
             .any(|l| l.contains("no se copian archivos")),
         "y el resumen previo lo anuncia antes de confirmar: {:?}",
-        reparacion.summary_before
+        repair.summary_before
     );
-    sandbox.limpiar();
+    sandbox.clear();
 }
 
 /// Sin bundle alrededor, `self install` termina con `bundle_invalid` y no modifica
 /// nada (§9.3, tercer modo).
 #[tokio::test]
 async fn bundle_without_required_files_is_rejected() {
-    let sandbox = Sandbox::nuevo("incompleto");
+    let sandbox = Sandbox::new("incompleto");
 
     // Un "bundle" con el ejecutable y nada más: es el caso de `target/release`, que
     // §9.3 nombra explícitamente.
@@ -475,47 +475,50 @@ async fn bundle_without_required_files_is_rejected() {
     std::fs::create_dir_all(&sandbox.staging).expect("se crea el staging");
     std::fs::write(&exe, "binario suelto\n").expect("se escribe el ejecutable");
 
-    let antes = estado(&sandbox.raiz);
-    let err = install::install(&sandbox.env(&exe), &Sandbox::opciones(), &Inerte)
+    let before = state(&sandbox.root);
+    let err = install::install(&sandbox.env(&exe), &Sandbox::options(), &Inert)
         .await
         .expect_err("un bundle sin los archivos obligatorios no se instala");
 
     // `install` devuelve `anyhow::Error` porque hay fallos de E/S sin `reason` propio,
     // pero los que §9.1 declara viajan dentro como `LifecycleError`, que es lo que el
     // sobre emite.
-    let le = err
+    let failure = err
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .unwrap_or_else(|| panic!("el fallo declara un `reason`: {err:#}"));
-    assert_eq!(le.reason, "bundle_invalid");
-    assert_eq!(le.exit_code, 15, "`BundleInvalid = 15` de la tabla cerrada");
+    assert_eq!(failure.reason, "bundle_invalid");
+    assert_eq!(
+        failure.exit_code, 15,
+        "`BundleInvalid = 15` de la tabla cerrada"
+    );
     assert!(
-        le.message.contains("faltan") && le.message.contains("archivo(s)"),
-        "el mensaje nombra los ausentes: {le}"
+        failure.message.contains("faltan") && failure.message.contains("archivo(s)"),
+        "el mensaje nombra los ausentes: {failure}"
     );
     assert_eq!(
-        estado(&sandbox.raiz),
-        antes,
+        state(&sandbox.root),
+        before,
         "nada modificado: la validación es del paso 2, antes de tocar el disco"
     );
     assert!(
         receipt::read_from(&sandbox.program_dir).unwrap().is_none(),
         "y no hay recibo"
     );
-    sandbox.limpiar();
+    sandbox.clear();
 }
 
 /// `--no-modify-path` no toca ni el perfil ni el registro, y el recibo lo dice para
 /// que `self uninstall` no tenga que revertir nada (criterio 2, la otra mitad).
 #[tokio::test]
 async fn no_modify_path_leaves_path_untouched() {
-    let sandbox = Sandbox::nuevo("sin-path");
-    let exe = sandbox.escribir_bundle(&sandbox.staging);
-    let opciones = Options {
+    let sandbox = Sandbox::new("sin-path");
+    let exe = sandbox.write_bundle(&sandbox.staging);
+    let options = Options {
         no_modify_path: true,
-        ..Sandbox::opciones()
+        ..Sandbox::options()
     };
 
-    let outcome = install::install(&sandbox.env(&exe), &opciones, &Inerte)
+    let outcome = install::install(&sandbox.env(&exe), &options, &Inert)
         .await
         .expect("la instalación se completa");
     assert_eq!(outcome.path_integration, PathIntegration::none());
@@ -536,7 +539,7 @@ async fn no_modify_path_leaves_path_untouched() {
             == PathIntegration::none(),
         "el recibo dice que no se integró nada"
     );
-    sandbox.limpiar();
+    sandbox.clear();
 }
 
 /// Un `path_conflict` —algo que no es un enlace nuestro en la ruta del enlace— aborta
@@ -561,21 +564,24 @@ async fn foreign_path_is_conflict_and_installs_nothing() {
     if !cfg!(unix) {
         return;
     }
-    let sandbox = Sandbox::nuevo("conflicto");
-    let exe = sandbox.escribir_bundle(&sandbox.staging);
-    let ocupado = sandbox.bin_dir.join("ai-voice-interconnector");
-    std::fs::write(&ocupado, "no soy un enlace\n").expect("se ocupa la ruta del enlace");
+    let sandbox = Sandbox::new("conflicto");
+    let exe = sandbox.write_bundle(&sandbox.staging);
+    let busy = sandbox.bin_dir.join("ai-voice-interconnector");
+    std::fs::write(&busy, "no soy un enlace\n").expect("se ocupa la ruta del enlace");
 
-    let err = install::install(&sandbox.env(&exe), &Sandbox::opciones(), &Inerte)
+    let err = install::install(&sandbox.env(&exe), &Sandbox::options(), &Inert)
         .await
         .expect_err("una ruta ajena es conflicto");
-    let le = err
+    let failure = err
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .unwrap_or_else(|| panic!("el fallo declara un `reason`: {err:#}"));
-    assert_eq!(le.reason, "path_conflict");
-    assert_eq!(le.exit_code, 14, "`PathConflict = 14` de la tabla cerrada");
+    assert_eq!(failure.reason, "path_conflict");
     assert_eq!(
-        std::fs::read_to_string(&ocupado).unwrap(),
+        failure.exit_code, 14,
+        "`PathConflict = 14` de la tabla cerrada"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&busy).unwrap(),
         "no soy un enlace\n",
         "el fichero ajeno no se toca"
     );
@@ -597,29 +603,29 @@ async fn foreign_path_is_conflict_and_installs_nothing() {
         "el bundle quedó colocado en el directorio de programa: el conflicto es del \
          paso 8, no de la colocación"
     );
-    sandbox.limpiar();
+    sandbox.clear();
 }
 
 /// El estado del sandbox, **sin el archivo de bloqueo**.
-fn listar(raiz: &Path) -> Vec<String> {
+fn list(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    let mut pila = vec![raiz.to_path_buf()];
-    while let Some(dir) = pila.pop() {
-        let Ok(entradas) = std::fs::read_dir(&dir) else {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entrada in entradas.flatten() {
-            let ruta = entrada.path();
-            let relativa = ruta
-                .strip_prefix(raiz)
-                .unwrap_or(&ruta)
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if entrada.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                out.push(format!("{relativa}/"));
-                pila.push(ruta);
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                out.push(format!("{relative}/"));
+                stack.push(path);
             } else {
-                out.push(relativa);
+                out.push(relative);
             }
         }
     }
@@ -635,8 +641,8 @@ fn listar(raiz: &Path) -> Vec<String> {
 /// estado de la instalación —programa, datos, perfiles, registro y receipt—, no al
 /// mecanismo que serializa las operaciones. Exigir que ni el bloqueo aparezca sería
 /// exigir que el paso 1 no ocurriera, que es otra cosa.
-fn estado(raiz: &Path) -> Vec<String> {
-    listar(raiz)
+fn state(root: &Path) -> Vec<String> {
+    list(root)
         .into_iter()
         .filter(|e| e.rsplit('/').next() != Some(avi_lifecycle::LIFECYCLE_LOCK_NAME))
         .collect()

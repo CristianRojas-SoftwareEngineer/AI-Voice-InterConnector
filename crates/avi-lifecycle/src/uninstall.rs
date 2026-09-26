@@ -235,8 +235,8 @@ pub async fn run(
     let entries = plan.entries();
 
     // ── Paso 4. Confirmación destructiva ─────────────────────────────────────────
-    let resumen = compose_summary(&plan, options);
-    let decision = confirmar(&resumen, &entries, options)?;
+    let summary = compose_summary(&plan, options);
+    let decision = confirm(&summary, &entries, options)?;
     if decision == Decision::Cancelled {
         return Ok(Outcome {
             status: "cancelled",
@@ -254,7 +254,7 @@ pub async fn run(
 
     // ── Paso 6. Borrar el estado: la raíz de datos entera salvo `--keep-data` ─────
     for target in &plan.state.targets {
-        match borrar(&target.path) {
+        match remove_path(&target.path) {
             Ok(()) => removed.push(target.path.display().to_string()),
             Err(e) => {
                 eprintln!("  no se pudo borrar {}: {e}", target.path.display());
@@ -339,7 +339,7 @@ pub fn compose_plan(
     program_dir: &Path,
     options: &Options,
 ) -> Plan {
-    let modelos = cleanup::plan(
+    let models = cleanup::plan(
         roots,
         &cleanup::Options {
             model: true,
@@ -350,10 +350,10 @@ pub fn compose_plan(
     // `--keep-data` no es un destino, y sin él lo decide R3.
     let mut state = DeletionPlan {
         targets: Vec::new(),
-        preserved: modelos.preserved,
+        preserved: models.preserved,
     };
     if options.keep_data {
-        let datos = cleanup::plan(
+        let data = cleanup::plan(
             roots,
             &cleanup::Options {
                 all: true,
@@ -363,7 +363,7 @@ pub fn compose_plan(
         // Criterio 18: `--keep-data` conserva **modelos, voces y habla**, así que las
         // tres categorías de datos quedan fuera. Del plan de `cleanup --all` solo se
         // queda lo que es estado de ejecución: configuración, logs y pidfile.
-        state.targets = datos
+        state.targets = data
             .targets
             .into_iter()
             .filter(|t| {
@@ -373,7 +373,7 @@ pub fn compose_plan(
                 )
             })
             .collect();
-        state.preserved.extend(datos.preserved);
+        state.preserved.extend(data.preserved);
         state.preserved.push(Preserved {
             path: roots.models_dir.clone(),
             reason: "`--keep-data` conserva los modelos",
@@ -387,7 +387,7 @@ pub fn compose_plan(
             reason: "`--keep-data` conserva el habla sintetizada",
         });
     } else {
-        state.targets = modelos.targets;
+        state.targets = models.targets;
         if roots.data_dir.is_dir() {
             state.targets.push(cleanup::Target {
                 path: roots.data_dir.clone(),
@@ -424,15 +424,15 @@ fn describe_path_integration(receipt: &InstallReceipt, preserved: &mut Vec<Prese
             reason: "se retira el enlace, no se borra",
         });
     }
-    for bloque in integration.profile_blocks.iter().flatten() {
+    for block in integration.profile_blocks.iter().flatten() {
         preserved.push(Preserved {
-            path: bloque.clone(),
+            path: block.clone(),
             reason: "se retira el bloque delimitado, no se borra el archivo",
         });
     }
-    if let Some(entrada) = &integration.registry_entry {
+    if let Some(entry) = &integration.registry_entry {
         preserved.push(Preserved {
-            path: entrada.clone(),
+            path: entry.clone(),
             reason: "se retira la entrada del registro, conservando el tipo del valor",
         });
     }
@@ -498,10 +498,10 @@ fn compose_summary(plan: &Plan, options: &Options) -> Vec<String> {
             ", incluido el estado de usuario"
         }
     )];
-    let entradas = plan.entries();
+    let entries = plan.entries();
     out.push(format!(
         "{} ruta(s) a tocar y {} que se conservan:",
-        entradas.len(),
+        entries.len(),
         plan.preserved.len()
     ));
     for target in &plan.state.targets {
@@ -523,23 +523,23 @@ fn compose_summary(plan: &Plan, options: &Options) -> Vec<String> {
 }
 
 /// Aplica la confirmación destructiva de §9.1.
-fn confirmar(
-    resumen: &[String],
+fn confirm(
+    summary: &[String],
     entries: &[PlanEntry],
     options: &Options,
 ) -> anyhow::Result<Decision> {
     let stdin = std::io::stdin();
-    let mut entrada = stdin.lock();
+    let mut entry = stdin.lock();
     confirm::confirm(
         &Confirmation {
             kind: Kind::Destructive,
-            summary: resumen,
+            summary,
             entries,
             assume_yes: options.assume_yes,
             dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
         },
-        &mut entrada,
+        &mut entry,
         &mut std::io::stderr(),
     )
 }
@@ -574,17 +574,17 @@ pub fn revert_path(receipt: Option<&InstallReceipt>, home: &Path) -> bool {
             touched = true;
         }
     }
-    if let Some(bloques) = &integration.profile_blocks {
+    if let Some(blocks) = &integration.profile_blocks {
         let bin_dir = receipt_bin_dir(receipt);
-        for bloque in bloques {
-            if path_unix::remove_block(bloque, &bin_dir, home).unwrap_or(false) {
+        for block in blocks {
+            if path_unix::remove_block(block, &bin_dir, home).unwrap_or(false) {
                 touched = true;
             }
         }
     }
     #[cfg(windows)]
-    if let Some(entrada) = &integration.registry_entry {
-        if let Ok(outcome) = crate::path_windows::revert(crate::path_windows::ENV_SUBKEY, entrada) {
+    if let Some(entry) = &integration.registry_entry {
+        if let Ok(outcome) = crate::path_windows::revert(crate::path_windows::ENV_SUBKEY, entry) {
             touched |= outcome.changed;
         }
     }
@@ -607,10 +607,8 @@ fn executable_name(receipt: &InstallReceipt) -> String {
         .files
         .iter()
         .find_map(|f| {
-            let nombre = f.rsplit('/').next().unwrap_or(f);
-            nombre
-                .starts_with(crate::APP_NAME)
-                .then(|| nombre.to_string())
+            let name = f.rsplit('/').next().unwrap_or(f);
+            name.starts_with(crate::APP_NAME).then(|| name.to_string())
         })
         .unwrap_or_else(executable_name_default)
 }
@@ -661,17 +659,17 @@ pub fn program_dir_is_removable(roots: &Roots, program_dir: &Path) -> bool {
     // separador y no con el de la ruta: comparar con `/` en Windows, o con `Path::
     // starts_with` en Unix —donde la clave es un único componente porque lleva `\`, no
     // `/`— desactivaría la regla justo donde más importa.
-    let clave = crate::canonical_path_key(program_dir);
-    for prohibido in [
+    let key = crate::canonical_path_key(program_dir);
+    for protected in [
         roots.home.as_path(),
         roots.data_dir.as_path(),
         roots.models_dir.as_path(),
         roots.temp_root.as_path(),
     ] {
-        if prohibido.as_os_str().is_empty() {
+        if protected.as_os_str().is_empty() {
             continue;
         }
-        if es_misma_o_descendiente(&clave, &crate::canonical_path_key(prohibido)) {
+        if is_same_or_descendant(&key, &crate::canonical_path_key(protected)) {
             return false;
         }
     }
@@ -679,7 +677,7 @@ pub fn program_dir_is_removable(roots: &Roots, program_dir: &Path) -> bool {
     // perfil entero. La igualdad ya la cubre el bucle de arriba.
     if !roots.home.as_os_str().is_empty() {
         let home = crate::canonical_path_key(&roots.home);
-        if home != clave && es_misma_o_descendiente(&home, &clave) {
+        if home != key && is_same_or_descendant(&home, &key) {
             return false;
         }
     }
@@ -718,30 +716,30 @@ fn state_exists(roots: &Roots) -> bool {
     roots.data_dir.is_dir() || roots.models_dir.is_dir()
 }
 
-/// `true` si `clave` es `ancestro` o cuelga de él, sobre claves canónicas.
+/// `true` si `key` es `ancestor` o cuelga de él, sobre claves canónicas.
 ///
 /// El separador del prefijo es `\` porque es el que `canonical_path_key` produce en las
 /// dos plataformas. Una clave vacía —la de la raíz, que `trim_matches` reduce a nada— no
 /// es ancestro de nadie: sin esta guarda, `""` sería prefijo de todas.
-fn es_misma_o_descendiente(clave: &str, ancestro: &str) -> bool {
-    if ancestro.is_empty() {
+fn is_same_or_descendant(key: &str, ancestor: &str) -> bool {
+    if ancestor.is_empty() {
         return false;
     }
-    clave == ancestro || clave.starts_with(&format!("{ancestro}\\"))
+    key == ancestor || key.starts_with(&format!("{ancestor}\\"))
 }
 
 /// Borra una ruta, sea archivo o directorio. `NotFound` **es** éxito: el plan dice lo que
 /// tiene que dejar de existir, y si ya no existe el objetivo está cumplido. No es un
 /// caso teórico —la parada del daemon borra el pidfile cuando no había daemon vivo, y
 /// el pidfile es un destino de `--all`—.
-fn borrar(path: &Path) -> std::io::Result<()> {
-    let resultado = if path.is_dir() && !path.is_symlink() {
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let outcome = if path.is_dir() && !path.is_symlink() {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
     };
-    match resultado {
+    match outcome {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        otro => otro,
+        other => other,
     }
 }

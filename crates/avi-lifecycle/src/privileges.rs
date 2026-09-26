@@ -194,10 +194,10 @@ mod tests {
 
         // El mensaje de §9.1 explica el porqué, no solo el qué: sin esto el
         // usuario ve un rechazo sin motivo y concluye que el programa no funciona.
-        let mensaje = decide_unix(0, Some("ana")).expect("sudo aborta");
-        assert!(mensaje.contains("por usuario"), "{mensaje}");
-        assert!(mensaje.contains("perfil de root"), "{mensaje}");
-        assert!(mensaje.contains("sin elevación"), "{mensaje}");
+        let message = decide_unix(0, Some("ana")).expect("sudo aborta");
+        assert!(message.contains("por usuario"), "{message}");
+        assert!(message.contains("perfil de root"), "{message}");
+        assert!(message.contains("sin elevación"), "{message}");
 
         // `inspect` no inventa elevación donde no la hay: la puerta de CI corre
         // sin `sudo`, así que aquí se afirma el caso real de la máquina.
@@ -221,25 +221,31 @@ mod tests {
     /// dice dónde va a instalarse: es la mitad de §9.1 que no aborta.
     #[test]
     fn privileges_warn_only_when_elevated() {
-        let baja = Report {
+        let unelevated = Report {
             elevated: false,
             via_sudo: false,
             warning: None,
         };
-        let alta = Report {
+        let elevated = Report {
             elevated: true,
             via_sudo: false,
             warning: None,
         };
         if cfg!(windows) {
-            assert!(warning_for(&baja).is_none(), "sin elevación no hay aviso");
-            let aviso = warning_for(&alta).expect("elevado avisa");
-            assert!(aviso.contains("perfil de la cuenta que ejecuta"), "{aviso}");
+            assert!(
+                warning_for(&unelevated).is_none(),
+                "sin elevación no hay aviso"
+            );
+            let warning = warning_for(&elevated).expect("elevado avisa");
+            assert!(
+                warning.contains("perfil de la cuenta que ejecuta"),
+                "{warning}"
+            );
         } else {
             // En Unix el proceso elevado aborta (§9.1), así que no hay aviso que
             // emitir: la misma regla, leída al revés.
-            assert!(warning_for(&baja).is_none());
-            assert!(warning_for(&alta).is_none());
+            assert!(warning_for(&unelevated).is_none());
+            assert!(warning_for(&elevated).is_none());
         }
     }
 
@@ -248,15 +254,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn privileges_elevated_probe_is_safe_and_idempotent() {
-        let primera = windows_elevated();
-        let segunda = windows_elevated();
+        let first = windows_elevated();
+        let second = windows_elevated();
         assert_eq!(
-            primera, segunda,
+            first, second,
             "la detección no tiene estado: dos llamadas dan lo mismo"
         );
         assert_eq!(
             inspect().elevated,
-            primera,
+            first,
             "`inspect` y el predicado coinciden"
         );
     }

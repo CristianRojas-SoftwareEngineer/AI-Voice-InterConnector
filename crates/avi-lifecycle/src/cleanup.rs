@@ -539,7 +539,7 @@ pub async fn run(
             size: Some(t.size),
         })
         .collect();
-    let decision = confirmar(&plan, &entries, options)?;
+    let decision = confirm(&plan, &entries, options)?;
     if decision == Decision::Cancelled {
         return Ok(Outcome {
             status: "cancelled",
@@ -556,7 +556,7 @@ pub async fn run(
     let mut removed = Vec::new();
     let mut failed = Vec::new();
     for target in &plan.targets {
-        match borrar(&target.path) {
+        match remove_path(&target.path) {
             Ok(()) => {
                 eprintln!("  {} {}", target.category.as_str(), target.path.display());
                 removed.push(target.path.display().to_string());
@@ -649,30 +649,30 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
 }
 
 /// Aplica la confirmación de §9.1 con el plan ya calculado.
-fn confirmar(
+fn confirm(
     plan: &DeletionPlan,
     entries: &[PlanEntry],
     options: &Options,
 ) -> anyhow::Result<Decision> {
-    let resumen = resumen(plan);
+    let summary = summary(plan);
     let stdin = std::io::stdin();
-    let mut entrada = stdin.lock();
+    let mut entry = stdin.lock();
     confirm::confirm(
         &Confirmation {
             kind: Kind::Destructive,
-            summary: &resumen,
+            summary: &summary,
             entries,
             assume_yes: options.assume_yes,
             dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
         },
-        &mut entrada,
+        &mut entry,
         &mut std::io::stderr(),
     )
 }
 
 /// Resumen legible del plan, que es lo que §9.1 llama "lista de rutas con tamaños".
-fn resumen(plan: &DeletionPlan) -> Vec<String> {
+fn summary(plan: &DeletionPlan) -> Vec<String> {
     let mut out = Vec::new();
     if plan.is_empty() {
         out.push("No hay nada que limpiar.".to_string());
@@ -703,17 +703,17 @@ fn resumen(plan: &DeletionPlan) -> Vec<String> {
 
 /// Tamaño legible. Mismo criterio de unidades que el resto del producto.
 fn human_bytes(bytes: u64) -> String {
-    const UNIDADES: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut valor = bytes as f64;
-    let mut unidad = 0;
-    while valor >= 1024.0 && unidad + 1 < UNIDADES.len() {
-        valor /= 1024.0;
-        unidad += 1;
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
     }
-    if unidad == 0 {
+    if unit == 0 {
         format!("{bytes} B")
     } else {
-        format!("{valor:.1} {}", UNIDADES[unidad])
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -723,15 +723,15 @@ fn human_bytes(bytes: u64) -> String {
 /// existe el objetivo está cumplido. No es un caso teórico —la parada del daemon borra
 /// el pidfile cuando no había daemon vivo, y el pidfile es un destino de `--all`, así
 /// que sin este tratamiento el mismo plan se anunciaría como fallido en una máquina limpia.
-fn borrar(path: &Path) -> std::io::Result<()> {
-    let resultado = if path.is_dir() && !path.is_symlink() {
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let outcome = if path.is_dir() && !path.is_symlink() {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
     };
-    match resultado {
+    match outcome {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        otro => otro,
+        other => other,
     }
 }
 

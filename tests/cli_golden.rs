@@ -836,10 +836,10 @@ fn sandbox_unique_state(tag: &str) -> (PathBuf, Vec<(String, String)>) {
 /// correcto porque lleva guion— sigue colisionando, y viceversa.
 #[test]
 fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
-    for producto in avi_store::TEMP_PREFIXES {
+    for product in avi_store::TEMP_PREFIXES {
         assert!(
-            !PREFIX_SANDBOX.starts_with(producto),
-            "el prefijo de los sandboxes de prueba `{PREFIX_SANDBOX}` empieza por `{producto}`, \
+            !PREFIX_SANDBOX.starts_with(product),
+            "el prefijo de los sandboxes de prueba `{PREFIX_SANDBOX}` empieza por `{product}`, \
              que §7 reserva a la aplicación: el barrido de §9.1 lo borraría como si fuera un \
              temporal nuestro"
         );
@@ -857,18 +857,18 @@ fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
 
     // Y el temporal del hijo está dentro del sandbox, que es la otra mitad.
     let (dir, envs) = sandbox_unique_state("invarianteprefijo");
-    let valor = |k: &str| {
+    let value = |k: &str| {
         envs.iter()
             .find(|(n, _)| n == k)
             .map(|(_, v)| PathBuf::from(v))
     };
     for variable in ["TEMP", "TMP", "TMPDIR"] {
-        let Some(valor) = valor(variable) else {
+        let Some(value) = value(variable) else {
             panic!("el sandbox debe reubicar {variable} para que su barrido no salga de él");
         };
         assert!(
-            valor.starts_with(&dir),
-            "{variable} del hijo es {valor:?}, que está fuera del sandbox {dir:?}: el barrido \
+            value.starts_with(&dir),
+            "{variable} del hijo es {value:?}, que está fuera del sandbox {dir:?}: el barrido \
              de §9.1 alcanzaría el temporal de la máquina"
         );
     }
@@ -1589,19 +1589,19 @@ fn cleanup_model_real_run_reports_paths() {
     // propios y no debe tocar los de la máquina que ejecuta la prueba.
     let tmp = sandbox.join("tmp");
     std::fs::create_dir_all(&tmp).unwrap();
-    let temporal = tmp.join("avi_clone_x_1.qvoice");
-    std::fs::write(&temporal, b"marker").unwrap();
+    let temp = tmp.join("avi_clone_x_1.qvoice");
+    std::fs::write(&temp, b"marker").unwrap();
 
     // ── Caso exclusivo: `AVI_CACHE_DIR` manda sobre las variables HF ──────────────
     // Las variables HF se vacían porque `models_cache_dir` da prioridad a
     // `AVI_CACHE_DIR` pero, sin ella, un `HF_HUB_CACHE` del entorno de la máquina
     // haría que la raíz se resolviera a otro sitio y la prueba probaría otra cosa.
-    let exclusiva = sandbox.join("models-exclusiva");
-    plantar_modelos(&exclusiva);
-    let envs_exclusiva = [
+    let exclusive = sandbox.join("models-exclusiva");
+    seed_models(&exclusive);
+    let exclusive_envs = [
         ("AVI_DATA_DIR", data.to_str().unwrap()),
         ("AVI_DAEMON_PORT", "0"),
-        ("AVI_CACHE_DIR", exclusiva.to_str().unwrap()),
+        ("AVI_CACHE_DIR", exclusive.to_str().unwrap()),
         ("HF_HUB_CACHE", ""),
         ("HF_HOME", ""),
         ("TMP", tmp.to_str().unwrap()),
@@ -1611,13 +1611,13 @@ fn cleanup_model_real_run_reports_paths() {
 
     let (code, dry) = run_json_env(
         &["--json", "cleanup", "--model", "--dry-run"],
-        &envs_exclusiva,
+        &exclusive_envs,
     );
     assert_eq!(code, 0, "{}", dry);
-    let (code, real) = run_json_env(&["--json", "cleanup", "--model", "--yes"], &envs_exclusiva);
+    let (code, real) = run_json_env(&["--json", "cleanup", "--model", "--yes"], &exclusive_envs);
     assert_eq!(code, 0, "{}", real);
 
-    let como_set = |v: &Value| -> std::collections::BTreeSet<String> {
+    let as_set = |v: &Value| -> std::collections::BTreeSet<String> {
         v["removed"]
             .as_array()
             .expect("removed debe ser array")
@@ -1625,102 +1625,97 @@ fn cleanup_model_real_run_reports_paths() {
             .map(|s| s.as_str().unwrap().to_string())
             .collect()
     };
-    let del_dry = como_set(&dry);
-    let del_real = como_set(&real);
-    for ruta in &del_dry {
+    let dry_removed = as_set(&dry);
+    let real_removed = as_set(&real);
+    for path in &dry_removed {
         assert!(
-            del_real.contains(ruta),
-            "real y dry-run deben listar lo mismo: {ruta} está en el dry-run y no en el real"
+            real_removed.contains(path),
+            "real y dry-run deben listar lo mismo: {path} está en el dry-run y no en el real"
         );
     }
     assert!(
-        del_real.contains(&exclusiva.display().to_string()),
-        "en la raíz exclusiva `--model` borra el directorio entero: {del_real:?}"
+        real_removed.contains(&exclusive.display().to_string()),
+        "en la raíz exclusiva `--model` borra el directorio entero: {real_removed:?}"
     );
     assert!(
-        !exclusiva.exists(),
+        !exclusive.exists(),
         "y la raíz desaparece, `xet` incluido: {:?}",
-        exclusiva.join("xet")
+        exclusive.join("xet")
     );
     assert!(
-        !temporal.exists(),
+        !temp.exists(),
         "el barrido transversal recoge el temporal propio huérfano sin PID"
     );
 
     // ── Caso compartido: `HF_HUB_CACHE` elige la raíz, y R3 manda ────────────────
-    let compartida = sandbox.join("hub-compartida");
-    plantar_modelos(&compartida);
-    std::fs::create_dir_all(compartida.join("models--Qwen--Qwen3-TTS-0.6B")).unwrap();
+    let shared = sandbox.join("hub-compartida");
+    seed_models(&shared);
+    std::fs::create_dir_all(shared.join("models--Qwen--Qwen3-TTS-0.6B")).unwrap();
     std::fs::write(
-        compartida
+        shared
             .join("models--Qwen--Qwen3-TTS-0.6B")
             .join("config.json"),
         b"{}",
     )
     .unwrap();
-    let ajeno = compartida.join("models--otra--herramienta");
-    let envs_compartida = [
+    let foreign = shared.join("models--otra--herramienta");
+    let shared_envs = [
         ("AVI_DATA_DIR", data.to_str().unwrap()),
         ("AVI_DAEMON_PORT", "0"),
         ("AVI_CACHE_DIR", ""),
-        ("HF_HUB_CACHE", compartida.to_str().unwrap()),
+        ("HF_HUB_CACHE", shared.to_str().unwrap()),
         ("HF_HOME", ""),
         ("TMP", tmp.to_str().unwrap()),
         ("TEMP", tmp.to_str().unwrap()),
         ("TMPDIR", tmp.to_str().unwrap()),
     ];
 
-    let (code, compartido_real) =
-        run_json_env(&["--json", "cleanup", "--model", "--yes"], &envs_compartida);
-    assert_eq!(code, 0, "{}", compartido_real);
-    let borrado = como_set(&compartido_real);
+    let (code, really_shared) =
+        run_json_env(&["--json", "cleanup", "--model", "--yes"], &shared_envs);
+    assert_eq!(code, 0, "{}", really_shared);
+    let removed = as_set(&really_shared);
 
     assert!(
-        borrado.contains(
-            &compartida
+        removed.contains(
+            &shared
                 .join("models--Helsinki-NLP--opus-mt-es-en")
                 .display()
                 .to_string()
         ),
-        "el repo propio sí se borra: {borrado:?}"
+        "el repo propio sí se borra: {removed:?}"
     );
     assert!(
-        borrado.contains(&compartida.join("ct2").display().to_string()),
+        removed.contains(&shared.join("ct2").display().to_string()),
         "y el derivado CT2, que es atribuible a la aplicación"
     );
     // R3: nada de esto se toca.
     assert!(
-        !borrado.contains(&compartida.join("xet").display().to_string()),
-        "R3: `xet` no se puede listar como borrado: {borrado:?}"
+        !removed.contains(&shared.join("xet").display().to_string()),
+        "R3: `xet` no se puede listar como borrado: {removed:?}"
     );
     assert!(
-        !borrado.contains(&compartida.join(".locks").display().to_string()),
-        "R3: el `.locks` completo no se puede listar como borrado: {borrado:?}"
+        !removed.contains(&shared.join(".locks").display().to_string()),
+        "R3: el `.locks` completo no se puede listar como borrado: {removed:?}"
     );
     assert!(
-        !borrado.contains(&ajeno.display().to_string()),
-        "R3: el repo de otra herramienta no se puede listar como borrado: {borrado:?}"
+        !removed.contains(&foreign.display().to_string()),
+        "R3: el repo de otra herramienta no se puede listar como borrado: {removed:?}"
     );
     assert!(
-        compartida.join("xet").exists(),
+        shared.join("xet").exists(),
         "R3: `xet` sobrevive a `--model` en una raíz compartida"
     );
     assert!(
-        compartida.join(".locks").exists(),
+        shared.join(".locks").exists(),
         "R3: el `.locks` completo sobrevive"
     );
     assert!(
-        ajeno.exists(),
+        foreign.exists(),
         "criterio 23: los modelos de otra herramienta sobreviven"
     );
+    assert!(shared.exists(), "y la raíz compartida no se borra entera");
     assert!(
-        compartida.exists(),
-        "y la raíz compartida no se borra entera"
-    );
-    assert!(
-        !compartida
-            .join("models--Helsinki-NLP--opus-mt-es-en")
-            .exists(),
+        !shared.join("models--Helsinki-NLP--opus-mt-es-en").exists(),
         "mientras el repo propio sí desaparece"
     );
 
@@ -1729,20 +1724,20 @@ fn cleanup_model_real_run_reports_paths() {
 
 /// Planta el layout de modelos vigente: un repo fijado, el derivado CT2, los locks y
 /// `xet` colgando de la raíz, más un repo de otra herramienta.
-fn plantar_modelos(raiz: &std::path::Path) {
-    let repo = raiz.join("models--Helsinki-NLP--opus-mt-es-en");
+fn seed_models(root: &std::path::Path) {
+    let repo = root.join("models--Helsinki-NLP--opus-mt-es-en");
     std::fs::create_dir_all(repo.join("snapshots").join("abc")).unwrap();
     std::fs::write(
         repo.join("snapshots").join("abc").join("config.json"),
         b"{}",
     )
     .unwrap();
-    let ct2 = raiz.join("ct2").join("opus-mt-es-en");
+    let ct2 = root.join("ct2").join("opus-mt-es-en");
     std::fs::create_dir_all(&ct2).unwrap();
     std::fs::write(ct2.join("model.bin"), b"marker").unwrap();
-    std::fs::create_dir_all(raiz.join(".locks").join("models--x--y")).unwrap();
-    std::fs::create_dir_all(raiz.join("xet")).unwrap();
-    std::fs::create_dir_all(raiz.join("models--otra--herramienta")).unwrap();
+    std::fs::create_dir_all(root.join(".locks").join("models--x--y")).unwrap();
+    std::fs::create_dir_all(root.join("xet")).unwrap();
+    std::fs::create_dir_all(root.join("models--otra--herramienta")).unwrap();
 }
 /// `doctor --json` emite **un solo objeto** también cuando falla, con el veredicto
 /// dentro y la salida 1.
@@ -1756,52 +1751,52 @@ fn plantar_modelos(raiz: &std::path::Path) {
 fn doctor_json_emits_exactly_one_object_even_on_failure() {
     let (dir, envs) = sandbox_unique_state("doctor");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let (code, valor) = run_json_env(&["--json", "doctor"], &envs);
+    let (code, value) = run_json_env(&["--json", "doctor"], &envs);
     // Un objeto: `run_json_env` ya no habría podido parsear dos objetos JSON seguidos,
     // así que llegar aquí con un solo objeto parseado es parte de la prueba.
     // objetos JSON seguidos, así que llegar aquí con un solo objeto parseado ya es parte de la prueba.
     assert!(
-        valor.get("error").is_none(),
+        value.get("error").is_none(),
         "el veredicto de `doctor` no lleva objeto `error`: {}",
-        valor
+        value
     );
-    for clave in [
+    for key in [
         "version", "target", "channel", "install", "path", "pending", "models", "checks", "failed",
     ] {
         assert!(
-            valor.get(clave).is_some(),
-            "falta la clave `{clave}` del reporte de ciclo de vida: {}",
-            valor
+            value.get(key).is_some(),
+            "falta la clave `{key}` del reporte de ciclo de vida: {}",
+            value
         );
     }
     // Las claves que el contrato retira. El sobre afirma su conjunto exacto en la
     // prueba de doctor del motor; aquí se afirma, de este lado del cable, que la raíz
     // de datos dejó de ser clave de primer nivel.
     assert!(
-        valor.get("data_dir").is_none(),
+        value.get("data_dir").is_none(),
         "la raíz de datos no puede ser clave de primer nivel: {}",
-        valor
+        value
     );
     // La información que las claves retiradas tenían no se pierde: cambia de sitio.
     assert!(
-        valor["install"]["data_dir"].is_string(),
+        value["install"]["data_dir"].is_string(),
         "la raíz de datos vive dentro de `install`"
     );
     assert!(
-        valor["models"]["base"].is_string(),
+        value["models"]["base"].is_string(),
         "el estado del modelo opt-in de clonado vive dentro de `models`"
     );
     assert_eq!(
-        valor["schema_version"],
+        value["schema_version"],
         Value::String("4".to_string()),
         "el sobre de la CLI sube a \"4\""
     );
     // Y el código de salida es el del veredicto: 1 si falló, 0 si no.
-    let fallido = valor["failed"].as_array().is_some_and(|f| !f.is_empty());
+    let failed = value["failed"].as_array().is_some_and(|f| !f.is_empty());
     assert_eq!(
         code,
-        if fallido { 1 } else { 0 },
-        "el código de salida es el del veredicto, sin objeto `error` detrás: {valor}"
+        if failed { 1 } else { 0 },
+        "el código de salida es el del veredicto, sin objeto `error` detrás: {value}"
     );
 
     let _ = std::fs::remove_dir_all(dir);
@@ -2826,7 +2821,7 @@ mod tts {
         // Instancia aislada propia; base observada en ejecución.
         let inst = IsolatedInstance::new("restart_rearma");
         start_instance_running_only(&inst, &[]);
-        let previo = inst.read_daemon_pid();
+        let previous = inst.read_daemon_pid();
         let a = inst.args();
         let (code, actual) = run_json_env(&["--json", "daemon", "restart"], &a);
         assert_eq!(code, 0, "daemon restart debe salir 0");
@@ -2834,17 +2829,17 @@ mod tts {
         assert!(actual.get("pid").is_some() || actual.get("status").is_some());
         // Rearme a nivel de sistema: el PID nuevo está vivo y el árbol previo,
         // si cambió el PID, quedó muerto (sin huérfano del ciclo anterior).
-        let nuevo = actual
+        let new = actual
             .get("pid")
             .and_then(|p| p.as_u64())
             .map(|n| n as u32)
             .or_else(|| inst.read_daemon_pid());
         assert!(
-            nuevo.map(avi_daemon::pid_alive).unwrap_or(false),
+            new.map(avi_daemon::pid_alive).unwrap_or(false),
             "tras restart el daemon debe estar vivo a nivel SO (pid {:?})",
-            nuevo
+            new
         );
-        if let (Some(p), Some(q)) = (previo, nuevo) {
+        if let (Some(p), Some(q)) = (previous, new) {
             if p != q {
                 assert!(
                     !avi_daemon::pid_alive(p),
@@ -3767,19 +3762,19 @@ fn speech_synthesize_play_without_tty_exits_2() {
 /// efecto y documenta los flags que el binario expone.
 #[test]
 fn speech_contract_matches_help() {
-    let contrato = std::fs::read_to_string(
+    let contract = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/CLI/CONTRACT.md"),
     )
     .expect("el contrato debe leerse");
     for flag in ["--compute-backend", "--exaggeration", "--cfg-weight"] {
         assert!(
-            !contrato.contains(flag),
+            !contract.contains(flag),
             "el contrato no debe prometer {}",
             flag
         );
     }
     assert!(
-        contrato.contains("--temperature"),
+        contract.contains("--temperature"),
         "el contrato debe especificar --temperature"
     );
     let (_, help) = run_text(&["speech", "synthesize", "--help"]);
@@ -4081,9 +4076,9 @@ fn test_voice_list_no_panic_on_sigpipe_closed_stdout_before_spawn() {
         std::io::Error::last_os_error()
     );
     let (read_fd, write_fd) = (fds[0], fds[1]);
-    let cerrado = unsafe { libc::close(read_fd) };
+    let closed = unsafe { libc::close(read_fd) };
     assert_eq!(
-        cerrado,
+        closed,
         0,
         "no se pudo cerrar el extremo de lectura del pipe: {}",
         std::io::Error::last_os_error()
@@ -4092,11 +4087,11 @@ fn test_voice_list_no_panic_on_sigpipe_closed_stdout_before_spawn() {
     // (b) Lanzar `voice list` con stdout apuntando al extremo de escritura
     // ya roto (write_fd sobrevive al close del otro extremo; Stdio adopta
     // el fd y lo cierra al soltar el Child).
-    let stdout_roto = unsafe { Stdio::from_raw_fd(write_fd) };
+    let broken_stdout = unsafe { Stdio::from_raw_fd(write_fd) };
     let mut cmd = Command::new(BIN);
     cmd.args(["voice", "list"])
         .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .stdout(stdout_roto)
+        .stdout(broken_stdout)
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("no se pudo lanzar el binario bajo test");
 

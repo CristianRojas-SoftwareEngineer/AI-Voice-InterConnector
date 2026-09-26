@@ -649,7 +649,7 @@ fn force_utf8() {
 fn install_sigint_handler() {
     ctrlc::set_handler(move || {
         // pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
-        let pid = lifecycle::daemon_stop::read_pid(&data_dir_efectiva()).or_else(|| {
+        let pid = lifecycle::daemon_stop::read_pid(&effective_data_dir()).or_else(|| {
             let m = IN_MEMORY_PID.load(std::sync::atomic::Ordering::Relaxed);
             if m != 0 {
                 Some(m)
@@ -658,8 +658,8 @@ fn install_sigint_handler() {
             }
         });
         if let Some(pid) = pid {
-            let propio = std::process::id();
-            if pid != 0 && pid != propio {
+            let own = std::process::id();
+            if pid != 0 && pid != own {
                 daemon::kill_tree_by_pid(pid);
                 daemon::wait_for_pid_death(pid, CTRL_C_CLEANUP_DEADLINE);
             }
@@ -859,14 +859,14 @@ async fn main() {
     };
 
     match result {
-        Ok(Salida::Hecho) => {}
+        Ok(Outcome::Done) => {}
         // Salida por veredicto (§10 del contrato): el comando ya emitió su payload
         // propio y solo queda fijar el código. Es lo que hace que `doctor --json`
         // emita **un solo objeto** también cuando falla: si esto fuera un `CliError`,
         // `main` adjuntaría detrás el objeto `error` y el sobre sería ilegible.
-        Ok(Salida::Veredicto(codigo)) => {
+        Ok(Outcome::Verdict(code)) => {
             std::io::stdout().flush().ok();
-            exit(codigo);
+            exit(code);
         }
         Err(err) => {
             if json_mode {
@@ -890,14 +890,14 @@ async fn main() {
 /// error**: es un comando que corrió bien y cuyo resultado es negativo. El único caso
 /// es `doctor`, y su reporte —con `checks` y `failed`— ya está en `stdout` cuando llega
 /// aquí.
-enum Salida {
-    Hecho,
-    Veredicto(i32),
+enum Outcome {
+    Done,
+    Verdict(i32),
 }
 
 /// Envuelve un handler que devuelve `Result<(), CliError>` en el tipo de `main`.
-fn ok(result: Result<(), CliError>) -> Result<Salida, CliError> {
-    result.map(|()| Salida::Hecho)
+fn ok(result: Result<(), CliError>) -> Result<Outcome, CliError> {
+    result.map(|()| Outcome::Done)
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────
@@ -1599,7 +1599,7 @@ async fn handle_speech(
             let saved = if play {
                 // RF-12.3–12.5: bucle interactivo, reemplaza la reproducción y
                 // el guardado incondicionales. Solo alcanzable en TTY (RF-12.2).
-                let resultado = synthesize_play_loop(
+                let outcome = synthesize_play_loop(
                     &voice,
                     &label,
                     force,
@@ -1621,7 +1621,7 @@ async fn handle_speech(
                     },
                 )
                 .await?;
-                match resultado {
+                match outcome {
                     Some(saved) => saved,
                     None => {
                         // Opción 4 / EOF: descartado, exit 0 (RF-12.3).
@@ -2123,7 +2123,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     e.to_string(),
                 )
             })?;
-            lifecycle::daemon_stop::write_pid(&data_dir_efectiva(), pid, &addr_real, 0).map_err(
+            lifecycle::daemon_stop::write_pid(&effective_data_dir(), pid, &addr_real, 0).map_err(
                 |e| {
                     CliError::new(
                         ExitCode::Error,
@@ -2145,16 +2145,16 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // tras muerte verificada (probe down + PID muerto/ausente); si el árbol
             // sigue vivo se conserva la pista y se falla con exit 5.
             let client = daemon_client();
-            lifecycle::daemon_stop::stop(&data_dir_efectiva(), DAEMON_ADDR, &ProcessosDelProducto)
+            lifecycle::daemon_stop::stop(&effective_data_dir(), DAEMON_ADDR, &ProductProcesses)
                 .await;
-            let pid = lifecycle::daemon_stop::read_pid(&data_dir_efectiva());
+            let pid = lifecycle::daemon_stop::read_pid(&effective_data_dir());
             let alive = pid.map(daemon::pid_alive).unwrap_or(false);
             let active = daemon_active(&client).await;
             // Los mensajes diagnostican la dirección descubierta (con
             // pidfile efímero difiere del literal; sin pidfile es idéntica).
             let client_addr = resolve_client_addr();
             if !active && !alive {
-                let _ = lifecycle::daemon_stop::remove_pid_file(&data_dir_efectiva());
+                let _ = lifecycle::daemon_stop::remove_pid_file(&effective_data_dir());
                 if json_mode {
                     emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
                 } else {
@@ -2179,7 +2179,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let t_total = std::time::Instant::now();
             let budget = std::time::Duration::from_secs(12);
             let client = daemon_client();
-            lifecycle::daemon_stop::stop(&data_dir_efectiva(), DAEMON_ADDR, &ProcessosDelProducto)
+            lifecycle::daemon_stop::stop(&effective_data_dir(), DAEMON_ADDR, &ProductProcesses)
                 .await;
             require_model_provisioned()?;
             // Igual que `Start`: fichero ready propio de la instancia,
@@ -2235,7 +2235,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     e.to_string(),
                 )
             })?;
-            lifecycle::daemon_stop::write_pid(&data_dir_efectiva(), pid, &addr_real, 0).map_err(
+            lifecycle::daemon_stop::write_pid(&effective_data_dir(), pid, &addr_real, 0).map_err(
                 |e| {
                     CliError::new(
                         ExitCode::Error,
@@ -2390,7 +2390,7 @@ async fn handle_cleanup(
         dry_run,
         assume_yes: yes,
     };
-    let outcome = lifecycle::cleanup::run(&roots, &options, &ProcessosDelProducto)
+    let outcome = lifecycle::cleanup::run(&roots, &options, &ProductProcesses)
         .await
         .map_err(lifecycle_error_to_cli)?;
 
@@ -2449,7 +2449,7 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
     // limpiar), el `daemon.ready` sobrevive y conserva el PID del árbol
     // efímero. El fallback solo aplica sin pidfile; `pid_alive` gatea después,
     // así que un ready rancio con PID muerto sigue cayendo a `Stopped`.
-    let pid = lifecycle::daemon_stop::read_pid(&data_dir_efectiva())
+    let pid = lifecycle::daemon_stop::read_pid(&effective_data_dir())
         .or_else(|| read_ready_pid(&ready_file_path()));
     // El probe apunta a la dirección descubierta (fallback idéntico sin
     // pidfile; vía nueva solo con pidfile vivo de addr efímera).
@@ -2459,7 +2459,7 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
     if !probe && !pid.map(daemon::pid_alive).unwrap_or(false) && resident_alive_by_pid() {
         return ResidualState::Degraded {
             pid,
-            reason: "residente vivo sin daemon (Parado con resident_pid vivo)",
+            reason: "residente vivo sin daemon (Stopped con resident_pid vivo)",
         };
     }
     match pid {
@@ -2485,7 +2485,7 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
 /// ausencia se confirma con el barrido por imagen de último recurso
 /// (`avi_tts::resident::sweep_resident_by_image`), no con este predicado.
 fn resident_alive_by_pid() -> bool {
-    let pid = lifecycle::daemon_stop::read_resident_pid(&data_dir_efectiva());
+    let pid = lifecycle::daemon_stop::read_resident_pid(&effective_data_dir());
     pid != 0 && avi_tts::resident::resident_pid_alive(pid)
 }
 
@@ -2555,7 +2555,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     // su árbol preciso; sin PID (pidfile perdido) el último recurso es el
     // barrido por imagen `qwen_tts` (seguro por imagen propia). La verificación
     // por `resident_pid` muerto vive en el paso 3.
-    let resident = lifecycle::daemon_stop::read_resident_pid(&data_dir_efectiva());
+    let resident = lifecycle::daemon_stop::read_resident_pid(&effective_data_dir());
     if resident != 0
         && resident != std::process::id()
         && avi_tts::resident::resident_pid_alive(resident)
@@ -2615,7 +2615,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
 /// vive en `avi-daemon` y `avi-tts`— y el **borrado diferido** de Windows, que necesita
 /// `daemon::spawn_uninstall_helper`. El motor decide; el binario ejecuta las dos
 /// primitivas de plataforma.
-async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliError> {
+async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliError> {
     match action {
         SelfSub::Install {
             no_setup,
@@ -2639,7 +2639,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliErro
                     .and_then(lifecycle::channel::Channel::from_name),
                 with_voice_cloning: false,
             };
-            let outcome = lifecycle::install::install(&env, &options, &ProcessosDelProducto)
+            let outcome = lifecycle::install::install(&env, &options, &ProductProcesses)
                 .await
                 .map_err(lifecycle_error_to_cli)?;
             // §9.1: `setup_failed` es un **éxito parcial** —el programa está instalado y
@@ -2648,12 +2648,12 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliErro
             // el `reason` y el código de salida. `Salida::Veredicto` es el mecanismo que ya
             // existe para eso —el comando emitió su payload y solo queda fijar el código—,
             // y es el mismo que usa `doctor` para su sobre único.
-            let parcial = outcome.lifecycle_error();
+            let partial = outcome.lifecycle_error();
             if json_mode {
-                let mut sobre = json!({
+                let mut on = json!({
                     "status": outcome.status,
-                    "reason": match &parcial {
-                        Some(le) => Value::String(le.reason.to_string()),
+                    "reason": match &partial {
+                        Some(failure) => Value::String(failure.reason.to_string()),
                         None => Value::Null,
                     },
                     "install_dir": outcome.receipt.install_dir,
@@ -2667,20 +2667,20 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliErro
                 // `network_error` o `ct2_conversion_failed` sin perderlo. Solo existe si
                 // hubo fallo: un sobre estable es más fácil de leer que uno con nulos.
                 if let lifecycle::install::ModelsState::Failed { cause } = &outcome.models {
-                    sobre["models_cause"] = json!({
+                    on["models_cause"] = json!({
                         "reason": cause.reason,
                         "message": cause.message
                     });
                 }
-                emit_raw_json(sobre);
+                emit_raw_json(on);
             } else {
-                for linea in &outcome.summary {
-                    println!("{linea}");
+                for line in &outcome.summary {
+                    println!("{line}");
                 }
             }
-            match parcial {
-                Some(le) => Ok(Salida::Veredicto(exit_code_for(le.reason).code())),
-                None => Ok(Salida::Hecho),
+            match partial {
+                Some(failure) => Ok(Outcome::Verdict(exit_code_for(failure.reason).code())),
+                None => Ok(Outcome::Done),
             }
         }
         SelfSub::Uninstall {
@@ -2691,13 +2691,13 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliErro
             let exe = std::env::current_exe().map_err(|e| {
                 CliError::new(ExitCode::Error, "self_uninstall_failed", e.to_string())
             })?;
-            let program_dir_registrado = lifecycle::channel::registered_install_dir(
+            let registered_program_dir = lifecycle::channel::registered_install_dir(
                 lifecycle::receipt::read_from(&lifecycle::install_dir())
                     .ok()
                     .flatten()
                     .as_ref(),
             );
-            let receipt = lifecycle::receipt::read_from(&program_dir_registrado)
+            let receipt = lifecycle::receipt::read_from(&registered_program_dir)
                 .ok()
                 .flatten();
             let roots = lifecycle::cleanup::Roots::from_receipt(receipt.as_ref());
@@ -2705,7 +2705,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliErro
                 roots,
                 receipt: receipt.as_ref(),
                 channel: lifecycle::channel::detect(&exe, receipt.as_ref()),
-                program_dir: program_dir_registrado,
+                program_dir: registered_program_dir,
                 daemon_addr: lifecycle::daemon_stop::DEFAULT_ADDR.to_string(),
                 home: home_dir(),
             };
@@ -2716,8 +2716,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliErro
                     dry_run,
                     assume_yes: yes,
                 },
-                &BorradoDelPrograma,
-                &ProcessosDelProducto,
+                &ProgramRemoval,
+                &ProductProcesses,
             )
             .await
             .map_err(lifecycle_error_to_cli)?;
@@ -2732,12 +2732,12 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliErro
             } else if outcome.status == "cancelled" {
                 println!("Cancelado.");
             } else {
-                for linea in &outcome.preserved {
-                    println!("  no se tocará {}: {}", linea.path.display(), linea.reason);
+                for line in &outcome.preserved {
+                    println!("  no se tocará {}: {}", line.path.display(), line.reason);
                 }
                 println!("Desinstalación completada ({}).", outcome.status);
             }
-            Ok(Salida::Hecho)
+            Ok(Outcome::Done)
         }
     }
 }
@@ -2749,20 +2749,20 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliErro
 /// `checks` y `failed`, y la salida es 1. Devolver `Err` aquí haría que `main` adjuntara
 /// detrás el objeto `error` y el sobre sería ilegible, que es el defecto que el
 /// contrato prohíbe con «cada invocación emite exactamente un objeto JSON».
-fn handle_doctor(json_mode: bool) -> Result<Salida, CliError> {
+fn handle_doctor(json_mode: bool) -> Result<Outcome, CliError> {
     let exe = std::env::current_exe()
         .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
     let env = lifecycle::doctor::Env::resolve();
     let report = lifecycle::doctor::report(&env, &exe);
-    let fallido = report.is_failure();
+    let failed = report.is_failure();
 
     if json_mode {
         // El motor devuelve el reporte ya serializable y con las nueve claves de §9.8
         // más las del contrato: aquí solo se estampa la versión del sobre.
-        let valor = serde_json::to_value(&report)
+        let value = serde_json::to_value(&report)
             .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
-        emit_raw_json(valor);
-    } else if fallido {
+        emit_raw_json(value);
+    } else if failed {
         for check in report.checks.iter().filter(|c| !c.ok) {
             eprintln!("  ✗ {}: {}", check.name, check.detail);
         }
@@ -2777,10 +2777,10 @@ fn handle_doctor(json_mode: bool) -> Result<Salida, CliError> {
         }
     }
 
-    if fallido {
-        Ok(Salida::Veredicto(ExitCode::Error.code()))
+    if failed {
+        Ok(Outcome::Verdict(ExitCode::Error.code()))
     } else {
-        Ok(Salida::Hecho)
+        Ok(Outcome::Done)
     }
 }
 
@@ -2792,7 +2792,11 @@ fn handle_doctor(json_mode: bool) -> Result<Salida, CliError> {
 /// `ExitCode::Error`, que es lo que §9.1 permite mientras su ciclo no la declare.
 fn lifecycle_error_to_cli(err: anyhow::Error) -> CliError {
     match err.downcast_ref::<lifecycle::LifecycleError>() {
-        Some(le) => CliError::new(exit_code_for(le.reason), le.reason, le.message.clone()),
+        Some(failure) => CliError::new(
+            exit_code_for(failure.reason),
+            failure.reason,
+            failure.message.clone(),
+        ),
         None => CliError::new(ExitCode::Error, "lifecycle_failed", err.to_string()),
     }
 }
@@ -2821,9 +2825,9 @@ fn exit_code_for(reason: &str) -> ExitCode {
 /// porque arrastraría el árbol de `avi-daemon` y `avi-tts` al crate del motor. Es la
 /// misma división que el motor documenta, y la guarda `pid != process::id()` que evita
 /// el auto-mate del bug v0.18.10–v0.18.25 está en ambos lados.
-struct ProcessosDelProducto;
+struct ProductProcesses;
 
-impl lifecycle::daemon_stop::ProcessControl for ProcessosDelProducto {
+impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
     fn pid_alive(&self, pid: u32) -> bool {
         daemon::pid_alive(pid)
     }
@@ -2852,9 +2856,9 @@ impl lifecycle::daemon_stop::ProcessControl for ProcessosDelProducto {
 /// borrado directo es imposible y se programa con el proceso auxiliar desacoplado que
 /// `avi-daemon` ya endureció; el motor decide cuál de los dos casos es y cambia el
 /// desenlace a `removal_scheduled`.
-struct BorradoDelPrograma;
+struct ProgramRemoval;
 
-impl lifecycle::uninstall::ProgramDirRemover for BorradoDelPrograma {
+impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
     fn exe_lives_inside(&self, program_dir: &std::path::Path) -> bool {
         std::env::current_exe()
             .ok()
@@ -2933,7 +2937,7 @@ fn is_valid_identifier(ids: Option<&str>, more: Option<&str>) -> Result<(), CliE
 /// Va por el motor porque el pidfile es **su** esquema: `daemon_stop` lo escribe, lo
 /// lee y lo borra, y las lecturas tolerantes que este binario usaba eran una segunda
 /// implementación del mismo formato.
-fn data_dir_efectiva() -> PathBuf {
+fn effective_data_dir() -> PathBuf {
     lifecycle::data_dir()
 }
 
@@ -2951,7 +2955,7 @@ fn home_dir() -> PathBuf {
 /// usa `DAEMON_ADDR` con comportamiento idéntico al anterior. Solo el caso "pidfile vivo
 /// con addr efímera" toma la vía nueva.
 fn resolve_client_addr() -> String {
-    lifecycle::daemon_stop::resolve_client_addr(&data_dir_efectiva())
+    lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir())
 }
 
 /// Lee el `pid` publicado en el fichero ready (recuperación de reclamo):
@@ -3572,7 +3576,7 @@ async fn synthesize_via_daemon(
     let saved = if play {
         // RF-12.3–12.5: bucle interactivo client-side (P6); la opción 3
         // re-despacha la síntesis por la misma vía daemon.
-        let resultado = synthesize_play_loop(
+        let outcome = synthesize_play_loop(
             voice,
             &label_lower,
             force,
@@ -3595,7 +3599,7 @@ async fn synthesize_via_daemon(
             },
         )
         .await?;
-        match resultado {
+        match outcome {
             Some(saved) => saved,
             None => {
                 // Opción 4 / EOF: descartado, exit 0 (RF-12.3).
@@ -4104,7 +4108,7 @@ mod tests {
     /// tiempo transcurrido queda acotado por el deadline. Hermético: no arranca
     /// daemon ni paga warmup, y usa un puerto efímero cerrado (no el 8765 compartido).
     #[tokio::test]
-    async fn await_daemon_ready_respeta_deadline() {
+    async fn await_daemon_ready_respects_deadline() {
         // Puerto efímero: enlazamos, capturamos la dirección y dropeamos el
         // listener para garantizar que el puerto queda cerrado (connection-refused).
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind efímero");
@@ -4136,7 +4140,7 @@ mod tests {
     /// `stopped` (fixture intacta, sin campos extra), `running` + `warm`, y
     /// `running` + `warm_error` cuando el warmup falló.
     #[test]
-    fn status_body_mapea_stopped_running_y_warm() {
+    fn status_body_maps_stopped_running_and_warm() {
         // stopped: solo `daemon` (schema_version lo añade emit_raw_json).
         let stopped = status_body(false, None, None);
         assert_eq!(stopped, json!({ "daemon": "stopped" }));
@@ -4161,7 +4165,7 @@ mod tests {
     /// El predicado puro del reclamo Unix ante líder muerto solo verifica
     /// con probe caído + PID muerto + residente muerto (no-plataformero, hermético).
     #[test]
-    fn unix_claim_verified_exige_triple_cierre() {
+    fn unix_claim_verified_requires_triple_close() {
         assert!(unix_claim_verified(false, false, false));
         assert!(!unix_claim_verified(true, false, false));
         assert!(!unix_claim_verified(false, true, false));

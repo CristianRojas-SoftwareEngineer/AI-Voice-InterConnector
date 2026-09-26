@@ -100,8 +100,8 @@ pub const MODEL_DOWNLOAD_ESTIMATE: u64 = 3_000_000_000;
 pub fn selection(options: &Options) -> Vec<&'static str> {
     avi_store::MODEL_REVISIONS
         .iter()
-        .map(|(nombre, _, _)| *nombre)
-        .filter(|nombre| *nombre != CLONING_MODEL || options.with_voice_cloning)
+        .map(|(name, _, _)| *name)
+        .filter(|name| *name != CLONING_MODEL || options.with_voice_cloning)
         .collect()
 }
 
@@ -117,9 +117,9 @@ pub fn purge_targets(options: &Options) -> Vec<&'static str> {
 /// necesite red.
 pub fn pending(store: &avi_store::ModelStore, options: &Options) -> Pending {
     let mut out = Pending::default();
-    for nombre in selection(options) {
-        if !store.is_provisioned(nombre) {
-            out.models.push(nombre.to_string());
+    for name in selection(options) {
+        if !store.is_provisioned(name) {
+            out.models.push(name.to_string());
         }
     }
     for pair in CT2_PAIRS {
@@ -176,11 +176,11 @@ pub fn needs_reconversion(ct2_dir: &Path, store: &avi_store::ModelStore, hf_name
 /// lista de errores.
 pub fn purge(store: &avi_store::ModelStore, options: &Options) -> PurgeOutcome {
     let mut outcome = PurgeOutcome::default();
-    for nombre in purge_targets(options) {
-        match store.remove_hf_snapshot(nombre) {
-            Ok(true) => outcome.snapshots.push(nombre.to_string()),
+    for name in purge_targets(options) {
+        match store.remove_hf_snapshot(name) {
+            Ok(true) => outcome.snapshots.push(name.to_string()),
             Ok(false) => {}
-            Err(e) => outcome.failures.push((nombre.to_string(), e.to_string())),
+            Err(e) => outcome.failures.push((name.to_string(), e.to_string())),
         }
     }
     // `xet` y los locks solo se tocan en la raíz exclusiva, que es exactamente lo
@@ -241,7 +241,7 @@ pub fn convert(hf_snapshot: &Path, ct2_dir: &Path) -> anyhow::Result<()> {
         std::fs::remove_dir_all(&tmp_dir)?;
     }
     std::fs::create_dir_all(&tmp_dir)?;
-    if let Err(e) = convertir(hf_snapshot, &tmp_dir) {
+    if let Err(e) = convert_body(hf_snapshot, &tmp_dir) {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(e);
     }
@@ -262,7 +262,7 @@ pub fn tmp_dir_for(ct2_dir: &Path) -> PathBuf {
 /// El cuerpo de la conversión: invocar el conversor, asegurar los `.spm` y pasar
 /// el gate. Aislado para que `convert` tenga una única salida de error y el
 /// temporal se limpie siempre.
-fn convertir(hf_snapshot: &Path, tmp_dir: &Path) -> anyhow::Result<()> {
+fn convert_body(hf_snapshot: &Path, tmp_dir: &Path) -> anyhow::Result<()> {
     let try_converter = |bin: &str| {
         std::process::Command::new(bin)
             .args([
@@ -326,8 +326,8 @@ fn convertir(hf_snapshot: &Path, tmp_dir: &Path) -> anyhow::Result<()> {
 /// declara §9.1 para un fallo de descarga tras reintentos. La traducción vive aquí
 /// para que `self install` no tenga que distinguir el origen del fallo: lo que le
 /// importa es que el programa queda instalado y basta reintentar con `setup`.
-pub fn map_download_failure(modelo: &str, causa: &anyhow::Error) -> LifecycleError {
-    LifecycleError::new("network_error", 1, format!("{modelo}: {causa}"))
+pub fn map_download_failure(model: &str, cause: &anyhow::Error) -> LifecycleError {
+    LifecycleError::new("network_error", 1, format!("{model}: {cause}"))
 }
 
 /// Desenlace de `setup`.
@@ -368,27 +368,27 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
 
     // 1. `--force-update`: purga de la **selección**, no del conjunto entero.
     if options.force_update {
-        if !confirmar_destructivo(options)? {
+        if !confirm_destructive(options)? {
             return Ok(outcome);
         }
         outcome.purge = purge(store, options);
-        for (nombre, motivo) in &outcome.purge.failures {
-            eprintln!("  no se pudo purgar {nombre}: {motivo}");
+        for (name, reason) in &outcome.purge.failures {
+            eprintln!("  no se pudo purgar {name}: {reason}");
         }
     }
 
     // 2. Provisión idempotente de la selección.
-    let pendiente = pending(store, options);
-    if (options.force_update || !pendiente.is_empty()) && !confirmar_tamano(&pendiente, options)? {
+    let pending = pending(store, options);
+    if (options.force_update || !pending.is_empty()) && !confirm_size(&pending, options)? {
         return Ok(outcome);
     }
-    for nombre in selection(options) {
-        if !store.is_provisioned(nombre) {
-            avi_store::ModelStore::ensure_downloaded(nombre)
+    for name in selection(options) {
+        if !store.is_provisioned(name) {
+            avi_store::ModelStore::ensure_downloaded(name)
                 .await
-                .map_err(|e| map_download_failure(nombre, &e))?;
+                .map_err(|e| map_download_failure(name, &e))?;
         }
-        outcome.provisioned.push(nombre.to_string());
+        outcome.provisioned.push(name.to_string());
     }
 
     // 3. Derivados CT2: obligatorios, e idempotentes por fecha sobre directorios sanos.
@@ -428,23 +428,23 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
 
 /// Error de conversión con el motivo ya redactado: el usuario lee este mensaje y no
 /// hay otra fuente para él.
-fn conversion_error(pair: &str, motivo: &str) -> LifecycleError {
+fn conversion_error(pair: &str, reason: &str) -> LifecycleError {
     LifecycleError::new(
         "setup_failed",
         11,
-        format!("No se pudo convertir CT2 {pair}: {motivo}"),
+        format!("No se pudo convertir CT2 {pair}: {reason}"),
     )
 }
 
 /// Confirmación destructiva de `--force-update` (§9.1). `false` es "el usuario dijo
 /// que no", que §9.1 no cuenta como error.
-fn confirmar_destructivo(options: &Options) -> anyhow::Result<bool> {
-    let resumen =
+fn confirm_destructive(options: &Options) -> anyhow::Result<bool> {
+    let summary =
         vec!["Se purgarán los modelos descargados y se volverán a descargar.".to_string()];
     let decision = crate::confirm::confirm(
         &crate::confirm::Confirmation {
             kind: crate::confirm::Kind::Destructive,
-            summary: &resumen,
+            summary: &summary,
             entries: &[],
             assume_yes: options.assume_yes,
             dry_run: false,
@@ -459,22 +459,22 @@ fn confirmar_destructivo(options: &Options) -> anyhow::Result<bool> {
 /// Confirmación del tamaño pendiente de §9.7: es no destructiva, así que sin terminal
 /// procede, y `--yes` la omite. Cuando la invoca `self install` después de su propio
 /// resumen, `called_from_lifecycle` la omite también.
-fn confirmar_tamano(pendiente: &Pending, options: &Options) -> anyhow::Result<bool> {
+fn confirm_size(pending: &Pending, options: &Options) -> anyhow::Result<bool> {
     if options.called_from_lifecycle {
         return Ok(true);
     }
-    if pendiente.estimated_bytes() == 0 {
+    if pending.estimated_bytes() == 0 {
         return Ok(true);
     }
-    let resumen = vec![format!(
+    let summary = vec![format!(
         "Se descargarán {} modelo(s), unos {}.",
-        pendiente.models.len(),
-        human_bytes(pendiente.estimated_bytes())
+        pending.models.len(),
+        human_bytes(pending.estimated_bytes())
     )];
     let decision = crate::confirm::confirm(
         &crate::confirm::Confirmation {
             kind: crate::confirm::Kind::NonDestructive,
-            summary: &resumen,
+            summary: &summary,
             entries: &[],
             assume_yes: options.assume_yes,
             dry_run: false,
@@ -488,17 +488,17 @@ fn confirmar_tamano(pendiente: &Pending, options: &Options) -> anyhow::Result<bo
 
 /// Tamaño legible con la misma escala que el resto del producto.
 fn human_bytes(bytes: u64) -> String {
-    const UNIDADES: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut valor = bytes as f64;
-    let mut unidad = 0;
-    while valor >= 1024.0 && unidad + 1 < UNIDADES.len() {
-        valor /= 1024.0;
-        unidad += 1;
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
     }
-    if unidad == 0 {
+    if unit == 0 {
         format!("{bytes} B")
     } else {
-        format!("{valor:.1} {}", UNIDADES[unidad])
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -527,26 +527,26 @@ mod tests {
     /// `needs_reconversion` cae en la rama "no se pudo leer una fecha, el derivado se
     /// acepta", que es determinista y no depende de la resolución del reloj del
     /// sistema de ficheros.
-    fn snapshot_falso(repo: &str, revision: &str) -> PathBuf {
+    fn fake_snapshot(repo: &str, revision: &str) -> PathBuf {
         let dir = avi_store::models_cache_dir()
             .join(format!("models--{repo}"))
             .join("snapshots")
             .join(revision);
         write_file(&dir.join("config.json"), "{}");
         write_file(&dir.join("model.txt"), "pesos");
-        for (modelo, patrones) in avi_store::MODEL_FILE_PATTERNS {
-            for patron in *patrones {
-                write_file(&dir.join(patron), "artefacto");
+        for (model, patterns) in avi_store::MODEL_FILE_PATTERNS {
+            for pattern in *patterns {
+                write_file(&dir.join(pattern), "artefacto");
             }
             // El patrón de un modelo solo aplica a su repo; se acepta el sobredibujado
             // porque las pruebas crean snapshots de un repo cada vez.
-            let _ = modelo;
+            let _ = model;
         }
         dir
     }
 
     /// Crea un derivado CT2 sano, el que el gate acepta.
-    fn derivado_sano(pair: &str) -> PathBuf {
+    fn derived_healthy(pair: &str) -> PathBuf {
         let dir = avi_store::ct2_model_dir(pair);
         write_file(&dir.join("model.bin"), "pesos");
         write_file(&dir.join("source.spm"), "spm");
@@ -559,78 +559,75 @@ mod tests {
     /// que es lo que permite que `self install` lo invoque sin preguntar.
     #[test]
     fn provisioning_is_idempotent() {
-        let (_guard, raiz) = cache_relocated("setup-idempotente");
+        let (_guard, root) = cache_relocated("setup-idempotente");
         let store = avi_store::ModelStore::new();
-        let con_clonado = Options::user(true, false, true);
+        let with_clone = Options::user(true, false, true);
 
         // 1. Sin nada provisionado, todo está pendiente.
-        let inicial = pending(&store, &con_clonado);
-        assert_eq!(inicial.models.len(), selection(&con_clonado).len());
-        assert!(!inicial.is_empty(), "nada provisionado, todo pendiente");
-        assert!(inicial.estimated_bytes() > 0, "hay tamaño que anunciar");
+        let initial = pending(&store, &with_clone);
+        assert_eq!(initial.models.len(), selection(&with_clone).len());
+        assert!(!initial.is_empty(), "nada provisionado, todo pendiente");
+        assert!(initial.estimated_bytes() > 0, "hay tamaño que anunciar");
 
         // 2. Se provisiona todo lo de la selección, derivado incluido: `pending`
         //    queda vacío.
-        for nombre in selection(&con_clonado) {
-            let (repo, revision) = avi_store::ModelStore::revision_of(nombre)
+        for name in selection(&with_clone) {
+            let (repo, revision) = avi_store::ModelStore::revision_of(name)
                 .expect("todo repo pinneado tiene revisión");
-            snapshot_falso(&repo.replace('/', "--"), revision);
+            fake_snapshot(&repo.replace('/', "--"), revision);
         }
         for pair in CT2_PAIRS {
-            derivado_sano(pair);
+            derived_healthy(pair);
         }
-        let despues = pending(&store, &con_clonado);
+        let after = pending(&store, &with_clone);
         assert!(
-            despues.is_empty(),
-            "con todo provisionado no queda nada pendiente: {despues:?}"
+            after.is_empty(),
+            "con todo provisionado no queda nada pendiente: {after:?}"
         );
-        assert_eq!(despues.estimated_bytes(), 0, "y no hay tamaño que anunciar");
+        assert_eq!(after.estimated_bytes(), 0, "y no hay tamaño que anunciar");
 
         // 3. Volver a calcular no cambia nada: la función es un inspeccionador.
-        assert_eq!(pending(&store, &con_clonado), despues);
+        assert_eq!(pending(&store, &with_clone), after);
 
         // 4. La selección manda: sin `--with-voice-cloning` el modelo base no se
         //    provisiona y por tanto tampoco se exige.
-        let sin_clonado = Options::user(false, false, true);
-        assert!(!selection(&sin_clonado).contains(&CLONING_MODEL));
-        assert!(selection(&con_clonado).contains(&CLONING_MODEL));
+        let without_clone = Options::user(false, false, true);
+        assert!(!selection(&without_clone).contains(&CLONING_MODEL));
+        assert!(selection(&with_clone).contains(&CLONING_MODEL));
         assert!(
-            pending(&store, &sin_clonado).is_empty(),
+            pending(&store, &without_clone).is_empty(),
             "lo que no se pidió tampoco se exige"
         );
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// La purga de `--force-update` respeta el filtro de la selección: borra lo
     /// seleccionado y **no** lo que el usuario no pidió.
     #[test]
     fn force_update_respects_selection() {
-        let (_guard, raiz) = cache_relocated("setup-purga");
+        let (_guard, root) = cache_relocated("setup-purga");
         let store = avi_store::ModelStore::new();
 
         // Snapshot del modelo de clonado, que solo se purga si se pidió.
-        snapshot_falso(
+        fake_snapshot(
             "Qwen--Qwen3-TTS-12Hz-0.6B-Base",
             "5d83992436eae1d760afd27aff78a71d676296fc",
         );
-        let clonado_dir =
+        let clone_dir =
             avi_store::models_cache_dir().join("models--Qwen--Qwen3-TTS-12Hz-0.6B-Base");
-        assert!(
-            clonado_dir.exists(),
-            "el snapshot del modelo de clonado está"
-        );
+        assert!(clone_dir.exists(), "el snapshot del modelo de clonado está");
 
         // Sin `--with-voice-cloning`, la purga no lo toca.
-        let sin_clonado = Options::user(false, true, true);
+        let without_clone = Options::user(false, true, true);
         assert_eq!(
-            purge_targets(&sin_clonado).len(),
-            selection(&sin_clonado).len(),
+            purge_targets(&without_clone).len(),
+            selection(&without_clone).len(),
             "los objetivos de purga son la selección, no el conjunto entero"
         );
-        assert!(!purge_targets(&sin_clonado).contains(&CLONING_MODEL));
-        let outcome = purge(&store, &sin_clonado);
+        assert!(!purge_targets(&without_clone).contains(&CLONING_MODEL));
+        let outcome = purge(&store, &without_clone);
         assert!(
-            clonado_dir.exists(),
+            clone_dir.exists(),
             "un modelo no seleccionado no se purga: {:?}",
             outcome.snapshots
         );
@@ -638,16 +635,16 @@ mod tests {
         assert!(outcome.is_clean(), "no hubo fallos: {:?}", outcome.failures);
 
         // Con `--with-voice-cloning`, sí.
-        let con_clonado = Options::user(true, true, true);
-        assert!(purge_targets(&con_clonado).contains(&CLONING_MODEL));
-        let outcome = purge(&store, &con_clonado);
+        let with_clone = Options::user(true, true, true);
+        assert!(purge_targets(&with_clone).contains(&CLONING_MODEL));
+        let outcome = purge(&store, &with_clone);
         assert!(
             outcome.snapshots.contains(&CLONING_MODEL.to_string()),
             "el modelo seleccionado sí se purga: {:?}",
             outcome.snapshots
         );
-        assert!(!clonado_dir.exists(), "y su snapshot desaparece de verdad");
-        std::fs::remove_dir_all(&raiz).ok();
+        assert!(!clone_dir.exists(), "y su snapshot desaparece de verdad");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Un fallo de conversión no deja un directorio parcial: ni el destino ni el
@@ -655,20 +652,20 @@ mod tests {
     /// derivado.
     #[test]
     fn failed_conversion_leaves_no_partial_dir() {
-        let raiz = scratch("setup-conversion");
-        let snapshot = raiz.join("snapshot-vacio");
-        let ct2_dir = raiz.join("models/ct2/marian-es-en");
+        let root = scratch("setup-conversion");
+        let snapshot = root.join("snapshot-vacio");
+        let ct2_dir = root.join("models/ct2/marian-es-en");
         std::fs::create_dir_all(&snapshot).unwrap();
 
         let err = convert(&snapshot, &ct2_dir).expect_err("sin pesos ni conversor no hay derivado");
-        let mensaje = format!("{err:#}");
+        let message = format!("{err:#}");
         assert!(
             !ct2_dir.exists(),
-            "no queda un directorio de destino parcial: {mensaje}"
+            "no queda un directorio de destino parcial: {message}"
         );
         assert!(
             !tmp_dir_for(&ct2_dir).exists(),
-            "ni el temporal hermano: {mensaje}"
+            "ni el temporal hermano: {message}"
         );
 
         // Un derivado previo tampoco se destruye por un fallo: se conserva para
@@ -680,7 +677,7 @@ mod tests {
             "el derivado previo sobrevive a un intento fallido"
         );
         assert!(!tmp_dir_for(&ct2_dir).exists());
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// La conversión que sí funciona, con el gate como única condición: si el
@@ -688,8 +685,8 @@ mod tests {
     /// derivado definitivo.
     #[test]
     fn conversion_verifies_with_the_accepting_gate() {
-        let raiz = scratch("setup-gate");
-        let ct2_dir = raiz.join("marian-es-en");
+        let root = scratch("setup-gate");
+        let ct2_dir = root.join("marian-es-en");
         let tmp = tmp_dir_for(&ct2_dir);
         // El gate exige `model.bin` **y** un tokenizador: `tokenizer.json` o los dos
         // `.spm`. Sin tokenizer el derivado no puede tokenizar aunque tenga pesos.
@@ -719,6 +716,6 @@ mod tests {
         // mismo volumen, y un temporal dentro del destino no lo sería.
         assert_eq!(tmp.parent(), ct2_dir.parent());
         assert_ne!(tmp, ct2_dir);
-        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 }

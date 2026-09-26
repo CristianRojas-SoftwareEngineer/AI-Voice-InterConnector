@@ -24,13 +24,13 @@ use avi_lifecycle::cleanup;
 use avi_lifecycle::install::{self, Options as InstallOptions};
 use avi_lifecycle::receipt::{self, PathIntegration};
 use avi_lifecycle::uninstall;
-use support::{Ahora, Inerte, Sandbox};
+use support::{Inert, Now, Sandbox};
 
 /// Opciones de instalación desatendida sin provisión de modelos y con `--channel dev`.
-fn opciones_dev() -> InstallOptions {
+fn dev_options() -> InstallOptions {
     InstallOptions {
         channel: Some(Channel::Dev),
-        ..Sandbox::opciones_instalacion()
+        ..Sandbox::install_options()
     }
 }
 
@@ -46,12 +46,12 @@ fn channels_behave_per_spec() {
     // Homebrew gana porque el Cask no deja recibo —lo gestiona otra herramienta— y porque
     // una copia del Cask ejecutándose dentro de otra instalación sigue siendo de Homebrew:
     // es el prefijo el que manda, no el papel del directorio.
-    let sandbox = Sandbox::nuevo("canales");
-    sandbox.sembrar_entorno();
-    let caskroom = sandbox.raiz.join("opt").join("homebrew").join("Caskroom");
-    let exe_del_cask = caskroom.join("ai-voice-interconnector");
+    let sandbox = Sandbox::new("canales");
+    sandbox.seed_env();
+    let caskroom = sandbox.root.join("opt").join("homebrew").join("Caskroom");
+    let cask_exe = caskroom.join("ai-voice-interconnector");
 
-    let script = sandbox.instalar_registrada(PathIntegration::none());
+    let script = sandbox.install_registered(PathIntegration::none());
     assert_eq!(
         script.channel,
         Channel::Script,
@@ -66,7 +66,7 @@ fn channels_behave_per_spec() {
         "§8.2: sin Cask, manda el recibo"
     );
     assert_eq!(
-        channel::detect(&exe_del_cask, Some(&script)),
+        channel::detect(&cask_exe, Some(&script)),
         Channel::Homebrew,
         "§8.2: y el prefijo de Homebrew gana sobre el recibo"
     );
@@ -77,19 +77,19 @@ fn channels_behave_per_spec() {
     );
     // `unmanaged` es el canal de un binario ejecutado fuera de una instalación, y por eso
     // `self install` funciona desde `target/`: instala si el bundle es válido.
-    let desde_staging = sandbox.escribir_bundle(&sandbox.staging);
-    let instalada = runtime
+    let from_staging = sandbox.write_bundle(&sandbox.staging);
+    let installed = runtime
         .block_on(install::install(
-            &sandbox.env_instalacion(&desde_staging),
+            &sandbox.install_env(&from_staging),
             &InstallOptions {
                 channel: Some(Channel::Dev),
-                ..Sandbox::opciones_instalacion()
+                ..Sandbox::install_options()
             },
-            &Inerte,
+            &Inert,
         ))
         .expect("§8.2: `self install` desde fuera de una instalación instala");
     assert_eq!(
-        instalada.receipt.channel,
+        installed.receipt.channel,
         Channel::Script,
         "§8.2: el valor por defecto es `script`"
     );
@@ -97,101 +97,105 @@ fn channels_behave_per_spec() {
     // ── `--channel dev` solo cuando el recibo se crea por primera vez ──────────
     // Es la opción oculta de §10.5, y su regla es lo que hace que una instalación de
     // desarrollo siga siendo `dev` después de una reparación.
-    let dev = Sandbox::nuevo("canal-dev");
-    dev.sembrar_entorno();
-    let exe = dev.escribir_bundle(&dev.staging);
-    let primera = runtime
+    let dev = Sandbox::new("canal-dev");
+    dev.seed_env();
+    let exe = dev.write_bundle(&dev.staging);
+    let first = runtime
         .block_on(install::install(
-            &dev.env_instalacion(&exe),
-            &opciones_dev(),
-            &Inerte,
+            &dev.install_env(&exe),
+            &dev_options(),
+            &Inert,
         ))
         .expect("§8.2: `self install --channel dev` se completa");
     assert_eq!(
-        primera.receipt.channel,
+        first.receipt.channel,
         Channel::Dev,
         "§8.2: `--channel dev` origina el canal `dev`"
     );
-    assert_eq!(primera.receipt.channel.as_str(), "dev");
+    assert_eq!(first.receipt.channel.as_str(), "dev");
 
-    let exe = dev.escribir_bundle(&dev.staging);
-    let segunda = runtime
+    let exe = dev.write_bundle(&dev.staging);
+    let second = runtime
         .block_on(install::install(
-            &dev.env_instalacion(&exe),
-            &opciones_dev(),
-            &Inerte,
+            &dev.install_env(&exe),
+            &dev_options(),
+            &Inert,
         ))
         .expect("§8.2: la segunda pasada se completa");
     assert_eq!(
-        segunda.receipt.channel,
+        second.receipt.channel,
         Channel::Dev,
         "§8.2: y una reparación conserva el canal, que es lo que hace que `self update` siga \
          tratando la instalación como `dev`"
     );
-    let en_disco = receipt::read_from(&dev.program_dir)
+    let on_disk = receipt::read_from(&dev.program_dir)
         .expect("§8.2: se lee el recibo")
         .expect("§8.2: el recibo existe");
     assert_eq!(
-        en_disco.channel,
+        on_disk.channel,
         Channel::Dev,
         "§8.2: y el recibo de disco lo dice"
     );
 
     // ── 2. `homebrew` es `externally_managed` y no toca nada ────────────────────
     // Las dos operaciones de §8.2 que declaran el canal `homebrew` con comando propio.
-    let hb = Sandbox::nuevo("canal-homebrew");
-    hb.sembrar_entorno();
-    hb.plantar_estado();
-    let recibo_hb = hb.instalar_registrada(PathIntegration::none());
-    let antes = hb.snapshot();
+    let hb = Sandbox::new("canal-homebrew");
+    hb.seed_env();
+    hb.seed_state();
+    let hb_receipt = hb.install_registered(PathIntegration::none());
+    let before = hb.snapshot();
 
     let error = runtime
         .block_on(uninstall::run(
-            &hb.env_uninstall(Some(&recibo_hb), Channel::Homebrew),
+            &hb.env_uninstall(Some(&hb_receipt), Channel::Homebrew),
             &uninstall::Options {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Ahora,
-            &Inerte,
+            &Now,
+            &Inert,
         ))
         .expect_err("§8.2: `homebrew` no se desinstala desde aquí");
-    let le = error
+    let failure = error
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("§8.2: el fallo declara un `reason`");
-    assert_eq!(le.reason, "externally_managed");
+    assert_eq!(failure.reason, "externally_managed");
     assert_eq!(
-        le.exit_code, 12,
+        failure.exit_code, 12,
         "`ExternallyManaged = 12` de la tabla cerrada"
     );
     assert!(
-        le.message.contains(uninstall::HOMEBREW_UNINSTALL),
+        failure.message.contains(uninstall::HOMEBREW_UNINSTALL),
         "§8.2: el mensaje lleva el comando de Homebrew exacto: {}",
-        le.message
+        failure.message
     );
     assert!(
-        le.message.contains("cleanup --all"),
+        failure.message.contains("cleanup --all"),
         "§8.2: y sugiere `cleanup --all` para el estado de usuario"
     );
     assert_eq!(
         hb.snapshot(),
-        antes,
+        before,
         "§8.2: y nada se toca, ni programa, ni estado, ni modelos"
     );
 
     // `cleanup` sí opera en los cuatro canales: no depende del canal, y el estado de
     // usuario es del usuario.
-    for canal in [
+    for channel in [
         Channel::Script,
         Channel::Dev,
         Channel::Homebrew,
         Channel::Unmanaged,
     ] {
-        let s = Sandbox::nuevo(&format!("cleanup-{canal}"));
-        s.sembrar_entorno();
-        s.plantar_estado();
-        s.instalar_registrada(PathIntegration::none());
-        assert_eq!(s.env_uninstall(None, canal).channel, canal, "§8.2: {canal}");
+        let s = Sandbox::new(&format!("cleanup-{channel}"));
+        s.seed_env();
+        s.seed_state();
+        s.install_registered(PathIntegration::none());
+        assert_eq!(
+            s.env_uninstall(None, channel).channel,
+            channel,
+            "§8.2: {channel}"
+        );
         let outcome = runtime
             .block_on(cleanup::run(
                 &s.roots(),
@@ -200,17 +204,17 @@ fn channels_behave_per_spec() {
                     assume_yes: true,
                     ..Default::default()
                 },
-                &Inerte,
+                &Inert,
             ))
             .expect("§8.2: `cleanup` se ejecuta en cualquier canal");
-        assert_eq!(outcome.status, "cleanup_complete", "§8.2: {canal}");
+        assert_eq!(outcome.status, "cleanup_complete", "§8.2: {channel}");
         assert!(
-            !support::existe(&s.models_dir),
-            "§8.2: {canal}: borra los modelos"
+            !support::exists(&s.models_dir),
+            "§8.2: {channel}: borra los modelos"
         );
         assert!(
-            support::existe(&s.program_dir),
-            "§8.2: {canal}: y nunca borra el programa"
+            support::exists(&s.program_dir),
+            "§8.2: {channel}: y nunca borra el programa"
         );
     }
 
@@ -219,17 +223,17 @@ fn channels_behave_per_spec() {
     // instalación registrada. La prueba lo monta al revés de lo habitual: el recibo apunta
     // a un directorio y la operación se invoca con `program_dir` de otro sitio, que es lo
     // que pasa cuando el comando corre desde `target/` o desde el bundle extraído a mano.
-    let registrado = Sandbox::nuevo("registrado");
-    registrado.sembrar_entorno();
-    registrado.plantar_estado();
-    let recibo_registrado = registrado.instalar_registrada(PathIntegration::none());
+    let registered = Sandbox::new("registrado");
+    registered.seed_env();
+    registered.seed_state();
+    let registered_receipt = registered.install_registered(PathIntegration::none());
 
-    let al_pie = Sandbox::nuevo("al-pie");
-    al_pie.sembrar_entorno();
-    al_pie.plantar_estado();
-    al_pie.instalar_registrada(PathIntegration::none());
+    let bare = Sandbox::new("al-pie");
+    bare.seed_env();
+    bare.seed_state();
+    bare.install_registered(PathIntegration::none());
 
-    let env = entorno_sobre_el_registrado(&registrado, &recibo_registrado);
+    let env = env_over_registered(&registered, &registered_receipt);
     let outcome = runtime
         .block_on(uninstall::run(
             &env,
@@ -237,46 +241,46 @@ fn channels_behave_per_spec() {
                 assume_yes: true,
                 ..Default::default()
             },
-            &Ahora,
-            &Inerte,
+            &Now,
+            &Inert,
         ))
         .expect("§8.2: la desinstalación se ejecuta");
     assert_eq!(outcome.status, "uninstalled");
     assert!(
-        !support::existe(&registrado.program_dir),
+        !support::exists(&registered.program_dir),
         "§8.2: se borra la instalación **registrada**, que es la del recibo"
     );
     assert!(
-        support::existe(&al_pie.program_dir),
+        support::exists(&bare.program_dir),
         "§8.2: y la copia de la que se invoca el comando no se toca, porque no es la \
          instalación registrada"
     );
     assert!(
-        support::existe(&al_pie.data_dir) && support::existe(&al_pie.models_dir),
+        support::exists(&bare.data_dir) && support::exists(&bare.models_dir),
         "§8.2: tampoco sus raíces, porque el recibo manda sobre dónde se resuelven ahora: es \
          lo que permite que la actualización y la desinstalación operen sobre las mismas \
          ubicaciones aunque la variable ya no esté definida"
     );
     assert!(
-        registrado.program_dir != al_pie.program_dir,
+        registered.program_dir != bare.program_dir,
         "§8.2: los dos directorios son distintos, que es lo que hace la prueba significativa"
     );
 
     // Y el directorio de programa sobre el que se opera sale del recibo, no de la
     // resolución por convención: con `AVI_INSTALL_DIR` apuntando al otro sitio, la
     // operación sigue intentando el registrado.
-    let resuelta = channel::registered_install_dir(Some(&recibo_registrado));
+    let resolved = channel::registered_install_dir(Some(&registered_receipt));
     assert_eq!(
-        resuelta, registrado.program_dir,
+        resolved, registered.program_dir,
         "§8.2: `registered_install_dir` devuelve el del recibo, no el de `AVI_INSTALL_DIR`"
     );
     assert_ne!(
-        resuelta, al_pie.program_dir,
+        resolved, bare.program_dir,
         "§8.2: y son distintos, que es justo lo que la operación tiene que ignorar"
     );
     assert_eq!(
         std::env::var("AVI_INSTALL_DIR").ok().as_deref(),
-        Some(al_pie.program_dir.to_string_lossy().as_ref()),
+        Some(bare.program_dir.to_string_lossy().as_ref()),
         "§8.2: la reubicación por variable apunta al otro sitio, que es la trampa"
     );
 }
@@ -289,23 +293,23 @@ fn channels_behave_per_spec() {
 /// deliberada: el directorio de temporales del sistema es un parámetro para que las pruebas
 /// no barren `%TEMP%` de la máquina que las ejecuta, que es el mismo motivo por el que §13
 /// exige raíces reubicadas.
-fn entorno_sobre_el_registrado<'a>(
-    registrado: &'a Sandbox,
-    recibo: &'a receipt::InstallReceipt,
+fn env_over_registered<'a>(
+    registered: &'a Sandbox,
+    receipt: &'a receipt::InstallReceipt,
 ) -> uninstall::Env<'a> {
     uninstall::Env {
         roots: cleanup::Roots {
-            program_dir: recibo.install_dir.clone(),
-            data_dir: recibo.roots.data_dir.clone(),
-            models_dir: recibo.roots.cache_dir.clone(),
-            temp_root: registrado.temp_root.clone(),
-            home: registrado.home.clone(),
-            models_shared: registrado.shared_hub.is_some(),
+            program_dir: receipt.install_dir.clone(),
+            data_dir: receipt.roots.data_dir.clone(),
+            models_dir: receipt.roots.cache_dir.clone(),
+            temp_root: registered.temp_root.clone(),
+            home: registered.home.clone(),
+            models_shared: registered.shared_hub.is_some(),
         },
-        program_dir: channel::registered_install_dir(Some(recibo)),
-        receipt: Some(recibo),
+        program_dir: channel::registered_install_dir(Some(receipt)),
+        receipt: Some(receipt),
         channel: Channel::Unmanaged,
         daemon_addr: "127.0.0.1:0".to_string(),
-        home: registrado.home.clone(),
+        home: registered.home.clone(),
     }
 }

@@ -75,7 +75,7 @@ pub fn read_path(subkey: &str) -> anyhow::Result<Option<RawPath>> {
 
     // La máscara acepta los dos tipos de cadena, porque el valor del usuario puede
     // ser de cualquiera de los dos y §9.3.1 manda conservarlo, no normalizarlo.
-    const MASCARA: u32 = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND;
+    const MASK: u32 = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND;
     let (subkey_w, value_w) = (wide(subkey), wide(PATH_VALUE));
 
     let mut kind: u32 = 0;
@@ -88,7 +88,7 @@ pub fn read_path(subkey: &str) -> anyhow::Result<Option<RawPath>> {
             windows_sys::Win32::System::Registry::HKEY_CURRENT_USER,
             subkey_w.as_ptr(),
             value_w.as_ptr(),
-            MASCARA,
+            MASK,
             &mut kind,
             std::ptr::null_mut(),
             &mut bytes,
@@ -111,7 +111,7 @@ pub fn read_path(subkey: &str) -> anyhow::Result<Option<RawPath>> {
             windows_sys::Win32::System::Registry::HKEY_CURRENT_USER,
             subkey_w.as_ptr(),
             value_w.as_ptr(),
-            MASCARA,
+            MASK,
             &mut kind,
             buffer.as_mut_ptr().cast(),
             &mut capacity,
@@ -162,12 +162,12 @@ pub fn plan_integrate(actual: Option<&RawPath>, entry: &Path) -> Plan {
         };
     };
     let wanted = entry.display().to_string();
-    let ya_esta = raw
+    let already = raw
         .value
         .split(';')
         .filter(|s| !s.is_empty())
         .any(|s| crate::canonical_path_entry_matches(Path::new(s), entry));
-    if ya_esta {
+    if already {
         return Plan {
             value: raw.value.clone(),
             kind: raw.kind,
@@ -199,13 +199,13 @@ pub fn plan_revert(actual: Option<&RawPath>, entry: &Path) -> Plan {
             changed: false,
         };
     };
-    let quedan: Vec<&str> = raw
+    let remaining: Vec<&str> = raw
         .value
         .split(';')
         .filter(|s| !s.is_empty())
         .filter(|s| !crate::canonical_path_entry_matches(Path::new(s), entry))
         .collect();
-    let value = quedan.join(";");
+    let value = remaining.join(";");
     let changed = value != raw.value;
     Plan {
         value,
@@ -252,9 +252,9 @@ pub fn revert(subkey: &str, entry: &Path) -> anyhow::Result<Outcome> {
 }
 
 /// Escribe el valor conservando `kind` y con el NUL final que el registro exige.
-fn write_path(subkey: &str, valor: &str, kind: u32) -> anyhow::Result<()> {
+fn write_path(subkey: &str, value: &str, kind: u32) -> anyhow::Result<()> {
     use windows_sys::Win32::System::Registry::RegSetKeyValueW;
-    let datos = wide(valor);
+    let data = wide(value);
     // SAFETY: los tres punteros son a `Vec<u16>` terminados en NUL que viven hasta
     // el final de la llamada, y `cb` es su longitud real en bytes.
     let code = unsafe {
@@ -263,8 +263,8 @@ fn write_path(subkey: &str, valor: &str, kind: u32) -> anyhow::Result<()> {
             wide(subkey).as_ptr(),
             wide(PATH_VALUE).as_ptr(),
             kind,
-            datos.as_ptr().cast(),
-            u32::try_from(datos.len() * std::mem::size_of::<u16>()).unwrap_or(u32::MAX),
+            data.as_ptr().cast(),
+            u32::try_from(data.len() * std::mem::size_of::<u16>()).unwrap_or(u32::MAX),
         )
     };
     check(code, "escribir")
@@ -302,9 +302,9 @@ pub fn create_key(subkey: &str) -> anyhow::Result<()> {
 
 /// Crea una clave propia del llamante con un `Path` de partida, para probar la
 /// conservación del tipo y de las entradas `%VAR%` (el criterio 7).
-pub fn create_key_for_test(subkey: &str, valor: &str, kind: u32) -> anyhow::Result<()> {
+pub fn create_key_for_test(subkey: &str, value: &str, kind: u32) -> anyhow::Result<()> {
     create_key(subkey)?;
-    write_path(subkey, valor, kind)
+    write_path(subkey, value, kind)
 }
 
 /// Borra una clave creada por [`create_key_for_test`].
@@ -349,22 +349,22 @@ pub fn broadcast_setting_change() -> bool {
 
 /// Convierte a `Vec<u16>` con NUL final: la forma en que el registro guarda los
 /// valores de cadena y los nombres de clave y valor.
-fn wide(texto: &str) -> Vec<u16> {
-    let mut out: Vec<u16> = texto.encode_utf16().collect();
+fn wide(text: &str) -> Vec<u16> {
+    let mut out: Vec<u16> = text.encode_utf16().collect();
     out.push(0);
     out
 }
 
 /// Traduce un código de `advapi32` a error, nombrando la clave implicada y el
 /// código, que es lo que hace falta para diagnosticar sin abrir un canal de incidencias.
-fn check(code: u32, que: &str) -> anyhow::Result<()> {
+fn check(code: u32, what: &str) -> anyhow::Result<()> {
     if code == windows_sys::Win32::Foundation::ERROR_SUCCESS {
         return Ok(());
     }
     Err(LifecycleError::new(
         "path_conflict",
         14,
-        format!("no se pudo {que} el valor {PATH_VALUE} de HKCU (código de Windows {code})"),
+        format!("no se pudo {what} el valor {PATH_VALUE} de HKCU (código de Windows {code})"),
     )
     .into())
 }
@@ -379,24 +379,24 @@ mod tests {
     /// escribir en el registro: con la entrada ya presente, nada cambia.
     #[test]
     fn path_windows_plan_is_idempotent() {
-        let entrada = Path::new(r"C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector");
+        let entry = Path::new(r"C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector");
         let actual = RawPath {
             value: r"C:\Windows;C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector"
                 .to_string(),
             kind: REG_EXPAND_SZ,
         };
 
-        let plan = plan_integrate(Some(&actual), entrada);
+        let plan = plan_integrate(Some(&actual), entry);
         assert!(!plan.changed, "la entrada ya estaba: no se escribe");
         assert_eq!(plan.value, actual.value, "ni se toca el texto");
         assert_eq!(plan.kind, REG_EXPAND_SZ, "ni el tipo");
 
         // Sin la entrada, se añade al final y el tipo se conserva.
-        let sin_entrada = RawPath {
+        let without_entry = RawPath {
             value: r"C:\Windows;C:\Python".to_string(),
             kind: REG_EXPAND_SZ,
         };
-        let plan = plan_integrate(Some(&sin_entrada), entrada);
+        let plan = plan_integrate(Some(&without_entry), entry);
         assert!(plan.changed);
         assert_eq!(
             plan.value,
@@ -406,20 +406,20 @@ mod tests {
         assert_eq!(plan.kind, REG_EXPAND_SZ, "el tipo leído se conserva");
 
         // Sin valor previo: se crea con `REG_EXPAND_SZ`, que es lo que fija §9.3.1.
-        let plan = plan_integrate(None, entrada);
+        let plan = plan_integrate(None, entry);
         assert!(plan.changed);
-        assert_eq!(plan.value, entrada.display().to_string());
+        assert_eq!(plan.value, entry.display().to_string());
         assert_eq!(plan.kind, REG_EXPAND_SZ);
 
         // Un valor que ya acaba en `;` no recibe otro.
-        let con_separador = RawPath {
+        let with_separator = RawPath {
             value: r"C:\Windows;".to_string(),
             kind: REG_SZ,
         };
-        let plan = plan_integrate(Some(&con_separador), entrada);
+        let plan = plan_integrate(Some(&with_separator), entry);
         assert_eq!(
             plan.value,
-            format!(r"C:\Windows;{}", entrada.display()),
+            format!(r"C:\Windows;{}", entry.display()),
             "no se duplica el separador"
         );
         assert_eq!(
@@ -437,24 +437,24 @@ mod tests {
     /// afirmar nada.
     #[test]
     fn path_windows_canonical_comparison_sees_expanded_form() {
-        let perfil = std::env::var("USERPROFILE").expect("sesión de Windows con USERPROFILE");
-        let entrada = PathBuf::from(&perfil).join("AppData/Local/Programs/ai-voice-interconnector");
-        let con_variable = RawPath {
+        let profile = std::env::var("USERPROFILE").expect("sesión de Windows con USERPROFILE");
+        let entry = PathBuf::from(&profile).join("AppData/Local/Programs/ai-voice-interconnector");
+        let with_value = RawPath {
             value: format!(
                 r"%SystemRoot%\system32;%USERPROFILE%{}",
-                entrada.display().to_string().replacen(&perfil, "", 1)
+                entry.display().to_string().replacen(&profile, "", 1)
             ),
             kind: REG_EXPAND_SZ,
         };
-        let plan = plan_integrate(Some(&con_variable), &entrada);
+        let plan = plan_integrate(Some(&with_value), &entry);
         assert!(
             !plan.changed,
             "la entrada con `%USERPROFILE%` ya es la del directorio de programa: {}",
-            con_variable.value
+            with_value.value
         );
 
         // Y al revés: la reversión quita la forma con variable.
-        let plan = plan_revert(Some(&con_variable), &entrada);
+        let plan = plan_revert(Some(&with_value), &entry);
         assert!(plan.changed);
         assert_eq!(
             plan.value, r"%SystemRoot%\system32",
@@ -463,22 +463,22 @@ mod tests {
         assert_eq!(plan.kind, REG_EXPAND_SZ, "el tipo se conserva al revertir");
 
         // Una entrada que solo se parece no se quita.
-        let vecina = RawPath {
+        let neighbor = RawPath {
             value: format!(
                 r"C:\Windows;{}\otro-programa",
-                entrada
+                entry
                     .display()
                     .to_string()
-                    .replacen(&entrada.display().to_string(), "", 1)
+                    .replacen(&entry.display().to_string(), "", 1)
             ),
             kind: REG_EXPAND_SZ,
         };
-        let plan = plan_revert(Some(&vecina), &entrada);
+        let plan = plan_revert(Some(&neighbor), &entry);
         assert!(!plan.changed, "un directorio vecino no es el del programa");
-        assert_eq!(plan.value, vecina.value);
+        assert_eq!(plan.value, neighbor.value);
 
         // Sin valor previo, revertir no inventa nada.
-        let plan = plan_revert(None, &entrada);
+        let plan = plan_revert(None, &entry);
         assert!(!plan.changed);
     }
 }

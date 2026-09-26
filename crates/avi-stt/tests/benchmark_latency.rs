@@ -70,11 +70,11 @@ fn benchmark_latency_quality() {
         let (min, med, max) = (samples_ms[0], samples_ms[2], samples_ms[4]);
         let rtf = med / 1000.0 / duration_s;
         let w = wer_text(expected, &text);
-        let has_tildes = text.contains(['á', 'é', 'í', 'ó', 'ú', 'ü', 'ñ']);
+        let has_diacritics = text.contains(['á', 'é', 'í', 'ó', 'ú', 'ü', 'ñ']);
         let punctuation = text.chars().any(|c| "¿¡,.;:!?()\"'".contains(c));
 
         println!(
-            "{name}|DUR={duration_s:.2}s|MIN={min:.1}ms|MED={med:.1}ms|MAX={max:.1}ms|RTF={rtf:.2}|WER={w:.4}|TILDES={has_tildes}|PUNTUACION={punctuation}"
+            "{name}|DUR={duration_s:.2}s|MIN={min:.1}ms|MED={med:.1}ms|MAX={max:.1}ms|RTF={rtf:.2}|WER={w:.4}|TILDES={has_diacritics}|PUNTUACION={punctuation}"
         );
         println!("  TEXTO={text:?}");
     }
