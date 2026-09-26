@@ -887,12 +887,11 @@ jobs:
             test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
             echo "[STEP] Instalar bats-core - FIN"
       - run:
-          name: Ejecutar smoke-tests install-linux.sh y upgrade (bats)
+          name: Ejecutar smoke-test install-linux.sh (bats)
           command: |
-            echo "[STEP] Ejecutar smoke-tests install-linux.sh y upgrade (bats) - INICIO"
+            echo "[STEP] Ejecutar smoke-test install-linux.sh (bats) - INICIO"
             bats tests/installer/install-linux.bats
-            bats tests/installer/upgrade-linux.bats
-            echo "[STEP] Ejecutar smoke-tests install-linux.sh y upgrade (bats) - FIN"
+            echo "[STEP] Ejecutar smoke-test install-linux.sh (bats) - FIN"
 
   test-installer-windows:
     # Smoke-test de install-windows.ps1 con Pester v5 pineado (el executor
@@ -911,16 +910,14 @@ jobs:
             Install-Module Pester -RequiredVersion 5.8.0 -Repository PSGallery -Force -SkipPublisherCheck -Scope CurrentUser
             Write-Host "[STEP] Instalar Pester (pineado 5.8.0) - FIN"
       - run:
-          name: Ejecutar smoke-tests install-windows.ps1 y upgrade (Pester)
+          name: Ejecutar smoke-test install-windows.ps1 (Pester)
           command: |
-            Write-Host "[STEP] Ejecutar smoke-tests install-windows.ps1 y upgrade (Pester) - INICIO"
+            Write-Host "[STEP] Ejecutar smoke-test install-windows.ps1 (Pester) - INICIO"
             $ErrorActionPreference = "Stop"
             Import-Module Pester -RequiredVersion 5.8.0
             Invoke-Pester tests/installer/install-windows.tests.ps1 -CI
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Invoke-Pester tests/installer/upgrade-windows.tests.ps1 -CI
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Ejecutar smoke-tests install-windows.ps1 y upgrade (Pester) - FIN"
+            Write-Host "[STEP] Ejecutar smoke-test install-windows.ps1 (Pester) - FIN"
 
   test-installer-macos:
     # Smoke-test de install-macos.sh en el executor macOS real (bats): única

@@ -1,19 +1,26 @@
 //! Los cuatro canales de §8.2 en las operaciones de este ciclo.
 //!
-//! La tabla de §8.2 tiene una columna por operación y una fila por canal, y casi todas las
-//! celdas son de otros ciclos: `self update` es del Ciclo 2. Lo que este archivo demuestra
-//! son las que **sí** son de C1, y son tres cosas distintas que conviene no mezclar:
+//! La tabla de §8.2 tiene una columna por operación y una fila por canal. Las celdas de
+//! `self update` son del Ciclo 2 y este archivo las cubre en lo que le es propio —la
+//! detección—, mientras que la negativa sin tocar nada es el criterio 15 en
+//! `tests/update.rs`. Son cuatro cosas distintas que conviene no mezclar:
 //!
 //! 1. **Cómo se origina cada canal.** La precedencia de §8.2 —Homebrew sobre el recibo, el
 //!    recibo sobre `unmanaged`— y el hecho de que `self install` escriba el canal en el
-//!    recibo y de que `--channel dev` (§10.5) solo surte efecto cuando el recibo se crea por
+//!    recibo y de que `--channel dev` (§10.5) solo surta efecto cuando el recibo se crea por
 //!    primera vez.
 //! 2. **Qué puede hacer cada canal.** `homebrew` es `externally_managed` con el comando
-//!    correcto y sin tocar nada; `script`, `dev` y `unmanaged` pueden desinstalar.
+//!    correcto y sin tocar nada; `script`, `dev` y `unmanaged` pueden desinstalar. Para
+//!    `self update`, `homebrew` y `dev` son `externally_managed`: la detección es la misma
+//!    de §8.2 y la afirma `update_detects_managed_channels`.
 //! 3. **Sobre qué opera la desinstalación.** §8.2 dice que `self uninstall` actúa siempre
 //!    sobre la **instalación registrada**, sea cual sea la copia del binario que ejecute el
 //!    comando. Es la propiedad que hace que `self uninstall` funcione desde `target/`, y es
 //!    la que ninguna otra prueba del ciclo cubre de punta a punta.
+//! 4. **Qué ve `self update` en cada canal.** El brazo `Update` se niega antes de tocar la
+//!    red o el disco cuando la detección dice `homebrew` o `dev`; `script` y `unmanaged`
+//!    siguen adelante. Es la misma detección de los puntos anteriores, ejercitada con las
+//!    entradas que ese brazo distingue.
 
 #![allow(clippy::disallowed_methods)]
 
@@ -312,4 +319,64 @@ fn env_over_registered<'a>(
         daemon_addr: "127.0.0.1:0".to_string(),
         home: registered.home.clone(),
     }
+}
+
+/// Lo que `self update` ve en cada canal (§8.2, Ciclo 2): `homebrew` y `dev` son los dos
+/// que el brazo `Update` declara `externally_managed`, y `script` y `unmanaged` los que
+/// siguen adelante. Es la misma detección de la prueba grande, ejercitada con las
+/// entradas que ese brazo distingue; la negativa sin tocar nada es el criterio 15 en
+/// `tests/update.rs`.
+#[test]
+fn update_detects_managed_channels() {
+    let _guard = support::exclusively();
+
+    let sandbox = Sandbox::new("canal-update");
+    sandbox.seed_env();
+    let script = sandbox.install_registered(PathIntegration::none());
+    let cask_exe = sandbox
+        .root
+        .join("opt")
+        .join("homebrew")
+        .join("Caskroom")
+        .join("ai-voice-interconnector");
+    assert_eq!(
+        channel::detect(&cask_exe, Some(&script)),
+        Channel::Homebrew,
+        "§8.2: `self update` ve `homebrew` bajo el prefijo, aunque haya recibo de `script`"
+    );
+
+    let dev_receipt = receipt::InstallReceipt::new(
+        "0.23.1",
+        avi_lifecycle::target::host_triple(),
+        Channel::Dev,
+        &sandbox.program_dir,
+        vec![uninstall::executable_name_default()],
+        PathIntegration::none(),
+        receipt::Roots {
+            data_dir: sandbox.data_dir.clone(),
+            cache_dir: sandbox.models_dir.clone(),
+        },
+        None,
+    );
+    assert_eq!(
+        channel::detect(
+            &sandbox.program_dir.join("ai-voice-interconnector"),
+            Some(&dev_receipt)
+        ),
+        Channel::Dev,
+        "§8.2: `self update` ve `dev` cuando el recibo lo declara"
+    );
+    assert_eq!(
+        channel::detect(
+            &sandbox.program_dir.join("ai-voice-interconnector"),
+            Some(&script)
+        ),
+        Channel::Script,
+        "§8.2: y `script` sigue adelante"
+    );
+    assert_eq!(
+        channel::detect(&sandbox.staging.join("ai-voice-interconnector"), None),
+        Channel::Unmanaged,
+        "§8.2: como `unmanaged` sin recibo"
+    );
 }
