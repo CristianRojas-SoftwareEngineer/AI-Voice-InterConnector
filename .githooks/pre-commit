@@ -1,0 +1,12 @@
+#!/bin/sh
+# Gancho de pre-commit: la puerta de idioma antes de dejar entrar un commit.
+#
+# `core.hooksPath` es configuración local de git y no se versiona, así que este
+# fichero no se activa por sí solo. Actívalo una vez por clon con:
+#
+#   git config core.hooksPath .githooks
+#
+# Es la misma comprobación que la puerta F5 y la F7, en forma de comando que
+# cualquier commit puede ejecutar, no de recuerdo del orquestador.
+set -e
+exec cargo run --quiet -p xtask -- language --check
