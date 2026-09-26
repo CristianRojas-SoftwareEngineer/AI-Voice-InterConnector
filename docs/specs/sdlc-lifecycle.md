@@ -171,6 +171,7 @@ No se funde todo en un único ejecutable para ambas audiencias porque sus contex
 | P8 | **Sin efectos colaterales ocultos.** Lo que se modifica fuera del directorio de programa (PATH, perfiles de shell) se anuncia antes, se registra en el recibo y se revierte exactamente al desinstalar. |
 | P9 | **Misma semántica en todas partes.** Mismos verbos, flags, confirmaciones y códigos de resultado en los cuatro targets y en ambas audiencias. |
 | P10 | **Seguro por defecto.** HTTPS, verificación de integridad antes de ejecutar nada descargado y confirmación en operaciones destructivas. |
+| P11 | **Idioma por capa.** Identificadores en inglés, incluidos los nombres de fichero y los targets de Cargo; comentarios, documentación, mensajes al usuario, textos de ayuda y descripciones de prueba en español; los contratos de máquina —claves JSON, `reason`, flags, variables de entorno y líneas de protocolo— no se traducen. La fuente canónica de esta política es `AGENTS.md` §0. |
 
 ### 6.2 Componentes
 
