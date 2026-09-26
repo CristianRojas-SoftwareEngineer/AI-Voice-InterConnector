@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 mod clean;
+mod language;
 
 const GITHUB_REPO: &str = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector";
 const CASK_NAME: &str = "ai-voice-interconnector";
@@ -305,6 +306,14 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+    /// Verifica que el código de primera parte no tenga identificadores en español
+    Language {
+        #[arg(long)]
+        check: bool,
+        /// Sobrescribe la raíz a escanear (por defecto, el directorio actual)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
     /// Compila el motor TTS nativo (qwen_tts) desde vendor/qwen3-tts
     BuildEngine {
         /// Ejecuta `<bin> --self-test` tras compilar (oráculo de kernels)
@@ -450,6 +459,7 @@ fn main() -> Result<()> {
                 println!("Usa --check para verificar la sección del CHANGELOG");
             }
         }
+        Commands::Language { check, root } => language::run(check, root.as_deref())?,
         Commands::BuildEngine {
             self_test,
             simd,
@@ -2501,6 +2511,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             vec!["xtask", "licenses"],
             vec!["xtask", "release"],
             vec!["xtask", "changelog"],
+            vec!["xtask", "language"],
             vec!["xtask", "build-engine"],
         ] {
             let help = help_text(&node);
