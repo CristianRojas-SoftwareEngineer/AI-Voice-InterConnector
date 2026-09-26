@@ -368,24 +368,24 @@ fn cleanup_categories_are_scoped() {
     );
 
     // --synthetic-speech: la raíz de habla entera, `default` incluida.
-    let solo_speech = cleanup::plan(
+    let speech_only = cleanup::plan(
         &roots,
         &CleanupOptions {
             synthetic_speech: true,
             ..Default::default()
         },
     );
-    assert_eq!(paths(&solo_speech), vec![speech.display().to_string()]);
+    assert_eq!(paths(&speech_only), vec![speech.display().to_string()]);
 
     // --all: la unión más configuración, logs y pidfile, y **nunca** el programa.
-    let todo = cleanup::plan(
+    let all_plan = cleanup::plan(
         &roots,
         &CleanupOptions {
             all: true,
             ..Default::default()
         },
     );
-    let planned_removed = paths(&todo);
+    let planned_removed = paths(&all_plan);
     for expected in [
         sandbox.models_dir.display().to_string(),
         voices.join("mia").display().to_string(),
@@ -404,7 +404,10 @@ fn cleanup_categories_are_scoped() {
         "el programa no lo borra `cleanup` (§9.6): eso es `self uninstall`"
     );
     assert!(
-        todo.preserved.iter().any(|p| p.path == sandbox.program_dir),
+        all_plan
+            .preserved
+            .iter()
+            .any(|p| p.path == sandbox.program_dir),
         "y se dice explícitamente que se conserva"
     );
 

@@ -149,7 +149,7 @@ pub fn write_block(path: &Path, bin_dir: &Path, home: &Path) -> std::io::Result<
     if content.ends_with(&block) {
         return Ok(false);
     }
-    let new = añadir(&content, &block);
+    let new = append(&content, &block);
     write(path, &new)?;
     Ok(true)
 }
@@ -168,7 +168,7 @@ pub fn remove_block(path: &Path, bin_dir: &Path, home: &Path) -> std::io::Result
         Err(e) => return Err(e),
     };
     let block = block_text(bin_dir, home);
-    // `añadir` pone un separador antes del bloque salvo cuando el archivo estaba
+    // `append` pone un separador antes del bloque salvo cuando el archivo estaba
     // vacío, así que el sufijo a quitar depende de si queda algo delante. Los dos
     // casos son excluyentes, y por eso basta con probar el largo primero.
     let with_separator = format!("\n{block}");
@@ -191,7 +191,7 @@ pub fn remove_block(path: &Path, bin_dir: &Path, home: &Path) -> std::io::Result
 /// la reversión no podría saber cuál de los dos había que devolver. El coste es una
 /// línea en blanco extra cuando el perfil ya acababa en salto de línea, que es
 /// cosmetics y no de contrato.
-fn añadir(content: &str, block: &str) -> String {
+fn append(content: &str, block: &str) -> String {
     if content.is_empty() {
         block.to_string()
     } else {
