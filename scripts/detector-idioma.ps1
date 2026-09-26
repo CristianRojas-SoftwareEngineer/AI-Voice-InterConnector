@@ -30,8 +30,24 @@ $ES = @(
   'ejecutar','leer','nuevo','nueva','anterior','siguiente','copia','copias','mover',
   'abrir','cerrar','listo','activo','inactivo','principal','secundario','exito',
   'borrar','nombre','nombres','ruta','rutas','usuario','usuarios','operacion',
-  'huerfano','huerfanos','resumen','correcto','siguiente','resto','madre'
+  'huerfano','huerfanos','resumen','correcto','siguiente','resto','madre',
+  'anadir','solo'
 )
+# `todo` se deja fuera a proposito: en este codigo es el marcador ingles del
+# CHANGELOG, no la palabra castellana. `with_todo` en xtask lo demuestra.
+
+# La lista esta escrita sin acentos, y el comparador es OrdinalIgnoreCase, que no
+# los iguala: sin normalizar, `codigo` con tilde pasaria el filtro. Se quitan los
+# diacriticos antes de comparar, no al construir la lista, que ya es ASCII.
+function Remove-Diacritics([string]$s) {
+  $d = $s.Normalize([System.Text.NormalizationForm]::FormD)
+  $sb = [System.Text.StringBuilder]::new($d.Length)
+  foreach ($ch in $d.ToCharArray()) {
+    $cat = [System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch)
+    if ($cat -ne [System.Globalization.UnicodeCategory]::NonSpacingMark) { [void]$sb.Append($ch) }
+  }
+  $sb.ToString().Normalize([System.Text.NormalizationForm]::FormC)
+}
 $set = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $ES | ForEach-Object { [void]$set.Add($_) }
 
@@ -94,13 +110,16 @@ function Get-Segments([string]$id) {
   foreach ($chunk in $id.Split('_')) {
     if ([string]::IsNullOrEmpty($chunk)) { continue }
     foreach ($p in [regex]::Split($chunk, '(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')) {
-      if ($p) { $out.Add($p) }
+      if ($p) { $out.Add((Remove-Diacritics $p)) }
     }
   }
   return $out
 }
 
-$id = [regex]'[A-Za-z_][A-Za-z0-9_]*'
+# Unicode y no ASCII: Rust admite identificadores no ASCII, y una letra fuera de
+# la clase ASCII rompia la tokenizacion. `anadir` se leia como `adir`, que
+# ademas caia por el gate de longitud y era invisible.
+$id = [regex]'[_\p{L}][\p{L}\p{N}_]*'
 $hits = @()
 # Raices de codigo de primera parte. scripts/ entra por si algun dia aloja Rust;
 # este fichero .ps1 no lo cubre, porque el lexificador es el de Rust.
@@ -112,7 +131,8 @@ $files = $roots |
 foreach ($f in $files) {
   $code = Get-Code ([System.IO.File]::ReadAllText($f.FullName))
   foreach ($m in $id.Matches($code)) {
-    $segs = @(Get-Segments $m.Value | Where-Object { $_.Length -ge 5 -and $set.Contains($_) })
+    # 4 y no 5: `solo` y `caso` son tan castellanas como `linea`.
+    $segs = @(Get-Segments $m.Value | Where-Object { $_.Length -ge 4 -and $set.Contains($_) })
     if ($segs.Count) {
       $hits += [pscustomobject]@{
         file = $f.FullName.Substring($repo.Length + 1)
