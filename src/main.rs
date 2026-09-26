@@ -7,6 +7,7 @@ use avi_core::engine::SttEngine;
 use avi_core::exit_codes::{CliError, ExitCode};
 use avi_core::json_emitter::emit_raw_json;
 use avi_daemon as daemon;
+use avi_lifecycle as lifecycle;
 use avi_store as store;
 use avi_store::{ModelStore, SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
@@ -68,7 +69,8 @@ const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs
 /// pidfile; se fija en la secuencia `Start` justo tras `spawn_background`.
 static IN_MEMORY_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-// CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2` (`ct2_model_dir`) → `model.bin`
+// CT2 derivado obligatorio de Marian HF en la raíz de modelos vigente, bajo
+// `ct2/opus-mt-<par>/` (`ct2_model_dir`) → `model.bin`
 // más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` autocontenidos).
 // Incondicional cuando Marian está provisionado; idempotente por `mtime` solo sobre dirs
 // sanos (dir roto ⇒ reconversión); escritura atómica (temporal hermano + rename).
@@ -403,17 +405,55 @@ enum Commands {
         #[arg(long, short)]
         yes: bool,
     },
-    /// Desinstala el programa (datos + binario + PATH) en un comando
-    Uninstall {
-        /// No pedir confirmación
-        #[arg(long, short)]
-        force: bool,
-        /// Alias de --force
-        #[arg(long)]
-        yes: bool,
+    /// Operaciones sobre la instalación del usuario (§6.4)
+    #[command(name = "self")]
+    SelfCmd {
+        #[command(subcommand)]
+        action: SelfSub,
     },
     /// Diagnóstico de entorno
     Doctor,
+}
+
+/// Subcomandos de self. Se llama SelfSub y no SelfComandos por dos razones:
+/// Self es palabra reservada de Rust, y el nombre no debe colisionar por subcadena
+/// con el enum de comandos de nivel superior, cuya variante de desinstalación este
+/// ciclo retira: la comprobación de que esa variante ya no aparece en el árbol tiene que
+/// dar cero, y un enum cuyo nombre la contenga daría una coincidencia sin que el
+/// comando existiera. Lo que el usuario ve en --help es self, que es lo único que
+/// §6.4 declara.
+#[derive(Subcommand)]
+enum SelfSub {
+    /// Instala el bundle del que forma parte este ejecutable, o repara la instalación
+    Install {
+        /// No provisionar modelos
+        #[arg(long)]
+        no_setup: bool,
+        /// No tocar perfiles ni registro
+        #[arg(long)]
+        no_modify_path: bool,
+        /// Resolver un conflicto en la ruta del enlace sin preguntar
+        #[arg(long, short)]
+        force: bool,
+        /// No pedir confirmación
+        #[arg(long)]
+        yes: bool,
+        /// Canal de la instalación; `dev` es la opción oculta de §10.5
+        #[arg(long, hide = true)]
+        channel: Option<String>,
+    },
+    /// Elimina el programa, la integración de PATH y (por defecto) el estado
+    Uninstall {
+        /// Conservar modelos, voces y habla sintetizada
+        #[arg(long)]
+        keep_data: bool,
+        /// Mostrar el plan sin modificar el disco
+        #[arg(long)]
+        dry_run: bool,
+        /// No pedir confirmación
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -609,7 +649,7 @@ fn force_utf8() {
 fn install_sigint_handler() {
     ctrlc::set_handler(move || {
         // pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
-        let pid = read_daemon_pid().or_else(|| {
+        let pid = lifecycle::daemon_stop::read_pid(&data_dir_efectiva()).or_else(|| {
             let m = IN_MEMORY_PID.load(std::sync::atomic::Ordering::Relaxed);
             if m != 0 {
                 Some(m)
@@ -780,20 +820,22 @@ async fn main() {
     }
 
     let result = match cli.command {
-        Some(Commands::Version) => handle_version(json_mode),
-        Some(Commands::Devices) => handle_devices(json_mode),
+        Some(Commands::Version) => ok(handle_version(json_mode)),
+        Some(Commands::Devices) => ok(handle_devices(json_mode)),
         Some(Commands::Translate { text, from, to }) => {
-            handle_translate(json_mode, daemon_mode, &text, &from, &to).await
+            ok(handle_translate(json_mode, daemon_mode, &text, &from, &to).await)
         }
-        Some(Commands::Voice { action }) => handle_voice(json_mode, daemon_mode, action).await,
-        Some(Commands::Speech { action }) => handle_speech(json_mode, daemon_mode, action).await,
-        Some(Commands::Daemon { action }) => handle_daemon(json_mode, action).await,
+        Some(Commands::Voice { action }) => ok(handle_voice(json_mode, daemon_mode, action).await),
+        Some(Commands::Speech { action }) => {
+            ok(handle_speech(json_mode, daemon_mode, action).await)
+        }
+        Some(Commands::Daemon { action }) => ok(handle_daemon(json_mode, action).await),
         Some(Commands::Setup {
             with_stt,
             with_voice_cloning,
             force_update,
             yes,
-        }) => handle_setup(json_mode, with_stt, with_voice_cloning, force_update, yes).await,
+        }) => ok(handle_setup(json_mode, with_stt, with_voice_cloning, force_update, yes).await),
         Some(Commands::Cleanup {
             voices,
             synthetic_speech,
@@ -801,35 +843,61 @@ async fn main() {
             all,
             dry_run,
             yes,
-        }) => {
-            handle_cleanup(
-                json_mode,
-                voices,
-                synthetic_speech,
-                model,
-                all,
-                dry_run,
-                yes,
-            )
-            .await
-        }
-        Some(Commands::Uninstall { force, yes }) => handle_uninstall(json_mode, force || yes).await,
+        }) => ok(handle_cleanup(
+            json_mode,
+            voices,
+            synthetic_speech,
+            model,
+            all,
+            dry_run,
+            yes,
+        )
+        .await),
+        Some(Commands::SelfCmd { action }) => handle_self(json_mode, action).await,
         Some(Commands::Doctor) => handle_doctor(json_mode),
-        None => handle_version(json_mode),
+        None => ok(handle_version(json_mode)),
     };
 
-    if let Err(err) = result {
-        if json_mode {
-            emit_raw_json(json!({
-                "error": err.message,
-                "reason": err.reason,
-            }));
-        } else {
-            eprintln!("Error: {}", err.message);
+    match result {
+        Ok(Salida::Hecho) => {}
+        // Salida por veredicto (§10 del contrato): el comando ya emitió su payload
+        // propio y solo queda fijar el código. Es lo que hace que `doctor --json`
+        // emita **un solo objeto** también cuando falla: si esto fuera un `CliError`,
+        // `main` adjuntaría detrás el objeto `error` y el sobre sería ilegible.
+        Ok(Salida::Veredicto(codigo)) => {
+            std::io::stdout().flush().ok();
+            exit(codigo);
         }
-        std::io::stdout().flush().ok();
-        exit(err.code.code());
+        Err(err) => {
+            if json_mode {
+                emit_raw_json(json!({
+                    "error": err.message,
+                    "reason": err.reason,
+                }));
+            } else {
+                eprintln!("Error: {}", err.message);
+            }
+            std::io::stdout().flush().ok();
+            exit(err.code.code());
+        }
     }
+}
+
+/// Desenlace de un handler ante `main`: éxito, o salida por veredicto (§10 del
+/// contrato).
+///
+/// Existe como tipo y no como `Result<(), CliError>` porque el veredicto **no es un
+/// error**: es un comando que corrió bien y cuyo resultado es negativo. El único caso
+/// es `doctor`, y su reporte —con `checks` y `failed`— ya está en `stdout` cuando llega
+/// aquí.
+enum Salida {
+    Hecho,
+    Veredicto(i32),
+}
+
+/// Envuelve un handler que devuelve `Result<(), CliError>` en el tipo de `main`.
+fn ok(result: Result<(), CliError>) -> Result<Salida, CliError> {
+    result.map(|()| Salida::Hecho)
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────
@@ -2055,13 +2123,15 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     e.to_string(),
                 )
             })?;
-            write_daemon_pid(pid, &addr_real, 0).map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "daemon_error",
-                    format!("No se pudo escribir daemon.pid: {}", e),
-                )
-            })?;
+            lifecycle::daemon_stop::write_pid(&data_dir_efectiva(), pid, &addr_real, 0).map_err(
+                |e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "daemon_error",
+                        format!("No se pudo escribir daemon.pid: {}", e),
+                    )
+                },
+            )?;
             if json_mode {
                 emit_raw_json(json!({ "status": "started", "daemon": "running", "pid": pid }));
             } else {
@@ -2075,15 +2145,16 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // tras muerte verificada (probe down + PID muerto/ausente); si el árbol
             // sigue vivo se conserva la pista y se falla con exit 5.
             let client = daemon_client();
-            stop_daemon_and_resident().await;
-            let pid = read_daemon_pid();
+            lifecycle::daemon_stop::stop(&data_dir_efectiva(), DAEMON_ADDR, &ProcessosDelProducto)
+                .await;
+            let pid = lifecycle::daemon_stop::read_pid(&data_dir_efectiva());
             let alive = pid.map(daemon::pid_alive).unwrap_or(false);
             let active = daemon_active(&client).await;
             // Los mensajes diagnostican la dirección descubierta (con
             // pidfile efímero difiere del literal; sin pidfile es idéntica).
             let client_addr = resolve_client_addr();
             if !active && !alive {
-                let _ = remove_daemon_pid_file();
+                let _ = lifecycle::daemon_stop::remove_pid_file(&data_dir_efectiva());
                 if json_mode {
                     emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
                 } else {
@@ -2108,7 +2179,8 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let t_total = std::time::Instant::now();
             let budget = std::time::Duration::from_secs(12);
             let client = daemon_client();
-            stop_daemon_and_resident().await;
+            lifecycle::daemon_stop::stop(&data_dir_efectiva(), DAEMON_ADDR, &ProcessosDelProducto)
+                .await;
             require_model_provisioned()?;
             // Igual que `Start`: fichero ready propio de la instancia,
             // espera de la `addr` real y persistencia en el pidfile.
@@ -2163,13 +2235,15 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     e.to_string(),
                 )
             })?;
-            write_daemon_pid(pid, &addr_real, 0).map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "daemon_error",
-                    format!("No se pudo escribir daemon.pid: {}", e),
-                )
-            })?;
+            lifecycle::daemon_stop::write_pid(&data_dir_efectiva(), pid, &addr_real, 0).map_err(
+                |e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "daemon_error",
+                        format!("No se pudo escribir daemon.pid: {}", e),
+                    )
+                },
+            )?;
             if json_mode {
                 emit_raw_json(json!({ "status": "restarted", "daemon": "running", "pid": pid }));
             } else {
@@ -2242,7 +2316,13 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
 }
 
 // ─── Setup / Cleanup / Doctor ────────────────────────────────────────
-
+/// `setup`: delega en el motor y compone el sobre `--json` (§9.7).
+///
+/// Todo el cuerpo —la purga por plan, la idempotencia por presencia del snapshot, la
+/// reconversión por fecha del derivado y la escritura atómica— vive en
+/// `lifecycle::setup`. Aquí solo queda la prosa y el sobre, porque el parseo de la CLI
+/// y el emisor no están en ese crate (§6.3). `convert_marian_to_ct2` desaparece con
+/// este cableado: su equivalente es `lifecycle::setup::convert`.
 async fn handle_setup(
     json_mode: bool,
     with_stt: bool,
@@ -2258,235 +2338,40 @@ async fn handle_setup(
         .ensure_initialized()
         .map_err(|e| CliError::new(ExitCode::Error, "voice_store_init_failed", e.to_string()))?;
 
-    // 1b. --force-update: purga incondicional de snapshots pinneados + cache xet
-    // antes de re-provisionar. Respeta la selección de clonado (mismo filtro que
-    // el bucle de provisión). Confirmación destructiva salvo --yes/no-TTY.
-    if force_update {
-        if !yes && std::io::stdin().is_terminal() {
-            eprint!(
-                "Esto purgará los modelos descargados (~9–11,5 GB) y los re-descargará. ¿Continuar? [y/N]: "
-            );
-            let _ = std::io::stderr().flush();
-            let mut input = String::new();
-            if std::io::stdin().read_line(&mut input).is_ok() {
-                let t = input.trim().to_ascii_lowercase();
-                if t != "y" && t != "yes" && t != "s" && t != "si" && t != "sí" {
-                    if json_mode {
-                        emit_raw_json(json!({ "status": "cancelled" }));
-                    } else {
-                        println!("Cancelado.");
-                    }
-                    return Ok(());
-                }
-            }
-        }
-        for name in store::MODEL_REVISIONS
-            .iter()
-            .map(|(n, _, _)| *n)
-            .filter(|n| *n != "qwen3-tts-0.6b-base" || with_voice_cloning)
-        {
-            match model_store.remove_hf_snapshot(name) {
-                Ok(true) => eprintln!("Snapshot {} purgado.", name),
-                Ok(false) => {}
-                Err(e) => eprintln!("  ✗ No se pudo purgar {}: {}", name, e),
-            }
-        }
-        match store::ModelStore::remove_xet_cache() {
-            Ok(true) => eprintln!("Cache xet purgada."),
-            Ok(false) => {}
-            Err(e) => eprintln!("  ✗ No se pudo purgar cache xet: {}", e),
-        }
-        if let Err(e) = store::ModelStore::remove_hf_locks() {
-            eprintln!("  ✗ No se pudo purgar .locks de hub: {}", e);
-        }
-    }
-
-    // 2. Descargar y registrar modelos pinneados. Base es opt-in (--with-voice-cloning).
+    // `--with-stt` es redundante: `parakeet-tdt-v3` ya está en la selección por
+    // defecto. Se acepta por compatibilidad y se dice por stderr, que es donde §9.1
+    // manda la información humana.
     if with_stt {
         tracing::info!("--with-stt es redundante: parakeet-tdt-v3 ya está incluido en setup");
     }
-    let mut provisioned = Vec::new();
-    for name in store::MODEL_REVISIONS
-        .iter()
-        .map(|(n, _, _)| *n)
-        .filter(|n| *n != "qwen3-tts-0.6b-base" || with_voice_cloning)
-    {
-        // Idempotente: la presencia del snapshot HF (`is_provisioned`) es el
-        // único criterio; `ensure_downloaded` resuelve desde cache sin red si ya
-        // está. No hay índice `manifest.json` que escribir.
-        if !model_store.is_provisioned(name) {
-            store::ModelStore::ensure_downloaded(name)
-                .await
-                .map_err(|e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "model_download_failed",
-                        format!("{}: {}", name, e),
-                    )
-                })?;
-        }
-        provisioned.push(name.to_string());
-    }
 
-    // 2b. CT2 es derivado obligatorio de Marian HF en `hf_cache_dir/ct2`.
-    // Incondicional cuando Marian está provisionado; idempotente por mtime solo sobre dirs
-    // sanos (gate nuevo en falso ⇒ reconversión aunque ct2 > hf).
-    // Determinista: fallo de conversión → setup falla con `ct2_conversion_failed`.
-    for pair in &["es-en", "en-es"] {
-        let hf_name = format!("marian-{}", pair);
-        if !model_store.is_provisioned(&hf_name) {
-            continue;
-        }
-        let Some(hf_snapshot) = model_store.model_snapshot_path(&hf_name) else {
-            return Err(CliError::new(
-                ExitCode::Error,
-                "ct2_conversion_failed",
-                format!(
-                    "No se pudo convertir CT2 {}: snapshot HF de '{}' no resoluble — limpia la cache HF y reintenta setup",
-                    pair, hf_name
-                ),
-            ));
-        };
-        if !hf_snapshot.is_dir() {
-            return Err(CliError::new(
-                ExitCode::Error,
-                "ct2_conversion_failed",
-                format!(
-                    "No se pudo convertir CT2 {}: snapshot HF de '{}' ausente en '{}' — limpia la cache HF y reintenta setup",
-                    pair,
-                    hf_name,
-                    hf_snapshot.display()
-                ),
-            ));
-        }
-        let ct2_dir = store::ct2_model_dir(pair);
-        if store::is_ct2_provisioned(pair) {
-            let ct2_mtime = std::fs::metadata(ct2_dir.join("model.bin"))
-                .and_then(|m| m.modified())
-                .ok();
-            let hf_mtime = std::fs::metadata(hf_snapshot.join("pytorch_model.bin"))
-                .or_else(|_| std::fs::metadata(hf_snapshot.join("model.safetensors")))
-                .and_then(|m| m.modified())
-                .ok();
-            if let (Some(ct2_t), Some(hf_t)) = (ct2_mtime, hf_mtime) {
-                if ct2_t > hf_t {
-                    tracing::info!("CT2 {} ya convertido ({}), skip", pair, ct2_dir.display());
-                    continue;
-                }
-            } else {
-                tracing::info!("CT2 {} ya existe, skip", pair);
-                continue;
-            }
-        }
-        convert_marian_to_ct2(&hf_snapshot, &ct2_dir).map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "ct2_conversion_failed",
-                format!(
-                    "No se pudo convertir CT2 {}: {} — instala ctranslate2 (pip install ctranslate2) y reintenta setup",
-                    pair, e
-                ),
-            )
-        })?;
-        tracing::info!("CT2 {} convertido en {}", pair, ct2_dir.display());
-    }
+    let options = lifecycle::setup::Options::user(with_voice_cloning, force_update, yes);
+    let outcome = lifecycle::setup::run(&model_store, &options)
+        .await
+        .map_err(lifecycle_error_to_cli)?;
 
     if json_mode {
         emit_raw_json(json!({
             "status": "completed",
             "with_stt": with_stt,
-            "models_provisioned": provisioned
+            "models_provisioned": outcome.provisioned
         }));
     } else {
         println!(
             "Setup completado: {} modelo(s) disponibles.",
-            provisioned.len()
+            outcome.provisioned.len()
         );
     }
     Ok(())
 }
 
-fn convert_marian_to_ct2(
-    hf_snapshot: &std::path::Path,
-    ct2_dir: &std::path::Path,
-) -> anyhow::Result<()> {
-    // Escritura atómica: el conversor vuelca en un dir temporal hermano y solo
-    // tras verificar el derivado completo se renombra sobre el destino. Así un
-    // fallo nunca deja un parcial que el gate acepte, y el dir previo roto se
-    // sustituye entero (reparación por reconversión).
-    let tmp_dir = ct2_dir.with_extension(format!("tmp-{}", std::process::id()));
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)?;
-    }
-    std::fs::create_dir_all(&tmp_dir)?;
-    let convertir = || -> anyhow::Result<()> {
-        // Conversión determinista a CT2 int8 vía `python -m ctranslate2.converters.transformers`,
-        // con `--copy_files` para que el derivado quede autocontenido (tokenizador
-        // dentro del dir CT2, no solo en el snapshot).
-        let try_converter = |bin: &str| {
-            std::process::Command::new(bin)
-                .args([
-                    "-m",
-                    "ctranslate2.converters.transformers",
-                    "--model",
-                    &hf_snapshot.to_string_lossy(),
-                    "--output_dir",
-                    &tmp_dir.to_string_lossy(),
-                    "--quantization",
-                    "int8",
-                    "--copy_files",
-                    "source.spm",
-                    "target.spm",
-                    "--force",
-                ])
-                .status()
-        };
-        match try_converter("python") {
-            Ok(s) if s.success() => {}
-            Ok(s) => anyhow::bail!("el conversor python terminó con {}", s),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match try_converter("python3") {
-                Ok(s) if s.success() => {}
-                Ok(s) => anyhow::bail!("el conversor python3 terminó con {}", s),
-                Err(e2) => anyhow::bail!("python no encontrado: {} / {}", e, e2),
-            },
-            Err(e) => anyhow::bail!("fallo al ejecutar converter: {}", e),
-        }
-        // Copia posterior verificada: si el conversor no depositó los `.spm`
-        // (versión sin `--copy_files`), se copian desde el snapshot pinneado.
-        for spm in ["source.spm", "target.spm"] {
-            if !tmp_dir.join(spm).is_file() {
-                let source = hf_snapshot.join(spm);
-                if !source.is_file() {
-                    anyhow::bail!(
-                        "el snapshot {} no contiene {} (revisión inesperada) — limpia la cache HF y reintenta setup",
-                        hf_snapshot.display(),
-                        spm
-                    );
-                }
-                std::fs::copy(&source, tmp_dir.join(spm))?;
-            }
-        }
-        // Verificación con el mismo criterio del gate antes de declarar éxito.
-        let missing = store::ct2_dir_missing_files(&tmp_dir);
-        if !missing.is_empty() {
-            anyhow::bail!(
-                "derivado CT2 incompleto (faltan: {}) — limpia la cache HF y reintenta setup",
-                missing.join(", ")
-            );
-        }
-        Ok(())
-    };
-    if let Err(e) = convertir() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        return Err(e);
-    }
-    if ct2_dir.exists() {
-        std::fs::remove_dir_all(ct2_dir)?;
-    }
-    std::fs::rename(&tmp_dir, ct2_dir)?;
-    Ok(())
-}
-
+/// `cleanup`: delega íntegro en el motor (§9.6) y compone el sobre `--json`.
+///
+/// Lo que hay aquí es la conversión de tipos y la prosa; **la lista de destinos, el
+/// gate de categoría, la confirmación, la parada del daemon y el barrido** son los del
+/// motor. La lista que el sobre publica es la misma que el plan calculó, porque las dos
+/// salen de `lifecycle::cleanup::plan` —que es exactamente lo que fallaba antes, cuando
+/// `--dry-run` y la ejecución eran dos listas.
 async fn handle_cleanup(
     json_mode: bool,
     voices: bool,
@@ -2496,258 +2381,39 @@ async fn handle_cleanup(
     dry_run: bool,
     yes: bool,
 ) -> Result<(), CliError> {
-    // Gate sin flags → InvalidInput exit 2 sin borrar (paridad oráculo 7542962, CONTRACT §11)
-    if !voices && !synthetic_speech && !model && !all {
-        return Err(CliError::new(
-            ExitCode::InvalidInput,
-            "usage_error",
-            "cleanup requiere al menos un flag: --voices, --synthetic-speech, --model o --all",
-        ));
-    }
-    let do_voices = voices || all;
-    let do_speech = synthetic_speech || all;
-    let do_model = model || all;
+    let roots = lifecycle::cleanup::Roots::resolve();
+    let options = lifecycle::cleanup::Options {
+        model,
+        voices,
+        synthetic_speech,
+        all,
+        dry_run,
+        assume_yes: yes,
+    };
+    let outcome = lifecycle::cleanup::run(&roots, &options, &ProcessosDelProducto)
+        .await
+        .map_err(lifecycle_error_to_cli)?;
 
-    // Construir lista de rutas candidatas existentes para --dry-run y payload removed
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    // --model: snapshots HF + xet + ct2 + legacy data_dir/models
-    if do_model {
-        for (_, repo, _) in store::MODEL_REVISIONS {
-            let p = store::hf_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
-            if p.exists() {
-                candidates.push(p);
-            }
-        }
-        let xet = store::xet_cache_dir();
-        if xet.exists() {
-            candidates.push(xet);
-        }
-        let locks = store::hf_cache_dir().join(".locks");
-        if locks.exists() {
-            candidates.push(locks);
-        }
-        let ct2 = store::ct2_cache_dir();
-        if ct2.exists() {
-            candidates.push(ct2);
-        }
-        let legacy_models = store::data_dir().join("models");
-        if legacy_models.exists() {
-            candidates.push(legacy_models);
-        }
-    }
-    // --voices: voces no-fábrica + arrastre speech/<voz> excepto default
-    if do_voices {
-        let voice_base = store::data_dir().join("voices");
-        if voice_base.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&voice_base) {
-                for entry in entries.flatten() {
-                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        let name = entry.file_name().to_string_lossy().to_lowercase();
-                        if store::is_factory_name(&name) {
-                            continue;
-                        }
-                        candidates.push(entry.path());
-                        // Arrastre speech/<voz> solo si no se va a borrar speech entero
-                        if !do_speech && name != "default" {
-                            let sp = store::data_dir().join("speech").join(&name);
-                            if sp.exists() {
-                                candidates.push(sp);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // --synthetic-speech: speech/ entero (subsumido si ya hay arrastre, deduplicado arriba)
-    if do_speech {
-        let sp_root = store::data_dir().join("speech");
-        if sp_root.exists() {
-            candidates.push(sp_root);
-        }
-    }
-    // Temp huérfano siempre candidato auxiliar (no categoría, pero se limpia con cualquier cleanup)
-    {
-        let tmp = std::env::temp_dir();
-        if let Ok(entries) = std::fs::read_dir(&tmp) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-")
-                {
-                    candidates.push(entry.path());
-                }
-            }
-        }
-    }
-    // Deduplicar candidatos por display (evita duplicar speech/<voz> bajo speech/ root)
-    {
-        let mut seen = std::collections::HashSet::new();
-        candidates.retain(|p| seen.insert(p.display().to_string()));
-    }
-    let removed_display: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
-
-    // Gate --dry-run: listar sin borrar, exit 0, payload con removed/dry_run
-    if dry_run {
-        if json_mode {
-            emit_raw_json(json!({
-                "status": "cleanup_complete",
-                "removed": removed_display,
-                "dry_run": true
-            }));
-        } else {
-            if candidates.is_empty() {
-                println!("Nada para limpiar (dry-run).");
-            } else {
-                println!("Dry-run: se eliminarían {} ruta(s):", candidates.len());
-                for p in &candidates {
-                    println!("  {}", p.display());
-                }
-            }
-        }
-        return Ok(());
-    }
-
-    // Confirmación si no es --yes y hay TTY (patrón handle_uninstall:1688)
-    if !yes && std::io::stdin().is_terminal() {
-        eprint!("Esto eliminará datos seleccionados. ¿Continuar? [y/N]: ");
-        let _ = std::io::stderr().flush();
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_ok() {
-            let t = input.trim().to_ascii_lowercase();
-            if t != "y" && t != "yes" && t != "s" && t != "si" && t != "sí" {
-                if json_mode {
-                    emit_raw_json(json!({ "status": "cancelled" }));
-                } else {
-                    println!("Cancelado.");
-                }
-                return Ok(());
-            }
-        }
-    }
-
-    // 0. Parar daemon graceful si está vivo (libera puerto; reutiliza helper compartido)
-    stop_daemon_and_resident().await;
-
-    let mut actually_removed: Vec<String> = Vec::new();
-
-    // Branch --model
-    if do_model {
-        let model_store = ModelStore::new();
-        for (name, repo, _) in store::MODEL_REVISIONS {
-            match model_store.remove_hf_snapshot(name) {
-                Ok(true) => {
-                    eprintln!("Snapshot {} eliminado.", name);
-                    // Misma ruta que lista `--dry-run` (contrato: `removed` son rutas)
-                    let p =
-                        store::hf_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
-                    actually_removed.push(p.display().to_string());
-                }
-                Ok(false) => {}
-                Err(e) => eprintln!("  ✗ No se pudo borrar {}: {}", name, e),
-            }
-        }
-        match store::ModelStore::remove_xet_cache() {
-            Ok(true) => {
-                eprintln!("Cache xet eliminada.");
-                actually_removed.push(store::xet_cache_dir().display().to_string());
-            }
-            Ok(false) => {}
-            Err(e) => eprintln!("  ✗ No se pudo borrar cache xet: {}", e),
-        }
-        match store::ModelStore::remove_hf_locks() {
-            Ok(true) => {
-                actually_removed.push(store::hf_cache_dir().join(".locks").display().to_string());
-            }
-            Ok(false) => {}
-            Err(e) => eprintln!("  ✗ No se pudo borrar .locks de hub: {}", e),
-        }
-        match store::remove_ct2_cache() {
-            Ok(true) => {
-                eprintln!("Cache CT2 eliminada.");
-                actually_removed.push(store::ct2_cache_dir().display().to_string());
-            }
-            Ok(false) => {}
-            Err(e) => eprintln!("  ✗ No se pudo borrar cache CT2: {}", e),
-        }
-        let legacy_models = store::data_dir().join("models");
-        if legacy_models.exists() {
-            let _ = std::fs::remove_dir_all(&legacy_models);
-            actually_removed.push(legacy_models.display().to_string());
-        }
-    }
-    // Branch --voices (con arrastre speech/<voz> excepto default; preserva FACTORY_VOICES)
-    if do_voices {
-        let voice_base = store::data_dir().join("voices");
-        if voice_base.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&voice_base) {
-                for entry in entries.flatten() {
-                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        let name = entry.file_name().to_string_lossy().to_lowercase();
-                        if store::is_factory_name(&name) {
-                            continue;
-                        }
-                        let p = entry.path();
-                        if p.exists() {
-                            let _ = std::fs::remove_dir_all(&p);
-                            actually_removed.push(p.display().to_string());
-                        }
-                        if !do_speech && name != "default" {
-                            let sp = store::data_dir().join("speech").join(&name);
-                            if sp.exists() {
-                                let _ = std::fs::remove_dir_all(&sp);
-                                actually_removed.push(sp.display().to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // Branch --synthetic-speech: speech/ entero
-    if do_speech {
-        let sp_root = store::data_dir().join("speech");
-        if sp_root.exists() {
-            let _ = std::fs::remove_dir_all(&sp_root);
-            actually_removed.push(sp_root.display().to_string());
-        }
-    }
-    // Temp huérfano (siempre que haya borrado selectivo)
-    {
-        let tmp = std::env::temp_dir();
-        if let Ok(entries) = std::fs::read_dir(&tmp) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("avi_") || name.starts_with("ai-voice-interconnector-install-")
-                {
-                    let p = entry.path();
-                    let disp = p.display().to_string();
-                    if p.is_dir() {
-                        let _ = std::fs::remove_dir_all(&p);
-                    } else {
-                        let _ = std::fs::remove_file(&p);
-                    }
-                    // Solo registrar si existía (ya estaba en candidates)
-                    if removed_display.contains(&disp) {
-                        actually_removed.push(disp);
-                    }
-                }
-            }
-        }
-    }
-    // `removed` lista lo borrado en esta ejecución, sin fallback a las
-    // candidatas (vacío si no había nada o si todos los borrados fallaron).
     if json_mode {
         emit_raw_json(json!({
-            "status": "cleanup_complete",
-            "removed": actually_removed,
-            "dry_run": false
+            "status": outcome.status,
+            "reason": Value::Null,
+            "removed": outcome.removed,
+            "dry_run": outcome.dry_run
         }));
+    } else if outcome.status == "cancelled" {
+        println!("Cancelado.");
+    } else if outcome.dry_run {
+        println!("Nada se ha modificado (dry-run).");
     } else {
-        println!("Limpieza de modelos/caché completada.");
+        println!(
+            "Limpieza completada: {} ruta(s), {} barrido(s).",
+            outcome.removed.len(),
+            outcome.swept.len()
+        );
     }
     Ok(())
 }
-
 /// Estado del residual al arrancar: la vida real se determina por PID vivo más
 /// probe, no por probe solo ni pidfile solo.
 enum ResidualState {
@@ -2783,7 +2449,8 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
     // limpiar), el `daemon.ready` sobrevive y conserva el PID del árbol
     // efímero. El fallback solo aplica sin pidfile; `pid_alive` gatea después,
     // así que un ready rancio con PID muerto sigue cayendo a `Stopped`.
-    let pid = read_daemon_pid().or_else(|| read_ready_pid(&ready_file_path()));
+    let pid = lifecycle::daemon_stop::read_pid(&data_dir_efectiva())
+        .or_else(|| read_ready_pid(&ready_file_path()));
     // El probe apunta a la dirección descubierta (fallback idéntico sin
     // pidfile; vía nueva solo con pidfile vivo de addr efímera).
     let client_addr = resolve_client_addr();
@@ -2818,7 +2485,7 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
 /// ausencia se confirma con el barrido por imagen de último recurso
 /// (`avi_tts::resident::sweep_resident_by_image`), no con este predicado.
 fn resident_alive_by_pid() -> bool {
-    let pid = read_resident_pid();
+    let pid = lifecycle::daemon_stop::read_resident_pid(&data_dir_efectiva());
     pid != 0 && avi_tts::resident::resident_pid_alive(pid)
 }
 
@@ -2888,7 +2555,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     // su árbol preciso; sin PID (pidfile perdido) el último recurso es el
     // barrido por imagen `qwen_tts` (seguro por imagen propia). La verificación
     // por `resident_pid` muerto vive en el paso 3.
-    let resident = read_resident_pid();
+    let resident = lifecycle::daemon_stop::read_resident_pid(&data_dir_efectiva());
     if resident != 0
         && resident != std::process::id()
         && avi_tts::resident::resident_pid_alive(resident)
@@ -2942,371 +2609,293 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
 /// invocador (bug v0.18.10–v0.18.25 en `uninstall --force`). La guarda
 /// `pid != process::id()` previene la auto-muerte incluso si el PID leído fuera el del
 /// propio proceso.
-async fn stop_daemon_and_resident() {
-    let start = std::time::Instant::now();
-    let client = daemon_client();
-    // Graceful contra la dirección descubierta.
-    let client_addr = resolve_client_addr();
-    // 1) Graceful acotado si responde (no hereda el timeout de 120 s).
-    if daemon_active(&client).await {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_millis(1500),
-            client
-                .post(format!("http://{}/shutdown", client_addr))
-                .send(),
-        )
-        .await;
-        let remaining = STOP_DEADLINE_GLOBAL
-            .checked_sub(start.elapsed())
-            .unwrap_or(std::time::Duration::from_millis(500));
-        let wait = std::cmp::min(remaining, std::time::Duration::from_secs(3));
-        let _ = tokio::time::timeout(wait, wait_health_down(&client, wait)).await;
-    }
-    // 2) Árbol preciso por PID si sigue vivo (ambas plataformas, con guarda).
-    let pid = read_daemon_pid();
-    let alive = pid.map(daemon::pid_alive).unwrap_or(false);
-    let still_active = daemon_active(&client).await;
-    if still_active || alive {
-        if let Some(p) = pid {
-            if p != 0 && p != std::process::id() {
-                daemon::kill_tree_by_pid(p);
-            }
-        }
-    }
-    // 2b) Residente por identidad estable. Si el PID registrado sigue vivo se
-    // mata su árbol preciso; sin PID (pidfile perdido) el último recurso es el
-    // barrido por imagen `qwen_tts` (seguro por imagen propia; imagen del daemon
-    // prohibida). La verificación por `resident_pid` muerto vive en el paso 3.
-    let resident = read_resident_pid();
-    if resident != 0
-        && resident != std::process::id()
-        && avi_tts::resident::resident_pid_alive(resident)
-    {
-        avi_tts::resident::kill_tree_resident_by_pid(resident);
-    } else if resident == 0 {
-        avi_tts::resident::sweep_resident_by_image();
-    }
-    // 3) Verificación con el restante del deadline global.
-    while start.elapsed() < STOP_DEADLINE_GLOBAL {
-        let alive_now = read_daemon_pid().map(daemon::pid_alive).unwrap_or(false);
-        if !daemon_active(&client).await && !alive_now && !resident_alive_by_pid() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    // 4) Borrado solo tras muerte verificada o pista rancia reconciliada.
-    let pid_final = read_daemon_pid();
-    let final_alive = pid_final.map(daemon::pid_alive).unwrap_or(false);
-    if !daemon_active(&client).await && !final_alive {
-        let _ = remove_daemon_pid_file();
-    }
-}
-
-async fn handle_uninstall(json_mode: bool, force: bool) -> Result<(), CliError> {
-    // Confirmación interactiva si no es --force/--yes y hay TTY
-    if !force && std::io::stdin().is_terminal() {
-        eprint!("Esto eliminará datos (modelos, voces, locuciones), el binario y la integración PATH. ¿Continuar? [y/N]: ");
-        use std::io::Write;
-        let _ = std::io::stderr().flush();
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_ok() {
-            let t = input.trim().to_ascii_lowercase();
-            if t != "y" && t != "yes" && t != "s" && t != "si" {
-                if json_mode {
-                    emit_raw_json(json!({ "status": "cancelled" }));
-                } else {
-                    println!("Cancelado.");
-                }
-                return Ok(());
-            }
-        }
-    }
-
-    // 0. Parar daemon graceful si está vivo (helper compartido con `cleanup`; el
-    // fallback de daemon colgado mata por PID, nunca por imagen compartida con el CLI)
-    stop_daemon_and_resident().await;
-
-    // 1. Datos de usuario (incluye modelos, voces, locuciones)
-    let data = store::data_dir();
-    if data.exists() {
-        std::fs::remove_dir_all(&data).map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "uninstall_failed",
-                format!("No se pudo borrar {}: {}", data.display(), e),
-            )
-        })?;
-    }
-
-    // 1b. Snapshots HF de los modelos pinneados (~/.cache/huggingface/hub)
-    {
-        let model_store = ModelStore::new();
-        for name in store::MODEL_REVISIONS.iter().map(|(n, _, _)| *n) {
-            if let Err(e) = model_store.remove_hf_snapshot(name) {
-                eprintln!("  ✗ No se pudo borrar snapshot {}: {}", name, e);
-            }
-        }
-        // 1c. Cache xet + locks + derivado CT2 (mismo alcance que `cleanup --model`)
-        match store::ModelStore::remove_xet_cache() {
-            Ok(true) => eprintln!("Cache xet eliminada."),
-            Ok(false) => {}
-            Err(e) => eprintln!("  ✗ No se pudo borrar cache xet: {}", e),
-        }
-        if let Err(e) = store::ModelStore::remove_hf_locks() {
-            eprintln!("  ✗ No se pudo borrar .locks de hub: {}", e);
-        }
-        match store::remove_ct2_cache() {
-            Ok(true) => eprintln!("Cache CT2 eliminada."),
-            Ok(false) => {}
-            Err(e) => eprintln!("  ✗ No se pudo borrar cache CT2: {}", e),
-        }
-        // Temp huérfano
-        {
-            let tmp = std::env::temp_dir();
-            if let Ok(entries) = std::fs::read_dir(&tmp) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("avi_")
-                        || name.starts_with("ai-voice-interconnector-install-")
-                    {
-                        let p = entry.path();
-                        if p.is_dir() {
-                            let _ = std::fs::remove_dir_all(&p);
-                        } else {
-                            let _ = std::fs::remove_file(&p);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Integración por SO (binario + PATH)
-    #[cfg(unix)]
-    {
-        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
-        let link = home.join(".local/bin/ai-voice-interconnector");
-        // `is_symlink` requiere `symlink_metadata`; basta con intentar borrar si existe
-        if link.exists() || std::fs::symlink_metadata(&link).is_ok() {
-            let _ = std::fs::remove_file(&link);
-        }
-        let install_dir = home.join(".local/opt/ai-voice-interconnector");
-        if install_dir.exists() {
-            let _ = std::fs::remove_dir_all(&install_dir);
-        }
-        // Fallback: si el binario se ejecuta desde otro prefijo, intenta borrar su directorio padre
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(parent) = exe.parent() {
-                if parent != install_dir && parent.join("ai-voice-interconnector").exists() {
-                    let _ = std::fs::remove_dir_all(parent);
-                }
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        // Fuente canónica única — espejo de `install-windows.ps1:Get-InstallDir`
-        // y `avi-store::windows_install_dir`. Sin `join("Programs/ai-...")` mixto.
-        let install_dir = store::windows_install_dir();
-        // H2 determinista: sin `let _ =`, si falla propaga `path_cleanup_failed`
-        remove_windows_user_path(&install_dir).map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "path_cleanup_failed",
-                format!(
-                    "No se pudo limpiar PATH de {}: {}",
-                    install_dir.display(),
-                    e
-                ),
-            )
-        })?;
-        // H4 determinista: si el `exe` vivo está dentro de `install_dir`,
-        // no se puede `remove_dir_all` sin `PermissionDenied` — se delega a
-        // helper desacoplado `Wait-Process PID` + `Remove-Item -LiteralPath`.
-        // Si el `exe` no está dentro (sandbox de `cargo test`), borrado
-        // síncrono determinista. Sin aviso `Bórralo manualmente`.
-        if install_dir.exists() {
-            let inside = std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.canonicalize().ok())
-                .and_then(|exe| {
-                    install_dir
-                        .canonicalize()
-                        .ok()
-                        .map(|dir| exe.starts_with(dir))
-                })
-                .unwrap_or(false);
-            if inside {
-                // Corta la herencia de los handles estándar antes de spawnear el
-                // helper: `spawn_uninstall_helper` vive fuera de
-                // `handle_daemon`, así que replica aquí el corte para que el `.ps1`
-                // no retenga el stdio del proceso que lanzó el uninstall.
-                disinherit_standard_handles();
-                daemon::spawn_uninstall_helper(&install_dir, std::process::id()).map_err(|e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "uninstall_failed",
-                        format!(
-                            "No se pudo programar el borrado de {}: {}",
-                            install_dir.display(),
-                            e
-                        ),
-                    )
-                })?;
-            } else {
-                std::fs::remove_dir_all(&install_dir).map_err(|e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "uninstall_failed",
-                        format!("No se pudo borrar {}: {}", install_dir.display(), e),
-                    )
-                })?;
-            }
-        }
-    }
-
-    if json_mode {
-        emit_raw_json(json!({ "status": "uninstalled" }));
-    } else {
-        println!("Desinstalación completada.");
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn remove_windows_user_path(dir: &std::path::Path) -> Result<(), String> {
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let env = hkcu
-        .open_subkey_with_flags(
-            "Environment",
-            winreg::enums::KEY_READ | winreg::enums::KEY_WRITE,
-        )
-        .map_err(|e| e.to_string())?;
-    let path: String = env.get_value("Path").unwrap_or_default();
-    let target_key = store::canonical_path_key(dir);
-    let filtered: Vec<String> = path
-        .split(';')
-        .filter(|s| {
-            if s.is_empty() {
-                return false;
-            }
-            store::canonical_path_key(std::path::Path::new(s)) != target_key
-        })
-        .map(|s| s.to_string())
-        .collect();
-    let new_path = filtered.join(";");
-    if new_path != path {
-        env.set_value("Path", &new_path)
-            .map_err(|e| e.to_string())?;
-        // Notificar al sistema del cambio de entorno (WM_SETTINGCHANGE)
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SendMessageTimeoutW, HWND_BROADCAST, WM_SETTINGCHANGE,
+/// `self install` y `self uninstall`: el grupo de §6.4, delegando en el motor.
+///
+/// El binario aporta lo que el motor no puede tener: el **control de procesos** —que
+/// vive en `avi-daemon` y `avi-tts`— y el **borrado diferido** de Windows, que necesita
+/// `daemon::spawn_uninstall_helper`. El motor decide; el binario ejecuta las dos
+/// primitivas de plataforma.
+async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Salida, CliError> {
+    match action {
+        SelfSub::Install {
+            no_setup,
+            no_modify_path,
+            force,
+            yes,
+            channel,
+        } => {
+            let exe = std::env::current_exe().map_err(|e| {
+                CliError::new(ExitCode::Error, "self_install_failed", e.to_string())
+            })?;
+            let env =
+                lifecycle::install::Env::from_current_exe(exe).map_err(lifecycle_error_to_cli)?;
+            let options = lifecycle::install::Options {
+                assume_yes: yes,
+                no_setup,
+                no_modify_path,
+                force,
+                channel: channel
+                    .as_deref()
+                    .and_then(lifecycle::channel::Channel::from_name),
+                with_voice_cloning: false,
             };
-            let wide: Vec<u16> = "Environment\0".encode_utf16().collect();
-            // SMTO_ABORTIFHUNG = 0x0002
-            SendMessageTimeoutW(
-                HWND_BROADCAST,
-                WM_SETTINGCHANGE,
-                0,
-                wide.as_ptr() as isize,
-                2,
-                5000,
-                std::ptr::null_mut(),
+            let outcome = lifecycle::install::install(&env, &options, &ProcessosDelProducto)
+                .await
+                .map_err(lifecycle_error_to_cli)?;
+            // §9.1: `setup_failed` es un **éxito parcial** —el programa está instalado y
+            // lo único que falta es la provisión—, con código propio. No es un `CliError`:
+            // el resumen del paso 12 y el sobre se emiten igual, y lo único que cambia es
+            // el `reason` y el código de salida. `Salida::Veredicto` es el mecanismo que ya
+            // existe para eso —el comando emitió su payload y solo queda fijar el código—,
+            // y es el mismo que usa `doctor` para su sobre único.
+            let parcial = outcome.lifecycle_error();
+            if json_mode {
+                let mut sobre = json!({
+                    "status": outcome.status,
+                    "reason": match &parcial {
+                        Some(le) => Value::String(le.reason.to_string()),
+                        None => Value::Null,
+                    },
+                    "install_dir": outcome.receipt.install_dir,
+                    "version": outcome.receipt.version,
+                    "channel": outcome.receipt.channel.as_str(),
+                    "path_integrated": outcome.path_integrated(),
+                    "models": outcome.models.as_str()
+                });
+                // El `reason` de la operación es `setup_failed`; el del fallo de provisión
+                // viaja anidado en `models_cause`, que es donde un consumidor encuentra
+                // `network_error` o `ct2_conversion_failed` sin perderlo. Solo existe si
+                // hubo fallo: un sobre estable es más fácil de leer que uno con nulos.
+                if let lifecycle::install::ModelsState::Failed { cause } = &outcome.models {
+                    sobre["models_cause"] = json!({
+                        "reason": cause.reason,
+                        "message": cause.message
+                    });
+                }
+                emit_raw_json(sobre);
+            } else {
+                for linea in &outcome.summary {
+                    println!("{linea}");
+                }
+            }
+            match parcial {
+                Some(le) => Ok(Salida::Veredicto(exit_code_for(le.reason).code())),
+                None => Ok(Salida::Hecho),
+            }
+        }
+        SelfSub::Uninstall {
+            keep_data,
+            dry_run,
+            yes,
+        } => {
+            let exe = std::env::current_exe().map_err(|e| {
+                CliError::new(ExitCode::Error, "self_uninstall_failed", e.to_string())
+            })?;
+            let program_dir_registrado = lifecycle::channel::registered_install_dir(
+                lifecycle::receipt::read_from(&lifecycle::install_dir())
+                    .ok()
+                    .flatten()
+                    .as_ref(),
             );
+            let receipt = lifecycle::receipt::read_from(&program_dir_registrado)
+                .ok()
+                .flatten();
+            let roots = lifecycle::cleanup::Roots::from_receipt(receipt.as_ref());
+            let env = lifecycle::uninstall::Env {
+                roots,
+                receipt: receipt.as_ref(),
+                channel: lifecycle::channel::detect(&exe, receipt.as_ref()),
+                program_dir: program_dir_registrado,
+                daemon_addr: lifecycle::daemon_stop::DEFAULT_ADDR.to_string(),
+                home: home_dir(),
+            };
+            let outcome = lifecycle::uninstall::run(
+                &env,
+                &lifecycle::uninstall::Options {
+                    keep_data,
+                    dry_run,
+                    assume_yes: yes,
+                },
+                &BorradoDelPrograma,
+                &ProcessosDelProducto,
+            )
+            .await
+            .map_err(lifecycle_error_to_cli)?;
+            if json_mode {
+                emit_raw_json(json!({
+                    "status": outcome.status,
+                    "reason": Value::Null,
+                    "removed": outcome.removed,
+                    "path_reverted": outcome.path_reverted,
+                    "dry_run": outcome.dry_run
+                }));
+            } else if outcome.status == "cancelled" {
+                println!("Cancelado.");
+            } else {
+                for linea in &outcome.preserved {
+                    println!("  no se tocará {}: {}", linea.path.display(), linea.reason);
+                }
+                println!("Desinstalación completada ({}).", outcome.status);
+            }
+            Ok(Salida::Hecho)
         }
     }
-    Ok(())
 }
 
-fn handle_doctor(json_mode: bool) -> Result<(), CliError> {
-    let model_store = ModelStore::new();
-    let voice_store = VoiceStore::new();
-    // Ruta de caché resuelta: auditable (la app decide, no el fallback de hf-hub)
-    let hf_cache = store::hf_cache_dir();
-
-    // Chequeos reales de entorno
-    let mut issues = Vec::new();
-
-    // Verificar que el directorio de datos existe y es escribible
-    let data_dir = store::data_dir();
-    if !data_dir.exists() {
-        issues.push("Directorio de datos no existe");
-    }
-
-    // Verificar los 4 modelos pinneados (snapshot HF en hf_cache_dir) y su derivado CT2 obligatorio
-    if !model_store.is_provisioned("qwen3-tts-0.6b") {
-        issues.push("Modelo TTS (Qwen3-TTS 0.6B) no provisionado");
-    }
-    if !model_store.is_provisioned("parakeet-tdt-v3") {
-        issues.push("Modelo STT (Parakeet TDT v3) no provisionado");
-    }
-    if !model_store.is_provisioned("marian-es-en") {
-        issues.push("Modelo traducción es→en (Marian) no provisionado");
-    } else if !store::is_ct2_provisioned("es-en") {
-        issues.push("Modelo CT2 es→en incompleto en 'hf_cache_dir/ct2/opus-mt-es-en' (exige model.bin más tokenizer.json o source.spm+target.spm) — ejecuta setup");
-    }
-    if !model_store.is_provisioned("marian-en-es") {
-        issues.push("Modelo traducción en→es (Marian) no provisionado");
-    } else if !store::is_ct2_provisioned("en-es") {
-        issues.push("Modelo CT2 en→es incompleto en 'hf_cache_dir/ct2/opus-mt-en-es' (exige model.bin más tokenizer.json o source.spm+target.spm) — ejecuta setup");
-    }
-    // Base opt-in: WARN si falta, no FAIL
-    let base_ready = model_store.is_provisioned("qwen3-tts-0.6b-base");
-    let base_status = if base_ready {
-        "ready"
-    } else {
-        "missing_opt_in"
-    };
-
-    // Verificar voces
-    if let Err(_e) = voice_store.list() {
-        issues.push("Error al listar voces");
-    }
+/// `doctor`: compone el sobre a partir de la sección de ciclo de vida del motor y
+/// devuelve el **veredicto** como código de salida (§10 del contrato).
+///
+/// Un solo objeto en `stdout` **también cuando falla**: el veredicto va dentro, en
+/// `checks` y `failed`, y la salida es 1. Devolver `Err` aquí haría que `main` adjuntara
+/// detrás el objeto `error` y el sobre sería ilegible, que es el defecto que el
+/// contrato prohíbe con «cada invocación emite exactamente un objeto JSON».
+fn handle_doctor(json_mode: bool) -> Result<Salida, CliError> {
+    let exe = std::env::current_exe()
+        .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
+    let env = lifecycle::doctor::Env::resolve();
+    let report = lifecycle::doctor::report(&env, &exe);
+    let fallido = report.is_failure();
 
     if json_mode {
-        emit_raw_json(json!({
-            "status": if issues.is_empty() { "ok" } else { "failed" },
-            "data_dir": data_dir.to_string_lossy(),
-            "hf_cache": hf_cache.to_string_lossy(),
-            "issues": issues,
-            "base_status": base_status,
-        }));
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(CliError::new(
-                ExitCode::Error,
-                "doctor_checks_failed",
-                "Chequeos de entorno fallaron",
-            ))
+        // El motor devuelve el reporte ya serializable y con las nueve claves de §9.8
+        // más las del contrato: aquí solo se estampa la versión del sobre.
+        let valor = serde_json::to_value(&report)
+            .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
+        emit_raw_json(valor);
+    } else if fallido {
+        for check in report.checks.iter().filter(|c| !c.ok) {
+            eprintln!("  ✗ {}: {}", check.name, check.detail);
         }
-    } else if issues.is_empty() {
-        if base_ready {
-            println!("Diagnóstico: todo correcto.");
-        } else {
-            println!("Diagnóstico: todo correcto. [WARN] Modelo Base de clonado no provisionado (usa setup --with-voice-cloning).");
-        }
-        println!("Cache HF: {}", hf_cache.display());
-        Ok(())
+        eprintln!(
+            "Diagnóstico: {} comprobación(es) fallan.",
+            report.failed.len()
+        );
     } else {
-        for issue in &issues {
-            eprintln!("  ✗ {}", issue);
+        println!("Diagnóstico: todo correcto.");
+        for check in &report.checks {
+            println!("  ✓ {}: {}", check.name, check.detail);
         }
-        if !base_ready {
-            eprintln!("  ⚠ [WARN] Modelo Base de clonado no provisionado (usa setup --with-voice-cloning).");
-        }
-        eprintln!("Cache HF: {}", hf_cache.display());
-        Err(CliError::new(
-            ExitCode::Error,
-            "doctor_checks_failed",
-            "Chequeos de entorno fallaron",
-        ))
+    }
+
+    if fallido {
+        Ok(Salida::Veredicto(ExitCode::Error.code()))
+    } else {
+        Ok(Salida::Hecho)
     }
 }
 
+/// Traduce un `reason` del motor a la variante de `ExitCode` que le corresponde.
+///
+/// El motor no depende de `avi-core` (§6.3), así que el par `reason` + código viaja
+/// como dato y esta es la traducción. Los enteros salen de la misma tabla cerrada, y
+/// cada `reason` sin variante propia —los que los ciclos 2 y 3 declaran— cae en
+/// `ExitCode::Error`, que es lo que §9.1 permite mientras su ciclo no la declare.
+fn lifecycle_error_to_cli(err: anyhow::Error) -> CliError {
+    match err.downcast_ref::<lifecycle::LifecycleError>() {
+        Some(le) => CliError::new(exit_code_for(le.reason), le.reason, le.message.clone()),
+        None => CliError::new(ExitCode::Error, "lifecycle_failed", err.to_string()),
+    }
+}
+
+/// Variante de `ExitCode` de cada `reason` de contrato (§9.1).
+fn exit_code_for(reason: &str) -> ExitCode {
+    match reason {
+        "confirmation_required" | "usage_error" => ExitCode::InvalidInput,
+        "setup_failed" => ExitCode::SetupFailed,
+        "externally_managed" => ExitCode::ExternallyManaged,
+        "rolled_back" => ExitCode::RolledBack,
+        "path_conflict" => ExitCode::PathConflict,
+        "bundle_invalid" => ExitCode::BundleInvalid,
+        "daemon_stop_failed" => ExitCode::DaemonStopFailed,
+        "lifecycle_locked" => ExitCode::LifecycleLocked,
+        // `unsupported_platform` y los `reason` de los ciclos 2 y 3 no tienen variante
+        // en este ciclo: salen con el 1 genérico.
+        _ => ExitCode::Error,
+    }
+}
+
+/// Control de procesos del producto, conectado al protocolo de parada del motor.
+///
+/// El motor trae el **protocolo** —`daemon.pid`, `POST /shutdown`, el árbol por PID, el
+/// plazo global de 8 s— y entra por un rasgo el **control de procesos**, que vive aquí
+/// porque arrastraría el árbol de `avi-daemon` y `avi-tts` al crate del motor. Es la
+/// misma división que el motor documenta, y la guarda `pid != process::id()` que evita
+/// el auto-mate del bug v0.18.10–v0.18.25 está en ambos lados.
+struct ProcessosDelProducto;
+
+impl lifecycle::daemon_stop::ProcessControl for ProcessosDelProducto {
+    fn pid_alive(&self, pid: u32) -> bool {
+        daemon::pid_alive(pid)
+    }
+
+    fn kill_tree_by_pid(&self, pid: u32) -> bool {
+        daemon::kill_tree_by_pid(pid)
+    }
+
+    fn resident_pid_alive(&self, pid: u32) -> bool {
+        avi_tts::resident::resident_pid_alive(pid)
+    }
+
+    fn kill_tree_resident_by_pid(&self, pid: u32) -> bool {
+        avi_tts::resident::kill_tree_resident_by_pid(pid)
+    }
+
+    fn sweep_resident_by_image(&self) -> bool {
+        avi_tts::resident::sweep_resident_by_image()
+    }
+}
+
+/// Borrado del directorio de programa, con el mecanismo de plataforma (§9.5, paso 8).
+///
+/// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso está dentro —que es
+/// el caso normal, porque el comando se invoca desde la propia instalación—, el
+/// borrado directo es imposible y se programa con el proceso auxiliar desacoplado que
+/// `avi-daemon` ya endureció; el motor decide cuál de los dos casos es y cambia el
+/// desenlace a `removal_scheduled`.
+struct BorradoDelPrograma;
+
+impl lifecycle::uninstall::ProgramDirRemover for BorradoDelPrograma {
+    fn exe_lives_inside(&self, program_dir: &std::path::Path) -> bool {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.canonicalize().ok())
+            .and_then(|exe| {
+                program_dir
+                    .canonicalize()
+                    .ok()
+                    .map(|dir| exe.starts_with(dir))
+            })
+            .unwrap_or(false)
+    }
+
+    fn remove_now(&self, program_dir: &std::path::Path) -> anyhow::Result<()> {
+        if !program_dir.exists() {
+            return Ok(());
+        }
+        std::fs::remove_dir_all(program_dir)?;
+        Ok(())
+    }
+
+    fn schedule(&self, program_dir: &std::path::Path, pid: u32) -> anyhow::Result<bool> {
+        // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
+        // impide el borrado directo. En Unix no hay tal impedance y el motor ya habría
+        // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
+        // tenga una implementación silenciosa.
+        #[cfg(windows)]
+        {
+            // El helper no debe heredar los handles estándar del proceso que lanza la
+            // desinstalación, o su `.ps1` retendría el stdio y el lanzador no vería EOF.
+            disinherit_standard_handles();
+            daemon::spawn_uninstall_helper(program_dir, pid)?;
+            Ok(true)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (program_dir, pid);
+            anyhow::bail!("el borrado diferido del directorio de programa es de Windows")
+        }
+    }
+}
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 fn require_model_provisioned() -> Result<(), CliError> {
@@ -3339,78 +2928,30 @@ fn is_valid_identifier(ids: Option<&str>, more: Option<&str>) -> Result<(), CliE
     }
     Ok(())
 }
-
-fn daemon_pid_path() -> PathBuf {
-    store::data_dir().join("daemon.pid")
+/// Raíz de datos vigente (§7), donde vive el pidfile del daemon.
+///
+/// Va por el motor porque el pidfile es **su** esquema: `daemon_stop` lo escribe, lo
+/// lee y lo borra, y las lecturas tolerantes que este binario usaba eran una segunda
+/// implementación del mismo formato.
+fn data_dir_efectiva() -> PathBuf {
+    lifecycle::data_dir()
 }
 
-/// Escribe el pidfile de forma atómica (escritura tardía pero atómica por
-/// rename); el handler Ctrl+C ya no depende solo de él gracias al PID en memoria.
-/// El pidfile extiende el esquema plano con `resident_pid`. Al arrancar solo se
-/// conoce el PID del daemon y el residente es 0/desconocido; el daemon lo
-/// actualiza en disco al arrancar el residente (`start_resident`).
-/// `addr` es la dirección REAL publicada por el hijo en el fichero ready:
-/// con puerto efímero difiere del literal `DAEMON_ADDR`.
-fn write_daemon_pid(pid: u32, addr: &str, resident_pid: u32) -> anyhow::Result<()> {
-    let path = daemon_pid_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("pid.tmp");
-    let content = serde_json::json!({
-        "pid": pid,
-        "addr": addr,
-        "started_at": chrono::Utc::now().to_rfc3339(),
-        "resident_pid": resident_pid
-    });
-    std::fs::write(&tmp, serde_json::to_string_pretty(&content)?)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+/// `$HOME` del usuario, la misma clave que usa `lifecycle::path_unix` al escribir los
+/// bloques delimitados de §9.3.1. Se pasa al motor como dato porque la reversión
+/// necesita **el mismo** `$HOME` con el que se escribió el bloque.
+fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn read_daemon_pid() -> Option<u32> {
-    let path = daemon_pid_path();
-    let content = std::fs::read_to_string(&path).ok()?;
-    let v: Value = serde_json::from_str(&content).ok()?;
-    v.get("pid")?.as_u64().map(|n| n as u32)
-}
-
-/// Lee el PID del residente registrado en el pidfile. Lectura tolerante:
-/// esquema viejo sin el campo, fichero ausente o valor inválido = 0/desconocido.
-fn read_resident_pid() -> u32 {
-    let path = daemon_pid_path();
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let v: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return 0,
-    };
-    v.get("resident_pid")
-        .and_then(|n| n.as_u64())
-        .map(|n| n as u32)
-        .unwrap_or(0)
-}
-
-/// Lee la `addr` publicada en el pidfile. Lectura tolerante: fichero
-/// ausente, ilegible o esquema viejo sin el campo = `None` (el llamante cae
-/// al default, nunca falla).
-fn read_pidfile_addr() -> Option<String> {
-    let content = std::fs::read_to_string(daemon_pid_path()).ok()?;
-    let v: Value = serde_json::from_str(&content).ok()?;
-    let addr = v.get("addr")?.as_str()?.trim();
-    if addr.is_empty() {
-        return None;
-    }
-    Some(addr.to_string())
-}
-
-/// Resuelve la dirección del cliente CLI: `addr` del pidfile cuando existe; sin pidfile usa
-/// `DAEMON_ADDR` con comportamiento idéntico al actual. Solo el caso
-/// "pidfile vivo con addr efímera" toma la vía nueva.
+/// Resuelve la dirección del cliente CLI: `addr` del pidfile cuando existe; sin pidfile
+/// usa `DAEMON_ADDR` con comportamiento idéntico al anterior. Solo el caso "pidfile vivo
+/// con addr efímera" toma la vía nueva.
 fn resolve_client_addr() -> String {
-    read_pidfile_addr().unwrap_or_else(|| DAEMON_ADDR.to_string())
+    lifecycle::daemon_stop::resolve_client_addr(&data_dir_efectiva())
 }
 
 /// Lee el `pid` publicado en el fichero ready (recuperación de reclamo):
@@ -3475,14 +3016,6 @@ async fn await_ready_file_addr(
         deadline,
         last
     )
-}
-
-fn remove_daemon_pid_file() -> std::io::Result<()> {
-    let p = daemon_pid_path();
-    if p.exists() {
-        std::fs::remove_file(p)?;
-    }
-    Ok(())
 }
 
 /// Espera acotada a que el daemon sea alcanzable (`/health` responde) tras el

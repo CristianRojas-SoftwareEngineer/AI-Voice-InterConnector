@@ -1,6 +1,0 @@
-{
-  "schema_version": "3",
-  "status": "error",
-  "reason": "invalid_target",
-  "message": "El idioma destino no es válido o no está soportado por el motor de traducción."
-}

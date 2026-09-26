@@ -24,6 +24,11 @@ avi-store = { path = "crates/avi-store" }
 avi-daemon = { path = "crates/avi-daemon" }
 avi-stt = { path = "crates/avi-stt" }
 avi-translation = { path = "crates/avi-translation" }
+# Motor del ciclo de vida del usuario (§6.2): `self install`, `self uninstall`,
+# `cleanup` y la sección de ciclo de vida de `doctor`. **Sin el feature `faults`**,
+# que solo se activa en los builds de prueba de más abajo, de modo que el binario
+# distribuido no contiene el punto de inyección de fallo de §13.
+avi-lifecycle = { path = "crates/avi-lifecycle" }
 # Cliente HTTP async del CLI para el dispatch 3-modos contra el daemon.
 # `default-features = false` preserva el cliente ligero (HTTP sin TLS, suficiente
 # para localhost); el daemon expone solo rutas HTTP en 127.0.0.1:8765.
@@ -48,7 +53,9 @@ full = ["native-stt", "native-translation"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
-winreg = "0.52"
+# `winreg` se retira aquí: su único consumidor era `remove_windows_user_path` en
+# `src/main.rs`, que este ciclo borra porque la reversión del `PATH` pasa por
+# `lifecycle::path_windows`, que accede a `HKCU` con `windows-sys`.
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -56,6 +63,10 @@ libc = "0.2"
 [dev-dependencies]
 hound = "3"
 avi-stt = { path = "crates/avi-stt" }
+# Solo para los tests: habilita el feature `faults` del motor, de modo que
+# `cargo test --all` disponga del punto de inyección de §13 sin que
+# `cargo build --release` lo lleve.
+avi-lifecycle = { path = "crates/avi-lifecycle", features = ["faults"] }
 
 [patch.crates-io]
 cmake = { path = "vendor/cmake-0.1.58" }

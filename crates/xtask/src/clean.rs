@@ -4,13 +4,18 @@
 //! - **Proyecto**: artefactos de build del repo (`target/`, motor TTS compilado,
 //!   pesos legados bajo `vendor/qwen3-tts`, coverage, cachekeys de CI).
 //! - **App**: estado del producto en el perfil del usuario (binario instalado vía
-//!   su propio `uninstall`, `data_dir`, snapshots HF pinneados, `xet`, `.locks`,
-//!   derivado CT2 y temporales del producto).
+//!   su propio `uninstall`, `data_dir`, raíz de modelos, derivados CT2 y
+//!   temporales del producto).
 //!
 //! No toca caches globales compartidas con otros proyectos (`~/.cargo/registry`,
 //! `~/.cargo/git`, sccache) ni paquetes Python. Las rutas de la capa app replican
 //! la resolución de `avi-store` sin depender de él (arrastraría el árbol TLS de
 //! `hf-hub`); un test con `avi-store` como dev-dependency fija la paridad.
+//!
+//! **La réplica y sus tests desaparecen en el Ciclo 4**, cuando `xtask clean`
+//! delegue en el binario y la fuente única pase a ser `avi-store` sin duplicado.
+//! Hasta entonces no es una decisión permanente: es el coste de no compilar el
+//! árbol TLS aquí.
 
 use anyhow::{bail, Result};
 use std::io::{IsTerminal, Write};
@@ -50,8 +55,19 @@ const REPO_ENTRIES: &[&str] = &[
 ];
 
 /// Prefijos de temporales del producto (mismo barrido que `cleanup`, más el
-/// helper de `uninstall` en Windows).
+/// helper de `uninstall` en Windows). `avi-` y `avi_` son la fuente
+/// (`avi_store::TEMP_PREFIXES`) y el único que cubre el borrado diferido
+/// `avi-uninstall-<pid>-<ms>.ps1`; el tercero es el staging de los scripts de
+/// instalación de la raíz, que desaparece con ellos en el Ciclo 3.
 const TEMP_PREFIXES: &[&str] = &["avi_", "avi-", "ai-voice-interconnector-install-"];
+
+/// Valor de una variable de entorno de reubicación, ignorando el vacío.
+fn relocated_dir(var: &str) -> Option<PathBuf> {
+    std::env::var(var)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+}
 
 fn home_dir() -> PathBuf {
     directories::UserDirs::new()
@@ -59,56 +75,126 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Réplica de la resolución de `%LOCALAPPDATA%` de `avi-store`.
+fn local_app_data() -> PathBuf {
+    relocated_dir("LOCALAPPDATA").unwrap_or_else(|| home_dir().join("AppData").join("Local"))
+}
+
+/// Réplica de `avi_store::cache_home`.
+fn cache_home() -> PathBuf {
+    relocated_dir("XDG_CACHE_HOME").unwrap_or_else(|| home_dir().join(".cache"))
+}
+
 /// Réplica de `avi_store::data_dir`.
 pub(crate) fn data_dir() -> PathBuf {
-    if let Ok(ov) = std::env::var("AVI_DATA_DIR") {
-        if !ov.trim().is_empty() {
-            return PathBuf::from(ov);
-        }
+    if let Some(dir) = relocated_dir("AVI_DATA_DIR") {
+        return dir;
     }
-    directories::ProjectDirs::from("", "", APP_NAME)
-        .map(|d| d.data_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(".ai-voice-interconnector"))
-}
-
-/// Réplica de `avi_store::hf_cache_dir`.
-pub(crate) fn hf_cache_dir() -> PathBuf {
-    if let Ok(cache) = std::env::var("HF_HUB_CACHE") {
-        if !cache.is_empty() {
-            return PathBuf::from(cache);
-        }
-    }
-    if let Ok(home) = std::env::var("HF_HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home).join("hub");
-        }
-    }
-    home_dir().join(".cache").join("huggingface").join("hub")
-}
-
-/// Réplica de `avi_store::xet_cache_dir`.
-pub(crate) fn xet_cache_dir() -> PathBuf {
-    let hub = hf_cache_dir();
-    if hub.ends_with("hub") {
-        hub.parent()
-            .map(|p| p.join("xet"))
-            .unwrap_or_else(|| hub.join("../xet"))
-    } else {
-        home_dir().join(".cache").join("huggingface").join("xet")
-    }
-}
-
-/// Directorio de instalación y binario instalado por plataforma.
-fn install_layout() -> (Vec<PathBuf>, Option<PathBuf>) {
     if cfg!(windows) {
-        let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
-        let dir = PathBuf::from(local).join("Programs").join(APP_NAME);
-        let bin = dir.join(format!("{}.exe", APP_NAME));
-        (vec![dir], Some(bin))
+        local_app_data().join(APP_NAME).join("data")
     } else {
-        let home = home_dir();
-        let link = home.join(".local/bin").join(APP_NAME);
-        let dir = home.join(".local/opt").join(APP_NAME);
+        directories::ProjectDirs::from("", "", APP_NAME)
+            .map(|d| d.data_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".").join(APP_NAME))
+    }
+}
+
+/// Réplica de `avi_store::install_dir`.
+fn install_dir() -> PathBuf {
+    if let Some(dir) = relocated_dir("AVI_INSTALL_DIR") {
+        return dir;
+    }
+    if cfg!(windows) {
+        local_app_data().join("Programs").join(APP_NAME)
+    } else {
+        home_dir().join(".local").join("opt").join(APP_NAME)
+    }
+}
+
+/// Réplica de `avi_store::bin_dir`. En Windows no hay enlace: la entrada que se
+/// escribe en `HKCU\Environment\Path` es el propio directorio de programa.
+fn bin_dir() -> PathBuf {
+    if let Some(dir) = relocated_dir("AVI_BIN_DIR") {
+        return dir;
+    }
+    if cfg!(windows) {
+        install_dir()
+    } else {
+        home_dir().join(".local").join("bin")
+    }
+}
+
+/// Réplica de `avi_store::shared_hf_root`: la caché HF que el usuario eligió
+/// compartir, o `None` si no eligió ninguna.
+pub(crate) fn shared_hf_root() -> Option<PathBuf> {
+    if let Some(dir) = relocated_dir("HF_HUB_CACHE") {
+        return Some(dir);
+    }
+    relocated_dir("HF_HOME").map(|home| home.join("hub"))
+}
+
+/// Réplica de `avi_store::models_root_is_shared`.
+pub(crate) fn models_root_is_shared() -> bool {
+    shared_hf_root().is_some()
+}
+
+/// Réplica de `avi_store::models_cache_dir`: raíz de modelos **exclusiva** de la
+/// aplicación por defecto, y la caché HF compartida del usuario si definió
+/// `HF_HUB_CACHE` o `HF_HOME`.
+pub(crate) fn models_cache_dir() -> PathBuf {
+    if let Some(dir) = relocated_dir("AVI_CACHE_DIR") {
+        return dir;
+    }
+    if let Some(shared) = shared_hf_root() {
+        return shared;
+    }
+    if cfg!(windows) {
+        local_app_data().join(APP_NAME).join("cache").join("models")
+    } else if cfg!(target_os = "macos") {
+        home_dir()
+            .join("Library")
+            .join("Caches")
+            .join(APP_NAME)
+            .join("models")
+    } else {
+        cache_home().join(APP_NAME).join("models")
+    }
+}
+
+/// Réplica de `avi_store::xet_cache_dir`: `xet` cuelga de la raíz de modelos
+/// cuando es exclusiva, y sigue la cadena real de `xet-runtime` cuando el
+/// usuario eligió una caché HF compartida.
+///
+/// Ya no la consume la capa app: `xet` cae con la raíz de modelos entera cuando
+/// es exclusiva, y R3 lo prohíbe cuando es compartida. Sobrevive solo como
+/// fixture del test de paridad, que es lo que fija que ambas copias no divergen
+/// antes de que C4 elimine la réplica.
+#[cfg(test)]
+pub(crate) fn xet_cache_dir() -> PathBuf {
+    if models_root_is_shared() {
+        if let Some(dir) = relocated_dir("HF_XET_CACHE") {
+            return dir;
+        }
+        if let Some(home) = relocated_dir("HF_HOME") {
+            return home.join("xet");
+        }
+        return cache_home().join("huggingface").join("xet");
+    }
+    models_cache_dir().join("xet")
+}
+
+/// Directorio de instalación y comando instalado por plataforma: los directorios
+/// que `clean` barre de la capa app y la ruta del comando, que es el binario en
+/// Windows y el enlace simbólico en Unix.
+fn install_layout() -> (Vec<PathBuf>, Option<PathBuf>) {
+    let dir = install_dir();
+    if cfg!(windows) {
+        (
+            vec![dir.clone()],
+            Some(dir.join(format!("{}.exe", APP_NAME))),
+        )
+    } else {
+        let link = bin_dir().join(APP_NAME);
         (vec![dir, link.clone()], Some(link))
     }
 }
@@ -147,15 +233,24 @@ fn collect_c_artifacts(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// Rutas de la capa app que existen.
 pub(crate) fn app_targets() -> Vec<PathBuf> {
-    let hub = hf_cache_dir();
+    let models = models_cache_dir();
     let mut out: Vec<PathBuf> = install_layout().0;
     out.push(data_dir());
-    for repo in PINNED_REPOS {
-        out.push(hub.join(format!("models--{}", repo.replace('/', "--"))));
+    if models_root_is_shared() {
+        // R3: en una raíz compartida solo alcanzan los repos fijados, sus
+        // derivados y sus locks. `xet` y el `.locks` completo son globales de la
+        // caché HF y quedan vivos aunque alojen shards de la aplicación.
+        for repo in PINNED_REPOS {
+            let repo_dir = format!("models--{}", repo.replace('/', "--"));
+            out.push(models.join(&repo_dir));
+            out.push(models.join(".locks").join(&repo_dir));
+        }
+        out.push(models.join("ct2"));
+    } else {
+        // Raíz exclusiva: el directorio entero es de la aplicación, `xet` y el
+        // derivado CT2 incluidos, así que basta con borrarlo de una vez.
+        out.push(models);
     }
-    out.push(hub.join(".locks"));
-    out.push(hub.join("ct2"));
-    out.push(xet_cache_dir());
     out.retain(|p| p.symlink_metadata().is_ok());
     out.extend(temp_targets(&std::env::temp_dir()));
     out
@@ -320,7 +415,12 @@ pub fn run(dry_run: bool, yes: bool) -> Result<()> {
     let (install_dirs, installed_bin) = install_layout();
     if let Some(bin) = installed_bin.filter(|b| b.is_file()) {
         println!("Desinstalando {} ...", bin.display());
-        run_quiet(&bin, &["uninstall", "--force", "--json"]);
+        // `self uninstall --yes --json`: el comando de nivel superior `uninstall` y su
+        // `--force` desaparecen en el ciclo de vida, sin alias. La capa de aplicación de
+        // esta tarea sigue funcionando porque invoca el comando nuevo, y **su
+        // sustitución por delegación real es del Ciclo 4**, donde `xtask clean` dejará de
+        // lanzar el binario del producto y reutilizará el motor como biblioteca.
+        run_quiet(&bin, &["self", "uninstall", "--yes", "--json"]);
         // En Windows el install_dir lo borra un helper desacoplado tras la salida.
         for _ in 0..20 {
             if install_dirs.iter().all(|d| d.symlink_metadata().is_err()) {
@@ -415,6 +515,9 @@ fn spawn_deferred_removal(_dir: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// La réplica de pines y este test desaparecen con la réplica de rutas en el
+    /// Ciclo 4. Hasta entonces son la única garantía de que ambas copias de la
+    /// lista no divergen.
     #[test]
     fn pinned_repos_match_avi_store() {
         let store: std::collections::BTreeSet<&str> = avi_store::MODEL_REVISIONS
@@ -428,9 +531,12 @@ mod tests {
     #[test]
     fn app_paths_match_avi_store() {
         assert_eq!(data_dir(), avi_store::data_dir());
-        assert_eq!(hf_cache_dir(), avi_store::hf_cache_dir());
+        assert_eq!(models_cache_dir(), avi_store::models_cache_dir());
+        assert_eq!(shared_hf_root(), avi_store::shared_hf_root());
         assert_eq!(xet_cache_dir(), avi_store::xet_cache_dir());
-        assert_eq!(hf_cache_dir().join("ct2"), avi_store::ct2_cache_dir());
+        assert_eq!(models_cache_dir().join("ct2"), avi_store::ct2_cache_dir());
+        assert_eq!(install_dir(), avi_store::install_dir());
+        assert_eq!(bin_dir(), avi_store::bin_dir());
     }
 
     #[test]

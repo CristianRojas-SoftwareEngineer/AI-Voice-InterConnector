@@ -79,7 +79,7 @@ en `docs/BUILD.md` §6.
 
 <!-- inventario:inicio -->
 Generado desde `Cargo.lock` (496 paquetes resueltos, 447 crates únicos, directos y transitivos).
-Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-later 9, ISC 4, MIT 429, MPL-2.0 2, Unicode-3.0 18, Zlib 5.
+Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-later 10, ISC 4, MIT 428, MPL-2.0 2, Unicode-3.0 18, Zlib 5.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
@@ -103,6 +103,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `avi-audio` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-core` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-daemon` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
+| `avi-lifecycle` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-store` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-stt` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-translation` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
@@ -560,7 +561,6 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `windows_x86_64_msvc` | 0.48.5 | MIT OR Apache-2.0 | MIT |
 | `windows_x86_64_msvc` | 0.52.6 | MIT OR Apache-2.0 | MIT |
 | `winnow` | 1.0.4 | MIT | MIT |
-| `winreg` | 0.52.0 | MIT | MIT |
 | `wit-bindgen` | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | MIT |
 | `writeable` | 0.6.4 | Unicode-3.0 | Unicode-3.0 |
 | `xet-client` | 1.6.0 | Apache-2.0 | Apache-2.0 |

@@ -6,7 +6,9 @@ pub mod json_emitter;
 mod tests {
     use crate::engine::{HierarchicalSegmenter, Segmenter};
     use crate::exit_codes::ExitCode;
-    use crate::json_emitter::{emit_raw_json, with_schema_version, SCHEMA_VERSION};
+    use crate::json_emitter::{
+        emit_raw_json, with_schema_version, CLI_SCHEMA_VERSION, DAEMON_SCHEMA_VERSION,
+    };
     use serde_json::{json, Value};
 
     #[test]
@@ -22,6 +24,14 @@ mod tests {
         assert_eq!(ExitCode::PreconditionFailed.code(), 8);
         assert_eq!(ExitCode::TranslationFailed.code(), 9);
         assert_eq!(ExitCode::TranscriptionFailed.code(), 10);
+        // Variantes del ciclo de vida, con el entero que fija la tabla cerrada.
+        assert_eq!(ExitCode::SetupFailed.code(), 11);
+        assert_eq!(ExitCode::ExternallyManaged.code(), 12);
+        assert_eq!(ExitCode::RolledBack.code(), 13);
+        assert_eq!(ExitCode::PathConflict.code(), 14);
+        assert_eq!(ExitCode::BundleInvalid.code(), 15);
+        assert_eq!(ExitCode::DaemonStopFailed.code(), 16);
+        assert_eq!(ExitCode::LifecycleLocked.code(), 17);
         assert_eq!(ExitCode::Interrupted.code(), 130);
     }
 
@@ -141,23 +151,33 @@ mod tests {
 
     #[test]
     fn test_emit_raw_json_includes_schema_version() {
-        let val = with_schema_version(json!({ "status": "ok" }));
+        // Las dos versiones se afirman por separado y con su valor. Si una sube sin la
+        // otra, esta prueba falla, que es lo que evita que el cambio de la CLI arrastre
+        // al protocolo del daemon o al revés.
         assert_eq!(
-            val.get("schema_version").and_then(|v| v.as_str()),
-            Some(SCHEMA_VERSION),
-            "el envelope debe llevar schema_version=\"{}\"",
-            SCHEMA_VERSION
+            CLI_SCHEMA_VERSION, "4",
+            "el sobre --json de la CLI subió a \"4\": retira y renombra claves de `doctor`"
         );
         assert_eq!(
-            SCHEMA_VERSION, "3",
-            "schema_version canónico debe ser \"3\""
+            DAEMON_SCHEMA_VERSION, "3",
+            "el protocolo NDJSON del daemon se queda en \"3\": este ciclo no lo toca"
+        );
+        assert_ne!(
+            CLI_SCHEMA_VERSION, DAEMON_SCHEMA_VERSION,
+            "son contratos distintos y sus versiones se gobiernan por separado"
+        );
+        let val = with_schema_version(json!({ "status": "ok" }), CLI_SCHEMA_VERSION);
+        assert_eq!(
+            val.get("schema_version").and_then(|v| v.as_str()),
+            Some(CLI_SCHEMA_VERSION),
+            "el envelope debe llevar schema_version=\"{CLI_SCHEMA_VERSION}\""
         );
     }
 
     #[test]
     fn test_emit_raw_json_preserves_data() {
         let input = json!({ "status": "ok", "count": 42, "label": "test" });
-        let val = with_schema_version(input.clone());
+        let val = with_schema_version(input.clone(), CLI_SCHEMA_VERSION);
         // los campos originales deben sobrevivir en el envelope
         assert_eq!(val.get("status"), Some(&json!("ok")));
         assert_eq!(val.get("count"), Some(&json!(42)));
@@ -171,7 +191,7 @@ mod tests {
     #[test]
     fn test_emit_raw_json_flatten_schema_version() {
         // `schema_version` debe ser campo raíz, no anidado dentro de `data`
-        let val = with_schema_version(json!({ "data": { "nested": true } }));
+        let val = with_schema_version(json!({ "data": { "nested": true } }), DAEMON_SCHEMA_VERSION);
         assert!(
             val.get("schema_version").is_some(),
             "schema_version debe ser campo raíz, no anidado"

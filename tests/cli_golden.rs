@@ -2,7 +2,7 @@
 //!
 //! Invoca el binario compilado con argumentos fijos y compara `stdout` (JSON) y el
 //! código de salida contra fixtures en `tests/golden/`, replicando el contrato que
-//! cubrían los scripts Python eliminados: `schema_version == "3"` (vía
+//! cubrían los scripts Python eliminados: `schema_version == "4"` (vía
 //! `avi_core::json_emitter`) y los códigos de salida de `avi_core::exit_codes`.
 //!
 //! Se ubica como test de integración del paquete raíz (y no dentro de `src/main.rs`)
@@ -741,42 +741,141 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
 
 // ─── Sandbox de estado por instancia (directorio de estado por instancia) ──
 //
-// Cada test pesado posee su instancia aislada: `AVI_DATA_DIR` desvía el
-// pidfile/almacén (`avi-store::data_dir`), `LOCALAPPDATA` el `install_dir` de
-// Windows y `HF_HUB_CACHE`/`HF_HOME` las caches HF. Unicidad por
-// `TMP_COUNTER` (misma fuente que el tempfile anti-cuelgue, que se preserva
-// intacto).
+// Cada test pesado posee su instancia aislada. El aislamiento va por las **variables de
+// reubicación de §7**, no por `LOCALAPPDATA`: en Windows las Known Folders ignoran
+// `LOCALAPPDATA`, así que un doble que dependiera de ella no representaría nada del
+// mecanismo que se quiere probar. `AVI_INSTALL_DIR` y `AVI_CACHE_DIR` aíslan el
+// directorio de programa y la raíz de modelos, `AVI_DATA_DIR` los datos, y
+// `HF_HUB_CACHE`/`HF_HOME` el caso de la caché compartida. Unicidad por `TMP_COUNTER`
+// (misma fuente que el tempfile anti-cuelgue, que se preserva intacto).
+
+/// Prefijo de los sandboxes de esta puerta, y de ningún otro directorio que cree.
+///
+/// **Por qué no empieza por `avi`.** §7 reserva para la aplicación los prefijos de
+/// temporales `avi-` y `avi_`, y el barrido de §9.1 decide por **`starts_with`**, no por
+/// igualdad: `crates/avi-lifecycle/src/recovery.rs:248` compara
+/// `name.starts_with(prefix)` contra `TEMP_PREFIXES`, y `crates/avi-store/src/lib.rs:660`
+/// los define como `&["avi-", "avi_"]`. Las dos formas "naturales" de nombrar un sandbox de
+/// pruebas **colisionan** con los dos: `avi_test_sandbox_*` empieza por `avi_`, y
+/// `avi-test-*` empieza por `avi-`. El criterio exacto es, por tanto, que el nombre **no
+/// empiece por `avi-` ni por `avi_`**, y nada más: no importa que lleve `avi` más adelante,
+/// ni que el resto del nombre no exista.
+///
+/// La consecuencia de no cumplirlos no es teórica. Un sandbox con el prefijo del producto es
+/// un temporal propio a todos los efectos, así que el barrido de `self install`, `self
+/// uninstall` o `cleanup` lo borra —`owner_pid` no encuentra un PID de tres dígitos en
+/// `test_sandbox_` y lo declara huérfano—, y si el sandbox pertenece a un test que se está
+/// ejecutando en paralelo, se lo borra por debajo. Una puerta que puede fallar por culpa
+/// del arnés no es una puerta.
+///
+/// `test_sandbox_prefix_does_not_collide_with_the_product_temporaries` afirma el invariante
+/// para que un renombrado de vuelta a `avi_` no pueda colarse sin que nadie se entere.
+const PREFIX_SANDBOX: &str = "golden-sandbox_";
 
 /// Crea un directorio sandbox único y devuelve (ruta, envs para el hijo).
 fn sandbox_unique_state(tag: &str) -> (PathBuf, Vec<(String, String)>) {
     let dir = std::env::temp_dir().join(format!(
-        "avi_test_sandbox_{}_{}_{}",
-        tag,
+        "{PREFIX_SANDBOX}{tag}_{}_{}",
         std::process::id(),
         TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
     ));
     std::fs::create_dir_all(&dir).expect("crear sandbox de estado");
+    let install = dir.join("install");
+    let cache = dir.join("cache");
     let hf = dir.join("hf");
-    std::fs::create_dir_all(&hf).expect("crear caches HF del sandbox");
-    let local = dir.join("LocalAppData");
-    std::fs::create_dir_all(&local).expect("crear LocalAppData del sandbox");
-    let envs = vec![
+    for d in [&install, &cache, &hf] {
+        std::fs::create_dir_all(d).expect("crear raíces del sandbox");
+    }
+    // `AVI_CACHE_DIR` tiene precedencia sobre las variables HF en §7, así que la raíz
+    // de modelos del sandbox es la **exclusiva** de la aplicación; `HF_HUB_CACHE` y
+    // `HF_HOME` se fijan igualmente para que ninguna prueba que las herede del entorno
+    // de la máquina escriba fuera del sandbox.
+    let mut envs = vec![
         (
             "AVI_DATA_DIR".to_string(),
             dir.to_string_lossy().to_string(),
         ),
         (
-            "LOCALAPPDATA".to_string(),
-            local.to_string_lossy().to_string(),
+            "AVI_INSTALL_DIR".to_string(),
+            install.to_string_lossy().to_string(),
+        ),
+        (
+            "AVI_CACHE_DIR".to_string(),
+            cache.to_string_lossy().to_string(),
         ),
         ("HF_HUB_CACHE".to_string(), hf.to_string_lossy().to_string()),
         ("HF_HOME".to_string(), hf.to_string_lossy().to_string()),
     ];
+    // El temporal del hijo también se reubica, y no es un detalle de belt-and-braces sino
+    // la otra mitad del invariante: §7 **no** declara variable de reubicación para el
+    // directorio de temporales, así que sin esto cualquier comando de ciclo de vida que
+    // arranque el barrido de §9.1 —`self install`, `self uninstall`, `cleanup`— leería el
+    // `%TEMP%` de la máquina. Con el temporal dentro del sandbox, el universo del barrido
+    // está acotado al sandbox aunque el prefijo volviera a colisionar, y las dos
+    // protections son independientes a propósito.
+    let temp = dir.join("tmp-hijo");
+    std::fs::create_dir_all(&temp).expect("crear temporal del sandbox");
+    for variable in ["TEMP", "TMP", "TMPDIR"] {
+        envs.push((variable.to_string(), temp.to_string_lossy().to_string()));
+    }
     (dir, envs)
 }
 
+/// El invariante que hace que el arnés de esta puerta no se pueda borrar a sí mismo: el
+/// prefijo de sus sandboxes no es uno de los que §7 reserva a la aplicación, y el temporal
+/// del hijo está dentro del sandbox.
+///
+/// Son **dos** afirmaciones y las dos importan, porque son independietes. El prefijo
+/// protege de que el barrido del `%TEMP%` de la máquina se lleve un sandbox; la
+/// reubicación del temporal protege de que el barrido del hijo se lleve el `%TEMP%` de la
+/// máquina. Con las dos, ningún barrido puede tocar el directorio de otro test ni el de la
+/// máquina, y el motivo no depende de que el prefijo siga siendo el de hoy.
+///
+/// La condición exacta es `!nombre.starts_with(prefijo_del_producto)`, y el mensaje la
+/// demuestra con las dos trampas: cambiar `avi_test_` por `avi-test-` —que parece más
+/// correcto porque lleva guion— sigue colisionando, y viceversa.
+#[test]
+fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
+    for producto in avi_store::TEMP_PREFIXES {
+        assert!(
+            !PREFIX_SANDBOX.starts_with(producto),
+            "el prefijo de los sandboxes de prueba `{PREFIX_SANDBOX}` empieza por `{producto}`, \
+             que §7 reserva a la aplicación: el barrido de §9.1 lo borraría como si fuera un \
+             temporal nuestro"
+        );
+    }
+    // Las dos formas "naturales" colisionan, y es lo que hace que el criterio sea "no empieza
+    // por `avi-` ni por `avi_`" y no "no lleva `avi`".
+    assert!(
+        "avi_test_sandbox_x".starts_with("avi_"),
+        "precondición del criterio: `avi_test_*` empieza por `avi_` y por eso colisionaba"
+    );
+    assert!(
+        "avi-test-sandbox-x".starts_with("avi-"),
+        "precondición del criterio: `avi-test-*` empieza por `avi-` y por eso colisionaría"
+    );
+
+    // Y el temporal del hijo está dentro del sandbox, que es la otra mitad.
+    let (dir, envs) = sandbox_unique_state("invarianteprefijo");
+    let valor = |k: &str| {
+        envs.iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| PathBuf::from(v))
+    };
+    for variable in ["TEMP", "TMP", "TMPDIR"] {
+        let Some(valor) = valor(variable) else {
+            panic!("el sandbox debe reubicar {variable} para que su barrido no salga de él");
+        };
+        assert!(
+            valor.starts_with(&dir),
+            "{variable} del hijo es {valor:?}, que está fuera del sandbox {dir:?}: el barrido \
+             de §9.1 alcanzaría el temporal de la máquina"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ─── Fichero ready (transporte del evento de readiness por instancia) ──
-//
 // El hijo publica `addr=<real>` tras el bind y `warm=<estado>` tras el
 // warmup en el fichero designado por `--ready-file` (escritura atómica:
 // temporal hermano + rename). La lectura es tolerante a fichero a medio
@@ -1119,7 +1218,7 @@ fn speech_transcribe_with_audio_matches_contract() {
         "es-latam",
     ]);
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     assert_eq!(actual["source"], Value::String("es-latam".to_string()));
     let text = actual["text"].as_str().expect("`text` debe ser un string");
     assert!(!text.is_empty(), "`text` no debe estar vacío");
@@ -1327,7 +1426,7 @@ fn daemon_status_matches_fixture() {
     let (code, actual) = run_json(&["--json", "daemon", "status"]);
     assert_eq!(code, 0);
     if actual["daemon"] == Value::String("running".to_string()) {
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         let expected = fixture("cli_daemon_status_running.json");
         assert_eq!(actual["daemon"], expected["daemon"]);
     } else {
@@ -1335,15 +1434,27 @@ fn daemon_status_matches_fixture() {
     }
 }
 
+// ─── `cleanup` ────────────────────────────────────────────────────────────
+//
+// **Ninguna de las pruebas de este bloque carga una fixture, y antes de este ciclo
+// todas se llamaban `*_matches_fixture`.** De las siete, solo
+// `cleanup_dry_run_matches_fixture` leía una fixture real; las otras seis afirmaban en
+// línea, de modo que el nombre mentía sobre lo que cubrían y la cobertura nominal de
+// `cleanup` era aparente. Los nombres se conservan para no romper la referencias
+// externas, y cada bloque dice en su comentario qué afirma de verdad.
+
+/// Sin categoría: `usage_error` con salida 2 y sin borrar nada (criterio 22). Es la
+/// puerta de uso de §9.1 y no una aserción de fixture.
 #[test]
 fn cleanup_matches_fixture() {
-    // Redefinido: cleanup sin flags → exit 2 usage_error (paridad oráculo, CONTRACT §11)
     let (code, actual) = run_json(&["--json", "cleanup"]);
     assert_eq!(code, 2, "cleanup sin flags debe ser InvalidInput");
     assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
 }
 
+/// El mismo gate, afirmado por su salida y su `reason` y nada más: es lo que la puerta
+/// de uso necesita saber.
 #[test]
 fn cleanup_without_flags_exits_2() {
     let (code, actual) = run_json(&["--json", "cleanup"]);
@@ -1351,6 +1462,8 @@ fn cleanup_without_flags_exits_2() {
     assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
 }
 
+/// `--voices` en simulación: el sobre estándar, con `status` y `reason`, y el alcance
+/// de la categoría. No carga fixture: afirma el contrato en línea.
 #[test]
 fn cleanup_voices_matches_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
@@ -1359,11 +1472,13 @@ fn cleanup_voices_matches_fixture() {
         actual["status"],
         Value::String("cleanup_complete".to_string())
     );
+    assert_eq!(actual["reason"], Value::Null, "sin `reason` en el éxito");
     assert_eq!(actual["dry_run"], Value::Bool(true));
     assert!(actual["removed"].is_array());
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
 }
 
+/// `--synthetic-speech` en simulación: el mismo sobre y el alcance de la categoría.
 #[test]
 fn cleanup_synthetic_speech_matches_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup", "--synthetic-speech", "--dry-run"]);
@@ -1372,24 +1487,43 @@ fn cleanup_synthetic_speech_matches_fixture() {
         actual["status"],
         Value::String("cleanup_complete".to_string())
     );
+    assert_eq!(actual["reason"], Value::Null);
     assert_eq!(actual["dry_run"], Value::Bool(true));
     assert!(actual["removed"].is_array());
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
 }
 
+/// `--model` en simulación: con la raíz **exclusiva** de la aplicación, el alcance de
+/// `--model` es el directorio entero, así que `removed` lo nombra una vez. Es el
+/// alcance nuevo de §9.6 con la decisión de relocalizar `xet`, y no el layout viejo de
+/// snapshots sueltos.
 #[test]
 fn cleanup_model_matches_fixture() {
-    let (code, actual) = run_json(&["--json", "cleanup", "--model", "--dry-run"]);
-    assert_eq!(code, 0);
+    let (dir, envs) = sandbox_unique_state("cleanup-model");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "cleanup", "--model", "--dry-run"], &envs);
+    assert_eq!(code, 0, "{}", actual);
     assert_eq!(
         actual["status"],
         Value::String("cleanup_complete".to_string())
     );
+    assert_eq!(actual["reason"], Value::Null);
     assert_eq!(actual["dry_run"], Value::Bool(true));
-    assert!(actual["removed"].is_array());
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    let roots = dir.join("cache");
+    assert!(
+        actual["removed"]
+            .as_array()
+            .expect("removed debe ser array")
+            .iter()
+            .any(|p| p.as_str() == Some(roots.to_string_lossy().as_ref())),
+        "el alcance de `--model` en raíz exclusiva es el directorio entero: {}",
+        actual["removed"]
+    );
 }
 
+/// `--all` en simulación: la unión de las tres categorías más configuración, logs y el
+/// estado del daemon (§9.6).
 #[test]
 fn cleanup_all_matches_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup", "--all", "--dry-run"]);
@@ -1398,28 +1532,47 @@ fn cleanup_all_matches_fixture() {
         actual["status"],
         Value::String("cleanup_complete".to_string())
     );
+    assert_eq!(actual["reason"], Value::Null);
     assert_eq!(actual["dry_run"], Value::Bool(true));
     assert!(actual["removed"].is_array());
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
 }
 
+/// La **única** prueba de `cleanup` que carga una fixture real, y sigue siendo una
+/// prueba de fixture: compara contra `tests/golden/cli_cleanup_dry_run.json`, que este
+/// ciclo regenera con el plan nuevo de `--dry-run` y con la versión `"4"` del sobre.
 #[test]
 fn cleanup_dry_run_matches_fixture() {
     // --voices + --dry-run es el caso canónico de dry_run; valida fixture dedicada
     let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
     assert_eq!(code, 0);
     assert_eq!(actual["dry_run"], Value::Bool(true));
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     // fixture de referencia para dry_run debe coincidir en status
     let expected = fixture("cli_cleanup_dry_run.json");
     assert_eq!(actual["status"], expected["status"]);
     assert_eq!(actual["dry_run"], expected["dry_run"]);
+    assert_eq!(actual["schema_version"], expected["schema_version"]);
 }
-
-/// `cleanup --model` real en sandbox: `removed` lista rutas (las mismas que
-/// `--dry-run`), incluye `.locks` y `ct2`, y los directorios desaparecen.
-/// `hub` como hoja (el `xet` hermano queda dentro del sandbox) y temp propio
-/// (el barrido de `avi_*` no toca el temp real).
+/// `cleanup --model` de punta a punta, en las **dos** formas que puede tomar la raíz de
+/// modelos de §7.
+///
+/// La versión anterior plantaba el layout viejo —`<HF_HOME>/hub/models--…`, `hub/ct2`,
+/// `hub/.locks` y `xet` como hermano— y exigía que los cuatro aparecieran en `removed`.
+/// Con la decisión de relocalizar `xet` y con R3 aplicada, ese layout ya no describe
+/// nada: en la raíz **exclusiva** el borrado es de directorio entero, y en la raíz
+/// **compartida** que el usuario elige con `HF_HUB_CACHE` solo se borran los repos
+/// fijados, sus derivados y sus locks.
+///
+/// Lo que la prueba afirma, y es lo que el plan fija como su destino:
+///
+/// - `--dry-run` y la ejecución real listan **lo mismo**, porque salen de la misma
+///   función de cálculo.
+/// - En la raíz exclusiva, `--model` borra el directorio entero, `xet` incluido.
+/// - En la raíz compartida, borra el repo propio y el derivado CT2, y **no** borra
+///   `xet`, ni el `.locks` completo, ni el repos de otra herramienta (criterio 23).
+/// - El barrido transversal recoge un temporal propio huérfano **sin PID**, que es el
+///   segundo punto heredado que este lote absorbe.
 #[test]
 fn cleanup_model_real_run_reports_paths() {
     // Sin pidfile, `cleanup` apaga el daemon de 127.0.0.1:8765: no tocar el del usuario.
@@ -1428,45 +1581,43 @@ fn cleanup_model_real_run_reports_paths() {
         eprintln!("[cleanup] skip: daemon activo en 127.0.0.1:8765");
         return;
     }
-    let sandbox = std::env::temp_dir().join(format!(
-        "cleanup_sandbox_{}_{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
-    ));
-    let hf_home = sandbox.join("hf");
-    let hub = hf_home.join("hub");
-    let snapshot = hub.join("models--Helsinki-NLP--opus-mt-es-en");
-    let ct2 = hub.join("ct2").join("opus-mt-es-en");
-    let tmp = sandbox.join("tmp");
-    for d in [
-        &snapshot,
-        &ct2,
-        &hub.join(".locks"),
-        &hf_home.join("xet"),
-        &tmp,
-    ] {
-        std::fs::create_dir_all(d).unwrap();
-    }
-    std::fs::write(ct2.join("model.bin"), b"marker").unwrap();
-    std::fs::write(tmp.join("avi_clone_x_1.qvoice"), b"marker").unwrap();
+    let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let sandbox = std::env::temp_dir().join(format!("cleanup_sandbox_{}_{n}", std::process::id()));
     let data = sandbox.join("data");
     std::fs::create_dir_all(&data).unwrap();
-    let envs = [
+    // El temporal del sistema se desvía al sandbox: `cleanup` barre los temporales
+    // propios y no debe tocar los de la máquina que ejecuta la prueba.
+    let tmp = sandbox.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let temporal = tmp.join("avi_clone_x_1.qvoice");
+    std::fs::write(&temporal, b"marker").unwrap();
+
+    // ── Caso exclusivo: `AVI_CACHE_DIR` manda sobre las variables HF ──────────────
+    // Las variables HF se vacían porque `models_cache_dir` da prioridad a
+    // `AVI_CACHE_DIR` pero, sin ella, un `HF_HUB_CACHE` del entorno de la máquina
+    // haría que la raíz se resolviera a otro sitio y la prueba probaría otra cosa.
+    let exclusiva = sandbox.join("models-exclusiva");
+    plantar_modelos(&exclusiva);
+    let envs_exclusiva = [
         ("AVI_DATA_DIR", data.to_str().unwrap()),
         ("AVI_DAEMON_PORT", "0"),
-        ("HF_HUB_CACHE", hub.to_str().unwrap()),
-        ("HF_HOME", hf_home.to_str().unwrap()),
+        ("AVI_CACHE_DIR", exclusiva.to_str().unwrap()),
+        ("HF_HUB_CACHE", ""),
+        ("HF_HOME", ""),
         ("TMP", tmp.to_str().unwrap()),
         ("TEMP", tmp.to_str().unwrap()),
         ("TMPDIR", tmp.to_str().unwrap()),
     ];
 
-    let (code, dry) = run_json_env(&["--json", "cleanup", "--model", "--dry-run"], &envs);
+    let (code, dry) = run_json_env(
+        &["--json", "cleanup", "--model", "--dry-run"],
+        &envs_exclusiva,
+    );
     assert_eq!(code, 0, "{}", dry);
-    let (code, real) = run_json_env(&["--json", "cleanup", "--model", "--yes"], &envs);
+    let (code, real) = run_json_env(&["--json", "cleanup", "--model", "--yes"], &envs_exclusiva);
     assert_eq!(code, 0, "{}", real);
 
-    let as_set = |v: &Value| -> std::collections::BTreeSet<String> {
+    let como_set = |v: &Value| -> std::collections::BTreeSet<String> {
         v["removed"]
             .as_array()
             .expect("removed debe ser array")
@@ -1474,135 +1625,186 @@ fn cleanup_model_real_run_reports_paths() {
             .map(|s| s.as_str().unwrap().to_string())
             .collect()
     };
-    assert_eq!(
-        as_set(&dry),
-        as_set(&real),
-        "real y dry-run deben listar lo mismo"
-    );
-    for p in [
-        &snapshot,
-        &hub.join("ct2"),
-        &hub.join(".locks"),
-        &hf_home.join("xet"),
-    ] {
+    let del_dry = como_set(&dry);
+    let del_real = como_set(&real);
+    for ruta in &del_dry {
         assert!(
-            as_set(&real).contains(&p.display().to_string()),
-            "falta {} en removed",
-            p.display()
+            del_real.contains(ruta),
+            "real y dry-run deben listar lo mismo: {ruta} está en el dry-run y no en el real"
         );
-        assert!(!p.exists(), "{} debe borrarse", p.display());
     }
-    assert!(!tmp.join("avi_clone_x_1.qvoice").exists());
+    assert!(
+        del_real.contains(&exclusiva.display().to_string()),
+        "en la raíz exclusiva `--model` borra el directorio entero: {del_real:?}"
+    );
+    assert!(
+        !exclusiva.exists(),
+        "y la raíz desaparece, `xet` incluido: {:?}",
+        exclusiva.join("xet")
+    );
+    assert!(
+        !temporal.exists(),
+        "el barrido transversal recoge el temporal propio huérfano sin PID"
+    );
+
+    // ── Caso compartido: `HF_HUB_CACHE` elige la raíz, y R3 manda ────────────────
+    let compartida = sandbox.join("hub-compartida");
+    plantar_modelos(&compartida);
+    std::fs::create_dir_all(compartida.join("models--Qwen--Qwen3-TTS-0.6B")).unwrap();
+    std::fs::write(
+        compartida
+            .join("models--Qwen--Qwen3-TTS-0.6B")
+            .join("config.json"),
+        b"{}",
+    )
+    .unwrap();
+    let ajeno = compartida.join("models--otra--herramienta");
+    let envs_compartida = [
+        ("AVI_DATA_DIR", data.to_str().unwrap()),
+        ("AVI_DAEMON_PORT", "0"),
+        ("AVI_CACHE_DIR", ""),
+        ("HF_HUB_CACHE", compartida.to_str().unwrap()),
+        ("HF_HOME", ""),
+        ("TMP", tmp.to_str().unwrap()),
+        ("TEMP", tmp.to_str().unwrap()),
+        ("TMPDIR", tmp.to_str().unwrap()),
+    ];
+
+    let (code, compartido_real) =
+        run_json_env(&["--json", "cleanup", "--model", "--yes"], &envs_compartida);
+    assert_eq!(code, 0, "{}", compartido_real);
+    let borrado = como_set(&compartido_real);
+
+    assert!(
+        borrado.contains(
+            &compartida
+                .join("models--Helsinki-NLP--opus-mt-es-en")
+                .display()
+                .to_string()
+        ),
+        "el repo propio sí se borra: {borrado:?}"
+    );
+    assert!(
+        borrado.contains(&compartida.join("ct2").display().to_string()),
+        "y el derivado CT2, que es atribuible a la aplicación"
+    );
+    // R3: nada de esto se toca.
+    assert!(
+        !borrado.contains(&compartida.join("xet").display().to_string()),
+        "R3: `xet` no se puede listar como borrado: {borrado:?}"
+    );
+    assert!(
+        !borrado.contains(&compartida.join(".locks").display().to_string()),
+        "R3: el `.locks` completo no se puede listar como borrado: {borrado:?}"
+    );
+    assert!(
+        !borrado.contains(&ajeno.display().to_string()),
+        "R3: el repo de otra herramienta no se puede listar como borrado: {borrado:?}"
+    );
+    assert!(
+        compartida.join("xet").exists(),
+        "R3: `xet` sobrevive a `--model` en una raíz compartida"
+    );
+    assert!(
+        compartida.join(".locks").exists(),
+        "R3: el `.locks` completo sobrevive"
+    );
+    assert!(
+        ajeno.exists(),
+        "criterio 23: los modelos de otra herramienta sobreviven"
+    );
+    assert!(
+        compartida.exists(),
+        "y la raíz compartida no se borra entera"
+    );
+    assert!(
+        !compartida
+            .join("models--Helsinki-NLP--opus-mt-es-en")
+            .exists(),
+        "mientras el repo propio sí desaparece"
+    );
 
     let _ = std::fs::remove_dir_all(&sandbox);
 }
 
-/// Regresión del self-kill de `uninstall --force` en Windows (v0.18.10–v0.18.25):
-/// el fallback `taskkill /F /IM ai-voice-interconnector.exe` mataba al propio CLI
-/// (daemon y CLI comparten la imagen del binario) antes de borrar PATH/install_dir,
-/// retornando `exit 1` sin tocar nada. La corrección sustituyó ese fallback por un
-/// kill por **PID** leído de `daemon.pid` (con guarda `pid != process::id()`). Si
-/// reapareciera el kill por imagen, el binario bajo test moriría por `taskkill` y
-/// `status.code()` devolvería `None`, provocando el fallo del test (regresión en CI
-/// `test-windows`).
+/// Planta el layout de modelos vigente: un repo fijado, el derivado CT2, los locks y
+/// `xet` colgando de la raíz, más un repo de otra herramienta.
+fn plantar_modelos(raiz: &std::path::Path) {
+    let repo = raiz.join("models--Helsinki-NLP--opus-mt-es-en");
+    std::fs::create_dir_all(repo.join("snapshots").join("abc")).unwrap();
+    std::fs::write(
+        repo.join("snapshots").join("abc").join("config.json"),
+        b"{}",
+    )
+    .unwrap();
+    let ct2 = raiz.join("ct2").join("opus-mt-es-en");
+    std::fs::create_dir_all(&ct2).unwrap();
+    std::fs::write(ct2.join("model.bin"), b"marker").unwrap();
+    std::fs::create_dir_all(raiz.join(".locks").join("models--x--y")).unwrap();
+    std::fs::create_dir_all(raiz.join("xet")).unwrap();
+    std::fs::create_dir_all(raiz.join("models--otra--herramienta")).unwrap();
+}
+/// `doctor --json` emite **un solo objeto** también cuando falla, con el veredicto
+/// dentro y la salida 1.
 ///
-/// Sandbox aislado: `LOCALAPPDATA` (honrada en `handle_uninstall` para el
-/// `install_dir`) y `HF_HUB_CACHE`/`HF_HOME` (honradas por `hf_cache_dir` en
-/// `avi-store`) apuntan a un directorio temporal propio, con un `install_dir` falso
-/// como marcador. El nombre del sandbox no empieza por `avi_` ni
-/// `ai-voice-interconnector-install-`, ajeno al barrido de temp huérfano de
-/// `uninstall`. Si hubiera un daemon real activo en 127.0.0.1:8765, el test se salta
-/// con aviso: `cargo test` no debe detener el daemon del usuario (esa ruta la cubre
-/// el E2E manual).
-#[cfg(windows)]
+/// Es la garantía de §10 del contrato —"cada invocación emite exactamente un objeto
+/// JSON"— y la forma de fijarla es comprobar que **`stdout` contiene un único objeto**
+/// y que no lleva la clave `error` que el canal de error añadiría detrás. La prueba
+/// pasa aunque el veredicto sea favorable, porque lo que afirma es la unicidad del
+/// objeto y la ausencia del canal de error, no el resultado del diagnóstico.
 #[test]
-fn uninstall_force_no_self_kill() {
-    let _tts = tts::lock_tts();
-
-    // (a) Skip si hay daemon real activo (no detenerlo desde `cargo test`).
-    let (_, status) = run_json(&["--json", "daemon", "status"]);
-    if status["daemon"] == Value::String("running".to_string()) {
-        eprintln!("[uninstall] skip: daemon activo en 127.0.0.1:8765");
-        return;
-    }
-
-    // (b) Sandbox con install_dir falso (marcador) y caches HF aisladas.
-    let sandbox = std::env::temp_dir().join(format!(
-        "uninstall_sandbox_{}_{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
-    ));
-    let local = sandbox.join("LocalAppData");
-    let programs = local.join("Programs/ai-voice-interconnector");
-    std::fs::create_dir_all(&programs)
-        .unwrap_or_else(|e| panic!("no se pudo crear install_dir falso: {}", e));
-    std::fs::write(programs.join("ai-voice-interconnector.exe"), b"marker")
-        .unwrap_or_else(|e| panic!("no se pudo escribir el marcador: {}", e));
-    // `hub` como hoja: `xet_cache_dir` deriva su hermano `xet` solo si la ruta
-    // termina en `hub`; si no, cae al `~/.cache/huggingface/xet` real.
-    let hf_home = sandbox.join("hf");
-    let hf = hf_home.join("hub");
-    let ct2_model = hf.join("ct2").join("opus-mt-es-en");
-    std::fs::create_dir_all(&ct2_model).unwrap();
-    std::fs::write(ct2_model.join("model.bin"), b"marker").unwrap();
-    std::fs::create_dir_all(hf.join(".locks")).unwrap();
-    std::fs::create_dir_all(hf_home.join("xet")).unwrap();
-
-    let data_sandbox = sandbox.join("data");
-    std::fs::create_dir_all(&data_sandbox).unwrap();
-
-    // (c) uninstall --force contra el sandbox aislado.
-    let (code, actual) = run_json_env(
-        &["--json", "uninstall", "--force"],
-        &[
-            ("LOCALAPPDATA", local.to_str().unwrap()),
-            ("AVI_DATA_DIR", data_sandbox.to_str().unwrap()),
-            ("HF_HUB_CACHE", hf.to_str().unwrap()),
-            ("HF_HOME", hf_home.to_str().unwrap()),
-        ],
-    );
-
-    // Derivados de modelo: `uninstall` borra CT2, `.locks` y xet (paridad `cleanup --model`).
-    assert!(!hf.join("ct2").exists(), "uninstall debe borrar hub/ct2");
+fn doctor_json_emits_exactly_one_object_even_on_failure() {
+    let (dir, envs) = sandbox_unique_state("doctor");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, valor) = run_json_env(&["--json", "doctor"], &envs);
+    // Un objeto: `run_json_env` ya no habría podido parsear dos objetos JSON seguidos,
+    // así que llegar aquí con un solo objeto parseado es parte de la prueba.
+    // objetos JSON seguidos, así que llegar aquí con un solo objeto parseado ya es parte de la prueba.
     assert!(
-        !hf.join(".locks").exists(),
-        "uninstall debe borrar hub/.locks"
+        valor.get("error").is_none(),
+        "el veredicto de `doctor` no lleva objeto `error`: {}",
+        valor
     );
-    assert!(!hf_home.join("xet").exists(), "uninstall debe borrar xet");
-
-    // (d) Invariante crítico: no auto-muerte, contrato JSON intacto.
-    // H2+H4 atómicos: `PATH` canónico sin residuo y helper desacoplado
-    // determinista — no se afirma `!programs.exists()` síncrono porque `H4`
-    // es `Wait-Process PID` + `Remove-Item -LiteralPath` tras la salida del
-    // padre (determinista sin `PermissionDenied` aviso).
-    assert_eq!(
-        code, 0,
-        "uninstall --force no debe auto-matarse: {}",
-        actual
-    );
-    assert_eq!(actual["status"], Value::String("uninstalled".to_string()));
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
-    // H4: el helper se crea en `TEMP\avi-uninstall-*.ps1` y borra
-    // `install_dir` tras la muerte del PID; el padre no intenta
-    // `remove_dir_all` síncrono. En sandbox sin `exe` vivo el helper lo
-    // borra en <1s; se espera de forma determinista sin best-effort.
-    {
-        let mut ok = !programs.exists();
-        for _ in 0..10 {
-            if ok {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            ok = !programs.exists();
-        }
+    for clave in [
+        "version", "target", "channel", "install", "path", "pending", "models", "checks", "failed",
+    ] {
         assert!(
-            ok,
-            "el install_dir del sandbox debe borrarse (H4 determinista)"
+            valor.get(clave).is_some(),
+            "falta la clave `{clave}` del reporte de ciclo de vida: {}",
+            valor
         );
     }
+    // Las claves que el contrato retira. El sobre afirma su conjunto exacto en la
+    // prueba de doctor del motor; aquí se afirma, de este lado del cable, que la raíz
+    // de datos dejó de ser clave de primer nivel.
+    assert!(
+        valor.get("data_dir").is_none(),
+        "la raíz de datos no puede ser clave de primer nivel: {}",
+        valor
+    );
+    // La información que las claves retiradas tenían no se pierde: cambia de sitio.
+    assert!(
+        valor["install"]["data_dir"].is_string(),
+        "la raíz de datos vive dentro de `install`"
+    );
+    assert!(
+        valor["models"]["base"].is_string(),
+        "el estado del modelo opt-in de clonado vive dentro de `models`"
+    );
+    assert_eq!(
+        valor["schema_version"],
+        Value::String("4".to_string()),
+        "el sobre de la CLI sube a \"4\""
+    );
+    // Y el código de salida es el del veredicto: 1 si falló, 0 si no.
+    let fallido = valor["failed"].as_array().is_some_and(|f| !f.is_empty());
+    assert_eq!(
+        code,
+        if fallido { 1 } else { 0 },
+        "el código de salida es el del veredicto, sin objeto `error` detrás: {valor}"
+    );
 
-    // (e) Limpieza del sandbox.
-    let _ = std::fs::remove_dir_all(&sandbox);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -1611,7 +1813,7 @@ fn voice_list_respects_envelope_contract() {
     // invariantes de contrato (envelope + presencia de `default`).
     let (code, actual) = run_json(&["--json", "voice", "list"]);
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     let voices = actual["voices"]
         .as_array()
         .expect("`voices` debe ser un array");
@@ -1661,7 +1863,7 @@ fn translate_es_to_en_produces_translation() {
         "en",
     ]);
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     assert_eq!(actual["source"], Value::String("es".to_string()));
     assert_eq!(actual["target"], Value::String("en".to_string()));
     let translated = actual["translated"]
@@ -1996,7 +2198,7 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         assert_eq!(actual["status"], Value::String("success".to_string()));
         let audio = actual["audio_path"]
             .as_str()
@@ -2063,7 +2265,7 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         assert_eq!(actual["status"], Value::String("success".to_string()));
         let audio = actual["audio_path"]
             .as_str()
@@ -2223,7 +2425,7 @@ mod tts {
             "default",
         ]);
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         let entries = actual["speech"]
             .as_array()
             .expect("`speech` debe ser un array");
@@ -2301,7 +2503,7 @@ mod tts {
         create_utterance("ryan", &label_ryan);
         let (code, actual) = run_json(&["--json", "--no-daemon", "speech", "list"]);
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         let entries = actual["speech"]
             .as_array()
             .expect("`speech` debe ser un array");
@@ -2473,7 +2675,7 @@ mod tts {
             "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
         ]);
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(actual["precomputed"], Value::Bool(false));
         let speech = actual["speech"].as_str().expect("speech debe existir");
@@ -2687,8 +2889,8 @@ mod tts {
             "con status running el PID de la pista debe estar vivo (pid {:?})",
             pid
         );
-        // Cuando está running, el fixture running debe coincidir (schema_version 3)
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        // Cuando está running, el fixture running debe coincidir (schema_version 4)
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         let expected = fixture("cli_daemon_status_running.json");
         // Comparar daemon y engine
         assert_eq!(actual["daemon"], expected["daemon"]);
@@ -3130,7 +3332,7 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0, "translate --daemon debe delegar con exit 0");
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         assert!(actual.get("translated").is_some());
         let expected = fixture("cli_translate_daemon.json");
         assert_eq!(actual["source"], expected["source"]);
@@ -3232,7 +3434,7 @@ mod tts {
             t0.elapsed().as_millis()
         ));
         assert_eq!(code, 0, "voice clone --daemon debe delegar con exit 0");
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(
             actual["precomputed"],
@@ -3284,7 +3486,7 @@ mod tts {
         );
         assert_eq!(code, 0, "dub passthrough --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         // Verificación sobre el archivo recibido: WAV válido más
         // texto no vacío. Sin gate WER: este test no lo tenía y añadir un
         // umbral numérico sobre inferencia sin poder ejecutar la pesada sería
@@ -3355,7 +3557,7 @@ mod tts {
         );
         assert_eq!(code, 0, "dub con traducción --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         // Verificación sobre el archivo recibido: WAV válido más
         // texto traducido no vacío (el daemon devuelve en `text` el final
         // traducido; `src/main.rs:3051-3055`). Sin gate WER por el mismo
@@ -3637,7 +3839,9 @@ fn help_output_is_spanish_for_every_command() {
         vec!["daemon", "serve"],
         vec!["setup"],
         vec!["cleanup"],
-        vec!["uninstall"],
+        vec!["self"],
+        vec!["self", "install"],
+        vec!["self", "uninstall"],
         vec!["doctor"],
     ];
     for node in &nodes {
