@@ -1,0 +1,56 @@
+{
+  "note": "Lista canonica de archivos que el bundle de release debe contener, por target. La valida `self install` contra el directorio de programa en ejecucion y la montara `cargo xtask package`; al ser la unica fuente, empaquetado e instalacion no pueden divergir. Replica el staging de los cuatro jobs de build de .circleci/config.yml: ejecutable, los cuatro documentos de la raiz, el derivado del motor en vendor/qwen3-tts/ y la libreria de ONNX Runtime con el nombre exacto que el crate `ort` busca en load-dynamic, mas las tres DLL del runtime de VC++ que esa libreria de Windows necesita. Rutas relativas a la raiz del bundle, separador `/` en todos los targets.",
+  "targets": {
+    "x86_64-pc-windows-msvc": {
+      "executable": "ai-voice-interconnector.exe",
+      "required": [
+        "ai-voice-interconnector.exe",
+        "LICENSE",
+        "THIRD-PARTY-LICENSES.md",
+        "SOURCE-OFFER.md",
+        "README.md",
+        "onnxruntime.dll",
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+        "msvcp140.dll",
+        "vendor/qwen3-tts/qwen_tts.exe"
+      ]
+    },
+    "x86_64-unknown-linux-gnu": {
+      "executable": "ai-voice-interconnector",
+      "required": [
+        "ai-voice-interconnector",
+        "LICENSE",
+        "THIRD-PARTY-LICENSES.md",
+        "SOURCE-OFFER.md",
+        "README.md",
+        "libonnxruntime.so",
+        "vendor/qwen3-tts/qwen_tts"
+      ]
+    },
+    "aarch64-unknown-linux-gnu": {
+      "executable": "ai-voice-interconnector",
+      "required": [
+        "ai-voice-interconnector",
+        "LICENSE",
+        "THIRD-PARTY-LICENSES.md",
+        "SOURCE-OFFER.md",
+        "README.md",
+        "libonnxruntime.so",
+        "vendor/qwen3-tts/qwen_tts"
+      ]
+    },
+    "aarch64-apple-darwin": {
+      "executable": "ai-voice-interconnector",
+      "required": [
+        "ai-voice-interconnector",
+        "LICENSE",
+        "THIRD-PARTY-LICENSES.md",
+        "SOURCE-OFFER.md",
+        "README.md",
+        "libonnxruntime.dylib",
+        "vendor/qwen3-tts/qwen_tts"
+      ]
+    }
+  }
+}

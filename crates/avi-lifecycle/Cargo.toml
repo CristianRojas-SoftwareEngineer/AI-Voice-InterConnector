@@ -1,0 +1,38 @@
+[package]
+name = "avi-lifecycle"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[features]
+# Puntos de inyeccion de fallo que §13 autoriza solo en los builds de prueba.
+# El binario distribuido se construye sin este feature, de modo que no
+# contiene forma de provocar un fallo a proposito.
+faults = []
+
+[dependencies]
+# Fuente unica de rutas y de recursos del producto (§7). Aporta `hf-hub`, que es
+# exactamente lo que impide que `xtask` dependa de el: el manifiesto de bundle
+# vive en `packaging/bundle-manifest.json` y no en este crate.
+avi-store = { path = "../avi-store" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+# `setup` se traslada como funcion asincrona; el binario ya compila `full` en el
+# mismo lockfile, asi que no anade trabajo de compilacion.
+tokio = { version = "1.35", features = ["full"] }
+# El parseo de la CLI se queda en `src/main.rs`: este crate no depende de `clap`.
+
+[target.'cfg(windows)'.dependencies]
+# Acceso directo a `HKCU\Environment` para la integracion de PATH (§9.3.1). Hoy
+# lo consume `winreg` desde el binario; aqui se accede por `windows-sys` para no
+# arrastrar un envoltorio de registro adicional.
+# `Win32_System_Threading` no estaba en la lista que fijo T4 y se anade para el
+# barrido de temporales de §9.1: sin el, "¿este PID sigue vivo?" no tiene
+# respuesta en Windows y el barrido borraria temporales de un proceso vivo. Es
+# una feature de una dependencia ya declarada, no una dependencia nueva.
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(unix)'.dependencies]
+# Enlace simbolico, permisos y deteccion de privilegios elevados (§9.3.1, §9.1).
+libc = "0.2"

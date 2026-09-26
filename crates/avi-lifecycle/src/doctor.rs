@@ -1,0 +1,766 @@
+//! Sección de ciclo de vida de `doctor` (§9.8), como datos y no como texto.
+//!
+//! `doctor` es la única operación que el usuario puede ejecutar sin riesgo, y por eso
+//! es donde el estado del ciclo de vida tiene que ser legible: versión y target, canal,
+//! instalación y recibo, `PATH` con duplicados y precedencia, pendientes de transacción
+//! y modelos.
+//!
+//! **Por qué este módulo no imprime nada.** El contrato de la CLI exige que cada
+//! invocación emita **exactamente un objeto JSON**, y que la salida por veredicto de
+//! `doctor` —código ≠ 0 con el reporte ya emitido y **sin** objeto `error`— no lleve un
+//! segundo objeto detrás. Eso solo es posible si el veredicto es un **dato** que el
+//! binario compone, y no una impresión con un `exit` detrás. Aquí no hay `println!` ni
+//! `exit`: hay una función que devuelve el reporte, serializable, con su veredicto
+//! dentro.
+//!
+//! **Las claves que se retiran.** El contrato niega cuatro claves de primer nivel del
+//! reporte —la ruta de la caché, la del directorio de datos, el estado del modelo opt-in
+//! de clonado y la lista de problemas— y §9.8 las cubre con `install`, `path` y
+//! `models`. Aquí no se emiten, **ni siquiera como nombre**: la prueba de este módulo
+//! afirma el **conjunto exacto** de claves del sobre en vez de una lista de
+//! prohibidas, que es una afirmación más fuerte y no necesita nombrarlas. La
+//! información no se pierde, cambia de sitio: la raíz de datos es el campo `data_dir` de
+//! `install`, el estado del modelo opt-in de clonado es el campo `base` de `models` con
+//! sus mismos dos valores, y las comprobaciones que eran la lista de problemas son
+//! `checks` y `failed`.
+//!
+//! **Recuperación en modo informe.** §9.1 dice que `doctor` ejecuta la recuperación al
+//! empezar "en modo informe". Eso significa que **calcula** lo que la recuperación
+//! haría —con [`crate::recovery::preview`], la misma decisión que usa el barrido real— y
+//! lo publica en `pending`, **sin tocar nada**: sin tomar el bloqueo y sin modificar el
+//! programa. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del
+//! producto en uno que borra temporales de la máquina que lo invoca.
+
+use crate::channel::{self, Channel};
+use crate::cleanup;
+use crate::receipt::{self, InstallReceipt, PathIntegration};
+use crate::recovery::{self, Roots as RecoveryRoots};
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+
+/// Entorno que informa `doctor`: las raíces de §7 y lo que hace falta para juzgar la
+/// integración de `PATH`.
+///
+/// Reutiliza [`cleanup::Roots`] en vez de declarar otro juego de raíces: §7 exige una
+/// sola fuente, y duplicar la estructura es el primer paso de duplicar la resolución.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Env {
+    pub roots: cleanup::Roots,
+    /// `PATH` de la sesión, tal como lo ve el proceso.
+    pub path_env: String,
+    /// Subclave de registro donde se integra el `PATH` en Windows. Vacía en Unix.
+    pub registry_subkey: String,
+}
+
+impl Env {
+    /// Entorno con las raíces de §7 ya resueltas, que es lo que usa el binario.
+    pub fn resolve() -> Self {
+        Self {
+            roots: cleanup::Roots::resolve(),
+            path_env: std::env::var("PATH").unwrap_or_default(),
+            registry_subkey: registry_subkey_default(),
+        }
+    }
+
+    /// Entorno de la instalación registrada, con el recibo como fuente de verdad de
+    /// las raíces (§7).
+    pub fn from_receipt(receipt: Option<&InstallReceipt>) -> Self {
+        Self {
+            roots: cleanup::Roots::from_receipt(receipt),
+            ..Self::resolve()
+        }
+    }
+
+    fn recovery_roots(&self) -> RecoveryRoots<'_> {
+        RecoveryRoots {
+            program_dir: &self.roots.program_dir,
+            temp_root: &self.roots.temp_root,
+            in_use: None,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn registry_subkey_default() -> String {
+    crate::path_windows::ENV_SUBKEY.to_string()
+}
+
+#[cfg(not(windows))]
+fn registry_subkey_default() -> String {
+    String::new()
+}
+
+/// Fila `install` de §9.8: directorio de programa, raíz de datos efectiva y estado del
+/// recibo.
+///
+/// La raíz de datos vive **aquí** y no como clave de primer nivel: es el sitio donde §9.8
+/// la coloca y donde el contrato espera que esté tras retirar `data_dir`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Install {
+    /// Directorio de programa, que es el del recibo si lo hay (§8.2).
+    pub dir: PathBuf,
+    /// Raíz de datos efectiva (§7), del recibo si lo hay.
+    pub data_dir: PathBuf,
+    /// `valid` o `absent`, que es como §9.8 nombra el estado del recibo.
+    pub receipt: &'static str,
+    /// Versión instalada, si el recibo la declara.
+    pub version: Option<String>,
+}
+
+/// Una instalación coexistente con la registrada, y cuál tiene precedencia en el
+/// `PATH` (§8.2: "si conviven dos instalaciones, `doctor` lo informa junto con cuál
+/// tiene precedencia en el PATH").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Coexistence {
+    pub path: PathBuf,
+    pub channel: Channel,
+    /// `true` si esta instalación es la que resuelve el comando.
+    pub takes_precedence: bool,
+}
+
+/// Fila `path` de §9.8.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PathState {
+    /// `true` si el comando resuelve a la instalación registrada.
+    pub resolves_to_this_install: bool,
+    /// Entradas del `PATH` que apuntan a una instalación de la aplicación; más de una
+    /// es el duplicado que §9.8 pide detectar.
+    pub duplicate_entries: Vec<String>,
+    /// `present`, `absent` o `not_modified` (`--no-modify-path`).
+    pub integration: &'static str,
+    /// Instalaciones que compiten con la registrada, con su precedencia.
+    pub coexisting: Vec<Coexistence>,
+}
+
+/// Fila `pending` de §9.8: diario de transacción, aparcados, stagings huérfanos y
+/// temporales propios huérfanos.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Pending {
+    pub transaction_journal: bool,
+    pub parked: Vec<String>,
+    pub stagings: Vec<String>,
+    pub temporaries: Vec<String>,
+    /// Temporales de un proceso vivo: no se pueden decidir y no son un residuo.
+    pub temporaries_kept: Vec<String>,
+}
+
+impl Pending {
+    /// `true` si no queda nada pendiente. Es lo que un `doctor` sano afirma.
+    pub fn is_clean(&self) -> bool {
+        !self.transaction_journal
+            && self.parked.is_empty()
+            && self.stagings.is_empty()
+            && self.temporaries.is_empty()
+    }
+}
+
+/// Fila `models` de §9.8: provisionados, faltantes y con tamaños.
+///
+/// El estado del modelo opt-in de clonado es el campo `base` de esta fila y no una clave
+/// del sobre: es un dato de modelos, no un veredicto aparte. Se llama así, y no como la
+/// clave plana que el contrato retira, para que el sobre no vuelva a exponer un nombre
+/// que el contrato niega.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Models {
+    pub root: PathBuf,
+    /// `true` si la raíz es la caché HF compartida que eligió el usuario, lo que hace
+    /// que R3 limite el alcance de cualquier borrado.
+    pub shared_root: bool,
+    pub provisioned: Vec<String>,
+    pub missing: Vec<String>,
+    /// Estado del modelo Base de clonado: `ready` o `missing_opt_in`.
+    pub base: &'static str,
+    /// Pares de traducción cuyo derivado CT2 no pasa el gate.
+    pub ct2_incomplete: Vec<String>,
+    pub size_bytes: u64,
+}
+
+/// Una comprobación con su veredicto. Es la clave `checks` del contrato.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Check {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// Reporte de `doctor`: las siete claves de §9.8 más `checks` y `failed`.
+///
+/// Es serializable y **no** lleva `status`: el veredicto son `checks` y `failed`, y el
+/// código de salida lo decide el binario conservando el 1 del contrato, sin adjuntar un
+/// objeto `error` detrás.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Report {
+    pub version: String,
+    pub target: String,
+    pub channel: Channel,
+    pub install: Install,
+    pub path: PathState,
+    pub pending: Pending,
+    pub models: Models,
+    pub checks: Vec<Check>,
+    /// Comprobaciones que fallan, que es lo que §10 del contrato llama `failed`.
+    pub failed: Vec<String>,
+}
+
+impl Report {
+    /// Veredicto del contrato: `true` si alguna comprobación falló.
+    pub fn is_failure(&self) -> bool {
+        !self.failed.is_empty()
+    }
+}
+
+/// Informa del ciclo de vida (§9.8) y devuelve el veredicto como dato.
+///
+/// `exe` es el ejecutable que se está ejecutando: lo necesitan la detección de canal y
+/// la de precedencia en el `PATH`, y por eso es un parámetro y no una lectura de
+/// `current_exe` — §13 exige que las pruebas aislen el entorno.
+pub fn report(env: &Env, exe: &Path) -> Report {
+    let roots = &env.roots;
+    // El recibo se lee de la instalación registrada, que es donde vive (§8.2).
+    let receipt = receipt::read_from(&roots.program_dir).ok().flatten();
+    let channel = channel::detect(exe, receipt.as_ref());
+    let pending = pending(env);
+    let path = path_state(env, receipt.as_ref());
+    let models = models(roots);
+
+    let install = Install {
+        // El directorio de programa es el del **entorno**, que ya es el de la
+        // instalación registrada cuando hay recibo: `Env::from_receipt` lo toma de ahí.
+        // Volver a llamar a `registered_install_dir` aquí volvería a la convención de
+        // §7 cuando no hay recibo, que es un sitio que el usuario no está mirando.
+        dir: roots.program_dir.clone(),
+        data_dir: roots.data_dir.clone(),
+        receipt: if receipt.is_some() { "valid" } else { "absent" },
+        version: receipt.as_ref().map(|r| r.version.clone()),
+    };
+
+    let mut checks: Vec<Check> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    let mut check = |name: &str, ok: bool, detail: String| {
+        checks.push(Check {
+            name: name.to_string(),
+            ok,
+            detail: detail.clone(),
+        });
+        if !ok {
+            failed.push(name.to_string());
+        }
+    };
+
+    check(
+        "install_receipt",
+        install.receipt == "valid",
+        match &receipt {
+            Some(r) => format!("recibo válido en {}", r.install_dir.display()),
+            None => "no hay recibo de instalación".to_string(),
+        },
+    );
+    check(
+        "path_resolves",
+        path.resolves_to_this_install,
+        if path.resolves_to_this_install {
+            "el comando resuelve a la instalación registrada".to_string()
+        } else {
+            "el comando no resuelve a la instalación registrada".to_string()
+        },
+    );
+    check(
+        "path_duplicates",
+        path.duplicate_entries.is_empty(),
+        if path.duplicate_entries.is_empty() {
+            "sin entradas duplicadas en el PATH".to_string()
+        } else {
+            format!(
+                "{} entradas apuntan a una instalación: {}",
+                path.duplicate_entries.len(),
+                path.duplicate_entries.join(", ")
+            )
+        },
+    );
+    check(
+        "pending_artifacts",
+        pending.is_clean(),
+        if pending.is_clean() {
+            "sin residuos de operaciones anteriores".to_string()
+        } else {
+            format!(
+                "{} aparcado(s), {} staging(s) y {} temporal(es) por recoger",
+                pending.parked.len(),
+                pending.stagings.len(),
+                pending.temporaries.len()
+            )
+        },
+    );
+    check(
+        "models_provisioned",
+        models.missing.is_empty(),
+        if models.missing.is_empty() {
+            "todos los modelos fijados están provisionados".to_string()
+        } else {
+            format!("faltan: {}", models.missing.join(", "))
+        },
+    );
+    check(
+        "models_ct2",
+        models.ct2_incomplete.is_empty(),
+        if models.ct2_incomplete.is_empty() {
+            "los derivados CT2 pasan el gate".to_string()
+        } else {
+            format!(
+                "derivado CT2 incompleto: {}",
+                models.ct2_incomplete.join(", ")
+            )
+        },
+    );
+
+    Report {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        target: crate::target::host_triple().to_string(),
+        channel,
+        install,
+        path,
+        pending,
+        models,
+        checks,
+        failed,
+    }
+}
+
+/// Fila `pending` de §9.8, en modo informe: lo que la recuperación **haría**, sin
+/// hacerlo.
+fn pending(env: &Env) -> Pending {
+    let preview = recovery::preview(env.recovery_roots());
+    Pending {
+        transaction_journal: crate::transaction::journal_path(&env.roots.program_dir).is_file(),
+        parked: display_all(&preview.parked),
+        stagings: display_all(&preview.stagings),
+        temporaries: display_all(&preview.temporaries),
+        temporaries_kept: display_all(&preview.temporaries_kept),
+    }
+}
+
+/// Fila `path` de §9.8.
+///
+/// Un solo recorrido del `PATH` alimenta las tres cosas que la fila declara: qué
+/// entradas apuntan a una instalación, cuál es la que resuelve el comando y cuáles son
+/// las instalaciones coexistentes. Recorrerlo tres veces era la forma de que una de
+/// las tres viera algo que las otras no.
+fn path_state(env: &Env, receipt: Option<&InstallReceipt>) -> PathState {
+    let integracion = receipt.map(|r| &r.path_integration);
+    let registradas = instalaciones_en_path(env, integracion, receipt);
+
+    // Entradas del `PATH` de la sesión que apuntan a una instalación de la aplicación.
+    let entradas: Vec<String> = env
+        .path_env
+        .split(separador_path())
+        .filter(|e| !e.trim().is_empty())
+        .filter(|e| {
+            registradas
+                .iter()
+                .any(|(dir, _, _)| crate::canonical_path_entry_matches(Path::new(e), dir))
+        })
+        .map(|e| e.to_string())
+        .collect();
+    // El comando resuelve a la instalación registrada si la **primera** coincidencia
+    // del `PATH` es la de la instalación registrada (§8.2, orden de precedencia).
+    let resolves_to_this_install = entradas.first().is_some_and(|primera| {
+        registradas.iter().any(|(dir, _, propia)| {
+            *propia && crate::canonical_path_entry_matches(Path::new(primera), dir)
+        })
+    });
+    let duplicate_entries = if entradas.len() > 1 {
+        entradas
+    } else {
+        Vec::new()
+    };
+
+    let mut coexisting: Vec<Coexistence> = registradas
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, _, propia))| !*propia)
+        .map(|(indice, (path, channel, _))| Coexistence {
+            path: path.clone(),
+            channel: *channel,
+            takes_precedence: indice == 0,
+        })
+        .collect();
+    // El directorio de programa registrado puede no estar en el `PATH` de la sesión —
+    // se invoca por su ruta completa— y aun así ser la instalación a la que se opera.
+    // Se informa igualmente, y sin precedencia porque no está en el `PATH`.
+    if !registradas.iter().any(|(_, _, propia)| *propia) {
+        coexisting.push(Coexistence {
+            path: env.roots.program_dir.clone(),
+            channel: channel::detect(&env.roots.program_dir, receipt),
+            takes_precedence: false,
+        });
+    }
+
+    PathState {
+        resolves_to_this_install,
+        duplicate_entries,
+        integration: integration_state(env, integracion),
+        coexisting,
+    }
+}
+
+/// Separador de entradas del `PATH` de la plataforma.
+fn separador_path() -> char {
+    if cfg!(windows) {
+        ';'
+    } else {
+        ':'
+    }
+}
+
+/// Estado del enlace o de la entrada de registro.
+///
+/// Windows pregunta al **registro**, que es donde vive la integración, y no al `PATH`
+/// del proceso: el registro es lo que sobrevive a la sesión. Unix pregunta por el
+/// enlace, y `path_unix` no necesita el `PATH` porque la integración es el archivo de
+/// arranque.
+fn integration_state(env: &Env, integracion: Option<&PathIntegration>) -> &'static str {
+    if !integracion.is_some_and(|i| i.modify_path) {
+        return "not_modified";
+    }
+    #[cfg(windows)]
+    {
+        if env.registry_subkey.is_empty() {
+            return "absent";
+        }
+        // Se pregunta al registro por la entrada del **directorio de programa**, que es
+        // lo que §9.3.1 añade: el directorio del enlace es el mismo en Windows.
+        let programa = env.roots.program_dir.display().to_string();
+        match crate::path_windows::read_path(&env.registry_subkey) {
+            Ok(Some(raw)) if alguna_entrada_es_de(&raw.value, &[programa]) => "present",
+            _ => "absent",
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = env;
+        match integracion.and_then(|i| i.symlink.as_ref()) {
+            Some(symlink) if symlink.symlink_metadata().is_ok() => "present",
+            _ => "absent",
+        }
+    }
+}
+
+#[cfg(windows)]
+fn alguna_entrada_es_de(value: &str, candidatos: &[String]) -> bool {
+    value.split(';').filter(|e| !e.trim().is_empty()).any(|e| {
+        candidatos
+            .iter()
+            .any(|c| crate::canonical_path_entry_matches(Path::new(e), Path::new(c)))
+    })
+}
+
+/// Instalaciones visibles en el `PATH`, en el orden del `PATH`, con la bandera de
+/// cuál es la registrada.
+///
+/// El criterio de "esto es una instalación" es objetivo: el directorio contiene el
+/// ejecutable de la aplicación o su recibo. El Cask de Homebrew no deja recibo, así que
+/// se reconoce por el ejecutable bajo el prefijo que `channel::is_homebrew_path`
+/// define, y el canal sale de [`channel::detect`] con esa misma precedencia (§8.2).
+///
+/// El orden es el del `PATH` porque es el que decide la precedencia, que es lo que §9.8
+/// pide informar cuando conviven dos instalaciones.
+fn instalaciones_en_path(
+    env: &Env,
+    integracion: Option<&PathIntegration>,
+    receipt: Option<&InstallReceipt>,
+) -> Vec<(PathBuf, Channel, bool)> {
+    let exe_name = crate::uninstall::executable_name_default();
+    let clave_registrada = receipt
+        .map(|r| crate::canonical_path_key(&r.install_dir))
+        .unwrap_or_else(|| crate::canonical_path_key(&env.roots.program_dir));
+    // En Unix el bloque delimitado exporta el directorio del enlace, que es la ruta que
+    // el usuario ve en el `PATH`; la instalación de ahí también se cuenta.
+    let directorio_del_enlace = integracion
+        .and_then(|i| i.symlink.clone())
+        .and_then(|s| s.parent().map(Path::to_path_buf))
+        .unwrap_or_else(crate::bin_dir);
+
+    let mut vistas: Vec<(PathBuf, Channel, bool)> = Vec::new();
+    for entrada in env
+        .path_env
+        .split(separador_path())
+        .filter(|e| !e.trim().is_empty())
+    {
+        let dir = PathBuf::from(entrada);
+        let parece_instalacion =
+            dir.join(&exe_name).is_file() || receipt::receipt_path(&dir).is_file();
+        if !parece_instalacion {
+            continue;
+        }
+        let key = crate::canonical_path_key(&dir);
+        if vistas
+            .iter()
+            .any(|(v, _, _)| crate::canonical_path_key(v) == key)
+        {
+            continue;
+        }
+        let canal = channel::detect(&dir.join(&exe_name), None);
+        vistas.push((dir, canal, key == clave_registrada));
+    }
+
+    // El directorio del enlace sin el ejecutable al lado —una instalación enlazada cuyo
+    // programa se movió— sigue siendo una instalación visible, y sin ella el
+    // diagnóstico no podría decir que el comando resuelve a ella.
+    if cfg!(unix) {
+        let key = crate::canonical_path_key(&directorio_del_enlace);
+        let ya = vistas
+            .iter()
+            .any(|(v, _, _)| crate::canonical_path_key(v) == key);
+        if !ya && directorio_del_enlace.join(&exe_name).exists() {
+            vistas.insert(
+                0,
+                (
+                    directorio_del_enlace.clone(),
+                    channel::detect(&directorio_del_enlace.join(&exe_name), None),
+                    key == clave_registrada,
+                ),
+            );
+        }
+    }
+
+    vistas
+}
+
+/// Fila `models` de §9.8.
+fn models(roots: &cleanup::Roots) -> Models {
+    let store = avi_store::ModelStore::new();
+    let mut provisioned = Vec::new();
+    let mut missing = Vec::new();
+    for (name, _, _) in avi_store::MODEL_REVISIONS {
+        if store.is_provisioned(name) {
+            provisioned.push((*name).to_string());
+        } else {
+            missing.push((*name).to_string());
+        }
+    }
+    let base_ready = store.is_provisioned(crate::setup::CLONING_MODEL);
+    let mut ct2_incomplete = Vec::new();
+    for pair in crate::setup::CT2_PAIRS {
+        if store.is_provisioned(&format!("marian-{pair}")) && !avi_store::is_ct2_provisioned(pair) {
+            ct2_incomplete.push(pair.to_string());
+        }
+    }
+    Models {
+        root: roots.models_dir.clone(),
+        shared_root: roots.models_shared,
+        provisioned,
+        missing,
+        base: if base_ready {
+            "ready"
+        } else {
+            "missing_opt_in"
+        },
+        ct2_incomplete,
+        size_bytes: cleanup::path_size(&roots.models_dir),
+    }
+}
+
+fn display_all(paths: &[PathBuf]) -> Vec<String> {
+    paths.iter().map(|p| p.display().to_string()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::write_file;
+
+    fn env(tag: &str) -> Env {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        let raiz = std::env::temp_dir().join(format!("doctor-{}-{tag}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&raiz);
+        let roots = cleanup::Roots {
+            program_dir: raiz.join("opt/ai-voice-interconnector"),
+            data_dir: raiz.join("data"),
+            models_dir: raiz.join("models"),
+            temp_root: raiz.join("tmp"),
+            home: raiz.join("home/ana"),
+            models_shared: false,
+        };
+        for dir in [
+            &roots.program_dir,
+            &roots.data_dir,
+            &roots.models_dir,
+            &roots.temp_root,
+        ] {
+            std::fs::create_dir_all(dir).expect("se crea el sandbox");
+        }
+        Env {
+            roots,
+            path_env: String::new(),
+            registry_subkey: String::new(),
+        }
+    }
+
+    fn claves(report: &Report) -> Vec<String> {
+        let valor = serde_json::to_value(report).expect("el reporte es JSON");
+        valor
+            .as_object()
+            .expect("el reporte es un objeto")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Ejecutable de la plataforma, para plantar una instalación coexistente.
+    fn exe_name() -> String {
+        crate::uninstall::executable_name_default()
+    }
+
+    /// Las nueve claves del sobre —las siete de §9.8 más `checks` y `failed`— están, y
+    /// ninguna de las cuatro que el contrato retira está. La raíz de datos y el estado
+    /// del modelo Base sobreviven **dentro** de `install` y de `models`, que es donde §9.8
+    /// los coloca.
+    #[test]
+    fn doctor_reports_every_lifecycle_key() {
+        let env = env("keys");
+        let exe = env.roots.program_dir.join(exe_name());
+        let report = report(&env, &exe);
+
+        let esperadas = [
+            "version", "target", "channel", "install", "path", "pending", "models", "checks",
+            "failed",
+        ];
+        let claves = claves(&report);
+        for esperada in esperadas {
+            assert!(
+                claves.iter().any(|k| k == esperada),
+                "falta la clave `{esperada}`: {claves:?}"
+            );
+        }
+        assert_eq!(claves.len(), esperadas.len(), "y no hay más: {claves:?}");
+
+        // La información que las claves retiradas tenían no se pierde: cambia de sitio.
+        assert_eq!(report.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(report.target, crate::target::host_triple());
+        assert_eq!(report.channel, Channel::Unmanaged);
+        assert_eq!(report.install.receipt, "absent");
+        assert_eq!(report.install.dir, env.roots.program_dir);
+        assert_eq!(report.install.data_dir, env.roots.data_dir);
+        assert_eq!(report.path.integration, "not_modified");
+        assert!(report.pending.is_clean());
+        assert_eq!(report.models.root, env.roots.models_dir);
+        assert!(!report.models.shared_root);
+        assert_eq!(report.models.base, "missing_opt_in");
+        assert_eq!(report.checks.len(), 6, "seis comprobaciones");
+        assert!(
+            report.is_failure(),
+            "sin nada instalado, el veredicto es negativo"
+        );
+
+        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
+    }
+
+    /// Dos instalaciones simultáneas, una de ellas del Cask, y cuál tiene precedencia
+    /// en el `PATH` (§8.2). La registrada no se lista a sí misma.
+    #[test]
+    fn doctor_reports_coexisting_installations() {
+        let mut env = env("coexistence");
+        let registrada = env.roots.program_dir.clone();
+        write_file(&registrada.join(exe_name()), "binario");
+        let segunda = env.roots.temp_root.join("segunda-instalacion");
+        write_file(&segunda.join(exe_name()), "binario");
+        // La del Cask va la primera, y no deja recibo: se reconoce por el prefijo.
+        let cask = env
+            .roots
+            .temp_root
+            .join("Caskroom/ai-voice-interconnector/0.24.0");
+        write_file(&cask.join(exe_name()), "binario");
+        // El separador es el de la plataforma: `separador_path()` lo decide también en
+        // producción, y con el equivocado el `PATH` entero se lee como una sola entrada y
+        // la prueba mide otra cosa.
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        env.path_env = [cask.clone(), registrada.clone(), segunda]
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<String>>()
+            .join(sep);
+
+        let report = report(&env, &registrada.join(exe_name()));
+        let coexisting = &report.path.coexisting;
+        assert_eq!(coexisting.len(), 2, "solo las ajenas: {coexisting:?}");
+        assert!(
+            coexisting[0].takes_precedence,
+            "la primera del PATH tiene precedencia"
+        );
+        assert!(!coexisting[1].takes_precedence, "la segunda no");
+        assert_eq!(
+            coexisting[0].channel,
+            Channel::Homebrew,
+            "el Cask se reconoce por el prefijo, no por el recibo"
+        );
+        assert_eq!(coexisting[0].path, cask, "y la que precede es la del Cask");
+        assert!(report.path.duplicate_entries.len() > 1, "y hay duplicados");
+        assert!(report.is_failure());
+
+        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
+    }
+
+    /// El informe de pendientes con un `.old-*` y un staging huérfano plantados, y
+    /// `doctor` **no toca nada**: es un modo informe.
+    #[test]
+    fn doctor_reports_pending_artifacts() {
+        let env = env("pending");
+        let aparcado = env
+            .roots
+            .program_dir
+            .join(format!("{}1234", crate::PARKED_DIR_PREFIX));
+        write_file(&aparcado.join("anterior"), "v1");
+        let staging = env
+            .roots
+            .program_dir
+            .parent()
+            .unwrap()
+            .join(format!("{}9999", crate::STAGING_DIR_PREFIX));
+        write_file(&staging.join("descargado"), "bundle");
+        let temporal = env.roots.temp_root.join("avi-huerfano.tmp");
+        write_file(&temporal, "x");
+
+        let informe = report(&env, &env.roots.program_dir.join(exe_name()));
+        let pending = &informe.pending;
+
+        assert!(
+            pending
+                .parked
+                .iter()
+                .any(|p| p == &aparcado.display().to_string()),
+            "el aparcado se informa: {:?}",
+            pending.parked
+        );
+        assert!(
+            pending
+                .stagings
+                .iter()
+                .any(|p| p == &staging.display().to_string()),
+            "el staging huérfano se informa: {:?}",
+            pending.stagings
+        );
+        assert!(
+            pending
+                .temporaries
+                .iter()
+                .any(|p| p == &temporal.display().to_string()),
+            "el temporal huérfano se informa: {:?}",
+            pending.temporaries
+        );
+        assert!(!pending.is_clean());
+        assert!(informe.is_failure());
+
+        // Y el diario de transacción se informa cuando existe.
+        write_file(
+            &crate::transaction::journal_path(&env.roots.program_dir),
+            "{}",
+        );
+        let con_diario = report(&env, &env.roots.program_dir.join(exe_name()));
+        assert!(con_diario.pending.transaction_journal);
+
+        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
+    }
+}
