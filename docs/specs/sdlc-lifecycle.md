@@ -228,7 +228,7 @@ AI-Voice-InterConnector/
 | Comando | Propósito | Flags |
 |---|---|---|
 | `self install` | Instala el bundle del que forma parte el ejecutable, o repara la instalación si se ejecuta desde ella | `--no-setup`, `--no-modify-path`, `--force`, `--yes`, `--json` |
-| `self update` | Actualiza a la última versión estable o a una concreta | `--check`, `--version X.Y.Z`, `--force`, `--no-setup`, `--yes`, `--json` |
+| `self update` | Actualiza a la última versión estable o a una concreta | `--check`, `--version X.Y.Z`, `--force`/`-f`, `--no-setup`, `--yes`, `--json` |
 | `self uninstall` | Elimina el programa, la integración de PATH y (por defecto) el estado | `--keep-data`, `--dry-run`, `--yes`, `--json` |
 | `setup` | Provisiona los modelos fijados por la versión | `--with-voice-cloning`, `--force-update`, `--yes`, `--json` |
 | `cleanup` | Borra el estado por categorías, sin tocar el programa | `--model`, `--voices`, `--synthetic-speech`, `--all`, `--dry-run`, `--yes`, `--json` |

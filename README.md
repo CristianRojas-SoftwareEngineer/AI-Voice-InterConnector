@@ -88,6 +88,8 @@ ai-voice-interconnector setup
 
 ```bash
 ai-voice-interconnector self uninstall --yes        # desinstalación completa (programa + PATH + estado)
+ai-voice-interconnector self update --check         # informa la versión disponible sin modificar nada
+ai-voice-interconnector self update --yes           # actualiza a la última estable con verificación y traspaso
 # Conservar modelos, voces y habla: ai-voice-interconnector self uninstall --keep-data --yes
 # Limpieza granular sin tocar programa ni PATH: ai-voice-interconnector cleanup --all --yes
 # Ver el plan sin borrar nada: ai-voice-interconnector self uninstall --dry-run
@@ -202,10 +204,11 @@ ai-voice-interconnector daemon start / status / stop / restart / serve
 ai-voice-interconnector setup [--with-voice-cloning] [--with-stt] [--force-update] [-y|--yes]
 ai-voice-interconnector cleanup [--voices|--synthetic-speech|--model|--all] [--dry-run] [-y|--yes]
 ai-voice-interconnector self install [--no-setup] [--no-modify-path] [-f|--force] [-y|--yes]
+ai-voice-interconnector self update [--check] [--version X.Y.Z] [-f|--force] [--no-setup] [-y|--yes]
 ai-voice-interconnector self uninstall [--keep-data] [--dry-run] [-y|--yes]
 ```
 
-Contrato estable (`--json` `schema_version="4"`, exit codes `0-17/130`) en `docs/CLI/CONTRACT.md`. El protocolo del daemon sigue en `schema_version="3"`: es un contrato independiente.
+Contrato estable (`--json` `schema_version="4"`, exit codes `0-21/130`) en `docs/CLI/CONTRACT.md`. El protocolo del daemon sigue en `schema_version="3"`: es un contrato independiente.
 
 ## Invocación desde cualquier lenguaje
 

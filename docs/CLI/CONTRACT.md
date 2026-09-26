@@ -148,7 +148,7 @@ El proyecto tiene dos canales legibles por máquina y usa los dos: el entero, qu
 | `cleanup` | — | Borrado del estado por categorías, sin tocar el programa |
 | `daemon` | `start`, `stop`, `restart`, `status`, `serve` | Ciclo de vida del daemon |
 | `version` | — | Versión |
-| `self` | `install`, `uninstall` | Operaciones del ciclo de vida sobre la instalación del usuario |
+| `self` | `install`, `update`, `uninstall` | Operaciones del ciclo de vida sobre la instalación del usuario |
 
 **Cuatro de ellos son grupos nominales de gestión** —`speech`, `voice`, `daemon` y `self`—: tienen sub-acciones y ninguna acción propia.
 
@@ -163,7 +163,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | Sub-acción | Flags | Estado |
 |---|---|---|
 | `self install` | `--no-setup` · `--no-modify-path` · `--force`/`-f` · `--yes` · `--json` | Vigente |
-| `self update` | `--check` · `--version X.Y.Z` · `--force`/`-f` · `--no-setup` · `--yes` · `--json` | **Ciclo 2**: la sub-acción aún no existe en el árbol de comandos |
+| `self update` | `--check` · `--version X.Y.Z` · `--force`/`-f` · `--no-setup` · `--yes` · `--json` | Vigente |
 | `self uninstall` | `--keep-data` · `--dry-run` · `--yes` · `--json` | Vigente |
 | `setup` | `--with-stt` · `--with-voice-cloning` · `--force-update` · `--yes`/`-y` · `--json` | Vigente |
 | `cleanup` | `--model` · `--voices` · `--synthetic-speech` · `--all` · `--dry-run` · `--yes`/`-y` · `--json` | Vigente |
@@ -500,14 +500,18 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 | `15` | `ExitCode::BundleInvalid` | Falta un archivo obligatorio del bundle alrededor del ejecutable; nada modificado |
 | `16` | `ExitCode::DaemonStopFailed` | No se pudo detener el daemon y **nada del plan se borró** |
 | `17` | `ExitCode::LifecycleLocked` | Hay otra operación de ciclo de vida en curso sobre el mismo bloqueo |
+| `18` | `ExitCode::UnsupportedPlatform` | Plataforma no soportada; compilar desde el código fuente |
+| `19` | `ExitCode::BinaryIncompatible` | El binario descargado no arranca o no informa la versión objetivo, con diagnóstico |
+| `20` | `ExitCode::NetworkError` | Fallo de descarga tras reintentos acotados |
+| `21` | `ExitCode::ChecksumMismatch` | El hash no coincide o falta en `SHA256SUMS.txt`; nada modificado |
 | `130` | `ExitCode::Interrupted` | Interrupción del usuario (Ctrl+C con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria en la ventana spawn→write) |
 
-**Los siete enteros del 11 al 17 son de la tabla cerrada del ciclo de vida, uno por `reason`**, y no se reparten por el eje de dos preguntas de §1 como los anteriores: cada uno corresponde a un `reason` que §9.1 de la especificación declara, y la correspondencia es 1:1 con la variante de `ExitCode` (`crates/avi-core/src/exit_codes.rs`). Los dos casos que rompen el patrón son deliberados y son los que hay que recordar al leer la tabla:
+**Los once enteros del 11 al 21 son de la tabla cerrada del ciclo de vida, uno por `reason`**, y no se reparten por el eje de dos preguntas de §1 como los anteriores: cada uno corresponde a un `reason` que §9.1 de la especificación declara, y la correspondencia es 1:1 con la variante de `ExitCode` (`crates/avi-core/src/exit_codes.rs`). Los dos casos que rompen el patrón son deliberados y son los que hay que recordar al leer la tabla:
 
 - **El 11 no es un error.** `setup_failed` es un **éxito parcial**: el programa está instalado, el resumen y el sobre se emiten igual, y lo único que cambia es el `reason` del sobre y el código de salida. Por eso el sobre de `self install` sale por *veredicto* y no por el objeto `error` de §10.
 - **El 15 y el 17 son los que el ejecutable sin bundle alrededor y el bloqueo ya tomado producen**, y son los dos que un usuario se encuentra sin haber hecho nada mal: `target\debug\ai-voice-interconnector.exe self install` responde `bundle_invalid` (15) porque no hay bundle alrededor, no porque la instalación esté rota.
 
-`ExitCode::ExternallyManaged` cubre Homebrew y el canal `dev`; `unsupported_platform`, `binary_incompatible`, `network_error` y `checksum_mismatch` **no tienen variante propia** en este ciclo y salen con el `1` genérico: los declara el ciclo que también fija su entero, y declararlos aquí fijaría un número que ese ciclo no pidió (`exit_code_for` en `src/main.rs`, y la cabecera de `crates/avi-core/src/exit_codes.rs`).
+`unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20) y `checksum_mismatch` (21) **tienen variante propia**: los emiten `self update`, la descarga de `setup` y la comprobación de arranque del bundle, con la traducción en `exit_code_for` (`src/main.rs`) y las variantes en la cabecera de `crates/avi-core/src/exit_codes.rs`.
 
 ### Cómo se reparten los enteros
 
@@ -580,7 +584,7 @@ El payload de error usa **dos claves de primer nivel** —`error` con el mensaje
 {"schema_version": "4", "error": "El texto a traducir está vacío", "reason": "empty_text"}
 ```
 
-`reason` es la clave de la causa fina y es **aditiva**: los `reason` del ciclo de vida (`lifecycle_locked`, `bundle_invalid`, `daemon_stop_failed`, `path_conflict`, `rolled_back`, `externally_managed`, `confirmation_required`, `usage_error`, `network_error`, `ct2_conversion_failed`) viajan por ella sin necesidad de un entero propio, y un `reason` desconocido se trata como ausente. El fallo de parseo lleva `reason: "usage_error"`.
+`reason` es la clave de la causa fina y es **aditiva**: los `reason` del ciclo de vida (`lifecycle_locked`, `bundle_invalid`, `daemon_stop_failed`, `path_conflict`, `rolled_back`, `externally_managed`, `confirmation_required`, `usage_error`, `unsupported_platform`, `binary_incompatible`, `network_error`, `checksum_mismatch`, `ct2_conversion_failed`) viajan por ella; los del ciclo de vida tienen además entero propio del 11 al 21, salvo `confirmation_required` y `usage_error` (2) y `ct2_conversion_failed` anidado (1), y un `reason` desconocido se trata como ausente. El fallo de parseo lleva `reason: "usage_error"`.
 
 Las tres reglas de compatibilidad y la regla de promoción son contrato **de consumo** además de emisión: `USAGE.md` declara explícitamente que un `reason` desconocido se trata como ausente.
 
@@ -635,9 +639,9 @@ Son **dos, independientes**, y ya **no valen lo mismo**: el sobre de la CLI va p
 
 ## 11. `self`, `setup`, `cleanup` y `voice`
 
-### `self install` y `self uninstall`
+### `self install`, `self update` y `self uninstall`
 
-`self` es el grupo que hace que **el ciclo de vida viva en el binario que se gestiona a sí mismo**. Los dos subcomandos que existen hoy comparten cuatro propiedades, y las cuatro importan más que sus flags:
+`self` es el grupo que hace que **el ciclo de vida viva en el binario que se gestiona a sí mismo**. Los tres subcomandos comparten cuatro propiedades, y las cuatro importan más que sus flags:
 
 - **Actúan sobre la instalación registrada, no sobre la copia que se invoca.** Las raíces efectivas salen del recibo (`cleanup::Roots::from_receipt`), de modo que la operación acierta aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén definidas (§8.2).
 - **Toman un bloqueo exclusivo de SO** sobre el archivo de bloqueo, y por eso un segundo proceso concurrente sale con `lifecycle_locked` (17) en vez de esperar.
@@ -647,13 +651,14 @@ Son **dos, independientes**, y ya **no valen lo mismo**: el sobre de la CLI va p
 | Sub-acción | Qué hace | `reason` de éxito parcial o de fallo |
 |---|---|---|
 | `self install` | Instala el bundle del que forma parte el ejecutable, o **repara** la instalación si se ejecuta desde ella; ejecuta `setup` al final salvo `--no-setup` | `setup_failed` (11) con el programa instalado |
+| `self update` | Actualiza la instalación registrada a la última estable o a `--version X.Y.Z`, con verificación y traspaso al binario nuevo; `--check` solo informa | `already_up_to_date` (0) sin descargar; `not_installed` (3) sin instalación; `externally_managed` (12) en `homebrew`/`dev`; `setup_failed` (11) parcial; `unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20), `checksum_mismatch` (21) |
 | `self uninstall` | Borra el estado, revierte el `PATH` según el recibo y borra el directorio de programa aplicando R2 | — |
 
 **`self uninstall` sin `--keep-data` borra la raíz de datos entera, no el plan de `cleanup --all`.** La diferencia es deliberada y está en `uninstall::compose_plan`: `cleanup --all` protege las voces de fábrica (`default`, `ryan`, `vivian`) porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar. Al desinstalar **el programa desaparece**, y con él las voces de fábrica: dejarlas sería residuo dentro de una raíz de propiedad exclusiva, que es exactamente lo que prohíbe el criterio 17. Con `--keep-data` sí se aplica el plan de `cleanup --all` **filtrado** —modelos, voces y habla quedan fuera— y el directorio de programa se borra igualmente.
 
 **Idempotencia**: sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_installed` (criterio 21). En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se programa para cuando el proceso termine y el `status` es `removal_scheduled`, que también es éxito.
 
-El detalle completo —los doce pasos de `self install`, el bundle y su manifiesto, el recibo y la integración de `PATH`— está en [`commands/SELF.md`](commands/SELF.md).
+El detalle completo —los doce pasos de `self install`, los once de `self update` con traspaso y borrado diferido, el bundle y su manifiesto, el recibo y la integración de `PATH`— está en [`commands/SELF.md`](commands/SELF.md).
 
 ### `cleanup`
 
@@ -691,7 +696,7 @@ provisiona nada adicional.
 
 **Su flujo es el de siempre, ahora en el motor**: selección por banderas, idempotencia por presencia del snapshot, purga de `--force-update` **sobre la misma selección** (purgar el modelo de clonado que el usuario no pidió dejaría la instalación sin lo que sí quiere) y conversión del derivado CT2 con directorio temporal hermano y renombrado atómico, verificada con el mismo gate que la acepta.
 
-**Lo que llega en el ciclo 2**: la **selección persistida en configuración** y la **poda de las revisiones obsoletas** de los repos propios. No están hoy, y no es un olvido: las necesita una actualización, no una instalación, y escribirlas ahora fijaría un contrato que ese ciclo va a cambiar (`crates/avi-lifecycle/src/setup.rs`, cabecera del módulo).
+**Selección persistida y poda, vigentes**: la selección vive en `setup-selection.json` bajo la raíz de datos (esquema 1, lectura tolerante y escritura atómica) y el `setup` invocado por el traspaso lee la guardada, no los flags; tras el reemplazo provisiona el pin nuevo y poda las revisiones propias obsoletas, con R3 en raíz compartida (`crates/avi-lifecycle/src/setup.rs`).
 
 **`setup` invocado al final de una instalación no es un error de la instalación.** `self install` lo ejecuta en el mismo proceso; si falla, el programa **queda instalado** y el desenlace es `setup_failed` (11), con el motivo del fallo de provisión anidado en `models_cause`. Ver `self install` en [`commands/SELF.md`](commands/SELF.md) y §10.
 
@@ -788,4 +793,4 @@ Cada comando principal de la CLI tiene un documento de investigación dedicado e
 | `daemon` | [`commands/DAEMON.md`](commands/DAEMON.md) | `start`, `stop`, `restart`, `status`, `serve` |
 | `version` | [`commands/VERSION.md`](commands/VERSION.md) | — |
 | `translate` | [`commands/TRANSLATE.md`](commands/TRANSLATE.md) | — |
-| `self` | [`commands/SELF.md`](commands/SELF.md) | `install`, `uninstall` |
+| `self` | [`commands/SELF.md`](commands/SELF.md) | `install`, `update`, `uninstall` |

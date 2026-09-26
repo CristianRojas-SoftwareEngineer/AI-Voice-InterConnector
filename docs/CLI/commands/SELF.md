@@ -1,6 +1,6 @@
 # Grupo `self` — ciclo de vida de la instalación del usuario
 
-`self` es el grupo con el que **el binario gestiona su propia instalación**. Reemplaza al comando de nivel superior `uninstall` —que ya no existe, sin alias ni flag deprecado— y es el primero de los dos lados del ciclo de vida; el segundo, `self update`, llega en el ciclo 2.
+`self` es el grupo con el que **el binario gestiona su propia instalación**. Reemplaza al comando de nivel superior `uninstall` —que ya no existe, sin alias ni flag deprecado— y cubre los dos lados del ciclo de vida: `self install` instala o repara, `self update` actualiza a la última estable o a una concreta, y `self uninstall` desinstala.
 
 La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§6.4 superficie, §9.1 reglas transversales, §9.3 `self install`, §9.5 `self uninstall`); el contrato de la CLI —flags, `reason`, códigos de salida, sobre `--json`— está en [`../CONTRACT.md`](../CONTRACT.md). Este documento describe **dónde vive cada cosa y por qué**.
 
@@ -15,11 +15,10 @@ La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§6.4 superficie
 | Subcomando | Flags | Efecto |
 |---|---|---|
 | `self install` | `--no-setup` · `--no-modify-path` · `--force`/`-f` · `--yes` · `--json` · `--channel` (oculta) | Instala el bundle del que forma parte el ejecutable, o repara la instalación si se ejecuta desde ella |
+| `self update` | `--check` · `--version X.Y.Z` · `--force`/`-f` · `--no-setup` · `--yes` · `--json` | Actualiza la instalación registrada a la última estable o a una concreta, con verificación y traspaso |
 | `self uninstall` | `--keep-data` · `--dry-run` · `--yes` · `--json` | Borra el estado, revierte el `PATH` y borra el directorio de programa |
 
 `--json` es global (`Cli::json`), no un flag por subcomando. `--channel` es la única opción oculta del grupo: la reserva `cargo xtask install` (§10.5) y **solo surte efecto cuando el recibo se crea por primera vez**, de modo que reparar una instalación no reescriba su canal (`install::resolve_channel`).
-
-`self update` **no existe todavía**. Está declarado en §9.4 de la especificación y sus cuatro flags (`--check`, `--version X.Y.Z`, `--force`, `--no-setup`, más `--yes`) están en la tabla de superficie de [`../CONTRACT.md`](../CONTRACT.md) marcados como ciclo 2; documentarlos como vigentes sería untrue.
 
 ---
 
@@ -62,6 +61,26 @@ El orden es el de §9.3 y está escrito en el propio código, con el número de 
 
 ---
 
+## `self update`: los once pasos
+
+El orden es el de §9.4 y está escrito en el propio código (`handle_self`, brazo `Update`):
+
+1. **Recuperación y bloqueo.** La recuperación corre con el bloqueo tomado sobre la instalación registrada; barre aparcados, stagings huérfanos y temporales propios sin proceso vivo.
+2. **Leer el recibo y el canal** (§8.2). `homebrew` o `dev` → `externally_managed` (12) con el comando correcto; sin instalación → `not_installed` con el one-liner y salida 3.
+3. **Resolver la versión objetivo**: `--version` explícito sin tocar la red, o la última estable siguiendo la redirección de `releases/latest` (con `AVI_DOWNLOAD_BASE_URL` si está definida); la API REST solo es respaldo.
+4. **Comparar las versiones** con el comparador numérico vigente: iguales → `already_up_to_date` sin descargar, éxito con 0 (`--force` reinstala); objetivo menor → solo con `--version` explícito y marca destructiva.
+5. **`--check`**: informa la transición (`anterior → nueva`, o que ya se está en la última) y termina sin cambios de actualización. En `--json`: `current`, `latest`, `update_available` y `channel`.
+6. **Resumen y confirmación.** Normal `[S/n]`; degradación `[s/N]` con `confirmation_required` sin terminal.
+7. **Preparar el bundle nuevo**: descarga del archivo y de `SHA256SUMS.txt` en un staging hermano con HTTPS y reintentos acotados, verificación de coincidencia exacta en `SHA256SUMS.txt` (discrepancia o línea ausente → `checksum_mismatch`, 21, con staging borrado), extracción y comprobación de arranque con coincidencia de `--version` (si no → `binary_incompatible`, 19) y validación contra el manifiesto.
+8. **Parar el daemon con el binario actual**, que conoce su protocolo y su `daemon.pid`, anotando si estaba en ejecución. Si no se detiene → `daemon_stop_failed` (16) sin tocar nada y con el staging retirado.
+9. **Traspaso**: ejecuta `<staging>/ai-voice-interconnector self install --yes` heredando la consola, con las preferencias del recibo (`--no-modify-path` si la instalación no tocaba el `PATH`), `--no-setup` si se pidió, y **`--force` propagado cuando el `update` lo recibió**. Se espera y se propaga el resultado: éxito, `setup_failed` parcial con `models_cause`, o `rolled_back`.
+10. **Limpiar**: borra siempre el staging; lo aparcado que siga en uso (en Windows, el ejecutable del proceso que actualiza) queda a borrado diferido con un auxiliar desacoplado que espera la muerte del proceso y reintenta de forma acotada, o a la recuperación de la siguiente operación. En Unix no hay diferido.
+11. **Resultado**: `anterior → nueva`. Sin reinicio automático del daemon: si estaba activo, el resumen indica cómo relanzarlo con el comando habitual.
+
+**Garantías.** Un fallo antes del traspaso deja todo intacto (staging borrado, instalación intacta). Un fallo durante el traspaso revierte la transacción nueva del `self install` invocado. Una interrupción en cualquier punto queda recuperable en la siguiente operación de ciclo de vida.
+
+---
+
 ## `setup_failed`: el único desenlace que no es ni éxito ni error
 
 Si el `setup` del paso 11 falla, **la instalación no falla**. §9.1 lo declara éxito parcial, y el código lo modela así:
@@ -94,7 +113,7 @@ El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cau
 
 **`ct2_conversion_failed` no es nunca el código de salida del proceso.** Es un `reason` anidado cuyo valor declarado es **1**, el del error genérico, y el proceso sale con el de la operación (`setup_failed`, 11). Anidarlo con un 11 haría que un consumidor leyera un 11 donde la tabla de §9.1 no lo promete.
 
-Cuando `setup` se invoca **directamente** (no desde `self install`), un fallo de conversión sí sale con `reason` `setup_failed` y 11, y un fallo de descarga sale con `network_error` y **1**, porque es el `reason` del ciclo 2 el que tiene que declararse y aún no tiene variante propia.
+Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de conversión sale con `reason` `setup_failed` y 11, y un fallo de descarga sale con `network_error` y **20**. El `self update` propaga el mismo parcial: si el `setup` del binario nuevo falla, el resultado es `updated` con `reason` `setup_failed`, salida 11 y causa anidada en `models_cause`.
 
 ---
 
@@ -151,6 +170,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | Subcomando | Claves |
 |---|---|
 | `self install` | `status` · `reason` · `install_dir` · `version` · `channel` · `path_integrated` · `models` · `models_cause` (solo si `models` es `failed`) |
+| `self update` | `status` (`updated` o `already_up_to_date` o `check`) · `reason` (`setup_failed` en el parcial) · `previous_version` · `version`/`latest` · `channel` · `current`/`update_available` (en `--check` y `already_up_to_date`) · `models_cause` (solo en el parcial) |
 | `self uninstall` | `status` · `reason` (`null`) · `removed` · `path_reverted` · `dry_run` |
 
 `status` toma los valores `installed` / `repaired` en `self install`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` en `self uninstall`. `schema_version` lo inyecta `emit_raw_json` y vale **`"4"`**; el protocolo del daemon sigue en `"3"` porque es otro contrato.
@@ -170,7 +190,12 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `rolled_back` | 13 | Fallo en el reemplazo; la versión anterior quedó restaurada |
 | `externally_managed` | 12 | `homebrew`: la copia la gestiona Homebrew (`self uninstall`); también el canal `dev` en `self update` |
 | `confirmation_required` | 2 | Destructiva sin terminal y sin `--yes` |
-| `setup_failed` | 11 | `self install` terminó con el programa instalado y la provisión sin completar |
-| `unsupported_platform` | 1 | Target no soportado; sin variante propia en este ciclo |
+| `setup_failed` | 11 | `self install` terminó con el programa instalado y la provisión sin completar; `self update` propaga el mismo parcial del binario nuevo |
+| `already_up_to_date` | 0 | `self update` sin descarga: ya se está en la versión objetivo (éxito) |
+| `not_installed` | 3 | `self update` sin instalación registrada, con el one-liner |
+| `unsupported_platform` | 18 | Target no soportado, antes de tocar la red |
+| `binary_incompatible` | 19 | El binario descargado no arranca o no informa la versión objetivo, con diagnóstico |
+| `network_error` | 20 | Fallo de descarga tras reintentos acotados |
+| `checksum_mismatch` | 21 | El hash no coincide o falta en `SHA256SUMS.txt`; staging borrado y nada más modificado |
 
-Los `reason` del ciclo 2 y del 3 —`binary_incompatible`, `network_error`, `checksum_mismatch`— salen con el **1** genérico: los declara el ciclo que también fija su entero.
+Los `reason` del ciclo 3 salen con el **1** genérico: los declara el ciclo que también fija su entero.

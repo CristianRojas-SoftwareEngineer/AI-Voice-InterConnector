@@ -48,7 +48,7 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 | `speech` | `synthesize`, `say`, `dub`, `play`, `list`, `remove`, `transcribe` | Síntesis de habla, gestión del almacén, transcripción, composición voz→voz |
 | `voice` | `list`, `clone`, `remove` | Gestión del registro de voces |
 | `daemon` | `start`, `stop`, `restart`, `status`, `serve` | Ciclo de vida del daemon nativo (Axum) |
-| `self` | `install`, `uninstall` | Ciclo de vida de la instalación del usuario: instalar/reparar y desinstalar |
+| `self` | `install`, `update`, `uninstall` | Ciclo de vida de la instalación del usuario: instalar/reparar, actualizar y desinstalar |
 
 ### Comandos standalone
 

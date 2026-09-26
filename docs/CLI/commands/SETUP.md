@@ -90,15 +90,19 @@ Peso aproximado: ~9 GB la selección base, ~11,5 GB con `--with-voice-cloning`.
 
 Es un **éxito parcial**, y por eso el sobre de `self install` sale por veredicto y no con el objeto `error` detrás. El detalle está en [`SELF.md`](SELF.md) y en §11 de [`../CONTRACT.md`](../CONTRACT.md).
 
-Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo de descarga sale con `network_error` y **1**, y un fallo de conversión con `setup_failed` y **11**.
+Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo de descarga sale con `network_error` y **20**, y un fallo de conversión con `setup_failed` y **11**.
 
 ---
 
-## Lo que llega en el ciclo 2
+## Selección persistida y poda, vigentes
 
-**La selección persistida en configuración y la poda de las revisiones obsoletas de los repos propios** —las dos cosas que §9.7 pide— **no están implementadas hoy**, y no es un olvido: las necesita una actualización, no una instalación, y escribirlas ahora fijaría un contrato que el ciclo 2 va a cambiar. Está declarado en la cabecera de `crates/avi-lifecycle/src/setup.rs` para que la omisión no se lea como un descuido.
+**La selección persistida en configuración y la poda de las revisiones obsoletas de los repos propios** —las dos cosas que §9.7 pide— **están vigentes**, porque las necesita una actualización, no una instalación.
 
-Consecuencia práctica hasta entonces: la selección es **la de los flags de esta invocación**, no la de la instalación. Un `setup` posterior sin `--with-voice-cloning` no purga el modelo Base (la purga es sobre la selección), pero tampoco lo vuelve a descargar si ya está.
+La selección vive en `setup-selection.json` bajo la raíz de datos vigente (honra `AVI_DATA_DIR`), con esquema `{schema_version: 1, with_voice_cloning: bool}` extensible a futuros opcionales. La lectura es tolerante (fichero ausente o ilegible → conjunto base) y la escritura es atómica (temporal + renombrado, como el recibo). Sobrevive a los updates porque el reemplazo no toca la raíz de datos; se pierde al desinstalar, lo cual es correcto. El `setup` invocado por el traspaso lee la selección guardada, no los flags.
+
+Tras el reemplazo, el `setup` de la versión nueva provisiona los modelos cuyo pin cambió y poda las revisiones propias obsoletas (`selection`/`purge_targets`/`purge`), con R3 en raíz compartida. La confirmación de tamaño y `called_from_lifecycle` siguen vigentes, la idempotencia se conserva y las migraciones hacia delante corren antes de provisionar.
+
+Consecuencia práctica: la selección es **la guardada en la instalación**, no la de los flags de esta invocación. Un `setup` posterior sin `--with-voice-cloning` no purga el modelo Base (la purga es sobre la selección), pero tampoco lo vuelve a descargar si ya está.
 
 ---
 
@@ -119,7 +123,7 @@ No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a s
 | Situación | `reason` | Código |
 |---|---|---|
 | No se pudo inicializar el registro de voces | `voice_store_init_failed` | 1 |
-| Fallo de descarga de un snapshot (invocación directa) | `network_error` | 1 |
+| Fallo de descarga de un snapshot (invocación directa) | `network_error` | 20 |
 | Fallo de conversión de un derivado (invocación directa) | `setup_failed` | 11 |
 | El mismo fallo, invocado desde `self install` | `setup_failed` (11) con la causa en `models_cause` | 11 |
 
