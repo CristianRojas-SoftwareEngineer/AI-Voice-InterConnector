@@ -6,14 +6,13 @@ use thiserror::Error;
 /// al 17 hay **una variante por cada `reason` nuevo que declara el ciclo de vida**
 /// (§9.1), con el orden y los enteros que fija la tabla cerrada del plan: `setup_failed`,
 /// `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`,
-/// `daemon_stop_failed` y `lifecycle_locked`.
+/// `daemon_stop_failed` y `lifecycle_locked`. Del 18 al 21, los que el Ciclo 2 declara
+/// para `self update` (§9.1, red e integridad): `unsupported_platform`,
+/// `binary_incompatible`, `network_error` y `checksum_mismatch`.
 ///
-/// **`unsupported_platform` no tiene variante propia en este ciclo** y sigue saliendo
-/// con `Error` (1), porque el ciclo que declare también `binary_incompatible` es el que
-/// tiene que elegir su entero; declararlo aquí fijaría un número que ese ciclo no pidió.
-/// Los `reason` de los ciclos 2 y 3 —`unsupported_platform`, `binary_incompatible`,
-/// `network_error` y `checksum_mismatch`— reciben su propia variante **en su propio
-/// ciclo**, siguiendo el mismo patrón, sin tocar las de aquí.
+/// **`unsupported_platform` tiene variante propia desde el Ciclo 2** y sale con 18:
+/// el ciclo que declara también `binary_incompatible` es el que elige su entero, y
+/// ese ciclo es este.
 #[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitCode {
     #[error("Éxito")]
@@ -52,6 +51,14 @@ pub enum ExitCode {
     DaemonStopFailed = 16,
     #[error("Hay otra operación de ciclo de vida en curso")]
     LifecycleLocked = 17,
+    #[error("Plataforma no soportada (compilar desde el código fuente)")]
+    UnsupportedPlatform = 18,
+    #[error("Binario descargado incompatible")]
+    BinaryIncompatible = 19,
+    #[error("Fallo de red")]
+    NetworkError = 20,
+    #[error("El archivo descargado no coincide con su hash")]
+    ChecksumMismatch = 21,
     #[error("Interrupción por el usuario")]
     Interrupted = 130,
 }

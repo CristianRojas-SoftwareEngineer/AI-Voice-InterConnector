@@ -34,6 +34,7 @@ pub mod setup;
 pub mod target;
 pub mod transaction;
 pub mod uninstall;
+pub mod update;
 pub mod update_fetch;
 pub mod update_resolve;
 
@@ -70,20 +71,19 @@ pub const BUNDLE_MANIFEST: &str = include_str!("../../../packaging/bundle-manife
 /// `reason` + código viaja como dato y lo traduce la variante de `ExitCode` que declara
 /// T16 al cablear. Los enteros salen de la misma tabla cerrada:
 /// `confirmation_required` y `usage_error` conservan el 2 de `ExitCode::InvalidInput`, y
-/// `unsupported_platform` usa el 1 genérico porque su variante la declara el ciclo que
-/// declare también `binary_incompatible`. Los siete nuevos van con el entero que fija la
+/// los del Ciclo 2 los fija su propio plan (`unsupported_platform = 18`,
+/// `binary_incompatible = 19`, `network_error = 20`, `checksum_mismatch = 21`). Los
+/// siete nuevos van con el entero que fija la
 /// consideración 2 del plan: `SetupFailed = 11`, `ExternallyManaged = 12`,
 /// `RolledBack = 13`, `PathConflict = 14`, `BundleInvalid = 15`, `DaemonStopFailed = 16`
 /// y `LifecycleLocked = 17`. Si ahí cambiara alguno, cambia aquí y en T16 a la vez.
-/// Los `reason` de los ciclos 2 y 3 (`unsupported_platform` ya declarado aquí como
-/// error genérico, y `binary_incompatible`, `network_error` y `checksum_mismatch`)
-/// recibirán su propia variante en su propio ciclo, siguiendo el mismo patrón y sin
-/// tocar las de aquí.
+/// Los `reason` del ciclo 3 recibirán su propia variante en su propio ciclo, siguiendo
+/// el mismo patrón y sin tocar las de aquí.
 ///
 /// El Ciclo 2 declara aquí sus constructores con los enteros que fija su plan
-/// (`binary_incompatible = 19`, `network_error = 20`, `checksum_mismatch = 21`); las
-/// variantes de `ExitCode` y su cableado en `exit_code_for` llegan con U4, que es la
-/// bisagra visible del ciclo.
+/// (`unsupported_platform = 18`, `binary_incompatible = 19`, `network_error = 20`,
+/// `checksum_mismatch = 21`); las variantes de `ExitCode` y su cableado en
+/// `exit_code_for` llegan con U4, que es la bisagra visible del ciclo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleError {
     pub reason: &'static str,
@@ -104,10 +104,10 @@ impl LifecycleError {
         }
     }
 
-    /// Target no soportado (§3). Error genérico, sin variante propia en este
-    /// ciclo.
+    /// Target no soportado (§3). El entero lo fija el plan del Ciclo 2; la
+    /// variante de `ExitCode` llega con U4.
     pub fn unsupported_platform(message: impl Into<String>) -> Self {
-        Self::new("unsupported_platform", 1, message.into())
+        Self::new("unsupported_platform", 18, message.into())
     }
 
     /// Falta un archivo obligatorio del bundle (§9.3, paso 2). Nada modificado.

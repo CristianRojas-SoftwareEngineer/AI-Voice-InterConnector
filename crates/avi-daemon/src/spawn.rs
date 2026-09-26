@@ -202,20 +202,59 @@ pub fn wait_for_pid_death(pid: u32, deadline: std::time::Duration) -> bool {
 /// `PID` padre y luego borra `LiteralPath` con `Remove-Item -Recurse -Force`,
 /// sin best-effort: si crear el archivo o spawnear falla, retorna `Err` y
 /// `handle_uninstall` falla — no hay aviso `Bórralo manualmente`.
+///
+/// Es el caso particular de [`spawn_deferred_removal`] para el directorio de
+/// programa, y delega en él: la desinstalación del Ciclo 1 no cambia de
+/// comportamiento, solo comparte el mecanismo con el resto del ciclo.
 #[cfg(windows)]
 pub fn spawn_uninstall_helper(
     install_dir: &std::path::Path,
     pid: u32,
 ) -> anyhow::Result<std::path::PathBuf> {
+    spawn_deferred_removal(install_dir, pid)
+}
+
+/// Reintentos de borrado del helper diferido, con espera entre ellos. Acotados
+/// (§9.4): un archivo en uso se libera al morir el proceso, y lo que siga
+/// bloqueado después lo recoge la recuperación de la siguiente operación.
+#[cfg(windows)]
+pub const DEFERRED_REMOVAL_ATTEMPTS: u32 = 10;
+
+/// Espera entre reintentos del helper diferido.
+#[cfg(windows)]
+pub const DEFERRED_REMOVAL_RETRY_MS: u64 = 500;
+
+/// Borrado diferido de una ruta arbitraria del ciclo en Windows (staging,
+/// `.old-*`, directorio de programa).
+///
+/// Generaliza [`spawn_uninstall_helper`]: el mismo mecanismo —un `.ps1` en
+/// `%TEMP%` que espera la muerte del `PID` y borra `LiteralPath`—, con
+/// reintentos acotados en vez de un solo intento. El prefijo del helper sigue
+/// siendo `avi-`, que es el que el barrido de §9.1 cubre; en Unix no hay
+/// impedimento de borrado en uso y el motor borra directo, así que esta
+/// función solo existe en Windows.
+///
+/// Sin best-effort, como el auxiliar específico: si crear el archivo o
+/// spawnear falla, retorna `Err`.
+#[cfg(windows)]
+pub fn spawn_deferred_removal(
+    path: &std::path::Path,
+    pid: u32,
+) -> anyhow::Result<std::path::PathBuf> {
     use std::os::windows::process::CommandExt;
     use std::process::Stdio;
 
-    let dir_literal = install_dir.to_string_lossy().replace('\'', "''");
+    let dir_literal = path.to_string_lossy().replace('\'', "''");
+    let attempts = DEFERRED_REMOVAL_ATTEMPTS;
+    let retry_ms = DEFERRED_REMOVAL_RETRY_MS;
     let script = format!(
         "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
-         Start-Sleep -Milliseconds 500; \
-         if (Test-Path -LiteralPath '{dir}') {{ \
-           Remove-Item -LiteralPath '{dir}' -Recurse -Force -ErrorAction SilentlyContinue \
+         Start-Sleep -Milliseconds {retry_ms}; \
+         for ($i = 1; $i -le {attempts}; $i++) {{ \
+           if (-not (Test-Path -LiteralPath '{dir}')) {{ break }}; \
+           Remove-Item -LiteralPath '{dir}' -Recurse -Force -ErrorAction SilentlyContinue; \
+           if (-not (Test-Path -LiteralPath '{dir}')) {{ break }}; \
+           Start-Sleep -Milliseconds {retry_ms} \
          }}; \
          Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n",
         pid = pid,
@@ -223,7 +262,7 @@ pub fn spawn_uninstall_helper(
     );
 
     let helper = std::env::temp_dir().join(format!(
-        "avi-uninstall-{}-{}.ps1",
+        "avi-deferred-{}-{}.ps1",
         pid,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

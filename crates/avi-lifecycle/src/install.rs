@@ -725,6 +725,11 @@ fn pending_models(options: &Options) -> setup::Pending {
 }
 
 /// Opciones de `setup` que se derivan de las de `self install`.
+///
+/// `called_from_lifecycle` hace que la selección salga del fichero guardado y
+/// no de los flags (`setup::effective_options`): es lo que permite que el
+/// `setup` invocado por el traspaso de `self update` conserve el conjunto del
+/// usuario.
 fn setup_options(options: &Options) -> setup::Options {
     setup::Options {
         with_voice_cloning: options.with_voice_cloning,

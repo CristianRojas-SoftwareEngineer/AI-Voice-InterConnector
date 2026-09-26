@@ -33,6 +33,12 @@ pub enum FaultPoint {
     OnDaemonStop,
     /// Al escribir el diario de la transacción (§9.1, recuperación).
     OnJournalWrite,
+    /// Antes del traspaso de `self update` al binario nuevo (§9.4, paso 9).
+    BeforeHandover,
+    /// Con el traspaso ya ejecutado y antes de la limpieza del staging (§9.4,
+    /// paso 10): simula la interrupción que deja el staging para la
+    /// recuperación de la siguiente operación.
+    DuringHandover,
 }
 
 impl FaultPoint {
@@ -47,6 +53,8 @@ impl FaultPoint {
             Self::BeforeReceipt => "before_receipt",
             Self::OnDaemonStop => "on_daemon_stop",
             Self::OnJournalWrite => "on_journal_write",
+            Self::BeforeHandover => "before_handover",
+            Self::DuringHandover => "during_handover",
         }
     }
 }

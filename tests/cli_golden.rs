@@ -3837,6 +3837,7 @@ fn help_output_is_spanish_for_every_command() {
         vec!["self"],
         vec!["self", "install"],
         vec!["self", "uninstall"],
+        vec!["self", "update"],
         vec!["doctor"],
     ];
     for node in &nodes {

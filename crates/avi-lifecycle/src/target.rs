@@ -15,9 +15,9 @@
 //! puede discrepar. Lo que este módulo rechaza es un binario compilado para un
 //! triple que no está en la tabla.
 //!
-//! La variante de código propia de `unsupported_platform` la declara el ciclo
-//! que declare también `binary_incompatible` y `checksum_mismatch`; hasta
-//! entonces el `reason` es el correcto y el código es el genérico.
+//! La variante de código propia de `unsupported_platform` la declara el Ciclo 2
+//! junto con `binary_incompatible` y `checksum_mismatch`: el `reason` es el de §3
+//! y el código es el 18 de la tabla cerrada.
 
 use crate::{LifecycleError, APP_NAME};
 
@@ -165,8 +165,8 @@ mod tests {
             let err = ensure_supported(triple).unwrap_err();
             assert_eq!(err.reason, "unsupported_platform", "reason de {triple}");
             assert_eq!(
-                err.exit_code, 1,
-                "sin variante propia, el código es el genérico"
+                err.exit_code, 18,
+                "con variante propia del Ciclo 2, el código es el 18"
             );
             assert!(
                 err.message.contains(triple) && err.message.contains("docs/BUILD.md"),
@@ -181,7 +181,7 @@ mod tests {
             );
             assert_eq!(
                 release_asset_name(triple, "0.24.0").unwrap_err().exit_code,
-                1
+                18
             );
         }
     }

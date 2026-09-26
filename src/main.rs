@@ -454,6 +454,25 @@ enum SelfSub {
         #[arg(long)]
         yes: bool,
     },
+    /// Actualiza la instalación a la última estable (o a `--version`), con
+    /// verificación de integridad y traspaso al binario nuevo
+    Update {
+        /// Solo informa de la versión disponible, sin modificar nada
+        #[arg(long)]
+        check: bool,
+        /// Versión objetivo X.Y.Z (por defecto, la última estable)
+        #[arg(long)]
+        version: Option<String>,
+        /// Reinstala la misma versión o degrada a una anterior
+        #[arg(long, short)]
+        force: bool,
+        /// No provisionar modelos tras el reemplazo
+        #[arg(long)]
+        no_setup: bool,
+        /// No pedir confirmación
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2609,6 +2628,38 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
 /// invocador (bug v0.18.10–v0.18.25 en `uninstall --force`). La guarda
 /// `pid != process::id()` previene la auto-muerte incluso si el PID leído fuera el del
 /// propio proceso.
+/// Resumen previo de `self update` (§9.4): qué versión se instala sobre cuál,
+/// dónde, por qué canal y de dónde se descarga. Es lo que se muestra **antes**
+/// de confirmar, en paralelo al resumen previo de `self install`.
+fn compose_update_summary(
+    receipt: &lifecycle::receipt::InstallReceipt,
+    program_dir: &std::path::Path,
+    target: &str,
+    resolution: &lifecycle::update_resolve::Resolution,
+    channel: lifecycle::channel::Channel,
+) -> Vec<String> {
+    let mut out = vec![format!(
+        "Se actualizará {} ({}): {} → {}",
+        lifecycle::APP_NAME,
+        target,
+        receipt.version,
+        resolution.target,
+    )];
+    out.push(format!(
+        "  Programa:  {}   (reemplaza {})",
+        program_dir.display(),
+        receipt.version
+    ));
+    out.push(format!("  Canal:     {}", channel.as_str()));
+    if let Ok(url) = lifecycle::update_fetch::asset_url(&resolution.target, target) {
+        out.push(format!("  Descarga:  {url}"));
+    }
+    if resolution.destructive {
+        out.push("  Aviso: degradación de versión (operación destructiva).".to_string());
+    }
+    out
+}
+
 /// `self install` y `self uninstall`: el grupo de §6.4, delegando en el motor.
 ///
 /// El binario aporta lo que el motor no puede tener: el **control de procesos** —que
@@ -2739,6 +2790,262 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             }
             Ok(Outcome::Done)
         }
+        SelfSub::Update {
+            check,
+            version,
+            force,
+            no_setup,
+            yes,
+        } => {
+            let exe = std::env::current_exe()
+                .map_err(|e| CliError::new(ExitCode::Error, "self_update_failed", e.to_string()))?;
+            // Instalación registrada y canal (§8.2): sea cual sea la copia que
+            // ejecuta el comando, se opera sobre la registrada. Va antes del
+            // bloqueo porque el directorio de programa registrado es lo que
+            // dice dónde se toma.
+            let preliminary = lifecycle::receipt::read_from(&lifecycle::install_dir())
+                .ok()
+                .flatten();
+            let program_dir = lifecycle::channel::registered_install_dir(preliminary.as_ref());
+            let receipt = lifecycle::receipt::read_from(&program_dir).ok().flatten();
+            let channel = lifecycle::channel::detect(&exe, receipt.as_ref());
+            if channel == lifecycle::channel::Channel::Homebrew {
+                return Err(CliError::new(
+                    ExitCode::ExternallyManaged,
+                    "externally_managed",
+                    "esta copia la gestiona Homebrew: actualiza con `brew upgrade --cask \
+                     ai-voice-interconnector`, y `cleanup --all` para el estado de usuario",
+                ));
+            }
+            if channel == lifecycle::channel::Channel::Dev {
+                return Err(CliError::new(
+                    ExitCode::ExternallyManaged,
+                    "externally_managed",
+                    "esta instalación es del canal dev: actualiza con `cargo xtask install`",
+                ));
+            }
+            let Some(receipt) = receipt else {
+                return Err(CliError::new(
+                    ExitCode::NotFound,
+                    "not_installed",
+                    "no hay instalación registrada: instala con el one-liner de tu sistema \
+                     operativo (docs/SELF-HOSTED-INSTALL.md)",
+                ));
+            };
+            // Falla rápido en plataforma no soportada, antes de tocar la red.
+            let target = lifecycle::target::host_triple();
+            lifecycle::target::ensure_supported(target)
+                .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+
+            // ── Paso 1. Recuperación y bloqueo (§9.1) ────────────────────────
+            // Sin staging en uso todavía: el que cree U2 no existe y todo
+            // hermano con prefijo es huérfano por definición.
+            let roots = lifecycle::cleanup::Roots::from_receipt(Some(&receipt));
+            let lock = lifecycle::lock::acquire_at(&roots.lock_path())
+                .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+            let recovery = lifecycle::recovery::recover(roots.recovery_roots())
+                .map_err(lifecycle_error_to_cli)?;
+
+            // ── U1. Resolución de la versión objetivo ────────────────────────
+            // Con `--version` explícito no se toca la red: la resolución lo usa
+            // como objetivo sin pedir la última estable.
+            let client = lifecycle::update_fetch::http_client()
+                .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+            let request = lifecycle::update_resolve::ResolveRequest {
+                installed: receipt.version.clone(),
+                explicit: version.clone(),
+                force,
+            };
+            let latest = match &request.explicit {
+                Some(explicit) => explicit.clone(),
+                None => lifecycle::update_resolve::latest_stable(&client)
+                    .await
+                    .map_err(|e| lifecycle_error_to_cli(e.into()))?,
+            };
+            let resolution = lifecycle::update_resolve::resolve(&request, &latest)
+                .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+
+            // ── `--check`: informa sin cambios de actualización ──────────────
+            // La recuperación del paso 1 ya pudo barrer huérfanos pendientes;
+            // "sin cambios" no incluye ese barrido.
+            if check {
+                let available = resolution.verdict != lifecycle::update_resolve::Verdict::UpToDate;
+                drop(lock);
+                if json_mode {
+                    emit_raw_json(json!({
+                        "status": "check",
+                        "reason": Value::Null,
+                        "current": receipt.version,
+                        "latest": resolution.target,
+                        "update_available": available,
+                        "channel": channel.as_str(),
+                    }));
+                } else if available {
+                    println!(
+                        "Hay actualización disponible: {} → {}.",
+                        receipt.version, resolution.target
+                    );
+                } else {
+                    println!("Ya está actualizado ({}).", receipt.version);
+                }
+                return Ok(Outcome::Done);
+            }
+
+            // Iguales sin `--force`: `already_up_to_date`, éxito con 0.
+            if resolution.verdict == lifecycle::update_resolve::Verdict::UpToDate {
+                drop(lock);
+                if json_mode {
+                    emit_raw_json(json!({
+                        "status": "already_up_to_date",
+                        "reason": Value::Null,
+                        "current": receipt.version,
+                        "latest": resolution.target,
+                        "channel": channel.as_str(),
+                    }));
+                } else {
+                    println!("Ya está actualizado ({}).", receipt.version);
+                }
+                return Ok(Outcome::Done);
+            }
+
+            // ── Resumen previo y confirmación (§9.1) ─────────────────────────
+            // Normal `[S/n]`; degradación `[s/N]` con `confirmation_required`
+            // sin terminal (`confirm.rs` sin cambios).
+            let summary =
+                compose_update_summary(&receipt, &program_dir, target, &resolution, channel);
+            let kind = if resolution.destructive {
+                lifecycle::confirm::Kind::Destructive
+            } else {
+                lifecycle::confirm::Kind::NonDestructive
+            };
+            let entries: Vec<lifecycle::confirm::PlanEntry> = if resolution.destructive {
+                vec![lifecycle::confirm::PlanEntry::of(&program_dir)]
+            } else {
+                Vec::new()
+            };
+            let decision = {
+                let stdin = std::io::stdin();
+                let mut entry = stdin.lock();
+                lifecycle::confirm::confirm(
+                    &lifecycle::confirm::Confirmation {
+                        kind,
+                        summary: &summary,
+                        entries: &entries,
+                        assume_yes: yes,
+                        dry_run: false,
+                        stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
+                    },
+                    &mut entry,
+                    &mut std::io::stderr(),
+                )
+                .map_err(|e| CliError::new(ExitCode::Error, "lifecycle_failed", e.to_string()))?
+            };
+            if decision == lifecycle::confirm::Decision::Cancelled {
+                println!("Cancelado.");
+                return Ok(Outcome::Done);
+            }
+
+            // ── U2. Descarga, verificación y extracción ──────────────────────
+            // Ante cualquier fallo el staging se borra y la instalación queda
+            // intacta.
+            let staged = lifecycle::update_fetch::fetch(
+                &client,
+                &lifecycle::update_fetch::FetchRequest {
+                    program_dir: program_dir.clone(),
+                    target: target.to_string(),
+                    version: resolution.target.clone(),
+                },
+            )
+            .await
+            .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+            lifecycle::update_fetch::verify_boot(&staged.staging, target, &resolution.target)
+                .await
+                .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+
+            // ── Paso 8 (U4). Parar el daemon con el binario actual ───────────
+            // Si no se detiene, `daemon_stop_failed` sin tocar nada: la
+            // instalación sigue intacta y el staging se retira.
+            let daemon = lifecycle::daemon_stop::stop(
+                &roots.data_dir,
+                lifecycle::daemon_stop::DEFAULT_ADDR,
+                &ProductProcesses,
+            )
+            .await;
+            if let Err(failure) = lifecycle::daemon_stop::require_stopped(&daemon) {
+                let _ = std::fs::remove_dir_all(&staged.staging);
+                return Err(lifecycle_error_to_cli(failure.into()));
+            }
+
+            // ── U3. Traspaso al binario nuevo ────────────────────────────────
+            // El bloqueo se suelta antes de lanzar: el `self install` interno
+            // toma el mismo bloqueo, y con él tomado el hijo vería
+            // `lifecycle_locked`.
+            drop(lock);
+            let section = lifecycle::manifest::target_section(target)
+                .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+            let handover = lifecycle::update::handover(&lifecycle::update::HandoverRequest {
+                staging_exe: staged.staging.join(section.executable_path()),
+                no_setup,
+                no_modify_path: !receipt.path_integration.modify_path,
+                force,
+            })
+            .await
+            .map_err(lifecycle_error_to_cli)?;
+            lifecycle::update::cleanup_staging(&staged.staging, &LifecyclePaths);
+
+            // ── Resultado `anterior → nueva` ─────────────────────────────────
+            // Sin reinicio automático del daemon (D6): el resultado indica cómo
+            // relanzarlo. `setup_failed` es éxito parcial con el mecanismo de
+            // veredicto del brazo `Install`.
+            let partial = matches!(
+                handover,
+                lifecycle::update::HandoverOutcome::PartialSetupFailed
+            );
+            if json_mode {
+                let mut on = json!({
+                    "status": "updated",
+                    "reason": if partial { Value::String("setup_failed".to_string()) } else { Value::Null },
+                    "previous_version": receipt.version,
+                    "version": resolution.target,
+                    "channel": channel.as_str(),
+                });
+                if partial {
+                    on["models_cause"] = json!({
+                        "reason": "setup_failed",
+                        "message": lifecycle::update::partial_setup_message(),
+                    });
+                }
+                emit_raw_json(on);
+            } else {
+                println!(
+                    "{} actualizado: {} → {}.",
+                    lifecycle::APP_NAME,
+                    receipt.version,
+                    resolution.target
+                );
+                if partial {
+                    println!("  Aviso: {}.", lifecycle::update::partial_setup_message());
+                }
+                if !recovery.kept.is_empty() {
+                    println!(
+                        "  Aviso: quedaron {} recurso(s) de una operación anterior sin poder \
+                         limpiarse; `doctor` los informa.",
+                        recovery.kept.len()
+                    );
+                }
+                if daemon.was_running {
+                    println!(
+                        "  Daemon: estaba en ejecución y se ha parado; se relanza con el comando \
+                         habitual."
+                    );
+                }
+            }
+            if partial {
+                Ok(Outcome::Verdict(exit_code_for("setup_failed").code()))
+            } else {
+                Ok(Outcome::Done)
+            }
+        }
     }
 }
 
@@ -2788,7 +3095,7 @@ fn handle_doctor(json_mode: bool) -> Result<Outcome, CliError> {
 ///
 /// El motor no depende de `avi-core` (§6.3), así que el par `reason` + código viaja
 /// como dato y esta es la traducción. Los enteros salen de la misma tabla cerrada, y
-/// cada `reason` sin variante propia —los que los ciclos 2 y 3 declaran— cae en
+/// cada `reason` sin variante propia —los que el ciclo 3 declare— cae en
 /// `ExitCode::Error`, que es lo que §9.1 permite mientras su ciclo no la declare.
 fn lifecycle_error_to_cli(err: anyhow::Error) -> CliError {
     match err.downcast_ref::<lifecycle::LifecycleError>() {
@@ -2812,8 +3119,12 @@ fn exit_code_for(reason: &str) -> ExitCode {
         "bundle_invalid" => ExitCode::BundleInvalid,
         "daemon_stop_failed" => ExitCode::DaemonStopFailed,
         "lifecycle_locked" => ExitCode::LifecycleLocked,
-        // `unsupported_platform` y los `reason` de los ciclos 2 y 3 no tienen variante
-        // en este ciclo: salen con el 1 genérico.
+        "unsupported_platform" => ExitCode::UnsupportedPlatform,
+        "binary_incompatible" => ExitCode::BinaryIncompatible,
+        "network_error" => ExitCode::NetworkError,
+        "checksum_mismatch" => ExitCode::ChecksumMismatch,
+        // Los `reason` del ciclo 3 no tienen variante en este ciclo: salen con
+        // el 1 genérico.
         _ => ExitCode::Error,
     }
 }
@@ -2897,6 +3208,45 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         {
             let _ = (program_dir, pid);
             anyhow::bail!("el borrado diferido del directorio de programa es de Windows")
+        }
+    }
+}
+/// Borrado de rutas del ciclo con el mecanismo de plataforma (§9.4, paso 10).
+///
+/// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso está dentro
+/// —el staging tras el traspaso—, el borrado directo es imposible y se programa
+/// con el proceso auxiliar desacoplado generalizado de `avi-daemon`; el motor
+/// decide cuál de los dos casos es. Es la contrapartida de `ProgramRemoval`
+/// para rutas arbitrarias del ciclo (staging, `.old-*`), que `ProgramRemoval`
+/// no cambia de forma por U3.
+struct LifecyclePaths;
+
+impl lifecycle::update::PathRemover for LifecyclePaths {
+    fn remove_now(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        if !path.exists() {
+            return Ok(());
+        }
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    fn schedule(&self, path: &std::path::Path, pid: u32) -> anyhow::Result<bool> {
+        // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
+        // impide el borrado directo. En Unix no hay tal impedimento y el motor ya habría
+        // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
+        // tenga una implementación silenciosa.
+        #[cfg(windows)]
+        {
+            // El helper no debe heredar los handles estándar del proceso que lanza la
+            // actualización, o su `.ps1` retendría el stdio y el lanzador no vería EOF.
+            disinherit_standard_handles();
+            daemon::spawn_deferred_removal(path, pid)?;
+            Ok(true)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (path, pid);
+            anyhow::bail!("el borrado diferido de rutas del ciclo es de Windows")
         }
     }
 }
@@ -4374,5 +4724,31 @@ mod tests {
             .expect_err("el truncado debe fallar");
         assert_eq!(e.code, ExitCode::Error);
         assert_eq!(e.reason, "daemon_error");
+    }
+
+    /// El cableado de `exit_code_for` para los `reason` de red e integridad
+    /// del Ciclo 2: enteros 18–21 de la tabla cerrada (decisión 1). Lo
+    /// desconocido sigue saliendo con el 1 genérico hasta que su ciclo lo
+    /// declare.
+    #[test]
+    fn exit_code_for_maps_update_reasons() {
+        assert_eq!(exit_code_for("unsupported_platform").code(), 18);
+        assert_eq!(exit_code_for("binary_incompatible").code(), 19);
+        assert_eq!(exit_code_for("network_error").code(), 20);
+        assert_eq!(exit_code_for("checksum_mismatch").code(), 21);
+        assert_eq!(
+            exit_code_for("unsupported_platform"),
+            ExitCode::UnsupportedPlatform
+        );
+        assert_eq!(
+            exit_code_for("binary_incompatible"),
+            ExitCode::BinaryIncompatible
+        );
+        assert_eq!(exit_code_for("network_error"), ExitCode::NetworkError);
+        assert_eq!(
+            exit_code_for("checksum_mismatch"),
+            ExitCode::ChecksumMismatch
+        );
+        assert_eq!(exit_code_for("motivo_del_futuro").code(), 1);
     }
 }
