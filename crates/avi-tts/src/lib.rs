@@ -195,7 +195,8 @@ fn resolve_binary() -> Option<PathBuf> {
 /// Resolución del directorio de pesos por capas:
 /// 1. `QWEN3_TTS_MODEL_DIR`; 2. directorio hermano del binario
 ///    (`<dir del bin>/qwen3-tts-0.6b`); 3. `<exe_dir>/vendor/qwen3-tts/qwen3-tts-0.6b`;
-/// 4. snapshot HF `ModelStore::model_snapshot_path("qwen3-tts-0.6b")`; 5. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b`.
+/// 4. snapshot en la raíz de modelos `ModelStore::model_snapshot_path("qwen3-tts-0.6b")`;
+/// 5. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b`.
 fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("QWEN3_TTS_MODEL_DIR") {
         let p = PathBuf::from(d);
@@ -241,7 +242,7 @@ fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
 /// CustomVoice usado por la síntesis general.
 /// Orden: 1. `QWEN3_TTS_BASE_MODEL_DIR`; 2. directorio hermano del binario
 /// (`<dir del bin>/qwen3-tts-0.6b-base`); 3. `<exe_dir>/vendor/qwen3-tts/qwen3-tts-0.6b-base`;
-/// 4. snapshot HF `ModelStore::model_snapshot_path("qwen3-tts-0.6b-base")`;
+/// 4. snapshot en la raíz de modelos `ModelStore::model_snapshot_path("qwen3-tts-0.6b-base")`;
 /// 5. `<cwd>/vendor/qwen3-tts/qwen3-tts-0.6b-base`.
 pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("QWEN3_TTS_BASE_MODEL_DIR") {
@@ -266,7 +267,7 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
             }
         }
     }
-    // Capa HF: snapshot cacheado por setup --with-voice-cloning
+    // Capa modelos: snapshot provisionado en la raíz de modelos por setup --with-voice-cloning
     if let Some(p) = avi_store::ModelStore::new().model_snapshot_path("qwen3-tts-0.6b-base") {
         if p.is_dir()
             && p.read_dir()

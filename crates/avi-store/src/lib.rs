@@ -2,20 +2,89 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Directorio base de datos del usuario (~/.ai-voice-interconnector)
+/// Nombre canónico del producto: directorio de programa, directorio del
+/// enlace, nombre del bloqueo y nombre del ejecutable. Fuente única (§7).
+pub const APP_NAME: &str = "ai-voice-interconnector";
+
+/// Valor de una variable de entorno de reubicación, ignorando el vacío.
 ///
-/// Sandbox de estado por instancia: `AVI_DATA_DIR` desvía la base a un
-/// directorio propio por test. Sin la variable, resolución idéntica a la de
-/// siempre (sin cambios de lógica ni de fallback).
+/// Además de permitir ubicaciones personalizadas es lo que hace posibles las
+/// pruebas aisladas: en Windows las Known Folders ignoran `LOCALAPPDATA`.
+fn relocated_dir(var: &str) -> Option<PathBuf> {
+    std::env::var(var)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn home_dir() -> PathBuf {
+    directories::UserDirs::new()
+        .map(|d| d.home_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// `%LOCALAPPDATA%` de la Known Folder del usuario. Si la variable no está
+/// definida se deriva de `HOME`: inventar una ruta en el directorio de trabajo
+/// pondría el estado del producto dentro de `target/`. Las ramas que la usan
+/// son `cfg!(windows)`, así que la función se compila también en Unix.
+fn local_app_data() -> PathBuf {
+    relocated_dir("LOCALAPPDATA").unwrap_or_else(|| home_dir().join("AppData").join("Local"))
+}
+
+/// `$XDG_CACHE_HOME` con el fallback de `~/.cache`.
+fn cache_home() -> PathBuf {
+    relocated_dir("XDG_CACHE_HOME").unwrap_or_else(|| home_dir().join(".cache"))
+}
+
+/// Raíz de datos de usuario y estado: voces, habla sintetizada, configuración,
+/// `daemon.pid` y logs (§7).
+///
+/// `AVI_DATA_DIR` la desvía. Sin la variable, en Windows es
+/// `%LOCALAPPDATA%\ai-voice-interconnector\data` (D4), en Linux
+/// `$XDG_DATA_HOME/ai-voice-interconnector` y en macOS
+/// `~/Library/Application Support/ai-voice-interconnector`, que es justo lo que
+/// resuelve `directories` en los tres sistemas Unix.
 pub fn data_dir() -> PathBuf {
-    if let Ok(ov) = std::env::var("AVI_DATA_DIR") {
-        if !ov.trim().is_empty() {
-            return PathBuf::from(ov);
-        }
+    if let Some(dir) = relocated_dir("AVI_DATA_DIR") {
+        return dir;
     }
-    directories::ProjectDirs::from("", "", "ai-voice-interconnector")
-        .map(|d| d.data_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(".ai-voice-interconnector"))
+    if cfg!(windows) {
+        local_app_data().join(APP_NAME).join("data")
+    } else {
+        directories::ProjectDirs::from("", "", APP_NAME)
+            .map(|d| d.data_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".").join(APP_NAME))
+    }
+}
+
+/// Directorio de programa: el bundle completo y el recibo (§7). Existe en los
+/// cuatro targets de distribución, no solo en Windows, y `AVI_INSTALL_DIR` lo
+/// desvía. Dos `join` y no uno con separador embebido: una ruta con `/` mixto
+/// rompe la comparación con el registro de Windows y con el resto del motor.
+pub fn install_dir() -> PathBuf {
+    if let Some(dir) = relocated_dir("AVI_INSTALL_DIR") {
+        return dir;
+    }
+    if cfg!(windows) {
+        local_app_data().join("Programs").join(APP_NAME)
+    } else {
+        home_dir().join(".local").join("opt").join(APP_NAME)
+    }
+}
+
+/// Directorio del comando en el PATH (§7). En Unix es el directorio del enlace
+/// simbólico; en Windows no hay enlace y la entrada que se escribe en
+/// `HKCU\Environment\Path` es el propio directorio de programa, así que ambos
+/// coinciden. `AVI_BIN_DIR` lo desvía.
+pub fn bin_dir() -> PathBuf {
+    if let Some(dir) = relocated_dir("AVI_BIN_DIR") {
+        return dir;
+    }
+    if cfg!(windows) {
+        install_dir()
+    } else {
+        home_dir().join(".local").join("bin")
+    }
 }
 
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (`qwen_tts.c:spk_table`)
@@ -32,31 +101,137 @@ pub fn is_factory_name(name: &str) -> bool {
     FACTORY_VOICES.contains(&name.to_lowercase().as_str())
 }
 
-/// Directorio de instalación per-user en Windows — única fuente canónica.
-///
-/// Espejo de `install-windows.ps1:Get-InstallDir` (`Join-Path $env:LOCALAPPDATA
-/// "Programs\ai-voice-interconnector"`). Construcción determinista en dos
-/// `join` — no `join("Programs/ai-...")` que deja `/` mixto — para que
-/// `display` y comparación sean coherentes con el registro `HKCU`.
-#[cfg(windows)]
-pub fn windows_install_dir() -> PathBuf {
-    let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(local)
-        .join("Programs")
-        .join("ai-voice-interconnector")
-}
-
 /// Normalización canónica de una entrada de `PATH` para comparación
-/// determinista: `/` → `\`, `lowercase`, `trim` de `\` y espacios.
-/// Hace que `C:\...\Programs/ai-voice-interconnector` y
-/// `C:\...\Programs\ai-voice-interconnector\` sean idénticas.
+/// determinista: prefijo verbatim de Windows fuera, `/` → `\`, `lowercase`, `trim`
+/// de `\` y espacios. Hace que `C:\...\Programs/ai-voice-interconnector` y
+/// `C:\...\Programs\ai-voice-interconnector\` sean idénticas, y que
+/// `\\?\C:\...\ai-voice-interconnector` lo sea también.
+///
+/// **El prefijo verbatim se quita aquí y no en cada consumidor.** La capa de Windows
+/// devuelve `\\?\…` en los modos de apertura extendidos, así que la ruta del ejecutable
+/// en ejecución y la del directorio de programa —que viene de una variable de
+/// reubicación— llegan con y sin él. Un consumidor que se lo quite en su módulo y otro
+/// que no divergen, y el siguiente que escriba una comparación de rutas hereda el
+/// defecto. §7 hace de esta función la fuente única de la semántica de comparación, y
+/// la fuente única del arreglo.
+///
+/// El prefijo solo se quita en Windows: en Unix no existe, y una ruta que empiece por
+/// `\\` es ahí un nombre de archivo legítimo.
+/// Normalización canónica de una entrada de `PATH` para comparación
+/// determinista: prefijo verbatim de Windows fuera, `/` → `\`, `lowercase` y separadores
+/// **finales** fuera. Hace que `C:\...\Programs/ai-voice-interconnector` y
+/// `C:\...\Programs\ai-voice-interconnector\` sean idénticas, y que
+/// `\\?\C:\...\ai-voice-interconnector` lo sea también.
+///
+/// **El separador inicial no se quita nunca, y eso es lo que hace la función correcta
+/// en las dos plataformas.** `trim_matches` —que los quitaba de los dos extremos— tenía
+/// dos consecuencias falsas:
+///
+/// - En Unix convertía `/home/ana` en `home\ana`, de modo que una ruta absoluta
+///   comparaba igual a una relativa con el mismo nombre.
+/// - En la UNC de Windows `\\servidor\recurso` perdía las dos barras iniciales, que son
+///   justo lo que la distingue de una ruta local.
+///
+/// En Unix los `\` son **caracteres de nombre de archivo legítimos**, así que una ruta
+/// que empieza por `\\` no es una verbatim: el prefijo no se quita y lo único que se
+/// re-codifica es el separador `/` como `\`, que es lo que permite comparar la forma
+/// absoluta con la que escribe el bloque de §9.3.1.
+///
+/// **El prefijo verbatim se quita aquí y no en cada consumidor.** La capa de Windows
+/// devuelve `\\?\.` en los modos de apertura extendidos, así que la ruta del ejecutable
+/// en ejecución y la del directorio de programa —que viene de una variable de
+/// reubicación— llegan con y sin él. Un consumidor que se lo quite en su módulo y otro
+/// que no divergen, y el siguiente que escriba una comparación de rutas hereda el
+/// defecto. §7 hace de esta función la fuente única de la semántica de comparación, y
+/// la fuente única del arreglo.
+///
+/// El prefijo solo se quita en Windows: en Unix no existe, y una ruta que empiece por
+/// `\\` es ahí un nombre de archivo legítimo.
 pub fn canonical_path_key(p: &Path) -> String {
-    p.to_string_lossy()
+    sin_prefijo_verbatim(&p.to_string_lossy())
         .replace('/', "\\")
         .to_lowercase()
-        .trim_matches('\\')
-        .trim()
+        .trim_end_matches('\\')
+        .trim_end()
         .to_string()
+}
+
+/// Quita el prefijo de ruta verbatim de Windows.
+///
+/// Cubre las dos formas: `\\?\C:\ruta` es la local, y `\\?\UNC\servidor\recurso` la de
+/// red, cuya forma normal es `\\servidor\recurso` —con la barra inicial, que es la que
+/// la distingue de una ruta local. Devolver laUNC sin barras haría que una ruta de red
+/// comparara igual a un directorio local del mismo nombre.
+#[cfg(windows)]
+fn sin_prefijo_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+        return std::borrow::Cow::Owned(format!(r"\\{unc}"));
+    }
+    std::borrow::Cow::Borrowed(raw.strip_prefix(r"\\?\").unwrap_or(raw))
+}
+
+/// En Unix no hay prefijo verbatim, así que la ruta se devuelve tal cual.
+#[cfg(not(windows))]
+fn sin_prefijo_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Borrowed(raw)
+}
+
+/// ¿Son la misma entrada de `PATH` dos rutas escritas de forma distinta?
+///
+/// La comparación canónica de §9.3.1 distingue mayúsculas, ignora separadores
+/// finales y **considera también la forma expandida de cada entrada**. En
+/// Windows el valor de `HKCU\Environment\Path` se lee sin expandir, así que
+/// `%LOCALAPPDATA%\Programs\ai-voice-interconnector` y la ruta real que el
+/// motor acaba de escribir tienen que comparar iguales; sin esta segunda forma
+/// la comprobación daría un falso negativo y el motor añadiría la entrada dos
+/// veces. En Unix se expanden `${VAR}` y `%VAR%` por el mismo motivo.
+pub fn canonical_path_entry_matches(a: &Path, b: &Path) -> bool {
+    if canonical_path_key(a) == canonical_path_key(b) {
+        return true;
+    }
+    canonical_path_key(&expand_path_vars(a)) == canonical_path_key(&expand_path_vars(b))
+}
+
+/// Sustituye las referencias a variables de entorno de una entrada de `PATH`
+/// por su valor. Cubre `%VAR%` (Windows) y `${VAR}`; una referencia sin valor
+/// conocido se deja intacta, para que comparar dos entradas no definidas no
+/// las vuelva iguales por accidente.
+fn expand_path_vars(p: &Path) -> PathBuf {
+    let raw = p.to_string_lossy().to_string();
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw.as_str();
+    while let Some(start) = rest.find(['%', '$']) {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        // El desplazamiento se cuenta desde `tail` **con** el prefijo puesto, y el
+        // nombre se lee de la cola **sin** él. Confundir las dos cosas dejaba el `}` de
+        // cierre dentro del valor expandido: `%VAR%` salía bien por casualidad —quitar
+        // el `%` inicial no desplaza el cierre— y `${VAR}` salía mal, que es la forma que
+        // se usa en Unix. El defecto era invisible porque la prueba solo usaba la forma
+        // de Windows.
+        let (name, consumed) = match tail.strip_prefix('%') {
+            Some(after) => match after.find('%') {
+                Some(end) => (&after[..end], start + end + 2),
+                None => ("", 0),
+            },
+            None => match tail.strip_prefix("${").and_then(|after| after.find('}')) {
+                Some(end) => (&tail[start + 2..start + 2 + end], start + end + 3),
+                None => ("", 0),
+            },
+        };
+        if !name.is_empty() {
+            if let Ok(value) = std::env::var(name) {
+                out.push_str(&value);
+                rest = &tail[consumed..];
+                continue;
+            }
+        }
+        let consumed = consumed.max(1);
+        out.push_str(&tail[..consumed]);
+        rest = &tail[consumed..];
+    }
+    out.push_str(rest);
+    PathBuf::from(out)
 }
 
 // ─── VoiceStore ──────────────────────────────────────────────────────
@@ -460,6 +635,36 @@ pub const MODEL_REVISIONS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Nombre del bloqueo de ciclo de vida, hermano del directorio de programa
+/// (§7): `~/.local/opt/.ai-voice-interconnector.lock`,
+/// `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.lock`.
+pub const LIFECYCLE_LOCK_NAME: &str = ".ai-voice-interconnector.lock";
+
+/// Prefijo del staging, también hermano del directorio de programa (§7):
+/// `~/.local/opt/.ai-voice-interconnector-staging-<pid>-<ms>`.
+pub const STAGING_DIR_PREFIX: &str = ".ai-voice-interconnector-staging-";
+
+/// Prefijo de los aparcados **dentro** del directorio de programa (§7):
+/// `<programa>/.old-<timestamp>`. Vive dentro a propósito: la reversión de un
+/// reemplazo tiene que poder hacerse sin mover nada fuera del programa.
+pub const PARKED_DIR_PREFIX: &str = ".old-";
+
+/// Subdirectorio de `xet` dentro de la raíz de modelos exclusiva. Lo fija
+/// `ModelStore::new()` en `HF_XET_CACHE`.
+pub const MODELS_XET_SUBDIR: &str = "xet";
+
+/// Prefijos de los temporales de ejecución de la aplicación (§7): `$TMPDIR` en
+/// Unix y `%TEMP%` en Windows. En Windows el helper de borrado diferido
+/// (`avi-uninstall-<pid>-<ms>.ps1`) cae en `avi-`, de modo que ningún otro
+/// prefijo puede sustituir a este conjunto.
+pub const TEMP_PREFIXES: &[&str] = &["avi-", "avi_"];
+
+// **R4.** Las cinco constantes anteriores son la fuente única de los recursos que la
+// aplicación crea: todo recurso nuevo se declara aquí, en la tabla de §7 y en
+// los planes de limpieza y desinstalación **en el mismo cambio**. Un recurso
+// que solo aparece en un plan de limpieza es un recurso que sobrevive a la
+// desinstalación.
+
 /// Patrones de descarga por modelo (`snapshot_download` con `allow_patterns`).
 /// Vacío = snapshot completo (repos pequeños/cohesivos). Para `parakeet-tdt-v3`
 /// se acota a los 4 artefactos que consume `ParakeetEngine`
@@ -474,60 +679,85 @@ pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[(
     ],
 )];
 
-/// Directorio raíz de la cache de HuggingFace — decisión de la aplicación, no
-/// del crate.
+/// Raíz de la caché de HuggingFace que el usuario eligió compartir, si la
+/// eligió: `HF_HUB_CACHE` o, en su defecto, `HF_HOME/hub`. `None` significa
+/// que rige la raíz de modelos exclusiva de la aplicación.
 ///
-/// `hf-hub` 1.0 resuelve con fallback `HOME`→`/tmp` (hardcodeado), lo que en
-/// Windows produce `<unidad-del-cwd>:\tmp\.cache\huggingface\hub`: ubicación
-/// no-canónica, dependiente de la unidad y compartida entre usuarios. Aquí se
-/// decide localmente para que lectura (`is_provisioned`, cleanup/uninstall) y
-/// escritura (`ensure_downloaded`) usen SIEMPRE la misma ruta, determinista en
-/// los 4 targets:
-///
-/// 1. `HF_HUB_CACHE` (override explícito del usuario)
-/// 2. `HF_HOME/hub` (convención HF)
-/// 3. `{home}/.cache/huggingface/hub` — misma convención que `huggingface_hub`
-///    de Python en los tres SO, por lo que reutiliza modelos ya bajados por
-///    instalaciones previas.
-pub fn hf_cache_dir() -> PathBuf {
-    if let Ok(cache) = std::env::var("HF_HUB_CACHE") {
-        if !cache.is_empty() {
-            return PathBuf::from(cache);
-        }
+/// `HF_HUB_CACHE` tiene precedencia porque es la que nombra la caché de `hub`
+/// directamente; `HF_HOME` es la convención y su caché vive en `hub/` dentro.
+pub fn shared_hf_root() -> Option<PathBuf> {
+    if let Some(dir) = relocated_dir("HF_HUB_CACHE") {
+        return Some(dir);
     }
-    if let Ok(home) = std::env::var("HF_HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home).join("hub");
-        }
-    }
-    let home = directories::UserDirs::new()
-        .map(|d| d.home_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".cache").join("huggingface").join("hub")
+    relocated_dir("HF_HOME").map(|home| home.join("hub"))
 }
 
-/// Directorio raíz de la cache xet (shard-cache) acoplada a `hf_cache_dir`.
-/// `hf-hub` con `xet` usa `~/.cache/huggingface/xet` además de `hub`; purgar
-/// solo `hub` deja `shard-cache` huérfano e incoherente (riesgo de coherencia).
-pub fn xet_cache_dir() -> PathBuf {
-    // Deriva de `hf_cache_dir` reemplazando el último componente `hub` por `xet`
-    // para honrar `HF_HUB_CACHE`/`HF_HOME` cuando apuntan a `hub`.
-    let hub = hf_cache_dir();
-    if hub.ends_with("hub") {
-        hub.parent()
-            .map(|p| p.join("xet"))
-            .unwrap_or_else(|| hub.join("../xet"))
+/// ¿La raíz de modelos es la caché HF compartida que eligió el usuario? En ese
+/// caso su contenido es compartido y rige R3: solo se borran entradas
+/// atribuibles a la aplicación.
+pub fn models_root_is_shared() -> bool {
+    shared_hf_root().is_some()
+}
+
+/// Raíz de modelos: caché regenerable y **exclusiva de la aplicación** por
+/// defecto (§7, D3). Snapshots, derivado CT2, locks y `xet` cuelgan todos de
+/// ella, y es la única ubicación de modelos que existe.
+///
+/// `AVI_CACHE_DIR` tiene precedencia sobre las variables de HuggingFace: es la
+/// variable de reubicación de la aplicación y es lo que permite aislar una
+/// prueba aunque el entorno tenga un `HF_HOME` global.
+///
+/// Sin reubicación y con una caché HF compartida elegida por el usuario
+/// (`HF_HUB_CACHE` o `HF_HOME`), la raíz es esa y su contenido es compartido.
+/// En cualquier otro caso es la columna de modelos de §7:
+/// `$XDG_CACHE_HOME/ai-voice-interconnector/models`,
+/// `~/Library/Caches/ai-voice-interconnector/models` o
+/// `%LOCALAPPDATA%\ai-voice-interconnector\cache\models`.
+pub fn models_cache_dir() -> PathBuf {
+    if let Some(dir) = relocated_dir("AVI_CACHE_DIR") {
+        return dir;
+    }
+    if let Some(shared) = shared_hf_root() {
+        return shared;
+    }
+    if cfg!(windows) {
+        local_app_data().join(APP_NAME).join("cache").join("models")
+    } else if cfg!(target_os = "macos") {
+        home_dir()
+            .join("Library")
+            .join("Caches")
+            .join(APP_NAME)
+            .join("models")
     } else {
-        // Fallback directo a `~/.cache/huggingface/xet` si `hf_cache_dir` no termina en hub
-        let home = directories::UserDirs::new()
-            .map(|d| d.home_dir().to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-        home.join(".cache").join("huggingface").join("xet")
+        cache_home().join(APP_NAME).join("models")
     }
 }
 
-/// Directorio CT2 derivado obligatorio de Marian HF en `hf_cache_dir()/ct2`.
-/// Layout: `hf_cache_dir()/ct2/opus-mt-es-en` y `opus-mt-en-es`, cada uno con
+/// Directorio de la caché `xet` (shard-cache) del proceso que provisiona
+/// modelos.
+///
+/// En la raíz de modelos exclusiva cuelga de ella, y `ModelStore::new()` fija
+/// `HF_XET_CACHE` a este mismo sitio para que el borrado sea de directorio
+/// entero. En la raíz compartida la variable es del usuario y no se toca, así
+/// que se devuelve la cadena real que resuelve `xet-runtime`: `HF_XET_CACHE` →
+/// `HF_HOME/xet` → `XDG_CACHE_HOME/huggingface/xet` →
+/// `~/.cache/huggingface/xet`.
+pub fn xet_cache_dir() -> PathBuf {
+    if models_root_is_shared() {
+        if let Some(dir) = relocated_dir("HF_XET_CACHE") {
+            return dir;
+        }
+        if let Some(home) = relocated_dir("HF_HOME") {
+            return home.join("xet");
+        }
+        return cache_home().join("huggingface").join("xet");
+    }
+    models_cache_dir().join(MODELS_XET_SUBDIR)
+}
+
+/// Directorio CT2 derivado obligatorio de Marian HF en
+/// `models_cache_dir()/ct2`.
+/// Layout: `models_cache_dir()/ct2/opus-mt-es-en` y `opus-mt-en-es`, cada uno con
 /// `model.bin` CT2 más tokenizador utilizable por el loader (`tokenizer.json`,
 /// o `source.spm` más `target.spm` copiados desde el snapshot por `setup`).
 /// Invariante: provisionado equivale a lo que `setup` deposita y, por tanto, a
@@ -536,7 +766,7 @@ pub fn xet_cache_dir() -> PathBuf {
 /// no todo lo que `auto::Tokenizer` sabría cargar; la idempotencia por `mtime`
 /// solo aplica a dirs sanos (un dir roto es no provisionado y fuerza reconversión).
 pub fn ct2_cache_dir() -> PathBuf {
-    hf_cache_dir().join("ct2")
+    models_cache_dir().join("ct2")
 }
 pub fn ct2_model_dir(pair: &str) -> PathBuf {
     ct2_cache_dir().join(format!("opus-mt-{}", pair))
@@ -575,7 +805,9 @@ pub fn ct2_missing_files(pair: &str) -> Vec<String> {
 pub fn is_ct2_provisioned(pair: &str) -> bool {
     ct2_missing_files(pair).is_empty()
 }
-/// Purga determinista del derivado CT2 en `hf_cache_dir/ct2`, simétrica a `remove_xet_cache`.
+/// Purga determinista del derivado CT2 en `models_cache_dir()/ct2`. El derivado
+/// es atribuible a la aplicación, así que se purga tanto en la raíz exclusiva
+/// como en la compartida (R3).
 pub fn remove_ct2_cache() -> Result<bool> {
     let ct2 = ct2_cache_dir();
     if ct2.is_dir() {
@@ -587,7 +819,7 @@ pub fn remove_ct2_cache() -> Result<bool> {
 
 /// Almacén de modelos descargados.
 ///
-/// Fuente de verdad única: snapshots de HuggingFace en `hf_cache_dir()` con
+/// Fuente de verdad única: snapshots de HuggingFace en `models_cache_dir()` con
 /// layout `models--<org>--<repo>/snapshots/<hash>/`. Todos los modelos están
 /// pinneados en `MODEL_REVISIONS`, así que la provisión se decide solo por
 /// presencia del snapshot; no hay índice `manifest.json` intermedio.
@@ -602,8 +834,25 @@ impl Default for ModelStore {
 }
 
 impl ModelStore {
+    /// Ancla el almacén en `models_cache_dir()`, nunca en `data_dir()/models`:
+    /// los modelos son caché regenerable de propiedad exclusiva y no estado de
+    /// usuario, y §7 los coloca en raíces distintas.
+    ///
+    /// Fija además `HF_XET_CACHE` al subdirectorio `xet` de la raíz cuando esta
+    /// es exclusiva. Es la única palanca disponible: `HFClientBuilder::cache_dir`
+    /// solo fija la caché de `hub`, de modo que `xet` se sitúa por variable de
+    /// entorno; y es la variable que resuelve `xet-runtime` (`HF_XET_CACHE` →
+    /// `HF_HOME/xet` → `XDG_CACHE_HOME/huggingface/xet` →
+    /// `~/.cache/huggingface/xet`). Con una raíz compartida la variable es del
+    /// usuario y no se toca, porque R3 prohíbe que su contenido se relocalice.
+    ///
+    /// La llamada a `set_var` es segura en la toolchain del proyecto
+    /// (edition 2021); pasa a `unsafe` en edition 2024.
     pub fn new() -> Self {
-        let base_dir = data_dir().join("models");
+        let base_dir = models_cache_dir();
+        if !models_root_is_shared() {
+            std::env::set_var("HF_XET_CACHE", base_dir.join(MODELS_XET_SUBDIR));
+        }
         Self { base_dir }
     }
 
@@ -624,7 +873,7 @@ impl ModelStore {
     /// lee `refs/<rev>`.
     pub fn model_snapshot_path(&self, model_name: &str) -> Option<PathBuf> {
         let (repo, rev) = ModelStore::revision_of(model_name)?;
-        let repo_dir = hf_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
+        let repo_dir = models_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
         let direct = repo_dir.join("snapshots").join(rev);
         if direct.is_dir() {
             return Some(direct);
@@ -694,16 +943,19 @@ impl ModelStore {
     }
 
     /// Directorio de un modelo: snapshot HF pinneado; si no resuelve, cae al
-    /// directorio nominal bajo `data_dir()/models`.
+    /// directorio nominal bajo la raíz de modelos.
     pub fn model_dir(&self, model_name: &str) -> PathBuf {
         self.model_snapshot_path(model_name)
             .unwrap_or_else(|| self.base_dir.join(model_name))
     }
 
-    /// Borrar el snapshot HF de un modelo (cleanup/uninstall).
+    /// Borra el snapshot pinneado de un modelo: el directorio
+    /// `models--<org>--<nombre>` bajo la raíz de modelos vigente. El repo es
+    /// atribuible a la aplicación, así que el borrado procede tanto en la raíz
+    /// exclusiva como en la compartida (R3).
     pub fn remove_hf_snapshot(&self, model_name: &str) -> Result<bool> {
         if let Some((repo, _)) = ModelStore::revision_of(model_name) {
-            let dir = hf_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
+            let dir = models_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
             if dir.is_dir() {
                 std::fs::remove_dir_all(&dir)?;
                 return Ok(true);
@@ -712,9 +964,14 @@ impl ModelStore {
         Ok(false)
     }
 
-    /// Borrar la cache xet asociada a `hf_cache_dir` (shard-cache + staging + logs).
-    /// Se usa en `cleanup`/`uninstall` para evitar incoherencia `hub` purgado + `xet` vivo.
+    /// Borra la caché `xet` **solo** en la raíz de modelos exclusiva, donde
+    /// cuelga de ella. En una raíz compartida devuelve `Ok(false)` sin tocar
+    /// nada: `xet` es un subdirectorio global de la caché HF y R3 prohíbe
+    /// borrarlo, porque aloja los shards de todos los proyectos que la usan.
     pub fn remove_xet_cache() -> Result<bool> {
+        if models_root_is_shared() {
+            return Ok(false);
+        }
         let xet = xet_cache_dir();
         if xet.is_dir() {
             std::fs::remove_dir_all(&xet)?;
@@ -723,13 +980,34 @@ impl ModelStore {
         Ok(false)
     }
 
-    /// Borrar los locks de descarga de `hub` (`hf_cache_dir()/.locks`). Paso
-    /// explícito de `cleanup`/`uninstall`/`setup --force-update`, separado de
-    /// `remove_xet_cache` para que el borrado se reporte y su error se propague.
+    /// Borra los locks de descarga (`.locks`) **solo** en la raíz de modelos
+    /// exclusiva. En una raíz compartida devuelve `Ok(false)`: R3 prohíbe
+    /// borrar el `.locks` completo, y los locks de los repos propios se van con
+    /// `remove_hf_snapshot`, que sí los alcanza.
     pub fn remove_hf_locks() -> Result<bool> {
-        let locks = hf_cache_dir().join(".locks");
+        if models_root_is_shared() {
+            return Ok(false);
+        }
+        let locks = models_cache_dir().join(".locks");
         if locks.is_dir() {
             std::fs::remove_dir_all(&locks)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Borra la raíz de modelos **entera** cuando es exclusiva, `xet` y derivados
+    /// incluidos. Es el alcance que `cleanup --model` y `self uninstall` usan
+    /// para dejar residuo cero dentro de las raíces de propiedad exclusiva; con
+    /// una raíz compartida devuelve `Ok(false)` y el llamador se limita a los
+    /// repos fijados, sus derivados y sus locks.
+    pub fn remove_models_root() -> Result<bool> {
+        if models_root_is_shared() {
+            return Ok(false);
+        }
+        let root = models_cache_dir();
+        if root.is_dir() {
+            std::fs::remove_dir_all(&root)?;
             return Ok(true);
         }
         Ok(false)
@@ -738,7 +1016,7 @@ impl ModelStore {
     /// Descarga nativa de un modelo pinneado vía HuggingFace Hub.
     ///
     /// Usa `hf-hub` (`snapshot_download` con revisión de `MODEL_REVISIONS`): cache
-    /// estándar en `hf_cache_dir()`, resume por Range, ETag/commit-hash y reintentos
+    /// estándar en `models_cache_dir()`, resume por Range, ETag/commit-hash y reintentos
     /// del propio crate. La barra `indicatif` refleja archivos/bytes agregados vía
     /// `ProgressHandler`. Idempotente: si el snapshot ya existe y no es
     /// `force_download`, HF resuelve desde cache sin red. Compila igual en los 4
@@ -751,10 +1029,10 @@ impl ModelStore {
             )
         })?;
         let progress = indicatif_progress();
-        // Cache explícita: la resolución de la app (hf_cache_dir) manda sobre el
+        // Cache explícita: la resolución de la app (models_cache_dir) manda sobre el
         // fallback roto de hf-hub (HOME→/tmp); lectura y escritura convergen.
         let client = hf_hub::HFClient::builder()
-            .cache_dir(hf_cache_dir())
+            .cache_dir(models_cache_dir())
             .build()?;
         let (owner, name) = hf_hub::split_id(repo_id);
         let repo = client.model(owner, name);
@@ -797,7 +1075,8 @@ impl ModelStore {
         if !valid {
             let _ = std::fs::remove_dir_all(&snapshot);
             // Limpiar blobs incompletos del repo si existen
-            let repo_dir = hf_cache_dir().join(format!("models--{}", repo_id.replace('/', "--")));
+            let repo_dir =
+                models_cache_dir().join(format!("models--{}", repo_id.replace('/', "--")));
             let blobs = repo_dir.join("blobs");
             if blobs.is_dir() {
                 if let Ok(entries) = std::fs::read_dir(&blobs) {
@@ -916,51 +1195,364 @@ mod tests {
     /// del proceso): `cargo test` los corre en paralelo y sin lock se pisan.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// T-descargador: `hf_cache_dir()` honra `HF_HUB_CACHE`, luego `HF_HOME/hub`,
-    /// y cae en `{home}/.cache/huggingface/hub` — nunca en `/tmp`.
+    /// Copia de las variables de entorno que un test va a tocar. `ENV_LOCK`
+    /// serializa a los lectores, pero sin restaurar al final un fallo a mitad
+    /// contaminaría el resto de la suite.
+    fn env_guard(vars: &[&str]) -> Vec<(String, Option<String>)> {
+        vars.iter()
+            .map(|v| ((*v).to_string(), std::env::var(v).ok()))
+            .collect()
+    }
+
+    fn env_restore(saved: Vec<(String, Option<String>)>) {
+        for (var, value) in saved {
+            match value {
+                Some(v) => std::env::set_var(&var, v),
+                None => std::env::remove_var(&var),
+            }
+        }
+    }
+
+    /// Sin `HF_HUB_CACHE` ni `HF_HOME` la raíz de modelos es la **exclusiva de
+    /// la aplicación** (D3): nunca la caché compartida de HuggingFace, y con
+    /// el derivado CT2 y `xet` colgando de ella.
     #[test]
-    fn hf_cache_dir_precedence_env_and_fallback() {
+    fn models_root_is_exclusive_by_default() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let hf_hub_cache = std::env::var("HF_HUB_CACHE").ok();
-        let hf_home = std::env::var("HF_HOME").ok();
-        let xdg = std::env::var("XDG_CACHE_HOME").ok();
-
-        // 1. HF_HUB_CACHE tiene precedencia máxima
-        std::env::set_var("HF_HUB_CACHE", r"C:\cache_custom\hub");
-        std::env::remove_var("HF_HOME");
-        assert_eq!(hf_cache_dir(), PathBuf::from(r"C:\cache_custom\hub"));
-
-        // 2. Sin HF_HUB_CACHE, HF_HOME/hub
+        let saved = env_guard(&["AVI_CACHE_DIR", "HF_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"]);
+        std::env::remove_var("AVI_CACHE_DIR");
         std::env::remove_var("HF_HUB_CACHE");
-        std::env::set_var("HF_HOME", "/hf_home_custom");
-        assert_eq!(hf_cache_dir(), PathBuf::from("/hf_home_custom").join("hub"));
-
-        // 3. Fallback: home/.cache/huggingface/hub (nunca /tmp)
         std::env::remove_var("HF_HOME");
-        let dir = hf_cache_dir();
-        let dir_str = dir.to_string_lossy().to_lowercase();
+        std::env::remove_var("XDG_CACHE_HOME");
+
         assert!(
-            dir_str.ends_with(r"\.cache\huggingface\hub")
-                || dir_str.ends_with("/.cache/huggingface/hub"),
-            "el fallback debe ser {{home}}/.cache/huggingface/hub, fue: {dir_str}"
+            shared_hf_root().is_none(),
+            "sin variables de HuggingFace no hay raíz compartida"
         );
+        assert!(!models_root_is_shared());
+        let root = models_cache_dir();
+        let rendered = root.to_string_lossy().to_string();
+        if cfg!(windows) {
+            assert_eq!(root.file_name().unwrap(), "models");
+            assert_eq!(root.parent().unwrap().file_name().unwrap(), "cache");
+            assert_eq!(
+                root.parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap(),
+                APP_NAME
+            );
+        } else if cfg!(target_os = "macos") {
+            assert!(
+                root.ends_with("Library/Caches/ai-voice-interconnector/models"),
+                "columna de modelos de macOS: {rendered}"
+            );
+        } else {
+            assert!(
+                root.ends_with(".cache/ai-voice-interconnector/models"),
+                "columna de modelos de Linux: {rendered}"
+            );
+        }
         assert!(
-            !dir_str.contains("\\tmp\\"),
-            "no debe caer en /tmp: {dir_str}"
+            !rendered.contains("huggingface"),
+            "la raíz por defecto no puede ser la caché HF: {rendered}"
+        );
+        assert!(ct2_cache_dir().starts_with(&root));
+        assert_eq!(xet_cache_dir(), root.join(MODELS_XET_SUBDIR));
+
+        env_restore(saved);
+    }
+
+    /// `HF_HUB_CACHE` tiene precedencia sobre `HF_HOME/hub`, y cualquiera de las
+    /// dos convierte la raíz de modelos en la caché compartida que eligió el
+    /// usuario. `AVI_CACHE_DIR` es la reubicación de la aplicación y manda sobre
+    /// las dos: es lo que permite aislar una prueba con un `HF_HOME` global.
+    #[test]
+    fn shared_hf_root_takes_precedence() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let saved = env_guard(&["AVI_CACHE_DIR", "HF_HUB_CACHE", "HF_HOME"]);
+        std::env::remove_var("AVI_CACHE_DIR");
+
+        std::env::set_var("HF_HUB_CACHE", r"C:\cache_custom\hub");
+        std::env::set_var("HF_HOME", "/hf_home_custom");
+        assert_eq!(
+            shared_hf_root(),
+            Some(PathBuf::from(r"C:\cache_custom\hub"))
+        );
+        assert_eq!(models_cache_dir(), PathBuf::from(r"C:\cache_custom\hub"));
+        assert!(models_root_is_shared());
+
+        std::env::remove_var("HF_HUB_CACHE");
+        assert_eq!(
+            shared_hf_root(),
+            Some(PathBuf::from("/hf_home_custom").join("hub"))
+        );
+        assert_eq!(
+            models_cache_dir(),
+            PathBuf::from("/hf_home_custom").join("hub")
         );
 
-        // Restaurar estado env original
-        match hf_hub_cache {
-            Some(v) => std::env::set_var("HF_HUB_CACHE", v),
-            None => std::env::remove_var("HF_HUB_CACHE"),
+        std::env::set_var("AVI_CACHE_DIR", "/raiz_aislada");
+        assert_eq!(models_cache_dir(), PathBuf::from("/raiz_aislada"));
+        assert!(
+            models_root_is_shared(),
+            "reubicar no cambia la propiedad: el contenido sigue siendo compartido"
+        );
+
+        env_restore(saved);
+    }
+
+    /// Directorio de programa y directorio del enlace según la tabla de §7, en
+    /// los dos layouts, y su reubicación por `AVI_INSTALL_DIR`/`AVI_BIN_DIR`.
+    #[test]
+    fn install_and_bin_dirs_per_platform() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let saved = env_guard(&["AVI_INSTALL_DIR", "AVI_BIN_DIR", "LOCALAPPDATA"]);
+        std::env::remove_var("AVI_INSTALL_DIR");
+        std::env::remove_var("AVI_BIN_DIR");
+        // La aserción no puede depender de la máquina del que corre el test.
+        std::env::set_var("LOCALAPPDATA", home_dir().join("AppData").join("Local"));
+
+        let (install, bin) = (install_dir(), bin_dir());
+        let rendered = install.to_string_lossy().to_string();
+        // La aserción es de Windows: allí una ruta con `/` mezclado sale de una variable
+        // de reubicación escrita con la barra equivocada. En Unix `/` **es** el
+        // separador, así que la comprobación sería falsa por construcción.
+        #[cfg(windows)]
+        assert!(
+            !rendered.contains('/'),
+            "sin separadores mixtos en el directorio de programa: {rendered}"
+        );
+        #[cfg(not(windows))]
+        assert!(
+            rendered.contains('/'),
+            "en Unix el separador del directorio de programa es `/`: {rendered}"
+        );
+        if cfg!(windows) {
+            assert!(
+                install.ends_with(r"Programs\ai-voice-interconnector"),
+                "columna de programa en Windows: {rendered}"
+            );
+            assert_eq!(
+                bin, install,
+                "en Windows la entrada del PATH es el directorio de programa"
+            );
+        } else {
+            assert!(
+                install.ends_with(".local/opt/ai-voice-interconnector"),
+                "columna de programa en Unix: {rendered}"
+            );
+            assert!(
+                bin.ends_with(".local/bin"),
+                "directorio del enlace en Unix: {}",
+                bin.display()
+            );
         }
-        match hf_home {
-            Some(v) => std::env::set_var("HF_HOME", v),
-            None => std::env::remove_var("HF_HOME"),
+
+        std::env::set_var("AVI_INSTALL_DIR", "/opt/avi_reubicado");
+        std::env::set_var("AVI_BIN_DIR", "/usr/local/bin");
+        assert_eq!(install_dir(), PathBuf::from("/opt/avi_reubicado"));
+        assert_eq!(bin_dir(), PathBuf::from("/usr/local/bin"));
+        if cfg!(windows) {
+            // Sin reubicar el enlace, la entrada del PATH cae en el programa.
+            std::env::remove_var("AVI_BIN_DIR");
+            assert_eq!(bin_dir(), PathBuf::from("/opt/avi_reubicado"));
         }
-        if let Some(v) = xdg {
-            std::env::set_var("XDG_CACHE_HOME", v);
+
+        env_restore(saved);
+    }
+
+    /// `xet` cuelga de la raíz de modelos exclusiva y `ModelStore::new()` la
+    /// fija en `HF_XET_CACHE` porque es la única palanca disponible. Con raíz
+    /// compartida la variable es del usuario y no se toca: `xet` sigue la
+    /// cadena real de `xet-runtime` y queda fuera de cualquier borrado (R3).
+    #[test]
+    fn xet_resolves_inside_exclusive_models_root() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let saved = env_guard(&[
+            "AVI_CACHE_DIR",
+            "HF_HUB_CACHE",
+            "HF_HOME",
+            "HF_XET_CACHE",
+            "XDG_CACHE_HOME",
+        ]);
+        for var in [
+            "AVI_CACHE_DIR",
+            "HF_HUB_CACHE",
+            "HF_HOME",
+            "HF_XET_CACHE",
+            "XDG_CACHE_HOME",
+        ] {
+            std::env::remove_var(var);
         }
+
+        let root = models_cache_dir();
+        assert_eq!(xet_cache_dir(), root.join(MODELS_XET_SUBDIR));
+        assert!(xet_cache_dir().starts_with(&root));
+
+        let _store = ModelStore::new();
+        assert_eq!(
+            std::env::var("HF_XET_CACHE").ok(),
+            Some(root.join(MODELS_XET_SUBDIR).to_string_lossy().to_string()),
+            "`HFClientBuilder::cache_dir` solo fija `hub`: la variable es la única palanca"
+        );
+
+        std::env::set_var("HF_HOME", "/hf_home_custom");
+        std::env::set_var("HF_XET_CACHE", "/xet_del_usuario");
+        assert_eq!(
+            models_cache_dir(),
+            PathBuf::from("/hf_home_custom").join("hub")
+        );
+        assert_eq!(xet_cache_dir(), PathBuf::from("/xet_del_usuario"));
+        let _store = ModelStore::new();
+        assert_eq!(
+            std::env::var("HF_XET_CACHE").ok(),
+            Some("/xet_del_usuario".to_string()),
+            "con raíz compartida la variable es del usuario y no se toca"
+        );
+
+        std::env::remove_var("HF_XET_CACHE");
+        assert_eq!(
+            xet_cache_dir(),
+            PathBuf::from("/hf_home_custom").join("xet"),
+            "sin HF_XET_CACHE, `xet-runtime` cae a HF_HOME/xet"
+        );
+
+        env_restore(saved);
+    }
+
+    /// La comparación de entradas de `PATH` de §9.3.1 no da un falso negativo
+    /// con una entrada escrita con una variable sin expandir, que es como se
+    /// lee el valor `Path` del registro de Windows.
+    #[test]
+    fn canonical_path_entry_comparison_handles_percent_vars() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let saved = env_guard(&["AVI_TEST_PATH_ROOT"]);
+        let root = std::env::temp_dir().join("avi_store_path_entry");
+        std::env::set_var("AVI_TEST_PATH_ROOT", &root);
+
+        let real = root.join("Programs").join(APP_NAME);
+        let written = if cfg!(windows) {
+            Path::new(r"%AVI_TEST_PATH_ROOT%\Programs\ai-voice-interconnector")
+        } else {
+            Path::new("${AVI_TEST_PATH_ROOT}/Programs/ai-voice-interconnector")
+        };
+        assert!(canonical_path_entry_matches(written, &real));
+        assert!(
+            canonical_path_entry_matches(written, &real.join("")),
+            "la comparación sigue normalizando separadores finales"
+        );
+
+        // Entradas que solo se parecen en el nombre de la variable.
+        let sibling = if cfg!(windows) {
+            Path::new(r"%AVI_TEST_PATH_ROOT%\Programs")
+        } else {
+            Path::new("${AVI_TEST_PATH_ROOT}/Programs")
+        };
+        assert!(!canonical_path_entry_matches(
+            sibling,
+            &root.join("Programs").join("otro")
+        ));
+
+        // Una variable sin valor deja la entrada intacta: dos referencias
+        // distintas no se vuelven iguales por accidente.
+        assert!(!canonical_path_entry_matches(
+            Path::new("%AVI_TEST_PATH_NO_EXISTE%"),
+            Path::new("%AVI_TEST_PATH_TAMPOCO_EXISTE%")
+        ));
+
+        env_restore(saved);
+    }
+
+    /// El prefijo de ruta verbatim de Windows se quita antes de normalizar, en las
+    /// dos formas que tiene: la local `\\?\C:\…` y la de red `\\?\UNC\servidor\…`.
+    ///
+    /// Es lo que hace que la ruta del ejecutable en ejecución —que la API de Windows
+    /// puede devolver con el prefijo— y la del directorio de programa —que viene de
+    /// `AVI_INSTALL_DIR` o de la convención, sin él— comparen iguales. Sin esto,
+    /// `self install` invocado desde dentro del directorio de programa creería estar
+    /// fuera y trataría una reparación como una instalación.
+    #[cfg(windows)]
+    #[test]
+    fn canonical_path_key_strips_the_verbatim_prefix() {
+        let sin_prefijo = Path::new(r"C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector");
+        let con_prefijo =
+            Path::new(r"\\?\C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector");
+        assert_eq!(
+            canonical_path_key(con_prefijo),
+            canonical_path_key(sin_prefijo)
+        );
+        assert!(
+            canonical_path_entry_matches(con_prefijo, sin_prefijo),
+            "el comparador de entradas hereda la normalización"
+        );
+        assert!(canonical_path_entry_matches(sin_prefijo, con_prefijo));
+
+        // Con separadores mixtos y barra final, que es como suele venir de verdad.
+        assert_eq!(
+            canonical_path_key(Path::new(r"\\?\C:\Users\ana\AppData\Local\Programs\")),
+            canonical_path_key(Path::new(r"C:\Users\ana\AppData\Local\Programs")),
+            "el prefijo se quita antes que cualquier otra normalización"
+        );
+
+        // La forma de red: `\\?\UNC\servidor\recurso` es `\\servidor\recurso`, con la
+        // barra inicial, que es la que la distingue de una ruta local.
+        assert_eq!(
+            canonical_path_key(Path::new(r"\\?\UNC\servidor\recurso\bin")),
+            canonical_path_key(Path::new(r"\\servidor\recurso\bin")),
+            "la UNC verbatim se normaliza a la UNC normal"
+        );
+        assert_ne!(
+            canonical_path_key(Path::new(r"\\?\UNC\servidor\recurso\bin")),
+            canonical_path_key(Path::new(r"C:\servidor\recurso\bin")),
+            "y no se confunde con una ruta local del mismo nombre"
+        );
+
+        // Una ruta que solo se parece no se toca: el prefijo no amplía lo que compara
+        // igual.
+        assert_ne!(
+            canonical_path_key(Path::new(r"\\?\C:\otro-programa")),
+            canonical_path_key(Path::new(r"C:\ai-voice-interconnector"))
+        );
+
+        // Una ruta sin prefijo no cambia: la normalización anterior sigue igual.
+        assert_eq!(
+            canonical_path_key(Path::new(r"C:\Users\ana\AppData\Local\Programs")),
+            r"c:\users\ana\appdata\local\programs",
+            "sin prefijo, el comportamiento es el de siempre"
+        );
+    }
+
+    /// En Unix el prefijo verbatim no existe y **no** se quita nada: una ruta que
+    /// empieza por `\\` es aquí un nombre de archivo, y tratarla como una de Windows
+    /// haría comparar dos cosas distintas.
+    ///
+    /// Lo que la normalización sí hace en Unix es re-codificar `/` como `\`, y conservar
+    /// **un** separador inicial: es lo que distingue una ruta absoluta de una relativa
+    /// con el mismo nombre, que es la propiedad que hacía falta y que `trim_matches`
+    /// rompía. La primera aserción decía `\?` donde la coherencia con la segunda —y con
+    /// el propósito— exige `\\?`: quitar un separador inicial de una cadena que tiene dos
+    /// es quitar contenido, no normalizar. La expectativa se corrige; el código, no.
+    #[cfg(not(windows))]
+    #[test]
+    fn canonical_path_key_keeps_backslashes_on_unix() {
+        assert_eq!(
+            canonical_path_key(Path::new(r"\\?/home/ana/.local/bin")),
+            r"\\?\home\ana\.local\bin",
+            "en Unix los caracteres de la forma verbatim son parte del nombre"
+        );
+        assert_eq!(
+            canonical_path_key(Path::new("/home/ana/.local/bin/")),
+            r"\home\ana\.local\bin",
+            "y la normalización de siempre sigue igual: un separador inicial, ninguno final"
+        );
+        assert_ne!(
+            canonical_path_key(Path::new("/home/ana/bin")),
+            canonical_path_key(Path::new("home/ana/bin")),
+            "una ruta absoluta no compara igual a una relativa con el mismo nombre"
+        );
     }
 
     fn min_wav() -> Vec<u8> {
@@ -1305,39 +1897,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn windows_install_dir_and_canonical_path_key_deterministic() {
-        // windows_install_dir usa dos join — no mixto — y canonical_path_key
-        // normaliza \ vs / , case y trailing.
-        #[cfg(windows)]
-        {
-            let dir = windows_install_dir();
-            assert!(
-                !dir.to_string_lossy().contains('/'),
-                "install_dir no debe contener '/' mixto: {}",
-                dir.display()
-            );
-            assert!(dir.ends_with("ai-voice-interconnector"));
-        }
-        // canonical_path_key es cross-platform.
-        assert_eq!(
-            canonical_path_key(std::path::Path::new(
-                "C:\\Users\\Ana\\AppData\\Local\\Programs/ai-voice-interconnector\\"
-            )),
-            canonical_path_key(std::path::Path::new(
-                "C:\\Users\\ana\\AppData\\Local\\Programs\\ai-voice-interconnector"
-            ))
-        );
-        assert_eq!(
-            canonical_path_key(std::path::Path::new(
-                "C:/Users/Ana/AppData/Local/Programs/ai-voice-interconnector/"
-            )),
-            "c:\\users\\ana\\appdata\\local\\programs\\ai-voice-interconnector"
-        );
-    }
-
     /// `revision_of("qwen3-tts-0.6b-base")` existe con repo público confirmado y hash
-    /// real (40 hex), y `model_snapshot_path` resuelve bajo HF_HUB_CACHE temporal.
+    /// real (40 hex), y `model_snapshot_path` resuelve bajo la raíz de modelos
+    /// reubicada.
     #[test]
     fn revision_of_base_exists_and_snapshot_resolves() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1346,24 +1908,24 @@ mod tests {
             .expect("qwen3-tts-0.6b-base debe estar en MODEL_REVISIONS");
         assert_eq!(repo, "Qwen/Qwen3-TTS-12Hz-0.6B-Base");
         assert_eq!(rev.len(), 40, "commit hash debe ser 40 chars");
-        // Snapshot resuelve con HF_HUB_CACHE temporal no vacío
-        let prev = std::env::var("HF_HUB_CACHE").ok();
+        // Snapshot resuelve contra la raíz de modelos reubicada
+        let saved = env_guard(&["AVI_CACHE_DIR", "HF_HUB_CACHE", "HF_HOME"]);
         let tmp = temp_dir("base_snapshot");
-        std::env::set_var("HF_HUB_CACHE", tmp.to_string_lossy().to_string());
+        std::env::set_var("AVI_CACHE_DIR", &tmp);
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::remove_var("HF_HOME");
         let store = ModelStore::new();
+        assert_eq!(models_cache_dir(), tmp);
         // Crear snapshot vacío con al menos un fichero para que is_provisioned sea true
         let (repo2, rev2) = ModelStore::revision_of("qwen3-tts-0.6b-base").unwrap();
-        let repo_dir = hf_cache_dir().join(format!("models--{}", repo2.replace('/', "--")));
+        let repo_dir = models_cache_dir().join(format!("models--{}", repo2.replace('/', "--")));
         let snap = repo_dir.join("snapshots").join(rev2);
         std::fs::create_dir_all(&snap).unwrap();
         std::fs::write(snap.join("config.json"), br#"{"tts_model_type":"base"}"#).unwrap();
         assert!(store.is_provisioned("qwen3-tts-0.6b-base"));
         let resolved = store.model_snapshot_path("qwen3-tts-0.6b-base").unwrap();
         assert!(resolved.is_dir());
-        match prev {
-            Some(v) => std::env::set_var("HF_HUB_CACHE", v),
-            None => std::env::remove_var("HF_HUB_CACHE"),
-        }
+        env_restore(saved);
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

@@ -187,8 +187,9 @@ mod tests {
     use avi_core::engine::TranslationEngine;
     use avi_core::engine::{HierarchicalSegmenter, Segmenter};
 
-    /// Modelo CT2 derivado en HF cache `hf_cache_dir()/ct2` presente. Los snapshots
-    /// y derivados están gitignoreados: en un checkout limpio (CI) los E2E se saltan.
+    /// Modelo CT2 derivado presente en la raíz de modelos
+    /// (`models_cache_dir()/ct2`). Esa raíz vive fuera del repo: en un checkout
+    /// limpio (CI) los E2E se saltan.
     #[cfg(feature = "native-translation")]
     fn ct2_model_available(subdir: &str) -> bool {
         let pair = subdir.strip_prefix("opus-mt-").unwrap_or(subdir);

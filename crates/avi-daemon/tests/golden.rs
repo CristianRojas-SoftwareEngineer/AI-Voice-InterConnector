@@ -52,7 +52,7 @@ fn test_state() -> Arc<DaemonState> {
             let stt_engine = {
                 let stt_model_dir = avi_store::ModelStore::new()
                     .model_snapshot_path("parakeet-tdt-v3")
-                    .expect("el modelo STT de test debe estar provisionado en hf_cache_dir — ejecuta setup --with-stt");
+                    .expect("el modelo STT de test debe estar provisionado en la raíz de modelos — ejecuta setup --with-stt");
                 avi_stt::ParakeetEngine::new(&stt_model_dir)
                     .expect("el modelo STT de test debe cargarse")
             };
@@ -133,9 +133,9 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 // sistema operativo solo la verifica la serie de tests pesada
 // (`tests/cli_golden.rs`: reaper ruidoso + `verificar_cero_huerfanos`).
 
-/// Modelos reales de STT (Parakeet TDT v3 int8: 4 archivos) presentes. Los snapshots
-/// bajo `hf_cache_dir()` están gitignoreados: en un checkout limpio (CI) estos tests
-/// dorados se saltan con aviso; en desarrollo corren completos.
+/// Modelos reales de STT (Parakeet TDT v3 int8: 4 archivos) presentes. La raíz de
+/// modelos vive fuera del repo: en un checkout limpio (CI) estos tests dorados
+/// se saltan con aviso; en desarrollo corren completos.
 fn models_present() -> bool {
     #[cfg(not(feature = "native-stt"))]
     return false;
@@ -146,7 +146,7 @@ fn models_present() -> bool {
 #[tokio::test]
 async fn health_matches_fixture() {
     if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;
     }
     let (status, bytes) = send(get("/health")).await;
@@ -163,7 +163,7 @@ async fn health_matches_fixture() {
 #[tokio::test]
 async fn transcribe_matches_fixture() {
     if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;
     }
     // Payload `{}` (campo audio_b64 ausente) → rama de error de campo ausente
@@ -177,7 +177,7 @@ async fn transcribe_matches_fixture() {
 #[tokio::test]
 async fn synthesize_empty_text_is_contract_error() {
     if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;
     }
     let (status, bytes) = send(post_json("/synthesize", serde_json::json!({ "text": "" }))).await;
@@ -191,7 +191,7 @@ async fn synthesize_empty_text_is_contract_error() {
 #[tokio::test]
 async fn synthesize_old_payload_without_new_fields() {
     if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;
     }
     let (status, bytes) = send(post_json(
@@ -209,7 +209,7 @@ async fn synthesize_old_payload_without_new_fields() {
 #[tokio::test]
 async fn synthesize_invalid_temperature_is_usage_error() {
     if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;
     }
     let (status, bytes) = send(post_json(
@@ -235,7 +235,7 @@ async fn synthesize_invalid_temperature_is_usage_error() {
 #[tokio::test]
 async fn synthesize_emits_contract_ndjson_stream() {
     if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;
     }
     let (status, bytes) = send(post_json(
@@ -289,7 +289,7 @@ async fn synthesize_emits_contract_ndjson_stream() {
 #[tokio::test]
 async fn transcribe_long_audio_transcribes_in_one_pass() {
     if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;
     }
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
@@ -349,7 +349,7 @@ async fn transcribe_long_audio_transcribes_in_one_pass() {
 #[tokio::test]
 async fn voices_clone_daemon_precomputed_true() {
     if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;
     }
     if test_state().tts_engine.base_model_dir.is_none() {
@@ -427,7 +427,7 @@ async fn voices_clone_daemon_precomputed_true() {
 #[tokio::test]
 async fn warm_voice_fail_fast_and_acceptance() {
     if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;
     }
     // Fail-fast: voz inexistente → Err antes del bind.

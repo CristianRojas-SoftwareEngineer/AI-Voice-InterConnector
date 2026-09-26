@@ -178,9 +178,15 @@ type SharedState = Arc<DaemonState>;
 // ─── Helpers internos ───────────────────────────────────────────────────
 
 /// Inserta `schema_version` en un `Value`, reutilizado por handlers que devuelven
-/// JSON directamente (coherencia con `emit_raw_json`).
+/// JSON directamente.
+///
+/// **El protocolo del daemon tiene su propia versión**, `DAEMON_SCHEMA_VERSION`, que
+/// este ciclo no cambia: el emisor compartido de `avi-core` lo comparte con el sobre `--json`
+/// de la CLI, pero los dos son contratos independientes y sus versiones se gobiernan por
+/// separado. Por eso la versión se pasa explícitamente en vez de leerse de una
+/// constante única: subir la de la CLI no puede arrastrar a esta.
 fn with_sv(val: Value) -> Value {
-    json_emitter::with_schema_version(val)
+    json_emitter::with_schema_version(val, json_emitter::DAEMON_SCHEMA_VERSION)
 }
 
 /// Serializa un evento NDJSON con envelope de schema_version al canal de salida.
@@ -580,7 +586,7 @@ async fn synthesize_handler(
 
     Response::builder()
         .header("content-type", "application/x-ndjson")
-        .header("x-schema-version", json_emitter::SCHEMA_VERSION)
+        .header("x-schema-version", json_emitter::DAEMON_SCHEMA_VERSION)
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
@@ -1027,7 +1033,7 @@ async fn voices_clone_handler(
 
     Response::builder()
         .header("content-type", "application/x-ndjson")
-        .header("x-schema-version", json_emitter::SCHEMA_VERSION)
+        .header("x-schema-version", json_emitter::DAEMON_SCHEMA_VERSION)
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
@@ -1444,7 +1450,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
 
         Response::builder()
             .header("content-type", "application/x-ndjson")
-            .header("x-schema-version", json_emitter::SCHEMA_VERSION)
+            .header("x-schema-version", json_emitter::DAEMON_SCHEMA_VERSION)
             .body(body)
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
     }
