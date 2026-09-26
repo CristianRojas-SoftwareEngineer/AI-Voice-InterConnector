@@ -22,6 +22,21 @@ anyhow = "1.0"
 # mismo lockfile, asi que no anade trabajo de compilacion.
 tokio = { version = "1.35", features = ["full"] }
 # El parseo de la CLI se queda en `src/main.rs`: este crate no depende de `clap`.
+# Cliente HTTPS de `self update` (§9.4, §12). `rustls-tls` evita OpenSSL del
+# sistema (compila igual en los cuatro targets); `system-proxy` respeta
+# `HTTPS_PROXY`, `NO_PROXY` y el proxy del sistema en Windows; `stream` descarga
+# a disco sin cargar el archivo entero en memoria. Sin `default-features` para
+# no arrastrar `native-tls`.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "system-proxy"] }
+# SHA-256 de `SHA256SUMS.txt` (§12, sin firma por D7).
+sha2 = "0.11"
+# Extracción del bundle descargado: `.zip` en Windows, `.tar.gz` en Unix (§3).
+# `zip` va sin `default-features` y solo con `deflate` por `flate2` (Rust puro,
+# sin zopfli/bzip2/zstd/lzma): `deflate-flate2` abre los caminos de código y
+# `flate2` aporta la dependencia con su backend por defecto.
+zip = { version = "2.4", default-features = false, features = ["deflate-flate2", "flate2"] }
+tar = "0.4"
+flate2 = "1.0"
 
 [target.'cfg(windows)'.dependencies]
 # Acceso directo a `HKCU\Environment` para la integracion de PATH (§9.3.1). Hoy

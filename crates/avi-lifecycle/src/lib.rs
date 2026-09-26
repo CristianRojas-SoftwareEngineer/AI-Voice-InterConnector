@@ -34,6 +34,8 @@ pub mod setup;
 pub mod target;
 pub mod transaction;
 pub mod uninstall;
+pub mod update_fetch;
+pub mod update_resolve;
 
 pub use avi_store::{
     bin_dir, canonical_path_entry_matches, canonical_path_key, data_dir, install_dir,
@@ -77,6 +79,11 @@ pub const BUNDLE_MANIFEST: &str = include_str!("../../../packaging/bundle-manife
 /// error genérico, y `binary_incompatible`, `network_error` y `checksum_mismatch`)
 /// recibirán su propia variante en su propio ciclo, siguiendo el mismo patrón y sin
 /// tocar las de aquí.
+///
+/// El Ciclo 2 declara aquí sus constructores con los enteros que fija su plan
+/// (`binary_incompatible = 19`, `network_error = 20`, `checksum_mismatch = 21`); las
+/// variantes de `ExitCode` y su cableado en `exit_code_for` llegan con U4, que es la
+/// bisagra visible del ciclo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleError {
     pub reason: &'static str,
@@ -150,6 +157,26 @@ impl LifecycleError {
     /// **éxito parcial** con código propio, reintentable con `setup`.
     pub fn setup_failed(message: impl Into<String>) -> Self {
         Self::new("setup_failed", 11, message.into())
+    }
+
+    /// El binario descargado no arranca o no informa la versión objetivo (§9.4,
+    /// paso 8). El entero lo fija el plan del Ciclo 2; la variante de `ExitCode`
+    /// llega con U4.
+    pub fn binary_incompatible(message: impl Into<String>) -> Self {
+        Self::new("binary_incompatible", 19, message.into())
+    }
+
+    /// Fallo de red acotado por los reintentos de §9.1 (§9.4, pasos 3–5 y 7). El
+    /// entero lo fija el plan del Ciclo 2; la variante de `ExitCode` llega con U4.
+    pub fn network_error(message: impl Into<String>) -> Self {
+        Self::new("network_error", 20, message.into())
+    }
+
+    /// El archivo descargado no coincide con `SHA256SUMS.txt` (§12): hash distinto
+    /// o entrada ausente. Nada más queda modificado y el staging se borra. El
+    /// entero lo fija el plan del Ciclo 2; la variante de `ExitCode` llega con U4.
+    pub fn checksum_mismatch(message: impl Into<String>) -> Self {
+        Self::new("checksum_mismatch", 21, message.into())
     }
 }
 
@@ -226,5 +253,111 @@ pub(crate) mod test_support {
         }
         out.sort();
         out
+    }
+
+    /// Respuesta enlatada de un servidor HTTP local de prueba: estado, cuerpo y
+    /// cabeceras adicionales (p. ej. `Location` para una redirección).
+    pub struct FakeResponse {
+        pub status: u16,
+        pub body: Vec<u8>,
+        pub extra_headers: Vec<(String, String)>,
+    }
+
+    impl FakeResponse {
+        /// Respuesta con solo estado y cuerpo, sin cabeceras adicionales.
+        pub fn new(status: u16, body: impl Into<Vec<u8>>) -> Self {
+            Self {
+                status,
+                body: body.into(),
+                extra_headers: Vec::new(),
+            }
+        }
+
+        /// Redirección 302 hacia `location`, con cuerpo vacío.
+        pub fn redirect(location: &str) -> Self {
+            Self {
+                status: 302,
+                body: Vec::new(),
+                extra_headers: vec![("Location".to_string(), location.to_string())],
+            }
+        }
+    }
+
+    /// Sirve `responses` en orden a conexiones locales, una respuesta por
+    /// conexión, y devuelve la URL base más las rutas pedidas en orden.
+    ///
+    /// Es el mock de red a nivel de cliente que el plan de `self update` exige:
+    /// ninguna prueba de resolución o descarga sale a internet. Solo atiende
+    /// `GET` sin cuerpo: lee hasta el fin de las cabeceras, anota la ruta de la
+    /// primera línea y responde con `Content-Length` y cierre de conexión, que es
+    /// lo que un cliente HTTP necesita para no quedarse esperando.
+    pub async fn serve_responses(
+        responses: Vec<FakeResponse>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("se puede enlazar el servidor local de la prueba");
+        let addr = listener
+            .local_addr()
+            .expect("el servidor local tiene dirección");
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let handle = {
+            let seen = std::sync::Arc::clone(&seen);
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                for canned in responses {
+                    let Ok((mut conn, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while let Ok(read) = conn.read(&mut chunk).await {
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.len() > 8192 || request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let path = String::from_utf8_lossy(&request)
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .to_string();
+                    seen.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(path);
+                    let reason = match canned.status {
+                        200 => "OK",
+                        302 => "Found",
+                        404 => "Not Found",
+                        500 => "Internal Server Error",
+                        _ => "OK",
+                    };
+                    let mut head = format!(
+                        "HTTP/1.1 {} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n",
+                        canned.status,
+                        canned.body.len()
+                    );
+                    for (name, value) in &canned.extra_headers {
+                        head.push_str(&format!("{name}: {value}\r\n"));
+                    }
+                    head.push_str("\r\n");
+                    {
+                        let _ = conn.write_all(head.as_bytes()).await;
+                        let _ = conn.write_all(&canned.body).await;
+                    }
+                }
+            })
+        };
+        (format!("http://{addr}"), seen, handle)
     }
 }

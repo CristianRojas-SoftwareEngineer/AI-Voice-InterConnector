@@ -78,11 +78,12 @@ en `docs/BUILD.md` §6.
 ## Inventario completo del lockfile
 
 <!-- inventario:inicio -->
-Generado desde `Cargo.lock` (496 paquetes resueltos, 447 crates únicos, directos y transitivos).
-Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-2.0 1, GPL-3.0-or-later 10, ISC 4, MIT 428, MPL-2.0 2, Unicode-3.0 18, Zlib 5.
+Generado desde `Cargo.lock` (509 paquetes resueltos, 459 crates únicos, directos y transitivos).
+Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-2.0 2, GPL-3.0-or-later 10, ISC 4, MIT 439, MPL-2.0 2, Unicode-3.0 18, Zlib 6.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
+| `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | MIT |
 | `ahash` | 0.8.12 | MIT OR Apache-2.0 | MIT |
 | `aho-corasick` | 1.1.5 | Unlicense OR MIT | MIT |
 | `ai-voice-interconnector` | 0.23.1 | GPL-3.0-or-later | GPL-3.0-or-later |
@@ -96,6 +97,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `anstyle-wincon` | 3.0.11 | MIT OR Apache-2.0 | MIT |
 | `anyhow` | 1.0.104 | MIT OR Apache-2.0 | MIT |
 | `approx` | 0.5.1 | Apache-2.0 | Apache-2.0 |
+| `arbitrary` | 1.4.2 | MIT OR Apache-2.0 | MIT |
 | `arrayvec` | 0.7.8 | MIT OR Apache-2.0 | MIT |
 | `async-trait` | 0.1.92 | MIT OR Apache-2.0 | MIT |
 | `atomic-waker` | 1.1.2 | Apache-2.0 OR MIT | MIT |
@@ -183,6 +185,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `dary_heap` | 0.3.9 | MIT OR Apache-2.0 | MIT |
 | `dasp_sample` | 0.11.0 | MIT OR Apache-2.0 | MIT |
 | `deranged` | 0.5.8 | MIT OR Apache-2.0 | MIT |
+| `derive_arbitrary` | 1.4.2 | MIT OR Apache-2.0 | MIT |
 | `derive_builder` | 0.20.2 | MIT OR Apache-2.0 | MIT |
 | `derive_builder_core` | 0.20.2 | MIT OR Apache-2.0 | MIT |
 | `derive_builder_macro` | 0.20.2 | MIT OR Apache-2.0 | MIT |
@@ -201,7 +204,9 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `errno` | 0.3.14 | MIT OR Apache-2.0 | MIT |
 | `esaxx-rs` | 0.1.10 | Apache-2.0 | Apache-2.0 |
 | `fastrand` | 2.5.0 | Apache-2.0 OR MIT | MIT |
+| `filetime` | 0.2.29 | MIT/Apache-2.0 | MIT |
 | `find-msvc-tools` | 0.1.10 | MIT OR Apache-2.0 | MIT |
+| `flate2` | 1.1.10 | MIT OR Apache-2.0 | MIT |
 | `fnv` | 1.0.7 | Apache-2.0 / MIT | MIT |
 | `foldhash` | 0.2.0 | Zlib | Zlib |
 | `form_urlencoded` | 1.2.2 | MIT OR Apache-2.0 | MIT |
@@ -295,6 +300,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `mime` | 0.3.17 | MIT OR Apache-2.0 | MIT |
 | `mime_guess` | 2.0.5 | MIT | MIT |
 | `minimal-lexical` | 0.2.1 | MIT/Apache-2.0 | MIT |
+| `miniz_oxide` | 0.9.1 | MIT OR Zlib OR Apache-2.0 | MIT |
 | `mio` | 1.2.2 | MIT | MIT |
 | `monostate` | 0.1.18 | MIT OR Apache-2.0 | MIT |
 | `monostate-impl` | 0.1.18 | MIT OR Apache-2.0 | MIT |
@@ -419,6 +425,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `shlex` | 1.3.0 | MIT OR Apache-2.0 | MIT |
 | `shlex` | 2.0.1 | MIT OR Apache-2.0 | MIT |
 | `signal-hook-registry` | 1.4.8 | MIT OR Apache-2.0 | MIT |
+| `simd-adler32` | 0.3.10 | MIT | MIT |
 | `simd_cesu8` | 1.2.0 | Apache-2.0 OR MIT | MIT |
 | `simdutf8` | 0.1.5 | MIT OR Apache-2.0 | MIT |
 | `slab` | 0.4.12 | MIT | MIT |
@@ -439,6 +446,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `sysinfo` | 0.38.4 | MIT | MIT |
 | `system-configuration` | 0.7.0 | MIT OR Apache-2.0 | MIT |
 | `system-configuration-sys` | 0.6.0 | MIT OR Apache-2.0 | MIT |
+| `tar` | 0.4.46 | MIT OR Apache-2.0 | MIT |
 | `tempfile` | 3.27.0 | MIT OR Apache-2.0 | MIT |
 | `termcolor` | 1.4.1 | Unlicense OR MIT | MIT |
 | `thiserror` | 1.0.69 | MIT OR Apache-2.0 | MIT |
@@ -506,10 +514,12 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `wasm-bindgen-macro` | 0.2.127 | MIT OR Apache-2.0 | MIT |
 | `wasm-bindgen-macro-support` | 0.2.127 | MIT OR Apache-2.0 | MIT |
 | `wasm-bindgen-shared` | 0.2.127 | MIT OR Apache-2.0 | MIT |
+| `wasm-streams` | 0.4.2 | MIT OR Apache-2.0 | MIT |
 | `wasm-streams` | 0.5.0 | MIT OR Apache-2.0 | MIT |
 | `web-sys` | 0.3.104 | MIT OR Apache-2.0 | MIT |
 | `web-time` | 1.1.0 | MIT OR Apache-2.0 | MIT |
 | `webpki-root-certs` | 1.0.9 | CDLA-Permissive-2.0 | CDLA-Permissive-2.0 |
+| `webpki-roots` | 1.0.9 | CDLA-Permissive-2.0 | CDLA-Permissive-2.0 |
 | `whoami` | 2.1.3 | Apache-2.0 OR BSL-1.0 OR MIT | MIT |
 | `winapi` | 0.3.9 | MIT/Apache-2.0 | MIT |
 | `winapi-i686-pc-windows-gnu` | 0.4.0 | MIT/Apache-2.0 | MIT |
@@ -563,6 +573,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `winnow` | 1.0.4 | MIT | MIT |
 | `wit-bindgen` | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | MIT |
 | `writeable` | 0.6.4 | Unicode-3.0 | Unicode-3.0 |
+| `xattr` | 1.6.1 | MIT OR Apache-2.0 | MIT |
 | `xet-client` | 1.6.0 | Apache-2.0 | Apache-2.0 |
 | `xet-core-structures` | 1.6.0 | Apache-2.0 | Apache-2.0 |
 | `xet-data` | 1.6.0 | Apache-2.0 | Apache-2.0 |
@@ -578,6 +589,8 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `zerotrie` | 0.2.5 | Unicode-3.0 | Unicode-3.0 |
 | `zerovec` | 0.11.7 | Unicode-3.0 | Unicode-3.0 |
 | `zerovec-derive` | 0.11.4 | Unicode-3.0 | Unicode-3.0 |
+| `zip` | 2.4.2 | MIT | MIT |
+| `zlib-rs` | 0.6.7 | Zlib | Zlib |
 | `zmij` | 1.0.23 | MIT | MIT |
 <!-- inventario:fin -->
 
