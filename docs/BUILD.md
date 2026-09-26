@@ -568,10 +568,10 @@ un bundle).
 
 | Aspecto | Windows | Linux | macOS |
 |---------|---------|-------|-------|
-| PATH | El one-liner `install-windows.ps1` registra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` en HKCU (sin UAC); el binario `uninstall` lo revierte | `install-linux.sh` crea symlink `~/.local/bin/ai-voice-interconnector → ~/.local/opt/ai-voice-interconnector/ai-voice-interconnector`; `uninstall` lo borra | One-liner `install-macos.sh` análogo a Linux (`~/.local/bin`); Cask `brew install --cask` enlaza en `/opt/homebrew/bin` |
+| PATH | El one-liner `install-windows.ps1` registra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` en HKCU (sin UAC); `self uninstall` lo revierte conservando el tipo del valor | `install-linux.sh` crea symlink `~/.local/bin/ai-voice-interconnector → ~/.local/opt/ai-voice-interconnector/ai-voice-interconnector`; `self uninstall` lo retira | One-liner `install-macos.sh` análogo a Linux (`~/.local/bin`); Cask `brew install --cask` enlaza en `/opt/homebrew/bin` |
 | Guía hacia `setup` | El one-liner encadena `setup` tras instalar | Ídem | Ídem (Cask no encadena; caveat remite a `setup`) |
-| Desinstalación | `ai-voice-interconnector uninstall --force` (HKCU + dir + cleanup) o manual | `ai-voice-interconnector uninstall --force` (symlink + dir + cleanup) | `ai-voice-interconnector uninstall --force` o `brew uninstall --cask --zap` |
-| Datos provisionados | `ai-voice-interconnector cleanup --voices` / `--synthetic-speech` / `--model` / `--all` (unión sin binario/PATH; sin flags → exit 2) | Ídem | Ídem |
+| Desinstalación | `ai-voice-interconnector self uninstall --yes` (programa + PATH + estado, con R2) o manual | `ai-voice-interconnector self uninstall --yes` (enlace + dir + estado) | `ai-voice-interconnector self uninstall --yes` o `brew uninstall --cask --zap` |
+| Datos provisionados | `ai-voice-interconnector cleanup --voices` / `--synthetic-speech` / `--model` / `--all` (limpieza granular sin programa ni PATH; sin categoría → exit 2) | Ídem | Ídem |
 
 ### Limitación conocida: firma de código y notarización
 
@@ -688,14 +688,22 @@ La provisión se decide solo por presencia del snapshot HF; no hay índice
 `manifest.json` intermedio (los `manifest.json` de versiones previas que
 queden en disco son inertes y los barre `cleanup`):
 
-| SO | Cache HF (`hf_cache_dir()`) | Datos del usuario (`data_dir()`) |
+| SO | Modelos (`models_cache_dir()`) | Datos del usuario (`data_dir()`) |
 |----|------------------------------|----------------------------------|
-| Windows | `%USERPROFILE%\.cache\huggingface\hub` | `%APPDATA%\ai-voice-interconnector\data` |
-| Linux | `~/.cache/huggingface/hub` | `~/.local/share/ai-voice-interconnector/data` |
-| macOS | `~/.cache/huggingface/hub` | `~/Library/Application Support/ai-voice-interconnector/data` |
+| Windows | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` | `%LOCALAPPDATA%\ai-voice-interconnector\data` |
+| Linux | `$XDG_CACHE_HOME/ai-voice-interconnector/models` (`~/.cache/ai-voice-interconnector/models`) | `~/.local/share/ai-voice-interconnector` |
+| macOS | `~/Library/Caches/ai-voice-interconnector/models` | `~/Library/Application Support/ai-voice-interconnector` |
 
-`doctor` imprime la ruta resuelta (`Cache HF:` / campo `hf_cache` en `--json`)
-para auditoría. `cleanup --model/--voices/--synthetic-speech/--all` borra selectivamente snapshots HF + datos de usuario (sin binario ni PATH; sin flags sale con exit 2 `usage_error`); `uninstall` es el único que añade binario y PATH.
+La raíz de modelos es **exclusiva de la aplicación** y por eso `cleanup --model` puede
+borrarla como directorio entero; si el usuario define `HF_HUB_CACHE` o `HF_HOME`, esa raíz
+pasa a ser **compartida** y el alcance se limita a lo atribuible a la aplicación (regla R3:
+nunca `xet` ni el `.locks` completo).
+
+`doctor` informa las dos raíces resueltas para auditoría: `models.root` (con
+`models.shared_root`) y `install.data_dir` en `--json`; en texto, las imprime en las
+líneas de detalle de cada chequeo. `cleanup --model/--voices/--synthetic-speech/--all` borra
+selectivamente el estado del usuario (sin programa ni `PATH`; sin categoría sale con exit 2
+`usage_error`); `self uninstall` es el único que añade programa y `PATH`.
 
 ## 8. Limpieza del entorno de desarrollo
 
@@ -705,7 +713,7 @@ Cada capa tiene su comando:
 | Capa | Qué contiene | Comando |
 |------|--------------|---------|
 | Proyecto (repo) | `target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario/objetos/`output.wav` del motor y pesos locales obsoletos en `vendor/qwen3-tts` | `cargo run -p xtask -- clean` |
-| App (perfil de usuario) | Instalación, `data_dir()`, snapshots HF pineados, `hub/ct2`, `hub/.locks`, `xet`, temporales `avi_*`/`avi-*`/`*.qvoice` | `cargo run -p xtask -- clean` (o `ai-voice-interconnector uninstall` sin repo) |
+| App (perfil de usuario) | Instalación, `data_dir()`, raíz de modelos, derivados CT2 y temporales `avi_*`/`avi-*`/`*.qvoice` | `cargo run -p xtask -- clean` (delega en `ai-voice-interconnector self uninstall --yes`; también se puede invocar directamente sin repo) |
 | Global compartida | `~/.cargo/registry`, `~/.cargo/git`, caché de `sccache`, paquetes `pip` del conversor CTranslate2 | Manual: la comparten otros proyectos |
 
 ```bash
@@ -717,7 +725,7 @@ cargo run -p xtask -- clean --yes
 ```
 
 `clean` se ejecuta desde la raíz del repo. Antes de borrar, desinstala el
-binario instalado (`uninstall --force`) y detiene el daemon lanzado desde
+binario instalado (`self uninstall --yes`) y detiene el daemon lanzado desde
 `target/`. Nunca borra código fuente versionado. En Windows, el propio
 `xtask.exe` en ejecución se borra con un proceso auxiliar al terminar.
 

@@ -92,7 +92,7 @@ clonar, el precalentamiento en segundo plano de la voz recién clonada (eviccion
 la voz caliente previa; el residente TTS es de una sola voz) y responde
 `precomputed: true` con la semántica «precarga en caliente iniciada» —la
 completitud real se refleja en `GET /health` (`warm`). La **ruta local** responde
-始终 `precomputed: false`: su motor TTS es efímero por proceso, no hay
+siempre `precomputed: false`: su motor TTS es efímero por proceso, no hay
 residente persistente que calentar. El antiguo endpoint `POST /voices/precompute`
 fue purgado (`crates/avi-daemon/src/lib.rs` expone 7 rutas públicas, sin
 `/voices/precompute` ni `GET /voices`); la precarga vive ahora en el propio

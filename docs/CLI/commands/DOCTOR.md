@@ -1,164 +1,155 @@
 # `doctor`
 
-Diagnóstico de entorno sin efectos secundarios: no descarga, no instala, no
-inicia procesos. Verifica que los modelos pinneados estén provisionados, que
-el directorio de datos exista y que el almacén de voces sea legible. Emite un
-veredicto (texto o JSON) y termina con exit code `1` si algún chequeo
-obligatorio falló.
+Diagnóstico del sistema y del estado del ciclo de vida, **sin efectos secundarios**: no descarga, no instala, no borra y no inicia procesos. Es la única operación del ciclo de vida que el usuario puede ejecutar sin riesgo, y por eso es donde el estado de la instalación tiene que ser legible: versión y target, canal, instalación y recibo, `PATH` con duplicados y precedencia, pendientes de una operación anterior y modelos.
 
-Implementación: `handle_doctor` (`src/main.rs`), apoyado en `avi-store`
-(`crates/avi-store/src/lib.rs`: `ModelStore::is_provisioned`, `is_ct2_provisioned`,
-`hf_cache_dir`, `data_dir`) y en `VoiceStore::list` (`crates/avi-store/src/lib.rs`).
+Emite un **veredicto** —texto o JSON— y termina con exit code **1** si algún chequeo falla.
+
+**Implementación:** el motor es el módulo `doctor` de `avi-lifecycle` (`crates/avi-lifecycle/src/doctor.rs`), que devuelve el reporte **como dato serializable** y sin imprimir nada. `src/main.rs` (`handle_doctor`) solo lo estampa, decide el código de salida y compone el veredicto.
+
+**Por qué el motor no imprime.** El contrato de la CLI exige que cada invocación emita **exactamente un objeto JSON**, y que la salida por veredicto de `doctor` —código ≠ 0 con el reporte ya emitido y **sin** objeto `error` detrás— no lleve un segundo objeto. Eso solo es posible si el veredicto es un **dato** que el binario compone, y no una impresión con un `exit` detrás. En el motor no hay `println!` ni `exit`: hay una función que devuelve el reporte con su veredicto dentro.
 
 ---
 
-## Superficie CLI
+## Definición CLI (parser)
 
 ```
 ai-voice-interconnector doctor [--json]
 ```
 
-`Doctor` es una variante sin campos del enum `Commands` (`src/main.rs`): no
-admite subcomandos ni flags propias. Solo hereda el flag global `--json`
-(`src/main.rs`); los flags globales `--daemon`/`--no-daemon` no aplican
-porque `doctor` nunca dialoga con el daemon (`src/main.rs`
-`Some(Commands::Doctor) => handle_doctor(json_mode)`, llamada síncrona sin
-`daemon_mode`).
+`Doctor` es una variante **sin campos** del enum `Commands`: no admite subcomandos ni flags propias. Solo hereda el flag global `--json`. Los flags globales `--daemon`/`--no-daemon` no aplican porque `doctor` nunca dialoga con el daemon: la llamada es síncrona y no recibe `daemon_mode`.
 
 ---
 
-## Flujo de chequeos
+## Las nueve claves del sobre
 
-```
-handle_doctor
-    │
-    ▼
-data_dir() existe                              ← issue si falta
-    │
-    ▼
-is_provisioned("qwen3-tts-0.6b")               ← issue si falta
-is_provisioned("parakeet-tdt-v3")              ← issue si falta
-is_provisioned("marian-es-en")
-    │  false → issue "no provisionado"
-    │  true  → is_ct2_provisioned("es-en")      ← issue con ficheros faltantes si incompleto
-is_provisioned("marian-en-es")
-    │  false → issue "no provisionado"
-    │  true  → is_ct2_provisioned("en-es")      ← issue con ficheros faltantes si incompleto
-    │
-    ▼
-is_provisioned("qwen3-tts-0.6b-base")          ← opt-in, NUNCA genera issue
-    │  true  → base_status = "ready"
-    │  false → base_status = "missing_opt_in"
-    │
-    ▼
-voice_store.list()                             ← issue "Error al listar voces" si falla
-    │
-    ▼
-Salida (JSON o texto) + Ok(()) si issues vacío, Err(CliError) si no
-```
+| Clave | Contenido |
+|---|---|
+| `version` | Versión del binario en ejecución |
+| `target` | Tripla del target del host |
+| `channel` | `script`, `dev`, `homebrew` o `unmanaged` |
+| `install` | `dir` (directorio de programa), `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`) y `version` (la del recibo, si lo hay) |
+| `path` | `resolves_to_this_install`, `duplicate_entries`, `integration` (`present`/`absent`/`not_modified`) y `coexisting` (instalaciones ajenas, con su canal y cuál tiene precedencia) |
+| `pending` | `transaction_journal`, `parked`, `stagings`, `temporaries` y `temporaries_kept` |
+| `models` | `root`, `shared_root`, `provisioned`, `missing`, `base`, `ct2_incomplete` y `size_bytes` |
+| `checks` | Una entrada `{name, ok, detail}` por comprobación |
+| `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
 
-Son **6 chequeos obligatorios** (directorio de datos, TTS, STT, CT2 es→en, CT2
-en→es, listado de voces) más **1 chequeo advisory** (modelo Base de clonado,
-opt-in). Solo los obligatorios acumulan en `issues`; el Base nunca lo hace, ni
-siquiera cuando falta.
+`schema_version` lo inyecta `emit_raw_json` y vale **`"4"`**. El protocolo del daemon sigue en `"3"`: son contratos independientes y este no lo toca.
 
-A diferencia de `setup`, `doctor` nunca llama a `ensure_downloaded` ni a
-`convert_marian_to_ct2`: solo lee el estado ya provisionado con las mismas
-funciones de verificación que usa `setup` para decidir si saltarse un modelo
-(`is_provisioned`, `is_ct2_provisioned`).
+### Las cuatro claves que se retiran
+
+`data_dir`, `hf_cache`, `base_status` e `issues` **ya no son claves de primer nivel**. No se emiten **ni siquiera como nombre**: la prueba del módulo afirma el **conjunto exacto** de claves del sobre, que es una afirmación más fuerte que una lista de prohibidas.
+
+**La información no se pierde, cambia de sitio:**
+
+| Clave retirada | Dónde vive ahora |
+|---|---|
+| `data_dir` | `install.data_dir` — y es la raíz de datos **efectiva**, la del recibo si lo hay |
+| `hf_cache` | `models.root`, con `models.shared_root` diciendo si esa raíz es la caché HF compartida que eligió el usuario |
+| `base_status` | `models.base`, con los mismos dos valores (`ready` / `missing_opt_in`) |
+| `issues` | `checks` (el detalle por comprobación) y `failed` (los nombres de las que fallan) |
+
+**Por qué se retiran en vez de quedarse**: el contrato niega las claves de primer nivel que duplican lo que una sección ya dice mejor, y §9.8 de la especificación coloca la raíz de datos dentro de `install`, el estado de los modelos dentro de `models` y el `PATH` dentro de `path`. Retirar claves es un cambio **incompatible**, y por eso el sobre de la CLI sube a `"4"` en lugar de quedarse como adición.
 
 ---
 
-## Chequeo CT2 de traducción
+## Los seis chequeos
 
-`is_ct2_provisioned(pair)` (`crates/avi-store/src/lib.rs`) exige el
-derivado completo, no solo el snapshot Marian: `model.bin` más un tokenizador
-válido (`tokenizer.json`, o el par `source.spm`+`target.spm` que produce
-`convert_marian_to_ct2`). Un `model.bin` huérfano sin tokenizador cuenta como
-incompleto. El mensaje de issue incluye la lista exacta de ficheros faltantes
-vía `ct2_missing_files(pair)` (`crates/avi-store/src/lib.rs`), por
-ejemplo:
+`checks` y `failed` son el veredicto, y `failed` no está vacío si y solo si hay algún `ok: false`:
 
-```
-Modelo CT2 es→en incompleto en 'hf_cache_dir/ct2/opus-mt-es-en' (exige model.bin
-más tokenizer.json o source.spm+target.spm) — ejecuta setup
-```
-
-Nótese que este chequeo depende del snapshot Marian correspondiente: si
-`marian-es-en` no está provisionado, la issue reportada es la de snapshot
-ausente, no la de CT2 incompleto (son ramas mutuamente excluyentes por
-dirección, `src/main.rs`).
-
----
-
-## Contrato `--json`
-
-Con `--json`, `handle_doctor` emite un único objeto vía `emit_raw_json`
-(`src/main.rs`), que inyecta `schema_version` automáticamente
-(`crates/avi-core/src/json_emitter.rs`):
-
-| Clave | Tipo | Significado |
+| `name` | Falla cuando | Qué mira |
 |---|---|---|
-| `schema_version` | string | Inyectada por `emit_raw_json`/`with_schema_version` |
-| `status` | string | `"ok"` si `issues` está vacío, `"failed"` en otro caso |
-| `data_dir` | string | Ruta de `store::data_dir()` |
-| `hf_cache` | string | Ruta de `store::hf_cache_dir()` |
-| `issues` | array de strings | Mensajes de los chequeos obligatorios fallidos (vacío si todo pasa) |
-| `base_status` | string | `"ready"` o `"missing_opt_in"` — nunca afecta `status` ni exit code |
+| `install_receipt` | No hay recibo en el directorio de programa | Recibo válido o ausente |
+| `path_resolves` | La **primera** entrada del `PATH` que apunta a una instalación no es la registrada | Orden de precedencia |
+| `path_duplicates` | Más de una entrada del `PATH` apunta a una instalación | Coexistencia (Cask + `script`) |
+| `pending_artifacts` | Quedan aparcados, stagings o temporales por recoger | Transacción interrumpida |
+| `models_provisioned` | Falta algún repo de `MODEL_REVISIONS` | Solo presencia de snapshot, con los ficheros críticos |
+| `models_ct2` | Hay `Marian` provisionado y su derivado CT2 no pasa el gate | `model.bin` más tokenizador completo |
 
-No hay array `checks` con entradas `{status, name, detail}`, ni contadores
-`passed`/`failed`, ni campos `platform`/`python`: el contrato real es plano,
-con `issues` como única fuente de detalle por chequeo.
+**El modelo Base de clonado no es un chequeo.** `qwen3-tts-0.6b-base` es opt-in: su ausencia es un dato (`models.base = "missing_opt_in"`), nunca un fallo, porque no es obligatorio para que el producto funcione.
 
-**Particularidad cuando hay fallos:** `handle_doctor` retorna `Err(CliError)`
-además de haber emitido su propio JSON a stdout. El bucle de `main`
-(`src/main.rs`) trata ese error igual que el de cualquier otro
-comando: con `--json` imprime un **segundo** objeto JSON en stdout,
-`{"error": "...", "reason": "doctor_checks_failed"}` (también con
-`schema_version` inyectado), antes de salir con `exit(1)`. Un consumidor de
-`--json doctor` que falla debe esperar **dos objetos JSON concatenados** en
-stdout, no uno solo.
+**El chequeo de CT2 depende del snapshot de Marian.** Si `marian-es-en` no está provisionado, lo que se informa es el modelo ausente, no un derivado incompleto: son ramas excluyentes por dirección.
+
+**Nada de esto escribe en disco.** La recuperación de §9.1 se ejecuta aquí en **modo informe**: `doctor` **calcula** lo que la recuperación haría —con la misma decisión que usa el barrido real— y lo publica en `pending`, sin tomar el bloqueo y sin modificar nada. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del producto en uno que borra temporales de la máquina que lo invoca.
 
 ---
 
-## Salida en texto
+## Un solo objeto, también cuando falla
 
-Sin `--json` y sin issues:
+Este es el punto donde el contrato es más estricto y donde el comportamiento se decidió a propósito:
 
+- Con `--json`, `doctor` emite **un único objeto**: el reporte, con el veredicto dentro (`checks` y `failed`).
+- Si algún chequeo falla, el código de salida es **1** y **no se adjunta el objeto `error` detrás**. Es una **salida por veredicto** (`Salida::Veredicto`), no un error: el comando corrió sin error y su resultado es negativo.
+- Devolver `Err(CliError)` desde aquí haría que `main` escribiera un segundo objeto `error` detrás del reporte y el sobre sería ilegible, que es exactamente el defecto que «cada invocación emite exactamente un objeto JSON» prohíbe.
+
+Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea de veredicto detrás; si todo pasa, la lista completa con `✓` va a stdout.
+
+---
+
+## Contrato `--json` (ejemplo)
+
+```json
+{
+  "schema_version": "4",
+  "version": "0.23.1",
+  "target": "x86_64-pc-windows-msvc",
+  "channel": "script",
+  "install": {
+    "dir": "C:\\Users\\…\\AppData\\Local\\Programs\\ai-voice-interconnector",
+    "data_dir": "C:\\Users\\…\\AppData\\Local\\ai-voice-interconnector\\data",
+    "receipt": "valid",
+    "version": "0.23.1"
+  },
+  "path": {
+    "resolves_to_this_install": true,
+    "duplicate_entries": [],
+    "integration": "present",
+    "coexisting": []
+  },
+  "pending": {
+    "transaction_journal": false,
+    "parked": [],
+    "stagings": [],
+    "temporaries": [],
+    "temporaries_kept": []
+  },
+  "models": {
+    "root": "C:\\Users\\…\\AppData\\Local\\ai-voice-interconnector\\cache\\models",
+    "shared_root": false,
+    "provisioned": ["qwen3-tts-0.6b", "marian-es-en", "marian-en-es", "parakeet-tdt-v3"],
+    "missing": [],
+    "base": "missing_opt_in",
+    "ct2_incomplete": [],
+    "size_bytes": 9876543210
+  },
+  "checks": [
+    { "name": "install_receipt", "ok": true, "detail": "recibo válido en …" }
+  ],
+  "failed": []
+}
 ```
-Diagnóstico: todo correcto.
-Cache HF: <ruta>
-```
 
-o, si el modelo Base de clonado no está provisionado:
+**`integration` pregunta al registro, no al `PATH` del proceso**, en Windows: el registro es lo que sobrevive a la sesión. En Unix pregunta por el enlace, y no necesita el `PATH` porque la integración es el archivo de arranque. `not_modified` es el valor de `--no-modify-path`, y no es un fallo: el recibo registra que nunca se integró nada, y por eso `self uninstall` no toca ningún perfil.
 
-```
-Diagnóstico: todo correcto. [WARN] Modelo Base de clonado no provisionado (usa setup --with-voice-cloning).
-Cache HF: <ruta>
-```
-
-Con issues, cada una se imprime en stderr con prefijo `✗`, seguida del WARN
-del Base si aplica (prefijo `⚠`) y la línea de cache HF; luego `main` imprime
-`Error: Chequeos de entorno fallaron` en stderr y sale con `exit(1)`
-(`src/main.rs`).
+**El directorio de programa registrado puede no estar en el `PATH` de la sesión** —se invoca por su ruta completa— y aun así es la instalación a la que se opera; en ese caso se informa igualmente en `coexisting`, y sin precedencia.
 
 ---
 
 ## Errores
 
-| Reason | Código | Causa |
+| Situación | Código | `reason` |
 |---|---|---|
-| `doctor_checks_failed` | Error (1) | Al menos un chequeo obligatorio (directorio de datos, TTS, STT, CT2 es→en, CT2 en→es, listado de voces) falló |
+| Algún chequeo falló | **1** | — (no hay `reason`: el veredicto va en `checks`/`failed`) |
+| No se pudo resolver el ejecutable en ejecución | 1 | `doctor_failed` |
 
-`doctor` no define reasons propias adicionales: cualquier fallo obligatorio,
-sin importar cuál, colapsa al mismo `reason` con el detalle en `issues`
-(JSON) o en stderr (texto).
+**`doctor` no tiene `reason` de contrato propios.** Un fallo de chequeo no es un error de la operación: es el dictamen que el comando existe para dar. La única excepción es `doctor_failed`, que es un fallo real del comando (no se pudo resolver `current_exe` o serializar el reporte) y sale por el canal de error normal.
 
 ---
 
 ## Ejemplos
 
 ```bash
-ai-voice-interconnector doctor                # reporte en texto, exit 0 o 1
-ai-voice-interconnector --json doctor         # payload legible por máquina
+ai-voice-interconnector doctor                       # reporte en texto, exit 0 o 1
+ai-voice-interconnector --json doctor                # sobre con las nueve claves
+ai-voice-interconnector --json doctor | jq .failed   # solo los chequeos que fallan
 ```

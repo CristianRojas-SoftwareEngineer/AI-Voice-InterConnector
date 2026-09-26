@@ -83,7 +83,7 @@ Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO)
 - **Cero dependencias externas**: El usuario final no instala Python, Node, Rust ni nada más
 - **Descarga + instalación + configuración** en un solo paso (one-liner verifica checksum, extrae, integra PATH y encadena `setup`)
 - **Audio nativo**: playback usando APIs nativas del SO (cpal)
-- **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero (`uninstall` borra binario+PATH; `cleanup --all` es unión Modelo+voces+habla sin binario ni PATH — ver `docs/CLI/CONTRACT.md §11`), en los tres sistemas operativos por igual (ver [docs/PARITY.md](PARITY.md))
+- **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero (`self uninstall` borra programa+PATH+estado; `cleanup --all` es la limpieza granular del estado sin tocar el programa — ver `docs/CLI/CONTRACT.md §11`), en los tres sistemas operativos por igual (ver [docs/PARITY.md](PARITY.md))
 
 El **canal PyPI fue retirado en la Fase 7** (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)): la distribución es 100% Rust por archivos comprimidos. La mención histórica se conserva solo para auditoría.
 
@@ -98,7 +98,7 @@ El ideal de paridad que persigue el goal inmediato, por fase del ciclo de vida (
 | Provisión | Modelo descargado al terminar la instalación (`setup` encadenado u ofrecido) |
 | Uso | CLI, daemon, voces y contratos `--json` idénticos |
 | Actualización | Reemplaza la versión anterior sin residuo ni pasos-trampa |
-| Desinstalación | Datos (`cleanup --all` = unión Modelo+voces+habla, sin binario ni PATH) + binario (`uninstall`), con residuo cero |
+| Desinstalación | Estado con `cleanup --all` ( granular, sin tocar el programa) y programa+PATH+estado con `self uninstall`, con residuo cero |
 
 #### Comandos CLI
 
@@ -143,13 +143,13 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 
 #### Desinstalación en un comando
 
-La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina binario, PATH integrado y datos (modelo y voces), con residuo cero, en los tres SO. `ai-voice-interconnector uninstall` es el único que borra binario y PATH (`cleanup --all` es unión Modelo+voces+habla sin binario ni PATH — `handle_cleanup`/`handle_uninstall` (`src/main.rs`), `docs/CLI/CONTRACT.md §11`). Ambos son multiplataforma y espejan la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación:
+La desinstalación es **equivalente en esfuerzo a la instalación de una línea**: un único comando elimina programa, PATH integrado y estado (modelo y voces), con residuo cero, en los tres SO. `ai-voice-interconnector self uninstall` es el único que borra programa y PATH (`cleanup` es la limpieza granular del estado, sin tocar el programa — `crates/avi-lifecycle/src/cleanup.rs` y `uninstall.rs`, `docs/CLI/CONTRACT.md §11`). Ambas son multiplataforma y espejan la instalación one-line de cada plataforma. La desinstalación es atómica de cara al usuario: cancelar la confirmación del borrado aborta el proceso sin eliminar nada. Cada SO elimina el mismo conjunto de componentes; la secuencia interna de borrado y su mecánica son detalle de implementación:
 
-- **Linux**: el symlink `~/.local/bin/ai-voice-interconnector`, el directorio de instalación `~/.local/opt/ai-voice-interconnector/` y los datos (`cleanup`). Sin `sudo`. (`uninstall --force` omite confirmación)
-- **macOS**: análogo a Linux (`uninstall` limpia symlink + `~/.local/opt` + `cleanup`) en la vía one-liner; con **Homebrew Cask**, `brew uninstall --cask --zap ai-voice-interconnector` sigue siendo la vía idiomática (cubre también los datos). Sin `sudo`.
-- **Windows**: los datos (`cleanup`), el directorio `%LOCALAPPDATA%\Programs\ai-voice-interconnector` y la entrada del PATH de usuario (`HKCU\Environment` + `WM_SETTINGCHANGE`). Sin UAC; `--force` omite confirmación.
+- **Linux**: el enlace `~/.local/bin/ai-voice-interconnector`, el directorio de instalación `~/.local/opt/ai-voice-interconnector/` y el estado. Sin `sudo`. (`--yes` omite la confirmación; sin terminal es obligatorio)
+- **macOS**: análogo a Linux (`self uninstall` retira el enlace + `~/.local/opt` + el estado) en la vía one-liner; con **Homebrew Cask**, `brew uninstall --cask --zap ai-voice-interconnector` sigue siendo la vía idiomática (cubre también el estado). Sin `sudo`.
+- **Windows**: el estado, el directorio `%LOCALAPPDATA%\Programs\ai-voice-interconnector` y la entrada del PATH de usuario (`HKCU\Environment` + `WM_SETTINGCHANGE`). Sin UAC; `--yes` omite la confirmación.
 
-Las vías idiomáticas por SO (`brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `uninstall` es la vía equivalente de un comando en las tres plataformas. El estado real de esta paridad vive en [docs/PARITY.md](PARITY.md). El binario gestiona PATH/dir directamente.
+Las vías idiomáticas por SO (`brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `self uninstall` es la vía equivalente de un comando en las tres plataformas. El estado real de esta paridad vive en [docs/PARITY.md](PARITY.md). El binario gestiona PATH/dir directamente.
 
 #### Estructura del proyecto
 
@@ -168,7 +168,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 7. [x] El español latinoamericano suena natural y con buena prosodia
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
-10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del registro de [docs/PARITY.md](PARITY.md) están cerradas a nivel de código/scripts/tests (one-liner macOS `install-macos.sh`, `.command` sin `sudo`, limpieza de artefactos en `install-linux.sh`, `zap` del Cask completo, README con las tres plataformas — cerradas en v0.5.0 — y `setup --uninstall` multiplataforma — brecha de *desinstalación en un comando*, cerrada a nivel de código/scripts/tests en v0.6.0). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
+10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del registro de [docs/PARITY.md](PARITY.md) están cerradas a nivel de código/scripts/tests (one-liner macOS `install-macos.sh`, `.command` sin `sudo`, limpieza de artefactos en `install-linux.sh`, `zap` del Cask completo, README con las tres plataformas — cerradas en v0.5.0 — y `setup --uninstall` multiplataforma — brecha de *desinstalación en un comando*, cerrada a nivel de código/scripts/tests en v0.6.0; la invocación citada era la de entonces y hoy el comando es `self uninstall`—). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
 
 #### Validación E2E
 

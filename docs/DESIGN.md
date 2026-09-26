@@ -69,9 +69,12 @@ AI-Voice-InterConnector/
 │   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)
 │   ├── avi-stt/                        # ParakeetEngine (ort, load-dynamic)
 │   ├── avi-translation/                # Ct2TranslationEngine (CTranslate2/ct2rs)
+│   ├── avi-lifecycle/                  # Motor del ciclo de vida: install, uninstall, cleanup, doctor, recibo, bloqueo, PATH
+├── packaging/
+│   └── bundle-manifest.json            # Lista canónica de archivos del bundle (la validan self install y cargo xtask package)
 ├── vendor/
 │   └── qwen3-tts/                      # Binario y pesos Qwen3-TTS (no commiteados todos)
-└── crates/xtask/src/main.rs            # cask / source-offer / licenses (tooling Rust)
+└── crates/xtask/src/main.rs            # cask / source-offer / licenses / clean (tooling Rust)
 ├── install-linux.sh                    # One-liner Linux (curl|sh)
 ├── install-macos.sh                    # One-liner macOS (curl|sh)
 ├── install-windows.ps1                 # One-liner Windows (irm|iex)
@@ -96,7 +99,7 @@ AI-Voice-InterConnector/
 
 ## Entry point `src/main.rs`
 
-`src/main.rs` es el **punto de entrada único** del binario. Usa `clap` para parsear los subcomandos (`version`, `devices`, `translate`, `voice`, `speech`, `daemon`, `setup`, `cleanup`, `uninstall`, `doctor`) y hace dispatch a los crates (`avi-tts`, `avi-store`, etc.) o al daemon vía HTTP. Es también la **fuente de verdad de la versión** (`const VERSION = "X.Y.Z"`, espejo de `Cargo.toml` y `tests/golden/cli_version.json`).
+`src/main.rs` es el **punto de entrada único** del binario. Usa `clap` para parsear los subcomandos (`version`, `devices`, `translate`, `voice`, `speech`, `daemon`, `setup`, `cleanup`, `self`, `doctor`) y hace dispatch a los crates (`avi-tts`, `avi-store`, etc.) o al daemon vía HTTP. Es también la **fuente de verdad de la versión** (`const VERSION = "X.Y.Z"`, espejo de `Cargo.toml` y `tests/golden/cli_version.json`).
 
 En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-interconnector <args>`.
 
@@ -164,7 +167,7 @@ Principales:
 - `voice clone/list/remove` — gestión de voces
 - `speech say/synthesize/transcribe/dub/play/list/remove` — síntesis y audio
 - `daemon start/stop/restart/status/serve` — daemon HTTP
-- `cleanup [--all]` / `uninstall [--force]` — limpieza y desinstalación en un comando
+- `cleanup [--all]` / `self install` / `self uninstall [--keep-data]` — limpieza granular y ciclo de vida de la instalación en un comando
 - `doctor` — diagnóstico de entorno
 
 ## Compilación Rust (cargo)

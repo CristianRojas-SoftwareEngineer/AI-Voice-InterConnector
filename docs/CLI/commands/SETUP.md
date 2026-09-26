@@ -1,69 +1,55 @@
 # `setup`
 
-Provisiona el runtime: chequeos de entorno + descarga de los modelos pinneados
-desde HuggingFace y derivación del modelo CT2 de traducción. Es idempotente: una
-segunda ejecución solo registra los snapshots ya presentes.
+Provisiona el runtime: descarga los modelos pinneados desde HuggingFace Hub y convierte el derivado CT2 de traducción. Es **idempotente**: una segunda ejecución con todo presente no descarga nada.
 
-Implementación: `handle_setup` (`src/main.rs`), apoyado en `avi-store`
-(`crates/avi-store/src/lib.rs`: `MODEL_REVISIONS`, `ensure_downloaded`,
-`is_provisioned`, `remove_hf_snapshot`, `remove_xet_cache`, `is_ct2_provisioned`).
+**Implementación:** el motor es el módulo `setup` de `avi-lifecycle` (`crates/avi-lifecycle/src/setup.rs`), que es una **traducción fiel, no un rediseño**: conserva la semántica que ya existía —selección por banderas, idempotencia por presencia del snapshot, purga de `--force-update` sobre la selección y conversión del derivado con directorio temporal atómico y el mismo gate que la acepta—. En `src/main.rs` quedan solo `handle_setup` y el sobre `--json`, porque el parseo de la CLI y el emisor no viven en ese crate.
 
 ---
 
-## Superficie CLI
+## Definición CLI (parser)
 
 ```
 ai-voice-interconnector setup [--with-voice-cloning] [--with-stt] [--force-update] [--yes|-y] [--json]
 ```
 
-| Flag | Tipo | Default | Descripción |
-|---|---|---|---|
-| `--with-voice-cloning` | flag | `false` | Provisiona además el modelo Base de clonado `qwen3-tts-0.6b-base` (~2,5 GB), requerido por `voice clone` |
-| `--with-stt` | flag | `false` | Aceptado por compatibilidad; **redundante**: `parakeet-tdt-v3` ya se provisiona siempre. Solo emite un aviso informativo |
-| `--force-update` | flag | `false` | Purga los snapshots pinneados (respetando la selección de clonado) y la caché xet, luego re-descarga desde cero. Confirma antes de purgar salvo `--yes` o entrada no interactiva |
-| `--yes`, `-y` | flag | `false` | Omite la confirmación destructiva de `--force-update`. Sin `--force-update` es un no-op inocuo |
-| `--json` | flag global | `false` | Emite JSON legible por máquina en stdout |
+| Flag | Default | Descripción |
+|---|---|---|
+| `--with-voice-cloning` | `false` | Añade a la selección el modelo Base de clonado `qwen3-tts-0.6b-base` (~2,5 GB), requerido por `voice clone` |
+| `--with-stt` | `false` | **Redundante**: `parakeet-tdt-v3` ya se provisiona siempre. Solo emite un aviso informativo por stderr |
+| `--force-update` | `false` | Purga la **selección** y la vuelve a provisionar. Es una operación destructiva: pide su propia confirmación |
+| `--yes`, `-y` | `false` | Omite la confirmación de la purga y la del tamaño pendiente |
+| `--json` | `false` | Global; emite el payload en stdout |
 
-No existe `--language`: el conjunto de modelos provisionados es fijo (es+en
-offline completo desde el primer uso).
+No existe `--language`: el conjunto provisionado es fijo (es+en offline completo desde el primer uso), así que la provisión es determinista para la instalación por defecto.
 
 ---
 
 ## Flujo de provisión
 
-```
-handle_setup
-    │
-    ▼
-VoiceStore::ensure_initialized        ← crea el directorio de datos y materializa la voz `default`
-    │
-    ▼
-[--force-update] purga incondicional  ← confirmación destructiva salvo --yes / no-TTY
-    │  remove_hf_snapshot(name) por cada modelo de la selección
-    │  remove_xet_cache() una vez
-    ▼
-Bucle sobre MODEL_REVISIONS (filtrado por selección de clonado)
-    │  is_provisioned(name) == true  → skip (snapshot HF ya presente)
-    │  is_provisioned(name) == false → ensure_downloaded(name) (hf-hub, revisión fijada)
-    ▼
-Derivación CT2 de traducción (es-en, en-es)
-    │  para cada par con Marian HF provisionado:
-    │    is_ct2_provisioned + gate por mtime (ct2 > hf) → skip
-    │    en otro caso → convert_marian_to_ct2 (escritura atómica, reconversión del dir roto)
-    ▼
-Salida (JSON o mensaje humano)
-```
+1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio de datos y materializa la voz de fábrica `default`.
+2. **`--with-stt`**: aviso informativo, nada más.
+3. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar. Purgar el modelo de clonado cuando el usuario no lo pidió dejaría la instalación sin lo que sí quiere. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
+4. **Calcular lo pendiente** antes de descargar: repos sin snapshot y derivados CT2 que haya que convertir o revalidar. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§9.7).
+5. **Descargar** lo pendiente, repo a repo, en la revisión fijada.
+6. **Convertir los derivados CT2** de los pares `es-en` y `en-es` cuyo repo esté provisionado y cuyo derivado no pase el gate.
+7. **Sobre `--json`** o mensaje humano.
 
-La purga de `--force-update` no re-deriva el CT2 explícitamente: al re-descargar
-los snapshots Marian con `mtime` nuevo, el gate por `mtime` de la sección de
-derivación dispara la reconversión por sí solo.
+### La conversión del derivado CT2
+
+El derivado es **obligatorio**, no opcional: sin él la traducción no funciona. Vive en `avi_store::ct2_model_dir(pair)` = `<models_cache_dir>/ct2/opus-mt-<pair>/` y se genera con `ctranslate2` desde el snapshot de Marian.
+
+- **Atómica**: se convierte en un directorio temporal **hermano** del destino y se publica con `rename`. Hermano y no dentro, porque el renombrado final tiene que ser del mismo volumen: si el temporal estuviera dentro del destino, la escritura no sería atómica porque el destino se borra antes.
+- **Verificada antes de declarar éxito**: se comprueba con el mismo criterio del gate que usa el loader (`ct2_dir_missing_files`), de modo que un temporal incompleto nunca se publica.
+- **Los `.spm` se aseguran**: si el conversor no los depositó —una versión sin `--copy_files`— se copian desde el snapshot pinneado, porque sin ellos el derivado no puede tokenizar. Si el snapshot tampoco los trae, es un fallo con diagnóstico.
+- **Idempotente por fecha**: solo se reconvierte cuando el `model.bin` del derivado es más viejo que el snapshot. Si alguna de las dos fechas no se puede leer, el derivado se da por bueno: reconvertir porque no se pudo leer una fecha convertiría en fallo lo que es un no-op.
+
+**La provisión no depende de nada que sobreviva a `cleanup --model`**, y por eso `setup` es el mecanismo de reintento: tras `cleanup --model` la aplicación queda operativa en cuanto `setup` vuelve a descargar.
 
 ---
 
 ## Modelos provisionados (`MODEL_REVISIONS`)
 
-Cada modelo se fija por **commit hash** de HuggingFace (reproducible; un push
-upstream no se propaga a los usuarios). Fuente: `crates/avi-store/src/lib.rs`.
+Cada modelo se fija por **commit hash** de HuggingFace, así que un push upstream no se propaga a los usuarios. Fuente: `crates/avi-store/src/lib.rs`.
 
 | Nombre lógico | Repo HF | Rol | Selección |
 |---|---|---|---|
@@ -73,57 +59,80 @@ upstream no se propaga a los usuarios). Fuente: `crates/avi-store/src/lib.rs`.
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (4 artefactos int8 vía `MODEL_FILE_PATTERNS`) | Siempre |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz | Opt-in `--with-voice-cloning` |
 
-Peso aproximado: ~9 GB base, ~11,5 GB con `--with-voice-cloning`. Los modelos
-se descargan a la caché HF del usuario (`hf_cache_dir()`, respeta
-`HF_HUB_CACHE`/`HF_HOME` → `~/.cache/huggingface/hub`).
+Peso aproximado: ~9 GB la selección base, ~11,5 GB con `--with-voice-cloning`.
 
-El derivado CT2 de traducción (`model.bin` + `source.spm`+`target.spm`) vive en
-`hf_cache_dir/ct2` y se convierte desde los snapshots Marian con `ctranslate2`.
+**Dónde se descargan.** A la **caché exclusiva de la aplicación**, no a la caché HF del usuario: `models_cache_dir()` (`avi-store`), que es `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS y `$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux. La razón es que el borrado pueda ser de directorio entero sin tocar nada ajeno. **Si el usuario define `HF_HUB_CACHE` o `HF_HOME`, esa raíz pasa a ser compartida** y se respeta su elección: entonces `cleanup --model` limita el alcance a lo atribuible a la aplicación (regla R3) y `doctor` lo dice con `models.shared_root`.
+
+**`HF_XET_CACHE` no se decide en dos sitios.** Toda la provisión pasa por `ModelStore::new()`, que ya la fija al subdirectorio `xet` de la raíz de modelos antes de construir el cliente. Fijarla también desde el motor duplicaría la decisión.
 
 ---
 
 ## Integridad e idempotencia
 
-- `is_provisioned(name)` valida no solo la existencia del snapshot sino también
-  los ficheros críticos con `size>0`, evitando caché truncada que pasa
-  `.exists()` pero revienta al cargar.
-- `ensure_downloaded` valida y hace rollback de snapshot+blobs ante descarga parcial.
-- La conversión CT2 es atómica (dir temporal hermano + `rename`); un fallo nunca
-  deja un parcial que el gate acepte, y un dir roto se sustituye por reconversión.
+- `is_provisioned(name)` valida no solo la existencia del snapshot sino también los ficheros críticos con `size > 0`, lo que evita una caché truncada que pasa `.exists()` y revienta al cargar.
+- `ensure_downloaded` valida y hace rollback de snapshot y blobs ante una descarga parcial.
+- La conversión CT2 es atómica y verificada (§«La conversión del derivado CT2»).
+- `Pending::is_empty()` es la condición de idempotencia: si no hay nada pendiente, no se descarga nada y no se pregunta el tamaño.
+
+---
+
+## `setup` al final de una instalación: `setup_failed`
+
+`self install` ejecuta `setup` **en el mismo proceso** (salvo `--no-setup`), y su fallo **no es un fallo de la instalación**:
+
+| | Valor |
+|---|---|
+| `status` | `installed` — el programa **queda instalado** |
+| `reason` | `setup_failed` |
+| Código de salida | **11** (`ExitCode::SetupFailed`) |
+| Causa del fallo de provisión | Anidada en `models_cause.reason`: `network_error` o `ct2_conversion_failed` |
+| Qué hacer | Reintentar con `setup` |
+
+Es un **éxito parcial**, y por eso el sobre de `self install` sale por veredicto y no con el objeto `error` detrás. El detalle está en [`SELF.md`](SELF.md) y en §11 de [`../CONTRACT.md`](../CONTRACT.md).
+
+Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo de descarga sale con `network_error` y **1**, y un fallo de conversión con `setup_failed` y **11**.
+
+---
+
+## Lo que llega en el ciclo 2
+
+**La selección persistida en configuración y la poda de las revisiones obsoletas de los repos propios** —las dos cosas que §9.7 pide— **no están implementadas hoy**, y no es un olvido: las necesita una actualización, no una instalación, y escribirlas ahora fijaría un contrato que el ciclo 2 va a cambiar. Está declarado en la cabecera de `crates/avi-lifecycle/src/setup.rs` para que la omisión no se lea como un descuido.
+
+Consecuencia práctica hasta entonces: la selección es **la de los flags de esta invocación**, no la de la instalación. Un `setup` posterior sin `--with-voice-cloning` no purga el modelo Base (la purga es sobre la selección), pero tampoco lo vuelve a descargar si ya está.
 
 ---
 
 ## Contrato `--json`
 
-Con `--json`, la salida en stdout es:
-
 | Clave | Tipo | Significado |
 |---|---|---|
-| `status` | string | `"completed"` (o `"cancelled"` si se declina la confirmación de `--force-update`) |
+| `status` | string | `"completed"` |
 | `with_stt` | boolean | Espejo del flag `--with-stt` |
-| `models_provisioned` | array de strings | Nombres lógicos registrados en esta ejecución |
+| `models_provisioned` | array de strings | Los modelos de la selección disponibles tras la ejecución |
 
-No hay clave `language`. Los mensajes de progreso y la purga van a stderr,
-reservando stdout para el JSON.
+No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a stderr, reservando stdout para el JSON; `schema_version` lo inyecta el emisor y vale **`"4"`**.
 
 ---
 
 ## Errores
 
-| Reason | Código | Causa |
+| Situación | `reason` | Código |
 |---|---|---|
-| `voice_store_init_failed` | Error | No se pudo inicializar el `VoiceStore`/directorio de datos |
-| `model_download_failed` | Error | Falló la descarga de un snapshot HF (red, credenciales, disco) |
-| `ct2_conversion_failed` | Error | Snapshot Marian no resoluble/ausente, o falló la conversión CT2 (falta `ctranslate2`) |
+| No se pudo inicializar el registro de voces | `voice_store_init_failed` | 1 |
+| Fallo de descarga de un snapshot (invocación directa) | `network_error` | 1 |
+| Fallo de conversión de un derivado (invocación directa) | `setup_failed` | 11 |
+| El mismo fallo, invocado desde `self install` | `setup_failed` (11) con la causa en `models_cause` | 11 |
+
+`ct2_conversion_failed` **no es un `reason` de primer nivel de la invocación directa**: es el `reason` anidado que viaja en `models_cause` cuando el fallo lo sufre `self install`. Su valor declarado es **1**, el del error genérico, y el proceso sale con el de la operación.
 
 ---
 
 ## Ejemplos
 
 ```bash
-ai-voice-interconnector setup                          # descarga los 4 base (idempotente)
+ai-voice-interconnector setup                          # descarga la selección base (idempotente)
 ai-voice-interconnector setup --with-voice-cloning     # incluye el Base de clonado (~2,5 GB)
-ai-voice-interconnector setup --force-update           # purga + re-descarga (confirma en TTY)
+ai-voice-interconnector setup --force-update           # purga la selección y re-descarga (confirma en TTY)
 ai-voice-interconnector setup --force-update --yes     # ídem, no interactivo
 ai-voice-interconnector --json setup                   # payload legible por máquina
 ```

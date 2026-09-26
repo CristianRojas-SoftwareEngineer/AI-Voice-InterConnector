@@ -381,6 +381,9 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 | `setup_failed` | `self install`, `self update` | Programa instalado, pero la provisión de modelos falló | Éxito parcial (código propio), reintentable con `setup` |
 | `rolled_back` | `self install`, `self update` | Fallo durante el reemplazo; versión anterior restaurada | Error |
 | `removal_scheduled` | `self uninstall` | Windows: el directorio se borra al terminar el proceso | Éxito |
+| `ct2_conversion_failed` | `self install`, `self update` | Falló la conversión de un derivado CT2 durante la provisión | **`reason` anidado**, no código de salida: viaja en `models_cause.reason` del sobre, con su mensaje, y su valor declarado es **1**, el del error genérico. El proceso sale con el de la operación, que es `setup_failed` (11) |
+
+**`ct2_conversion_failed` es el único `reason` de la tabla que no es de primer nivel.** No aparece en `reason` del sobre ni determina el código de salida: es la causa **anidada** del fallo de provisión, la que dice *qué* falló, mientras que `setup_failed` —que sí es de primer nivel— dice *qué dejó de completarse*. Los dos se necesitan y no se funden: fundirlos perdería el `reason` que la reserva a cada caso. Su valor es 1 y no 11 a propósito, porque el 11 es el código de la operación y un consumidor que leyera un 11 anidado vería un código que la tabla no promete ahí. Cuando `setup` se invoca **directamente**, el mismo fallo sale como `setup_failed` de primer nivel con 11, porque entonces sí es la operación la que falla.
 
 **Bloqueo.** Las operaciones de ciclo de vida toman un bloqueo exclusivo de SO (`flock` o `LockFileEx`) sobre el archivo de bloqueo de [§7](#7-modelo-de-rutas-y-propiedad). El SO lo libera aunque el proceso muera. Mientras está tomado, los comandos que lanzan el daemon automáticamente no lo lanzan y terminan con `lifecycle_locked`, para que no arranque un daemon de la versión saliente en mitad de una actualización.
 
@@ -551,7 +554,9 @@ Actúa sobre la instalación registrada, sea cual sea la copia del binario que l
 3. **`--dry-run`**: imprime el plan y termina.
 4. **Confirmación destructiva.**
 5. **Parar el daemon.** Si falla → `daemon_stop_failed`, sin borrar nada.
-6. **Borrar el estado** (salvo con `--keep-data`), con el mismo alcance que `cleanup --all`.
+6. **Borrar el estado** (salvo con `--keep-data`):
+   - **Sin `--keep-data`: la raíz de datos entera**, y no el plan de `cleanup --all`. El motivo es que al desinstalar **desaparece el programa, y con él las voces de fábrica** (`cleanup --all` las protege porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar). Dejarlas sería residuo dentro de una raíz de propiedad exclusiva, que es lo que prohíbe el criterio 17, de modo que el destino del estado es la raíz completa —que R1 permite porque es exclusiva— en vez de la lista de categorías. Los modelos siguen el plan de `--model`, con sus reglas de propiedad.
+   - **Con `--keep-data`: el plan de `cleanup --all` filtrado** —fuera modelos, voces y habla, dentro configuración, logs y estado del daemon—, que es lo coherente con lo que el usuario ha pedido. El directorio de programa se borra igual en los dos casos: la bandera conserva el estado, no el programa.
 7. **Revertir el PATH** según el recibo:
    - el enlace, solo si apunta al directorio de programa;
    - los bloques delimitados de los perfiles;
@@ -748,7 +753,7 @@ El proyecto es pre-1.0 y no requiere retrocompatibilidad. La eliminación de las
 
 ### 14.3 Audiencia previa nula
 
-El proyecto no está distribuido: no hay instalaciones del ciclo de vida anterior en máquinas de usuarios. La primera versión publicada de este ciclo de vida es la primera instalación para todo el mundo, de modo que no hay nadie a quien迁移 haya que acompañar.
+El proyecto no está distribuido: no hay instalaciones del ciclo de vida anterior en máquinas de usuarios. La primera versión publicada de este ciclo de vida es la primera instalación para todo el mundo, de modo que no hay nadie a quien haya que acompañar.
 
 - **No hay procedimiento de migración** que documentar, ni nota de transición en el `CHANGELOG.md`.
 - `CHANGELOG.md` registra en su sección `[No publicado]` el cambio incompatible y su carácter pre-1.0, sin más.
@@ -761,10 +766,15 @@ El proyecto no está distribuido: no hay instalaciones del ciclo de vida anterio
 | `docs/specs/sdlc-lifecycle.md` (este) | Fuente de verdad funcional del ciclo de vida |
 | `README.md` | One-liners y los tres comandos esenciales (`self update`, `self uninstall`, `cleanup`) |
 | `USAGE.md` | Guía de usuario del ciclo de vida |
-| `docs/CLI/CONTRACT.md` | Contrato de `self *` y `cleanup`: flags, `reason` y códigos de salida |
+| `docs/CLI/README.md` | **Índice** de `docs/CLI/`: el árbol de documentos, la tabla de comandos de nivel superior (con `self` y **sin** `uninstall`) y la tabla de códigos de salida con los siete enteros del ciclo de vida |
+| `docs/CLI/CONTRACT.md` | Contrato de `self *`, `setup`, `cleanup` y `doctor`: flags, `reason` y códigos de salida, sobre `--json` y las dos versiones de esquema |
+| `docs/CLI/commands/SELF.md` | **Documento nuevo** del grupo `self`: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
+| `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1–R3, el gate de categoría y la confirmación destructiva |
+| `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, conversión CT2, caché exclusiva de modelos y lo que llega en el Ciclo 2 |
+| `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del sobre, las cuatro retiradas, los seis chequeos y el veredicto de un solo objeto |
 | `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
-| `docs/PARITY.md` | Remite a la matriz de paridad de [§11](#11-matriz-de-paridad-por-target) |
+| `docs/PARITY.md` | Remite a la matriz de paridad de [§11](#11-matriz-de-paridad-por-target); el resto es registro histórico por fases |
 | `docs/SELF-HOSTED-INSTALL.md` | Se retira |
 
 ## 15. Criterios de aceptación

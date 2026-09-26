@@ -45,7 +45,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 - **Transcripción STT**: `speech transcribe` (Parakeet TDT 0.6B v3 int8, ONNX Runtime)
 - **Traducción**: `translate` es↔en (CTranslate2, opt-in)
 - **Daemon**: `daemon start/status/stop/restart/serve` (Axum, `127.0.0.1:8765` por defecto con override `AVI_DAEMON_PORT`, streaming NDJSON)
-- **100% offline**: Sin APIs externas ni conexiones a internet (modelos en `~/.cache/huggingface/hub`)
+- **100% offline**: Sin APIs externas ni conexiones a internet (modelos en la caché de la aplicación, `~/.cache/ai-voice-interconnector/models` en Linux)
 - **Binario autocontenido por plataforma**: `tar.gz` (Linux/macOS) / `.zip` (Windows) con `LICENSE`/`THIRD-PARTY-LICENSES.md`/`SOURCE-OFFER.md`
 - **CLI universal**: `subprocess.run(["./ai-voice-interconnector", "speech", "say", "--text", "..."])`
 - **Audio nativo**: `cpal` (WASAPI/CoreAudio/ALSA)
@@ -84,16 +84,20 @@ brew install --cask ai-voice-interconnector
 ai-voice-interconnector setup
 ```
 
-**Desinstalación en un comando** (paridad con instalación):
+**Ciclo de vida en un comando** (paridad con instalación). El programa se gestiona a sí mismo: no hay un `uninstall` de nivel superior.
 
 ```bash
-ai-voice-interconnector uninstall --force   # desinstalación completa (datos + binario + PATH)
-# Limpieza de datos sin binario/PATH: ai-voice-interconnector cleanup --all --yes  # unión Modelo+voces+habla
+ai-voice-interconnector self uninstall --yes        # desinstalación completa (programa + PATH + estado)
+# Conservar modelos, voces y habla: ai-voice-interconnector self uninstall --keep-data --yes
+# Limpieza granular sin tocar programa ni PATH: ai-voice-interconnector cleanup --all --yes
+# Ver el plan sin borrar nada: ai-voice-interconnector self uninstall --dry-run
 # macOS Cask: brew uninstall --cask --zap ai-voice-interconnector
 ```
 
-- **Linux/macOS**: borra `~/.local/bin` symlink + `~/.local/opt/ai-voice-interconnector/` + datos.
-- **Windows**: borra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` + entrada `HKCU` PATH + datos.
+- **Linux/macOS**: borra el enlace `~/.local/bin`, el directorio `~/.local/opt/ai-voice-interconnector/`, los bloques delimitados de los perfiles y el estado.
+- **Windows**: borra `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, su entrada en el `PATH` de usuario (`HKCU\Environment`, conservando el tipo del valor) y el estado.
+- **Sin `--keep-data`** se borra la **raíz de datos entera**: al desinstalar desaparece el programa y con él las voces de fábrica, así que dejar nada dentro de una raíz de propiedad exclusiva es lo que corresponde.
+- Es **idempotente**: repetirla en un sistema ya limpio termina con éxito.
 
 ### Descargar binario pre-compilado
 
@@ -130,8 +134,11 @@ La firma Authenticode/Apple notarization es goal a largo plazo (`docs/GOAL.md`).
 ### Provisión del/los modelo(s) (`setup`)
 
 Cinco modelos pinneados (4 + 1 opt-in) no vienen en el binario: `qwen3-tts-0.6b` (~4,7 GB),
-`marian-es-en`/`marian-en-es` (~3 GB), `parakeet-tdt-v3` (~600 MB, int8) y `qwen3-tts-0.6b-base` (~2,5 GB, opt-in con `setup --with-voice-cloning`). Se descargan a
-`~/.cache/huggingface/hub` vía `setup` (~9 GB base, ~11,5 GB con `--with-voice-cloning`):
+`marian-es-en`/`marian-en-es` (~3 GB), `parakeet-tdt-v3` (~600 MB, int8) y `qwen3-tts-0.6b-base` (~2,5 GB, opt-in con `setup --with-voice-cloning`). Se descargan a la
+**caché exclusiva de la aplicación** (`~/.cache/ai-voice-interconnector/models` en Linux,
+`~/Library/Caches/ai-voice-interconnector/models` en macOS,
+`%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows; si defines `HF_HUB_CACHE` o
+`HF_HOME`, esa raíz se respeta y pasa a ser compartida) vía `setup` (~9 GB base, ~11,5 GB con `--with-voice-cloning`):
 
 ```bash
 ai-voice-interconnector setup
@@ -192,10 +199,13 @@ ai-voice-interconnector voice list / remove --name X
 ai-voice-interconnector translate --text "Hola" --from es --to en
 ai-voice-interconnector devices / doctor / version
 ai-voice-interconnector daemon start / status / stop / restart / serve
-ai-voice-interconnector setup [--with-voice-cloning] [--with-stt] [--force-update] [-y|--yes] / cleanup [--voices|--synthetic-speech|--model|--all] [--dry-run] [-y|--yes] / uninstall --force
+ai-voice-interconnector setup [--with-voice-cloning] [--with-stt] [--force-update] [-y|--yes]
+ai-voice-interconnector cleanup [--voices|--synthetic-speech|--model|--all] [--dry-run] [-y|--yes]
+ai-voice-interconnector self install [--no-setup] [--no-modify-path] [-f|--force] [-y|--yes]
+ai-voice-interconnector self uninstall [--keep-data] [--dry-run] [-y|--yes]
 ```
 
-Contrato estable (`--json` `schema_version="3"`, exit codes `0-10/130`) en `docs/CLI/CONTRACT.md`.
+Contrato estable (`--json` `schema_version="4"`, exit codes `0-17/130`) en `docs/CLI/CONTRACT.md`. El protocolo del daemon sigue en `schema_version="3"`: es un contrato independiente.
 
 ## Invocación desde cualquier lenguaje
 

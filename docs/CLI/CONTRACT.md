@@ -14,6 +14,8 @@ Este documento es la descripción normativa del contrato público de la CLI —c
   - [El canal de la causa fina, y la regla que decide entre código y razón](#el-canal-de-la-causa-fina-y-la-regla-que-decide-entre-código-y-razón)
 - [2. La superficie y el vocabulario](#2-la-superficie-y-el-vocabulario)
   - [Diez comandos de nivel superior](#diez-comandos-de-nivel-superior)
+  - [`uninstall` ya no es un comando](#uninstall-ya-no-es-un-comando)
+  - [La superficie del ciclo de vida, flag a flag](#la-superficie-del-ciclo-de-vida-flag-a-flag)
   - [El qualifier `synthetic` y la resolución del vocabulario](#el-qualifier-synthetic-y-la-resolución-del-vocabulario)
   - [Las decisiones de vocabulario de la superficie](#las-decisiones-de-vocabulario-de-la-superficie)
 - [3. El grupo `speech`](#3-el-grupo-speech)
@@ -54,7 +56,8 @@ Este documento es la descripción normativa del contrato público de la CLI —c
   - [El mecanismo: un solo punto de traducción](#el-mecanismo-un-solo-punto-de-traducción)
   - [Los cinco payloads del grupo `speech`](#los-cinco-payloads-del-grupo-speech)
   - [Las dos versiones de esquema](#las-dos-versiones-de-esquema)
-- [11. `cleanup`, `setup` y `voice`](#11-cleanup-setup-y-voice)
+- [11. `self`, `setup`, `cleanup` y `voice`](#11-self-setup-cleanup-y-voice)
+  - [`self install` y `self uninstall`](#self-install-y-self-uninstall)
   - [`cleanup`](#cleanup)
   - [`setup`](#setup)
   - [`voice`](#voice)
@@ -114,7 +117,7 @@ Son **dos preguntas encadenadas, no una**. La primera forma las clases; la segun
 
 La locución tiene `(voz, etiqueta)`, y las cinco sub-acciones del grupo `speech` operan exactamente sobre ese par: cae del lado de `voice list`. Emitir además la ruta le daría al integrador un **segundo handle, no gobernado**, sobre un recurso que ya tiene el suyo — y nada le impediría usarlo, momento en el cual el invariante de las rutas sería decorativo: no lo violaría el sistema, lo violaría el consumidor con lo que el sistema le entregó.
 
-**La asimetría de reversibilidad que respalda el criterio.** Las dos opciones no cuestan lo mismo si resultan equivocadas: **añadir una clave después es aditivo** y está cubierto por la política de compatibilidad del esquema `--json`; **retirarla es incompatible** y obliga a subir `schema_version="3"` (`src/main.rs` / `crates/avi-core/src/json_emitter.rs`). Con esa asimetría, el lado seguro se conoce de antemano y no hay opcionalidad que comprar aplazando la decisión.
+**La asimetría de reversibilidad que respalda el criterio.** Las dos opciones no cuestan lo mismo si resultan equivocadas: **añadir una clave después es aditivo** y está cubierto por la política de compatibilidad del esquema `--json`; **retirarla es incompatible** y obliga a subir `schema_version` (hoy `"4"`) (`src/main.rs` / `crates/avi-core/src/json_emitter.rs`). Con esa asimetría, el lado seguro se conoce de antemano y no hay opcionalidad que comprar aplazando la decisión.
 
 **Coste declarado.** Ninguna superficie saca los bytes de una locución fuera de la CLI: `speech play` la reproduce y no hay ningún comando de exportación. Un orquestador que quiera el WAV no lo tiene. Eso es un hueco de la superficie de comandos; la respuesta, si la necesidad aparece, es un comando explícito con su propia decisión, no una clave en un listado.
 
@@ -142,14 +145,33 @@ El proyecto tiene dos canales legibles por máquina y usa los dos: el entero, qu
 | `devices` | — | Lista dispositivos de audio |
 | `doctor` | — | Diagnósticos |
 | `setup` | — | Provisión del runtime |
-| `cleanup` | — | Borrado de modelo, voces y/o habla sintética |
+| `cleanup` | — | Borrado del estado por categorías, sin tocar el programa |
 | `daemon` | `start`, `stop`, `restart`, `status`, `serve` | Ciclo de vida del daemon |
 | `version` | — | Versión |
-| `uninstall` | — | Desinstalación completa: datos, integración de PATH y binario |
+| `self` | `install`, `uninstall` | Operaciones del ciclo de vida sobre la instalación del usuario |
 
-**Tres de ellos son grupos nominales de gestión** —`speech`, `voice` y `daemon`—: tienen sub-acciones y ninguna acción propia.
+**Cuatro de ellos son grupos nominales de gestión** —`speech`, `voice`, `daemon` y `self`—: tienen sub-acciones y ninguna acción propia.
 
 Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es mecánica: un test recorre el parser real para descubrir cuáles lo declaran, de modo que una sub-acción nueva sin `--json` lo hace fallar.
+
+### `uninstall` ya no es un comando
+
+**El comando de nivel superior `uninstall` y su `--force` no existen.** No hay alias, no hay flag deprecado y no hay periodo de transición: el proyecto es pre-1.0 y no está distribuido, así que no hay instalaciones a las que acompañar (§14.3 de [`docs/specs/sdlc-lifecycle.md`](../../specs/sdlc-lifecycle.md)). Lo que hace ese papel es el grupo `self`, y `--force` sigue existiendo **con otro significado** en `self install` y `self update`: resolver un `path_conflict` en la ruta del enlace ([§11](#11-self-setup-cleanup-y-voice)).
+
+### La superficie del ciclo de vida, flag a flag
+
+| Sub-acción | Flags | Estado |
+|---|---|---|
+| `self install` | `--no-setup` · `--no-modify-path` · `--force`/`-f` · `--yes` · `--json` | Vigente |
+| `self update` | `--check` · `--version X.Y.Z` · `--force`/`-f` · `--no-setup` · `--yes` · `--json` | **Ciclo 2**: la sub-acción aún no existe en el árbol de comandos |
+| `self uninstall` | `--keep-data` · `--dry-run` · `--yes` · `--json` | Vigente |
+| `setup` | `--with-stt` · `--with-voice-cloning` · `--force-update` · `--yes`/`-y` · `--json` | Vigente |
+| `cleanup` | `--model` · `--voices` · `--synthetic-speech` · `--all` · `--dry-run` · `--yes`/`-y` · `--json` | Vigente |
+| `doctor` | `--json` | Vigente |
+
+`--json` es **global** (`Cli::json`, `src/main.rs`): lo declara la raíz, no cada sub-acción, y por eso aparece en todas las filas. `--channel` es la única opción de `self install` que no aparece aquí porque está **oculta** (`hide = true`): la reserva `cargo xtask install` (§10.5 de la especificación), y solo surte efecto cuando el recibo se crea por primera vez.
+
+**`self install` tiene además un modo que no es un flag.** El modo lo decide la posición del ejecutable, no una opción: dentro del directorio de programa **repara** en vez de instalar, y un ejecutable sin bundle alrededor (por ejemplo `target\debug`) sale con `bundle_invalid` (15) indicando `cargo xtask install` ([`commands/SELF.md`](commands/SELF.md)).
 
 ### El qualifier `synthetic` y la resolución del vocabulario
 
@@ -409,7 +431,7 @@ La única interacción entre `--json` y el comportamiento es la regla 2: `--json
 
 ### Ubicación y layout
 
-`<data_dir>/speech/<voz>/<etiqueta>.wav` (`crates/avi-store/src/lib.rs` `SpeechStore`), **raíz hermana de `voices/`** (`VoiceStore`: `<data_dir>/voices/<nombre>/`; caché HF: `hf_cache_dir()`).
+`<data_dir>/speech/<voz>/<etiqueta>.wav` (`crates/avi-store/src/lib.rs` `SpeechStore`), **raíz hermana de `voices/`** (`VoiceStore`: `<data_dir>/voices/<nombre>/`; raíz de modelos: `models_cache_dir()`).
 
 **Por qué no anidado en `voices/<voz>/speech/`**, que sería la opción intuitiva y ahorraría código de borrado: las voces de fábrica (`default` —clonada con `reference.qvoice`—, `ryan` y `vivian` —presets puros sin referencia—; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) son entradas del registro `VoiceStore` —la resolución preset/clonada (`avi-tts/src/lib.rs` `resolve_voice_engine`, presencia de `reference.qvoice`) es detalle interno no-normativo— y el almacén separa la salida generada (`speech/`) del registro (`voices/`).
 
@@ -435,7 +457,7 @@ Cada locución son dos archivos, y **el `.wav` manda**. El `.json` son metadatos
 Junto a cada `<etiqueta>.wav` se escribe `<etiqueta>.json` con tres campos: `text`, `voice` y `created_at`. Sin él las etiquetas son opacas: pasadas unas semanas, `saludo2` no le dice nada a nadie.
 
 - **`created_at` en ISO 8601 UTC.**
-- **El sidecar es formato interno y no lleva versión de esquema propia.** Su única superficie estable es el payload `--json`, gobernado por `schema_version="3"` (`src/main.rs` / `crates/avi-core/src/json_emitter.rs`). Darle versión propia daría al proyecto tres versiones de esquema donde hay dos.
+- **El sidecar es formato interno y no lleva versión de esquema propia.** Su única superficie estable es el payload `--json`, gobernado por `schema_version` (hoy `"4"`) (`src/main.rs` / `crates/avi-core/src/json_emitter.rs`). Darle versión propia daría al proyecto tres versiones de esquema donde hay dos.
 - **Un lector que encuentre un campo desconocido lo ignora**, igual que hacen los modelos del protocolo IPC con `extra="ignore"`.
 - **`speech list` tolera un sidecar ausente** mostrando la locución sin metadatos, en vez de fallar. Muestra el texto **truncado** en la salida humana y **completo** en el payload `--json`.
 
@@ -471,7 +493,21 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 | `8` | `ExitCode::PreconditionFailed` | Una precondición del entorno no se cumple; el remedio está fuera del programa y la operación es reintentable una vez corregida |
 | `9` | `ExitCode::TranslationFailed` | El pipeline de traducción falló con el modelo ya cargado |
 | `10` | `ExitCode::TranscriptionFailed` | El pipeline de transcripción falló con el modelo ya cargado |
+| `11` | `ExitCode::SetupFailed` | La provisión de modelos falló y el programa **queda instalado**: éxito parcial, reintentable con `setup` |
+| `12` | `ExitCode::ExternallyManaged` | La copia la gestiona otra herramienta (Homebrew, o el canal `dev` para `self update`) |
+| `13` | `ExitCode::RolledBack` | Fallo durante el reemplazo; la versión anterior quedó restaurada |
+| `14` | `ExitCode::PathConflict` | En la ruta del enlace hay un archivo ajeno; nada del plan se aplica |
+| `15` | `ExitCode::BundleInvalid` | Falta un archivo obligatorio del bundle alrededor del ejecutable; nada modificado |
+| `16` | `ExitCode::DaemonStopFailed` | No se pudo detener el daemon y **nada del plan se borró** |
+| `17` | `ExitCode::LifecycleLocked` | Hay otra operación de ciclo de vida en curso sobre el mismo bloqueo |
 | `130` | `ExitCode::Interrupted` | Interrupción del usuario (Ctrl+C con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria en la ventana spawn→write) |
+
+**Los siete enteros del 11 al 17 son de la tabla cerrada del ciclo de vida, uno por `reason`**, y no se reparten por el eje de dos preguntas de §1 como los anteriores: cada uno corresponde a un `reason` que §9.1 de la especificación declara, y la correspondencia es 1:1 con la variante de `ExitCode` (`crates/avi-core/src/exit_codes.rs`). Los dos casos que rompen el patrón son deliberados y son los que hay que recordar al leer la tabla:
+
+- **El 11 no es un error.** `setup_failed` es un **éxito parcial**: el programa está instalado, el resumen y el sobre se emiten igual, y lo único que cambia es el `reason` del sobre y el código de salida. Por eso el sobre de `self install` sale por *veredicto* y no por el objeto `error` de §10.
+- **El 15 y el 17 son los que el ejecutable sin bundle alrededor y el bloqueo ya tomado producen**, y son los dos que un usuario se encuentra sin haber hecho nada mal: `target\debug\ai-voice-interconnector.exe self install` responde `bundle_invalid` (15) porque no hay bundle alrededor, no porque la instalación esté rota.
+
+`ExitCode::ExternallyManaged` cubre Homebrew y el canal `dev`; `unsupported_platform`, `binary_incompatible`, `network_error` y `checksum_mismatch` **no tienen variante propia** en este ciclo y salen con el `1` genérico: los declara el ciclo que también fija su entero, y declararlos aquí fijaría un número que ese ciclo no pidió (`exit_code_for` en `src/main.rs`, y la cabecera de `crates/avi-core/src/exit_codes.rs`).
 
 ### Cómo se reparten los enteros
 
@@ -519,7 +555,7 @@ Dos pruebas de que la convención es la correcta:
 
 La reexportación desde `src/main.rs` crea dos sitios donde *parecen* vivir las constantes; el primer invariante lo desactiva —cualquier definición fuera del crate hoja falla—, así que la reexportación es un alias y no una segunda declaración. La distinción queda escrita en el crate.
 
-**El comentario del crate** enuncia el criterio generador en sus dos tiempos —clase de causa y admisión por la siguiente llamada del consumidor—, fecha el congelamiento de la tabla **en la 1.0**, advierte que un intercambio de valores es indetectable para un consumidor, y recoge el criterio de revisión que no puede ser test. La versión del esquema es `schema_version="3"` (`src/main.rs` / `crates/avi-core/src/json_emitter.rs`).
+**El comentario del crate** enuncia el criterio generador en sus dos tiempos —clase de causa y admisión por la siguiente llamada del consumidor—, fecha el congelamiento de la tabla **en la 1.0**, advierte que un intercambio de valores es indetectable para un consumidor, y recoge el criterio de revisión que no puede ser test. La versión del esquema es `schema_version` (hoy `"4"`; `crates/avi-core/src/json_emitter.rs`).
 
 **Dos reglas transversales, y solo una es mecanizable.**
 
@@ -530,21 +566,21 @@ La reexportación desde `src/main.rs` crea dos sitios donde *parecen* vivir las 
 
 ### La invariante del canal
 
-**Bajo `--json`, toda salida no-cero emite el payload de error, salvo la salida por veredicto.** `code` y `message` son obligatorios; `reason` es opcional en cualquier código y se define donde la distinción **ya existe calculada** en el código.
+**Bajo `--json`, toda salida no-cero emite el payload de error, salvo la salida por veredicto.** `error` (el mensaje) y `reason` son obligatorios en el payload; el código **no viaja en el sobre**, lo transporta el estado de salida del proceso, y por eso un consumidor tiene que leer las dos cosas.
 
 El canal tiene **tres formatos**, y cada invocación emite **exactamente un objeto JSON**:
 
 1. **Éxito**: el payload propio del comando, vía `emit_raw_json()`, con salida 0.
-2. **Error**: el objeto `{"error": {…}}`, vía `CliError` traducido por `main()`, con salida ≠ 0.
-3. **Veredicto**: código ≠ 0 con el payload **propio** del comando ya emitido y **sin** objeto `error`. Es un dictamen, no un fallo: el comando corrió sin error pero su resultado es negativo. El único caso es **`doctor`**, cuyo exit 1 con FAIL (§9) emite solo el reporte (`checks`, `failed`) y sale con 1.
+2. **Error**: el objeto `{"error": …, "reason": …}`, vía `CliError` traducido por `main()`, con salida ≠ 0.
+3. **Veredicto**: código ≠ 0 con el payload **propio** del comando ya emitido y **sin** objeto `error`. Es un dictamen, no un fallo: el comando corrió sin error pero su resultado es negativo. Hay **dos** casos: **`doctor`**, cuyo exit 1 con FAIL (§9) emite solo el reporte (`checks`, `failed`), y **`self install` con `setup_failed`**, que emite su sobre completo con `status` `installed` y sale con **11** sin adjuntar objeto `error` (§11).
 
-El payload de error usa una clave de primer nivel `error`, emitida solo bajo `--json`, y deja intacto el stderr en castellano para el uso humano:
+El payload de error usa **dos claves de primer nivel** —`error` con el mensaje y `reason` con el literal de máquina—, ambas planas y no anidadas, y deja intacto el stderr en castellano para el uso humano:
 
 ```json
-{"schema_version": "3", "error": {"code": 8, "reason": "disk_full", "message": "…"}}
+{"schema_version": "4", "error": "El texto a traducir está vacío", "reason": "empty_text"}
 ```
 
-El único código con `reason` poblado es el **8**: la clasificación de por qué falló la provisión —dependencia del runtime ausente, credenciales, red, permisos y disco lleno— ya se calcula, y `reason` es el nombre estable de esa distinción. El 6 y el 7 agrupan subcausas sin nombrar; añadírselas más adelante es aditivo. El fallo de parseo lleva `reason: "usage_error"`.
+`reason` es la clave de la causa fina y es **aditiva**: los `reason` del ciclo de vida (`lifecycle_locked`, `bundle_invalid`, `daemon_stop_failed`, `path_conflict`, `rolled_back`, `externally_managed`, `confirmation_required`, `usage_error`, `network_error`, `ct2_conversion_failed`) viajan por ella sin necesidad de un entero propio, y un `reason` desconocido se trata como ausente. El fallo de parseo lleva `reason: "usage_error"`.
 
 Las tres reglas de compatibilidad y la regla de promoción son contrato **de consumo** además de emisión: `USAGE.md` declara explícitamente que un `reason` desconocido se trata como ausente.
 
@@ -590,16 +626,34 @@ Los payloads de `daemon start`, `stop` y `restart` no llevan clave booleana prop
 
 ### Las dos versiones de esquema
 
-Son **dos, independientes**, y ambas valen `"3"`:
+Son **dos, independientes**, y ya **no valen lo mismo**: el sobre de la CLI va por `"4"` y el protocolo del daemon sigue en `"3"`.
 
-- **`crates/avi-daemon/src/lib.rs` (`DaemonState`, `run_daemon_server`) — protocolo IPC del daemon.** Subió a `"2"` porque `/synthesize` identifica la voz por su nombre y no transporta rutas: una forma que no es aditiva y por tanto exige versión propia. Subió otra vez a `"3"` con el rediseño cross-lingual: `model_loaded` pasó de `bool` a `dict[str, bool]` (un modelo cargado por idioma en vez de uno solo), un cambio incompatible de un campo existente (`crates/avi-core/src/engine.rs` `SttEngine`/`TtsEngine`, estados `warm`/`warm_failed`).
-- **`src/main.rs` / `crates/avi-core/src/json_emitter.rs` (`schema_version="3"`) — payloads `--json` de la CLI.** Subió a `"2"` porque el payload de síntesis no lleva clave de ruta de salida. Subió otra vez a `"3"` por la misma razón que el protocolo del daemon: `daemon status --json` refleja el mismo cambio de `model_loaded` de booleano a objeto por idioma.
+- **`crates/avi-daemon/src/lib.rs` (`DaemonState`, `run_daemon_server`) — protocolo IPC del daemon, `DAEMON_SCHEMA_VERSION = "3"`.** Subió a `"2"` porque `/synthesize` identifica la voz por su nombre y no transporta rutas: una forma que no es aditiva y por tanto exige versión propia. Subió otra vez a `"3"` con el rediseño cross-lingual: `model_loaded` pasó de `bool` a `dict[str, bool]` (un modelo cargado por idioma en vez de uno solo), un cambio incompatible de un campo existente (`crates/avi-core/src/engine.rs` `SttEngine`/`TtsEngine`, estados `warm`/`warm_failed`). **El ciclo de vida no lo toca**: ni `self install`, ni `self uninstall`, ni `cleanup`, ni la sección de ciclo de vida de `doctor` cambian una clave del protocolo del daemon, así que su versión no se mueve.
+- **`src/main.rs` / `crates/avi-core/src/json_emitter.rs` (`CLI_SCHEMA_VERSION = "4"`) — payloads `--json` de la CLI.** Subió a `"2"` porque el payload de síntesis no lleva clave de ruta de salida, y a `"3"` por la misma razón que el protocolo del daemon (`model_loaded` de booleano a objeto por idioma). Subió a `"4"` con el ciclo de vida, y el motivo es un **cambio incompatible y no aditivo**: `doctor --json` retira cuatro claves de primer nivel —`data_dir`, `hf_cache`, `base_status` e `issues`— y las sustituye por la sección de ciclo de vida (`version`, `target`, `channel`, `install`, `path`, `pending`, `models`), con `checks` y `failed` como veredicto. Retirar claves es incompatible por la asimetría de reversibilidad de §1, y por eso exige subir la versión en vez de dejarse como adición.
 
-Son dos causas independientes que coinciden en el mismo hecho generador. Los payloads del grupo `speech` no influyen en ninguna: añadir subcomandos es aditivo, y añadir la clave `error` también lo es.
+**La política de compatibilidad es la misma en ambas**: añadir claves no incrementa la versión; solo lo hace un cambio incompatible de las existentes. Y el **número de versión no es comparable entre las dos**: un cliente que valide `"4"` para el sobre de la CLI y `"3"` para el protocolo del daemon no está ante una contradicción, sino ante dos contratos que suben por separado.
 
-**La política de compatibilidad es la misma en ambas**: añadir claves no incrementa la versión; solo lo hace un cambio incompatible de las existentes.
+## 11. `self`, `setup`, `cleanup` y `voice`
 
-## 11. `cleanup`, `setup` y `voice`
+### `self install` y `self uninstall`
+
+`self` es el grupo que hace que **el ciclo de vida viva en el binario que se gestiona a sí mismo**. Los dos subcomandos que existen hoy comparten cuatro propiedades, y las cuatro importan más que sus flags:
+
+- **Actúan sobre la instalación registrada, no sobre la copia que se invoca.** Las raíces efectivas salen del recibo (`cleanup::Roots::from_receipt`), de modo que la operación acierta aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén definidas (§8.2).
+- **Toman un bloqueo exclusivo de SO** sobre el archivo de bloqueo, y por eso un segundo proceso concurrente sale con `lifecycle_locked` (17) en vez de esperar.
+- **Ejecutan la recuperación antes de componer el plan**, para que el plan que el usuario ve y confirma sea el que queda después del barrido de aparcados, stagings huérfanos y temporales propios.
+- **El binario aporta lo que el motor no puede tener**: el control de procesos (parada del daemon) y el borrado diferido de Windows. El motor decide; el binario ejecuta esas dos primitivas de plataforma (`ProcessosDelProducto`, `BorradoDelPrograma`).
+
+| Sub-acción | Qué hace | `reason` de éxito parcial o de fallo |
+|---|---|---|
+| `self install` | Instala el bundle del que forma parte el ejecutable, o **repara** la instalación si se ejecuta desde ella; ejecuta `setup` al final salvo `--no-setup` | `setup_failed` (11) con el programa instalado |
+| `self uninstall` | Borra el estado, revierte el `PATH` según el recibo y borra el directorio de programa aplicando R2 | — |
+
+**`self uninstall` sin `--keep-data` borra la raíz de datos entera, no el plan de `cleanup --all`.** La diferencia es deliberada y está en `uninstall::compose_plan`: `cleanup --all` protege las voces de fábrica (`default`, `ryan`, `vivian`) porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar. Al desinstalar **el programa desaparece**, y con él las voces de fábrica: dejarlas sería residuo dentro de una raíz de propiedad exclusiva, que es exactamente lo que prohíbe el criterio 17. Con `--keep-data` sí se aplica el plan de `cleanup --all` **filtrado** —modelos, voces y habla quedan fuera— y el directorio de programa se borra igualmente.
+
+**Idempotencia**: sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_installed` (criterio 21). En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se programa para cuando el proceso termine y el `status` es `removal_scheduled`, que también es éxito.
+
+El detalle completo —los doce pasos de `self install`, el bundle y su manifiesto, el recibo y la integración de `PATH`— está en [`commands/SELF.md`](commands/SELF.md).
 
 ### `cleanup`
 
@@ -607,16 +661,22 @@ Son dos causas independientes que coinciden en el mismo hecho generador. Los pay
 |---|---|
 | `--voices` | Las voces que puede borrar y, **con ellas, solo los namespaces de habla sintética de esas voces** (arrastre `speech/<voz>` excepto `default`) |
 | `--synthetic-speech` | La raíz `speech/` entera, `default` incluida |
-| `--model` | Snapshots HF pineados (`MODEL_REVISIONS` en `hf_cache_dir()`), `xet` + `.locks` y `ct2` (`hf_cache_dir/ct2`), y `data_dir()/models` legado |
-| `--all` | Unión Modelo + voces + habla sintética (**sin binario ni PATH**; solo datos) |
-| `--dry-run` | Lista sin borrar (exit 0); cubre los tres modos anteriores; con `--json` emite `removed` + `dry_run:true` |
-| `--yes` / `-y` | Omite la confirmación interactiva (`s/si/sí/y/yes`); con `--dry-run` es no-op |
+| `--model` | En la raíz de modelos **exclusiva** de la aplicación, la **raíz entera** (snapshots, derivado CT2, locks y `xet` cuelgan de ella). En la raíz **compartida** que el usuario eligió con `HF_HUB_CACHE`/`HF_HOME`, solo los repos fijados (`MODEL_REVISIONS`), sus locks y el derivado `ct2`; **`xet` y el `.locks` completo nunca se borran** (regla R3) |
+| `--all` | Unión de las tres categorías **más** configuración (`config.json`), logs y el estado de ejecución del daemon (`daemon.pid` y `daemon.ready`) (**sin programa ni PATH**) |
+| `--dry-run` | Lista sin borrar (exit 0) y sin tomar el bloqueo; con `--json` emite `removed` + `dry_run:true` |
+| `--yes` / `-y` | Omite la confirmación interactiva (`s/si/sí/y/yes/dale/ok`); con `--dry-run` es no-op |
 
-**Gate `sin flags → exit 2`:** `cleanup` sin ningún flag de categoría (`--voices`, `--synthetic-speech`, `--model`, `--all`) sale con `2` `usage_error` sin borrar (del binario principal). `--all` equivale a `--voices --synthetic-speech --model` (del binario principal).
+**Gate `sin flags → exit 2`:** `cleanup` sin ningún flag de categoría (`--voices`, `--synthetic-speech`, `--model`, `--all`) sale con `2` `usage_error` **sin borrar nada y sin tomar el bloqueo** (`cleanup::run`, primera comprobación). `--all` equivale a `--voices --synthetic-speech --model` más configuración, logs y estado del daemon.
+
+**Sin terminal, `cleanup` no procede por su cuenta.** Es una operación destructiva: sin TTY y sin `--yes` termina con `confirmation_required` (2) y no borra nada. La celda no destructiva de la tabla de §9.1 —lo no destructivo procede sin preguntar— es la de `self install` y `setup`, no la de `cleanup`.
+
+**El plan es una función pura de sus entradas** (`cleanup::plan`): la usan la confirmación, el `--dry-run` y la ejecución, de modo que no puede haber divergencia entre lo que se anuncia y lo que ocurre. Antes de borrar recursos que el daemon usa, `cleanup` lo detiene; si no se detiene, `daemon_stop_failed` (16) y **nada del plan se borra**.
 
 **`speech/default/` (y `ryan`/`vivian`) sobrevive a `--voices` y cae únicamente con `--synthetic-speech` o `--all`.** El criterio es el del propio flag —las locuciones se van con su voz— y las voces de fábrica (`default`, `ryan`, `vivian`; `crates/avi-store/src/lib.rs` `FACTORY_VOICES`) no se van nunca: `voice remove` las protege (exit 2) y `--voices` no las borra. Importa declararlo porque `default` es la voz por defecto de `speech synthesize` y su namespace es probablemente el más poblado. Reparto con `speech remove`: el borrado individual es `speech remove --label`, el masivo es `cleanup --synthetic-speech` (ver «Reparto con `cleanup`» en [§3](#3-el-grupo-speech)).
 
-`--all` es unión de limpiezas de datos; **no toca binario ni PATH** — solo `uninstall` borra binario y PATH (del binario principal). Con la raíz separada del registro de voces, el arrastre de `--voices` es código explícito y no un efecto del `rmtree`.
+`--all` es unión de limpiezas de datos; **no toca programa ni PATH** — eso es `self uninstall`, y es el único comando que borra el directorio de programa. Con la raíz separada del registro de voces, el arrastre de `--voices` es código explícito y no un efecto del `rmtree`.
+
+**El plan nunca dice qué se conserva por callado**: la lista de `preserved` (raíz compartida con su motivo, directorio de programa) es parte del plan y se imprime junto a él, porque un usuario que ve `cleanup --all` sin lista de lo que se conserva no puede saber que sus modelos de otra herramienta siguen ahí.
 
 ### `setup`
 
@@ -628,6 +688,13 @@ provisiona siempre en `setup` base; el flag solo emite un aviso informativo.
 No existe `--language` en `setup`: el conjunto provisionado es fijo (es+en
 offline completo desde el primer uso). `setup --with-stt` sin más flags no
 provisiona nada adicional.
+
+**Su flujo es el de siempre, ahora en el motor**: selección por banderas, idempotencia por presencia del snapshot, purga de `--force-update` **sobre la misma selección** (purgar el modelo de clonado que el usuario no pidió dejaría la instalación sin lo que sí quiere) y conversión del derivado CT2 con directorio temporal hermano y renombrado atómico, verificada con el mismo gate que la acepta.
+
+**Lo que llega en el ciclo 2**: la **selección persistida en configuración** y la **poda de las revisiones obsoletas** de los repos propios. No están hoy, y no es un olvido: las necesita una actualización, no una instalación, y escribirlas ahora fijaría un contrato que ese ciclo va a cambiar (`crates/avi-lifecycle/src/setup.rs`, cabecera del módulo).
+
+**`setup` invocado al final de una instalación no es un error de la instalación.** `self install` lo ejecuta en el mismo proceso; si falla, el programa **queda instalado** y el desenlace es `setup_failed` (11), con el motivo del fallo de provisión anidado en `models_cause`. Ver `self install` en [`commands/SELF.md`](commands/SELF.md) y §10.
+
 
 ### `voice`
 
@@ -650,7 +717,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 `/synthesize` recibe `voice: str`. No hay lista de directorios de audio permitidos, ni validación de rutas de audio, ni directorio de sesión del daemon, porque no hay rutas que validar.
 
-**Riesgo conocido y declarado**: `data_dir()` / `hf_cache_dir()` (`crates/avi-store/src/lib.rs`) depende de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. El daemon no expone un endpoint para inspeccionar su vista del almacén (`GET /voices` fue podado). Con `AVI_DATA_DIR`, esa dependencia es además el mecanismo de aislamiento por instancia en tests (sandbox propio por test; en producción la resolución por defecto no cambia).
+**Riesgo conocido y declarado**: `data_dir()` / `models_cache_dir()` (`crates/avi-store/src/lib.rs`) dependen de `LOCALAPPDATA` / `XDG_DATA_HOME`, así que un daemon y un cliente arrancados con entornos distintos responden «voz no encontrada» para una voz que el cliente sí lista. El daemon no expone un endpoint para inspeccionar su vista del almacén (`GET /voices` fue podado). Con `AVI_DATA_DIR`, esa dependencia es además el mecanismo de aislamiento por instancia en tests (sandbox propio por test; en producción la resolución por defecto no cambia).
 
 ## 13. `translate`, `speech transcribe`, `speech dub` y la síntesis cross-lingual
 
@@ -674,7 +741,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 ### Provisión y daemon
 
-`setup` descarga `Marian` (`opus-mt-es-en`/`en-es`) y convierte incondicionalmente su derivado obligatorio `CT2` `INT8` en `hf_cache_dir/ct2/opus-mt-{es-en,en-es}/` (`crates/avi-store/src/lib.rs:ct2_model_dir`, idempotente por `mtime` solo sobre dirs sanos): `model.bin` más tokenizador utilizable por el loader (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot). Si el dir está roto (sin tokenizador), `setup` lo reconvierte de forma atómica (temporal hermano + rename, verificación con el criterio del gate `is_ct2_provisioned` == loader); `doctor` exige el derivado completo para ambas direcciones (Falla con `CT2 es→en/en→es no provisionado` si `Marian HF` está pero el `CT2` no pasa el gate); `cleanup` purga `hf_cache_dir/ct2` junto a `xet` y `hf_cache_dir/.locks`. Sin gating por `--language`: la provisión es determinista para la instalación por defecto. `daemon start`/`serve` aceptan `--auto-restart` y `--max-retries` (default `3`) — con `--auto-restart` el supervisor reintenta hasta `max_retries` con backoff `500ms*2^retries` capado a `4s` (cada reintento con reclamo activo del árbol propio previo con deadline de 5 s y verificación de muerte + puerto libre; el reclamo activo matar-y-rearrancar vive en `start` —en Unix ante líder muerto por grupo con verificación por 8766, runtime diferido a CI—, nunca en `serve`; con puertos efímeros el reclamo previo al reintento pierde su objeto (el cliente ya descubre la `addr` real por el pidfile); un `daemon stop` graceful vía `shutdown_notify` no reintenta.
+`setup` descarga `Marian` (`opus-mt-es-en`/`en-es`) y convierte incondicionalmente su derivado obligatorio `CT2` `INT8` en `ct2_model_dir(pair)` = `<models_cache_dir>/ct2/opus-mt-{es-en,en-es}/` (`crates/avi-store/src/lib.rs:ct2_model_dir`, idempotente por `mtime` solo sobre dirs sanos): `model.bin` más tokenizador utilizable por el loader (`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot). Si el dir está roto (sin tokenizador), `setup` lo reconvierte de forma atómica (temporal hermano + rename, verificación con el criterio del gate `is_ct2_provisioned` == loader); `doctor` exige el derivado completo para ambas direcciones (Falla con `CT2 es→en/en→es no provisionado` si `Marian HF` está pero el `CT2` no pasa el gate); `cleanup --model` purga el derivado `ct2` —con la raíz de modelos entera si es exclusiva, y solo el derivado si es compartida (R3)—. Sin gating por `--language`: la provisión es determinista para la instalación por defecto. `daemon start`/`serve` aceptan `--auto-restart` y `--max-retries` (default `3`) — con `--auto-restart` el supervisor reintenta hasta `max_retries` con backoff `500ms*2^retries` capado a `4s` (cada reintento con reclamo activo del árbol propio previo con deadline de 5 s y verificación de muerte + puerto libre; el reclamo activo matar-y-rearrancar vive en `start` —en Unix ante líder muerto por grupo con verificación por 8766, runtime diferido a CI—, nunca en `serve`; con puertos efímeros el reclamo previo al reintento pierde su objeto (el cliente ya descubre la `addr` real por el pidfile); un `daemon stop` graceful vía `shutdown_notify` no reintenta.
 
 ### `speech transcribe`: audio→texto, verificable sin traducir ni sintetizar
 
@@ -721,4 +788,4 @@ Cada comando principal de la CLI tiene un documento de investigación dedicado e
 | `daemon` | [`commands/DAEMON.md`](commands/DAEMON.md) | `start`, `stop`, `restart`, `status`, `serve` |
 | `version` | [`commands/VERSION.md`](commands/VERSION.md) | — |
 | `translate` | [`commands/TRANSLATE.md`](commands/TRANSLATE.md) | — |
-| `uninstall` | [`../SELF-HOSTED-INSTALL.md`](../SELF-HOSTED-INSTALL.md#desinstalación) | — |
+| `self` | [`commands/SELF.md`](commands/SELF.md) | `install`, `uninstall` |

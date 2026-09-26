@@ -96,36 +96,118 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-El entorno de desarrollo acumulaba decenas de GB de artefactos que ningún
-comando limpiaba (`target/`, objetos C y pesos obsoletos del motor en
-`vendor/qwen3-tts`, `.qvoice` temporales filtrados por `voice clone`), y
-`uninstall` dejaba en el perfil del usuario el derivado CT2 y los locks de
-descarga de HuggingFace. Ahora `cargo run -p xtask -- clean` deja repo y perfil
-de usuario listos para compilar, instalar o usar solo artefactos nuevos, y
-`uninstall` borra lo mismo que `cleanup --all`.
+**Cambio incompatible**: el ciclo de vida de la aplicación pasa a ser un binario que se
+gestiona a sí mismo. `uninstall` desaparece como comando de nivel superior y, con él, su
+`--force`; en su lugar está el grupo `self`, con `self install` (que también repara una
+instalación existente) y `self uninstall`, más `cleanup` para la limpieza granular del
+estado. El cambio es **pre-1.0 y sin transición**: no hay alias, no hay flags deprecados y
+no hay nota de migración. **No hay procedimiento de migración** porque **no hay
+instalaciones previas**: el proyecto no está distribuido, así que la primera versión
+publicada de este ciclo de vida es la primera instalación para todo el mundo.
+
+El mismo corte mueve la caché de modelos a una raíz **exclusiva de la aplicación** y los
+datos de usuario a `%LOCALAPPDATA%\ai-voice-interconnector\data` en Windows, con las
+variables `AVI_INSTALL_DIR`, `AVI_BIN_DIR`, `AVI_DATA_DIR` y `AVI_CACHE_DIR` como
+reubicación. Y sube el sobre `--json` de la CLI a `schema_version` `"4"`: el protocolo del
+daemon sigue en `"3"`, porque es un contrato independiente.
 
 ### Añadido
 
-- xtask: subcomando `clean [--dry-run] [--yes]`. Lista con tamaños y borra la
-  capa del proyecto (`target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura,
-  binario, objetos y pesos locales del motor en `vendor/qwen3-tts`) y la de la
-  app (instalación, `data_dir()`, snapshots HF pineados, `hub/ct2`,
-  `hub/.locks`, `xet` y temporales del producto). Detiene antes el daemon y
-  desinstala el binario instalado. No toca cachés globales compartidas
-  (`~/.cargo/registry`, `~/.cargo/git`, `sccache`).
+- `self install`: instala el bundle del que forma parte el ejecutable y, ejecutado desde
+  dentro del directorio de programa, **repara** la instalación sin copiar archivos. Escribe
+  un recibo atómico (`install-receipt.json`) con la versión, el target, el canal, los archivos
+  colocados, la integración de `PATH` y las raíces efectivas, de modo que actualizar y
+  desinstalar operen sobre las mismas rutas aunque la variable de reubicación ya no esté
+  definida. Toma un bloqueo exclusivo de SO, completa la recuperación de una operación
+  interrumpida antes de componer el plan, para en macOS la cuarentena de todo el directorio
+  de programa, y conserva el tipo del valor `Path` de `HKCU\Environment` y sus entradas
+  `%VAR%` al integrar el `PATH` en Windows. Un ejecutable **sin bundle alrededor** (por
+  ejemplo `target\debug`) responde `bundle_invalid` (15) indicando `cargo xtask install`.
+- `self uninstall`: borra el estado, revierte la integración de `PATH` **exactamente según el
+  recibo** —el enlace solo si apunta al directorio de programa, los bloques delimitados de
+  los perfiles, y la entrada del registro con comparación canónica— y borra el directorio de
+  programa aplicando la regla de propiedad R2. Es idempotente (`not_installed` y salida 0 en
+  un sistema ya limpio) y, en Windows, programa el borrado del directorio si el ejecutable en
+  uso está dentro (`removal_scheduled`).
+- `self uninstall` **sin** `--keep-data` borra la **raíz de datos entera**, no el plan de
+  `cleanup --all`: al desinstalar desaparece el programa y con él las voces de fábrica, así
+  que dejar nada dentro de una raíz de propiedad exclusiva es lo que corresponde. Con
+  `--keep-data` sí se aplica el plan de `cleanup --all` filtrado (modelos, voces y habla se
+  conservan; dentro quedan configuración, logs y estado del daemon).
+- Sección de ciclo de vida de `doctor`: `version`, `target`, `channel`, `install`, `path`,
+  `pending` y `models` se suman al veredicto en `checks` y `failed`. La recuperación se
+  calcula **en modo informe** —se dice lo que se recogería sin recoger nada— y el reporte se
+  emite como **un único objeto en `stdout`, también cuando falla**: el veredicto va dentro
+  y no se adjunta un objeto `error` detrás.
+- Motor del ciclo de vida en el crate nuevo `avi-lifecycle`, con el planificador único de
+  borrado, el protocolo de parada del daemon, el bloqueo, la transacción, la integración de
+  `PATH` por SO y las reglas de confirmación de §9.1 en un solo sitio por regla.
+- Siete enteros nuevos en la tabla de códigos de salida, **uno por `reason`**: `11`
+  `setup_failed`, `12` `externally_managed`, `13` `rolled_back`, `14` `path_conflict`, `15`
+  `bundle_invalid`, `16` `daemon_stop_failed` y `17` `lifecycle_locked`
+  (`crates/avi-core/src/exit_codes.rs`).
+- xtask: subcomando `clean [--dry-run] [--yes]`. Lista con tamaños y borra la capa del proyecto (`target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario, objetos y pesos locales del motor en `vendor/qwen3-tts`) y la de la app (instalación, `data_dir()`, raíz de modelos, derivados CT2 y temporales del producto), delegando en `self uninstall --yes`. No toca cachés globales compartidas (`~/.cargo/registry`, `~/.cargo/git`, `sccache`).
+
+### Cambiado
+
+- **Cambio incompatible, pre-1.0 y sin transición**: `ai-voice-interconnector uninstall`
+  deja de existir, y con él su `--force`. No hay alias, ni flag deprecado, ni periodo de
+  transición, ni nota de migración. Lo que hace ese papel es `self uninstall`; y `--force`
+  sigue existiendo **con otro significado** en `self install` y `self update`, para resolver
+  un conflicto en la ruta del enlace del `PATH`.
+- **No hay procedimiento de migración.** El proyecto no está distribuido: no hay
+  instalaciones del ciclo de vida anterior en máquinas de usuarios, así que no hay nadie a
+  quien haya que acompañar. Cualquier instalación creada con los scripts anteriores desde
+  `main` se trata como no instalada: `self install` no la reconoce, no la adopta y no la
+  actualiza, y sus datos en las rutas antiguas no se borran ni se migran.
+- `self install` cuyo `setup` final falla es ahora un **éxito parcial**: `status`
+  `installed`, `reason` `setup_failed` y **código de salida 11**, con el programa instalado y
+  reintentable con `setup`. Antes salía con `reason` nulo y código 0. El motivo del fallo de
+  descarga o de conversión viaja anidado en `models_cause` con su propio `reason`
+  (`network_error` o `ct2_conversion_failed`).
+- El sobre `--json` de la CLI sube a `schema_version` **`"4"`**: `doctor` retira las claves
+  de primer nivel `data_dir`, `hf_cache`, `base_status` e `issues` —su información vive
+  ahora dentro de `install`, `path` y `models`, y el veredicto en `checks`/`failed`—, lo que
+  es un cambio incompatible y por eso exige versión. **El protocolo del daemon sigue en
+  `"3"`**: son contratos independientes y este ciclo no lo toca.
+- La caché de modelos pasa a ser **exclusiva de la aplicación** (`%LOCALAPPDATA%\ai-voice-interconnector\cache\models`,
+  `~/Library/Caches/ai-voice-interconnector/models`, `$XDG_CACHE_HOME/ai-voice-interconnector/models`),
+  con `HF_HUB_CACHE`/`HF_HOME` como opción de quien quiera compartir. En la raíz compartida,
+  `cleanup --model` limita el alcance a lo atribuible a la aplicación: nunca borra `xet` ni el
+  `.locks` completo, y lo conserva se anuncia en el plan. En Windows, los datos de usuario
+  pasan a `%LOCALAPPDATA%\ai-voice-interconnector\data`.
+- `cleanup` delega su lista de destinos en un **planificador único** que usan la
+  confirmación, el `--dry-run` y la ejecución, con las reglas de propiedad R1–R3. Antes el
+  plan de `--dry-run` y la ejecución eran dos listas, y `cleanup --model --dry-run` podía
+  anunciar un borrado que no ocurría. `--all` añade configuración, logs y el estado del
+  daemon. Sin terminal y sin `--yes`, `cleanup` termina con `confirmation_required` (2) y no
+  borra nada, en vez de proceder sin preguntar. `--dry-run` ya no toma el bloqueo.
+- `setup` se traslada al motor conservando su semántica (selección por banderas, idempotencia
+  por presencia del snapshot, purga de `--force-update` sobre la misma selección, conversión
+  CT2 atómica y verificada con el mismo gate que la acepta). La **selección persistida en
+  configuración** y la **poda de revisiones obsoletas** llegan con `self update`, en el ciclo 2.
 
 ### Corregido
 
-- `uninstall` borra también el derivado CT2 (`hub/ct2`) y `hub/.locks`, con el
-  mismo alcance que `cleanup --model`.
-- `cleanup --model` borra `hub/.locks` y su `removed` informa rutas reales
-  (`models--*`) y solo lo efectivamente borrado.
-- `setup --force-update` limpia `hub/.locks` además de `xet`.
-- `voice clone` (local y vía daemon) ya no filtra el `.qvoice` temporal: usa
-  el prefijo `avi_` que barren `cleanup`/`uninstall` y lo borra al terminar.
-- El `zap` del Cask incluye `hub/ct2` y `hub/.locks`.
-- tests: el test de `uninstall` ya no podía purgar el `xet` real del
-  desarrollador (el sandbox HF no terminaba en `hub`).
+- `self install` **borraba su propio bundle**: el barrido de huecos de la recuperación se
+  llevaba el staging hermano y la instalación se eliminaba a sí misma entre los pasos 1 y 2.
+  Cerrado declarando el bundle en uso en la recuperación.
+- `canonical_path_key` no normalizaba el prefijo de rutas verbatim que devuelve la API de
+  Windows, y hacía que en Unix una ruta absoluta comparara igual que una relativa del mismo
+  nombre. El arreglo permanente está en `avi-store`, no en el consumidor.
+- El resumen de `self install` **duplicaba la línea del `PATH`** en toda la operación: el
+  resumen final lleva una sola línea, y es la del estado, no la del plan.
+- `uninstall` borraba también el derivado CT2 (`ct2`) y los locks de descarga; ahora lo hace
+  el motor con las reglas de propiedad correctas.
+- `cleanup --model` borra los locks y su `removed` informa rutas reales (`models--*`) y solo
+  lo efectivamente borrado.
+- `setup --force-update` limpia además los locks y `xet`.
+- `voice clone` (local y vía daemon) ya no filtra el `.qvoice` temporal: usa el prefijo `avi_`
+  que barren `cleanup` y `self uninstall`, y lo borra al terminar.
+- El `zap` del Cask incluye el derivado CT2 y los locks.
+- tests: las pruebas del ciclo de vida ya no podían purgar la caché real del desarrollador (el
+  sandbox no terminaba en `hub`), ni colisionar con los temporales del producto: los sandboxes
+  usan prefijos que no empiezan por `avi-`/`avi_`, que es el criterio de los barridos.
 
 ## [0.23.1] — 2026-09-25
 

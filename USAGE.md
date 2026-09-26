@@ -26,7 +26,8 @@
     - [`voice remove`](#voice-remove)
   - [`translate`](#translate)
   - [`cleanup`](#cleanup)
-- [Desinstalación completa](#desinstalación-completa)
+- [Ciclo de vida de la instalación (`self`)](#ciclo-de-vida-de-la-instalación-self)
+  - [Instalar y reparar: `self install`](#instalar-y-reparar-self-install)
 - [Actualizar de versión](#actualizar-de-versión)
 - [Modo daemon](#modo-daemon)
   - [Gestión del daemon](#gestión-del-daemon)
@@ -103,10 +104,12 @@ irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-In
 ```
 
 **Desinstalación limpia**, en **un comando** en los tres SO: `ai-voice-interconnector
-uninstall` encadena la limpieza de datos (`data_dir()` + snapshots HF + cachés
-`xet`/`ct2`/`.locks`), revierte la integración de PATH y borra el binario, en ese
-orden. Usa `uninstall --force` para omitir la confirmación. Con Homebrew Cask, la vía idiomática es
-`brew uninstall --cask --zap`. Ver «Desinstalación completa» más abajo.
+self uninstall` borra el estado, revierte la integración de PATH y borra el programa, en
+ese orden. Usa `--yes` para omitir la confirmación, `--keep-data` para conservar modelos,
+voces y habla, y `--dry-run` para ver el plan sin tocar el disco. Sin terminal, `--yes` es
+**obligatorio**: sin él la operación termina con `confirmation_required` y no borra nada.
+Con Homebrew Cask, la vía idiomática es `brew uninstall --cask --zap`. Ver «Ciclo de vida
+de la instalación» más abajo.
 
 ### Compilar desde el código fuente (Rust)
 
@@ -124,8 +127,11 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 ## Primer uso: provisionar el/los modelo(s) (`setup`)
 
 `setup` descarga **los 4 modelos base + 1 opt-in** desde HuggingFace Hub de forma nativa
-(crate `hf-hub`, TLS rustls; sin Python) a la caché canónica
-(`~/.cache/huggingface/hub`; respeta `HF_HUB_CACHE`/`HF_HOME` si las defines):
+(crate `hf-hub`, TLS rustls; sin Python) a la **caché exclusiva de la aplicación**
+(`~/.cache/ai-voice-interconnector/models` en Linux,
+`~/Library/Caches/ai-voice-interconnector/models` en macOS,
+`%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows; respeta
+`HF_HUB_CACHE`/`HF_HOME` si las defines, y en ese caso esa raíz pasa a ser compartida):
 
 | Modelo | Repo HF | Uso |
 |---|---|---|
@@ -148,8 +154,10 @@ ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación 
 **Qué esperar:** barra de progreso por bytes con ETA y resume automático si se
 interrumpe. La provisión se decide solo por presencia del snapshot HF (no hay
 índice `manifest.json` que consultar): si lo vuelves a ejecutar con los
-snapshots presentes, termina al instante sin descargar nada. La limpieza posterior corresponde a `cleanup` (snapshots + datos)
-o `uninstall --force` (además binario + PATH).
+snapshots presentes, termina al instante sin descargar nada. Si la provisión falla al
+final de una instalación, el programa **queda instalado** y el comando sale con `11`
+(`setup_failed`): es un éxito parcial y basta reintentar con `setup`. La limpieza
+posterior corresponde a `cleanup` (datos) o `self uninstall` (además programa y PATH).
 
 **Provisión por SO** (experiencia homóloga):
 
@@ -172,15 +180,20 @@ Tanto los comandos de lectura (`version`, `doctor`, `devices`, `voice list`,
 `ai-voice-interconnector` desde otro programa: ningún comando obliga a parsear texto.
 
 Todo payload `--json` incluye el campo **`"schema_version"`** (actualmente
-`"3"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
+`"4"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
 nuevas no lo incrementa; solo un cambio incompatible de las claves existentes lo
 haría. Un consumidor puede leerlo para detectar cambios de contrato.
+
+**Ojo: el protocolo del daemon sigue en `"3"`.** Son dos contratos
+independientes —el sobre de la CLI y el IPC del daemon— y suben por separado: el
+ciclo de vida cambió el sobre (retiró cuatro claves de `doctor`) y **no** tocó el
+protocolo del daemon.
 
 ### Referencia de esquemas `--json`
 
 Los payloads siguientes son **parte del contrato programático**: sus claves son
 estables (los cambios solo pueden ser aditivos mientras `schema_version` sea
-`"3"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
+`"4"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
 diagnóstico/progreso va a stderr. La clave `schema_version` (string) se omite de
 las tablas por brevedad: está presente en todos.
 
@@ -273,13 +286,26 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `with_stt` | boolean | Espejo del flag `--with-stt` (redundante: STT ya va incluido) |
 | `models_provisioned` | array de strings | Los 4 modelos base + 1 opt-in si `--with-voice-cloning` (`qwen3-tts-0.6b`, `marian-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
 
-**`cleanup --json` / `uninstall --json`**
+**`cleanup --json` / `self uninstall --json`**
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `"cleanup_complete"` / `"uninstalled"` / `"cancelled"` (cancelación de la confirmación, exit 0) |
-| `removed` | array de strings | Solo `cleanup`: rutas efectivamente eliminadas (o candidatas con `--dry-run`); vacío si nada que limpiar |
-| `dry_run` | boolean | Solo `cleanup`: `true` con `--dry-run`, `false` en borrado real |
+| `status` | string | `cleanup`: `"cleanup_complete"` / `"cancelled"` (cancelación de la confirmación, exit 0). `self uninstall`: `"uninstalled"` / `"removal_scheduled"` (Windows, borrado diferido) / `"not_installed"` (idempotencia) / `"cancelled"` |
+| `reason` | string \| null | `null` en el desenlace normal; con `--json`, un fallo emite el objeto `error` + `reason` de §10 del contrato |
+| `removed` | array de strings | Rutas efectivamente eliminadas (o las del plan con `--dry-run`); vacío si no había nada |
+| `dry_run` | boolean | `cleanup`: `true` con `--dry-run`, `false` en borrado real |
+| `path_reverted` | boolean | Solo `self uninstall`: `true` si se revirtió la integración de `PATH` registrada en el recibo |
+
+**`self install --json`**
+
+| Clave | Tipo | Significado |
+|-------|------|-------------|
+| `status` | string | `"installed"` o `"repaired"` (reparación: el ejecutable se invoca desde el propio directorio de programa) |
+| `reason` | string \| null | `null` en éxito; `"setup_failed"` si el programa quedó instalado pero la provisión no se completó (**exit 11**, éxito parcial) |
+| `install_dir` / `version` / `channel` | string | Lo que queda en el recibo de la instalación |
+| `path_integrated` | boolean | Si la integración de `PATH` está en pie (estado, no diff de esta pasada) |
+| `models` | string | `"skipped"` (`--no-setup`), `"already_provisioned"`, `"provisioned"` o `"failed"` |
+| `models_cause` | objeto | **Solo si `models` es `"failed"`**: `{reason, message}` con `network_error` o `ct2_conversion_failed` |
 
 **`voice clone --json`**
 
@@ -867,43 +893,82 @@ el ciclo de vida instalación→desinstalación. **Sin flags → exit `2` `usage
 ```bash
 ai-voice-interconnector cleanup --voices              # voces no-fábrica + arrastre speech/<voz> (excepto default)
 ai-voice-interconnector cleanup --synthetic-speech    # raíz speech/ entera (incluye default)
-ai-voice-interconnector cleanup --model               # snapshots HF pineados + xet + ct2 (derivado completo) + data_dir()/models
-ai-voice-interconnector cleanup --all                 # unión Modelo+voces+habla (sin binario ni PATH)
+ai-voice-interconnector cleanup --model               # la raíz de modelos: entera si es exclusiva, o solo lo atribuible si es compartida
+ai-voice-interconnector cleanup --all                 # las tres categorías + configuración, logs y estado del daemon (sin programa ni PATH)
 ai-voice-interconnector cleanup --all --dry-run       # lista sin borrar (exit 0, --json con removed/dry_run)
 ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y alias)
 ```
 
-**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o snapshots HF de
-los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `Helsinki-NLP/opus-mt-*`,
-`istupakov/parakeet-tdt-0.6b-v3-onnx`) + `xet`/`ct2` (incluido el derivado CT2 completo: `model.bin` + tokenizador). `--all` es la unión de las tres categorías **sin binario ni PATH** — solo `uninstall` borra binario y PATH (del binario principal). El borrado es quirúrgico: nunca toca modelos de otros
-proyectos en la caché. `--dry-run` lista candidatas sin borrar; `--yes/-y` omite la confirmación interactiva. Con `--json` emite `{"status":"cleanup_complete","removed":[...],"dry_run":bool}`. Todo es recuperable: `setup` re-descarga los modelos y
+**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o la raíz de modelos. En la raíz de modelos **exclusiva** el borrado es de directorio entero (snapshots, derivado CT2, locks y `xet` cuelgan de ella); si el usuario eligió una caché HF compartida con `HF_HUB_CACHE`/`HF_HOME`, solo se borran los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `Helsinki-NLP/opus-mt-*`, `istupakov/parakeet-tdt-0.6b-v3-onnx`), sus locks y el derivado `ct2`, y **`xet` y el `.locks` completo se conservan y se anuncian** (`doctor` dice si la raíz es compartida con `models.shared_root`). `--all` es la unión de las tres categorías **sin programa ni PATH** — solo `self uninstall` borra el programa y el `PATH`. El borrado es quirúrgico: nunca toca modelos de otros proyectos en una caché compartida. `--dry-run` lista el plan sin borrar **y sin tomar el bloqueo**; `--yes/-y` omite la confirmación interactiva, y **sin terminal es obligatorio**: sin él sale con `confirmation_required` (2) y no borra nada. Con `--json` emite `{"schema_version":"4","status":"cleanup_complete","reason":null,"removed":[...],"dry_run":bool}`. Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
 
 ---
 
-## Desinstalación completa
+## Ciclo de vida de la instalación (`self`)
 
-**Canal nativo (los tres SO), en un comando**: `ai-voice-interconnector uninstall`
-encadena la limpieza de datos (el mismo alcance que `cleanup --all`: snapshots HF,
-cachés `xet`/`ct2`/`.locks` y `data_dir()`), revierte la integración de PATH y borra el binario, **en ese
-orden**. Pide confirmación interactiva salvo con `--force`/`--yes`; cancelar
-aborta sin borrar nada (`{"status":"cancelled"}`, exit 0). Con `--json` emite
-`{"schema_version","status"}`.
+**Canal nativo (los tres SO), en un comando**: `ai-voice-interconnector self uninstall`
+borra el estado, revierte la integración de `PATH` y borra el programa, **en ese orden**.
 
-- **Linux**: quita el symlink `~/.local/bin/ai-voice-interconnector`, borra
-  `~/.local/opt/ai-voice-interconnector/` y los datos.
-- **macOS**: igual que Linux en la vía one-liner; con Homebrew Cask la vía
-  idiomática es `brew uninstall --cask --zap ai-voice-interconnector`.
-- **Windows**: borra los datos y el directorio
-  `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, quita esa entrada del PATH
-  de usuario (`HKCU\Environment`) y notifica el cambio al sistema. El directorio
-  del binario en uso lo borra un proceso auxiliar al terminar el comando.
+```bash
+ai-voice-interconnector self uninstall --dry-run      # imprime el plan con tamaños; no borra nada
+ai-voice-interconnector self uninstall               # pide confirmación [s/N]
+ai-voice-interconnector self uninstall --yes         # no interactivo (obligatorio sin terminal)
+ai-voice-interconnector self uninstall --keep-data   # conserva modelos, voces y habla sintetizada
+```
+
+**Qué esperar:** el plan lista, con tamaños, lo que se va a borrar y lo que **no** se tocará
+—la integración de `PATH` se *retira*, no se borra el archivo, y una caché HF compartida se
+conserva—. Sin terminal, `--yes` es obligatorio: sin él sale con `confirmation_required`
+(exit 2) y no borra nada. Cancelar la confirmación no es un error: `status` `cancelled` y
+exit 0. Con `--json` emite `{"schema_version":"4","status":…,"reason":null,"removed":[…],"path_reverted":bool,"dry_run":bool}`.
+
+**Sin `--keep-data` se borra la raíz de datos entera**, no el plan de `cleanup --all`, y la
+diferencia es deliberada: `cleanup --all` protege las voces de fábrica porque van embebidas
+en el binario y el programa sigue instalado, pero **al desinstalar desaparece el programa**, y
+dejarlas sería residuo dentro de una raíz de propiedad exclusiva. Con `--keep-data` sí se
+aplica el plan de `cleanup --all` filtrado (modelos, voces y habla fuera; dentro
+configuración, logs y estado del daemon), y el programa se borra igual.
+
+- **Linux/macOS**: retira el enlace `~/.local/bin/ai-voice-interconnector` (solo si apunta al
+  directorio de programa) y los bloques delimitados de los perfiles, y borra
+  `~/.local/opt/ai-voice-interconnector/`.
+- **Windows**: borra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` y quita su entrada del
+  `PATH` de usuario (`HKCU\Environment`) conservando el **tipo** del valor y las entradas
+  `%VAR%`, y difundiendo `WM_SETTINGCHANGE`. Si el ejecutable en uso está dentro del
+  directorio, un proceso auxiliar lo borra al terminar el comando y el `status` es
+  `removal_scheduled` (que es éxito).
+- **Idempotente**: repetirla en un sistema ya limpio termina con éxito y `status`
+  `not_installed`.
+- **Con Homebrew Cask** la vía idiomática es `brew uninstall --cask --zap
+  ai-voice-interconnector`, y el comando responde `externally_managed` (12) con esa
+  instrucción.
+
+### Instalar y reparar: `self install`
+
+```bash
+ai-voice-interconnector self install                  # instala el bundle del que forma parte el ejecutable
+ai-voice-interconnector self install --no-setup       # no provisiona modelos
+ai-voice-interconnector self install --no-modify-path # no toca perfiles ni registro
+ai-voice-interconnector self install --force          # resuelve un conflicto en la ruta del enlace
+```
+
+Ejecutado **desde dentro** del directorio de programa, `self install` **repara** en vez de
+instalar: reaplica la integración de `PATH`, los permisos, la limpieza de cuarentena y el
+recibo sin copiar archivos. Un ejecutable **sin bundle alrededor** (por ejemplo
+`target\debug`) responde `bundle_invalid` (15) indicando `cargo xtask install`: no es una
+instalación rota, es que no hay nada alrededor que instalar.
+
+Si la provisión de modelos falla al final, el programa **queda instalado**, el `status` es
+`installed`, el `reason` es `setup_failed`, el código de salida es **11** y el motivo del
+fallo viaja anidado en `models_cause` (`network_error` o `ct2_conversion_failed`). Es un
+**éxito parcial**: basta reintentar con `setup`.
 
 ---
 
 ## Actualizar de versión
 
-`ai-voice-interconnector` no tiene auto-actualización: cada nueva versión se instala
+`self update` (consulta de versión, descarga, verificación y traspaso) **no existe todavía**;
+cada nueva versión se instala
 manualmente sobre (o junto a) la anterior. Los modelos y las voces en el
 directorio de datos de usuario no se ven afectados por la actualización del
 binario.
@@ -916,7 +981,7 @@ binario.
   `~/.local/bin/ai-voice-interconnector`.
 - **macOS (Homebrew)**: `brew upgrade --cask ai-voice-interconnector`.
 
-Los modelos descargados (`~/.cache/huggingface/hub`) se reutilizan tal cual.
+Los modelos descargados (en la caché de la aplicación, `~/.cache/ai-voice-interconnector/models` en Linux) se reutilizan tal cual.
 Cada versión del binario fija las revisiones exactas de los modelos que usa
 (`MODEL_REVISIONS`): si tu caché contiene otra revisión, `setup` la detecta como
 no provisionada y descarga la requerida (la caché deduplica por contenido).
@@ -1054,7 +1119,18 @@ desde el binario como desde el código fuente. En concreto:
   | `8` | Precondición de entorno incumplida | Credenciales, red, permisos o disco insuficientes al provisionar |
   | `9` | Fallo del pipeline de traducción | `translate` con el modelo cargado pero la inferencia falla |
   | `10` | Fallo del pipeline de transcripción | `speech transcribe`/`speech dub` con el modelo cargado pero la inferencia falla (directo o vía daemon) |
+  | `11` | Provisión de modelos fallida, **programa instalado** | `self install` termina con la provisión sin completar: éxito parcial, reintentable con `setup` |
+  | `12` | La copia la gestiona otra herramienta | `self uninstall` sobre una instalación de Homebrew (o `self update` en canal `dev`) |
+  | `13` | Reemplazo revertido | Fallo al reemplazar la versión anterior; la anterior queda restaurada |
+  | `14` | Conflicto en la ruta del enlace del `PATH` | Hay un archivo ajeno donde va el enlace (salvo `--force`) |
+  | `15` | Bundle incompleto | `self install` desde un ejecutable sin bundle alrededor, p. ej. `target\debug` |
+  | `16` | No se pudo detener el daemon | Nada del plan de `cleanup`/`self uninstall` se aplicó |
+  | `17` | Otra operación de ciclo de vida en curso | El bloqueo de §7 del ciclo de vida ya está tomado |
   | `130` | Interrupción del usuario | Ctrl+C (128 + SIGINT) durante cualquier comando |
+
+  Los códigos 0–10 y el 130 son los del contrato de la CLI y no cambian. Los del 11 al 17 son
+  la tabla cerrada del ciclo de vida, **uno por `reason`**, y hay que leer el 11 con cuidado:
+  **no es un error**, es un éxito parcial con el programa ya instalado.
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el
   audio generado para un mismo texto y voz es equivalente en cualquier SO.
 - **El motor de audio** es nativo por SO (`cpal`: WASAPI/CoreAudio/ALSA); no
@@ -1066,8 +1142,9 @@ Las únicas diferencias son internas y no cambian la forma de usar la aplicació
 |---------|---------|-------|-------|
 | Reproducción de audio | cpal (WASAPI) | cpal (ALSA) | cpal (CoreAudio) |
 | Enumeración de dispositivos | cpal | cpal | cpal |
-| Voces de usuario (binario) | `%LOCALAPPDATA%\ai-voice-interconnector\voices` | `~/.local/share/ai-voice-interconnector/voices` | `~/Library/Application Support/ai-voice-interconnector/voices` |
-| Caché del modelo | `~/.cache/huggingface/hub` | `~/.cache/huggingface/hub` | `~/.cache/huggingface/hub` |
+| Voces de usuario (binario) | `%LOCALAPPDATA%\ai-voice-interconnector\data\voices` | `~/.local/share/ai-voice-interconnector/voices` | `~/Library/Application Support/ai-voice-interconnector/voices` |
+| Caché del modelo | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` | `~/.cache/ai-voice-interconnector/models` | `~/Library/Caches/ai-voice-interconnector/models` |
+| Directorio del programa | `%LOCALAPPDATA%\Programs\ai-voice-interconnector` | `~/.local/opt/ai-voice-interconnector` | `~/.local/opt/ai-voice-interconnector` |
 
 > La caché del modelo respeta las variables de entorno `HF_HUB_CACHE` y `HF_HOME`
 > si están definidas (misma resolución que usa HuggingFace Hub); la ruta de la
