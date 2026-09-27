@@ -1068,15 +1068,27 @@ fn parse_macos_sha256(sums_text: &str, version: &str) -> Result<String> {
 }
 
 /// Entradas `zap trash:` del Cask derivadas de las canónicas de `avi-shared`
-/// (decisión (b), vía (f)): el directorio de soporte de la aplicación, un
-/// snapshot por modelo pineado en `MODEL_REVISIONS` y el derivado CT2. Sin
-/// `xet` ni `.locks` globales: en caché compartida rige R3 y esos directorios
-/// no son atribuibles a la aplicación.
+/// (decisión (b), vía (f)): la raíz de modelos **exclusiva** de la
+/// aplicación, el directorio de soporte de la aplicación, un snapshot por
+/// modelo pineado en `MODEL_REVISIONS` y el derivado CT2. Sin `xet` ni
+/// `.locks` globales: en caché compartida rige R3 y esos directorios no son
+/// atribuibles a la aplicación.
 fn cask_zap_entries() -> Vec<String> {
-    let mut entries = vec![format!(
-        "~/Library/Application Support/{}",
-        avi_shared::paths::APP_NAME
-    )];
+    // La raíz de modelos encabeza la lista porque el canal Cask responde
+    // `externally_managed` a `self uninstall`: este `zap` es su única vía de
+    // borrado, y desde D3 los modelos ya no viven en la caché HF compartida
+    // sino en la raíz exclusiva de `models_cache_dir()`. Va en forma `~`
+    // porque el Cask se genera en la máquina que construye y se ejecuta en la
+    // del usuario; los segmentos son los de la columna de modelos de
+    // `models_cache_dir()` para macOS (`Library`, `Caches`, `APP_NAME`,
+    // `models`).
+    let mut entries = vec![
+        format!("~/Library/Caches/{}/models", avi_shared::paths::APP_NAME),
+        format!(
+            "~/Library/Application Support/{}",
+            avi_shared::paths::APP_NAME
+        ),
+    ];
     for (_, repo, _) in avi_shared::paths::MODEL_REVISIONS {
         entries.push(format!(
             "~/.cache/huggingface/hub/models--{}",
@@ -1466,6 +1478,13 @@ mod tests {
     #[test]
     fn test_cask_zap_lists_current_model_caches() {
         let c = render_cask("9.9.9", &"b".repeat(64));
+        // Raíz de modelos exclusiva: el canal Cask no puede usar
+        // `self uninstall`, así que este `zap` es su única vía de borrado.
+        let models_root = format!("~/Library/Caches/{}/models", avi_shared::paths::APP_NAME);
+        assert!(
+            c.contains(&models_root),
+            "el zap debe incluir la raíz de modelos {models_root}"
+        );
         // Soporte de la aplicación desde la canónica.
         assert!(c.contains(&format!(
             "~/Library/Application Support/{}",
@@ -1490,7 +1509,7 @@ mod tests {
                 "el zap no debe incluir el global {forbidden} (R3)"
             );
         }
-        // Conteo exacto: soporte + un snapshot por modelo + CT2.
+        // Conteo exacto: modelos + soporte + un snapshot por modelo + CT2.
         let zap_block = c
             .split("zap trash: [")
             .nth(1)
@@ -1501,8 +1520,8 @@ mod tests {
         let trash_lines = zap_block.lines().filter(|l| l.contains('"')).count();
         assert_eq!(
             trash_lines,
-            2 + avi_shared::paths::MODEL_REVISIONS.len(),
-            "el zap debe listar exactamente soporte + snapshots + CT2"
+            3 + avi_shared::paths::MODEL_REVISIONS.len(),
+            "el zap debe listar exactamente modelos + soporte + snapshots + CT2"
         );
     }
 
