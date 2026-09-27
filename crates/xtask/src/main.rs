@@ -372,6 +372,12 @@ enum Commands {
         /// No comprimir: deja el árbol del bundle sin empaquetar
         #[arg(long)]
         no_compress: bool,
+        /// Con `--no-compress`, escribe el árbol plano en `--out` en vez de
+        /// dentro de un subdirectorio con el nombre del artefacto. Es el layout
+        /// que espera un staging (§7): el ejecutable cuelga directamente de la
+        /// raíz, como lo dejan el bootstrap y `self update`.
+        #[arg(long, requires = "no_compress")]
+        flat: bool,
         /// Falla si la versión del CLI no coincide (puerta tag-versión de CI)
         #[arg(long, value_name = "X.Y.Z")]
         expect_version: Option<String>,
@@ -534,8 +540,9 @@ fn main() -> Result<()> {
         Commands::Package {
             out,
             no_compress,
+            flat,
             expect_version,
-        } => package::run(out, no_compress, expect_version)?,
+        } => package::run(out, no_compress, flat, expect_version)?,
     }
     Ok(())
 }

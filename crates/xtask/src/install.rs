@@ -1,6 +1,7 @@
 //! `xtask install`: instala el build local por el camino del release (§10.5).
 //!
-//! Ejecuta `package --no-compress` en un staging temporal y después
+//! Ejecuta `package --no-compress` en un staging hermano del directorio de
+//! programa (mismo volumen, §7) y después
 //! `<staging>/ai-voice-interconnector self install --channel dev` (`--channel`
 //! es la opción oculta del producto): el build local queda instalado por el
 //! mismo camino que un release, de modo que cada instalación de desarrollo
@@ -65,11 +66,12 @@ fn remove_staging(dir: &Path) {
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// Ejecuta `package --no-compress` por proceso contra `out`: el empaquetado
-/// real, sin duplicar su lógica aquí.
+/// Ejecuta `package --no-compress --flat` por proceso contra `out`: el
+/// empaquetado real, sin duplicar su lógica aquí. `--flat` deja el árbol plano
+/// en `out`, que es el layout de staging que espera el motor (§7).
 fn run_package_no_compress(xtask: &Path, out: &Path) -> Result<()> {
     let status = std::process::Command::new(xtask)
-        .args(["package", "--no-compress", "--out"])
+        .args(["package", "--no-compress", "--flat", "--out"])
         .arg(out)
         .status()
         .map_err(|e| anyhow::anyhow!("no se pudo lanzar `package --no-compress`: {e}"))?;
@@ -79,6 +81,23 @@ fn run_package_no_compress(xtask: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Staging hermano del directorio de programa (mismo volumen, §7): el
+/// reemplazo transaccional de `self install` usa `rename`, que exige mismo
+/// filesystem. `temp_dir()` vale en Windows (%TEMP% y %LOCALAPPDATA% suelen
+/// compartir volumen) pero rompe donde no (p. ej. `/tmp` tmpfs frente a
+/// `/home` en WSL). Puro salvo la resolución de rutas, fijado por test.
+pub(crate) fn staging_dir() -> PathBuf {
+    let sibling_base = avi_shared::paths::install_dir()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    sibling_base.join(format!(
+        "{}{}",
+        avi_shared::paths::STAGING_DIR_PREFIX,
+        std::process::id()
+    ))
+}
+
 /// Punto de entrada de `xtask install`.
 pub fn run(no_setup: bool) -> Result<()> {
     let root = std::env::current_dir()?;
@@ -86,7 +105,7 @@ pub fn run(no_setup: bool) -> Result<()> {
         bail!("ejecuta `cargo xtask install` desde la raíz del repositorio");
     }
     let xtask = std::env::current_exe()?;
-    let staging = std::env::temp_dir().join(format!("avi-xtask-install-{}", std::process::id()));
+    let staging = staging_dir();
     if staging.is_dir() {
         remove_staging(&staging);
     }
@@ -182,5 +201,23 @@ mod tests {
         remove_staging(&dir);
         assert!(!dir.exists());
         remove_staging(&dir);
+    }
+
+    /// El staging cuelga del mismo padre que el directorio de programa
+    /// (mismo volumen para el `rename` transaccional) y lleva el prefijo
+    /// canónico, sin tocar el entorno.
+    #[test]
+    fn staging_is_sibling_of_program_dir() {
+        let staging = staging_dir();
+        let install = avi_shared::paths::install_dir();
+        assert_eq!(staging.parent(), install.parent());
+        let name = staging
+            .file_name()
+            .expect("el staging tiene nombre")
+            .to_string_lossy();
+        assert!(
+            name.starts_with(avi_shared::paths::STAGING_DIR_PREFIX),
+            "prefijo canónico: {name}"
+        );
     }
 }

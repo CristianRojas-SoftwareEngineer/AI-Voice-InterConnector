@@ -149,7 +149,14 @@ fn ort_expected_libs(triple: &str) -> Result<Vec<&'static str>> {
 /// los pines.
 fn ort_bundle_is_fresh(bundle: &Path, triple: &str, ort_version: &str) -> Result<bool> {
     for lib in ort_expected_libs(triple)? {
-        if !bundle.join(lib).is_file() {
+        // Existencia y tamaño: un archivo vacío (descarga truncada) no es
+        // fresco y fuerza la reconstrucción en vez de aceptarse en silencio.
+        let fresh = bundle
+            .join(lib)
+            .metadata()
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+        if !fresh {
             return Ok(false);
         }
     }
@@ -203,6 +210,29 @@ fn download_https(url: &str, dest: &Path) -> Result<()> {
     bail!("no se pudo descargar {url} (¿curl instalado y red disponible?)")
 }
 
+/// Prioridad de una entrada del archivo como candidata a librería: el nombre
+/// exacto gana a la versión, y a igualdad la más específica (más larga).
+/// Tamaño cero nunca vale: los assets de Microsoft listan primero los enlaces
+/// simbólicos (`libonnxruntime.so.1 -> .so.1.28.0`) y quedarse con la primera
+/// coincidencia escribe una librería vacía que todo lo demás acepta.
+fn rank_lib_candidate(
+    canonical: &str,
+    pattern: &str,
+    name: &str,
+    size: u64,
+) -> Option<(u8, usize)> {
+    if size == 0 {
+        return None;
+    }
+    if name == canonical {
+        Some((2, name.len()))
+    } else if name.starts_with(pattern) {
+        Some((1, name.len()))
+    } else {
+        None
+    }
+}
+
 /// Extrae la librería de ONNX Runtime del archivo descargado a `bundle/` con su
 /// nombre canónico (el que el crate `ort` busca en `load-dynamic`). Verificada:
 /// falla si el archivo no trae la librería esperada.
@@ -227,32 +257,43 @@ fn extract_ort_library(
     let found: Option<Vec<u8>> = if archive.extension().and_then(|e| e.to_str()) == Some("zip") {
         let file = std::fs::File::open(archive)?;
         let mut zip = zip::ZipArchive::new(file)?;
-        let mut hit: Option<Vec<u8>> = None;
+        let mut best: Option<((u8, usize), usize)> = None;
         for i in 0..zip.len() {
-            let mut entry = zip.by_index(i)?;
+            let entry = zip.by_index(i)?;
             if entry.is_dir() {
                 continue;
             }
             let name = entry.name().rsplit('/').next().unwrap_or("").to_string();
-            if name == canonical && hit.is_none() {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
-                hit = Some(bytes);
+            if let Some(rank) = rank_lib_candidate(canonical, pattern, &name, entry.size()) {
+                if best.is_none_or(|(r, _)| rank > r) {
+                    best = Some((rank, i));
+                }
             }
         }
-        hit
+        match best {
+            Some((_, i)) => {
+                let mut entry = zip.by_index(i)?;
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+                Some(bytes)
+            }
+            None => None,
+        }
     } else {
         let file = std::fs::File::open(archive)?;
         let gz = flate2::read::GzDecoder::new(file);
         let mut tar = tar::Archive::new(gz);
+        let mut best_rank: Option<(u8, usize)> = None;
         let mut hit: Option<Vec<u8>> = None;
         for entry in tar.entries()? {
             let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().to_string();
             let name = path.rsplit('/').next().unwrap_or("").to_string();
-            if (name == canonical || name.starts_with(pattern)) && hit.is_none() {
+            let rank = rank_lib_candidate(canonical, pattern, &name, entry.size());
+            if rank.is_some_and(|r| best_rank.is_none_or(|b| r > b)) {
                 let mut bytes = Vec::new();
                 std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+                best_rank = rank;
                 hit = Some(bytes);
             }
         }
@@ -523,8 +564,29 @@ fn compress_tar_gz(stage: &Path, dest: &Path, section: Option<&BundleTarget>) ->
     Ok(())
 }
 
+/// Destino del árbol sin comprimir: la raíz de `--out` con `--flat` (layout de
+/// staging, §7) o un subdirectorio con el nombre del artefacto.
+fn uncompressed_dest(out_dir: &Path, asset: &str, flat: bool) -> PathBuf {
+    if flat {
+        return out_dir.to_path_buf();
+    }
+    let stem = asset
+        .trim_end_matches(".tar.gz")
+        .trim_end_matches(".zip")
+        .to_string();
+    out_dir.join(&stem)
+}
+
 /// Punto de entrada de `xtask package`.
-pub fn run(out: Option<PathBuf>, no_compress: bool, expect_version: Option<String>) -> Result<()> {
+pub fn run(
+    out: Option<PathBuf>,
+    no_compress: bool,
+    flat: bool,
+    expect_version: Option<String>,
+) -> Result<()> {
+    if flat && !no_compress {
+        bail!("`--flat` solo tiene sentido con `--no-compress`");
+    }
     let root = std::env::current_dir()?;
     let manifest_path = root.join(MANIFEST_REL);
     if !manifest_path.is_file() {
@@ -561,11 +623,7 @@ pub fn run(out: Option<PathBuf>, no_compress: bool, expect_version: Option<Strin
     std::fs::create_dir_all(&out_dir)?;
     let asset = release_asset_name(triple, &version)?;
     if no_compress {
-        let stem = asset
-            .trim_end_matches(".tar.gz")
-            .trim_end_matches(".zip")
-            .to_string();
-        let dest = out_dir.join(&stem);
+        let dest = uncompressed_dest(&out_dir, &asset, flat);
         if dest.is_dir() {
             std::fs::remove_dir_all(&dest)?;
         }
@@ -758,11 +816,55 @@ mod tests {
         assert!(ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
         std::fs::remove_file(base.join(ort_expected_libs(triple).unwrap()[0])).unwrap();
         assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
+        // Vacía (descarga truncada) tampoco es fresca: fuerza reconstruir.
+        std::fs::write(base.join(ort_expected_libs(triple).unwrap()[0]), b"").unwrap();
+        assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
         std::fs::remove_dir_all(&base).ok();
     }
 
-    /// Compresión determinista: dos pasadas sobre el mismo árbol dan el mismo
-    /// archivo con exactamente las entradas del manifiesto.
+    /// El asset de Linux lista `libonnxruntime.so.1` (enlace, 0 bytes) antes
+    /// que la librería real: la extracción debe traer los bytes reales, no
+    /// los del enlace.
+    #[test]
+    fn extract_ignores_symlink_before_real_library() {
+        let base =
+            std::env::temp_dir().join(format!("xtask_package_symlink_{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let archive_path = base.join("ort.tgz");
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+            let mut tar = tar::Builder::new(gz);
+            let mut link = tar::Header::new_gnu();
+            link.set_entry_type(tar::EntryType::Symlink);
+            link.set_size(0);
+            link.set_cksum();
+            tar.append_link(
+                &mut link,
+                "lib/libonnxruntime.so.1",
+                "libonnxruntime.so.1.28.0",
+            )
+            .unwrap();
+            let mut header = tar::Header::new_gnu();
+            let data = b"REAL";
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, "lib/libonnxruntime.so.1.28.0", &data[..])
+                .unwrap();
+            let gz = tar.into_inner().unwrap();
+            gz.finish().unwrap();
+        }
+        let bundle = base.join("bundle");
+        extract_ort_library(&archive_path, &bundle, "x86_64-unknown-linux-gnu", "1.28.0").unwrap();
+        assert_eq!(
+            std::fs::read(bundle.join("libonnxruntime.so")).unwrap(),
+            b"REAL"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Compresión determinista: dos pasadas sobre el mismo árbol dan el mismo    /// archivo con exactamente las entradas del manifiesto.
     #[test]
     fn compression_is_deterministic() {
         let base = std::env::temp_dir().join(format!("xtask_package_zip_{}", std::process::id()));
@@ -803,5 +905,33 @@ mod tests {
             ]
         );
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// El destino del árbol sin comprimir: con `--flat` cuelga de la raíz de
+    /// `--out` (layout de staging, que el motor espera plano), y sin él va en
+    /// un subdirectorio con el nombre del artefacto. Puro, sin disco del repo.
+    #[test]
+    fn uncompressed_destination_follows_flat() {
+        let out = Path::new("/tmp/salida");
+        let asset = "ai-voice-interconnector-0.24.0-x86_64-linux.tar.gz";
+        let stem = asset.trim_end_matches(".tar.gz").to_string();
+        assert_eq!(uncompressed_dest(out, asset, false), out.join(&stem));
+        assert_eq!(uncompressed_dest(out, asset, true), out.to_path_buf());
+    }
+
+    /// `--flat` sin `--no-compress` es un error de uso, no una bandera muda.
+    #[test]
+    fn flat_requires_no_compress() {
+        let err = run(
+            None,
+            /* no_compress */ false,
+            /* flat */ true,
+            Some("9.9.9".to_string()),
+        )
+        .expect_err("`--flat` sin `--no-compress` debe fallar");
+        assert!(
+            err.to_string().contains("--flat"),
+            "el mensaje nombra la bandera: {err}"
+        );
     }
 }

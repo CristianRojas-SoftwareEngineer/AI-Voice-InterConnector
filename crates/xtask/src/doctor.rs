@@ -113,6 +113,14 @@ fn probe_output(program: &str, args: &[&str]) -> Option<String> {
     }
 }
 
+/// Primera sonda que produce salida, probando cada candidato en orden. Los
+/// candidatos absolutos (`/sbin/ldconfig`) se comprueban tal cual: `ldconfig`
+/// vive en `sbin`, fuera del PATH de shells restringidos, y buscarlo solo por
+/// nombre lo declara ausente aunque esté instalado.
+fn probe_first(candidates: &[&str], args: &[&str]) -> Option<String> {
+    candidates.iter().find_map(|c| probe_output(c, args))
+}
+
 /// Primer token con pinta de versión (`1.96.0`, `3.28`, `16.2.0-1`) en un
 /// texto libre como `rustc 1.96.0 (…).`
 pub(crate) fn version_token(text: &str) -> Option<String> {
@@ -627,8 +635,11 @@ fn check_engine_toolchain(pins: &Pins) -> Row {
     // Linux: make, gcc y OpenBLAS.
     let make = probe_output("make", &["--version"]).and_then(|o| version_token(&o));
     let gcc = probe_output("gcc", &["--version"]).and_then(|o| version_token(&o));
-    let openblas = probe_output("ldconfig", &["-p"])
-        .is_some_and(|o| o.lines().any(|l| l.contains("openblas")));
+    let openblas = probe_first(
+        &["ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"],
+        &["-p"],
+    )
+    .is_some_and(|o| o.lines().any(|l| l.contains("openblas")));
     if make.is_some() && gcc.is_some() && openblas {
         return Row {
             id: "engine-toolchain",
@@ -1170,5 +1181,20 @@ mod tests {
         assert_eq!(row.status, Status::Missing);
         assert_eq!(row.want, Some("1.28.0".to_string()));
         assert!(row.hint.unwrap().contains("bootstrap"));
+    }
+
+    #[test]
+    fn probe_first_falls_back_to_absolute_candidate() {
+        // `ldconfig` puede no estar en el PATH aunque exista en `/sbin`: el
+        // primer candidato que produce salida gana, sea por nombre o absoluto.
+        // `--list` lo acepta el propio arnés libtest en todas las plataformas.
+        let missing = "programa-que-no-existe-xtask-doctor";
+        assert!(probe_first(&[missing], &["--list"]).is_none());
+        let exe = std::env::current_exe().expect("ejecutable de pruebas");
+        let found = probe_first(&[missing, &exe.to_string_lossy()], &["--list"]);
+        assert!(
+            found.is_some(),
+            "el candidato absoluto debe probarse tal cual"
+        );
     }
 }
