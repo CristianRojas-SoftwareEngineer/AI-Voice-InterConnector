@@ -1951,7 +1951,8 @@ mod tests {
                 }
             }
 
-            // Empaquetado: persist_to_workspace, staging y SHA-256 solo fuera de sonda.
+            // Empaquetado: persist_to_workspace, package, humo y SHA-256
+            // solo fuera de sonda.
             let persist = lines
                 .iter()
                 .position(|l| l.trim() == "- persist_to_workspace:")
@@ -1962,7 +1963,8 @@ mod tests {
                 "{job}: persist_to_workspace debe ir bajo unless: << parameters.probe >>"
             );
             for name in [
-                "name: Preparar artefacto versionado (staging)",
+                "name: Empaquetar bundle con xtask package",
+                "name: Humo de instalación en sandbox (self install)",
                 "name: Emitir SHA-256 del artefacto",
             ] {
                 let n = lines

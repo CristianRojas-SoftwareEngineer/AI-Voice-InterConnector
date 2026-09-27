@@ -82,7 +82,7 @@ parameters:
     type: string
     default: "1.14.0"
     description: >
-      Versión de bats-core de los smoke tests de instaladores (Linux y macOS).
+      Versión de bats-core de la suite del bootstrap (Linux y macOS).
       Se instala desde el tag de git en $HOME/.local y la instalación aborta si
       `bats --version` no coincide: misma versión en ambos SO, sin apt/brew.
 
@@ -862,13 +862,14 @@ jobs:
             echo "[STEP] Verificar CHANGELOG - FIN"
 
   # ──────────────────────────────────────────────────────────────
-  # Smoke tests de instaladores de una línea (mock por PATH, sin red)
-  # Valida lógica de parsing de release, checksums y guards sin descargar.
+  # Suites del bootstrap de primera instalación (bats + Pester)
+  # Ejercitan packaging/bootstrap/ contra el servidor falso local de
+  # tests/bootstrap/support/, sin red real.
   # ──────────────────────────────────────────────────────────────
-  test-installer-linux:
-    # Valida install-linux.sh sin red real, mockeando curl/uname/sha256sum
-    # por PATH (tests/installer/). Decisión consciente: el flujo real se
-    # valida en el proceso de release y en los smoke tests de los builds.
+  test-bootstrap-linux:
+    # Suite POSIX (tests/bootstrap/install.bats) con `sh` (dash) contra el
+    # servidor falso HTTPS local: detección, resolución, integridad,
+    # delegación y confirmación con terminal.
     docker:
       # Digest del índice multi-arch de cimg/base:2026.09 (pin reproducible;
       # el mismo que publish-release). Renovar a mano junto con su tag.
@@ -887,15 +888,16 @@ jobs:
             test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
             echo "[STEP] Instalar bats-core - FIN"
       - run:
-          name: Ejecutar smoke-test install-linux.sh (bats)
+          name: Ejecutar suite del bootstrap POSIX (bats)
           command: |
-            echo "[STEP] Ejecutar smoke-test install-linux.sh (bats) - INICIO"
-            bats tests/installer/install-linux.bats
-            echo "[STEP] Ejecutar smoke-test install-linux.sh (bats) - FIN"
+            echo "[STEP] Ejecutar suite del bootstrap POSIX (bats) - INICIO"
+            bats tests/bootstrap/install.bats
+            echo "[STEP] Ejecutar suite del bootstrap POSIX (bats) - FIN"
 
-  test-installer-windows:
-    # Smoke-test de install-windows.ps1 con Pester v5 pineado (el executor
-    # trae Pester 3.x; un release nuevo no debe romper el job sin cambios).
+  test-bootstrap-windows:
+    # Suite Windows (tests/bootstrap/install.tests.ps1) con Pester v5 pineado
+    # (el executor trae Pester 3.x; un release nuevo no debe romper el job sin
+    # cambios). El arnés (support/Serve.ps1) es HTTP local sin dependencias.
     executor: win/server-2022
     steps:
       - checkout
@@ -910,18 +912,18 @@ jobs:
             Install-Module Pester -RequiredVersion 5.8.0 -Repository PSGallery -Force -SkipPublisherCheck -Scope CurrentUser
             Write-Host "[STEP] Instalar Pester (pineado 5.8.0) - FIN"
       - run:
-          name: Ejecutar smoke-test install-windows.ps1 (Pester)
+          name: Ejecutar suite del bootstrap Windows (Pester)
           command: |
-            Write-Host "[STEP] Ejecutar smoke-test install-windows.ps1 (Pester) - INICIO"
+            Write-Host "[STEP] Ejecutar suite del bootstrap Windows (Pester) - INICIO"
             $ErrorActionPreference = "Stop"
             Import-Module Pester -RequiredVersion 5.8.0
-            Invoke-Pester tests/installer/install-windows.tests.ps1 -CI
+            Invoke-Pester tests/bootstrap/install.tests.ps1 -CI
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Ejecutar smoke-test install-windows.ps1 (Pester) - FIN"
+            Write-Host "[STEP] Ejecutar suite del bootstrap Windows (Pester) - FIN"
 
-  test-installer-macos:
-    # Smoke-test de install-macos.sh en el executor macOS real (bats): única
-    # validación del shell nativo de la plataforma sin un Mac físico.
+  test-bootstrap-macos:
+    # Suite POSIX en el executor macOS real (bats): única validación del shell
+    # nativo de la plataforma sin un Mac físico. Misma suite que en Linux.
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
@@ -939,21 +941,22 @@ jobs:
             test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
             echo "[STEP] Instalar bats-core - FIN"
       - run:
-          name: Ejecutar smoke-test install-macos.sh (bats)
+          name: Ejecutar suite del bootstrap POSIX (bats)
           command: |
-            echo "[STEP] Ejecutar smoke-test install-macos.sh (bats) - INICIO"
-            bats tests/installer/install-macos.bats
-            echo "[STEP] Ejecutar smoke-test install-macos.sh (bats) - FIN"
+            echo "[STEP] Ejecutar suite del bootstrap POSIX (bats) - INICIO"
+            bats tests/bootstrap/install.bats
+            echo "[STEP] Ejecutar suite del bootstrap POSIX (bats) - FIN"
 
   # ──────────────────────────────────────────────────────────────
   # Builds nativos Rust — 4 targets de distribución (cargo build --release)
-  # Cada build hace smoke test (version + voice list) y stagea el binario
-  # versionado al workspace para publish-release. Requieren triple puerta +
-  # coverage + instaladores (ver workflow build-all).
+  # Cada build hace smoke test (version + voice list), empaqueta con
+  # `xtask package` y prueba lo empaquetado con `self install` en un sandbox
+  # antes de persistirlo al workspace para publish-release. Requieren triple
+  # puerta + coverage + bootstrap (ver workflow build-all).
   # ──────────────────────────────────────────────────────────────
   # Parámetro `probe` (los 4 build-*): modo sonda del workflow
   # `native-cache-probe`. Sin restaurar ni guardar target-v3 (target/ frío en
-  # cada corrida), sin empaquetado (staging, SHA-256, persist_to_workspace:
+  # cada corrida), sin empaquetado (package, SHA-256, persist_to_workspace:
   # exigen CIRCLE_TAG == const VERSION) y con el diagnóstico de CMake. Sigue
   # ejecutando smoke test y motor TTS, y guarda sccache en la variante `full`
   # (caché por contenido: sembrarla no contamina producción).
@@ -1201,7 +1204,7 @@ jobs:
           # mingw32-make bajo el entorno MSYS2 UCRT64 (PATH ucrt64/bin + usr/bin,
           # MSYSTEM=UCRT64, leído de MSYS2_ROOT default C:\msys64) y verifica con
           # --self-test. Produce vendor\qwen3-tts\qwen_tts.exe fresco desde fuente.
-          # El staging de abajo lo consume.
+          # El empaquetado de abajo lo consume.
           # Cacheado: si qwen_tts.exe existe tras restore (clave exacta sin fallback),
           # es fresco y solo se verifica; si no, build completo.
           name: Compilar y verificar motor TTS
@@ -1273,47 +1276,42 @@ jobs:
                 paths:
                   - ort-bundle
             - run:
-                # Nombre del artefacto con la versión REAL del CLI: la fuente de
-                # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
-                # que quedó en 0.1.0 tras la migración). Fail-fast: si difiere del tag
-                # v*, el release saldría con nombre inconsistente → abortar.
-                name: Preparar artefacto versionado (staging)
+                # Empaquetado canónico (§10.4): `xtask package` monta el bundle
+                # desde packaging/bundle-manifest.json (la misma lista que valida
+                # `self install`) y aborta si VERSION != tag (decisión c).
+                name: Empaquetar bundle con xtask package
                 command: |
-                  Write-Host "[STEP] Preparar artefacto versionado - INICIO"
+                  Write-Host "[STEP] Empaquetar bundle con xtask package - INICIO"
                   $ErrorActionPreference = "Stop"
-                  New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-                  $Version = [regex]::Match((Get-Content src\main.rs -Raw), 'const VERSION: &str = "([^"]+)"').Groups[1].Value
-                  if (-not $Version) { throw "No se pudo extraer const VERSION de src/main.rs" }
+                  $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
                   $TagVersion = $env:CIRCLE_TAG -replace '^v',''
-                  if ($Version -ne $TagVersion) { throw "VERSION en main.rs ($Version) != tag ($TagVersion)" }
-                  $Src = "target\release\ai-voice-interconnector.exe"
-                  if (-not (Test-Path $Src)) { throw "Binario no encontrado: $Src" }
-                  # Staging de layout plano: binario (sin sufijo de arch) + los 4
-                  # documentos de la raíz + la librería ONNX Runtime y el runtime VC++
-                  # empaquetados en el step anterior, comprimidos a .zip para que el
-                  # one-liner de Windows extraiga todo junto al binario (GPLv3 +
-                  # autocontención STT).
-                  $Stage = "staging"
-                  if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
-                  New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-                  Copy-Item $Src "$Stage\ai-voice-interconnector.exe"
-                  foreach ($Doc in @("LICENSE", "THIRD-PARTY-LICENSES.md", "SOURCE-OFFER.md", "README.md")) {
-                    Copy-Item $Doc "$Stage\$Doc"
-                  }
-                  # Librería ONNX Runtime + runtime VC++ (autocontención STT).
-                  Copy-Item "ort-bundle\*" $Stage
-                  # Motor TTS vendido (qwen_tts.exe): se incluye junto al binario para que
-                  # la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts.exe) funcione
-                  # en el instalador sin variables de entorno.
-                  $VendoredTTS = "vendor\qwen3-tts\qwen_tts.exe"
-                  if (-not (Test-Path $VendoredTTS)) { throw "qwen_tts.exe vendido no encontrado en $VendoredTTS" }
-                  $VendoredDst = "$Stage\vendor\qwen3-tts"
-                  New-Item -ItemType Directory -Force -Path $VendoredDst | Out-Null
-                  Copy-Item $VendoredTTS "$VendoredDst\qwen_tts.exe"
-                  $Dst = "artifacts\ai-voice-interconnector-$Version-x86_64-windows.zip"
-                  Compress-Archive -Path "$Stage\*" -DestinationPath $Dst -Force
-                  Write-Host "Artefacto: $Dst"
-                  Write-Host "[STEP] Preparar artefacto versionado - FIN"
+                  cargo run -p xtask -- package --expect-version "$TagVersion"
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
+            - run:
+                # Humo de §13: instala el artefacto empaquetado en un sandbox con
+                # las cuatro raíces reubicadas y comprueba que el binario
+                # instalado arranca.
+                name: Humo de instalación en sandbox (self install)
+                command: |
+                  Write-Host "[STEP] Humo de instalación en sandbox - INICIO"
+                  $ErrorActionPreference = "Stop"
+                  $Sandbox = Join-Path $env:TEMP ("avi-smoke-" + [guid]::NewGuid().ToString("N"))
+                  $env:AVI_INSTALL_DIR = Join-Path $Sandbox "program"
+                  $env:AVI_BIN_DIR = Join-Path $Sandbox "bin"
+                  $env:AVI_DATA_DIR = Join-Path $Sandbox "data"
+                  $env:AVI_CACHE_DIR = Join-Path $Sandbox "cache"
+                  New-Item -ItemType Directory -Force -Path $env:AVI_INSTALL_DIR, $env:AVI_BIN_DIR, $env:AVI_DATA_DIR, $env:AVI_CACHE_DIR | Out-Null
+                  $StageSmoke = Join-Path $Sandbox "stage"
+                  New-Item -ItemType Directory -Force -Path $StageSmoke | Out-Null
+                  $Zip = Get-Item artifacts\\ai-voice-interconnector-*-x86_64-windows.zip
+                  Expand-Archive -Path $Zip.FullName -DestinationPath $StageSmoke -Force
+                  & "$StageSmoke\\ai-voice-interconnector.exe" self install --no-setup --no-modify-path --yes
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  & "$env:AVI_INSTALL_DIR\\ai-voice-interconnector.exe" --version
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  Remove-Item -Recurse -Force $Sandbox
+                  Write-Host "[STEP] Humo de instalación en sandbox - FIN"
             - run:
                 name: Emitir SHA-256 del artefacto
                 command: |
@@ -1449,58 +1447,32 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - run:
-                # Nombre del artefacto con la versión REAL del CLI: la fuente de
-                # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
-                # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
-                name: Preparar artefacto versionado (staging)
+                # Empaquetado canónico (§10.4): `xtask package` monta el bundle
+                # desde packaging/bundle-manifest.json (la misma lista que valida
+                # `self install`) y aborta si VERSION != tag (decisión c).
+                name: Empaquetar bundle con xtask package
                 command: |
-                  echo "[STEP] Preparar artefacto versionado - INICIO"
+                  echo "[STEP] Empaquetar bundle con xtask package - INICIO"
                   set -euo pipefail
-                  mkdir -p artifacts
-                  VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
-                  if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
-                  if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
-                    echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
-                    exit 1
-                  fi
-                  SRC="target/release/ai-voice-interconnector"
-                  test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
-                  # Staging de layout plano: binario (sin sufijo de arch) + los 4
-                  # documentos de la raíz + la librería ONNX Runtime, comprimidos a
-                  # tar.gz para que el one-liner extraiga y todo viaje junto al binario.
-                  STAGE="$(mktemp -d)"
-                  cp "$SRC" "$STAGE/ai-voice-interconnector"
-                  chmod +x "$STAGE/ai-voice-interconnector"
-                  cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
-                  # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
-                  # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
-                  # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13) con el
-                  # nombre por defecto que busca ort, sin que el usuario instale nada.
-                  ORT_VERSION="<< pipeline.parameters.ort_version >>"
-                  ORT_TGZ="onnxruntime-linux-x64-${ORT_VERSION}.tgz"
-                  curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
-                  ORT_EXTRACT="$(mktemp -d)"
-                  tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
-                  # Captura previa en variable en lugar de tubería directa a `head`:
-                  # si `find` tiene más de una coincidencia, `head -n1` cierra la
-                  # tubería tras la primera línea y `find` recibe EPIPE (mismo riesgo
-                  # que `grep -q` en el smoke test, bajo `pipefail`).
-                  ort_matches="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f)"
-                  ORT_LIB="$(printf '%s\n' "$ort_matches" | head -n1)"
-                  test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
-                  cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
-                  # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
-                  # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
-                  # tras extraer, sin variables de entorno (paridad con Windows).
-                  VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
-                  test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
-                  mkdir -p "$STAGE/vendor/qwen3-tts"
-                  cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
-                  chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
-                  DST="artifacts/ai-voice-interconnector-${VERSION}-x86_64-linux.tar.gz"
-                  tar -czf "$DST" -C "$STAGE" .
-                  echo "Artefacto: $DST"
-                  echo "[STEP] Preparar artefacto versionado - FIN"
+                  cargo run -p xtask -- package --expect-version "${CIRCLE_TAG#v}"
+                  echo "[STEP] Empaquetar bundle con xtask package - FIN"
+            - run:
+                # Humo de §13: instala el artefacto empaquetado en un sandbox con
+                # las cuatro raíces reubicadas y comprueba que el binario
+                # instalado arranca.
+                name: Humo de instalación en sandbox (self install)
+                command: |
+                  echo "[STEP] Humo de instalación en sandbox - INICIO"
+                  set -euo pipefail
+                  SANDBOX="$(mktemp -d)"
+                  export AVI_INSTALL_DIR="$SANDBOX/program" AVI_BIN_DIR="$SANDBOX/bin" AVI_DATA_DIR="$SANDBOX/data" AVI_CACHE_DIR="$SANDBOX/cache"
+                  mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
+                  STAGE_SMOKE="$(mktemp -d)"
+                  tar -xzf artifacts/ai-voice-interconnector-*-x86_64-linux.tar.gz -C "$STAGE_SMOKE"
+                  "$STAGE_SMOKE/ai-voice-interconnector" self install --no-setup --no-modify-path --yes
+                  "$AVI_INSTALL_DIR/ai-voice-interconnector" --version
+                  rm -rf "$SANDBOX" "$STAGE_SMOKE"
+                  echo "[STEP] Humo de instalación en sandbox - FIN"
             - run:
                 name: Emitir SHA-256 del artefacto
                 command: |
@@ -1637,58 +1609,32 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - run:
-                # Nombre del artefacto con la versión REAL del CLI: la fuente de
-                # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
-                # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
-                name: Preparar artefacto versionado (staging)
+                # Empaquetado canónico (§10.4): `xtask package` monta el bundle
+                # desde packaging/bundle-manifest.json (la misma lista que valida
+                # `self install`) y aborta si VERSION != tag (decisión c).
+                name: Empaquetar bundle con xtask package
                 command: |
-                  echo "[STEP] Preparar artefacto versionado - INICIO"
+                  echo "[STEP] Empaquetar bundle con xtask package - INICIO"
                   set -euo pipefail
-                  mkdir -p artifacts
-                  VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
-                  if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
-                  if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
-                    echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
-                    exit 1
-                  fi
-                  SRC="target/release/ai-voice-interconnector"
-                  test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
-                  # Staging de layout plano: binario (sin sufijo de arch) + los 4
-                  # documentos de la raíz + la librería ONNX Runtime, comprimidos a
-                  # tar.gz para que el one-liner extraiga y todo viaje junto al binario.
-                  STAGE="$(mktemp -d)"
-                  cp "$SRC" "$STAGE/ai-voice-interconnector"
-                  chmod +x "$STAGE/ai-voice-interconnector"
-                  cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
-                  # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
-                  # busca libonnxruntime.so junto al ejecutable. Se empaqueta la librería
-                  # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13, build
-                  # aarch64) con el nombre por defecto que busca ort.
-                  ORT_VERSION="<< pipeline.parameters.ort_version >>"
-                  ORT_TGZ="onnxruntime-linux-aarch64-${ORT_VERSION}.tgz"
-                  curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
-                  ORT_EXTRACT="$(mktemp -d)"
-                  tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
-                  # Captura previa en variable en lugar de tubería directa a `head`:
-                  # si `find` tiene más de una coincidencia, `head -n1` cierra la
-                  # tubería tras la primera línea y `find` recibe EPIPE (mismo riesgo
-                  # que `grep -q` en el smoke test, bajo `pipefail`).
-                  ort_matches="$(find "$ORT_EXTRACT" -name 'libonnxruntime.so.*' -type f)"
-                  ORT_LIB="$(printf '%s\n' "$ort_matches" | head -n1)"
-                  test -n "$ORT_LIB" || (echo "libonnxruntime.so no encontrada en ${ORT_TGZ}" && exit 1)
-                  cp "$ORT_LIB" "$STAGE/libonnxruntime.so"
-                  # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
-                  # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
-                  # tras extraer, sin variables de entorno (paridad con Windows).
-                  VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
-                  test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
-                  mkdir -p "$STAGE/vendor/qwen3-tts"
-                  cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
-                  chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
-                  DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-linux.tar.gz"
-                  tar -czf "$DST" -C "$STAGE" .
-                  echo "Artefacto: $DST"
-                  echo "[STEP] Preparar artefacto versionado - FIN"
+                  cargo run -p xtask -- package --expect-version "${CIRCLE_TAG#v}"
+                  echo "[STEP] Empaquetar bundle con xtask package - FIN"
+            - run:
+                # Humo de §13: instala el artefacto empaquetado en un sandbox con
+                # las cuatro raíces reubicadas y comprueba que el binario
+                # instalado arranca.
+                name: Humo de instalación en sandbox (self install)
+                command: |
+                  echo "[STEP] Humo de instalación en sandbox - INICIO"
+                  set -euo pipefail
+                  SANDBOX="$(mktemp -d)"
+                  export AVI_INSTALL_DIR="$SANDBOX/program" AVI_BIN_DIR="$SANDBOX/bin" AVI_DATA_DIR="$SANDBOX/data" AVI_CACHE_DIR="$SANDBOX/cache"
+                  mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
+                  STAGE_SMOKE="$(mktemp -d)"
+                  tar -xzf artifacts/ai-voice-interconnector-*-arm64-linux.tar.gz -C "$STAGE_SMOKE"
+                  "$STAGE_SMOKE/ai-voice-interconnector" self install --no-setup --no-modify-path --yes
+                  "$AVI_INSTALL_DIR/ai-voice-interconnector" --version
+                  rm -rf "$SANDBOX" "$STAGE_SMOKE"
+                  echo "[STEP] Humo de instalación en sandbox - FIN"
             - run:
                 name: Emitir SHA-256 del artefacto
                 command: |
@@ -1860,59 +1806,32 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - run:
-                # Nombre del artefacto con la versión REAL del CLI: la fuente de
-                # verdad es `const VERSION` en src/main.rs (desacoplada de Cargo.toml,
-                # que quedó en 0.1.0 tras la migración). Fail-fast contra el tag.
-                name: Preparar artefacto versionado (staging)
+                # Empaquetado canónico (§10.4): `xtask package` monta el bundle
+                # desde packaging/bundle-manifest.json (la misma lista que valida
+                # `self install`) y aborta si VERSION != tag (decisión c).
+                name: Empaquetar bundle con xtask package
                 command: |
-                  echo "[STEP] Preparar artefacto versionado - INICIO"
+                  echo "[STEP] Empaquetar bundle con xtask package - INICIO"
                   set -euo pipefail
-                  mkdir -p artifacts
-                  VERSION=$(sed -n 's/^const VERSION: &str = "\(.*\)";/\1/p' src/main.rs)
-                  if [ -z "$VERSION" ]; then echo "ERROR: const VERSION no encontrada en src/main.rs" >&2; exit 1; fi
-                  if [ "$VERSION" != "${CIRCLE_TAG#v}" ]; then
-                    echo "ERROR: VERSION en main.rs ($VERSION) != tag (${CIRCLE_TAG#v})" >&2
-                    exit 1
-                  fi
-                  SRC="target/release/ai-voice-interconnector"
-                  test -x "$SRC" || (echo "Binario no encontrado: $SRC" && exit 1)
-                  # Staging de layout plano: binario (sin sufijo de arch) + los 4
-                  # documentos de la raíz + la librería ONNX Runtime, comprimidos a
-                  # tar.gz. Homebrew autoextrae el tar.gz (binary stanza) y todo viaja
-                  # junto al binario.
-                  STAGE="$(mktemp -d)"
-                  cp "$SRC" "$STAGE/ai-voice-interconnector"
-                  chmod +x "$STAGE/ai-voice-interconnector"
-                  cp LICENSE THIRD-PARTY-LICENSES.md SOURCE-OFFER.md README.md "$STAGE/"
-                  # Autocontención STT (requisito duro): el crate `ort` en `load-dynamic`
-                  # busca libonnxruntime.dylib junto al ejecutable. Se empaqueta la
-                  # librería oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort
-                  # rc.13, build osx-arm64) con el nombre por defecto que busca ort.
-                  ORT_VERSION="<< pipeline.parameters.ort_version >>"
-                  ORT_TGZ="onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
-                  curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TGZ}" -o "/tmp/${ORT_TGZ}"
-                  ORT_EXTRACT="$(mktemp -d)"
-                  tar -xzf "/tmp/${ORT_TGZ}" -C "$ORT_EXTRACT"
-                  # Captura previa en variable en lugar de tubería directa a `head`:
-                  # si `find` tiene más de una coincidencia, `head -n1` cierra la
-                  # tubería tras la primera línea y `find` recibe EPIPE (mismo riesgo
-                  # que `grep -q` en el smoke test, bajo `pipefail`).
-                  ort_matches="$(find "$ORT_EXTRACT" -name 'libonnxruntime.*.dylib' -type f)"
-                  ORT_LIB="$(printf '%s\n' "$ort_matches" | head -n1)"
-                  test -n "$ORT_LIB" || (echo "libonnxruntime.dylib no encontrada en ${ORT_TGZ}" && exit 1)
-                  cp "$ORT_LIB" "$STAGE/libonnxruntime.dylib"
-                  # Motor TTS vendido (qwen_tts): se incluye bajo vendor/qwen3-tts/ para
-                  # que la resolución por defecto (<cwd>/vendor/qwen3-tts/qwen_tts) funcione
-                  # tras extraer, sin variables de entorno (paridad con Windows).
-                  VENDORED_TTS="vendor/qwen3-tts/qwen_tts"
-                  test -x "$VENDORED_TTS" || (echo "qwen_tts vendido no encontrado en $VENDORED_TTS" && exit 1)
-                  mkdir -p "$STAGE/vendor/qwen3-tts"
-                  cp "$VENDORED_TTS" "$STAGE/vendor/qwen3-tts/qwen_tts"
-                  chmod +x "$STAGE/vendor/qwen3-tts/qwen_tts"
-                  DST="artifacts/ai-voice-interconnector-${VERSION}-arm64-macos.tar.gz"
-                  tar -czf "$DST" -C "$STAGE" .
-                  echo "Artefacto: $DST"
-                  echo "[STEP] Preparar artefacto versionado - FIN"
+                  cargo run -p xtask -- package --expect-version "${CIRCLE_TAG#v}"
+                  echo "[STEP] Empaquetar bundle con xtask package - FIN"
+            - run:
+                # Humo de §13: instala el artefacto empaquetado en un sandbox con
+                # las cuatro raíces reubicadas y comprueba que el binario
+                # instalado arranca.
+                name: Humo de instalación en sandbox (self install)
+                command: |
+                  echo "[STEP] Humo de instalación en sandbox - INICIO"
+                  set -euo pipefail
+                  SANDBOX="$(mktemp -d)"
+                  export AVI_INSTALL_DIR="$SANDBOX/program" AVI_BIN_DIR="$SANDBOX/bin" AVI_DATA_DIR="$SANDBOX/data" AVI_CACHE_DIR="$SANDBOX/cache"
+                  mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
+                  STAGE_SMOKE="$(mktemp -d)"
+                  tar -xzf artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz -C "$STAGE_SMOKE"
+                  "$STAGE_SMOKE/ai-voice-interconnector" self install --no-setup --no-modify-path --yes
+                  "$AVI_INSTALL_DIR/ai-voice-interconnector" --version
+                  rm -rf "$SANDBOX" "$STAGE_SMOKE"
+                  echo "[STEP] Humo de instalación en sandbox - FIN"
             - run:
                 name: Emitir SHA-256 del artefacto
                 command: |
@@ -1933,7 +1852,7 @@ jobs:
     # y publica el GitHub Release directo (sin borrador). Solo en tags v*.
     # Requiere context `github-release` con GH_TOKEN (contents:write).
     docker:
-      # Mismo pin por digest que test-installer-linux (cimg/base:2026.09).
+      # Mismo pin por digest que test-bootstrap-linux (cimg/base:2026.09).
       - image: cimg/base:2026.09@sha256:668174490adc470cd34eb3aa178939d65f817bc13ef657a94ff0278338f7d8da
     steps:
       - checkout
@@ -1954,15 +1873,36 @@ jobs:
             sudo apt-get install -y gh
             echo "[STEP] Instalar gh CLI - FIN"
       - run:
+          name: Estampar la versión del tag en los bootstrap
+          command: |
+            echo "[STEP] Estampar la versión en los bootstrap - INICIO"
+            set -euo pipefail
+            VERSION="${CIRCLE_TAG#v}"
+            for f in packaging/bootstrap/install.sh packaging/bootstrap/install.ps1; do
+              count="$(grep -c "__AVI_STAMPED_VERSION__" "$f" || true)"
+              if [ "$count" != "1" ]; then
+                echo "ERROR: se esperaba exactamente un marcador en $f (hay $count)" >&2
+                exit 1
+              fi
+              sed -i "s/__AVI_STAMPED_VERSION__/${VERSION}/" "$f"
+              if grep -q "__AVI_STAMPED_VERSION__" "$f"; then
+                echo "ERROR: marcador residual en $f tras estampar" >&2
+                exit 1
+              fi
+              echo "Estampado $f con $VERSION"
+            done
+            echo "[STEP] Estampar la versión en los bootstrap - FIN"
+      - run:
           name: Generar SHA256SUMS.txt sobre artefactos del workspace
           command: |
             echo "[STEP] Generar SHA256SUMS.txt - INICIO"
             set -euo pipefail
+            cp packaging/bootstrap/install.sh packaging/bootstrap/install.ps1 artifacts/
             cd artifacts
-            sha256sum ai-voice-interconnector-* > SHA256SUMS.txt
+            sha256sum ai-voice-interconnector-* install.sh install.ps1 > SHA256SUMS.txt
             cat SHA256SUMS.txt
             echo "Artefactos recolectados:"
-            ls -lh ai-voice-interconnector-*
+            ls -lh ai-voice-interconnector-* install.sh install.ps1 SHA256SUMS.txt
             echo "[STEP] Generar SHA256SUMS.txt - FIN"
       - run:
           name: Extraer notas de release desde CHANGELOG
@@ -2001,12 +1941,12 @@ jobs:
             } >> notes.md
             echo "[STEP] Anexar pie de oferta GPLv3 - FIN"
       - run:
-          name: Publicar GitHub Release con 4 binarios + SHA256SUMS
+          name: Publicar GitHub Release con 7 assets
           command: |
             echo "[STEP] Publicar GitHub Release - INICIO"
             set -euo pipefail
             gh release create "$CIRCLE_TAG" \
-              artifacts/ai-voice-interconnector-* artifacts/SHA256SUMS.txt \
+              artifacts/ai-voice-interconnector-* artifacts/install.sh artifacts/install.ps1 artifacts/SHA256SUMS.txt \
               --title "$CIRCLE_TAG" \
               --notes-file notes.md
             echo "[STEP] Publicar GitHub Release - FIN"
@@ -2158,19 +2098,19 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
-      - test-installer-linux:
+      - test-bootstrap-linux:
           filters:
             tags:
               only: /^v.*/
             branches:
               ignore: /.*/
-      - test-installer-windows:
+      - test-bootstrap-windows:
           filters:
             tags:
               only: /^v.*/
             branches:
               ignore: /.*/
-      - test-installer-macos:
+      - test-bootstrap-macos:
           filters:
             tags:
               only: /^v.*/
@@ -2187,9 +2127,9 @@ workflows:
             - test-linux
             - test-windows
             - test-macos
-            - test-installer-linux
-            - test-installer-windows
-            - test-installer-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
             - coverage
             - validate-licenses
             - validate-changelog
@@ -2203,9 +2143,9 @@ workflows:
             - test-linux
             - test-windows
             - test-macos
-            - test-installer-linux
-            - test-installer-windows
-            - test-installer-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
             - coverage
             - validate-licenses
             - validate-changelog
@@ -2219,9 +2159,9 @@ workflows:
             - test-linux
             - test-windows
             - test-macos
-            - test-installer-linux
-            - test-installer-windows
-            - test-installer-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
             - coverage
             - validate-licenses
             - validate-changelog
@@ -2235,9 +2175,9 @@ workflows:
             - test-linux
             - test-windows
             - test-macos
-            - test-installer-linux
-            - test-installer-windows
-            - test-installer-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
             - coverage
             - validate-licenses
             - validate-changelog
