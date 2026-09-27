@@ -1,9 +1,9 @@
 //! `cleanup` y `self uninstall` de punta a punta sobre raíces reubicadas a
-//! temporales (§9.5, §9.6, §13, criterios 17, 18, 20, 21, 22 y 23).
+//! temporales, criterios 17, 18, 20, 21, 22 y 23.
 //!
-//! Todas las raíces de §7 llegan como dato, no por variable de entorno: en Windows las
+//! Todas las raíces llegan como dato, no por variable de entorno: en Windows las
 //! Known Folders ignoran `LOCALAPPDATA`, así que un sandbox que dependiera de ellas no
-//! estaría probando el mecanismo que §7 define. El directorio de programa, la raíz de
+//! estaría probando el mecanismo de reubicación. El directorio de programa, la raíz de
 //! datos, la raíz de modelos, el directorio de temporales y `$HOME` son todos del test,
 //! y la condición de "raíz de modelos compartida" también —que es lo que hace que estas
 //! pruebas no toquen el entorno del proceso y puedan correr en paralelo sin candado.
@@ -56,7 +56,8 @@ impl uninstall::ProgramDirRemover for Now {
     }
 }
 
-/// Removedor diferido: no borra nada y dice que lo programa. Es el caso de §9.5, paso 8,
+/// Removedor diferido: no borra nada y dice que lo programa. Es el caso del paso 8 de la
+/// desinstalación,
 /// en Windows.
 struct Deferred;
 
@@ -75,7 +76,7 @@ impl uninstall::ProgramDirRemover for Deferred {
     }
 }
 
-/// Sandbox con las cinco raíces de §7.
+/// Sandbox con las cinco raíces.
 struct Sandbox {
     root: PathBuf,
     program_dir: PathBuf,
@@ -161,7 +162,7 @@ impl Sandbox {
         out
     }
 
-    /// Planta el estado de §9.6 completo: modelos, voces de fábrica y de usuario, habla
+    /// Planta el estado completo: modelos, voces de fábrica y de usuario, habla
     /// sintetizada, configuración, logs y pidfile.
     fn seed_state(&self) {
         // Modelos: un repo fijado, el derivado CT2, los locks, `xet` y un repo ajeno.
@@ -236,7 +237,9 @@ impl Sandbox {
         )
     }
 
-    /// Instala: escribe el ejecutable y el recibo de §8.1.
+    /// Instala: escribe el ejecutable y el recibo. Las raíces llegan como dato y el
+    /// directorio de programa lo da el recibo si lo hay: la operación actúa sobre la
+    /// instalación registrada, no sobre la posición del ejecutable.
     fn install(&self) -> InstallReceipt {
         let receipt = self.receipt();
         write(
@@ -292,8 +295,8 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 /// `Env` de desinstalación con las raíces del sandbox y el directorio de programa
-/// registrado que corresponde. Las raíces llegan como dato —§13— y el directorio de
-/// programa lo da el recibo si lo hay, que es §8.2: la operación actúa sobre la
+/// registrado que corresponde. Las raíces llegan como dato y el directorio de
+/// programa lo da el recibo si lo hay: la operación actúa sobre la
 /// instalación registrada, no sobre la posición del ejecutable.
 fn env_uninstall<'a>(
     sandbox: &Sandbox,
@@ -320,7 +323,7 @@ fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
         .collect()
 }
 
-/// Cada categoría borra **exactamente** su alcance (§9.6), y `--model` en la raíz
+/// Cada categoría borra **exactamente** su alcance, y `--model` en la raíz
 /// exclusiva borra el directorio entero con `xet` dentro.
 #[test]
 fn cleanup_categories_are_scoped() {
@@ -401,7 +404,7 @@ fn cleanup_categories_are_scoped() {
     }
     assert!(
         !planned_removed.contains(&sandbox.program_dir.display().to_string()),
-        "el programa no lo borra `cleanup` (§9.6): eso es `self uninstall`"
+        "el programa no lo borra `cleanup`: eso es `self uninstall`"
     );
     assert!(
         all_plan
@@ -463,7 +466,7 @@ fn cleanup_without_category_is_usage_error() {
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("es un LifecycleError");
     assert_eq!(lifecycle.reason, "usage_error");
-    assert_eq!(lifecycle.exit_code, 2, "error de uso (§9.1)");
+    assert_eq!(lifecycle.exit_code, 2, "error de uso");
     assert_eq!(
         sandbox.snapshot(),
         before,
@@ -626,7 +629,7 @@ fn shared_hf_cache_keeps_foreign_entries() {
     let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
-/// Un temporal propio sin PID se barre: §9.6 exige que cualquier invocación barra los
+/// Un temporal propio sin PID se barre: la regla exige que cualquier invocación barra los
 /// temporales propios huérfanos, y uno sin PID no pertenece a ningún proceso vivo.
 ///
 /// Este es el segundo punto heredado que este lote absorbe: el barrido solo borraba los
@@ -838,7 +841,7 @@ fn uninstall_homebrew_is_externally_managed() {
 
 /// R2: el directorio de programa no se borra si no contiene recibo ni ejecutable, ni si
 /// es una raíz del sistema, `$HOME` o un ancestro de `$HOME`. Ni una variable de
-/// reubicación ni un recibo manipulado pueden ampliar el alcance (§12).
+/// reubicación ni un recibo manipulado pueden ampliar el alcance.
 #[test]
 fn uninstall_refuses_unsafe_program_dir() {
     let sandbox = Sandbox::new("r2");
@@ -897,7 +900,7 @@ fn uninstall_refuses_unsafe_program_dir() {
 }
 
 /// En Windows, con el ejecutable en uso dentro del directorio de programa, el borrado se
-/// programa y el desenlace es `removal_scheduled`, que es un éxito (§9.5, paso 8, §9.1).
+/// programa y el desenlace es `removal_scheduled`, que es un éxito.
 #[test]
 fn uninstall_schedules_removal_when_the_executable_is_inside() {
     let sandbox = Sandbox::new("diferido");
@@ -918,7 +921,7 @@ fn uninstall_schedules_removal_when_the_executable_is_inside() {
 
     assert_eq!(
         outcome.status, "removal_scheduled",
-        "es un éxito, no un error (§9.1)"
+        "es un éxito, no un error"
     );
     assert!(!outcome.program_dir_removed, "y no se borró todavía");
     assert!(
@@ -970,8 +973,9 @@ fn uninstall_dry_run_touches_nothing() {
     let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
-/// La reversión del `PATH` sale del recibo, no de donde esté el ejecutable (§9.5,
-/// paso 7). En Unix: el enlace, solo si apunta al directorio de programa, y los bloques
+/// La reversión del `PATH` sale del recibo, no de donde esté el ejecutable (paso 7
+/// de la desinstalación). En Unix: el enlace, solo si apunta al directorio de programa, y
+/// los bloques
 /// delimitados de los perfiles.
 #[cfg(unix)]
 #[test]

@@ -1,5 +1,5 @@
-//! `setup` trasladado al motor: provisión de modelos y conversión del derivado
-//! (§9.7, paso 11 de §9.3).
+//! `setup` trasladado al motor: provisión de modelos y conversión del derivado,
+//! que es el paso 11 de la instalación.
 //!
 //! Es una **traducción fiel, no un rediseño**. Se traslada tal cual la semántica
 //! que ya existe: la selección por banderas, la idempotencia por presencia del
@@ -8,7 +8,7 @@
 //!
 //! **Lo que el Ciclo 2 añade, y dónde.** La **selección persistida en
 //! configuración** (`setup-selection.json`), la **poda de revisiones obsoletas**
-//! y las **migraciones** de §9.7 viven en este módulo, tras `Options`: las
+//! y las **migraciones** del `setup` nuevo viven en este módulo, tras `Options`: las
 //! necesita una actualización, y el `setup` invocado por el traspaso lee la
 //! selección guardada en vez de los flags.
 //!
@@ -21,7 +21,7 @@
 //! **La purga de `--force-update` pasa por el plan de borrado de modelos**, no por
 //! las purgas ad hoc del binario. Es el cambio de fondo de T13: `setup` y
 //! `cleanup --model` obedecen las mismas reglas de propiedad —R3 entre ellas— y la
-//! misma confirmación destructiva de §9.1.
+//! misma confirmación destructiva.
 
 use crate::LifecycleError;
 use serde::{Deserialize, Serialize};
@@ -38,19 +38,19 @@ pub const CT2_PAIRS: [&str; 2] = ["es-en", "en-es"];
 pub const CLONING_MODEL: &str = "qwen3-tts-0.6b-base";
 
 /// Opciones de `setup` que el motor necesita conocer. El resto de la superficie
-/// (`--json`, `--with-stt`) se queda en el binario (§6.3: aquí no se parsea la CLI).
+/// (`--json`, `--with-stt`) se queda en el binario, que es quien parsea la CLI.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Options {
     /// `--with-voice-cloning`: añade el modelo base de clonado a la selección.
     pub with_voice_cloning: bool,
     /// `--force-update`: purga los modelos seleccionados y los vuelve a
-    /// provisionar. Es una operación destructiva (§9.1) y por eso pide su propia
+    /// provisionar. Es una operación destructiva y por eso pide su propia
     /// confirmación.
     pub force_update: bool,
     /// `--yes`: omite la confirmación de la purga y la del tamaño pendiente.
     pub assume_yes: bool,
     /// La invocó `self install` o `self update` **después de su propio resumen**:
-    /// §9.7 dice que entonces no vuelve a preguntar por el tamaño pendiente.
+    /// La regla dice que entonces no vuelve a preguntar por el tamaño pendiente.
     pub called_from_lifecycle: bool,
 }
 
@@ -66,14 +66,14 @@ impl Options {
     }
 }
 
-/// Nombre del fichero de selección persistida en la raíz de datos (§9.7,
-/// decisión 4 del Ciclo 2).
+/// Nombre del fichero de selección persistida en la raíz de datos, por decisión 4
+/// del Ciclo 2.
 pub const SELECTION_FILE_NAME: &str = "setup-selection.json";
 
 /// Versión del esquema de la selección que esta versión del motor sabe leer.
 pub const SELECTION_SCHEMA_VERSION: u32 = 1;
 
-/// Selección de `setup` persistida (§9.7, Ciclo 2): hoy solo
+/// Selección de `setup` persistida, del Ciclo 2: hoy solo
 /// `with_voice_cloning`, extensible a futuros opcionales.
 ///
 /// Sobrevive a los updates porque el reemplazo no toca la raíz de datos; se
@@ -168,7 +168,7 @@ pub struct MigrationOutcome {
     pub selection_created: bool,
 }
 
-/// Migraciones idempotentes hacia delante del `setup` nuevo (§9.7, Ciclo 2),
+/// Migraciones idempotentes hacia delante del `setup` nuevo, del Ciclo 2,
 /// antes de provisionar: hoy, asegurar la selección en esquema 1.
 ///
 /// Idempotente: una segunda ejecución no escribe nada. No borra una selección
@@ -195,7 +195,7 @@ pub fn migrate_at(data_dir: &Path) -> anyhow::Result<MigrationOutcome> {
     })
 }
 
-/// Qué está pendiente de provisionar, que es lo que §9.7 manda calcular **antes**
+/// Qué está pendiente de provisionar, que hay que calcular **antes**
 /// de descargar.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pending {
@@ -206,14 +206,14 @@ pub struct Pending {
 }
 
 impl Pending {
-    /// `true` si no hay nada que hacer, que es la condición de idempotencia de §9.7
+    /// `true` si no hay nada que hacer, que es la condición de idempotencia
     /// y la que hace que `setup` no descargue nada cuando todo está provisionado.
     pub fn is_empty(&self) -> bool {
         self.models.is_empty() && self.ct2.is_empty()
     }
 
     /// Tamaño estimado de la descarga pendiente, en bytes. Es una estimación
-    /// declarada: el número exacto depende de lo que reporte el servidor, y §9.7
+    /// declarada: el número exacto depende de lo que reporte el servidor, y la regla
     /// pide un orden de magnitud para la confirmación, no una cifra contable.
     pub fn estimated_bytes(&self) -> u64 {
         MODEL_DOWNLOAD_ESTIMATE * self.models.len() as u64
@@ -221,7 +221,7 @@ impl Pending {
 }
 
 /// Estimación por repo pinneado. La suma del conjunto base ronda los 9 GB, que es
-/// la cifra que el resumen previo de §9.3 usa como ejemplo.
+/// la cifra que el resumen previo de la instalación usa como ejemplo.
 pub const MODEL_DOWNLOAD_ESTIMATE: u64 = 3_000_000_000;
 
 /// Repos de la selección, con el mismo filtro de clonado que usa el binario hoy.
@@ -378,7 +378,7 @@ impl PruneOutcome {
     }
 }
 
-/// Poda tras éxito (§9.7, Ciclo 2): elimina las revisiones de los repos
+/// Poda tras éxito, del Ciclo 2: elimina las revisiones de los repos
 /// propios que están fuera del pin vigente de `MODEL_REVISIONS`.
 ///
 /// Solo toca directorios de snapshots de repos propios, que son atribuibles a
@@ -534,11 +534,11 @@ fn convert_body(hf_snapshot: &Path, tmp_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Traduce un fallo de provisión al `reason` de §9.1 que corresponde.
+/// Traduce un fallo de provisión al `reason` de contrato que corresponde.
 ///
-/// `setup_failed` es el que el resumen de `self install` emite (§9.1: "Programa
-/// instalado, pero la provisión de modelos falló"), y `network_error` el que
-/// declara §9.1 para un fallo de descarga tras reintentos. La traducción vive aquí
+/// `setup_failed` es el que el resumen de `self install` emite ("Programa
+/// instalado, pero la provisión de modelos falló"), y `network_error` el que la
+/// tabla declara para un fallo de descarga tras reintentos. La traducción vive aquí
 /// para que `self install` no tenga que distinguir el origen del fallo: lo que le
 /// importa es que el programa queda instalado y basta reintentar con `setup`.
 pub fn map_download_failure(model: &str, cause: &anyhow::Error) -> LifecycleError {
@@ -563,7 +563,7 @@ pub struct Outcome {
 
 impl Outcome {
     /// `true` si no provisionó nada porque ya estaba todo, que es la condición de
-    /// idempotencia de §9.7.
+    /// idempotencia del `setup`.
     pub fn is_already_provisioned(&self) -> bool {
         self.converted.is_empty() && self.provisioned.iter().all(|_| true)
     }
@@ -575,16 +575,16 @@ impl Outcome {
 /// handler: el filtro de la selección, la idempotencia por presencia del snapshot, la
 /// reconversión por fecha, la escritura atómica del derivado y la purga por plan. Lo
 /// único que se queda en el binario es el sobre `--json` y la prosa, porque el parseo
-/// de la CLI y el emisor no viven en este crate (§6.3).
+/// de la CLI y el emisor no viven en este crate.
 ///
-/// La confirmación destructiva de `--force-update` y la del tamaño pendiente (§9.1 y
-/// §9.7) se aplican aquí, con el mismo módulo `confirm` que usan `cleanup` y
+/// La confirmación destructiva de `--force-update` y la del tamaño pendiente se
+/// aplican aquí, con el mismo módulo `confirm` que usan `cleanup` y
 /// `self uninstall`, para que las tres operaciones destructivas del producto tengan una
-/// sola implementación de la tabla de §9.1.
+/// sola implementación de la tabla de confirmaciones.
 pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Result<Outcome> {
     let mut outcome = Outcome::default();
 
-    // 0. Migraciones del `setup` nuevo (§9.7, Ciclo 2) y persistencia de la
+    // 0. Migraciones del `setup` nuevo y persistencia de la
     //    selección del usuario, antes de provisionar. El `setup` invocado por
     //    el traspaso lee la guardada, no los flags (`called_from_lifecycle`):
     //    por eso aquí solo se escribe en la invocación directa.
@@ -653,7 +653,7 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
         outcome.converted.push(pair.to_string());
     }
 
-    // 4. Poda tras éxito (§9.7, Ciclo 2): las revisiones fuera del pin vigente.
+    // 4. Poda tras éxito: las revisiones fuera del pin vigente.
     //    Un fallo aquí no invalida lo provisionado: se informa y se sigue.
     outcome.pruned = prune_obsolete();
     for (name, reason) in &outcome.pruned.failures {
@@ -673,8 +673,8 @@ fn conversion_error(pair: &str, reason: &str) -> LifecycleError {
     )
 }
 
-/// Confirmación destructiva de `--force-update` (§9.1). `false` es "el usuario dijo
-/// que no", que §9.1 no cuenta como error.
+/// Confirmación destructiva de `--force-update`. `false` es "el usuario dijo
+/// que no", que la tabla de `reason` no cuenta como error.
 fn confirm_destructive(options: &Options) -> anyhow::Result<bool> {
     let summary =
         vec!["Se purgarán los modelos descargados y se volverán a descargar.".to_string()];
@@ -693,7 +693,8 @@ fn confirm_destructive(options: &Options) -> anyhow::Result<bool> {
     Ok(decision != crate::confirm::Decision::Cancelled)
 }
 
-/// Confirmación del tamaño pendiente de §9.7: es no destructiva, así que sin terminal
+/// Confirmación del tamaño pendiente de la provisión: es no destructiva, así que sin
+/// terminal
 /// procede, y `--yes` la omite. Cuando la invoca `self install` después de su propio
 /// resumen, `called_from_lifecycle` la omite también.
 fn confirm_size(pending: &Pending, options: &Options) -> anyhow::Result<bool> {
@@ -791,7 +792,7 @@ mod tests {
         dir
     }
 
-    /// La provisión no hace trabajo cuando todo está ya provisionado (§9.7):
+    /// La provisión no hace trabajo cuando todo está ya provisionado:
     /// `pending` queda vacío y no se toca el disco. Es la idempotencia de `setup`,
     /// que es lo que permite que `self install` lo invoque sin preguntar.
     #[test]
@@ -956,7 +957,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// La selección sobrevive a un update (§9.7, Ciclo 2): `setup
+    /// La selección sobrevive a un update, desde el Ciclo 2: `setup
     /// --with-voice-cloning` la guarda, y el `setup` invocado por el traspaso
     /// (`called_from_lifecycle`) lee la guardada en vez de los flags.
     #[test]

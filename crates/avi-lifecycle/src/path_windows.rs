@@ -1,7 +1,7 @@
 //! Integración de `PATH` en Windows: la entrada del directorio de programa en el
-//! valor `Path` de `HKCU\Environment` (§9.3.1, criterio 7).
+//! valor `Path` de `HKCU\Environment`.
 //!
-//! Aquí se elimina el defecto que el código anterior tenía, y §9.3.1 lo nombra
+//! Aquí se elimina el defecto que el código anterior tenía, y el enunciado lo nombra
 //! uno por uno:
 //!
 //! - **Se lee sin expandir.** `RegGetValueW` con `RRF_NOEXPAND` devuelve el valor
@@ -18,7 +18,7 @@
 //!   exploradoras nuevas y los procesos que ya estaban abiertos vean el valor
 //!   nuevo.
 //!
-//! **La ruta de la clave es un parámetro**, como pide §13: la prueba de integración
+//! **La ruta de la clave es un parámetro**: la prueba de integración
 //! opera sobre una clave propia del test en lugar de la del usuario, y así el
 //! criterio 7 se demuestra sin tocar el entorno de quien ejecuta.
 //!
@@ -74,7 +74,7 @@ pub fn read_path(subkey: &str) -> anyhow::Result<Option<RawPath>> {
     };
 
     // La máscara acepta los dos tipos de cadena, porque el valor del usuario puede
-    // ser de cualquiera de los dos y §9.3.1 manda conservarlo, no normalizarlo.
+    // ser de cualquiera de los dos y la regla manda conservarlo, no normalizarlo.
     const MASK: u32 = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND;
     let (subkey_w, value_w) = (wide(subkey), wide(PATH_VALUE));
 
@@ -149,7 +149,7 @@ pub fn read_path(subkey: &str) -> anyhow::Result<Option<RawPath>> {
 /// con eso elimina tanto la forma verbatim como la normal, indistintamente.
 ///
 /// Y en la práctica el motor nunca escribe una ruta verbatim: `entry` viene de
-/// `bin_dir()`, que sale de `AVI_BIN_DIR` o de la convención de §7, ninguna de las
+/// `bin_dir()`, que sale de `AVI_BIN_DIR` o de la convención de rutas, ninguna de las
 /// dos con prefijo. El prefijo solo puede llegar **desde el registro**, escrito a mano
 /// o por otra herramienta.
 pub fn plan_integrate(actual: Option<&RawPath>, entry: &Path) -> Plan {
@@ -272,7 +272,7 @@ fn write_path(subkey: &str, value: &str, kind: u32) -> anyhow::Result<()> {
 
 /// Crea una clave propia del llamante, para pruebas, **sin ningún valor `Path`**, de
 /// modo que la integración tenga que crearlo desde cero: es el caso de "el valor no
-/// existía" de §9.3.1, con su `REG_EXPAND_SZ` de serie.
+/// existía", con su `REG_EXPAND_SZ` de serie.
 ///
 /// Devuelve la ruta de subclave bajo `HKCU`, que hay que borrar con [`delete_key`].
 pub fn create_key(subkey: &str) -> anyhow::Result<()> {
@@ -405,7 +405,7 @@ mod tests {
         );
         assert_eq!(plan.kind, REG_EXPAND_SZ, "el tipo leído se conserva");
 
-        // Sin valor previo: se crea con `REG_EXPAND_SZ`, que es lo que fija §9.3.1.
+        // Sin valor previo: se crea con `REG_EXPAND_SZ`, que es lo que fija la regla.
         let plan = plan_integrate(None, entry);
         assert!(plan.changed);
         assert_eq!(plan.value, entry.display().to_string());

@@ -1,8 +1,9 @@
 //! Criterio 7: el tipo del valor `Path` de `HKCU\Environment` y las entradas
-//! `%VAR%` quedan intactos después de instalar y de desinstalar (§9.3.1).
+//! `%VAR%` quedan intactos después de instalar y de desinstalar.
 //!
 //! La prueba opera sobre **una clave propia del test**, no sobre la del usuario:
-//! §13 lo exige y es la única forma de que una puerta de CI pueda demostrarla sin
+//! El aislamiento lo exige y es la única forma de que una puerta de CI pueda demostrarla
+//! sin
 //! tocar el entorno de quien la ejecuta. La ruta de la clave es un parámetro de
 //! `avi-lifecycle::path_windows` precisamente para esto.
 //!
@@ -69,7 +70,7 @@ fn entry() -> PathBuf {
 /// la desinstalación haría. Y como control, la prueba comprueba que el valor `Path` del
 /// usuario no ha cambiado: si algo tocara `HKCU\Environment`, saldría aquí.
 ///
-/// La columna de §7 para Windows dice que el directorio del enlace **es** el directorio
+/// La columna de rutas para Windows dice que el directorio del enlace **es** el directorio
 /// de programa, así que el sandbox lo dice con `bin_dir = program_dir` en vez de la ruta
 /// de Unix.
 #[test]
@@ -127,7 +128,7 @@ fn criterion_7_windows_user_path_type_and_vars_survive() {
         .expect("criterio 7: el recibo registra la entrada del registro");
     assert_eq!(
         entry, sandbox.program_dir,
-        "criterio 7: en Windows la entrada es el directorio de programa (§7)"
+        "criterio 7: en Windows la entrada es el directorio de programa"
     );
     assert!(
         outcome.path_integration.symlink.is_none(),
@@ -298,8 +299,8 @@ fn windows_user_path_type_and_vars_survive() {
     delete_key(&key).expect("se borra la clave de prueba");
 }
 
-/// Un `Path` que el usuario escribió como `REG_SZ` sigue siendo `REG_SZ`: §9.3.1
-/// manda conservar el tipo, no normalizarlo a `REG_EXPAND_SZ`.
+/// Un `Path` que el usuario escribió como `REG_SZ` sigue siendo `REG_SZ`: la
+/// regla manda conservar el tipo, no normalizarlo a `REG_EXPAND_SZ`.
 #[test]
 fn windows_user_path_keeps_reg_sz_type() {
     let key = test_key("regsz");
@@ -318,7 +319,7 @@ fn windows_user_path_keeps_reg_sz_type() {
     delete_key(&key).expect("se borra la clave de prueba");
 }
 
-/// Un `Path` que no existe se crea con `REG_EXPAND_SZ`, que es lo que fija §9.3.1, y
+/// Un `Path` que no existe se crea con `REG_EXPAND_SZ`, que es lo que fija la regla, y
 /// una clave que no existe se trata igual: no es un error de la integración.
 #[test]
 fn windows_user_path_absent_value_is_created_expandable() {

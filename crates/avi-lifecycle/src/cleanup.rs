@@ -1,8 +1,8 @@
-//! `cleanup`: borrado del estado por categorías (§9.6), con el planificador que
+//! `cleanup`: borrado del estado por categorías, con el planificador que
 //! solo actúa dentro de raíces de propiedad exclusiva.
 //!
-//! Lo que este módulo sustituye es la aritmética ad hoc que vivía en
-//! `handle_cleanup` (`src/main.rs`), donde el plan de `--dry-run` y la ejecución
+//! Lo que este módulo sustituye es la aritmética ad hoc que vivía en el binario,
+//! donde el plan de `--dry-run` y la ejecución
 //! eran **dos** listas: el planificaba `xet` y `.locks` sin mirar si la raíz de
 //! modelos era compartida, mientras el ejecutor devolvía `Ok(false)` bajo R3. El
 //! resultado era que `cleanup --model --dry-run` anunciaba un borrado que no
@@ -11,7 +11,7 @@
 //!
 //! **Una sola función de cálculo.** [`plan`] construye la lista de destinos con sus
 //! tamaños aplicando R1 a R3, y la usan las tres cosas que la necesitan: el resumen
-//! de la confirmación de §9.1, la salida de `--dry-run` y la ejecución. No puede
+//! de la confirmación, la salida de `--dry-run` y la ejecución. No puede
 //! haber divergencia porque no hay dos implementaciones; `plan_and_execution_agree_under_shared_root`
 //! lo afirma sobre el caso que fallaba.
 //!
@@ -25,10 +25,10 @@
 //! sus derivados y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de
 //! otra herramienta (criterio 23).
 //!
-//! **Nada de lo que el daemon usa se borra sin pararlo antes** (§9.6), y el fallo
+//! **Nada de lo que el daemon usa se borra sin pararlo antes**, y el fallo
 //! de la parada es `daemon_stop_failed` con nada del plan borrado.
 //!
-//! **Tras `--model` la aplicación queda reintentable** (§9.6): `setup` vuelve a
+//! **Tras `--model` la aplicación queda reintentable**: `setup` vuelve a
 //! descargar lo que falte, porque la provisión no depende de nada que sobreviva al
 //! borrado.
 
@@ -40,7 +40,7 @@ use crate::LifecycleError;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Categoría de §9.6 a la que pertenece un destino, para el mensaje humano y para
+/// Categoría a la que pertenece un destino, para el mensaje humano y para
 /// que el sobre pueda decir qué se borró y por qué.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Category {
@@ -72,23 +72,23 @@ impl Category {
     }
 }
 
-/// Raíces sobre las que opera `cleanup` (§7), como dato y no como llamada a
+/// Raíces sobre las que opera `cleanup`, como dato y no como llamada a
 /// `avi-store`.
 ///
-/// El motivo es el mismo que en [`crate::install::Env`]: §13 exige que las pruebas
+/// El motivo es el mismo que en [`crate::install::Env`]: las pruebas aisladas tienen
 /// aisladas funcionen con las raíces reubicadas a temporales, y en Windows las Known
 /// Folders ignoran `LOCALAPPDATA`, así que un sandbox que no pase las raíces por
 /// parámetro no representaría nada del mecanismo que se quiere probar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Roots {
-    /// Directorio de programa. `cleanup` no lo borra (§9.6: eso es `self
-    /// uninstall`), pero su padre es donde vive el staging y él donde los aparcados.
+    /// Directorio de programa. `cleanup` no lo borra —eso es `self
+    /// uninstall`—, pero su padre es donde vive el staging y él donde los aparcados.
     pub program_dir: PathBuf,
     /// Raíz de datos: voces, habla sintetizada, configuración, logs y pidfile.
     pub data_dir: PathBuf,
     /// Raíz de modelos: snapshots, derivado CT2, locks y `xet`.
     pub models_dir: PathBuf,
-    /// Directorio de temporales del sistema, para el barrido transversal de §9.1.
+    /// Directorio de temporales del sistema, para el barrido transversal.
     pub temp_root: PathBuf,
     /// `$HOME`, que R2 usa como una de las rutas que el directorio de programa nunca
     /// puede ser. Vacío donde el producto no lo necesita.
@@ -97,7 +97,8 @@ pub struct Roots {
     /// que hace que R3 limite el alcance de `--model` a lo atribuible a la aplicación.
     ///
     /// Va como **dato** y no se vuelve a leer del entorno dentro del planificador por
-    /// dos razones. La primera es §13: leer `HF_HUB_CACHE` desde el planificador hace
+    /// dos razones. La primera es el aislamiento de las pruebas: leer
+    /// `HF_HUB_CACHE` desde el planificador hace
     /// que dos pruebas que corren en paralelo se contaminen, porque el entorno del
     /// proceso es global. La segunda es que el plan tiene que ser una función de sus
     /// entradas: si el plan dependiera del entorno, `--dry-run` podría anunciar un
@@ -107,7 +108,7 @@ pub struct Roots {
 }
 
 impl Roots {
-    /// Raíces de §7 resueltas ahora, que es lo que usa el binario.
+    /// Raíces del producto resueltas ahora, que es lo que usa el binario.
     pub fn resolve() -> Self {
         let models_dir = crate::models_cache_dir();
         Self {
@@ -124,9 +125,9 @@ impl Roots {
     }
 
     /// Raíces efectivas de la instalación registrada, con el recibo como fuente de
-    /// verdad de los datos y de los modelos (§7: "los valores efectivos se registran
-    /// en el recibo, así que la actualización y la desinstalación operan sobre las
-    /// mismas ubicaciones aunque la variable ya no esté definida").
+    /// verdad de los datos y de los modelos: los valores efectivos se registran en el
+    /// recibo, así que la actualización y la desinstalación operan sobre las mismas
+    /// ubicaciones aunque la variable ya no esté definida.
     pub fn from_receipt(receipt: Option<&InstallReceipt>) -> Self {
         let mut roots = Self::resolve();
         if let Some(receipt) = receipt {
@@ -147,30 +148,31 @@ impl Roots {
         }
     }
 
-    /// Archivo de bloqueo de §7, hermano del directorio de programa. Es un dato y no
+    /// Archivo de bloqueo, hermano del directorio de programa. Es un dato y no
     /// la constante de `lock::lock_path()` porque el directorio de programa puede ser
-    /// el **registrado** y no el de la convención (§8.2).
+    /// el **registrado** y no el de la convención de rutas.
     pub fn lock_path(&self) -> PathBuf {
         crate::lock::lock_path_for(&self.program_dir)
     }
 }
 
-/// Opciones de `cleanup`. El parseo se queda en el binario (§6.3).
+/// Opciones de `cleanup`. El parseo se queda en el binario, que es quien ve los
+/// argumentos.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Options {
     pub model: bool,
     pub voices: bool,
     pub synthetic_speech: bool,
     /// `--all`: la unión de las tres categorías más configuración, logs y el estado
-    /// del daemon (§9.6).
+    /// del daemon.
     pub all: bool,
     pub dry_run: bool,
     pub assume_yes: bool,
 }
 
 impl Options {
-    /// `true` si se pidió alguna categoría. Sin ninguna, §9.1 obliga a `usage_error`
-    /// sin borrar nada (criterio 22).
+    /// `true` si se pidió alguna categoría. Sin ninguna, la operación devuelve
+    /// `usage_error` sin borrar nada.
     pub fn any_category(&self) -> bool {
         self.model || self.voices || self.synthetic_speech || self.all
     }
@@ -191,7 +193,7 @@ impl Options {
     }
 }
 
-/// Un destino del plan, con el tamaño que §9.1 exige listar junto a la ruta.
+/// Un destino del plan, con el tamaño que hay que listar junto a la ruta.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub path: PathBuf,
@@ -203,7 +205,7 @@ pub struct Target {
 
 /// Un recurso compartido que la operación deja intacto a propósito.
 ///
-/// §9.5 lo llama "no se tocará" y R3 lo exige: el plan tiene que **decir** que no se
+/// El resumen lo llama "no se tocará" y R3 lo exige: el plan tiene que **decir** que no se
 /// borra, porque un usuario que ve `cleanup --all` sin lista de lo que se conserva
 /// no puede saber que sus modelos de otra herramienta siguen ahí.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,7 +261,7 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
         );
     }
     if options.all {
-        // §9.6: `--all` añade configuración, logs y `daemon.pid` al resto. El
+        // `--all` añade configuración, logs y `daemon.pid` al resto. El
         // fichero `daemon.ready` va con él porque es el otro mitad del mismo estado
         // de ejecución y dejarlo sería un residuo que `doctor` seguiría reportando.
         push(
@@ -280,8 +282,8 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
         );
     }
 
-    // `cleanup` nunca toca el programa ni su integración de `PATH` (§9.6: eso es
-    // `self uninstall`), y decirlo es parte del plan.
+    // `cleanup` nunca toca el programa ni su integración de `PATH` —eso es
+    // `self uninstall`—, y decirlo es parte del plan.
     if program_dir_exists(&roots.program_dir) {
         preserved.push(Preserved {
             path: roots.program_dir.clone(),
@@ -468,10 +470,10 @@ pub struct Outcome {
     pub status: &'static str,
     /// Rutas borradas en esta ejecución, en el orden del plan.
     pub removed: Vec<String>,
-    /// Del barrido transversal de §9.1, cuando lo hubo.
+    /// Del barrido transversal, cuando lo hubo.
     pub swept: Vec<String>,
-    /// Lo que quedó sin poder borrar, con el motivo. No es un fallo: §9.1 lo
-    /// considera un archivo en uso que recoge el borrado diferido.
+    /// Lo que quedó sin poder borrar, con el motivo. No es un fallo: se considera
+    /// un archivo en uso que recoge el borrado diferido.
     pub kept: Vec<String>,
     /// Recursos compartidos que se conservan, con el motivo.
     pub preserved: Vec<Preserved>,
@@ -489,20 +491,20 @@ impl Outcome {
     }
 }
 
-/// Ejecuta `cleanup` (§9.6).
+/// Ejecuta `cleanup`.
 ///
-/// El orden es el de §9.1 y §9.6: sin categoría no se borra nada; la simulación
-/// imprime el plan y no toca el disco, ni siquiera el bloqueo ni el barrido, porque
-/// `--dry-run` no puede dejar ni el archivo de bloqueo detrás; y en la ejecución real
-/// la recuperación y el barrido van **antes** del plan, para que el plan que el
-/// usuario ve y confirma sea el que queda después del barrido y no una lista que el
-/// barrido va a invalidar.
+/// El orden es el de las reglas de borrado: sin categoría no se borra nada; la
+/// simulación imprime el plan y no toca el disco, ni siquiera el bloqueo ni el
+/// barrido, porque `--dry-run` no puede dejar ni el archivo de bloqueo detrás; y en la
+/// ejecución real la recuperación y el barrido van **antes** del plan, para que el
+/// plan que el usuario ve y confirma sea el que queda después del barrido y no una
+/// lista que el barrido va a invalidar.
 pub async fn run(
     roots: &Roots,
     options: &Options,
     control: &dyn ProcessControl,
 ) -> anyhow::Result<Outcome> {
-    // §9.1: sin categoría, `usage_error` sin borrar nada (criterio 22). Antes de
+    // Sin categoría, `usage_error` sin borrar nada. Antes de
     // cualquier otra cosa, incluido el bloqueo.
     if !options.any_category() {
         return Err(LifecycleError::usage_error(
@@ -512,7 +514,7 @@ pub async fn run(
         .into());
     }
 
-    // Ninguna operación pide elevación (§9.1, §12).
+    // Ninguna operación pide elevación.
     let report = crate::privileges::ensure_per_user()?;
     if let Some(warning) = &report.warning {
         eprintln!("{warning}");
@@ -522,7 +524,7 @@ pub async fn run(
         return Ok(simulate(roots, options));
     }
 
-    // §9.1: recuperación y bloqueo. El barrido transversal de §9.6 va aquí dentro,
+    // Recuperación y bloqueo. El barrido transversal va aquí dentro,
     // que es lo que significa "cualquier invocación barre además…".
     let lock_path = roots.lock_path();
     let lock = crate::lock::acquire_at(&lock_path)?;
@@ -530,7 +532,7 @@ pub async fn run(
 
     let plan = plan(roots, options);
 
-    // §9.1: `cleanup` es destructiva. Lista con tamaños y confirmación `[s/N]`.
+    // `cleanup` es destructiva. Lista con tamaños y confirmación `[s/N]`.
     let entries: Vec<PlanEntry> = plan
         .targets
         .iter()
@@ -548,7 +550,7 @@ pub async fn run(
         });
     }
 
-    // §9.6: antes de borrar recursos que el daemon usa, se detiene el daemon. Si no
+    // Antes de borrar recursos que el daemon usa, se detiene el daemon. Si no
     // se detiene, `daemon_stop_failed` y nada del plan se borra.
     let daemon = daemon_stop::stop(&roots.data_dir, &daemon_addr(), control).await;
     daemon_stop::require_stopped(&daemon)?;
@@ -592,13 +594,13 @@ pub async fn run(
     })
 }
 
-/// Simulación de §9.1: imprime el plan, incluido el barrido que se haría, y no
+/// Simulación: imprime el plan, incluido el barrido que se haría, y no
 /// modifica el disco.
 ///
-/// El barrido **no** se ejecuta aquí aunque §9.6 diga "cualquier invocación": lo que
-/// no puede coexistir con una simulación es modificar el disco, y el criterio 20 es
-/// explícito. Lo que sí hace es anunciarlo con la misma decisión del barrido real, de
-/// modo que lo que dice el `--dry-run` es lo que ocurriría.
+/// El barrido **no** se ejecuta aquí aunque la regla diga "cualquier invocación
+/// barre además…": lo que no puede coexistir con una simulación es modificar el disco.
+/// Lo que sí hace es anunciarlo con la misma decisión del barrido real, de modo que
+/// lo que dice el `--dry-run` es lo que ocurriría.
 pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     let plan = plan(roots, options);
     let preview: SweepPreview = recovery::preview(roots.recovery_roots());
@@ -648,7 +650,7 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     }
 }
 
-/// Aplica la confirmación de §9.1 con el plan ya calculado.
+/// Aplica la confirmación con el plan ya calculado.
 fn confirm(
     plan: &DeletionPlan,
     entries: &[PlanEntry],
@@ -671,7 +673,7 @@ fn confirm(
     )
 }
 
-/// Resumen legible del plan, que es lo que §9.1 llama "lista de rutas con tamaños".
+/// Resumen legible del plan, que es la lista de rutas con tamaños que ve el usuario.
 fn summary(plan: &DeletionPlan) -> Vec<String> {
     let mut out = Vec::new();
     if plan.is_empty() {

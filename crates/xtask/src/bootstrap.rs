@@ -1,4 +1,4 @@
-//! `xtask bootstrap`: prepara o pone al día el entorno de desarrollo (§10.3).
+//! `xtask bootstrap`: prepara o pone al día el entorno de desarrollo.
 //!
 //! Convergente: la misma orden prepara el entorno la primera vez y lo pone al
 //! día tras un `git pull`; si nada cambió, no hace trabajo (criterio 24). Los

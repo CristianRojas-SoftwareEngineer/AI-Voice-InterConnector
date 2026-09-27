@@ -1,8 +1,8 @@
-//! `self uninstall`: los nueve pasos de §9.5, en orden, sobre la instalación
+//! `self uninstall`: los nueve pasos, en orden, sobre la instalación
 //! registrada y no sobre la posición del ejecutable.
 //!
-//! Lo que este módulo sustituye es `handle_uninstall` (`src/main.rs`), que tenía tres
-//! defectos que R1, R2 y §9.5 condemnan:
+//! Una desinstalación anterior, implementada en el binario, tenía tres
+//! defectos que R1, R2 y la operación de desinstalación condemnan:
 //!
 //! - En Unix borraba el **directorio padre del ejecutable** cuando este no era el
 //!   canónico. Lanzado desde el árbol de desarrollo eso alcanzaba `target/debug`, que
@@ -10,12 +10,12 @@
 //!   propio árbol.
 //! - La integración de `PATH` se revertía con una función propia que **aplanaba
 //!   `%VAR%`** al escribir, de modo que una entrada que el usuario había escrito como
-//!   `%LOCALAPPDATA%\...` salía como la ruta expandida. `path_windows` de §9.3.1
-//!   conserva el tipo y la forma, y la reversión exacta se deriva del recibo.
-//! - La parada del daemon y la lectura del pidfile vivían en el binario, y el
-//!   borrado diferido de Windows en `avi-daemon`: cuatro sitios para una regla.
+//!   `%LOCALAPPDATA%\...` salía como la ruta expandida. La integración del `PATH` en
+//!   Windows conserva el tipo y la forma, y la reversión exacta se deriva del recibo.
+//! - La parada del daemon, la lectura del pidfile y el borrado diferido de Windows no
+//!   compartían una regla común: cuatro sitios para una regla.
 //!
-//! **Sobre qué actúa.** §8.2 y §9.5: sobre la instalación registrada, sea cual sea la
+//! **Sobre qué actúa.** Sobre la instalación registrada, sea cual sea la
 //! copia del binario que invoque el comando. Las raíces efectivas salen del recibo
 //! ([`Roots::from_receipt`](crate::cleanup::Roots::from_receipt)), de modo que
 //! desinstalar funciona aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén
@@ -25,10 +25,10 @@
 //! ([`program_dir_is_removable`]): el directorio de programa solo se borra si contiene
 //! el recibo o el ejecutable, y nunca si es la raíz de una unidad, `$HOME`, un
 //! ancestro de `$HOME` o una de las otras raíces del producto. Ni una variable de
-//! reubicación ni un recibo manipulado pueden ampliar el alcance (§12).
+//! reubicación ni un recibo manipulado pueden ampliar el alcance.
 //!
-//! **Idempotencia**: sin instalación ni estado, éxito con `not_installed` (criterio
-//! 21). **Residuo**: cero dentro de las raíces de propiedad exclusiva (criterio 17), y
+//! **Idempotencia**: sin instalación ni estado, éxito con `not_installed`.
+//! **Residuo**: cero dentro de las raíces de propiedad exclusiva, y
 //! lo compartido que no se borra se informa.
 
 use crate::channel::Channel;
@@ -41,17 +41,18 @@ use crate::LifecycleError;
 use std::path::{Path, PathBuf};
 
 /// Comando de Homebrew que sustituye a la desinstalación de la copia del Cask
-/// (§9.5, paso 1).
+/// (paso 1).
 pub const HOMEBREW_UNINSTALL: &str = "brew uninstall --cask --zap ai-voice-interconnector";
 
-/// Opciones de `self uninstall`. El parseo se queda en el binario (§6.3).
+/// Opciones de `self uninstall`. El parseo se queda en el binario, que es quien ve
+/// los argumentos.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Options {
-    /// `--keep-data`: conserva modelos, voces y habla sintetizada (criterio 18).
+    /// `--keep-data`: conserva modelos, voces y habla sintetizada.
     pub keep_data: bool,
-    /// `--dry-run`: imprime el plan y no modifica el disco (criterio 20).
+    /// `--dry-run`: imprime el plan y no modifica el disco.
     pub dry_run: bool,
-    /// `--yes`: omite la confirmación destructiva de §9.1.
+    /// `--yes`: omite la confirmación destructiva.
     pub assume_yes: bool,
 }
 
@@ -61,7 +62,7 @@ pub struct Options {
 /// `remove_dir_all`, y en Windows un proceso auxiliar desacoplado—, porque el motor no
 /// lo puede implementar sin arrastrar `avi-daemon`. Lo que sí es del motor es la
 /// **decisión**: cuándo se borra ya y cuándo se programa, y que el resultado difiera
-/// (`uninstalled` contra `removal_scheduled`, §9.1). Por eso entra por un rasgo, igual
+/// (`uninstalled` contra `removal_scheduled`). Por eso entra por un rasgo, igual
 /// que [`ProcessControl`](crate::daemon_stop::ProcessControl).
 pub trait ProgramDirRemover {
     /// `true` si el ejecutable en uso está dentro de `program_dir`, que es el caso en
@@ -70,11 +71,11 @@ pub trait ProgramDirRemover {
     /// Borra el directorio ya. En Unix es lo que hace siempre.
     fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()>;
     /// Programa el borrado para cuando termine el proceso en curso y devuelve `true`
-    /// si quedó programado. Es el caso diferido de §9.5, paso 8.
+    /// si quedó programado. Es el caso diferido del paso 8.
     fn schedule(&self, program_dir: &Path, pid: u32) -> anyhow::Result<bool>;
 }
 
-/// Plan de §9.5, paso 2.
+/// Plan del paso 2.
 ///
 /// El estado **no** se recalcula: sale del planificador de `cleanup`, con **una**
 /// diferencia deliberada —sin `--keep-data` el destino es la raíz de datos entera y no
@@ -95,7 +96,7 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Entradas con tamaños que §9.1 exige listar antes de una operación destructiva.
+    /// Entradas con tamaños que hay que listar antes de una operación destructiva.
     pub fn entries(&self) -> Vec<PlanEntry> {
         let mut out: Vec<PlanEntry> = self
             .state
@@ -119,28 +120,29 @@ pub type Preserved = cleanup::Preserved;
 /// Estado de partida de la operación, tal como lo ve el binario.
 pub struct Env<'a> {
     /// Raíces efectivas sobre las que se opera. Las resuelve el binario con
-    /// [`Roots::from_receipt`], que es donde §7 dice que el recibo manda: van como dato
-    /// para que la operación sea una función de sus entradas y para que §13 pueda
-    /// aislarlas a temporales.
+    /// [`Roots::from_receipt`], que es donde el recibo manda sobre las variables de
+    /// entorno: van como dato para que la operación sea una función de sus entradas y
+    /// para que las pruebas aisladas puedan apartarlas a temporales.
     pub roots: Roots,
     /// Recibo de la instalación registrada, si lo hay. `None` es el caso
     /// `not_installed`.
     pub receipt: Option<&'a InstallReceipt>,
     /// Canal de la copia que se está ejecutando, que decide si la operación puede
-    /// actuar (§8.2).
+    /// actuar.
     pub channel: Channel,
     /// Directorio de programa **registrado**, que es sobre el que se opera y no sobre
-    /// la posición del ejecutable (§8.2, §9.5).
+    /// la posición del ejecutable.
     pub program_dir: PathBuf,
     /// Dirección del protocolo de parada, con el mismo override que el resto del
     /// producto.
     pub daemon_addr: String,
     /// `$HOME` del usuario.
     ///
-    /// Va como dato y no se lee del entorno porque los bloques delimitados de §9.3.1
+    /// Va como dato y no se lee del entorno porque los bloques delimitados del `PATH`
     /// se escribieron con el `$HOME` **de aquel momento**: `remove_block` reconstruye el
     /// texto del bloque para compararlo, y con el `$HOME` equivocado no lo quitaría. El
-    /// llamador lo pasa porque es quien sabe cuál es —en producción, el mismo de §7—.
+    /// llamador lo pasa porque es quien sabe cuál es —en producción, el mismo que usan
+    /// las rutas del producto—.
     pub home: PathBuf,
 }
 
@@ -149,7 +151,7 @@ pub struct Env<'a> {
 pub enum Removal {
     /// Borrado ya, de forma síncrona.
     Now,
-    /// Programado para cuando termine el proceso en curso (§9.5, paso 8, Windows).
+    /// Programado para cuando termine el proceso en curso (paso 8, en Windows).
     Scheduled,
 }
 
@@ -160,7 +162,7 @@ pub struct Outcome {
     pub status: &'static str,
     /// Rutas borradas en esta ejecución, incluido el directorio de programa.
     pub removed: Vec<String>,
-    /// Del barrido transversal de §9.1.
+    /// Del barrido transversal.
     pub swept: Vec<String>,
     /// Lo que no se pudo borrar.
     pub kept: Vec<String>,
@@ -176,13 +178,14 @@ pub struct Outcome {
     pub failed: Vec<String>,
 }
 
-/// Ejecuta `self uninstall` (§9.5).
+/// Ejecuta `self uninstall`.
 ///
-/// El orden es el de §9.5, y dos de sus pasos tienen una consecuencia que conviene
-/// dejar escrita: la recuperación y el barrido (paso 1) ocurren **antes** de que se
-/// componga el plan, para que el plan que el usuario ve y confirma sea el que queda;
-/// y la parada del daemon (paso 5) ocurre **después** de la confirmación, de modo que
-/// un `daemon_stop_failed` no deja nada borrado, que es lo que §9.5 exige.
+/// El orden es el de los nueve pasos, y dos de ellos tienen una consecuencia que
+/// conviene dejar escrita: la recuperación y el barrido (paso 1) ocurren **antes** de
+/// que se componga el plan, para que el plan que el usuario ve y confirma sea el que
+/// queda; y la parada del daemon (paso 5) ocurre **después** de la confirmación, de
+/// modo que un `daemon_stop_failed` no deja nada borrado, que es lo que la operación
+/// exige.
 pub async fn run(
     env: &Env<'_>,
     options: &Options,
@@ -206,7 +209,7 @@ pub async fn run(
     let roots = &env.roots;
     let program_dir = env.program_dir.clone();
 
-    // Sin instalación ni estado: §9.5 es éxito con `not_installed` (criterio 21).
+    // Sin instalación ni estado: la operación es éxito con `not_installed`.
     if receipt.is_none() && !state_exists(roots) && !program_dir.is_dir() {
         return Ok(Outcome {
             status: "not_installed",
@@ -221,7 +224,7 @@ pub async fn run(
         return Ok(simulate(roots, receipt, &program_dir, options));
     }
 
-    // §9.1: ninguna operación pide elevación.
+    // Ninguna operación pide elevación.
     let report = crate::privileges::ensure_per_user()?;
     if let Some(warning) = &report.warning {
         eprintln!("{warning}");
@@ -319,7 +322,7 @@ pub async fn run(
     })
 }
 
-/// Compone el plan de §9.5, paso 2.
+/// Compone el plan del paso 2.
 ///
 /// El estado se compone con el planificador de `cleanup` y no con un segundo alcance en
 /// paralelo: dos implementaciones de un mismo alcance divergirían en cuanto una cambiara.
@@ -438,7 +441,7 @@ fn describe_path_integration(receipt: &InstallReceipt, preserved: &mut Vec<Prese
     }
 }
 
-/// Paso 3: la simulación de §9.1.
+/// Paso 3: la simulación.
 pub fn simulate(
     roots: &Roots,
     receipt: Option<&InstallReceipt>,
@@ -487,7 +490,7 @@ pub fn simulate(
     }
 }
 
-/// Resumen legible del plan, que es lo que §9.5 paso 2 muestra antes de preguntar.
+/// Resumen legible del plan, que es lo que el paso 2 muestra antes de preguntar.
 fn compose_summary(plan: &Plan, options: &Options) -> Vec<String> {
     let mut out = vec![format!(
         "Se desinstalará {}{}.",
@@ -522,7 +525,7 @@ fn compose_summary(plan: &Plan, options: &Options) -> Vec<String> {
     out
 }
 
-/// Aplica la confirmación destructiva de §9.1.
+/// Aplica la confirmación destructiva.
 fn confirm(
     summary: &[String],
     entries: &[PlanEntry],
@@ -564,8 +567,8 @@ pub fn revert_path(receipt: Option<&InstallReceipt>, home: &Path) -> bool {
     let integration: &PathIntegration = &receipt.path_integration;
     let mut touched = false;
 
-    // El enlace simbólico es un mecanismo de Unix: en Windows §8.1 lo registra como
-    // `null` y la integración es la entrada del registro de abajo.
+    // El enlace simbólico es un mecanismo de Unix: en Windows el recibo lo registra
+    // como `null` y la integración es la entrada del registro de abajo.
     #[cfg(unix)]
     let program_exe = receipt.install_dir.join(executable_name(receipt));
     #[cfg(unix)]
@@ -597,7 +600,7 @@ pub fn revert_path(receipt: Option<&InstallReceipt>, home: &Path) -> bool {
 /// ejecutable no hace falta porque la reversión es la entrada del registro.
 #[cfg(unix)]
 ///
-/// El recibo guarda las rutas de los archivos colocados (§8.1) y el ejecutable es el
+/// El recibo guarda las rutas de los archivos colocados y el ejecutable es el
 /// único cuyo nombre lleva el de la aplicación; se busca entre ellos y se cae al
 /// nombre de la plataforma si el recibo es antiguo y no lo lista. Deducirlo del recibo
 /// y no de `std::env::current_exe` es lo que permite que la reversión apunte a la
@@ -627,7 +630,7 @@ pub fn executable_name_default() -> String {
 /// Los bloques de perfil se escribieron con el `bin_dir` del momento de instalar, y
 /// `remove_block` necesita exactamente ese valor para quitar el bloque: con el
 /// `bin_dir` de hoy, un bloque escrito por una instalación anterior no se quitaría. El
-/// recibo no lo guarda como campo propio —§8.1 registra el enlace, no su
+/// recibo no lo guarda como campo propio —registra el enlace, no su
 /// directorio—, así que se deduce de la ruta del enlace, que sí está.
 fn receipt_bin_dir(receipt: &InstallReceipt) -> PathBuf {
     receipt
@@ -645,9 +648,9 @@ fn receipt_bin_dir(receipt: &InstallReceipt) -> PathBuf {
 /// el ejecutable, que es lo que lo convierte *en* el directorio de programa y no en un
 /// directorio cualquiera. La negativa: nunca es la raíz de una unidad, `$HOME`, un
 /// ancestro de `$HOME` ni coincide con otra raíz del producto, de modo que ni una
-/// variable de reubicación ni un recibo manipulado puedan ampliar el alcance (§12).
+/// variable de reubicación ni un recibo manipulado puedan ampliar el alcance.
 /// Colgar del perfil no protege: el directorio de programa vive bajo `$HOME` en
-/// todas las plataformas (§7), así que esa pertenencia no puede rechazarlo; lo que
+/// todas las plataformas, así que esa pertenencia no puede rechazarlo; lo que
 /// nunca puede ser es el propio `$HOME` o un ancestro suyo.
 pub fn program_dir_is_removable(roots: &Roots, program_dir: &Path) -> bool {
     if program_dir.as_os_str().is_empty() {
@@ -700,7 +703,7 @@ fn remove_program_dir(
         return Ok(Removal::Now);
     }
     if remover.exe_lives_inside(program_dir) {
-        // Windows: el ejecutable en uso impide el borrado directo. §9.5 pide un
+        // Windows: el ejecutable en uso impide el borrado directo. Se pide un
         // proceso auxiliar desacoplado con reintentos acotados, y el desenlace es
         // `removal_scheduled`, que es un éxito.
         if remover.schedule(program_dir, std::process::id())? {
@@ -751,7 +754,7 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod r2_tests {
     //! Regresión: el directorio de programa cuelga de `$HOME` en todas las
-    //! plataformas (§7), así que esa pertenencia no puede rechazarlo; lo que R2
+    //! plataformas, así que esa pertenencia no puede rechazarlo; lo que R2
     //! impide es que sea el propio `$HOME`, un ancestro suyo u otra raíz.
 
     use super::*;

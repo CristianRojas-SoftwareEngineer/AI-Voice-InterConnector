@@ -1,4 +1,4 @@
-//! Directorios canónicos del producto, temporales y revisiones de modelos (§7).
+//! Directorios canónicos del producto, temporales y revisiones de modelos.
 //!
 //! Fuente única de las rutas que antes vivían replicadas en `avi-store`,
 //! `avi-lifecycle` y `xtask clean`: `avi-store` las reexporta para conservar su
@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 /// Nombre canónico del producto: directorio de programa, directorio del
-/// enlace, nombre del bloqueo y nombre del ejecutable. Fuente única (§7).
+/// enlace, nombre del bloqueo y nombre del ejecutable. Fuente única.
 pub const APP_NAME: &str = "ai-voice-interconnector";
 
 /// Valor de una variable de entorno de reubicación, ignorando el vacío.
@@ -41,7 +41,7 @@ fn cache_home() -> PathBuf {
 }
 
 /// Raíz de datos de usuario y estado: voces, habla sintetizada, configuración,
-/// `daemon.pid` y logs (§7).
+/// `daemon.pid` y logs.
 ///
 /// `AVI_DATA_DIR` la desvía. Sin la variable, en Windows es
 /// `%LOCALAPPDATA%\ai-voice-interconnector\data` (D4), en Linux
@@ -61,7 +61,7 @@ pub fn data_dir() -> PathBuf {
     }
 }
 
-/// Directorio de programa: el bundle completo y el recibo (§7). Existe en los
+/// Directorio de programa: el bundle completo y el recibo. Existe en los
 /// cuatro targets de distribución, no solo en Windows, y `AVI_INSTALL_DIR` lo
 /// desvía. Dos `join` y no uno con separador embebido: una ruta con `/` mixto
 /// rompe la comparación con el registro de Windows y con el resto del motor.
@@ -76,7 +76,7 @@ pub fn install_dir() -> PathBuf {
     }
 }
 
-/// Directorio del comando en el PATH (§7). En Unix es el directorio del enlace
+/// Directorio del comando en el PATH. En Unix es el directorio del enlace
 /// simbólico; en Windows no hay enlace y la entrada que se escribe en
 /// `HKCU\Environment\Path` es el propio directorio de programa, así que ambos
 /// coinciden. `AVI_BIN_DIR` lo desvía.
@@ -131,16 +131,16 @@ pub const MODEL_REVISIONS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Nombre del bloqueo de ciclo de vida, hermano del directorio de programa
-/// (§7): `~/.local/opt/.ai-voice-interconnector.lock`,
+/// Nombre del bloqueo de ciclo de vida, hermano del directorio de programa:
+/// `~/.local/opt/.ai-voice-interconnector.lock`,
 /// `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.lock`.
 pub const LIFECYCLE_LOCK_NAME: &str = ".ai-voice-interconnector.lock";
 
-/// Prefijo del staging, también hermano del directorio de programa (§7):
+/// Prefijo del staging, también hermano del directorio de programa:
 /// `~/.local/opt/.ai-voice-interconnector-staging-<pid>-<ms>`.
 pub const STAGING_DIR_PREFIX: &str = ".ai-voice-interconnector-staging-";
 
-/// Prefijo de los aparcados **dentro** del directorio de programa (§7):
+/// Prefijo de los aparcados **dentro** del directorio de programa:
 /// `<programa>/.old-<timestamp>`. Vive dentro a propósito: la reversión de un
 /// reemplazo tiene que poder hacerse sin mover nada fuera del programa.
 pub const PARKED_DIR_PREFIX: &str = ".old-";
@@ -149,14 +149,14 @@ pub const PARKED_DIR_PREFIX: &str = ".old-";
 /// `ModelStore::new()` en `HF_XET_CACHE`.
 pub const MODELS_XET_SUBDIR: &str = "xet";
 
-/// Prefijos de los temporales de ejecución de la aplicación (§7): `$TMPDIR` en
+/// Prefijos de los temporales de ejecución de la aplicación: `$TMPDIR` en
 /// Unix y `%TEMP%` en Windows. En Windows el helper de borrado diferido
 /// (`avi-uninstall-<pid>-<ms>.ps1`) cae en `avi-`, de modo que ningún otro
 /// prefijo puede sustituir a este conjunto.
 pub const TEMP_PREFIXES: &[&str] = &["avi-", "avi_"];
 
 // **R4.** Las cinco constantes anteriores son la fuente única de los recursos que la
-// aplicación crea: todo recurso nuevo se declara aquí, en la tabla de §7 y en
+// aplicación crea: todo recurso nuevo se declara aquí, en la tabla de rutas y en
 // los planes de limpieza y desinstalación **en el mismo cambio**. Un recurso
 // que solo aparece en un plan de limpieza es un recurso que sobrevive a la
 // desinstalación.
@@ -196,7 +196,7 @@ pub fn models_root_is_shared() -> bool {
 }
 
 /// Raíz de modelos: caché regenerable y **exclusiva de la aplicación** por
-/// defecto (§7, D3). Snapshots, derivado CT2, locks y `xet` cuelgan todos de
+/// defecto (D3). Snapshots, derivado CT2, locks y `xet` cuelgan todos de
 /// ella, y es la única ubicación de modelos que existe.
 ///
 /// `AVI_CACHE_DIR` tiene precedencia sobre las variables de HuggingFace: es la
@@ -205,7 +205,7 @@ pub fn models_root_is_shared() -> bool {
 ///
 /// Sin reubicación y con una caché HF compartida elegida por el usuario
 /// (`HF_HUB_CACHE` o `HF_HOME`), la raíz es esa y su contenido es compartido.
-/// En cualquier otro caso es la columna de modelos de §7:
+/// En cualquier otro caso es la columna de modelos de la tabla de rutas:
 /// `$XDG_CACHE_HOME/ai-voice-interconnector/models`,
 /// `~/Library/Caches/ai-voice-interconnector/models` o
 /// `%LOCALAPPDATA%\ai-voice-interconnector\cache\models`.

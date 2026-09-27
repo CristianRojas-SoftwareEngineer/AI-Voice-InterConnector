@@ -37,7 +37,7 @@ use avi_store::{SpeechStore, VoiceStore};
 /// `warm` nace en `Warming` eterno porque aquí no corre `run_daemon_server`
 /// (sin bind ni warmup real); los tests de contrato leen el estado tal cual y
 /// nunca esperan la señal `avi-daemon-ready`. La espera por señal solo aplica
-/// a la clase E2E-con-proceso (`tests/cli_golden.rs`).
+/// a la clase E2E-con-proceso.
 static TEST_STATE: OnceLock<Arc<DaemonState>> = OnceLock::new();
 
 fn test_state() -> Arc<DaemonState> {
@@ -131,7 +131,7 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 // doble de pruebas queda intacto, y su límite conocido es no reproducir el
 // ciclo de vida real del proceso. La ausencia real de huérfanos a nivel de
 // sistema operativo solo la verifica la serie de tests pesada
-// (`tests/cli_golden.rs`: reaper ruidoso + `verificar_cero_huerfanos`).
+// (con reaper ruidoso y `verificar_cero_huerfanos`).
 
 /// Modelos reales de STT (Parakeet TDT v3 int8: 4 archivos) presentes. La raíz de
 /// modelos vive fuera del repo: en un checkout limpio (CI) estos tests dorados
@@ -272,7 +272,8 @@ async fn synthesize_emits_contract_ndjson_stream() {
 
     // Invariante: evento final `result` con `audio_b64` no vacío, O `error`.
     // En este entorno de test el motor TTS no es localizable desde CWD
-    // (crates/avi-daemon), por lo que el evento final esperado es `error` con
+    // (el directorio de trabajo de este crate), por lo que el evento final esperado es
+    // `error` con
     // `reason` `model_missing` — rama aceptada en este entorno de test. La
     // síntesis real con audio verdadero se verifica por separado contra el motor.
     let final_event = events.last().unwrap();

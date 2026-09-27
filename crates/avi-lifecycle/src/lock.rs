@@ -1,10 +1,10 @@
-//! Bloqueo de ciclo de vida (§9.1).
+//! Bloqueo de ciclo de vida.
 //!
 //! Sin bloqueo, una actualización puede arrancar el daemon de la versión saliente
 //! en mitad del reemplazo: nada impide que un comando que lanza el daemon lo
 //! haga mientras otra operación de ciclo de vida está escribiendo el directorio
 //! de programa. El bloqueo es **exclusivo de sistema operativo** (`flock` en
-//! Unix, `LockFileEx` en Windows) sobre el archivo de §7, así que el sistema lo
+//! Unix, `LockFileEx` en Windows) sobre el archivo de bloqueo, así que el sistema lo
 //! libera aunque el proceso muera a mitad de una operación, que es exactamente
 //! el caso que el motor debe poder recuperar al empezar la siguiente.
 //!
@@ -24,18 +24,18 @@ use crate::LifecycleError;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-/// Ruta del archivo de bloqueo de §7: hermano del directorio de programa, que
+/// Ruta del archivo de bloqueo: hermano del directorio de programa, que
 /// es donde la tabla de rutas lo coloca en los cuatro targets.
 pub fn lock_path() -> PathBuf {
     lock_path_for(&crate::install_dir())
 }
 
-/// Ruta del archivo de bloqueo de §7 a partir de un directorio de programa: hermano
+/// Ruta del archivo de bloqueo a partir de un directorio de programa: hermano
 /// suyo, que es donde la tabla de rutas lo coloca en los cuatro targets.
 ///
 /// Es un parámetro y no la constante porque las tres operaciones destructivas —
 /// `self install`, `cleanup` y `self uninstall`— trabajan sobre el directorio de
-/// programa **registrado**, que puede no ser el de la convención, y §13 exige que las
+/// programa **registrado**, que puede no ser el de la convención, y las
 /// pruebas aislen las raíces a temporales. Tener la regla en un solo sitio es lo que
 /// impide que una de ellas tome el bloqueo de un sitio y borre de otro.
 pub fn lock_path_for(program_dir: &Path) -> PathBuf {
@@ -61,7 +61,7 @@ impl LifecycleLock {
     }
 }
 
-/// Toma el bloqueo de ciclo de vida sobre el archivo de §7.
+/// Toma el bloqueo de ciclo de vida sobre el archivo de bloqueo.
 ///
 /// Falla con `lifecycle_locked` si otra operación lo tiene tomado, y entonces no
 /// se ha modificado nada.
@@ -115,7 +115,7 @@ pub fn is_locked_at(path: &Path) -> bool {
 }
 
 /// Abre el archivo de bloqueo con lectura y escritura, creándolo si hace falta.
-/// El directorio es el del programa, que es de propiedad exclusiva (§7).
+/// El directorio es el del programa, que es de propiedad exclusiva del producto.
 fn open_lock_file(path: &Path) -> Result<File, LifecycleError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {

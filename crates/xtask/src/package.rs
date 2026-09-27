@@ -1,4 +1,4 @@
-//! `xtask package`: monta el bundle del release para el target del host (§10.4).
+//! `xtask package`: monta el bundle del release para el target del host.
 //!
 //! Lee `packaging/bundle-manifest.json` como lista canónica (la misma que valida
 //! `self install`): empaquetado e instalación no pueden divergir. Resuelve ONNX
@@ -59,7 +59,7 @@ fn relative_path(root: &Path, relative: &str) -> PathBuf {
     path
 }
 
-/// Triple del host según la tabla de §3, derivado de la plataforma de
+/// Triple del host según la tabla de targets soportados, derivado de la plataforma de
 /// compilación (este binario siempre corre donde se compiló).
 pub(crate) fn host_triple() -> Result<&'static str> {
     match (std::env::consts::ARCH, std::env::consts::OS) {
@@ -68,12 +68,12 @@ pub(crate) fn host_triple() -> Result<&'static str> {
         ("aarch64", "linux") => Ok("aarch64-unknown-linux-gnu"),
         ("aarch64", "macos") => Ok("aarch64-apple-darwin"),
         (arch, os) => bail!(
-            "la plataforma de este host ({arch}-{os}) no está en la tabla de §3: compila desde el código fuente (docs/BUILD.md)"
+            "la plataforma de este host ({arch}-{os}) no está soportada: compila desde el código fuente (docs/BUILD.md)"
         ),
     }
 }
 
-/// Raíz de arquitectura de la convención de §3 (`aarch64-*` → `arm64`).
+/// Raíz de arquitectura de la convención de nombres (`aarch64-*` → `arm64`).
 fn release_arch(triple: &str) -> Result<&'static str> {
     match triple {
         "x86_64-pc-windows-msvc" | "x86_64-unknown-linux-gnu" => Ok("x86_64"),
@@ -565,7 +565,7 @@ fn compress_tar_gz(stage: &Path, dest: &Path, section: Option<&BundleTarget>) ->
 }
 
 /// Destino del árbol sin comprimir: la raíz de `--out` con `--flat` (layout de
-/// staging, §7) o un subdirectorio con el nombre del artefacto.
+/// staging) o un subdirectorio con el nombre del artefacto.
 fn uncompressed_dest(out_dir: &Path, asset: &str, flat: bool) -> PathBuf {
     if flat {
         return out_dir.to_path_buf();
@@ -683,7 +683,7 @@ mod tests {
     fn manifest_covers_host_target() {
         let text = include_str!("../../../packaging/bundle-manifest.json");
         let sections = parse_manifest_text(text).unwrap();
-        assert_eq!(sections.len(), 4, "una sección por cada target de §3");
+        assert_eq!(sections.len(), 4, "una sección por cada target soportado");
         let triple = host_triple().unwrap();
         let section = sections.get(triple).unwrap();
         assert!(section.required.contains(&section.executable));

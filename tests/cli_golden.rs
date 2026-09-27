@@ -742,7 +742,7 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
 // ─── Sandbox de estado por instancia (directorio de estado por instancia) ──
 //
 // Cada test pesado posee su instancia aislada. El aislamiento va por las **variables de
-// reubicación de §7**, no por `LOCALAPPDATA`: en Windows las Known Folders ignoran
+// reubicación**, no por `LOCALAPPDATA`: en Windows las Known Folders ignoran
 // `LOCALAPPDATA`, así que un doble que dependiera de ella no representaría nada del
 // mecanismo que se quiere probar. `AVI_INSTALL_DIR` y `AVI_CACHE_DIR` aíslan el
 // directorio de programa y la raíz de modelos, `AVI_DATA_DIR` los datos, y
@@ -751,8 +751,8 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
 
 /// Prefijo de los sandboxes de esta puerta, y de ningún otro directorio que cree.
 ///
-/// **Por qué no empieza por `avi`.** §7 reserva para la aplicación los prefijos de
-/// temporales `avi-` y `avi_`, y el barrido de §9.1 decide por **`starts_with`**, no por
+/// **Por qué nostarts by `avi`.** El producto reserva para la aplicación los prefijos de
+/// temporales `avi-` y `avi_`, y el barrido decide por **`starts_with`**, no por
 /// igualdad: `crates/avi-lifecycle/src/recovery.rs:248` compara
 /// `name.starts_with(prefix)` contra `TEMP_PREFIXES`, y `crates/avi-store/src/lib.rs:660`
 /// los define como `&["avi-", "avi_"]`. Las dos formas "naturales" de nombrar un sandbox de
@@ -786,7 +786,7 @@ fn sandbox_unique_state(tag: &str) -> (PathBuf, Vec<(String, String)>) {
     for d in [&install, &cache, &hf] {
         std::fs::create_dir_all(d).expect("crear raíces del sandbox");
     }
-    // `AVI_CACHE_DIR` tiene precedencia sobre las variables HF en §7, así que la raíz
+    // `AVI_CACHE_DIR` tiene precedencia sobre las variables HF, así que la raíz
     // de modelos del sandbox es la **exclusiva** de la aplicación; `HF_HUB_CACHE` y
     // `HF_HOME` se fijan igualmente para que ninguna prueba que las herede del entorno
     // de la máquina escriba fuera del sandbox.
@@ -807,9 +807,9 @@ fn sandbox_unique_state(tag: &str) -> (PathBuf, Vec<(String, String)>) {
         ("HF_HOME".to_string(), hf.to_string_lossy().to_string()),
     ];
     // El temporal del hijo también se reubica, y no es un detalle de belt-and-braces sino
-    // la otra mitad del invariante: §7 **no** declara variable de reubicación para el
-    // directorio de temporales, así que sin esto cualquier comando de ciclo de vida que
-    // arranque el barrido de §9.1 —`self install`, `self uninstall`, `cleanup`— leería el
+    // la otra mitad del invariante: la tabla **no** declara variable de reubicación para
+    // el directorio de temporales, así que sin esto cualquier comando de ciclo de vida
+    // que arranque el barrido —`self install`, `self uninstall`, `cleanup`— leería el
     // `%TEMP%` de la máquina. Con el temporal dentro del sandbox, el universo del barrido
     // está acotado al sandbox aunque el prefijo volviera a colisionar, y las dos
     // protections son independientes a propósito.
@@ -822,7 +822,7 @@ fn sandbox_unique_state(tag: &str) -> (PathBuf, Vec<(String, String)>) {
 }
 
 /// El invariante que hace que el arnés de esta puerta no se pueda borrar a sí mismo: el
-/// prefijo de sus sandboxes no es uno de los que §7 reserva a la aplicación, y el temporal
+/// prefijo de sus sandboxes no es uno de los que el producto reserva, y el temporal
 /// del hijo está dentro del sandbox.
 ///
 /// Son **dos** afirmaciones y las dos importan, porque son independietes. El prefijo
@@ -840,7 +840,7 @@ fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
         assert!(
             !PREFIX_SANDBOX.starts_with(product),
             "el prefijo de los sandboxes de prueba `{PREFIX_SANDBOX}` empieza por `{product}`, \
-             que §7 reserva a la aplicación: el barrido de §9.1 lo borraría como si fuera un \
+             que el producto reserva a la aplicación: el barrido lo borraría como si fuera un \
              temporal nuestro"
         );
     }
@@ -869,7 +869,7 @@ fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
         assert!(
             value.starts_with(&dir),
             "{variable} del hijo es {value:?}, que está fuera del sandbox {dir:?}: el barrido \
-             de §9.1 alcanzaría el temporal de la máquina"
+             alcanzaría el temporal de la máquina"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -1444,7 +1444,7 @@ fn daemon_status_matches_fixture() {
 // externas, y cada bloque dice en su comentario qué afirma de verdad.
 
 /// Sin categoría: `usage_error` con salida 2 y sin borrar nada (criterio 22). Es la
-/// puerta de uso de §9.1 y no una aserción de fixture.
+/// puerta de uso de la tabla de reasons y no una aserción de fixture.
 #[test]
 fn cleanup_matches_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup"]);
@@ -1495,7 +1495,7 @@ fn cleanup_synthetic_speech_matches_fixture() {
 
 /// `--model` en simulación: con la raíz **exclusiva** de la aplicación, el alcance de
 /// `--model` es el directorio entero, así que `removed` lo nombra una vez. Es el
-/// alcance nuevo de §9.6 con la decisión de relocalizar `xet`, y no el layout viejo de
+/// alcance nuevo de `--model` con la decisión de relocalizar `xet`, y no el layout viejo de
 /// snapshots sueltos.
 #[test]
 fn cleanup_model_matches_fixture() {
@@ -1523,7 +1523,7 @@ fn cleanup_model_matches_fixture() {
 }
 
 /// `--all` en simulación: la unión de las tres categorías más configuración, logs y el
-/// estado del daemon (§9.6).
+/// estado del daemon.
 #[test]
 fn cleanup_all_matches_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup", "--all", "--dry-run"]);
@@ -1555,7 +1555,7 @@ fn cleanup_dry_run_matches_fixture() {
     assert_eq!(actual["schema_version"], expected["schema_version"]);
 }
 /// `cleanup --model` de punta a punta, en las **dos** formas que puede tomar la raíz de
-/// modelos de §7.
+/// modelos de la tabla de rutas.
 ///
 /// La versión anterior plantaba el layout viejo —`<HF_HOME>/hub/models--…`, `hub/ct2`,
 /// `hub/.locks` y `xet` como hermano— y exigía que los cuatro aparecieran en `removed`.
@@ -1742,7 +1742,7 @@ fn seed_models(root: &std::path::Path) {
 /// `doctor --json` emite **un solo objeto** también cuando falla, con el veredicto
 /// dentro y la salida 1.
 ///
-/// Es la garantía de §10 del contrato —"cada invocación emite exactamente un objeto
+/// Es la garantía del contrato —"cada invocación emite exactamente un objeto
 /// JSON"— y la forma de fijarla es comprobar que **`stdout` contiene un único objeto**
 /// y que no lleva la clave `error` que el canal de error añadiría detrás. La prueba
 /// pasa aunque el veredicto sea favorable, porque lo que afirma es la unicidad del

@@ -1,4 +1,4 @@
-//! Fuente única estructural del bundle, las rutas y los pines (§7).
+//! Fuente única estructural del bundle, las rutas y los pines del producto.
 //!
 //! Micro-crate puro: tipos del manifiesto del bundle con su parseo, directorios
 //! canónicos del producto con sus revisiones de modelos y lectura de

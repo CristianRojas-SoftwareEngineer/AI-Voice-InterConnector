@@ -3,11 +3,11 @@ use thiserror::Error;
 /// Códigos de salida del binario del producto.
 ///
 /// Los enteros del 0 al 10 y el 130 son los del contrato de la CLI y no cambian. Del 11
-/// al 17 hay **una variante por cada `reason` nuevo que declara el ciclo de vida**
-/// (§9.1), con el orden y los enteros que fija la tabla cerrada del plan: `setup_failed`,
+/// al 17 hay **una variante por cada `reason` nuevo que declara el ciclo de vida**,
+/// con el orden y los enteros que fija la tabla cerrada del plan: `setup_failed`,
 /// `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`,
 /// `daemon_stop_failed` y `lifecycle_locked`. Del 18 al 21, los que el Ciclo 2 declara
-/// para `self update` (§9.1, red e integridad): `unsupported_platform`,
+/// para `self update` (red e integridad): `unsupported_platform`,
 /// `binary_incompatible`, `network_error` y `checksum_mismatch`.
 ///
 /// **`unsupported_platform` tiene variante propia desde el Ciclo 2** y sale con 18:

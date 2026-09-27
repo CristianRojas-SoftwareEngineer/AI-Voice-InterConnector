@@ -196,15 +196,15 @@ fn write_bundle(dest: &Path) -> Vec<PathBuf> {
 /// Sandbox con un árbol con la forma de un bundle: ejecutable y documentos en la raíz,
 /// librería de runtime junto a ellos y el derivado del motor tres niveles más abajo.
 ///
-/// El bundle se escribe primero en el **staging** —que es donde el bootstrap de §9.2 lo
-/// deja— y [`Arbol::colocados`] lo traslada al directorio de programa, que es donde el
-/// paso 6 de §9.3 lo coloca y donde la limpieza se ejecuta.
+/// El bundle se escribe primero en el **staging** —que es donde lo deja el bootstrap— y
+/// [`Arbol::colocados`] lo traslada al directorio de programa, que es donde la
+/// instalación lo coloca y donde la limpieza se ejecuta.
 struct Tree {
     /// Raíz del sandbox, para borrarla entera.
     root: PathBuf,
-    /// Staging hermano del directorio de programa, con el prefijo de §7.
+    /// Staging hermano del directorio de programa, con el prefijo de la tabla de rutas.
     staging: PathBuf,
-    /// Directorio de programa de §7.
+    /// Directorio de programa.
     program: PathBuf,
     /// Archivos del bundle, en la ruta en la que están ahora: el staging.
     files: Vec<PathBuf>,
@@ -227,7 +227,7 @@ impl Tree {
 
     /// Los archivos del bundle **en el directorio de programa**. Es la traducción de
     /// "mover lo que hay en el staging al directorio de programa", que es el paso 6 de
-    /// §9.3.
+    /// la instalación.
     fn placed(&self) -> Vec<PathBuf> {
         self.files
             .iter()
@@ -425,7 +425,7 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     .expect("criterio 9: la instalación se completa");
 
     // El derivado del motor y la librería de ONNX Runtime están entre lo colocado, y son
-    // los dos que §9.3 nombra como los que se ejecutan o se cargan.
+    // los dos que la operación nombra como los que se ejecutan o se cargan.
     assert!(
         outcome
             .receipt
@@ -706,7 +706,7 @@ fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
 /// quedarse limpios, y el criterio 9 exige que ninguno conserve la cuarentena.
 ///
 /// Y el resultado lo dice: `is_clear()` es `false` porque hay un archivo que no se pudo
-/// limpiar, que es exactamente la información que el resumen de §9.3 muestra.
+/// limpiar, que es exactamente la información que el resumen final muestra.
 #[test]
 fn quarantine_strip_reports_failures_and_keeps_going() {
     let tree = Tree::new("fallos");
@@ -855,7 +855,8 @@ fn quarantine_default_outcome_is_nothing_to_do() {
     assert!(outcome.is_nothing_to_do());
 }
 
-/// La marca es la que nombra §9.3. Se afirma en todas partes, no solo en macOS: es parte
+/// La marca es la que nombra la limpieza. Se afirma en todas partes, no solo en macOS: es
+/// parte
 /// del contrato del módulo.
 #[test]
 fn quarantine_attribute_name_is_the_one_the_spec_names() {
@@ -1012,7 +1013,7 @@ async fn install_strips_quarantine_from_whole_program_dir() {
     .expect("la instalación se completa");
 
     // El derivado del motor y la librería de ONNX Runtime están entre lo colocado, y son
-    // los dos que §9.3 nombra como los que se ejecutan o se cargan.
+    // los dos que la operación nombra como los que se ejecutan o se cargan.
     assert!(
         outcome
             .receipt
@@ -1095,7 +1096,7 @@ fn quarantine_gate_needs_xattr() {
 
 // ─── Entorno de la instalación, solo para macOS ──────────────────────────────────
 
-/// Rutas de §7 de la prueba del criterio 9.
+/// Rutas de la tabla del producto en la prueba del criterio 9.
 #[cfg(target_os = "macos")]
 struct Sandbox {
     root: PathBuf,
@@ -1108,7 +1109,7 @@ struct Sandbox {
 
 #[cfg(target_os = "macos")]
 impl Sandbox {
-    /// `SHELL` de la máquina, con el nombre corto que usa la tabla de §9.3.1.
+    /// `SHELL` de la máquina, con el nombre corto que usa la tabla de shells.
     fn shell() -> &'static str {
         match std::env::var("SHELL")
             .unwrap_or_default()

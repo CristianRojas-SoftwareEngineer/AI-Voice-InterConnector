@@ -1,5 +1,5 @@
 //! Contrato de `self install` cuando la provisión de modelos falla: `setup_failed` como
-//! **éxito parcial** (§9.1, §9.3 paso 11, criterio 6 de §15).
+//! **éxito parcial**, que es el paso 11 de la instalación y el criterio 6 del plan.
 //!
 //! ### Por qué este archivo existe y no está en `cli_golden.rs`
 //!
@@ -41,8 +41,9 @@
 //!   encuentra un modelo.
 //! - **Sin `PATH`**: `--no-modify-path` en las dos, porque en Windows la integración escribe
 //!   en `HKCU\Environment` y una puerta no puede tocar el entorno de quien la ejecuta.
-//! - **Sin el temporal de la máquina**: §7 no declara variable de reubicación para el
-//!   directorio de temporales, así que el barrido de §9.1 del hijo alcanzaría el `%TEMP%`
+//! - **Sin el temporal de la máquina**: la tabla de rutas no declara variable de
+//!   reubicación para el directorio de temporales, así que el barrido del hijo alcanzaría
+//!   el `%TEMP%`
 //!   real. Se le pasan `TEMP`, `TMP` y `TMPDIR` apuntando al del sandbox, y así el barrido
 //!   solo ve lo suyo.
 //! - **Sin el árbol de compilación**: `self install` en modo instalación **mueve** el bundle
@@ -64,8 +65,8 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Prefijo de los directorios que crea este archivo.
 ///
-/// **Por qué no empieza por `avi`.** §7 reserva para la aplicación los prefijos de
-/// temporales `avi-` y `avi_`, y el barrido de §9.1 decide por **`starts_with`**: compara
+/// **Por qué no empieza por `avi`.** El producto reserva para la aplicación los prefijos
+/// de temporales `avi-` y `avi_`, y el barrido decide por **`starts_with`**: compara
 /// `name.starts_with(prefix)` contra `TEMP_PREFIXES` en
 /// `crates/avi-lifecycle/src/recovery.rs:248`, y `TEMP_PREFIXES` es `&["avi-", "avi_"]` en
 /// `crates/avi-store/src/lib.rs:660`. Un directorio con el prefijo del producto es un
@@ -120,13 +121,13 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
     panic!("no se pudo crear un tempfile único tras 64 intentos");
 }
 
-/// Sandbox del contrato: un directorio con las raíces de §7 del hijo, un `tmp` aislado y un
+/// Sandbox del contrato: un directorio con las raíces del hijo, un `tmp` aislado y un
 /// staging con el bundle completo alrededor de una copia del binario.
 struct Sandbox {
     root: PathBuf,
     /// Ejecutable a invocar: la **copia** del staging, que es la que tiene el bundle alrededor.
     exe: PathBuf,
-    /// Entorno del hijo. `TEMP`/`TMP`/`TMPDIR` reubican su temporal, que §7 no permite
+    /// Entorno del hijo. `TEMP`/`TMP`/`TMPDIR` reubican su temporal, que la tabla no permite
     /// reubicar por variable de la aplicación.
     envs: Vec<(String, String)>,
 }
@@ -200,7 +201,7 @@ impl Sandbox {
         let exe = staging.join(section.executable_path());
         let value = |p: &Path| p.display().to_string();
         let mut envs = vec![
-            // `AVI_CACHE_DIR` tiene precedencia sobre `HF_HUB_CACHE` en §7, así que la
+            // `AVI_CACHE_DIR` tiene precedencia sobre `HF_HUB_CACHE`, así que la
             // raíz de modelos del sandbox es la **exclusiva** de la aplicación; las
             // variables de HuggingFace se fijan igualmente para que ninguna prueba que las
             // herede del entorno de la máquina escriba fuera del sandbox.
@@ -208,10 +209,10 @@ impl Sandbox {
             ("HF_HUB_CACHE".to_string(), value(&hf)),
             ("HF_HOME".to_string(), value(&hf)),
             ("AVI_INSTALL_DIR".to_string(), value(&install)),
-            // En Windows la entrada del `PATH` es el propio directorio de programa (§7).
+            // En Windows la entrada del `PATH` es el propio directorio de programa.
             ("AVI_BIN_DIR".to_string(), value(&install)),
             ("AVI_DATA_DIR".to_string(), value(&data)),
-            // El temporal del hijo, aislado: §7 no declara variable de reubicación para él.
+            // El temporal del hijo, aislado: la tabla no declara variable de reubicación para él.
             ("TEMP".to_string(), value(&temp)),
             ("TMP".to_string(), value(&temp)),
             ("TMPDIR".to_string(), value(&temp)),
@@ -272,8 +273,8 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
         for product in avi_store::TEMP_PREFIXES {
             assert!(
                 !prefix.starts_with(product),
-                "el prefijo de {name} (`{prefix}`) empieza por `{product}`, que §7 reserva \
-                 a la aplicación: el barrido de §9.1 lo borraría como si fuera temporal nuestro"
+                "el prefijo de {name} (`{prefix}`) empieza por `{product}`, que el producto \
+                 reserva a la aplicación: el barrido lo borraría como si fuera temporal nuestro"
             );
         }
     }
@@ -301,7 +302,7 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
         );
         assert!(
             value.starts_with(&sandbox.root),
-            "{variable} del hijo es {value:?}, fuera del sandbox {:?}: el barrido de §9.1 \
+            "{variable} del hijo es {value:?}, fuera del sandbox {:?}: el barrido \
              alcanzaría el temporal de la máquina",
             sandbox.root
         );
@@ -320,7 +321,7 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
 
 /// `self install` sin `--no-setup` y con la provisión fallida: el programa queda
 /// instalado, el `reason` del sobre es `setup_failed` y el código de salida es el 11 de la
-/// tabla cerrada, que es lo que §9.1 llama éxito parcial.
+/// tabla cerrada, que es lo que la tabla de reasons llama éxito parcial.
 ///
 /// Y el `reason` del **fallo de provisión** viaja anidado en `models_cause`, que es donde un
 /// consumidor lo encuentra sin perderlo: el de la operación y el de la causa son dos cosas
@@ -341,14 +342,14 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
 
     assert_eq!(
         code, 11,
-        "§9.1: `setup_failed` es éxito parcial con código propio, `SetupFailed = 11` de la \
+        "`setup_failed` es éxito parcial con código propio, `SetupFailed = 11` de la \
          tabla cerrada; el sobre fue {actual:?}"
     );
     assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     assert_eq!(
         actual["status"],
         Value::String("installed".to_string()),
-        "§9.3 paso 11: el programa queda instalado, que es la otra mitad del criterio"
+        "el paso 11: el programa queda instalado, que es la otra mitad del criterio"
     );
     assert_eq!(actual["reason"], Value::String("setup_failed".to_string()));
     assert_eq!(actual["models"], Value::String("failed".to_string()));
@@ -387,7 +388,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
             .join(avi_lifecycle::receipt::RECEIPT_NAME)
             .is_file(),
         "con su recibo: `self install` lo escribió antes de provisionar, que es el orden de \
-         §9.3 pasos 10 y 11"
+         los pasos 10 y 11"
     );
     assert!(
         actual["version"].as_str().is_some_and(|v| !v.is_empty()),
@@ -396,7 +397,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
 }
 
 /// El camino de éxito no cambia: con `--no-setup` se sale con 0, sin `reason` y sin
-/// `models_cause`. Es la mitad del criterio 6 que §9.3 paso 11 no toca, y la que demuestra
+/// `models_cause`. Es la mitad del criterio 6 que el paso 11 no toca, y la que demuestra
 /// que el `reason` nuevo no se ha colado en las operaciones limpias.
 #[test]
 fn self_install_no_setup_exits_0_without_reason() {

@@ -1,7 +1,7 @@
 //! Comprobación de privilegios: ninguna operación de ciclo de vida pide
-//! elevación (§9.1, §12).
+//! elevación.
 //!
-//! §12 fija el principio —*nunca se eleva*— y §9.1 lo hace verificable por
+//! El principio es *nunca se eleva*, y se hace verificable por
 //! plataforma, y no con el mismo gesto en las dos:
 //!
 //! - **Unix**: si se detecta ejecución vía `sudo` (uid 0 con `SUDO_USER`
@@ -14,14 +14,14 @@
 //!   evita el diagnóstico de "no aparece en el PATH".
 //!
 //! **La decisión es una función pura.** `decide_unix` recibe el uid y el valor de
-//! `SUDO_USER` y devuelve el motivo, o `None` si se puede seguir. Así la regla que
-//! §9.1 declara se afirma en cualquier plataforma y en cualquier momento, sin
+//! `SUDO_USER` y devuelve el motivo, o `None` si se puede seguir. Así la regla se
+//! afirma en cualquier plataforma y en cualquier momento, sin
 //! depender de estar dentro de un contenedor, elevada o no. Lo que sí es de
 //! plataforma son las dos lecturas que la alimentan.
 
 use crate::LifecycleError;
 
-/// Veredicto de la comprobación de privilegios, y el aviso que §9.1 pide emitir
+/// Veredicto de la comprobación de privilegios, y el aviso que hay que emitir
 /// cuando corresponde.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
@@ -31,7 +31,7 @@ pub struct Report {
     /// La elevated vino de `sudo` (`SUDO_USER` definido), no del modo root
     /// propio de un contenedor. Solo tiene sentido en Unix.
     pub via_sudo: bool,
-    /// Aviso para stderr (§9.1). `None` cuando no hay nada que avisar.
+    /// Aviso para stderr. `None` cuando no hay nada que avisar.
     pub warning: Option<String>,
 }
 
@@ -50,7 +50,7 @@ pub fn inspect() -> Report {
 }
 
 /// Comprueba los privilegios antes de una operación. Aborta en Unix si la
-/// ejecución vino de `sudo`; en Windows solo avisa, que es lo que §9.1 fija.
+/// ejecución vino de `sudo`; en Windows solo avisa, sin abortar.
 pub fn ensure_per_user() -> Result<Report, LifecycleError> {
     let report = inspect();
     if report.via_sudo {
@@ -85,7 +85,7 @@ fn sudo_message() -> String {
     )
 }
 
-/// Aviso de §9.1 para un proceso elevado en Windows. `None` fuera de Windows: en
+/// Aviso para un proceso elevado en Windows. `None` fuera de Windows: en
 /// Unix la elevación por `sudo` aborta, así que no hay nada que avisar.
 fn warning_for(report: &Report) -> Option<String> {
     if cfg!(windows) && report.elevated {
@@ -166,7 +166,7 @@ fn windows_elevated() -> bool {
 mod tests {
     use super::*;
 
-    /// La regla de §9.1 afirmada como tabla y no como caso: se enumera toda la
+    /// La regla afirmada como tabla y no como caso: se enumera toda la
     /// combinación de uid y `SUDO_USER` y se dice qué hace cada una.
     #[test]
     fn privileges_abort_under_sudo_and_allow_plain_root() {
@@ -192,7 +192,7 @@ mod tests {
         );
         assert_eq!(decide_unix(1000, None), None);
 
-        // El mensaje de §9.1 explica el porqué, no solo el qué: sin esto el
+        // El mensaje explica el porqué, no solo el qué: sin esto el
         // usuario ve un rechazo sin motivo y concluye que el programa no funciona.
         let message = decide_unix(0, Some("ana")).expect("sudo aborta");
         assert!(message.contains("por usuario"), "{message}");
@@ -209,7 +209,7 @@ mod tests {
         );
         if report.via_sudo {
             // Si esta máquina estuviera elevada con `sudo`, `ensure_per_user`
-            // tiene que rechazarla: es el contrato de §9.1.
+            // tiene que rechazarla: es el contrato de la operación.
             let err = ensure_per_user().expect_err("con sudo se aborta");
             assert_eq!(err.reason, "sudo_not_supported");
         } else {
@@ -218,7 +218,7 @@ mod tests {
     }
 
     /// El aviso de Windows solo existe si el proceso está elevado, y su texto
-    /// dice dónde va a instalarse: es la mitad de §9.1 que no aborta.
+    /// dice dónde va a instalarse: es la mitad de la regla que no aborta.
     #[test]
     fn privileges_warn_only_when_elevated() {
         let unelevated = Report {
@@ -242,7 +242,7 @@ mod tests {
                 "{warning}"
             );
         } else {
-            // En Unix el proceso elevado aborta (§9.1), así que no hay aviso que
+            // En Unix el proceso elevado aborta, así que no hay aviso que
             // emitir: la misma regla, leída al revés.
             assert!(warning_for(&unelevated).is_none());
             assert!(warning_for(&elevated).is_none());

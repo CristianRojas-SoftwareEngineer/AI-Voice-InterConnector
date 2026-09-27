@@ -1,9 +1,9 @@
-//! Reemplazo transaccional del directorio de programa (§9.3.6) y su diario.
+//! Reemplazo transaccional del directorio de programa y su diario.
 //!
 //! El instalador heredado borra el directorio de programa antes de extraer, así
 //! que un fallo de extracción deja al usuario sin programa y sin vuelta atrás,
 //! y en Windows un ejecutable en uso aborta la operación con el directorio a
-//! medio borrar. El algoritmo de §9.3.6 es el mismo en los cuatro targets:
+//! medio borrar. El algoritmo es el mismo en los cuatro targets:
 //!
 //! 1. **Aparcar** el contenido actual en `<programa>/.old-<txid>/` por renombrado,
 //!    registrándolo en el diario. Aparcar en vez de borrar es lo que hace el
@@ -15,7 +15,8 @@
 //! 3. **Ajustar permisos**: en Unix, 0755 para ejecutables y 0644 para el resto.
 //! 4. **Confirmar**: marcar el diario como confirmado y borrar `.old-<txid>/`.
 //!    Lo que no se pueda borrar por estar en uso queda para el borrado diferido
-//!    (§9.4), que es lo que impide que el commit falle por un archivo abierto.
+//!    (borrado diferido), que es lo que impide que el commit falle por un archivo
+//!    abierto.
 //! 5. **Revertir** si falla el paso 2 o el 3: retirar lo colocado, restaurar lo
 //!    aparcado, borrar el diario → `rolled_back`.
 //!
@@ -31,7 +32,7 @@ use crate::LifecycleError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Nombre del diario de transacción dentro del directorio de programa (§9.1).
+/// Nombre del diario de transacción dentro del directorio de programa.
 pub const JOURNAL_NAME: &str = ".transaction.json";
 
 /// Versión del esquema de diario que esta versión del motor sabe leer.
@@ -90,7 +91,7 @@ pub struct ReplaceOutcome {
     /// Rutas relativas colocadas, en el orden en que se colocaron.
     pub placed: Vec<String>,
     /// Del aparcado que no se pudo borrar por estar en uso. No es un fallo: queda
-    /// para el borrado diferido (§9.4) y la recuperación lo recoge.
+    /// para el borrado diferido y la recuperación lo recoge.
     pub leftovers: Vec<PathBuf>,
 }
 
@@ -110,13 +111,13 @@ pub fn read_journal(program_dir: &Path) -> anyhow::Result<Option<Journal>> {
 }
 
 /// Reemplaza el contenido de `program_dir` por el bundle de `source_dir`
-/// siguiendo §9.3.6.
+/// siguiendo el algoritmo del módulo.
 ///
 /// Falla con `rolled_back` y la versión anterior restaurada si algo falla tras
 /// abrir el diario.
 ///
 /// `source_dir` debe estar en el mismo volumen que `program_dir`, que es lo que
-/// §9.3.6.2 da por hecho y lo que cumple el staging por ser hermano del
+/// que el staging cumple por ser hermano del
 /// directorio de programa. Si no fuera así, el renombrado de la colocación
 /// fallaría, la transacción revertiría y no se tocaría la versión anterior.
 pub fn replace(program_dir: &Path, source_dir: &Path) -> anyhow::Result<ReplaceOutcome> {
@@ -150,7 +151,7 @@ pub fn replace(program_dir: &Path, source_dir: &Path) -> anyhow::Result<ReplaceO
     }
 }
 
-/// Los cuatro pasos de §9.3.6 sobre un diario ya abierto.
+/// Los cuatro pasos sobre un diario ya abierto.
 fn run(
     journal: &mut Journal,
     program_dir: &Path,
@@ -200,7 +201,7 @@ fn run(
         match std::fs::remove_dir_all(parked) {
             Ok(()) => {}
             Err(_) => {
-                // Borrado diferido (§9.4): lo que el SO no deja borrar, por estar
+                // Borrado diferido: lo que el SO no deja borrar, por estar
                 // en uso, no impide el commit.
                 leftovers = leftovers_in(parked);
             }
@@ -299,7 +300,7 @@ fn is_running_executable(path: &Path) -> bool {
     crate::canonical_path_entry_matches(path, &actual)
 }
 
-/// 0755 para lo ejecutable y 0644 para el resto, en Unix (§9.3.6.3). En Windows
+/// 0755 para lo ejecutable y 0644 para el resto, en Unix. En Windows
 /// no hay permisos que ajustar.
 #[cfg(unix)]
 fn fix_permissions(program_dir: &Path, placed: &[String]) {
@@ -339,7 +340,7 @@ fn leftovers_in(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Revierte la transacción: retira lo colocado, restaura lo aparcado y borra el
-/// diario. Es el paso 5 de §9.3.6 y lo que ejecuta la recuperación cuando
+/// diario. Es el quinto paso y lo que ejecuta la recuperación cuando
 /// encuentra un diario sin confirmar.
 ///
 /// Lo colocado se devuelve **al origen** cuando el origen sigue existiendo y ya
@@ -573,7 +574,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Una interrupción en cualquier punto de §9.3.6 deja la versión anterior
+    /// Una interrupción en cualquier punto del algoritmo deja la versión anterior
     /// operativa y utilizable, y la siguiente operación completa la recuperación
     /// dejando cero residuo.
     ///

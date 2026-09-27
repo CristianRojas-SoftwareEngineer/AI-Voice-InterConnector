@@ -1,7 +1,7 @@
-//! Confirmación y simulación de las operaciones de ciclo de vida (§9.1).
+//! Confirmación y simulación de las operaciones de ciclo de vida.
 //!
-//! La tabla de §9.1 tiene cuatro celdas, y las cuatro importan porque el defecto
-//! que corrigen es que **sin terminal se borra en silencio**: hoy la
+//! La tabla de confirmaciones tiene cuatro celdas, y las cuatro importan porque el
+//! defecto que corrigen es que **sin terminal se borra en silencio**: hoy la
 //! confirmación solo se pide cuando hay TTY, así que un `cleanup` sin terminal
 //! borra sin preguntar. Aquí la ausencia de terminal es un dato explícito, no una
 //! señal de que se pueda pasar, y el predicado se inyecta para que las pruebas
@@ -18,11 +18,11 @@
 //!
 //! **Lo que el usuario no confirma no es un error de contrato.** El producto
 //! actual responde `Cancelado.` y sale con éxito, y así sigue: `Cancelled` es
-//! una decisión, no un `reason`. Los `reason` que sí son contrato están en §9.1
-//! y son `confirmation_required` y `usage_error`.
+//! una decisión, no un `reason`. Los `reason` que sí son contrato son
+//! `confirmation_required` y `usage_error`.
 //!
 //! La lectura de la respuesta y la escritura del prompt son parámetros, no
-//! `std::io` directo: el prompt va a **stderr** (§9.1) y la respuesta se lee de
+//! `std::io` directo: el prompt va a **stderr** y la respuesta se lee de
 //! **stdin**, que es justo lo que el bootstrap redirige a la terminal de control
 //! para que `curl | sh` siga siendo interactivo.
 
@@ -30,7 +30,7 @@ use crate::LifecycleError;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-/// Tipo de operación según la tabla de §9.1.
+/// Tipo de operación según la tabla de confirmaciones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// `self install`, `self update`, `setup`: no borran nada por sí solas.
@@ -65,7 +65,7 @@ impl Kind {
     }
 }
 
-/// Una ruta del plan con su tamaño, para el listado que §9.1 exige en las
+/// Una ruta del plan con su tamaño, para el listado que hay que hacer en las
 /// operaciones destructivas. El tamaño es `None` cuando la ruta no existe, que es
 /// el caso de `self uninstall` antes de haber instalado nada.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +92,7 @@ pub struct Confirmation<'a> {
     /// `PATH`, modelos). Se imprime siempre.
     pub summary: &'a [String],
     /// Rutas que la operación va a tocar. En las destructivas es la lista con
-    /// tamaños que §9.1 exige; en las no destructivas puede estar vacía.
+    /// tamaños que la tabla exige; en las no destructivas puede estar vacía.
     pub entries: &'a [PlanEntry],
     /// `--yes`: omite la pregunta.
     pub assume_yes: bool,
@@ -110,12 +110,12 @@ pub enum Decision {
     Proceed,
     /// `--dry-run`: el plan está impreso y no se toca el disco.
     DryRun,
-    /// El usuario dijo que no. No es un error (§9.1 no lo lista entre los
-    /// `reason`): el producto responde `Cancelado.` y sale con éxito.
+    /// El usuario dijo que no. No es un error (la tabla de `reason` no lo
+    /// lista): el producto responde `Cancelado.` y sale con éxito.
     Cancelled,
 }
 
-/// Aplica la tabla de §9.1 y devuelve la decisión.
+/// Aplica la tabla de confirmaciones y devuelve la decisión.
 ///
 /// `input` es stdin y `out` es stderr, para que el prompt no contamine la salida
 /// que el contrato del CLI declara. Ninguna rama escribe en el disco: el módulo
@@ -142,7 +142,7 @@ pub fn confirm<R: BufRead>(
 
     if !request.stdin_is_terminal {
         return match request.kind {
-            // Sin terminal, lo no destructivo procede (§9.1).
+            // Sin terminal, lo no destructivo procede.
             Kind::NonDestructive => Ok(Decision::Proceed),
             // Sin terminal, lo destructivo exige `--yes`.
             Kind::Destructive => Err(LifecycleError::confirmation_required(format!(
@@ -210,8 +210,8 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// Categorías que acepta `cleanup` (§9.6). La puerta de uso está aquí porque es la
-/// misma regla transversal de §9.1: sin categoría, `usage_error` y 2, sin borrar
+/// Categorías que acepta `cleanup`. La puerta de uso está aquí porque es la
+/// misma regla transversal: sin categoría, `usage_error` y 2, sin borrar
 /// nada.
 pub const CLEANUP_CATEGORIES: [&str; 4] = ["model", "voices", "synthetic-speech", "all"];
 
@@ -252,7 +252,7 @@ mod tests {
         }
     }
 
-    /// Las cuatro celdas de la tabla de §9.1 con el predicado de terminal
+    /// Las cuatro celdas de la tabla de confirmaciones con el predicado de terminal
     /// inyectado, y en cada celda el prompt que le corresponde.
     #[test]
     fn confirmation_matrix_covers_four_cells() {
@@ -374,7 +374,7 @@ mod tests {
     }
 
     /// Destructiva sin terminal y sin `--yes`: `confirmation_required` con
-    /// código 2, y nada borrado — que es el criterio 19 de §15.
+    /// código 2, y nada borrado.
     #[test]
     fn destructive_without_tty_and_without_yes_exits_2() {
         let dir = scratch("confirm-sin-tty");

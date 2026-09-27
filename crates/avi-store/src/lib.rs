@@ -37,7 +37,7 @@ pub fn is_factory_name(name: &str) -> bool {
 /// en ejecución y la del directorio de programa —que viene de una variable de
 /// reubicación— llegan con y sin él. Un consumidor que se lo quite en su módulo y otro
 /// que no divergen, y el siguiente que escriba una comparación de rutas hereda el
-/// defecto. §7 hace de esta función la fuente única de la semántica de comparación, y
+/// defecto. Esta función es la fuente única de la semántica de comparación, y
 /// la fuente única del arreglo.
 ///
 /// El prefijo solo se quita en Windows: en Unix no existe, y una ruta que empiece por
@@ -60,14 +60,14 @@ pub fn is_factory_name(name: &str) -> bool {
 /// En Unix los `\` son **caracteres de nombre de archivo legítimos**, así que una ruta
 /// que empieza por `\\` no es una verbatim: el prefijo no se quita y lo único que se
 /// re-codifica es el separador `/` como `\`, que es lo que permite comparar la forma
-/// absoluta con la que escribe el bloque de §9.3.1.
+/// absoluta con la que escribe el bloque del `PATH`.
 ///
 /// **El prefijo verbatim se quita aquí y no en cada consumidor.** La capa de Windows
 /// devuelve `\\?\.` en los modos de apertura extendidos, así que la ruta del ejecutable
 /// en ejecución y la del directorio de programa —que viene de una variable de
 /// reubicación— llegan con y sin él. Un consumidor que se lo quite en su módulo y otro
 /// que no divergen, y el siguiente que escriba una comparación de rutas hereda el
-/// defecto. §7 hace de esta función la fuente única de la semántica de comparación, y
+/// defecto. Esta función es la fuente única de la semántica de comparación, y
 /// la fuente única del arreglo.
 ///
 /// El prefijo solo se quita en Windows: en Unix no existe, y una ruta que empiece por
@@ -103,7 +103,8 @@ fn without_prefix_verbatim(raw: &str) -> std::borrow::Cow<'_, str> {
 
 /// ¿Son la misma entrada de `PATH` dos rutas escritas de forma distinta?
 ///
-/// La comparación canónica de §9.3.1 distingue mayúsculas, ignora separadores
+/// La comparación canónica de entradas de `PATH` distingue mayúsculas, ignora
+/// separadores
 /// finales y **considera también la forma expandida de cada entrada**. En
 /// Windows el valor de `HKCU\Environment\Path` se lee sin expandir, así que
 /// `%LOCALAPPDATA%\Programs\ai-voice-interconnector` y la ruta real que el
@@ -551,7 +552,7 @@ impl Default for ModelStore {
 impl ModelStore {
     /// Ancla el almacén en `models_cache_dir()`, nunca en `data_dir()/models`:
     /// los modelos son caché regenerable de propiedad exclusiva y no estado de
-    /// usuario, y §7 los coloca en raíces distintas.
+    /// usuario, y la tabla de rutas los coloca en raíces distintas.
     ///
     /// Fija además `HF_XET_CACHE` al subdirectorio `xet` de la raíz cuando esta
     /// es exclusiva. Es la única palanca disponible: `HFClientBuilder::cache_dir`
@@ -1019,7 +1020,7 @@ mod tests {
         env_restore(saved);
     }
 
-    /// Directorio de programa y directorio del enlace según la tabla de §7, en
+    /// Directorio de programa y directorio del enlace según la tabla de rutas, en
     /// los dos layouts, y su reubicación por `AVI_INSTALL_DIR`/`AVI_BIN_DIR`.
     #[test]
     fn install_and_bin_dirs_per_platform() {
@@ -1141,7 +1142,7 @@ mod tests {
         env_restore(saved);
     }
 
-    /// La comparación de entradas de `PATH` de §9.3.1 no da un falso negativo
+    /// La comparación de entradas de `PATH` no da un falso negativo
     /// con una entrada escrita con una variable sin expandir, que es como se
     /// lee el valor `Path` del registro de Windows.
     #[test]

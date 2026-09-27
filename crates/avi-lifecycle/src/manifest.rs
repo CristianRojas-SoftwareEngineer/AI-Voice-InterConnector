@@ -1,4 +1,5 @@
-//! Lista canónica de archivos del bundle y su validación (§9.3, paso 2).
+//! Lista canónica de archivos del bundle y su validación, que es el paso 2 de la
+//! instalación.
 //!
 //! La lista vive en `packaging/bundle-manifest.json`, un archivo de datos del
 //! repositorio, y se embebe aquí con `include_str!`: empaquetado e instalación
@@ -26,7 +27,7 @@ pub fn targets() -> Result<BTreeMap<String, BundleTarget>, LifecycleError> {
     raw()
 }
 
-/// Sección de `triple`, exigiendo antes que el triple esté soportado (§3). Un
+/// Sección de `triple`, exigiendo antes que el triple esté soportado. Un
 /// triple soportado sin sección es un defecto de empaquetado, no del bundle del
 /// usuario, y se reporta como `bundle_invalid` nombrando el triple.
 pub fn target_section(triple: &str) -> Result<BundleTarget, LifecycleError> {
@@ -44,7 +45,7 @@ pub fn target_section(triple: &str) -> Result<BundleTarget, LifecycleError> {
 ///
 /// No falla por archivos ausentes: es el inspector que usa `validate_bundle`
 /// para componer su mensaje, y el que necesita el plan de un `cleanup`
-/// (§9.6) sin producir un error.
+/// sin producir un error.
 pub fn missing_files(triple: &str, dir: &Path) -> Result<Vec<String>, LifecycleError> {
     Ok(missing_in(&target_section(triple)?, dir))
 }
@@ -63,8 +64,8 @@ fn missing_in(section: &BundleTarget, dir: &Path) -> Vec<String> {
 /// target. Devuelve la lista de rutas obligatorias, todas presentes, o falla
 /// con `bundle_invalid` nombrando cada ruta ausente.
 ///
-/// **No modifica nada**: el llamador valida antes de tocar el disco (§9.3,
-/// paso 2), de modo que un bundle incompleto deja la instalación como estaba.
+/// **No modifica nada**: el llamador valida antes de tocar el disco, de modo que
+/// un bundle incompleto deja la instalación como estaba.
 pub fn validate_bundle(triple: &str, dir: &Path) -> Result<Vec<String>, LifecycleError> {
     let section = target_section(triple)?;
     let missing = missing_in(&section, dir);
@@ -93,7 +94,7 @@ mod tests {
         dir
     }
 
-    /// El manifiesto está embebido, tiene una sección por cada target de §3 y
+    /// El manifiesto está embebido, tiene una sección por cada target soportado y
     /// ninguna de más, y cada sección es coherente: nada vacío, el ejecutable
     /// entre los obligatorios, sin rutas absolutas ni escapes hacia arriba, y
     /// con los archivos que de verdad exige el producto.
@@ -103,7 +104,7 @@ mod tests {
         assert_eq!(
             targets.len(),
             target::SUPPORTED_TARGETS.len(),
-            "una sección por cada target de §3: {:?}",
+            "una sección por cada target soportado: {:?}",
             targets.keys().collect::<Vec<_>>()
         );
         for triple in target::SUPPORTED_TARGETS {

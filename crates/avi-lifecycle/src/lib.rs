@@ -1,17 +1,17 @@
 //! Motor del ciclo de vida del usuario: `self install` con reparación,
-//! `self uninstall`, `cleanup` y la sección de ciclo de vida de `doctor` (§6.2).
+//! `self uninstall`, `cleanup` y la sección de ciclo de vida de `doctor`.
 //!
-//! Aquí se traslada la lógica que hoy vive partida entre `src/main.rs` —los
+//! Aquí se trasladó la lógica que vivía partida entre el binario —los
 //! cuerpos de `uninstall`, `cleanup`, `setup`, el protocolo de parada del daemon
-//! y los ayudantes de pidfile— y los cinco scripts de la raíz, de modo que cada
-//! regla de §7 tenga una única implementación por target.
+//! y los ayudantes de pidfile— y los scripts de la raíz, de modo que cada
+//! regla de rutas tenga una única implementación por target.
 //!
 //! Es una biblioteca sin punto de entrada propio: el parseo de la CLI y el
 //! cableado se quedan en el binario, que es quien conoce `clap` y el sobre
 //! `--json`.
 //!
 //! Las rutas y los recursos del producto no se definen aquí: `avi-store` es la
-//! fuente única (§7) y este crate las reexporta para que el motor tenga una
+//! fuente única y este crate las reexporta para que el motor tenga una
 //! sola forma de nombrarlas.
 
 pub mod channel;
@@ -45,7 +45,7 @@ pub use avi_store::{
 };
 
 /// Superficie pública que el binario necesita para cablear el grupo `self` y para
-/// delegar `cleanup` y `doctor` (§6.4). Los módulos internos siguen siendo públicos
+/// delegar `cleanup` y `doctor`. Los módulos internos siguen siendo públicos
 /// porque las pruebas de integración los necesitan, pero el cableado entra por aquí y
 /// no por dentro del motor.
 pub mod prelude {
@@ -65,9 +65,9 @@ pub mod prelude {
 pub const BUNDLE_MANIFEST: &str = include_str!("../../../packaging/bundle-manifest.json");
 
 /// Fallo de una operación de ciclo de vida que la especificación declara como
-/// `reason` de contrato de máquina (§9.1).
+/// `reason` de contrato de máquina.
 ///
-/// El motor no depende de `avi-core` (§6.3: aquí no se parsea la CLI), así que el par
+/// El motor no depende de `avi-core` porque aquí no se parsea la CLI, así que el par
 /// `reason` + código viaja como dato y lo traduce la variante de `ExitCode` que declara
 /// T16 al cablear. Los enteros salen de la misma tabla cerrada:
 /// `confirmation_required` y `usage_error` conservan el 2 de `ExitCode::InvalidInput`, y
@@ -104,75 +104,76 @@ impl LifecycleError {
         }
     }
 
-    /// Target no soportado (§3). El entero lo fija el plan del Ciclo 2; la
+    /// Target no soportado. El entero lo fija el plan del Ciclo 2; la
     /// variante de `ExitCode` llega con U4.
     pub fn unsupported_platform(message: impl Into<String>) -> Self {
         Self::new("unsupported_platform", 18, message.into())
     }
 
-    /// Falta un archivo obligatorio del bundle (§9.3, paso 2). Nada modificado.
+    /// Falta un archivo obligatorio del bundle (paso 2). Nada modificado.
     pub fn bundle_invalid(message: impl Into<String>) -> Self {
         Self::new("bundle_invalid", 15, message.into())
     }
 
-    /// Hay otra operación de ciclo de vida en curso (§9.1).
+    /// Hay otra operación de ciclo de vida en curso.
     pub fn lifecycle_locked(message: impl Into<String>) -> Self {
         Self::new("lifecycle_locked", 17, message.into())
     }
 
     /// La copia la gestiona otra herramienta, con el comando correcto en el mensaje
-    /// (§9.1, §9.5, paso 1).
+    /// (paso 1 de la desinstalación).
     pub fn externally_managed(message: impl Into<String>) -> Self {
         Self::new("externally_managed", 12, message.into())
     }
 
-    /// No se pudo detener el daemon y nada se ha modificado (§9.1, §9.5, paso 5).
+    /// No se pudo detener el daemon y nada se ha modificado (paso 5).
     pub fn daemon_stop_failed(message: impl Into<String>) -> Self {
         Self::new("daemon_stop_failed", 16, message.into())
     }
 
-    /// Operación destructiva sin terminal y sin `--yes` (§9.1). Error de uso.
+    /// Operación destructiva sin terminal y sin `--yes`. Error de uso.
     pub fn confirmation_required(message: impl Into<String>) -> Self {
         Self::new("confirmation_required", 2, message.into())
     }
 
-    /// Invocación sin la categoría obligatoria (`cleanup` sin categoría, §9.1).
+    /// Invocación sin la categoría obligatoria (`cleanup` sin categoría).
     /// Error de uso.
     pub fn usage_error(message: impl Into<String>) -> Self {
         Self::new("usage_error", 2, message.into())
     }
 
-    /// Fallo durante el reemplazo con la versión anterior restaurada (§9.1).
+    /// Fallo durante el reemplazo con la versión anterior restaurada.
     pub fn rolled_back(message: impl Into<String>) -> Self {
         Self::new("rolled_back", 13, message.into())
     }
 
-    /// En la ruta del enlace hay un archivo ajeno (§9.1, §9.3.1). Error, salvo
+    /// En la ruta del enlace hay un archivo ajeno. Error, salvo
     /// `--force`.
     pub fn path_conflict(message: impl Into<String>) -> Self {
         Self::new("path_conflict", 14, message.into())
     }
 
-    /// El programa quedó instalado pero la provisión de modelos falló (§9.1). Es un
+    /// El programa quedó instalado pero la provisión de modelos falló. Es un
     /// **éxito parcial** con código propio, reintentable con `setup`.
     pub fn setup_failed(message: impl Into<String>) -> Self {
         Self::new("setup_failed", 11, message.into())
     }
 
-    /// El binario descargado no arranca o no informa la versión objetivo (§9.4,
-    /// paso 8). El entero lo fija el plan del Ciclo 2; la variante de `ExitCode`
+    /// El binario descargado no arranca o no informa la versión objetivo (paso 8
+    /// de la actualización). El entero lo fija el plan del Ciclo 2; la variante de `ExitCode`
     /// llega con U4.
     pub fn binary_incompatible(message: impl Into<String>) -> Self {
         Self::new("binary_incompatible", 19, message.into())
     }
 
-    /// Fallo de red acotado por los reintentos de §9.1 (§9.4, pasos 3–5 y 7). El
+    /// Fallo de red acotado por los reintentos que fija la tabla de reasons
+    // (pasos 3 a 5 y 7 de la actualización). El
     /// entero lo fija el plan del Ciclo 2; la variante de `ExitCode` llega con U4.
     pub fn network_error(message: impl Into<String>) -> Self {
         Self::new("network_error", 20, message.into())
     }
 
-    /// El archivo descargado no coincide con `SHA256SUMS.txt` (§12): hash distinto
+    /// El archivo descargado no coincide con `SHA256SUMS.txt`: hash distinto
     /// o entrada ausente. Nada más queda modificado y el staging se borra. El
     /// entero lo fija el plan del Ciclo 2; la variante de `ExitCode` llega con U4.
     pub fn checksum_mismatch(message: impl Into<String>) -> Self {
@@ -203,7 +204,7 @@ pub(crate) mod test_support {
 
     /// Directorio de trabajo limpio y único para una prueba. El prefijo es
     /// deliberadamente neutro: los barridos de recuperación solo tocan
-    /// temporales con los prefijos propios de §7 (`avi-`, `avi_`), y el sandbox
+    /// temporales con los prefijos propios de la tabla de rutas (`avi-`, `avi_`), y el sandbox
     /// de una prueba no debe ser confundido con un temporal del producto.
     pub fn scratch(tag: &str) -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);

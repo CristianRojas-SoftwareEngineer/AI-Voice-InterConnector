@@ -14,9 +14,9 @@ use tokio::sync::Mutex;
 
 pub mod spawn;
 pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_death};
-// `spawn_uninstall_helper` solo existe bajo `#[cfg(windows)]` en `spawn.rs`; el
-// reexport debe compartir el gate o el build no-Windows rompe con E0432 (el call
-// site en `src/main.rs` ya está dentro de un bloque `#[cfg(windows)]`).
+// `spawn_uninstall_helper` solo existe bajo `#[cfg(windows)]`; el reexport debe
+// compartir el gate o el build no-Windows rompe con E0432, porque el call site
+// del binario ya está dentro de un bloque `#[cfg(windows)]`.
 #[cfg(windows)]
 pub use spawn::{spawn_deferred_removal, spawn_uninstall_helper};
 // El trait `SttEngine` (`.transcribe`) solo lo consume la superficie STT,
@@ -668,7 +668,7 @@ async fn transcribe_handler(
 }
 
 /// Mapea el token de idioma del cliente (`es-latam`/`en`) al código ISO que
-/// exige Parakeet (paridad con `resolve_stt_language` en `src/main.rs`).
+/// exige Parakeet, con la misma paridad que aplica el binario.
 #[cfg(feature = "native-stt")]
 fn resolve_stt_language(token: &str) -> &str {
     match token {
@@ -678,7 +678,7 @@ fn resolve_stt_language(token: &str) -> &str {
 }
 
 /// Normaliza token de idioma para traducción (`es-latam`→`es`), paridad con
-/// `resolve_stt_language` de `src/main.rs` y `avi_translation`.
+/// `resolve_stt_language` de este crate y `avi_translation`.
 fn resolve_translation_language(token: &str) -> &str {
     match token {
         "es-latam" => "es",
@@ -1525,7 +1525,7 @@ const WARMUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(40);
 /// Deadline de la síntesis por petición: acota `synthesize_handler` y
 /// `dub_handler` para que el daemon emita su propio diagnóstico
 /// (`synthesis_timeout`) ante un cuelgue intra-`POST` del residente, en vez
-/// de ceder al corte ciego del cliente a los 10 s (`src/main.rs:3293`). Debe
+/// de ceder al corte ciego del cliente a los 10 s. Debe
 /// ser `< 10 s` para que el daemon gane la carrera, y `≥` la síntesis feliz
 /// sobre un residente ya caliente (muy inferior a los ~18-20 s del TTFN de
 /// warmup, dominado por spawn + carga, ausentes aquí). 8 s deja ~2 s de
@@ -1546,7 +1546,7 @@ const SYNTH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
 /// con tráfico vivo; en el arranque es no disputado.
 ///
 /// Riesgo heredado (R2): el residente enlaza en `INADDR_ANY`
-/// (`avi-tts/src/lib.rs:746-750`); el warmup lo mantiene vivo, extendiendo esa
+/// (el resident de TTS); el warmup lo mantiene vivo, extendiendo esa
 /// superficie de red. Documentado, NO corregido (fuera de alcance).
 ///
 /// Limitación estructural (inherente al residente, no a `default`): el residente
@@ -1589,8 +1589,8 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()>
 }
 
 /// Nombre de la env interna que transporta la ruta del fichero ready dentro
-/// del proceso `serve`: el flag `--ready-file` la fija en `handle_daemon`
-/// (`src/main.rs`) y `run_daemon_server` la consume. No es contrato público:
+/// del proceso `serve`: el flag `--ready-file` la fija el manejador del binario y
+/// `run_daemon_server` la consume. No es contrato público:
 /// el padre solo conoce el flag y el fichero resultante.
 pub const READY_FILE_ENV: &str = "AVI_READY_FILE";
 

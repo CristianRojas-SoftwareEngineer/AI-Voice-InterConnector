@@ -1,4 +1,5 @@
-//! Descarga, verificación y extracción del bundle objetivo (§9.4, pasos 7–8; §12).
+//! Descarga, verificación y extracción del bundle objetivo: los pasos 7 y 8 de la
+//! actualización.
 //!
 //! Convierte una versión objetivo en un bundle nuevo arrancable en staging, con
 //! integridad garantizada por `SHA256SUMS.txt` (sin firma, por D7). El staging es
@@ -99,8 +100,8 @@ pub(crate) async fn get_with_retry(
     }
 }
 
-/// URL del archivo de release para `version` en `triple`, con la convención de
-/// §3 (`releases/download/vX.Y.Z/…`).
+/// URL del archivo de release para `version` en `triple`, con la convención de la
+/// tabla de targets soportados (`releases/download/vX.Y.Z/…`).
 pub fn asset_url(version: &str, triple: &str) -> Result<String, LifecycleError> {
     let asset = target::release_asset_name(triple, version)?;
     Ok(format!(
@@ -118,7 +119,7 @@ pub fn sums_url(version: &str) -> String {
 }
 
 /// Directorio de staging: hermano del programa (mismo volumen, para que el
-/// traspaso no cruce volúmenes) con el prefijo propio de §7.
+/// traspaso no cruce volúmenes) con el prefijo propio de la tabla de rutas.
 ///
 /// Es seguro por construcción: la versión viaja pegada al prefijo dentro de un
 /// único componente, así que no puede escapar al padre haga lo que haga.
@@ -189,7 +190,8 @@ async fn fetch_into(
 /// Arranca `<staging>/… --version` y exige que informe `version`.
 ///
 /// Un binario que no ejecuta, falla o informa otra versión es
-/// `binary_incompatible`, con el diagnóstico de §3 (triple y `docs/BUILD.md`).
+/// `binary_incompatible`, con el diagnóstico que nombra el triple y remite a la
+/// documentación de compilación.
 pub async fn verify_boot(
     staging: &Path,
     triple: &str,
@@ -496,7 +498,7 @@ fn walk(staging: &Path) -> Vec<String> {
 }
 
 /// Deja el staging solo para el usuario en Unix (0700). En Windows hereda la
-/// ACL del padre, que en las raíces de §7 ya es del usuario.
+/// ACL del padre, que en las raíces del producto ya es del usuario.
 fn restrict_staging(staging: &Path) {
     #[cfg(unix)]
     {
@@ -584,7 +586,7 @@ mod tests {
         assert_eq!(err.reason, "checksum_mismatch");
     }
 
-    /// El staging es hermano del programa, con el prefijo propio de §7.
+    /// El staging es hermano del programa, con el prefijo propio de la tabla de rutas.
     #[test]
     fn update_fetch_staging_is_sibling() {
         let program = Path::new("/home/ana/.local/opt/ai-voice-interconnector");

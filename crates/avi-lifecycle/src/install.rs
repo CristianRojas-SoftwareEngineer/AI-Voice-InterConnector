@@ -1,16 +1,16 @@
-//! `self install` (§9.3): instalar, reparar y rechazar por bundle incompleto.
+//! `self install`: instalar, reparar y rechazar por bundle incompleto.
 //!
-//! Son los tres modos de §9.3, distinguidos por la posición del ejecutable que se
-//! invoca, y los doce pasos de su flujo en orden. Ninguna de las dos cosas es nueva
+//! Son los tres modos de la operación, distinguidos por la posición del ejecutable que
+//! se invoca, y los doce pasos de su flujo en orden. Ninguna de las dos cosas es nueva
 //! en el producto: el instalador heredado no sabe qué debe haber alrededor del
 //! binario, no sabe qué se integró en el `PATH`, no deja recibo, no repara una
 //! instalación existente y no distingue ejecutar desde un bundle extraído a mano de
 //! ejecutar desde la propia instalación.
 //!
-//! **La opción oculta `--channel dev` (§10.5) vive aquí.** El comando que la
-//! invoca —`cargo xtask install`— es del Ciclo 4, y la otra mitad de §10.5
+//! **La opción oculta `--channel dev` vive aquí.** El comando que la
+//! invoca —`cargo xtask install`— es del Ciclo 4, y la otra mitad
 //! —ejecutar `package --no-compress` en un staging— no existe todavía. Lo que este
-//! ciclo fija es el otro valor de la sección: **qué queda escrito en el recibo**, y que
+//! ciclo fija es el otro valor del canal: **qué queda escrito en el recibo**, y que
 //! el valor surte efecto **solo cuando el recibo se crea por primera vez**, de modo
 //! que reparar una instalación no reescriba su canal.
 //!
@@ -33,7 +33,7 @@ use crate::transaction;
 use crate::{confirm, privileges, quarantine, setup, target, LifecycleError};
 use std::path::{Path, PathBuf};
 
-/// Los dos modos de ejecución de §9.3 por posición del ejecutable. El tercero —
+/// Los dos modos de ejecución por posición del ejecutable. El tercero —
 /// ejecutable sin bundle alrededor— no es un modo sino un desenlace de la
 /// validación del paso 2, y por eso lo produce [`crate::manifest::validate_bundle`]
 /// con `bundle_invalid` y no [`Mode`].
@@ -57,9 +57,9 @@ impl Mode {
     }
 }
 
-/// Entorno de la operación. Todo lo que §7 resuelve por rutas va aquí como dato y no
-/// como llamada a `avi-store`, por dos razones: §13 exige que las pruebas aisladas
-/// funcionen con las raíces reubicadas a temporales, y en Windows las Known Folders
+/// Entorno de la operación. Todo lo que las rutas del sistema resuelven va aquí como
+/// dato y no como llamada a `avi-store`, por dos razones: las pruebas aisladas tienen
+/// que funcionar con las raíces reubicadas a temporales, y en Windows las Known Folders
 /// ignoran `LOCALAPPDATA`, así que sin parámetros el sandbox no representaría nada
 /// del mecanismo nuevo.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,20 +67,21 @@ pub struct Env {
     /// Ejecutable que se invoca, ya resuelto a ruta real: es lo que decide el modo.
     pub exe: PathBuf,
     pub version: String,
-    /// Triple del target, que es lo que §9.3 paso 2 valida contra el manifiesto.
+    /// Triple del target, que es lo que el paso 2 valida contra el manifiesto.
     pub target: String,
-    /// Directorio de programa de §7.
+    /// Directorio de programa.
     pub program_dir: PathBuf,
     /// Directorio del enlace. En Windows es el propio directorio de programa, y la
     /// entrada del `PATH` es esa misma ruta.
     pub bin_dir: PathBuf,
-    /// Raíz de datos de §7, donde vive el pidfile del daemon.
+    /// Raíz de datos, donde vive el pidfile del daemon.
     pub data_dir: PathBuf,
-    /// Raíz de modelos de §7. Es la que se registra en el recibo y la que anuncia
+    /// Raíz de modelos. Es la que se registra en el recibo y la que anuncia
     /// el resumen; el almacén la resuelve por `avi-store`, así que en una prueba
     /// reubicada tiene que venir de `AVI_CACHE_DIR` para que ambas coincidan.
     pub models_dir: PathBuf,
-    /// Directorio de temporales del sistema, para el barrido de §9.1.
+    /// Directorio de temporales del sistema, que es donde vive lo que el barrido
+    /// recoge.
     pub temp_root: PathBuf,
     /// `$HOME`, del que cuelgan los perfiles de shell. En Windows existe para que
     /// `Env` tenga la misma forma en los cuatro targets; la parte de perfiles no se
@@ -88,30 +89,31 @@ pub struct Env {
     pub home: PathBuf,
     /// `PATH` de la sesión en la que corre, para decidir si hace falta el bloque.
     pub path_env: String,
-    /// Shell de `$SHELL`, para la tabla de archivos de arranque de §9.3.1.
+    /// Shell de `$SHELL`, que decide qué archivo de arranque recibe el bloque del
+    /// `PATH` en Unix.
     pub shell: path_unix::Shell,
     /// `$ZDOTDIR`, si el usuario la define.
     pub zdotdir: Option<PathBuf>,
     /// Subclave de registro donde se integra el `PATH` en Windows. Parámetro para que
-    /// la prueba de integración opere sobre una clave propia, como pide §13. Vacía en
-    /// Unix, donde no hay registro.
+    /// la prueba de integración opere sobre una clave propia en vez de la del
+    /// usuario. Vacía en Unix, donde no hay registro.
     pub registry_subkey: String,
     /// Dirección a la que se conecta el protocolo de parada cuando no hay pidfile.
     /// Parámetro por lo mismo que en `daemon_stop::stop`.
     pub daemon_addr: String,
-    /// Origen del bundle para el recibo. El bootstrap de §9.2 lo estampa en la
-    /// variable que se lee aquí; vacío para una reparación o el canal `dev`.
+    /// Origen del bundle para el recibo. El bootstrap lo estampa en la variable que
+    /// se lee aquí; vacío para una reparación o el canal `dev`.
     pub source: Option<String>,
 }
 
 impl Env {
-    /// Entorno con las raíces de §7 ya resueltas, que es lo que usa el binario.
+    /// Entorno con las raíces ya resueltas, que es lo que usa el binario.
     ///
     /// `exe` se guarda **tal cual**, con el prefijo verbatim que la API de Windows
     /// pueda devolver. No hace falta quitarlo aquí: `canonical_path_key` —la fuente
-    /// única de la semántica de comparación de §7— lo hace antes de normalizar, así que
-    /// `detect_mode` reconoce el directorio deprograma aunque las dos rutas lleguen en
-    /// formas distintas. Normalizarlo aquí además duplicaría esa regla y la dejaría
+    /// única de la semántica de comparación de rutas— lo hace antes de normalizar, así
+    /// que `detect_mode` reconoce el directorio de programa aunque las dos rutas lleguen
+    /// en formas distintas. Normalizarlo aquí además duplicaría esa regla y la dejaría
     /// fuera de sitio el día que aparezca otro consumidor.
     pub fn from_current_exe(exe: PathBuf) -> anyhow::Result<Self> {
         let target = target::host_triple();
@@ -156,29 +158,29 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Opciones de `self install`. El parseo se queda en el binario (§6.3).
+/// Opciones de `self install`. El parseo se queda en el binario, que es quien ve
+/// los argumentos.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Options {
     /// `--yes`: omite la confirmación. Instalar es no destructivo, así que sin
-    /// terminal procede igual (§9.1); con terminal, `--yes` la salta.
+    /// terminal procede igual; con terminal, `--yes` la salta.
     pub assume_yes: bool,
-    /// `--no-setup`: no provisiona modelos. Es el criterio 6.
+    /// `--no-setup`: no provisiona modelos.
     pub no_setup: bool,
     /// `--no-modify-path`: no toca ningún perfil ni el registro.
     pub no_modify_path: bool,
-    /// `--force`: resuelve un `path_conflict` (§9.3.1). No es el `--force` de
-    /// `uninstall`, que desaparece en T16.
+    /// `--force`: resuelve un `path_conflict` del enlace simbólico. No es el
+    /// `--force` de `uninstall`, que desaparece en T16.
     pub force: bool,
-    /// `--channel dev`, la opción oculta de §10.5. Solo surte efecto cuando el
-    /// recibo se crea por primera vez.
+    /// `--channel dev`, la opción oculta. Solo surte efecto cuando el recibo se crea
+    /// por primera vez.
     pub channel: Option<Channel>,
     /// `--with-voice-cloning`, que se pasa a `setup`.
     pub with_voice_cloning: bool,
 }
 
 impl Options {
-    /// Opciones de una instalación desatendida, que es lo que el bootstrap de §9.2
-    /// invoca.
+    /// Opciones de una instalación desatendida, que es lo que el bootstrap invoca.
     pub fn unattended() -> Self {
         Self {
             assume_yes: true,
@@ -188,7 +190,7 @@ impl Options {
 }
 
 /// Estado de los modelos tras la operación: una de las cuatro líneas del resumen
-/// final de §9.3.
+/// final.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelsState {
     /// `--no-setup`: no se provisionó nada.
@@ -198,14 +200,14 @@ pub enum ModelsState {
     /// Se provisionó lo que faltaba.
     Provisioned { count: usize },
     /// Se empezó a provisionar y falló. El programa queda instalado y basta reintentar
-    /// con `setup`, que es lo que §9.1 llama éxito parcial de `setup_failed`.
+    /// con `setup`, que es lo que se llama éxito parcial de `setup_failed`.
     ///
     /// `cause` es el fallo **de la provisión**, con su propio `reason`: un fallo de
     /// descarga es `network_error` y un fallo de conversión de CT2 es
     /// `ct2_conversion_failed`. No es el `reason` de la operación, que es
     /// `setup_failed` y vive en [`Outcome::lifecycle_error`]: uno dice *qué* falló y el
     /// otro *qué dejó de completarse*, y confundirlos perdería el `reason` que la tabla
-    /// de §9.1 reserva a cada caso.
+    /// de reasons reserva a cada caso.
     Failed { cause: LifecycleError },
 }
 
@@ -228,11 +230,12 @@ pub struct Outcome {
     pub status: &'static str,
     pub mode: Mode,
     /// Recibo escrito. En reparación es un recibo nuevo con los mismos valores de
-    /// versión, canal y origen: reaplicar el recibo es uno de los pasos de §9.3.
+    /// versión, canal y origen: reaplicar el recibo es uno de los pasos de la
+    /// instalación.
     pub receipt: InstallReceipt,
-    /// Resumen final de §9.3, paso 12.
+    /// Resumen final, paso 12.
     pub summary: Vec<String>,
-    /// Resumen previo de §9.3, paso 4, el que se mostró **antes** de confirmar. Se
+    /// Resumen previo, paso 4, el que se mostró **antes** de confirmar. Se
     /// conserva porque es el que anuncia los cambios y el que el motor de T16 compone
     /// el sobre; el final es el estado.
     pub summary_before: Vec<String>,
@@ -245,12 +248,12 @@ pub struct Outcome {
     pub path_rewritten: bool,
     pub models: ModelsState,
     /// Desenlace de la parada del daemon, que el resumen necesita para indicar cómo
-    /// reiniciarlo (§9.4, paso 11).
+    /// reiniciarlo (paso 11).
     pub daemon: StopOutcome,
-    /// Una instalación ajena detectada, que §9.3 paso 3 solo avisa: coexistir con un
+    /// Una instalación ajena detectada, que el paso 3 solo avisa: coexistir con un
     /// Cask no bloquea.
     pub foreign_in_path: Option<PathBuf>,
-    /// Archivos que la recuperación de §9.1 no pudo limpiar.
+    /// Archivos que la recuperación no pudo limpiar.
     pub recovery_kept: Vec<PathBuf>,
 }
 
@@ -263,7 +266,7 @@ impl Outcome {
 
     /// `true` si esta pasada reescribió el `PATH`, que es lo que hace que el resumen
     /// pida abrir una terminal nueva: el proceso que ejecutó `curl | sh` no puede
-    /// cambiar el `PATH` de su shell padre (§9.3.1).
+    /// cambiar el `PATH` de su shell padre.
     pub fn path_changed(&self) -> bool {
         self.path_rewritten
     }
@@ -276,8 +279,8 @@ impl Outcome {
     /// `reason` de contrato y código de salida de la operación cuando el desenlace **no**
     /// es un éxito limpio, y `None` cuando lo es.
     ///
-    /// §9.1 declara `setup_failed` como **éxito parcial** con código propio —`SetupFailed =
-    /// 11` de la tabla cerrada—, no como error: el programa está instalado y lo único que
+    /// `setup_failed` es **éxito parcial** con código propio —`SetupFailed =
+    /// 11` de la tabla cerrada—, no un error: el programa está instalado y lo único que
     /// falta es la provisión. Por eso vive aquí y no como `Err` de [`install`], que
     /// perdería el resumen del paso 12 y dejaría al usuario sin el estado de su
     /// instalación. Quien cablea decide qué hacer con él: emitir el sobre y salir por
@@ -294,7 +297,7 @@ impl Outcome {
         }
     }
 
-    /// Cancelación: el usuario dijo que no y §9.1 **no** la lista entre los `reason`,
+    /// Cancelación: el usuario dijo que no y la tabla de `reason` **no** la lista,
     /// así que es salida 0 y ningún `reason`. El producto ya responde `Cancelado.`, y
     /// por eso esto es un desenlace y no un error.
     ///
@@ -348,7 +351,7 @@ pub fn detect_mode(exe: &Path, program_dir: &Path) -> Mode {
 ///
 /// Devuelve `Ordering` y no un booleano porque el plan necesita distinguir los tres
 /// casos: instalar una versión menor es una degradación y se confirma como operación
-/// destructiva (§9.3, paso 4).
+/// destructiva (paso 4).
 pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let numbers = |v: &str| -> Vec<u64> {
         v.split(['-', '+'])
@@ -372,8 +375,8 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
-/// Directorio donde vive el bundle alrededor del ejecutable, que es el que §9.3
-/// valida en el paso 2.
+/// Directorio donde vive el bundle alrededor del ejecutable, que es el que valida
+/// el paso 2.
 pub fn bundle_dir(exe: &Path) -> PathBuf {
     exe.parent().unwrap_or(Path::new(".")).to_path_buf()
 }
@@ -384,18 +387,19 @@ pub async fn install(
     options: &Options,
     control: &dyn ProcessControl,
 ) -> anyhow::Result<Outcome> {
-    // Ninguna operación pide elevación (§9.1, §12): en Unix `sudo` aborta aquí, antes
+    // Ninguna operación pide elevación: en Unix `sudo` aborta aquí, antes
     // de tocar el disco, y en Windows se avisa por stderr.
     let report = privileges::ensure_per_user()?;
     if let Some(warning) = &report.warning {
         eprintln!("{warning}");
     }
 
-    // ── Paso 1. Recuperación y bloqueo (§9.1) ────────────────────────────────────
+    // ── Paso 1. Recuperación y bloqueo ────────────────────────────────────────
     // La recuperación va con el bloqueo tomado: si no, el barrido podría llevarse por
     // delante el staging que otra operación está usando. Y el staging del que esta
-    // operación va a instalar se declara en uso: §9.1 barre "stagings huérfanos", y
-    // el bundle de §9.3 paso 2 todavía no es huérfano aunque esté recién extraído.
+    // operación va a instalar se declara en uso: el barrido recoge "stagings
+    // huérfanos", y el bundle del paso 2 todavía no es huérfano aunque esté recién
+    // extraído.
     let lock = crate::lock::acquire_at(&lock_path_for(&env.program_dir))?;
     let bundle = bundle_dir(&env.exe);
     let recovery = crate::recovery::recover(crate::recovery::Roots {
@@ -404,34 +408,34 @@ pub async fn install(
         in_use: Some(&bundle),
     })?;
 
-    // ── Modo, por posición del ejecutable (§9.3) ─────────────────────────────────
+    // ── Modo, por posición del ejecutable ─────────────────────────────────────
     let mode = detect_mode(&env.exe, &env.program_dir);
 
-    // ── Paso 2. Validar el bundle, sin modificar nada antes (§9.3) ───────────────
+    // ── Paso 2. Validar el bundle, sin modificar nada antes ───────────────────
     let files = manifest::validate_bundle(&env.target, &bundle)?;
     let executable = manifest::target_section(&env.target)?.executable_path();
 
-    // ── Paso 3. Detectar la instalación previa (§9.3) ───────────────────────────
+    // ── Paso 3. Detectar la instalación previa ────────────────────────────────
     let previous = receipt::read_from(&env.program_dir).ok().flatten();
     let replaces = previous.as_ref().map(|r| r.version.clone());
-    // Una instalación ajena solo genera aviso de coexistencia y precedencia: §9.3
-    // dice que no bloquea, y es T14 quien produce `externally_managed` para Homebrew.
+    // Una instalación ajena solo genera aviso de coexistencia y precedencia: no
+    // bloquea, y es T14 quien produce `externally_managed` para Homebrew.
     let foreign_in_path = previous
         .as_ref()
         .filter(|r| r.install_dir != env.program_dir)
         .map(|r| r.install_dir.clone());
     // En una reparación, lo que hay en el directorio de programa es la instalación,
     // así que exigir recibo no añade nada y convertiría una reparación de una
-    // instalación en canal `dev` sin recibo —que §10.5 sí genera— en un error.
+    // instalación en canal `dev` sin recibo —que es un caso válido— en un error.
     let degradation = previous
         .as_ref()
         .is_some_and(|r| compare_versions(&env.version, &r.version) == std::cmp::Ordering::Less);
 
-    // ── Paso 4. Resumen previo y confirmación (§9.3) ────────────────────────────
+    // ── Paso 4. Resumen previo y confirmación ─────────────────────────────────
     let pending = pending_models(options);
     let path_plan = plan_path(env, options);
     let previous_summary = compose_summary(env, options, mode, &replaces, &path_plan, &pending);
-    // Una degradación se confirma como operación destructiva (§9.3, paso 4), aunque
+    // Una degradación se confirma como operación destructiva (paso 4), aunque
     // instalar no borre nada por sí mismo.
     let kind = if degradation {
         confirm::Kind::Destructive
@@ -448,18 +452,18 @@ pub async fn install(
         return Ok(Outcome::cancelled(env, mode));
     }
 
-    // ── Paso 5. Parar el daemon; si no se detiene, nada modificado (§9.3) ───────
+    // ── Paso 5. Parar el daemon; si no se detiene, nada modificado ─────────────
     let daemon = daemon_stop::stop(&env.data_dir, &env.daemon_addr, control).await;
     daemon_stop::require_stopped(&daemon)?;
 
-    // ── Paso 6. Reemplazo transaccional (§9.3, paso 6) ──────────────────────────
+    // ── Paso 6. Reemplazo transaccional ───────────────────────────────────────
     // En reparación **no se copia nada**: se reaplican integración, permisos,
-    // cuarentena y recibo sobre lo que ya está (§9.3, modo reparación).
+    // cuarentena y recibo sobre lo que ya está.
     if mode == Mode::Install {
         let _ = transaction::replace(&env.program_dir, &bundle)?;
     }
 
-    // ── Paso 7. Cuarentena, en macOS (§9.3, paso 7) ─────────────────────────────
+    // ── Paso 7. Cuarentena, en macOS ──────────────────────────────────────────
     // No es un fallo de la instalación: la cuarentena que no se quita degrada el
     // arranque, y el resumen lo informa.
     let quarantine = quarantine::strip(&env.program_dir);
@@ -470,16 +474,16 @@ pub async fn install(
         );
     }
 
-    // ── Paso 8. Integración del PATH (§9.3.1) ──────────────────────────────────
+    // ── Paso 8. Integración del PATH ─────────────────────────────────────────
     crate::faults::trip(crate::faults::FaultPoint::BeforePathIntegration)?;
     let program_exe = env.program_dir.join(&executable);
     let (path_integration, path_rewritten) = apply_path(env, options, &program_exe)?;
 
-    // ── Paso 9. Aviso de instalación per-machine antigua, en Windows (§9.3) ─────
+    // ── Paso 9. Aviso de instalación per-machine antigua, en Windows ─────────
     // HKLM nunca se modifica, ni para escribir: solo se informa del comando exacto.
     let machine_warning = machine_path_warning(env);
 
-    // ── Paso 10. Recibo atómico y liberación del bloqueo (§9.3) ─────────────────
+    // ── Paso 10. Recibo atómico y liberación del bloqueo ──────────────────────
     crate::faults::trip(crate::faults::FaultPoint::BeforeReceipt)?;
     let receipt = InstallReceipt::new(
         &env.version,
@@ -497,14 +501,14 @@ pub async fn install(
     receipt::write_to(&receipt, &env.program_dir)?;
     drop(lock);
 
-    // ── Paso 11. `setup` en el mismo proceso, salvo `--no-setup` (§9.3) ─────────
+    // ── Paso 11. `setup` en el mismo proceso, salvo `--no-setup` ──────────────
     let models = if options.no_setup {
         ModelsState::Skipped
     } else {
         provision(&pending, options).await
     };
 
-    // ── Paso 12. Resumen final (§9.3) ───────────────────────────────────────────
+    // ── Paso 12. Resumen final ────────────────────────────────────────────────
     let summary = final_summary(
         env,
         mode,
@@ -534,9 +538,9 @@ pub async fn install(
     })
 }
 
-/// Aplica la tabla de §9.1. `stdin` y `stderr` se toman aquí porque son la única
-/// entrada y salida del prompt, y §9.1 exige que el prompt vaya a stderr para no
-/// contaminar el sobre `--json`.
+/// Aplica la tabla de confirmaciones. `stdin` y `stderr` se toman aquí porque son la
+/// única entrada y salida del prompt, y el prompt va a stderr para no contaminar el
+/// sobre `--json`.
 fn confirm(
     summary: &[String],
     entries: &[confirm::PlanEntry],
@@ -559,7 +563,7 @@ fn confirm(
     )
 }
 
-/// Qué se va a hacer con el `PATH`, para el resumen previo de §9.3.
+/// Qué se va a hacer con el `PATH`, para el resumen previo.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathPlan {
     /// Primer archivo de arranque al que se añade el bloque, en Unix. Se registra
@@ -609,8 +613,8 @@ pub fn plan_path(env: &Env, options: &Options) -> PathPlan {
 /// de la integración, no el diff de esta pasada: si registrara solo lo que se cambió,
 /// una segunda instalación desde el mismo bundle escribiría un recibo sin entrada de
 /// `PATH` y `self uninstall` no podría revertir la que puso la primera, dejando
-/// residuo —el criterio 17—. El `bool` sí es el diff, y es lo que decide si el resumen
-/// pide una terminal nueva.
+/// residuo. El `bool` sí es el diff, y es lo que decide si el resumen pide una
+/// terminal nueva.
 pub fn apply_path(
     env: &Env,
     options: &Options,
@@ -664,16 +668,16 @@ pub fn apply_path(
     }
 }
 
-/// Detecta una instalación de Homebrew por la ruta del ejecutable (§8.2). Lo usa el
+/// Detecta una instalación de Homebrew por la ruta del ejecutable. Lo usa el
 /// resumen previo para el aviso de coexistencia; `externally_managed` es de T14.
 pub fn foreign_installation(exe: &Path) -> Option<PathBuf> {
     crate::channel::is_homebrew_path(exe).then(|| bundle_dir(exe))
 }
 
-/// Aviso de §9.3, paso 9: si el `PATH` de la sesión lleva una entrada de una
+/// Aviso del paso 9: si el `PATH` de la sesión lleva una entrada de una
 /// instalación per-machine antigua, se muestra el comando exacto para quitarla desde
 /// una PowerShell de administrador. **HKLM nunca se modifica** y ni siquiera se lee:
-/// el motor no pide elevación (§9.1), así que la información disponible es la del
+/// el motor no pide elevación, así que la información disponible es la del
 /// `PATH` de la sesión, que es la misma que ve el usuario.
 fn machine_path_warning(env: &Env) -> Option<String> {
     if !cfg!(windows) {
@@ -697,7 +701,7 @@ fn machine_path_warning(env: &Env) -> Option<String> {
     })
 }
 
-/// Canal del recibo nuevo: `--channel dev` (§10.5) solo si el recibo se crea por
+/// Canal del recibo nuevo: `--channel dev` solo si el recibo se crea por
 /// primera vez. Reparar una instalación existente conserva su canal, que es lo que
 /// hace que `self update` siga trato una instalación `dev` como tal.
 pub fn resolve_channel(options: &Options, previous: Option<&InstallReceipt>) -> Channel {
@@ -705,7 +709,7 @@ pub fn resolve_channel(options: &Options, previous: Option<&InstallReceipt>) -> 
 }
 
 /// Origen del bundle en el recibo: el de la instalación anterior si la había, y si no
-/// el que el bootstrap de §9.2 estampó. Un bundle extraído a mano no lo tiene, y ahí
+/// el que el bootstrap estampó. Un bundle extraído a mano no lo tiene, y ahí
 /// `source` queda vacío.
 fn source_of(env: &Env, previous: Option<&InstallReceipt>) -> Option<String> {
     previous
@@ -713,12 +717,12 @@ fn source_of(env: &Env, previous: Option<&InstallReceipt>) -> Option<String> {
         .or_else(|| env.source.clone())
 }
 
-/// Modelos pendientes de provisionar, calculados **antes** de descargar (§9.7).
+/// Modelos pendientes de provisionar, calculados **antes** de descargar.
 ///
 /// El almacén se construye por `avi-store`, que resuelve la raíz de modelos por
 /// `AVI_CACHE_DIR`; `Env::models_dir` tiene que coincidir con ella, y en producción
 /// ambas salen de `crate::models_cache_dir()`. En una prueba reubicada, las dos
-/// salen de la variable, que es justo el mecanismo que §7 declara para el aislamiento.
+/// salen de la variable, que es justo el mecanismo que declara el aislamiento.
 fn pending_models(options: &Options) -> setup::Pending {
     let store = avi_store::ModelStore::new();
     setup::pending(&store, &setup_options(options))
@@ -741,12 +745,13 @@ fn setup_options(options: &Options) -> setup::Options {
 
 /// Paso 11: `setup` en el mismo proceso.
 ///
-/// Un fallo **no** es un `Err`: §9.1 define `setup_failed` como éxito parcial con el
+/// Un fallo **no** es un `Err`: `setup_failed` es éxito parcial con el
 /// programa instalado y reintentable con `setup`, así que es un estado del desenlace y
 /// no un fallo de la instalación. El `reason` de la operación lo decide
 /// [`Outcome::lifecycle_error`]; lo que viaja aquí es el **fallo de la provisión**, con su
-/// propio `reason`, que es lo que §9.1 reserva a cada caso: `network_error` para un fallo
-/// de descarga y `ct2_conversion_failed` para uno de conversión.
+/// propio `reason`, que es lo que la tabla de reasons reserva a cada caso:
+/// `network_error` para un fallo de descarga y `ct2_conversion_failed` para uno de
+/// conversión.
 async fn provision(pending: &setup::Pending, options: &Options) -> ModelsState {
     if pending.is_empty() {
         return ModelsState::AlreadyProvisioned;
@@ -778,18 +783,18 @@ async fn provision(pending: &setup::Pending, options: &Options) -> ModelsState {
     ModelsState::Provisioned { count }
 }
 
-/// Fallo de conversión de un derivado CT2, con el `reason` que `docs/CLI/commands/SETUP.md`
-/// publica para él y el **código genérico**, porque §9.1 no le declara fila propia y la
-/// tabla cerrada del plan reserva eso al ciclo que lo declare.
+/// Fallo de conversión de un derivado CT2, con el `reason` que la documentación
+/// publica para él y el **código genérico**, porque la tabla de reasons no le declara
+/// fila propia y la tabla cerrada del plan reserva eso al ciclo que lo declare.
 ///
 /// El código de este `reason` nunca es el código de salida del proceso: es un `reason`
 /// anidado, y el código de salida es el de la operación —`SetupFailed = 11`—. Anidarlo con
-/// un 11 haría que un consumidor leyera un 11 donde §9.1 no lo promises.
+/// un 11 haría que un consumidor leyera un 11 donde la tabla de códigos no lo promises.
 fn ct2_failure(pair: &str, reason: &str) -> LifecycleError {
     LifecycleError::new("ct2_conversion_failed", 1, format!("CT2 {pair}: {reason}"))
 }
 
-/// Prose de `setup_failed`, en las palabras de §9.1: el programa queda instalado y basta
+/// Prose de `setup_failed`: el programa queda instalado y basta
 /// reintentar con `setup`.
 ///
 /// **Una sola fuente** para el resumen del paso 12 y para el `reason` del sobre, para que
@@ -805,7 +810,7 @@ fn setup_failed_message(program_dir: &Path, cause: &LifecycleError) -> String {
     )
 }
 
-/// Resumen previo de §9.3, paso 4, con el formato que la especificación muestra.
+/// Resumen previo, paso 4.
 fn compose_summary(
     env: &Env,
     options: &Options,
@@ -882,7 +887,7 @@ fn compose_summary(
     out
 }
 
-/// Resumen final de §9.3, paso 12: versión, rutas, estado del `PATH` —con la
+/// Resumen final, paso 12: versión, rutas, estado del `PATH` —con la
 /// indicación de abrir una terminal nueva cuando corresponda— y estado de los
 /// modelos.
 #[allow(clippy::too_many_arguments)]
@@ -991,12 +996,12 @@ fn final_summary(
     out
 }
 
-/// Ruta del archivo de bloqueo de §7: hermano del directorio de programa, que es
+/// Ruta del archivo de bloqueo: hermano del directorio de programa, que es
 /// donde la tabla de rutas lo coloca en los cuatro targets. Es la misma que
 /// [`crate::lock::lock_path`], calculada desde el directorio de programa que trae la
-/// operación en vez de del del entorno.
-/// Ruta del archivo de bloqueo: la regla vive en [`crate::lock`] porque las tres
-/// operaciones destructivas la necesitan y §7 no admite tres copias.
+/// operación en vez de del entorno.
+/// La regla vive en [`crate::lock`] porque las tres operaciones destructivas la
+/// necesitan y una sola copia no admite tres motores.
 fn lock_path_for(program_dir: &Path) -> PathBuf {
     crate::lock::lock_path_for(program_dir)
 }
@@ -1035,7 +1040,7 @@ mod tests {
              variable de reubicación. Cambiarlo sería tocar `avi-store`, que es de T1."
         );
         // El prefijo verbatim de Windows lo quita `canonical_path_key`, que es la
-        // fuente única de la semántica de comparación de §7. Antes lo hacía este
+        // fuente única de la semántica de comparación de rutas. Antes lo hacía este
         // módulo, y el arreglo permanente está en `avi-store`.
         //
         // La rama va con `#[cfg(windows)]` y no con `cfg!(windows)`: en Unix el prefijo
@@ -1088,7 +1093,7 @@ mod tests {
     }
 
     /// La degradación se distingue de la actualización y de la misma versión, que es
-    /// lo que §9.3 paso 4 necesita para decidir la clase de confirmación.
+    /// lo que el paso 4 necesita para decidir la clase de confirmación.
     #[test]
     fn version_ordering_separates_downgrade() {
         use std::cmp::Ordering;
@@ -1114,7 +1119,7 @@ mod tests {
         assert_eq!(compare_versions("", "0.0.0"), Ordering::Equal);
     }
 
-    /// `--channel dev` de §10.5 solo surte efecto cuando el recibo se crea por
+    /// `--channel dev` solo surte efecto cuando el recibo se crea por
     /// primera vez. Reparar una instalación existente conserva su canal: si no, una
     /// reparación reescribiría el canal y `self update` dejaría de reconocer la
     /// instalación como `dev`.

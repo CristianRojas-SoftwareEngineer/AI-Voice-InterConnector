@@ -374,7 +374,7 @@ enum Commands {
         no_compress: bool,
         /// Con `--no-compress`, escribe el árbol plano en `--out` en vez de
         /// dentro de un subdirectorio con el nombre del artefacto. Es el layout
-        /// que espera un staging (§7): el ejecutable cuelga directamente de la
+        /// que espera un staging: el ejecutable cuelga directamente de la
         /// raíz, como lo dejan el bootstrap y `self update`.
         #[arg(long, requires = "no_compress")]
         flat: bool,
@@ -1733,7 +1733,8 @@ mod tests {
         // NO deben ejecutar `cargo clean -p ai-voice-interconnector`: sin --release/--profile
         // es un no-op sobre el perfil release (limpia solo target/debug), y aunque no lo fuera
         // el bump de VERSION ya invalida el fingerprint de cargo por sí solo (mtime + -C
-        // metadata) y sccache nunca cachea crates --crate-type bin. Ver docs/BUILD.md §4.
+        // metadata) y sccache nunca cachea crates --crate-type bin. Ver la
+        // documentación de compilación.
         for job in [
             "build-windows-x64",
             "build-linux-x64",

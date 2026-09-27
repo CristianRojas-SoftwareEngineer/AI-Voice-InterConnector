@@ -1,4 +1,5 @@
-//! Resolución de la versión objetivo de `self update` (§9.4, pasos 3–5).
+//! Resolución de la versión objetivo de `self update`, los pasos 3 a 5 de la
+//! actualización.
 //!
 //! Fija qué versión es la objetivo y cómo se compara con la instalada, antes de
 //! descargar nada. La comparación reutiliza `compare_versions` de `install` (sin

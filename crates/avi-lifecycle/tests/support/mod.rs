@@ -1,15 +1,16 @@
-//! Arnés común de las pruebas de aceptación de §15.
+//! Arnés común de las pruebas de aceptación del plan.
 //!
-//! §13 exige que la integración corra «con las raíces reubicadas a temporales», y §7
+//! El aislamiento exige que la integración corra «con las raíces reubicadas a
+//! temporales», y la tabla de rutas
 //! declara las cuatro variables de reubicación que lo hacen posible. En Windows las
 //! Known Folders ignoran `LOCALAPPDATA`, así que un sandbox que se apoyara en ellas no
-//! estaría probando el mecanismo de §7 sino el de la convención del sistema. Este
+//! estaría probando el mecanismo de reubicación sino el de la convención del sistema. Este
 //! módulo hace las dos cosas a la vez, que es lo que hace falta para que la prueba
 //! valga:
 //!
 //! 1. **Declara las cuatro variables** (`AVI_INSTALL_DIR`, `AVI_BIN_DIR`, `AVI_DATA_DIR`
 //!    y `AVI_CACHE_DIR`) apuntando al sandbox, para que lo que el motor resuelve por el
-//!    entorno —`ModelStore::new()` en los pasos 4 y 11 de §9.3, `ct2_model_dir()`—
+//!    entorno —`ModelStore::new()` en los pasos 4 y 11 de la instalación, `ct2_model_dir()`—
 //!    caiga dentro del sandbox y no en la máquina que ejecuta la puerta.
 //! 2. **Pasa las mismas rutas como dato** en `install::Env`, `cleanup::Roots` y
 //!    `uninstall::Env`, que es como las reciben en producción. Si las dos mitudes
@@ -22,7 +23,7 @@
 //! `models_shared: true` sobre una ruta que R3 nunca protege.
 //!
 //! El prefijo del directorio del sandbox es deliberadamente neutro: los barridos de
-//! §9.1 solo tocan entradas con los prefijos propios (`avi-`, `avi_`), y un sandbox
+//! los barridos solo tocan entradas con los prefijos propios (`avi-`, `avi_`), y un sandbox
 //! llamado `avi-…` se confundiría con un temporal del producto.
 
 #![allow(dead_code)]
@@ -59,7 +60,7 @@ pub fn exclusively() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Variables de entorno de §7 que el sandbox declara o borra según el modo.
+/// Variables de entorno de reubicación que el sandbox declara o borra según el modo.
 const ROOT_VARS: [&str; 6] = [
     "AVI_INSTALL_DIR",
     "AVI_BIN_DIR",
@@ -78,16 +79,16 @@ pub enum Models {
     Shared,
 }
 
-/// Sandbox con las siete raíces de §7 dentro de un directorio propio.
+/// Sandbox con las siete raíces dentro de un directorio propio.
 pub struct Sandbox {
     /// Raíz del sandbox, para borrarla entera al terminar.
     pub root: PathBuf,
     /// Etiqueta de la prueba. Va en el nombre del staging, así que el hijo sin
     /// terminal del criterio 19 necesita conocerla para reconstruir el sandbox.
     pub tag: String,
-    /// Directorio de programa de §7.
+    /// Directorio de programa.
     pub program_dir: PathBuf,
-    /// Staging hermano, con el prefijo hermano de §7.
+    /// Staging hermano, con el prefijo hermano.
     pub staging: PathBuf,
     /// Directorio del enlace (`~/.local/bin`).
     pub bin_dir: PathBuf,
@@ -194,7 +195,7 @@ impl Sandbox {
             .expect("se crea la clave de registro de prueba");
     }
 
-    /// Declara —o borra— en el entorno del proceso las variables de §7 que este sandbox
+    /// Declara —o borra— en el entorno del proceso las variables de reubicación que este sandbox
     /// representa. Sin esto, lo que el motor resuelve por entorno saldría de la máquina
     /// que ejecuta la puerta.
     ///
@@ -220,7 +221,7 @@ impl Sandbox {
         std::env::set_var("AVI_DATA_DIR", value(&self.data_dir));
     }
 
-    /// Borra las seis variables de §7. Lo llama [`Self::limpiar`].
+    /// Borra las seis variables de reubicación. Lo llama [`Self::limpiar`].
     pub fn clear_env() {
         for variable in ROOT_VARS {
             std::env::remove_var(variable);
@@ -230,7 +231,7 @@ impl Sandbox {
     /// Escribe un bundle sintético **completo** en `destino`, con los nombres exactos
     /// que `packaging/bundle-manifest.json` exige para el target del host, y devuelve
     /// el ejecutable. La lista no se escribe a mano: si el manifiesto cambiara, la
-    /// seguiría la validación del paso 2 de §9.3.
+    /// seguiría la validación del paso 2 de la instalación.
     pub fn write_bundle(&self, dest: &Path) -> PathBuf {
         let section = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
             .expect("el target del host tiene sección en el manifiesto");
@@ -291,7 +292,7 @@ impl Sandbox {
     }
 
     /// `Env` de desinstalación. El directorio de programa lo da el recibo si lo hay,
-    /// que es §8.2: la operación actúa sobre la instalación registrada, no sobre la
+    /// que es la regla: la operación actúa sobre la instalación registrada, no sobre la
     /// posición del ejecutable.
     pub fn env_uninstall<'a>(
         &self,
@@ -310,7 +311,7 @@ impl Sandbox {
         }
     }
 
-    /// Planta el estado de §9.6 completo y, además, los recursos **compartidos** que el
+    /// Planta el estado completo y, además, los recursos **compartidos** que el
     /// criterio 23 nombra: un repo de otra herramienta dentro de la caché de modelos,
     /// `~/.cargo` y el directorio de `sccache`.
     ///
@@ -388,7 +389,7 @@ impl Sandbox {
         write(&self.temp_root.join("sccache").join("objeto"), "sccache");
     }
 
-    /// Un temporal propio huérfano, que §9.6 obliga a barrer, plantado junto a los
+    /// Un temporal propio huérfano, que la regla obliga a barrer, plantado junto a los
     /// compartidos del párrafo anterior: es el contraste que demuestra que el barrido es
     /// selectivo por prefijo y no por directorio.
     pub fn seed_own_temp(&self) -> PathBuf {
@@ -414,7 +415,7 @@ impl Sandbox {
         )
     }
 
-    /// Instala sin pasar por `self install`: escribe el ejecutable y el recibo de §8.1.
+    /// Instala sin pasar por `self install`: escribe el ejecutable y el recibo.
     /// Es lo que necesitan las pruebas de desinstalación y limpieza, cuyo objeto es la
     /// desinstalación y no la colocación.
     pub fn install_registered(&self, integration: PathIntegration) -> InstallReceipt {
@@ -523,7 +524,8 @@ impl ProcessControl for Inert {
     }
 }
 
-/// Removedor que borra ya. El caso diferido de Windows es el de §9.5, paso 8, y no es
+/// Removedor que borra ya. El caso diferido de Windows es el del paso 8 de la
+/// desinstalación, y no es
 /// lo que se ejercita aquí.
 pub struct Now;
 
@@ -626,7 +628,8 @@ pub fn entries(plan: &[avi_lifecycle::confirm::PlanEntry]) -> Vec<String> {
 //
 // `uninstall::run` y `cleanup::run` leen `stdin_is_terminal` del **stdin real** del
 // proceso, con `std::io::IsTerminal`. No es un parámetro, así que no hay forma de
-// recorrer la celda «sin terminal» de la tabla de §9.1 sin cambiar el entorno de la
+// recorrer la celda «sin terminal» de la tabla de confirmaciones sin cambiar el entorno
+// de la
 // puerta: si el proceso se lanza desde una consola interactiva, `stdin` es una terminal
 // y la operación pediría confirmación en vez de negarse. Afirmar lo contrario en un
 // proceso con terminal sería pasar la prueba por el motivo equivocado.
@@ -687,7 +690,7 @@ pub fn read_report_lines(stdout: &[u8]) -> Vec<String> {
         .collect()
 }
 
-// ─── Servidor falso de releases (§13) ───────────────────────────────────────────
+// ─── Servidor falso de releases ─────────────────────────────────────────────────
 //
 // El `self update` resuelve y descarga contra `AVI_DOWNLOAD_BASE_URL` cuando está
 // definida (`update_resolve::download_base_url`), y si no contra el GitHub real. Este

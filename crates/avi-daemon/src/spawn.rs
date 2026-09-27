@@ -18,7 +18,7 @@ use std::process::Command;
 /// `Stdio::null` + `setsid` + `FD_CLOEXEC` ya logra lo análogo.
 ///
 /// NOTA (cierre garantizado): el apagado ya no depende solo de
-/// `lib.rs::shutdown_handler` vía `with_graceful_shutdown` + `tokio::sync::Notify`
+/// `shutdown_handler` del crate vía `with_graceful_shutdown` + `tokio::sync::Notify`
 /// (el antiguo `tokio::spawn(async { process::exit(0) })` no terminaba el proceso
 /// dentro del runtime de `axum::serve`). El daemon escucha además señales del
 /// sistema por la misma ruta que POST `/shutdown`, el CLI reclama el residual
@@ -189,11 +189,11 @@ pub fn wait_for_pid_death(pid: u32, deadline: std::time::Duration) -> bool {
 }
 
 // Instala en el proceso actual (lado daemon longevo) un Job Object con
-// `KILL_ON_JOB_CLOSE`. La implementación vive en el binario (`src/main.rs`,
-// rama `Serve`, que sí dispone de `windows-sys` vía el workspace): este crate
+// `KILL_ON_JOB_CLOSE`. La implementación vive en el binario, en la rama
+// `Serve`, que sí dispone de `windows-sys` vía el workspace: este crate
 // no añade la dependencia para no exceder el alcance (alternativa admitida:
-// `kill_tree_by_pid` con verificación). Ver `install_job_with_tree_kill`
-// en el CLI.
+// `kill_tree_by_pid` con verificación). La rama del CLI se llama
+// `install_job_with_tree_kill`.
 
 /// Helper determinista de desinstalación en Windows.
 ///
@@ -215,7 +215,7 @@ pub fn spawn_uninstall_helper(
 }
 
 /// Reintentos de borrado del helper diferido, con espera entre ellos. Acotados
-/// (§9.4): un archivo en uso se libera al morir el proceso, y lo que siga
+/// (de la actualización): un archivo en uso se libera al morir el proceso, y lo que siga
 /// bloqueado después lo recoge la recuperación de la siguiente operación.
 #[cfg(windows)]
 pub const DEFERRED_REMOVAL_ATTEMPTS: u32 = 10;
@@ -230,7 +230,7 @@ pub const DEFERRED_REMOVAL_RETRY_MS: u64 = 500;
 /// Generaliza [`spawn_uninstall_helper`]: el mismo mecanismo —un `.ps1` en
 /// `%TEMP%` que espera la muerte del `PID` y borra `LiteralPath`—, con
 /// reintentos acotados en vez de un solo intento. El prefijo del helper sigue
-/// siendo `avi-`, que es el que el barrido de §9.1 cubre; en Unix no hay
+/// siendo `avi-`, que es el que el barrido cubre; en Unix no hay
 /// impedimento de borrado en uso y el motor borra directo, así que esta
 /// función solo existe en Windows.
 ///

@@ -37,8 +37,8 @@ mod tests {
 
     #[test]
     fn test_short_text_returns_single_segment() {
-        // Derivado de `test_short_text_returns_single_segment`
-        // (`tests/test_translation_segmenter.py`): un texto que cabe entero se
+        // Derivado de la prueba equivalente del segmentador en Python: un texto
+        // que cabe entero se
         // devuelve como único párrafo con un único segmento igual al texto.
         let segmenter = HierarchicalSegmenter::new(200);
         let result = segmenter.segment("Hola, ¿cómo estás?");

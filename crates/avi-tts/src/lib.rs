@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-/// Defaults de muestreo del motor Qwen3-TTS (fuente: `docs/server.md:140-141`
-/// y `qwen_tts_server.c:295-298`); los defaults del host deben coincidir para
-/// que la omisión de flags HTTP/CLI sea idéntica a pasarlos explícitos.
+/// Defaults de muestreo del motor Qwen3-TTS, tomados de su código fuente; los
+/// defaults del host deben coincidir para que la omisión de flags HTTP/CLI sea
+/// idéntica a pasarlos explícitos.
 pub const DEFAULT_TEMPERATURE: f32 = 0.5;
 pub const DEFAULT_TOP_K: u32 = 50;
 pub const DEFAULT_TOP_P: f32 = 1.0;
@@ -98,7 +98,7 @@ impl GenerationOptions {
 
 /// Opciones de prosodia (ganancia y tempo), serializables al body HTTP.
 /// `EmotionOptions` es no-op en el modelo 0.6B: se serializa si se usa, sin
-/// prometer control emocional (restricción del plan de migración §2.4).
+/// prometer control emocional: es una restricción conocida del modelo.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProsodyOptions {
     pub volume: Option<f32>,
@@ -238,7 +238,7 @@ fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
 
 /// Resolución del directorio del modelo Base por capas, deliberadamente
 /// separada de `resolve_model_dir`: solo la usa el clonado (`--ref-audio`),
-/// que exige el modelo Base (`vendor/qwen3-tts/main.c:1848`), distinto del
+/// que exige el modelo Base, distinto del
 /// CustomVoice usado por la síntesis general.
 /// Orden: 1. `QWEN3_TTS_BASE_MODEL_DIR`; 2. directorio hermano del binario
 /// (`<dir del bin>/qwen3-tts-0.6b-base`); 3. `<exe_dir>/vendor/qwen3-tts/qwen3-tts-0.6b-base`;
@@ -563,7 +563,7 @@ impl TtsEngine for Qwen3TtsEngine {
 /// Construye el body HTTP de `POST /v1/tts`: sin `format` (el
 /// servidor lo ignora), claves solo-si-`Some`, y `speaker`/`language` omitidos
 /// cuando la voz es clonada (el servidor conserva la voz y el idioma del
-/// arranque, `docs/server.md:28-34`).
+/// arranque, según el servidor).
 pub(crate) fn build_tts_body(
     text: &str,
     voice: &VoiceEngine,
@@ -1104,7 +1104,7 @@ pub mod resident {
     /// real `qwen_tts`, así que queda ciego al reclamo por PID/imagen del
     /// residente huérfano. La ausencia real de huérfanos a nivel SO —verificada
     /// por `resident_pid` muerto más ausencia por imagen— solo la comprueba la
-    /// serie pesada (`tests/cli_golden.rs`).
+    /// serie pesada de extremo a extremo.
     #[cfg(test)]
     pub(crate) fn simulate_server(
         body: std::sync::Arc<Mutex<String>>,
@@ -1194,7 +1194,7 @@ mod tests {
     use std::time::Duration;
 
     /// Los defaults del host deben coincidir con los defaults del motor
-    /// (`docs/server.md:140-141`). Afirma los defaults del `struct`/motor sin
+    /// (los del motor). Afirma los defaults del `struct`/motor sin
     /// cambios, no los valores de producción de `GenerationOptions::production()`
     /// (config validada por oído) — este test queda intacto a propósito.
     #[test]

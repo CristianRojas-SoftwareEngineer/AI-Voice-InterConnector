@@ -1,5 +1,5 @@
-//! Interrupción de la transacción y recuperación en la siguiente operación (§9.1,
-//! §9.3.6; plan T18, acción 5).
+//! Interrupción de la transacción y recuperación en la siguiente operación; plan T18,
+//! acción 5.
 //!
 //! La garantía que se demuestra es la del criterio 14 escrita para el Ciclo 1: una
 //! interrupción en cualquier punto **deja la versión anterior operativa** y la siguiente
@@ -11,7 +11,7 @@
 //! 1. `interrupted_transaction_is_recovered_next_run` planta, con la API pública de
 //!    `transaction`, el estado **exacto** en que una operación deja el directorio de
 //!    programa al morir en cada uno de los cinco estados del diario, y comprueba que la
-//!    recuperación lo resuelve como §9.1 dice: los cuatro estados sin confirmar se
+//!    recuperación lo resuelve como la regla dice: los cuatro estados sin confirmar se
 //!    revierten y devuelven la versión anterior; el confirmado se completa como commit.
 //!    Luego, en un sandbox nuevo por estado, comprueba que una **operación real** —
 //!    `self install`— completa la recuperación por su cuenta y no deja residuo.
@@ -38,7 +38,8 @@ use avi_lifecycle::uninstall;
 use std::path::Path;
 use support::{Inert, Now, Sandbox};
 
-/// Los cinco estados del diario de §9.3.6: el punto del flujo en el que la operación
+/// Los cinco estados del diario de la transacción: el punto del flujo en el que la
+/// operación
 /// muere, si ese estado se revierte o se completa como commit, y un nombre estable para
 /// el sandbox y los mensajes.
 const POINTS: [(&str, &str, JournalState, bool); 5] = [
@@ -72,7 +73,7 @@ const POINTS: [(&str, &str, JournalState, bool); 5] = [
 /// Versión anterior, la que se aparca al empezar la operación interrumpida.
 const PREVIOUS_VERSION: &str = "0.23.1";
 
-/// Recibo de la versión anterior, con la forma de §8.1.
+/// Recibo de la versión anterior, con la forma que escribe el instalador.
 fn previous_receipt(sandbox: &Sandbox) -> InstallReceipt {
     InstallReceipt::new(
         PREVIOUS_VERSION,
@@ -106,7 +107,8 @@ fn seed_previous_version(sandbox: &Sandbox) {
 /// Estado en el que una operación deja el directorio de programa al morir en `estado`.
 ///
 /// Se construye con la API pública de `transaction` —el diario es un dato serializable y
-/// §9.1 define su esquema— replicando el orden real de §9.3.6: escribir el diario, aparcar
+/// la recuperación define su esquema— replicando el orden real del algoritmo: escribir el
+/// diario, aparcar
 /// por renombrado, y colocar moviendo desde el origen. Devuelve el `txid`, que es como
 /// se nombra el aparcado.
 fn interrupt_at(sandbox: &Sandbox, slug: &str, state: JournalState) -> String {
@@ -123,12 +125,12 @@ fn interrupt_at(sandbox: &Sandbox, slug: &str, state: JournalState) -> String {
         source_dir: Some(sandbox.staging.clone()),
     };
 
-    // El bundle nuevo está en el staging, que es donde el bootstrap de §9.2 lo deja, y la
+    // El bundle nuevo está en el staging, que es donde lo deja el bootstrap, y la
     // versión anterior está en el directorio de programa, que es lo que hay.
     sandbox.write_bundle(&sandbox.staging);
     seed_previous_version(sandbox);
 
-    // El diario se escribe **antes** de tocar nada (§9.3.6), y el aparcado se salta el
+    // El diario se escribe **antes** de tocar nada, y el aparcado se salta el
     // diario, igual que hace el motor.
     write_journal(&sandbox.program_dir, &journal);
     if state == JournalState::Started {
@@ -180,7 +182,8 @@ fn write_journal(program_dir: &Path, journal: &Journal) {
 }
 
 /// Raíces de la recuperación con el staging **en uso**, que es lo que pasa el paso 1 de
-/// §9.3: el bundle que la operación va a instalar todavía no es huérfano aunque esté recién
+/// la instalación: el bundle que la operación va a instalar todavía no es huérfano aunque
+/// esté recién
 /// extraído, y barrerse a sí mismo entre el paso 1 y el paso 2 dejaría a `self install`
 /// instalando un bundle vacío.
 fn roots(sandbox: &Sandbox) -> recovery::Roots<'_> {
@@ -193,7 +196,7 @@ fn roots(sandbox: &Sandbox) -> recovery::Roots<'_> {
 
 /// Residuo de una operación de ciclo de vida: aparcados y temporales propios. El staging
 /// no se cuenta, porque durante una operación es suyo y no huérfano, y porque borrarlo es
-/// el paso 10 de §9.2, que corresponde al bootstrap y no al motor.
+/// el paso 10 del bootstrap, que corresponde al bootstrap y no al motor.
 fn residue(sandbox: &Sandbox) -> Vec<String> {
     let mut out: Vec<String> = support::list(&sandbox.program_dir)
         .into_iter()
@@ -221,7 +224,8 @@ fn operational_previous_version(sandbox: &Sandbox) -> bool {
             .is_some_and(|r| r.version == PREVIOUS_VERSION)
 }
 
-/// Estado del sandbox sin el archivo de bloqueo, que §9.1 crea al tomar el bloqueo —el
+/// Estado del sandbox sin el archivo de bloqueo, que la recuperación crea al tomar el
+/// bloqueo —el
 /// paso 1, antes de la recuperación— y que no es «nada modificado» sino el mecanismo que
 /// serializa las operaciones.
 fn state_without_lock(sandbox: &Sandbox) -> Vec<(String, u64)> {
@@ -234,7 +238,7 @@ fn state_without_lock(sandbox: &Sandbox) -> Vec<(String, u64)> {
     out
 }
 
-/// **La recuperación de §9.1**, en cada punto de §9.3.6.
+/// **La recuperación**, en cada punto del algoritmo de la transacción.
 ///
 /// Dos afirmaciones por punto. La primera es sobre la **recuperación**, a la que se le
 /// planta el estado: los cuatro estados sin confirmar se revierten y devuelven la versión
@@ -310,7 +314,7 @@ fn interrupted_transaction_is_recovered_next_run() {
         );
         if commit {
             // El commit **conserva** lo colocado y borra el aparcado. No hay recibo todavía:
-            // el recibo es el paso 10 de §9.3, posterior a la transacción, así que en este
+            // el recibo es el paso 10 de la instalación, posterior a la transacción, así que en este
             // punto la instalación está colocada pero sin registrar. Lo que se afirma es que
             // el bundle entero está en su sitio, que es lo que distingue un commit de un
             // rollback a medias.
@@ -420,8 +424,8 @@ fn interrupted_transaction_is_recovered_next_run() {
     }
 }
 
-/// **La interrupción de verdad**, en cada punto de §9.3.6, con el punto de inyección de
-/// §13. Solo existe compilada con el feature `faults`.
+/// **La interrupción de verdad**, en cada punto de la transacción, con el punto de
+/// inyección de fallos. Solo existe compilada con el feature `faults`.
 ///
 /// Los cuatro primeros puntos caen dentro de la transacción, así que `self install` falla
 /// con `rolled_back` y la versión anterior queda restaurada: es el mismo desenlace que una
@@ -518,7 +522,8 @@ fn interrupted_install_recovers_next_run() {
     }
 }
 
-/// Sin el feature `faults` no hay punto de inyección, y eso es una garantía de §13 y no
+/// Sin el feature `faults` no hay punto de inyección, y eso es una garantía del producto y
+/// no
 /// una carencia: el binario distribuido no puede provocar un fallo a propósito.
 ///
 /// La aserción también es la que impide que la capa 1 se apoye en la inyección sin
@@ -546,8 +551,8 @@ fn fault_injection_is_inert_without_the_feature() {
 
     assert_eq!(
         outcome.status, "installed",
-        "criterio 14: sin `faults` la inyección es inerte, que es lo que §13 exige del binario \
-         distribuido"
+        "criterio 14: sin `faults` la inyección es inerte, que es lo que el producto exige \
+         del binario distribuido"
     );
     assert!(
         !faults::is_armed(FaultPoint::BeforeCommit),
@@ -555,7 +560,8 @@ fn fault_injection_is_inert_without_the_feature() {
     );
 }
 
-/// §9.1 dice que **toda** operación de ciclo de vida empieza por la recuperación, y esta es
+/// La regla dice que **toda** operación de ciclo de vida empieza por la recuperación, y esta
+/// es
 /// la comprobación de que la desinstalación no es la excepción: con una transacción
 /// pendiente plantada, opera igualmente, sobre el directorio de programa registrado, y no
 /// deja aparcados, stagings ni temporales.
@@ -600,12 +606,13 @@ fn uninstall_recovers_before_it_plans() {
     );
 }
 
-/// **El barrido de §9.1 es selectivo por prefijo, y por eso un sandbox de pruebas con el
+/// **El barrido es selectivo por prefijo, y por eso un sandbox de pruebas con el
 /// prefijo del producto es un temporal propio a todos los efectos.**
 ///
 /// Es el lado del motor del invariante que `tests/cli_golden.rs` afirma desde el lado de las
 /// pruebas. Aquí se comprueba contra el **barrido real**, con los nombres reales: un temporal
-/// propio con el prefijo de §7 se borra, y un directorio de pruebas con un prefijo que no
+/// propio con el prefijo de la tabla de rutas se borra, y un directorio de pruebas con un
+/// prefijo que no
 /// es del producto sobrevive, aunque esté en el mismo directorio y en el mismo instante.
 ///
 /// El nombre del sandbox ajeno es el **mismo prefijo que usa `tests/cli_golden.rs`**, a
@@ -652,10 +659,10 @@ fn sweep_never_touches_a_foreign_test_sandbox() {
     })
     .expect("el barrido se ejecuta");
 
-    // Los temporales propios se van, con PID muerto y sin PID: es lo que §9.6 obliga.
+    // Los temporales propios se van, con PID muerto y sin PID: es lo que la regla obliga.
     assert!(
         !support::exists(&own_with_dead_pid) && !support::exists(&own_without_pid),
-        "los temporales propios se barren, que es lo que §9.6 pide: {:?}",
+        "los temporales propios se barren, que es lo que la regla pide: {:?}",
         outcome.removed_temporaries
     );
     // Y los sandboxes de pruebas sobreviven, con todo su contenido.
@@ -676,8 +683,8 @@ fn sweep_never_touches_a_foreign_test_sandbox() {
     // Los dos controles, y la asimetría es el punto: manda el prefijo, no la autoría.
     assert!(
         !support::exists(&third_party_our_prefix),
-        "un archivo de otro programa llamado `avi-…` **se borra**: el prefijo es lo que §7 \
-         reserva, no la autoría, y por eso un sandbox con prefijo del producto no está a salvo \
+        "un archivo de otro programa llamado `avi-…` **se borra**: el prefijo es lo que el \
+         producto reserva, no la autoría, y por eso un sandbox con prefijo del producto no está a salvo \
          por ser de un test"
     );
     assert!(
@@ -738,10 +745,10 @@ fn own_prefix_without_pid_is_swept_even_though_the_test_is_alive() {
 /// Un diario que no se puede interpretar **detiene** la operación en vez de dejar que borre
 /// a ciegas.
 ///
-/// Es la postura de §9.1 aplicada al peor caso: si el estado del directorio de programa no
-/// se puede leer, no se sabe qué operación lo dejó así, y borrar sin saberlo sería peor que
-/// no borrar. La prueba afirma lo que el motor hace, no lo que la especificación dice —§9.1
-/// no enumera este caso—: que la operación falla y que **no se borra nada**, que es la
+/// Es la postura de la recuperación aplicada al peor caso: si el estado del directorio de
+/// programa no se puede leer, no se sabe qué operación lo dejó así, y borrar sin saberlo
+/// sería peor que no borrar. La prueba afirma lo que el motor hace, no lo que el
+/// enunciado no enumera: que la operación falla y que **no se borra nada**, que es la
 /// propiedad de seguridad.
 #[test]
 fn unreadable_journal_stops_the_operation_without_deleting() {

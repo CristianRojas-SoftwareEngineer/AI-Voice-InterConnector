@@ -1,13 +1,13 @@
-//! Target del binario en ejecución y nombre convencional del archivo de release
-//! (§3).
+//! Target del binario en ejecución y nombre convencional del archivo de release.
 //!
-//! La tabla de §3 vive aquí, en código, como una sola definición: la consumen
+//! La tabla de targets soportados vive aquí, en código, como una sola definición: la
+//! consumen
 //! la validación del bundle (`manifest`), el nombre del archivo que descarga
 //! `self update` en el Ciclo 2 y el nombre que produce `cargo xtask package` en
 //! el Ciclo 3. Que las tres cosas coincidan es lo que impide que un bundle se
 //! valide con una lista y se publique con otra.
 //!
-//! **La detección del target del sistema operativo de §3 no se replica aquí.**
+//! **La detección del target del sistema operativo no se replica aquí.**
 //! La tabla de `uname -m`, `AMD64` y `sysctl hw.optional.arm64` describe el
 //! bootstrap, que aún no existe (Ciclo 3, `packaging/bootstrap/`), y hoy solo
 //! se compila para los targets de la tabla: el binario ya sabe con qué triple
@@ -16,12 +16,12 @@
 //! triple que no está en la tabla.
 //!
 //! La variante de código propia de `unsupported_platform` la declara el Ciclo 2
-//! junto con `binary_incompatible` y `checksum_mismatch`: el `reason` es el de §3
-//! y el código es el 18 de la tabla cerrada.
+//! junto con `binary_incompatible` y `checksum_mismatch`: el `reason` es el de la
+//! tabla de targets y el código es el 18 de la tabla cerrada.
 
 use crate::{LifecycleError, APP_NAME};
 
-/// Triples de §3. Es la tabla de §3 en código, y `manifest` la usa para exigir
+/// Triples soportados. Es la tabla en código, y `manifest` la usa para exigir
 /// que el manifiesto tenga una sección por cada uno.
 pub const SUPPORTED_TARGETS: [&str; 4] = [
     "x86_64-pc-windows-msvc",
@@ -36,13 +36,13 @@ pub fn host_triple() -> &'static str {
     env!("AVI_TARGET_TRIPLE")
 }
 
-/// `true` si el triple está en la tabla de §3.
+/// `true` si el triple está en la tabla de targets soportados.
 pub fn is_supported(triple: &str) -> bool {
     SUPPORTED_TARGETS.contains(&triple)
 }
 
 /// Exige que el triple esté soportado, y si no emite `unsupported_platform` con
-/// un mensaje que remite a compilar desde el código fuente, como manda §3.
+/// un mensaje que remite a compilar desde el código fuente, como manda la regla.
 pub fn ensure_supported(triple: &str) -> Result<(), LifecycleError> {
     if is_supported(triple) {
         return Ok(());
@@ -51,7 +51,7 @@ pub fn ensure_supported(triple: &str) -> Result<(), LifecycleError> {
 }
 
 /// Raíz del target: su arquitectura tal como la nombra la columna "Archivo de
-/// release" de §3, que no coincide con el prefijo del triple en arm64
+/// release" de la tabla de targets, que no coincide con el prefijo del triple en arm64
 /// (`aarch64-*` → `arm64`). La usan el nombre del archivo de release y quien
 /// tenga que comparar contra un bundle ya publicado.
 pub fn release_arch(triple: &str) -> Result<&'static str, LifecycleError> {
@@ -64,7 +64,7 @@ pub fn release_arch(triple: &str) -> Result<&'static str, LifecycleError> {
 
 /// Etiqueta de sistema operativo y extensión del archivo de release de un
 /// triple: la segunda mitad de la convención `ai-voice-interconnector-<ver>-
-/// <arch>-<os>.<ext>` de §3.
+/// <arch>-<os>.<ext>` de la tabla de targets.
 fn release_os(triple: &str) -> Result<(&'static str, &'static str), LifecycleError> {
     match triple {
         "x86_64-pc-windows-msvc" => Ok(("windows", "zip")),
@@ -74,9 +74,9 @@ fn release_os(triple: &str) -> Result<(&'static str, &'static str), LifecycleErr
     }
 }
 
-/// Mensaje de `unsupported_platform` de §3: nombra el triple y remite a compilar
-/// desde el código fuente. La ruta es la real —`docs/BUILD.md`— y no la que
-/// escribe el enunciado, que la escribe relativa a `docs/specs/`.
+/// Mensaje de `unsupported_platform`: nombra el triple y remite a compilar
+/// desde el código fuente. La ruta que lleva el mensaje es la real
+/// —`docs/BUILD.md`—, y no una relativa al sitio donde vive el enunciado.
 fn unsupported(triple: &str) -> LifecycleError {
     LifecycleError::unsupported_platform(format!(
         "la plataforma de este binario ({triple}) no está soportada: compila \
@@ -85,7 +85,8 @@ fn unsupported(triple: &str) -> LifecycleError {
 }
 
 /// Nombre convencional del archivo de release de `triple` para `version`, con
-/// la convención de §3: `ai-voice-interconnector-<ver>-<arch>-<os>.<ext>`.
+/// la convención de la tabla de targets:
+/// `ai-voice-interconnector-<ver>-<arch>-<os>.<ext>`.
 ///
 /// Es la convención de los cuatro jobs de build de `.circleci/config.yml`, que
 /// es donde vive hoy. La consumen `self update` en el Ciclo 2 y
@@ -101,7 +102,7 @@ pub fn release_asset_name(triple: &str, version: &str) -> Result<String, Lifecyc
 mod tests {
     use super::*;
 
-    /// La tabla de §3 y el nombre del archivo de release se derivan de la misma
+    /// La tabla de targets y el nombre del archivo de release se derivan de la misma
     /// definición, sin depender de la plataforma donde corra la prueba.
     #[test]
     fn release_asset_name_per_target() {
@@ -130,7 +131,7 @@ mod tests {
         assert_eq!(
             expected.len(),
             SUPPORTED_TARGETS.len(),
-            "la tabla de §3 tiene cuatro targets"
+            "la tabla de targets soportados tiene cuatro entradas"
         );
         for (triple, version, name) in expected {
             assert_eq!(
@@ -140,7 +141,7 @@ mod tests {
             );
             assert!(
                 ensure_supported(triple).is_ok(),
-                "{triple} está en la tabla de §3"
+                "{triple} está en la tabla de targets soportados"
             );
         }
         // La versión se interpola tal cual: el nombre no lleva la `v` del tag.
@@ -151,7 +152,7 @@ mod tests {
     }
 
     /// Windows ARM64, macOS Intel, musl y userland de 32 bits: los cuatro
-    /// casos que §3 declara no soportados, incluidos los que solo se detectan
+    /// casos que la tabla declara no soportados, incluidos los que solo se detectan
     /// al arrancar el binario y que por eso comparten `reason`.
     #[test]
     fn unsupported_target_is_rejected() {
@@ -198,7 +199,7 @@ mod tests {
         );
         assert!(
             is_supported(triple),
-            "{triple} compila fuera de la tabla de §3"
+            "{triple} compila fuera de la tabla de targets soportados"
         );
         // La raíz del target y la etiqueta de sistema operativo son las que el
         // nombre de release usa, y ambas salen del mismo sitio.

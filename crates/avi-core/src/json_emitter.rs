@@ -5,8 +5,8 @@ use std::io::Write;
 ///
 /// Sube a `"4"` por un cambio incompatible: el ciclo de vida retira y renombra claves
 /// del reporte de `doctor` (`data_dir`, `hf_cache`, `base_status` e `issues` salen, y la
-/// información pasa dentro de `install` y de `models`) y añade las siete entradas de
-/// §9.8. Retirar una clave obliga a subir la versión; añadirla no.
+/// información pasa dentro de `install` y de `models`) y añade otras siete entradas
+/// al sobre. Retirar una clave obliga a subir la versión; añadirla no.
 pub const CLI_SCHEMA_VERSION: &str = "4";
 
 /// Versión del **protocolo del daemon** (NDJSON y cabecera `x-schema-version`).

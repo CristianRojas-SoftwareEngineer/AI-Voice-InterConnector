@@ -405,7 +405,7 @@ enum Commands {
         #[arg(long, short)]
         yes: bool,
     },
-    /// Operaciones sobre la instalación del usuario (§6.4)
+    /// Operaciones sobre la instalación del usuario
     #[command(name = "self")]
     SelfCmd {
         #[command(subcommand)]
@@ -421,7 +421,7 @@ enum Commands {
 /// ciclo retira: la comprobación de que esa variante ya no aparece en el árbol tiene que
 /// dar cero, y un enum cuyo nombre la contenga daría una coincidencia sin que el
 /// comando existiera. Lo que el usuario ve en --help es self, que es lo único que
-/// §6.4 declara.
+/// la tabla de la CLI declara.
 #[derive(Subcommand)]
 enum SelfSub {
     /// Instala el bundle del que forma parte este ejecutable, o repara la instalación
@@ -438,7 +438,7 @@ enum SelfSub {
         /// No pedir confirmación
         #[arg(long)]
         yes: bool,
-        /// Canal de la instalación; `dev` es la opción oculta de §10.5
+        /// Canal de la instalación; `dev` es la opción oculta
         #[arg(long, hide = true)]
         channel: Option<String>,
     },
@@ -879,7 +879,8 @@ async fn main() {
 
     match result {
         Ok(Outcome::Done) => {}
-        // Salida por veredicto (§10 del contrato): el comando ya emitió su payload
+        // Salida por veredicto, que es lo que permite el contrato: el comando ya emitió
+        // su payload
         // propio y solo queda fijar el código. Es lo que hace que `doctor --json`
         // emita **un solo objeto** también cuando falla: si esto fuera un `CliError`,
         // `main` adjuntaría detrás el objeto `error` y el sobre sería ilegible.
@@ -902,8 +903,8 @@ async fn main() {
     }
 }
 
-/// Desenlace de un handler ante `main`: éxito, o salida por veredicto (§10 del
-/// contrato).
+/// Desenlace de un handler ante `main`: éxito, o salida por veredicto, que es lo
+/// que permite el contrato.
 ///
 /// Existe como tipo y no como `Result<(), CliError>` porque el veredicto **no es un
 /// error**: es un comando que corrió bien y cuyo resultado es negativo. El único caso
@@ -2335,12 +2336,12 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
 }
 
 // ─── Setup / Cleanup / Doctor ────────────────────────────────────────
-/// `setup`: delega en el motor y compone el sobre `--json` (§9.7).
+/// `setup`: delega en el motor y compone el sobre `--json`.
 ///
 /// Todo el cuerpo —la purga por plan, la idempotencia por presencia del snapshot, la
 /// reconversión por fecha del derivado y la escritura atómica— vive en
 /// `lifecycle::setup`. Aquí solo queda la prosa y el sobre, porque el parseo de la CLI
-/// y el emisor no están en ese crate (§6.3). `convert_marian_to_ct2` desaparece con
+/// y el emisor no están en ese crate. `convert_marian_to_ct2` desaparece con
 /// este cableado: su equivalente es `lifecycle::setup::convert`.
 async fn handle_setup(
     json_mode: bool,
@@ -2358,8 +2359,8 @@ async fn handle_setup(
         .map_err(|e| CliError::new(ExitCode::Error, "voice_store_init_failed", e.to_string()))?;
 
     // `--with-stt` es redundante: `parakeet-tdt-v3` ya está en la selección por
-    // defecto. Se acepta por compatibilidad y se dice por stderr, que es donde §9.1
-    // manda la información humana.
+    // defecto. Se acepta por compatibilidad y se dice por stderr, que es donde va la
+    // información humana.
     if with_stt {
         tracing::info!("--with-stt es redundante: parakeet-tdt-v3 ya está incluido en setup");
     }
@@ -2384,7 +2385,7 @@ async fn handle_setup(
     Ok(())
 }
 
-/// `cleanup`: delega íntegro en el motor (§9.6) y compone el sobre `--json`.
+/// `cleanup`: delega íntegro en el motor y compone el sobre `--json`.
 ///
 /// Lo que hay aquí es la conversión de tipos y la prosa; **la lista de destinos, el
 /// gate de categoría, la confirmación, la parada del daemon y el barrido** son los del
@@ -2628,7 +2629,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
 /// invocador (bug de auto-mate por imagen compartida en `v0.18.10`–`v0.18.25`). La
 /// guarda `pid != process::id()` previene la auto-muerte incluso si el PID leído fuera
 /// el del propio proceso.
-/// Resumen previo de `self update` (§9.4): qué versión se instala sobre cuál,
+/// Resumen previo de `self update`: qué versión se instala sobre cuál,
 /// dónde, por qué canal y de dónde se descarga. Es lo que se muestra **antes**
 /// de confirmar, en paralelo al resumen previo de `self install`.
 fn compose_update_summary(
@@ -2660,7 +2661,7 @@ fn compose_update_summary(
     out
 }
 
-/// `self install` y `self uninstall`: el grupo de §6.4, delegando en el motor.
+/// `self install` y `self uninstall`: el grupo de la CLI, delegando en el motor.
 ///
 /// El binario aporta lo que el motor no puede tener: el **control de procesos** —que
 /// vive en `avi-daemon` y `avi-tts`— y el **borrado diferido** de Windows, que necesita
@@ -2693,7 +2694,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             let outcome = lifecycle::install::install(&env, &options, &ProductProcesses)
                 .await
                 .map_err(lifecycle_error_to_cli)?;
-            // §9.1: `setup_failed` es un **éxito parcial** —el programa está instalado y
+            // `setup_failed` es un **éxito parcial** —el programa está instalado y
             // lo único que falta es la provisión—, con código propio. No es un `CliError`:
             // el resumen del paso 12 y el sobre se emiten igual, y lo único que cambia es
             // el `reason` y el código de salida. `Salida::Veredicto` es el mecanismo que ya
@@ -2799,7 +2800,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
         } => {
             let exe = std::env::current_exe()
                 .map_err(|e| CliError::new(ExitCode::Error, "self_update_failed", e.to_string()))?;
-            // Instalación registrada y canal (§8.2): sea cual sea la copia que
+            // Instalación registrada y canal: sea cual sea la copia que
             // ejecuta el comando, se opera sobre la registrada. Va antes del
             // bloqueo porque el directorio de programa registrado es lo que
             // dice dónde se toma.
@@ -2837,7 +2838,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             lifecycle::target::ensure_supported(target)
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
 
-            // ── Paso 1. Recuperación y bloqueo (§9.1) ────────────────────────
+            // ── Paso 1. Recuperación y bloqueo ────────────────────────────────
             // Sin staging en uso todavía: el que cree U2 no existe y todo
             // hermano con prefijo es huérfano por definición.
             let roots = lifecycle::cleanup::Roots::from_receipt(Some(&receipt));
@@ -2908,7 +2909,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 return Ok(Outcome::Done);
             }
 
-            // ── Resumen previo y confirmación (§9.1) ─────────────────────────
+            // ── Resumen previo y confirmación ────────────────────────────────
             // Normal `[S/n]`; degradación `[s/N]` con `confirmation_required`
             // sin terminal (`confirm.rs` sin cambios).
             let summary =
@@ -3050,7 +3051,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
 }
 
 /// `doctor`: compone el sobre a partir de la sección de ciclo de vida del motor y
-/// devuelve el **veredicto** como código de salida (§10 del contrato).
+/// devuelve el **veredicto** como código de salida, que es lo que permite el
+/// contrato.
 ///
 /// Un solo objeto en `stdout` **también cuando falla**: el veredicto va dentro, en
 /// `checks` y `failed`, y la salida es 1. Devolver `Err` aquí haría que `main` adjuntara
@@ -3064,7 +3066,8 @@ fn handle_doctor(json_mode: bool) -> Result<Outcome, CliError> {
     let failed = report.is_failure();
 
     if json_mode {
-        // El motor devuelve el reporte ya serializable y con las nueve claves de §9.8
+        // El motor devuelve el reporte ya serializable y con las nueve claves del
+        // contrato
         // más las del contrato: aquí solo se estampa la versión del sobre.
         let value = serde_json::to_value(&report)
             .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
@@ -3093,10 +3096,10 @@ fn handle_doctor(json_mode: bool) -> Result<Outcome, CliError> {
 
 /// Traduce un `reason` del motor a la variante de `ExitCode` que le corresponde.
 ///
-/// El motor no depende de `avi-core` (§6.3), así que el par `reason` + código viaja
+/// El motor no depende de `avi-core`, así que el par `reason` + código viaja
 /// como dato y esta es la traducción. Los enteros salen de la misma tabla cerrada, y
 /// cada `reason` sin variante propia —los que el ciclo 3 declare— cae en
-/// `ExitCode::Error`, que es lo que §9.1 permite mientras su ciclo no la declare.
+/// `ExitCode::Error`, que es lo que la tabla permite mientras su ciclo no la declare.
 fn lifecycle_error_to_cli(err: anyhow::Error) -> CliError {
     match err.downcast_ref::<lifecycle::LifecycleError>() {
         Some(failure) => CliError::new(
@@ -3108,7 +3111,7 @@ fn lifecycle_error_to_cli(err: anyhow::Error) -> CliError {
     }
 }
 
-/// Variante de `ExitCode` de cada `reason` de contrato (§9.1).
+/// Variante de `ExitCode` de cada `reason` de contrato.
 fn exit_code_for(reason: &str) -> ExitCode {
     match reason {
         "confirmation_required" | "usage_error" => ExitCode::InvalidInput,
@@ -3160,7 +3163,8 @@ impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
     }
 }
 
-/// Borrado del directorio de programa, con el mecanismo de plataforma (§9.5, paso 8).
+/// Borrado del directorio de programa, con el mecanismo de plataforma (paso 8 de
+/// la desinstalación).
 ///
 /// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso está dentro —que es
 /// el caso normal, porque el comando se invoca desde la propia instalación—, el
@@ -3175,7 +3179,7 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         // ejecutable en uso impide borrar su directorio. En Unix no la hay —el proceso
         // sigue vivo desde el inodo desenlazado—, así que responder `true` llevaría al
         // motor a `schedule`, que en Unix no tiene implementación, y `self uninstall`
-        // invocado desde la propia instalación (la vía que documenta §10.5) nunca
+        // invocado desde la propia instalación (la vía del canal `dev`) nunca
         // borraría el directorio de programa.
         #[cfg(not(windows))]
         {
@@ -3223,7 +3227,8 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         }
     }
 }
-/// Borrado de rutas del ciclo con el mecanismo de plataforma (§9.4, paso 10).
+/// Borrado de rutas del ciclo con el mecanismo de plataforma (paso 10 de la
+/// actualización).
 ///
 /// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso está dentro
 /// —el staging tras el traspaso—, el borrado directo es imposible y se programa
@@ -3294,7 +3299,7 @@ fn is_valid_identifier(ids: Option<&str>, more: Option<&str>) -> Result<(), CliE
     }
     Ok(())
 }
-/// Raíz de datos vigente (§7), donde vive el pidfile del daemon.
+/// Raíz de datos vigente, donde vive el pidfile del daemon.
 ///
 /// Va por el motor porque el pidfile es **su** esquema: `daemon_stop` lo escribe, lo
 /// lee y lo borra, y las lecturas tolerantes que este binario usaba eran una segunda
@@ -3304,7 +3309,7 @@ fn effective_data_dir() -> PathBuf {
 }
 
 /// `$HOME` del usuario, la misma clave que usa `lifecycle::path_unix` al escribir los
-/// bloques delimitados de §9.3.1. Se pasa al motor como dato porque la reversión
+/// bloques delimitados del `PATH`. Se pasa al motor como dato porque la reversión
 /// necesita **el mismo** `$HOME` con el que se escribió el bloque.
 fn home_dir() -> PathBuf {
     std::env::var("HOME")

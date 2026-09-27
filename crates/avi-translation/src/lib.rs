@@ -79,8 +79,8 @@ impl Ct2TranslationEngine {
                 // La hipótesis del decoder termina con el token `</s>` (EOS),
                 // que el detokenizador de ct2rs reconstruye como texto literal;
                 // el oráculo lo elimina al decodificar con el SentencePiece
-                // destino (los símbolos de control decodifican a cadena vacía,
-                // `model_loader.py`). Se sanea aquí para preservar la paridad
+                // destino (los símbolos de control decodifican a cadena vacía).
+                // Se sanea aquí para preservar la paridad
                 // de salida.
                 translated.trim_end_matches("</s>").trim_end().to_string()
             })

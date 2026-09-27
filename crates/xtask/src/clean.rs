@@ -1,5 +1,5 @@
 //! `xtask clean`: devuelve la máquina del desarrollador a un estado limpio por
-//! capas, para compilar, instalar o usar solo artefactos nuevos (§10.6):
+//! capas, para compilar, instalar o usar solo artefactos nuevos:
 //!
 //! | Capa | Flag | Contenido | Mecanismo |
 //! |---|---|---|---|
@@ -196,7 +196,7 @@ fn run_quiet(bin: &Path, args: &[&str]) {
         .status();
 }
 
-/// `true` si la ruta contiene el componente `Caskroom` (§8.2): la copia la
+/// `true` si la ruta contiene el componente `Caskroom`: la copia la
 /// gestiona Homebrew (criterio por componente, no por subcadena). Pura.
 pub(crate) fn path_has_caskroom(path: &Path) -> bool {
     path.components().any(|c| {
@@ -207,7 +207,7 @@ pub(crate) fn path_has_caskroom(path: &Path) -> bool {
 }
 
 /// `true` si la copia instalada del producto la gestiona Homebrew: el comando
-/// resuelto en el PATH está bajo `Caskroom` (§8.2). Mejor esfuerzo: sin
+/// resuelto en el PATH está bajo `Caskroom`. Mejor esfuerzo: sin
 /// comando instalado no hay canal `homebrew` que respetar.
 fn installed_copy_is_homebrew() -> bool {
     let name = format!("{}{}", APP_NAME, std::env::consts::EXE_SUFFIX);

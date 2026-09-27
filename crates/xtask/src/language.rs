@@ -46,7 +46,7 @@ const MIN_SEGMENT: usize = 4;
 /// `wer_total` en `avi-translation`, `total_samples`, `total_steps`, `total_cmp`,
 /// `STREAM_TOTAL_DEADLINE`, `t_total` y un `total` acumulador en cuatro ficheros).
 /// Meterlo daba 34 falsos positivos en el árbol ya limpio. Es el mismo caso que
-/// `variable`, documentado en F8 §7.2: palabra que en este código es inglés bien
+/// `variable`, documentado en F8: palabra que en este código es inglés bien
 /// puesto y por eso no es deuda.
 ///
 /// El script original traía `siguiente` dos veces (164 entradas, 163 distintas);

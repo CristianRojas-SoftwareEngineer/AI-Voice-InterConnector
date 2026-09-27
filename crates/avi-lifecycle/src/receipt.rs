@@ -1,9 +1,9 @@
 //! Recibo de instalación: qué se instaló, dónde, por qué canal y qué
-//! integración de `PATH` se aplicó (§8.1).
+//! integración de `PATH` se aplicó.
 //!
 //! El recibo es lo que permite reparar una instalación, revertir exactamente
 //! lo que se hizo en `PATH` al desinstalar y operar sobre la instalación
-//! registrada aunque el comando lo ejecute otra copia del binario (§8.2). Vive
+//! registrada aunque el comando lo ejecute otra copia del binario. Vive
 //! dentro del directorio de programa y se escribe de forma atómica, con fichero
 //! temporal hermano y renombrado, de modo que un corte a mitad no deje un
 //! recibo corrupto que la siguiente ejecución no pueda leer.
@@ -15,20 +15,19 @@
 //!
 //! **Los valores efectivos de las raíces se registran** (`roots`): aunque la
 //! variable de reubicación deje de estar definida, la actualización y la
-//! desinstalación operan sobre las mismas ubicaciones (§7, párrafo de
-//! reubicación).
+//! desinstalación operan sobre las mismas ubicaciones.
 
 use crate::channel::Channel;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Nombre del recibo dentro del directorio de programa (§8.1).
+/// Nombre del recibo dentro del directorio de programa.
 pub const RECEIPT_NAME: &str = "install-receipt.json";
 
 /// Versión del esquema que esta versión del motor sabe leer.
 pub const RECEIPT_SCHEMA_VERSION: u32 = 1;
 
-/// Integración de `PATH` efectivamente aplicada (§8.1 y §9.3.1). Los tres
+/// Integración de `PATH` efectivamente aplicada. Los tres
 /// campos son mutuamente excluyentes según la plataforma: en Unix el enlace
 /// simbólico y los bloques de perfil, en Windows la entrada de registro; lo que
 /// no aplique es `null` y no una cadena vacía, para que se distinga "no se
@@ -78,7 +77,7 @@ impl PathIntegration {
 }
 
 /// Raíces de datos y de modelos tal como quedaron resueltas en el momento de la
-/// instalación (§7, reubicación). Se guardan como valores efectivos, no como
+/// instalación. Se guardan como valores efectivos, no como
 /// nombres de variable, para que una desinstalación posterior no dependa de que
 /// la variable siga definida.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,8 +86,8 @@ pub struct Roots {
     pub cache_dir: PathBuf,
 }
 
-/// Recibo de instalación completo, con la estructura de §8.1 y sin campos
-/// inventados.
+/// Recibo de instalación completo, con la estructura que el instalador escribe y
+/// sin campos inventados.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallReceipt {
     pub schema_version: u32,
@@ -102,8 +101,7 @@ pub struct InstallReceipt {
     pub files: Vec<String>,
     pub path_integration: PathIntegration,
     pub roots: Roots,
-    /// Instante de la instalación en RFC 3339 UTC, que es lo que muestra el
-    /// ejemplo de §8.1.
+    /// Instante de la instalación en RFC 3339 UTC.
     pub installed_at: String,
     /// Origen del bundle, si la instalación vino de un archivo publicado; vacío
     /// para una reparación o para el canal `dev`.
@@ -114,7 +112,7 @@ pub struct InstallReceipt {
 impl InstallReceipt {
     /// Recibo de una instalación nueva. `roots` y `install_dir` se pasan ya
     /// resueltos: quien escribe es quien sabe qué valor efectivo se aplicó.
-    // Los ocho campos son los de §8.1 que el instalador conoce uno a uno; un
+    // Los ocho campos son los que el instalador conoce uno a uno; un
     // agrupador aquí solo movería la misma lista un sitio más arriba.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -148,7 +146,7 @@ impl InstallReceipt {
 ///
 /// Es lo que permite que `self update` y `self uninstall` operen sobre la
 /// instalación registrada sea cual sea la copia del binario que ejecuta el
-/// comando (§8.2), aunque la variable de reubicación ya no esté definida.
+/// comando, aunque la variable de reubicación ya no esté definida.
 pub fn effective_roots(receipt: Option<&InstallReceipt>) -> Roots {
     match receipt {
         Some(receipt) => receipt.roots.clone(),
@@ -165,7 +163,7 @@ pub fn receipt_path(program_dir: &Path) -> PathBuf {
 }
 
 /// Lee el recibo del directorio de programa. `Ok(None)` si no hay recibo: una
-/// instalación sin recibo **no se adopta** (§14.2), se trata como no instalada.
+/// instalación sin recibo **no se adopta**, se trata como no instalada.
 pub fn read_from(program_dir: &Path) -> anyhow::Result<Option<InstallReceipt>> {
     let path = receipt_path(program_dir);
     let text = match std::fs::read_to_string(&path) {
@@ -213,9 +211,9 @@ pub fn write_to(receipt: &InstallReceipt, program_dir: &Path) -> anyhow::Result<
     }
 }
 
-/// Instante actual en RFC 3339 UTC (`2026-09-25T18:00:00Z`), el formato del
-/// ejemplo de §8.1. Sin `chrono` ni `time` en el árbol, y añadir una dependencia
-/// por una fecha no lo compensa: el cálculo es de día juliano a fecha civil.
+/// Instante actual en RFC 3339 UTC (`2026-09-25T18:00:00Z`). Sin `chrono` ni
+/// `time` en el árbol, y añadir una dependencia por una fecha no lo compensa: el
+/// cálculo es de día juliano a fecha civil.
 ///
 /// Lo comparte el pidfile del daemon, que también lleva `started_at` en el mismo
 /// formato; por eso es `pub(crate)` y no privado.
@@ -465,7 +463,7 @@ mod tests {
         );
         write_to(&receipt, &dir).unwrap();
 
-        // La variable desaparece: es el caso de §7 cuando el usuario borra su
+        // La variable desaparece: es el caso cuando el usuario borra su
         // entorno o cambia de máquina el directorio de programa.
         std::env::remove_var("AVI_DATA_DIR");
         std::env::remove_var("AVI_CACHE_DIR");

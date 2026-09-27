@@ -1,5 +1,5 @@
-//! Protocolo de parada del daemon y del proceso residente (§9.3, paso 5; §9.5,
-//! paso 5; §9.6).
+//! Protocolo de parada del daemon y del proceso residente. Es el paso 5 de la
+//! instalación y de la desinstalación, y un paso propio de la limpieza.
 //!
 //! Este bloque **no se reescribe: se traslada**. El protocolo tiene historia real
 //! detrás —`daemon.pid` con esquema plano, `POST /shutdown` acotado, árbol
@@ -20,8 +20,8 @@
 //!
 //! **El `pidfile` cambia de sitio con D4.** La resolución usa la raíz de datos
 //! vigente, de modo que un daemon vivo de una versión anterior —cuyo pidfile vivía
-//! en `%APPDATA%`— **no se encuentra**. Es un supuesto asumido (§14.2, §14.3: la
-//! audiencia previa es nula) y está escrito en el módulo para que no se lea como un
+//! en `%APPDATA%`— **no se encuentra**. Es un supuesto asumido, sin audiencia previa
+//! que lo apoye, y está escrito en el módulo para que no se lea como un
 //! olvido.
 //!
 //! **No hay cliente HTTP.** El plan declara que este crate se construye sin él, así
@@ -34,7 +34,7 @@ use crate::LifecycleError;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Plazo global de la parada (§9.3, paso 5). Viene de `STOP_DEADLINE_GLOBAL` en el
+/// Plazo global de la parada. Viene de `STOP_DEADLINE_GLOBAL` en el
 /// binario y no cambia: es el presupuesto de todo el protocolo.
 pub const STOP_DEADLINE_GLOBAL: Duration = Duration::from_secs(8);
 
@@ -49,22 +49,22 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Dirección por defecto cuando no hay pidfile. Es la que publica el binario.
 pub const DEFAULT_ADDR: &str = "127.0.0.1:8765";
 
-/// Nombre del pidfile dentro de la raíz de datos (§7: `daemon.pid`).
+/// Nombre del pidfile dentro de la raíz de datos.
 pub const PID_FILE: &str = "daemon.pid";
 
-/// Ruta del pidfile bajo la raíz de datos de §7.
+/// Ruta del pidfile bajo la raíz de datos.
 pub fn pid_path(data_dir: &Path) -> PathBuf {
     data_dir.join(PID_FILE)
 }
 
-/// Ruta del pidfile con las raíces de §7 ya resueltas.
+/// Ruta del pidfile con las raíces ya resueltas.
 pub fn pid_path_default() -> PathBuf {
     pid_path(&crate::data_dir())
 }
 
 /// Contenido del pidfile tal como está en disco. El esquema es plano a propósito:
 /// un binario antiguo tiene que poder leerlo y un binario nuevo tiene que poder
-/// ignorarlo sin romper (§8.1, el mismo criterio que el recibo).
+/// ignorarlo sin romper, con el mismo criterio que el recibo.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PidFile {
     pub pid: u32,
@@ -179,7 +179,7 @@ pub trait ProcessControl {
 }
 
 /// Desenlace de la parada, que es lo que permite producir `daemon_stop_failed` y
-/// lo que necesita el resumen de §9.4 para decir cómo reiniciar el daemon.
+/// lo que necesita el resumen de la operación para decir cómo reiniciar el daemon.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StopOutcome {
     /// El daemon estaba en ejecución antes de parar. Es el dato que el resumen
@@ -204,7 +204,7 @@ impl StopOutcome {
     }
 }
 
-/// Traduce un desenlace que no paró a `daemon_stop_failed` (§9.1), que es un error
+/// Traduce un desenlace que no paró a `daemon_stop_failed`, que es un error
 /// con **nada modificado**: la operación que llama aborta antes de tocar el disco.
 pub fn require_stopped(outcome: &StopOutcome) -> Result<(), LifecycleError> {
     if outcome.stopped {
@@ -235,8 +235,8 @@ pub async fn stop(
     let addr = resolve_addr(data_dir, default_addr);
     let previous_pid = read_pid(data_dir);
     // "Estaba en ejecución" se decide antes de tocar nada: es lo que el resumen de
-    // §9.4 necesita para decir cómo reiniciarlo, y no puede depender de si la
-    // parada tuvo éxito.
+    // la operación necesita para decir cómo reiniciarlo, y no puede depender de si
+    // la parada tuvo éxito.
     let was_running = previous_pid.is_some_and(|pid| control.pid_alive(pid)) || probe(&addr).await;
     crate::faults::trip(crate::faults::FaultPoint::OnDaemonStop).ok();
 
@@ -315,7 +315,7 @@ pub async fn stop(
 }
 
 /// Verificación del residente por su PID registrado, que es el predicado que
-/// §9.1 llama "verificación a nivel de sistema" en el paso 3.
+/// la tabla de comprobaciones llama "verificación a nivel de sistema".
 fn resident_alive_by_pid(data_dir: &Path, control: &dyn ProcessControl) -> bool {
     let pid = read_resident_pid(data_dir);
     pid != 0 && control.resident_pid_alive(pid)

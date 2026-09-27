@@ -1,7 +1,7 @@
-//! `xtask install`: instala el build local por el camino del release (§10.5).
+//! `xtask install`: instala el build local por el camino del release.
 //!
 //! Ejecuta `package --no-compress` en un staging hermano del directorio de
-//! programa (mismo volumen, §7) y después
+//! programa (mismo volumen) y después
 //! `<staging>/ai-voice-interconnector self install --channel dev` (`--channel`
 //! es la opción oculta del producto): el build local queda instalado por el
 //! mismo camino que un release, de modo que cada instalación de desarrollo
@@ -68,7 +68,7 @@ fn remove_staging(dir: &Path) {
 
 /// Ejecuta `package --no-compress --flat` por proceso contra `out`: el
 /// empaquetado real, sin duplicar su lógica aquí. `--flat` deja el árbol plano
-/// en `out`, que es el layout de staging que espera el motor (§7).
+/// en `out`, que es el layout de staging que espera el motor.
 fn run_package_no_compress(xtask: &Path, out: &Path) -> Result<()> {
     let status = std::process::Command::new(xtask)
         .args(["package", "--no-compress", "--flat", "--out"])
@@ -81,7 +81,7 @@ fn run_package_no_compress(xtask: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Staging hermano del directorio de programa (mismo volumen, §7): el
+/// Staging hermano del directorio de programa (mismo volumen): el
 /// reemplazo transaccional de `self install` usa `rename`, que exige mismo
 /// filesystem. `temp_dir()` vale en Windows (%TEMP% y %LOCALAPPDATA% suelen
 /// compartir volumen) pero rompe donde no (p. ej. `/tmp` tmpfs frente a

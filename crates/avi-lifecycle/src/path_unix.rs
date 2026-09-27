@@ -1,5 +1,5 @@
 //! Integración de `PATH` en Unix: enlace simbólico y bloque delimitado de
-//! perfiles (§9.3.1, decisión cerrada D2).
+//! perfiles, por decisión cerrada D2.
 //!
 //! D2 es lo que hace este módulo necesario donde el instalador heredado no
 //! tocaba nada: **en Unix el `PATH` persistente se modifica por defecto**, se
@@ -17,19 +17,19 @@
 use crate::LifecycleError;
 use std::path::{Path, PathBuf};
 
-/// Marca de apertura del bloque delimitado (§9.3.1).
+/// Marca de apertura del bloque delimitado.
 pub const BLOCK_BEGIN: &str = "# >>> ai-voice-interconnector >>>";
-/// Marca de cierre del bloque delimitado (§9.3.1).
+/// Marca de cierre del bloque delimitado.
 pub const BLOCK_END: &str = "# <<< ai-voice-interconnector <<<";
 
-/// Cuerpo del bloque de §9.3.1, con la línea exacta que publica la
+/// Cuerpo del bloque, con la línea exacta que publica la
 /// especificación.
 ///
 /// `bin_dir` se interpola como `$HOME/.local/bin` cuando es la ruta convencional,
 /// que es lo que hace portable el bloque entre máquinas del mismo usuario, y como
 /// ruta absoluta cuando `AVI_BIN_DIR` la reubica. El resultado es byte a byte el
 /// bloque de la especificación en el caso normal.
-/// Forma en la que el bloque del §9.3.1 escribe la entrada del `PATH`: `$HOME/...`
+/// Forma en la que el bloque escribe la entrada del `PATH`: `$HOME/...`
 /// cuando el directorio del enlace es `$HOME/.local/bin`, y la ruta absoluta en el
 /// resto de los casos.
 ///
@@ -52,7 +52,7 @@ pub fn block_text(bin_dir: &Path, home: &Path) -> String {
     )
 }
 
-/// Los shells que §9.3.1 nombra, en la forma en que se detectan.
+/// Los shells que la tabla nombra, en la forma en que se detectan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {
     Sh,
@@ -62,7 +62,7 @@ pub enum Shell {
 }
 
 impl Shell {
-    /// Lee el shell del usuario de `$SHELL`, que es de lo que §9.3.1 dice "el de
+    /// Lee el shell del usuario de `$SHELL`, que es de lo que la tabla dice "el de
     /// `$SHELL`". Desconocido se trata como `sh`, que es el caso más restrictivo
     /// y del que los demás heredan.
     pub fn from_env(shell: Option<&str>) -> Self {
@@ -79,9 +79,9 @@ impl Shell {
 /// Archivos de arranque a los que hay que añadir el bloque, según el shell
 /// detectado y los que ya tengan archivo.
 ///
-/// `home`, `zdotdir` y `exists` son parámetros —como la clave de registro en
-/// §9.3.1— para que la prueba no dependa del `HOME` de quien la ejecuta ni de si
-/// esa máquina tiene bash. El orden es el de la tabla de §9.3.1: `~/.profile`
+/// `home`, `zdotdir` y `exists` son parámetros —como la clave de registro en la
+/// integración del `PATH`— para que la prueba no dependa del `HOME` de quien la
+/// ejecuta ni de si esa máquina tiene bash. El orden es el de la tabla: `~/.profile`
 /// siempre, `~/.bashrc` solo si existe, el `.zshrc` del shell de `$SHELL` y el
 /// archivo propio de fish.
 pub fn profile_targets<F>(
@@ -107,7 +107,7 @@ where
 }
 
 /// ¿Hace falta el bloque? Solo si el directorio del enlace no está ya en el
-/// `PATH` de la sesión (§9.3.1).
+/// `PATH` de la sesión.
 ///
 /// Se aceptan las dos formas de la misma entrada: la expandida y la que el bloque
 /// escribe sin expandir (`$HOME/.local/bin`), porque un `PATH` con la segunda no
@@ -206,7 +206,7 @@ fn write(path: &Path, content: &str) -> std::io::Result<()> {
     std::fs::write(path, content)
 }
 
-/// Qué hay en la ruta del enlace (§9.3.1). La clasificación va aparte de la
+/// Qué hay en la ruta del enlace. La clasificación va aparte de la
 /// creación para que la regla —"solo es conflicto lo que no es enlace nuestro"—
 /// se pueda afirmar sin crear enlaces, que en Windows y dentro de contenedores
 /// exigen privilegios que las pruebas no tienen.
@@ -220,7 +220,7 @@ pub enum Existing {
     Foreign,
 }
 
-/// Regla de §9.3.1 como función pura, para que el `reason` y su código se
+/// Regla como función pura, para que el `reason` y su código se
 /// afirmación en cualquier plataforma.
 pub fn decide_existing(
     existing: &Existing,
@@ -271,7 +271,7 @@ pub fn classify_existing(link: &Path, program_exe: &Path) -> Existing {
         }
         // `read_link` sobre algo que no es un enlace da `InvalidInput` en Unix y
         // también puede dar `PermissionDenied`: en los dos casos hay algo ahí que
-        // no es un enlace nuestro, que es exactamente lo que §9.3.1 llama
+        // no es un enlace nuestro, que es exactamente lo que la regla llama
         // conflicto.
         Err(_) => Existing::Foreign,
     }
@@ -290,7 +290,7 @@ pub fn classify_existing(link: &Path, _program_exe: &Path) -> Existing {
 }
 
 /// Crea el enlace simbólico de forma atómica: enlace temporal hermano y
-/// renombrado (§9.3.1). Devuelve `path_conflict` si en la ruta hay algo que no sea
+/// renombrado. Devuelve `path_conflict` si en la ruta hay algo que no sea
 /// un enlace propio, salvo `force`.
 #[cfg(unix)]
 pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<(), LifecycleError> {
@@ -334,8 +334,8 @@ pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<()
     }
 }
 
-/// Revierte el enlace, **solo si apunta al directorio de programa** (§9.5,
-/// paso 7). Un enlace a otra cosa no es de la instalación y no se toca.
+/// Revierte el enlace, **solo si apunta al directorio de programa** (paso 7
+/// de la desinstalación). Un enlace a otra cosa no es de la instalación y no se toca.
 #[cfg(unix)]
 pub fn revert_symlink(link: &Path, program_exe: &Path) -> bool {
     match classify_existing(link, program_exe) {
@@ -359,7 +359,7 @@ mod tests {
     /// El bloque se escribe una vez y no se duplica por reintentarlo: es el
     /// criterio 2 aplicado al lado de Unix.
     ///
-    /// Se afirma además que lo que se escribe es exactamente el bloque de §9.3.1
+    /// Se afirma además que lo que se escribe es exactamente el bloque publicado
     /// cuando el directorio del enlace es el convencional, porque un bloque
     /// distinto sería un contrato distinto.
     #[test]
@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(
             body,
             format!("{original}\n{block}"),
-            "el contenido es el original más el bloque de §9.3.1, con `$HOME` sin expandir"
+            "el contenido es el original más el bloque, con `$HOME` sin expandir"
         );
         assert_eq!(
             block,
@@ -387,7 +387,7 @@ mod tests {
                 "{BLOCK_BEGIN}\ncase \":${{PATH}}:\" in *\":$HOME/.local/bin:\"*) ;; *) \
                  export PATH=\"$HOME/.local/bin:$PATH\" ;; esac\n{BLOCK_END}"
             ),
-            "y el bloque es literalmente el de §9.3.1"
+            "y el bloque es literalmente el publicado"
         );
 
         // Las dos formas de idempotencia: repetir y volver a pedir el bloque.
@@ -474,7 +474,7 @@ mod tests {
     /// En la ruta del enlace hay algo que no es enlace propio: `path_conflict` con
     /// su código de la tabla cerrada, y `--force` lo deja pasar.
     ///
-    /// La regla se afirma por sus tres estados, porque §9.3.1 dice "solo es
+    /// La regla se afirma por sus tres estados, porque la regla dice "solo es
     /// conflicto lo que no es enlace nuestro": repetir sobre un enlace nuestro
     /// **no** es conflicto, y ese es el caso que una implementación que mirara
     /// solo `exists()` rompería en cada reejecución.
@@ -513,7 +513,7 @@ mod tests {
         );
 
         // Y la clasificación real: un fichero de texto donde debería ir el enlace
-        // es exactamente el caso que §9.3.1 llama conflicto.
+        // es exactamente el caso que la regla llama conflicto.
         write_file(&link, "no soy un enlace\n");
         assert_eq!(
             classify_existing(&link, &exe),
@@ -571,7 +571,7 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
-    /// Los archivos de arranque que se tocan son los de la tabla de §9.3.1, y
+    /// Los archivos de arranque que se tocan son los de la tabla, y
     /// solo se añade `.bashrc` si existe: escribirlo en una máquina sin bash sería
     /// crear un archivo que el usuario no pidió.
     #[test]

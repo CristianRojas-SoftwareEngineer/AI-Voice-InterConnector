@@ -1,12 +1,11 @@
-//! Canal de una copia del binario: por dónde se instaló y quién la gestiona
-//! (§8.2).
+//! Canal de una copia del binario: por dónde se instaló y quién la gestiona.
 //!
 //! El canal decide qué puede hacer cada comando sobre una instalación. Dos
-//! casos de la tabla de §8.2 se resuelven con esto: una copia de Homebrew no se
+//! casos de la tabla de canales se resuelven con esto: una copia de Homebrew no se
 //! actualiza ni se desinstala desde aquí sino con `brew`, y una instalación de
 //! desarrollo (`cargo xtask install`) no se actualiza por el canal publicado.
 //!
-//! **Precedencia** (§8.2): `homebrew` si el ejecutable resuelto está bajo el
+//! **Precedencia**: `homebrew` si el ejecutable resuelto está bajo el
 //! prefijo de Homebrew; si no, el canal que declara el recibo; si no hay recibo,
 //! `unmanaged`. Homebrew gana sobre el recibo porque el Cask no deja recibo —lo
 //! gestiona otra herramienta— y porque una copia del Cask ejecutándose dentro de
@@ -21,12 +20,12 @@ use crate::receipt::InstallReceipt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Componente de ruta que delata una instalación gestionada por Homebrew. §8.2
-/// lo nombra como criterio, no como prefijo fijo, porque el prefijo cambia
+/// Componente de ruta que delata una instalación gestionada por Homebrew. Se
+/// nombra como criterio, no como prefijo fijo, porque el prefijo cambia
 /// entre `/opt/homebrew` y `/usr/local` según la arquitectura.
 const HOMEBREW_MARKER: &str = "Caskroom";
 
-/// Vía por la que se instaló la copia (§8.2).
+/// Vía por la que se instaló la copia.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
@@ -84,7 +83,7 @@ pub fn is_homebrew_path(exe: &Path) -> bool {
     })
 }
 
-/// Canal de la copia que se está ejecutando, con la precedencia de §8.2:
+/// Canal de la copia que se está ejecutando, con la precedencia de la tabla:
 /// Homebrew sobre el recibo, el recibo sobre `unmanaged`.
 pub fn detect(exe: &Path, receipt: Option<&InstallReceipt>) -> Channel {
     if is_homebrew_path(exe) {
@@ -98,7 +97,7 @@ pub fn detect(exe: &Path, receipt: Option<&InstallReceipt>) -> Channel {
 
 /// Directorio de programa sobre el que un comando de ciclo de vida opera: el
 /// de la instalación registrada si hay recibo, y el de la convención si no lo
-/// hay (§8.2). Que sea independiente de la copia que ejecuta el comando es lo
+/// hay. Que sea independiente de la copia que ejecuta el comando es lo
 /// que permite que `self uninstall` quite la instalación aunque se invoque desde
 /// `target/`.
 pub fn registered_install_dir(receipt: Option<&InstallReceipt>) -> PathBuf {

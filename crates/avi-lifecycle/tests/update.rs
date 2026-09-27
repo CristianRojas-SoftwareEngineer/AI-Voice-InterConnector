@@ -1,4 +1,4 @@
-//! Criterios de aceptación de §15 para `self update`: del **11** al **16**.
+//! Criterios de aceptación del plan para `self update`: del **11** al **16**.
 //!
 //! Los seis criterios de este ciclo se prueban contra el servidor falso del arnés
 //! (`support::FakeReleaseServer`), que suplanta al GitHub real con
@@ -48,7 +48,7 @@ use support::Inert;
 use support::{FakeReleaseServer, Models, Sandbox};
 
 /// Instalación registrada de `version` en el sandbox, sin pasar por
-/// `self install`: escribe el ejecutable y el recibo de §8.1. Es lo que necesitan
+/// `self install`: escribe el ejecutable y el recibo. Es lo que necesitan
 /// las pruebas de actualización, cuyo objeto es la actualización y no la
 /// colocación.
 fn install_version(sandbox: &Sandbox, version: &str) -> InstallReceipt {
@@ -475,7 +475,7 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
     assert_eq!(installed.receipt.version, "0.24.0");
 }
 
-/// Sin el feature `faults` no hay inyección, y eso es una garantía de §13 y no
+/// Sin el feature `faults` no hay inyección, y eso es una garantía del producto y no
 /// una carencia: el binario distribuido no puede interrumpirse a propósito. El
 /// traspaso con un ejecutable inexistente falla por el lanzamiento, no por un
 /// fallo inyectado, y la 0.23.1 sigue operativa.
@@ -520,7 +520,8 @@ fn criterion_14_fault_injection_is_inert_without_the_feature() {
 /// **Criterio 15.** En los canales `homebrew` y `dev`, `self update` termina con
 /// `externally_managed` e indica el comando correcto.
 ///
-/// La detección es la de §8.2 (el prefijo manda sobre el recibo, el recibo sobre
+/// La detección es la de la tabla de canales (el prefijo manda sobre el recibo, el recibo
+/// sobre
 /// `unmanaged`) y el `reason` con su código es el de la tabla cerrada; el binario
 /// lo emite antes de tocar la red o el disco, así que aquí se afirma que nada se
 /// toca. El comando exacto de cada canal es el que el brazo `Update` anuncia.
@@ -855,7 +856,7 @@ fn criterion_update_no_terminal_refuses_destructive() {
     assert_eq!(
         lines,
         vec!["destructive=confirmation_required/2"],
-        "sin terminal y sin `--yes` lo destructivo se niega con el 2 de §9.1"
+        "sin terminal y sin `--yes` lo destructivo se niega con el 2 de la tabla de reasons"
     );
 }
 
@@ -881,7 +882,7 @@ fn child_destructive_without_terminal() {
         .downcast_ref::<LifecycleError>()
         .expect("la negativa viaja como `LifecycleError`");
     assert_eq!(failure.reason, "confirmation_required");
-    assert_eq!(failure.exit_code, 2, "error de uso (§9.1)");
+    assert_eq!(failure.exit_code, 2, "error de uso");
     support::report_line(&format!(
         "destructive={}/{}",
         failure.reason, failure.exit_code

@@ -1,4 +1,4 @@
-//! Criterios de aceptación de §15 que le tocan al Ciclo 1, una prueba por criterio.
+//! Criterios de aceptación del plan que le tocan al Ciclo 1, una prueba por criterio.
 //!
 //! Los once criterios de este ciclo son el **2**, el **6**, el **7**, el **9** —que solo
 //! se puede ejecutar en macOS y por eso vive en `tests/quarantine.rs`—, y del **17** al
@@ -6,12 +6,13 @@
 //! cada aserción, para que el informe de ground truth mapee sin ambigüedad.
 //!
 //! Todas las pruebas usan el mismo arnés (`tests/support/mod.rs`), que hace las dos
-//! cosas que §13 exige y que no son la misma: **declarar las cuatro variables de
-//! reubicación de §7** apuntando al sandbox, para que lo que el motor resuelve por el
+//! cosas que el aislamiento exige y que no son la misma: **declarar las cuatro
+//! variables de
+//! reubicación** apuntando al sandbox, para que lo que el motor resuelve por el
 //! entorno caiga dentro del sandbox, y **pasar las mismas rutas como dato** en `Env` y
 //! `Roots`, que es como las recibe en producción. En Windows las Known Folders ignoran
 //! `LOCALAPPDATA`, así que un sandbox que se apoyara en ellas no estaría probando nada
-//! del mecanismo de §7.
+//! del mecanismo de reubicación.
 //!
 //! Ninguna prueba depende de red, de ONNX Runtime ni del motor TTS: el bundle es
 //! sintético y sale de `packaging/bundle-manifest.json`. El único proceso externo que
@@ -39,7 +40,7 @@ use std::path::{Path, PathBuf};
 use support::{Inert, Models, Now, Sandbox};
 
 /// Recibo con el instante de instalación neutralizado, para comparar dos pasadas por
-/// todo lo demás. `installed_at` es lo único que §8.1 declara que cambia entre dos
+/// todo lo demás. `installed_at` es lo único que el esquema declara que cambia entre dos
 /// instalaciones de la misma versión.
 fn normalized_receipt(receipt: &InstallReceipt) -> InstallReceipt {
     let mut copy = receipt.clone();
@@ -47,7 +48,8 @@ fn normalized_receipt(receipt: &InstallReceipt) -> InstallReceipt {
     copy
 }
 
-/// Estado del sandbox sin el archivo de bloqueo, que §9.1 crea al tomar el bloqueo y que
+/// Estado del sandbox sin el archivo de bloqueo, que la recuperación crea al tomar el
+/// bloqueo y que
 /// no es «nada modificado» sino el mecanismo que serializa las operaciones.
 fn state_without_lock(sandbox: &Sandbox) -> Vec<(String, u64)> {
     let mut out: Vec<(String, u64)> = sandbox
@@ -180,9 +182,8 @@ fn criterion_2_install_twice_is_idempotent() {
     );
 
     // ── Segunda instalación, desde el mismo bundle ──────────────────────────────
-    // El bundle se repone porque la colocación **mueve** los archivos desde el origen
-    // (§9.3.6.2). Es también lo que hace el bootstrap de §9.2, que extrae en un staging
-    // nuevo cada vez.
+    // El bundle se repone porque la colocación **mueve** los archivos desde el origen.
+    // Es también lo que hace el bootstrap, que extrae en un staging nuevo cada vez.
     let exe = sandbox.write_bundle(&sandbox.staging);
     let second = runtime
         .block_on(install::install(
@@ -330,7 +331,7 @@ fn criterion_2_final_summary_reports_the_path_state_once() {
     );
     assert!(
         lines[0].contains("abre una terminal nueva"),
-        "criterio 2: con la indicación de §9.3.1, que solo aparece si se acaba de escribir: {}",
+        "criterio 2: con la indicación de terminal nueva, que solo aparece si se acaba de escribir: {}",
         lines[0]
     );
 
@@ -453,7 +454,7 @@ fn criterion_6_no_setup_provisions_nothing() {
         receipt::read_from(&sandbox.program_dir)
             .expect("criterio 6: se lee el recibo")
             .is_some(),
-        "criterio 6: el programa queda instalado, que es lo que §9.3 paso 11 promete"
+        "criterio 6: el programa queda instalado, que es lo que promete el paso 11"
     );
 }
 
@@ -471,7 +472,8 @@ fn criterion_6_no_setup_provisions_nothing() {
 /// comprueba contra el disco. La del `reason` se comprueba sobre
 /// [`install::Outcome::lifecycle_error`], que es el punto único donde el motor decide el
 /// `reason` de la operación: `setup_failed` con el código `11` de la tabla cerrada, que es
-/// lo que §9.1 declara como **éxito parcial** y lo que el cableado convierte en código de
+/// lo que la tabla de reasons declara como **éxito parcial** y lo que el cableado convierte
+/// en código de
 /// salida. Y se afirma también la separación de los dos `reason`, que es lo que mantiene
 /// intacto el criterio del ciclo 2: el de la **operación** es `setup_failed` y el del
 /// **fallo de provisión** viaja anidado, y en este caso es `ct2_conversion_failed`.
@@ -547,14 +549,14 @@ fn criterion_6_setup_failure_keeps_install() {
     );
     assert_eq!(
         cause.exit_code, 1,
-        "criterio 6: y el código genérico, porque §9.1 no le declara fila propia; el código \
+        "criterio 6: y el código genérico, porque la tabla no le declara fila propia; el código \
          de salida del proceso es el de la operación, no este"
     );
 
     // ── Mitad 2: termina con `setup_failed` y el código 11 ────────────────────
     let failure = outcome
         .lifecycle_error()
-        .expect("criterio 6: §9.1 declara `setup_failed` para este desenlace");
+        .expect("criterio 6: `setup_failed` es el reason de este desenlace");
     assert_eq!(
         failure.reason, "setup_failed",
         "criterio 6: el `reason` de la operación es `setup_failed`"
@@ -569,7 +571,7 @@ fn criterion_6_setup_failure_keeps_install() {
         "criterio 6: el cableado traduce ese `reason` al mismo entero, que es lo que evita \
          que las dos copias del 11 diverjan"
     );
-    // El mensaje dice las dos cosas que §9.3 paso 11 promete: qué no se completó y que
+    // El mensaje dice las dos cosas que promete el paso 11: qué no se completó y que
     // basta reintentar con `setup`.
     assert!(
         failure.message.contains("no se completó"),
@@ -996,7 +998,8 @@ fn criterion_18_keep_data_preserves_state() {
 /// omite nunca, y las dos operaciones destructivas del alcance del ciclo se ejecutan en el
 /// hijo: `self uninstall` y `cleanup --all`.
 ///
-/// La comparación de disco ignora el archivo de bloqueo a propósito: §9.1 lo crea en el
+/// La comparación de disco ignora el archivo de bloqueo a propósito: la recuperación lo
+/// crea en el
 /// paso 1, antes del plan y de la confirmación, y «no borra nada» no es «no escribe el
 /// mecanismo que serializa las operaciones».
 #[test]
@@ -1045,7 +1048,7 @@ fn criterion_19_no_tty_without_yes_refuses() {
         );
         assert_eq!(
             code, "2",
-            "criterio 19: `{operation}` devuelve el error de uso de §9.1"
+            "criterio 19: `{operation}` devuelve el error de uso"
         );
     }
 
@@ -1101,7 +1104,7 @@ fn child_without_terminal() {
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("criterio 19: el fallo es un `LifecycleError`");
     assert_eq!(failure.reason, "confirmation_required");
-    assert_eq!(failure.exit_code, 2, "criterio 19: error de uso (§9.1)");
+    assert_eq!(failure.exit_code, 2, "criterio 19: error de uso");
     support::report_line(&format!(
         "uninstall={}/{}",
         failure.reason, failure.exit_code
@@ -1122,7 +1125,7 @@ fn child_without_terminal() {
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("criterio 19: el fallo es un `LifecycleError`");
     assert_eq!(failure.reason, "confirmation_required");
-    assert_eq!(failure.exit_code, 2, "criterio 19: error de uso (§9.1)");
+    assert_eq!(failure.exit_code, 2, "criterio 19: error de uso");
     support::report_line(&format!("cleanup={}/{}", failure.reason, failure.exit_code));
 
     // Y el disco está intacto. Sin `--yes` no se puede haber borrado nada, y esta
@@ -1173,7 +1176,7 @@ fn criterion_20_dry_run_does_not_touch_disk() {
         "criterio 20: el plan de desinstalación no está vacío"
     );
     // Los destinos de estado llevan el tamaño recursivo de la ruta, que es la cifra que
-    // §9.1 pide listar. Se afirma que **coincide con la medida** y no solo que es
+    // la tabla pide listar. Se afirma que **coincide con la medida** y no solo que es
     // positiva, porque un cero fijo pasaría la comprobación débil y no sería un tamaño.
     for dest in &plan.state.targets {
         assert_eq!(
@@ -1303,7 +1306,7 @@ fn criterion_20_dry_run_does_not_touch_disk() {
 /// Se cubren las dos formas de «ya limpio»: la repetición sobre el mismo sandbox, que es
 /// la que un usuario llega por accidente, y el sistema en el que nunca se instaló, que es
 /// la que llega por un `cleanup --all` previo. En los dos casos el desenlace es **éxito**,
-/// no un error: `not_installed` es un desenlace y §9.1 lo clasifica así para
+/// no un error: `not_installed` es un desenlace y la tabla lo clasifica así para
 /// `self uninstall`.
 #[test]
 fn criterion_21_uninstall_is_idempotent() {
@@ -1418,11 +1421,11 @@ fn criterion_22_cleanup_scope_and_usage_error() {
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("criterio 22: el fallo declara un `reason`");
     assert_eq!(failure.reason, "usage_error");
-    assert_eq!(failure.exit_code, 2, "criterio 22: error de uso (§9.1)");
+    assert_eq!(failure.exit_code, 2, "criterio 22: error de uso");
     assert_eq!(
         sandbox.snapshot(),
         before,
-        "criterio 22: y no borra nada, ni siquiera el barrido de §9.6"
+        "criterio 22: y no borra nada, ni siquiera el barrido transversal"
     );
 
     // ── Cada categoría, en su sandbox ──────────────────────────────────────────

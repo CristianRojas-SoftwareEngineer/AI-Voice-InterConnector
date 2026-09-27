@@ -1,10 +1,10 @@
-//! Limpieza de la cuarentena de macOS (§9.3, paso 7; §12).
+//! Limpieza de la cuarentena de macOS, que es el paso 7 de la instalación.
 //!
 //! Un bundle descargado con el navegador y extraído con el Finder llega a
 //! `com.apple.quarantine` puesto en **todos** sus archivos. El instalador heredado lo
 //! quita solo del ejecutable, y eso no basta: el motor (`vendor/qwen3-tts/qwen_tts`)
 //! se **ejecuta** y la librería de ONNX Runtime se **carga**, así que ambos siguen
-//! heredando la cuarentena y macOS los bloquea igual. Por eso §9.3 pide quitarlo de
+//! heredando la cuarentena y macOS los bloquea igual. Por eso hay que quitarlo de
 //! forma recursiva en todo el directorio de programa, no solo del ejecutable.
 //!
 //! **Lo único genuinamente de macOS es el atributo extendido**, que se lee y se borra
@@ -21,13 +21,13 @@
 //! que ningún archivo tiene cuarentena, así que `strip` recorre el árbol, no limpia
 //! nada, no falla y no toca el disco fuera del directorio. La función existe igual, con
 //! el mismo tipo de resultado, porque `self install` la invoca sin preguntar por la
-//! plataforma (§9.3, paso 7) y porque el código que la usa tiene que ser el mismo en los
-//! cuatro targets (§11: la diferencia entre columnas es el mecanismo, no la
-//! experiencia).
+//! plataforma y porque el código que la usa tiene que ser el mismo en los
+//! cuatro targets: la diferencia entre plataformas es el mecanismo, no la
+//! experiencia.
 
 use std::path::{Path, PathBuf};
 
-/// Nombre del atributo extendido que §9.3, paso 7, y §12 nombran. Constante y no un
+/// Nombre del atributo extendido que la limpieza quita. Constante y no un
 /// literal en las funciones para que la prueba pueda afirmar que es exactamente este.
 pub const BLOCK_MARKER: &str = "com.apple.quarantine";
 
@@ -106,7 +106,7 @@ pub const MAX_DEPTH: usize = 32;
 ///
 /// Solo **lee** el árbol: pregunta por el atributo de cada archivo y, si lo hay, pide
 /// quitarlo. Nunca escribe fuera de `dir` y nunca decide qué es de la aplicación por su
-/// nombre: el directorio que se le pasa **es** el directorio de programa, y §9.3 lo hace
+/// nombre: el directorio que se le pasa **es** el directorio de programa, y eso lo hace
 /// responsable de todo lo que hay dentro.
 fn walk(
     dir: &Path,

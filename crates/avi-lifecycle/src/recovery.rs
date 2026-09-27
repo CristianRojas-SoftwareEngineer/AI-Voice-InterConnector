@@ -1,4 +1,4 @@
-//! Recuperación al empezar una operación de ciclo de vida (§9.1).
+//! Recuperación al empezar una operación de ciclo de vida.
 //!
 //! Toda operación de ciclo de vida, y `doctor` en modo informe, hace dos cosas al
 //! empezar, y en este orden: completar la transacción que una operación anterior
@@ -13,24 +13,25 @@
 //!    por eso el diario se marca confirmado *antes* de borrar el aparcado.
 //! 2. **Barrido.** Aparcados `.old-*` que ya no estén en uso, stagings huérfanos
 //!    hermanos del directorio de programa y temporales propios con los prefijos
-//!    de §7, sin proceso vivo.
+//!    de la tabla de rutas, sin proceso vivo.
 //!
-//! **Se llama con el bloqueo tomado** (§9.3, paso 1): si no, el barrido podría
+//! **Se llama con el bloqueo tomado** (paso 1 de la instalación): si no, el barrido
+//! podría
 //! llevarse por delante el staging que otra operación está usando. Por eso este
 //! módulo no toma el bloqueo por su cuenta.
 //!
 //! Lo que no se puede borrar **no es un fallo**: son archivos en uso, y el
-//! borrado diferido (§9.4) los recoge después. El resultado enumera lo que se
-//! quitó y lo que se quedó, para que `doctor` pueda informarlo (§9.1 lo pide
-//! explícitamente).
+//! borrado diferido los recoge después. El resultado enumera lo que se
+//! quitó y lo que se quedó, para que `doctor` pueda informarlo, que es lo que
+//! la operación exige explícitamente.
 
 use crate::transaction;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 /// Raíces sobre las que actúa la recuperación. `temp_root` es un parámetro —como
-/// la clave de registro en §9.3.1— para que las pruebas no barran el directorio
-/// temporal de la máquina.
+/// la clave de registro en la integración del `PATH`— para que las pruebas no barran
+/// el directorio temporal de la máquina.
 #[derive(Debug, Clone, Copy)]
 pub struct Roots<'a> {
     /// Directorio de programa, donde vive el diario y los aparcados.
@@ -39,17 +40,18 @@ pub struct Roots<'a> {
     pub temp_root: &'a Path,
     /// Staging que la operación en curso está usando, si lo hay.
     ///
-    /// §9.1 dice "stagings **huérfanos**", y un staging del que se va a instalar no
-    /// lo es aunque todavía no haya nada dentro: es el bundle que el paso 2 de §9.3
-    /// valida y el paso 6 coloca. Sin este campo, `self install` se borraría a sí
+    /// El barrido recoge "stagings **huérfanos**", y un staging del que se va a
+    /// instalar no lo es aunque todavía no haya nada dentro: es el bundle que el
+    /// paso 2 de la instalación valida y el paso 6 coloca. Sin este campo,
+    /// `self install` se borraría a sí
     /// mismo el bundle entre el paso 1 y el paso 2. `None` en `doctor` y en
     /// `cleanup`, que no vienen a instalar nada.
     pub in_use: Option<&'a Path>,
 }
 
-/// Lo que el barrido de §9.1 **tocaría ahora mismo**, calculado sin tocar nada.
+/// Lo que el barrido **tocaría ahora mismo**, calculado sin tocar nada.
 ///
-/// Es la forma de informe: `doctor` (§9.1, "en modo informe") y el plan de
+/// Es la forma de informe: `doctor` en modo informe y el plan de
 /// `cleanup --dry-run` muestran esta lista, y el barrido real usa la misma
 /// decisión. Derivar las dos de funciones distintas es lo que produjo el defecto
 /// que T14 absorbe en el planificador de borrado: el plan anunciaba `xet` y
@@ -104,7 +106,7 @@ impl RecoveryOutcome {
     }
 }
 
-/// Recuperación con las raíces de §7: directorio de programa según la
+/// Recuperación con las raíces del producto: directorio de programa según la
 /// reubicación y directorio de temporales del sistema.
 pub fn recover_default() -> Result<RecoveryOutcome> {
     let program_dir = crate::install_dir();
@@ -116,7 +118,7 @@ pub fn recover_default() -> Result<RecoveryOutcome> {
     })
 }
 
-/// Completa la transacción pendiente y barre lo huérfano (§9.1).
+/// Completa la transacción pendiente y barre lo huérfano.
 pub fn recover(roots: Roots<'_>) -> Result<RecoveryOutcome> {
     let mut outcome = RecoveryOutcome::default();
 
@@ -154,8 +156,8 @@ pub fn recover(roots: Roots<'_>) -> Result<RecoveryOutcome> {
     Ok(outcome)
 }
 
-/// Qué haría el barrido de §9.1 sin tocar nada. `doctor` lo usa como informe
-/// (§9.1, "en modo informe") y `cleanup --dry-run` lo anuncia; el barrido real usa
+/// Qué haría el barrido sin tocar nada. `doctor` lo usa como informe
+/// en modo informe y `cleanup --dry-run` lo anuncia; el barrido real usa
 /// la misma decisión. Derivar el plan y la ejecución de funciones distintas es lo
 /// que produjo el defecto que T14 absorbe en el planificador de borrado: el plan
 /// anunciaba `xet` y `.locks` sin mirar si la raíz era compartida mientras el
@@ -184,7 +186,8 @@ fn sweep_parked(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
     }
 }
 
-/// Stagings huérfanos: hermanos del directorio de programa con el prefijo de §7,
+/// Stagings huérfanos: hermanos del directorio de programa con el prefijo de la
+// tabla de rutas,
 /// que es donde los deja `self install` y `self update`. Solo hermanos, nunca
 /// otras rutas del padre (R1).
 ///
@@ -199,10 +202,10 @@ fn sweep_stagings(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
     }
 }
 
-/// Temporales propios con los prefijos de §7.
+/// Temporales propios con los prefijos de la tabla de rutas.
 ///
 /// Un archivo con el PID en el nombre solo se borra si ese proceso ya no existe.
-/// Uno **sin** PID reconocible también se barre: §9.6 dice que cualquier invocación
+/// Uno **sin** PID reconocible también se barre: cualquier invocación
 /// barre los temporales propios huérfanos, y un temporal sin PID no pertenece a
 /// ningún proceso vivo, luego está huérfano por definición. Conservarlos para
 /// siempre era lo que hacía que el barrido no recogiera nunca lo que el producto
@@ -385,7 +388,7 @@ mod tests {
     /// La recuperación barre aparcados, stagings y temporales huérfanos, y deja
     /// intacto lo que no es suyo.
     ///
-    /// El temporal **sin** PID se barre: §9.6 exige que cualquier invocación barra
+    /// El temporal **sin** PID se barre: la regla exige que cualquier invocación barra
     /// los temporales propios huérfanos, y uno sin PID no pertenece a ningún proceso
     /// vivo. Conservarlo era lo que hacía que `avi_clone_x_1.qvoice` se acumulara sin
     /// que nada lo recogiera.
@@ -431,7 +434,7 @@ mod tests {
         assert!(!parked.exists() && !staging.exists() && !dead_temp.exists());
         assert!(
             !without_pid.exists(),
-            "el temporal sin PID también se barre: §9.6 pide los huérfanos"
+            "el temporal sin PID también se barre, porque la regla pide los huérfanos"
         );
         assert!(
             live_temp.exists(),
@@ -500,7 +503,7 @@ mod tests {
 
     /// El staging que la operación en curso va a instalar **no** es un staging
     /// huérfano, aunque esté vacío: barrerse a sí mismo entre el paso 1 y el paso 2 de
-    /// §9.3 dejaría a `self install` instalando un bundle vacío.
+    /// la instalación dejaría a `self install` instalando un bundle vacío.
     ///
     /// El resto del barrido no cambia: el hermano huérfano sí se va.
     #[test]
@@ -578,7 +581,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
 
         // Sin confirmar: se revierte y la versión anterior vuelve a ser la
-        // operativa, que es lo que promete §9.1.
+        // operativa, que es lo que promete la recuperación.
         let dir = scratch("recovery-rollback");
         let program = dir.join("programa");
         let temp_root = dir.join("temp");

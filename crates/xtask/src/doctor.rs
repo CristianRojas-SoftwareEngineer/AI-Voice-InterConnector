@@ -1,6 +1,6 @@
-//! `xtask doctor`: diagnóstico solo-lectura del entorno de desarrollo (§10.2).
+//! `xtask doctor`: diagnóstico solo-lectura del entorno de desarrollo.
 //!
-//! La tabla de §10.1 se declara una sola vez aquí: los pines (Rust, ONNX
+//! La tabla de requisitos se declara una sola vez aquí: los pines (Rust, ONNX
 //! Runtime, MSYS2…) se leen de `packaging/pins.json` vía `avi-shared`, y de
 //! ahí los consumen `doctor`, `bootstrap` y la CI. Por cada requisito informa
 //! si está correcto, falta o tiene una versión distinta de la fijada; cuando
@@ -15,7 +15,7 @@ use anyhow::Result;
 use avi_shared::pins::Pins;
 use std::path::{Path, PathBuf};
 
-/// Filas de la tabla de §10.1, en su orden. `sccache` es la única opcional.
+/// Filas de la tabla de requisitos, en su orden. `sccache` es la única opcional.
 pub(crate) const ROW_IDS: &[&str] = &[
     "rust",
     "c-compiler",
@@ -909,7 +909,7 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
     debug_assert_eq!(
         rows.iter().map(|r| r.id).collect::<Vec<_>>(),
         ROW_IDS,
-        "la tabla cubre cada fila de §10.1 en orden"
+        "la tabla cubre cada fila de requisitos en orden"
     );
     Report {
         rows,
@@ -950,7 +950,7 @@ pub fn run(json: bool) -> Result<()> {
 }
 
 fn print_human(report: &Report) {
-    println!("Requisitos del entorno de desarrollo (§10.1):");
+    println!("Requisitos del entorno de desarrollo:");
     for row in &report.rows {
         let state = status_text(&row.status);
         let detail = match (&row.found, &row.want) {
@@ -1046,7 +1046,7 @@ mod tests {
         }
     }
 
-    /// La tabla cubre cada fila de §10.1 sin duplicados ni filas de más.
+    /// La tabla cubre cada fila de requisitos sin duplicados ni filas de más.
     #[test]
     fn table_covers_spec_rows_once() {
         let mut ids = ROW_IDS.to_vec();

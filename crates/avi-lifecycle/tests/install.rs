@@ -1,7 +1,6 @@
-//! `self install` de punta a punta sobre raíces reubicadas a temporales (§9.3,
-//! §13, criterio 2).
+//! `self install` de punta a punta sobre raíces reubicadas a temporales, criterio 2.
 //!
-//! Todas las raíces de §7 se reubican por sus variables, que es lo que §13 declara
+//! Todas las raíces se reubican por sus variables, que es lo que el aislamiento declara
 //! que hace posibles las pruebas aisladas: en Windows las Known Folders ignoran
 //! `LOCALAPPDATA`, así que el sandbox no puede apoyarse en ellas. El directorio de
 //! programa, el directorio del enlace, la raíz de datos, la raíz de modelos, el
@@ -10,8 +9,8 @@
 //! El bundle que se instala es **sintético y completo**: los cuatro documentos, la
 //! librería de runtime y el derivado del motor, con los nombres exactos que
 //! `packaging/bundle-manifest.json` exige para el target del host. El ejecutable es
-//! un fichero de texto: esta prueba afirma el flujo de §9.3, no que el binario
-//! arranque, que es lo que hace el bootstrap en el paso 8 de §9.2.
+//! un fichero de texto: esta prueba afirma el flujo de la instalación, no que el binario
+//! arranque, que es lo que hace el bootstrap en su último paso.
 //!
 //! `--no-setup` en todas las instalaciones: la provisión de modelos necesita red y es
 //! la prueba `setup` de T13, no la de `self install`.
@@ -52,15 +51,14 @@ impl ProcessControl for Inert {
 /// que es justo lo que un test asíncrono no debe hacer. Lo que evita que dos pruebas
 /// simultáneas se pisen es el nombre único del sandbox y el de la clave de registro.
 ///
-/// Sandbox con las siete raíces de §7 reubicadas.
+/// Sandbox con las siete raíces reubicadas.
 struct Sandbox {
     /// Raíz del sandbox, para borrarlo entero al terminar.
     root: PathBuf,
-    /// Directorio de programa: hermano de `opt`, con el nombre de §7.
+    /// Directorio de programa: hermano de `opt`, con el nombre del producto.
     program_dir: PathBuf,
-    /// Staging hermano, con el prefijo hermano de §7. Tiene que estar en el mismo
-    /// volumen que el directorio de programa porque la colocación es un renombrado
-    /// (§9.3.6.2).
+    /// Staging hermano, con el prefijo hermano. Tiene que estar en el mismo
+    /// volumen que el directorio de programa porque la colocación es un renombrado.
     staging: PathBuf,
     /// Directorio del enlace (`~/.local/bin`).
     bin_dir: PathBuf,
@@ -113,7 +111,7 @@ impl Sandbox {
         #[cfg(windows)]
         {
             // Clave vacía: no hay valor `Path`, así que la integración tiene que
-            // crearlo desde cero. Es el caso de §9.3.1 "REG_EXPAND_SZ si no
+            // crearlo desde cero. Es el caso de "REG_EXPAND_SZ si no
             // existía", que es el que se ejercita en la puerta de Windows.
             avi_lifecycle::path_windows::create_key(&sandbox.registry_subkey)
                 .expect("se crea la clave de registro de prueba");
@@ -282,8 +280,8 @@ async fn install_twice_is_idempotent() {
 
     // ── Segunda instalación, desde el mismo bundle ──────────────────────────────
     // El bundle se repone porque la colocación **mueve** los archivos desde el
-    // origen (§9.3.6.2): sin reponerlo, la segunda pasada se instalaría un bundle
-    // vacío. Es también lo que hace el bootstrap de §9.2, que extrae en un staging
+    // origen: sin reponerlo, la segunda pasada se instalaría un bundle
+    // vacío. Es también lo que hace el bootstrap, que extrae en un staging
     // nuevo cada vez. El ejecutable vuelve a ser el del staging, que es el que la
     // primera pasada dejó de tener alrededor al mover el bundle.
     let _exe = sandbox.write_bundle(&sandbox.staging);
@@ -376,7 +374,7 @@ async fn install_twice_is_idempotent() {
 }
 
 /// La reparación desde dentro del directorio de programa no copia archivos: reaplica
-/// integración de `PATH`, cuarentena y recibo (§9.3, modo reparación).
+/// integración de `PATH`, cuarentena y recibo.
 ///
 /// La afirmación central es que **el ejecutable no se toca**, y se hace comparando el
 /// `mtime` del bundle colocado: si la reparación hubiera copiado algo, el directorio
@@ -460,13 +458,13 @@ async fn repair_from_inside_program_dir_copies_nothing() {
 }
 
 /// Sin bundle alrededor, `self install` termina con `bundle_invalid` y no modifica
-/// nada (§9.3, tercer modo).
+/// nada, que es el tercer modo de la operación.
 #[tokio::test]
 async fn bundle_without_required_files_is_rejected() {
     let sandbox = Sandbox::new("incompleto");
 
     // Un "bundle" con el ejecutable y nada más: es el caso de `target/release`, que
-    // §9.3 nombra explícitamente.
+    // el flujo de la instalación nombra explícitamente.
     let exe = sandbox.staging.join(
         avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
             .unwrap()
@@ -481,7 +479,8 @@ async fn bundle_without_required_files_is_rejected() {
         .expect_err("un bundle sin los archivos obligatorios no se instala");
 
     // `install` devuelve `anyhow::Error` porque hay fallos de E/S sin `reason` propio,
-    // pero los que §9.1 declara viajan dentro como `LifecycleError`, que es lo que el
+    // pero los que la tabla de reasons declara viajan dentro como `LifecycleError`, que
+    // es lo que el
     // sobre emite.
     let failure = err
         .downcast_ref::<avi_lifecycle::LifecycleError>()
@@ -543,9 +542,10 @@ async fn no_modify_path_leaves_path_untouched() {
 }
 
 /// Un `path_conflict` —algo que no es un enlace nuestro en la ruta del enlace— aborta
-/// con su `reason` y su código, y **no integra el `PATH` ni registra nada** (§9.3.1).
+/// con su `reason` y su código, y **no integra el `PATH` ni registra nada**.
 ///
-/// El nombre dice "no instala nada" y la afirmación es más estrecha a propósito: §9.1
+/// El nombre dice "no instala nada" y la afirmación es más estrecha a propósito: la
+/// tabla de reasons
 /// solo declara "nada modificado" para `daemon_stop_failed` y `bundle_invalid`, no para
 /// `path_conflict`, y el conflicto se detecta en el **paso 8**, después de la colocación
 /// transaccional del paso 6. El disco, por tanto, no queda idéntico —el bundle está en
@@ -593,7 +593,7 @@ async fn foreign_path_is_conflict_and_installs_nothing() {
         receipt::read_from(&sandbox.program_dir).unwrap().is_none(),
         "y no se escribe recibo: la integración es anterior a él"
     );
-    // Lo que §9.1 sí permite, y que conviene afirmar para que la diferencia con
+    // Lo que la tabla sí permite, y que conviene afirmar para que la diferencia con
     // `bundle_invalid` quede explícita: el bundle ya está colocado.
     assert!(
         sandbox
@@ -636,7 +636,7 @@ fn list(root: &Path) -> Vec<String> {
 /// El estado del sandbox para comparar antes y después de una operación que se
 /// supone que no modifica nada.
 ///
-/// El **archivo de bloqueo queda fuera a propósito**: §9.1 lo crea al tomar el
+/// El **archivo de bloqueo queda fuera a propósito**: la recuperación lo crea al tomar el
 /// bloqueo, que es el paso 1, y el «nada modificado» de `bundle_invalid` se refiere al
 /// estado de la instalación —programa, datos, perfiles, registro y receipt—, no al
 /// mecanismo que serializa las operaciones. Exigir que ni el bloqueo aparezca sería

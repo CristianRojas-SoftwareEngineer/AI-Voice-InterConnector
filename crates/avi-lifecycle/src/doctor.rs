@@ -1,4 +1,4 @@
-//! Sección de ciclo de vida de `doctor` (§9.8), como datos y no como texto.
+//! Sección de ciclo de vida de `doctor`, como datos y no como texto.
 //!
 //! `doctor` es la única operación que el usuario puede ejecutar sin riesgo, y por eso
 //! es donde el estado del ciclo de vida tiene que ser legible: versión y target, canal,
@@ -15,7 +15,7 @@
 //!
 //! **Las claves que se retiran.** El contrato niega cuatro claves de primer nivel del
 //! reporte —la ruta de la caché, la del directorio de datos, el estado del modelo opt-in
-//! de clonado y la lista de problemas— y §9.8 las cubre con `install`, `path` y
+//! de clonado y la lista de problemas— y el sobre las cubre con `install`, `path` y
 //! `models`. Aquí no se emiten, **ni siquiera como nombre**: la prueba de este módulo
 //! afirma el **conjunto exacto** de claves del sobre en vez de una lista de
 //! prohibidas, que es una afirmación más fuerte y no necesita nombrarlas. La
@@ -24,7 +24,8 @@
 //! sus mismos dos valores, y las comprobaciones que eran la lista de problemas son
 //! `checks` y `failed`.
 //!
-//! **Recuperación en modo informe.** §9.1 dice que `doctor` ejecuta la recuperación al
+//! **Recuperación en modo informe.** La regla dice que `doctor` ejecuta la recuperación
+//! al
 //! empezar "en modo informe". Eso significa que **calcula** lo que la recuperación
 //! haría —con [`crate::recovery::preview`], la misma decisión que usa el barrido real— y
 //! lo publica en `pending`, **sin tocar nada**: sin tomar el bloqueo y sin modificar el
@@ -38,10 +39,12 @@ use crate::recovery::{self, Roots as RecoveryRoots};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// Entorno que informa `doctor`: las raíces de §7 y lo que hace falta para juzgar la
+/// Entorno que informa `doctor`: las raíces del producto y lo que hace falta para juzgar
+/// la
 /// integración de `PATH`.
 ///
-/// Reutiliza [`cleanup::Roots`] en vez de declarar otro juego de raíces: §7 exige una
+/// Reutiliza [`cleanup::Roots`] en vez de declarar otro juego de raíces: la regla exige
+/// una
 /// sola fuente, y duplicar la estructura es el primer paso de duplicar la resolución.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Env {
@@ -53,7 +56,7 @@ pub struct Env {
 }
 
 impl Env {
-    /// Entorno con las raíces de §7 ya resueltas, que es lo que usa el binario.
+    /// Entorno con las raíces ya resueltas, que es lo que usa el binario.
     pub fn resolve() -> Self {
         Self {
             roots: cleanup::Roots::resolve(),
@@ -63,7 +66,7 @@ impl Env {
     }
 
     /// Entorno de la instalación registrada, con el recibo como fuente de verdad de
-    /// las raíces (§7).
+    /// las raíces, del recibo si lo hay.
     pub fn from_receipt(receipt: Option<&InstallReceipt>) -> Self {
         Self {
             roots: cleanup::Roots::from_receipt(receipt),
@@ -90,26 +93,27 @@ fn registry_subkey_default() -> String {
     String::new()
 }
 
-/// Fila `install` de §9.8: directorio de programa, raíz de datos efectiva y estado del
+/// Fila `install` del reporte: directorio de programa, raíz de datos efectiva y estado
+/// del
 /// recibo.
 ///
-/// La raíz de datos vive **aquí** y no como clave de primer nivel: es el sitio donde §9.8
-/// la coloca y donde el contrato espera que esté tras retirar `data_dir`.
+/// La raíz de datos vive **aquí** y no como clave de primer nivel: es el sitio donde el
+/// contrato la coloca y donde espera que esté tras retirar `data_dir`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Install {
-    /// Directorio de programa, que es el del recibo si lo hay (§8.2).
+    /// Directorio de programa, que es el del recibo si lo hay.
     pub dir: PathBuf,
-    /// Raíz de datos efectiva (§7), del recibo si lo hay.
+    /// Raíz de datos efectiva, del recibo si lo hay.
     pub data_dir: PathBuf,
-    /// `valid` o `absent`, que es como §9.8 nombra el estado del recibo.
+    /// `valid` o `absent`, que es como el sobre nombra el estado del recibo.
     pub receipt: &'static str,
     /// Versión instalada, si el recibo la declara.
     pub version: Option<String>,
 }
 
 /// Una instalación coexistente con la registrada, y cuál tiene precedencia en el
-/// `PATH` (§8.2: "si conviven dos instalaciones, `doctor` lo informa junto con cuál
-/// tiene precedencia en el PATH").
+/// `PATH`: si conviven dos instalaciones, `doctor` lo informa junto con cuál
+/// tiene precedencia en el PATH.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Coexistence {
     pub path: PathBuf,
@@ -118,13 +122,13 @@ pub struct Coexistence {
     pub takes_precedence: bool,
 }
 
-/// Fila `path` de §9.8.
+/// Fila `path` del reporte.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PathState {
     /// `true` si el comando resuelve a la instalación registrada.
     pub resolves_to_this_install: bool,
     /// Entradas del `PATH` que apuntan a una instalación de la aplicación; más de una
-    /// es el duplicado que §9.8 pide detectar.
+    /// es el duplicado que hay que detectar.
     pub duplicate_entries: Vec<String>,
     /// `present`, `absent` o `not_modified` (`--no-modify-path`).
     pub integration: &'static str,
@@ -132,7 +136,8 @@ pub struct PathState {
     pub coexisting: Vec<Coexistence>,
 }
 
-/// Fila `pending` de §9.8: diario de transacción, aparcados, stagings huérfanos y
+///
+/// Fila `pending` del reporte: diario de transacción, aparcados, stagings huérfanos y
 /// temporales propios huérfanos.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Pending {
@@ -154,7 +159,7 @@ impl Pending {
     }
 }
 
-/// Fila `models` de §9.8: provisionados, faltantes y con tamaños.
+/// Fila `models` del reporte: provisionados, faltantes y con tamaños.
 ///
 /// El estado del modelo opt-in de clonado es el campo `base` de esta fila y no una clave
 /// del sobre: es un dato de modelos, no un veredicto aparte. Se llama así, y no como la
@@ -183,7 +188,7 @@ pub struct Check {
     pub detail: String,
 }
 
-/// Reporte de `doctor`: las siete claves de §9.8 más `checks` y `failed`.
+/// Reporte de `doctor`: las siete claves del sobre más `checks` y `failed`.
 ///
 /// Es serializable y **no** lleva `status`: el veredicto son `checks` y `failed`, y el
 /// código de salida lo decide el binario conservando el 1 del contrato, sin adjuntar un
@@ -198,7 +203,7 @@ pub struct Report {
     pub pending: Pending,
     pub models: Models,
     pub checks: Vec<Check>,
-    /// Comprobaciones que fallan, que es lo que §10 del contrato llama `failed`.
+    /// Comprobaciones que fallan, que es lo que el contrato llama `failed`.
     pub failed: Vec<String>,
 }
 
@@ -209,14 +214,14 @@ impl Report {
     }
 }
 
-/// Informa del ciclo de vida (§9.8) y devuelve el veredicto como dato.
+/// Informa del ciclo de vida y devuelve el veredicto como dato.
 ///
 /// `exe` es el ejecutable que se está ejecutando: lo necesitan la detección de canal y
 /// la de precedencia en el `PATH`, y por eso es un parámetro y no una lectura de
-/// `current_exe` — §13 exige que las pruebas aislen el entorno.
+/// `current_exe` — las pruebas tienen que aislar el entorno.
 pub fn report(env: &Env, exe: &Path) -> Report {
     let roots = &env.roots;
-    // El recibo se lee de la instalación registrada, que es donde vive (§8.2).
+    // El recibo se lee de la instalación registrada, que es donde vive.
     let receipt = receipt::read_from(&roots.program_dir).ok().flatten();
     let channel = channel::detect(exe, receipt.as_ref());
     let pending = pending(env);
@@ -227,7 +232,7 @@ pub fn report(env: &Env, exe: &Path) -> Report {
         // El directorio de programa es el del **entorno**, que ya es el de la
         // instalación registrada cuando hay recibo: `Env::from_receipt` lo toma de ahí.
         // Volver a llamar a `registered_install_dir` aquí volvería a la convención de
-        // §7 cuando no hay recibo, que es un sitio que el usuario no está mirando.
+        // rutas cuando no hay recibo, que es un sitio que el usuario no está mirando.
         dir: roots.program_dir.clone(),
         data_dir: roots.data_dir.clone(),
         receipt: if receipt.is_some() { "valid" } else { "absent" },
@@ -326,7 +331,7 @@ pub fn report(env: &Env, exe: &Path) -> Report {
     }
 }
 
-/// Fila `pending` de §9.8, en modo informe: lo que la recuperación **haría**, sin
+/// Fila `pending` del reporte, en modo informe: lo que la recuperación **haría**, sin
 /// hacerlo.
 fn pending(env: &Env) -> Pending {
     let preview = recovery::preview(env.recovery_roots());
@@ -339,7 +344,7 @@ fn pending(env: &Env) -> Pending {
     }
 }
 
-/// Fila `path` de §9.8.
+/// Fila `path` del reporte.
 ///
 /// Un solo recorrido del `PATH` alimenta las tres cosas que la fila declara: qué
 /// entradas apuntan a una instalación, cuál es la que resuelve el comando y cuáles son
@@ -362,7 +367,7 @@ fn path_state(env: &Env, receipt: Option<&InstallReceipt>) -> PathState {
         .map(|e| e.to_string())
         .collect();
     // El comando resuelve a la instalación registrada si la **primera** coincidencia
-    // del `PATH` es la de la instalación registrada (§8.2, orden de precedencia).
+    // del `PATH` es la de la instalación registrada, por el orden de precedencia.
     let resolves_to_this_install = entries.first().is_some_and(|first| {
         registered
             .iter()
@@ -428,7 +433,8 @@ fn integration_state(env: &Env, integration: Option<&PathIntegration>) -> &'stat
             return "absent";
         }
         // Se pregunta al registro por la entrada del **directorio de programa**, que es
-        // lo que §9.3.1 añade: el directorio del enlace es el mismo en Windows.
+        // lo que la integración del `PATH` añade: el directorio del enlace es el mismo en
+        // Windows.
         let program = env.roots.program_dir.display().to_string();
         match crate::path_windows::read_path(&env.registry_subkey) {
             Ok(Some(raw)) if any_entry_is_from(&raw.value, &[program]) => "present",
@@ -460,10 +466,10 @@ fn any_entry_is_from(value: &str, candidates: &[String]) -> bool {
 /// El criterio de "esto es una instalación" es objetivo: el directorio contiene el
 /// ejecutable de la aplicación o su recibo. El Cask de Homebrew no deja recibo, así que
 /// se reconoce por el ejecutable bajo el prefijo que `channel::is_homebrew_path`
-/// define, y el canal sale de [`channel::detect`] con esa misma precedencia (§8.2).
+/// define, y el canal sale de [`channel::detect`] con esa misma precedencia.
 ///
-/// El orden es el del `PATH` porque es el que decide la precedencia, que es lo que §9.8
-/// pide informar cuando conviven dos instalaciones.
+/// El orden es el del `PATH` porque es el que decide la precedencia, que es lo que hay
+/// que informar cuando conviven dos instalaciones.
 fn installs_in_path(
     env: &Env,
     integration: Option<&PathIntegration>,
@@ -526,7 +532,7 @@ fn installs_in_path(
     views
 }
 
-/// Fila `models` de §9.8.
+/// Fila `models` del reporte.
 fn models(roots: &cleanup::Roots) -> Models {
     let store = avi_store::ModelStore::new();
     let mut provisioned = Vec::new();
@@ -614,10 +620,10 @@ mod tests {
         crate::uninstall::executable_name_default()
     }
 
-    /// Las nueve claves del sobre —las siete de §9.8 más `checks` y `failed`— están, y
+    /// Las nueve claves del sobre —las siete del contrato más `checks` y `failed`— están, y
     /// ninguna de las cuatro que el contrato retira está. La raíz de datos y el estado
-    /// del modelo Base sobreviven **dentro** de `install` y de `models`, que es donde §9.8
-    /// los coloca.
+    /// del modelo Base sobreviven **dentro** de `install` y de `models`, que es donde el
+    /// contrato los coloca.
     #[test]
     fn doctor_reports_every_lifecycle_key() {
         let env = env("keys");
@@ -659,7 +665,7 @@ mod tests {
     }
 
     /// Dos instalaciones simultáneas, una de ellas del Cask, y cuál tiene precedencia
-    /// en el `PATH` (§8.2). La registrada no se lista a sí misma.
+    /// en el `PATH`. La registrada no se lista a sí misma.
     #[test]
     fn doctor_reports_coexisting_installations() {
         let mut env = env("coexistence");

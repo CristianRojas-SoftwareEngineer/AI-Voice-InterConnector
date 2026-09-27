@@ -1,5 +1,5 @@
-//! Traspaso de `self update` al binario nuevo y limpieza posterior (§9.4, pasos
-//! 9–10).
+//! Traspaso de `self update` al binario nuevo y limpieza posterior: los pasos 9 y 10
+//! de la actualización.
 //!
 //! El reemplazo lo ejecuta el binario nuevo (P3): este módulo lanza
 //! `<staging>/ai-voice-interconnector self install --yes` heredando la consola,
@@ -8,11 +8,11 @@
 //! traspaso pasa `--no-modify-path`; `--no-setup` se hereda si se pidió, y
 //! `--force` se propaga cuando el `update` lo recibió (decisión 5 del Ciclo 2).
 //!
-//! Garantías (§9.4): un fallo antes del traspaso deja el staging borrado y la
+//! Garantías: un fallo antes del traspaso deja el staging borrado y la
 //! instalación intacta (lo hace quien llama, con `fetch`, que ya borra el
 //! staging ante cualquier fallo); un fallo durante el traspaso revierte la
 //! transacción nueva (la del `self install` del binario nuevo, que es
-//! transaccional por §9.3.6); una interrupción queda recuperable en la
+//! transaccional); una interrupción queda recuperable en la
 //! siguiente operación (`recovery.rs` barre el staging huérfano).
 //!
 //! La limpieza post-traspaso borra siempre el staging: lo que está en uso queda
@@ -121,7 +121,7 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
     Ok(outcome)
 }
 
-/// Prosa del éxito parcial del traspaso, en las palabras de §9.1: el programa
+/// Prosa del éxito parcial del traspaso: el programa
 /// queda actualizado y basta reintentar con `setup`.
 ///
 /// Es la contrapartida de `install::setup_failed_message` para el camino del
@@ -167,7 +167,7 @@ pub enum StagingCleanup {
 /// a diferido (Windows) o a la recuperación de la siguiente operación.
 ///
 /// Nunca falla el `update`: un staging que sobrevive es litter con prefijo
-/// propio de §7, que es exactamente lo que el barrido de §9.1 recoge.
+/// propio de la tabla de rutas, que es exactamente lo que el barrido recoge.
 pub fn cleanup_staging(staging: &Path, remover: &dyn PathRemover) -> StagingCleanup {
     if remover.remove_now(staging).is_ok() {
         return StagingCleanup::Removed;

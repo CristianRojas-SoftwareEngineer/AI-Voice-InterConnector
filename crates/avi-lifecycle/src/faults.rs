@@ -3,7 +3,7 @@
 //!
 //! Sin este módulo, probar la reversión de un reemplazo transaccional obliga a
 //! simular el fallo, y una simulación no ejercita la rama de reversión real.
-//! §13 lo autoriza, y solo en los builds de prueba: el binario distribuido se
+//! La autorización se limita a los builds de prueba: el binario distribuido se
 //! compila sin el feature `faults`, con lo que el estado de armado no existe y
 //! `trip` se reduce a `Ok(())`.
 //!
@@ -20,26 +20,26 @@ use anyhow::{bail, Result};
 /// Puntos del flujo en los que se puede inyectar un fallo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FaultPoint {
-    /// Antes de aparcar el contenido actual del directorio de programa (§9.3.6.1).
+    /// Antes de aparcar el contenido actual del directorio de programa.
     BeforePark,
-    /// Con el contenido aparcado y antes de colocar el bundle nuevo (§9.3.6.2).
+    /// Con el contenido aparcado y antes de colocar el bundle nuevo.
     BeforePlace,
-    /// Con el bundle colocado y antes de ajustar permisos (§9.3.6.3).
+    /// Con el bundle colocado y antes de ajustar permisos.
     BeforeFixPermissions,
-    /// Antes de confirmar la transacción y borrar el aparcado (§9.3.6.4).
+    /// Antes de confirmar la transacción y borrar el aparcado.
     BeforeCommit,
-    /// Antes de integrar el PATH (§9.3.1).
+    /// Antes de integrar el PATH.
     BeforePathIntegration,
-    /// Antes de escribir el recibo (§9.3, paso 10).
+    /// Antes de escribir el recibo (paso 10).
     BeforeReceipt,
-    /// Al parar el daemon (§9.3, paso 5).
+    /// Al parar el daemon (paso 5).
     OnDaemonStop,
-    /// Al escribir el diario de la transacción (§9.1, recuperación).
+    /// Al escribir el diario de la transacción, en la recuperación.
     OnJournalWrite,
-    /// Antes del traspaso de `self update` al binario nuevo (§9.4, paso 9).
+    /// Antes del traspaso de `self update` al binario nuevo (paso 9).
     BeforeHandover,
-    /// Con el traspaso ya ejecutado y antes de la limpieza del staging (§9.4,
-    /// paso 10): simula la interrupción que deja el staging para la
+    /// Con el traspaso ya ejecutado y antes de la limpieza del staging (paso
+    /// 10): simula la interrupción que deja el staging para la
     /// recuperación de la siguiente operación.
     DuringHandover,
 }
