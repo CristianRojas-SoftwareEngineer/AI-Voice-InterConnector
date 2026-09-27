@@ -1,12 +1,19 @@
 #!/bin/sh
-# Gancho de pre-commit: la puerta de idioma antes de dejar entrar un commit.
+# Gancho de pre-commit: las puertas de la política de código antes de dejar entrar un
+# commit. Son dos, y las dos son ejecutables por cualquier persona, no de recuerdo del
+# orquestador:
+#
+#   - idioma:      ningún identificador en español en el código de primera parte.
+#   - comentarios: ni citas de sección ni localizadores de línea en comentarios y en
+#                  diagnósticos de aserción.
 #
 # `core.hooksPath` es configuración local de git y no se versiona, así que este
 # fichero no se activa por sí solo. Actívalo una vez por clon con:
 #
 #   git config core.hooksPath .githooks
 #
-# Es la misma comprobación que la puerta F5 y la F7, en forma de comando que
-# cualquier commit puede ejecutar, no de recuerdo del orquestador.
+# El flag de reducción de ruido va antes del alias: al revés se lo entrega cargo al
+# subcomando y `comments` lo tomaría por una raíz a escanear.
 set -e
-exec cargo --quiet xtask language --check
+cargo --quiet xtask language --check
+cargo --quiet xtask comments --check

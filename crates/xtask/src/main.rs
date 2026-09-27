@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 mod bootstrap;
 mod clean;
+mod comments;
 mod doctor;
 mod install;
 mod language;
@@ -310,6 +311,14 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
+    /// Verifica que el código de primera parte no cite secciones ni localice líneas
+    Comments {
+        #[arg(long)]
+        check: bool,
+        /// Sobrescribe la raíz a escanear (por defecto, el directorio actual)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
     /// Compila el motor TTS nativo (qwen_tts) desde vendor/qwen3-tts
     BuildEngine {
         /// Ejecuta `<bin> --self-test` tras compilar (oráculo de kernels)
@@ -507,6 +516,7 @@ fn main() -> Result<()> {
             }
         }
         Commands::Language { check, root } => language::run(check, root.as_deref())?,
+        Commands::Comments { check, root } => comments::run(check, root.as_deref())?,
         Commands::BuildEngine {
             self_test,
             simd,
@@ -2716,6 +2726,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             vec!["xtask", "release"],
             vec!["xtask", "changelog"],
             vec!["xtask", "language"],
+            vec!["xtask", "comments"],
             vec!["xtask", "build-engine"],
             vec!["xtask", "package"],
             vec!["xtask", "clean"],

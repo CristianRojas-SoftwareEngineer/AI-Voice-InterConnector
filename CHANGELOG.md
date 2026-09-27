@@ -261,6 +261,24 @@ daemon sigue en `"3"`, porque es un contrato independiente.
 
 ### Documentación
 
+- **Comentario autocontenido, y una puerta que lo vigila.** La política de comentarios pasa a
+  ser norma y no costumbre: un comentario explica la regla en lugar de remitir a una sección
+  numerada de la especificación o a otro fichero, y se enuncia en la fila por capa de
+  `AGENTS.md` y como principio `P12` de la especificación. El enunciado sin puerta es un
+  enunciado que se degrada en silencio, así que el ciclo añade `cargo xtask comments --check`,
+  que rechaza la cita de sección y el localizador de línea en comentarios y en diagnósticos de
+  aserción, recorre las cuatro familias de ficheros de primera parte y se ejecuta en el gancho
+  de `pre-commit` junto a la puerta de idioma. Su lista blanca son cuatro líneas de la sección 6
+  de la GNU GPL, que es contrato de licencia y no de la especificación, y una de sus pruebas
+  falla si una entrada deja de ser necesaria, de modo que la lista no se puede dejar poda.
+  Reescritura de **945 líneas en 70 ficheros**: 687 citas de sección, 230 comentarios que
+  nombraban otro fichero y 21 localizadores de línea, de los cuales nueve apuntaban ya a
+  ficheros borrados. Los recuentos antes y después quedan en el registro del ciclo.
+- **Aislamiento del estado de inyección de fallos de las pruebas.** El estado de armado de
+  puntos de fallo era por proceso, y cinco binarios de prueba son cinco procesos con copias
+  independientes: el cruce real era entre hilos del mismo binario, porque el ejecutor de pruebas
+  lanza un hilo por caso. Armar un punto pasa a ser tomar una guardia que se suelta al caer, con
+  un cerrojo que aísla por hilo. Lo que se corrige no se ve hasta que una prueba falla sin motivo.
 - **Consolidación documental del ciclo**: la especificación `docs/specs/sdlc-lifecycle.md`
   pasa a su forma normativa final. Se retiran el diagnóstico y la planificación de fases que
   describían en presente un estado ya implementado, queda en estado «implementada», y las

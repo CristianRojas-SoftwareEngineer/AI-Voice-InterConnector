@@ -67,9 +67,8 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// **Por qué no empieza por `avi`.** El producto reserva para la aplicación los prefijos
 /// de temporales `avi-` y `avi_`, y el barrido decide por **`starts_with`**: compara
-/// `name.starts_with(prefix)` contra `TEMP_PREFIXES` en
-/// `crates/avi-lifecycle/src/recovery.rs:248`, y `TEMP_PREFIXES` es `&["avi-", "avi_"]` en
-/// `crates/avi-store/src/lib.rs:660`. Un directorio con el prefijo del producto es un
+/// `name.starts_with(prefix)` contra `TEMP_PREFIXES`, que vale
+/// `&["avi-", "avi_"]`. Un directorio con el prefijo del producto es un
 /// temporal propio a todos los efectos, así que el barrido lo borra —`owner_pid` no
 /// encuentra una racha de tres dígitos en el nombre y lo declara huérfano—.
 ///

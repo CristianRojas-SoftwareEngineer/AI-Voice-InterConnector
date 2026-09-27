@@ -3,11 +3,11 @@
 //! Lee `packaging/bundle-manifest.json` como lista canónica (la misma que valida
 //! `self install`): empaquetado e instalación no pueden divergir. Resuelve ONNX
 //! Runtime reutilizando `ort-bundle/` si está fresco para la versión fijada
-//! en `packaging/pins.json` (fuente única, espejo de `ort_version` en
-//! `.circleci/config.yml:58-60`), o con descarga verificada si no. Valida `--expect-version` (decisión c: la
+//! en `packaging/pins.json` (fuente única, espejo del parámetro `ort_version` de
+//! la CI), o con descarga verificada si no. Valida `--expect-version` (decisión c: la
 //! puerta tag-versión vive aquí, ningún paso YAML la duplica), pasa el humo
 //! (`version` y `voice list`) y comprime de forma determinista con el nombre de
-//! `release_asset_name` (`target.rs:90-94`).
+//! `release_asset_name`.
 //!
 //! Sin red en los tests: la descarga vive en `ensure_ort_bundle` y todo lo demás
 //! (manifiesto, nombres, puerta de versión, montaje, compresión) es puro o solo
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 /// Versión de ONNX Runtime empaquetada (pareja del crate `ort` en uso). Se lee
 /// de `packaging/pins.json` (fuente única del ciclo 4, espejo del parámetro
-/// `ort_version` de `.circleci/config.yml:58-60`): si el pipeline la sube, el
+/// `ort_version` de la CI): si el pipeline la sube, el
 /// pin sube con ella o el bundle reutilizado no coincidirá con el que espera
 /// el motor. Sin réplica en el código.
 fn load_ort_version(root: &Path) -> Result<String> {
@@ -92,7 +92,7 @@ fn release_os(triple: &str) -> Result<(&'static str, &'static str)> {
     }
 }
 
-/// Nombre convencional del archivo de release (`target.rs:90-94`):
+/// Nombre convencional del archivo de release, el que fija la tabla de targets:
 /// `ai-voice-interconnector-<ver>-<arch>-<os>.<ext>`, sin la `v` del tag.
 fn release_asset_name(triple: &str, version: &str) -> Result<String> {
     let arch = release_arch(triple)?;

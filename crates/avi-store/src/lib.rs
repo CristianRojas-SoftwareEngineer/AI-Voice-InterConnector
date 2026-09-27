@@ -265,8 +265,8 @@ impl VoiceStore {
         Ok(())
     }
 
-    /// Verificar si una voz existe (nombre normalizado a minúsculas, paridad
-    /// con `voices.py:37`)
+    /// Verificar si una voz existe, con el nombre normalizado a minúsculas como
+    /// hace el oráculo
     pub fn exists(&self, name: &str) -> bool {
         self.base_dir.join(name.to_lowercase()).is_dir()
     }
@@ -1363,8 +1363,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Normalización de mayúsculas en todas las operaciones del almacén
-    /// (paridad con `voices.py:37` y `synthetic_speech.py:51`).
+    /// Normalización de mayúsculas en todas las operaciones del almacén, con la
+    /// misma paridad que el oráculo.
     #[test]
     fn normalization_lowercase() {
         let dir = temp_dir("norm");

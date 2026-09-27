@@ -1131,7 +1131,7 @@ async fn handle_voice(
             timbre_reference,
             force,
         } => {
-            // Orden de validaciones del oráculo (cli.py:841-899): nombre antes de modelo.
+            // Orden de validaciones del oráculo: el nombre se valida antes que el modelo.
             let name = name.to_lowercase();
             VoiceStore::validate_name(&name)
                 .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
@@ -1555,7 +1555,7 @@ async fn handle_speech(
                 ));
             }
             validate_temperature(temperature)?;
-            // Orden de validaciones del oráculo (cli.py:659-667).
+            // Orden de validaciones del oráculo: la temperatura se comprueba antes que el texto.
             if text.trim().is_empty() {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
@@ -1752,7 +1752,7 @@ async fn handle_speech(
             temperature,
         } => {
             validate_temperature(temperature)?;
-            // Validaciones puras del oráculo (cli.py:562-624) — antes del despacho
+            // Validaciones puras del oráculo, antes del despacho:
             if duration.is_some() && !mic {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,

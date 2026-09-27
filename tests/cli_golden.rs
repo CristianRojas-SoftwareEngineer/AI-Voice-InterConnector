@@ -751,11 +751,10 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
 
 /// Prefijo de los sandboxes de esta puerta, y de ningún otro directorio que cree.
 ///
-/// **Por qué nostarts by `avi`.** El producto reserva para la aplicación los prefijos de
+/// **Por qué no empieza por `avi`.** El producto reserva para la aplicación los prefijos de
 /// temporales `avi-` y `avi_`, y el barrido decide por **`starts_with`**, no por
-/// igualdad: `crates/avi-lifecycle/src/recovery.rs:248` compara
-/// `name.starts_with(prefix)` contra `TEMP_PREFIXES`, y `crates/avi-store/src/lib.rs:660`
-/// los define como `&["avi-", "avi_"]`. Las dos formas "naturales" de nombrar un sandbox de
+/// igualdad: la comparación es `name.starts_with(prefix)` contra `TEMP_PREFIXES`, que
+/// vale `&["avi-", "avi_"]`. Las dos formas "naturales" de nombrar un sandbox de
 /// pruebas **colisionan** con los dos: `avi_test_sandbox_*` empieza por `avi_`, y
 /// `avi-test-*` empieza por `avi-`. El criterio exacto es, por tanto, que el nombre **no
 /// empiece por `avi-` ni por `avi_`**, y nada más: no importa que lleve `avi` más adelante,
@@ -1203,7 +1202,7 @@ fn speech_transcribe_with_audio_matches_contract() {
     }
     // Régimen con fixture de sesión compartida (sin instancia aislada propia):
     // testigo natural del despacho `Auto`
-    // (`src/main.rs:794-810`): con sesión en ejecución delega al daemon, sin
+    // con sesión en ejecución delega al daemon, sin
     // ella cae a directo; ambas rutas emiten {text, source}+schema, así que
     // las invariantes no dependen de la ruta efectiva. El lock excluye
     // paradas del ciclo durante la petición (sin reenrute forzado: sin flags
@@ -2171,9 +2170,8 @@ mod tts {
         // daemon no responde, falla.
         // Paridad de envelope verificada en el producto: mismo
         // {status, audio_path, voice} persistido en el almacén, con chequeo de
-        // colisión de etiqueta en el cliente en ambas rutas
-        // (`src/main.rs:963-970` frente a `src/main.rs:1232-1239`;
-        // `src/main.rs:3490-3500` frente a `src/main.rs:1597`).
+        // colisión de etiqueta en el cliente en ambas rutas, en la variante local
+        // y en la del daemon por igual.
         let inst = IsolatedInstance::new("synthesize_label");
         start_instance(&inst, &[]);
         let a = inst.args();
@@ -2303,8 +2301,8 @@ mod tts {
             return;
         }
         // Ruta directa fijada (colateral del régimen con fixture): la
-        // existencia de la voz solo se verifica en la rama local
-        // (`src/main.rs:937-944`); la vía daemon la resuelve el residente.
+        // existencia de la voz solo se verifica en la rama local; la vía daemon la
+        // resuelve el residente.
         let (code, actual) = run_json(&[
             "--json",
             "--no-daemon",
@@ -2539,8 +2537,8 @@ mod tts {
         }
         let _guard = lock_tts();
         // Testigo en directo de `say`: ruta local fijada con
-        // `--no-daemon` — la vía daemon borra su WAV efímero tras reproducir
-        // (`src/main.rs:2823`) y rompería la verificación sobre archivo.
+        // `--no-daemon` — la vía daemon borra su WAV efímero tras reproducir y
+        // rompería la verificación sobre archivo.
         // Humo único de audio: esta es la ÚNICA reproducción real de
         // la suite, acotada a un texto corto ("Hola mundo", <2 s); la
         // verificación es sobre el archivo (WAV válido + WER), no sobre el
@@ -2598,8 +2596,8 @@ mod tts {
         // `--no-daemon` para que la sesión en ejecución no lo reenrute.
         // Verificación solo-archivo: WAV válido + WER sobre el
         // archivo producido. El gate de audio se conserva porque `dub`
-        // reproduce siempre en ambas rutas (`src/main.rs:1534` directo y
-        // `src/main.rs:3645`/`:3778` daemon, passthrough/traducción): sin
+        // reproduce siempre en ambas rutas, directo y por el daemon, en passthrough
+        // y en traducción: sin
         // mezclador el comando falla con `playback_failed` y no hay archivo
         // que verificar.
         let (code, actual) = run_json(&[
@@ -3555,7 +3553,7 @@ mod tts {
         assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         // Verificación sobre el archivo recibido: WAV válido más
         // texto traducido no vacío (el daemon devuelve en `text` el final
-        // traducido; `src/main.rs:3051-3055`). Sin gate WER por el mismo
+        // traducido). Sin gate WER por el mismo
         // motivo que `dub_daemon_passthrough`: no endurecer a ciegas.
         let audio = actual["audio_path"]
             .as_str()
