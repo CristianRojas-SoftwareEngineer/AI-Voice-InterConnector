@@ -1,8 +1,8 @@
 # Especificación funcional: ciclo de vida de la aplicación y del entorno de desarrollo
 
-> **Estado**: aprobada; en implementación · **Versión base**: v0.23.1 · **Fecha**: 2026-09-25
+> **Estado**: implementada · **Versión base**: v0.23.1 · **Fecha**: 2026-09-25
 
-> **Directiva de no retrocompatibilidad.** El proyecto es pre-1.0 y no requiere ningún tipo de retrocompatibilidad con el ciclo de vida anterior. No hay aliases ni flags deprecados, ni adopción de instalaciones sin recibo, ni migración de datos cuando cambien las rutas, ni scripts puente en las URLs antiguas. El proyecto no está distribuido: no hay instalaciones previas, de modo que no se concede ningún mecanismo de transición ([§14.3](#143-audiencia-previa-nula)).
+> **Directiva de no retrocompatibilidad.** El proyecto es pre-1.0 y no requiere ningún tipo de retrocompatibilidad con el ciclo de vida anterior. No hay aliases ni flags deprecados, ni adopción de instalaciones sin recibo, ni migración de datos cuando cambien las rutas, ni scripts puente en las URLs antiguas. El proyecto no está distribuido: no hay instalaciones previas, de modo que no se concede ningún mecanismo de transición.
 
 Este documento especifica cómo se **instala, actualiza, desinstala y limpia** `ai-voice-interconnector` en el entorno del usuario final, y cómo se **prepara, actualiza y limpia** el entorno del desarrollador, con el mismo comportamiento en los cuatro targets de compilación. Evalúa las alternativas de implementación y fija una arquitectura única que reemplaza a los scripts de ciclo de vida de la raíz del repositorio.
 
@@ -13,19 +13,18 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 - [1. Alcance](#1-alcance)
 - [2. Glosario](#2-glosario)
 - [3. Targets soportados](#3-targets-soportados)
-- [4. Diagnóstico del estado actual](#4-diagnóstico-del-estado-actual)
-- [5. Evaluación de alternativas](#5-evaluación-de-alternativas)
-- [6. Arquitectura](#6-arquitectura)
-- [7. Modelo de rutas y propiedad](#7-modelo-de-rutas-y-propiedad)
-- [8. Recibo de instalación y canales](#8-recibo-de-instalación-y-canales)
-- [9. Entorno del usuario](#9-entorno-del-usuario)
-- [10. Entorno del desarrollador](#10-entorno-del-desarrollador)
-- [11. Matriz de paridad por target](#11-matriz-de-paridad-por-target)
-- [12. Seguridad](#12-seguridad)
-- [13. Estrategia de pruebas](#13-estrategia-de-pruebas)
-- [14. Plan de migración](#14-plan-de-migración)
-- [15. Criterios de aceptación](#15-criterios-de-aceptación)
-- [16. Decisiones cerradas](#16-decisiones-cerradas)
+- [4. Evaluación de alternativas](#4-evaluación-de-alternativas)
+- [5. Arquitectura](#5-arquitectura)
+- [6. Modelo de rutas y propiedad](#6-modelo-de-rutas-y-propiedad)
+- [7. Recibo de instalación y canales](#7-recibo-de-instalación-y-canales)
+- [8. Entorno del usuario](#8-entorno-del-usuario)
+- [9. Entorno del desarrollador](#9-entorno-del-desarrollador)
+- [10. Matriz de paridad por target](#10-matriz-de-paridad-por-target)
+- [11. Seguridad](#11-seguridad)
+- [12. Estrategia de pruebas](#12-estrategia-de-pruebas)
+- [13. Papel de la documentación](#13-papel-de-la-documentación)
+- [14. Criterios de aceptación](#14-criterios-de-aceptación)
+- [15. Decisiones cerradas](#15-decisiones-cerradas)
 
 ---
 
@@ -39,10 +38,10 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 
 **Fuera del alcance**
 
-- Firma de código y notarización (goal a largo plazo; solo se referencia en [§12](#12-seguridad)).
+- Firma de código y notarización (goal a largo plazo; solo se referencia en [§11](#11-seguridad)).
 - Actualización automática en segundo plano o comprobación periódica de versiones: la actualización es siempre una acción explícita del usuario.
 - Instalación para todos los usuarios del sistema (per-machine) y convivencia de varias versiones instaladas a la vez.
-- Canales nuevos de gestores de paquetes (winget, Scoop, apt, AUR). El Cask de Homebrew existente se conserva como canal gestionado externamente ([§8.2](#82-canales)).
+- Canales nuevos de gestores de paquetes (winget, Scoop, apt, AUR). El Cask de Homebrew existente se conserva como canal gestionado externamente ([§7.2](#72-canales)).
 - El corte de releases (`xtask release`, `xtask cask`), salvo el empaquetado, que comparte con el entorno de desarrollo.
 
 ## 2. Glosario
@@ -54,7 +53,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 | **Bootstrap** | Script mínimo de primer contacto (`install.sh`, `install.ps1`) que obtiene y verifica el bundle y delega la instalación en el propio binario. |
 | **Directorio de programa** | Directorio donde vive el bundle instalado. Propiedad exclusiva de la aplicación; nunca contiene datos del usuario. |
 | **Recibo de instalación** | Archivo JSON dentro del directorio de programa que registra qué se instaló, dónde, por qué canal y qué integración de PATH se aplicó. |
-| **Canal** | Vía por la que se instaló la copia: `script`, `dev`, `homebrew` o `unmanaged` ([§8.2](#82-canales)). |
+| **Canal** | Vía por la que se instaló la copia: `script`, `dev`, `homebrew` o `unmanaged` ([§7.2](#72-canales)). |
 | **Estado de la aplicación** | Todo lo que la aplicación crea en el perfil del usuario fuera del directorio de programa: modelos, voces de usuario, habla sintetizada, configuración, `daemon.pid`, logs y temporales. |
 | **Staging** | Directorio de trabajo, hermano del directorio de programa, donde se descarga, verifica y extrae un bundle antes de instalarlo. |
 | **Aparcar** | Renombrar un archivo instalado a un subdirectorio `.old-<txid>` en lugar de borrarlo, para poder revertir o para sortear un archivo en uso. |
@@ -79,33 +78,9 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 
 **Compatibilidad comprobada, no inferida.** No se parsean versiones de glibc para decidir si se instala: se ejecuta el binario descargado (`--version`) y, si no arranca, se diagnostica la causa probable (glibc insuficiente vía `getconf GNU_LIBC_VERSION`, musl, userland de 32 bits). Una sola comprobación cubre todas las incompatibilidades de ABI, incluidas las que un parseo no detecta.
 
-## 4. Diagnóstico del estado actual
+## 4. Evaluación de alternativas
 
-La funcionalidad está hoy repartida en tres lenguajes y siete ubicaciones:
-
-| Pieza | Ubicación | Lenguaje |
-|---|---|---|
-| Instalación | `install-linux.sh`, `install-macos.sh`, `install-windows.ps1` (raíz) | POSIX sh ×2, PowerShell |
-| Actualización | `upgrade-ai-voice-interconnector.sh` y `.ps1` (raíz), que reejecutan los anteriores | POSIX sh, PowerShell |
-| Desinstalación y limpieza del usuario | subcomandos `uninstall` y `cleanup` del binario | Rust |
-| Limpieza del desarrollador | `xtask clean` | Rust |
-| Empaquetado del bundle | paso de staging repetido en cada job de build de CI | sh ×3, PowerShell |
-| Tests de ciclo de vida | bats, Pester y tests de Rust | 3 frameworks |
-| Documentación | README, USAGE, SELF-HOSTED-INSTALL, DISTRIBUTION, PARITY, BUILD, contrato de la CLI | — |
-
-Problemas estructurales que motivan el rediseño:
-
-1. **Lógica triplicada y divergente.** El mismo flujo existe en tres scripts con diferencias no intencionadas: manejo del fallo de `setup`, orden de la opción de consulta de versión, opciones disponibles por SO y forma de buscar el nombre del archivo en `SHA256SUMS.txt`.
-2. **Rutas espejadas.** El directorio de instalación y las rutas de estado se replican a mano en PowerShell, en `avi-store` y en `xtask clean`, y hacen falta tests de paridad para mantenerlas sincronizadas.
-3. **Actualización frágil.** Los wrappers de actualización solo funcionan desde una copia del repositorio, ejecutan la copia local del instalador (no la publicada) y reinstalan aunque ya se tenga la última versión.
-4. **Reemplazo no seguro.** Ninguna vía detiene el daemon antes de reemplazar el programa. En Windows, un ejecutable en uso aborta la instalación con el directorio a medio borrar. El borrado previo a la extracción no se puede revertir si la extracción falla.
-5. **Efectos colaterales.** En Windows, reescribir el PATH de usuario con la API de .NET aplana las entradas `%VAR%` (`REG_EXPAND_SZ` → `REG_SZ`). `irm | iex` deja preferencias y funciones del instalador en la sesión del usuario.
-6. **Confirmación inconsistente.** `xtask clean` exige `--yes` cuando no hay terminal, pero `uninstall` y `cleanup` del producto borran sin confirmar en esa misma situación.
-7. **Mala experiencia de desarrollo.** Cinco archivos de ciclo de vida en la raíz, tres frameworks de test y siete documentos que describen partes solapadas del mismo ciclo.
-
-## 5. Evaluación de alternativas
-
-### 5.1 Criterios
+### 4.1 Criterios
 
 | Id | Criterio |
 |---|---|
@@ -117,7 +92,7 @@ Problemas estructurales que motivan el rediseño:
 | C6 | Encaje con el bundle multiarchivo y con el pipeline existente. |
 | C7 | Coste de adopción. |
 
-### 5.2 Alternativas para el entorno del usuario
+### 4.2 Alternativas para el entorno del usuario
 
 | Criterio | A. Estado actual | B. Scripts unificados por shell | **C. Binario autogestionado + bootstrap mínimo** | D. Instalador separado | E. `cargo-dist` | F. Gestores de paquetes |
 |---|---|---|---|---|---|---|
@@ -129,14 +104,14 @@ Problemas estructurales que motivan el rediseño:
 | C6 | ✅ | ✅ | ✅ | ⚠️ | ❌ | ⚠️ |
 | C7 | — | Bajo | Medio | Alto | Alto | Alto |
 
-- **A. Estado actual.** Funciona en el caso feliz, pero incumple C1, C3 y C5 y acumula los defectos de [§4](#4-diagnóstico-del-estado-actual).
+- **A. Estado actual.** Funciona en el caso feliz, pero incumple C1, C3 y C5: el mismo flujo de instalación, actualización y desinstalación está duplicado en tres lenguajes, con divergencias no intencionadas; las rutas de instalación y de estado están replicadas a mano y exigen tests de paridad para no desincronizarse; la actualización solo funciona desde una copia del repositorio, ejecuta la copia local del instalador y reinstala aunque ya se tenga la última versión; ninguna vía detiene el daemon antes de reemplazar el programa, de modo que en Windows un ejecutable en uso aborta la instalación con el directorio a medio borrar; en Windows, reescribir el PATH de usuario aplana las entradas `%VAR%`, e `irm | iex` deja preferencias y funciones del instalador en la sesión del usuario; la confirmación es inconsistente, porque `xtask clean` exige `--yes` cuando no hay terminal y los comandos de desinstalación y limpieza del producto no; y conviven cinco piezas de ciclo de vida en la raíz del repositorio, tres frameworks de test y siete documentos que describen partes solapadas del mismo ciclo.
 - **B. Scripts unificados por familia de shell** (un `install.sh` para Linux y macOS y un `install.ps1` con instalar, actualizar y desinstalar). Reduce de cinco a dos archivos, pero la lógica sigue en dos lenguajes y duplica lo que el binario ya hace en Rust (parada del daemon, rutas, PATH en el registro). Hereda además las limitaciones de `irm | iex` (no admite parámetros y comparte ámbito con la sesión) y un testeo débil.
 - **C. Binario autogestionado + bootstrap mínimo** (patrón de `rustup` y `uv`). El producto gestiona su propio ciclo de vida con subcomandos `self`. Para la primera instalación basta un bootstrap por familia de shell, que no puede eliminarse porque en ese momento el binario todavía no existe en la máquina. El conocimiento necesario ya vive en el binario: rutas (`avi-store`), parada unificada del daemon, acceso al registro de Windows y difusión de `WM_SETTINGCHANGE`, y un stack TLS (rustls) por la descarga de modelos. Además, la lógica que instala una versión es la de esa misma versión, así que las correcciones del instalador se aplican en cuanto se publican.
 - **D. Instalador o gestor separado** (estilo `rustup-init`). Añade un segundo ejecutable sin firmar por target, lo que duplica el problema de reputación ante SmartScreen y Defender, exige sincronizar versiones entre instalador y aplicación, y no aporta nada que el binario del producto no pueda hacer.
 - **E. `cargo-dist` (con `axoupdater`).** Genera instaladores, recibos y un actualizador, pero asume GitHub Actions como CI, y el pipeline de CircleCI tiene puertas, `sccache`, build del motor con MSYS2 y bundle de ONNX Runtime. Su modelo está orientado a binarios sueltos en un directorio `bin`, así que el bundle multiarchivo y los ganchos propios (parar el daemon, `setup`) quedarían fuera o requerirían personalización. Su actualizador reejecuta el instalador generado, con lo que la lógica vuelve a los scripts. Se adoptan sus ideas (recibo, URLs `releases/latest/download`, `irm | iex` sobre assets del release), no la herramienta.
 - **F. Gestores de paquetes nativos como vía principal.** Son complementarios, no sustitutos: exigen prerrequisitos (Homebrew, Scoop) que la audiencia sin toolchain no tiene y multiplican el mantenimiento (un manifiesto y una publicación por gestor). Se conserva el Cask; futuros canales entrarían como gestionados externamente.
 
-### 5.3 Alternativas para el entorno del desarrollador
+### 4.3 Alternativas para el entorno del desarrollador
 
 | Opción | Prerrequisito extra | Multiplataforma | Testeable | Valoración |
 |---|---|---|---|---|
@@ -145,7 +120,7 @@ Problemas estructurales que motivan el rediseño:
 | `cargo-make` | Instalar `cargo-make` | ⚠️ DSL en TOML + scripts | ⚠️ | Descartada |
 | Makefile / scripts PowerShell | `make` en Windows | ❌ | ❌ | Descartada |
 
-### 5.4 Decisión
+### 4.4 Decisión
 
 **Un programa por audiencia y un único motor de ciclo de vida, escrito en Rust:**
 
@@ -153,18 +128,18 @@ Problemas estructurales que motivan el rediseño:
 - **Desarrollador** → `cargo xtask` (`doctor`, `bootstrap`, `build-engine`, `package`, `install`, `clean`). Delega en el binario del producto todo lo que toca la instalación o el estado del usuario, y no replica rutas.
 - **Primer contacto** → dos bootstrap mínimos (POSIX sh para Linux y macOS, PowerShell para Windows), fuera de la raíz, publicados como assets del release.
 
-No se funde todo en un único ejecutable para ambas audiencias porque sus contextos son disjuntos. El usuario final no tiene el repositorio ni `cargo`, y las tareas de desarrollo (compilar, empaquetar, cortar releases) solo tienen sentido con el código fuente: incluirlas en el binario distribuido lo inflaría y expondría comandos irrelevantes. La coherencia no la da un único ejecutable, sino un único motor y una misma semántica de verbos y flags ([§9.1](#91-reglas-transversales)).
+No se funde todo en un único ejecutable para ambas audiencias porque sus contextos son disjuntos. El usuario final no tiene el repositorio ni `cargo`, y las tareas de desarrollo (compilar, empaquetar, cortar releases) solo tienen sentido con el código fuente: incluirlas en el binario distribuido lo inflaría y expondría comandos irrelevantes. La coherencia no la da un único ejecutable, sino un único motor y una misma semántica de verbos y flags ([§8.1](#81-reglas-transversales)).
 
-## 6. Arquitectura
+## 5. Arquitectura
 
-### 6.1 Principios
+### 5.1 Principios
 
 | Id | Principio |
 |---|---|
 | P1 | **Fuente única.** Cada regla (targets, rutas, formato del bundle, integración de PATH) se implementa una sola vez, en Rust. El bootstrap y `xtask` no conocen rutas de instalación ni de estado. |
 | P2 | **El binario se gestiona a sí mismo.** Instalar, actualizar y desinstalar son subcomandos del producto. |
 | P3 | **La versión que se instala ejecuta su propia lógica.** El bootstrap y la actualización delegan en el binario nuevo. |
-| P4 | **Propiedad exclusiva.** Solo se borra lo que la aplicación posee en exclusiva; los recursos compartidos nunca se borran por defecto ([§7](#7-modelo-de-rutas-y-propiedad)). |
+| P4 | **Propiedad exclusiva.** Solo se borra lo que la aplicación posee en exclusiva; los recursos compartidos nunca se borran por defecto ([§6](#6-modelo-de-rutas-y-propiedad)). |
 | P5 | **Per-user, sin privilegios.** Ninguna operación del usuario pide `sudo` ni UAC. |
 | P6 | **Idempotencia y convergencia.** Repetir una operación deja el mismo estado final; ninguna falla por encontrar el trabajo ya hecho. |
 | P7 | **Transaccional.** Una instalación o actualización fallida deja intacta la versión anterior. |
@@ -173,7 +148,7 @@ No se funde todo en un único ejecutable para ambas audiencias porque sus contex
 | P10 | **Seguro por defecto.** HTTPS, verificación de integridad antes de ejecutar nada descargado y confirmación en operaciones destructivas. |
 | P11 | **Idioma por capa.** Identificadores en inglés, incluidos los nombres de fichero y los targets de Cargo; comentarios, documentación, mensajes al usuario, textos de ayuda y descripciones de prueba en español; los contratos de máquina —claves JSON, `reason`, flags, variables de entorno y líneas de protocolo— no se traducen. La fuente canónica de esta política es `AGENTS.md` §0. |
 
-### 6.2 Componentes
+### 5.2 Componentes
 
 ```text
 Usuario final                                       Desarrollador
@@ -199,7 +174,7 @@ packaging/bootstrap/install.{sh,ps1}                  doctor · bootstrap · bui
 - **`crates/avi-store`** sigue siendo la única fuente de rutas; `avi-lifecycle` la consume.
 - **`crates/xtask`** delega en el binario del producto por invocación de proceso. Así no arrastra dependencias de red ni TLS (el tiempo de compilación de `xtask` precede a toda tarea de desarrollo) y no replica rutas.
 
-### 6.3 Organización del repositorio
+### 5.3 Organización del repositorio
 
 ```text
 AI-Voice-InterConnector/
@@ -217,11 +192,11 @@ AI-Voice-InterConnector/
 └── .cargo/config.toml            # alias `cargo xtask` = `run -p xtask --`
 ```
 
-**Desaparece:** los cinco scripts de la raíz (`install-linux.sh`, `install-macos.sh`, `install-windows.ps1`, `upgrade-ai-voice-interconnector.sh` y `.ps1`), los pasos de staging repetidos por job en la CI (sustituidos por `cargo xtask package`), las réplicas de rutas en `xtask clean` y en el instalador de Windows, y `docs/SELF-HOSTED-INSTALL.md` (su contenido vigente se absorbe según [§14.4](#144-consolidación-documental)).
+**Desaparecido tras la implementación:** los cinco scripts de la raíz (`install-linux.sh`, `install-macos.sh`, `install-windows.ps1`, `upgrade-ai-voice-interconnector.sh` y `.ps1`), los pasos de staging repetidos por job en la CI (sustituidos por `cargo xtask package`) y las réplicas de rutas en `xtask clean` y en el instalador de Windows. `docs/SELF-HOSTED-INSTALL.md` queda retirado, con su contenido vigente absorbido según [§13](#13-papel-de-la-documentación).
 
 **Único archivo nuevo en la raíz:** `rust-toolchain.toml`. Es la convención estándar de Rust y rustup solo la reconoce en la raíz; a cambio, instala y actualiza automáticamente la versión de Rust fijada para cualquier desarrollador.
 
-### 6.4 Superficie de comandos
+### 5.4 Superficie de comandos
 
 **Usuario final** (binario del producto):
 
@@ -261,7 +236,7 @@ irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/re
 
 `release`, `cask`, `licenses`, `source-offer` y `changelog` se mantienen sin cambios (fuera de alcance).
 
-## 7. Modelo de rutas y propiedad
+## 6. Modelo de rutas y propiedad
 
 Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library` en macOS, Known Folders en Windows) y se definen únicamente en `avi-store`.
 
@@ -269,7 +244,7 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 |---|---|---|---|---|
 | Directorio de programa (bundle + recibo) | Exclusiva | `~/.local/opt/ai-voice-interconnector/` | `~/.local/opt/ai-voice-interconnector/` | `%LOCALAPPDATA%\Programs\ai-voice-interconnector\` |
 | Comando en el PATH | Exclusiva (solo el enlace o la entrada) | Enlace `~/.local/bin/ai-voice-interconnector` | Ídem | Entrada en el valor `Path` de `HKCU\Environment` |
-| Bloque en perfiles de shell | Exclusiva (solo el bloque delimitado) | [§9.3.1](#931-integración-de-path) | Ídem | — |
+| Bloque en perfiles de shell | Exclusiva (solo el bloque delimitado) | [§8.3.1](#831-integración-de-path) | Ídem | — |
 | Datos de usuario y estado (voces, habla sintetizada, configuración, `daemon.pid`, logs) | Exclusiva | `$XDG_DATA_HOME/ai-voice-interconnector/` | `~/Library/Application Support/ai-voice-interconnector/` | `%LOCALAPPDATA%\ai-voice-interconnector\data\` |
 | Modelos (caché regenerable) | Exclusiva | `$XDG_CACHE_HOME/ai-voice-interconnector/models/` | `~/Library/Caches/ai-voice-interconnector/models/` | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models\` |
 | Staging y aparcados | Exclusiva | `~/.local/opt/.ai-voice-interconnector-staging-*` y `<programa>/.old-*` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector-staging-*` y `<programa>\.old-*` |
@@ -295,9 +270,9 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 - **R3.** En una raíz compartida solo se borran entradas atribuibles a la aplicación (los repos fijados, `models--<org>--<nombre>`, y sus bloqueos). Nunca se borran subdirectorios globales de la caché (`xet`, `.locks` completo).
 - **R4.** Todo recurso nuevo que la aplicación empiece a crear se añade a esta tabla y a los planes de limpieza y desinstalación en el mismo cambio.
 
-## 8. Recibo de instalación y canales
+## 7. Recibo de instalación y canales
 
-### 8.1 Recibo
+### 7.1 Recibo
 
 El recibo `install-receipt.json` vive en el directorio de programa y se escribe de forma atómica (archivo temporal + renombrado).
 
@@ -336,7 +311,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 - En Windows, `path_integration.registry_entry` guarda la entrada añadida al PATH de usuario, y `symlink`/`profile_blocks` son `null`.
 - Los campos desconocidos se ignoran, para que un binario antiguo pueda leer recibos nuevos. Un `schema_version` mayor que el soportado aborta la operación con un mensaje que pide actualizar.
 
-### 8.2 Canales
+### 7.2 Canales
 
 | Canal | Cómo se origina | `self install` | `self update` | `self uninstall` | `cleanup` |
 |---|---|---|---|---|---|
@@ -347,11 +322,11 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 
 **Detección del canal:** `homebrew` si el ejecutable resuelto está bajo el prefijo de Homebrew (`Caskroom`); `script` o `dev` según el recibo; `unmanaged` en cualquier otro caso. `self update` y `self uninstall` siempre actúan sobre la **instalación registrada** (el recibo en su ubicación), independientemente de qué copia del binario ejecute el comando. Si conviven dos instalaciones (Cask y `script`), `doctor` lo informa junto con cuál tiene precedencia en el PATH.
 
-## 9. Entorno del usuario
+## 8. Entorno del usuario
 
-### 9.1 Reglas transversales
+### 8.1 Reglas transversales
 
-**Confirmación.** "Hay terminal" significa que stdin es una TTY. El bootstrap redirige stdin a la terminal de control cuando existe ([§9.2](#92-bootstrap-primera-instalación)), de modo que `curl | sh` sigue siendo interactivo.
+**Confirmación.** "Hay terminal" significa que stdin es una TTY. El bootstrap redirige stdin a la terminal de control cuando existe ([§8.2](#82-bootstrap-primera-instalación)), de modo que `curl | sh` sigue siendo interactivo.
 
 | Tipo de operación | Con terminal | Sin terminal |
 |---|---|---|
@@ -386,7 +361,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 
 **`ct2_conversion_failed` es el único `reason` de la tabla que no es de primer nivel.** No aparece en `reason` del sobre ni determina el código de salida: es la causa **anidada** del fallo de provisión, la que dice *qué* falló, mientras que `setup_failed` —que sí es de primer nivel— dice *qué dejó de completarse*. Los dos se necesitan y no se funden: fundirlos perdería el `reason` que la reserva a cada caso. Su valor es 1 y no 11 a propósito, porque el 11 es el código de la operación y un consumidor que leyera un 11 anidado vería un código que la tabla no promete ahí. Cuando `setup` se invoca **directamente**, el mismo fallo sale como `setup_failed` de primer nivel con 11, porque entonces sí es la operación la que falla.
 
-**Bloqueo.** Las operaciones de ciclo de vida toman un bloqueo exclusivo de SO (`flock` o `LockFileEx`) sobre el archivo de bloqueo de [§7](#7-modelo-de-rutas-y-propiedad). El SO lo libera aunque el proceso muera. Mientras está tomado, los comandos que lanzan el daemon automáticamente no lo lanzan y terminan con `lifecycle_locked`, para que no arranque un daemon de la versión saliente en mitad de una actualización.
+**Bloqueo.** Las operaciones de ciclo de vida toman un bloqueo exclusivo de SO (`flock` o `LockFileEx`) sobre el archivo de bloqueo de [§6](#6-modelo-de-rutas-y-propiedad). El SO lo libera aunque el proceso muera. Mientras está tomado, los comandos que lanzan el daemon automáticamente no lo lanzan y terminan con `lifecycle_locked`, para que no arranque un daemon de la versión saliente en mitad de una actualización.
 
 **Recuperación.** Al empezar, toda operación de ciclo de vida (y `doctor`, en modo informe):
 
@@ -397,7 +372,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 
 **Red.** Solo HTTPS con TLS ≥ 1.2, reintentos acotados con espera creciente, respeto de las variables de proxy estándar (`HTTPS_PROXY`, `NO_PROXY`) y del proxy del sistema en Windows.
 
-### 9.2 Bootstrap (primera instalación)
+### 8.2 Bootstrap (primera instalación)
 
 El bootstrap es el único código que corre antes de que exista el binario. Su responsabilidad se limita a **obtener, verificar y ejecutar** el bundle correcto. No integra el PATH, no provisiona modelos, no consulta versiones instaladas ni conoce rutas de estado: todo eso lo hace `self install`. Cada script ocupa del orden de un centenar de líneas.
 
@@ -424,7 +399,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 **Flujo:**
 
 1. **Detectar el target** según [§3](#3-targets-soportados). Si no está soportado → `unsupported_platform`, antes de descargar nada.
-2. **Unix: rechazar `sudo`** ([§9.1](#91-reglas-transversales), privilegios).
+2. **Unix: rechazar `sudo`** ([§8.1](#81-reglas-transversales), privilegios).
 3. **Resolver la versión**, por este orden: opción o variable, versión estampada, y (solo si el script se ejecuta sin estampar, desde el repositorio) la última estable, obtenida siguiendo la redirección de `https://github.com/<repo>/releases/latest`. No se usa la API REST de GitHub, así que no hay límite de peticiones ni hace falta parsear JSON.
 4. **Crear el staging** como hermano del directorio de programa (mismo volumen), con permisos solo del usuario.
 5. **Descargar** el archivo del target y `SHA256SUMS.txt` por HTTPS.
@@ -444,7 +419,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 - Usa `Invoke-WebRequest -UseBasicParsing`, `Get-FileHash` y `Expand-Archive`.
 - Su único efecto sobre la sesión es añadir el directorio de programa al PATH de esa sesión, para que el comando funcione sin abrir otra terminal.
 
-### 9.3 `self install`
+### 8.3 `self install`
 
 **Modo, según dónde está el ejecutable que se invoca:**
 
@@ -454,7 +429,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 
 **Flujo de instalación:**
 
-1. **Recuperación y bloqueo** ([§9.1](#91-reglas-transversales)).
+1. **Recuperación y bloqueo** ([§8.1](#81-reglas-transversales)).
 2. **Validar el bundle** contra la lista de archivos de su target, fijada en compilación. Es la misma lista que usa `cargo xtask package`, de modo que empaquetado e instalación no pueden divergir. Si falta un archivo → `bundle_invalid`.
 3. **Detectar la instalación previa**: registrada (recibo) o ajena (Cask en el PATH, que solo genera un aviso de coexistencia y precedencia).
 4. **Resumen y confirmación.** Ejemplo:
@@ -474,16 +449,16 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
    1. **Aparcar** el contenido actual del directorio de programa en `<programa>/.old-<txid>/` por renombrado, registrándolo en el diario. En Windows, renombrar un ejecutable en uso está permitido; borrarlo no.
    2. **Colocar** el bundle nuevo. Los archivos se mueven desde el staging (renombrado en el mismo volumen), salvo el ejecutable que está corriendo, que se copia.
    3. **Ajustar permisos**: en Unix, 0755 para ejecutables y 0644 para el resto.
-   4. **Confirmar**: marcar el diario como confirmado y borrar `.old-<txid>/`. Lo que no se pueda borrar por estar en uso queda para borrado diferido ([§9.4](#94-self-update)).
+   4. **Confirmar**: marcar el diario como confirmado y borrar `.old-<txid>/`. Lo que no se pueda borrar por estar en uso queda para borrado diferido ([§8.4](#84-self-update)).
    5. **Revertir** si falla el paso 2 o el 3: retirar lo colocado, restaurar lo aparcado, borrar el diario → `rolled_back`.
 7. **macOS**: eliminar `com.apple.quarantine` de forma recursiva en todo el directorio de programa, no solo en el ejecutable, porque el motor y la librería de ONNX Runtime también se ejecutan o cargan. Si el archivo se descargó por navegador y se extrajo con el Finder, todos los archivos heredan la cuarentena.
-8. **Integración de PATH** ([§9.3.1](#931-integración-de-path)).
+8. **Integración de PATH** ([§8.3.1](#831-integración-de-path)).
 9. **Windows**: si el PATH de máquina contiene una entrada de una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. HKLM nunca se modifica.
 10. **Escribir el recibo** (de forma atómica) y liberar el bloqueo.
-11. **Ejecutar `setup`** en el mismo proceso, salvo `--no-setup` ([§9.7](#97-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`.
+11. **Ejecutar `setup`** en el mismo proceso, salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`.
 12. **Resumen final**: versión, rutas, estado del PATH (con "abre una terminal nueva" cuando corresponda) y estado de los modelos.
 
-#### 9.3.1 Integración de PATH
+#### 8.3.1 Integración de PATH
 
 **Linux y macOS**
 
@@ -516,7 +491,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 
 Todo lo modificado queda en el recibo, y `self uninstall` lo revierte exactamente, sin reescribir nada más.
 
-### 9.4 `self update`
+### 8.4 `self update`
 
 ```text
 ai-voice-interconnector self update [--check] [--version X.Y.Z] [--force] [--no-setup] [--yes] [--json]
@@ -525,14 +500,14 @@ ai-voice-interconnector self update [--check] [--version X.Y.Z] [--force] [--no-
 **Flujo:**
 
 1. **Recuperación y bloqueo.**
-2. **Leer el recibo y el canal** ([§8.2](#82-canales)). Si el canal es `homebrew` o `dev` → `externally_managed` con el comando correcto; si no hay instalación → `not_installed` con el one-liner.
+2. **Leer el recibo y el canal** ([§7.2](#72-canales)). Si el canal es `homebrew` o `dev` → `externally_managed` con el comando correcto; si no hay instalación → `not_installed` con el one-liner.
 3. **Resolver la versión objetivo**: `--version`, o la última estable obtenida por la redirección de `releases/latest`, sin API. La API REST solo se usa como respaldo. Se respeta `AVI_DOWNLOAD_BASE_URL`.
 4. **Comparar las versiones** semánticamente:
    - iguales → `already_up_to_date`, sin descargar nada (`--force` reinstala la misma versión);
    - objetivo menor → solo con `--version` explícito, y se trata como operación destructiva por la compatibilidad de datos.
 5. **`--check`**: informa la transición (`0.23.1 → 0.24.0`, o que ya se está en la última) y termina sin cambios. En JSON: `current`, `latest`, `update_available` y `channel`.
 6. **Resumen y confirmación.**
-7. **Preparar el bundle nuevo**: descargar el archivo y `SHA256SUMS.txt` en un staging hermano, verificar el SHA-256 (y la firma, cuando exista, [§12](#12-seguridad)), extraer, y comprobar que el binario nuevo arranca y que `--version` coincide con la versión objetivo.
+7. **Preparar el bundle nuevo**: descargar el archivo y `SHA256SUMS.txt` en un staging hermano, verificar el SHA-256 (y la firma, cuando exista, [§11](#11-seguridad)), extraer, y comprobar que el binario nuevo arranca y que `--version` coincide con la versión objetivo.
 8. **Parar el daemon con el binario actual**, que conoce su propio protocolo y la ruta de su `daemon.pid`. Se anota si estaba en ejecución.
 9. **Traspaso**: ejecutar `<staging>/ai-voice-interconnector self install --yes` heredando la consola, con las preferencias registradas en el recibo (por ejemplo, `--no-modify-path` si se usó al instalar) y `--no-setup` si se pidió. Se espera a que termine y se propaga su resultado.
 10. **Limpiar**: borrar el staging. Lo aparcado que siga en uso (en Windows, el ejecutable del proceso que actualiza) se elimina con un proceso auxiliar desacoplado que espera a que ese proceso termine y borra con reintentos acotados. Si el auxiliar no llega a hacerlo, la recuperación de la siguiente operación lo completa.
@@ -540,9 +515,9 @@ ai-voice-interconnector self update [--check] [--version X.Y.Z] [--force] [--no-
 
 **Garantías.** Un fallo antes del traspaso deja todo intacto. Un fallo durante el traspaso se revierte con la transacción del `self install` nuevo. Una interrupción en cualquier punto se recupera en la siguiente operación de ciclo de vida.
 
-**Modelos.** El `setup` de la versión nueva provisiona los modelos cuyo pin cambió y poda las revisiones propias obsoletas ([§9.7](#97-setup-en-el-ciclo-de-vida)).
+**Modelos.** El `setup` de la versión nueva provisiona los modelos cuyo pin cambió y poda las revisiones propias obsoletas ([§8.7](#87-setup-en-el-ciclo-de-vida)).
 
-### 9.5 `self uninstall`
+### 8.5 `self uninstall`
 
 ```text
 ai-voice-interconnector self uninstall [--keep-data] [--dry-run] [--yes] [--json]
@@ -567,7 +542,7 @@ Actúa sobre la instalación registrada, sea cual sea la copia del binario que l
 
 **Idempotencia:** sin instalación ni estado, termina con éxito y `not_installed`. **Residuo:** cero dentro de las raíces de propiedad exclusiva. Lo compartido que no se borra se informa explícitamente.
 
-### 9.6 `cleanup`
+### 8.6 `cleanup`
 
 ```text
 ai-voice-interconnector cleanup (--model | --voices | --synthetic-speech | --all) [--dry-run] [--yes] [--json]
@@ -585,7 +560,7 @@ ai-voice-interconnector cleanup (--model | --voices | --synthetic-speech | --all
 - Cualquier invocación barre además los temporales propios huérfanos, los stagings huérfanos y los aparcados `.old-*`.
 - Tras `--model`, la aplicación queda reintentable: `setup` descarga de nuevo lo necesario.
 
-### 9.7 `setup` en el ciclo de vida
+### 8.7 `setup` en el ciclo de vida
 
 Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 
@@ -595,7 +570,7 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 - Es idempotente: si todo está provisionado, no descarga nada.
 - Las **migraciones de estado** entre versiones son responsabilidad del `setup` de la versión nueva, idempotentes y solo hacia delante.
 
-### 9.8 `doctor`
+### 8.8 `doctor`
 
 `doctor` añade una sección de ciclo de vida (claves JSON entre paréntesis):
 
@@ -608,9 +583,9 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 | Pendientes (`pending`) | Diario de transacción, aparcados y stagings huérfanos |
 | Modelos (`models`) | Provisionados, faltantes y revisiones obsoletas, con tamaños |
 
-## 10. Entorno del desarrollador
+## 9. Entorno del desarrollador
 
-### 10.1 Requisitos por target
+### 9.1 Requisitos por target
 
 La tabla de requisitos y las versiones fijadas (Rust, ONNX Runtime, paquetes de MSYS2) se declaran **una sola vez, en código de `xtask`**, y de ahí las consumen `cargo xtask doctor`, `cargo xtask bootstrap` y la CI. La guía de build remite a `cargo xtask doctor` en lugar de duplicar la lista.
 
@@ -625,11 +600,11 @@ La tabla de requisitos y las versiones fijadas (Rust, ONNX Runtime, paquetes de 
 | ONNX Runtime (runtime de STT, versión fijada) | Descarga verificada | Descarga verificada | Descarga verificada | `cargo xtask bootstrap` |
 | sccache (opcional) | ✅ | ✅ | ✅ | `cargo install` o gestor |
 
-### 10.2 `cargo xtask doctor`
+### 9.2 `cargo xtask doctor`
 
 Solo lectura. Para cada requisito informa si está correcto, falta o tiene una versión distinta de la fijada. Cuando algo falta, da el comando exacto de instalación para el gestor detectado (apt, dnf, pacman o zypper; `xcode-select` o `brew`; winget o el `pacman` de MSYS2). Informa además de la deriva del entorno: motor TTS desactualizado respecto de sus fuentes, versión de ONNX Runtime distinta de la fijada y modelos no provisionados. Termina con éxito solo si están todos los requisitos obligatorios. Admite `--json`.
 
-### 10.3 `cargo xtask bootstrap` (instalar y actualizar el entorno)
+### 9.3 `cargo xtask bootstrap` (instalar y actualizar el entorno)
 
 Es **convergente**: la misma orden prepara el entorno la primera vez y lo pone al día después de un `git pull`. Si nada cambió, no hace trabajo.
 
@@ -640,7 +615,7 @@ Es **convergente**: la misma orden prepara el entorno la primera vez y lo pone a
 5. Con `--models`, provisiona los modelos ejecutando `setup` con el build local.
 6. Imprime un resumen del estado alcanzado.
 
-### 10.4 `cargo xtask package`
+### 9.4 `cargo xtask package`
 
 Produce el bundle y el archivo de release del target del host. No hay compilación cruzada: cada target se empaqueta en su runner nativo.
 
@@ -652,14 +627,14 @@ Produce el bundle y el archivo de release del target del host. No hay compilaci�
 
 Los cuatro jobs de build de CI invocan este comando en lugar de repetir cada uno su propio staging. El job de publicación estampa la versión en los bootstrap, los añade como assets y calcula `SHA256SUMS.txt` sobre todos los assets.
 
-### 10.5 `cargo xtask install`
+### 9.5 `cargo xtask install`
 
 Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-interconnector self install --channel dev` (`--channel` es una opción oculta). El build local queda instalado **por el mismo camino que un release**, de modo que cada instalación de desarrollo ejercita el instalador real.
 
 - **Volver al release publicado**: `ai-voice-interconnector self update --force`.
 - **Desinstalar**: `ai-voice-interconnector self uninstall`, o `cargo run -- self uninstall` si la copia instalada está rota.
 
-### 10.6 `cargo xtask clean`
+### 9.6 `cargo xtask clean`
 
 | Capa | Flag | Contenido | Mecanismo |
 |---|---|---|---|
@@ -670,10 +645,10 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 
 - Detiene primero los daemons lanzados desde `target/`.
 - Nunca borra código fuente versionado.
-- Aplica las reglas de confirmación de [§9.1](#91-reglas-transversales): `--dry-run`, y `--yes` obligatorio sin terminal.
+- Aplica las reglas de confirmación de [§8.1](#81-reglas-transversales): `--dry-run`, y `--yes` obligatorio sin terminal.
 - En Windows, el `xtask.exe` en ejecución se borra con el mismo mecanismo de borrado diferido que el producto.
 
-### 10.7 Mapa de operaciones del desarrollador
+### 9.7 Mapa de operaciones del desarrollador
 
 | Necesidad | Comando |
 |---|---|
@@ -685,7 +660,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Desinstalar el build local | `ai-voice-interconnector self uninstall` |
 | Limpiar el repositorio / la aplicación / todo | `cargo xtask clean` / `clean --app` / `clean --all` |
 
-## 11. Matriz de paridad por target
+## 10. Matriz de paridad por target
 
 | Operación | Windows x86_64 | Linux x86_64 | Linux arm64 | macOS arm64 |
 |---|---|---|---|---|
@@ -700,7 +675,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 
 Las diferencias entre columnas son mecanismos idiomáticos de cada SO. La experiencia (comandos, confirmaciones, resultados y residuo) es la misma.
 
-## 12. Seguridad
+## 11. Seguridad
 
 - **Transporte**: solo HTTPS (en `curl`, `--proto '=https' --tlsv1.2`), sin vuelta atrás a HTTP.
 - **Integridad**: el SHA-256 del archivo se verifica contra `SHA256SUMS.txt` antes de extraer o ejecutar nada, buscando el nombre exacto del archivo.
@@ -709,13 +684,13 @@ Las diferencias entre columnas son mecanismos idiomáticos de cada SO. La experi
   - embeber la clave pública en el binario, para que `self update` verifique la firma sin herramientas externas;
   - en el bootstrap, verificar la firma solo si `minisign` está disponible. La primera instalación sigue confiando en HTTPS y en GitHub, como cualquier `curl | sh`.
 - **Código remoto**: lo único que se ejecuta sin verificación previa es el propio bootstrap, algo inherente a `curl | sh` e `irm | iex`. Por eso es mínimo, se publica como asset versionado, figura en `SHA256SUMS.txt` y tiene una alternativa inspeccionable.
-- **Privilegios**: nunca se eleva (salvo `cargo xtask bootstrap --system`, por petición explícita); se rechaza `sudo` en Unix y se avisa si el proceso está elevado en Windows ([§9.1](#91-reglas-transversales)).
-- **Borrado**: rige por las reglas R1–R3 ([§7](#7-modelo-de-rutas-y-propiedad)). Ni una variable de reubicación ni un recibo manipulado pueden ampliar el alcance del borrado.
+- **Privilegios**: nunca se eleva (salvo `cargo xtask bootstrap --system`, por petición explícita); se rechaza `sudo` en Unix y se avisa si el proceso está elevado en Windows ([§8.1](#81-reglas-transversales)).
+- **Borrado**: rige por las reglas R1–R3 ([§6](#6-modelo-de-rutas-y-propiedad)). Ni una variable de reubicación ni un recibo manipulado pueden ampliar el alcance del borrado.
 - **Staging y temporales**: se crean con permisos exclusivos del usuario.
 - **Reputación de binarios sin firmar**: la descarga por CLI no aplica Mark-of-the-Web y `self install` limpia la cuarentena de macOS. Estas medidas mitigan el síntoma; la solución de fondo es la firma de código (goal a largo plazo, [SECURITY.md](../../SECURITY.md#artefactos-sin-firmar)).
 - **Sin telemetría**: ninguna operación envía información. Las únicas peticiones de red son las descargas de releases y de modelos.
 
-## 13. Estrategia de pruebas
+## 12. Estrategia de pruebas
 
 | Nivel | Qué cubre | Dónde corre |
 |---|---|---|
@@ -727,58 +702,25 @@ Las diferencias entre columnas son mecanismos idiomáticos de cada SO. La experi
 
 Las interrupciones se simulan con un punto de inyección de fallos que solo existe en builds de prueba, nunca en el binario distribuido.
 
-## 14. Plan de migración
+## 13. Papel de la documentación
 
-### 14.1 Fases
-
-La implementación se organiza en cinco ciclos, cada uno con su propio plan aprobado, verificación en Windows y en WSL, reconciliación documental y commit local.
-
-| Fase | Contenido | Ciclo |
-|---|---|---|
-| 1. Motor | Crate `avi-lifecycle`; traslado de la lógica de `uninstall` y `cleanup`; `self install` (con reparación), recibo, bloqueo, transacción, integración de PATH (tipo conservado en Windows); `self uninstall`; sección de `doctor`; reglas de confirmación unificadas | C1 |
-| 2. Actualización | `self update` (consulta, resolución, descarga, verificación, traspaso), recuperación y borrado diferido, `setup` con selección persistida y poda | C2 |
-| 3. Empaquetado y bootstrap | `cargo xtask package` adoptado por los 4 jobs de build; `packaging/bootstrap/install.{sh,ps1}` publicados como assets con versión estampada y en `SHA256SUMS.txt`; pruebas nuevas; sustitución de los jobs de pruebas de instaladores | C3 |
-| 4. Entorno de desarrollo | `rust-toolchain.toml`, alias `cargo xtask`, `doctor`, `bootstrap`, `install` y capas de `clean` con delegación de la capa de aplicación | C4 |
-| 5. Corte y consolidación | Eliminación de los 5 scripts de la raíz y de sus pruebas, de los wrappers de actualización y del comando `uninstall` de nivel superior (cada uno en el ciclo que lo reemplaza); consolidación documental; barrido de restos; entrada en el CHANGELOG con la declaración del cambio incompatible | C1–C4, cierre en C5 |
-| 6. Firma (diferida) | Firma de `SHA256SUMS.txt` con ed25519/minisign y verificación en `self update` | Fuera de esta implementación ([§12](#12-seguridad)) |
-
-### 14.2 Eliminación sin transición
-
-El proyecto es pre-1.0 y no requiere retrocompatibilidad. La eliminación de las piezas anteriores es total e inmediata:
-
-- **No hay aliases ni flags deprecados.** `ai-voice-interconnector uninstall` y su `--force` desaparecen; `--force` existe con otro significado en `self install` y `self update`.
-- **No hay adopción de instalaciones sin recibo.** Una instalación en la ruta canónica sin `install-receipt.json` no se reconoce, no se adopta y no se actualiza: se trata como no instalada (`not_installed`).
-- **No hay migración de datos.** Los modelos pasan a la caché exclusiva de la aplicación y los datos de Windows a `%LOCALAPPDATA%` sin mover lo anterior.
-- **No hay scripts puente** en las URLs `raw.githubusercontent.com/…/main/install-*.sh` e `install-windows.ps1`, que se retiran en el corte.
-- **Las secciones ya publicadas del `CHANGELOG.md`** son registro histórico y no se reescriben.
-
-### 14.3 Audiencia previa nula
-
-El proyecto no está distribuido: no hay instalaciones del ciclo de vida anterior en máquinas de usuarios. La primera versión publicada de este ciclo de vida es la primera instalación para todo el mundo, de modo que no hay nadie a quien haya que acompañar.
-
-- **No hay procedimiento de migración** que documentar, ni nota de transición en el `CHANGELOG.md`.
-- `CHANGELOG.md` registra en su sección `[No publicado]` el cambio incompatible y su carácter pre-1.0, sin más.
-- Cualquier instalación creada con los scripts anteriores desde `main` se trata, por la regla de [§14.2](#142-eliminación-sin-transición), como no instalada: `self install` no la reconoce. Sus datos en las rutas antiguas no se borran ni se migran.
-
-### 14.4 Consolidación documental
-
-| Documento | Papel tras la migración |
+| Documento | Papel tras la implementación |
 |---|---|
 | `docs/specs/sdlc-lifecycle.md` (este) | Fuente de verdad funcional del ciclo de vida |
 | `README.md` | One-liners y los tres comandos esenciales (`self update`, `self uninstall`, `cleanup`) |
 | `USAGE.md` | Guía de usuario del ciclo de vida |
 | `docs/CLI/README.md` | **Índice** de `docs/CLI/`: el árbol de documentos, la tabla de comandos de nivel superior (con `self` y **sin** `uninstall`) y la tabla de códigos de salida con los siete enteros del ciclo de vida |
 | `docs/CLI/CONTRACT.md` | Contrato de `self *`, `setup`, `cleanup` y `doctor`: flags, `reason` y códigos de salida, sobre `--json` y las dos versiones de esquema |
-| `docs/CLI/commands/SELF.md` | **Documento nuevo** del grupo `self`: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
+| `docs/CLI/commands/SELF.md` | Documento del grupo `self`, creado en el ciclo 1 y con 201 líneas: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
 | `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1–R3, el gate de categoría y la confirmación destructiva |
 | `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, conversión CT2, caché exclusiva de modelos y lo que llega en el Ciclo 2 |
 | `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del sobre, las cuatro retiradas, los seis chequeos y el veredicto de un solo objeto |
 | `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
-| `docs/PARITY.md` | Remite a la matriz de paridad de [§11](#11-matriz-de-paridad-por-target); el resto es registro histórico por fases |
+| `docs/PARITY.md` | Remite a la matriz de paridad de [§10](#10-matriz-de-paridad-por-target); el resto es registro histórico por fases |
 | `docs/SELF-HOSTED-INSTALL.md` | Se retira |
 
-## 15. Criterios de aceptación
+## 14. Criterios de aceptación
 
 **Instalación**
 
@@ -823,7 +765,7 @@ El proyecto no está distribuido: no hay instalaciones del ciclo de vida anterio
 
 28. La raíz del repositorio no contiene scripts de ciclo de vida, y ninguna ruta de instalación o de estado se define fuera de `avi-store`.
 
-## 16. Decisiones cerradas
+## 15. Decisiones cerradas
 
 Cerradas en el gate de alcance de la orquestación. El texto de cada sección affected ya asume la opción elegida.
 

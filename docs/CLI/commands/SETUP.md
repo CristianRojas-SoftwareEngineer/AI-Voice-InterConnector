@@ -29,7 +29,7 @@ No existe `--language`: el conjunto provisionado es fijo (es+en offline completo
 1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio de datos y materializa la voz de fábrica `default`.
 2. **`--with-stt`**: aviso informativo, nada más.
 3. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar. Purgar el modelo de clonado cuando el usuario no lo pidió dejaría la instalación sin lo que sí quiere. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
-4. **Calcular lo pendiente** antes de descargar: repos sin snapshot y derivados CT2 que haya que convertir o revalidar. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§9.7).
+4. **Calcular lo pendiente** antes de descargar: repos sin snapshot y derivados CT2 que haya que convertir o revalidar. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§8.7).
 5. **Descargar** lo pendiente, repo a repo, en la revisión fijada.
 6. **Convertir los derivados CT2** de los pares `es-en` y `en-es` cuyo repo esté provisionado y cuyo derivado no pase el gate.
 7. **Sobre `--json`** o mensaje humano.
@@ -96,7 +96,7 @@ Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo 
 
 ## Selección persistida y poda, vigentes
 
-**La selección persistida en configuración y la poda de las revisiones obsoletas de los repos propios** —las dos cosas que §9.7 pide— **están vigentes**, porque las necesita una actualización, no una instalación.
+**La selección persistida en configuración y la poda de las revisiones obsoletas de los repos propios** —las dos cosas que §8.7 pide— **están vigentes**, porque las necesita una actualización, no una instalación.
 
 La selección vive en `setup-selection.json` bajo la raíz de datos vigente (honra `AVI_DATA_DIR`), con esquema `{schema_version: 1, with_voice_cloning: bool}` extensible a futuros opcionales. La lectura es tolerante (fichero ausente o ilegible → conjunto base) y la escritura es atómica (temporal + renombrado, como el recibo). Sobrevive a los updates porque el reemplazo no toca la raíz de datos; se pierde al desinstalar, lo cual es correcto. El `setup` invocado por el traspaso lee la selección guardada, no los flags.
 

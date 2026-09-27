@@ -554,7 +554,7 @@ herramientas de terceros**: cada target se comprime con una utilidad del sistema
 
 Cada `build-*` en `.circleci/config.yml` empaqueta con `cargo xtask
 package --expect-version "${CIRCLE_TAG#v}"` (puerta tag-versión fail-fast:
-`const VERSION` de `src/main.rs` vs `CIRCLE_TAG`) más el humo de §13 (`self
+`const VERSION` de `src/main.rs` vs `CIRCLE_TAG`) más el humo de §12 (`self
 install --no-setup --no-modify-path` en sandbox con raíces reubicadas, y
 después `--version`/`voice list`). El subcomando `package`
 (`crates/xtask/src/package.rs`) monta el bundle desde

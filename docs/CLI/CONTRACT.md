@@ -156,7 +156,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 
 ### `uninstall` ya no es un comando
 
-**El comando de nivel superior `uninstall` y su `--force` no existen.** No hay alias, no hay flag deprecado y no hay periodo de transición: el proyecto es pre-1.0 y no está distribuido, así que no hay instalaciones a las que acompañar (§14.3 de [`docs/specs/sdlc-lifecycle.md`](../../specs/sdlc-lifecycle.md)). Lo que hace ese papel es el grupo `self`, y `--force` sigue existiendo **con otro significado** en `self install` y `self update`: resolver un `path_conflict` en la ruta del enlace ([§11](#11-self-setup-cleanup-y-voice)).
+**El comando de nivel superior `uninstall` y su `--force` no existen.** No hay alias, no hay flag deprecado y no hay periodo de transición: el proyecto es pre-1.0 y no está distribuido, así que no hay instalaciones a las que acompañar (directiva de no retrocompatibilidad de la cabecera de [`docs/specs/sdlc-lifecycle.md`](../../specs/sdlc-lifecycle.md)). Lo que hace ese papel es el grupo `self`, y `--force` sigue existiendo **con otro significado** en `self install` y `self update`: resolver un `path_conflict` en la ruta del enlace ([§11](#11-self-setup-cleanup-y-voice)).
 
 ### La superficie del ciclo de vida, flag a flag
 
@@ -169,7 +169,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | `cleanup` | `--model` · `--voices` · `--synthetic-speech` · `--all` · `--dry-run` · `--yes`/`-y` · `--json` | Vigente |
 | `doctor` | `--json` | Vigente |
 
-`--json` es **global** (`Cli::json`, `src/main.rs`): lo declara la raíz, no cada sub-acción, y por eso aparece en todas las filas. `--channel` es la única opción de `self install` que no aparece aquí porque está **oculta** (`hide = true`): la reserva `cargo xtask install` (§10.5 de la especificación), y solo surte efecto cuando el recibo se crea por primera vez.
+`--json` es **global** (`Cli::json`, `src/main.rs`): lo declara la raíz, no cada sub-acción, y por eso aparece en todas las filas. `--channel` es la única opción de `self install` que no aparece aquí porque está **oculta** (`hide = true`): la reserva `cargo xtask install` (§9.5 de la especificación), y solo surte efecto cuando el recibo se crea por primera vez.
 
 **`self install` tiene además un modo que no es un flag.** El modo lo decide la posición del ejecutable, no una opción: dentro del directorio de programa **repara** en vez de instalar, y un ejecutable sin bundle alrededor (por ejemplo `target\debug`) sale con `bundle_invalid` (15) indicando `cargo xtask install` ([`commands/SELF.md`](commands/SELF.md)).
 
@@ -506,7 +506,7 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 | `21` | `ExitCode::ChecksumMismatch` | El hash no coincide o falta en `SHA256SUMS.txt`; nada modificado |
 | `130` | `ExitCode::Interrupted` | Interrupción del usuario (Ctrl+C con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria en la ventana spawn→write) |
 
-**Los once enteros del 11 al 21 son de la tabla cerrada del ciclo de vida, uno por `reason`**, y no se reparten por el eje de dos preguntas de §1 como los anteriores: cada uno corresponde a un `reason` que §9.1 de la especificación declara, y la correspondencia es 1:1 con la variante de `ExitCode` (`crates/avi-core/src/exit_codes.rs`). Los dos casos que rompen el patrón son deliberados y son los que hay que recordar al leer la tabla:
+**Los once enteros del 11 al 21 son de la tabla cerrada del ciclo de vida, uno por `reason`**, y no se reparten por el eje de dos preguntas de §1 como los anteriores: cada uno corresponde a un `reason` que §8.1 de la especificación declara, y la correspondencia es 1:1 con la variante de `ExitCode` (`crates/avi-core/src/exit_codes.rs`). Los dos casos que rompen el patrón son deliberados y son los que hay que recordar al leer la tabla:
 
 - **El 11 no es un error.** `setup_failed` es un **éxito parcial**: el programa está instalado, el resumen y el sobre se emiten igual, y lo único que cambia es el `reason` del sobre y el código de salida. Por eso el sobre de `self install` sale por *veredicto* y no por el objeto `error` de §10.
 - **El 15 y el 17 son los que el ejecutable sin bundle alrededor y el bloqueo ya tomado producen**, y son los dos que un usuario se encuentra sin haber hecho nada mal: `target\debug\ai-voice-interconnector.exe self install` responde `bundle_invalid` (15) porque no hay bundle alrededor, no porque la instalación esté rota.
@@ -643,7 +643,7 @@ Son **dos, independientes**, y ya **no valen lo mismo**: el sobre de la CLI va p
 
 `self` es el grupo que hace que **el ciclo de vida viva en el binario que se gestiona a sí mismo**. Los tres subcomandos comparten cuatro propiedades, y las cuatro importan más que sus flags:
 
-- **Actúan sobre la instalación registrada, no sobre la copia que se invoca.** Las raíces efectivas salen del recibo (`cleanup::Roots::from_receipt`), de modo que la operación acierta aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén definidas (§8.2).
+- **Actúan sobre la instalación registrada, no sobre la copia que se invoca.** Las raíces efectivas salen del recibo (`cleanup::Roots::from_receipt`), de modo que la operación acierta aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén definidas (§7.2).
 - **Toman un bloqueo exclusivo de SO** sobre el archivo de bloqueo, y por eso un segundo proceso concurrente sale con `lifecycle_locked` (17) en vez de esperar.
 - **Ejecutan la recuperación antes de componer el plan**, para que el plan que el usuario ve y confirma sea el que queda después del barrido de aparcados, stagings huérfanos y temporales propios.
 - **El binario aporta lo que el motor no puede tener**: el control de procesos (parada del daemon) y el borrado diferido de Windows. El motor decide; el binario ejecuta esas dos primitivas de plataforma (`ProcessosDelProducto`, `BorradoDelPrograma`).
@@ -673,7 +673,7 @@ El detalle completo —los doce pasos de `self install`, los once de `self updat
 
 **Gate `sin flags → exit 2`:** `cleanup` sin ningún flag de categoría (`--voices`, `--synthetic-speech`, `--model`, `--all`) sale con `2` `usage_error` **sin borrar nada y sin tomar el bloqueo** (`cleanup::run`, primera comprobación). `--all` equivale a `--voices --synthetic-speech --model` más configuración, logs y estado del daemon.
 
-**Sin terminal, `cleanup` no procede por su cuenta.** Es una operación destructiva: sin TTY y sin `--yes` termina con `confirmation_required` (2) y no borra nada. La celda no destructiva de la tabla de §9.1 —lo no destructivo procede sin preguntar— es la de `self install` y `setup`, no la de `cleanup`.
+**Sin terminal, `cleanup` no procede por su cuenta.** Es una operación destructiva: sin TTY y sin `--yes` termina con `confirmation_required` (2) y no borra nada. La celda no destructiva de la tabla de §8.1 —lo no destructivo procede sin preguntar— es la de `self install` y `setup`, no la de `cleanup`.
 
 **El plan es una función pura de sus entradas** (`cleanup::plan`): la usan la confirmación, el `--dry-run` y la ejecución, de modo que no puede haber divergencia entre lo que se anuncia y lo que ocurre. Antes de borrar recursos que el daemon usa, `cleanup` lo detiene; si no se detiene, `daemon_stop_failed` (16) y **nada del plan se borra**.
 

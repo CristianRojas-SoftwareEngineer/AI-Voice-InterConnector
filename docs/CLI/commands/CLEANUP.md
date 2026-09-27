@@ -54,11 +54,11 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 **`NotFound` es éxito.** El plan dice lo que tiene que dejar de existir, y si ya no existe el objetivo está cumplido. No es un caso teórico: la parada del daemon borra el pidfile cuando no había daemon vivo, y el pidfile es un destino de `--all`.
 
-**Lo que no se pudo borrar no es un fallo de la operación**: §9.1 lo considera un archivo en uso que recoge el borrado diferido, y va en `kept`/`failed` con su motivo en lugar de tumbar la operación entera.
+**Lo que no se pudo borrar no es un fallo de la operación**: §8.1 lo considera un archivo en uso que recoge el borrado diferido, y va en `kept`/`failed` con su motivo en lugar de tumbar la operación entera.
 
 ---
 
-## Confirmación: la tabla de §9.1, y solo su parte destructiva
+## Confirmación: la tabla de §8.1, y solo su parte destructiva
 
 `cleanup` es **destructiva**, y su celda es la que obliga:
 
@@ -66,11 +66,11 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 |---|---|---|
 | `cleanup` | Lista de rutas con tamaños, luego `Esto eliminará lo indicado. ¿Continuar? [s/N]` | **Exige `--yes`**: sin él termina con `confirmation_required` (2) y **no borra nada** |
 
-La aceptación es `s`/`si`/`sí`/`y`/`yes`/`dale`/`ok` (sin distinguir mayúsculas). **Cualquier otra respuesta es un no**, incluido el salto de línea, y también en el prompt no destructivo: una errata nunca debe autorizar un borrado. Responder «no» **no es un error**: es `status` `cancelled` con salida 0, porque §9.1 no cuenta la cancelación entre los `reason`.
+La aceptación es `s`/`si`/`sí`/`y`/`yes`/`dale`/`ok` (sin distinguir mayúsculas). **Cualquier otra respuesta es un no**, incluido el salto de línea, y también en el prompt no destructivo: una errata nunca debe autorizar un borrado. Responder «no» **no es un error**: es `status` `cancelled` con salida 0, porque §8.1 no cuenta la cancelación entre los `reason`.
 
 El prompt va a **stderr** y la respuesta se lee de **stdin**, para que `--json` no se contamine. La celda no destructiva de la tabla —lo que no borra nada procede sin preguntar— es la de `self install` y `setup`, **no** la de `cleanup`.
 
-Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la purga de `setup --force-update`) usan **el mismo módulo `confirm`**, para que la tabla de §9.1 tenga una sola implementación.
+Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la purga de `setup --force-update`) usan **el mismo módulo `confirm`**, para que la tabla de §8.1 tenga una sola implementación.
 
 ---
 

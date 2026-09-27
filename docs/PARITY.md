@@ -1,6 +1,6 @@
 # Paridad de experiencia entre sistemas operativos
 
-> **La matriz de paridad de referencia es la de la especificación**: [§11 de `docs/specs/sdlc-lifecycle.md`](specs/sdlc-lifecycle.md#11-matriz-de-paridad-por-target). Este documento conserva el registro por fases y el historial de brechas; cuando las dos se discrepen, manda la especificación.
+> **La matriz de paridad de referencia es la de la especificación**: [§10 de `docs/specs/sdlc-lifecycle.md`](specs/sdlc-lifecycle.md#10-matriz-de-paridad-por-target). Este documento conserva el registro por fases y el historial de brechas; cuando las dos se discrepen, manda la especificación.
 
 Este documento registra el **estado de equivalencia funcional y de experiencia de usuario** del canal nativo entre Windows, Linux y macOS, y enumera **qué falta para cerrar la paridad completa**. El criterio no es la paridad tecnológica (cada SO usa sus mecanismos idiomáticos: `.zip`/`tar.gz`, symlink en `~/.local/bin`, PATH en HKCU, Cask de Homebrew — eso es aceptable por diseño), sino que el **usuario final recorra un ciclo de vida equivalente**: instalar, usar, actualizar y desinstalar con la misma cantidad de fricción, privilegios y residuo.
 

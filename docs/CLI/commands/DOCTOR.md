@@ -49,7 +49,7 @@ ai-voice-interconnector doctor [--json]
 | `base_status` | `models.base`, con los mismos dos valores (`ready` / `missing_opt_in`) |
 | `issues` | `checks` (el detalle por comprobación) y `failed` (los nombres de las que fallan) |
 
-**Por qué se retiran en vez de quedarse**: el contrato niega las claves de primer nivel que duplican lo que una sección ya dice mejor, y §9.8 de la especificación coloca la raíz de datos dentro de `install`, el estado de los modelos dentro de `models` y el `PATH` dentro de `path`. Retirar claves es un cambio **incompatible**, y por eso el sobre de la CLI sube a `"4"` en lugar de quedarse como adición.
+**Por qué se retiran en vez de quedarse**: el contrato niega las claves de primer nivel que duplican lo que una sección ya dice mejor, y §8.8 de la especificación coloca la raíz de datos dentro de `install`, el estado de los modelos dentro de `models` y el `PATH` dentro de `path`. Retirar claves es un cambio **incompatible**, y por eso el sobre de la CLI sube a `"4"` en lugar de quedarse como adición.
 
 ---
 
@@ -70,7 +70,7 @@ ai-voice-interconnector doctor [--json]
 
 **El chequeo de CT2 depende del snapshot de Marian.** Si `marian-es-en` no está provisionado, lo que se informa es el modelo ausente, no un derivado incompleto: son ramas excluyentes por dirección.
 
-**Nada de esto escribe en disco.** La recuperación de §9.1 se ejecuta aquí en **modo informe**: `doctor` **calcula** lo que la recuperación haría —con la misma decisión que usa el barrido real— y lo publica en `pending`, sin tomar el bloqueo y sin modificar nada. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del producto en uno que borra temporales de la máquina que lo invoca.
+**Nada de esto escribe en disco.** La recuperación de §8.1 se ejecuta aquí en **modo informe**: `doctor` **calcula** lo que la recuperación haría —con la misma decisión que usa el barrido real— y lo publica en `pending`, sin tomar el bloqueo y sin modificar nada. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del producto en uno que borra temporales de la máquina que lo invoca.
 
 ---
 

@@ -2,9 +2,9 @@
 
 `self` es el grupo con el que **el binario gestiona su propia instalación**. Reemplaza al comando de nivel superior `uninstall` —que ya no existe, sin alias ni flag deprecado— y cubre los dos lados del ciclo de vida: `self install` instala o repara, `self update` actualiza a la última estable o a una concreta, y `self uninstall` desinstala.
 
-La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§6.4 superficie, §9.1 reglas transversales, §9.3 `self install`, §9.5 `self uninstall`); el contrato de la CLI —flags, `reason`, códigos de salida, sobre `--json`— está en [`../CONTRACT.md`](../CONTRACT.md). Este documento describe **dónde vive cada cosa y por qué**.
+La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§5.4 superficie, §8.1 reglas transversales, §8.3 `self install`, §8.5 `self uninstall`); el contrato de la CLI —flags, `reason`, códigos de salida, sobre `--json`— está en [`../CONTRACT.md`](../CONTRACT.md). Este documento describe **dónde vive cada cosa y por qué**.
 
-**Implementación:** el motor es el crate `avi-lifecycle` (`crates/avi-lifecycle/src/install.rs` y `uninstall.rs`), sin punto de entrada propio: el parseo de la CLI y el cableado se quedan en `src/main.rs` (`handle_self`), porque el motor no depende de `clap` ni de `avi-core` (§6.3 de la especificación). El binario aporta las dos primitivas que el motor no puede tener —el control de procesos (`ProcessosDelProducto`, que vive en `avi-daemon`/`avi-tts`) y el borrado diferido de Windows (`BorradoDelPrograma`, que usa `avi-daemon::spawn::spawn_uninstall_helper`)—. El motor decide; el binario ejecuta esas dos.
+**Implementación:** el motor es el crate `avi-lifecycle` (`crates/avi-lifecycle/src/install.rs` y `uninstall.rs`), sin punto de entrada propio: el parseo de la CLI y el cableado se quedan en `src/main.rs` (`handle_self`), porque el motor no depende de `clap` ni de `avi-core` (§5.3 de la especificación). El binario aporta las dos primitivas que el motor no puede tener —el control de procesos (`ProcessosDelProducto`, que vive en `avi-daemon`/`avi-tts`) y el borrado diferido de Windows (`BorradoDelPrograma`, que usa `avi-daemon::spawn::spawn_uninstall_helper`)—. El motor decide; el binario ejecuta esas dos.
 
 ---
 
@@ -18,7 +18,7 @@ La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§6.4 superficie
 | `self update` | `--check` · `--version X.Y.Z` · `--force`/`-f` · `--no-setup` · `--yes` · `--json` | Actualiza la instalación registrada a la última estable o a una concreta, con verificación y traspaso |
 | `self uninstall` | `--keep-data` · `--dry-run` · `--yes` · `--json` | Borra el estado, revierte el `PATH` y borra el directorio de programa |
 
-`--json` es global (`Cli::json`), no un flag por subcomando. `--channel` es la única opción oculta del grupo: la reserva `cargo xtask install` (§10.5) y **solo surte efecto cuando el recibo se crea por primera vez**, de modo que reparar una instalación no reescriba su canal (`install::resolve_channel`).
+`--json` es global (`Cli::json`), no un flag por subcomando. `--channel` es la única opción oculta del grupo: la reserva `cargo xtask install` (§9.5) y **solo surte efecto cuando el recibo se crea por primera vez**, de modo que reparar una instalación no reescriba su canal (`install::resolve_channel`).
 
 ---
 
@@ -40,16 +40,16 @@ La comparación es por **clave canónica** (`avi_store::canonical_path_entry_mat
 
 ## Los doce pasos de `self install`
 
-El orden es el de §9.3 y está escrito en el propio código, con el número de paso en cada bloque:
+El orden es el de §8.3 y está escrito en el propio código, con el número de paso en cada bloque:
 
 1. **Recuperación y bloqueo** (`install.rs`). La recuperación va **con el bloqueo tomado**, no antes: si fuera al revés, el barrido de stagings huérfanos se llevaría por delante el staging que esta misma operación va a instalar. Por eso el bundle de donde se invoca se declara **en uso** (`recovery::Roots.in_use`). Este campo existe por un defecto real: sin él, `self install` borraba su propio bundle entre los pasos 1 y 2.
 2. **Validar el bundle** contra la lista de archivos del target, fijada en compilación (`BUNDLE_MANIFEST`, embebido desde `packaging/bundle-manifest.json`). Es la misma lista que usa `cargo xtask package`, de modo que empaquetado e instalación no pueden divergir. Si falta un archivo → `bundle_invalid` (15), sin haber modificado nada.
 3. **Detectar la instalación previa**: registrada (recibo) o ajena. Una ajena (un Cask en el `PATH`) **solo genera aviso** de coexistencia y precedencia: no bloquea.
-4. **Resumen previo y confirmación.** Instalar una versión **menor** que la instalada es una degradación y se confirma como operación **destructiva** (`confirm::Kind::Destructive`), aunque instalar no borre nada por sí mismo. Cancelar aquí es salida 0 y ningún `reason`: §9.1 no cuenta la cancelación entre los `reason`.
+4. **Resumen previo y confirmación.** Instalar una versión **menor** que la instalada es una degradación y se confirma como operación **destructiva** (`confirm::Kind::Destructive`), aunque instalar no borre nada por sí mismo. Cancelar aquí es salida 0 y ningún `reason`: §8.1 no cuenta la cancelación entre los `reason`.
 5. **Parar el daemon**, incluido el proceso residente del motor. Si no se detiene → `daemon_stop_failed` (16), **sin modificar nada**.
 6. **Reemplazo transaccional** (`transaction::replace`): aparcar, colocar, ajustar permisos, confirmar y borrar lo aparcado; revertir restaurando lo aparcado si falla → `rolled_back` (13). **En reparación no se copia nada.**
 7. **macOS**: eliminar `com.apple.quarantine` de forma recursiva en **todo** el directorio de programa, no solo en el ejecutable, porque el motor y la librería de ONNX Runtime también se ejecutan o cargan. No es un fallo de la instalación: la cuarentena que no se quita degrada el arranque y el resumen lo informa.
-8. **Integración de `PATH`** ([`../CONTRACT.md` §11](../CONTRACT.md) y §9.3.1 de la especificación). En Unix el `PATH` se modifica **por defecto** (decisión D2) y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
+8. **Integración de `PATH`** ([`../CONTRACT.md` §11](../CONTRACT.md) y §8.3.1 de la especificación). En Unix el `PATH` se modifica **por defecto** (decisión D2) y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
 9. **Windows**: si el `PATH` de máquina parece llevar una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. **HKLM nunca se modifica**, ni para escribir ni para leer.
 10. **Escribir el recibo** de forma atómica y liberar el bloqueo.
 11. **`setup` en el mismo proceso**, salvo `--no-setup`.
@@ -63,10 +63,10 @@ El orden es el de §9.3 y está escrito en el propio código, con el número de 
 
 ## `self update`: los once pasos
 
-El orden es el de §9.4 y está escrito en el propio código (`handle_self`, brazo `Update`):
+El orden es el de §8.4 y está escrito en el propio código (`handle_self`, brazo `Update`):
 
 1. **Recuperación y bloqueo.** La recuperación corre con el bloqueo tomado sobre la instalación registrada; barre aparcados, stagings huérfanos y temporales propios sin proceso vivo.
-2. **Leer el recibo y el canal** (§8.2). `homebrew` o `dev` → `externally_managed` (12) con el comando correcto; sin instalación → `not_installed` con el one-liner y salida 3.
+2. **Leer el recibo y el canal** (§7.2). `homebrew` o `dev` → `externally_managed` (12) con el comando correcto; sin instalación → `not_installed` con el one-liner y salida 3.
 3. **Resolver la versión objetivo**: `--version` explícito sin tocar la red, o la última estable siguiendo la redirección de `releases/latest` (con `AVI_DOWNLOAD_BASE_URL` si está definida); la API REST solo es respaldo.
 4. **Comparar las versiones** con el comparador numérico vigente: iguales → `already_up_to_date` sin descargar, éxito con 0 (`--force` reinstala); objetivo menor → solo con `--version` explícito y marca destructiva.
 5. **`--check`**: informa la transición (`anterior → nueva`, o que ya se está en la última) y termina sin cambios de actualización. En `--json`: `current`, `latest`, `update_available` y `channel`.
@@ -83,7 +83,7 @@ El orden es el de §9.4 y está escrito en el propio código (`handle_self`, bra
 
 ## `setup_failed`: el único desenlace que no es ni éxito ni error
 
-Si el `setup` del paso 11 falla, **la instalación no falla**. §9.1 lo declara éxito parcial, y el código lo modela así:
+Si el `setup` del paso 11 falla, **la instalación no falla**. §8.1 lo declara éxito parcial, y el código lo modela así:
 
 | | Valor |
 |---|---|
@@ -111,7 +111,7 @@ El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cau
 
 `models_cause` **solo existe si hubo fallo**: un sobre estable es más fácil de leer que uno con nulos. Los cuatro valores de `models` son `skipped` (`--no-setup`), `already_provisioned`, `provisioned` y `failed`.
 
-**`ct2_conversion_failed` no es nunca el código de salida del proceso.** Es un `reason` anidado cuyo valor declarado es **1**, el del error genérico, y el proceso sale con el de la operación (`setup_failed`, 11). Anidarlo con un 11 haría que un consumidor leyera un 11 donde la tabla de §9.1 no lo promete.
+**`ct2_conversion_failed` no es nunca el código de salida del proceso.** Es un `reason` anidado cuyo valor declarado es **1**, el del error genérico, y el proceso sale con el de la operación (`setup_failed`, 11). Anidarlo con un 11 haría que un consumidor leyera un 11 donde la tabla de §8.1 no lo promete.
 
 Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de conversión sale con `reason` `setup_failed` y 11, y un fallo de descarga sale con `network_error` y **20**. El `self update` propaga el mismo parcial: si el `setup` del binario nuevo falla, el resultado es `updated` con `reason` `setup_failed`, salida 11 y causa anidada en `models_cause`.
 
@@ -119,7 +119,7 @@ Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el t
 
 ## `self uninstall`: qué se borra y por qué
 
-Los nueve pasos de §9.5, en orden, sobre la **instalación registrada** y no sobre la posición del ejecutable.
+Los nueve pasos de §8.5, en orden, sobre la **instalación registrada** y no sobre la posición del ejecutable.
 
 1. **El canal decide si se puede actuar**: `homebrew` → `externally_managed` (12) con el comando de Homebrew en el mensaje. Sin instalación, sin estado y sin directorio de programa → **`not_installed` y salida 0** (criterio 21).
 2. **`--dry-run`**: imprime el plan y termina **sin tomar el bloqueo**, porque tomar el bloqueo crea el archivo y una simulación que deja un archivo detrás no es una simulación (criterio 20).
@@ -159,9 +159,9 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 
 ## Bloqueo, recuperación y el reparto con el binario
 
-- **El bloqueo es exclusivo de SO** (`flock` en Unix, `LockFileEx` en Windows) sobre el archivo de §7, y el SO lo libera aunque el proceso muera. Mientras está tomado, una segunda operación de ciclo de vida sale con `lifecycle_locked` (**17**). La propiedad de la que depende: dos instalaciones concurrentes no se pisan.
+- **El bloqueo es exclusivo de SO** (`flock` en Unix, `LockFileEx` en Windows) sobre el archivo de §6, y el SO lo libera aunque el proceso muera. Mientras está tomado, una segunda operación de ciclo de vida sale con `lifecycle_locked` (**17**). La propiedad de la que depende: dos instalaciones concurrentes no se pisan.
 - **La recuperación corre antes de componer el plan**, para que el plan que el usuario ve y confirma sea el que queda después del barrido de aparcados, stagings huérfanos y temporales propios sin proceso vivo.
-- **El motor no puede matar un árbol de procesos ni agendar un borrado en Windows**, así que ambos entran por rasgos (`ProcessControl`, `ProgramDirRemover`). La frontera es deliberada: arrastrar `avi-daemon` y `avi-tts` al crate del motor crearía un ciclo de dependencias, y §6.3 lo prohíbe.
+- **El motor no puede matar un árbol de procesos ni agendar un borrado en Windows**, así que ambos entran por rasgos (`ProcessControl`, `ProgramDirRemover`). La frontera es deliberada: arrastrar `avi-daemon` y `avi-tts` al crate del motor crearía un ciclo de dependencias, y §5.3 lo prohíbe.
 
 ---
 

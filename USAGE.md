@@ -1138,7 +1138,7 @@ desde el binario como desde el código fuente. En concreto:
   | `14` | Conflicto en la ruta del enlace del `PATH` | Hay un archivo ajeno donde va el enlace (salvo `--force`) |
   | `15` | Bundle incompleto | `self install` desde un ejecutable sin bundle alrededor, p. ej. `target\debug` |
   | `16` | No se pudo detener el daemon | Nada del plan de `cleanup`/`self uninstall` se aplicó (`self update` tampoco toca nada) |
-  | `17` | Otra operación de ciclo de vida en curso | El bloqueo de §7 del ciclo de vida ya está tomado |
+  | `17` | Otra operación de ciclo de vida en curso | El bloqueo de §6 del ciclo de vida ya está tomado |
   | `18` | Plataforma no soportada | Target no soportado; compilar desde el código fuente |
   | `19` | Binario descargado incompatible | `self update` verifica el arranque y la versión antes del traspaso, con diagnóstico |
   | `20` | Fallo de red | Descarga tras reintentos acotados (`self update`, `setup`) |
