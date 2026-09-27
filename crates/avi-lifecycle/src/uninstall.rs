@@ -646,6 +646,9 @@ fn receipt_bin_dir(receipt: &InstallReceipt) -> PathBuf {
 /// directorio cualquiera. La negativa: nunca es la raíz de una unidad, `$HOME`, un
 /// ancestro de `$HOME` ni coincide con otra raíz del producto, de modo que ni una
 /// variable de reubicación ni un recibo manipulado puedan ampliar el alcance (§12).
+/// Colgar del perfil no protege: el directorio de programa vive bajo `$HOME` en
+/// todas las plataformas (§7), así que esa pertenencia no puede rechazarlo; lo que
+/// nunca puede ser es el propio `$HOME` o un ancestro suyo.
 pub fn program_dir_is_removable(roots: &Roots, program_dir: &Path) -> bool {
     if program_dir.as_os_str().is_empty() {
         return false;
@@ -661,7 +664,6 @@ pub fn program_dir_is_removable(roots: &Roots, program_dir: &Path) -> bool {
     // `/`— desactivaría la regla justo donde más importa.
     let key = crate::canonical_path_key(program_dir);
     for protected in [
-        roots.home.as_path(),
         roots.data_dir.as_path(),
         roots.models_dir.as_path(),
         roots.temp_root.as_path(),
@@ -673,11 +675,13 @@ pub fn program_dir_is_removable(roots: &Roots, program_dir: &Path) -> bool {
             return false;
         }
     }
-    // Un ancestro de `$HOME` sería `/`, `/home` o `C:\Users\ana`: borrarlo se lleva el
-    // perfil entero. La igualdad ya la cubre el bucle de arriba.
+    // `$HOME` o un ancestro suyo (`/`, `/home`, `C:\Users\ana`): borrarlo se lleva
+    // el perfil entero. La igualdad se rechaza aquí porque el bucle de arriba ya no
+    // cubre `$HOME` a propósito: el programa cuelga del perfil en todas las
+    // plataformas y esa pertenencia no lo protege.
     if !roots.home.as_os_str().is_empty() {
         let home = crate::canonical_path_key(&roots.home);
-        if home != key && is_same_or_descendant(&home, &key) {
+        if home == key || is_same_or_descendant(&home, &key) {
             return false;
         }
     }
@@ -741,5 +745,109 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
     match outcome {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod r2_tests {
+    //! Regresión: el directorio de programa cuelga de `$HOME` en todas las
+    //! plataformas (§7), así que esa pertenencia no puede rechazarlo; lo que R2
+    //! impide es que sea el propio `$HOME`, un ancestro suyo u otra raíz.
+
+    use super::*;
+    use std::path::PathBuf;
+
+    fn sandbox(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "uninstall-r2-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("reloj del sistema")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("se crea el temporal");
+        root
+    }
+
+    fn roots(home: &Path, program: &Path) -> Roots {
+        Roots {
+            program_dir: program.to_path_buf(),
+            data_dir: home.join("datos"),
+            models_dir: home.join("modelos"),
+            temp_root: home.join("temporales"),
+            home: home.to_path_buf(),
+            models_shared: false,
+        }
+    }
+
+    fn with_receipt(program: &Path) {
+        std::fs::create_dir_all(program).expect("se crea el programa");
+        std::fs::write(receipt::receipt_path(program), "{}").expect("se escribe el recibo");
+    }
+
+    #[test]
+    fn program_under_home_with_receipt_is_removable() {
+        let root = sandbox("bajo-home");
+        let home = root.join("home").join("ana");
+        let program = home.join("programas").join("ai-voice-interconnector");
+        with_receipt(&program);
+        assert!(
+            program_dir_is_removable(&roots(&home, &program), &program),
+            "el caso real de todas las plataformas no puede rechazarse"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn home_as_program_dir_is_not_removable() {
+        let root = sandbox("home-igual");
+        let home = root.join("home").join("ana");
+        with_receipt(&home);
+        assert!(
+            !program_dir_is_removable(&roots(&home, &home), &home),
+            "el propio $HOME nunca es borrable"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn home_ancestor_is_not_removable() {
+        let root = sandbox("ancestro");
+        let home = root.join("home").join("ana");
+        with_receipt(&root);
+        assert!(
+            !program_dir_is_removable(&roots(&home, &root), &root),
+            "un ancestro de $HOME se llevaría el perfil"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn data_root_is_not_removable() {
+        let root = sandbox("datos");
+        let home = root.join("home").join("ana");
+        let datos = home.join("datos");
+        with_receipt(&datos);
+        let r = roots(&home, &datos);
+        assert!(
+            !program_dir_is_removable(&r, &datos),
+            "otra raíz del producto nunca es borrable"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn without_receipt_or_exe_is_not_removable() {
+        let root = sandbox("sin-recibo");
+        let home = root.join("home").join("ana");
+        let program = home.join("programas").join("ai-voice-interconnector");
+        std::fs::create_dir_all(&program).expect("se crea el programa");
+        assert!(
+            !program_dir_is_removable(&roots(&home, &program), &program),
+            "la mitad positiva exige recibo o ejecutable"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

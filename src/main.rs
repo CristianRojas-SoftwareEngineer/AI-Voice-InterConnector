@@ -3171,6 +3171,18 @@ struct ProgramRemoval;
 
 impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
     fn exe_lives_inside(&self, program_dir: &std::path::Path) -> bool {
+        // La impedancia que justifica el borrado diferido es **de Windows**: allí el
+        // ejecutable en uso impide borrar su directorio. En Unix no la hay —el proceso
+        // sigue vivo desde el inodo desenlazado—, así que responder `true` llevaría al
+        // motor a `schedule`, que en Unix no tiene implementación, y `self uninstall`
+        // invocado desde la propia instalación (la vía que documenta §10.5) nunca
+        // borraría el directorio de programa.
+        #[cfg(not(windows))]
+        {
+            let _ = program_dir;
+            return false;
+        }
+        #[cfg(windows)]
         std::env::current_exe()
             .ok()
             .and_then(|exe| exe.canonicalize().ok())
