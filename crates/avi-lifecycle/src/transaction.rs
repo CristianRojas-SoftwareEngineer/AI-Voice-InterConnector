@@ -601,9 +601,9 @@ mod tests {
             // Versión anterior completa: ejecutable, motor, librería y licencia.
             bundle(&program, "v1");
 
-            faults::arm(point);
+            let window = faults::armed(point);
             let err = replace(&program, &source).unwrap_err();
-            faults::disarm_all();
+            drop(window);
 
             let failure = err
                 .downcast_ref::<LifecycleError>()
@@ -660,8 +660,9 @@ mod tests {
             );
 
             // La siguiente operación completa el reemplazo: mismo bundle, mismo
-            // resultado final, sin residuos de la anterior.
-            faults::disarm_all();
+            // resultado final, sin residuos de la anterior. La ventana ya se
+            // cerró al terminar la aserción del fallo inyectado, así que este
+            // reintento corre sin ningún punto armado.
             let outcome = replace(&program, &source).unwrap();
             assert!(outcome.leftovers.is_empty());
             assert_eq!(

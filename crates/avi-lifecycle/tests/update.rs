@@ -389,7 +389,7 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
     let before = sandbox.program_content();
 
     // Interrupción antes del traspaso: ni siquiera se lanza el binario nuevo.
-    faults::arm(FaultPoint::BeforeHandover);
+    let window = faults::armed(FaultPoint::BeforeHandover);
     let error = runtime
         .block_on(update::handover(&update::HandoverRequest {
             staging_exe: PathBuf::from("/ruta/inexistente/ai-voice-interconnector"),
@@ -398,7 +398,7 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
             force: false,
         }))
         .expect_err("criterio 14: el punto inyectado interrumpe el traspaso");
-    faults::disarm_all();
+    drop(window);
     assert!(
         error
             .to_string()
@@ -424,7 +424,7 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
         support::write(&script, "#!/bin/sh\nexit 0\n");
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
             .expect("criterio 14: el hijo se hace ejecutable");
-        faults::arm(FaultPoint::DuringHandover);
+        let window = faults::armed(FaultPoint::DuringHandover);
         let error = runtime
             .block_on(update::handover(&update::HandoverRequest {
                 staging_exe: script,
@@ -433,7 +433,7 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
                 force: false,
             }))
             .expect_err("criterio 14: el punto inyectado interrumpe tras el hijo");
-        faults::disarm_all();
+        drop(window);
         assert!(
             error
                 .to_string()
@@ -490,7 +490,7 @@ fn criterion_14_fault_injection_is_inert_without_the_feature() {
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
 
-    faults::arm(FaultPoint::BeforeHandover);
+    let window = faults::armed(FaultPoint::BeforeHandover);
     let error = runtime
         .block_on(update::handover(&update::HandoverRequest {
             staging_exe: PathBuf::from("/ruta/inexistente/ai-voice-interconnector"),
@@ -499,7 +499,7 @@ fn criterion_14_fault_injection_is_inert_without_the_feature() {
             force: false,
         }))
         .expect_err("criterio 14: sin hijo que lanzar el traspaso falla");
-    faults::disarm_all();
+    drop(window);
 
     assert!(
         !error.to_string().contains("fallo inyectado"),

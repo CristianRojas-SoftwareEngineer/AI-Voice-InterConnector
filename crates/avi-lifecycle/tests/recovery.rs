@@ -460,7 +460,7 @@ fn interrupted_install_recovers_next_run() {
 
         // ── Interrumpir ─────────────────────────────────────────────────────────
         let exe = sandbox.write_bundle(&sandbox.staging);
-        faults::arm(point);
+        let window = faults::armed(point);
         let error = runtime
             .block_on(install::install(
                 &sandbox.install_env(&exe),
@@ -468,7 +468,7 @@ fn interrupted_install_recovers_next_run() {
                 &Inert,
             ))
             .expect_err("criterio 14: el punto inyectado hace fallar la operación");
-        faults::disarm_all();
+        drop(window);
 
         assert!(
             error.to_string().contains(point.as_str()),
@@ -522,7 +522,7 @@ fn interrupted_install_recovers_next_run() {
 /// una carencia: el binario distribuido no puede provocar un fallo a propósito.
 ///
 /// La aserción también es la que impide que la capa 1 se apoye en la inyección sin
-/// decirlo: si `arm` fuese efectivo sin el feature, esta prueba caería.
+/// decirlo: si `armed` fuese efectivo sin el feature, esta prueba caería.
 #[cfg(not(feature = "faults"))]
 #[test]
 fn fault_injection_is_inert_without_the_feature() {
@@ -533,7 +533,7 @@ fn fault_injection_is_inert_without_the_feature() {
     sandbox.seed_env();
     let exe = sandbox.write_bundle(&sandbox.staging);
 
-    faults::arm(FaultPoint::BeforeCommit);
+    let window = faults::armed(FaultPoint::BeforeCommit);
     let runtime = support::runtime();
     let outcome = runtime
         .block_on(install::install(
@@ -542,7 +542,7 @@ fn fault_injection_is_inert_without_the_feature() {
             &Inert,
         ))
         .expect("sin el feature, armar un punto no interrumpe nada");
-    faults::disarm_all();
+    drop(window);
 
     assert_eq!(
         outcome.status, "installed",
