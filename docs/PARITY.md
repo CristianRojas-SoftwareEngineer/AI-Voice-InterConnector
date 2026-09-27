@@ -34,8 +34,9 @@ Fecha de corte: **v0.20.6 (Fase 8+)** (canal Rust por archivos comprimidos). Cad
 
 ## Fase 1 — Instalación
 
-Mecánica interna de cada script (flujo paso a paso, checksum, dependencias del
-host) en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
+Mecánica interna de la instalación (flujo paso a paso, checksum, dependencias del
+host) en [docs/DISTRIBUTION.md](DISTRIBUTION.md); el detalle por comando, en
+[`CLI/commands/`](CLI/commands/).
 
 ### Estado
 

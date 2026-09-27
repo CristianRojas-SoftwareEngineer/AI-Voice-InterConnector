@@ -9,4 +9,4 @@
 # Es la misma comprobación que la puerta F5 y la F7, en forma de comando que
 # cualquier commit puede ejecutar, no de recuerdo del orquestador.
 set -e
-exec cargo run --quiet -p xtask -- language --check
+exec cargo --quiet xtask language --check

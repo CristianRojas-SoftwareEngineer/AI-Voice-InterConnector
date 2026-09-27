@@ -2625,9 +2625,9 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
 /// Por qué el fallback es por PID y nunca por imagen: daemon y CLI comparten la misma
 /// imagen `ai-voice-interconnector.exe` (el daemon es el mismo binario lanzado con
 /// `daemon serve`), así que `taskkill /IM` no puede distinguirlos y mataba al propio
-/// invocador (bug v0.18.10–v0.18.25 en `uninstall --force`). La guarda
-/// `pid != process::id()` previene la auto-muerte incluso si el PID leído fuera el del
-/// propio proceso.
+/// invocador (bug de auto-mate por imagen compartida en `v0.18.10`–`v0.18.25`). La
+/// guarda `pid != process::id()` previene la auto-muerte incluso si el PID leído fuera
+/// el del propio proceso.
 /// Resumen previo de `self update` (§9.4): qué versión se instala sobre cuál,
 /// dónde, por qué canal y de dónde se descarga. Es lo que se muestra **antes**
 /// de confirmar, en paralelo al resumen previo de `self install`.
@@ -2829,7 +2829,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     ExitCode::NotFound,
                     "not_installed",
                     "no hay instalación registrada: instala con el one-liner de tu sistema \
-                     operativo (docs/SELF-HOSTED-INSTALL.md)",
+                     operativo (docs/DISTRIBUTION.md)",
                 ));
             };
             // Falla rápido en plataforma no soportada, antes de tocar la red.

@@ -20,7 +20,8 @@ rustflags = ["-C", "target-feature=+crt-static"]
 CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
 CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
 
-# Forma corta de las tareas de desarrollo: `cargo xtask …` equivale a
-# `cargo run -p xtask -- …` (ciclo 4).
+# Forma canónica de las tareas de desarrollo: `cargo xtask …` (ciclo 4), que
+# compila y ejecuta el binario `xtask` del workspace pasándole los argumentos
+# después del separador `--`.
 [alias]
 xtask = ["run", "-p", "xtask", "--"]

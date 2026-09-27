@@ -589,8 +589,7 @@ registrado como goal a largo plazo en [docs/GOAL.md](GOAL.md#goal-a-largo-plazo)
 
 Como mitigación, los **one-liners descargan por CLI** (`curl`/`Invoke-WebRequest`),
 que no aplica Mark-of-the-Web, así que el archivo extraído no dispara
-SmartScreen/Gatekeeper. Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md) y
-[docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
+SmartScreen/Gatekeeper. Ver [docs/DISTRIBUTION.md](DISTRIBUTION.md).
 
 ---
 

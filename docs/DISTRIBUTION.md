@@ -13,6 +13,7 @@ quedó 100 % Rust en su distribución.
 - [Formato de los artefactos](#formato-de-los-artefactos)
 - [Instalación](#instalación)
 - [Por qué el one-liner evita SmartScreen/Gatekeeper](#por-qué-el-one-liner-evita-smartscreengatekeeper)
+- [Publicación, tap de Homebrew y antivirus](#publicación-tap-de-homebrew-y-antivirus)
 - [Canal PyPI retirado](#canal-pypi-retirado)
 - [Flujo de publicación (CI)](#flujo-de-publicación-ci)
 
@@ -87,9 +88,7 @@ mismo** y encadena `setup` (el `setup` solo provisiona modelos):
 
 El porqué de que `install.ps1` no dispare SmartScreen (a diferencia de
 la descarga por navegador) está explicado en
-[SECURITY.md](../SECURITY.md#artefactos-sin-firmar); el diseño histórico
-completo sigue en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md)
-(diferido al ciclo 5, sin tocar).
+[SECURITY.md](../SECURITY.md#artefactos-sin-firmar) y en la sección siguiente.
 
 ## Por qué el one-liner evita SmartScreen/Gatekeeper
 
@@ -102,6 +101,67 @@ activa. En macOS, además, `self install` limpia `com.apple.quarantine` del
 programa instalado (el bootstrap no toca la cuarentena). La resolución de raíz (firma de
 código y notarización) sigue pendiente; ver `docs/BUILD.md` §"Limitación
 conocida: firma de código y notarización".
+
+## Publicación, tap de Homebrew y antivirus
+
+**Principios de publicación.** Publicar una versión nueva no requiere la aprobación
+ni la revisión de un tercero, ni un pull request a un proyecto externo. Los repos
+propios —el tap de Homebrew— y la automatización de CI sobre el propio repositorio
+están bajo control total del proyecto y no cuentan como terceros: un `git push` a un
+repositorio propio no es un PR a un proyecto externo. Esto descarta los catálogos
+oficiales (`winget-pkgs`, `homebrew-cask`, Flathub, Snap Store) como vía de
+publicación. Toda la automatización de publicación vive en `.circleci/config.yml`
+(CI único, sin GitHub Actions) y el job `publish-release` publica el GitHub Release
+directo, sin borrador: sus assets son públicos en cuanto el job termina y
+`releases/latest` apunta a la versión nueva sin desfase. El tag es el punto de no
+retorno, y es lo que permite que un job posterior del mismo pipeline
+(`publish-metadata`) lea los assets ya públicos.
+
+**Prerrequisitos del canal de Homebrew.** El Cask de macOS depende de dos recursos
+de una sola vez, ya creados:
+
+- El repositorio tap `homebrew-ai-voice-interconnector` (público), que aloja
+  `Casks/ai-voice-interconnector.rb`.
+- El context de CircleCI `homebrew-tap`, con la variable `HOMEBREW_TAP_PAT` (un PAT
+  fine-grained con permiso `Contents:RW` solo sobre el tap), que autoriza el push del
+  Cask actualizado.
+
+El bootstrap de una línea no necesita ningún recurso previo. `publish-metadata` crea
+o reescribe `Casks/ai-voice-interconnector.rb` en el tap en cada release, y el único
+prerrequisito es que el repositorio tap exista: regenerar y re-empujar produce el
+mismo resultado, así que el reintento es seguro en cualquier momento.
+
+**Experiencia de usuario del Cask.** Homebrew autoextrae el `tar.gz`, enlaza el
+binario en el prefix (`/opt/homebrew/bin`, ya en el PATH) sin `sudo` y elimina el
+atributo de cuarentena, con lo que mitiga Gatekeeper. Toda la integración de `PATH`,
+la desinstalación (`brew uninstall --cask --zap`) y la limpieza de cuarentena las
+resuelve Homebrew; solo el modelo queda pendiente, porque el Cask no puede correr
+post-install: sus `caveats` remiten a `setup` y a la licencia GPL-3.0-or-later.
+
+**Antivirus.** El Cask de macOS es la única vía que sí limpia la cuarentena. Los
+one-liners no eliminan por sí mismos las alertas de antivirus; evitan SmartScreen
+porque descargan por CLI (sección anterior), pero Microsoft Defender **Antivirus** es
+independiente del Mark-of-the-Web y puede marcar el binario sin firma venga de donde
+venga. La marca que Windows y macOS añaden a todo archivo bajado de internet, y que
+es la que activa SmartScreen/Gatekeeper, no la lleva un archivo descargado por CLI;
+el detalle completo está en
+[SECURITY.md](../SECURITY.md#artefactos-sin-firmar).
+
+**Runbook de reporte a Microsoft.** La vía de remediación es el reporte a WDSI
+(*Windows Defender Security Intelligence*, `microsoft.com/wdsi`), donde se reportan
+los falsos positivos de Defender para que los reclasifiquen; el paso a paso está en
+[SECURITY.md](../SECURITY.md#artefactos-sin-firmar). Cubre solo la **detección de
+Defender Antivirus** —una firma concreta (p. ej. `Trojan:Win32/Wacatac`) que, tras
+revisión de un analista, Microsoft borra globalmente para todos los Defender—. **No**
+desactiva SmartScreen, que es reputación y solo la resuelve la firma de código
+(Authenticode en Windows, notarización en macOS). El reporte se puede hacer con el
+binario sin firmar, y firmar no borra una detección ya existente (solo el reporte lo
+hace). Sin firma, la reputación se acumula por archivo, así que cada versión nueva
+puede requerir un reporte propio; con firma de código, la reputación se hereda entre
+versiones y esa recurrencia disminuye mucho.
+
+El estado de esta brecha por SO (mitigada, diferida a firma de código) vive en
+[docs/PARITY.md](PARITY.md#fase-2--primer-arranque-reputación-del-binario-sin-firmar).
 
 ## Canal PyPI retirado
 

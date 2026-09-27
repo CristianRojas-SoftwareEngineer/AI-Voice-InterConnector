@@ -36,7 +36,7 @@ la integridad se verifica cotejando los checksums SHA-256.
   repositorio tap público `homebrew-ai-voice-interconnector`. Lo usa solo
   `publish-metadata`, que en cada release crea o reescribe
   `Casks/ai-voice-interconnector.rb` en el tap. El diseño del canal está en
-  [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
+  [docs/DISTRIBUTION.md](DISTRIBUTION.md).
 
 ### Antes de cada corte
 

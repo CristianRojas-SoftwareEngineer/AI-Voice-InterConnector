@@ -243,9 +243,8 @@ Motor Qwen3-TTS MIT/Apache-2.0; dependencias en [THIRD-PARTY-LICENSES.md](THIRD-
 - [docs/GOAL.md](docs/GOAL.md) - Meta y criterios de aceptación
 - [docs/DESIGN.md](docs/DESIGN.md) - Diseño técnico (Rust)
 - [docs/BUILD.md](docs/BUILD.md) - Guía de compilación Rust
-- [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) - Canal nativo (`tar.gz`/`.zip`)
+- [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) - Canal nativo (`tar.gz`/`.zip`), one-liners, Homebrew Cask y antivirus
 - [docs/PARITY.md](docs/PARITY.md) - Paridad Windows/Linux/macOS
-- [docs/SELF-HOSTED-INSTALL.md](docs/SELF-HOSTED-INSTALL.md) - One-liners
 - [docs/RELEASING.md](docs/RELEASING.md) - Publicación de Releases
 - [docs/MANUAL-VALIDATION.md](docs/MANUAL-VALIDATION.md) - Validación manual CLI
 

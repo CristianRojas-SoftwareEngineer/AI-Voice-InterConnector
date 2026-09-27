@@ -5,7 +5,7 @@
 //! defectos que R1, R2 y §9.5 condemnan:
 //!
 //! - En Unix borraba el **directorio padre del ejecutable** cuando este no era el
-//!   canónico. Con `cargo run -- uninstall --force` eso alcanzaba `target/debug`, que
+//!   canónico. Lanzado desde el árbol de desarrollo eso alcanzaba `target/debug`, que
 //!   es un directorio del repositorio: R2 lo prohíbe y el bug era alcanzable desde el
 //!   propio árbol.
 //! - La integración de `PATH` se revertía con una función propia que **aplanaba
