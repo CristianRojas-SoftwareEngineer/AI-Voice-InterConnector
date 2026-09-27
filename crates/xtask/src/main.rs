@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 mod clean;
 mod language;
+mod package;
 
 const GITHUB_REPO: &str = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector";
 const CASK_NAME: &str = "ai-voice-interconnector";
@@ -335,6 +336,18 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
+    /// Empaqueta el bundle del release para el target del host desde el manifiesto
+    Package {
+        /// Directorio de salida del artefacto (por defecto, `artifacts`)
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// No comprimir: deja el árbol del bundle sin empaquetar
+        #[arg(long)]
+        no_compress: bool,
+        /// Falla si la versión del CLI no coincide (puerta tag-versión de CI)
+        #[arg(long, value_name = "X.Y.Z")]
+        expect_version: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -468,6 +481,11 @@ fn main() -> Result<()> {
             build_engine(self_test, simd, jobs)?;
         }
         Commands::Clean { dry_run, yes } => clean::run(dry_run, yes)?,
+        Commands::Package {
+            out,
+            no_compress,
+            expect_version,
+        } => package::run(out, no_compress, expect_version)?,
     }
     Ok(())
 }
@@ -598,7 +616,7 @@ fn build_engine(self_test: bool, simd: Option<String>, jobs: Option<usize>) -> R
     Ok(())
 }
 
-fn get_version() -> Result<String> {
+pub(crate) fn get_version() -> Result<String> {
     // Rust: Cargo.toml
     let cargo = Path::new("Cargo.toml");
     if cargo.is_file() {
@@ -2515,6 +2533,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             vec!["xtask", "changelog"],
             vec!["xtask", "language"],
             vec!["xtask", "build-engine"],
+            vec!["xtask", "package"],
         ] {
             let help = help_text(&node);
             assert!(help.contains("Uso:"), "{:?} debe contener 'Uso:'", node);

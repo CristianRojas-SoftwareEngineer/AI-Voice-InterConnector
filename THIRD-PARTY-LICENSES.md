@@ -78,8 +78,8 @@ en `docs/BUILD.md` §6.
 ## Inventario completo del lockfile
 
 <!-- inventario:inicio -->
-Generado desde `Cargo.lock` (509 paquetes resueltos, 459 crates únicos, directos y transitivos).
-Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-2.0 2, GPL-3.0-or-later 10, ISC 4, MIT 439, MPL-2.0 2, Unicode-3.0 18, Zlib 6.
+Generado desde `Cargo.lock` (510 paquetes resueltos, 460 crates únicos, directos y transitivos).
+Resumen por familia (paquetes resueltos): Apache-2.0 25, BSD 4, CDLA-Permissive-2.0 2, GPL-3.0-or-later 10, ISC 4, MIT 439, MPL-2.0 2, Unicode-3.0 18, Zlib 6.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
@@ -592,6 +592,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 24, BSD 4, CDLA-Permissive-
 | `zip` | 2.4.2 | MIT | MIT |
 | `zlib-rs` | 0.6.7 | Zlib | Zlib |
 | `zmij` | 1.0.23 | MIT | MIT |
+| `zopfli` | 0.8.3 | Apache-2.0 | Apache-2.0 |
 <!-- inventario:fin -->
 
 > `ai-voice-interconnector`, `avi-*` y `xtask` son crates locales del proyecto (GPL-3.0-or-later).

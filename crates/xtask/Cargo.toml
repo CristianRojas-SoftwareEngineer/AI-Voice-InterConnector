@@ -12,6 +12,10 @@ anyhow = "1.0"
 regex = "1.10"
 serde_json = "1.0"
 directories = "5.0"
+serde = { version = "1.0", features = ["derive"] }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1.1"
 
 [dev-dependencies]
 # Solo para fijar la paridad de rutas de `clean` con el producto.
