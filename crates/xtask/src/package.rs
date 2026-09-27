@@ -3,8 +3,8 @@
 //! Lee `packaging/bundle-manifest.json` como lista canónica (la misma que valida
 //! `self install`): empaquetado e instalación no pueden divergir. Resuelve ONNX
 //! Runtime reutilizando `ort-bundle/` si está fresco para la versión fijada
-//! (`ORT_VERSION`, espejo de `ort_version` en `.circleci/config.yml:58-60`), o
-//! con descarga verificada si no. Valida `--expect-version` (decisión c: la
+//! en `packaging/pins.json` (fuente única, espejo de `ort_version` en
+//! `.circleci/config.yml:58-60`), o con descarga verificada si no. Valida `--expect-version` (decisión c: la
 //! puerta tag-versión vive aquí, ningún paso YAML la duplica), pasa el humo
 //! (`version` y `voice list`) y comprime de forma determinista con el nombre de
 //! `release_asset_name` (`target.rs:90-94`).
@@ -14,15 +14,20 @@
 //! toca temporales.
 
 use anyhow::{bail, Result};
-use serde::Deserialize;
-use std::collections::BTreeMap;
+use avi_shared::manifest::{parse_manifest_text, BundleTarget};
+use avi_shared::pins;
 use std::path::{Path, PathBuf};
 
-/// Versión de ONNX Runtime empaquetada (pareja del crate `ort` en uso).
-/// Espejo del parámetro `ort_version` de `.circleci/config.yml:58-60`: si el
-/// pipeline la sube, este valor debe subir con ella o el bundle reutilizado no
-/// coincidirá con el que espera el motor.
-const ORT_VERSION: &str = "1.28.0";
+/// Versión de ONNX Runtime empaquetada (pareja del crate `ort` en uso). Se lee
+/// de `packaging/pins.json` (fuente única del ciclo 4, espejo del parámetro
+/// `ort_version` de `.circleci/config.yml:58-60`): si el pipeline la sube, el
+/// pin sube con ella o el bundle reutilizado no coincidirá con el que espera
+/// el motor. Sin réplica en el código.
+fn load_ort_version(root: &Path) -> Result<String> {
+    pins::load_from_root(root)
+        .map(|p| p.ort)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
 
 /// Manifiesto canónico, relativo a la raíz del repositorio.
 const MANIFEST_REL: &str = "packaging/bundle-manifest.json";
@@ -44,27 +49,6 @@ const ARCHIVE_MTIME: u64 = 1_577_836_800;
 /// de Microsoft es /MD). Réplica de la lista del job `build-windows-x64`.
 const VC_DLLS: &[&str] = &["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
 
-/// Sección de un target en el manifiesto (réplica mínima de `manifest.rs` de
-/// `avi-lifecycle`: este crate no puede depender de él sin arrastrar su árbol
-/// TLS, y la fuente única sigue siendo el JSON del disco).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BundleTarget {
-    pub triple: String,
-    pub executable: String,
-    pub required: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawManifest {
-    targets: BTreeMap<String, RawTarget>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawTarget {
-    executable: String,
-    required: Vec<String>,
-}
-
 /// Une un fragmento del manifiesto (siempre con `/`) con una raíz, con el
 /// separador de la plataforma.
 fn relative_path(root: &Path, relative: &str) -> PathBuf {
@@ -73,24 +57,6 @@ fn relative_path(root: &Path, relative: &str) -> PathBuf {
         path.push(part);
     }
     path
-}
-
-/// Parsea el texto del manifiesto a secciones por triple.
-fn parse_manifest_text(text: &str) -> Result<BTreeMap<String, BundleTarget>> {
-    let raw: RawManifest = serde_json::from_str(text)
-        .map_err(|e| anyhow::anyhow!("el manifiesto de bundle no es JSON válido: {e}"))?;
-    Ok(raw
-        .targets
-        .into_iter()
-        .map(|(triple, section)| {
-            let target = BundleTarget {
-                triple: triple.clone(),
-                executable: section.executable,
-                required: section.required,
-            };
-            (triple, target)
-        })
-        .collect())
 }
 
 /// Triple del host según la tabla de §3, derivado de la plataforma de
@@ -150,16 +116,16 @@ fn check_expect_version(actual: &str, expect: Option<&str>) -> Result<()> {
 
 /// Archivo y URL de descarga de ONNX Runtime para el triple (nombres oficiales
 /// de los releases de Microsoft, los mismos que usan los cuatro jobs de build).
-fn ort_download(triple: &str) -> Result<(String, String)> {
+fn ort_download(triple: &str, ort_version: &str) -> Result<(String, String)> {
     let file = match triple {
-        "x86_64-pc-windows-msvc" => format!("onnxruntime-win-x64-{ORT_VERSION}.zip"),
-        "x86_64-unknown-linux-gnu" => format!("onnxruntime-linux-x64-{ORT_VERSION}.tgz"),
-        "aarch64-unknown-linux-gnu" => format!("onnxruntime-linux-aarch64-{ORT_VERSION}.tgz"),
-        "aarch64-apple-darwin" => format!("onnxruntime-osx-arm64-{ORT_VERSION}.tgz"),
+        "x86_64-pc-windows-msvc" => format!("onnxruntime-win-x64-{ort_version}.zip"),
+        "x86_64-unknown-linux-gnu" => format!("onnxruntime-linux-x64-{ort_version}.tgz"),
+        "aarch64-unknown-linux-gnu" => format!("onnxruntime-linux-aarch64-{ort_version}.tgz"),
+        "aarch64-apple-darwin" => format!("onnxruntime-osx-arm64-{ort_version}.tgz"),
         other => bail!("triple no soportado: {other}"),
     };
     let url =
-        format!("https://github.com/microsoft/onnxruntime/releases/download/v{ORT_VERSION}/{file}");
+        format!("https://github.com/microsoft/onnxruntime/releases/download/v{ort_version}/{file}");
     Ok((file, url))
 }
 
@@ -179,8 +145,9 @@ fn ort_expected_libs(triple: &str) -> Result<Vec<&'static str>> {
 }
 
 /// `true` si `ort-bundle/` ya sirve para este triple: todas las librerías
-/// presentes y marcador ausente (caché de CI) o coincidente con `ORT_VERSION`.
-fn ort_bundle_is_fresh(bundle: &Path, triple: &str) -> Result<bool> {
+/// presentes y marcador ausente (caché de CI) o coincidente con la versión de
+/// los pines.
+fn ort_bundle_is_fresh(bundle: &Path, triple: &str, ort_version: &str) -> Result<bool> {
     for lib in ort_expected_libs(triple)? {
         if !bundle.join(lib).is_file() {
             return Ok(false);
@@ -189,7 +156,7 @@ fn ort_bundle_is_fresh(bundle: &Path, triple: &str) -> Result<bool> {
     let marker = bundle.join(ORT_MARKER);
     if marker.is_file() {
         let pinned = std::fs::read_to_string(&marker).unwrap_or_default();
-        if pinned.trim() != ORT_VERSION {
+        if pinned.trim() != ort_version {
             return Ok(false);
         }
     }
@@ -239,7 +206,12 @@ fn download_https(url: &str, dest: &Path) -> Result<()> {
 /// Extrae la librería de ONNX Runtime del archivo descargado a `bundle/` con su
 /// nombre canónico (el que el crate `ort` busca en `load-dynamic`). Verificada:
 /// falla si el archivo no trae la librería esperada.
-fn extract_ort_library(archive: &Path, bundle: &Path, triple: &str) -> Result<()> {
+fn extract_ort_library(
+    archive: &Path,
+    bundle: &Path,
+    triple: &str,
+    ort_version: &str,
+) -> Result<()> {
     let canonical = if triple.contains("-windows-") {
         "onnxruntime.dll"
     } else if triple.contains("-apple-") {
@@ -293,7 +265,7 @@ fn extract_ort_library(archive: &Path, bundle: &Path, triple: &str) -> Result<()
             Ok(())
         }
         None => bail!(
-            "el archivo {} no trae la librería {canonical} de ONNX Runtime {ORT_VERSION}",
+            "el archivo {} no trae la librería {canonical} de ONNX Runtime {ort_version}",
             archive.display()
         ),
     }
@@ -316,9 +288,9 @@ fn copy_vc_runtime(bundle: &Path) -> Result<()> {
 
 /// Asegura `ort-bundle/` para el triple: lo reutiliza si está fresco o lo
 /// reconstruye con descarga verificada en caso contrario.
-fn ensure_ort_bundle(root: &Path, triple: &str) -> Result<PathBuf> {
+fn ensure_ort_bundle(root: &Path, triple: &str, ort_version: &str) -> Result<PathBuf> {
     let bundle = root.join(ORT_BUNDLE_REL);
-    if bundle.is_dir() && ort_bundle_is_fresh(&bundle, triple)? {
+    if bundle.is_dir() && ort_bundle_is_fresh(&bundle, triple, ort_version)? {
         eprintln!("Bundle ONNX Runtime reutilizado de {ORT_BUNDLE_REL}");
         return Ok(bundle);
     }
@@ -326,16 +298,16 @@ fn ensure_ort_bundle(root: &Path, triple: &str) -> Result<PathBuf> {
         std::fs::remove_dir_all(&bundle)?;
     }
     std::fs::create_dir_all(&bundle)?;
-    let (file, url) = ort_download(triple)?;
-    let dest = std::env::temp_dir().join(format!("avi-ort-{ORT_VERSION}-{file}"));
-    eprintln!("Descargando ONNX Runtime {ORT_VERSION}: {url}");
+    let (file, url) = ort_download(triple, ort_version)?;
+    let dest = std::env::temp_dir().join(format!("avi-ort-{ort_version}-{file}"));
+    eprintln!("Descargando ONNX Runtime {ort_version}: {url}");
     download_https(&url, &dest)?;
-    extract_ort_library(&dest, &bundle, triple)?;
+    extract_ort_library(&dest, &bundle, triple, ort_version)?;
     std::fs::remove_file(&dest).ok();
     #[cfg(windows)]
     copy_vc_runtime(&bundle)?;
-    std::fs::write(bundle.join(ORT_MARKER), ORT_VERSION)?;
-    if !ort_bundle_is_fresh(&bundle, triple)? {
+    std::fs::write(bundle.join(ORT_MARKER), ort_version)?;
+    if !ort_bundle_is_fresh(&bundle, triple, ort_version)? {
         bail!("el bundle de ONNX Runtime quedó incompleto tras la descarga");
     }
     Ok(bundle)
@@ -561,15 +533,16 @@ pub fn run(out: Option<PathBuf>, no_compress: bool, expect_version: Option<Strin
     }
     let version = super::get_version()?;
     check_expect_version(&version, expect_version.as_deref())?;
+    let ort_version = load_ort_version(&root)?;
     let text = std::fs::read_to_string(&manifest_path)?;
-    let sections = parse_manifest_text(&text)?;
+    let sections = parse_manifest_text(&text).map_err(|e| anyhow::anyhow!("{e}"))?;
     let triple = host_triple()?;
     let section = sections.get(triple).ok_or_else(|| {
         anyhow::anyhow!("el manifiesto de bundle no tiene sección para el target {triple}")
     })?;
     let sources = locate_sources(&root)?;
     smoke_binary(&sources.binary)?;
-    let bundle = ensure_ort_bundle(&root, triple)?;
+    let bundle = ensure_ort_bundle(&root, triple, &ort_version)?;
     for lib in ort_expected_libs(triple)? {
         if !bundle.join(lib).is_file() {
             bail!("librería no encontrada en {}: {lib}", bundle.display());
@@ -739,14 +712,23 @@ mod tests {
         assert!(release_asset_name("i686-unknown-linux-gnu", "0.24.0").is_err());
     }
 
+    /// Versión de ONNX fijada en `pins.json`: los tests la leen de la fuente
+    /// única, como el comando, en vez de replicarla.
+    fn test_ort_version() -> String {
+        pins::parse_text(include_str!("../../../packaging/pins.json"))
+            .expect("pins.json válido")
+            .ort
+    }
+
     /// La descarga de ONNX Runtime apunta a los archivos oficiales por triple.
     #[test]
     fn ort_download_per_target() {
-        let (file, url) = ort_download("x86_64-pc-windows-msvc").unwrap();
-        assert_eq!(file, format!("onnxruntime-win-x64-{ORT_VERSION}.zip"));
-        assert!(url.ends_with(&file) && url.contains(ORT_VERSION));
-        let (file, _) = ort_download("aarch64-apple-darwin").unwrap();
-        assert_eq!(file, format!("onnxruntime-osx-arm64-{ORT_VERSION}.tgz"));
+        let ort_version = test_ort_version();
+        let (file, url) = ort_download("x86_64-pc-windows-msvc", &ort_version).unwrap();
+        assert_eq!(file, format!("onnxruntime-win-x64-{ort_version}.zip"));
+        assert!(url.ends_with(&file) && url.contains(&ort_version));
+        let (file, _) = ort_download("aarch64-apple-darwin", &ort_version).unwrap();
+        assert_eq!(file, format!("onnxruntime-osx-arm64-{ort_version}.tgz"));
         assert!(ort_expected_libs("x86_64-pc-windows-msvc")
             .unwrap()
             .contains(&"onnxruntime.dll"));
@@ -759,6 +741,7 @@ mod tests {
     /// con marcador divergente o librerías ausentes, no.
     #[test]
     fn ort_bundle_freshness() {
+        let ort_version = test_ort_version();
         let triple = if cfg!(windows) {
             "x86_64-pc-windows-msvc"
         } else {
@@ -769,13 +752,13 @@ mod tests {
         for lib in ort_expected_libs(triple).unwrap() {
             std::fs::write(base.join(lib), b"x").unwrap();
         }
-        assert!(ort_bundle_is_fresh(&base, triple).unwrap());
+        assert!(ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
         std::fs::write(base.join(ORT_MARKER), "0.0.0").unwrap();
-        assert!(!ort_bundle_is_fresh(&base, triple).unwrap());
-        std::fs::write(base.join(ORT_MARKER), ORT_VERSION).unwrap();
-        assert!(ort_bundle_is_fresh(&base, triple).unwrap());
+        assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
+        std::fs::write(base.join(ORT_MARKER), &ort_version).unwrap();
+        assert!(ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
         std::fs::remove_file(base.join(ort_expected_libs(triple).unwrap()[0])).unwrap();
-        assert!(!ort_bundle_is_fresh(&base, triple).unwrap());
+        assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
         std::fs::remove_dir_all(&base).ok();
     }
 

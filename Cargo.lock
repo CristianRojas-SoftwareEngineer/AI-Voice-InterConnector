@@ -242,6 +242,7 @@ name = "avi-lifecycle"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "avi-shared",
  "avi-store",
  "flate2",
  "libc",
@@ -256,12 +257,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "avi-shared"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "avi-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "avi-shared",
  "chrono",
- "directories",
  "hf-hub",
  "hound",
  "indicatif 0.17.11",
@@ -4997,12 +5007,12 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "avi-shared",
  "avi-store",
  "clap",
  "directories",
  "flate2",
  "regex",
- "serde",
  "serde_json",
  "tar",
  "zip",

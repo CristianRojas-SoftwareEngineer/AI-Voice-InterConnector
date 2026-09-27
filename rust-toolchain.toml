@@ -1,0 +1,5 @@
+[toolchain]
+# Versión fijada del compilador (espejo de `rust` en `packaging/pins.json` y
+# de `rust_version` en `.circleci/config.yml`). `rustup` la aplica al entrar
+# al repositorio; sin componentes: los añade c4-04 si los exige.
+channel = "1.96.0"

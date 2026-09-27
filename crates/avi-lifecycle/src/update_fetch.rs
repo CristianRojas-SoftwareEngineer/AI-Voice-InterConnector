@@ -12,6 +12,8 @@
 //! en Windows (feature `system-proxy`).
 
 use crate::{manifest, target, LifecycleError, STAGING_DIR_PREFIX};
+#[cfg(unix)]
+use avi_shared::manifest::relative_path;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -491,17 +493,6 @@ fn walk(staging: &Path) -> Vec<String> {
     }
     out.sort();
     out
-}
-
-/// Une un fragmento con `/` a una ruta de la plataforma. Solo la necesitan los
-/// permisos de Unix.
-#[cfg(unix)]
-fn relative_path(relative: &str) -> PathBuf {
-    let mut path = PathBuf::new();
-    for part in relative.split('/') {
-        path.push(part);
-    }
-    path
 }
 
 /// Deja el staging solo para el usuario en Unix (0700). En Windows hereda la
