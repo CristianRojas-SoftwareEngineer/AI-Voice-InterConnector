@@ -20,7 +20,7 @@ Fecha de corte: **v0.20.6 (Fase 8+)** (canal Rust por archivos comprimidos). Cad
 
 | Fase | Windows | Linux | macOS | ¿Paridad? |
 |---|---|---|---|---|
-| Instalación de una línea sin prerrequisitos | ✅ `irm \| iex` | ✅ `curl \| sh` | ✅ `curl \| sh` (`install-macos.sh`) | **Sí** |
+| Instalación de una línea sin prerrequisitos | ✅ `irm \| iex` | ✅ `curl \| sh` | ✅ `curl \| sh` (bootstrap `install.sh`, común a Linux y macOS) | **Sí** |
 | Instalación sin privilegios de admin | ✅ per-user, sin UAC | ✅ `~/.local` | ✅ `~/.local` (one-liner sin `sudo`) | **Sí** |
 | Modelo provisionado al terminar de instalar | ✅ encadena `setup` | ✅ encadena `setup` | ✅ one-liner encadena `setup` (Cask: *caveat*) | **Sí** |
 | Verificación de checksum automática | ✅ | ✅ | ✅ (one-liner con `shasum`; Cask sí) | **Sí** |
@@ -39,10 +39,10 @@ host) en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
 
 ### Estado
 
-- **Windows**: `install-windows.ps1` (`irm | iex`) resuelve el release, verifica el checksum, extrae el `.zip` en `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, registra ese directorio en el PATH de usuario (HKCU, sin UAC) de forma idempotente y encadena `ai-voice-interconnector setup`. Cero prerrequisitos: PowerShell viene con el SO.
-- **Linux**: `install-linux.sh` (`curl | sh`) hace lo análogo: checksum, extrae el `tar.gz` en `~/.local/opt/ai-voice-interconnector/`, crea el symlink `~/.local/bin/ai-voice-interconnector` (con aviso de PATH) y encadena `setup`. Cero prerrequisitos en la práctica (`curl` + coreutils).
+- **Windows**: el bootstrap `install.ps1` (`irm | iex` sobre `releases/latest/download`) resuelve la versión (opción/`AVI_VERSION`/estampada/`latest`), verifica el checksum exacto, comprueba que el binario arranca y delega en `self install`, que extrae el `.zip` en `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, registra ese directorio en el PATH de usuario (HKCU, sin UAC) de forma idempotente y encadena `setup`. Cero prerrequisitos: PowerShell viene con el SO.
+- **Linux**: el bootstrap `install.sh` (`curl | sh` sobre `releases/latest/download`) hace lo análogo —detección de target, checksum exacto, comprobación de arranque con diagnóstico de glibc— y delega en `self install`, que extrae el `tar.gz` en `~/.local/opt/ai-voice-interconnector/`, crea el symlink `~/.local/bin/ai-voice-interconnector` (con aviso de PATH) y encadena `setup`. Cero prerrequisitos en la práctica (`curl` + coreutils).
 - **macOS**: dos vías, ambas sin `sudo`:
-  - **One-liner** `install-macos.sh` (`curl | sh`): descarga el `tar.gz` de arm64, verifica el checksum con `shasum`, lo extrae en `~/.local/opt/ai-voice-interconnector/`, limpia la cuarentena de Gatekeeper del binario, crea el symlink per-user en `~/.local/bin` (con aviso de PATH) y encadena `setup`. Sin prerrequisitos (ni Homebrew ni `sudo`).
+  - **One-liner** `install.sh` (el mismo bootstrap POSIX, `curl | sh`): descarga el `tar.gz` de arm64, verifica el checksum exacto, comprueba el arranque y delega en `self install`, que extrae en `~/.local/opt/ai-voice-interconnector/`, limpia la cuarentena de Gatekeeper del programa, crea el symlink per-user en `~/.local/bin` (con aviso de PATH) y encadena `setup`. Sin prerrequisitos (ni Homebrew ni `sudo`).
   - **Cask de Homebrew** (`brew tap … && brew install --cask ai-voice-interconnector`): automatiza checksum, PATH y cuarentena, pero **exige tener Homebrew instalado** — un prerequisito de terceros que la audiencia declarada del canal nativo ("usuario final sin toolchain", `docs/DISTRIBUTION.md`) no necesariamente tiene. Además **no provisiona el modelo**: Homebrew no permite post-install arbitrario, así que el Cask solo imprime un *caveat* remitiendo a `ai-voice-interconnector setup` (`cargo run -p xtask -- cask`, `crates/xtask/src/main.rs`).
 
 ### Qué falta para la paridad
@@ -77,9 +77,9 @@ Nada pendiente en esta fase.
 
 ### Estado
 
-- **Windows**: repetir el one-liner instala la versión nueva en el mismo directorio (`Expand-Archive` reemplaza el contenido) y conserva la entrada de PATH. Limpio.
+- **Windows**: repetir el one-liner delega en `self install`, que reemplaza de forma transaccional en el mismo directorio y conserva la entrada de PATH. Limpio.
 - **macOS (Cask)**: `brew upgrade --cask ai-voice-interconnector` con `livecheck` — la mejor experiencia de actualización de las tres plataformas.
-- **Linux / macOS (one-liner)**: re-ejecutar el instalador con una versión nueva limpia el directorio de instalación anterior (`rm -rf` antes de extraer), extrae el binario nuevo y reapunta el symlink. Sin residuo de versiones previas.
+- **Linux / macOS (one-liner)**: repetir el one-liner delega en `self install`, que valida el bundle, reemplaza de forma transaccional y mantiene el symlink. La actualización entre versiones la hace `self update` (descarga verificada + traspaso al binario nuevo), no la re-ejecución. Sin residuo de versiones previas.
 
 ### Qué falta para la paridad
 
@@ -103,10 +103,10 @@ Con la migración a Rust se reintrodujo la desinstalación en un comando, y hoy 
 
 | Brecha | Fase | SO | Estado | Nota |
 |---|---|---|---|---|
-| *one-liner de instalación en macOS* | Instalación | macOS | ✅ Cerrada | `install-macos.sh` (`curl \| sh`) sobre `tar.gz` |
+| *one-liner de instalación en macOS* | Instalación | macOS | ✅ Cerrada | Bootstrap `install.sh` (POSIX, común a Linux y macOS) sobre `tar.gz` |
 | *Cask en el README* | Instalación | macOS | ✅ Cerrada | README con las tres plataformas + Cask |
 | *instalación sin `sudo` en macOS* | Instalación | macOS | ✅ Cerrada | one-liner per-user en `~/.local/bin` |
-| *acumulación de versiones anteriores* | Actualización | Linux/macOS | ✅ Cerrada | `rm -rf` del directorio de instalación antes de extraer |
+| *acumulación de versiones anteriores* | Actualización | Linux/macOS | ✅ Cerrada | Reemplazo transaccional por `self install` / `self update` |
 | *desinstalación en un comando* | Desinstalación | Windows + Linux | ✅ Cerrada (v0.10.8; reencuadrada con el grupo `self`) | `self uninstall` (programa + `PATH` + estado) + `cleanup` (limpieza granular del estado) multiplataforma — `crates/avi-lifecycle` |
 | *firma de código* | Primer arranque | Windows + macOS | ⚠️ Abierta (diferida, cross-SO) | Mitigada por los one-liners (CLI sin MOTW) y el Cask; fondo = firma/notarización (goal a largo plazo) |
 | *publish-metadata E2E* | Publicación | macOS | ✅ Cerrada (v0.10.8) | `ruby -c` del Cask y `sha256` contra `SHA256SUMS.txt` verificados en pipeline `publish-metadata` |

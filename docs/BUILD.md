@@ -92,7 +92,7 @@ No se requiere Python, Node ni toolchain adicional para compilar o empaquetar.
 | SO | Probado en (CI) | Mínimo declarado | Origen del mínimo |
 |----|-----------------|------------------|-------------------|
 | Windows | Executor `circleci/windows@5.0` (Windows Server 2022) | Windows 10+ x64 | Binario Rust autocontenido, sin APIs posteriores |
-| Linux | `cimg/rust:1.96.0` (base Ubuntu 22.04, glibc 2.35) | glibc ≥ 2.35 | Binario `gnu` (crt-static no cubre glibc); `install-linux.sh` advierte por debajo |
+| Linux | `cimg/rust:1.96.0` (base Ubuntu 22.04, glibc 2.35) | glibc ≥ 2.35 | Binario `gnu` (crt-static no cubre glibc); el bootstrap lo diagnostica con la comprobación de arranque (`binary_incompatible`) |
 | macOS | Runner Apple Silicon Xcode 26.4 | macOS 13+ (Ventura) | Binario Rust arm64 |
 
 **Limitación aceptada:** los mínimos declarados **no** se prueban en máquinas
@@ -211,18 +211,18 @@ completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
   corren **una vez** por release y bloquean de verdad la publicación.
 
 - **Gates completos.** Además de la triple puerta: `coverage` (cargo-llvm-cov,
-  **solo aquí**), los tres smoke-tests de instaladores (`test-installer-linux`
-  bats, `test-installer-windows` Pester, `test-installer-macos` bats) y los gates
+  **solo aquí**), las tres suites de bootstrap (`test-bootstrap-linux`
+  bats, `test-bootstrap-windows` Pester, `test-bootstrap-macos` bats, en
+  `tests/bootstrap/`) y los gates
   `validate-licenses` (SOURCE-OFFER/THIRD-PARTY) y `validate-changelog`. Esos
   **9 gates** son `requires:` de los 4 builds nativos, que compilan las 4
   plataformas en modo release (validación de compilación por plataforma).
   Los runners bats están pineados: bats-core se instala desde el tag de git
   según el parámetro `bats_version` (1.14.0, verificado con `bats --version`),
-  la misma versión en Linux y macOS, y `test-installer-linux` corre sobre
-  `cimg/base` pineada por digest. `test-installer-windows` instala Pester 5.8.0
+  la misma versión en Linux y macOS, y `test-bootstrap-linux` corre sobre
+  `cimg/base` pineada por digest. `test-bootstrap-windows` instala Pester 5.8.0
   desde PSGallery con `$ErrorActionPreference = "Stop"`, de modo que un fallo de
-  instalación o de importación hace fallar el paso. Linux y Windows ejecutan
-  también el smoke test de su wrapper `upgrade-ai-voice-interconnector.*`.
+  instalación o de importación hace fallar el paso.
 
 **Feedback pre-release.** El repo es trunk-based sobre `main` (flujo de un solo
 desarrollador, sin ramas de larga vida); los commits de rama **no** disparan CI
@@ -246,7 +246,7 @@ garantía "commit taggeado probado".
           │        (triple puerta = gate mecánico)         │
           └──────────────────────┬────────────────────────┘
         ┌───────────────┬────────┴──────┬───────────────┬──────────────┐
-        │   coverage    │ validate-     │ validate-     │ test-installer-* (×3)  │
+        │   coverage    │ validate-     │ validate-     │ test-bootstrap-* (×3)  │
         │(cargo llvm-cov)│ licenses     │ changelog     │ (bats/Pester)          │
         └───────┬───────┴──────┬────────┴──────┬────────┴──────┬────────────────┘
                 └──────────────┴───────┬───────┴───────────────┘
@@ -257,7 +257,7 @@ garantía "commit taggeado probado".
 │build-windows│ │build-linux- │ │build-linux- │ │ build-darwin-    │
 │ -x64        │ │    x64      │ │   arm64     │ │     arm64        │
 └─────────────┘ └─────────────┘ └─────────────┘ └──────────────────┘
-     (cada build: cargo build --release --features full + smoke test version/voice list + staging tar.gz/zip)
+     (cada build: `cargo run -p xtask -- package --expect-version` + humo de `self install` en sandbox + `version`/`voice list`)
                               │
                               ▼   publish-release → publish-metadata
 ```
@@ -294,12 +294,12 @@ Los tests de topología de `xtask` fallan si el workflow de sonda llega a conten
 | `coverage` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo llvm-cov --workspace --lcov` genera `lcov.info` (artefacto `coverage-lcov`) y `cargo llvm-cov report` imprime el resumen sin re-ejecutar la suite; sin umbral de % |
 | `validate-licenses` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- source-offer --check` + `licenses --check` |
 | `validate-changelog` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- changelog --check` |
-| `test-installer-*` | `build-all` | por SO | bats/Pester | Smoke tests de one-liners (mock por PATH) |
+| `test-bootstrap-*` | `build-all` | por SO | bats/Pester | Suites de los bootstrap (`tests/bootstrap/`, contra servidor local) |
 | `build-windows-x64` | `build-all` | Windows x64 | `win/server-2022` | `cargo build --release --features full` + staging `.zip` |
 | `build-linux-x64` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
 | `build-linux-arm64` | `build-all` | Linux ARM64 | docker `cimg/rust:1.96.0` (`arm.medium`) | idem, nativo aarch64 |
 | `build-darwin-arm64` | `build-all` | macOS arm64 | macos `m4pro.medium` | idem, Xcode 26.4 |
-| `publish-release` | `build-all` (CD) | Linux x64 | docker `cimg/base:2026.09` (pineada por digest) | Solo en tags `v*`: recolecta 4 artefactos, genera `SHA256SUMS.txt`, publica GitHub Release |
+| `publish-release` | `build-all` (CD) | Linux x64 | docker `cimg/base:2026.09` (pineada por digest) | Solo en tags `v*`: estampa los bootstrap, genera `SHA256SUMS.txt` sobre los 6 ficheros y publica el GitHub Release con 7 assets |
 | `publish-metadata` | `build-all` (CD) | Linux x64 | docker `cimg/rust` | Solo en tags `v*`: renderiza Cask con `cargo run -p xtask -- cask` y empuja al tap |
 
 ### Simetría: 3 puertas de test vs. 4 targets de build
@@ -324,9 +324,11 @@ distintos**.
 
 Al pushear un tag `v*`, además de tests + builds corre `publish-release`
 (estrategia GitHub Releases). Recolecta los 4 artefactos **versionados** por
-`persist_to_workspace`/`attach_workspace`, genera `SHA256SUMS.txt`, extrae las
+`persist_to_workspace`/`attach_workspace`, estampa la versión del tag en ambos
+bootstrap (una sustitución verificada por fichero), genera `SHA256SUMS.txt`
+sobre los 6 ficheros, extrae las
 notas de la sección `[X.Y.Z]` de `CHANGELOG.md` (fail-fast si no existe) y
-publica el GitHub Release directo (sin borrador).
+publica el GitHub Release directo (sin borrador) con 7 assets.
 
 ### Cacheo de dependencias y toolchain
 
@@ -524,8 +526,8 @@ El **deliverable** que se publica a usuarios es el **archivo comprimido** de
 cada target (binario Rust + los 4 documentos de licencia + `ort-bundle` +
 `qwen_tts` vendido), con su nombre de
 release **versionado y con arch** (p. ej.
-`ai-voice-interconnector-<ver>-x86_64-windows.zip`). Estos cuatro archivos llegan
-al GitHub Release a través de `persist_to_workspace` / `attach_workspace`.
+`ai-voice-interconnector-<ver>-x86_64-windows.zip`). Estos cuatro archivos, junto a los dos bootstrap estampados, llegan
+al GitHub Release a través de `persist_to_workspace` / `attach_workspace` (7 assets con `SHA256SUMS.txt`).
 
 El output del empaquetado en el runner vive en `artifacts/`:
 
@@ -537,8 +539,8 @@ artifacts/
 └── ai-voice-interconnector-<ver>-arm64-macos.tar.gz   # macOS (Apple Silicon)
 ```
 
-`publish-release` recoge estos cuatro archivos por `attach_workspace`, calcula
-`SHA256SUMS.txt` sobre ellos y crea el GitHub Release. Cada archivo tiene layout
+`publish-release` estampa ambos bootstrap, recoge los 4 archivos más los 2 bootstrap por `attach_workspace`, calcula
+`SHA256SUMS.txt` sobre los 6 ficheros y crea el GitHub Release (7 assets). Cada archivo tiene layout
 plano (binario + 4 documentos + `ort-bundle` + `qwen_tts` vendido, en la raíz).
 
 ### Empaquetado por plataforma (archivos comprimidos)
@@ -553,14 +555,19 @@ herramientas de terceros**: cada target se comprime con una utilidad del sistema
 | macOS arm64 | `tar.gz` | `tar -czf` (base del SO) |
 | Windows x64 | `.zip` | `Compress-Archive` (PowerShell) |
 
-El step **«Preparar artefacto versionado (staging)»** de cada `build-*` en
-`.circleci/config.yml` valida la versión (`const VERSION` de `src/main.rs` vs
-`CIRCLE_TAG`, fail-fast), monta un directorio de staging con **layout plano**
+Cada `build-*` en `.circleci/config.yml` empaqueta con `cargo run -p xtask --
+package --expect-version "${CIRCLE_TAG#v}"` (puerta tag-versión fail-fast:
+`const VERSION` de `src/main.rs` vs `CIRCLE_TAG`) más el humo de §13 (`self
+install --no-setup --no-modify-path` en sandbox con raíces reubicadas, y
+después `--version`/`voice list`). El subcomando `package`
+(`crates/xtask/src/package.rs`) monta el bundle desde
+`packaging/bundle-manifest.json` —la misma lista que valida `self install`—
+con **layout plano**
 —el binario renombrado a `ai-voice-interconnector[.exe]` (sin sufijo de
 arquitectura) más los 4 documentos de la raíz (`LICENSE`,
 `THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`, `README.md`), el `ort-bundle`
 (ONNX Runtime + DLLs VC++ en Windows) y el `qwen_tts` vendido— y lo comprime al
-archivo del target. Los documentos GPLv3 viajan así **dentro del archivo** y
+archivo del target con el nombre de `release_asset_name`. Los documentos GPLv3 viajan así **dentro del archivo** y
 quedan instalados junto al binario (cumplimiento §6 de la GPLv3 sin depender de
 un bundle).
 
@@ -568,7 +575,7 @@ un bundle).
 
 | Aspecto | Windows | Linux | macOS |
 |---------|---------|-------|-------|
-| PATH | El one-liner `install-windows.ps1` registra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` en HKCU (sin UAC); `self uninstall` lo revierte conservando el tipo del valor | `install-linux.sh` crea symlink `~/.local/bin/ai-voice-interconnector → ~/.local/opt/ai-voice-interconnector/ai-voice-interconnector`; `self uninstall` lo retira | One-liner `install-macos.sh` análogo a Linux (`~/.local/bin`); Cask `brew install --cask` enlaza en `/opt/homebrew/bin` |
+| PATH | El bootstrap `install.ps1` delega en `self install`, que registra `%LOCALAPPDATA%\Programs\ai-voice-interconnector` en HKCU (sin UAC); `self uninstall` lo revierte conservando el tipo del valor | El bootstrap `install.sh` (POSIX) delega en `self install`, que crea el symlink `~/.local/bin/ai-voice-interconnector → ~/.local/opt/ai-voice-interconnector/ai-voice-interconnector`; `self uninstall` lo retira | El mismo `install.sh` en macOS (Apple Silicon, `~/.local/bin`); Cask `brew install --cask` enlaza en `/opt/homebrew/bin` |
 | Guía hacia `setup` | El one-liner encadena `setup` tras instalar | Ídem | Ídem (Cask no encadena; caveat remite a `setup`) |
 | Desinstalación | `ai-voice-interconnector self uninstall --yes` (programa + PATH + estado, con R2) o manual | `ai-voice-interconnector self uninstall --yes` (enlace + dir + estado) | `ai-voice-interconnector self uninstall --yes` o `brew uninstall --cask --zap` |
 | Datos provisionados | `ai-voice-interconnector cleanup --voices` / `--synthetic-speech` / `--model` / `--all` (limpieza granular sin programa ni PATH; sin categoría → exit 2) | Ídem | Ídem |

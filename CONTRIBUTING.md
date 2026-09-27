@@ -75,13 +75,12 @@ No hay gate de porcentaje aún; el job valida que la instrumentación no rompa l
 
 ### Smoke-tests de instaladores
 
-Además de `cargo test`, los one-liners tienen smoke-tests en `tests/installer/`, que corren **en CI, no en `cargo test`**:
+Además de `cargo test`, los bootstrap tienen suites en `tests/bootstrap/`, que corren **en CI, no en `cargo test`**:
 
-- `install-linux.bats` — `install-linux.sh` (Linux), con [bats-core](https://github.com/bats-core/bats-core) (`bats tests/installer/install-linux.bats`).
-- `install-macos.bats` — `install-macos.sh` (macOS), también con bats.
-- `install-windows.tests.ps1` — `install-windows.ps1` (Windows), con **Pester v5** (`Invoke-Pester tests/installer/install-windows.tests.ps1 -CI`).
+- `install.bats` — `packaging/bootstrap/install.sh` (Linux y macOS), con [bats-core](https://github.com/bats-core/bats-core) (`bats tests/bootstrap/install.bats`).
+- `install.tests.ps1` — `packaging/bootstrap/install.ps1` (Windows), con **Pester v5** (`Invoke-Pester tests/bootstrap/install.tests.ps1 -CI`).
 
-Si modificas un instalador, actualiza su smoke-test; los tres jobs (`test-installer-*`) son puerta de los 4 builds en CI.
+Si modificas un bootstrap, actualiza su suite; los tres jobs (`test-bootstrap-*`) son puerta de los 4 builds en CI.
 
 ## Dependencias y lockfile
 

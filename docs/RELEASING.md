@@ -119,32 +119,41 @@ Con el tag pusheado, ejecuta sin intervención:
    |---|---|
    | `test-linux`, `test-windows`, `test-macos` | `cargo test --all` en cada SO nativo |
    | `coverage` | Cobertura de la suite |
-   | `test-installer-linux`, `test-installer-windows`, `test-installer-macos` | Smoke tests de los instaladores |
+    | `test-bootstrap-linux`, `test-bootstrap-windows`, `test-bootstrap-macos` | Suites de los bootstrap (`tests/bootstrap/`, bats/Pester contra servidor local) |
    | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render para la versión del tag (`source-offer --check`) y `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock` (`licenses --check`) |
    | `validate-changelog` | La promoción está completa (`changelog --check`): cabecera `[X.Y.Z]`, entrada del índice con el ancla de GitHub, enlace de comparación, sin `TODO: curar` y sin `[No publicado]` |
 
 2. **Builds.** Son `build-windows-x64`, `build-linux-x64`, `build-linux-arm64`
-   y `build-darwin-arm64`. Cada uno:
-   - empaqueta su artefacto con el nombre del release;
-   - emite su SHA-256 en el log, en el step «Emitir SHA-256 del artefacto»;
-   - lo persiste en el workspace compartido.
+    y `build-darwin-arm64`. Cada uno:
+    - empaqueta su artefacto con `cargo run -p xtask -- package
+      --expect-version "${CIRCLE_TAG#v}"` (fail-fast si el tag difiere de `VERSION`);
+    - ejecuta el humo (`self install --no-setup --no-modify-path` en sandbox
+      con raíces reubicadas, y después `--version`/`voice list`);
+    - emite su SHA-256 en el log, en el step «Emitir SHA-256 del artefacto»;
+    - lo persiste en el workspace compartido.
 
-   Los artefactos son:
-   - `ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`
-   - `ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`
-   - `ai-voice-interconnector-X.Y.Z-arm64-linux.tar.gz`
-   - `ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`
+    Los artefactos son:
+    - `ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`
+    - `ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`
+    - `ai-voice-interconnector-X.Y.Z-arm64-linux.tar.gz`
+    - `ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`
+
+    más los dos bootstrap estampados (`install.sh`, `install.ps1`), que
+    `publish-release` suma al release.
 3. **`publish-release`** (después de los 4 builds):
-   - Toma los 4 artefactos del workspace. El binario que se adjunta es el
-     mismo que pasó las puertas.
-   - Genera `SHA256SUMS.txt`.
-   - Extrae de `CHANGELOG.md` la sección `[X.Y.Z]` como notas. Si no la
-     encuentra, falla.
-   - Agrega a las notas un pie con la oferta de código fuente GPLv3 §6: el
-     tarball del tag (`archive/refs/tags/vX.Y.Z.tar.gz`) y el enlace al tag.
-   - Publica el GitHub Release sobre `vX.Y.Z` con 5 assets (4 artefactos y
-     `SHA256SUMS.txt`) y las notas. Si el tag ya tiene un Release,
-     `gh release create` falla.
+    - Estampa la versión del tag en el marcador `__AVI_STAMPED_VERSION__` de
+      ambos bootstrap (`packaging/bootstrap/install.sh` e `install.ps1`), con
+      exactamente una sustitución verificada por fichero.
+    - Toma los 4 artefactos del workspace. El binario que se adjunta es el
+      mismo que pasó las puertas.
+    - Genera `SHA256SUMS.txt` sobre los 6 ficheros (4 artefactos + 2 bootstrap).
+    - Extrae de `CHANGELOG.md` la sección `[X.Y.Z]` como notas. Si no la
+      encuentra, falla.
+    - Agrega a las notas un pie con la oferta de código fuente GPLv3 §6: el
+      tarball del tag (`archive/refs/tags/vX.Y.Z.tar.gz`) y el enlace al tag.
+    - Publica el GitHub Release sobre `vX.Y.Z` con 7 assets (4 artefactos, 2
+      bootstrap y `SHA256SUMS.txt`) y las notas. Si el tag ya tiene un Release,
+      `gh release create` falla.
 4. **`publish-metadata`** (después de `publish-release`):
    - Descarga `SHA256SUMS.txt` del Release publicado.
    - Genera `Casks/ai-voice-interconnector.rb` con la versión del tag y el
@@ -162,7 +171,7 @@ gh release view vX.Y.Z --json tagName,assets
 En la pestaña **Releases** aparece `vX.Y.Z` ya público y marcado como *latest*.
 Verifica:
 
-- Los **5 assets** están presentes (4 artefactos y `SHA256SUMS.txt`).
+- Los **7 assets** están presentes (4 artefactos, 2 bootstrap y `SHA256SUMS.txt`).
 - Las **notas** corresponden a la sección `[X.Y.Z]` del `CHANGELOG.md` e
   incluyen el pie de oferta de código fuente GPLv3 §6 con el enlace al tarball
   (`.../archive/refs/tags/vX.Y.Z.tar.gz`).
@@ -180,7 +189,8 @@ Verifica:
 ## 4. Verificación del usuario final
 
 El usuario final verifica la integridad de su descarga contra el
-`SHA256SUMS.txt` publicado en el Release:
+`SHA256SUMS.txt` publicado en el Release (cubre los 4 archivos y los 2
+bootstrap):
 
 ```bash
 # Linux/macOS

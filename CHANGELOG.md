@@ -149,6 +149,9 @@ daemon sigue en `"3"`, porque es un contrato independiente.
 - xtask: subcomando `clean [--dry-run] [--yes]`. Lista con tamaños y borra la capa del proyecto (`target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario, objetos y pesos locales del motor en `vendor/qwen3-tts`) y la de la app (instalación, `data_dir()`, raíz de modelos, derivados CT2 y temporales del producto), delegando en `self uninstall --yes`. No toca cachés globales compartidas (`~/.cargo/registry`, `~/.cargo/git`, `sccache`).
 - `self update`: actualiza la instalación registrada a la última estable (o a `--version X.Y.Z`) en once pasos (§9.4): recuperación y bloqueo, recibo y canal, resolución sin API con respaldo, comparación semántica, `--check` sin cambios, resumen y confirmación, descarga HTTPS con SHA-256 y arranque verificado, parada con el binario actual, traspaso al binario nuevo (`self install --yes` con `--no-modify-path` del recibo, `--no-setup` si se pidió y `--force`/`-f` propagado), borrado del staging con diferido en Windows y resultado `anterior → nueva` sin reinicio automático del daemon. `already_up_to_date` es éxito con 0; `not_installed` es error con 3; `homebrew`/`dev` responden `externally_managed` (12). Cuatro enteros nuevos, uno por `reason`: `18` `unsupported_platform`, `19` `binary_incompatible`, `20` `network_error` y `21` `checksum_mismatch` (`crates/avi-core/src/exit_codes.rs`).
 - `setup` con selección persistida (`setup-selection.json`, esquema 1, lectura tolerante y escritura atómica bajo la raíz de datos) y poda de revisiones obsoletas: el `setup` del traspaso lee la selección guardada y provisiona el pin nuevo podando lo propio obsoleto con R3 en raíz compartida.
+- `cargo run -p xtask -- package` (`crates/xtask/src/package.rs`): monta el bundle del target del host desde `packaging/bundle-manifest.json` (la misma lista que valida `self install`), con `--out`, `--no-compress` y `--expect-version` (puerta fail-fast tag-versión).
+- Bootstrap de primera instalación como assets versionados del release (`packaging/bootstrap/install.sh` POSIX para Linux y macOS, `install.ps1` para Windows): detección de target, resolución de versión (opción/`AVI_VERSION`/estampada/`latest`), verificación exacta contra `SHA256SUMS.txt`, comprobación de arranque con diagnóstico (`unsupported_platform`/`binary_incompatible`, glibc ≥ 2.35 en Linux) y delegación en `self install`. Sin `--check`: con el binario instalado se usa `self update --check`.
+- Suites de bootstrap en `tests/bootstrap/` (`install.bats`, `install.tests.ps1`) contra servidor HTTP local.
 
 ### Cambiado
 
@@ -188,6 +191,14 @@ daemon sigue en `"3"`, porque es un contrato independiente.
   por presencia del snapshot, purga de `--force-update` sobre la misma selección, conversión
   CT2 atómica y verificada con el mismo gate que la acepta). La **selección persistida en
   configuración** y la **poda de revisiones obsoletas** llegan con `self update`, en el ciclo 2.
+- Los cuatro builds empaquetan con `cargo run -p xtask -- package --expect-version "${CIRCLE_TAG#v}"`
+  más el humo de `self install` en sandbox, en lugar de los cuatro stagings duplicados con
+  expresiones de versión propias.
+- `publish-release` estampa la versión del tag en ambos bootstrap y publica 7 assets (4 archivos,
+  `install.sh`, `install.ps1` y `SHA256SUMS.txt` sobre los 6 ficheros).
+- Los jobs `test-installer-*` pasan a ser `test-bootstrap-*`; se retiran `install-linux.sh`,
+  `install-macos.sh`, `install-windows.ps1`, los envoltorios `upgrade-ai-voice-interconnector.*`
+  y `tests/installer/`.
 
 ### Corregido
 

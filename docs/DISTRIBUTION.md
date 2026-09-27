@@ -25,7 +25,7 @@ quedó 100 % Rust en su distribución.
 | **Tamaño** | Binario Rust pequeño y autocontenido (el archivo total suma además `ort-bundle` + `qwen_tts` vendido; CTranslate2 (ct2rs) enlazado estático + Parakeet vía `ort` `load-dynamic` vía `crt-static`) |
 | **Dependencias del sistema** | Ninguna (autocontenido) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
-| **Actualización** | Re-ejecutar el one-liner por SO con `--check` (reporta la transición sin instalar), `upgrade-ai-voice-interconnector.{sh,ps1}` (wrapper), o `brew upgrade --cask` |
+| **Actualización** | Con el binario instalado: `self update --check` (informa sin modificar) o `self update`; el bootstrap no tiene `--check`; o `brew upgrade --cask` |
 | **Desinstalación** | Eliminar el directorio de instalación + la entrada de PATH; `ai-voice-interconnector cleanup --model` para los modelos (o `uninstall` para todo); en Homebrew `brew uninstall --cask --zap` |
 | **Publicación en CI** | `publish-release` → GitHub Release; `publish-metadata` → Cask del tap |
 | **Reversibilidad de la publicación** | El Release es público al publicarse: revertir implica borrar un Release ya público |
@@ -50,41 +50,46 @@ vendido, todos en la raíz del archivo):
 Los 4 documentos incluidos son `LICENSE`, `THIRD-PARTY-LICENSES.md`,
 `SOURCE-OFFER.md` (oferta de fuente GPLv3 §6) y `README.md`. Al viajar dentro
 del archivo, quedan instalados junto al binario, satisfaciendo el cumplimiento
-GPLv3 sin depender del bundle. `SHA256SUMS.txt` se calcula sobre los archivos
-comprimidos.
+GPLv3 sin depender del bundle. `SHA256SUMS.txt` se calcula sobre los 4 archivos
+comprimidos más los 2 bootstrap (`install.sh`, `install.ps1`); el release
+publica 7 assets.
 
 ## Instalación
 
 Ver [README.md](../README.md#instalación) y [USAGE.md](../USAGE.md#instalación)
 para el detalle completo por SO. Las tres plataformas tienen una **instalación
-auto-hospedada de una línea** (`curl | sh` / `irm | iex`), con un script por SO
-que descarga, verifica el checksum, extrae el archivo e **integra el PATH por sí
-mismo** (dado que el `setup` del binario Rust ya no lo hace: solo provisiona
-modelos):
+de una línea** (`curl | sh` / `irm | iex`) desde los assets del release: el
+bootstrap descarga el archivo de su target, verifica el checksum, comprueba que
+el binario arranca y delega en `self install`, que **integra el PATH por sí
+mismo** y encadena `setup` (el `setup` solo provisiona modelos):
 
-- **Linux** — `install-linux.sh` (`curl | sh`) selecciona el `tar.gz` de la
-  arquitectura del host, verifica el checksum (`sha256sum`), lo extrae en
-  `~/.local/opt/ai-voice-interconnector/` (limpiando la versión anterior), crea
-  el symlink `~/.local/bin/ai-voice-interconnector` y encadena `setup`.
-- **macOS** — `install-macos.sh` (`curl | sh`) descarga el `tar.gz` de arm64,
-  verifica el checksum (`shasum`), lo extrae en
-  `~/.local/opt/ai-voice-interconnector/`, limpia la cuarentena de Gatekeeper
-  del binario, crea el symlink per-user en `~/.local/bin` y encadena `setup`.
+- **Linux** — `install.sh` (`curl | sh` sobre `releases/latest/download`)
+  detecta la arquitectura del host (x86_64/arm64), verifica el checksum exacto
+  contra `SHA256SUMS.txt`, comprueba el arranque (`binary_incompatible` con
+  diagnóstico de glibc ≥ 2.35 si el binario no arranca) y delega en
+  `self install`, que crea el symlink
+  `~/.local/bin/ai-voice-interconnector` y encadena `setup`.
+- **macOS** — el mismo `install.sh` (POSIX, `curl | sh`): descarga el `tar.gz`
+  de arm64 (Apple Silicon; Mac Intel responde `unsupported_platform`),
+  verifica el checksum, comprueba el arranque y delega en `self install`, que
+  además limpia la cuarentena de Gatekeeper del programa instalado.
   **Vía complementaria** para usuarios de Homebrew: el Cask del tap propio
   (`brew tap CristianRojas-SoftwareEngineer/ai-voice-interconnector && brew
   install --cask ai-voice-interconnector`), que resuelve PATH, desinstalación
   (`--zap`) y cuarentena sin intervención manual, pero exige Homebrew y no
   provisiona los modelos.
-- **Windows** — `install-windows.ps1` (`irm | iex`) descarga el `.zip` x86_64,
-  verifica su checksum, lo extrae en
-  `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, registra ese directorio en
+- **Windows** — `install.ps1` (`irm | iex` sobre `releases/latest/download`)
+  descarga el `.zip` x86_64 (ARM64 responde `unsupported_platform`),
+  verifica su checksum, comprueba el arranque y delega en `self install`, que
+  registra ese directorio en
   el PATH de usuario (HKCU, sin UAC) de forma idempotente y termina con
   `ai-voice-interconnector setup`.
 
-El porqué de que `install-windows.ps1` no dispare SmartScreen (a diferencia de
+El porqué de que `install.ps1` no dispare SmartScreen (a diferencia de
 la descarga por navegador) está explicado en
-[SECURITY.md](../SECURITY.md#artefactos-sin-firmar); diseño completo de los
-tres instaladores en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md).
+[SECURITY.md](../SECURITY.md#artefactos-sin-firmar); el diseño histórico
+completo sigue en [docs/SELF-HOSTED-INSTALL.md](SELF-HOSTED-INSTALL.md)
+(diferido al ciclo 5, sin tocar).
 
 ## Por qué el one-liner evita SmartScreen/Gatekeeper
 
@@ -93,8 +98,8 @@ El mecanismo de Mark-of-the-Web/cuarentena que dispara SmartScreen y Gatekeeper
 el **navegador** a un archivo descargado. Los one-liners descargan por CLI
 (`curl`, `Invoke-WebRequest`), que no aplica Mark-of-the-Web, así que el archivo
 extraído no lleva la marca y ninguno de los dos sistemas de reputación se
-activa. En macOS, además, `install-macos.sh` limpia explícitamente
-`com.apple.quarantine` del binario extraído. La resolución de raíz (firma de
+activa. En macOS, además, `self install` limpia `com.apple.quarantine` del
+programa instalado (el bootstrap no toca la cuarentena). La resolución de raíz (firma de
 código y notarización) sigue pendiente; ver `docs/BUILD.md` §"Limitación
 conocida: firma de código y notarización".
 
@@ -121,8 +126,9 @@ En cada tag `v*`, tras la triple puerta de tests (`test-linux`, `test-windows`,
 con los documentos de licencia en el archivo comprimido de su target y lo
 persisten al workspace. Luego:
 
-1. `publish-release` recoge los 4 archivos, calcula `SHA256SUMS.txt` sobre ellos
-   y crea el GitHub Release (`gh release create`) con los archivos + el checksum.
+1. `publish-release` estampa la versión del tag en ambos bootstrap, recoge los
+   4 archivos + los 2 bootstrap, calcula `SHA256SUMS.txt` sobre los 6 ficheros
+   y crea el GitHub Release (`gh release create`) con los 7 assets.
 2. `publish-metadata` (depende de `publish-release`) renderiza el Cask de
    Homebrew con `cargo run -p xtask -- cask` — `binary` stanza sobre el `tar.gz` de
    macOS, con el `sha256` extraído de `SHA256SUMS.txt` — y lo empuja al tap.

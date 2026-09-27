@@ -89,18 +89,18 @@ HKCU). Luego invoca:
 ai-voice-interconnector <comando>
 ```
 
-En **Linux**, `install-linux.sh` automatiza toda la descarga/verificación/instalación
+En **Linux y macOS**, el bootstrap `install.sh` (asset versionado del release) automatiza toda la descarga/verificación/instalación
 con una sola línea (detalle en [README.md](README.md#instalación-de-una-línea)):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-linux.sh | sh
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.sh | sh
 ```
 
-En **Windows**, `install-windows.ps1` hace lo análogo desde PowerShell (instalación
-per-user, sin UAC; termina ejecutando `ai-voice-interconnector setup`):
+En **Windows**, el bootstrap `install.ps1` hace lo análogo desde PowerShell (instalación
+per-user, sin UAC; delega en `self install`, que a su vez ejecuta `setup`):
 
 ```powershell
-irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-windows.ps1 | iex
+irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex
 ```
 
 **Desinstalación limpia**, en **un comando** en los tres SO: `ai-voice-interconnector
@@ -161,10 +161,12 @@ posterior corresponde a `cleanup` (datos) o `self uninstall` (además programa y
 
 **Provisión por SO** (experiencia homóloga):
 
-- **Windows**: `install-windows.ps1` registra el directorio en el PATH de usuario
+- **Windows**: el bootstrap `install.ps1` delega en `self install`, que registra
+  el directorio en el PATH de usuario
   (HKCU) y ejecuta `setup` al terminar.
-- **Linux / macOS**: `install-linux.sh` / `install-macos.sh` crean el symlink
-  `~/.local/bin/ai-voice-interconnector` y encadenan `setup` al terminar.
+- **Linux / macOS**: el bootstrap `install.sh` (POSIX, común a ambos SO) delega
+  en `self install`, que crea el symlink
+  `~/.local/bin/ai-voice-interconnector` y encadena `setup` al terminar.
   Si `~/.local/bin` no está en tu PATH, el instalador te lo avisa con la línea
   exacta a añadir al shell profile.
 
@@ -1188,7 +1190,8 @@ ai-voice-interconnector setup
 El binario Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+
 o equivalente): se compila contra la glibc del runner de build y `crt-static` no
 enlaza glibc estáticamente. En una distro más antigua (p. ej. Ubuntu 20.04,
-Debian 11) el binario no arranca — `install-linux.sh` lo detecta y aborta antes.
+Debian 11) el binario no arranca — el bootstrap comprueba que el binario arranca
+antes de delegar y aborta con `binary_incompatible` (lo instalado queda intacto).
 Actualiza la distro o compila desde código fuente en tu distro actual (ver
 [docs/BUILD.md](docs/BUILD.md)).
 

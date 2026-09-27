@@ -56,25 +56,21 @@ AI Voice InterConnector se distribuye por **canal nativo** (archivos comprimidos
 
 ### Instalación de una línea
 
-En **Linux** (`curl | sh`), descarga el `tar.gz` de tu arquitectura, verifica `SHA256SUMS.txt`, extrae en `~/.local/opt/ai-voice-interconnector/`, crea el symlink `~/.local/bin/ai-voice-interconnector` y encadena `setup`:
+En **Linux y macOS** (`curl | sh`, sin `sudo`), el bootstrap detecta el target del host, verifica `SHA256SUMS.txt`, comprueba que el binario arranca y delega en `self install` (que integra el PATH y encadena `setup`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-linux.sh | sh
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.sh | sh
 ```
 
-En **macOS Apple Silicon** (`curl | sh`, sin `sudo` ni Homebrew), análogo a Linux con `shasum` y limpieza de cuarentena Gatekeeper (`xattr`):
+En **macOS** solo Apple Silicon está soportado; la limpieza de cuarentena Gatekeeper la aplica `self install`, no el bootstrap.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-macos.sh | sh
-```
-
-En **Windows** (`irm | iex`, sin UAC), descarga el `.zip` x86_64, verifica `Get-FileHash` y registra `HKCU\Environment\Path`:
+En **Windows** (`irm | iex`, sin UAC), el bootstrap descarga el `.zip` x86_64, verifica su hash, comprueba el arranque y delega en `self install` (que registra `HKCU\Environment\Path`):
 
 ```powershell
-irm https://raw.githubusercontent.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/main/install-windows.ps1 | iex
+irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex
 ```
 
-Los tres scripts abortan si el checksum no coincide con `SHA256SUMS.txt` (ver [SECURITY.md](SECURITY.md)).
+Ambos bootstrap abortan si el checksum no coincide con `SHA256SUMS.txt` (ver [SECURITY.md](SECURITY.md)). Cada release los publica estampados con su versión como assets propios; nada se sirve desde `main`.
 
 **Alternativa Homebrew (macOS)**: automatiza checksum/PATH/cuarentena (exige Homebrew, no provisiona modelo):
 
@@ -103,7 +99,7 @@ ai-voice-interconnector self update --yes           # actualiza a la última est
 
 ### Descargar binario pre-compilado
 
-Desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases) (4 artefactos + `SHA256SUMS.txt`):
+Desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases) (4 archivos + 2 bootstrap + `SHA256SUMS.txt`: 7 assets):
 
 ```bash
 # Linux x64 (sustituye X.Y.Z por la versión del Release)
@@ -120,13 +116,13 @@ Expand-Archive ai.zip -Force; .\ai-voice-interconnector.exe setup
 ```
 
 > Mac Intel (x86_64) y Windows ARM64 no están soportados (limitación de toolchain aceptada, ver `docs/BUILD.md`).
-> Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+); el instalador advierte si es menor.
+> Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+); el bootstrap comprueba que el binario arranca y, si no lo hace, aborta con `binary_incompatible` remitiendo a `docs/BUILD.md`.
 
-Cada Release publica `SHA256SUMS.txt`; verifica con `sha256sum -c` o `Get-FileHash` antes de ejecutar.
+Cada Release publica `SHA256SUMS.txt` sobre los 6 ficheros (4 archivos + 2 bootstrap); verifica con `sha256sum -c` o `Get-FileHash` antes de ejecutar.
 
 ### Primer arranque: SmartScreen / Gatekeeper
 
-Al ejecutar por primera vez un binario **descargado por navegador**, es esperable el bloqueo del SO (Mark-of-the-Web). Los **one-liners no lo disparan** (descarga por CLI sin MOTW, `xattr` en macOS). Detalle en [SECURITY.md](SECURITY.md#artefactos-sin-firmar).
+Al ejecutar por primera vez un binario **descargado por navegador**, es esperable el bloqueo del SO (Mark-of-the-Web). Los **one-liners no lo disparan** (descarga por CLI sin MOTW; la limpieza de cuarentena en macOS la aplica `self install`). Detalle en [SECURITY.md](SECURITY.md#artefactos-sin-firmar).
 
 - **Windows**: *Más información* → *Ejecutar de todas formas*.
 - **macOS**: clic derecho → *Abrir* (o `xattr -d com.apple.quarantine`).
