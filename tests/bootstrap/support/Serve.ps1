@@ -3,8 +3,8 @@
 # Se ejecuta como proceso hijo (Start-Process -PassThru); sirve el árbol de
 # <Root> tal cual (<Root>/vX.Y.Z/<fichero>), responde 404 fuera del árbol y
 # registra cada petición en <RequestLog> para las aserciones de "antes de
-# descargar". HTTP plano basta porque install.ps1 no fija --proto como el
-# bootstrap POSIX. Uso: powershell -File Serve.ps1 -Root <dir> -PortFile <f> -RequestLog <f>.
+# descargar". HTTP plano basta porque el bootstrap de Windows no fija --proto
+# como el de POSIX. Uso: powershell -File Serve.ps1 -Root <dir> -PortFile <f> -RequestLog <f>.
 
 param(
     [string]$Root = "",

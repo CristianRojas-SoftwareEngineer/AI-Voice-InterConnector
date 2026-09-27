@@ -29,6 +29,7 @@
   |---|---|
   | Code identifiers: variables, parameters, functions, tests, types, enum variants, fields, constants, modules, code file names and Cargo target names | English |
   | Comments, documentation, commit messages, user-facing messages and help texts, string test descriptions (bats `@test`, Pester `It`/`Describe`) | Spanish |
+  | Comments in code, tests, configuration and scripts, which are self-contained: a comment explains the rule instead of remitting to a section of a specification or to another file | Spanish, and self-contained: the assertion replaces the citation it pointed at, with two exceptions. An end-user error message may refer to the documentation, because it is that user's only point of contact. The name of the file a function writes or reads is named, because there the name is part of the operation. This row does not reach machine contracts, which the row below governs |
   | Literal test data and machine contracts: JSON keys, `reason` codes, CLI flags, environment variables, events and protocol lines | Keep their current form (do not translate) |
 
 - Exception: keep highly standardized technical terms in English when:

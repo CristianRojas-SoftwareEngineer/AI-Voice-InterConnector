@@ -6,7 +6,7 @@
 # borrado), 4 (plataforma no soportada antes de descargar), 5 (binario
 # incompatible con diagnóstico), 8 (sin efectos en la sesión salvo el PATH de
 # esa sesión; la consola sobrevive al error bajo tubería) y 10 (paso de
-# parámetros y variables). Sin casos --check (decisión d) y sin red real.
+# parámetros y variables). Sin casos --check y sin red real.
 #
 # Ejecutar: Invoke-Pester tests/bootstrap/install.tests.ps1 -CI
 
@@ -168,7 +168,7 @@ Describe "bootstrap de Windows" {
         # Puerto cerrado: si intentara descargar, el error sería de red.
         $envBase.AVI_DOWNLOAD_BASE_URL = "http://127.0.0.1:1"
         # Solo en el hijo (ChildEnv): tocarlas en el anfitrión envenena la
-        # herencia a los hijos siguientes (ver Setup.ps1).
+        # herencia a los hijos siguientes.
         $childEnv = @{ PROCESSOR_ARCHITECTURE = "ARM64"; PROCESSOR_ARCHITEW6432 = "" }
         $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
             -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase -ChildEnv $childEnv

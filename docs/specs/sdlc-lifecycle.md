@@ -147,6 +147,7 @@ No se funde todo en un único ejecutable para ambas audiencias porque sus contex
 | P9 | **Misma semántica en todas partes.** Mismos verbos, flags, confirmaciones y códigos de resultado en los cuatro targets y en ambas audiencias. |
 | P10 | **Seguro por defecto.** HTTPS, verificación de integridad antes de ejecutar nada descargado y confirmación en operaciones destructivas. |
 | P11 | **Idioma por capa.** Identificadores en inglés, incluidos los nombres de fichero y los targets de Cargo; comentarios, documentación, mensajes al usuario, textos de ayuda y descripciones de prueba en español; los contratos de máquina —claves JSON, `reason`, flags, variables de entorno y líneas de protocolo— no se traducen. La fuente canónica de esta política es `AGENTS.md` §0. |
+| P12 | **Comentario autocontenido.** Un comentario de código, prueba, configuración o script explica la regla en lugar de remitir a una sección de esta especificación o a otro fichero para explicarse, con dos excepciones: los mensajes de error al usuario final sí remiten a la documentación, porque es su único punto de contacto, y el nombre del fichero que una función escribe o lee sí se nombra, porque ahí el nombre es parte de la operación. La fuente canónica de esta política es `AGENTS.md` §0. |
 
 ### 5.2 Componentes
 

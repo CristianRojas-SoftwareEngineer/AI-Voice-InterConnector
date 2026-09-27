@@ -5,7 +5,7 @@
 # reubicadas a temporales. Cubre los criterios 3 (checksum con staging
 # borrado), 4 (plataforma no soportada antes de descargar), 5 (binario
 # incompatible con diagnóstico) y 10 (paso de opciones y confirmación con
-# terminal). Sin casos --check (decisión d) y sin red real.
+# terminal). Sin casos --check y sin red real.
 #
 # Ejecutar: bats tests/bootstrap/install.bats (con `sh`, que es dash en WSL).
 

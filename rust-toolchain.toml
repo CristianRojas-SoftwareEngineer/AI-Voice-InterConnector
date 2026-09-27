@@ -1,5 +1,5 @@
 [toolchain]
-# Versión fijada del compilador (espejo de `rust` en `packaging/pins.json` y
-# de `rust_version` en `.circleci/config.yml`). `rustup` la aplica al entrar
-# al repositorio; sin componentes: los añade c4-04 si los exige.
+# Versión fijada del compilador: la aplica `rustup` al entrar al repositorio,
+# de modo que el desarrollo local y la pipeline compilan siempre con el mismo
+# compilador. Sin componentes: los añade el job de cobertura cuando los exige.
 channel = "1.96.0"

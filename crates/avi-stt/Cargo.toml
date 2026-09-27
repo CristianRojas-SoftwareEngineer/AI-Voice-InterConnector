@@ -10,10 +10,10 @@ license = "GPL-3.0-or-later"
 # `.dylib`) en runtime desde el directorio del binario. Reemplaza a
 # whisper-rs/whisper.cpp como motor STT; CT2 (ct2rs) permanece solo en
 # avi-translation. `ort =2.0.0-rc.13` apareja con ONNX Runtime 1.28, cuya
-# librería se empaqueta junto al binario en los artefactos de release (ver
-# `.circleci/config.yml`). Opcional tras el feature `native-stt` (off por
-# default): así `cargo test`/`cargo llvm-cov` compilan el crate sin ONNX
-# Runtime; los builds de release lo activan para conservar el motor real.
+# librería se empaqueta junto al binario en los artefactos de release. Opcional
+# tras el feature `native-stt` (off por default): así `cargo test`/`cargo
+# llvm-cov` compilan el crate sin ONNX Runtime; los builds de release lo activan
+# para conservar el motor real.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"], optional = true }
 avi-core = { path = "../avi-core" }
 anyhow = "1.0"

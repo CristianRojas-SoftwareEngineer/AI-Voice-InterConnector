@@ -5,13 +5,13 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 
 [features]
-# Puntos de inyeccion de fallo que §13 autoriza solo en los builds de prueba.
+# Puntos de inyeccion de fallo que solo se activan en los builds de prueba.
 # El binario distribuido se construye sin este feature, de modo que no
 # contiene forma de provocar un fallo a proposito.
 faults = []
 
 [dependencies]
-# Fuente unica de rutas y de recursos del producto (§7). Aporta `hf-hub`, que es
+# Fuente unica de rutas y de recursos del producto. Aporta `hf-hub`, que es
 # exactamente lo que impide que `xtask` dependa de el: los tipos del manifiesto
 # de bundle viven en `avi-shared` (crate puro) y no en este crate.
 avi-store = { path = "../avi-store" }
@@ -23,16 +23,18 @@ anyhow = "1.0"
 # `setup` se traslada como funcion asincrona; el binario ya compila `full` en el
 # mismo lockfile, asi que no anade trabajo de compilacion.
 tokio = { version = "1.35", features = ["full"] }
-# El parseo de la CLI se queda en `src/main.rs`: este crate no depende de `clap`.
-# Cliente HTTPS de `self update` (§9.4, §12). `rustls-tls` evita OpenSSL del
-# sistema (compila igual en los cuatro targets); `system-proxy` respeta
-# `HTTPS_PROXY`, `NO_PROXY` y el proxy del sistema en Windows; `stream` descarga
-# a disco sin cargar el archivo entero en memoria. Sin `default-features` para
-# no arrastrar `native-tls`.
+# El parseo de la CLI se queda en el binario principal: este crate no depende
+# de `clap`.
+# Cliente HTTPS de `self update`. `rustls-tls` evita OpenSSL del sistema
+# (compila igual en los cuatro targets); `system-proxy` respeta `HTTPS_PROXY`,
+# `NO_PROXY` y el proxy del sistema en Windows; `stream` descarga a disco sin
+# cargar el archivo entero en memoria. Sin `default-features` para no arrastrar
+# `native-tls`.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "system-proxy"] }
-# SHA-256 de `SHA256SUMS.txt` (§12, sin firma por D7).
+# SHA-256 para verificar el archivo descargado contra `SHA256SUMS.txt`, sin
+# firma digital.
 sha2 = "0.11"
-# Extracción del bundle descargado: `.zip` en Windows, `.tar.gz` en Unix (§3).
+# Extracción del bundle descargado: `.zip` en Windows, `.tar.gz` en Unix.
 # `zip` va sin `default-features` y solo con `deflate` por `flate2` (Rust puro,
 # sin zopfli/bzip2/zstd/lzma): `deflate-flate2` abre los caminos de código y
 # `flate2` aporta la dependencia con su backend por defecto.
@@ -41,15 +43,14 @@ tar = "0.4"
 flate2 = "1.0"
 
 [target.'cfg(windows)'.dependencies]
-# Acceso directo a `HKCU\Environment` para la integracion de PATH (§9.3.1). Hoy
-# lo consume `winreg` desde el binario; aqui se accede por `windows-sys` para no
-# arrastrar un envoltorio de registro adicional.
-# `Win32_System_Threading` no estaba en la lista que fijo T4 y se anade para el
-# barrido de temporales de §9.1: sin el, "¿este PID sigue vivo?" no tiene
-# respuesta en Windows y el barrido borraria temporales de un proceso vivo. Es
-# una feature de una dependencia ya declarada, no una dependencia nueva.
+# Acceso directo a `HKCU\Environment` para la integracion de PATH: se accede con
+# `windows-sys` para no arrastrar un envoltorio de registro adicional.
+# `Win32_System_Threading` se anade para el barrido de temporales: sin el,
+# "¿este PID sigue vivo?" no tiene respuesta en Windows y el barrido borraria
+# temporales de un proceso vivo. Es una feature de una dependencia ya declarada,
+# no una dependencia nueva.
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(unix)'.dependencies]
-# Enlace simbolico, permisos y deteccion de privilegios elevados (§9.3.1, §9.1).
+# Enlace simbolico, permisos y deteccion de privilegios elevados.
 libc = "0.2"

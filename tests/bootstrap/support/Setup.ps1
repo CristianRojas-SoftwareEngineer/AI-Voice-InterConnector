@@ -2,7 +2,7 @@
 #
 # El servidor falso (support/Serve.ps1, HTTP en 127.0.0.1 con puerto efímero)
 # sirve el asset de Windows y un SHA256SUMS.txt coherente o corrupto. La base
-# se fija con AVI_DOWNLOAD_BASE_URL y las cuatro raíces (§7) se reubican a
+# se fija con AVI_DOWNLOAD_BASE_URL y las cuatro raíces se reubican a
 # temporales. La versión de prueba es 9.9.9: lo inexistente (8.8.8) falla con
 # error de red, lo que demuestra qué resolución se eligió.
 #

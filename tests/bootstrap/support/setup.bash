@@ -119,7 +119,7 @@ harness_stop_server() {
     fi
 }
 
-# Reubica las cuatro raíces (§7) y el registro del doble a temporales de $1.
+# Reubica las cuatro raíces y el registro del doble a temporales de $1.
 harness_relocate() {
     base="$1"
     export AVI_INSTALL_DIR="$base/install"

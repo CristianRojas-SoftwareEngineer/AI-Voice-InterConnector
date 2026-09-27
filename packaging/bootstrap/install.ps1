@@ -4,7 +4,7 @@ Bootstrap de primera instalación de ai-voice-interconnector para Windows.
 .DESCRIPTION
 Detecta el target, resuelve la versión, descarga por HTTPS, verifica el hash
 con comparación exacta, comprueba que el binario arranca y delega en
-`self install`. Sin -Check (decisión d): con el binario instalado se usa
+`self install`. Sin -Check: con el binario instalado se usa
 `self update --check`. Toda opción tiene variable de entorno equivalente,
 porque `irm | iex` no admite parámetros. Su único efecto sobre la sesión es
 añadir el directorio de programa al PATH de esa sesión.
@@ -32,7 +32,8 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
     $Repo = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
     $App = "ai-voice-interconnector"
 
-    # Versión estampada al publicar el release (la sustituye c3-05, una sola vez).
+    # Versión estampada al publicar el release (la sustituye la automatización de
+    # publicación, una sola vez).
     $StampedVersion = "__AVI_STAMPED_VERSION__"
 
     function Write-BootstrapLog {
@@ -102,7 +103,7 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
     }
 
     function Invoke-BootstrapInstall {
-        # TLS 1.2 (§12); la barra de progreso ya está desactivada arriba.
+        # TLS 1.2; la barra de progreso ya está desactivada arriba.
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
         } catch {

@@ -10,8 +10,7 @@
 # (parámetro `native_cache_probe`) mide los 4 build-* sin publicar nunca.
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
 # licencia, versionados vía `persist_to_workspace` → `publish-release`.
-# Pines reproducibles: `rust_version` + `ort_version` + digest de `cimg/rust` (ver §Reproducibilidad).
-# Ver docs/BUILD.md §4 para arquitectura completa.
+# Pines reproducibles: `rust_version` + `ort_version` + digest de `cimg/rust`.
 
 version: 2.1
 
@@ -22,8 +21,8 @@ orbs:
 # << pipeline.parameters.rust_version >> en cada job Rust (no repetir literal).
 # Bump de versión = editar solo aquí + actualizar digest de `cimg/rust` en las
 # 4 referencias `image:` (obtenido vía `docker buildx imagetools inspect
-# cimg/rust:<< pipeline.parameters.rust_version >>` o hub.docker.com, ver
-# docs/BUILD.md §Reproducibilidad). Sin digest, el tag es flotante y pierde
+# cimg/rust:<< pipeline.parameters.rust_version >>` o hub.docker.com). Sin digest,
+# el tag es flotante y pierde
 # reproducibilidad; el digest congela el SO base + toolchain.
 parameters:
   rust_version:
@@ -32,11 +31,11 @@ parameters:
     description: >
       Versión exacta de Rust (toolchain) usada en todos los jobs Rust
       (cargo test/build). Espejo entre plataformas (Linux/Windows/macOS).
-  # Pines del toolchain C del motor TTS en Windows (MSYS2 UCRT64). Fuente única,
-  # espejo de las versiones tabuladas en docs/BUILD.md §6. El release base fija un
-  # snapshot reproducible; la caché de C:\msys64 (msys2_*_cache) es el mecanismo de
-  # determinismo, y el assert de gcc en el bootstrap ataja el drift upstream en
-  # caché fría. Bump = editar aquí (invalida la caché por clave) + docs/BUILD.md §6.
+  # Pines del toolchain C del motor TTS en Windows (MSYS2 UCRT64). Fuente única
+  # de esos pines. El release base fija un snapshot reproducible; la caché de
+  # C:\msys64 (msys2_*_cache) es el mecanismo de determinismo, y el assert de gcc
+  # en el bootstrap ataja el drift upstream en caché fría. Bump = editar aquí
+  # (invalida la caché por clave).
   msys2_base_release:
     type: string
     default: "2026-06-11"
@@ -62,7 +61,7 @@ parameters:
   # Sonda de builds nativos: solo se activa por API (POST /pipeline con
   # `native_cache_probe: true`). Ejecuta únicamente los 4 build-* en modo
   # `probe` (sin target-*, sin empaquetado) y excluye `build-all`, así que
-  # NUNCA publica. Ver workflow `native-cache-probe` y docs/BUILD.md §4.
+  # NUNCA publica. Ver workflow `native-cache-probe`.
   native_cache_probe:
     type: boolean
     default: false
@@ -95,7 +94,7 @@ parameters:
 # de `Cargo.lock.cachekey`, un lock efímero que genera `perl` neutralizando la
 # línea `version` del propio crate. Así el bump de cada release no cambia la
 # clave; solo la cambian dependencias reales.
-# Invalidación por familia de caché (detalle en docs/BUILD.md §4):
+# Invalidación por familia de caché:
 #   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock;
 #     conserva fallback por prefijo.
 #   - target (v3): cambia con dependencias reales en Cargo.lock y con el tree hash
@@ -153,7 +152,7 @@ commands:
       # clave con un transform de texto evita compilar xtask (y su árbol, que en
       # Windows tira de windows-sys/raw-dylib y necesita dlltool.exe, ausente antes
       # de instalar MSYS2) desde cero en cada job. Un único mecanismo cross-platform,
-      # sin ramas por shell (ver Objetivo 2 del plan de clave estable).
+      # sin ramas por shell.
       - run:
           name: Generar Cargo.lock.cachekey (clave de caché normalizada)
           shell: bash
@@ -205,7 +204,7 @@ commands:
     # invalida su propio fingerprint de cargo (mtime del checkout + `-C metadata`
     # derivado de la versión del paquete) sin necesidad de limpiarlo a mano, y
     # sccache nunca cachea crates `--crate-type bin` (el binario final siempre
-    # pasa por `rustc` real). Ver docs/BUILD.md §4.
+    # pasa por `rustc` real).
     #
     # `when` por defecto es `always` (test-linux/test-windows/test-macos/coverage):
     # ahí un fallo del job suele ser un test que falló, no una compilación
@@ -290,7 +289,7 @@ commands:
           paths:
             - C:\msys64
 
-  # sccache (R2): envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
+  # sccache: envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
   # hash de contenido en ~/.cache/sccache. Cada variante (test/full/cov) guarda
   # y restaura solo su propio blob (clave segmentada por variant, espejo de
   # target-v3), sobreviviendo a bumps de Cargo.lock que invalidan target/.
@@ -486,8 +485,8 @@ commands:
             done
             echo "[STEP] Diagnóstico de builds CMake (sonda) - FIN"
 
-  # Fuente única de pines (decisiones (a)+(f)): `packaging/pins.json` es la
-  # única tabla de versiones; los parámetros del pipeline la espejan. Este paso
+  # Fuente única de pines: `packaging/pins.json` es la única tabla de versiones;
+  # los parámetros del pipeline la espejan. Este paso
   # falla antes de compilar si algún pin diverge del JSON. No genera pasos de
   # instalación: la CI conserva sus comandos (`apt`, `brew`, MSYS2).
   validate_pins:
@@ -537,7 +536,7 @@ jobs:
   test-linux:
     # Executor x86_64 Docker con Rust preinstalado. La suite es
     # arch-independiente y mockea el engine (Parakeet/Qwen no se ejercitan),
-    # así que re-correrla en ARM64 no aportaría señal (ver docs/BUILD.md §4).
+    # así que re-correrla en ARM64 no aportaría señal.
     # Es la arquitectura más barata/rápida disponible.
     # Caché: registry + target-v3 + sccache autoconsistente (variant: test),
     # igual que test-windows/test-macos/coverage.
@@ -785,8 +784,8 @@ jobs:
   coverage:
     # Job de cobertura Rust (cargo-llvm-cov, LLVM instrumentation). Corre solo
     # en Linux x86_64: coverage es agnóstico de SO, duplicarlo triplicaría coste
-    # sin señal nueva (ver docs/BUILD.md §4). Reemplaza a pytest-cov; genera
-    # lcov.info y resumen por líneas. Sin gate de % por diseño — solo valida
+    # sin señal nueva. Reemplaza a pytest-cov; genera lcov.info y resumen por
+    # líneas. Sin gate de % por diseño — solo valida
     # que la instrumentación no rompa la suite.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
@@ -1200,13 +1199,10 @@ jobs:
             if (-not (Test-Path $Exe)) { throw "Binario no encontrado: $Exe" }
             & $Exe version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            # Contrato JSON determinista (src/main.rs:575 handle_version ->
-            # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
-            # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
-            # --json DEBE exponer name + version + schema_version. Sin este gate
-            # un binario cuyo bump de VERSION no se propagó (p.ej. un `main.rs`
-            # editado a mano sin recompilar) pasa el smoke de texto pero viola
-            # el contrato JSON y rompe consumidores.
+            # Contrato JSON determinista: `version --json` DEBE exponer name +
+            # version + schema_version. Sin este gate un binario cuyo bump de
+            # VERSION no se propagó (p.ej. editado a mano sin recompilar) pasa el
+            # smoke de texto pero viola el contrato JSON y rompe consumidores.
             $jsonRaw = & $Exe version --json | Out-String
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             try { $j = $jsonRaw | ConvertFrom-Json } catch { throw "version --json no es JSON válido: $jsonRaw : $_" }
@@ -1327,9 +1323,9 @@ jobs:
                 paths:
                   - ort-bundle
             - run:
-                # Empaquetado canónico (§10.4): `xtask package` monta el bundle
-                # desde packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`) y aborta si VERSION != tag (decisión c).
+                # Empaquetado canónico: `xtask package` monta el bundle desde
+                # packaging/bundle-manifest.json (la misma lista que valida
+                # `self install`) y aborta si VERSION != tag.
                 name: Empaquetar bundle con xtask package
                 command: |
                   Write-Host "[STEP] Empaquetar bundle con xtask package - INICIO"
@@ -1340,9 +1336,9 @@ jobs:
                   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                   Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
             - run:
-                # Humo de §13: instala el artefacto empaquetado en un sandbox con
-                # las cuatro raíces reubicadas y comprueba que el binario
-                # instalado arranca.
+                # Humo de instalación: instala el artefacto empaquetado en un
+                # sandbox con las cuatro raíces reubicadas y comprueba que el
+                # binario instalado arranca.
                 name: Humo de instalación en sandbox (self install)
                 command: |
                   Write-Host "[STEP] Humo de instalación en sandbox - INICIO"
@@ -1378,8 +1374,8 @@ jobs:
   build-linux-x64:
     # Linux x64: el más barato/rápido para la suite, pero el build necesita
     # `large` (8 GB RAM): el linking de cpal + tokio + ct2rs (ort es
-    # load-dynamic) supera los 4 GB de `medium` (OOM silencioso). Simetría con
-    # docs/BUILD.md §4 — `large` trae 4 vCPU de regalo no aprovechados.
+    # load-dynamic) supera los 4 GB de `medium` (OOM silencioso). `large` trae
+    # 4 vCPU de regalo no aprovechados.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
     resource_class: large
@@ -1459,11 +1455,9 @@ jobs:
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
-            # Contrato JSON determinista (src/main.rs:575 handle_version ->
-            # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
-            # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
-            # --json DEBE exponer name + version + schema_version. Python3 parsea
-            # sin depender de jq (cimg/rust ya lo provee, pero python3 es canónico).
+            # Contrato JSON determinista: `version --json` DEBE exponer name +
+            # version + schema_version. Python3 parsea sin depender de jq
+            # (cimg/rust ya lo provee, pero python3 es canónico).
             target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="3", "schema_version !=3: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
@@ -1499,9 +1493,9 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - run:
-                # Empaquetado canónico (§10.4): `xtask package` monta el bundle
-                # desde packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`) y aborta si VERSION != tag (decisión c).
+                # Empaquetado canónico: `xtask package` monta el bundle desde
+                # packaging/bundle-manifest.json (la misma lista que valida
+                # `self install`) y aborta si VERSION != tag.
                 name: Empaquetar bundle con xtask package
                 command: |
                   echo "[STEP] Empaquetar bundle con xtask package - INICIO"
@@ -1509,9 +1503,9 @@ jobs:
                   cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
             - run:
-                # Humo de §13: instala el artefacto empaquetado en un sandbox con
-                # las cuatro raíces reubicadas y comprueba que el binario
-                # instalado arranca.
+                # Humo de instalación: instala el artefacto empaquetado en un
+                # sandbox con las cuatro raíces reubicadas y comprueba que el
+                # binario instalado arranca.
                 name: Humo de instalación en sandbox (self install)
                 command: |
                   echo "[STEP] Humo de instalación en sandbox - INICIO"
@@ -1622,11 +1616,9 @@ jobs:
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
-            # Contrato JSON determinista (src/main.rs:575 handle_version ->
-            # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
-            # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
-            # --json DEBE exponer name + version + schema_version. Python3 parsea
-            # sin depender de jq (cimg/rust ya lo provee, pero python3 es canónico).
+            # Contrato JSON determinista: `version --json` DEBE exponer name +
+            # version + schema_version. Python3 parsea sin depender de jq
+            # (cimg/rust ya lo provee, pero python3 es canónico).
             target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="3", "schema_version !=3: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
@@ -1662,9 +1654,9 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - run:
-                # Empaquetado canónico (§10.4): `xtask package` monta el bundle
-                # desde packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`) y aborta si VERSION != tag (decisión c).
+                # Empaquetado canónico: `xtask package` monta el bundle desde
+                # packaging/bundle-manifest.json (la misma lista que valida
+                # `self install`) y aborta si VERSION != tag.
                 name: Empaquetar bundle con xtask package
                 command: |
                   echo "[STEP] Empaquetar bundle con xtask package - INICIO"
@@ -1672,9 +1664,9 @@ jobs:
                   cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
             - run:
-                # Humo de §13: instala el artefacto empaquetado en un sandbox con
-                # las cuatro raíces reubicadas y comprueba que el binario
-                # instalado arranca.
+                # Humo de instalación: instala el artefacto empaquetado en un
+                # sandbox con las cuatro raíces reubicadas y comprueba que el
+                # binario instalado arranca.
                 name: Humo de instalación en sandbox (self install)
                 command: |
                   echo "[STEP] Humo de instalación en sandbox - INICIO"
@@ -1818,11 +1810,9 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
-            # Contrato JSON determinista (src/main.rs:575 handle_version ->
-            # emit_raw_json(json!({ "name": APP_NAME, "version": VERSION })) +
-            # crates/avi-core/src/json_emitter.rs:26 with_schema_version): version
-            # --json DEBE exponer name + version + schema_version. Python3 parsea
-            # sin depender de jq (cimg/rust ya lo provee, pero python3 es canónico).
+            # Contrato JSON determinista: `version --json` DEBE exponer name +
+            # version + schema_version. Python3 parsea sin depender de jq
+            # (cimg/rust ya lo provee, pero python3 es canónico).
             target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="3", "schema_version !=3: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
@@ -1860,9 +1850,9 @@ jobs:
           condition: << parameters.probe >>
           steps:
             - run:
-                # Empaquetado canónico (§10.4): `xtask package` monta el bundle
-                # desde packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`) y aborta si VERSION != tag (decisión c).
+                # Empaquetado canónico: `xtask package` monta el bundle desde
+                # packaging/bundle-manifest.json (la misma lista que valida
+                # `self install`) y aborta si VERSION != tag.
                 name: Empaquetar bundle con xtask package
                 command: |
                   echo "[STEP] Empaquetar bundle con xtask package - INICIO"
@@ -1870,9 +1860,9 @@ jobs:
                   cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
             - run:
-                # Humo de §13: instala el artefacto empaquetado en un sandbox con
-                # las cuatro raíces reubicadas y comprueba que el binario
-                # instalado arranca.
+                # Humo de instalación: instala el artefacto empaquetado en un
+                # sandbox con las cuatro raíces reubicadas y comprueba que el
+                # binario instalado arranca.
                 name: Humo de instalación en sandbox (self install)
                 command: |
                   echo "[STEP] Humo de instalación en sandbox - INICIO"
@@ -2100,8 +2090,7 @@ jobs:
 #   taggear: si los tests fallan, los builds no corren y nada se publica.
 #
 #   `coverage`, instaladores y licencias/changelog completan los gates de los 4
-#   builds nativos, que compilan las 4 plataformas en modo release. Ver
-#   docs/BUILD.md §4.
+#   builds nativos, que compilan las 4 plataformas en modo release.
 # ══════════════════════════════════════════════════════════════════════
 workflows:
   # ── Pipeline de RELEASE: tests (gate) + empaquetado + publicación en tags `v*` ──
@@ -2110,7 +2099,7 @@ workflows:
     # dependencias declaren `filters.tags`; por eso el filtro `v*` se propaga
     # por toda la cadena (tests/gates → builds → publish-*).
     # Todos los jobs declaran además `branches: ignore /.*/`: esta pipeline corre
-    # SOLO en tags `v*`, nunca en pushes de rama. Ver docs/BUILD.md §4.
+    # SOLO en tags `v*`, nunca en pushes de rama.
     # Excluido explícitamente cuando se dispara la sonda (native_cache_probe).
     when:
       not: << pipeline.parameters.native_cache_probe >>
@@ -2267,7 +2256,7 @@ workflows:
   # {"branch":"main","parameters":{"native_cache_probe":true}}. Ejecuta los 4 build-* en modo `probe`: sin puertas,
   # sin publish-*, sin restaurar ni guardar target-*, sin empaquetado; con
   # --timings y el diagnóstico de CMake. Guarda sccache (por contenido). Sin
-  # `requires` ni filtros de tags: corre en la rama indicada. Ver docs/BUILD.md §4.
+  # `requires` ni filtros de tags: corre en la rama indicada.
   native-cache-probe:
     when: << pipeline.parameters.native_cache_probe >>
     jobs:

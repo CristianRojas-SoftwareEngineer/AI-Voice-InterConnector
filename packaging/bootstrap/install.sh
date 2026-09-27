@@ -6,11 +6,11 @@
 # Uso con opciones (como archivo o tras `sh -s --`):
 #   curl -fsSL <url> | sh -s -- --version 0.24.0 --no-setup --yes
 #
-# Flujo (§9.2): detecta el target, resuelve la versión, crea un staging hermano
-# del programa, descarga por HTTPS, verifica el hash con comparación exacta,
-# comprueba que el binario arranca y delega en `self install`. Sin `--check`
-# (decisión d): con el binario instalado se usa `self update --check`. El PATH,
-# los modelos y las rutas de estado los decide `self install`, no este script.
+# Flujo: detecta el target, resuelve la versión, crea un staging hermano del
+# programa, descarga por HTTPS, verifica el hash con comparación exacta,
+# comprueba que el binario arranca y delega en `self install`. Sin `--check`:
+# con el binario instalado se usa `self update --check`. El PATH, los modelos y
+# las rutas de estado los decide `self install`, no este script.
 
 set -eu
 umask 077
@@ -18,7 +18,8 @@ umask 077
 repo="CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
 app="ai-voice-interconnector"
 
-# Versión estampada al publicar el release (la sustituye c3-05, una sola vez).
+# Versión estampada al publicar el release (la sustituye la automatización de
+# publicación, una sola vez).
 stamped_version="__AVI_STAMPED_VERSION__"
 
 log() { printf '%s\n' "$*" >&2; }
@@ -33,7 +34,7 @@ AVI_YES=1, AVI_DOWNLOAD_BASE_URL. Sin --check: usa `self update --check`.
 EOF
 }
 
-# Entradas (§9.2): la opción manda; si falta, vale la variable de entorno.
+# Entradas: la opción manda; si falta, vale la variable de entorno.
 opt_version="${AVI_VERSION:-}"
 opt_no_setup=0; opt_no_modify_path=0; opt_yes=0
 case "${AVI_NO_SETUP:-}" in 1|true|yes|True|Yes|TRUE|YES) opt_no_setup=1 ;; esac
@@ -53,12 +54,12 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-# Privilegios (§9.1): instalación per-user; con sudo se aborta, root puro vale.
+# Privilegios: instalación per-user; con sudo se aborta, root puro vale.
 if [ "$(id -u 2>/dev/null || printf '1000')" = "0" ] && [ -n "${SUDO_USER:-}" ]; then
     fail "no ejecutes este instalador con sudo: la instalación es per-user y acabaría en el perfil de root."
 fi
 
-# Detección del target (§3); en macOS manda sysctl aunque haya Rosetta.
+# Detección del target; en macOS manda sysctl aunque haya Rosetta.
 os="$(uname -s)"
 machine="$(uname -m)"
 case "$os" in
@@ -79,7 +80,7 @@ case "$os" in
     *) fail "[unsupported_platform] sistema no soportado: $os (solo Linux y macOS; en Windows usa install.ps1)." ;;
 esac
 
-# Requisitos (§9.2): POSIX sh más descarga, hash, extracción y temporales.
+# Requisitos: POSIX sh más descarga, hash, extracción y temporales.
 for cmd in mktemp tar tr dirname; do have "$cmd" || fail "falta el comando requerido: $cmd."; done
 have curl || have wget || fail "se necesita curl o wget para descargar."
 have sha256sum || have shasum || fail "se necesita sha256sum o shasum para verificar."
@@ -115,7 +116,7 @@ resolve_latest_api() {
     printf '%s' "${tag#v}"
 }
 
-# Resolución de versión (§9.2 paso 3): opción o variable, estampada, latest.
+# Resolución de versión: opción o variable, estampada, latest.
 version="${opt_version#v}"
 case "$version" in "") case "$stamped_version" in ""|__AVI_*) version="" ;; *) version="$stamped_version" ;; esac ;; esac
 case "$version" in
@@ -159,7 +160,7 @@ log "Checksum verificado: $archive"
 tar -xzf "$staging/$archive" -C "$staging" || fail "no se pudo extraer $archive."
 bin="$staging/$app"
 [ -x "$bin" ] || fail "[bundle_invalid] el archivo no contiene el binario esperado: $app."
-# Compatibilidad comprobada, no inferida (decisión b): si no arranca se
+# Compatibilidad comprobada, no inferida: si no arranca se
 # diagnostica sin parsear la glibc y lo instalado queda intacto.
 if ! "$bin" --version >/dev/null 2>&1; then
     log "ERROR [binary_incompatible]: el binario descargado ($target) no arranca en este sistema."
@@ -168,7 +169,7 @@ if ! "$bin" --version >/dev/null 2>&1; then
     exit 1
 fi
 
-# Delegación en el binario nuevo (§9.2 paso 9); con tubería, stdin va a /dev/tty
+# Delegación en el binario nuevo; con tubería, stdin va a /dev/tty
 # cuando se puede abrir (existe el nodo pero sin terminal rectora no se abre).
 set -- self install
 [ "$opt_no_setup" = "1" ] && set -- "$@" --no-setup
