@@ -61,7 +61,7 @@ fn relative_path(root: &Path, relative: &str) -> PathBuf {
 
 /// Triple del host según la tabla de §3, derivado de la plataforma de
 /// compilación (este binario siempre corre donde se compiló).
-fn host_triple() -> Result<&'static str> {
+pub(crate) fn host_triple() -> Result<&'static str> {
     match (std::env::consts::ARCH, std::env::consts::OS) {
         ("x86_64", "windows") => Ok("x86_64-pc-windows-msvc"),
         ("x86_64", "linux") => Ok("x86_64-unknown-linux-gnu"),
@@ -287,8 +287,9 @@ fn copy_vc_runtime(bundle: &Path) -> Result<()> {
 }
 
 /// Asegura `ort-bundle/` para el triple: lo reutiliza si está fresco o lo
-/// reconstruye con descarga verificada en caso contrario.
-fn ensure_ort_bundle(root: &Path, triple: &str, ort_version: &str) -> Result<PathBuf> {
+/// reconstruye con descarga verificada en caso contrario. Lo reutiliza
+/// `bootstrap` (decisión (d)): un solo descargador verificado en el crate.
+pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, ort_version: &str) -> Result<PathBuf> {
     let bundle = root.join(ORT_BUNDLE_REL);
     if bundle.is_dir() && ort_bundle_is_fresh(&bundle, triple, ort_version)? {
         eprintln!("Bundle ONNX Runtime reutilizado de {ORT_BUNDLE_REL}");

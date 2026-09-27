@@ -4,7 +4,10 @@ use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+mod bootstrap;
 mod clean;
+mod doctor;
+mod install;
 mod language;
 mod package;
 
@@ -327,14 +330,47 @@ enum Commands {
         #[arg(long)]
         jobs: Option<usize>,
     },
-    /// Limpia el entorno de desarrollo: artefactos del repo y estado de la app
+    /// Limpia el entorno de desarrollo por capas (--repo por defecto)
     Clean {
+        /// Solo la capa del repositorio: target/, ort-bundle/, motor y cobertura
+        #[arg(long)]
+        repo: bool,
+        /// Solo la capa de la aplicación: delega en el binario del repositorio
+        #[arg(long)]
+        app: bool,
+        /// Ambas capas: aplicación y después repositorio
+        #[arg(long)]
+        all: bool,
         /// Lista rutas y tamaños sin borrar nada
         #[arg(long)]
         dry_run: bool,
         /// Omite la confirmación interactiva
         #[arg(long)]
         yes: bool,
+    },
+    /// Verifica los requisitos del host y la deriva del entorno, sin modificar nada
+    Doctor {
+        /// Salida en JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Prepara o pone al día el entorno de desarrollo (convergente)
+    Bootstrap {
+        /// Ejecuta los gestores del sistema (única vía con sudo/UAC)
+        #[arg(long)]
+        system: bool,
+        /// Provisiona los modelos con el build local
+        #[arg(long)]
+        models: bool,
+        /// Omite la confirmación interactiva
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Instala el build local por el camino del release (canal dev)
+    Install {
+        /// No provisionar modelos
+        #[arg(long)]
+        no_setup: bool,
     },
     /// Empaqueta el bundle del release para el target del host desde el manifiesto
     Package {
@@ -480,7 +516,29 @@ fn main() -> Result<()> {
         } => {
             build_engine(self_test, simd, jobs)?;
         }
-        Commands::Clean { dry_run, yes } => clean::run(dry_run, yes)?,
+        Commands::Clean {
+            repo,
+            app,
+            all,
+            dry_run,
+            yes,
+        } => {
+            let layer = if all || (repo && app) {
+                clean::Layer::All
+            } else if app {
+                clean::Layer::App
+            } else {
+                clean::Layer::Repo
+            };
+            clean::run(layer, dry_run, yes)?
+        }
+        Commands::Doctor { json } => doctor::run(json)?,
+        Commands::Bootstrap {
+            system,
+            models,
+            yes,
+        } => bootstrap::run(system, models, yes)?,
+        Commands::Install { no_setup } => install::run(no_setup)?,
         Commands::Package {
             out,
             no_compress,

@@ -5008,9 +5008,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "avi-shared",
- "avi-store",
  "clap",
- "directories",
  "flate2",
  "regex",
  "serde_json",

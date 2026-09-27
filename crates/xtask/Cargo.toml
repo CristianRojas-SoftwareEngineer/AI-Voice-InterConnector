@@ -13,11 +13,6 @@ regex = "1.10"
 serde_json = "1.0"
 # Tipos del bundle y pines desde la fuente única (ciclo 4, sin red ni TLS).
 avi-shared = { path = "../avi-shared" }
-directories = "5.0"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1.1"
-
-[dev-dependencies]
-# Solo para fijar la paridad de rutas de `clean` con el producto.
-avi-store = { path = "../avi-store" }
