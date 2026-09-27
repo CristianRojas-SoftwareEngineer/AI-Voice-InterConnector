@@ -14,8 +14,11 @@ con una persona pulsando teclas.
 La secuencia está en orden lógico: cada paso asume que el anterior pasó. Ejecutar
 tras instalar el artefacto del release (Windows `ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`,
 Linux `ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`, macOS `ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`)
-descomprimido y con `setup` ejecutado, o bien desde una terminal nueva (el instalador agrega el `PATH`
-automáticamente).
+descomprimido y con `setup` ejecutado, o bien desde una terminal nueva: la integración
+del `PATH` es persistente —bloque delimitado en los perfiles de shell en Linux y macOS,
+valor `Path` de `HKCU\Environment` en Windows— y por eso una terminal ya abierta no la
+ve. Solo la sesión que ejecutó el bootstrap recibe el `PATH` en el acto; con
+`--no-modify-path` no se integra nada y hay que invocar el binario por su ruta completa.
 
 ## Cómo leer esta guía
 
@@ -91,10 +94,11 @@ ai-voice-interconnector doctor --json
 
 ## 3. Provisión del modelo
 
-🧠 (esta sección la genera) — solo si no se hizo desde el instalador.
+🧠 (esta sección la genera) — hace falta si la instalación se hizo con `--no-setup` o
+si terminó en `setup_failed`, que deja el programa instalado pero sin modelos.
 
 ```bash
-# Descarga los 4 modelos pinneados a ~/.cache/huggingface/hub (idempotente)
+# Descarga los 4 modelos pinneados a la caché exclusiva de la aplicación (idempotente)
 ai-voice-interconnector setup
 ```
 

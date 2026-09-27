@@ -718,7 +718,18 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
 | `docs/PARITY.md` | Remite a la matriz de paridad de [§10](#10-matriz-de-paridad-por-target); el resto es registro histórico por fases |
-| `docs/SELF-HOSTED-INSTALL.md` | Se retira |
+| `docs/SELF-HOSTED-INSTALL.md` | Retirado: no existe en el arbol. Su contenido vigente esta en `docs/DISTRIBUTION.md` |
+| `docs/DESIGN.md` | Arquitectura, motor TTS, estructura del proyecto y comandos; su árbol describe las piezas vigentes, de modo que la ausencia de los cinco scripts de la raíz es un hecho comprobable y no un olvido |
+| `docs/GOAL.md` | Especificación ideal del producto y clasificación de specs, con la firma de código en el goal a largo plazo; el criterio de equivalencia entre SO nombra la invocación vigente y conserva la de entonces como constancia |
+| `docs/MANUAL-VALIDATION.md` | Procedimiento operativo de la validación end-to-end manual: la matriz de la CLI que CI no puede ejercitar, con la caché de modelos y la integración de `PATH` vigentes |
+| `docs/RELEASING.md` | El corte de release: bump de las cinco versiones, promoción de `[No publicado]` por `cargo xtask release` y aborted list del gate de publicación |
+| `docs/CLI/commands/VERSION.md` | Documento de `version`, el único comando de nivel superior sin motor en `avi-lifecycle`: lo resuelve `handle_version` en `src/main.rs`, y por eso el sobre `--json` es toda su superficie |
+| `THIRD-PARTY-LICENSES.md` | Inventario de licencias de terceros, con la región generada por `cargo xtask licenses` y la región curada arriba; gobierna el aviso de atribución de los pesos de modelo |
+| `SECURITY.md` | Política y runbook: Mark-of-the-Web, los dos bootstrap como única ejecución previa al binario, y el aviso de binarios sin firmar diferido al goal a largo plazo |
+| `AGENTS.md` | Directrices de trabajo en este repositorio: idioma, surgicalidad, disciplina de versionado y prohibiciones; gobierna a quien modifica el proyecto, no al usuario final |
+| `.claude/skills/test-windows-e2e-as-final-user/SKILL.md` | Receta reutilizable del recorrido E2E en Windows como usuario final. **Fuera de git** (`.gitignore:62`): su corrección no entra en ningún commit y su reversión es el texto anterior, no `git checkout` |
+| `.claude/skills/release/SKILL.md` | Receta del corte de release en siete pasos, del gate de confirmación a la verificación del release. También **fuera de git** (`.gitignore:62`), con la misma consecuencia |
+| Memorias del agente (`~/.claude/projects/…/memory/`) | Índice de lo aprendido entre sesiones, **fuera de git** y mantenido por el orquestador. No documenta el producto, así que no es parte de su documentación de primera parte |
 
 ## 14. Criterios de aceptación
 

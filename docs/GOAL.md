@@ -168,7 +168,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 7. [x] El español latinoamericano suena natural y con buena prosodia
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
-10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del registro de [docs/PARITY.md](PARITY.md) están cerradas a nivel de código/scripts/tests (one-liner macOS `install-macos.sh`, `.command` sin `sudo`, limpieza de artefactos en `install-linux.sh`, `zap` del Cask completo, README con las tres plataformas — cerradas en v0.5.0 — y `setup --uninstall` multiplataforma — brecha de *desinstalación en un comando*, cerrada a nivel de código/scripts/tests en v0.6.0; la invocación citada era la de entonces y hoy el comando es `self uninstall`—). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
+10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del registro de [docs/PARITY.md](PARITY.md) están cerradas a nivel de código/scripts/tests (one-liner macOS sin `sudo` y limpieza de artefactos —cerradas en v0.5.0, cuando cada SO tenía su propio script y hoy comparten el bootstrap `install.sh` (POSIX) más `install.ps1` para Windows—, `zap` del Cask completo y README con las tres plataformas — y desinstalación en un comando, cerrada a nivel de código/scripts/tests en v0.6.0; la invocación citada era la de entonces y hoy el comando es `self uninstall`—). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
 
 #### Validación E2E
 
@@ -191,7 +191,7 @@ La implementación está completa únicamente cuando:
 - [x] La clonación de voz funciona con una muestra de ~10 segundos
 - [x] El audio generado preserva las características de la voz original
 - [x] El español latinoamericano suena natural
-- [x] Hay scripts de build e instalador por cada SO (Windows, Linux, macOS) en el pipeline de CI
+- [x] El pipeline de CI produce el artefacto de cada SO (Windows, Linux, macOS) y publica los dos bootstrap del one-liner (`install.sh` e `install.ps1`) como assets del release; en la raíz del repositorio no queda ningún script de ciclo de vida, y los que se ejecutan antes del binario viven en `packaging/bootstrap/`
 - [ ] Los instaladores funcionan sin ninguna dependencia externa (validación E2E por SO, ver "Validación E2E" arriba: smoke test automatizado en CI + validación manual Windows del propietario + feedback de usuarios reales en Linux y macOS)
 - [ ] La experiencia de instalación, uso, actualización y desinstalación es equivalente en los 3 SO: [docs/PARITY.md](PARITY.md) sin brechas **accionables** abiertas (la de *firma de código* permanece registrada como diferida al goal a largo plazo y no bloquea esta condición)
 - [x] **README.md** refleja la arquitectura vigente

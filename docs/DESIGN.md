@@ -33,7 +33,7 @@ AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │              ai-voice-interconnector (binario Rust)         │
-│   Instalador por SO (one-liners curl|sh / irm|iex + Cask)  │
+│   Bootstrap install.sh / install.ps1 -> self install        │
 │   Binario autocontenido (cargo build --release --features full) │
 └──────────────────────┬──────────────────────────────────────┘
                        │
@@ -52,7 +52,7 @@ AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 └─────────────────────────────────────────────────────────────┘
 ```
 
-El binario expone el CLI (`src/main.rs` + crates) y gestiona el daemon HTTP en `127.0.0.1:8765` por defecto (`DAEMON_ADDR`, con override `AVI_DAEMON_PORT`, `0` = efímero). Los modelos se provisionan vía `ai-voice-interconnector setup` en `~/.cache/huggingface/hub` y `data_dir()` por SO (con override `AVI_DATA_DIR` por instancia; sin él, resolución idéntica).
+El binario expone el CLI (`src/main.rs` + crates) y gestiona el daemon HTTP en `127.0.0.1:8765` por defecto (`DAEMON_ADDR`, con override `AVI_DAEMON_PORT`, `0` = efímero). Los modelos se provisionan vía `ai-voice-interconnector setup` en la **caché exclusiva de la aplicación** (`models_cache_dir()`: `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS, `$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux) y `data_dir()` por SO (con override `AVI_DATA_DIR` por instancia; sin él, resolución idéntica). Solo si el usuario define `HF_HUB_CACHE` o `HF_HOME` esa raíz pasa a ser compartida.
 
 ## Estructura del proyecto
 
@@ -64,6 +64,7 @@ AI-Voice-InterConnector/
 │   ├── avi-core/                       # Tipos, exit codes, json emitter
 │   ├── avi-audio/                      # AudioService (cpal, hound)
 │   ├── avi-tts/                        # Qwen3TtsEngine, GenerationOptions, resident
+│   ├── avi-shared/                     # Fuente única de rutas y canonicalización (reexportada por avi-store)
 │   ├── avi-store/                      # VoiceStore, SpeechStore, ModelStore (hf-hub + indicatif; MODEL_REVISIONS; cache_dir propio)
 │   │   └── assets/default/             # speech-reference.wav + timbre-reference.wav embebidos
 │   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)
@@ -71,28 +72,27 @@ AI-Voice-InterConnector/
 │   ├── avi-translation/                # Ct2TranslationEngine (CTranslate2/ct2rs)
 │   ├── avi-lifecycle/                  # Motor del ciclo de vida: install, uninstall, cleanup, doctor, recibo, bloqueo, PATH
 ├── packaging/
-│   └── bundle-manifest.json            # Lista canónica de archivos del bundle (la validan self install y cargo xtask package)
+│   ├── bundle-manifest.json            # Lista canónica de archivos del bundle (la validan self install y cargo xtask package)
+│   ├── pins.json                       # Versiones fijadas del toolchain y de las dependencias nativas (lo consume cargo xtask doctor)
+│   └── bootstrap/                      # Los dos one-liners del release, únicos ejecutados antes de que exista el binario
+│       ├── install.sh                  # Linux + macOS (POSIX sh)
+│       └── install.ps1                 # Windows (PowerShell 5.1+ y 7+)
 ├── vendor/
 │   └── qwen3-tts/                      # Binario y pesos Qwen3-TTS (no commiteados todos)
 └── crates/xtask/src/main.rs            # cask / source-offer / licenses / clean (tooling Rust)
-├── install-linux.sh                    # One-liner Linux (curl|sh)
-├── install-macos.sh                    # One-liner macOS (curl|sh)
-├── install-windows.ps1                 # One-liner Windows (irm|iex)
 └── tests/
     ├── cli_golden.rs                   # Harness dorado del CLI
-    └── installer/                      # bats/Pester de one-liners
-        ├── install-linux.bats
-        ├── install-macos.bats
-        └── install-windows.tests.ps1
+    ├── self_install_contract.rs        # Contrato de self install (recibo, bloqueo, integracion de PATH)
+    └── bootstrap/                      # bats + Pester de los dos bootstrap (mismo servidor local de releases falsos)
 ├── Cargo.toml                          # Workspace Rust (version = X.Y.Z, espejo de src/main.rs)
 ├── Cargo.lock
+├── rust-toolchain.toml                 # Versión de Rust fijada para desarrollo y CI (único archivo nuevo en la raíz)
 ├── .circleci/config.yml                # Pipeline Rust (cargo test/build + publish-release)
 └── docs/
     ├── DESIGN.md                       # Este documento
     ├── BUILD.md                        # Build y distribución Rust
     ├── DISTRIBUTION.md                 # Canales de distribución (tar.gz/zip)
-    ├── PARITY.md                       # Paridad multiplataforma
-    └── SELF-HOSTED-INSTALL.md          # One-liners
+    └── PARITY.md                       # Paridad multiplataforma
 ```
 
 > Las voces de **fábrica** `default` están embebidas en el binario (`crates/avi-store/assets/default/`) y se materializan en `data_dir()/voices/default/` en `VoiceStore::ensure_initialized()`. Las voces de **usuario** viven en `data_dir()/voices/<nombre>/` (user-data-dir por SO).
