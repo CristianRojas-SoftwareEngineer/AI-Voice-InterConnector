@@ -3180,7 +3180,7 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         #[cfg(not(windows))]
         {
             let _ = program_dir;
-            return false;
+            false
         }
         #[cfg(windows)]
         std::env::current_exe()
