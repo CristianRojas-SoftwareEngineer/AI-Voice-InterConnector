@@ -486,6 +486,50 @@ commands:
             done
             echo "[STEP] Diagnóstico de builds CMake (sonda) - FIN"
 
+  # Fuente única de pines (decisiones (a)+(f)): `packaging/pins.json` es la
+  # única tabla de versiones; los parámetros del pipeline la espejan. Este paso
+  # falla antes de compilar si algún pin diverge del JSON. No genera pasos de
+  # instalación: la CI conserva sus comandos (`apt`, `brew`, MSYS2).
+  validate_pins:
+    description: Valida los pines del pipeline contra packaging/pins.json (falla si divergen)
+    steps:
+      - run:
+          name: Validar pines del pipeline contra packaging/pins.json
+          shell: bash
+          command: |
+            echo "[STEP] Validar pines contra packaging/pins.json - INICIO"
+            set -euo pipefail
+            python3 - \<<'PYEOF'
+            import json
+            import sys
+            with open("packaging/pins.json", encoding="utf-8") as handle:
+                pins = json.load(handle)
+            esperados = {
+                "rust": "<< pipeline.parameters.rust_version >>",
+                "ort": "<< pipeline.parameters.ort_version >>",
+                "msys2_base": "<< pipeline.parameters.msys2_base_release >>",
+                "msys2_gcc": "<< pipeline.parameters.msys2_gcc_version >>",
+                "msys2_openblas": "<< pipeline.parameters.msys2_openblas_version >>",
+                "msys2_make": "<< pipeline.parameters.msys2_make_version >>",
+            }
+            errores = []
+            for clave, esperado in esperados.items():
+                obtenido = pins.get(clave)
+                if obtenido != esperado:
+                    errores.append(
+                        "pin divergente: {} (pins.json={!r}, pipeline={!r})".format(
+                            clave, obtenido, esperado
+                        )
+                    )
+                else:
+                    print("pin {} = {!r} OK".format(clave, obtenido))
+            if errores:
+                for error in errores:
+                    print("ERROR: " + error, file=sys.stderr)
+                sys.exit(1)
+            PYEOF
+            echo "[STEP] Validar pines contra packaging/pins.json - FIN"
+
 jobs:
   # ──────────────────────────────────────────────────────────────
   # Gate Rust — triple puerta simétrica (cargo test --all)
@@ -507,6 +551,7 @@ jobs:
     resource_class: medium
     steps:
       - checkout
+      - validate_pins
       - run:
           # libasound2-dev + pkg-config exponen ALSA a cpal (sí se compila en la
           # suite). libclang-dev (bindgen/ct2rs, solo con native-translation) ya
@@ -576,6 +621,7 @@ jobs:
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     steps:
       - checkout
+      - validate_pins
       - toolchain_restore_cache:
           os: windows
       - run:
@@ -666,6 +712,7 @@ jobs:
     resource_class: m4pro.medium
     steps:
       - checkout
+      - validate_pins
       - toolchain_restore_cache:
           os: macos
       - run:
@@ -746,6 +793,7 @@ jobs:
     resource_class: medium
     steps:
       - checkout
+      - validate_pins
       - run:
           # NOTA: con native-stt/native-translation off por defecto,
           # coverage compila la workspace SIN los stacks C++ (no aparece
@@ -823,6 +871,7 @@ jobs:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
+      - validate_pins
       - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
@@ -831,13 +880,13 @@ jobs:
           name: Verificar SOURCE-OFFER.md
           command: |
             echo "[STEP] Verificar SOURCE-OFFER.md - INICIO"
-            cargo run -p xtask --quiet -- source-offer --check
+            cargo --quiet xtask source-offer --check
             echo "[STEP] Verificar SOURCE-OFFER.md - FIN"
       - run:
           name: Verificar THIRD-PARTY-LICENSES.md
           command: |
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - INICIO"
-            cargo run -p xtask --quiet -- licenses --check
+            cargo --quiet xtask licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
 
   validate-changelog:
@@ -850,6 +899,7 @@ jobs:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
+      - validate_pins
       - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
@@ -858,7 +908,7 @@ jobs:
           name: Verificar sección de CHANGELOG
           command: |
             echo "[STEP] Verificar CHANGELOG - INICIO"
-            cargo run -p xtask --quiet -- changelog --check
+            cargo --quiet xtask changelog --check
             echo "[STEP] Verificar CHANGELOG - FIN"
 
   # ──────────────────────────────────────────────────────────────
@@ -973,6 +1023,7 @@ jobs:
         default: false
     steps:
       - checkout
+      - validate_pins
       - toolchain_restore_cache:
           os: windows
       - run:
@@ -1217,7 +1268,7 @@ jobs:
               & $TtsExe --self-test
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             } else {
-              cargo run -p xtask -- build-engine --self-test
+              cargo xtask build-engine --self-test
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
             Write-Host "[STEP] Compilar y verificar motor TTS - FIN"
@@ -1285,7 +1336,7 @@ jobs:
                   $ErrorActionPreference = "Stop"
                   $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
                   $TagVersion = $env:CIRCLE_TAG -replace '^v',''
-                  cargo run -p xtask -- package --expect-version "$TagVersion"
+                  cargo xtask package --expect-version "$TagVersion"
                   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                   Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
             - run:
@@ -1338,6 +1389,7 @@ jobs:
         default: false
     steps:
       - checkout
+      - validate_pins
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
           # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
@@ -1432,7 +1484,7 @@ jobs:
           # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
           # oráculo de kernels sin pesos) en un solo paso.
           name: Compilar y verificar motor TTS
-          command: cargo run -p xtask -- build-engine --self-test
+          command: cargo xtask build-engine --self-test
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1454,7 +1506,7 @@ jobs:
                 command: |
                   echo "[STEP] Empaquetar bundle con xtask package - INICIO"
                   set -euo pipefail
-                  cargo run -p xtask -- package --expect-version "${CIRCLE_TAG#v}"
+                  cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
             - run:
                 # Humo de §13: instala el artefacto empaquetado en un sandbox con
@@ -1498,6 +1550,7 @@ jobs:
         default: false
     steps:
       - checkout
+      - validate_pins
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
           # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
@@ -1594,7 +1647,7 @@ jobs:
           # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
           # oráculo de kernels sin pesos) en un solo paso.
           name: Compilar y verificar motor TTS
-          command: cargo run -p xtask -- build-engine --self-test
+          command: cargo xtask build-engine --self-test
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1616,7 +1669,7 @@ jobs:
                 command: |
                   echo "[STEP] Empaquetar bundle con xtask package - INICIO"
                   set -euo pipefail
-                  cargo run -p xtask -- package --expect-version "${CIRCLE_TAG#v}"
+                  cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
             - run:
                 # Humo de §13: instala el artefacto empaquetado en un sandbox con
@@ -1658,6 +1711,7 @@ jobs:
         default: false
     steps:
       - checkout
+      - validate_pins
       - toolchain_restore_cache:
           os: macos
       - run:
@@ -1791,7 +1845,7 @@ jobs:
           name: Compilar y verificar motor TTS
           command: |
             export PATH="$HOME/.cargo/bin:$PATH"
-            cargo run -p xtask -- build-engine --self-test
+            cargo xtask build-engine --self-test
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1813,7 +1867,7 @@ jobs:
                 command: |
                   echo "[STEP] Empaquetar bundle con xtask package - INICIO"
                   set -euo pipefail
-                  cargo run -p xtask -- package --expect-version "${CIRCLE_TAG#v}"
+                  cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
             - run:
                 # Humo de §13: instala el artefacto empaquetado en un sandbox con
@@ -1961,6 +2015,7 @@ jobs:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     steps:
       - checkout
+      - validate_pins
       # Caché: registry + sccache (sin target xtask) — coherente con los jobs pequeños/xtask.
       - cargo_restore_registry
       - sccache_restore_cache:
@@ -1994,7 +2049,7 @@ jobs:
           command: |
             echo "[STEP] Renderizar Cask - INICIO"
             set -euo pipefail
-            cargo run -p xtask --quiet -- cask \
+            cargo --quiet xtask cask \
               --tag "$CIRCLE_TAG" \
               --sums-file /tmp/release-metadata/SHA256SUMS.txt \
               --out /tmp/tap-clone/Casks/ai-voice-interconnector.rb

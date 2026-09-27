@@ -339,7 +339,7 @@ fn locate_sources(root: &Path) -> Result<Sources> {
     let engine = root.join("vendor").join("qwen3-tts").join(&engine_name);
     if !engine.is_file() {
         bail!(
-            "motor TTS no encontrado: {} (compila antes con `cargo run -p xtask -- build-engine`)",
+            "motor TTS no encontrado: {} (compila antes con `cargo xtask build-engine`)",
             engine.display()
         );
     }
@@ -528,9 +528,7 @@ pub fn run(out: Option<PathBuf>, no_compress: bool, expect_version: Option<Strin
     let root = std::env::current_dir()?;
     let manifest_path = root.join(MANIFEST_REL);
     if !manifest_path.is_file() {
-        bail!(
-            "ejecuta `cargo run -p xtask -- package` desde la raíz del repositorio (falta {MANIFEST_REL})"
-        );
+        bail!("ejecuta `cargo xtask package` desde la raíz del repositorio (falta {MANIFEST_REL})");
     }
     let version = super::get_version()?;
     check_expect_version(&version, expect_version.as_deref())?;

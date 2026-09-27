@@ -263,7 +263,7 @@ fn delegate_app_layer(repo_bin: &Path, homebrew: bool, dry_run: bool) -> Result<
 pub fn run(layer: Layer, dry_run: bool, yes: bool) -> Result<()> {
     let root = std::env::current_dir()?;
     if !root.join("Cargo.toml").is_file() || !root.join("crates").join("xtask").is_dir() {
-        bail!("ejecuta `cargo run -p xtask -- clean` desde la raíz del repositorio");
+        bail!("ejecuta `cargo xtask clean` desde la raíz del repositorio");
     }
 
     let repo_paths = if layer.wants_repo() {

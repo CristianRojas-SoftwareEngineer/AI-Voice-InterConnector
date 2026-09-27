@@ -78,8 +78,8 @@ en `docs/BUILD.md` §6.
 ## Inventario completo del lockfile
 
 <!-- inventario:inicio -->
-Generado desde `Cargo.lock` (510 paquetes resueltos, 460 crates únicos, directos y transitivos).
-Resumen por familia (paquetes resueltos): Apache-2.0 25, BSD 4, CDLA-Permissive-2.0 2, GPL-3.0-or-later 10, ISC 4, MIT 439, MPL-2.0 2, Unicode-3.0 18, Zlib 6.
+Generado desde `Cargo.lock` (511 paquetes resueltos, 461 crates únicos, directos y transitivos).
+Resumen por familia (paquetes resueltos): Apache-2.0 25, BSD 4, CDLA-Permissive-2.0 2, GPL-3.0-or-later 11, ISC 4, MIT 439, MPL-2.0 2, Unicode-3.0 18, Zlib 6.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
@@ -106,6 +106,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 25, BSD 4, CDLA-Permissive-
 | `avi-core` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-daemon` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-lifecycle` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
+| `avi-shared` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-store` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-stt` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
 | `avi-translation` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |

@@ -41,12 +41,9 @@ agrupa el binario con los documentos de licencia GPLv3.
 
 ## 1. Requisitos
 
-- **Rust 1.96.0** (ver `rust_version` en `.circleci/config.yml` y `rust-toolchain.toml` si existe)
-- **Cargo** (incluido con Rust)
-- **CMake ≥ 3.20** (para CTranslate2/ct2rs, solo con `native-translation`)
-- **pkg-config**
-- **libasound2-dev** (Linux, para `cpal` ALSA) y **libclang-dev** (solo con `--features native-translation`/`full`, para `bindgen` de `ct2rs`; no requerido para `featureless` ni `native-stt`)
-- **sccache 0.8.2** (opcional, acelera recompilaciones; el CI lo usa con `RUSTC_WRAPPER=sccache`)
+La tabla única de requisitos vive en el código y la comprueba
+`cargo xtask doctor` (solo lectura): ejecuta ese comando en tu host en lugar
+de contrastar esta guía.
 
 No se requiere Python, Node ni toolchain adicional para compilar o empaquetar.
 
@@ -622,13 +619,13 @@ UCRT64 o definir `MSYS2_ROOT`.
 
 ### Toolchain y flags por plataforma
 
-**Toolchain vigente (Windows):** MSYS2 UCRT64 **gcc 16.2.0** (Rev3),
-`mingw-w64-ucrt-x86_64-openblas 0.3.34-1`, `mingw32-make 4.4.1-5`
-(`vendor/qwen3-tts/Makefile`). En CI se **aprovisiona pineado**: el job
-`build-windows-x64` extrae el release base de MSYS2 (`msys2_base_release`,
-`2026-06-11`) y sincroniza las versiones pineadas (parámetros `msys2_*_version`
-del pipeline, espejo de esta tabla), cacheando `C:\msys64` por clave de versión
-(determinismo de release). El log del bootstrap captura `pacman -Q` + `gcc
+**Toolchain vigente (Windows):** MSYS2 UCRT64 con gcc, OpenBLAS y make
+pineados en `packaging/pins.json` (claves `msys2_*`, espejo de los parámetros
+del pipeline; comprueba tu host con `cargo xtask doctor`).
+En CI se **aprovisiona pineado**: el job `build-windows-x64` extrae el release
+base de MSYS2 y sincroniza las versiones pineadas, cacheando `C:\msys64` por
+clave de versión (determinismo de release). El log del bootstrap captura
+`pacman -Q` + `gcc
 --version` como evidencia de la **GCC Runtime Library Exception** (libgfortran/
 libquadmath/libgcc estáticos en el `.exe`). Si la versión instalada difiere del
 pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidencia

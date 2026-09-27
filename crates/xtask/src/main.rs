@@ -33,15 +33,7 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
   binary "ai-voice-interconnector"
 
   zap trash: [
-    "~/Library/Application Support/ai-voice-interconnector",
-    "~/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice",
-    "~/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base",
-    "~/.cache/huggingface/hub/models--istupakov--parakeet-tdt-0.6b-v3-onnx",
-    "~/.cache/huggingface/hub/models--Helsinki-NLP--opus-mt-es-en",
-    "~/.cache/huggingface/hub/models--Helsinki-NLP--opus-mt-en-es",
-    "~/.cache/huggingface/hub/ct2",
-    "~/.cache/huggingface/hub/.locks",
-    "~/.cache/huggingface/xet",
+{zap_entries}
   ]
 
   caveats <<~EOS
@@ -718,7 +710,7 @@ fn diff_source_offer(current: &str, rendered: &str) -> Result<(), String> {
         return Ok(());
     }
     let mut msg = String::from(
-        "SOURCE-OFFER.md desincronizado: regenera con `cargo run -p xtask -- source-offer > SOURCE-OFFER.md`\n",
+        "SOURCE-OFFER.md desincronizado: regenera con `cargo xtask source-offer > SOURCE-OFFER.md`\n",
     );
     for line in diff_lines(&norm_current, &norm_rendered) {
         msg.push_str(&line);
@@ -1068,12 +1060,38 @@ fn parse_macos_sha256(sums_text: &str, version: &str) -> Result<String> {
     }
 }
 
+/// Entradas `zap trash:` del Cask derivadas de las canónicas de `avi-shared`
+/// (decisión (b), vía (f)): el directorio de soporte de la aplicación, un
+/// snapshot por modelo pineado en `MODEL_REVISIONS` y el derivado CT2. Sin
+/// `xet` ni `.locks` globales: en caché compartida rige R3 y esos directorios
+/// no son atribuibles a la aplicación.
+fn cask_zap_entries() -> Vec<String> {
+    let mut entries = vec![format!(
+        "~/Library/Application Support/{}",
+        avi_shared::paths::APP_NAME
+    )];
+    for (_, repo, _) in avi_shared::paths::MODEL_REVISIONS {
+        entries.push(format!(
+            "~/.cache/huggingface/hub/models--{}",
+            repo.replace('/', "--")
+        ));
+    }
+    entries.push("~/.cache/huggingface/hub/ct2".to_string());
+    entries
+}
+
 fn render_cask(version: &str, sha256: &str) -> String {
+    let zap = cask_zap_entries()
+        .iter()
+        .map(|entry| format!("    \"{entry}\","))
+        .collect::<Vec<_>>()
+        .join("\n");
     CASK_TEMPLATE
         .replace("{cask_name}", CASK_NAME)
         .replace("{cask_version}", version)
         .replace("{cask_sha256}", sha256)
         .replace("{repo}", GITHUB_REPO)
+        .replace("{zap_entries}", &zap)
 }
 
 fn render_cask_from_tag(circle_tag: &str, sums_text: &str) -> Result<String> {
@@ -1291,7 +1309,7 @@ fn diff_licenses_inventory(current: &str, region: &str) -> Result<(), String> {
         return Ok(());
     }
     let mut msg = format!(
-        "{} desincronizado: regenera con `cargo run -p xtask -- licenses` y revisa el diff\n",
+        "{} desincronizado: regenera con `cargo xtask licenses` y revisa el diff\n",
         LICENSES_DOC
     );
     for line in diff_lines(&norm_current, &expected) {
@@ -1422,9 +1440,17 @@ mod tests {
         assert!(!c.contains("\n  app "));
         assert!(c.contains("releases/download/v#{version}/"));
         assert!(c.contains("zap trash:"));
-        assert!(c.contains("models--Qwen--"));
-        assert!(c.contains("models--istupakov--"));
-        assert!(c.contains("models--Helsinki-NLP--"));
+        // El `zap` deriva de las canónicas: un snapshot por modelo pineado.
+        for (_, repo, _) in avi_shared::paths::MODEL_REVISIONS {
+            let snapshot = format!("models--{}", repo.replace('/', "--"));
+            assert!(
+                c.contains(&snapshot),
+                "el zap debe derivar el snapshot canónico {snapshot}"
+            );
+        }
+        // R3: sin globales compartidos.
+        assert!(!c.contains("~/.cache/huggingface/xet"));
+        assert!(!c.contains("~/.cache/huggingface/hub/.locks"));
         assert!(c.contains("GPL-3.0-or-later"));
         assert!(c.contains(r#"depends_on macos: ">= :ventura""#));
         assert!(c.contains("síntesis"));
@@ -1433,23 +1459,49 @@ mod tests {
     #[test]
     fn test_cask_zap_lists_current_model_caches() {
         let c = render_cask("9.9.9", &"b".repeat(64));
-        assert!(c.contains("models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice"));
-        assert!(c.contains("models--Qwen--Qwen3-TTS-12Hz-0.6B-Base"));
-        assert!(c.contains("models--istupakov--parakeet-tdt-0.6b-v3-onnx"));
-        assert!(c.contains("models--Helsinki-NLP--opus-mt-es-en"));
-        assert!(c.contains("models--Helsinki-NLP--opus-mt-en-es"));
-        assert!(c.contains("~/.cache/huggingface/xet"));
+        // Soporte de la aplicación desde la canónica.
+        assert!(c.contains(&format!(
+            "~/Library/Application Support/{}",
+            avi_shared::paths::APP_NAME
+        )));
+        // Un snapshot por modelo pineado, sin réplica literal.
+        for (_, repo, _) in avi_shared::paths::MODEL_REVISIONS {
+            let snapshot = format!("models--{}", repo.replace('/', "--"));
+            assert!(
+                c.contains(&snapshot),
+                "el zap debe derivar el snapshot canónico {snapshot}"
+            );
+        }
         assert!(c.contains("~/.cache/huggingface/hub/ct2"));
-        assert!(c.contains("~/.cache/huggingface/hub/.locks"));
+        // R3: sin globales compartidos.
+        for forbidden in [
+            "~/.cache/huggingface/xet",
+            "~/.cache/huggingface/hub/.locks",
+        ] {
+            assert!(
+                !c.contains(forbidden),
+                "el zap no debe incluir el global {forbidden} (R3)"
+            );
+        }
+        // Conteo exacto: soporte + un snapshot por modelo + CT2.
+        let zap_block = c
+            .split("zap trash: [")
+            .nth(1)
+            .unwrap_or("")
+            .split(']')
+            .next()
+            .unwrap_or("");
+        let trash_lines = zap_block.lines().filter(|l| l.contains('"')).count();
+        assert_eq!(
+            trash_lines,
+            2 + avi_shared::paths::MODEL_REVISIONS.len(),
+            "el zap debe listar exactamente soporte + snapshots + CT2"
+        );
     }
 
     /// Texto de `.circleci/config.yml`, localizado desde la raíz o desde el crate.
     fn read_ci_config() -> String {
-        let candidates = [
-            ".circleci/config.yml",
-            "../../.circleci/config.yml",
-            "C:/Users/Cristian/Desktop/Proyectos/Voices/AI-Voice-InterConnector/.circleci/config.yml",
-        ];
+        let candidates = [".circleci/config.yml", "../../.circleci/config.yml"];
         for p in candidates {
             if let Ok(t) = std::fs::read_to_string(p) {
                 return t;
@@ -1458,6 +1510,51 @@ mod tests {
         // Fallback via CARGO_MANIFEST_DIR
         let m = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.circleci/config.yml");
         std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
+    }
+
+    /// Valor `default:` de un parámetro del pipeline en `.circleci/config.yml`.
+    fn ci_param_default(cfg: &str, param: &str) -> Option<String> {
+        let lines: Vec<&str> = cfg.lines().collect();
+        let header = format!("{param}:");
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim() == header {
+                for candidate in lines.iter().skip(i + 1).take(6) {
+                    let trimmed = candidate.trim();
+                    if let Some(value) = trimmed
+                        .strip_prefix("default: \"")
+                        .and_then(|v| v.strip_suffix('"'))
+                    {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// `packaging/pins.json` ata los parámetros de la CI (decisiones (a)+(f)):
+    /// si el pipeline diverge del JSON, este test falla en local antes de que
+    /// el paso `validate_pins` falle en CI.
+    #[test]
+    fn test_ci_pins_match_pins_json() {
+        let pins = avi_shared::pins::parse_text(include_str!("../../../packaging/pins.json"))
+            .expect("pins.json válido");
+        let cfg = read_ci_config();
+        for (param, value) in [
+            ("rust_version", pins.rust.as_str()),
+            ("ort_version", pins.ort.as_str()),
+            ("msys2_base_release", pins.msys2_base.as_str()),
+            ("msys2_gcc_version", pins.msys2_gcc.as_str()),
+            ("msys2_openblas_version", pins.msys2_openblas.as_str()),
+            ("msys2_make_version", pins.msys2_make.as_str()),
+        ] {
+            let default = ci_param_default(&cfg, param)
+                .unwrap_or_else(|| panic!("la CI debe declarar el parámetro {param}"));
+            assert_eq!(
+                default, value,
+                "el parámetro {param} de la CI debe espejar packaging/pins.json"
+            );
+        }
     }
 
     #[test]
@@ -2594,6 +2691,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             vec!["xtask", "language"],
             vec!["xtask", "build-engine"],
             vec!["xtask", "package"],
+            vec!["xtask", "clean"],
+            vec!["xtask", "doctor"],
+            vec!["xtask", "bootstrap"],
+            vec!["xtask", "install"],
         ] {
             let help = help_text(&node);
             assert!(help.contains("Uso:"), "{:?} debe contener 'Uso:'", node);
