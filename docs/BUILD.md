@@ -683,10 +683,14 @@ deliberada y auditable.
 
 La aplicación decide su caché (no depende del
 fallback de `hf-hub`, que en Windows sin `HOME` caería en `<unidad>:\tmp`):
-`hf_cache_dir()` honra `HF_HUB_CACHE` > `HF_HOME/hub` y, si no existen, fija
-`{home}/.cache/huggingface/hub` — la misma convención que `huggingface_hub`
-de Python en los tres SO. El cliente de descarga se construye con
-`.cache_dir()` explícito, garantizando convergencia lectura=escritura.
+`models_cache_dir()` (`crates/avi-shared/src/paths.rs:212`) fija por defecto una raíz
+**exclusiva de la aplicación** —la columna de modelos de la tabla siguiente—, y solo la
+sustituye por la del usuario cuando este define `HF_HUB_CACHE` o, en su defecto,
+`HF_HOME/hub`, que es lo que resuelve `shared_hf_root()`
+(`crates/avi-shared/src/paths.rs:184`). `AVI_CACHE_DIR` tiene precedencia sobre ambas, y es
+lo que permite aislar una prueba aunque el entorno tenga un `HF_HOME` global. El cliente de
+descarga se construye con `.cache_dir()` explícito, garantizando convergencia
+lectura=escritura.
 La provisión se decide solo por presencia del snapshot HF; no hay índice
 `manifest.json` intermedio (los `manifest.json` de versiones previas que
 queden en disco son inertes y los barre `cleanup`):

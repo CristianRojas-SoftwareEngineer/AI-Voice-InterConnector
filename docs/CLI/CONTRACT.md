@@ -156,7 +156,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 
 ### `uninstall` ya no es un comando
 
-**El comando de nivel superior `uninstall` y su `--force` no existen.** No hay alias, no hay flag deprecado y no hay periodo de transición: el proyecto es pre-1.0 y no está distribuido, así que no hay instalaciones a las que acompañar (directiva de no retrocompatibilidad de la cabecera de [`docs/specs/sdlc-lifecycle.md`](../../specs/sdlc-lifecycle.md)). Lo que hace ese papel es el grupo `self`, y `--force` sigue existiendo **con otro significado** en `self install` y `self update`: resolver un `path_conflict` en la ruta del enlace ([§11](#11-self-setup-cleanup-y-voice)).
+**El comando de nivel superior `uninstall` y su `--force` no existen.** No hay alias, no hay flag deprecado y no hay periodo de transición: el proyecto es pre-1.0 y no está distribuido, así que no hay instalaciones a las que acompañar (directiva de no retrocompatibilidad de la cabecera de [`docs/specs/sdlc-lifecycle.md`](../specs/sdlc-lifecycle.md)). Lo que hace ese papel es el grupo `self`, y `--force` sigue existiendo **con otro significado** en `self install` y `self update`: resolver un `path_conflict` en la ruta del enlace ([§11](#11-self-setup-cleanup-y-voice)).
 
 ### La superficie del ciclo de vida, flag a flag
 

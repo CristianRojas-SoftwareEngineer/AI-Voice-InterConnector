@@ -27,12 +27,14 @@ quedó 100 % Rust en su distribución.
 | **Dependencias del sistema** | Ninguna (autocontenido) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
 | **Actualización** | Con el binario instalado: `self update --check` (informa sin modificar) o `self update`; el bootstrap no tiene `--check`; o `brew upgrade --cask` |
-| **Desinstalación** | Eliminar el directorio de instalación + la entrada de PATH; `ai-voice-interconnector cleanup --model` para los modelos (o `uninstall` para todo); en Homebrew `brew uninstall --cask --zap` |
+| **Desinstalación** | `ai-voice-interconnector self uninstall` (todo, con `--yes` para no preguntar) o `ai-voice-interconnector cleanup --model` solo para los modelos; en Homebrew `brew uninstall --cask --zap` |
 | **Publicación en CI** | `publish-release` → GitHub Release; `publish-metadata` → Cask del tap |
 | **Reversibilidad de la publicación** | El Release es público al publicarse: revertir implica borrar un Release ya público |
 
-`setup` provisiona los modelos en la caché de
-HuggingFace del usuario (`~/.cache/huggingface/hub`): ningún modelo viaja
+`setup` provisiona los modelos en la raíz de modelos **exclusiva de la
+aplicación** (`models_cache_dir()`: `%LOCALAPPDATA%\ai-voice-interconnector\cache\models`
+en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS y
+`$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux): ningún modelo viaja
 dentro del archivo, se descargan en el primer `setup`.
 
 ## Formato de los artefactos

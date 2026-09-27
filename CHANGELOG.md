@@ -227,9 +227,9 @@ daemon sigue en `"3"`, porque es un contrato independiente.
   expresiones de versión propias.
 - `publish-release` estampa la versión del tag en ambos bootstrap y publica 7 assets (4 archivos,
   `install.sh`, `install.ps1` y `SHA256SUMS.txt` sobre los 6 ficheros).
-- Los jobs `test-installer-*` pasan a ser `test-bootstrap-*`; se retiran `install-linux.sh`,
-  `install-macos.sh`, `install-windows.ps1`, los envoltorios `upgrade-ai-voice-interconnector.*`
-  y `tests/installer/`.
+- Los jobs `test-installer-*` pasan a ser `test-bootstrap-*`; se retiran los cinco scripts de
+  ciclo de vida de la raíz y su suite de pruebas, sustituidos por los dos bootstrap de
+  `tests/bootstrap/`.
 - `clean` ya no borra las dos capas en una sola operación: la de aplicación se pide de forma
   explícita (`--app` o `--all`) y la de repositorio es la de por defecto (`--repo`).
 - La puesta en marcha del entorno de desarrollo pasa de un flujo manual que divergía tras
@@ -258,6 +258,37 @@ daemon sigue en `"3"`, porque es un contrato independiente.
 - tests: las pruebas del ciclo de vida ya no podían purgar la caché real del desarrollador (el
   sandbox no terminaba en `hub`), ni colisionar con los temporales del producto: los sandboxes
   usan prefijos que no empiezan por `avi-`/`avi_`, que es el criterio de los barridos.
+
+### Documentación
+
+- **Consolidación documental del ciclo**: la especificación `docs/specs/sdlc-lifecycle.md`
+  pasa a su forma normativa final. Se retiran el diagnóstico y la planificación de fases que
+  describían en presente un estado ya implementado, queda en estado «implementada», y las
+  quince secciones se renumeran de forma contigua. La tabla de consolidación, que hasta ahora
+  era un subapartado del bloque retirado, asciende a **§13 «Papel de la documentación»** como
+  sección normativa de pleno derecho, y declara el papel de los documentos que ninguna otra
+  sección nombraba.
+- `docs/SELF-HOSTED-INSTALL.md` se retira. Su contenido vigente —publicación autónoma, tap y
+  contexto de Homebrew, comportamiento ante antivirus y enlace al runbook de `SECURITY.md`—
+  queda absorbido en `docs/DISTRIBUTION.md`, y sus cinco enlaces entrantes se re-apuntan. Las
+  afirmaciones que el documento hacía y que la especificación ya había retirado (que el
+  artefacto no es un bundle empaquetado, y las rutas de la caché compartida) no se trasladan.
+- Nueve documentos de la documentación de primera parte alinean sus citas a la especificación
+  con la renumeración, de modo que ninguna cita en prosa queda apuntando a una sección que ya
+  no existe, y la entrada de este `CHANGELOG.md` en `[No publicado]` deja de enumerar los
+  nombres concretos de los ficheros retirados sin dejar de narrar el hecho.
+- La skill de E2E (`test-windows-e2e-as-final-user`) se reescribe sobre el flujo vigente: el
+  one-liner del release con el bootstrap de cada plataforma y `self install` como paso
+  delegado, `self update`, `cleanup` por categoría y `self uninstall` con su confirmación. Deja
+  de instalar con scripts borrados, de pedir un flag que la suite rechaza y de describir rutas
+  de datos que D3 y D4 retiraron.
+- **Cierre del barrido del mapa legacy.** La ausencia de lo retirado deja de ser una
+  afirmación y pasa a ser un resultado comprobable: cero coincidencias de los términos
+  retirados en el repositorio versionado, con la única excepción de las secciones ya
+  publicadas de este `CHANGELOG.md`, que la norma de no retrocompatibilidad congela. Los 120
+  enlaces relativos de los 20 documentos de primera parte que los contienen resuelven, anclas
+  incluidas, y el criterio 28 queda demostrado por sus dos partes: cero scripts de ciclo de
+  vida en la raíz, y una sola definición de rutas.
 
 ## [0.23.1] — 2026-09-25
 

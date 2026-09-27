@@ -10,14 +10,15 @@ el metadato `license` de cada crate con `cargo xtask licenses`. La columna «Fam
 normalización para agrupar; la columna «Licencia (metadato)» es el dato declarado por
 cada crate y prevalece en caso de duda.
 
-> Nota: los pesos de modelos no se empaquetan en el binario; van a `~/.cache/huggingface/hub` vía `setup`.
+> Nota: los pesos de modelos no se empaquetan en el binario; van, vía `setup`, a la raíz de modelos **exclusiva de la aplicación** —`models_cache_dir()` en `crates/avi-shared/src/paths.rs`—: `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS y `$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux. La caché compartida de HuggingFace solo se usa si quien instala define `HF_HUB_CACHE` o `HF_HOME`.
 
 ---
 
 ## Modelos de voz (no empaquetados)
 
-Los **pesos del modelo** no se empaquetan en el binario: se descargan a la caché de
-HuggingFace del usuario mediante `ai-voice-interconnector setup`. Se listan por completitud.
+Los **pesos del modelo** no se empaquetan en el binario: se descargan a la raíz de modelos
+exclusiva de la aplicación mediante `ai-voice-interconnector setup`. Se listan por
+completitud.
 
 | Modelo | Licencia (verificada en HuggingFace) | Fuente |
 |--------|--------------------------------------|--------|
