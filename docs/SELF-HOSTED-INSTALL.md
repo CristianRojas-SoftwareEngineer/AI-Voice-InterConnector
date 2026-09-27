@@ -275,7 +275,7 @@ cuarentena elimina la fricción de Gatekeeper para quien use el one-liner.
 
 `cleanup` granular (`--voices`/`--synthetic-speech`/`--model`/`--all` con `--dry-run`/`--yes`; sin flags → exit 2) hace borrado selectivo sin binario/PATH: para el daemon, borra según flag (`voices`/`speech`/`models`) + `daemon.pid`, purga `hub`+`xet` y `temp` selectivamente, dejando el binario reintentable (`setup` descarga limpio). `--all` es la unión de las tres categorías sin binario ni PATH. El contrato de instalación es `binario siempre + aviso`: `install-*.sh/ps1` instala el binario aunque `setup` falle por red, deja `doctor --json` en `failed` y es reintentable con `ai-voice-interconnector setup` + verificación `doctor --json` (no aborta instalación).
 
-Estos comandos limpian la instalación y el perfil de usuario; el entorno de desarrollo (`target/`, artefactos del motor en `vendor/qwen3-tts`, pesos obsoletos) se limpia con `cargo run -p xtask -- clean` desde la raíz del repo ([BUILD.md](BUILD.md#8-limpieza-del-entorno-de-desarrollo)). El procedimiento manual por SO (borrado/registry) queda como fallback y para auditoría. El estado de paridad (brecha cerrada en v0.10.8) vive en [docs/PARITY.md](PARITY.md#fase-5--desinstalación).
+Estos comandos limpian la instalación y el perfil de usuario; el entorno de desarrollo (`target/`, artefactos del motor en `vendor/qwen3-tts`, pesos obsoletos) se limpia con `cargo xtask clean --repo` desde la raíz del repo ([BUILD.md](BUILD.md#8-limpieza-del-entorno-de-desarrollo)). El procedimiento manual por SO (borrado/registry) queda como fallback y para auditoría. El estado de paridad (brecha cerrada en v0.10.8) vive en [docs/PARITY.md](PARITY.md#fase-5--desinstalación).
 
 ## Comportamiento frente a antivirus
 

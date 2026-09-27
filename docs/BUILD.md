@@ -254,7 +254,7 @@ garantía "commit taggeado probado".
 │build-windows│ │build-linux- │ │build-linux- │ │ build-darwin-    │
 │ -x64        │ │    x64      │ │   arm64     │ │     arm64        │
 └─────────────┘ └─────────────┘ └─────────────┘ └──────────────────┘
-     (cada build: `cargo run -p xtask -- package --expect-version` + humo de `self install` en sandbox + `version`/`voice list`)
+     (cada build: `cargo xtask package --expect-version` + humo de `self install` en sandbox + `version`/`voice list`)
                               │
                               ▼   publish-release → publish-metadata
 ```
@@ -289,15 +289,15 @@ Los tests de topología de `xtask` fallan si el workflow de sonda llega a conten
 | `test-windows` | `build-all` (gate) | Windows x64 | `win/server-2022` | `cargo test --all` en Windows nativo |
 | `test-macos` | `build-all` (gate) | macOS arm64 | macos `m4pro.medium` | `cargo test --all` en macOS nativo |
 | `coverage` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo llvm-cov --workspace --lcov` genera `lcov.info` (artefacto `coverage-lcov`) y `cargo llvm-cov report` imprime el resumen sin re-ejecutar la suite; sin umbral de % |
-| `validate-licenses` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- source-offer --check` + `licenses --check` |
-| `validate-changelog` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo run -p xtask -- changelog --check` |
+| `validate-licenses` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo xtask source-offer --check` + `licenses --check` |
+| `validate-changelog` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo xtask changelog --check` |
 | `test-bootstrap-*` | `build-all` | por SO | bats/Pester | Suites de los bootstrap (`tests/bootstrap/`, contra servidor local) |
 | `build-windows-x64` | `build-all` | Windows x64 | `win/server-2022` | `cargo build --release --features full` + staging `.zip` |
 | `build-linux-x64` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
 | `build-linux-arm64` | `build-all` | Linux ARM64 | docker `cimg/rust:1.96.0` (`arm.medium`) | idem, nativo aarch64 |
 | `build-darwin-arm64` | `build-all` | macOS arm64 | macos `m4pro.medium` | idem, Xcode 26.4 |
 | `publish-release` | `build-all` (CD) | Linux x64 | docker `cimg/base:2026.09` (pineada por digest) | Solo en tags `v*`: estampa los bootstrap, genera `SHA256SUMS.txt` sobre los 6 ficheros y publica el GitHub Release con 7 assets |
-| `publish-metadata` | `build-all` (CD) | Linux x64 | docker `cimg/rust` | Solo en tags `v*`: renderiza Cask con `cargo run -p xtask -- cask` y empuja al tap |
+| `publish-metadata` | `build-all` (CD) | Linux x64 | docker `cimg/rust` | Solo en tags `v*`: renderiza Cask con `cargo xtask cask` y empuja al tap |
 
 ### Simetría: 3 puertas de test vs. 4 targets de build
 
@@ -552,7 +552,7 @@ herramientas de terceros**: cada target se comprime con una utilidad del sistema
 | macOS arm64 | `tar.gz` | `tar -czf` (base del SO) |
 | Windows x64 | `.zip` | `Compress-Archive` (PowerShell) |
 
-Cada `build-*` en `.circleci/config.yml` empaqueta con `cargo run -p xtask --
+Cada `build-*` en `.circleci/config.yml` empaqueta con `cargo xtask
 package --expect-version "${CIRCLE_TAG#v}"` (puerta tag-versión fail-fast:
 `const VERSION` de `src/main.rs` vs `CIRCLE_TAG`) más el humo de §13 (`self
 install --no-setup --no-modify-path` en sandbox con raíces reubicadas, y
@@ -604,7 +604,7 @@ El motor se **compila desde fuente en CI en las 4 plataformas**; ningún
 binario del motor se versiona. Los 4 jobs de build invocan una única interfaz:
 
 ```bash
-cargo run -p xtask -- build-engine --self-test
+cargo xtask build-engine --self-test
 ```
 
 `build-engine` (`crates/xtask/src/main.rs`) oculta el mecanismo por plataforma:
@@ -716,23 +716,29 @@ Cada capa tiene su comando:
 
 | Capa | Qué contiene | Comando |
 |------|--------------|---------|
-| Proyecto (repo) | `target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario/objetos/`output.wav` del motor y pesos locales obsoletos en `vendor/qwen3-tts` | `cargo run -p xtask -- clean` |
-| App (perfil de usuario) | Instalación, `data_dir()`, raíz de modelos, derivados CT2 y temporales `avi_*`/`avi-*`/`*.qvoice` | `cargo run -p xtask -- clean` (delega en `ai-voice-interconnector self uninstall --yes`; también se puede invocar directamente sin repo) |
+| Proyecto (repo) | `target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario/objetos/`output.wav` del motor y pesos locales obsoletos en `vendor/qwen3-tts` | `cargo xtask clean --repo` (capa por defecto) |
+| App (perfil de usuario) | Instalación, `data_dir()`, raíz de modelos, derivados CT2 y temporales `avi_*`/`avi-*`/`*.qvoice` | `cargo xtask clean --app` (delega en `ai-voice-interconnector self uninstall --yes`, o `cleanup --all --yes` en canal `homebrew`) |
+| Ambas | Aplicación y después repositorio | `cargo xtask clean --all` |
 | Global compartida | `~/.cargo/registry`, `~/.cargo/git`, caché de `sccache`, paquetes `pip` del conversor CTranslate2 | Manual: la comparten otros proyectos |
 
 ```bash
 # Ver qué se borraría y cuánto ocupa, sin borrar nada
-cargo run -p xtask -- clean --dry-run
+cargo xtask clean --repo --dry-run
 
-# Borrar (pide confirmación [s/N]; --yes la omite, obligatorio sin TTY)
-cargo run -p xtask -- clean --yes
+# Borrar el repositorio (pide confirmación [s/N]; --yes la omite, obligatorio sin TTY)
+cargo xtask clean --repo --yes
+
+# Aplicación y después repositorio
+cargo xtask clean --all --yes
 ```
 
-`clean` se ejecuta desde la raíz del repo. Antes de borrar, desinstala el
-binario instalado (`self uninstall --yes`) y detiene el daemon lanzado desde
-`target/`. Nunca borra código fuente versionado. En Windows, el propio
-`xtask.exe` en ejecución se borra con un proceso auxiliar al terminar.
+`clean` se ejecuta desde la raíz del repo. Antes de borrar, la capa `--repo`
+detiene el daemon lanzado desde `target/`; la capa `--app` delega en el binario
+instalado. `~/.cargo`, la caché de `sccache`, los paquetes del sistema y MSYS2
+**nunca** se tocan: se informa de ellos, no se borran. Nunca borra código fuente
+versionado. En Windows, el propio `xtask.exe` en ejecución se borra con un
+proceso auxiliar al terminar.
 
 Tras `clean`, el entorno arranca de cero: `cargo build` recompila todo (con
-`sccache` el costo baja), `cargo run -p xtask -- build-engine` reconstruye el
+`sccache` el costo baja), `cargo xtask build-engine` reconstruye el
 motor y `setup` vuelve a descargar los modelos pineados.

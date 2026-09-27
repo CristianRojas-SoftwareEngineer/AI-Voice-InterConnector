@@ -49,8 +49,8 @@ la integridad se verifica cotejando los checksums SHA-256.
   en cualquier otro caso.
 - **`THIRD-PARTY-LICENSES.md` en sincronía con `Cargo.lock`.** Cada vez que
   cambia `Cargo.lock`, hay que regenerar el inventario con
-  `cargo run -p xtask -- licenses` y revisar el diff. La comprobación
-  `cargo run -p xtask -- licenses --check` compara el inventario completo:
+  `cargo xtask licenses` y revisar el diff. La comprobación
+  `cargo xtask licenses --check` compara el inventario completo:
   nombre, versión, licencia y familia de cada fila, y los totales.
 - **Revisiones de los modelos auditadas.** Los modelos Qwen3-TTS y opus-mt se
   descargan con `ai-voice-interconnector setup` y no se empaquetan. Para
@@ -69,7 +69,7 @@ El repo es **trunk-based sobre `main`**. El trabajo diario y el corte ocurren en
 disparador de CI.
 
 ```bash
-cargo run -p xtask -- release X.Y.Z   # o /release X.Y.Z (skill orquestadora)
+cargo xtask release X.Y.Z   # o /release X.Y.Z (skill orquestadora)
 cargo test --all                      # recomendado: la triple puerta de CI lo exige
 git add -A
 git commit -m "release: vX.Y.Z"      # conventional-commits
@@ -77,7 +77,7 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin main --tags           # sin --tags el tag no dispara build-all
 ```
 
-`cargo run -p xtask -- release X.Y.Z` hace el corte completo:
+`cargo xtask release X.Y.Z` hace el corte completo:
 
 1. **Pre-validación.** Aborta sin tocar archivos si alguna de estas condiciones
    falla:
@@ -125,7 +125,7 @@ Con el tag pusheado, ejecuta sin intervención:
 
 2. **Builds.** Son `build-windows-x64`, `build-linux-x64`, `build-linux-arm64`
     y `build-darwin-arm64`. Cada uno:
-    - empaqueta su artefacto con `cargo run -p xtask -- package
+    - empaqueta su artefacto con `cargo xtask package
       --expect-version "${CIRCLE_TAG#v}"` (fail-fast si el tag difiere de `VERSION`);
     - ejecuta el humo (`self install --no-setup --no-modify-path` en sandbox
       con raíces reubicadas, y después `--version`/`voice list`);
@@ -157,7 +157,7 @@ Con el tag pusheado, ejecuta sin intervención:
 4. **`publish-metadata`** (después de `publish-release`):
    - Descarga `SHA256SUMS.txt` del Release publicado.
    - Genera `Casks/ai-voice-interconnector.rb` con la versión del tag y el
-     sha256 del `tar.gz` de macOS (`cargo run -p xtask -- cask`).
+     sha256 del `tar.gz` de macOS (`cargo xtask cask`).
    - Lo empuja al tap `homebrew-ai-voice-interconnector`.
 
    Si el Cask no cambia, no empuja nada, así que se puede reintentar sin riesgo.

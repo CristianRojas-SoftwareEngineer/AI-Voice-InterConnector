@@ -29,15 +29,26 @@ La tabla única de requisitos vive en el código: comprueba tu host con
 git clone https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector.git
 cd AI-Voice-InterConnector
 
-# Verificar toolchain Rust
+# Verificar toolchain Rust (fijado por rust-toolchain.toml)
 rustc --version  # 1.96.0
 cargo --version
+
+# Poner el entorno al día: componentes de Rust, ONNX Runtime y motor TTS
+cargo xtask bootstrap
+
+# Comprobar los requisitos del host (solo lectura)
+cargo xtask doctor
 
 # Ejecutar el CLI desde el código fuente (sin instalar)
 cargo run -- version
 cargo run -- doctor
 cargo run -- voice list
 ```
+
+`bootstrap` es convergente: repetirlo cuando nada cambia no hace trabajo. Con
+`--models` provisiona además los pesos, y `--system` es la única vía que ejecuta
+los gestores del sistema (con `sudo` o UAC), así que solo se usa cuando se pide
+de forma explícita.
 
 La voz `default` está embebida en el binario (`crates/avi-store/assets/default/`); no requiere `src/` ni Python.
 
@@ -47,13 +58,13 @@ La suite es **100% Rust** (`cargo test --all`, incluye los tests del tooling en
 `crates/xtask`). Antes de abrir un PR, verifica:
 
 ```bash
-cargo test --all --verbose          # tests (avi-core/audio/tts/stt/translation/store/daemon/xtask/cli_golden)
+cargo test --all --verbose          # tests (avi-core/audio/tts/stt/translation/store/daemon/shared/xtask/cli_golden)
 cargo fmt --all --check
 cargo clippy --all-targets
 
 # Validación GPLv3 (gate de CI)
-cargo run -p xtask -- source-offer --check
-cargo run -p xtask -- licenses --check
+cargo xtask source-offer --check
+cargo xtask licenses --check
 ```
 
 - Añade tests para todo comportamiento nuevo o corregido (`#[test]` en el crate correspondiente).
@@ -90,7 +101,7 @@ cargo update          # regenera Cargo.lock
 cargo test --all      # verifica
 ```
 
-Revisa el diff de `Cargo.lock` antes de commitear. Si cambia, regenera el inventario de `THIRD-PARTY-LICENSES.md` con `cargo run -p xtask -- licenses` y revisa su diff (ver su §Regeneración).
+Revisa el diff de `Cargo.lock` antes de commitear. Si cambia, regenera el inventario de `THIRD-PARTY-LICENSES.md` con `cargo xtask licenses` y revisa su diff (ver su §Regeneración).
 
 `THIRD-PARTY-LICENSES.md` y `SOURCE-OFFER.md` viajan dentro de los `tar.gz`/`.zip`; el gate `validate-licenses` falla si divergen.
 
@@ -113,7 +124,7 @@ El empaquetado de distribución (`tar.gz`/`.zip` con 4 docs GPLv3) lo hace el st
 
 - **Idioma**: código, comentarios, mensajes de commit y documentación en **español**, con ortografía correcta.
 - **Comentarios**: explican el *porqué*, no el *qué*; sigue la densidad del código circundante.
-- **Formato/lint**: `cargo fmt --all` y `cargo clippy --all-targets` deben pasar sin diff ni warnings nuevos. `cargo run -p xtask -- release` lo verifica (`cargo fmt --all --check` y `cargo clippy --all-targets -- -D warnings`) y aborta el corte si no se cumple.
+- **Formato/lint**: `cargo fmt --all` y `cargo clippy --all-targets` deben pasar sin diff ni warnings nuevos. `cargo xtask release` lo verifica (`cargo fmt --all --check` y `cargo clippy --all-targets -- -D warnings`) y aborta el corte si no se cumple.
 - **Commits**: mensajes descriptivos en español, prefijo de tipo cuando aplique (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build:`), en imperativo.
 
 ## Flujo de Pull Request

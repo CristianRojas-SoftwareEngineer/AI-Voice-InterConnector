@@ -70,7 +70,7 @@ const APP_NAME: &str = "ai-voice-interconnector";
 - Literales de cadena, sin mecanismo dinámico (no usan `env!("CARGO_PKG_VERSION")`
   ni ningún build script).
 - `Cargo.toml` fija la misma versión en `[package]`. Ningún mecanismo de
-  compilación los enlaza: los sincroniza `cargo run -p xtask -- release X.Y.Z`,
+  compilación los enlaza: los sincroniza `cargo xtask release X.Y.Z`,
   que reescribe a la vez `VERSION`, `Cargo.toml`, `Cargo.lock` y el fixture
   `tests/golden/cli_version.json` (ver [RELEASING.md](../../RELEASING.md)).
 

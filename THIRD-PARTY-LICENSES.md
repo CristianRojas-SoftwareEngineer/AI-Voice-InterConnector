@@ -6,7 +6,7 @@ licencias. Este documento reúne los avisos de copyright y las licencias corresp
 cuya preservación exigen dichas licencias al redistribuir el software.
 
 Este inventario se **regenera desde `Cargo.lock`** (lockfile Rust, fuente de verdad del build) y
-el metadato `license` de cada crate con `cargo run -p xtask -- licenses`. La columna «Familia» es una
+el metadato `license` de cada crate con `cargo xtask licenses`. La columna «Familia» es una
 normalización para agrupar; la columna «Licencia (metadato)» es el dato declarado por
 cada crate y prevalece en caso de duda.
 
@@ -605,8 +605,8 @@ Resumen por familia (paquetes resueltos): Apache-2.0 25, BSD 4, CDLA-Permissive-
 Este inventario se regenera de forma **deliberada** tras actualizar `Cargo.lock`:
 
 ```bash
-cargo run -p xtask -- licenses          # reescribe la región del inventario
-cargo run -p xtask -- licenses --check  # verifica sincronía completa
+cargo xtask licenses          # reescribe la región del inventario
+cargo xtask licenses --check  # verifica sincronía completa
 ```
 
 El generador reescribe solo la región entre los marcadores `<!-- inventario:inicio -->` y

@@ -73,7 +73,7 @@ limitada, pero conviene explicitar sus supuestos:
   pesos descargados (el transporte y el direccionamiento por hash de commit
   corren a cargo de HuggingFace Hub).
 - Los builds se producen desde **`Cargo.lock`**; la cadena se verifica con
-  `cargo run -p xtask -- licenses --check` / `source-offer --check` y
+  `cargo xtask licenses --check` / `source-offer --check` y
   `THIRD-PARTY-LICENSES.md` / `SOURCE-OFFER.md` (ver `docs/RELEASING.md`).
 
 ### Contenido generado
