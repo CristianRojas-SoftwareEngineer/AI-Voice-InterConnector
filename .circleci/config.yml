@@ -654,6 +654,31 @@ jobs:
           variant: test
       - sccache_setup_windows
       - run:
+          # TEMPORAL de diagnóstico: se retira en cuanto hable. Biseca la muerte
+          # del hijo del contrato (ubicación TEMP contra entorno sandbox) fuera
+          # del test, con el mismo binario recién enlazado.
+          name: Sonda de engendro en TEMP (diagnóstico)
+          command: |
+            Write-Host "[STEP] Sonda de engendro - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            $env:RUSTC_WRAPPER = "sccache"
+            $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
+            $env:CARGO_INCREMENTAL = "0"
+            $env:RUSTFLAGS = "-C linker=rust-lld"
+            cargo build --bin ai-voice-interconnector
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $Probe = "$env:TEMP\probehijo\ai-voice-interconnector.exe"
+            New-Item -ItemType Directory -Force -Path "$env:TEMP\probehijo" | Out-Null
+            Copy-Item "target/debug/ai-voice-interconnector.exe" $Probe -Force
+            Write-Host "copia lista"
+            & $Probe --help | Select-Object -First 3
+            Write-Host "ubicación TEMP sale con $LASTEXITCODE"
+            $env:TEMP = "$env:TEMP\probetmp"; $env:TMP = $env:TEMP
+            New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+            & $Probe --help | Select-Object -First 3
+            Write-Host "entorno sandbox sale con $LASTEXITCODE"
+            Write-Host "[STEP] Sonda de engendro - FIN"
+      - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
@@ -667,18 +692,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
-      - run:
-          # TEMPORAL de diagnóstico: se retira en cuanto hable. Vuelca el estado
-          # de Defender y sus detecciones si la suite falla, para distinguir una
-          # muerte externa del hijo de una copia corrupta.
-          name: Forense de Defender tras fallo de suite
-          when: on_fail
-          command: |
-            Write-Host "[STEP] Forense Defender - INICIO"
-            Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled | Format-Table -AutoSize | Out-String -Width 200
-            Get-MpThreatDetection | Select-Object -First 10 ProcessName, InitialDetectionTime | Format-Table -AutoSize | Out-String -Width 300
-            Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; Level=2,3} -MaxEvents 8 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id | Format-Table -AutoSize | Out-String -Width 200
-            Write-Host "[STEP] Forense Defender - FIN"
       - sccache_save_cache:
           os: windows
           variant: test
