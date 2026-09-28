@@ -727,29 +727,40 @@ fn check_onnx(root: &Path, pins: &Pins) -> Row {
     }
 }
 
-/// Sonda sccache (opcional): cualquier versión vale; si falta es solo aviso.
-fn check_sccache() -> Row {
+/// Sonda sccache (opcional): la instalada debe cubrir el pin; si falta es
+/// solo aviso. La comparación tolera el sufijo de empaquetado como el resto.
+fn check_sccache(pins: &Pins) -> Row {
     let label = "sccache";
+    let want = Some(pins.sccache.clone());
     let found = probe_output("sccache", &["--version"]).and_then(|o| version_token(&o));
-    if found.is_some() {
-        return Row {
+    match &found {
+        Some(version) if pin_covers(version, &pins.sccache) => Row {
             id: "sccache",
             label,
             mandatory: false,
             status: Status::Ok,
             found,
-            want: Some("cualquiera".to_string()),
+            want,
             hint: None,
-        };
-    }
-    Row {
-        id: "sccache",
-        label,
-        mandatory: false,
-        status: Status::Missing,
-        found: None,
-        want: Some("cualquiera".to_string()),
-        hint: Some("cargo install sccache o el gestor de tu sistema".to_string()),
+        },
+        Some(_) => Row {
+            id: "sccache",
+            label,
+            mandatory: false,
+            status: Status::Mismatch,
+            found,
+            want,
+            hint: None,
+        },
+        None => Row {
+            id: "sccache",
+            label,
+            mandatory: false,
+            status: Status::Missing,
+            found: None,
+            want,
+            hint: Some("cargo install sccache o el gestor de tu sistema".to_string()),
+        },
     }
 }
 
@@ -904,7 +915,7 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         check_alsa(),
         check_engine_toolchain(pins),
         check_onnx(root, pins),
-        check_sccache(),
+        check_sccache(pins),
     ];
     debug_assert_eq!(
         rows.iter().map(|r| r.id).collect::<Vec<_>>(),
@@ -1043,6 +1054,7 @@ mod tests {
             msys2_openblas: "0.3.34-1".to_string(),
             msys2_make: "4.4.1-5".to_string(),
             ninja: "1.13.2".to_string(),
+            bats: "1.14.0".to_string(),
         }
     }
 
