@@ -172,7 +172,7 @@ pub struct VoiceEntry {
 }
 
 /// Almacén de voces: gestión de voces clonadas + fábrica.
-/// Layout en disco: <data_dir>/voices/<nombre>/
+/// Layout en disco: `<data_dir>/voices/<nombre>/`
 pub struct VoiceStore {
     base_dir: PathBuf,
 }
@@ -341,7 +341,7 @@ pub struct SpeechEntry {
 }
 
 /// Almacén de habla sintética persistida.
-/// Layout en disco: <data_dir>/speech/<voz>/<etiqueta>.wav + <etiqueta>.json
+/// Layout en disco: `<data_dir>/speech/<voz>/<etiqueta>.wav` + `<etiqueta>.json`
 pub struct SpeechStore {
     base_dir: PathBuf,
 }

@@ -63,7 +63,7 @@ pub struct Options {
 /// lo puede implementar sin arrastrar `avi-daemon`. Lo que sí es del motor es la
 /// **decisión**: cuándo se borra ya y cuándo se programa, y que el resultado difiera
 /// (`uninstalled` contra `removal_scheduled`). Por eso entra por un rasgo, igual
-/// que [`ProcessControl`](crate::daemon_stop::ProcessControl).
+/// que [`crate::daemon_stop::ProcessControl`].
 pub trait ProgramDirRemover {
     /// `true` si el ejecutable en uso está dentro de `program_dir`, que es el caso en
     /// que el borrado directo es imposible en Windows.

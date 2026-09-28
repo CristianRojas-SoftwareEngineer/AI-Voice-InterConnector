@@ -1275,12 +1275,12 @@ async fn capture_mic_pcm(duration: Option<u64>) -> Result<Vec<i16>, CliError> {
 }
 
 /// Bucle interactivo `--play` (RF-12.3–12.5): reproduce la toma en memoria y
-/// ofrece 4 opciones a stderr — [1] mantener (reproducir de nuevo, sin
-/// re-síntesis), [2] guardar (recomprobando colisión de label al guardar,
-/// RF-12.4), [3] repetir con una síntesis nueva (misma vía, vía `resynthesize`)
-/// y reproducir, [4] descartar. EOF o error de lectura de stdin también
+/// ofrece 4 opciones a stderr — 1) mantener (reproducir de nuevo, sin
+/// re-síntesis), 2) guardar (recomprobando colisión de label al guardar,
+/// RF-12.4), 3) repetir con una síntesis nueva (misma vía, vía `resynthesize`)
+/// y reproducir, 4) descartar. EOF o error de lectura de stdin también
 /// descartan; una opción inválida avisa y repite el menú. Devuelve la ruta
-/// guardada si el usuario eligió [2], o `None` si descartó (RF-12.3, exit 0 en
+/// guardada si el usuario eligió la 2, o `None` si descartó (RF-12.3, exit 0 en
 /// ambos casos). Reusado por la ruta directa y la daemon (P6, client-side); el
 /// menú y los prompts van a stderr, nunca a stdout (P3). No introduce exit
 /// codes nuevos.

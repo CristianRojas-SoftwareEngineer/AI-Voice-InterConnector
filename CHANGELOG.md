@@ -152,17 +152,18 @@ daemon sigue en `"3"`, porque es un contrato independiente.
 - `cargo xtask package` (`crates/xtask/src/package.rs`): monta el bundle del target del host desde `packaging/bundle-manifest.json` (la misma lista que valida `self install`), con `--out`, `--no-compress` y `--expect-version` (puerta fail-fast tag-versión).
 - Bootstrap de primera instalación como assets versionados del release (`packaging/bootstrap/install.sh` POSIX para Linux y macOS, `install.ps1` para Windows): detección de target, resolución de versión (opción/`AVI_VERSION`/estampada/`latest`), verificación exacta contra `SHA256SUMS.txt`, comprobación de arranque con diagnóstico (`unsupported_platform`/`binary_incompatible`, glibc ≥ 2.35 en Linux) y delegación en `self install`. Sin `--check`: con el binario instalado se usa `self update --check`.
 - Suites de bootstrap en `tests/bootstrap/` (`install.bats`, `install.tests.ps1`) contra servidor HTTP local.
-- `rust-toolchain.toml` fija el canal de Rust **1.96.0** en el repositorio, de modo que
-  `rustup` lo aplica solo sin instalar nada a mano, y `.cargo/config.toml` declara el alias
+- `rust-toolchain.toml` lo genera `cargo xtask pins --sync` desde la clave `rust` de
+  `packaging/pins.json`, de modo que `rustup` aplica el canal **1.96.0** solo sin instalar
+  nada a mano, y `.cargo/config.toml` declara el alias
   `cargo xtask` como forma corta de las tareas de desarrollo en todo el repositorio, la CI y
-  la documentación. La versión es la misma que el parámetro `rust_version` de la CI.
+  la documentación. La versión es la misma que el parámetro `rust_pin` de la CI.
 - **Fuente única de los pines.** `packaging/pins.json` (Rust, ONNX Runtime, `sccache`, los
-  tres pines de MSYS2 y `ninja`) es el único archivo que los declara, y el crate puro
+  cuatro pines de MSYS2, `ninja` y `bats`) es el único archivo que los declara, y el crate puro
   `crates/avi-shared` los lee junto con los tipos del manifiesto y las rutas canónicas, sin
   red ni TLS. `avi-store`, `avi-lifecycle` y `xtask` dependen de él, así que las réplicas de
   `ORT_VERSION`, `PINNED_REPOS`, `TEMP_PREFIXES` y de las rutas canónicas desaparecen del
-  código. La CI valida el JSON contra los parámetros del pipeline y falla antes de compilar si
-  divergen.
+  código. La CI invoca `cargo xtask pins --check` y falla antes de compilar si divergen, y
+  cada parámetro pineado del pipeline se llama igual que su clave.
 - `cargo xtask doctor`: comprueba la tabla única de requisitos por target leyendo los pines,
   con la sonda exacta de cada gestor del SO (apt, dnf, pacman y zypper en Linux; `brew` y
   `xcode-select` en macOS; winget y el `pacman` de MSYS2 en Windows), informa la deriva del
@@ -261,6 +262,15 @@ daemon sigue en `"3"`, porque es un contrato independiente.
 
 ### Documentación
 
+- **Fuente única de los pines, sin duplicación no verificada.** La versión de cada
+  pin vive en un solo sitio que se compara, no en varios que se espejan a mano: el
+  validador único `cargo xtask pins --check` funde el test con la tabla escrita a mano
+  y el bloque de Python embebido en la CI, y la CI lo invoca en vez de ejecutar Python.
+  Los ocho parámetros pineados del pipeline se llaman igual que sus claves por
+  convención de sufijo, `rust-toolchain.toml` lo genera `cargo xtask pins --sync`, los
+  dos instaladores de `sccache` leen el fichero en vez de fijar literales y el doctor
+  compara la versión instalada contra el pin. Noveno pin: `bats` entra al fichero como
+  clave, porque un parámetro con sufijo sin clave haría fallar al validador.
 - **Comentario autocontenido, y una puerta que lo vigila.** La política de comentarios pasa a
   ser norma y no costumbre: un comentario explica la regla en lugar de remitir a una sección
   numerada de la especificación o a otro fichero, y se enuncia en la fila por capa de

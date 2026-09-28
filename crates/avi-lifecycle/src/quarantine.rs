@@ -243,7 +243,7 @@ impl Quarantine for NoAttributes {
 }
 
 /// ¿Tiene el archivo el atributo de cuarentena? Lo usan las pruebas para afirmar tanto
-/// el punto de partida como el punto de llegada, y para ponerlo, [`quarantine::put`].
+/// el punto de partida como el punto de llegada, y para ponerlo, [`Quarantine::put`].
 pub fn has(path: &Path) -> bool {
     platform().has(path).unwrap_or(false)
 }

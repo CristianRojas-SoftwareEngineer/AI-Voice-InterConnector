@@ -215,7 +215,7 @@ completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
   **9 gates** son `requires:` de los 4 builds nativos, que compilan las 4
   plataformas en modo release (validación de compilación por plataforma).
   Los runners bats están pineados: bats-core se instala desde el tag de git
-  según el parámetro `bats_version` (1.14.0, verificado con `bats --version`),
+  según el parámetro `bats_pin` (1.14.0, verificado con `bats --version`),
   la misma versión en Linux y macOS, y `test-bootstrap-linux` corre sobre
   `cimg/base` pineada por digest. `test-bootstrap-windows` instala Pester 5.8.0
   desde PSGallery con `$ErrorActionPreference = "Stop"`, de modo que un fallo de
@@ -367,13 +367,13 @@ externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 
 | Caché | Qué guarda | Jobs | Clave (se invalida cuando cambia…) |
 |-------|------------|------|------------------------------------|
-| `cargo-v2` (registry) | `~/.cargo/registry` y `~/.cargo/git`: las fuentes descargadas de crates | todos los que compilan | `arch`, `rust_version` y el checksum de `Cargo.lock.cachekey`. Tiene fallback por prefijo. |
-| `target-v3` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_version`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58`. Sin fallback. |
-| `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (3 GiB) | los mismos jobs que `target-v3`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_version` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
-| `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_version`. |
+| `cargo-v2` (registry) | `~/.cargo/registry` y `~/.cargo/git`: las fuentes descargadas de crates | todos los que compilan | `arch`, `rust_pin` y el checksum de `Cargo.lock.cachekey`. Tiene fallback por prefijo. |
+| `target-v3` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58`. Sin fallback. |
+| `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (3 GiB) | los mismos jobs que `target-v3`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
+| `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_pin`. |
 | `msys2-v1` | la instalación de MSYS2 | `build-windows-x64` | los pines de MSYS2: release base, gcc, openblas y make. |
 | `tts-v1` | el motor `qwen_tts.exe` compilado | `build-windows-x64` | `vendor/qwen3-tts/.engine-cachekey` (`Makefile`, `*.c`/`*.h` y `third_party/ingot`) y los pines de gcc y openblas. |
-| `ort-v1` | la librería oficial de ONNX Runtime para Windows | `build-windows-x64` | `ort_version`. |
+| `ort-v1` | la librería oficial de ONNX Runtime para Windows | `build-windows-x64` | `ort_pin`. |
 
 `variant` separa los conjuntos de features (`test` sin features, `cov`
 instrumentado, `full` con C++), y `os` separa los targets: sin esos
@@ -436,7 +436,7 @@ además inmune a la conversión de fin de línea del checkout.
 
 `sccache` envuelve tres tipos de compilación: `rustc` (`RUSTC_WRAPPER=sccache`); los nativos que compila el crate `cc` (`aws-lc-sys`, `ring`, `blake3`…), que detecta `RUSTC_WRAPPER` y usa `sccache` como wrapper; y, en los 4 `build-*`, los proyectos CMake (`ct2rs`/CTranslate2, `onednn-src`, `sentencepiece-sys`), vía `CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER=sccache`. CMake ≥ 3.17 lee esas variables del entorno al configurar, así que no se toca ningún `build.rs`. En Linux y macOS el comando `native_sccache_setup_unix` las exporta a `$BASH_ENV`. En Windows hacen falta tres piezas más, todas en el paso de compilación de `build-windows-x64`:
 
-- **Ninja como generador** (`CMAKE_GENERATOR=Ninja`): el generador Visual Studio, el que el crate `cmake` elige por defecto con MSVC, ignora los launchers. `native_sccache_setup_windows` descarga en cada corrida la release oficial fijada por el parámetro `ninja_version` a un directorio temporal fuera de toda caché, y verifica su versión.
+- **Ninja como generador** (`CMAKE_GENERATOR=Ninja`): el generador Visual Studio, el que el crate `cmake` elige por defecto con MSVC, ignora los launchers. `native_sccache_setup_windows` descarga en cada corrida la release oficial fijada por el parámetro `ninja_pin` a un directorio temporal fuera de toda caché, y verifica su versión.
 - **Entorno de MSVC**: Ninja no carga `INCLUDE`/`LIB` por sí mismo (el generador Visual Studio sí), así que el paso localiza Visual Studio con `vswhere`, importa `vcvars64.bat` y solo después antepone Ninja y `.cargo\bin` al `PATH`.
 - **`CC`/`CXX` con la ruta absoluta de `cl.exe`**: el crate `cc` solo usa `RUSTC_WRAPPER` como wrapper en MSVC cuando el compilador es la ruta de un ejecutable existente.
 
@@ -452,18 +452,18 @@ costo:
 | Escenario | Cachés que se invalidan | Efecto en los `build-*` |
 |-----------|-------------------------|-------------------------|
 | Cambio en el código fuente del workspace (`src/`, `crates/*`), bump de versión de una release, documentación o `CHANGELOG.md` | Ninguna | Todas las cachés aciertan. Cargo recompila los crates del workspace (siempre `Dirty` por `mtime`): `sccache` devuelve al instante los que no cambiaron y compila de verdad los editados y el binario final. `cargo build --release` tarda unos 20 s en linux-x64. |
-| Cambio de `ort_version` | `ort-v1` | Solo una descarga nueva de ONNX Runtime en `build-windows-x64`. |
+| Cambio de `ort_pin` | `ort-v1` | Solo una descarga nueva de ONNX Runtime en `build-windows-x64`. |
 | Cambio de fuentes del motor TTS (`vendor/qwen3-tts`, `third_party/ingot`) | `tts-v1` | Solo se recompila el motor TTS en `build-windows-x64`; el resto acierta. |
 | Cambio de los pines de MSYS2, gcc, openblas o make | `msys2-v1` y, con gcc u openblas, `tts-v1` | Reinstalación de MSYS2 y recompilación del motor TTS en `build-windows-x64`. |
 | Cambio real de dependencias Rust en `Cargo.lock` (añadir, quitar o actualizar crates sin tocar nativos) | `target-v3` (sin fallback) y `cargo-v2` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++: 2–5 min por job en Unix y ~11–15 min previstos en windows-x64. |
 | Edición del parche `vendor/cmake-0.1.58` o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | `target-v3`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
-| Cambio de `rust_version` | `toolchain-v1`, `cargo-v2`, `target-v3` y `sccache-v1` (todas llevan la versión en la clave) | Frío total: se reinstala Rust y se recompila todo, Rust y C/C++, sin ayuda de `sccache`. Referencia de `cargo build --release` en frío: `1969 s` en windows-x64, `1569 s` en linux-arm64, `956 s` en linux-x64 y `149 s` en darwin-arm64. |
+| Cambio de `rust_pin` | `toolchain-v1`, `cargo-v2`, `target-v3` y `sccache-v1` (todas llevan la versión en la clave) | Frío total: se reinstala Rust y se recompila todo, Rust y C/C++, sin ayuda de `sccache`. Referencia de `cargo build --release` en frío: `1969 s` en windows-x64, `1569 s` en linux-arm64, `956 s` en linux-x64 y `149 s` en darwin-arm64. |
 
 Causas ajenas al repositorio, que invalidan sin que cambie ningún archivo:
 
 - **Cambio de `{{ arch }}` del executor.** Todas las claves llevan `{{ arch }}`, y en los executors Linux x86-64 ese valor incluye la familia y el modelo de CPU (por ejemplo `linux-amd64-6_85`). Si CircleCI asigna un hardware distinto, todas las familias de ese job fallan y la corrida es fría.
 - **Expiración por retención.** CircleCI borra las cachés según la política de retención de la organización (15 días por defecto). Tras un período sin corridas más largo que la retención, la siguiente es fría. Las familias rolling (`sccache`) se renuevan en cada corrida; las inmutables (`target-v3`) solo existen mientras no expiren.
-- **Actualización de la imagen del executor.** Una versión nueva del compilador (MSVC, Xcode/clang, gcc) cambia la identidad del compilador que `sccache` hashea: la clave restaura, pero la primera corrida no obtiene aciertos C/C++ y vuelve a sembrar la caché. Ninja no se cachea: se descarga en cada corrida con la versión fijada en `ninja_version`.
+- **Actualización de la imagen del executor.** Una versión nueva del compilador (MSVC, Xcode/clang, gcc) cambia la identidad del compilador que `sccache` hashea: la clave restaura, pero la primera corrida no obtiene aciertos C/C++ y vuelve a sembrar la caché. Ninja no se cachea: se descarga en cada corrida con la versión fijada en `ninja_pin`.
 
 #### Determinismo de releases (binario obsoleto)
 
@@ -485,9 +485,9 @@ Las claves exactas de cada familia están en `.circleci/config.yml`.
 ### Reproducibilidad: pines por digest y sus implicaciones
 
 Las imágenes `cimg/rust:1.96.0` van pineadas por digest (`@sha256:...`), y
-`rust_version` + `ort_version` son parámetros únicos del pipeline (`pipeline.parameters`).
+`rust_pin` + `ort_pin` son parámetros únicos del pipeline (`pipeline.parameters`).
 Ver `.circleci/config.yml` §Reproducibilidad para procedimiento de bump (bumpear
-`ort_version` invalida `ort-v1` en el siguiente tag).
+`ort_pin` invalida `ort-v1` en el siguiente tag).
 
 El archivo de configuración completo está en `.circleci/config.yml`.
 
@@ -648,11 +648,11 @@ pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidenc
 ### Caché del motor en CI
 
 En CI Windows el binario del motor (`vendor/qwen3-tts/qwen_tts.exe`) se cachea con
-clave `tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}` donde
+clave `tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}` donde
 `.engine-cachekey` es el agregado determinista de `Makefile` + `*.c/*.h` (incluye `vendor/lz4.*`) + `third_party/ingot/**/*.{c,h}`.
 Si existe tras `restore_cache` (clave exacta sin fallback) solo se verifica con `--self-test`;
 si no, se compila. El bundle ONNX Runtime (`ort-bundle/`) se cachea con
-`ort-v1-win-x64-<< pipeline.parameters.ort_version >>` y guarda tras el bundling.
+`ort-v1-win-x64-<< pipeline.parameters.ort_pin >>` y guarda tras el bundling.
 
 Ver `vendor/qwen3-tts/CLAUDE.md` y `crates/avi-tts/src/lib.rs` para el contrato
 de invocación (`--int4 -j 4 --stream`, `GenerationOptions::production()` temp
