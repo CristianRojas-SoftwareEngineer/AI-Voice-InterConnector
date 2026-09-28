@@ -667,6 +667,18 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+      - run:
+          # TEMPORAL de diagnóstico: se retira en cuanto hable. Vuelca el estado
+          # de Defender y sus detecciones si la suite falla, para distinguir una
+          # muerte externa del hijo de una copia corrupta.
+          name: Forense de Defender tras fallo de suite
+          when: on_fail
+          command: |
+            Write-Host "[STEP] Forense Defender - INICIO"
+            Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled | Format-Table -AutoSize | Out-String -Width 200
+            Get-MpThreatDetection | Select-Object -First 10 ProcessName, InitialDetectionTime | Format-Table -AutoSize | Out-String -Width 300
+            Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; Level=2,3} -MaxEvents 8 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id | Format-Table -AutoSize | Out-String -Width 200
+            Write-Host "[STEP] Forense Defender - FIN"
       - sccache_save_cache:
           os: windows
           variant: test
