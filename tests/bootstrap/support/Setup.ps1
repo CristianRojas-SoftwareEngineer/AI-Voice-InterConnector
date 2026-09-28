@@ -148,13 +148,18 @@ function Start-HarnessServer {
     $proc = Start-Process -FilePath $engine -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ServeScript, "-Root", $Root, "-PortFile", $portFile, "-RequestLog", $requestLog) -NoNewWindow -PassThru
     $port = ""
     for ($i = 0; $i -lt 100; $i++) {
-        if ((Test-Path $portFile) -and (($port = (Get-Content -Raw $portFile)) -match "^\d+$")) {
-            try {
-                $tcp = New-Object Net.Sockets.TcpClient
-                $task = $tcp.BeginConnect("127.0.0.1", [int]$port, $null, $null)
-                if ($task.AsyncWaitHandle.WaitOne(500)) { $tcp.EndConnect($task); $tcp.Close(); break }
-                $tcp.Close()
-            } catch { Write-Verbose "puerto aún no listo, se reintenta" }
+        if (Test-Path $portFile) {
+            # El hijo puede estar escribiendo el fichero con bloqueo exclusivo:
+            # una lectura fallida es transitoria y se reintenta, no aborta.
+            try { $port = (Get-Content -Raw $portFile -ErrorAction Stop) } catch { $port = "" }
+            if ($port -match "^\d+$") {
+                try {
+                    $tcp = New-Object Net.Sockets.TcpClient
+                    $task = $tcp.BeginConnect("127.0.0.1", [int]$port, $null, $null)
+                    if ($task.AsyncWaitHandle.WaitOne(500)) { $tcp.EndConnect($task); $tcp.Close(); break }
+                    $tcp.Close()
+                } catch { Write-Verbose "puerto aún no listo, se reintenta" }
+            }
         }
         Start-Sleep -Milliseconds 200
     }
@@ -165,12 +170,14 @@ function Start-HarnessServer {
     return @{ Process = $proc; Port = $port; RequestLog = $requestLog }
 }
 
-# Detiene el servidor de Start-HarnessServer.
+# Detiene el servidor de Start-HarnessServer. Tolera que ya haya terminado:
+# el AfterEach corre también cuando el arranque falló y el objeto es de la
+# prueba anterior, ya detenida.
 function Stop-HarnessServer {
     param($Server)
     if ($null -ne $Server) {
         Stop-Process -InputObject $Server.Process -Force -ErrorAction SilentlyContinue
-        $Server.Process.WaitForExit(5000)
+        try { $Server.Process.WaitForExit(5000) } catch { Write-Verbose "el servidor ya había terminado" }
     }
 }
 
