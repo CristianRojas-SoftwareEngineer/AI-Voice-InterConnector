@@ -223,27 +223,43 @@ impl Sandbox {
     }
 
     /// Ejecuta el hijo y devuelve su código de salida y su sobre.
+    ///
+    /// El `stderr` del hijo se captura en un temporal hermano: si la salida no
+    /// es JSON, el pánico muestra el código y la cola del error en vez de un
+    /// fichero vacío que no dice nada (un fallo así en CI es ciego sin esto).
     fn run(&self, args: &[&str]) -> (i32, Value) {
         let (tmp, file) = open_atomic_tmp();
+        let (err_tmp, err_file) = open_atomic_tmp();
         let mut cmd = Command::new(&self.exe);
         cmd.args(args)
             .stdin(std::process::Stdio::null())
             .stdout(file)
-            .stderr(std::process::Stdio::null());
+            .stderr(err_file);
         for (k, v) in &self.envs {
             cmd.env(k, v);
         }
         let status = cmd.spawn().expect("el hijo debe arrancar").wait();
         let status = status.expect("el hijo debe terminar");
+        let code = status.code().expect("el hijo debe terminar con un código");
         let stdout = std::fs::read_to_string(&tmp)
             .unwrap_or_else(|e| panic!("no se pudo leer {}: {}", tmp.display(), e));
         let _ = std::fs::remove_file(&tmp);
-        let json: Value = serde_json::from_str(stdout.trim())
-            .unwrap_or_else(|e| panic!("stdout no es un único objeto JSON ({e}): {stdout}"));
-        (
-            status.code().expect("el hijo debe terminar con un código"),
-            json,
-        )
+        let stderr = std::fs::read_to_string(&err_tmp).unwrap_or_default();
+        let _ = std::fs::remove_file(&err_tmp);
+        let tail: String = stderr
+            .chars()
+            .rev()
+            .take(2000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let json: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!(
+                "stdout no es un único objeto JSON ({e}): {stdout}\ncódigo: {code}\nstderr: {tail}"
+            )
+        });
+        (code, json)
     }
 }
 

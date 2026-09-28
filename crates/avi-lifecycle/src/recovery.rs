@@ -324,8 +324,9 @@ fn process_is_alive(pid: u32) -> bool {
     if unsafe { libc::kill(pid, 0) } == 0 {
         return true;
     }
-    // SAFETY: `__errno_location` es un puntero al errno del hilo, válido aquí.
-    unsafe { *libc::__errno_location() == libc::EPERM }
+    // El rechazo por permiso vive en el errno del hilo: se lee con la lectura
+    // portátil en vez del accesorio por plataforma, que solo existe en Linux.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM as i32)
 }
 
 #[cfg(windows)]

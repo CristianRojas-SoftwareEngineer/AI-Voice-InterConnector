@@ -129,7 +129,10 @@ assert_no_staging_left() {
 @test "la versión estampada se usa sin --version ni AVI_VERSION" {
     mock_uname x86_64
     cp "$INSTALL_SH" "$WORK/install-stamped.sh"
-    sed -i "s/__AVI_STAMPED_VERSION__/9.9.9/" "$WORK/install-stamped.sh"
+    # Sufijo de respaldo explícito: el `-i` sin argumento solo lo acepta GNU;
+    # en BSD (macOS) exige el sufijo y falla sin él.
+    sed -i.bak "s/__AVI_STAMPED_VERSION__/9.9.9/" "$WORK/install-stamped.sh"
+    rm -f "$WORK/install-stamped.sh.bak"
 
     run sh "$WORK/install-stamped.sh" --no-setup --no-modify-path --yes
 
@@ -159,7 +162,7 @@ assert_no_staging_left() {
     [ ! -e "$AVI_INSTALL_DIR/ai-voice-interconnector" ]
 }
 
-@test "SHA256SUMS sin línea para el asset falla como checksum inválido" {
+@test "falta el asset en SHA256SUMS y falla como checksum inválido" {
     mock_uname x86_64
     harness_write_sums "$SERVE_DIR" missing "ai-voice-interconnector-9.9.9-x86_64-linux.tar.gz"
 
