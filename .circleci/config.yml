@@ -654,47 +654,6 @@ jobs:
           variant: test
       - sccache_setup_windows
       - run:
-          # TEMPORAL de diagnóstico: se retira en cuanto hable. Biseca la muerte
-          # del hijo del contrato (ubicación TEMP contra entorno sandbox) fuera
-          # del test, con el mismo binario recién enlazado.
-          name: Sonda de engendro en TEMP (diagnóstico)
-          command: |
-            Write-Host "[STEP] Sonda de engendro - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            $env:RUSTC_WRAPPER = "sccache"
-            $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
-            $env:CARGO_INCREMENTAL = "0"
-            $env:RUSTFLAGS = "-C linker=rust-lld"
-            cargo build --bin ai-voice-interconnector
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $Probe = "$env:TEMP\probehijo\ai-voice-interconnector.exe"
-            New-Item -ItemType Directory -Force -Path "$env:TEMP\probehijo" | Out-Null
-            Copy-Item "target/debug/ai-voice-interconnector.exe" $Probe -Force
-            Write-Host "copia lista"
-            & $Probe --help | Select-Object -First 3
-            Write-Host "ubicación TEMP sale con $LASTEXITCODE"
-            $env:TEMP = "$env:TEMP\probetmp"; $env:TMP = $env:TEMP
-            New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
-            & $Probe --help | Select-Object -First 3
-            Write-Host "entorno sandbox sale con $LASTEXITCODE"
-            # Réplica del staging del contrato: marcadores junto al exe, stdio a
-            # fichero y args de self install, en tres variantes que aíslan el factor.
-            $Stage = "$env:TEMP\probestage"
-            New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-            Copy-Item $Probe "$Stage\ai-voice-interconnector.exe" -Force
-            "contenido de onnxruntime.dll`n" | Out-File -Encoding ascii "$Stage\onnxruntime.dll"
-            "contenido de vcruntime140.dll`n" | Out-File -Encoding ascii "$Stage\vcruntime140.dll"
-            & "$Stage\ai-voice-interconnector.exe" --help > "$Stage\out1.txt" 2> "$Stage\err1.txt"
-            Write-Host "V1 marcadores + fichero sale con $LASTEXITCODE"
-            $env:AVI_INSTALL_DIR = "$Stage\install"
-            $env:AVI_DATA_DIR = "$Stage\data"
-            $env:AVI_DAEMON_PORT = "0"
-            & "$Stage\ai-voice-interconnector.exe" self install --no-setup --no-modify-path --yes > "$Stage\out2.txt" 2> "$Stage\err2.txt"
-            Write-Host "V2 self install sale con $LASTEXITCODE"
-            Get-ChildItem "$Stage\out*.txt" | ForEach-Object { Write-Host "$($_.Name): $($_.Length) bytes" }
-            Get-Content "$Stage\err2.txt" -TotalCount 5
-            Write-Host "[STEP] Sonda de engendro - FIN"
-      - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"

@@ -120,6 +120,31 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
     panic!("no se pudo crear un tempfile único tras 64 intentos");
 }
 
+/// Ruta a la CRT real del sistema para un archivo del bundle, si lo es.
+///
+/// El binario enlazado con rust-lld importa `VCRUNTIME140.dll` por nombre y el
+/// cargador la busca primero junto al ejecutable: un marcador de texto en su
+/// lugar mata al hijo con imagen inválida antes de que emita nada. El staging
+/// lleva la real y no un marcador.
+#[cfg(windows)]
+fn system_crt_dll(relative: &str) -> Option<PathBuf> {
+    const CRT: &[&str] = &["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
+    let name = relative.rsplit(['/', '\\']).next().unwrap_or(relative);
+    if !CRT.iter().any(|c| c.eq_ignore_ascii_case(name)) {
+        return None;
+    }
+    let candidate = PathBuf::from(std::env::var_os("SystemRoot")?)
+        .join("System32")
+        .join(name);
+    candidate.is_file().then_some(candidate)
+}
+
+/// Fuera de Windows no hay CRT del sistema que copiar.
+#[cfg(not(windows))]
+fn system_crt_dll(_relative: &str) -> Option<PathBuf> {
+    None
+}
+
 /// Sandbox del contrato: un directorio con las raíces del hijo, un `tmp` aislado y un
 /// staging con el bundle completo alrededor de una copia del binario.
 struct Sandbox {
@@ -164,6 +189,8 @@ impl Sandbox {
             }
             if relative == &section.executable {
                 std::fs::copy(BIN, &complete).expect("copiar el binario al staging del sandbox");
+            } else if let Some(system) = system_crt_dll(relative) {
+                std::fs::copy(&system, &complete).expect("copiar la CRT del sistema al staging");
             } else {
                 std::fs::write(&complete, format!("contenido de {relative}\n"))
                     .expect("escribir el archivo del bundle");
