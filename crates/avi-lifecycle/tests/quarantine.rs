@@ -990,6 +990,7 @@ async fn install_strips_quarantine_from_whole_program_dir() {
     let sandbox = Sandbox {
         root: tree.root.clone(),
         program_dir: tree.program.clone(),
+        staging: tree.staging.clone(),
         home: tree.root.join("home/ana"),
         data_dir: tree.root.join("data"),
         models_dir: tree.root.join("models"),
