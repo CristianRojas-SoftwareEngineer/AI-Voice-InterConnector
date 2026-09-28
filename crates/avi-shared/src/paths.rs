@@ -262,10 +262,20 @@ pub fn xet_cache_dir() -> PathBuf {
 /// no todo lo que `auto::Tokenizer` sabría cargar; la idempotencia por `mtime`
 /// solo aplica a dirs sanos (un dir roto es no provisionado y fuerza reconversión).
 pub fn ct2_cache_dir() -> PathBuf {
-    models_cache_dir().join("ct2")
+    ct2_cache_dir_at(&models_cache_dir())
+}
+/// Caché de derivados CT2 bajo una raíz de modelos dada. La raíz del usuario es
+/// un caso de esta función y no su fuente: un sandbox necesita la misma
+/// disposición sin tocar la caché real.
+pub fn ct2_cache_dir_at(models_root: &Path) -> PathBuf {
+    models_root.join("ct2")
 }
 pub fn ct2_model_dir(pair: &str) -> PathBuf {
-    ct2_cache_dir().join(format!("opus-mt-{}", pair))
+    ct2_model_dir_at(&models_cache_dir(), pair)
+}
+/// Directorio del derivado CT2 de un par bajo una raíz de modelos dada.
+pub fn ct2_model_dir_at(models_root: &Path, pair: &str) -> PathBuf {
+    ct2_cache_dir_at(models_root).join(format!("opus-mt-{}", pair))
 }
 /// Ficheros ausentes del derivado CT2 en `dir`: vacío equivale a cargable por
 /// el loader (`model.bin` presente más tokenizador completo). Nombra cada
@@ -298,6 +308,64 @@ pub fn ct2_dir_missing_files(dir: &Path) -> Vec<String> {
 pub fn ct2_missing_files(pair: &str) -> Vec<String> {
     ct2_dir_missing_files(&ct2_model_dir(pair))
 }
+/// Si el derivado CT2 de un par está completo bajo una raíz de modelos dada.
+/// La comprobación viaja con la raíz para que quien describe un árbol de
+/// modelos describa ese árbol y no el del usuario.
+pub fn is_ct2_provisioned_at(models_root: &Path, pair: &str) -> bool {
+    ct2_dir_missing_files(&ct2_model_dir_at(models_root, pair)).is_empty()
+}
 pub fn is_ct2_provisioned(pair: &str) -> bool {
-    ct2_missing_files(pair).is_empty()
+    is_ct2_provisioned_at(&models_cache_dir(), pair)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// El derivado de un par vive en `ct2/opus-mt-<par>` bajo la raíz que recibe
+    /// la función, y la variante global es la misma disposición aplicada a la raíz
+    /// del usuario. La paridad importa porque ambas son una sola disposición
+    /// declarada en un sitio, no dos: si divergieran, un reporte describiría un
+    /// árbol y el motor leería otro.
+    #[test]
+    fn ct2_layout_depends_on_the_given_root() {
+        let sandbox = Path::new("/sandbox/models");
+        assert_eq!(
+            ct2_model_dir_at(sandbox, "es-en"),
+            Path::new("/sandbox/models/ct2/opus-mt-es-en")
+        );
+        assert_eq!(
+            ct2_model_dir("es-en"),
+            ct2_model_dir_at(&models_cache_dir(), "es-en")
+        );
+    }
+
+    /// La provisión consulta la raíz que recibe y no otra: una raíz vacía no
+    /// declara provisionado un derivado que sí existe en una raíz hermana. Esta
+    /// es la comprobación que da valor a la anterior: si la función mirase la
+    /// caché global, el sandbox vacío lo declararía completo en cualquier máquina
+    /// que tenga el par convertido.
+    #[test]
+    fn ct2_provisioning_does_not_leak_from_a_sibling_root() {
+        let base = std::env::temp_dir().join(format!("ct2-at-{}", std::process::id()));
+        let empty = base.join("vacio");
+        let full = base.join("lleno");
+        std::fs::create_dir_all(&empty).expect("se crea la raíz vacía");
+        let derived = ct2_model_dir_at(&full, "es-en");
+        std::fs::create_dir_all(&derived).expect("se crea el derivado");
+        std::fs::write(derived.join("model.bin"), b"pesos").expect("se escribe el modelo");
+        std::fs::write(derived.join("source.spm"), b"tok").expect("se escribe el tokenizador");
+        std::fs::write(derived.join("target.spm"), b"tok").expect("se escribe el tokenizador");
+
+        assert!(
+            is_ct2_provisioned_at(&full, "es-en"),
+            "el derivado completo se declara provisionado en su propia raíz"
+        );
+        assert!(
+            !is_ct2_provisioned_at(&empty, "es-en"),
+            "una raíz sin el derivado no lo declara provisionado por tener otra raíz completo"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

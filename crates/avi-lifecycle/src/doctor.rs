@@ -538,7 +538,12 @@ fn installs_in_path(
 
 /// Fila `models` del reporte.
 fn models(roots: &cleanup::Roots) -> Models {
-    let store = avi_store::ModelStore::new();
+    // El almacén se ancla en la raíz que describe el reporte, no en la del
+    // usuario: la fila `root` y los indicadores de provisión tienen que hablar
+    // del mismo árbol. Con la raíz global, un sandbox vacío informaría del
+    // estado de la caché real y el reporte mentiría sobre lo que está
+    // mirando.
+    let store = avi_store::ModelStore::at(roots.models_dir.clone());
     let mut provisioned = Vec::new();
     let mut missing = Vec::new();
     for (name, _, _) in avi_store::MODEL_REVISIONS {
@@ -551,7 +556,9 @@ fn models(roots: &cleanup::Roots) -> Models {
     let base_ready = store.is_provisioned(crate::setup::CLONING_MODEL);
     let mut ct2_incomplete = Vec::new();
     for pair in crate::setup::CT2_PAIRS {
-        if store.is_provisioned(&format!("marian-{pair}")) && !avi_store::is_ct2_provisioned(pair) {
+        if store.is_provisioned(&format!("marian-{pair}"))
+            && !avi_store::is_ct2_provisioned_at(&roots.models_dir, pair)
+        {
             ct2_incomplete.push(pair.to_string());
         }
     }
@@ -667,6 +674,65 @@ mod tests {
             "sin nada instalado, el veredicto es negativo"
         );
 
+        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
+    }
+
+    /// La fila de modelos describe la raíz que recibe el reporte y no la del
+    /// usuario. La prueba materializa en el sandbox el snapshot pinneado del
+    /// modelo de clonación y espera que el reporte lo declare listo: si la fila
+    /// volviera a mirar la caché global, el veredicto dependería de qué tenga
+    /// provisionado la máquina que ejecuta la suite.
+    #[test]
+    fn doctor_reports_models_of_the_root_it_describes() {
+        let env = env("raiz-modelos");
+        // El layout es el de la caché HF: `models--<org>--<repo>/snapshots/<rev>`.
+        // La revisión pinneada se toma de `MODEL_REVISIONS` en vez de fijarla a
+        // mano, para que un bump de pin no pueda volver obsoleta la prueba.
+        let (repo, revision) = avi_store::MODEL_REVISIONS
+            .iter()
+            .find(|(name, _, _)| *name == crate::setup::CLONING_MODEL)
+            .map(|(_, repo, revision)| (*repo, *revision))
+            .expect("el modelo de clonación está pinneado");
+        let snapshot = env
+            .roots
+            .models_dir
+            .join(format!("models--{}", repo.replace('/', "--")))
+            .join("snapshots")
+            .join(revision);
+        std::fs::create_dir_all(&snapshot).expect("se crea el snapshot");
+        std::fs::write(snapshot.join("model.safetensors"), b"pesos")
+            .expect("se escribe un peso no vacío");
+
+        let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
+
+        assert_eq!(
+            report.models.base, "ready",
+            "el snapshot del sandbox hace que el modelo de clonación esté listo"
+        );
+        assert!(
+            report
+                .models
+                .provisioned
+                .contains(&crate::setup::CLONING_MODEL.to_string()),
+            "el modelo de clonación figura provisionado en la raíz que describe el reporte"
+        );
+
+        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
+    }
+
+    /// Sin nada en la raíz que describe el reporte, la fila de modelos dice que
+    /// no está. La comprobación contraria no valdría: mirando la caché global,
+    /// un sandbox vacío también informaría "listo" en una máquina que tenga el
+    /// modelo, que es justo lo que hacía fallar la suite.
+    #[test]
+    fn doctor_reports_absent_models_for_an_empty_root() {
+        let env = env("raiz-vacia");
+        let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
+        assert_eq!(
+            report.models.base, "missing_opt_in",
+            "una raíz vacía no puede declarar provisionado nada"
+        );
+        assert_eq!(report.models.provisioned.len(), 0);
         let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 

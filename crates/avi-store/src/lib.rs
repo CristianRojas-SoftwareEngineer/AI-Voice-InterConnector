@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 // (fuente única del ciclo 4) y aquí se reexportan para conservar la API; los
 // llamadores no cambian.
 pub use avi_shared::paths::{
-    bin_dir, ct2_cache_dir, ct2_dir_missing_files, ct2_missing_files, ct2_model_dir, data_dir,
-    install_dir, is_ct2_provisioned, models_cache_dir, models_root_is_shared, shared_hf_root,
-    xet_cache_dir, APP_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR, MODEL_FILE_PATTERNS,
-    MODEL_REVISIONS, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
+    bin_dir, ct2_cache_dir, ct2_cache_dir_at, ct2_dir_missing_files, ct2_missing_files,
+    ct2_model_dir, ct2_model_dir_at, data_dir, install_dir, is_ct2_provisioned,
+    is_ct2_provisioned_at, models_cache_dir, models_root_is_shared, shared_hf_root, xet_cache_dir,
+    APP_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR, MODEL_FILE_PATTERNS, MODEL_REVISIONS,
+    PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
 };
 
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (`qwen_tts.c:spk_table`)
@@ -535,10 +536,12 @@ pub fn remove_ct2_cache() -> Result<bool> {
 
 /// Almacén de modelos descargados.
 ///
-/// Fuente de verdad única: snapshots de HuggingFace en `models_cache_dir()` con
-/// layout `models--<org>--<repo>/snapshots/<hash>/`. Todos los modelos están
-/// pinneados en `MODEL_REVISIONS`, así que la provisión se decide solo por
-/// presencia del snapshot; no hay índice `manifest.json` intermedio.
+/// Fuente de verdad única: snapshots de HuggingFace en la raíz de modelos del
+/// propio almacén, con layout `models--<org>--<repo>/snapshots/<hash>/`. Esa raíz
+/// la toma `new()` de `models_cache_dir()` y la fija `at()` a mano, de modo que
+/// toda lectura y todo borrado del almacén hablan del mismo árbol. Todos los
+/// modelos están pinneados en `MODEL_REVISIONS`, así que la provisión se decide
+/// solo por presencia del snapshot; no hay índice `manifest.json` intermedio.
 pub struct ModelStore {
     base_dir: PathBuf,
 }
@@ -565,10 +568,20 @@ impl ModelStore {
     /// La llamada a `set_var` es segura en la toolchain del proyecto
     /// (edition 2021); pasa a `unsafe` en edition 2024.
     pub fn new() -> Self {
-        let base_dir = models_cache_dir();
+        let store = Self::at(models_cache_dir());
         if !models_root_is_shared() {
-            std::env::set_var("HF_XET_CACHE", base_dir.join(MODELS_XET_SUBDIR));
+            std::env::set_var("HF_XET_CACHE", store.base_dir.join(MODELS_XET_SUBDIR));
         }
+        store
+    }
+
+    /// Ancla el almacén en una raíz de modelos explícita. La diferencia con
+    /// `new()` no es solo el ancla: `new()` además fija `HF_XET_CACHE`, porque
+    /// descargar lo necesita, mientras que aquí no se toca el entorno del
+    /// proceso. Un sandbox de pruebas o un reporte que debe describir una raíz
+    /// ajena a la del usuario construyen el almacén con esta, de modo que leer
+    /// el estado de esa raíz nunca dependa de la caché global.
+    pub fn at(base_dir: PathBuf) -> Self {
         Self { base_dir }
     }
 
@@ -589,7 +602,9 @@ impl ModelStore {
     /// lee `refs/<rev>`.
     pub fn model_snapshot_path(&self, model_name: &str) -> Option<PathBuf> {
         let (repo, rev) = ModelStore::revision_of(model_name)?;
-        let repo_dir = models_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
+        let repo_dir = self
+            .base_dir
+            .join(format!("models--{}", repo.replace('/', "--")));
         let direct = repo_dir.join("snapshots").join(rev);
         if direct.is_dir() {
             return Some(direct);
@@ -671,7 +686,9 @@ impl ModelStore {
     /// exclusiva como en la compartida (R3).
     pub fn remove_hf_snapshot(&self, model_name: &str) -> Result<bool> {
         if let Some((repo, _)) = ModelStore::revision_of(model_name) {
-            let dir = models_cache_dir().join(format!("models--{}", repo.replace('/', "--")));
+            let dir = self
+                .base_dir
+                .join(format!("models--{}", repo.replace('/', "--")));
             if dir.is_dir() {
                 std::fs::remove_dir_all(&dir)?;
                 return Ok(true);
