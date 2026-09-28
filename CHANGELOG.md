@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.24.0 — 2026-09-27](#0240--2026-09-27)
 - [0.23.1 — 2026-09-25](#0231--2026-09-25)
 - [0.23.0 — 2026-09-25](#0230--2026-09-25)
@@ -93,6 +94,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Corregido
+
+- El recibo de `self install` y la cabecera de `doctor` declaran la versión del producto que informa `version --json`: el constructor del entorno y el reporte la reciben del binario en vez de estampar la del crate `avi-lifecycle`.
 
 ## [0.24.0] — 2026-09-27
 

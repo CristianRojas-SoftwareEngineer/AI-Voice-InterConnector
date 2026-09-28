@@ -219,7 +219,11 @@ impl Report {
 /// `exe` es el ejecutable que se está ejecutando: lo necesitan la detección de canal y
 /// la de precedencia en el `PATH`, y por eso es un parámetro y no una lectura de
 /// `current_exe` — las pruebas tienen que aislar el entorno.
-pub fn report(env: &Env, exe: &Path) -> Report {
+///
+/// `product_version` es la versión del producto que declara el binario en ejecución:
+/// la cabecera `version` del reporte la refleja, mientras `install.version` refleja
+/// la del recibo leído en disco.
+pub fn report(env: &Env, exe: &Path, product_version: &str) -> Report {
     let roots = &env.roots;
     // El recibo se lee de la instalación registrada, que es donde vive.
     let receipt = receipt::read_from(&roots.program_dir).ok().flatten();
@@ -319,7 +323,7 @@ pub fn report(env: &Env, exe: &Path) -> Report {
     );
 
     Report {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: product_version.to_string(),
         target: crate::target::host_triple().to_string(),
         channel,
         install,
@@ -628,7 +632,7 @@ mod tests {
     fn doctor_reports_every_lifecycle_key() {
         let env = env("keys");
         let exe = env.roots.program_dir.join(exe_name());
-        let report = report(&env, &exe);
+        let report = report(&env, &exe, "0.24.0");
 
         let expected = [
             "version", "target", "channel", "install", "path", "pending", "models", "checks",
@@ -644,7 +648,9 @@ mod tests {
         assert_eq!(keys.len(), expected.len(), "y no hay más: {keys:?}");
 
         // La información que las claves retiradas tenían no se pierde: cambia de sitio.
-        assert_eq!(report.version, env!("CARGO_PKG_VERSION"));
+        // La cabecera es la versión del producto que recibe el reporte, no la del
+        // crate de librería donde se compila.
+        assert_eq!(report.version, "0.24.0");
         assert_eq!(report.target, crate::target::host_triple());
         assert_eq!(report.channel, Channel::Unmanaged);
         assert_eq!(report.install.receipt, "absent");
@@ -689,7 +695,7 @@ mod tests {
             .collect::<Vec<String>>()
             .join(sep);
 
-        let report = report(&env, &registered.join(exe_name()));
+        let report = report(&env, &registered.join(exe_name()), "0.24.0");
         let coexisting = &report.path.coexisting;
         assert_eq!(coexisting.len(), 2, "solo las ajenas: {coexisting:?}");
         assert!(
@@ -729,7 +735,7 @@ mod tests {
         let temp = env.roots.temp_root.join("avi-huerfano.tmp");
         write_file(&temp, "x");
 
-        let findings = report(&env, &env.roots.program_dir.join(exe_name()));
+        let findings = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         let pending = &findings.pending;
 
         assert!(
@@ -764,8 +770,21 @@ mod tests {
             &crate::transaction::journal_path(&env.roots.program_dir),
             "{}",
         );
-        let with_journal = report(&env, &env.roots.program_dir.join(exe_name()));
+        let with_journal = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(with_journal.pending.transaction_journal);
+
+        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
+    }
+
+    /// La cabecera del reporte es la versión del producto recibida, no la del
+    /// crate de librería: con una versión ficticia se distingue el origen.
+    #[test]
+    fn doctor_reports_product_version_not_crate_version() {
+        let env = env("product-version");
+        let exe = env.roots.program_dir.join(exe_name());
+        let report = report(&env, &exe, "9.9.9");
+        assert_eq!(report.version, "9.9.9");
+        assert_ne!(report.version, env!("CARGO_PKG_VERSION"));
 
         let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }

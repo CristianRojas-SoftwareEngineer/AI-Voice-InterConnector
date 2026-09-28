@@ -109,18 +109,22 @@ pub struct Env {
 impl Env {
     /// Entorno con las raíces ya resueltas, que es lo que usa el binario.
     ///
+    /// `product_version` es la versión del producto que declara el binario
+    /// (espejo de `Cargo.toml` raíz): el recibo debe guardar esa y no la del
+    /// crate de librería, que es donde se compila este constructor.
+    ///
     /// `exe` se guarda **tal cual**, con el prefijo verbatim que la API de Windows
     /// pueda devolver. No hace falta quitarlo aquí: `canonical_path_key` —la fuente
     /// única de la semántica de comparación de rutas— lo hace antes de normalizar, así
     /// que `detect_mode` reconoce el directorio de programa aunque las dos rutas lleguen
     /// en formas distintas. Normalizarlo aquí además duplicaría esa regla y la dejaría
     /// fuera de sitio el día que aparezca otro consumidor.
-    pub fn from_current_exe(exe: PathBuf) -> anyhow::Result<Self> {
+    pub fn from_current_exe(exe: PathBuf, product_version: &str) -> anyhow::Result<Self> {
         let target = target::host_triple();
         target::ensure_supported(target)?;
         Ok(Self {
             exe,
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: product_version.to_string(),
             target: target.to_string(),
             program_dir: crate::install_dir(),
             bin_dir: crate::bin_dir(),
@@ -1205,6 +1209,16 @@ mod tests {
             "y el recibo dice que no se integró nada"
         );
         assert!(!changed, "ni se reescribió nada");
+    }
+
+    /// El constructor del binario estampa la versión del producto recibida, no la
+    /// del crate de librería: con una versión ficticia se distingue el origen.
+    #[test]
+    fn from_current_exe_stamps_product_version() {
+        let env = Env::from_current_exe(PathBuf::from("/opt/staging/exe"), "9.9.9")
+            .expect("el entorno se construye");
+        assert_eq!(env.version, "9.9.9");
+        assert_ne!(env.version, env!("CARGO_PKG_VERSION"));
     }
 
     fn receipt_from(channel: Channel) -> InstallReceipt {

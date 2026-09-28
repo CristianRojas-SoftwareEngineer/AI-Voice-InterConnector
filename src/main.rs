@@ -2679,8 +2679,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             let exe = std::env::current_exe().map_err(|e| {
                 CliError::new(ExitCode::Error, "self_install_failed", e.to_string())
             })?;
-            let env =
-                lifecycle::install::Env::from_current_exe(exe).map_err(lifecycle_error_to_cli)?;
+            let env = lifecycle::install::Env::from_current_exe(exe, VERSION)
+                .map_err(lifecycle_error_to_cli)?;
             let options = lifecycle::install::Options {
                 assume_yes: yes,
                 no_setup,
@@ -3062,7 +3062,7 @@ fn handle_doctor(json_mode: bool) -> Result<Outcome, CliError> {
     let exe = std::env::current_exe()
         .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
     let env = lifecycle::doctor::Env::resolve();
-    let report = lifecycle::doctor::report(&env, &exe);
+    let report = lifecycle::doctor::report(&env, &exe, VERSION);
     let failed = report.is_failure();
 
     if json_mode {
