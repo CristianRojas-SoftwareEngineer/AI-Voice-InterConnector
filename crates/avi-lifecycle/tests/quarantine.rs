@@ -1101,6 +1101,7 @@ fn quarantine_gate_needs_xattr() {
 struct Sandbox {
     root: PathBuf,
     program_dir: PathBuf,
+    staging: PathBuf,
     home: PathBuf,
     data_dir: PathBuf,
     models_dir: PathBuf,
@@ -1109,6 +1110,35 @@ struct Sandbox {
 
 #[cfg(target_os = "macos")]
 impl Sandbox {
+    /// Árbol con la forma de la instalación: el bundle se escribe primero en
+    /// el staging hermano, que es donde lo deja el bootstrap.
+    fn new(tag: &str) -> Self {
+        let root = unique(tag);
+        let staging = root
+            .join("opt")
+            .join(format!("{}test", avi_lifecycle::STAGING_DIR_PREFIX));
+        Self {
+            program_dir: root.join("opt").join("ai-voice-interconnector"),
+            home: root.join("home"),
+            data_dir: root.join("data"),
+            models_dir: root.join("models"),
+            temp_root: root.join("tmp"),
+            staging,
+            root,
+        }
+    }
+
+    /// Escribe el bundle en el staging y devuelve la ruta del ejecutable, que
+    /// es la que la instalación recibe.
+    fn write_bundle(&self, staging: &Path) -> PathBuf {
+        write_bundle(staging)
+            .into_iter()
+            .find(|p| {
+                p.file_name()
+                    .is_some_and(|n| n == "ai-voice-interconnector")
+            })
+            .expect("el bundle tiene ejecutable")
+    }
     /// `SHELL` de la máquina, con el nombre corto que usa la tabla de shells.
     fn shell() -> &'static str {
         match std::env::var("SHELL")

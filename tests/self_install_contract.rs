@@ -254,9 +254,34 @@ impl Sandbox {
             .chars()
             .rev()
             .collect();
+        // Integridad del ejecutable del staging: tamaño, cabecera MZ y longitud
+        // de la ruta. Un hijo que muere a nivel de cargador con la salida vacía
+        // no dice si la copia está trunca o lo mató algo externo.
+        let (exe_len, exe_mz, path_len) = match std::fs::metadata(&self.exe) {
+            Ok(meta) => {
+                let mut head = [0u8; 2];
+                let mz = std::fs::File::open(&self.exe)
+                    .and_then(|mut f| {
+                        <std::fs::File as std::io::Read>::read_exact(&mut f, &mut head)
+                            .map(|()| head == *b"MZ")
+                    })
+                    .unwrap_or(false);
+                (
+                    meta.len().to_string(),
+                    mz.to_string(),
+                    self.exe.as_os_str().len().to_string(),
+                )
+            }
+            Err(e) => (
+                format!("sin metadatos: {e}"),
+                "no".to_string(),
+                String::new(),
+            ),
+        };
         let json: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
             panic!(
-                "stdout no es un único objeto JSON ({e}): {stdout}\ncódigo: {code}\nstderr: {tail}"
+                "stdout no es un único objeto JSON ({e}): {stdout}\ncódigo: {code}\nstderr: {tail}\nexe: {} tamaño {exe_len} MZ {exe_mz} ruta {path_len}",
+                self.exe.display()
             )
         });
         (code, json)
