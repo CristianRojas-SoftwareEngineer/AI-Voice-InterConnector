@@ -8,8 +8,8 @@
 //! ejecutar desde la propia instalación.
 //!
 //! **La opción oculta `--channel dev` vive aquí.** El comando que la
-//! invoca —`cargo xtask install`— es del Ciclo 4, y la otra mitad
-//! —ejecutar `package --no-compress` en un staging— no existe todavía. Lo que este
+//! invoca —`cargo xtask install`— es del Ciclo 4, y ejecuta la otra mitad:
+//! `package --no-compress` sobre un staging hermano. Lo que este
 //! ciclo fija es el otro valor del canal: **qué queda escrito en el recibo**, y que
 //! el valor surte efecto **solo cuando el recibo se crea por primera vez**, de modo
 //! que reparar una instalación no reescriba su canal.
