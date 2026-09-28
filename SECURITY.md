@@ -8,7 +8,7 @@
   - [Daemon local (modo daemon)](#daemon-local-modo-daemon)
   - [Modelo y provisión](#modelo-y-provisión)
   - [Contenido generado](#contenido-generado)
-  - [Nota sobre los instaladores de una línea](#nota-sobre-los-instaladores-de-una-línea)
+  - [Nota sobre los bootstrap de una línea](#nota-sobre-los-bootstrap-de-una-línea)
 - [Artefactos sin firmar](#artefactos-sin-firmar)
   - [Runbook: reportar un falso positivo de Defender Antivirus (WDSI)](#runbook-reportar-un-falso-positivo-de-defender-antivirus-wdsi)
   - [Runbook: bloqueo de Gatekeeper en macOS](#runbook-bloqueo-de-gatekeeper-en-macos)

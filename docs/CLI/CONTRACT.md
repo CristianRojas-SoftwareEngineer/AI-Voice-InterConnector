@@ -57,7 +57,7 @@ Este documento es la descripción normativa del contrato público de la CLI —c
   - [Los cinco payloads del grupo `speech`](#los-cinco-payloads-del-grupo-speech)
   - [Las dos versiones de esquema](#las-dos-versiones-de-esquema)
 - [11. `self`, `setup`, `cleanup` y `voice`](#11-self-setup-cleanup-y-voice)
-  - [`self install` y `self uninstall`](#self-install-y-self-uninstall)
+  - [`self install`, `self update` y `self uninstall`](#self-install-self-update-y-self-uninstall)
   - [`cleanup`](#cleanup)
   - [`setup`](#setup)
   - [`voice`](#voice)

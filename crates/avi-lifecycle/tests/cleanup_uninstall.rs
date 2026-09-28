@@ -971,7 +971,10 @@ fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
         names
     };
     let before = names_of(&sandbox.program_dir);
-    assert!(!before.is_empty(), "la instalación de partida tiene archivos");
+    assert!(
+        !before.is_empty(),
+        "la instalación de partida tiene archivos"
+    );
 
     let outcome = runtime()
         .block_on(uninstall::run(
@@ -987,7 +990,9 @@ fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
 
     assert_eq!(outcome.status, "uninstalled");
     assert!(!outcome.program_dir_removed);
-    let error = outcome.lifecycle_error().expect("hay un reason de contrato");
+    let error = outcome
+        .lifecycle_error()
+        .expect("hay un reason de contrato");
     assert_eq!(error.reason, "program_dir_kept");
     assert_eq!(error.exit_code, 22);
     assert_eq!(

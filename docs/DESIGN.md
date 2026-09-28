@@ -80,7 +80,7 @@ AI-Voice-InterConnector/
 │       └── install.ps1                 # Windows (PowerShell 5.1+ y 7+)
 ├── vendor/
 │   └── qwen3-tts/                      # Binario y pesos Qwen3-TTS (no commiteados todos)
-└── crates/xtask/src/main.rs            # cask / source-offer / licenses / clean (tooling Rust)
+└── crates/xtask/src/main.rs            # tooling Rust: release, cask, licenses, gates de deriva, bootstrap, package, clean
 └── tests/
     ├── cli_golden.rs                   # Harness dorado del CLI
     ├── self_install_contract.rs        # Contrato de self install (recibo, bloqueo, integracion de PATH)
