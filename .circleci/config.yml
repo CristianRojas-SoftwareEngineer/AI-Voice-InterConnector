@@ -677,6 +677,22 @@ jobs:
             New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
             & $Probe --help | Select-Object -First 3
             Write-Host "entorno sandbox sale con $LASTEXITCODE"
+            # Réplica del staging del contrato: marcadores junto al exe, stdio a
+            # fichero y args de self install, en tres variantes que aíslan el factor.
+            $Stage = "$env:TEMP\probestage"
+            New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+            Copy-Item $Probe "$Stage\ai-voice-interconnector.exe" -Force
+            "contenido de onnxruntime.dll`n" | Out-File -Encoding ascii "$Stage\onnxruntime.dll"
+            "contenido de vcruntime140.dll`n" | Out-File -Encoding ascii "$Stage\vcruntime140.dll"
+            & "$Stage\ai-voice-interconnector.exe" --help > "$Stage\out1.txt" 2> "$Stage\err1.txt"
+            Write-Host "V1 marcadores + fichero sale con $LASTEXITCODE"
+            $env:AVI_INSTALL_DIR = "$Stage\install"
+            $env:AVI_DATA_DIR = "$Stage\data"
+            $env:AVI_DAEMON_PORT = "0"
+            & "$Stage\ai-voice-interconnector.exe" self install --no-setup --no-modify-path --yes > "$Stage\out2.txt" 2> "$Stage\err2.txt"
+            Write-Host "V2 self install sale con $LASTEXITCODE"
+            Get-ChildItem "$Stage\out*.txt" | ForEach-Object { Write-Host "$($_.Name): $($_.Length) bytes" }
+            Get-Content "$Stage\err2.txt" -TotalCount 5
             Write-Host "[STEP] Sonda de engendro - FIN"
       - run:
           name: Ejecutar suite Rust (cargo test --all)
