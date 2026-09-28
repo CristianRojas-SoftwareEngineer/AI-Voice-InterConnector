@@ -866,6 +866,13 @@ jobs:
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - INICIO"
             cargo --quiet xtask licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
+      - run:
+          name: Verificar pines y comentarios (puertas de política en CI)
+          command: |
+            echo "[STEP] Verificar pines y comentarios - INICIO"
+            cargo --quiet xtask pins --check
+            cargo --quiet xtask comments --check
+            echo "[STEP] Verificar pines y comentarios - FIN"
 
   validate-changelog:
     # Gate de CHANGELOG: verifica que exista la sección ## [X.Y.Z] para la
