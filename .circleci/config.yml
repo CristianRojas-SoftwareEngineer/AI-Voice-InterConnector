@@ -1187,7 +1187,7 @@ jobs:
             try { $j = $jsonRaw | ConvertFrom-Json } catch { throw "version --json no es JSON válido: $jsonRaw : $_" }
             if (-not $j.PSObject.Properties['version'] -or -not $j.version) { throw "version --json: campo 'version' ausente o vacío: $jsonRaw" }
             if (-not $j.PSObject.Properties['name'] -or $j.name -ne 'ai-voice-interconnector') { throw "version --json: campo 'name' incorrecto: $jsonRaw" }
-            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '3') { throw "version --json: campo 'schema_version' != '3': $jsonRaw" }
+            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '4') { throw "version --json: campo 'schema_version' != '4': $jsonRaw" }
             $expectedTag = $env:CIRCLE_TAG; if ($expectedTag) { $expectedTag = $expectedTag.TrimStart('v'); if ($j.version -ne $expectedTag) { throw "version --json: version '$($j.version)' != CIRCLE_TAG '$expectedTag' (tag=$env:CIRCLE_TAG)" } }
             Write-Host "version --json OK: name=$($j.name) version=$($j.version) schema_version=$($j.schema_version)"
             # Valida que la voz de fábrica 'default' quede registrada en un
@@ -1437,7 +1437,7 @@ jobs:
             # Contrato JSON determinista: `version --json` DEBE exponer name +
             # version + schema_version. Python3 parsea sin depender de jq
             # (cimg/rust ya lo provee, pero python3 es canónico).
-            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="3", "schema_version !=3: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
+            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="4", "schema_version !=4: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
@@ -1598,7 +1598,7 @@ jobs:
             # Contrato JSON determinista: `version --json` DEBE exponer name +
             # version + schema_version. Python3 parsea sin depender de jq
             # (cimg/rust ya lo provee, pero python3 es canónico).
-            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="3", "schema_version !=3: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
+            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="4", "schema_version !=4: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
@@ -1792,7 +1792,7 @@ jobs:
             # Contrato JSON determinista: `version --json` DEBE exponer name +
             # version + schema_version. Python3 parsea sin depender de jq
             # (cimg/rust ya lo provee, pero python3 es canónico).
-            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="3", "schema_version !=3: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
+            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="4", "schema_version !=4: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
