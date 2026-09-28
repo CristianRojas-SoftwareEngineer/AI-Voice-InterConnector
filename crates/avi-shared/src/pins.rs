@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 /// Manifiesto de pines, relativo a la raíz del repositorio.
 pub const PINS_REL: &str = "packaging/pins.json";
 
-/// Pines versionados: un campo por parámetro de la CI.
+/// Pines versionados: un campo por clave del fichero. Cada clave tiene su
+/// parámetro espejo en la CI salvo `sccache`, que no tiene parámetro y solo lo
+/// leen los pasos de instalación.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Pins {
     pub rust: String,
@@ -20,6 +22,7 @@ pub struct Pins {
     pub msys2_openblas: String,
     pub msys2_make: String,
     pub ninja: String,
+    pub bats: String,
 }
 
 /// Parsea el texto de `pins.json`.

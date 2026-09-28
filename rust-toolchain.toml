@@ -1,5 +1,5 @@
 [toolchain]
-# Versión fijada del compilador: la aplica `rustup` al entrar al repositorio,
-# de modo que el desarrollo local y la pipeline compilan siempre con el mismo
-# compilador. Sin componentes: los añade el job de cobertura cuando los exige.
+# Fichero generado por `cargo xtask pins --sync`: no editar a mano.
+# El canal copia la clave `rust` de `packaging/pins.json` y
+# `cargo xtask pins --check` falla si diverge.
 channel = "1.96.0"

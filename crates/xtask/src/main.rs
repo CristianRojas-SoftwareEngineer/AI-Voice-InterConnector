@@ -11,6 +11,7 @@ mod doctor;
 mod install;
 mod language;
 mod package;
+mod pins;
 
 const GITHUB_REPO: &str = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector";
 const CASK_NAME: &str = "ai-voice-interconnector";
@@ -319,6 +320,17 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
+    /// Verifica los pines versionados contra los parámetros de la CI y el canal de Rust
+    Pins {
+        #[arg(long)]
+        check: bool,
+        /// Regenera el canal de Rust desde packaging/pins.json
+        #[arg(long)]
+        sync: bool,
+        /// Sobrescribe la raíz a escanear (por defecto, el directorio actual)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
     /// Compila el motor TTS nativo (qwen_tts) desde vendor/qwen3-tts
     BuildEngine {
         /// Ejecuta `<bin> --self-test` tras compilar (oráculo de kernels)
@@ -517,6 +529,7 @@ fn main() -> Result<()> {
         }
         Commands::Language { check, root } => language::run(check, root.as_deref())?,
         Commands::Comments { check, root } => comments::run(check, root.as_deref())?,
+        Commands::Pins { check, sync, root } => pins::run(check, sync, root.as_deref())?,
         Commands::BuildEngine {
             self_test,
             simd,
@@ -1548,51 +1561,6 @@ mod tests {
         std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
     }
 
-    /// Valor `default:` de un parámetro del pipeline en `.circleci/config.yml`.
-    fn ci_param_default(cfg: &str, param: &str) -> Option<String> {
-        let lines: Vec<&str> = cfg.lines().collect();
-        let header = format!("{param}:");
-        for (i, line) in lines.iter().enumerate() {
-            if line.trim() == header {
-                for candidate in lines.iter().skip(i + 1).take(6) {
-                    let trimmed = candidate.trim();
-                    if let Some(value) = trimmed
-                        .strip_prefix("default: \"")
-                        .and_then(|v| v.strip_suffix('"'))
-                    {
-                        return Some(value.to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// `packaging/pins.json` ata los parámetros de la CI (decisiones (a)+(f)):
-    /// si el pipeline diverge del JSON, este test falla en local antes de que
-    /// el paso `validate_pins` falle en CI.
-    #[test]
-    fn test_ci_pins_match_pins_json() {
-        let pins = avi_shared::pins::parse_text(include_str!("../../../packaging/pins.json"))
-            .expect("pins.json válido");
-        let cfg = read_ci_config();
-        for (param, value) in [
-            ("rust_version", pins.rust.as_str()),
-            ("ort_version", pins.ort.as_str()),
-            ("msys2_base_release", pins.msys2_base.as_str()),
-            ("msys2_gcc_version", pins.msys2_gcc.as_str()),
-            ("msys2_openblas_version", pins.msys2_openblas.as_str()),
-            ("msys2_make_version", pins.msys2_make.as_str()),
-        ] {
-            let default = ci_param_default(&cfg, param)
-                .unwrap_or_else(|| panic!("la CI debe declarar el parámetro {param}"));
-            assert_eq!(
-                default, value,
-                "el parámetro {param} de la CI debe espejar packaging/pins.json"
-            );
-        }
-    }
-
     #[test]
     fn test_pipeline_heterogeneous_and_unconditional_sccache() {
         let cfg = read_ci_config();
@@ -1617,11 +1585,11 @@ mod tests {
             "debe existir el comando sccache_save_cache (guardado incondicional)"
         );
         assert!(
-            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ epoch }}"),
+            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ epoch }}"),
             "sccache_save_cache debe usar clave rolling por epoch segmentada por variante"
         );
         assert!(
-            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-"),
+            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-"),
             "sccache_restore_cache debe usar clave por prefijo segmentada por variante"
         );
         // Secciones scoping por job (delimitadas por siguiente job header para evitar falso-positivo cross-job)
