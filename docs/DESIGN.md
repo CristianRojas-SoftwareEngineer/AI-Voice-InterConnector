@@ -93,7 +93,7 @@ AI-Voice-InterConnector/
     ├── DESIGN.md                       # Este documento
     ├── BUILD.md                        # Build y distribución Rust
     ├── DISTRIBUTION.md                 # Canales de distribución (tar.gz/zip)
-    └── PARITY.md                       # Paridad multiplataforma
+    └── specs/sdlc-lifecycle.md         # Especificación del ciclo de vida y paridad multiplataforma
 ```
 
 > Las voces de **fábrica** `default` están embebidas en el binario (`crates/avi-store/assets/default/`) y se materializan en `data_dir()/voices/default/` en `VoiceStore::ensure_initialized()`. Las voces de **usuario** viven en `data_dir()/voices/<nombre>/` (user-data-dir por SO).

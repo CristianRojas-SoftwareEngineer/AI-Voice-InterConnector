@@ -113,6 +113,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 - Nuevo crate `avi-process` como única definición de las flags de creación de procesos de Windows (los nombres oficiales de `windows-sys`, sin hexadecimales escritos a mano) y del borrado diferido, que comparten el producto y `xtask`. Se retiran la copia de `xtask`, el delegado del daemon y los literales.
 - `ProgramDirRemover::schedule` y `PathRemover::schedule` devuelven `Result<()>`: desaparece la ruta del borrado parcial con el ejecutable en uso.
+- Se retira `docs/PARITY.md`: casi todo su contenido duplicaba la especificación del ciclo de vida. Lo propio (firma de código, cobertura de arquitecturas y provisión de modelos en el Cask) pasa a la sección «Brechas conocidas» de `docs/specs/sdlc-lifecycle.md`, y `README.md`, `docs/DESIGN.md`, `docs/DISTRIBUTION.md` y `docs/GOAL.md` remiten ahora a ella.
 
 ## [0.24.0] — 2026-09-27
 

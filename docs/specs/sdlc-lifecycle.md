@@ -678,6 +678,20 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 
 Las diferencias entre columnas son mecanismos idiomáticos de cada SO. La experiencia (comandos, confirmaciones, resultados y residuo) es la misma.
 
+El uso de la aplicación (CLI, daemon, voces de fábrica y de usuario, esquemas `--json` y códigos de salida) tampoco varía entre SO; solo cambia el backend de audio, una tecnología equivalente y no una diferencia de experiencia.
+
+### Brechas conocidas
+
+Son las únicas asimetrías de experiencia entre targets que permanecen abiertas, por decisión y no por olvido:
+
+| Brecha | Targets | Situación |
+|---|---|---|
+| **Firma de código** | Windows y macOS | Los binarios no van firmados ni notarizados. Los one-liners descargan por CLI (sin Mark-of-the-Web) y `self install` limpia la cuarentena de macOS, y el Cask hace lo propio; un archivo descargado por navegador sí dispara SmartScreen o Gatekeeper. Es cross-SO y está diferida al goal a largo plazo porque depende de terceros (SignPath OSS, Apple Developer). Ver [§11](#11-seguridad) y [SECURITY.md](../../SECURITY.md#artefactos-sin-firmar) |
+| **Cobertura de arquitecturas** | Todos | Solo los cuatro targets de [§3](#3-targets-soportados); no hay Windows ARM64 ni macOS Intel. Es una limitación de toolchain aceptada |
+| **Provisión de modelos en el Cask** | macOS (Homebrew) | Homebrew no admite un post-install arbitrario, así que el Cask no ejecuta `setup`: imprime un *caveat* que remite a `ai-voice-interconnector setup`. Además exige tener Homebrew, un prerrequisito que el one-liner no tiene |
+
+Al abrir o cerrar una brecha se actualiza esta tabla. El historial de las ya cerradas queda en `CHANGELOG.md`.
+
 ## 11. Seguridad
 
 - **Transporte**: solo HTTPS (en `curl`, `--proto '=https' --tlsv1.2`), sin vuelta atrás a HTTP.
@@ -720,7 +734,6 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del sobre, las cuatro retiradas, los seis chequeos y el veredicto de un solo objeto |
 | `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
-| `docs/PARITY.md` | Remite a la matriz de paridad de [§10](#10-matriz-de-paridad-por-target); el resto es registro histórico por fases |
 | `docs/SELF-HOSTED-INSTALL.md` | Retirado: no existe en el arbol. Su contenido vigente esta en `docs/DISTRIBUTION.md` |
 | `docs/DESIGN.md` | Arquitectura, motor TTS, estructura del proyecto y comandos; su árbol describe las piezas vigentes, de modo que la ausencia de los cinco scripts de la raíz es un hecho comprobable y no un olvido |
 | `docs/GOAL.md` | Especificación ideal del producto y clasificación de specs, con la firma de código en el goal a largo plazo; el criterio de equivalencia entre SO nombra la invocación vigente y conserva la de entonces como constancia |

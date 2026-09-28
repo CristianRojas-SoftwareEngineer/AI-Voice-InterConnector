@@ -163,7 +163,7 @@ puede requerir un reporte propio; con firma de código, la reputación se hereda
 versiones y esa recurrencia disminuye mucho.
 
 El estado de esta brecha por SO (mitigada, diferida a firma de código) vive en
-[docs/PARITY.md](PARITY.md#fase-2--primer-arranque-reputación-del-binario-sin-firmar).
+[brechas conocidas de la especificación del ciclo de vida](specs/sdlc-lifecycle.md#brechas-conocidas).
 
 ## Canal PyPI retirado
 
