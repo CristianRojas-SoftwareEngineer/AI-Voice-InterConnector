@@ -645,19 +645,25 @@ enum DaemonCommands {
 
 // ─── Bootstrap ───────────────────────────────────────────────────────
 
-/// Forzar UTF-8 en stdout/stderr (equivalente a bootstrap.py)
+/// Fija la página de códigos UTF-8 de entrada y salida de la consola heredada.
+/// Sin consola no hace nada.
 fn force_utf8() {
     #[cfg(windows)]
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "chcp", "65001"])
-        .output();
+    {
+        use windows_sys::Win32::Globalization::CP_UTF8;
+        use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+        unsafe {
+            SetConsoleOutputCP(CP_UTF8);
+            SetConsoleCP(CP_UTF8);
+        }
+    }
 }
 
 /// Instalar handler de SIGINT → limpieza acotada + exit 130.
 ///
 /// Preserva el código 130 en todos los modos; antes de salir mata el árbol
 /// preciso del daemon residual por PID con deadline breve y verificación
-/// (`taskkill /F /T /PID` en Windows con `CREATE_NO_WINDOW`, `kill -9` al
+/// (`taskkill /F /T /PID` en Windows, `kill -9` al
 /// grupo en Unix). Vencido el deadline sale igualmente con 130 sin colgarse.
 /// Reclama el PID en memoria cuando aún no hay pidfile (ventana
 /// spawn→write), preservando 130 y el techo de 2 s.
@@ -2665,7 +2671,7 @@ fn compose_update_summary(
 ///
 /// El binario aporta lo que el motor no puede tener: el **control de procesos** —que
 /// vive en `avi-daemon` y `avi-tts`— y el **borrado diferido** de Windows, que necesita
-/// `daemon::spawn_uninstall_helper`. El motor decide; el binario ejecuta las dos
+/// `avi_process::spawn_deferred_removal`. El motor decide; el binario ejecuta las dos
 /// primitivas de plataforma.
 async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliError> {
     match action {
@@ -2773,10 +2779,17 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             )
             .await
             .map_err(lifecycle_error_to_cli)?;
+            // `program_dir_kept` es un éxito parcial con código propio: el resto se completó
+            // y el directorio de programa sigue en disco. Se emite el sobre igual y solo
+            // cambian el `reason` y el código de salida, como en `self install`.
+            let kept = outcome.lifecycle_error();
             if json_mode {
                 emit_raw_json(json!({
                     "status": outcome.status,
-                    "reason": Value::Null,
+                    "reason": match &kept {
+                        Some(failure) => Value::String(failure.reason.to_string()),
+                        None => Value::Null,
+                    },
                     "removed": outcome.removed,
                     "path_reverted": outcome.path_reverted,
                     "dry_run": outcome.dry_run
@@ -2789,7 +2802,15 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 }
                 println!("Desinstalación completada ({}).", outcome.status);
             }
-            Ok(Outcome::Done)
+            match kept {
+                Some(failure) => {
+                    if !json_mode {
+                        eprintln!("{}", failure.message);
+                    }
+                    Ok(Outcome::Verdict(exit_code_for(failure.reason).code()))
+                }
+                None => Ok(Outcome::Done),
+            }
         }
         SelfSub::Update {
             check,
@@ -3126,6 +3147,7 @@ fn exit_code_for(reason: &str) -> ExitCode {
         "binary_incompatible" => ExitCode::BinaryIncompatible,
         "network_error" => ExitCode::NetworkError,
         "checksum_mismatch" => ExitCode::ChecksumMismatch,
+        "program_dir_kept" => ExitCode::ProgramDirKept,
         // Los `reason` del ciclo 3 no tienen variante en este ciclo: salen con
         // el 1 genérico.
         _ => ExitCode::Error,
@@ -3207,7 +3229,7 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         Ok(())
     }
 
-    fn schedule(&self, program_dir: &std::path::Path, pid: u32) -> anyhow::Result<bool> {
+    fn schedule(&self, program_dir: &std::path::Path, pid: u32) -> anyhow::Result<()> {
         // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
         // impide el borrado directo. En Unix no hay tal impedance y el motor ya habría
         // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
@@ -3217,8 +3239,8 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
             // El helper no debe heredar los handles estándar del proceso que lanza la
             // desinstalación, o su `.ps1` retendría el stdio y el lanzador no vería EOF.
             disinherit_standard_handles();
-            daemon::spawn_uninstall_helper(program_dir, pid)?;
-            Ok(true)
+            avi_process::spawn_deferred_removal(program_dir, pid)?;
+            Ok(())
         }
         #[cfg(not(windows))]
         {
@@ -3232,10 +3254,9 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
 ///
 /// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso está dentro
 /// —el staging tras el traspaso—, el borrado directo es imposible y se programa
-/// con el proceso auxiliar desacoplado generalizado de `avi-daemon`; el motor
-/// decide cuál de los dos casos es. Es la contrapartida de `ProgramRemoval`
-/// para rutas arbitrarias del ciclo (staging, `.old-*`), que `ProgramRemoval`
-/// no cambia de forma por U3.
+/// con el borrado diferido de `avi-process`; el motor decide cuál de los dos
+/// casos es. Es la contrapartida de `ProgramRemoval` para rutas arbitrarias del
+/// ciclo (staging, `.old-*`).
 struct LifecyclePaths;
 
 impl lifecycle::update::PathRemover for LifecyclePaths {
@@ -3247,7 +3268,7 @@ impl lifecycle::update::PathRemover for LifecyclePaths {
         Ok(())
     }
 
-    fn schedule(&self, path: &std::path::Path, pid: u32) -> anyhow::Result<bool> {
+    fn schedule(&self, path: &std::path::Path, pid: u32) -> anyhow::Result<()> {
         // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
         // impide el borrado directo. En Unix no hay tal impedimento y el motor ya habría
         // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
@@ -3257,8 +3278,8 @@ impl lifecycle::update::PathRemover for LifecyclePaths {
             // El helper no debe heredar los handles estándar del proceso que lanza la
             // actualización, o su `.ps1` retendría el stdio y el lanzador no vería EOF.
             disinherit_standard_handles();
-            daemon::spawn_deferred_removal(path, pid)?;
-            Ok(true)
+            avi_process::spawn_deferred_removal(path, pid)?;
+            Ok(())
         }
         #[cfg(not(windows))]
         {
@@ -4753,6 +4774,7 @@ mod tests {
         assert_eq!(exit_code_for("binary_incompatible").code(), 19);
         assert_eq!(exit_code_for("network_error").code(), 20);
         assert_eq!(exit_code_for("checksum_mismatch").code(), 21);
+        assert_eq!(exit_code_for("program_dir_kept").code(), 22);
         assert_eq!(
             exit_code_for("unsupported_platform"),
             ExitCode::UnsupportedPlatform

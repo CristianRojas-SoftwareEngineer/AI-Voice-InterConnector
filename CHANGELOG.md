@@ -97,10 +97,22 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+### Añadido
+
+- `self uninstall` emite `reason: "program_dir_kept"` con código de salida 22 cuando el resto de la desinstalación se completó pero el directorio de programa no se pudo borrar ni programar su borrado, en las tres plataformas. Antes ese fallo se reportaba como `uninstalled` con salida 0.
+
 ### Corregido
 
+- `self uninstall` en Windows borra de verdad el directorio de programa cuando el ejecutable en uso está dentro: el auxiliar de borrado se lanza con consola oculta y confirma con una marca que su script se ejecuta; si muere sin arrancar, el comando lo reporta en vez de dar el borrado por programado.
+- El daemon ya no abre ventanas de consola al arrancar ni al lanzar sus procesos auxiliares, y `force_utf8` deja de crear un proceso hijo por invocación.
+- `cargo xtask clean` borra `target/` en Windows: usaba la misma copia defectuosa del borrado diferido.
 - El recibo de `self install` y la cabecera de `doctor` declaran la versión del producto que informa `version --json`: el constructor del entorno y el reporte la reciben del binario en vez de estampar la del crate `avi-lifecycle`.
 - El modo automático de `translate` con el daemon en marcha entrega la traducción: la feature `native-translation` del paquete raíz propaga ya al daemon, de modo que los builds de distribución registran la ruta `/translate` en vez de responder 404.
+
+### Interno
+
+- Nuevo crate `avi-process` como única definición de las flags de creación de procesos de Windows (los nombres oficiales de `windows-sys`, sin hexadecimales escritos a mano) y del borrado diferido, que comparten el producto y `xtask`. Se retiran la copia de `xtask`, el delegado del daemon y los literales.
+- `ProgramDirRemover::schedule` y `PathRemover::schedule` devuelven `Result<()>`: desaparece la ruta del borrado parcial con el ejecutable en uso.
 
 ## [0.24.0] — 2026-09-27
 

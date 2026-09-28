@@ -150,9 +150,9 @@ pub const PARKED_DIR_PREFIX: &str = ".old-";
 pub const MODELS_XET_SUBDIR: &str = "xet";
 
 /// Prefijos de los temporales de ejecución de la aplicación: `$TMPDIR` en
-/// Unix y `%TEMP%` en Windows. En Windows el helper de borrado diferido
-/// (`avi-uninstall-<pid>-<ms>.ps1`) cae en `avi-`, de modo que ningún otro
-/// prefijo puede sustituir a este conjunto.
+/// Unix y `%TEMP%` en Windows. En Windows los temporales del borrado diferido
+/// (`avi-deferred-<pid>-<ms>.ps1` y su marca `.ready`) caen en `avi-`, de modo
+/// que ningún otro prefijo puede sustituir a este conjunto.
 pub const TEMP_PREFIXES: &[&str] = &["avi-", "avi_"];
 
 // **R4.** Las cinco constantes anteriores son la fuente única de los recursos que la

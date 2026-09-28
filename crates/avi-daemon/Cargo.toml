@@ -11,6 +11,7 @@ tokio = { version = "1.35", features = ["full"] }
 tokio-stream = "0.1"
 axum = "0.7"
 avi-core = { path = "../avi-core" }
+avi-process = { path = "../avi-process" }
 avi-store = { path = "../avi-store" }
 avi-stt = { path = "../avi-stt" }
 avi-tts = { path = "../avi-tts" }

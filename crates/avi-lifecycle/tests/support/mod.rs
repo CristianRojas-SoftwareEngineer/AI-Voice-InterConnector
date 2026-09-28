@@ -537,8 +537,8 @@ impl uninstall::ProgramDirRemover for Now {
         std::fs::remove_dir_all(program_dir)?;
         Ok(())
     }
-    fn schedule(&self, _program_dir: &Path, _pid: u32) -> anyhow::Result<bool> {
-        Ok(false)
+    fn schedule(&self, _program_dir: &Path, _pid: u32) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 

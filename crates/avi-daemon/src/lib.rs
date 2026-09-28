@@ -14,11 +14,6 @@ use tokio::sync::Mutex;
 
 pub mod spawn;
 pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_death};
-// `spawn_uninstall_helper` solo existe bajo `#[cfg(windows)]`; el reexport debe
-// compartir el gate o el build no-Windows rompe con E0432, porque el call site
-// del binario ya está dentro de un bloque `#[cfg(windows)]`.
-#[cfg(windows)]
-pub use spawn::{spawn_deferred_removal, spawn_uninstall_helper};
 // El trait `SttEngine` (`.transcribe`) solo lo consume la superficie STT,
 // gateada tras `native-stt`.
 #[cfg(feature = "native-stt")]

@@ -836,7 +836,9 @@ pub mod resident {
                 })?;
             use std::process::Stdio;
             // Windows: `qwen_tts.exe` NO debe heredar handles ni abrir terminal del
-            // padre. `DETACHED_PROCESS (0x8)` evita la ventana de consola independiente.
+            // padre. `DETACHED_PROCESS` lo deja sin consola: `qwen_tts` no lanza
+            // procesos de consola, así que no necesita una propia, y va sin grupo
+            // propio para que `taskkill /T` lo alcance.
             // La herencia del pipe (write-end) del proceso abuelo (test CLI) se corta
             // en la raíz: el daemon que spawnea este motor ya desheredó sus STD vía
             // `SetHandleInformation` (`main::disinherit_standard_handles`); no existe
@@ -856,7 +858,7 @@ pub mod resident {
                 cmd.stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::from(log_file))
-                    .creation_flags(0x00000008);
+                    .creation_flags(avi_process::DETACHED_PROCESS);
             }
             #[cfg(unix)]
             {

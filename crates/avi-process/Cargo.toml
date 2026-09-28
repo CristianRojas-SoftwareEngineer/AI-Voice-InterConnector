@@ -1,0 +1,14 @@
+[package]
+name = "avi-process"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Primitivas de procesos del sistema operativo: flags de creación y borrado diferido"
+
+[dependencies]
+anyhow = "1.0"
+
+# Único crate que fija flags de creación de procesos: el resto del repositorio
+# las importa de aquí con los nombres oficiales de `windows-sys`.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }

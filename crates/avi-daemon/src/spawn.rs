@@ -5,7 +5,7 @@ use std::process::Command;
 /// El daemon hijo **no debe heredar handles del padre**. En Windows el padre suele
 /// ser el CLI raíz, pero en los E2E de `cli_golden` el CLI a su vez es hijo de
 /// `cargo test` capturando su salida vía `Command::output()` (un *pipe*).
-/// `DETACHED_PROCESS (0x8)` no deshabilita la herencia de handles: con
+/// Ninguna creation flag de consola deshabilita la herencia de handles: con
 /// `bInheritHandles=TRUE` (default de `CreateProcessW`, no forzable a FALSE en Rust
 /// estable) el daemon hijo —y `qwen_tts.exe`— heredan el handle de escritura del
 /// pipe. Como `output()` solo retorna cuando todos los holders del pipe lo cierran,
@@ -58,11 +58,13 @@ pub fn spawn_background(
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        // DETACHED_PROCESS (0x8): sin consola del padre.
-        // CREATE_NEW_PROCESS_GROUP (0x200): grupo propio.
+        // CREATE_NO_WINDOW: el daemon tiene una consola oculta propia, que heredan
+        // `cmd`, `tasklist` y `taskkill` lanzados por él. Con DETACHED_PROCESS cada
+        // uno quedaría sin consola y abriría una ventana visible.
+        // CREATE_NEW_PROCESS_GROUP: grupo propio.
         // La herencia de handles se corta en la raíz vía `SetHandleInformation`
         // (`main::disinherit_standard_handles`), no con una creation flag.
-        cmd.creation_flags(0x00000008 | 0x00000200);
+        cmd.creation_flags(avi_process::CREATE_NO_WINDOW | avi_process::CREATE_NEW_PROCESS_GROUP);
     }
 
     #[cfg(unix)]
@@ -194,99 +196,3 @@ pub fn wait_for_pid_death(pid: u32, deadline: std::time::Duration) -> bool {
 // no añade la dependencia para no exceder el alcance (alternativa admitida:
 // `kill_tree_by_pid` con verificación). La rama del CLI se llama
 // `install_job_with_tree_kill`.
-
-/// Helper determinista de desinstalación en Windows.
-///
-/// No borra `install_dir` desde el proceso vivo (determinista: `PermissionDenied`
-/// si lo intentara). Escribe un `.ps1` en `%TEMP%` que espera la muerte del
-/// `PID` padre y luego borra `LiteralPath` con `Remove-Item -Recurse -Force`,
-/// sin best-effort: si crear el archivo o spawnear falla, retorna `Err` y
-/// `handle_uninstall` falla — no hay aviso `Bórralo manualmente`.
-///
-/// Es el caso particular de [`spawn_deferred_removal`] para el directorio de
-/// programa, y delega en él: la desinstalación del Ciclo 1 no cambia de
-/// comportamiento, solo comparte el mecanismo con el resto del ciclo.
-#[cfg(windows)]
-pub fn spawn_uninstall_helper(
-    install_dir: &std::path::Path,
-    pid: u32,
-) -> anyhow::Result<std::path::PathBuf> {
-    spawn_deferred_removal(install_dir, pid)
-}
-
-/// Reintentos de borrado del helper diferido, con espera entre ellos. Acotados
-/// (de la actualización): un archivo en uso se libera al morir el proceso, y lo que siga
-/// bloqueado después lo recoge la recuperación de la siguiente operación.
-#[cfg(windows)]
-pub const DEFERRED_REMOVAL_ATTEMPTS: u32 = 10;
-
-/// Espera entre reintentos del helper diferido.
-#[cfg(windows)]
-pub const DEFERRED_REMOVAL_RETRY_MS: u64 = 500;
-
-/// Borrado diferido de una ruta arbitraria del ciclo en Windows (staging,
-/// `.old-*`, directorio de programa).
-///
-/// Generaliza [`spawn_uninstall_helper`]: el mismo mecanismo —un `.ps1` en
-/// `%TEMP%` que espera la muerte del `PID` y borra `LiteralPath`—, con
-/// reintentos acotados en vez de un solo intento. El prefijo del helper sigue
-/// siendo `avi-`, que es el que el barrido cubre; en Unix no hay
-/// impedimento de borrado en uso y el motor borra directo, así que esta
-/// función solo existe en Windows.
-///
-/// Sin best-effort, como el auxiliar específico: si crear el archivo o
-/// spawnear falla, retorna `Err`.
-#[cfg(windows)]
-pub fn spawn_deferred_removal(
-    path: &std::path::Path,
-    pid: u32,
-) -> anyhow::Result<std::path::PathBuf> {
-    use std::os::windows::process::CommandExt;
-    use std::process::Stdio;
-
-    let dir_literal = path.to_string_lossy().replace('\'', "''");
-    let attempts = DEFERRED_REMOVAL_ATTEMPTS;
-    let retry_ms = DEFERRED_REMOVAL_RETRY_MS;
-    let script = format!(
-        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
-         Start-Sleep -Milliseconds {retry_ms}; \
-         for ($i = 1; $i -le {attempts}; $i++) {{ \
-           if (-not (Test-Path -LiteralPath '{dir}')) {{ break }}; \
-           Remove-Item -LiteralPath '{dir}' -Recurse -Force -ErrorAction SilentlyContinue; \
-           if (-not (Test-Path -LiteralPath '{dir}')) {{ break }}; \
-           Start-Sleep -Milliseconds {retry_ms} \
-         }}; \
-         Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n",
-        pid = pid,
-        dir = dir_literal
-    );
-
-    let helper = std::env::temp_dir().join(format!(
-        "avi-deferred-{}-{}.ps1",
-        pid,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    ));
-    std::fs::write(&helper, script)?;
-
-    let mut cmd = std::process::Command::new("powershell.exe");
-    cmd.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        helper.to_string_lossy().as_ref(),
-    ]);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // DETACHED_PROCESS (0x8) | CREATE_NEW_PROCESS_GROUP (0x200): sin consola del
-    // padre, grupo propio. La herencia de handles se corta en la raíz vía
-    // `SetHandleInformation` (`main::disinherit_standard_handles`), no con flag.
-    cmd.creation_flags(0x00000008 | 0x00000200);
-    cmd.spawn()?;
-    Ok(helper)
-}

@@ -283,8 +283,9 @@ fn entries_with_prefix(dir: &Path, prefix: &str) -> Vec<PathBuf> {
 
 /// PID del proceso dueño de un temporal propio, si el nombre lo lleva.
 ///
-/// Se busca la primera*racha de dígitos de tres o más* porque la convención de
-/// los helpers de borrado diferido es `avi-uninstall-<pid>-<ms>.ps1`, y porque
+/// Se busca la primera racha de dígitos de tres o más porque la convención de
+/// los temporales del borrado diferido es `avi-deferred-<pid>-<ms>` (con
+/// extensión `.ps1` o `.ready`), y porque
 /// un número de una cifra es más probablemente un contador que un PID: con eso,
 /// un temporal como `avi_clone_x_1.qvoice` no se confunde con un proceso.
 fn owner_pid(name: &str) -> Option<u32> {
@@ -370,7 +371,11 @@ mod tests {
     #[test]
     fn temp_owner_pid_is_read_from_the_name() {
         assert_eq!(
-            owner_pid("avi-uninstall-12345-1780000000000.ps1"),
+            owner_pid("avi-deferred-12345-1780000000000.ps1"),
+            Some(12345)
+        );
+        assert_eq!(
+            owner_pid("avi-deferred-12345-1780000000000.ready"),
             Some(12345)
         );
         assert_eq!(owner_pid("avi_12345.tmp"), Some(12345));
@@ -405,9 +410,9 @@ mod tests {
         write_file(&parked.join("viejo"), "v1");
         let staging = dir.join(format!("{}999", crate::STAGING_DIR_PREFIX));
         write_file(&staging.join("descargado"), "bundle");
-        let dead_temp = temp_root.join("avi-uninstall-4294967000-1780000000000.ps1");
+        let dead_temp = temp_root.join("avi-deferred-4294967000-1780000000000.ps1");
         write_file(&dead_temp, "borrador");
-        let live_temp = temp_root.join(format!("avi-uninstall-{}.ps1", std::process::id()));
+        let live_temp = temp_root.join(format!("avi-deferred-{}.ps1", std::process::id()));
         write_file(&live_temp, "en uso");
         let our = temp_root.join("lifecycle-test-de-otra-prueba.txt");
         write_file(&our, "ajeno");

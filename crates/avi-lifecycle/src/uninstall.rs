@@ -70,9 +70,10 @@ pub trait ProgramDirRemover {
     fn exe_lives_inside(&self, program_dir: &Path) -> bool;
     /// Borra el directorio ya. En Unix es lo que hace siempre.
     fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()>;
-    /// Programa el borrado para cuando termine el proceso en curso y devuelve `true`
-    /// si quedó programado. Es el caso diferido del paso 8.
-    fn schedule(&self, program_dir: &Path, pid: u32) -> anyhow::Result<bool>;
+    /// Programa el borrado para cuando termine el proceso en curso. `Ok` significa que
+    /// el auxiliar está en marcha; si no puede garantizarse, `Err`. Es el caso diferido
+    /// del paso 8.
+    fn schedule(&self, program_dir: &Path, pid: u32) -> anyhow::Result<()>;
 }
 
 /// Plan del paso 2.
@@ -173,9 +174,29 @@ pub struct Outcome {
     /// `true` si el directorio de programa se borró de verdad; `false` si quedó
     /// programado para después de salir, o si R2 lo impidió.
     pub program_dir_removed: bool,
+    /// Mensaje (ruta y causa) si el paso 8 no pudo borrar ni programar el directorio de
+    /// programa. La exclusión por R2 no cuenta: es preservación deliberada.
+    pub program_dir_kept: Option<String>,
     pub dry_run: bool,
     pub daemon_was_running: bool,
     pub failed: Vec<String>,
+}
+
+impl Outcome {
+    /// `reason` de contrato y código de salida cuando el paso 8 no pudo borrar ni programar
+    /// el directorio de programa, y `None` en cualquier otro desenlace.
+    ///
+    /// Es éxito parcial con código propio: el resto de la desinstalación se completó y lo
+    /// único que falta es ese directorio. La exclusión por R2 no es un fallo sino
+    /// preservación deliberada, así que no llega aquí. Quien cablea emite el sobre con este
+    /// `reason` y sale por veredicto con su código, como hace `self install`.
+    pub fn lifecycle_error(&self) -> Option<LifecycleError> {
+        self.program_dir_kept.as_ref().map(|detail| {
+            LifecycleError::program_dir_kept(format!(
+                "el resto de la desinstalación se completó, pero no se pudo borrar ni programar \n                 el borrado del directorio de programa ({detail}); bórralo a mano cuando ningún \n                 proceso lo use"
+            ))
+        })
+    }
 }
 
 /// Ejecuta `self uninstall`.
@@ -270,6 +291,7 @@ pub async fn run(
     let path_reverted = revert_path(receipt, &env.home);
 
     // ── Paso 8. Borrar el directorio de programa aplicando R2 ────────────────────
+    let mut program_dir_kept = None;
     let (program_dir_removed, status) = if program_dir_is_removable(roots, &program_dir) {
         match remove_program_dir(remover, &program_dir) {
             Ok(Removal::Now) => {
@@ -280,6 +302,7 @@ pub async fn run(
             Err(e) => {
                 eprintln!("  no se pudo borrar {}: {e}", program_dir.display());
                 failed.push(program_dir.display().to_string());
+                program_dir_kept = Some(format!("{}: {e}", program_dir.display()));
                 (false, "uninstalled")
             }
         }
@@ -316,6 +339,7 @@ pub async fn run(
         preserved: plan.preserved,
         path_reverted,
         program_dir_removed,
+        program_dir_kept,
         dry_run: false,
         daemon_was_running: daemon.was_running,
         failed,
@@ -484,6 +508,7 @@ pub fn simulate(
         preserved: plan.preserved,
         path_reverted: false,
         program_dir_removed: false,
+        program_dir_kept: None,
         dry_run: true,
         daemon_was_running: false,
         failed: Vec::new(),
@@ -704,15 +729,15 @@ fn remove_program_dir(
     }
     if remover.exe_lives_inside(program_dir) {
         // Windows: el ejecutable en uso impide el borrado directo. Se pide un
-        // proceso auxiliar desacoplado con reintentos acotados, y el desenlace es
-        // `removal_scheduled`, que es un éxito.
-        if remover.schedule(program_dir, std::process::id())? {
-            eprintln!(
-                "  el directorio se borrará al terminar este proceso: {}",
-                program_dir.display()
-            );
-            return Ok(Removal::Scheduled);
-        }
+        // proceso auxiliar desacoplado con reintentos acotados; si no puede
+        // programarse, el error sube y el directorio queda intacto: borrar aquí
+        // sería un borrado parcial con el ejecutable en uso.
+        remover.schedule(program_dir, std::process::id())?;
+        eprintln!(
+            "  el directorio se borrará al terminar este proceso: {}",
+            program_dir.display()
+        );
+        return Ok(Removal::Scheduled);
     }
     remover.remove_now(program_dir)?;
     Ok(Removal::Now)

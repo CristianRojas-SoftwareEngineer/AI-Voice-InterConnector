@@ -504,14 +504,15 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 | `19` | `ExitCode::BinaryIncompatible` | El binario descargado no arranca o no informa la versión objetivo, con diagnóstico |
 | `20` | `ExitCode::NetworkError` | Fallo de descarga tras reintentos acotados |
 | `21` | `ExitCode::ChecksumMismatch` | El hash no coincide o falta en `SHA256SUMS.txt`; nada modificado |
+| `22` | `ExitCode::ProgramDirKept` | `self uninstall` completó el resto, pero el directorio de programa no se pudo borrar ni programar su borrado |
 | `130` | `ExitCode::Interrupted` | Interrupción del usuario (Ctrl+C con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria en la ventana spawn→write) |
 
-**Los once enteros del 11 al 21 son de la tabla cerrada del ciclo de vida, uno por `reason`**, y no se reparten por el eje de dos preguntas de §1 como los anteriores: cada uno corresponde a un `reason` que §8.1 de la especificación declara, y la correspondencia es 1:1 con la variante de `ExitCode` (`crates/avi-core/src/exit_codes.rs`). Los dos casos que rompen el patrón son deliberados y son los que hay que recordar al leer la tabla:
+**Los doce enteros del 11 al 22 son de la tabla cerrada del ciclo de vida, uno por `reason`**, y no se reparten por el eje de dos preguntas de §1 como los anteriores: cada uno corresponde a un `reason` que §8.1 de la especificación declara, y la correspondencia es 1:1 con la variante de `ExitCode` (`crates/avi-core/src/exit_codes.rs`). Los dos casos que rompen el patrón son deliberados y son los que hay que recordar al leer la tabla:
 
 - **El 11 no es un error.** `setup_failed` es un **éxito parcial**: el programa está instalado, el resumen y el sobre se emiten igual, y lo único que cambia es el `reason` del sobre y el código de salida. Por eso el sobre de `self install` sale por *veredicto* y no por el objeto `error` de §10.
 - **El 15 y el 17 son los que el ejecutable sin bundle alrededor y el bloqueo ya tomado producen**, y son los dos que un usuario se encuentra sin haber hecho nada mal: `target\debug\ai-voice-interconnector.exe self install` responde `bundle_invalid` (15) porque no hay bundle alrededor, no porque la instalación esté rota.
 
-`unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20) y `checksum_mismatch` (21) **tienen variante propia**: los emiten `self update`, la descarga de `setup` y la comprobación de arranque del bundle, con la traducción en `exit_code_for` (`src/main.rs`) y las variantes en la cabecera de `crates/avi-core/src/exit_codes.rs`.
+`unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20), `checksum_mismatch` (21) y `program_dir_kept` (22) **tienen variante propia**: los emiten `self update`, la descarga de `setup`, la comprobación de arranque del bundle y el paso 8 de `self uninstall`, con la traducción en `exit_code_for` (`src/main.rs`) y las variantes en la cabecera de `crates/avi-core/src/exit_codes.rs`.
 
 ### Cómo se reparten los enteros
 
@@ -584,7 +585,7 @@ El payload de error usa **dos claves de primer nivel** —`error` con el mensaje
 {"schema_version": "4", "error": "El texto a traducir está vacío", "reason": "empty_text"}
 ```
 
-`reason` es la clave de la causa fina y es **aditiva**: los `reason` del ciclo de vida (`lifecycle_locked`, `bundle_invalid`, `daemon_stop_failed`, `path_conflict`, `rolled_back`, `externally_managed`, `confirmation_required`, `usage_error`, `unsupported_platform`, `binary_incompatible`, `network_error`, `checksum_mismatch`, `ct2_conversion_failed`) viajan por ella; los del ciclo de vida tienen además entero propio del 11 al 21, salvo `confirmation_required` y `usage_error` (2) y `ct2_conversion_failed` anidado (1), y un `reason` desconocido se trata como ausente. El fallo de parseo lleva `reason: "usage_error"`.
+`reason` es la clave de la causa fina y es **aditiva**: los `reason` del ciclo de vida (`lifecycle_locked`, `bundle_invalid`, `daemon_stop_failed`, `path_conflict`, `rolled_back`, `externally_managed`, `confirmation_required`, `usage_error`, `unsupported_platform`, `binary_incompatible`, `network_error`, `checksum_mismatch`, `program_dir_kept`, `ct2_conversion_failed`) viajan por ella; los del ciclo de vida tienen además entero propio del 11 al 22, salvo `confirmation_required` y `usage_error` (2) y `ct2_conversion_failed` anidado (1), y un `reason` desconocido se trata como ausente. El fallo de parseo lleva `reason: "usage_error"`.
 
 Las tres reglas de compatibilidad y la regla de promoción son contrato **de consumo** además de emisión: `USAGE.md` declara explícitamente que un `reason` desconocido se trata como ausente.
 
@@ -646,17 +647,17 @@ Son **dos, independientes**, y ya **no valen lo mismo**: el sobre de la CLI va p
 - **Actúan sobre la instalación registrada, no sobre la copia que se invoca.** Las raíces efectivas salen del recibo (`cleanup::Roots::from_receipt`), de modo que la operación acierta aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén definidas (§7.2).
 - **Toman un bloqueo exclusivo de SO** sobre el archivo de bloqueo, y por eso un segundo proceso concurrente sale con `lifecycle_locked` (17) en vez de esperar.
 - **Ejecutan la recuperación antes de componer el plan**, para que el plan que el usuario ve y confirma sea el que queda después del barrido de aparcados, stagings huérfanos y temporales propios.
-- **El binario aporta lo que el motor no puede tener**: el control de procesos (parada del daemon) y el borrado diferido de Windows. El motor decide; el binario ejecuta esas dos primitivas de plataforma (`ProcessosDelProducto`, `BorradoDelPrograma`).
+- **El binario aporta lo que el motor no puede tener**: el control de procesos (parada del daemon) y el borrado diferido de Windows. El motor decide; el binario ejecuta esas dos primitivas de plataforma (`ProductProcesses`, `ProgramRemoval`, esta última sobre `avi_process::spawn_deferred_removal`).
 
 | Sub-acción | Qué hace | `reason` de éxito parcial o de fallo |
 |---|---|---|
 | `self install` | Instala el bundle del que forma parte el ejecutable, o **repara** la instalación si se ejecuta desde ella; ejecuta `setup` al final salvo `--no-setup` | `setup_failed` (11) con el programa instalado |
 | `self update` | Actualiza la instalación registrada a la última estable o a `--version X.Y.Z`, con verificación y traspaso al binario nuevo; `--check` solo informa | `already_up_to_date` (0) sin descargar; `not_installed` (3) sin instalación; `externally_managed` (12) en `homebrew`/`dev`; `setup_failed` (11) parcial; `unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20), `checksum_mismatch` (21) |
-| `self uninstall` | Borra el estado, revierte el `PATH` según el recibo y borra el directorio de programa aplicando R2 | — |
+| `self uninstall` | Borra el estado, revierte el `PATH` según el recibo y borra el directorio de programa aplicando R2 | `program_dir_kept` (22) si el directorio de programa no se pudo borrar ni programar su borrado |
 
 **`self uninstall` sin `--keep-data` borra la raíz de datos entera, no el plan de `cleanup --all`.** La diferencia es deliberada y está en `uninstall::compose_plan`: `cleanup --all` protege las voces de fábrica (`default`, `ryan`, `vivian`) porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar. Al desinstalar **el programa desaparece**, y con él las voces de fábrica: dejarlas sería residuo dentro de una raíz de propiedad exclusiva, que es exactamente lo que prohíbe el criterio 17. Con `--keep-data` sí se aplica el plan de `cleanup --all` **filtrado** —modelos, voces y habla quedan fuera— y el directorio de programa se borra igualmente.
 
-**Idempotencia**: sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_installed` (criterio 21). En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se programa para cuando el proceso termine y el `status` es `removal_scheduled`, que también es éxito.
+**Idempotencia**: sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_installed` (criterio 21). En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se programa para cuando el proceso termine y el `status` es `removal_scheduled`, que también es éxito porque el auxiliar confirmó que su script arrancó. Si no se puede programar, el `status` es `uninstalled` con `reason` `program_dir_kept` y salida 22.
 
 El detalle completo —los doce pasos de `self install`, los once de `self update` con traspaso y borrado diferido, el bundle y su manifiesto, el recibo y la integración de `PATH`— está en [`commands/SELF.md`](commands/SELF.md).
 

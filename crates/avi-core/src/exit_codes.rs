@@ -8,7 +8,8 @@ use thiserror::Error;
 /// `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`,
 /// `daemon_stop_failed` y `lifecycle_locked`. Del 18 al 21, los que el Ciclo 2 declara
 /// para `self update` (red e integridad): `unsupported_platform`,
-/// `binary_incompatible`, `network_error` y `checksum_mismatch`.
+/// `binary_incompatible`, `network_error` y `checksum_mismatch`. El 22 es `program_dir_kept`
+/// de `self uninstall`.
 ///
 /// **`unsupported_platform` tiene variante propia desde el Ciclo 2** y sale con 18:
 /// el ciclo que declara también `binary_incompatible` es el que elige su entero, y
@@ -59,6 +60,8 @@ pub enum ExitCode {
     NetworkError = 20,
     #[error("El archivo descargado no coincide con su hash")]
     ChecksumMismatch = 21,
+    #[error("El directorio de programa no se pudo borrar")]
+    ProgramDirKept = 22,
     #[error("Interrupción por el usuario")]
     Interrupted = 130,
 }

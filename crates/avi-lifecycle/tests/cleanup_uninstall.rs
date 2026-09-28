@@ -51,8 +51,8 @@ impl uninstall::ProgramDirRemover for Now {
         std::fs::remove_dir_all(program_dir)?;
         Ok(())
     }
-    fn schedule(&self, _program_dir: &Path, _pid: u32) -> anyhow::Result<bool> {
-        Ok(false)
+    fn schedule(&self, _program_dir: &Path, _pid: u32) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
@@ -68,11 +68,27 @@ impl uninstall::ProgramDirRemover for Deferred {
     fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
     }
-    fn schedule(&self, program_dir: &Path, pid: u32) -> anyhow::Result<bool> {
+    fn schedule(&self, program_dir: &Path, pid: u32) -> anyhow::Result<()> {
         // El helper real escribe un script en el temporal del sistema; aquí basta con
         // registrar que se pidió, que es lo que el motor decide.
         write(&program_dir.join("borrado-programado"), &pid.to_string());
-        Ok(true)
+        Ok(())
+    }
+}
+
+/// Removedor sin auxiliar disponible: el ejecutable está dentro y `schedule` falla. Es el
+/// paso 8 cuando el borrado diferido no puede garantizarse, en cualquier plataforma.
+struct Unschedulable;
+
+impl uninstall::ProgramDirRemover for Unschedulable {
+    fn exe_lives_inside(&self, _program_dir: &Path) -> bool {
+        true
+    }
+    fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
+        anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
+    }
+    fn schedule(&self, _program_dir: &Path, _pid: u32) -> anyhow::Result<()> {
+        anyhow::bail!("el auxiliar terminó sin ejecutar su script")
     }
 }
 
@@ -933,6 +949,53 @@ fn uninstall_schedules_removal_when_the_executable_is_inside() {
         "el borrado quedó programado con el PID del proceso"
     );
     // El estado sí se borró: el programa es lo único que espera.
+    assert!(!exists(&sandbox.data_dir));
+
+    let _ = std::fs::remove_dir_all(&sandbox.root);
+}
+
+/// Si el borrado del directorio de programa no se puede programar, el desenlace es
+/// `program_dir_kept` con el código 22 y nunca un éxito limpio: el resto de la
+/// desinstalación se completó y el directorio queda intacto, sin borrado parcial.
+#[test]
+fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
+    let sandbox = Sandbox::new("no-programable");
+    let receipt = sandbox.install();
+    sandbox.seed_state();
+    let names_of = |dir: &Path| {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = names_of(&sandbox.program_dir);
+    assert!(!before.is_empty(), "la instalación de partida tiene archivos");
+
+    let outcome = runtime()
+        .block_on(uninstall::run(
+            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &UninstallOptions {
+                assume_yes: true,
+                ..Default::default()
+            },
+            &Unschedulable,
+            &Inert,
+        ))
+        .expect("uninstall se ejecuta");
+
+    assert_eq!(outcome.status, "uninstalled");
+    assert!(!outcome.program_dir_removed);
+    let error = outcome.lifecycle_error().expect("hay un reason de contrato");
+    assert_eq!(error.reason, "program_dir_kept");
+    assert_eq!(error.exit_code, 22);
+    assert_eq!(
+        names_of(&sandbox.program_dir),
+        before,
+        "el directorio de programa sigue intacto"
+    );
+    // El estado de usuario sí se borró: solo el programa quedó en disco.
     assert!(!exists(&sandbox.data_dir));
 
     let _ = std::fs::remove_dir_all(&sandbox.root);

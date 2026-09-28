@@ -185,6 +185,7 @@ AI-Voice-InterConnector/
 │       └── install.ps1           # Windows (PowerShell 5.1+ y 7+)
 ├── crates/
 │   ├── avi-lifecycle/            # motor de ciclo de vida del usuario
+│   ├── avi-process/              # flags de creación de procesos y borrado diferido (Windows)
 │   ├── avi-shared/                # rutas canonicas (fuente unica; reexportada por avi-store)
 │   └── avi-store/                # VoiceStore, SpeechStore, ModelStore (reexporta las rutas de avi-shared)
 ├── src/main.rs                   # cablea `self …`, `cleanup`, `setup`, `doctor`
@@ -358,6 +359,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 | `setup_failed` | `self install`, `self update` | Programa instalado, pero la provisión de modelos falló | Éxito parcial (código propio), reintentable con `setup` |
 | `rolled_back` | `self install`, `self update` | Fallo durante el reemplazo; versión anterior restaurada | Error |
 | `removal_scheduled` | `self uninstall` | Windows: el directorio se borra al terminar el proceso | Éxito |
+| `program_dir_kept` | `self uninstall` | Todas: el resto se completó, pero el directorio de programa no se pudo borrar ni programar su borrado | Error con código propio (22) |
 | `ct2_conversion_failed` | `self install`, `self update` | Falló la conversión de un derivado CT2 durante la provisión | **`reason` anidado**, no código de salida: viaja en `models_cause.reason` del sobre, con su mensaje, y su valor declarado es **1**, el del error genérico. El proceso sale con el de la operación, que es `setup_failed` (11) |
 
 **`ct2_conversion_failed` es el único `reason` de la tabla que no es de primer nivel.** No aparece en `reason` del sobre ni determina el código de salida: es la causa **anidada** del fallo de provisión, la que dice *qué* falló, mientras que `setup_failed` —que sí es de primer nivel— dice *qué dejó de completarse*. Los dos se necesitan y no se funden: fundirlos perdería el `reason` que la reserva a cada caso. Su valor es 1 y no 11 a propósito, porque el 11 es el código de la operación y un consumidor que leyera un 11 anidado vería un código que la tabla no promete ahí. Cuando `setup` se invoca **directamente**, el mismo fallo sale como `setup_failed` de primer nivel con 11, porque entonces sí es la operación la que falla.
@@ -538,7 +540,7 @@ Actúa sobre la instalación registrada, sea cual sea la copia del binario que l
    - el enlace, solo si apunta al directorio de programa;
    - los bloques delimitados de los perfiles;
     - la entrada del registro, con comparación canónica, conservando el tipo del valor y difundiendo `WM_SETTINGCHANGE`.
-8. **Borrar el directorio de programa** (con la regla R2). En Unix, directamente. En Windows, si el ejecutable en uso está dentro, un proceso auxiliar desacoplado espera a que termine y borra el directorio con reintentos acotados → `removal_scheduled`.
+8. **Borrar el directorio de programa** (con la regla R2). En Unix, directamente. En Windows, si el ejecutable en uso está dentro, un proceso auxiliar desacoplado espera a que termine y borra el directorio con reintentos acotados → `removal_scheduled`; el auxiliar confirma su arranque con una marca y, si muere sin darla, el borrado no se da por programado. Si el directorio no se puede borrar ni programar → `program_dir_kept`, sin borrado parcial.
 9. **Borrar el archivo de bloqueo.**
 
 **Idempotencia:** sin instalación ni estado, termina con éxito y `not_installed`. **Residuo:** cero dentro de las raíces de propiedad exclusiva. Lo compartido que no se borra se informa explícitamente.
@@ -647,7 +649,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 - Detiene primero los daemons lanzados desde `target/`.
 - Nunca borra código fuente versionado.
 - Aplica las reglas de confirmación de [§8.1](#81-reglas-transversales): `--dry-run`, y `--yes` obligatorio sin terminal.
-- En Windows, el `xtask.exe` en ejecución se borra con el mismo mecanismo de borrado diferido que el producto.
+- En Windows, el `xtask.exe` en ejecución se borra con la misma implementación de borrado diferido que el producto (el crate `avi-process`).
 
 ### 9.7 Mapa de operaciones del desarrollador
 
@@ -758,7 +760,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 
 **Desinstalación y limpieza**
 
-17. `self uninstall --yes` elimina el programa, la integración de PATH y el estado, sin residuo dentro de las raíces de propiedad exclusiva. En Windows puede terminar con `removal_scheduled`, y el directorio desaparece cuando el proceso termina.
+17. `self uninstall --yes` elimina el programa, la integración de PATH y el estado, sin residuo dentro de las raíces de propiedad exclusiva. En Windows puede terminar con `removal_scheduled`, y el directorio desaparece cuando el proceso termina. Si el borrado no puede programarse, el comando termina con `program_dir_kept` y nunca con éxito.
 18. `self uninstall --keep-data` conserva modelos, voces y habla sintetizada.
 19. Sin terminal y sin `--yes`, toda operación destructiva termina con `confirmation_required` y no borra nada.
 20. `--dry-run` en cualquier operación destructiva lista rutas y tamaños sin modificar el disco.

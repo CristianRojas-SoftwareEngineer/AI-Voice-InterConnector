@@ -72,7 +72,8 @@ pub const BUNDLE_MANIFEST: &str = include_str!("../../../packaging/bundle-manife
 /// T16 al cablear. Los enteros salen de la misma tabla cerrada:
 /// `confirmation_required` y `usage_error` conservan el 2 de `ExitCode::InvalidInput`, y
 /// los del Ciclo 2 los fija su propio plan (`unsupported_platform = 18`,
-/// `binary_incompatible = 19`, `network_error = 20`, `checksum_mismatch = 21`). Los
+/// `binary_incompatible = 19`, `network_error = 20`, `checksum_mismatch = 21`) y
+/// `program_dir_kept = 22` es el de `self uninstall`. Los
 /// siete nuevos van con el entero que fija la
 /// consideración 2 del plan: `SetupFailed = 11`, `ExternallyManaged = 12`,
 /// `RolledBack = 13`, `PathConflict = 14`, `BundleInvalid = 15`, `DaemonStopFailed = 16`
@@ -157,6 +158,12 @@ impl LifecycleError {
     /// **éxito parcial** con código propio, reintentable con `setup`.
     pub fn setup_failed(message: impl Into<String>) -> Self {
         Self::new("setup_failed", 11, message.into())
+    }
+
+    /// El resto de la desinstalación se completó y el directorio de programa sigue en
+    /// disco: no se pudo borrar ni programar su borrado (paso 8).
+    pub fn program_dir_kept(message: impl Into<String>) -> Self {
+        Self::new("program_dir_kept", 22, message.into())
     }
 
     /// El binario descargado no arranca o no informa la versión objetivo (paso 8

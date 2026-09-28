@@ -12,7 +12,8 @@
 //! primero los daemons lanzados desde `target/`, nunca borra código fuente
 //! versionado y aplica las reglas de confirmación (`--dry-run`, `--yes`
 //! obligatorio sin terminal). En Windows, el `xtask.exe` en ejecución se
-//! borra con el mismo mecanismo de borrado diferido que el producto.
+//! borra con la misma implementación de borrado diferido que el producto
+//! (`avi-process`).
 //!
 //! Las rutas de la capa app viven en `avi-shared` y las ejecuta el binario
 //! del repositorio: este módulo no replica ni una (fuente única del ciclo 4).
@@ -389,7 +390,8 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool) -> Result<()> {
     }
 
     if deferred_target {
-        spawn_deferred_removal(&target_dir)?;
+        #[cfg(windows)]
+        avi_process::spawn_deferred_removal(&target_dir, std::process::id())?;
         println!(
             "  … {} se termina de borrar al salir este proceso (helper en segundo plano)",
             target_dir.display()
@@ -403,38 +405,6 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool) -> Result<()> {
         bail!("limpieza incompleta");
     }
     println!("Limpieza completa.");
-    Ok(())
-}
-
-/// Borra `dir` tras la salida de este proceso y de `cargo` (reintentos
-/// acotados), con un PowerShell desacoplado: mismo patrón que el helper de
-/// `uninstall` del producto.
-#[cfg(windows)]
-fn spawn_deferred_removal(dir: &Path) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    let dir_literal = dir.to_string_lossy().replace('\'', "''");
-    let script = format!(
-        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
-         for ($i = 0; $i -lt 20 -and (Test-Path -LiteralPath '{dir}'); $i++) {{ \
-           Start-Sleep -Milliseconds 500; \
-           Remove-Item -LiteralPath '{dir}' -Recurse -Force -ErrorAction SilentlyContinue \
-         }}",
-        pid = std::process::id(),
-        dir = dir_literal
-    );
-    std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: sobrevive a la salida de cargo.
-        .creation_flags(0x00000008 | 0x00000200)
-        .spawn()?;
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn spawn_deferred_removal(_dir: &Path) -> Result<()> {
     Ok(())
 }
 

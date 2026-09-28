@@ -146,9 +146,9 @@ pub trait PathRemover {
     /// Borra la ruta ya. Una ruta ausente es éxito: el plan dice lo que tiene
     /// que dejar de existir, y si ya no existe el objetivo está cumplido.
     fn remove_now(&self, path: &Path) -> anyhow::Result<()>;
-    /// Programa el borrado para cuando termine el proceso en curso y devuelve
-    /// `true` si quedó programado. Es el caso diferido de Windows.
-    fn schedule(&self, path: &Path, pid: u32) -> anyhow::Result<bool>;
+    /// Programa el borrado para cuando termine el proceso en curso. `Ok` significa que
+    /// el auxiliar está en marcha. Es el caso diferido de Windows.
+    fn schedule(&self, path: &Path, pid: u32) -> anyhow::Result<()>;
 }
 
 /// Cómo quedó el staging tras la limpieza post-traspaso.
@@ -173,14 +173,14 @@ pub fn cleanup_staging(staging: &Path, remover: &dyn PathRemover) -> StagingClea
         return StagingCleanup::Removed;
     }
     match remover.schedule(staging, std::process::id()) {
-        Ok(true) => {
+        Ok(()) => {
             eprintln!(
                 "  el staging se borrará al terminar este proceso: {}",
                 staging.display()
             );
             StagingCleanup::Scheduled
         }
-        _ => {
+        Err(_) => {
             eprintln!(
                 "  no se pudo borrar {}: lo recogerá la recuperación de la \
                  siguiente operación",
@@ -275,7 +275,7 @@ mod tests {
     /// Doble para `PathRemover`: borrado programable y diferido programable.
     struct FakeRemover {
         remove_ok: bool,
-        schedule: anyhow::Result<bool>,
+        schedule: anyhow::Result<()>,
     }
 
     impl PathRemover for FakeRemover {
@@ -287,9 +287,9 @@ mod tests {
             }
         }
 
-        fn schedule(&self, _path: &Path, _pid: u32) -> anyhow::Result<bool> {
+        fn schedule(&self, _path: &Path, _pid: u32) -> anyhow::Result<()> {
             match &self.schedule {
-                Ok(scheduled) => Ok(*scheduled),
+                Ok(()) => Ok(()),
                 Err(_) => Err(anyhow::anyhow!("diferido no disponible")),
             }
         }
@@ -306,7 +306,7 @@ mod tests {
                 staging,
                 &FakeRemover {
                     remove_ok: true,
-                    schedule: Ok(false),
+                    schedule: Ok(()),
                 }
             ),
             StagingCleanup::Removed
@@ -316,23 +316,21 @@ mod tests {
                 staging,
                 &FakeRemover {
                     remove_ok: false,
-                    schedule: Ok(true),
+                    schedule: Ok(()),
                 }
             ),
             StagingCleanup::Scheduled
         );
-        for schedule in [Ok(false), Err(anyhow::anyhow!("x"))] {
-            assert_eq!(
-                cleanup_staging(
-                    staging,
-                    &FakeRemover {
-                        remove_ok: false,
-                        schedule,
-                    }
-                ),
-                StagingCleanup::Kept
-            );
-        }
+        assert_eq!(
+            cleanup_staging(
+                staging,
+                &FakeRemover {
+                    remove_ok: false,
+                    schedule: Err(anyhow::anyhow!("x")),
+                }
+            ),
+            StagingCleanup::Kept
+        );
     }
 
     /// Los puntos del traspaso tienen nombre estable para las pruebas de

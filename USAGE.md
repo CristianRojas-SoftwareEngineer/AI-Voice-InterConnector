@@ -949,7 +949,8 @@ configuración, logs y estado del daemon), y el programa se borra igual.
   `PATH` de usuario (`HKCU\Environment`) conservando el **tipo** del valor y las entradas
   `%VAR%`, y difundiendo `WM_SETTINGCHANGE`. Si el ejecutable en uso está dentro del
   directorio, un proceso auxiliar lo borra al terminar el comando y el `status` es
-  `removal_scheduled` (que es éxito).
+  `removal_scheduled` (que es éxito). Si el borrado no se puede programar, el resto se completa y
+  el comando termina con `reason` `program_dir_kept` y código 22.
 - **Idempotente**: repetirla en un sistema ya limpio termina con éxito y `status`
   `not_installed`.
 - **Con Homebrew Cask** la vía idiomática es `brew uninstall --cask --zap
@@ -1143,9 +1144,10 @@ desde el binario como desde el código fuente. En concreto:
   | `19` | Binario descargado incompatible | `self update` verifica el arranque y la versión antes del traspaso, con diagnóstico |
   | `20` | Fallo de red | Descarga tras reintentos acotados (`self update`, `setup`) |
   | `21` | Hash no coincidente | `self update` con `SHA256SUMS.txt`; nada modificado |
+  | `22` | Directorio de programa no borrado | `self uninstall` completó el resto; bórralo a mano (`program_dir_kept`) |
   | `130` | Interrupción del usuario | Ctrl+C (128 + SIGINT) durante cualquier comando |
 
-  Los códigos 0–10 y el 130 son los del contrato de la CLI y no cambian. Los del 11 al 21 son
+  Los códigos 0–10 y el 130 son los del contrato de la CLI y no cambian. Los del 11 al 22 son
   la tabla cerrada del ciclo de vida, **uno por `reason`**, y hay que leer el 11 con cuidado:
   **no es un error**, es un éxito parcial con el programa ya instalado (o actualizado).
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el

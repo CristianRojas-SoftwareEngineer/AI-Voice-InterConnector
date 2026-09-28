@@ -40,6 +40,7 @@ dependencies = [
  "avi-core",
  "avi-daemon",
  "avi-lifecycle",
+ "avi-process",
  "avi-store",
  "avi-stt",
  "avi-translation",
@@ -223,6 +224,7 @@ dependencies = [
  "anyhow",
  "avi-audio",
  "avi-core",
+ "avi-process",
  "avi-store",
  "avi-stt",
  "avi-translation",
@@ -254,6 +256,14 @@ dependencies = [
  "tokio",
  "windows-sys 0.52.0",
  "zip",
+]
+
+[[package]]
+name = "avi-process"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -311,6 +321,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "avi-audio",
+ "avi-process",
  "avi-store",
  "hound",
  "serde",
@@ -5007,6 +5018,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "avi-process",
  "avi-shared",
  "clap",
  "flate2",

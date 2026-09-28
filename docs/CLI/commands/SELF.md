@@ -4,7 +4,7 @@
 
 La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§5.4 superficie, §8.1 reglas transversales, §8.3 `self install`, §8.5 `self uninstall`); el contrato de la CLI —flags, `reason`, códigos de salida, sobre `--json`— está en [`../CONTRACT.md`](../CONTRACT.md). Este documento describe **dónde vive cada cosa y por qué**.
 
-**Implementación:** el motor es el crate `avi-lifecycle` (`crates/avi-lifecycle/src/install.rs` y `uninstall.rs`), sin punto de entrada propio: el parseo de la CLI y el cableado se quedan en `src/main.rs` (`handle_self`), porque el motor no depende de `clap` ni de `avi-core` (§5.3 de la especificación). El binario aporta las dos primitivas que el motor no puede tener —el control de procesos (`ProcessosDelProducto`, que vive en `avi-daemon`/`avi-tts`) y el borrado diferido de Windows (`BorradoDelPrograma`, que usa `avi-daemon::spawn::spawn_uninstall_helper`)—. El motor decide; el binario ejecuta esas dos.
+**Implementación:** el motor es el crate `avi-lifecycle` (`crates/avi-lifecycle/src/install.rs` y `uninstall.rs`), sin punto de entrada propio: el parseo de la CLI y el cableado se quedan en `src/main.rs` (`handle_self`), porque el motor no depende de `clap` ni de `avi-core` (§5.3 de la especificación). El binario aporta las dos primitivas que el motor no puede tener —el control de procesos (`ProductProcesses`, que vive en `avi-daemon`/`avi-tts`) y el borrado diferido de Windows (`ProgramRemoval`, que usa `avi_process::spawn_deferred_removal`)—. El motor decide; el binario ejecuta esas dos.
 
 ---
 
@@ -149,7 +149,7 @@ Con `--keep-data` el directorio de programa **se borra igual**: la bandera conse
 
 **R2 gobierna el paso 8 y por eso tiene su propia función pública** (`program_dir_is_removable`). Exige las dos mitades de la regla: la positiva —el directorio contiene el recibo o el ejecutable, que es lo que lo convierte *en* el directorio de programa— y la negativa —nunca es la raíz de una unidad, `$HOME`, un ancestro de `$HOME` ni coincide con otra raíz del producto—. Ni una variable de reubicación ni un recibo manipulado pueden ampliar el alcance.
 
-En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se **programa** para cuando termine el proceso (`removal_scheduled`, que es éxito) en vez de hacerse de forma síncrona.
+En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se **programa** para cuando termine el proceso (`removal_scheduled`, que es éxito) en vez de hacerse de forma síncrona. El auxiliar es un `powershell.exe` con consola oculta cuyo script escribe una marca `.ready` como primera instrucción (con `Set-Content`); el comando solo da el borrado por programado cuando la marca aparece o el auxiliar sigue vivo tras el plazo, y borra el script y la marca si el auxiliar muere sin arrancar. Si el borrado no se puede programar (o, fuera de Windows, el directorio no se puede borrar), el resto de la desinstalación se completa y el comando termina con `status` `uninstalled`, `reason` `program_dir_kept` y salida 22, sin borrado parcial del directorio.
 
 ### Idempotencia y residuo
 
@@ -197,5 +197,6 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `binary_incompatible` | 19 | El binario descargado no arranca o no informa la versión objetivo, con diagnóstico |
 | `network_error` | 20 | Fallo de descarga tras reintentos acotados |
 | `checksum_mismatch` | 21 | El hash no coincide o falta en `SHA256SUMS.txt`; staging borrado y nada más modificado |
+| `program_dir_kept` | 22 | `self uninstall`: el resto se completó, pero el directorio de programa no se pudo borrar ni programar su borrado |
 
 Los `reason` del ciclo 3 salen con el **1** genérico: los declara el ciclo que también fija su entero.
