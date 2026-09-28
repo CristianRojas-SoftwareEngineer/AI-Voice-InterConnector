@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.24.0 — 2026-09-27](#0240--2026-09-27)
 - [0.23.1 — 2026-09-25](#0231--2026-09-25)
 - [0.23.0 — 2026-09-25](#0230--2026-09-25)
 - [0.22.0 — 2026-09-25](#0220--2026-09-25)
@@ -94,7 +94,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.24.0] — 2026-09-27
 
 **Cambio incompatible**: el ciclo de vida de la aplicación pasa a ser un binario que se
 gestiona a sí mismo. `uninstall` desaparece como comando de nivel superior y, con él, su
@@ -2709,3 +2709,4 @@ estado con el que nace el producto.
 [0.22.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.21.0...v0.22.0
 [0.23.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.22.0...v0.23.0
 [0.23.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.23.0...v0.23.1
+[0.24.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.23.1...v0.24.0
