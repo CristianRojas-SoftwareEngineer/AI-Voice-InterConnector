@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "ai-voice-interconnector"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "avi-audio",

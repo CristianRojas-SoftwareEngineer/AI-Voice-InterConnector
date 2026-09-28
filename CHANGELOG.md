@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.25.0 — 2026-09-28](#0250--2026-09-28)
 - [0.24.0 — 2026-09-27](#0240--2026-09-27)
 - [0.23.1 — 2026-09-25](#0231--2026-09-25)
 - [0.23.0 — 2026-09-25](#0230--2026-09-25)
@@ -95,7 +95,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.25.0] — 2026-09-28
 
 La E2E del ciclo de vida destapó que `self uninstall` podía dar por borrado un directorio de programa que seguía en disco, que el daemon abría ventanas de consola en Windows y que los builds de distribución no servían `/translate`. Esta versión corrige esos fallos, hace que el desinstalador falle de forma honesta y unifica en un solo crate el manejo de procesos de Windows.
 
@@ -2734,3 +2734,4 @@ estado con el que nace el producto.
 [0.23.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.22.0...v0.23.0
 [0.23.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.23.0...v0.23.1
 [0.24.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.23.1...v0.24.0
+[0.25.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.24.0...v0.25.0
