@@ -10,51 +10,54 @@
 # (parámetro `native_cache_probe`) mide los 4 build-* sin publicar nunca.
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
 # licencia, versionados vía `persist_to_workspace` → `publish-release`.
-# Pines reproducibles: `rust_version` + `ort_version` + digest de `cimg/rust`.
+# Pines reproducibles: `rust_pin` + `ort_pin` + digest de `cimg/rust`.
 
 version: 2.1
 
 orbs:
   win: circleci/windows@5.0
 
-# Fuente única de pines de toolchain Rust. Esta versión se interpola con
-# << pipeline.parameters.rust_version >> en cada job Rust (no repetir literal).
-# Bump de versión = editar solo aquí + actualizar digest de `cimg/rust` en las
-# 4 referencias `image:` (obtenido vía `docker buildx imagetools inspect
-# cimg/rust:<< pipeline.parameters.rust_version >>` o hub.docker.com). Sin digest,
+# Espejo del pin de Rust: la fuente única es `packaging/pins.json` y este
+# parámetro la espeja porque se interpola con
+# << pipeline.parameters.rust_pin >> en cada job Rust (no repetir literal).
+# Bump de versión = editar el JSON (el validador falla si divergen) +
+# actualizar el digest de `cimg/rust` en las 7 referencias `image:`
+# (obtenido vía `docker buildx imagetools inspect
+# cimg/rust:<< pipeline.parameters.rust_pin >>` o hub.docker.com). Sin digest,
 # el tag es flotante y pierde
 # reproducibilidad; el digest congela el SO base + toolchain.
 parameters:
-  rust_version:
+  rust_pin:
     type: string
     default: "1.96.0"
     description: >
       Versión exacta de Rust (toolchain) usada en todos los jobs Rust
       (cargo test/build). Espejo entre plataformas (Linux/Windows/macOS).
-  # Pines del toolchain C del motor TTS en Windows (MSYS2 UCRT64). Fuente única
-  # de esos pines. El release base fija un snapshot reproducible; la caché de
-  # C:\msys64 (msys2_*_cache) es el mecanismo de determinismo, y el assert de gcc
-  # en el bootstrap ataja el drift upstream en caché fría. Bump = editar aquí
-  # (invalida la caché por clave).
-  msys2_base_release:
+  # Pines del toolchain C del motor TTS en Windows (MSYS2 UCRT64). Espejan a
+  # `packaging/pins.json`, que es la fuente única. El release base fija un
+  # snapshot reproducible; la caché de C:\msys64 (msys2_*_cache) es el
+  # mecanismo de determinismo, y el assert de gcc en el bootstrap ataja el
+  # drift upstream en caché fría. Bump = editar el JSON (invalida la caché por
+  # clave).
+  msys2_base_pin:
     type: string
     default: "2026-06-11"
     description: >
       Release del instalador base de MSYS2 (github.com/msys2/msys2-installer) del
       que se extrae C:\msys64. Debe ser posterior a la publicación de gcc del pin.
-  msys2_gcc_version:
+  msys2_gcc_pin:
     type: string
     default: "16.2.0"
     description: Versión de gcc UCRT64 (ancla de la GCC Runtime Library Exception).
-  msys2_openblas_version:
+  msys2_openblas_pin:
     type: string
     default: "0.3.34-1"
     description: Versión de mingw-w64-ucrt-x86_64-openblas.
-  msys2_make_version:
+  msys2_make_pin:
     type: string
     default: "4.4.1-5"
     description: Versión de make/mingw32-make (mingw-w64-ucrt-x86_64-make).
-  ort_version:
+  ort_pin:
     type: string
     default: "1.28.0"
     description: Versión de ONNX Runtime (pareja de ort 2.0.0-rc.13) empaquetada en los 4 builds.
@@ -66,7 +69,7 @@ parameters:
     type: boolean
     default: false
     description: Activa el workflow de sonda native-cache-probe (solo por API; nunca publica).
-  ninja_version:
+  ninja_pin:
     type: string
     default: "1.13.2"
     description: Versión de Ninja (release oficial ninja-win.zip) usada como generador CMake en Windows.
@@ -77,7 +80,7 @@ parameters:
       Tamaño máximo de la caché local de sccache (SCCACHE_CACHE_SIZE) en todos
       los jobs que la activan. Al superarlo, sccache desaloja por LRU los objetos
       sin uso; debe holgar sobre el working set de la variante más grande.
-  bats_version:
+  bats_pin:
     type: string
     default: "1.14.0"
     description: >
@@ -101,10 +104,10 @@ parameters:
 #     git de vendor/cmake-0.1.58. Clave exacta SIN fallback: un acierto garantiza
 #     que lo compilado corresponde al parche actual, así que su mtime se fija tras
 #     restaurar y cargo no lo marca Dirty.
-#   - toolchain (v1): cambia con rust_version.
+#   - toolchain (v1): cambia con rust_pin.
 #   - msys2 (v1): cambia con los pines de versión MSYS2 (solo build-windows-x64).
 #   - sccache (v1): rolling con epoch, por variant.
-#   - ort-bundle (v1): cambia con ort_version (solo build-windows-x64).
+#   - ort-bundle (v1): cambia con ort_pin (solo build-windows-x64).
 #   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey + msys2
 #     gcc/openblas (solo build-windows-x64).
 commands:
@@ -167,14 +170,14 @@ commands:
             echo "vendor/cmake-0.1.58 tree: $(cat .vendor-cmake.tree)"
       - restore_cache:
           keys:
-            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}
-            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-
+            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
+            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-
       - when:
           condition: << parameters.target >>
           steps:
             - restore_cache:
                 keys:
-                  - target-v3-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
+                  - target-v3-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
             - run:
                 name: Fijar mtime de vendor/cmake-0.1.58 (evita cascada Dirty)
                 shell: bash
@@ -190,7 +193,7 @@ commands:
     description: Guarda registry/git antes de compilar (un fallo de test no pierde descargas)
     steps:
       - save_cache:
-          key: cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}
+          key: cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
           paths:
             - ~/.cargo/registry
             - ~/.cargo/git
@@ -226,7 +229,7 @@ commands:
         default: "always"
     steps:
       - save_cache:
-          key: target-v3-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
+          key: target-v3-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-cmake.tree" }}
           paths:
             - target
           when: << parameters.when >>
@@ -240,16 +243,16 @@ commands:
           command: perl -0777 -pe 's/(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/' Cargo.lock > Cargo.lock.cachekey
       - restore_cache:
           keys:
-            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-{{ checksum "Cargo.lock.cachekey" }}
-            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_version >>-
+            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
+            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-
 
   # Caché de toolchain: ~/.rustup (toolchain + componentes) y ~/.cargo/bin
   # (binarios instalados: rustup, cargo, cargo-llvm-cov). Clave sin checksum —
-  # solo depende de arch + rust_version — así que es inmutable y se reconstruye
-  # al bumpear rust_version. Evita rustup-init (Win/macOS) y el `cargo install
+  # solo depende de arch + rust_pin — así que es inmutable y se reconstruye
+  # al bumpear rust_pin. Evita rustup-init (Win/macOS) y el `cargo install
   # cargo-llvm-cov --locked` (coverage) en cada corrida.
   toolchain_restore_cache:
-    description: Restaura ~/.rustup y ~/.cargo/bin por arch + rust_version + OS
+    description: Restaura ~/.rustup y ~/.cargo/bin por arch + rust_pin + OS
     parameters:
       os:
         type: string
@@ -257,16 +260,16 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>
+            - toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>
   toolchain_save_cache:
-    description: Guarda ~/.rustup y ~/.cargo/bin (clave inmutable por arch + rust_version + OS)
+    description: Guarda ~/.rustup y ~/.cargo/bin (clave inmutable por arch + rust_pin + OS)
     parameters:
       os:
         type: string
         default: "linux"
     steps:
       - save_cache:
-          key: toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>
+          key: toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>
           paths:
             - ~/.rustup
             - ~/.cargo/bin
@@ -280,12 +283,12 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_release >>-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-make<< pipeline.parameters.msys2_make_version >>
+            - msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
   msys2_save_cache:
     description: Guarda C:\msys64 (clave inmutable por arch + pines de versión MSYS2)
     steps:
       - save_cache:
-          key: msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_release >>-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-make<< pipeline.parameters.msys2_make_version >>
+          key: msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
           paths:
             - C:\msys64
 
@@ -313,7 +316,7 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-
+            - sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-
   sccache_save_cache:
     description: Guarda el directorio de sccache (clave rolling con epoch, OS-específico)
     parameters:
@@ -325,7 +328,7 @@ commands:
         default: "test"
     steps:
       - save_cache:
-          key: sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_version >>-<< parameters.variant >>-{{ epoch }}
+          key: sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ epoch }}
           paths:
             - ~/.cache/sccache
           when: always
@@ -337,7 +340,8 @@ commands:
           name: Configurar sccache (RUSTC_WRAPPER)
           command: |
             echo "[STEP] Configurar sccache - INICIO"
-            SCCACHE_VERSION="0.8.2"
+            # Versión viva desde packaging/pins.json: sin literales que se desalineen.
+            SCCACHE_VERSION="$(python3 -c "import json; print(json.load(open('packaging/pins.json'))['sccache'])")"
             if ! command -v sccache >/dev/null 2>&1; then
               case "$(uname -m)" in
                 x86_64|amd64) SCCACHE_ARCH="x86_64" ;;
@@ -374,7 +378,8 @@ commands:
           command: |
             Write-Host "[STEP] Configurar sccache - INICIO"
             $ErrorActionPreference = "Stop"
-            $SccacheVersion = "0.8.2"
+            # Versión viva desde packaging/pins.json: sin literales que se desalineen.
+            $SccacheVersion = (Get-Content packaging/pins.json -Raw | ConvertFrom-Json).sccache
             $Pkg = "sccache-v$SccacheVersion-x86_64-pc-windows-msvc"
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
             # sccache.exe en ~/.cargo/bin (en PATH). PowerShell no tiene $BASH_ENV:
@@ -419,11 +424,11 @@ commands:
     description: Instala Ninja (pin) en $env:TEMP\ninja para el generador CMake de Windows
     steps:
       - run:
-          name: Instalar Ninja << pipeline.parameters.ninja_version >> (generador CMake)
+          name: Instalar Ninja << pipeline.parameters.ninja_pin >> (generador CMake)
           command: |
             Write-Host "[STEP] Instalar Ninja - INICIO"
             $ErrorActionPreference = "Stop"
-            $NinjaVersion = "<< pipeline.parameters.ninja_version >>"
+            $NinjaVersion = "<< pipeline.parameters.ninja_pin >>"
             $Dir = "$env:TEMP\ninja"
             New-Item -ItemType Directory -Force -Path $Dir | Out-Null
             Invoke-WebRequest -Uri "https://github.com/ninja-build/ninja/releases/download/v$NinjaVersion/ninja-win.zip" -OutFile "$env:TEMP\ninja-win.zip"
@@ -486,9 +491,10 @@ commands:
             echo "[STEP] Diagnóstico de builds CMake (sonda) - FIN"
 
   # Fuente única de pines: `packaging/pins.json` es la única tabla de versiones;
-  # los parámetros del pipeline la espejan. Este paso
-  # falla antes de compilar si algún pin diverge del JSON. No genera pasos de
-  # instalación: la CI conserva sus comandos (`apt`, `brew`, MSYS2).
+  # los parámetros del pipeline la espejan. Este paso invoca al validador único
+  # (`cargo xtask pins --check`) y falla antes de compilar si algún pin diverge
+  # del JSON. No genera pasos de instalación: la CI conserva sus comandos
+  # (`apt`, `brew`, MSYS2).
   validate_pins:
     description: Valida los pines del pipeline contra packaging/pins.json (falla si divergen)
     steps:
@@ -498,35 +504,8 @@ commands:
           command: |
             echo "[STEP] Validar pines contra packaging/pins.json - INICIO"
             set -euo pipefail
-            python3 - \<<'PYEOF'
-            import json
-            import sys
-            with open("packaging/pins.json", encoding="utf-8") as handle:
-                pins = json.load(handle)
-            esperados = {
-                "rust": "<< pipeline.parameters.rust_version >>",
-                "ort": "<< pipeline.parameters.ort_version >>",
-                "msys2_base": "<< pipeline.parameters.msys2_base_release >>",
-                "msys2_gcc": "<< pipeline.parameters.msys2_gcc_version >>",
-                "msys2_openblas": "<< pipeline.parameters.msys2_openblas_version >>",
-                "msys2_make": "<< pipeline.parameters.msys2_make_version >>",
-            }
-            errores = []
-            for clave, esperado in esperados.items():
-                obtenido = pins.get(clave)
-                if obtenido != esperado:
-                    errores.append(
-                        "pin divergente: {} (pins.json={!r}, pipeline={!r})".format(
-                            clave, obtenido, esperado
-                        )
-                    )
-                else:
-                    print("pin {} = {!r} OK".format(clave, obtenido))
-            if errores:
-                for error in errores:
-                    print("ERROR: " + error, file=sys.stderr)
-                sys.exit(1)
-            PYEOF
+            export PATH="$HOME/.cargo/bin:$PATH"
+            cargo xtask pins --check
             echo "[STEP] Validar pines contra packaging/pins.json - FIN"
 
 jobs:
@@ -546,7 +525,7 @@ jobs:
     # (evidencia v0.20.4: 264/290 Fresh en Linux). sccache por contenido es
     # inmune al mtime y cubre ese residuo con hits de su propio perfil.
     docker:
-      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
     resource_class: medium
     steps:
       - checkout
@@ -573,7 +552,7 @@ jobs:
             echo "[STEP] Verificar toolchain Rust - INICIO"
             rustc --version
             cargo --version
-            echo "rust_version parámetro: << pipeline.parameters.rust_version >>"
+            echo "rust_pin parámetro: << pipeline.parameters.rust_pin >>"
             echo "[STEP] Verificar toolchain Rust - FIN"
       - run:
           # Descarga TODAS las deps al registry antes de guardar su caché:
@@ -620,15 +599,14 @@ jobs:
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     steps:
       - checkout
-      - validate_pins
       - toolchain_restore_cache:
           os: windows
       - run:
-          name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
+          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
           command: |
-            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
             $ErrorActionPreference = "Stop"
-            $RustVersion = "<< pipeline.parameters.rust_version >>"
+            $RustVersion = "<< pipeline.parameters.rust_pin >>"
             # Prefijo de PATH SOLO para este step: los steps posteriores que
             # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
             # equivalente de $BASH_ENV).
@@ -655,7 +633,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             rustc --version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+      - validate_pins
       - toolchain_save_cache:
           os: windows
       - cargo_restore_caches:
@@ -711,19 +690,18 @@ jobs:
     resource_class: m4pro.medium
     steps:
       - checkout
-      - validate_pins
       - toolchain_restore_cache:
           os: macos
       - run:
-          name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
+          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
           command: |
-            echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
             # Idempotente: si la caché de toolchain ya trae rustup, se omite
             # la instalación (ahorra ~2-3 min por corrida).
             if [ -x "$HOME/.cargo/bin/rustup" ]; then
               echo "Toolchain restaurado de caché; se omite rustup-init"
             else
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_pin >> --profile minimal
             fi
             # No sourcear ~/.cargo/env: no está en la caché de toolchain
             # (solo ~/.rustup y ~/.cargo/bin), así que en caché tibia no existe.
@@ -732,7 +710,8 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo --version
             rustc --version
-            echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+      - validate_pins
       - toolchain_save_cache:
           os: macos
       - cargo_restore_caches:
@@ -788,7 +767,7 @@ jobs:
     # líneas. Sin gate de % por diseño — solo valida
     # que la instrumentación no rompa la suite.
     docker:
-      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
     resource_class: medium
     steps:
       - checkout
@@ -926,10 +905,10 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Instalar bats-core (pineado << pipeline.parameters.bats_version >>)
+          name: Instalar bats-core (pineado << pipeline.parameters.bats_pin >>)
           command: |
             echo "[STEP] Instalar bats-core - INICIO"
-            BATS_VERSION="<< pipeline.parameters.bats_version >>"
+            BATS_VERSION="<< pipeline.parameters.bats_pin >>"
             git -c advice.detachedHead=false clone -q --depth 1 --branch "v${BATS_VERSION}" https://github.com/bats-core/bats-core.git /tmp/bats-core
             /tmp/bats-core/install.sh "$HOME/.local" >/dev/null
             echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
@@ -979,10 +958,10 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Instalar bats-core (pineado << pipeline.parameters.bats_version >>)
+          name: Instalar bats-core (pineado << pipeline.parameters.bats_pin >>)
           command: |
             echo "[STEP] Instalar bats-core - INICIO"
-            BATS_VERSION="<< pipeline.parameters.bats_version >>"
+            BATS_VERSION="<< pipeline.parameters.bats_pin >>"
             git -c advice.detachedHead=false clone -q --depth 1 --branch "v${BATS_VERSION}" https://github.com/bats-core/bats-core.git /tmp/bats-core
             /tmp/bats-core/install.sh "$HOME/.local" >/dev/null
             echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
@@ -1022,15 +1001,14 @@ jobs:
         default: false
     steps:
       - checkout
-      - validate_pins
       - toolchain_restore_cache:
           os: windows
       - run:
-          name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
+          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
           command: |
-            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
             $ErrorActionPreference = "Stop"
-            $RustVersion = "<< pipeline.parameters.rust_version >>"
+            $RustVersion = "<< pipeline.parameters.rust_pin >>"
             # Prefijo de PATH SOLO para este step: los steps posteriores que
             # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
             # equivalente de $BASH_ENV).
@@ -1049,7 +1027,8 @@ jobs:
             }
             cargo --version
             rustc --version
-            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+      - validate_pins
       - toolchain_save_cache:
           os: windows
       - msys2_restore_cache
@@ -1068,11 +1047,11 @@ jobs:
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - INICIO"
             $ErrorActionPreference = "Stop"
             $Root = "C:\msys64"
-            $GccPin = "<< pipeline.parameters.msys2_gcc_version >>"
+            $GccPin = "<< pipeline.parameters.msys2_gcc_pin >>"
             if (Test-Path "$Root\ucrt64\bin\gcc.exe") {
               Write-Host "MSYS2 restaurado de caché; se omite instalación"
             } else {
-              $Release = "<< pipeline.parameters.msys2_base_release >>"
+              $Release = "<< pipeline.parameters.msys2_base_pin >>"
               # Versión de choco = release base compactado + sufijo .0.0
               # (2026-06-11 -> 20260611.0.0): mismo pin que el release upstream.
               $ChocoVer = ($Release -replace '-', '') + ".0.0"
@@ -1245,7 +1224,7 @@ jobs:
             echo "[STEP] Generar .engine-cachekey - FIN"
       - restore_cache:
           keys:
-            - tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+            - tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` compila el motor con
           # mingw32-make bajo el entorno MSYS2 UCRT64 (PATH ucrt64/bin + usr/bin,
@@ -1269,7 +1248,7 @@ jobs:
             }
             Write-Host "[STEP] Compilar y verificar motor TTS - FIN"
       - save_cache:
-          key: tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_version >>-ob<< pipeline.parameters.msys2_openblas_version >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+          key: tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
           paths:
             - vendor/qwen3-tts/qwen_tts.exe
       - unless:
@@ -1277,11 +1256,11 @@ jobs:
           steps:
             - restore_cache:
                 keys:
-                  - ort-v1-win-x64-<< pipeline.parameters.ort_version >>
+                  - ort-v1-win-x64-<< pipeline.parameters.ort_pin >>
             - run:
                 # Autocontención (requisito duro): el crate `ort` en `load-dynamic`
                 # busca onnxruntime.dll junto al ejecutable. Se empaqueta la librería
-                # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_version >>, pareja de ort rc.13) y sus
+                # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_pin >>, pareja de ort rc.13) y sus
                 # 3 DLLs del runtime VC++ (la dll de MS es /MD), de modo que el usuario
                 # no necesite instalar el VC++ Redistributable ni nada previo.
                 # Cacheado: si onnxruntime.dll existe tras restore, se omite descarga.
@@ -1289,7 +1268,7 @@ jobs:
                 command: |
                   Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - INICIO"
                   $ErrorActionPreference = "Stop"
-                  $OrtVersion = "<< pipeline.parameters.ort_version >>"
+                  $OrtVersion = "<< pipeline.parameters.ort_pin >>"
                   $Bundle = "ort-bundle"
                   if (-not (Test-Path "$Bundle\onnxruntime.dll")) {
                     if (Test-Path $Bundle) { Remove-Item -Recurse -Force $Bundle }
@@ -1319,7 +1298,7 @@ jobs:
                   Get-ChildItem $Bundle | ForEach-Object { Write-Host "  $($_.Name)" }
                   Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - FIN"
             - save_cache:
-                key: ort-v1-win-x64-<< pipeline.parameters.ort_version >>
+                key: ort-v1-win-x64-<< pipeline.parameters.ort_pin >>
                 paths:
                   - ort-bundle
             - run:
@@ -1377,7 +1356,7 @@ jobs:
     # load-dynamic) supera los 4 GB de `medium` (OOM silencioso). `large` trae
     # 4 vCPU de regalo no aprovechados.
     docker:
-      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
     resource_class: large
     parameters:
       probe:
@@ -1536,7 +1515,7 @@ jobs:
     # Sin test-linux-arm64 (suite mockeada arch-independiente), el smoke
     # test de este build es el único gate del stack aarch64 (binario nativo).
     docker:
-      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_version)
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
     resource_class: arm.medium
     parameters:
       probe:
@@ -1703,20 +1682,19 @@ jobs:
         default: false
     steps:
       - checkout
-      - validate_pins
       - toolchain_restore_cache:
           os: macos
       - run:
-          name: Instalar Rust << pipeline.parameters.rust_version >> vía rustup
+          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
           no_output_timeout: 10m
           command: |
-            echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - INICIO"
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
             # Idempotente: si la caché de toolchain ya trae rustup, se omite
             # la instalación (ahorra ~2-3 min por corrida).
             if [ -x "$HOME/.cargo/bin/rustup" ]; then
               echo "Toolchain restaurado de caché; se omite rustup-init"
             else
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_version >> --profile minimal
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_pin >> --profile minimal
             fi
             # No sourcear ~/.cargo/env: no está en la caché de toolchain
             # (solo ~/.rustup y ~/.cargo/bin), así que en caché tibia no existe.
@@ -1725,7 +1703,8 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo --version
             rustc --version
-            echo "[STEP] Instalar Rust << pipeline.parameters.rust_version >> vía rustup - FIN"
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+      - validate_pins
       - toolchain_save_cache:
           os: macos
       - run:
