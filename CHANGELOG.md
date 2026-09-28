@@ -100,6 +100,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 ### Corregido
 
 - El recibo de `self install` y la cabecera de `doctor` declaran la versión del producto que informa `version --json`: el constructor del entorno y el reporte la reciben del binario en vez de estampar la del crate `avi-lifecycle`.
+- El modo automático de `translate` con el daemon en marcha entrega la traducción: la feature `native-translation` del paquete raíz propaga ya al daemon, de modo que los builds de distribución registran la ruta `/translate` en vez de responder 404.
 
 ## [0.24.0] — 2026-09-27
 

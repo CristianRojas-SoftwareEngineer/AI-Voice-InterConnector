@@ -8,6 +8,7 @@ mod bootstrap;
 mod clean;
 mod comments;
 mod doctor;
+mod features;
 mod install;
 mod language;
 mod package;
@@ -320,13 +321,21 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
-    /// Verifica los pines versionados contra los parámetros de la CI y el canal de Rust
+    /// Verifica que los pines versionados contra los parámetros de la CI y el canal de Rust
     Pins {
         #[arg(long)]
         check: bool,
         /// Regenera el canal de Rust desde packaging/pins.json
         #[arg(long)]
         sync: bool,
+        /// Sobrescribe la raíz a escanear (por defecto, el directorio actual)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
+    /// Verifica que todo feature que el código usa sea alcanzable desde el paquete raíz
+    Features {
+        #[arg(long)]
+        check: bool,
         /// Sobrescribe la raíz a escanear (por defecto, el directorio actual)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
@@ -530,6 +539,7 @@ fn main() -> Result<()> {
         Commands::Language { check, root } => language::run(check, root.as_deref())?,
         Commands::Comments { check, root } => comments::run(check, root.as_deref())?,
         Commands::Pins { check, sync, root } => pins::run(check, sync, root.as_deref())?,
+        Commands::Features { check, root } => features::run(check, root.as_deref())?,
         Commands::BuildEngine {
             self_test,
             simd,

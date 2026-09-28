@@ -508,6 +508,26 @@ commands:
             cargo xtask pins --check
             echo "[STEP] Validar pines contra packaging/pins.json - FIN"
 
+  # Puerta de la cadena de features. Qué capacidades expone el producto está
+  # declarado en los manifiestos y en los `cfg` del código, y nada ata las dos
+  # declaraciones: un eslabón ausente produce un binario que compila y arranca
+  # pero que no incluye la pieza. Este paso invoca al validador único
+  # (`cargo xtask features --check`), que exige que todo feature que el código
+  # usa sea alcanzable desde el paquete raíz, y falla antes de compilar si
+  # falta alguno. Es la misma forma que la puerta de pines y también sin C++.
+  validate_features:
+    description: Valida la cadena de features del workspace (falla si un eslabón falta)
+    steps:
+      - run:
+          name: Validar la cadena de features del workspace
+          shell: bash
+          command: |
+            echo "[STEP] Validar cadena de features - INICIO"
+            set -euo pipefail
+            export PATH="$HOME/.cargo/bin:$PATH"
+            cargo xtask features --check
+            echo "[STEP] Validar cadena de features - FIN"
+
 jobs:
   # ──────────────────────────────────────────────────────────────
   # Gate Rust — triple puerta simétrica (cargo test --all)
@@ -530,6 +550,7 @@ jobs:
     steps:
       - checkout
       - validate_pins
+      - validate_features
       - run:
           # libasound2-dev + pkg-config exponen ALSA a cpal (sí se compila en la
           # suite). libclang-dev (bindgen/ct2rs, solo con native-translation) ya
@@ -635,6 +656,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
       - validate_pins
+      - validate_features
       - toolchain_save_cache:
           os: windows
       - cargo_restore_caches:
@@ -712,6 +734,7 @@ jobs:
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
       - validate_pins
+      - validate_features
       - toolchain_save_cache:
           os: macos
       - cargo_restore_caches:
@@ -772,6 +795,7 @@ jobs:
     steps:
       - checkout
       - validate_pins
+      - validate_features
       - run:
           # NOTA: con native-stt/native-translation off por defecto,
           # coverage compila la workspace SIN los stacks C++ (no aparece
@@ -850,6 +874,7 @@ jobs:
     steps:
       - checkout
       - validate_pins
+      - validate_features
       - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
@@ -885,6 +910,7 @@ jobs:
     steps:
       - checkout
       - validate_pins
+      - validate_features
       - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
@@ -1036,6 +1062,7 @@ jobs:
             rustc --version
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
       - validate_pins
+      - validate_features
       - toolchain_save_cache:
           os: windows
       - msys2_restore_cache
@@ -1372,6 +1399,7 @@ jobs:
     steps:
       - checkout
       - validate_pins
+      - validate_features
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
           # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
@@ -1531,6 +1559,7 @@ jobs:
     steps:
       - checkout
       - validate_pins
+      - validate_features
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
           # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
@@ -1712,6 +1741,7 @@ jobs:
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
       - validate_pins
+      - validate_features
       - toolchain_save_cache:
           os: macos
       - run:
@@ -1992,6 +2022,7 @@ jobs:
     steps:
       - checkout
       - validate_pins
+      - validate_features
       # Caché: registry + sccache (sin target xtask) — coherente con los jobs pequeños/xtask.
       - cargo_restore_registry
       - sccache_restore_cache:

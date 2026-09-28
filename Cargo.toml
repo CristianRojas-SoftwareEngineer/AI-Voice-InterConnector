@@ -48,7 +48,7 @@ anyhow = "1.0"
 # de cada crate. `cargo test`/`cargo llvm-cov` corren lisos (sin C++); los builds
 # de distribución activan `full` para conservar STT + traducción.
 native-stt = ["avi-stt/native-stt", "avi-daemon/native-stt"]
-native-translation = ["avi-translation/native-translation"]
+native-translation = ["avi-translation/native-translation", "avi-daemon/native-translation"]
 full = ["native-stt", "native-translation"]
 
 [target.'cfg(windows)'.dependencies]

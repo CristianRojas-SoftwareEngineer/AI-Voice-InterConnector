@@ -1,12 +1,14 @@
 #!/bin/sh
 # Gancho de pre-commit: las puertas de la política de código antes de dejar entrar un
-# commit. Son tres, y las tres son ejecutables por cualquier persona, no de recuerdo del
+# commit. Son cuatro, y las cuatro son ejecutables por cualquier persona, no de recuerdo del
 # orquestador:
 #
 #   - idioma:      ningún identificador en español en el código de primera parte.
 #   - comentarios: ni citas de sección ni localizadores de línea en comentarios y en
 #                  diagnósticos de aserción.
 #   - pines:       parámetros pineados de la CI contra `packaging/pins.json` y canal.
+#   - features:    todo feature que el código use alcanzable desde el paquete raíz, para
+#                  que un eslabón ausente falle aquí y no en el binario que se distribuye.
 #
 # `core.hooksPath` es configuración local de git y no se versiona, así que este
 # fichero no se activa por sí solo. Actívalo una vez por clon con:
@@ -19,3 +21,4 @@ set -e
 cargo --quiet xtask language --check
 cargo --quiet xtask comments --check
 cargo --quiet xtask pins --check
+cargo --quiet xtask features --check
