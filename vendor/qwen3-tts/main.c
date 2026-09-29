@@ -25,6 +25,7 @@
 #include <math.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <arpa/inet.h>   /* inet_pton: valida --host */
 
 /* bf16<->f32 helpers (local; for partial-strength WDELTA interpolation on .qvoice load) */
 static inline float main_bf16_to_f32(uint16_t bf) {
@@ -939,6 +940,9 @@ int main(int argc, char **argv) {
     int serve_port = 0;  /* 0 = not serving */
     int serve_workers = 1;  /* --workers: concurrent synthesis workers (server mode) */
     int serve_batch = 1;    /* --batch-size: vLLM-style request-batching (server; N>=2 enables) */
+    /* El servidor no tiene autenticación: por defecto solo escucha en loopback y
+     * exponerlo a la red exige pedirlo de forma explícita con --host 0.0.0.0. */
+    const char *serve_host = "127.0.0.1";
     const char *ml_steer_path = NULL;  /* --ml-steer: multi-layer Talker emotion steer (.qlsteer) */
     float ml_steer_weight = 8.0f;      /* --ml-weight */
     int ml_l0 = 21, ml_l1 = 25;        /* --ml-range "l0-l1" (identity layers) */
@@ -1084,6 +1088,7 @@ int main(int argc, char **argv) {
         {"tail-trim",     no_argument,       0, 1058},
         {"seed-audition", required_argument, 0, 1059},
         {"audition-keep", no_argument,       0, 1060},
+        {"host",          required_argument, 0, 1061},
         {"help",          no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
@@ -1163,6 +1168,16 @@ int main(int argc, char **argv) {
             case 1058: tail_trim = 1; break;
             case 1059: seed_audition = atoi(optarg); if (seed_audition < 1) seed_audition = 1; break;
             case 1060: audition_keep = 1; break;
+            case 1061: {
+                /* Dirección IPv4 literal; una inválida aborta antes de cargar el modelo. */
+                struct in_addr host_tmp;
+                if (inet_pton(AF_INET, optarg, &host_tmp) != 1) {
+                    fprintf(stderr, "Error: --host requires an IPv4 address (got '%s')\n", optarg);
+                    return 1;
+                }
+                serve_host = optarg;
+                break;
+            }
             case 1016: list_voices_dir = optarg; break;
             case 1017: delete_voice = optarg; break;
             case 'S': silent = 1; break;
@@ -1190,6 +1205,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "  --serve <port>             Start HTTP server on port\n");
                 fprintf(stderr, "  --workers <n>              Concurrent synthesis workers (server; default 1)\n");
                 fprintf(stderr, "  --batch-size <n>           Request-batching: step up to n concurrent users together (server; n>=2)\n");
+                fprintf(stderr, "  --host <ipv4>              Bind address for --serve (default 127.0.0.1; 0.0.0.0 exposes to the network)\n");
                 fprintf(stderr, "  --seed <n>                 Random seed (default: time-based)\n");
                 fprintf(stderr, "  --max-duration <secs>      Max audio duration in seconds\n");
                 fprintf(stderr, "  --voice-design             VoiceDesign mode (create voice from --instruct)\n");
@@ -3020,9 +3036,9 @@ int main(int argc, char **argv) {
     if (serve_port > 0) {
         int ret;
         if (serve_batch >= 2)
-            ret = qwen_tts_serve_batched(ctx, serve_port, serve_batch);  /* vLLM-style request batching */
+            ret = qwen_tts_serve_batched(ctx, serve_host, serve_port, serve_batch);  /* vLLM-style request batching */
         else
-            ret = qwen_tts_serve_ex(ctx, serve_port, serve_workers);
+            ret = qwen_tts_serve_ex(ctx, serve_host, serve_port, serve_workers);
         qwen_tts_unload(ctx);
         return ret;
     }

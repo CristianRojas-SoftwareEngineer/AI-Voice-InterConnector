@@ -18,6 +18,12 @@ pub const DEFAULT_REP_PENALTY: f32 = 1.05;
 /// Puerto por defecto del servidor residente (el daemon del host ocupa el 8765).
 pub const DEFAULT_PORT: u16 = 8766;
 
+/// Dirección de escucha del servidor residente. El residente no tiene
+/// autenticación, así que solo escucha en loopback, igual que el daemon. Esta
+/// constante fija tanto el `--host` que recibe el motor como las URLs con las
+/// que el cliente le habla, de modo que servidor y cliente no puedan divergir.
+pub const RESIDENT_HOST: std::net::Ipv4Addr = std::net::Ipv4Addr::LOCALHOST;
+
 /// Nombre de imagen del proceso residente (`qwen_tts`). Fuente única para la
 /// resolución del binario y para el barrido por imagen de último recurso
 /// (`resident::sweep_resident_by_image`). El residente tiene imagen propia
@@ -490,7 +496,7 @@ impl Qwen3TtsEngine {
             let state = guard
                 .as_ref()
                 .expect("residente arrancado o reutilizado sano");
-            format!("http://127.0.0.1:{}", state.resident.port)
+            format!("http://{}:{}", RESIDENT_HOST, state.resident.port)
         };
         self.synthesize_via_http(&url, text, voice, options, None, None, out_path)
     }
@@ -757,7 +763,7 @@ pub fn clone_voice(
 }
 
 /// Servidor residente del motor Qwen3-TTS: spawn perezoso con
-/// `--serve <puerto> --int4 -j 4 --stream [--load-voice <qvoice> --icl-only]`, healthcheck
+/// `--serve <puerto> --host 127.0.0.1 --int4 -j 4 --stream [--load-voice <qvoice> --icl-only]`, healthcheck
 /// `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
 pub mod resident {
     use super::*;
@@ -781,7 +787,7 @@ pub mod resident {
     }
 
     /// Construye el `Command` de arranque del residente, sin
-    /// I/O real: `-d <model_dir> --serve <port> --int4 -j 4 --stream
+    /// I/O real: `-d <model_dir> --serve <port> --host 127.0.0.1 --int4 -j 4 --stream
     /// [--load-voice <qvoice> --icl-only]`.
     pub(crate) fn build_resident_command(
         bin: &Path,
@@ -794,6 +800,8 @@ pub mod resident {
             .arg(model_dir)
             .arg("--serve")
             .arg(port.to_string())
+            .arg("--host")
+            .arg(crate::RESIDENT_HOST.to_string())
             .arg("--int4")
             .arg("-j")
             .arg("4")
@@ -866,12 +874,6 @@ pub mod resident {
                     .stdout(Stdio::null())
                     .stderr(Stdio::from(log_file));
             }
-            // Riesgo R2 documentado: el motor enlaza en INADDR_ANY, no en loopback.
-            eprintln!(
-                "[avi-tts] Aviso: el motor Qwen3-TTS enlaza en todas las interfaces \
-                 (INADDR_ANY), puerto {}. El servidor es accesible desde la red local.",
-                port
-            );
             let child = cmd.spawn().map_err(|e| {
                 anyhow!(
                     "No se pudo arrancar el servidor Qwen3-TTS ({}): {}",
@@ -1066,7 +1068,7 @@ pub mod resident {
         interval_ms: u64,
         log_path: &Path,
     ) -> Result<()> {
-        let url = format!("http://127.0.0.1:{}/v1/health", port);
+        let url = format!("http://{}:{}/v1/health", crate::RESIDENT_HOST, port);
         for i in 0..retries {
             // Detecta crash inmediato: si el proceso terminó, el motor no va a
             // responder nunca. `try_wait` no bloquea.
@@ -1262,6 +1264,8 @@ mod tests {
                 "vendor/qwen3-tts/qwen3-tts-0.6b",
                 "--serve",
                 "8766",
+                "--host",
+                "127.0.0.1",
                 "--int4",
                 "-j",
                 "4",
@@ -1286,6 +1290,8 @@ mod tests {
                 "md",
                 "--serve",
                 "8766",
+                "--host",
+                "127.0.0.1",
                 "--int4",
                 "-j",
                 "4",

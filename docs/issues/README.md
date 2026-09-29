@@ -108,7 +108,6 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 | Documento | Severidad | Síntoma |
 |---|---|---|
-| [motor-tts-escucha-en-todas-las-interfaces.md](motor-tts-escucha-en-todas-las-interfaces.md) | Alta | El motor TTS residente acepta conexiones desde la red local |
 | [doctor-falla-tras-instalacion.md](doctor-falla-tras-instalacion.md) | Alta | `doctor` falla justo después de una instalación correcta |
 | [text-sin-limite-de-longitud.md](text-sin-limite-de-longitud.md) | Media | `--text` de más de 5000 caracteres no se rechaza con exit 2 |
 | [audio-inexistente-exit-10.md](audio-inexistente-exit-10.md) | Media | `--audio` inexistente sale con 10 en vez de 3 |

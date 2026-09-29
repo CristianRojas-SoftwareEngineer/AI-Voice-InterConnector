@@ -45,8 +45,7 @@ Se detalla en cada observación.
 
 Ninguna observación bloquea un caso de uso. Los mensajes engañosos (1 a 5) hacen perder
 tiempo de diagnóstico y confunden a los scripts que leen el `status`. Los residuos (7 a
-10) ocupan disco y ensucian `doctor`. La 11 alarga la exposición de red descrita en
-[motor-tts-escucha-en-todas-las-interfaces.md](motor-tts-escucha-en-todas-las-interfaces.md).
+10) ocupan disco y ensucian `doctor`.
 Workaround general: `cleanup` barre los temporales y `daemon stop` o `daemon start`
 reclaman el residente huérfano.
 
@@ -185,7 +184,7 @@ Recogida en cada observación.
 #### 11. Un kill duro del daemon deja huérfano al motor residente
 
 - **Síntoma:** con `Stop-Process -Force` sobre el daemon (con o sin `--auto-restart`),
-  el `qwen_tts` residente sigue vivo escuchando en `0.0.0.0:8766`, el pidfile queda
+  el `qwen_tts` residente sigue vivo escuchando en `127.0.0.1:8766`, el pidfile queda
   obsoleto y `daemon status` dice `stopped`. El siguiente `daemon start` o `daemon stop`
   lo detecta y lo reclama.
 - **Causa (confirmada por el comportamiento):** el residente es un proceso
@@ -217,8 +216,7 @@ Recogida en cada observación.
 Resolver primero las observaciones de causa confirmada y corrección local (1, 2, 3, 7 y
 8), que caben en un mismo parche. Las que tocan el contrato JSON (2 y 5) necesitan una
 decisión sobre el `status` antes de implementarlas. Las que están por verificar (4, 6,
-10 y 12) necesitan una reproducción instrumentada. La 11 conviene tratarla con el
-defecto del motor expuesto a la red.
+10 y 12) necesitan una reproducción instrumentada.
 
 ## Criterio de aceptación
 
@@ -227,8 +225,6 @@ todas están cerradas o separadas a su propio documento.
 
 ## Relacionados
 
-- [motor-tts-escucha-en-todas-las-interfaces.md](motor-tts-escucha-en-todas-las-interfaces.md)
-  (observación 11).
 - [daemon-start-puerto-ocupado.md](daemon-start-puerto-ocupado.md) y
   [dub-daemon-timeout-intermitente.md](dub-daemon-timeout-intermitente.md)
   (observación 9: falta de log del daemon).

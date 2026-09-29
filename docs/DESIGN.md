@@ -140,7 +140,7 @@ Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio�
    - clonada → Clonada(PathBuf) con reference.qvoice
                      │
                      ▼
-4. Intento residente HTTP (127.0.0.1:8766) → fallback subprocess --stdout (PCM 24kHz)
+4. Residente HTTP en loopback (127.0.0.1:8766), único camino de síntesis
                      │
                      ▼
 5. PCM → WAV (hound) → AudioService::play_wav (cpal) o guardado en SpeechStore

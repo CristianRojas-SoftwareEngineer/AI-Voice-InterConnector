@@ -4,8 +4,10 @@
 
 #include "qwen_tts.h"
 
-/* Start HTTP server. Blocks until killed. Returns 0 on clean shutdown, -1 on error. */
-int qwen_tts_serve(qwen_tts_ctx_t *ctx, int port);
+/* Start HTTP server. Blocks until killed. Returns 0 on clean shutdown, -1 on error.
+ * `host` is a literal IPv4 bind address (e.g. "127.0.0.1"); an invalid one makes
+ * the call fail instead of falling back to all interfaces. */
+int qwen_tts_serve(qwen_tts_ctx_t *ctx, const char *host, int port);
 
 /* Like qwen_tts_serve, but with n_workers concurrent synthesis workers.
  *   n_workers <= 1 : single-threaded inline accept loop (original behavior).
@@ -14,7 +16,7 @@ int qwen_tts_serve(qwen_tts_ctx_t *ctx, int port);
  * On thread-pool backends that are NOT reentrant (pthread/Win32) synthesis is
  * serialized with an internal lock — correct but no intra-op overlap; full
  * parallelism only on the GCD backend. */
-int qwen_tts_serve_ex(qwen_tts_ctx_t *ctx, int port, int n_workers);
+int qwen_tts_serve_ex(qwen_tts_ctx_t *ctx, const char *host, int port, int n_workers);
 
 /* vLLM-style request-batching server (opt-in --batch-size N, N>=2). A single
  * scheduler thread owns ctx and steps up to N concurrent users' requests together
@@ -22,7 +24,7 @@ int qwen_tts_serve_ex(qwen_tts_ctx_t *ctx, int port, int n_workers);
  * pool parses HTTP into jobs. Throughput lever for many concurrent users —
  * distinct from --workers (N independent single-stream synths). Preset voices +
  * sampling params per request; instruct/voice_design/stream fall back to single
- * jobs on the scheduler. */
-int qwen_tts_serve_batched(qwen_tts_ctx_t *ctx, int port, int max_batch);
+ * jobs on the scheduler. `host` is a literal IPv4 bind address. */
+int qwen_tts_serve_batched(qwen_tts_ctx_t *ctx, const char *host, int port, int max_batch);
 
 #endif /* QWEN_TTS_SERVER_H */

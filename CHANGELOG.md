@@ -100,6 +100,10 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 Recupera el canal de instalación de una línea en Windows, que abortaba con un error de análisis antes de ejecutar nada, y hace que la suite de Pester pruebe ese canal tal como lo usa el usuario.
 
+### Seguridad
+
+- El motor TTS residente escucha solo en loopback (`127.0.0.1`) y deja de aceptar conexiones desde la red local: el nuevo flag `--host` del motor usa loopback por defecto, rechaza direcciones inválidas y el lanzador lo fija explícitamente, también con `--no-daemon`.
+
 ### Corregido
 
 - La instalación de una línea en Windows (`irm … | iex`) funciona en PowerShell 5.1 y 7: `install.ps1` se publica en ASCII puro y sin BOM, y sus mensajes conservan las tildes cualquiera que sea la decodificación de `irm`.
@@ -112,6 +116,7 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 
 ### Documentación
 
+- `SECURITY.md` declara el modelo de confianza del motor residente (solo loopback y sin autenticación), y `vendor/qwen3-tts/DIVERGENCIAS.md` registra la procedencia y las divergencias del snapshot respecto al original.
 - La especificación del ciclo de vida deja de declarar el lint con `shellcheck` y PSScriptAnalyzer para los bootstrap: ningún job de CI lo ejecutaba, así que el contrato describe ahora lo que realmente se verifica.
 
 ## [0.25.0] — 2026-09-28

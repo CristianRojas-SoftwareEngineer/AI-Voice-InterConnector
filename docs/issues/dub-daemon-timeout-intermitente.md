@@ -167,5 +167,3 @@ Workaround: reintentar, usar el modo automático (sin `--daemon`), o esperar a q
 ## Relacionados
 
 - [daemon-start-puerto-ocupado.md](daemon-start-puerto-ocupado.md).
-- [motor-tts-escucha-en-todas-las-interfaces.md](motor-tts-escucha-en-todas-las-interfaces.md):
-  el mismo residente.

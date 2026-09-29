@@ -982,6 +982,14 @@ impl IsolatedInstance {
         IsolatedInstance { dir, envs }
     }
 
+    /// Puerto del motor TTS residente de la instancia (`QWEN3_TTS_PORT`).
+    fn tts_port(&self) -> Option<u16> {
+        self.envs
+            .iter()
+            .find(|(k, _)| k == "QWEN3_TTS_PORT")
+            .and_then(|(_, v)| v.parse().ok())
+    }
+
     /// Envs como `&[(&str, &str)]` para `run_json_env` y `*_env`.
     fn args(&self) -> Vec<(&str, &str)> {
         self.envs
@@ -2758,6 +2766,70 @@ mod tts {
     }
 
     // ─── daemon start/status/restart ────────────────────────────────
+
+    /// IPv4 de la interfaz de salida, descubierta sin enviar tráfico (un `connect`
+    /// UDP solo fija la ruta). `None` si el equipo solo tiene loopback.
+    fn non_loopback_ipv4() -> Option<std::net::Ipv4Addr> {
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        sock.connect("192.0.2.1:9").ok()?;
+        match sock.local_addr().ok()?.ip() {
+            std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip),
+            _ => None,
+        }
+    }
+
+    /// El residente acepta conexiones por loopback y las rechaza por la IPv4 de la LAN.
+    #[test]
+    fn resident_listens_only_on_loopback() {
+        let _tts = lock_tts();
+        hit_start_heavy("tts::resident_listens_only_on_loopback");
+        let _reaper = arm_reaper("resident_listens_only_on_loopback");
+        if !tts_provisioned() {
+            eprintln!("[daemon] skip: sin provisión TTS para el residente");
+            hit_end("tts::resident_listens_only_on_loopback (skip sin provisión)");
+            return;
+        }
+        let inst = IsolatedInstance::new("loopback");
+        let port = inst.tts_port().expect("la instancia debe fijar QWEN3_TTS_PORT");
+        start_instance(&inst, &[]);
+        let timeout = Duration::from_secs(3);
+        let loopback = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        assert!(
+            std::net::TcpStream::connect_timeout(&loopback, timeout).is_ok(),
+            "el residente debe aceptar conexiones en 127.0.0.1:{}",
+            port
+        );
+        match non_loopback_ipv4() {
+            Some(ip) => {
+                let lan = std::net::SocketAddr::from((ip, port));
+                assert!(
+                    std::net::TcpStream::connect_timeout(&lan, timeout).is_err(),
+                    "el residente está expuesto a la red: acepta conexiones en {}:{}",
+                    ip,
+                    port
+                );
+            }
+            None => eprintln!("[daemon] salto parcial: sin IPv4 no loopback, se omite la aserción de red"),
+        }
+        stop_instance(&inst, "resident_listens_only_on_loopback");
+        hit_end("tts::resident_listens_only_on_loopback");
+    }
+
+    /// El motor rechaza un `--host` inválido al parsear los argumentos, sin cargar el modelo.
+    #[test]
+    fn engine_rejects_invalid_host() {
+        let Some(bin) = tts_binary() else {
+            eprintln!("[tts] skip: sin binario del motor");
+            return;
+        };
+        let out = Command::new(bin)
+            .args(["--serve", "1", "--host", "no-es-ip"])
+            .output()
+            .expect("debe poder ejecutar el motor");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr);
+        assert!(stderr.contains("--host"), "stderr debe mencionar --host: {}", stderr);
+    }
 
     #[test]
     fn daemon_start_ok() {

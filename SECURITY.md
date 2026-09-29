@@ -6,6 +6,7 @@
 - [Cómo reportar una vulnerabilidad](#cómo-reportar-una-vulnerabilidad)
 - [Modelo de amenaza](#modelo-de-amenaza)
   - [Daemon local (modo daemon)](#daemon-local-modo-daemon)
+  - [Motor TTS residente](#motor-tts-residente)
   - [Modelo y provisión](#modelo-y-provisión)
   - [Contenido generado](#contenido-generado)
   - [Nota sobre los bootstrap de una línea](#nota-sobre-los-bootstrap-de-una-línea)
@@ -20,8 +21,8 @@ recibe correcciones de seguridad.
 
 | Versión | Soportada |
 |---------|-----------|
-| 0.1.x   | ✅ |
-| < 0.1.0 | ❌ |
+| Última versión publicada | ✅ |
+| Versiones anteriores     | ❌ |
 
 ## Cómo reportar una vulnerabilidad
 
@@ -60,6 +61,19 @@ limitada, pero conviene explicitar sus supuestos:
 - El endpoint de síntesis valida la entrada (`text` acotado a 5000 caracteres)
   antes de procesarla.
 - No reenvíes ni expongas el puerto 8765 a interfaces de red externas.
+
+### Motor TTS residente
+
+- El motor de síntesis corre como proceso residente que escucha **únicamente en
+  `127.0.0.1`**, en el puerto 8766 o el de `QWEN3_TTS_PORT`. **No implementa
+  autenticación**: cualquier proceso local del mismo usuario puede sintetizar con él,
+  enumerar las voces y usar las voces clonadas.
+- Lo lanzan el daemon (que lo mantiene caliente) y la CLI en modo `--no-daemon`
+  (durante la operación).
+- La dirección de escucha la fija el lanzador, y el motor exige loopback por defecto:
+  solo se expone a la red si alguien arranca el motor a mano con `--host 0.0.0.0`.
+  Con loopback comparte el nivel de confianza del daemon.
+- No reenvíes ni expongas su puerto a interfaces de red externas.
 
 ### Modelo y provisión
 

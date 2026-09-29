@@ -735,16 +735,16 @@ static void set_client_timeout(int fd) {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
-static int setup_listen_socket(int port) {
+static int setup_listen_socket(const char *host, int port) {
+    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(port) };
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        fprintf(stderr, "Invalid bind address: %s\n", host);
+        return -1;
+    }
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) { perror("socket"); return -1; }
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    struct sockaddr_in addr = {
-        .sin_family = AF_INET,
-        .sin_addr.s_addr = INADDR_ANY,
-        .sin_port = htons(port)
-    };
     if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("bind"); close(server_fd); return -1;
     }
@@ -763,8 +763,8 @@ static void install_signal_handlers(void) {
     signal(SIGPIPE, SIG_IGN);
 }
 
-static void print_banner(int port, int n_workers) {
-    fprintf(stderr, "Server listening on http://0.0.0.0:%d", port);
+static void print_banner(const char *host, int port, int n_workers) {
+    fprintf(stderr, "Server listening on http://%s:%d", host, port);
     if (n_workers > 1)
         fprintf(stderr, " (%d workers%s)", n_workers,
                 g_serialize_synth ? ", synthesis serialized: non-reentrant thread pool" : "");
@@ -1099,9 +1099,9 @@ static void *single_worker_main(void *arg) {
 }
 
 /* Batched server entry: reader pool + continuous-batching scheduler + single worker. */
-int qwen_tts_serve_batched(qwen_tts_ctx_t *ctx, int port, int max_batch) {
+int qwen_tts_serve_batched(qwen_tts_ctx_t *ctx, const char *host, int port, int max_batch) {
     if (max_batch < 2) max_batch = 2;
-    int server_fd = setup_listen_socket(port);
+    int server_fd = setup_listen_socket(host, port);
     if (server_fd < 0) return -1;
     install_signal_handlers();
     ctx->silent = 1;
@@ -1135,8 +1135,8 @@ int qwen_tts_serve_batched(qwen_tts_ctx_t *ctx, int port, int max_batch) {
     single_arg_t swarg = { .ctx = single_ctx ? single_ctx : ctx, .jq = &jq_single, .reject = (single_ctx == NULL) };
     pthread_create(&single_thr, NULL, single_worker_main, &swarg);
 
-    fprintf(stderr, "Server listening on http://0.0.0.0:%d (continuous request-batching: max_batch=%d, %d readers%s)\n",
-            port, max_batch, n_readers, single_ctx ? ", +1 single-job clone" : "");
+    fprintf(stderr, "Server listening on http://%s:%d (continuous request-batching: max_batch=%d, %d readers%s)\n",
+            host, port, max_batch, n_readers, single_ctx ? ", +1 single-job clone" : "");
     fprintf(stderr, "Endpoints:\n"
             "  POST /v1/tts          — generate speech (returns WAV, BATCHED)\n"
             "  POST /v1/tts/stream   — generate speech (chunked PCM, single clone)\n"
@@ -1166,9 +1166,9 @@ int qwen_tts_serve_batched(qwen_tts_ctx_t *ctx, int port, int max_batch) {
     return 0;
 }
 
-int qwen_tts_serve_ex(qwen_tts_ctx_t *ctx, int port, int n_workers) {
+int qwen_tts_serve_ex(qwen_tts_ctx_t *ctx, const char *host, int port, int n_workers) {
     if (n_workers < 1) n_workers = 1;
-    int server_fd = setup_listen_socket(port);
+    int server_fd = setup_listen_socket(host, port);
     if (server_fd < 0) return -1;
     install_signal_handlers();
 
@@ -1177,7 +1177,7 @@ int qwen_tts_serve_ex(qwen_tts_ctx_t *ctx, int port, int n_workers) {
 
     /* ── Single-worker: original inline accept loop (zero extra memory) ── */
     if (n_workers == 1) {
-        print_banner(port, 1);
+        print_banner(host, port, 1);
         while (server_running) {
             struct sockaddr_in client_addr;
             socklen_t client_len = sizeof(client_addr);
@@ -1230,7 +1230,7 @@ int qwen_tts_serve_ex(qwen_tts_ctx_t *ctx, int port, int n_workers) {
         pthread_create(&threads[i], NULL, worker_main, &args[i]);
     }
 
-    print_banner(port, spawned);
+    print_banner(host, port, spawned);
 
     while (server_running) {
         struct sockaddr_in client_addr;
@@ -1260,6 +1260,6 @@ int qwen_tts_serve_ex(qwen_tts_ctx_t *ctx, int port, int n_workers) {
     return 0;
 }
 
-int qwen_tts_serve(qwen_tts_ctx_t *ctx, int port) {
-    return qwen_tts_serve_ex(ctx, port, 1);
+int qwen_tts_serve(qwen_tts_ctx_t *ctx, const char *host, int port) {
+    return qwen_tts_serve_ex(ctx, host, port, 1);
 }

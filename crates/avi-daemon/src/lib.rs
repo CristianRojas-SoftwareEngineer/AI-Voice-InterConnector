@@ -1540,10 +1540,6 @@ const SYNTH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
 /// corre en `spawn_blocking`): en warm-on-clone es obligatorio porque compite
 /// con tráfico vivo; en el arranque es no disputado.
 ///
-/// Riesgo heredado (R2): el residente enlaza en `INADDR_ANY`
-/// (el resident de TTS); el warmup lo mantiene vivo, extendiendo esa
-/// superficie de red. Documentado, NO corregido (fuera de alcance).
-///
 /// Limitación estructural (inherente al residente, no a `default`): el residente
 /// TTS es de una sola voz, así que solo la última voz calentada queda precargada;
 /// calentar otra evicciona la previa y el resto paga el cold-start de reemplazo

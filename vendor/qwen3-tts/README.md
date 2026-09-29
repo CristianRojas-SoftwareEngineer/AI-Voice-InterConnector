@@ -107,6 +107,7 @@ Optional:
   --silent                   Suppress status output
   --debug                    Verbose diagnostics
   --serve <port>             Start HTTP server
+  --host <ipv4>              Bind address for --serve (default 127.0.0.1; 0.0.0.0 exposes to the network)
 ```
 
 ### Examples
@@ -431,6 +432,8 @@ curl -sN http://localhost:8080/v1/tts/stream \
 curl -s http://localhost:8080/v1/audio/speech \
   -d '{"input":"Hello world","voice":"ryan"}' -o output.wav
 ```
+
+> The server listens only on `127.0.0.1` by default and has no authentication. Exposing it to the network requires an explicit `--host 0.0.0.0`.
 
 > Full guide: all endpoints, request body, performance → [docs/server.md](docs/server.md)
 
