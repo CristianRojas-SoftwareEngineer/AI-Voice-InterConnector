@@ -52,8 +52,8 @@ fn resolve_daemon_addr() -> SocketAddr {
 /// Dimensionado solo para spawn + bind del proceso (el warmup TTS corre en segundo
 /// plano, ya no bloquea el arranque). Es el timeout diagnóstico de la espera
 /// del evento (fichero ready); el intervalo es la cadencia de lectura del fichero.
-/// Ningún timeout nuevo puede ser más corto que el `WARMUP_DEADLINE` (40 s) que
-/// acota el warmup real: este techo solo cubre bind+publicación (~1-2 s sanos).
+/// El warmup corre en segundo plano, acotado por el arranque del residente más el
+/// presupuesto del testigo; este techo solo cubre bind+publicación (~1-2 s sanos).
 const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Cadencia de lectura del fichero ready (antes intervalo del sondeo).
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
@@ -83,6 +83,17 @@ fn resolve_stt_language(token: &str) -> &str {
         "es-latam" => "es",
         other => other,
     }
+}
+
+/// Traduce un fallo de la síntesis directa al contrato: el vencimiento del
+/// presupuesto sale como `synthesis_timeout` y cualquier otro como `synthesis_error`.
+fn synthesis_cli_error(e: anyhow::Error) -> CliError {
+    let reason = if e.downcast_ref::<avi_tts::SynthesisTimeout>().is_some() {
+        "synthesis_timeout"
+    } else {
+        "synthesis_error"
+    };
+    CliError::new(ExitCode::Error, reason, e.to_string())
 }
 
 /// Valida el override de temperatura (`0 < t <= 2.0`); exit 2 si no calza.
@@ -1253,14 +1264,14 @@ async fn handle_voice(
 /// Captura PCM del micrófono en `spawn_blocking`: `duration` fija la
 /// captura por N segundos; `None` (solo alcanzable en TTY, ver guardas de
 /// `--duration`) dispara push-to-talk hasta Enter (`capture_16k_mono_pcm_until_enter`).
-/// Único punto de selección, reusado por las 4 vías de captura (directa y daemon,
-/// transcribe y dub) para no duplicar el `match` ni el manejo de `spawn_blocking`.
-async fn capture_mic_pcm(duration: Option<u64>) -> Result<Vec<i16>, CliError> {
+/// `max_secs` es el techo de duración del push-to-talk (se combina con el
+/// techo de entorno). Solo lo usa `acquire_pcm`.
+async fn capture_mic_pcm(duration: Option<u64>, max_secs: u64) -> Result<Vec<i16>, CliError> {
     tokio::task::spawn_blocking(move || {
         let svc = audio::AudioService::new();
         match duration {
             Some(secs) => svc.capture_16k_mono_pcm(secs),
-            None => svc.capture_16k_mono_pcm_until_enter(),
+            None => svc.capture_16k_mono_pcm_until_enter(max_secs),
         }
     })
     .await
@@ -1277,6 +1288,68 @@ async fn capture_mic_pcm(duration: Option<u64>) -> Result<Vec<i16>, CliError> {
             "transcription_error",
             e.to_string(),
         )
+    })
+}
+
+/// Rechaza con exit 3 (`audio_not_found`) un `--audio` que no es un archivo
+/// existente. Se llama antes de despachar al daemon o a la vía local para que
+/// ambas devuelvan el mismo código.
+fn validate_audio_arg(audio: &std::path::Path) -> Result<(), CliError> {
+    if audio.is_file() {
+        Ok(())
+    } else {
+        Err(CliError::new(
+            ExitCode::NotFound,
+            "audio_not_found",
+            format!("El archivo de audio '{}' no existe.", audio.display()),
+        ))
+    }
+}
+
+/// Error de uso (exit 2, `audio_too_long`) cuando el audio del dub supera
+/// `MAX_DUB_AUDIO_SECS` segundos.
+fn audio_too_long_error() -> CliError {
+    CliError::new(
+        ExitCode::InvalidInput,
+        "audio_too_long",
+        format!(
+            "El audio del doblaje no puede superar {} segundos.",
+            avi_core::MAX_DUB_AUDIO_SECS
+        ),
+    )
+}
+
+/// Rechaza el PCM 16 kHz mono del dub que supera `MAX_DUB_AUDIO_SECS`.
+fn ensure_dub_pcm_within_limit(pcm: &[i16]) -> Result<(), CliError> {
+    if pcm.len() as u64 > avi_core::MAX_DUB_AUDIO_SECS * 16_000 {
+        Err(audio_too_long_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Obtiene el PCM 16 kHz mono desde el micrófono o desde un WAV, y traduce los
+/// fallos al contrato: archivo ausente exit 3, WAV inválido exit 2, error de
+/// E/S exit 1 y fallo de micrófono exit 10 (`transcription_error`). `max_secs` es el techo de la
+/// captura push-to-talk. Con `mic == false`, `audio` debe ser `Some`.
+async fn acquire_pcm(
+    audio: Option<&str>,
+    mic: bool,
+    duration: Option<u64>,
+    max_secs: u64,
+) -> Result<Vec<i16>, CliError> {
+    if mic {
+        return capture_mic_pcm(duration, max_secs).await;
+    }
+    let path = audio.expect("validado arriba");
+    avi_audio::load_wav_16k_mono_pcm(std::path::Path::new(path)).map_err(|e| match e {
+        avi_audio::WavLoadError::NotFound => {
+            CliError::new(ExitCode::NotFound, "audio_not_found", e.to_string())
+        }
+        avi_audio::WavLoadError::Invalid(_) => {
+            CliError::new(ExitCode::InvalidInput, "invalid_audio", e.to_string())
+        }
+        avi_audio::WavLoadError::Io(_) => CliError::new(ExitCode::Error, "io_error", e.to_string()),
     })
 }
 
@@ -1449,6 +1522,9 @@ async fn handle_speech(
                     "--mic requiere --duration en este host.",
                 ));
             }
+            if let Some(a) = &audio {
+                validate_audio_arg(std::path::Path::new(a))?;
+            }
 
             // Dispatch 3 modos (Transcribe es delegable al daemon):
             // ForceDaemon → daemon (error si no responde); Auto → daemon si
@@ -1494,19 +1570,7 @@ async fn handle_speech(
             }
             #[cfg(feature = "native-stt")]
             {
-                let pcm = if mic {
-                    capture_mic_pcm(duration).await?
-                } else {
-                    avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(
-                        |e| {
-                            CliError::new(
-                                ExitCode::TranscriptionFailed,
-                                "transcription_error",
-                                e.to_string(),
-                            )
-                        },
-                    )?
-                };
+                let pcm = acquire_pcm(audio.as_deref(), mic, duration, u64::MAX).await?;
 
                 let engine = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3"))
                     .map_err(|e| {
@@ -1562,13 +1626,7 @@ async fn handle_speech(
             }
             validate_temperature(temperature)?;
             // Orden de validaciones del oráculo: la temperatura se comprueba antes que el texto.
-            if text.trim().is_empty() {
-                return Err(CliError::new(
-                    ExitCode::InvalidInput,
-                    "empty_text",
-                    "El texto a sintetizar está vacío",
-                ));
-            }
+            avi_core::validate_synthesis_text(&text)?;
             // Origen por defecto = destino (sin traducir).
             let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
@@ -1620,7 +1678,7 @@ async fn handle_speech(
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
             engine
                 .synthesize_with_temperature(&final_text, &voice, temperature, Some(&tmp_wav))
-                .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
+                .map_err(synthesis_cli_error)?;
 
             let saved = if play {
                 // RF-12.3–12.5: bucle interactivo, reemplaza la reproducción y
@@ -1640,9 +1698,7 @@ async fn handle_speech(
                                 temperature,
                                 Some(&tmp_wav),
                             )
-                            .map_err(|e| {
-                                CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
-                            })?;
+                            .map_err(synthesis_cli_error)?;
                         Ok(tmp_wav.clone())
                     },
                 )
@@ -1688,13 +1744,7 @@ async fn handle_speech(
             temperature,
         } => {
             validate_temperature(temperature)?;
-            if text.trim().is_empty() {
-                return Err(CliError::new(
-                    ExitCode::InvalidInput,
-                    "empty_text",
-                    "El texto a sintetizar está vacío",
-                ));
-            }
+            avi_core::validate_synthesis_text(&text)?;
             // Origen por defecto = destino (sin traducir).
             let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
@@ -1728,7 +1778,7 @@ async fn handle_speech(
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
             engine
                 .synthesize_with_temperature(&final_text, &voice, temperature, Some(&tmp_wav))
-                .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
+                .map_err(synthesis_cli_error)?;
             // Divergencia 5 corregida: `say` reproduce de verdad.
             audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
                 CliError::new(
@@ -1780,14 +1830,11 @@ async fn handle_speech(
                     "Debe especificarse --audio o --mic.",
                 ));
             }
+            if duration.is_some_and(|d| d > avi_core::MAX_DUB_AUDIO_SECS) {
+                return Err(audio_too_long_error());
+            }
             if let Some(a) = &audio {
-                if !std::path::Path::new(a).is_file() {
-                    return Err(CliError::new(
-                        ExitCode::NotFound,
-                        "audio_not_found",
-                        format!("El archivo de audio '{}' no existe.", a),
-                    ));
-                }
+                validate_audio_arg(std::path::Path::new(a))?;
             }
             // Despacho 3 modos: delega a POST /dub si daemon activo
             {
@@ -1835,19 +1882,14 @@ async fn handle_speech(
             }
             #[cfg(feature = "native-stt")]
             {
-                let pcm = if mic {
-                    capture_mic_pcm(duration).await?
-                } else {
-                    avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(
-                        |e| {
-                            CliError::new(
-                                ExitCode::TranscriptionFailed,
-                                "transcription_error",
-                                e.to_string(),
-                            )
-                        },
-                    )?
-                };
+                let pcm = acquire_pcm(
+                    audio.as_deref(),
+                    mic,
+                    duration,
+                    avi_core::MAX_DUB_AUDIO_SECS,
+                )
+                .await?;
+                ensure_dub_pcm_within_limit(&pcm)?;
                 let stt = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3"))
                     .map_err(|e| {
                         CliError::new(
@@ -1929,6 +1971,8 @@ async fn handle_speech(
                     }
                 };
 
+                // El texto traducido puede exceder el tope aunque el transcrito no.
+                avi_core::validate_synthesis_text(&final_text)?;
                 let voice_store = VoiceStore::new();
                 if !voice_store.exists(&voice) {
                     return Err(CliError::new(
@@ -1942,9 +1986,7 @@ async fn handle_speech(
                 let engine = Qwen3TtsEngine::new(None);
                 engine
                     .synthesize_with_temperature(&final_text, &voice, temperature, Some(&tmp_wav))
-                    .map_err(|e| {
-                        CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
-                    })?;
+                    .map_err(synthesis_cli_error)?;
                 audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
                     CliError::new(
                         ExitCode::Error,
@@ -2547,7 +2589,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     let start = std::time::Instant::now();
     // Graceful y verificación contra la dirección descubierta.
     let client_addr = resolve_client_addr();
-    // 1) Graceful breve si el probe responde (no hereda el timeout de 120 s).
+    // 1) Graceful breve si el probe responde (no hereda el techo `REQUEST_FAILSAFE` del cliente HTTP).
     if probe_health(client, &client_addr).await {
         let _ = tokio::time::timeout(
             std::time::Duration::from_millis(1500),
@@ -3496,7 +3538,7 @@ async fn wait_health_down(
 fn daemon_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_millis(500))
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(avi_core::REQUEST_FAILSAFE)
         .build()
         .expect("construir el cliente HTTP del daemon")
 }
@@ -3559,17 +3601,7 @@ async fn transcribe_via_daemon(
     // El POST apunta a la dirección descubierta (fallback idéntico sin
     // pidfile).
     let client_addr = resolve_client_addr();
-    let pcm: Vec<i16> = if mic {
-        capture_mic_pcm(duration).await?
-    } else {
-        avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
-            CliError::new(
-                ExitCode::TranscriptionFailed,
-                "transcription_error",
-                e.to_string(),
-            )
-        })?
-    };
+    let pcm = acquire_pcm(audio, mic, duration, u64::MAX).await?;
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let resp = client
@@ -3729,6 +3761,19 @@ async fn daemon_synthesize_wav(
                 format!("Daemon inalcanzable en {}: {}", client_addr, e),
             )
         })?;
+    // Un 400 lleva la validación de entrada del daemon (`reason` y `message`).
+    if resp.status() == reqwest::StatusCode::BAD_REQUEST {
+        let body: Value = resp.json().await.unwrap_or(json!({}));
+        let reason = body
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("invalid_input");
+        let message = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("El daemon rechazó la petición");
+        return Err(CliError::new(ExitCode::InvalidInput, reason, message));
+    }
     if !resp.status().is_success() {
         return Err(CliError::new(
             ExitCode::Error,
@@ -3796,13 +3841,13 @@ async fn daemon_synthesize_wav(
 }
 
 /// Timeout de inactividad entre eventos de un stream NDJSON: 1500 ms.
-/// Presupuesto histórico reinterpretado — ya no acota la inferencia total, solo
-/// dispara si el daemon deja de emitir (bucle atascado), nunca por inferencia sana
-/// (el servidor emite latidos cada ~500 ms).
+/// No acota la inferencia total: solo dispara si el daemon deja de emitir
+/// (bucle atascado), nunca por inferencia sana (el servidor emite latidos cada
+/// ~500 ms).
 const STREAM_INACTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 /// Deadline total failsafe del consumo de un stream (paridad con `daemon_client`):
 /// red de seguridad documentada, no presupuesto.
-const STREAM_TOTAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+const STREAM_TOTAL_DEADLINE: std::time::Duration = avi_core::REQUEST_FAILSAFE;
 
 /// Consume un stream NDJSON del daemon (`started` → latidos → `result`/`error`)
 /// con timeout de inactividad + failsafe total. Retorna el evento final
@@ -3824,8 +3869,10 @@ async fn consume_ndjson_stream(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
                 format!(
-                    "Daemon inalcanzable en {} (límite total 120s agotado en {})",
-                    client_addr, stage
+                    "Daemon inalcanzable en {} (límite total {}s agotado en {})",
+                    client_addr,
+                    STREAM_TOTAL_DEADLINE.as_secs(),
+                    stage
                 ),
             ));
         }
@@ -4105,7 +4152,7 @@ async fn clone_via_daemon(
     }
     // El envío solo espera las cabeceras (el daemon valida barato y
     // responde 200 de inmediato); el trabajo pesado se consume como stream con
-    // inactividad 1500 ms + failsafe 120 s hasta el evento final.
+    // inactividad 1500 ms + failsafe `REQUEST_FAILSAFE` hasta el evento final.
     // El POST apunta a la dirección descubierta.
     let client_addr = resolve_client_addr();
     let fut = client
@@ -4188,17 +4235,8 @@ async fn dub_via_daemon(
     voice: &str,
 ) -> Result<(), CliError> {
     // Captura/lectura PCM y encode a base64 para POST /dub
-    let pcm: Vec<i16> = if mic {
-        capture_mic_pcm(duration).await?
-    } else {
-        avi_audio::load_wav_16k_mono_pcm(audio.expect("validado arriba")).map_err(|e| {
-            CliError::new(
-                ExitCode::TranscriptionFailed,
-                "transcription_error",
-                e.to_string(),
-            )
-        })?
-    };
+    let pcm = acquire_pcm(audio, mic, duration, avi_core::MAX_DUB_AUDIO_SECS).await?;
+    ensure_dub_pcm_within_limit(&pcm)?;
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let mut payload = serde_json::json!({
@@ -4214,7 +4252,7 @@ async fn dub_via_daemon(
     }
     // El envío espera las cabeceras (respuesta 200 inmediata tras
     // validar barato); el pipeline se consume como stream con inactividad
-    // 1500 ms + failsafe 120 s hasta el evento final.
+    // 1500 ms + failsafe `REQUEST_FAILSAFE` hasta el evento final.
     // El POST apunta a la dirección descubierta.
     let client_addr = resolve_client_addr();
     let fut = client
@@ -4265,9 +4303,13 @@ async fn dub_via_daemon(
             .and_then(|v| v.as_str())
             .unwrap_or("error del daemon");
         let code = match reason {
-            "audio_missing" | "audio_decode_error" | "empty_text" | "unsupported_language_pair" => {
-                ExitCode::InvalidInput
-            }
+            "audio_missing"
+            | "audio_decode_error"
+            | "empty_text"
+            | "text_too_long"
+            | "audio_too_long"
+            | "invalid_audio"
+            | "unsupported_language_pair" => ExitCode::InvalidInput,
             "model_missing" => ExitCode::ModelMissing,
             "transcription_failed" => ExitCode::TranscriptionFailed,
             "translation_failed" => ExitCode::TranslationFailed,
@@ -4286,9 +4328,13 @@ async fn dub_via_daemon(
     // {status:"dubbed", text, translated, audio_b64, voice}; los mapeos
     // reason→exit se preservan también para los eventos `error` del stream.
     let val: Value = consume_ndjson_stream(resp, "dub", |reason| match reason {
-        "audio_missing" | "audio_decode_error" | "empty_text" | "unsupported_language_pair" => {
-            ExitCode::InvalidInput
-        }
+        "audio_missing"
+        | "audio_decode_error"
+        | "empty_text"
+        | "text_too_long"
+        | "audio_too_long"
+        | "invalid_audio"
+        | "unsupported_language_pair" => ExitCode::InvalidInput,
         "model_missing" => ExitCode::ModelMissing,
         "transcription_failed" => ExitCode::TranscriptionFailed,
         "translation_failed" => ExitCode::TranslationFailed,
@@ -4455,6 +4501,8 @@ async fn dub_compose_via_daemon(
             })?
         }
     };
+    // El texto traducido puede exceder el tope aunque el transcrito no.
+    avi_core::validate_synthesis_text(&final_text)?;
     let voice_store = VoiceStore::new();
     if !voice_store.exists(voice) {
         return Err(CliError::new(

@@ -350,7 +350,7 @@ en **español a stderr** (con `reason` legible por máquina) y dejan stdout limp
 | **5** | Daemon inalcanzable | `speech say --text x --daemon` con el daemon detenido |
 | **6** | Conflicto de estado | `speech synthesize --text x --label ya_existe` sin `--force` (colisión de etiqueta) |
 | **9** | Fallo del pipeline de traducción | `dub`/`say`/`synthesize`/`translate` con idiomas que difieren, el derivado CT2 **ya provisionado**, y la inferencia falla en tiempo de ejecución (`translation_failed`) |
-| **10** | Fallo del pipeline de transcripción | `speech transcribe --audio corrupto.wav --source-language es-latam` (audio ilegible) |
+| **10** | Fallo del pipeline de transcripción o de la captura del micrófono | difícil de sondear a mano: un `--audio` inexistente sale con 3, ilegible con 2 y con error de E/S con 1 |
 
 ```bash
 # Ejemplos directos:

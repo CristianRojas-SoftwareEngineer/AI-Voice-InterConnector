@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Defaults de muestreo del motor Qwen3-TTS, tomados de su código fuente; los
 /// defaults del host deben coincidir para que la omisión de flags HTTP/CLI sea
@@ -126,13 +126,28 @@ pub struct VoiceProfile {
 
 /// Trait público del motor de síntesis TTS
 pub trait TtsEngine: Send + Sync {
+    /// Síntesis interrumpible: activar `cancel` cierra la conexión con el motor,
+    /// que aborta la generación en curso y queda libre para la siguiente
+    /// petición; la llamada devuelve entonces `SynthesisCancelled`.
+    fn synthesize_cancellable(
+        &self,
+        text: &str,
+        profile: &VoiceProfile,
+        options: &GenerationOptions,
+        output_path: Option<&PathBuf>,
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf>;
+
+    /// Síntesis sin cancelación externa (solo la acota su presupuesto).
     fn synthesize_with_options(
         &self,
         text: &str,
         profile: &VoiceProfile,
         options: &GenerationOptions,
         output_path: Option<&PathBuf>,
-    ) -> Result<PathBuf>;
+    ) -> Result<PathBuf> {
+        self.synthesize_cancellable(text, profile, options, output_path, &AtomicBool::new(false))
+    }
 }
 
 /// Voz resuelta hacia la semántica del motor: preset del servidor o voz clonada
@@ -291,7 +306,8 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Motor Qwen3-TTS con servidor HTTP residente gestionado por el host como
-/// único camino de síntesis (healthcheck y POST ambos acotados a 30 s).
+/// único camino de síntesis (el healthcheck está acotado; el POST de síntesis
+/// se acota con el presupuesto proporcional al texto).
 pub struct Qwen3TtsEngine {
     pub server_url: Option<String>,
     pub binary_path: Option<PathBuf>,
@@ -301,15 +317,19 @@ pub struct Qwen3TtsEngine {
     /// PID del proceso `qwen_tts.exe` arrancado (0 si no hay). Se usa en `shutdown`
     /// como señal binaria «hubo residente» (0 / no-0) para decidir si invocar el
     /// kill, SIN tomar el `Mutex<resident>` que el hilo `spawn_blocking(warmup)`
-    /// retiene durante el spawn + `wait_health` (30 s) + síntesis HTTP (30 s).
+    /// retiene durante el spawn + `wait_health` + síntesis HTTP.
     resident_pid: AtomicU32,
 }
 
 /// Ventana de la salud observada por petición: `retries=1`,
 /// `interval_ms=2000` acotan el healthcheck a ~2 s por petición. Generoso
-/// para un `GET /v1/health` sano en loopback (responde en ms) y suficiente
-/// para fallar rápido ante un sumidero TCP que acepta y no responde, muy por
-/// debajo del deadline de handler de 8 s (`avi-daemon`).
+/// para un `GET /v1/health` sano en loopback (responde en ms) y muy por
+/// debajo del presupuesto de síntesis (mínimo 30 s), de modo que la
+/// observación de salud nunca consume el plazo de una síntesis. El motor
+/// atiende una petición cada vez, así que no responder en la ventana
+/// significa colgado u ocupado: tras una síntesis cancelada el motor aborta
+/// en un fotograma y responde dentro de la ventana, y uno que no aborta se
+/// reemplaza aquí.
 const HEALTH_OBS_RETRIES: usize = 1;
 const HEALTH_OBS_INTERVAL_MS: u64 = 2000;
 
@@ -381,7 +401,9 @@ impl Qwen3TtsEngine {
         self.synthesize_with_options(text, &profile, &options, output_path)
     }
 
-    /// Intentar la síntesis vía HTTP local (servidor manual o residente).
+    /// Intentar la síntesis vía HTTP local (servidor manual o residente). El
+    /// `budget` es el plazo total del `POST`; si vence, el error devuelto
+    /// envuelve `SynthesisTimeout`, y si se activa `cancel`, `SynthesisCancelled`.
     #[allow(clippy::too_many_arguments)]
     fn synthesize_via_http(
         &self,
@@ -392,13 +414,16 @@ impl Qwen3TtsEngine {
         prosody: Option<&ProsodyOptions>,
         emotion: Option<&EmotionOptions>,
         out_path: &Path,
+        budget: Duration,
+        cancel: &AtomicBool,
     ) -> Result<()> {
         let body = build_tts_body(text, voice, options, prosody, emotion).to_string();
         let (status, bytes) = http_exchange(
             &format!("{}/v1/tts", server_url),
             "POST",
             Some(&body),
-            Duration::from_secs(30),
+            budget,
+            Some(cancel),
         )?;
         if (200..300).contains(&status) {
             std::fs::write(out_path, bytes)?;
@@ -457,13 +482,18 @@ impl Qwen3TtsEngine {
     /// residente ya la da la capa superior (`synthesis_lock` en el daemon,
     /// secuencialidad en el CLI directo), así que la siguiente petición
     /// reclama el residente de inmediato en vez de esperar tras un hilo
-    /// huérfano reteniendo el lock durante 30 s.
+    /// huérfano reteniendo el lock. El plazo total del POST es el presupuesto
+    /// proporcional a la longitud del texto (`avi_core::synthesis_budget`).
+    /// Al vencer o al activarse `cancel` se cierra la conexión y el motor
+    /// aborta la generación, así que el residente sigue caliente y el
+    /// `health_check` de la siguiente petición lo reutiliza.
     fn synthesize_via_resident(
         &self,
         text: &str,
         voice: &VoiceEngine,
         options: &GenerationOptions,
         out_path: &Path,
+        cancel: &AtomicBool,
     ) -> Result<()> {
         let model_dir = self
             .model_dir
@@ -498,7 +528,15 @@ impl Qwen3TtsEngine {
                 .expect("residente arrancado o reutilizado sano");
             format!("http://{}:{}", RESIDENT_HOST, state.resident.port)
         };
-        self.synthesize_via_http(&url, text, voice, options, None, None, out_path)
+        // Una cancelación durante el arranque o la salud observada no debe
+        // encargar al motor un trabajo que nadie espera.
+        if cancel.load(Ordering::SeqCst) {
+            return Err(anyhow::Error::new(SynthesisCancelled));
+        }
+        let budget = avi_core::synthesis_budget(text.chars().count());
+        self.synthesize_via_http(
+            &url, text, voice, options, None, None, out_path, budget, cancel,
+        )
     }
 }
 
@@ -525,12 +563,13 @@ fn update_resident_pid_in_pidfile(pid: u32) {
 }
 
 impl TtsEngine for Qwen3TtsEngine {
-    fn synthesize_with_options(
+    fn synthesize_cancellable(
         &self,
         text: &str,
         profile: &VoiceProfile,
         options: &GenerationOptions,
         output_path: Option<&PathBuf>,
+        cancel: &AtomicBool,
     ) -> Result<PathBuf> {
         let path = output_path
             .cloned()
@@ -550,7 +589,17 @@ impl TtsEngine for Qwen3TtsEngine {
         if let Some(url) = &self.server_url {
             if matches!(voice, VoiceEngine::Preset(_))
                 && self
-                    .synthesize_via_http(url, text, &voice, options, None, None, &path)
+                    .synthesize_via_http(
+                        url,
+                        text,
+                        &voice,
+                        options,
+                        None,
+                        None,
+                        &path,
+                        avi_core::synthesis_budget(text.chars().count()),
+                        cancel,
+                    )
                     .is_ok()
             {
                 return Ok(path);
@@ -558,10 +607,11 @@ impl TtsEngine for Qwen3TtsEngine {
         }
 
         // 2. Servidor residente gestionado por el host: único
-        //    camino restante, con healthcheck (30 s) y POST (30 s) acotados.
+        //    camino restante, con healthcheck y POST acotados (este último por
+        //    el presupuesto de síntesis del texto).
         //    El texto viaja por body HTTP JSON, ruta segura para UTF-8 acentuado
         //    (a diferencia del argv de un subprocess en Windows).
-        self.synthesize_via_resident(text, &voice, options, &path)?;
+        self.synthesize_via_resident(text, &voice, options, &path, cancel)?;
         Ok(path)
     }
 }
@@ -624,23 +674,84 @@ pub(crate) fn build_tts_body(
     serde_json::Value::Object(obj)
 }
 
+/// La síntesis no respondió dentro de su presupuesto de tiempo (proporcional a
+/// la longitud del texto). Se distingue de otros fallos de E/S para que los
+/// llamadores lo reporten como `synthesis_timeout`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SynthesisTimeout {
+    /// Tiempo máximo que se concedió a la síntesis.
+    pub budget: Duration,
+}
+
+impl std::fmt::Display for SynthesisTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "La síntesis superó su presupuesto de {} s sin completarse.",
+            self.budget.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for SynthesisTimeout {}
+
+/// El llamante canceló la síntesis antes de que terminara (plazo vencido en
+/// una capa superior, cliente desconectado o fase descartada).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SynthesisCancelled;
+
+impl std::fmt::Display for SynthesisCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "La síntesis se canceló antes de completarse.")
+    }
+}
+
+impl std::error::Error for SynthesisCancelled {}
+
+/// Intervalo máximo entre dos consultas de la bandera de cancelación y del
+/// plazo mientras se espera la respuesta: acota a ~100 ms la latencia con la
+/// que una cancelación cierra la conexión.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
+
 /// Cliente HTTP/1.1 mínimo sobre `TcpStream` (sin runtime async): suficiente
 /// para `/v1/health` y `/v1/tts` del motor. Evita `reqwest::blocking`, que
 /// paniquea al dropearse dentro del runtime tokio de la CLI ("Cannot drop a
 /// runtime in a context where blocking is not allowed").
 ///
 /// Envía `Connection: close` y lee la respuesta hasta EOF; devuelve
-/// (código de estado, bytes del body).
+/// (código de estado, bytes del body). `timeout` es el plazo total del
+/// intercambio (conexión, envío y lectura): al vencer devuelve
+/// `SynthesisTimeout`, aunque el servidor siga enviando bytes a goteo. Si
+/// `cancel` se activa, devuelve `SynthesisCancelled`. En ambos casos el
+/// socket se cierra al soltarse, y ese cierre es la señal con la que el motor
+/// aborta la generación. Por eso nunca se cierra la mitad de escritura tras
+/// enviar la petición: el motor lo interpretaría como un abandono.
 fn http_exchange(
     url: &str,
     method: &str,
     body: Option<&str>,
     timeout: Duration,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(u16, Vec<u8>)> {
+    let deadline = Instant::now() + timeout;
+    let timed_out = || anyhow::Error::new(SynthesisTimeout { budget: timeout });
+    let remaining = || deadline.saturating_duration_since(Instant::now());
     let (host, port, path) = parse_http_url(url)?;
-    let mut stream = std::net::TcpStream::connect(format!("{}:{}", host, port))?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
+    let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))?
+        .next()
+        .ok_or_else(|| anyhow!("No se pudo resolver {}:{}", host, port))?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, timeout)?;
+    let is_timeout = |e: &std::io::Error| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        )
+    };
+    let left = remaining();
+    if left.is_zero() {
+        return Err(timed_out());
+    }
+    stream.set_write_timeout(Some(left))?;
     let mut req = format!(
         "{} {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n",
         method, path, host, port
@@ -652,12 +763,34 @@ fn http_exchange(
         ));
     }
     req.push_str("\r\n");
-    stream.write_all(req.as_bytes())?;
     if let Some(b) = body {
-        stream.write_all(b.as_bytes())?;
+        req.push_str(b);
     }
+    stream.write_all(req.as_bytes()).map_err(|e| {
+        if is_timeout(&e) {
+            timed_out()
+        } else {
+            anyhow::Error::new(e)
+        }
+    })?;
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf)?;
+    let mut chunk = [0u8; 8192];
+    loop {
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            return Err(anyhow::Error::new(SynthesisCancelled));
+        }
+        let left = remaining();
+        if left.is_zero() {
+            return Err(timed_out());
+        }
+        stream.set_read_timeout(Some(left.min(CANCEL_POLL)))?;
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(e) if is_timeout(&e) || e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(anyhow::Error::new(e)),
+        }
+    }
     let text = String::from_utf8_lossy(&buf);
     let header_end = text.find("\r\n\r\n").ok_or_else(|| {
         anyhow!(
@@ -1080,7 +1213,7 @@ pub mod resident {
                     log_path.display()
                 ));
             }
-            let ok = http_exchange(&url, "GET", None, Duration::from_millis(interval_ms))
+            let ok = http_exchange(&url, "GET", None, Duration::from_millis(interval_ms), None)
                 .map(|(status, _)| (200..300).contains(&status))
                 .unwrap_or(false);
             if ok {
@@ -1598,6 +1731,133 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&body.lock().unwrap()).unwrap();
         assert!((parsed["temperature"].as_f64().unwrap() - 0.9).abs() < 1e-6);
         assert_eq!(parsed["seed"], 7);
+    }
+
+    /// Un servidor que acepta la conexión pero nunca responde agota el
+    /// presupuesto inyectado y produce `SynthesisTimeout` con ese presupuesto.
+    /// `simulate_server` responde siempre, así que aquí se usa un listener mudo.
+    #[test]
+    fn synthesize_http_silent_server_yields_synthesis_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("puerto libre");
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("conexión del cliente");
+            thread::sleep(Duration::from_millis(1500));
+        });
+        let engine = Qwen3TtsEngine::new(None);
+        let out = std::env::temp_dir().join("avi_tts_test_timeout.wav");
+        let budget = Duration::from_millis(200);
+        let err = engine
+            .synthesize_via_http(
+                &format!("http://127.0.0.1:{}", port),
+                "Hola",
+                &VoiceEngine::Preset("default".to_string()),
+                &GenerationOptions::default(),
+                None,
+                None,
+                &out,
+                budget,
+                &AtomicBool::new(false),
+            )
+            .expect_err("un servidor mudo debe agotar el presupuesto");
+        let timeout = err
+            .downcast_ref::<SynthesisTimeout>()
+            .expect("el error debe envolver SynthesisTimeout");
+        assert_eq!(timeout.budget, budget);
+        handle.join().unwrap();
+    }
+
+    /// Un servidor que envía un byte cada 50 ms nunca deja vencer una lectura
+    /// individual; el plazo total igualmente corta el intercambio.
+    #[test]
+    fn http_exchange_trickling_server_hits_total_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("puerto libre");
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("conexión del cliente");
+            for _ in 0..40 {
+                if stream.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let budget = Duration::from_millis(300);
+        let started = Instant::now();
+        let err = http_exchange(
+            &format!("http://127.0.0.1:{}/v1/tts", port),
+            "POST",
+            Some("{}"),
+            budget,
+            None,
+        )
+        .expect_err("el goteo no debe extender el plazo total");
+        let elapsed = started.elapsed();
+        assert!(
+            err.downcast_ref::<SynthesisTimeout>().is_some(),
+            "el error debe envolver SynthesisTimeout: {}",
+            err
+        );
+        assert!(
+            elapsed < budget + Duration::from_secs(1),
+            "el plazo total debe cortar el goteo: {:?}",
+            elapsed
+        );
+        handle.join().unwrap();
+    }
+
+    /// Activar la bandera de cancelación cierra la conexión en menos de
+    /// 500 ms y el servidor observa EOF: es la señal con la que el motor
+    /// aborta la generación.
+    #[test]
+    fn http_exchange_cancel_flag_closes_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("puerto libre");
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("conexión del cliente");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            // Consume la petición completa y espera el cierre del cliente.
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => return 0,
+                    Ok(_) => continue,
+                    Err(_) => return usize::MAX,
+                }
+            }
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let setter = {
+            let cancel = cancel.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                cancel.store(true, Ordering::SeqCst);
+            })
+        };
+        let started = Instant::now();
+        let err = http_exchange(
+            &format!("http://127.0.0.1:{}/v1/tts", port),
+            "POST",
+            Some("{}"),
+            Duration::from_secs(10),
+            Some(&cancel),
+        )
+        .expect_err("la bandera debe cancelar el intercambio");
+        let elapsed = started.elapsed();
+        assert!(
+            err.downcast_ref::<SynthesisCancelled>().is_some(),
+            "el error debe envolver SynthesisCancelled: {}",
+            err
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "la cancelación debe cerrar pronto: {:?}",
+            elapsed
+        );
+        setter.join().unwrap();
+        assert_eq!(handle.join().unwrap(), 0, "el servidor debe leer EOF");
     }
 
     /// Proceso que duerme para simular el hijo del residente en tests. Hijo

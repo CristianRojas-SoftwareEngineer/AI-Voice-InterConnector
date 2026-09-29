@@ -181,13 +181,30 @@ async fn synthesize_empty_text_is_contract_error() {
         return;
     }
     let (status, bytes) = send(post_json("/synthesize", serde_json::json!({ "text": "" }))).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
     assert_eq!(actual, fixture("daemon_synthesize_empty.json"));
 }
 
-/// Compatibilidad hacia atrás: un payload antiguo sin los campos opcionales de
-/// idioma y temperatura se comporta igual que antes (mismo error de contrato).
+/// Texto de 501 caracteres: el daemon lo rechaza con 400 y `text_too_long`.
+#[tokio::test]
+async fn synthesize_text_too_long_is_contract_error() {
+    if !models_present() {
+        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
+        return;
+    }
+    let (status, bytes) = send(post_json(
+        "/synthesize",
+        serde_json::json!({ "text": "a".repeat(501) }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(actual, fixture("daemon_synthesize_too_long.json"));
+}
+
+/// Los campos de idioma y temperatura son opcionales: un payload que solo trae
+/// `text` y `voice` se valida igual (mismo error de contrato ante texto vacío).
 #[tokio::test]
 async fn synthesize_old_payload_without_new_fields() {
     if !models_present() {
@@ -199,7 +216,7 @@ async fn synthesize_old_payload_without_new_fields() {
         serde_json::json!({ "text": "", "voice": "default" }),
     ))
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
     assert_eq!(actual, fixture("daemon_synthesize_empty.json"));
 }

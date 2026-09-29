@@ -70,7 +70,7 @@ CLI (ai-voice-interconnector)
 
 - `synthesize`, `voices/clone` y `dub`: NDJSON `application/x-ndjson` con `schema_version` y latidos periódicos cada 500 ms (`STREAM_HEARTBEAT`).
 - `transcribe`: PCM `i16le 16kHz mono` base64 en `audio_b64`.
-- `health_body` (función interna del daemon): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`. `GET /health` puede incluir `ct2`/`stt` aditivas `warm/warming/warm_failed` cuando residentes, sin bump `schema_version`. Esta máquina de estados describe el *warmup de arranque*; no refleja una degradación posterior del residente ya `Warm`. La salud de síntesis se observa *por petición* (antes de reutilizar el residente en la síntesis TTS del módulo de audio) y puede detectar un residente degradado aunque `warm` siga en `Warm`.
+- `health_body` (función interna del daemon): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`. `GET /health` puede incluir `ct2`/`stt` aditivas `warm/warming/warm_failed` cuando residentes, sin bump `schema_version`. Esta máquina de estados la escriben los warmups (de arranque y de clonado: `Warming` al empezar el testigo, `Warm` o `Failed` al terminar) y cada síntesis completada, que la devuelve a `Warm`; no refleja una degradación del residente posterior a la última síntesis. La salud de síntesis se observa *por petición* (antes de reutilizar el residente en la síntesis TTS del módulo de audio) y puede detectar un residente degradado aunque `warm` siga en `Warm`.
 - `translate`/`dub` (etapa de traducción) exigen el derivado sano vía `is_ct2_provisioned` (`model.bin` más `tokenizer.json` o `source.spm`+`target.spm`); sin él responden `model_missing` (exit 4 en CLI) con los ficheros faltantes.
 
 ## Gestión del ciclo de vida

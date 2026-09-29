@@ -41,14 +41,14 @@ const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
 // Guard de tiempo por test pesado: `hit_start_*` fija el techo y
 // `check_guard` falla con `panic!` (último hito + fase exacta) en los polls
 // ya existentes (`wait_for_daemon_state`).
-// Techos: 180 s (resto) y 360 s (dub). Salen de techos del producto en
-// `src/main.rs` (cliente HTTP 120 s `:3061`, envío /dub con cabeceras 1500 ms `:3748`,
-// stream 1500 ms inactividad + 120 s failsafe `:3356-3359`, arranque
-// 10 s `:54`, parada con `wait_health_down` `:2481-2482` y `:2568-2569` + 1.5 s shutdown
-// `:2474` y `:2559`) más warmup TTS en segundo plano y presupuesto `:54-62`: 1 operación
-// (120 s) + arranque/parada (~15-25 s) + margen → 180 s; dub encadena
-// STT+traducción+TTS (hasta 2×120 s) + arranque/parada → 360 s. Sin baseline
-// medido aún; se remedirá y ajustará más adelante si hace falta.
+// Techos: 180 s (resto) y 360 s (dub). Parten de los techos del producto: el
+// stream NDJSON tolera 1500 ms de inactividad entre latidos y un failsafe
+// total de 240 s (`REQUEST_FAILSAFE`), el arranque espera hasta 10 s y la
+// parada usa `wait_health_down` más 1,5 s de shutdown graceful. Se suma el
+// warmup TTS en segundo plano: una operación típica (síntesis de texto corto,
+// muy por debajo del failsafe) + arranque/parada (~15-25 s) + margen → 180 s;
+// el dub encadena STT + traducción + TTS + arranque/parada → 360 s. Sin
+// baseline medido aún; se remedirá y ajustará más adelante si hace falta.
 
 /// Techo del guard para tests pesados no-dub (3 min).
 const GUARD_HEAVY_SECS: u64 = 180;
@@ -59,11 +59,13 @@ const GUARD_HEAVY_SECS: u64 = 180;
 const GUARD_DUB_SECS: u64 = 360;
 /// Presupuesto del warm convertido en timeout diagnóstico (readiness por
 /// evento en vez de por sondeo temporal): cada unidad
-/// vale 200 ms de espera del evento (225 uds = 45 s ≥ `WARMUP_DEADLINE` 40 s;
-/// ningún timeout nuevo es más corto que el warmup real). El timeout es bug a
+/// vale 200 ms de espera del evento. El warmup queda acotado por el arranque
+/// del residente (hasta 30 s) más el presupuesto del testigo de 25 caracteres
+/// (30 s + 0,30 s × 25 = 37,5 s): 67,5 s ≤ 340 uds = 68 s, así que ningún
+/// timeout nuevo es más corto que el warmup real. El timeout es bug a
 /// diagnosticar, no presupuesto de sondeo. Se conserva el tipo `u32` para no
 /// cambiar las firmas de `wait_for_daemon_state`.
-const WARM_FAILSAFE_RETRIES: u32 = 225;
+const WARM_FAILSAFE_RETRIES: u32 = 340;
 
 static PROCESS_T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
@@ -409,8 +411,9 @@ impl Drop for GuardReaper {
 // `crates/avi-daemon/tests/golden.rs`).
 //
 // Presupuesto explícito por test (serie permanente, sin tocar el producto):
-// techo = timeout del cliente HTTP del daemon, 120 s por petición. Ningún
-// test de la serie espera más que eso por una operación contra el residente.
+// techo = `REQUEST_FAILSAFE` del cliente HTTP del daemon (240 s por petición).
+// Ningún test de la serie espera más que eso por una operación contra el
+// residente.
 //
 // Contrato de ejecución:
 // - Aislamiento por `IsolatedInstance` (puertos efímeros y sandbox independiente);
@@ -1251,6 +1254,69 @@ fn speech_transcribe_without_audio_nor_mic_exits_2() {
         code, 2,
         "omitir --audio y --mic debe mapear a ExitCode::InvalidInput"
     );
+}
+
+/// Un `--audio` inexistente sale con exit 3 y `audio_not_found`, sin llegar
+/// a ningún despacho (daemon o vía local).
+#[test]
+fn transcribe_missing_audio_exits_3() {
+    let (code, actual) = run_json(&[
+        "--json",
+        "speech",
+        "transcribe",
+        "--audio",
+        "no_existe_avi_test.wav",
+        "--source-language",
+        "es-latam",
+    ]);
+    assert_eq!(code, 3, "audio inexistente debe mapear a exit 3");
+    assert_eq!(actual["reason"], "audio_not_found");
+}
+
+/// Igual que `transcribe`: el dub rechaza un `--audio` inexistente con exit 3.
+#[test]
+fn dub_missing_audio_exits_3() {
+    let (code, actual) = run_json(&[
+        "--json",
+        "speech",
+        "dub",
+        "--audio",
+        "no_existe_avi_test.wav",
+        "--source-language",
+        "es-latam",
+        "--target-language",
+        "es-latam",
+    ]);
+    assert_eq!(code, 3, "audio inexistente debe mapear a exit 3");
+    assert_eq!(actual["reason"], "audio_not_found");
+}
+
+/// Un archivo que no es un WAV válido sale con exit 2 y `invalid_audio`.
+/// La lectura del audio ocurre tras comprobar el modelo, y sin `native-stt`
+/// el binario no llega a leerla, por eso se gatea por el feature y por la
+/// presencia del modelo.
+#[cfg(feature = "native-stt")]
+#[test]
+fn transcribe_invalid_wav_exits_2() {
+    if !parakeet_model_available() {
+        eprintln!("[transcribe_invalid_wav] skip: modelo Parakeet ausente");
+        return;
+    }
+    let path = std::env::temp_dir().join(format!("avi_invalid_{}.wav", std::process::id()));
+    std::fs::write(&path, b"esto no es un wav").expect("debe escribirse el archivo basura");
+    let (code, actual) = run_json(&[
+        "--json",
+        "--no-daemon",
+        "speech",
+        "transcribe",
+        "--audio",
+        path.to_str().expect("ruta UTF-8"),
+        "--source-language",
+        "es-latam",
+    ]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, 2, "WAV inválido debe mapear a exit 2");
+    assert_eq!(actual["reason"], "invalid_audio");
 }
 
 // ─── push-to-talk (guardas de validación, no-TTY) ──────────────────────
@@ -2300,6 +2366,49 @@ mod tts {
         ]);
         assert_eq!(code, 2, "texto vacío → ExitCode::InvalidInput");
         assert_eq!(actual["reason"], Value::String("empty_text".to_string()));
+    }
+
+    #[test]
+    fn synthesize_text_too_long_exits_2() {
+        let long_text = "a".repeat(501);
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "synthesize",
+            "--text",
+            &long_text,
+            "--label",
+            "x",
+        ]);
+        assert_eq!(code, 2, "texto de 501 caracteres → ExitCode::InvalidInput");
+        assert_eq!(actual["reason"], Value::String("text_too_long".to_string()));
+    }
+
+    #[test]
+    fn say_text_too_long_exits_2() {
+        let long_text = "a".repeat(501);
+        let (code, actual) = run_json(&["--json", "speech", "say", "--text", &long_text]);
+        assert_eq!(code, 2, "texto de 501 caracteres → ExitCode::InvalidInput");
+        assert_eq!(actual["reason"], Value::String("text_too_long".to_string()));
+    }
+
+    #[test]
+    fn synthesize_text_at_limit_is_not_rejected_by_validation() {
+        // Con 500 caracteres la validación pasa; el resultado puede ser otro
+        // `reason` (por ejemplo, modelos ausentes), pero nunca `text_too_long`.
+        let limit_text = "a".repeat(500);
+        let (_code, actual) = run_json(&[
+            "--json",
+            "--no-daemon",
+            "speech",
+            "synthesize",
+            "--text",
+            &limit_text,
+            "--label",
+            "x",
+        ]);
+        assert_ne!(actual["reason"], Value::String("text_too_long".to_string()));
+        assert_ne!(actual["reason"], Value::String("empty_text".to_string()));
     }
 
     #[test]

@@ -104,8 +104,20 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 
 - El motor TTS residente escucha solo en loopback (`127.0.0.1`) y deja de aceptar conexiones desde la red local: el nuevo flag `--host` del motor usa loopback por defecto, rechaza direcciones inválidas y el lanzador lo fija explícitamente, también con `--no-daemon`.
 
+### Cambiado
+
+- El texto a sintetizar tiene un tope de 500 caracteres Unicode (`text_too_long`, exit 2) en `speech synthesize`, `speech say` y en el texto traducido de `speech dub`. Se valida en el cliente antes de despachar, con el mismo resultado por la vía directa y por la del daemon; el tope de 5000 que documentaba el contrato nunca estuvo implementado.
+- `speech dub` acepta audio de hasta 40 s: un WAV más largo o un `--duration` superior sale con `audio_too_long` (exit 2), y el push-to-talk se corta a 40 s.
+- `POST /synthesize` del daemon responde HTTP 400 con `{schema_version, error, reason, message}` ante un texto vacío o demasiado largo, en lugar de un 200 con cuerpo de error.
+- El plazo de síntesis pasa a ser proporcional al texto (30 s + 0,30 s por carácter, 180 s para 500 caracteres) y el techo total de una petición del cliente sube de 120 s a 240 s, en lugar de los límites fijos anteriores.
+- `warm` de `/health` refleja también el resultado de la última síntesis completada, y el warmup de arranque deja de tener un plazo propio de 40 s: lo acotan el arranque del motor y el presupuesto de síntesis del testigo.
+
 ### Corregido
 
+- `speech transcribe` y `speech dub` con un `--audio` inexistente salen con `audio_not_found` (exit 3), un WAV corrupto con `invalid_audio` (exit 2) y un fallo de E/S con `io_error` (exit 1); el exit 10 queda para fallos del pipeline de transcripción o del micrófono.
+- La síntesis de textos largos ya no expira con `synthesis_timeout` antes de tiempo: el plazo se calcula con la longitud del texto realmente sintetizado (el traducido, en `dub`).
+- Una petición de síntesis que espera el lock o el calentamiento del motor emite latidos `queued` o `warming` en lugar de quedar muda, por lo que ya no agota el timeout de inactividad del cliente.
+- Al vencer el presupuesto o desconectarse el cliente, la síntesis se cancela en el propio motor TTS, que queda caliente y libre para la siguiente petición en lugar de seguir trabajando para nadie o tener que relanzarse en frío. El presupuesto es ahora un plazo total de la petición al motor, no un plazo por lectura.
 - La instalación de una línea en Windows (`irm … | iex`) funciona en PowerShell 5.1 y 7: `install.ps1` se publica en ASCII puro y sin BOM, y sus mensajes conservan las tildes cualquiera que sea la decodificación de `irm`.
 - `self install` sobre una caché vacía deja convertidos los derivados CT2 de traducción: install y `setup` comparten la provisión, que decide la conversión después de las descargas.
 - `doctor` pasa en una instalación sin clonado de voz: `models_provisioned` evalúa la selección guardada y el modelo Base opt-in no seleccionado ya no cuenta como faltante.

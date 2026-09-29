@@ -17,9 +17,10 @@ cuándo se da por resuelto.
 - **Hechos separados de hipótesis.** Cada afirmación sobre la causa lleva su grado de
   confianza: *confirmada* (verificada en el código o reproducida), *probable* (encaja
   con la evidencia, sin verificar) o *por verificar*.
-- **Ciclo de vida.** Cuando se corrige un defecto, se cambia su estado a `resuelto` y se
-  indica la versión que lo corrige. El documento se borra al publicar esa versión: la
-  corrección queda en el CHANGELOG y la prueba de regresión, en el código.
+- **Ciclo de vida.** Cuando se resuelve un defecto, su contenido vigente se incorpora a
+  los documentos canónicos (contrato, documentación del comando, CHANGELOG) y el informe
+  se elimina en ese mismo cambio, sin esperar a publicar la versión: la corrección queda
+  en el CHANGELOG y la prueba de regresión, en el código.
 
 ## Escala de severidad
 
@@ -108,8 +109,5 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 | Documento | Severidad | Síntoma |
 |---|---|---|
-| [text-sin-limite-de-longitud.md](text-sin-limite-de-longitud.md) | Media | `--text` de más de 5000 caracteres no se rechaza con exit 2 |
-| [audio-inexistente-exit-10.md](audio-inexistente-exit-10.md) | Media | `--audio` inexistente sale con 10 en vez de 3 |
-| [dub-daemon-timeout-intermitente.md](dub-daemon-timeout-intermitente.md) | Media | `speech dub --daemon` falla de forma intermitente por timeout |
 | [daemon-start-puerto-ocupado.md](daemon-start-puerto-ocupado.md) | Baja | `daemon start` con el puerto ocupado espera 10 s y da un error opaco |
-| [observaciones-menores.md](observaciones-menores.md) | Baja | Doce defectos menores de mensajes, residuos, ruido de salida y documentación |
+| [observaciones-menores.md](observaciones-menores.md) | Baja (media en 13 y 17) | Diecisiete defectos menores de mensajes, residuos, ruido de salida, documentación, límites de entrada, contratos entre vías y límites de tamaño o tiempo del daemon con audio largo |

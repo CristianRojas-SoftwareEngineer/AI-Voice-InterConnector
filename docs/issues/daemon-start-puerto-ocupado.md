@@ -110,7 +110,8 @@ Estas opciones se complementan:
   PID sigue vivo y, si no, cortar la espera con un mensaje de «el daemon terminó
   durante el arranque».
 - Opcional: redirigir el stderr del hijo a un log del daemon en `data/logs/`, lo que
-  también ayudaría en [dub-daemon-timeout-intermitente.md](dub-daemon-timeout-intermitente.md).
+  también ayudaría a diagnosticar otros fallos del daemon
+  ([observaciones-menores.md](observaciones-menores.md), observación 9).
 
 ## Criterio de aceptación
 
@@ -125,5 +126,5 @@ Estas opciones se complementan:
 ## Relacionados
 
 - Contrato de la CLI, tabla de códigos de salida (5 frente a 6).
-- [dub-daemon-timeout-intermitente.md](dub-daemon-timeout-intermitente.md): también
-  sufre la falta de log propio del daemon.
+- [observaciones-menores.md](observaciones-menores.md) (observación 9): la falta de log
+  propio del daemon también dificulta diagnosticar este caso.

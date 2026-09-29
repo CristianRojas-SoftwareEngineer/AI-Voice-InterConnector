@@ -321,6 +321,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "avi-audio",
+ "avi-core",
  "avi-process",
  "avi-store",
  "hound",

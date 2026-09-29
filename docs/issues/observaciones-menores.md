@@ -1,29 +1,36 @@
-# Observaciones menores: mensajes, residuos y ruido de salida
+# Observaciones menores: mensajes, residuos, ruido de salida, límites y contratos entre vías
 
 | Campo | Valor |
 |---|---|
 | Estado | abierto |
-| Severidad | baja |
-| Tipo | diagnóstico (mensajes), funcional (residuos) y documentación |
+| Severidad | baja en general; media en las observaciones 13 y 17 (cada ficha de la 13 a la 17 indica la suya) |
+| Tipo | diagnóstico (mensajes), funcional (residuos y límites), contrato y documentación |
 | Componente | varios; se indica en cada observación |
 | Versión detectada | 0.25.0 |
-| Plataforma | Windows 11 |
+| Plataforma | Windows 11; las observaciones 13 a 17 no dependen de la plataforma |
 | Reproducibilidad | siempre, salvo que se indique otra cosa |
-| Detectado en | prueba E2E de v0.25.0, 2026-09-28 |
+| Detectado en | prueba E2E de v0.25.0, 2026-09-28 (1 a 12); revisión del código al diseñar la corrección de `--text` sin tope y de `--audio` inexistente, 2026-09-29 (13 a 15); revisión del código de la vía daemon de transcripción y dub, 2026-09-29 (16 y 17) |
 
 ## Resumen
 
-Doce defectos pequeños en los que el comando termina con el resultado correcto, pero el
-mensaje engaña, queda basura en disco o la documentación no cuadra con la realidad. Se
-agrupan aquí porque ninguno justifica un documento propio. Cada observación tiene una
-ficha breve (síntoma, reproducción, esperado, causa y criterio). Si alguna crece al
-diagnosticarla, se separa a su propio documento con la plantilla completa.
+Diecisiete defectos agrupados aquí porque ninguno justifica, por ahora, un documento
+propio. En los doce primeros el comando termina con el resultado correcto, pero el
+mensaje engaña, queda basura en disco o la documentación no cuadra con la realidad. Los
+cinco últimos salieron de leer el código y no de la prueba E2E: uno puede producir un
+resultado incorrecto (13, severidad media), dos son incoherencias entre la vía
+directa y la vía daemon (14 y 15) y dos son límites de tamaño o de tiempo de la vía
+daemon con audio largo (16 y 17, esta última de severidad media). Cada observación tiene una ficha breve (síntoma,
+reproducción, esperado, causa y criterio). Si alguna crece al diagnosticarla, se separa
+a su propio documento con la plantilla completa.
 
 ## Entorno
 
-Binario v0.25.0 instalado desde cero en Windows 11 con PowerShell 5.1, con todos los
-modelos provisionados (incluido el de clonado). Daemon en el puerto por defecto salvo
-que se indique.
+Observaciones 1 a 12: binario v0.25.0 instalado desde cero en Windows 11 con
+PowerShell 5.1, con todos los modelos provisionados (incluido el de clonado), y daemon
+en el puerto por defecto salvo que se indique.
+
+Observaciones 13 a 17: lectura del código fuente de v0.25.0. Ninguna se ha reproducido
+todavía; cada ficha indica cómo hacerlo.
 
 ## Precondiciones
 
@@ -43,11 +50,21 @@ Se detalla en cada observación.
 
 ## Impacto y workaround
 
-Ninguna observación bloquea un caso de uso. Los mensajes engañosos (1 a 5) hacen perder
-tiempo de diagnóstico y confunden a los scripts que leen el `status`. Los residuos (7 a
-10) ocupan disco y ensucian `doctor`.
+Ninguna de las observaciones 1 a 12 bloquea un caso de uso. Los mensajes engañosos (1 a
+5) hacen perder tiempo de diagnóstico y confunden a los scripts que leen el `status`.
+Los residuos (7 a 10) ocupan disco y ensucian `doctor`.
 Workaround general: `cleanup` barre los temporales y `daemon stop` o `daemon start`
 reclaman el residente huérfano.
+
+La observación 13 sí puede afectar al resultado: un WAV truncado se transcribe o se
+dobla incompleto sin ningún aviso. Workaround: comprobar la integridad del WAV antes de
+pasarlo. Las observaciones 14 y 15 afectan solo a los
+consumidores programados: reciben un código de salida o un dato que no coincide con el
+contrato.
+
+La observación 17 impide transcribir por daemon una grabación de más de ~49 s.
+Workaround: `--no-daemon`, que no tiene ese límite, o dividir el audio. La 16 solo
+afecta a un daemon anterior a la ruta `/dub`; workaround: actualizar el daemon.
 
 ## Evidencia
 
@@ -211,12 +228,145 @@ Recogida en cada observación.
 - **Criterio:** los documentos citados dan la misma cifra, medida sobre una instalación
   limpia.
 
+### Límites de entrada
+
+#### 13. Un WAV truncado se carga incompleto sin error
+
+- **Severidad:** media. El resultado es incorrecto y no hay aviso, aunque la entrada
+  dañada es poco frecuente.
+- **Síntoma (por verificar):** un WAV cuya cabecera declara más datos de los que contiene
+  el archivo se transcribe, se dobla o se usa como referencia de clonado con solo la
+  parte legible, y el comando termina bien.
+- **Reproducción:** cortar los últimos bytes de un WAV válido y pasarlo a
+  `speech transcribe --no-daemon --audio truncado.wav --source-language es-latam`.
+- **Causa (confirmada por lectura; el comportamiento exacto de `hound` ante el corte
+  está por verificar):** `load_wav_16k_mono_pcm` y `load_wav_24k_mono_pcm`
+  (`crates/avi-audio/src/lib.rs`) leen las muestras con `.filter_map(Result::ok)`, así
+  que descartan en silencio cualquier muestra que no se pueda leer y devuelven lo demás
+  como si el archivo estuviera completo. La carga para reproducción del mismo archivo
+  usa el mismo patrón.
+- **Esperado:** un error de lectura de muestras interrumpe la carga y se clasifica como
+  audio inválido (exit 2, `invalid_audio`, el mismo criterio que para un archivo que
+  existe pero no es un WAV válido). Antes de endurecerlo hay que decidir qué tolerancia
+  tienen los WAV reales con el tamaño de datos mal escrito en la cabecera, como los de
+  algunas grabadoras que escriben en streaming.
+- **Criterio:** una prueba unitaria con un WAV truncado comprueba el resultado decidido
+  (error o aviso), y ningún camino de carga descarta muestras en silencio.
+
+### Contratos entre la vía directa y la vía daemon
+
+#### 14. La síntesis por daemon devuelve exit 1 para errores que el contrato asigna a otro código
+
+- **Severidad:** baja; sube a media si se usa el daemon con modelos ausentes.
+- **Síntoma (por verificar):** con el daemon en marcha y el modelo TTS sin provisionar,
+  `speech synthesize --daemon --text hola --label x` sale con 1 y `reason`
+  `model_missing`, cuando el contrato asigna 4 a un modelo no provisionado.
+- **Reproducción:** arrancar el daemon, retirar o renombrar el modelo TTS y lanzar el
+  comando anterior. Anotar el código de salida y el `reason`.
+- **Causa (confirmada por lectura):** `daemon_synthesize_wav` (`src/main.rs`), que usan
+  `speech synthesize`, `speech say` y la composición del dub por daemon, convierte
+  cualquier evento `error` del stream en `ExitCode::Error`. Conserva el `reason` pero no
+  el código que le corresponde. Solo el 400 de validación de entrada (`empty_text`,
+  `text_too_long`) conserva su `reason` y sale con 2; cualquier otra respuesta distinta
+  de 2xx sale con exit 1 y `daemon_error`, sin `reason`. Es alcanzable: en `speech
+  synthesize`, `require_model_provisioned` se ejecuta después de la rama del daemon, así
+  que con el daemon activo el chequeo de modelo lo hace el `synthesize_handler`, que
+  emite `model_missing`. `translate_via_daemon` sí traduce `reason` a código
+  (`model_missing` → 4, `empty_text` → 2, etc.), pero con su propia copia del mapeo, y la
+  copia de la síntesis no lo tiene.
+- **Esperado:** un único mapeo de `reason` a código de salida, compartido por todos los
+  clientes de la vía daemon, que también lea el `reason` del cuerpo de las respuestas
+  distintas de 2xx, no solo el del 400 de validación.
+- **Criterio:** con el daemon activo y el modelo TTS ausente, `speech synthesize` y
+  `speech say` salen con 4 y `model_missing`. Una prueba golden lo cubre.
+
+#### 15. El evento `start` de la síntesis por daemon mide `text_length` en bytes
+
+- **Severidad:** baja. Es un campo informativo y no se conoce ningún consumidor que
+  dependa de él.
+- **Síntoma:** para un texto con acentos, el `text_length` del evento `start` del stream
+  de `/synthesize` es mayor que el número de caracteres del texto. Con «canción», da 8
+  en vez de 7.
+- **Causa (confirmada por lectura):** `synthesize_handler`
+  (`crates/avi-daemon/src/lib.rs`) emite `text_owned.len()`, que en Rust es la longitud
+  en bytes UTF-8. El tope de longitud del contrato se mide en caracteres, así que el dato
+  del evento y la regla no usan la misma unidad.
+- **Esperado:** `text_length` en caracteres (`chars().count()`), la misma unidad del
+  tope. Como el evento es un contrato de máquina, el cambio se anota en el CHANGELOG.
+- **Criterio:** una prueba del handler con un texto con acentos comprueba
+  `text_length` igual al número de caracteres.
+
+### Límites de tamaño y de tiempo en la vía daemon
+
+#### 16. El dub por daemon antiguo corta la transcripción a los 1500 ms
+
+- **Severidad:** baja. Solo afecta a un daemon anterior a la ruta `/dub`, que hoy no
+  debería quedar en uso.
+- **Síntoma (probable):** con un daemon que responde 404 a `POST /dub`, `speech dub
+  --daemon` con un audio de más de unos 14 s falla con exit 5 y `reason`
+  `daemon_unreachable` («Daemon inalcanzable en 127.0.0.1:8765 (timeout 1500ms)»),
+  aunque el daemon esté sano y siga transcribiendo.
+- **Reproducción:** levantar un daemon sin la ruta `/dub` y lanzar `speech dub --daemon`
+  con un WAV de 20 s o más. No se ha reproducido porque exige ese daemon antiguo.
+- **Causa (confirmada por lectura; la consecuencia con audio largo es probable):** cuando
+  `POST /dub` responde 404, `speech dub` degrada a `dub_compose_via_daemon`
+  (`src/main.rs`). Esa función envía el `POST /transcribe` (respuesta única, no stream)
+  envuelto en `tokio::time::timeout` de 1500 ms, y tanto el vencimiento como cualquier
+  error de red se mapean a `daemon_unreachable` (exit 5). `docs/DAEMON-MODE.md` documenta
+  que Parakeet transcribe en una sola pasada con RTF lineal de ~0,11, es decir, ~0,11 s
+  por segundo de audio: 1,5 s alcanzan para unos 14 s de audio.
+- **Esperado:** que la duración del audio no convierta un daemon sano en «inalcanzable».
+  Usar el mismo esquema de consumo que la ruta principal (sin corte de 1500 ms para la
+  inferencia; el plazo corto solo para conectar) o un plazo proporcional a la duración
+  del audio.
+- **Criterio:** una prueba con un daemon simulado que tarda más de 1,5 s en responder a
+  `/transcribe` comprueba que el dub por composición no falla con `daemon_unreachable`.
+
+#### 17. El daemon rechaza con 413 los audios de más de ~49 s en `/transcribe`
+
+- **Severidad:** media. `speech transcribe --daemon` (y el modo automático con el daemon
+  activo) falla con un mensaje sin utilidad ante grabaciones largas, que el producto
+  permite (techo de 300 s en push-to-talk).
+- **Síntoma (probable):** `speech transcribe --audio largo.wav` (o `--mic` de más de
+  ~49 s) con el daemon activo termina en exit 1 con `reason` `daemon_error` y el mensaje
+  «El daemon devolvió 413 Payload Too Large». Con `--no-daemon` el mismo audio se
+  transcribe bien.
+- **Reproducción:** con el daemon activo, ejecutar `speech transcribe --daemon --audio
+  largo.wav --source-language es-latam` con un WAV de 16 kHz mono de 60 s. No se ha
+  reproducido.
+- **Causa (confirmada por lectura del código; el 413 concreto es probable, deducido del
+  comportamiento por defecto de la biblioteca):** `build_router_with_state`
+  (`crates/avi-daemon/src/lib.rs`) construye el `Router` sin `DefaultBodyLimit`, y
+  `transcribe_handler` (igual que `dub_handler`) recibe el cuerpo con el extractor
+  `Json`. El proyecto usa axum 0.7.9 (`Cargo.lock`), cuyos extractores de cuerpo aplican
+  por defecto un límite de 2 MB. `transcribe_via_daemon` (`src/main.rs`) envía el PCM
+  i16 little-endian de 16 kHz mono (32 000 bytes por segundo) en base64, que aumenta el
+  tamaño un tercio: 2 MB de cuerpo equivalen a unos 49 s de audio. Un push-to-talk de
+  300 s (`AVI_PUSH_TO_TALK_MAX_SECS` por defecto) genera ~12,8 MB de cuerpo. En modo
+  automático no hay reintento local: `route_to_daemon` decide antes de leer el audio y
+  `transcribe_via_daemon` devuelve el error tal cual, sin cuerpo con `reason`.
+- **Esperado:** el daemon acepta audios hasta el techo del push-to-talk, o el cliente
+  rechaza con un `reason` claro antes de enviar. Fijar un `DefaultBodyLimit` explícito en
+  el router, coherente con ese techo (300 s ≈ 12,8 MB en base64, con margen), o
+  comprobar la duración en el cliente. El dub queda acotado aparte por su propio tope
+  de duración, así que esta ficha se centra en `/transcribe`.
+- **Criterio:** una prueba de integración del router envía un cuerpo de más de 2 MB y de
+  menos que el techo decidido a `/transcribe` y no recibe 413; otro cuerpo por encima
+  del techo recibe un rechazo con `reason` identificable.
+
 ## Diagnóstico sugerido
 
 Resolver primero las observaciones de causa confirmada y corrección local (1, 2, 3, 7 y
 8), que caben en un mismo parche. Las que tocan el contrato JSON (2 y 5) necesitan una
 decisión sobre el `status` antes de implementarlas. Las que están por verificar (4, 6,
 10 y 12) necesitan una reproducción instrumentada.
+
+La 13 necesita decidir la tolerancia con cabeceras mal escritas antes de tocar la carga.
+La 15 es un cambio de una línea que puede ir en el mismo parche que la 14.
+
+La 16 y la 17 se confirman con una reproducción: la 16 con un daemon sin `/dub` y la 17
+con un WAV de más de 49 s contra el daemon actual. La 17 es la prioritaria: afecta al
+daemon vigente y a grabaciones legítimas.
 
 ## Criterio de aceptación
 
@@ -225,6 +375,7 @@ todas están cerradas o separadas a su propio documento.
 
 ## Relacionados
 
-- [daemon-start-puerto-ocupado.md](daemon-start-puerto-ocupado.md) y
-  [dub-daemon-timeout-intermitente.md](dub-daemon-timeout-intermitente.md)
-  (observación 9: falta de log del daemon).
+- [daemon-start-puerto-ocupado.md](daemon-start-puerto-ocupado.md) (observación 9:
+  falta de log del daemon).
+- Contrato de la CLI, reglas de `--text` y de `--audio` (observaciones 13 a 15: la
+  clasificación de un audio inválido, y la unidad y el rechazo del tope de `--text`).

@@ -1,6 +1,12 @@
 pub mod engine;
 pub mod exit_codes;
 pub mod json_emitter;
+pub mod limits;
+
+pub use limits::{
+    synthesis_budget, validate_synthesis_text, MAX_DUB_AUDIO_SECS, MAX_TEXT_LENGTH,
+    REQUEST_FAILSAFE,
+};
 
 #[cfg(test)]
 mod tests {

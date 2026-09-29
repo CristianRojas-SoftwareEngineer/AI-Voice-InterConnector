@@ -242,9 +242,11 @@ impl AudioService {
     /// Capturar audio del micrófono en modo push-to-talk: graba hasta que el
     /// usuario pulse Enter, con un techo de seguridad configurable por
     /// `AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s) que detiene la grabación y
-    /// devuelve lo capturado hasta ese punto (no es un error). Comparte
+    /// devuelve lo capturado hasta ese punto (no es un error). `max_secs` es un
+    /// techo adicional que fija quien llama; rige el menor entre `max_secs` y el
+    /// del entorno (`u64::MAX` deja solo el del entorno). Comparte
     /// formato de salida (16 kHz, mono, int16) con `capture_16k_mono_pcm`.
-    pub fn capture_16k_mono_pcm_until_enter(&self) -> Result<Vec<i16>> {
+    pub fn capture_16k_mono_pcm_until_enter(&self, max_secs: u64) -> Result<Vec<i16>> {
         let device = self
             .host
             .default_input_device()
@@ -299,10 +301,11 @@ impl AudioService {
             _ => return Err(anyhow!("Formato de muestra no soportado para captura")),
         };
 
-        let max_secs: u64 = std::env::var("AVI_PUSH_TO_TALK_MAX_SECS")
+        let env_max_secs: u64 = std::env::var("AVI_PUSH_TO_TALK_MAX_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
+        let max_secs = max_secs.min(env_max_secs);
 
         stream.play()?;
         eprintln!("Grabando… pulsa Enter para detener.");
@@ -344,10 +347,60 @@ fn finish(recorded: Vec<f32>, channels: usize, sample_rate: u32) -> Vec<i16> {
     f32_to_i16(&resampled)
 }
 
+/// Error tipado de la carga de un WAV, para que quien llama distinga la causa
+/// sin inspeccionar mensajes: archivo inexistente, contenido que no es un WAV
+/// válido o fallo de lectura del sistema.
+#[derive(Debug)]
+pub enum WavLoadError {
+    /// El archivo no existe.
+    NotFound,
+    /// El contenido no es un WAV válido o su formato no está soportado.
+    Invalid(String),
+    /// Fallo de E/S distinto de «no existe».
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for WavLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WavLoadError::NotFound => write!(f, "El archivo de audio no existe"),
+            WavLoadError::Invalid(detail) => {
+                write!(f, "El archivo de audio no es un WAV válido: {detail}")
+            }
+            WavLoadError::Io(err) => write!(f, "No se pudo leer el archivo de audio: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for WavLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            WavLoadError::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+impl From<hound::Error> for WavLoadError {
+    fn from(err: hound::Error) -> Self {
+        match err {
+            hound::Error::IoError(io) => match io.kind() {
+                std::io::ErrorKind::NotFound => WavLoadError::NotFound,
+                // Un archivo truncado o vacío es contenido inválido, no un fallo del sistema.
+                std::io::ErrorKind::UnexpectedEof => WavLoadError::Invalid(io.to_string()),
+                _ => WavLoadError::Io(io),
+            },
+            other => WavLoadError::Invalid(other.to_string()),
+        }
+    }
+}
+
 /// Cargar un WAV arbitrario (`hound`, cualquier tasa/canales/formato) y normalizarlo
 /// a PCM `i16` mono a 16 kHz, mismo formato que exige Parakeet y que ya produce
-/// `capture_16k_mono_pcm` para el micrófono.
-pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>> {
+/// `capture_16k_mono_pcm` para el micrófono. Los fallos se devuelven como
+/// `WavLoadError`: `NotFound` si el archivo no existe, `Invalid` si no es un WAV
+/// válido o soportado e `Io` para el resto de fallos de lectura.
+pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
     let reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
 
@@ -552,6 +605,30 @@ mod tests {
         // 300 muestras estéreo -> 150 muestras mono @48kHz -> ~50 muestras @16kHz.
         assert!(!pcm.is_empty());
         assert!(pcm.len() < 150, "debe quedar remuestreado a una tasa menor");
+    }
+
+    #[test]
+    fn test_load_wav_16k_mono_pcm_missing_file_is_not_found() {
+        let path = std::env::temp_dir().join("avi_audio_test_no_existe_jamas.wav");
+        std::fs::remove_file(&path).ok();
+        let err = crate::load_wav_16k_mono_pcm(&path).unwrap_err();
+        assert!(
+            matches!(err, crate::WavLoadError::NotFound),
+            "obtenido: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_wav_16k_mono_pcm_garbage_bytes_is_invalid() {
+        let path = std::env::temp_dir().join("avi_audio_test_basura.wav");
+        std::fs::write(&path, b"esto no es un archivo wav, solo bytes basura").unwrap();
+        let result = crate::load_wav_16k_mono_pcm(&path);
+        std::fs::remove_file(&path).ok();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::WavLoadError::Invalid(_)),
+            "obtenido: {err:?}"
+        );
     }
 
     #[test]

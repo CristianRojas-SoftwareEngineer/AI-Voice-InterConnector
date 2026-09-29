@@ -24,7 +24,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 ```
 
 - **Servidor**: Axum sobre `127.0.0.1:8765` por defecto en loopback (`DAEMON_ADDR`, `src/main.rs`), con override por instancia vía `AVI_DAEMON_PORT` (`0` = efímero, el servidor publica `local_addr()`).
-- **Warmup**: precarga de la voz elegida por `--warm-voice` (default `default`) en segundo plano (`spawn_blocking(warm_voice_engine)`), tras el `bind` del puerto; no bloquea el arranque y el readiness es inmediato al enlazar. Tras el warmup el servidor emite `avi-daemon-ready warm=<warm|warm_failed> addr=<real>` en stderr (contrato de señal emitido; el consumo por `recv` y el sondeo-por-evento quedan diferidos, el sondeo por `/health` sigue vigente). Un warmup fallido no derriba el daemon: sigue sirviendo (una `--warm-voice` inexistente sí aborta el arranque, fail-fast antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone).
+- **Warmup**: precarga de la voz elegida por `--warm-voice` (default `default`) en segundo plano (`spawn_blocking(warm_voice_engine)`), tras el `bind` del puerto; no bloquea el arranque y el readiness es inmediato al enlazar. Tras el warmup el servidor emite `avi-daemon-ready warm=<warm|warm_failed> addr=<real>` en stderr (contrato de señal emitido; el consumo por `recv` y el sondeo-por-evento quedan diferidos, el sondeo por `/health` sigue vigente). El warmup queda acotado por el arranque del residente más el presupuesto de síntesis del testigo; un vencimiento cancela el testigo y deja `warm_failed` sin matar el motor. Un warmup fallido no derriba el daemon: sigue sirviendo (una `--warm-voice` inexistente sí aborta el arranque, fail-fast antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone).
 - **Serialización**: `synthesis_lock` — una síntesis a la vez; el resto espera.
 - **STT**: `ParakeetEngine` (Parakeet TDT 0.6B v3 int8) transcribe en una sola pasada, sin segmentación VAD (RTF lineal ~0.11).
 
@@ -32,7 +32,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 
 | Ruta | Método | Función |
 |---|---|---|
-| `/health` | GET | `status:"ready"` + handshake de `schema_version` + estado de warmup `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla; no certifica síntesis futura, ver salud observada por petición abajo) |
+| `/health` | GET | `status:"ready"` + handshake de `schema_version` + estado `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla), que refleja el warmup en curso o la última síntesis completada (no certifica síntesis futura, ver salud observada por petición abajo) |
 | `/synthesize` | POST | Síntesis con progreso streaming NDJSON, evento final `result` (`audio_b64`, WAV 24 kHz) |
 | `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), una sola pasada sin VAD (feature `native-stt`) |
 | `/translate` | POST | Traducción CT2 residente (feature `native-translation`) |
@@ -44,7 +44,7 @@ Son 7 rutas públicas (podados `GET /voices` y `POST /voices/precompute`; sin le
 
 El handshake es estricto: un daemon de otra `schema_version` se trata como no utilizable.
 
-Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediato en cuanto el puerto está enlazado y el motor construido; warm indica si el precalentamiento en segundo plano ya terminó. `warm` es append-only (se fija una sola vez en el warmup de arranque y no refleja ninguna degradación posterior del residente): no certifica que una síntesis futura vaya a completarse. La salud efectiva de síntesis se observa por petición — antes de reutilizar el residente, el daemon ejecuta un healthcheck real (`synthesize_via_resident`, `crates/avi-tts/src/lib.rs`) y rearranca uno fresco si está degradado.
+Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediato en cuanto el puerto está enlazado y el motor construido; warm indica si el precalentamiento en segundo plano ya terminó. `warm` lo fijan los warmups (de arranque y de clonado) y cada síntesis completada, que lo devuelve a `warm`; no refleja una degradación del residente posterior a la última síntesis y no certifica que una síntesis futura vaya a completarse. La salud efectiva de síntesis se observa por petición — antes de reutilizar el residente, el daemon ejecuta un healthcheck real (`synthesize_via_resident`, `crates/avi-tts/src/lib.rs`) y rearranca uno fresco si está degradado.
 
 ## Comandos del daemon
 
@@ -68,7 +68,7 @@ y doblaje (`POST /dub`) responden con `Content-Type: application/x-ndjson`:
 2. Latidos periódicos `{"event":"heartbeat"}` cada 500 ms emitidos mientras la inferencia en segundo plano continúa (y eventos de `progress`).
 3. Evento final `{"event":"result", ...}` con la carga útil en su formato contractual (`audio_b64` para síntesis y dub; `name`, `speech`, `precomputed:true` para clonado) o `{"event":"error", ...}` ante fallos.
 
-El cliente del CLI consume el stream con un timeout de inactividad entre latidos de 1500 ms y un deadline failsafe de 120 s. Si el cliente se desconecta, el servidor aborta la inferencia en curso mediante `AbortHandle`.
+El cliente del CLI consume el stream con un timeout de inactividad entre latidos de 1500 ms y un deadline failsafe de 240 s. Si el cliente se desconecta, el servidor deja de emitir y descarta el resultado; en la síntesis cancela además el trabajo del motor TTS, que queda libre para la siguiente petición. La transcripción, la traducción y el clonado terminan en segundo plano y su resultado se descarta.
 
 ## Resolución de binario y modelo
 
