@@ -459,7 +459,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 8. **Integración de PATH** ([§8.3.1](#831-integración-de-path)).
 9. **Windows**: si el PATH de máquina contiene una entrada de una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. HKLM nunca se modifica.
 10. **Escribir el recibo** (de forma atómica) y liberar el bloqueo.
-11. **Ejecutar `setup`** en el mismo proceso, salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`.
+11. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga y conversión CT2 según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`.
 12. **Resumen final**: versión, rutas, estado del PATH (con "abre una terminal nueva" cuando corresponda) y estado de los modelos.
 
 #### 8.3.1 Integración de PATH
@@ -585,7 +585,7 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 | Instalación (`install`) | Directorio de programa y estado del recibo: válido o ausente |
 | PATH (`path`) | Si el comando resuelve a esta instalación, si hay duplicados en el PATH (Cask + `script`) y el estado del enlace o de la entrada de registro |
 | Pendientes (`pending`) | Diario de transacción, aparcados y stagings huérfanos |
-| Modelos (`models`) | Provisionados, faltantes y revisiones obsoletas, con tamaños |
+| Modelos (`models`) | Provisionados, faltantes (evaluados contra la selección persistida: el modelo Base opt-in no seleccionado no cuenta) y revisiones obsoletas, con tamaños |
 
 ## 9. Entorno del desarrollador
 

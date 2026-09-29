@@ -98,7 +98,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-Recupera el canal de instalación de una línea en Windows, que abortaba con un error de análisis antes de ejecutar nada, y hace que la suite de Pester pruebe ese canal tal como lo usa el usuario.
+Recupera el canal de instalación de una línea en Windows, que abortaba con un error de análisis antes de ejecutar nada, y hace que la suite de Pester pruebe ese canal tal como lo usa el usuario. Además, una instalación correcta deja la traducción operativa y `doctor` en verde sin clonado de voz.
 
 ### Seguridad
 
@@ -107,9 +107,12 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 ### Corregido
 
 - La instalación de una línea en Windows (`irm … | iex`) funciona en PowerShell 5.1 y 7: `install.ps1` se publica en ASCII puro y sin BOM, y sus mensajes conservan las tildes cualquiera que sea la decodificación de `irm`.
+- `self install` sobre una caché vacía deja convertidos los derivados CT2 de traducción: install y `setup` comparten la provisión, que decide la conversión después de las descargas.
+- `doctor` pasa en una instalación sin clonado de voz: `models_provisioned` evalúa la selección guardada y el modelo Base opt-in no seleccionado ya no cuenta como faltante.
 
 ### Interno
 
+- `cargo xtask doctor` y `bootstrap --models` ya no tratan el modelo de clonado como deriva, y la constante del modelo opt-in (`CLONING_MODEL`) vive en `avi-shared`.
 - La suite Pester ejecuta `irm | iex` real contra el servidor local con los dos motores (`powershell.exe` y `pwsh`), y una guarda rechaza BOM y bytes no ASCII en los `.ps1`.
 - Todos los `.ps1` del repositorio pasan a ASCII puro y sin BOM: se retira la política anterior del BOM.
 - El job `test-bootstrap-windows` instala PowerShell 7 pineado (parámetro `pwsh_pin`) para que la suite no omita ese motor.

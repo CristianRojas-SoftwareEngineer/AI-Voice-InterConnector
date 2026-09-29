@@ -91,6 +91,11 @@ pub fn bin_dir() -> PathBuf {
     }
 }
 
+/// Nombre lógico del único modelo opt-in de `MODEL_REVISIONS`: el Base de clonado
+/// de voz. Solo se provisiona si la selección del usuario lo pide
+/// (`setup --with-voice-cloning`); los demás modelos de la tabla son obligatorios.
+pub const CLONING_MODEL: &str = "qwen3-tts-0.6b-base";
+
 /// Pines de modelos: `(nombre_lógico, repo HF, revisión)`.
 /// La revisión es un **commit hash** de HuggingFace: mismo binario → mismos
 /// bytes (reproducibilidad); actualizar un pin es una acción deliberada y

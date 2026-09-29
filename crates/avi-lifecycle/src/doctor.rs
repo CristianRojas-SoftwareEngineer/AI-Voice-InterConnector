@@ -172,6 +172,8 @@ pub struct Models {
     /// que R3 limite el alcance de cualquier borrado.
     pub shared_root: bool,
     pub provisioned: Vec<String>,
+    /// Repos de la selección efectiva sin provisionar. El modelo Base opt-in solo
+    /// cuenta si la selección guardada pidió el clonado; si no, es el dato `base`.
     pub missing: Vec<String>,
     /// Estado del modelo Base de clonado: `ready` o `missing_opt_in`.
     pub base: &'static str,
@@ -300,11 +302,13 @@ pub fn report(env: &Env, exe: &Path, product_version: &str) -> Report {
             )
         },
     );
+    // Falla si falta algún repo de la selección efectiva (los obligatorios, más Base
+    // si el usuario activó el clonado).
     check(
         "models_provisioned",
         models.missing.is_empty(),
         if models.missing.is_empty() {
-            "todos los modelos fijados están provisionados".to_string()
+            "todos los modelos de la selección están provisionados".to_string()
         } else {
             format!("faltan: {}", models.missing.join(", "))
         },
@@ -544,12 +548,17 @@ fn models(roots: &cleanup::Roots) -> Models {
     // estado de la caché real y el reporte mentiría sobre lo que está
     // mirando.
     let store = avi_store::ModelStore::at(roots.models_dir.clone());
+    // Lo exigido es la selección persistida en la raíz que se describe: el modelo
+    // opt-in no seleccionado es un dato (`base`), no un faltante.
+    let selection = crate::setup::selection_for(
+        crate::setup::read_selection_from(&roots.data_dir).with_voice_cloning,
+    );
     let mut provisioned = Vec::new();
     let mut missing = Vec::new();
     for (name, _, _) in avi_store::MODEL_REVISIONS {
         if store.is_provisioned(name) {
             provisioned.push((*name).to_string());
-        } else {
+        } else if selection.contains(name) {
             missing.push((*name).to_string());
         }
     }
@@ -717,6 +726,83 @@ mod tests {
             "el modelo de clonación figura provisionado en la raíz que describe el reporte"
         );
 
+        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
+    }
+
+    /// Planta en la raíz del sandbox los snapshots pinneados de todos los modelos
+    /// salvo el Base opt-in, con los archivos que el producto exige, y los derivados
+    /// CT2 sanos.
+    fn plant_required_models(env: &Env) {
+        for (name, repo, revision) in avi_store::MODEL_REVISIONS {
+            if *name == crate::setup::CLONING_MODEL {
+                continue;
+            }
+            let snapshot = env
+                .roots
+                .models_dir
+                .join(format!("models--{}", repo.replace('/', "--")))
+                .join("snapshots")
+                .join(revision);
+            match avi_store::MODEL_FILE_PATTERNS
+                .iter()
+                .find(|(n, _)| n == name)
+            {
+                Some((_, patterns)) => {
+                    for pattern in *patterns {
+                        write_file(&snapshot.join(pattern), "artefacto");
+                    }
+                }
+                None => write_file(&snapshot.join("model.safetensors"), "pesos"),
+            }
+        }
+        for pair in crate::setup::CT2_PAIRS {
+            let dir = avi_store::ct2_model_dir_at(&env.roots.models_dir, pair);
+            write_file(&dir.join("model.bin"), "pesos");
+            write_file(&dir.join("source.spm"), "spm");
+            write_file(&dir.join("target.spm"), "spm");
+        }
+    }
+
+    fn models_check(report: &Report) -> &Check {
+        report
+            .checks
+            .iter()
+            .find(|c| c.name == "models_provisioned")
+            .expect("existe el chequeo models_provisioned")
+    }
+
+    /// Sin clonado seleccionado, el modelo Base ausente no es un faltante: el
+    /// chequeo pasa y `base` lo informa como opt-in.
+    #[test]
+    fn models_provisioned_passes_without_opt_in_base() {
+        let env = env("modelos-sin-base");
+        plant_required_models(&env);
+        let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
+        assert!(models_check(&report).ok, "{:?}", report.models.missing);
+        assert!(report.models.missing.is_empty());
+        assert_eq!(report.models.base, "missing_opt_in");
+        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
+    }
+
+    /// Con el clonado seleccionado, la ausencia del Base sí hace fallar el chequeo.
+    #[test]
+    fn models_provisioned_fails_when_cloning_selected_and_base_absent() {
+        let env = env("modelos-clonado");
+        plant_required_models(&env);
+        crate::setup::write_selection_to(
+            &env.roots.data_dir,
+            &crate::setup::SetupSelection {
+                schema_version: crate::setup::SELECTION_SCHEMA_VERSION,
+                with_voice_cloning: true,
+            },
+        )
+        .expect("se guarda la selección");
+        let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
+        assert!(!models_check(&report).ok);
+        assert!(report
+            .models
+            .missing
+            .contains(&crate::setup::CLONING_MODEL.to_string()));
         let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 

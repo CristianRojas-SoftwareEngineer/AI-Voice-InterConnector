@@ -90,7 +90,7 @@ ai-voice-interconnector doctor
 ai-voice-interconnector doctor --json
 ```
 
-**Esperado**: informe de audio/modelo/dispositivos a stdout, **exit 0** si el entorno está sano. Un fallo de precondición de entorno sale con **exit 8**.
+**Esperado**: informe de audio/modelo/dispositivos a stdout, **exit 0** si el entorno está sano: tras una instalación correcta sin clonado de voz, `doctor` debe salir con 0. Si algún chequeo falla, el veredicto es **exit 1**.
 
 ## 3. Provisión del modelo
 

@@ -256,10 +256,13 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `"ok"` si no hay issues; `"failed"` en caso contrario (exit 1) |
-| `data_dir` | string | Ruta del directorio de datos del usuario |
-| `hf_cache` | string | Ruta de la caché HF resuelta (auditoría de ubicación) |
-| `issues` | array de strings | Descripciones de los chequeos fallidos (vacío si todo correcto) |
+| `version`, `target`, `channel` | string | Versión del binario, tripla del host y canal de instalación |
+| `install` | objeto | `dir`, `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`) y `version` |
+| `path` | objeto | Resolución y duplicados en el `PATH`, integración y coexistencia |
+| `pending` | objeto | Restos de operaciones anteriores (transacción, aparcados, stagings, temporales) |
+| `models` | objeto | `root`, `shared_root`, `provisioned`, `missing` (solo la selección guardada), `base` (`ready`/`missing_opt_in`), `ct2_incomplete`, `size_bytes` |
+| `checks` | array de objetos | `{name, ok, detail}` por chequeo |
+| `failed` | array de strings | Nombres de los chequeos fallidos (vacío si todo correcto); exit 1 si no está vacío |
 
 **`devices --json`**
 
@@ -380,17 +383,19 @@ Diagnóstico: todo correcto.
 Cache HF: C:\Users\<tu-usuario>\.cache\huggingface\hub
 ```
 
-`doctor` verifica el directorio de datos, los **4 modelos pinneados** (TTS
-Qwen3-TTS, traducción Marian es→en y en→es, STT Parakeet TDT v3) y el almacén de
-voces. Si falta alguno, lista cada issue con `✗` y remite a
+`doctor` ejecuta seis chequeos: recibo de instalación, resolución y duplicados en
+el `PATH`, artefactos pendientes, `models_provisioned` (los modelos de la
+selección guardada: TTS Qwen3-TTS, traducción Marian es→en y en→es y STT
+Parakeet TDT v3, más el Base si activaste el clonado) y `models_ct2` (derivados
+CT2 de traducción). Si alguno falla, lo lista y remite a
 `ai-voice-interconnector setup`.
 
-El modelo Base de clonado es opcional: si no está provisionado, `doctor` añade
-`[WARN] Modelo Base de clonado no provisionado (usa setup --with-voice-cloning).`
-sin fallar, y con `--json` lo informa en `base_status` (`ready` o
-`missing_opt_in`).
+El modelo Base de clonado es opcional: si no lo pediste, su ausencia no es un
+fallo y `--json` la informa en `models.base` (`ready` o `missing_opt_in`).
 
-Termina con código de salida 0 si todo pasa, y 1 si algún chequeo falla.
+El veredicto es el código de salida: 0 si todos los chequeos pasan (tras una
+instalación correcta sin clonado, `doctor` sale con 0) y 1 si alguno falla.
+Referencia canónica: `docs/CLI/commands/DOCTOR.md`.
 
 ---
 

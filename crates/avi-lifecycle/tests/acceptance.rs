@@ -109,8 +109,9 @@ fn run_category(sandbox: &Sandbox, runtime: &tokio::runtime::Runtime, options: c
 /// `avi-store` exige para dar cada uno por provisionado.
 ///
 /// Es lo que permite que la provisión **no toque la red**: con los snapshots ya en su
-/// sitio, `setup::pending` no devuelve repos que descargar y el único trabajo que queda
-/// es la conversión de CT2, que es local. Cada repo de pruebas se planta con los nombres
+/// sitio, la provisión no tiene repos que descargar y solo puede llegar a la conversión
+/// de CT2, que es local (se decide tras las descargas, con la regla compartida con
+/// `setup`). Cada repo de pruebas se planta con los nombres
 /// de archivo que el producto espera, no con un marcador, porque `is_provisioned` decide
 /// por presencia y tamaño de esos archivos.
 fn provision_selection(sandbox: &Sandbox) {
@@ -462,8 +463,9 @@ fn criterion_6_no_setup_provisions_nothing() {
 /// instalado y termina con `setup_failed`.
 ///
 /// El fallo se provoca **sin red**: se provisionan en el sandbox los repos de la
-/// selección, de modo que `setup::pending` no devuelve nada que descargar, y el único
-/// trabajo que queda es la conversión del derivado CT2, que es local. Que la conversión
+/// selección, de modo que no queda nada que descargar y la provisión solo llega a la
+/// conversión del derivado CT2, que es local (la conversión se decide tras las
+/// descargas, con la regla compartida con `setup`). Que la conversión
 /// falle es lo que la prueba necesita, y es independiente de qué conversores tenga
 /// instalados la máquina: si no hay `python`, falla por no encontrarlo; si lo hay, falla
 /// porque el conversor no encuentra un modelo donde está el snapshot de pruebas.

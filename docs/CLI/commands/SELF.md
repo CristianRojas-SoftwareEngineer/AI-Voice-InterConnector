@@ -52,7 +52,7 @@ El orden es el de §8.3 y está escrito en el propio código, con el número de 
 8. **Integración de `PATH`** ([`../CONTRACT.md` §11](../CONTRACT.md) y §8.3.1 de la especificación). En Unix el `PATH` se modifica **por defecto** (decisión D2) y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
 9. **Windows**: si el `PATH` de máquina parece llevar una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. **HKLM nunca se modifica**, ni para escribir ni para leer.
 10. **Escribir el recibo** de forma atómica y liberar el bloqueo.
-11. **`setup` en el mismo proceso**, salvo `--no-setup`.
+11. **La misma provisión que `setup`**, salvo `--no-setup`: descarga de la selección guardada y conversión CT2 obligatoria según el estado real del almacén, sin repetir la confirmación ni escribir la selección.
 12. **Resumen final**: versión, rutas, estado del `PATH` y estado de los modelos.
 
 **Lo que el recibo registra es el estado, no el diff de esta pasada.** El recibo dice qué integración de `PATH` está en pie, no qué cambió en esta ejecución: si registrara solo el diff, una segunda instalación desde el mismo bundle escribiría un recibo sin entrada de `PATH` y `self uninstall` no podría revertir la que puso la primera —dejando residuo, que es el criterio 17—. El diff vive aparte, en `Outcome::path_rewritten`, y es lo único que decide si el resumen pide abrir una terminal nueva.

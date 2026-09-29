@@ -879,12 +879,17 @@ pub(crate) fn models_are_provisioned() -> bool {
     probe_models_drift().is_empty()
 }
 
-/// Deriva de modelos: snapshots ausentes y derivados CT2 sin provisionar.
-/// Solo lectura sobre la caché.
+/// Deriva de modelos obligatorios: snapshots ausentes y derivados CT2 sin
+/// provisionar. Solo lectura sobre la caché.
 fn probe_models_drift() -> Vec<String> {
     let mut out = Vec::new();
     let models = avi_shared::paths::models_cache_dir();
     for (name, repo, revision) in avi_shared::paths::MODEL_REVISIONS {
+        // El clonado de voz es opt-in y el `setup` que lanza `bootstrap` no lo
+        // solicita, así que su ausencia no es deriva.
+        if *name == avi_shared::paths::CLONING_MODEL {
+            continue;
+        }
         let snapshot = models
             .join(format!("models--{}", repo.replace('/', "--")))
             .join("snapshots")

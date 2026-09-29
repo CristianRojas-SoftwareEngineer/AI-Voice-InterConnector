@@ -29,9 +29,9 @@ No existe `--language`: el conjunto provisionado es fijo (es+en offline completo
 1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio de datos y materializa la voz de fábrica `default`.
 2. **`--with-stt`**: aviso informativo, nada más.
 3. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar. Purgar el modelo de clonado cuando el usuario no lo pidió dejaría la instalación sin lo que sí quiere. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
-4. **Calcular lo pendiente** antes de descargar: repos sin snapshot y derivados CT2 que haya que convertir o revalidar. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§8.7).
+4. **Calcular lo pendiente** para el resumen previo: repos sin snapshot y derivados CT2 que haya que convertir o revalidar (incluido el de un Marian que está por descargarse). Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§8.7).
 5. **Descargar** lo pendiente, repo a repo, en la revisión fijada.
-6. **Convertir los derivados CT2** de los pares `es-en` y `en-es` cuyo repo esté provisionado y cuyo derivado no pase el gate.
+6. **Convertir los derivados CT2** de los pares `es-en` y `en-es` cuyo repo esté provisionado y cuyo derivado no pase el gate. La decisión se toma **después** de las descargas, según el estado real del almacén, con la misma regla que aplica `self install`.
 7. **Sobre `--json`** o mensaje humano.
 
 ### La conversión del derivado CT2
@@ -78,7 +78,7 @@ Peso aproximado: ~9 GB la selección base, ~11,5 GB con `--with-voice-cloning`.
 
 ## `setup` al final de una instalación: `setup_failed`
 
-`self install` ejecuta `setup` **en el mismo proceso** (salvo `--no-setup`), y su fallo **no es un fallo de la instalación**:
+`self install` aplica **la misma provisión que `setup`** (descarga de la selección y conversión CT2 según el estado real del almacén) en el mismo proceso (salvo `--no-setup`), sin repetir la confirmación ni escribir la selección, y su fallo **no es un fallo de la instalación**:
 
 | | Valor |
 |---|---|

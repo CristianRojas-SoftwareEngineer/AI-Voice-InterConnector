@@ -30,7 +30,7 @@ ai-voice-interconnector doctor [--json]
 | `install` | `dir` (directorio de programa), `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`) y `version` (la del recibo, si lo hay) |
 | `path` | `resolves_to_this_install`, `duplicate_entries`, `integration` (`present`/`absent`/`not_modified`) y `coexisting` (instalaciones ajenas, con su canal y cuál tiene precedencia) |
 | `pending` | `transaction_journal`, `parked`, `stagings`, `temporaries` y `temporaries_kept` |
-| `models` | `root`, `shared_root`, `provisioned`, `missing`, `base`, `ct2_incomplete` y `size_bytes` |
+| `models` | `root`, `shared_root`, `provisioned`, `missing` (solo repos de la selección guardada sin provisionar), `base`, `ct2_incomplete` y `size_bytes` |
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
 
@@ -63,7 +63,7 @@ ai-voice-interconnector doctor [--json]
 | `path_resolves` | La **primera** entrada del `PATH` que apunta a una instalación no es la registrada | Orden de precedencia |
 | `path_duplicates` | Más de una entrada del `PATH` apunta a una instalación | Coexistencia (Cask + `script`) |
 | `pending_artifacts` | Quedan aparcados, stagings o temporales por recoger | Transacción interrumpida |
-| `models_provisioned` | Falta algún repo de `MODEL_REVISIONS` | Solo presencia de snapshot, con los ficheros críticos |
+| `models_provisioned` | Falta algún repo de la selección efectiva (los obligatorios más Base si el usuario activó el clonado) | Solo presencia de snapshot, con los ficheros críticos |
 | `models_ct2` | Hay `Marian` provisionado y su derivado CT2 no pasa el gate | `model.bin` más tokenizador completo |
 
 **El modelo Base de clonado no es un chequeo.** `qwen3-tts-0.6b-base` es opt-in: su ausencia es un dato (`models.base = "missing_opt_in"`), nunca un fallo, porque no es obligatorio para que el producto funcione.

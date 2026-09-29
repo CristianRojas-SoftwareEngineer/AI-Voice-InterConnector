@@ -35,7 +35,7 @@ pub const CT2_PAIRS: [&str; 2] = ["es-en", "en-es"];
 /// Modelo cuya provisión depende de `--with-voice-cloning`. Es el único caso de
 /// selección opcional que el producto tiene hoy, y por eso el filtro es una
 /// comparación con su nombre y no una tabla.
-pub const CLONING_MODEL: &str = "qwen3-tts-0.6b-base";
+pub use avi_shared::paths::CLONING_MODEL;
 
 /// Opciones de `setup` que el motor necesita conocer. El resto de la superficie
 /// (`--json`, `--with-stt`) se queda en el binario, que es quien parsea la CLI.
@@ -195,13 +195,15 @@ pub fn migrate_at(data_dir: &Path) -> anyhow::Result<MigrationOutcome> {
     })
 }
 
-/// Qué está pendiente de provisionar, que hay que calcular **antes**
-/// de descargar.
+/// Plan de lo que falta provisionar. Alimenta el resumen previo y la
+/// confirmación de tamaño; la ejecución no se decide con él, porque [`provision`]
+/// mira el estado real del almacén tras cada descarga.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pending {
     /// Repos de los que hay que descargar, con el nombre corto que usa el producto.
     pub models: Vec<String>,
-    /// Pares de traducción cuyo derivado CT2 hay que convertir o revalidar.
+    /// Pares de traducción cuyo derivado CT2 hay que convertir o revalidar,
+    /// incluido el de un Marian que se va a descargar en esta pasada.
     pub ct2: Vec<String>,
 }
 
@@ -230,11 +232,16 @@ pub const MODEL_DOWNLOAD_ESTIMATE: u64 = 3_000_000_000;
 /// Cuando la invoca el ciclo de vida (traspaso de `self update`), la selección
 /// sale del fichero guardado y no de los flags ([`effective_options`]).
 pub fn selection(options: &Options) -> Vec<&'static str> {
-    let effective = effective_options(options);
+    selection_for(effective_options(options).with_voice_cloning)
+}
+
+/// Repos de la selección para una elección de clonado ya resuelta. Es el filtro
+/// puro que comparten `setup`, la provisión de `self install` y `doctor`.
+pub fn selection_for(with_voice_cloning: bool) -> Vec<&'static str> {
     avi_store::MODEL_REVISIONS
         .iter()
         .map(|(name, _, _)| *name)
-        .filter(|name| *name != CLONING_MODEL || effective.with_voice_cloning)
+        .filter(|name| *name != CLONING_MODEL || with_voice_cloning)
         .collect()
 }
 
@@ -259,9 +266,14 @@ pub fn pending(store: &avi_store::ModelStore, options: &Options) -> Pending {
         }
     }
     for pair in CT2_PAIRS {
-        // El derivado solo se considera pendiente si el repo está provisionado:
-        // sin snapshot no hay nada que convertir, y reintentarlo es ruido.
-        if !store.is_provisioned(&format!("marian-{pair}")) {
+        // Un derivado está pendiente si su Marian se va a descargar en esta
+        // pasada, o si el Marian ya existe y el derivado no pasa el gate.
+        let marian = format!("marian-{pair}");
+        if out.models.contains(&marian) {
+            out.ct2.push(pair.to_string());
+            continue;
+        }
+        if !store.is_provisioned(&marian) {
             continue;
         }
         let ct2_dir = avi_store::ct2_model_dir(pair);
@@ -545,6 +557,112 @@ pub fn map_download_failure(model: &str, cause: &anyhow::Error) -> LifecycleErro
     LifecycleError::new("network_error", 1, format!("{model}: {cause}"))
 }
 
+/// Costura de la provisión: la descarga (red) y la conversión (Python) se inyectan
+/// para poder comprobar la regla sin ninguna de las dos.
+#[allow(async_fn_in_trait)]
+pub trait Provisioner {
+    /// Descarga el modelo `name` al almacén.
+    async fn download(&self, name: &str) -> anyhow::Result<()>;
+    /// Convierte el snapshot de Marian al derivado CT2 de `ct2_dir`.
+    fn convert(&self, snapshot: &Path, ct2_dir: &Path) -> anyhow::Result<()>;
+}
+
+/// Implementación de producción: `ModelStore::ensure_downloaded` y [`convert`].
+pub struct HubProvisioner;
+
+impl Provisioner for HubProvisioner {
+    async fn download(&self, name: &str) -> anyhow::Result<()> {
+        avi_store::ModelStore::ensure_downloaded(name)
+            .await
+            .map(|_| ())
+    }
+
+    fn convert(&self, snapshot: &Path, ct2_dir: &Path) -> anyhow::Result<()> {
+        convert(snapshot, ct2_dir)
+    }
+}
+
+/// Lo que hizo [`provision`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Provisioned {
+    /// Repos de la selección, en el orden en que se procesaron.
+    pub provisioned: Vec<String>,
+    /// Repos que hubo que descargar en esta pasada.
+    pub downloaded: Vec<String>,
+    /// Derivados CT2 convertidos en esta pasada.
+    pub converted: Vec<String>,
+}
+
+/// Fallo de [`provision`], sin traducir todavía al `reason` de contrato: cada
+/// llamador conserva su propio código de error.
+#[derive(Debug)]
+pub enum ProvisionError {
+    /// Falló la descarga de `name`.
+    Download { name: String, cause: anyhow::Error },
+    /// Falló la conversión del derivado del par `pair`.
+    Conversion { pair: String, reason: String },
+}
+
+/// Provisión compartida por `setup` y `self install`: descarga la selección no
+/// provisionada y después convierte los derivados CT2 según el estado real del
+/// almacén. No confirma nada ni escribe la selección.
+///
+/// La conversión se decide **después** de las descargas porque depende del
+/// snapshot descargado: en un almacén vacío no hay nada que convertir antes de
+/// bajar Marian.
+pub async fn provision(
+    store: &avi_store::ModelStore,
+    options: &Options,
+    provisioner: &impl Provisioner,
+) -> Result<Provisioned, ProvisionError> {
+    let mut out = Provisioned::default();
+
+    // 1. Descarga idempotente de la selección.
+    for name in selection(options) {
+        if !store.is_provisioned(name) {
+            provisioner
+                .download(name)
+                .await
+                .map_err(|cause| ProvisionError::Download {
+                    name: name.to_string(),
+                    cause,
+                })?;
+            out.downloaded.push(name.to_string());
+        }
+        out.provisioned.push(name.to_string());
+    }
+
+    // 2. Derivados CT2: obligatorios, e idempotentes por fecha sobre directorios sanos.
+    for pair in CT2_PAIRS {
+        let hf_name = format!("marian-{pair}");
+        if !store.is_provisioned(&hf_name) {
+            continue;
+        }
+        let conversion = |reason: String| ProvisionError::Conversion {
+            pair: pair.to_string(),
+            reason,
+        };
+        let Some(snapshot) = store.model_snapshot_path(&hf_name) else {
+            return Err(conversion(format!(
+                "snapshot HF de '{hf_name}' no resoluble"
+            )));
+        };
+        if !snapshot.is_dir() {
+            return Err(conversion(format!("snapshot HF de '{hf_name}' ausente")));
+        }
+        let ct2_dir = avi_store::ct2_model_dir(pair);
+        if !needs_reconversion(&ct2_dir, store, &hf_name) {
+            eprintln!("CT2 {pair} ya convertido, se omite");
+            continue;
+        }
+        provisioner
+            .convert(&snapshot, &ct2_dir)
+            .map_err(|e| conversion(format!("{e:#}")))?;
+        out.converted.push(pair.to_string());
+    }
+    Ok(out)
+}
+
 /// Desenlace de `setup`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outcome {
@@ -571,11 +689,11 @@ impl Outcome {
 
 /// Ejecuta `setup`: purga si toca, provisiona la selección y convierte los derivados.
 ///
-/// Es el punto de entrada que el binario cablea. Todo lo que hay aquí era lógica del
-/// handler: el filtro de la selección, la idempotencia por presencia del snapshot, la
-/// reconversión por fecha, la escritura atómica del derivado y la purga por plan. Lo
-/// único que se queda en el binario es el sobre `--json` y la prosa, porque el parseo
-/// de la CLI y el emisor no viven en este crate.
+/// Es el punto de entrada que el binario cablea. La descarga y la conversión viven en
+/// [`provision`], compartida con `self install`; `run` añade la migración, la
+/// persistencia de la selección, la purga, la confirmación y la poda. Lo único que se
+/// queda en el binario es el sobre `--json` y la prosa, porque el parseo de la CLI y
+/// el emisor no viven en este crate.
 ///
 /// La confirmación destructiva de `--force-update` y la del tamaño pendiente se
 /// aplican aquí, con el mismo módulo `confirm` que usan `cleanup` y
@@ -607,51 +725,28 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
         }
     }
 
-    // 2. Provisión idempotente de la selección.
+    // 2. Resumen previo y confirmación con el plan de lo pendiente; después,
+    //    la provisión compartida (descarga y conversión CT2 según el estado real).
     let pending = pending(store, options);
     if (options.force_update || !pending.is_empty()) && !confirm_size(&pending, options)? {
         return Ok(outcome);
     }
-    for name in selection(options) {
-        if !store.is_provisioned(name) {
-            avi_store::ModelStore::ensure_downloaded(name)
-                .await
-                .map_err(|e| map_download_failure(name, &e))?;
-        }
-        outcome.provisioned.push(name.to_string());
-    }
-
-    // 3. Derivados CT2: obligatorios, e idempotentes por fecha sobre directorios sanos.
-    for pair in CT2_PAIRS {
-        let hf_name = format!("marian-{pair}");
-        if !store.is_provisioned(&hf_name) {
-            continue;
-        }
-        let Some(snapshot) = store.model_snapshot_path(&hf_name) else {
-            return Err(conversion_error(
-                pair,
-                &format!("snapshot HF de '{hf_name}' no resoluble"),
+    let provisioned = provision(store, options, &HubProvisioner)
+        .await
+        .map_err(|e| match e {
+            ProvisionError::Download { name, cause } => {
+                anyhow::Error::from(map_download_failure(&name, &cause))
+            }
+            ProvisionError::Conversion { pair, reason } => conversion_error(
+                &pair,
+                &format!(
+                    "{reason} — instala ctranslate2 (pip install ctranslate2) y reintenta setup"
+                ),
             )
-            .into());
-        };
-        if !snapshot.is_dir() {
-            return Err(
-                conversion_error(pair, &format!("snapshot HF de '{hf_name}' ausente")).into(),
-            );
-        }
-        let ct2_dir = avi_store::ct2_model_dir(pair);
-        if !needs_reconversion(&ct2_dir, store, &hf_name) {
-            eprintln!("CT2 {pair} ya convertido, se omite");
-            continue;
-        }
-        convert(&snapshot, &ct2_dir).map_err(|e| {
-            conversion_error(
-                pair,
-                &format!("{e} — instala ctranslate2 (pip install ctranslate2) y reintenta setup"),
-            )
+            .into(),
         })?;
-        outcome.converted.push(pair.to_string());
-    }
+    outcome.provisioned = provisioned.provisioned;
+    outcome.converted = provisioned.converted;
 
     // 4. Poda tras éxito: las revisiones fuera del pin vigente.
     //    Un fallo aquí no invalida lo provisionado: se informa y se sigue.
@@ -741,15 +836,38 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::test_support::{scratch, write_file, ENV_LOCK};
     use std::sync::MutexGuard;
 
+    /// Provisionador simulado: la descarga planta el snapshot pinneado y la
+    /// conversión escribe un derivado sano, sin red ni Python.
+    pub(crate) struct FakeProvisioner;
+
+    impl Provisioner for FakeProvisioner {
+        async fn download(&self, name: &str) -> anyhow::Result<()> {
+            let (repo, revision) = avi_store::ModelStore::revision_of(name)
+                .ok_or_else(|| anyhow::anyhow!("sin pin: {name}"))?;
+            fake_snapshot(&repo.replace('/', "--"), revision);
+            Ok(())
+        }
+
+        fn convert(&self, _snapshot: &Path, ct2_dir: &Path) -> anyhow::Result<()> {
+            let pair = ct2_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix("opus-mt-"))
+                .ok_or_else(|| anyhow::anyhow!("directorio CT2 inesperado"))?;
+            derived_healthy(pair);
+            Ok(())
+        }
+    }
+
     /// Fija `AVI_CACHE_DIR` a un directorio de pruebas y devuelve el guard que lo
     /// restaura. `avi-store` resuelve la raíz de modelos por esa variable, así que
     /// sin ella la prueba tocaría la caché de quien la ejecuta.
-    fn cache_relocated(tag: &str) -> (MutexGuard<'static, ()>, PathBuf) {
+    pub(crate) fn cache_relocated(tag: &str) -> (MutexGuard<'static, ()>, PathBuf) {
         let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = scratch(tag);
         std::env::set_var("AVI_CACHE_DIR", dir.join("models"));
@@ -765,7 +883,7 @@ mod tests {
     /// `needs_reconversion` cae en la rama "no se pudo leer una fecha, el derivado se
     /// acepta", que es determinista y no depende de la resolución del reloj del
     /// sistema de ficheros.
-    fn fake_snapshot(repo: &str, revision: &str) -> PathBuf {
+    pub(crate) fn fake_snapshot(repo: &str, revision: &str) -> PathBuf {
         let dir = avi_store::models_cache_dir()
             .join(format!("models--{repo}"))
             .join("snapshots")
@@ -784,7 +902,7 @@ mod tests {
     }
 
     /// Crea un derivado CT2 sano, el que el gate acepta.
-    fn derived_healthy(pair: &str) -> PathBuf {
+    pub(crate) fn derived_healthy(pair: &str) -> PathBuf {
         let dir = avi_store::ct2_model_dir(pair);
         write_file(&dir.join("model.bin"), "pesos");
         write_file(&dir.join("source.spm"), "spm");
@@ -836,6 +954,39 @@ mod tests {
             pending(&store, &without_clone).is_empty(),
             "lo que no se pidió tampoco se exige"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Sobre un almacén vacío, `pending` cuenta también el CT2 de los Marian que
+    /// se van a descargar: el resumen previo no puede omitirlo.
+    #[test]
+    fn pending_counts_ct2_of_marian_about_to_download() {
+        let (_guard, root) = cache_relocated("setup-pending-ct2");
+        let store = avi_store::ModelStore::new();
+        let plan = pending(&store, &Options::user(false, false, true));
+        assert_eq!(plan.ct2, CT2_PAIRS.map(String::from).to_vec());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Regresión: desde un almacén vacío, la provisión convierte el CT2 tras
+    /// descargar, porque decide con el estado real y no con un plan previo.
+    #[test]
+    fn provision_converts_ct2_after_downloading() {
+        let (_guard, root) = cache_relocated("setup-provision-vacio");
+        let store = avi_store::ModelStore::new();
+        let options = Options::user(false, false, true);
+        let result = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime de la prueba")
+            .block_on(provision(&store, &options, &FakeProvisioner))
+            .expect("la provisión simulada se completa");
+        assert_eq!(result.converted, CT2_PAIRS.map(String::from).to_vec());
+        for pair in CT2_PAIRS {
+            assert!(
+                avi_store::is_ct2_provisioned(pair),
+                "CT2 {pair} provisionado"
+            );
+        }
         std::fs::remove_dir_all(&root).ok();
     }
 

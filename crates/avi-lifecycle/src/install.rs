@@ -509,7 +509,7 @@ pub async fn install(
     let models = if options.no_setup {
         ModelsState::Skipped
     } else {
-        provision(&pending, options).await
+        provision(options, &setup::HubProvisioner).await
     };
 
     // ── Paso 12. Resumen final ────────────────────────────────────────────────
@@ -721,7 +721,8 @@ fn source_of(env: &Env, previous: Option<&InstallReceipt>) -> Option<String> {
         .or_else(|| env.source.clone())
 }
 
-/// Modelos pendientes de provisionar, calculados **antes** de descargar.
+/// Modelos pendientes de provisionar: solo alimenta el resumen previo del paso 4.
+/// No gobierna la ejecución: el paso 11 decide con el estado real del almacén.
 ///
 /// El almacén se construye por `avi-store`, que resuelve la raíz de modelos por
 /// `AVI_CACHE_DIR`; `Env::models_dir` tiene que coincidir con ella, y en producción
@@ -747,7 +748,9 @@ fn setup_options(options: &Options) -> setup::Options {
     }
 }
 
-/// Paso 11: `setup` en el mismo proceso.
+/// Paso 11: la misma provisión que `setup` (descarga de la selección y después
+/// conversión CT2 según el estado real del almacén), sin la confirmación, que ya
+/// mostró el resumen del paso 4, y sin la escritura de la selección.
 ///
 /// Un fallo **no** es un `Err`: `setup_failed` es éxito parcial con el
 /// programa instalado y reintentable con `setup`, así que es un estado del desenlace y
@@ -756,35 +759,22 @@ fn setup_options(options: &Options) -> setup::Options {
 /// propio `reason`, que es lo que la tabla de reasons reserva a cada caso:
 /// `network_error` para un fallo de descarga y `ct2_conversion_failed` para uno de
 /// conversión.
-async fn provision(pending: &setup::Pending, options: &Options) -> ModelsState {
-    if pending.is_empty() {
-        return ModelsState::AlreadyProvisioned;
-    }
+async fn provision(options: &Options, provisioner: &impl setup::Provisioner) -> ModelsState {
     let store = avi_store::ModelStore::new();
-    let mut count = 0usize;
-    for name in &pending.models {
-        if let Err(e) = avi_store::ModelStore::ensure_downloaded(name).await {
-            return ModelsState::Failed {
-                cause: setup::map_download_failure(name, &e),
-            };
+    match setup::provision(&store, &setup_options(options), provisioner).await {
+        Ok(done) if done.downloaded.is_empty() && done.converted.is_empty() => {
+            ModelsState::AlreadyProvisioned
         }
-        count += 1;
+        Ok(done) => ModelsState::Provisioned {
+            count: done.downloaded.len() + done.converted.len(),
+        },
+        Err(setup::ProvisionError::Download { name, cause }) => ModelsState::Failed {
+            cause: setup::map_download_failure(&name, &cause),
+        },
+        Err(setup::ProvisionError::Conversion { pair, reason }) => ModelsState::Failed {
+            cause: ct2_failure(&pair, &reason),
+        },
     }
-    for pair in &pending.ct2 {
-        let Some(snapshot) = store.model_snapshot_path(&format!("marian-{pair}")) else {
-            return ModelsState::Failed {
-                cause: ct2_failure(pair, &format!("el snapshot de marian-{pair} no resuelve")),
-            };
-        };
-        if let Err(e) = setup::convert(&snapshot, &avi_store::ct2_model_dir(pair)) {
-            return ModelsState::Failed {
-                cause: ct2_failure(pair, &format!("{e:#}")),
-            };
-        }
-        count += 1;
-    }
-    let _ = options;
-    ModelsState::Provisioned { count }
 }
 
 /// Fallo de conversión de un derivado CT2, con el `reason` que la documentación
@@ -1013,6 +1003,31 @@ fn lock_path_for(program_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regresión: con un almacén sin Marian, la provisión de install convierte
+    /// ambos derivados CT2 después de descargar, sin ejecutar `setup`.
+    #[test]
+    fn install_provision_converts_ct2_from_empty_store() {
+        let (_guard, root) = setup::tests::cache_relocated("install-provision-vacio");
+        std::env::set_var("AVI_DATA_DIR", root.join("data"));
+        let options = Options::unattended();
+        let plan = setup::pending(&avi_store::ModelStore::new(), &setup_options(&options));
+        for pair in setup::CT2_PAIRS {
+            assert!(plan.models.contains(&format!("marian-{pair}")));
+        }
+        let models = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime de la prueba")
+            .block_on(provision(&options, &setup::tests::FakeProvisioner));
+        assert!(
+            matches!(models, ModelsState::Provisioned { .. }),
+            "{models:?}"
+        );
+        for pair in setup::CT2_PAIRS {
+            assert!(avi_store::is_ct2_provisioned(pair), "CT2 {pair}");
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// El modo depende **solo** de la posición del ejecutable, y la comparación es
     /// canónica: una barra final de más no puede dar un modo equivocado sin dar ningún
