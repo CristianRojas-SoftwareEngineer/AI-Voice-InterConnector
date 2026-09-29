@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.25.0 — 2026-09-28](#0250--2026-09-28)
 - [0.24.0 — 2026-09-27](#0240--2026-09-27)
 - [0.23.1 — 2026-09-25](#0231--2026-09-25)
@@ -94,6 +95,24 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Recupera el canal de instalación de una línea en Windows, que abortaba con un error de análisis antes de ejecutar nada, y hace que la suite de Pester pruebe ese canal tal como lo usa el usuario.
+
+### Corregido
+
+- La instalación de una línea en Windows (`irm … | iex`) funciona en PowerShell 5.1 y 7: `install.ps1` se publica en ASCII puro y sin BOM, y sus mensajes conservan las tildes cualquiera que sea la decodificación de `irm`.
+
+### Interno
+
+- La suite Pester ejecuta `irm | iex` real contra el servidor local con los dos motores (`powershell.exe` y `pwsh`), y una guarda rechaza BOM y bytes no ASCII en los `.ps1`.
+- Todos los `.ps1` del repositorio pasan a ASCII puro y sin BOM: se retira la política anterior del BOM.
+- El job `test-bootstrap-windows` instala PowerShell 7 pineado (parámetro `pwsh_pin`) para que la suite no omita ese motor.
+
+### Documentación
+
+- La especificación del ciclo de vida deja de declarar el lint con `shellcheck` y PSScriptAnalyzer para los bootstrap: ningún job de CI lo ejecutaba, así que el contrato describe ahora lo que realmente se verifica.
 
 ## [0.25.0] — 2026-09-28
 

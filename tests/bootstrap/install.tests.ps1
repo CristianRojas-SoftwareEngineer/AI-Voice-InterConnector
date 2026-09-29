@@ -1,12 +1,15 @@
-﻿# Suite del bootstrap Windows packaging/bootstrap/install.ps1 (Pester v5).
+# Suite del bootstrap Windows packaging/bootstrap/install.ps1 (Pester v5).
 #
 # Corre contra el servidor falso local (support/Serve.ps1, HTTP en 127.0.0.1)
-# con el asset de Windows, SHA256SUMS.txt coherente o corrupto y raíces
+# con el asset de Windows, SHA256SUMS.txt coherente o corrupto y raices
 # reubicadas a temporales. Cubre los criterios 3 (checksum con staging
 # borrado), 4 (plataforma no soportada antes de descargar), 5 (binario
-# incompatible con diagnóstico), 8 (sin efectos en la sesión salvo el PATH de
-# esa sesión; la consola sobrevive al error bajo tubería) y 10 (paso de
-# parámetros y variables). Sin casos --check y sin red real.
+# incompatible con diagnostico), 8 (sin efectos en la sesion salvo el PATH de
+# esa sesion; la consola sobrevive al error bajo tuberia) y 10 (paso de
+# parametros y variables). Cubre ademas el canal real `irm <url> | iex` en
+# PowerShell 5.1 y 7 (las pruebas de tuberia necesitan `pwsh` en el PATH para
+# no omitirse) y la guarda de codificacion ASCII de los .ps1. Sin casos --check
+# y sin red real.
 #
 # Ejecutar: Invoke-Pester tests/bootstrap/install.tests.ps1 -CI
 
@@ -17,7 +20,7 @@ BeforeAll {
     $script:InstallPs1 = Join-Path $script:RepoRoot "packaging/bootstrap/install.ps1"
     $script:ServeScript = Join-Path $PSScriptRoot "support/Serve.ps1"
 
-    # Falso ejecutable (doble de `self install`), compilado una vez por ejecución.
+    # Falso ejecutable (doble de `self install`), compilado una vez por ejecucion.
     $script:RunDir = Join-Path ([IO.Path]::GetTempPath()) ("avi-bootstrap-test-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $script:RunDir | Out-Null
     $script:FakeExe = Join-Path $script:RunDir "fake-exe-bin.exe"
@@ -65,6 +68,9 @@ Describe "bootstrap de Windows" {
         }
         New-HarnessAsset -Dir $serveDir -FakeExe $script:FakeExe | Out-Null
         Write-HarnessChecksum -Dir $serveDir -Mode "ok"
+        # El bootstrap se sirve byte a byte para que `irm <base>/install.ps1 | iex`
+        # lo obtenga como en produccion.
+        Copy-Item $script:InstallPs1 (Join-Path $serveDir "install.ps1")
         $script:Server = Start-HarnessServer -Root $serveDir -WorkDir $script:TestDir -ServeScript $script:ServeScript
         $script:LastBaseUrl = "http://127.0.0.1:$($script:Server.Port)"
         $script:RegSubkey = $null
@@ -79,7 +85,7 @@ Describe "bootstrap de Windows" {
         Remove-Item -Recurse -Force $script:TestDir -ErrorAction SilentlyContinue
     }
 
-    It "instala delegando en self install con los parámetros" {
+    It "instala delegando en self install con los parametros" {
         $envBase = Get-TestEnvBase $script:TestDir
         $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
             -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
@@ -90,7 +96,7 @@ Describe "bootstrap de Windows" {
         Assert-NoStagingLeft $script:TestDir
     }
 
-    It "las variables AVI_* equivalen a los parámetros (criterio 10)" {
+    It "las variables AVI_* equivalen a los parametros (criterio 10)" {
         $envBase = Get-TestEnvBase $script:TestDir
         $envBase.AVI_VERSION = "9.9.9"
         $envBase.AVI_NO_SETUP = "1"
@@ -102,17 +108,17 @@ Describe "bootstrap de Windows" {
         (Get-Content -Raw $envBase.AVI_FAKE_LOG).Trim() | Should -Be "self install --no-setup --no-modify-path --yes"
     }
 
-    It "el parámetro -Version manda sobre AVI_VERSION" {
+    It "el parametro -Version manda sobre AVI_VERSION" {
         $envBase = Get-TestEnvBase $script:TestDir
         $envBase.AVI_VERSION = "8.8.8"
-        # El arnés solo sirve 9.9.9: si eligiera 8.8.8, la descarga fallaría.
+        # El arnes solo sirve 9.9.9: si eligiera 8.8.8, la descarga fallaria.
         $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
             -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
 
         $result.ExitCode | Should -Be 0
     }
 
-    It "la versión estampada se usa sin -Version ni AVI_VERSION" {
+    It "la version estampada se usa sin -Version ni AVI_VERSION" {
         $stamped = Join-Path $script:TestDir "install-stamped.ps1"
         (Get-Content -Raw $script:InstallPs1).Replace("__AVI_STAMPED_VERSION__", "9.9.9") |
             Set-Content -Path $stamped -NoNewline
@@ -136,7 +142,7 @@ Describe "bootstrap de Windows" {
         Test-Path (Join-Path $envBase.AVI_INSTALL_DIR "ai-voice-interconnector.exe") | Should -BeFalse
     }
 
-    It "SHA256SUMS sin línea para el asset aborta igual" {
+    It "SHA256SUMS sin linea para el asset aborta igual" {
         Write-HarnessChecksum -Dir (Join-Path $script:TestDir "serve") -Mode "missing"
         $envBase = Get-TestEnvBase $script:TestDir
         $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
@@ -151,7 +157,7 @@ Describe "bootstrap de Windows" {
         $envBase = Get-TestEnvBase $script:TestDir
         $envBase.AVI_FAKE_MODE = "noexec"
         $sentinel = Join-Path $envBase.AVI_INSTALL_DIR "sentinel.txt"
-        Set-Content -Path $sentinel -Value "instalación previa" -NoNewline
+        Set-Content -Path $sentinel -Value "instalacion previa" -NoNewline
         $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
             -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
 
@@ -159,15 +165,15 @@ Describe "bootstrap de Windows" {
         ($result.Stdout + $result.Stderr) | Should -Match "binary_incompatible"
         ($result.Stdout + $result.Stderr) | Should -Match "x86_64-pc-windows-msvc"
         ($result.Stdout + $result.Stderr) | Should -Match "BUILD\.md"
-        Get-Content -Raw $sentinel | Should -Be "instalación previa"
+        Get-Content -Raw $sentinel | Should -Be "instalacion previa"
         Assert-NoStagingLeft $script:TestDir
     }
 
     It "arquitectura no soportada falla antes de descargar (criterio 4)" {
         $envBase = Get-TestEnvBase $script:TestDir
-        # Puerto cerrado: si intentara descargar, el error sería de red.
+        # Puerto cerrado: si intentara descargar, el error seria de red.
         $envBase.AVI_DOWNLOAD_BASE_URL = "http://127.0.0.1:1"
-        # Solo en el hijo (ChildEnv): tocarlas en el anfitrión envenena la
+        # Solo en el hijo (ChildEnv): tocarlas en el anfitrion envenena la
         # herencia a los hijos siguientes.
         $childEnv = @{ PROCESSOR_ARCHITECTURE = "ARM64"; PROCESSOR_ARCHITEW6432 = "" }
         $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
@@ -177,7 +183,7 @@ Describe "bootstrap de Windows" {
         ($result.Stdout + $result.Stderr) | Should -Match "unsupported_platform"
     }
 
-    It "no deja variables ni funciones en la sesión tras dot-source (criterio 8)" {
+    It "no deja variables ni funciones en la sesion tras dot-source (criterio 8)" {
         $varsBefore = Get-Variable -Scope Global | Select-Object -ExpandProperty Name
         $funcsBefore = Get-ChildItem function: | Select-Object -ExpandProperty Name
         $eapBefore = $ErrorActionPreference
@@ -193,19 +199,23 @@ Describe "bootstrap de Windows" {
         $ProgressPreference | Should -Be $ppBefore
     }
 
-    It "bajo tubería instala sin cerrar la consola y añade el programa al PATH de la sesión (criterio 8)" {
+    It "bajo tuberia (irm | iex) con <Engine> instala sin cerrar la consola y anade el programa al PATH de la sesion (criterio 8)" -ForEach @(@{ Engine = "powershell.exe" }, @{ Engine = "pwsh" }) {
+        $cmd = Get-Command $Engine -ErrorAction SilentlyContinue
+        if ($null -eq $cmd) {
+            Set-ItResult -Skipped -Because "$Engine no disponible"
+            return
+        }
         $envBase = Get-TestEnvBase $script:TestDir
         $envBase.AVI_VERSION = "9.9.9"
         $envBase.AVI_NO_SETUP = "1"
         $envBase.AVI_NO_MODIFY_PATH = "1"
         $envBase.AVI_YES = "1"
-        $scriptText = Get-Content -Raw $script:InstallPs1
-        # `$env:Path se evalúa en el hijo (escapado): lo observado es el PATH
-        # de la sesión del bootstrap, con el programa añadido.
-        $stdinText = $scriptText + "`n[Console]::Out.WriteLine('PATH-EFFECT:' + `$env:Path)"
-        $result = Invoke-ChildBootstrap -StdinText $stdinText -ExtraEnv $envBase
+        # `$env:Path se evalua en el hijo (escapado): lo observado es el PATH
+        # de la sesion del bootstrap, con el programa anadido.
+        $stdinText = "irm $($script:LastBaseUrl)/install.ps1 | iex`n[Console]::Out.WriteLine('PATH-EFFECT:' + `$env:Path)"
+        $result = Invoke-ChildBootstrap -StdinText $stdinText -ExtraEnv $envBase -Engine $cmd.Source
 
-        # Sin `exit` bajo tubería: el proceso completa el marcador con código 0.
+        # Sin `exit` bajo tuberia: el proceso completa el marcador con codigo 0.
         $result.ExitCode | Should -Be 0
         $result.Stdout | Should -Match "Checksum verificado"
         $marker = ($result.Stdout -split "`r?`n" | Where-Object { $_ -match "PATH-EFFECT:" } | Select-Object -First 1)
@@ -213,16 +223,20 @@ Describe "bootstrap de Windows" {
         ($marker -split ";" ) -contains $envBase.AVI_INSTALL_DIR | Should -BeTrue
     }
 
-    It "bajo tubería un checksum corrupto se informa sin cerrar la consola" {
+    It "bajo tuberia (irm | iex) con <Engine> un checksum corrupto se informa sin cerrar la consola" -ForEach @(@{ Engine = "powershell.exe" }, @{ Engine = "pwsh" }) {
+        $cmd = Get-Command $Engine -ErrorAction SilentlyContinue
+        if ($null -eq $cmd) {
+            Set-ItResult -Skipped -Because "$Engine no disponible"
+            return
+        }
         Write-HarnessChecksum -Dir (Join-Path $script:TestDir "serve") -Mode "corrupt"
         $envBase = Get-TestEnvBase $script:TestDir
         $envBase.AVI_VERSION = "9.9.9"
         $envBase.AVI_NO_SETUP = "1"
         $envBase.AVI_NO_MODIFY_PATH = "1"
         $envBase.AVI_YES = "1"
-        $scriptText = Get-Content -Raw $script:InstallPs1
-        $stdinText = $scriptText + "`n[Console]::Out.WriteLine('PATH-EFFECT-ALIVE')"
-        $result = Invoke-ChildBootstrap -StdinText $stdinText -ExtraEnv $envBase
+        $stdinText = "irm $($script:LastBaseUrl)/install.ps1 | iex`n[Console]::Out.WriteLine('PATH-EFFECT-ALIVE')"
+        $result = Invoke-ChildBootstrap -StdinText $stdinText -ExtraEnv $envBase -Engine $cmd.Source
 
         $result.Stderr | Should -Match "checksum_mismatch"
         # La consola sigue viva: el marcador posterior se imprime.
@@ -252,5 +266,29 @@ Describe "bootstrap de Windows" {
 
         $result.ExitCode | Should -Be 0
         Test-Path "HKCU:\$($script:RegSubkey)" | Should -BeFalse
+    }
+}
+
+Describe "codificacion de los .ps1" {
+    # `irm` entrega el cuerpo sin `charset` (application/octet-stream en los
+    # assets de GitHub): PowerShell 5.1 lo decodifica como ISO-8859-1 y
+    # PowerShell 7 como UTF-8 conservando U+FEFF. Un BOM queda delante de `<#`
+    # y rompe el parseo; un byte no ASCII corrompe los mensajes. Por eso todo
+    # .ps1 del bootstrap y de su suite es ASCII puro y sin BOM.
+    It "ningun .ps1 del bootstrap ni de su suite contiene bytes no ASCII" {
+        $files = @(Get-ChildItem -Path (Join-Path $script:RepoRoot "packaging/bootstrap") -Filter "*.ps1" -File) +
+            @(Get-ChildItem -Path (Join-Path $script:RepoRoot "tests/bootstrap") -Filter "*.ps1" -File -Recurse)
+        $files.Count | Should -BeGreaterThan 0
+        $offenders = @()
+        foreach ($file in $files) {
+            $bytes = [IO.File]::ReadAllBytes($file.FullName)
+            for ($i = 0; $i -lt $bytes.Length; $i++) {
+                if ($bytes[$i] -gt 0x7F) {
+                    $offenders += "$($file.FullName) (desplazamiento $i, byte 0x$($bytes[$i].ToString('X2')))"
+                    break
+                }
+            }
+        }
+        $offenders | Should -BeNullOrEmpty
     }
 }

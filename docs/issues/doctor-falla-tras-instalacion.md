@@ -26,8 +26,7 @@ el clonado de voz.
 
 ## Entorno
 
-- Binario: v0.25.0, instalado con el bootstrap `install.ps1` (con el BOM retirado, ver
-  [install-ps1-bom-rompe-irm-iex.md](install-ps1-bom-rompe-irm-iex.md)).
+- Binario: v0.25.0, instalado con el bootstrap `install.ps1` ejecutado como archivo (`-File`).
 - SO: Windows 11, PowerShell 5.1.
 - Caché de modelos vacía antes de instalar. Sin daemon.
 
@@ -133,7 +132,5 @@ el clonado.
 
 ## Relacionados
 
-- [install-ps1-bom-rompe-irm-iex.md](install-ps1-bom-rompe-irm-iex.md): el canal por el
-  que se reprodujo la instalación.
 - Contrato de la CLI, sección de `setup`: conversión obligatoria del derivado CT2 y
   exigencia de `doctor` sobre ambas direcciones.

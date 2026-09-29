@@ -1,21 +1,21 @@
-﻿<#
+<#
 .SYNOPSIS
-Bootstrap de primera instalación de ai-voice-interconnector para Windows.
+Bootstrap de primera instalacion de ai-voice-interconnector para Windows.
 .DESCRIPTION
-Detecta el target, resuelve la versión, descarga por HTTPS, verifica el hash
-con comparación exacta, comprueba que el binario arranca y delega en
+Detecta el target, resuelve la version, descarga por HTTPS, verifica el hash
+con comparacion exacta, comprueba que el binario arranca y delega en
 `self install`. Sin -Check: con el binario instalado se usa
-`self update --check`. Toda opción tiene variable de entorno equivalente,
-porque `irm | iex` no admite parámetros. Su único efecto sobre la sesión es
-añadir el directorio de programa al PATH de esa sesión.
+`self update --check`. Toda opcion tiene variable de entorno equivalente,
+porque `irm | iex` no admite parametros. Su unico efecto sobre la sesion es
+anadir el directorio de programa al PATH de esa sesion.
 .EXAMPLE
 irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex
 .EXAMPLE
 $env:AVI_NO_SETUP = "1"; irm <url> | iex
 #>
 # Sin bloque param() en el nivel del script: bajo `irm | iex` sus variables
-# quedarían en la sesión del usuario. Los parámetros viven en el bloque de
-# ámbito propio y se enlazan con @args (como archivo admiten -Version y
+# quedarian en la sesion del usuario. Los parametros viven en el bloque de
+# ambito propio y se enlazan con @args (como archivo admiten -Version y
 # conmutadores; bajo `irm | iex` mandan las variables AVI_*).
 & {
     param(
@@ -29,11 +29,17 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
     $ErrorActionPreference = "Stop"
     $ProgressPreference = "SilentlyContinue"
 
+    # Este archivo es ASCII puro y sin BOM: `irm` entrega el cuerpo sin charset
+    # (ISO-8859-1 en PowerShell 5.1, UTF-8 con U+FEFF conservado en 7), asi que
+    # un BOM rompe el parseo y un byte no ASCII corrompe los mensajes. Las
+    # letras con tilde de los mensajes se componen al ejecutarse.
+    $a = [char]0x00E1; $i = [char]0x00ED; $o = [char]0x00F3; $u = [char]0x00FA
+
     $Repo = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector"
     $App = "ai-voice-interconnector"
 
-    # Versión estampada al publicar el release (la sustituye la automatización de
-    # publicación, una sola vez).
+    # Version estampada al publicar el release (la sustituye la automatizacion de
+    # publicacion, una sola vez).
     $StampedVersion = "__AVI_STAMPED_VERSION__"
 
     function Write-BootstrapLog {
@@ -48,8 +54,8 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
     }
 
     function Resolve-BootstrapLatest {
-        # Última estable sin API REST: se sigue la redirección de releases/latest.
-        # La URL final vive en sitios distintos según la versión (5.1: respuesta
+        # Ultima estable sin API REST: se sigue la redireccion de releases/latest.
+        # La URL final vive en sitios distintos segun la version (5.1: respuesta
         # HTTP con ResponseUri; 7+: mensaje con RequestMessage.RequestUri).
         $response = Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest" -UseBasicParsing -MaximumRedirection 10 -ErrorAction SilentlyContinue
         if ($null -ne $response) {
@@ -81,18 +87,18 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
         if ([string]::IsNullOrWhiteSpace($version)) {
             $version = Resolve-BootstrapLatest
             if ([string]::IsNullOrWhiteSpace($version)) {
-                throw "ERROR [network_error]: no se pudo resolver la última versión (sin red o sin GitHub). Fija una con -Version X.Y.Z o AVI_VERSION."
+                throw "ERROR [network_error]: no se pudo resolver la ${u}ltima versi${o}n (sin red o sin GitHub). Fija una con -Version X.Y.Z o AVI_VERSION."
             }
         }
         $parsed = $null
         if (-not [Version]::TryParse($version, [ref]$parsed)) {
-            throw "ERROR [usage_error]: versión inválida: '$version' (se espera X.Y.Z)."
+            throw "ERROR [usage_error]: versi${o}n inv${a}lida: '$version' (se espera X.Y.Z)."
         }
         return $version
     }
 
     function Resolve-BootstrapTarget {
-        # Arquitectura nativa del SO, no la del proceso (WOW64 o emulación).
+        # Arquitectura nativa del SO, no la del proceso (WOW64 o emulacion).
         $osArch = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432")
         if ([string]::IsNullOrWhiteSpace($osArch)) { $osArch = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE") }
         if ([string]::IsNullOrWhiteSpace($osArch)) {
@@ -103,17 +109,17 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
     }
 
     function Invoke-BootstrapInstall {
-        # TLS 1.2; la barra de progreso ya está desactivada arriba.
+        # TLS 1.2; la barra de progreso ya esta desactivada arriba.
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
         } catch {
             Write-BootstrapLog "AVISO: no se pudo forzar TLS 1.2: $_"
         }
 
-        # Con sesión elevada se avisa: la instalación es per-user, sin tocar HKLM.
+        # Con sesion elevada se avisa: la instalacion es per-user, sin tocar HKLM.
         $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
         if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            Write-BootstrapLog "AVISO: esta sesión está elevada, pero la instalación es per-user y se hará en el perfil de la cuenta actual."
+            Write-BootstrapLog "AVISO: esta sesi${o}n est${a} elevada, pero la instalaci${o}n es per-user y se har${a} en el perfil de la cuenta actual."
         }
 
         $wanted = $Version
@@ -164,21 +170,21 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
                 throw "ERROR [network_error]: descarga fallida: SHA256SUMS.txt. $_"
             }
 
-            # Verificación exacta antes de extraer: el nombre coincide cadena a cadena.
+            # Verificacion exacta antes de extraer: el nombre coincide cadena a cadena.
             $expected = $null
             foreach ($line in (Get-Content -Path $sumsPath)) {
                 $parts = $line -split '\s+', 3
                 if ($parts.Count -ge 2 -and $parts[1].TrimStart("*") -ceq $archiveName) { $expected = $parts[0].ToLowerInvariant(); break }
             }
-            if ([string]::IsNullOrWhiteSpace($expected)) { throw "ERROR [checksum_mismatch]: SHA256SUMS.txt no contiene ninguna línea para $archiveName; instalación abortada." }
+            if ([string]::IsNullOrWhiteSpace($expected)) { throw "ERROR [checksum_mismatch]: SHA256SUMS.txt no contiene ninguna l${i}nea para $archiveName; instalaci${o}n abortada." }
             $actual = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actual -cne $expected) { throw "ERROR [checksum_mismatch]: el checksum de $archiveName no coincide con SHA256SUMS.txt; instalación abortada." }
+            if ($actual -cne $expected) { throw "ERROR [checksum_mismatch]: el checksum de $archiveName no coincide con SHA256SUMS.txt; instalaci${o}n abortada." }
             Write-BootstrapLog "Checksum verificado: $archiveName"
 
             Expand-Archive -Path $archivePath -DestinationPath $staging -Force
             $exe = Join-Path $staging "$App.exe"
             if (-not (Test-Path $exe)) { throw "ERROR [bundle_invalid]: el archivo no contiene el ejecutable esperado: $App.exe." }
-            $incompatible = "ERROR [binary_incompatible]: el binario descargado ($target) no arranca en este sistema. Alternativa: compila desde la fuente siguiendo docs/BUILD.md. La instalación existente no se ha modificado."
+            $incompatible = "ERROR [binary_incompatible]: el binario descargado ($target) no arranca en este sistema. Alternativa: compila desde la fuente siguiendo docs/BUILD.md. La instalaci${o}n existente no se ha modificado."
             try {
                 & $exe --version | Out-Null
             } catch {
@@ -193,7 +199,7 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             & $exe @installArgs
             $code = $LASTEXITCODE
             if ($code -eq 0) {
-                # Único efecto sobre la sesión: el programa en el PATH en curso.
+                # Unico efecto sobre la sesion: el programa en el PATH en curso.
                 if (($env:Path -split ';') -notcontains $programDir) { $env:Path = "$env:Path;$programDir" }
             }
         } finally {
@@ -207,7 +213,7 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
     try {
         $resultCode = Invoke-BootstrapInstall
     } catch {
-        # No terminante a propósito: bajo `irm | iex` la sesión sigue viva.
+        # No terminante a proposito: bajo `irm | iex` la sesion sigue viva.
         Write-Error $_ -ErrorAction Continue
         $resultCode = 1
     }

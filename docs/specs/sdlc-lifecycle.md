@@ -412,7 +412,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 9. **Delegar**: `<staging>/ai-voice-interconnector self install`, pasando las opciones. En Unix, si stdin no es una terminal y `/dev/tty` está disponible, stdin se redirige desde `/dev/tty`.
 10. **Terminar**: borrar el staging, tanto si hubo éxito como error, y propagar el código de salida de `self install`.
 
-**Requisitos de `install.sh`:** POSIX sh (dash, bash, busybox sh, zsh en modo sh); `curl` o, en su defecto, `wget`; `sha256sum` o `shasum -a 256`; `tar` y `mktemp`. Validado con `shellcheck -s sh`.
+**Requisitos de `install.sh`:** POSIX sh (dash, bash, busybox sh, zsh en modo sh); `curl` o, en su defecto, `wget`; `sha256sum` o `shasum -a 256`; `tar` y `mktemp`.
 
 **Requisitos de `install.ps1`:** compatible con PowerShell 5.1 y 7+.
 
@@ -421,6 +421,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 - Desactiva la barra de progreso durante las descargas (en PowerShell 5.1 ralentiza mucho `Invoke-WebRequest`) y habilita TLS 1.2 si falta.
 - Usa `Invoke-WebRequest -UseBasicParsing`, `Get-FileHash` y `Expand-Archive`.
 - Su único efecto sobre la sesión es añadir el directorio de programa al PATH de esa sesión, para que el comando funcione sin abrir otra terminal.
+- El archivo es ASCII puro y sin BOM. Bajo `irm | iex` el cuerpo llega como texto sin `charset` (ISO-8859-1 en PowerShell 5.1, UTF-8 que conserva `U+FEFF` en 7): un BOM impide el parseo y un byte no ASCII corrompe los mensajes. Las tildes de los mensajes se componen con variables `[char]` definidas al inicio del bloque de ámbito propio.
 
 ### 8.3 `self install`
 
@@ -713,7 +714,7 @@ Al abrir o cerrar una brecha se actualiza esta tabla. El historial de las ya cer
 |---|---|---|
 | Unitarias (Rust) | Detección de target, comparación de versiones, lectura y escritura del recibo, edición de PATH (bloques de perfil; lista de PATH de Windows con conservación del tipo), planificador de transacciones y rollback, plan de limpieza (reglas de propiedad) | Las 3 puertas de test |
 | Integración (Rust, aislada) | Ciclos completos install → update → update sin cambios → uninstall; checksum inválido; interrupción y recuperación; daemon activo durante la actualización; canales `homebrew` y `dev`; confirmación sin terminal | Las 3 puertas, con las raíces reubicadas a temporales y un servidor HTTP local que sirve releases falsos (`AVI_DOWNLOAD_BASE_URL`). En Windows, la integración de PATH se prueba sobre una clave de registro de prueba |
-| Bootstrap | Detección de target, resolución de versión, checksum inválido, binario incompatible, paso de opciones y ausencia de efectos en la sesión de PowerShell; lint con `shellcheck` y PSScriptAnalyzer | bats (Linux, macOS) y Pester (Windows), contra el mismo servidor local |
+| Bootstrap | Detección de target, resolución de versión, checksum inválido, binario incompatible, paso de opciones y ausencia de efectos en la sesión de PowerShell; ejecución real de `irm | iex` contra el servidor local con PowerShell 5.1 y 7; guarda de codificación ASCII de los `.ps1` | bats (Linux, macOS) y Pester (Windows), contra el mismo servidor local |
 | Humo del empaquetado | `cargo xtask package`, luego `self install --no-setup --no-modify-path` en un sandbox, luego `--version` | Los 4 jobs de build (cubre Linux arm64, que no tiene puerta de test propia) |
 | E2E real | One-liner contra el release publicado, en máquinas reales | Manual, fuera del pipeline, según la política actual de validación E2E |
 

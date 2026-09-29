@@ -23,6 +23,7 @@ pub struct Pins {
     pub msys2_make: String,
     pub ninja: String,
     pub bats: String,
+    pub pwsh: String,
 }
 
 /// Parsea el texto de `pins.json`.

@@ -1,23 +1,23 @@
-﻿# Ayudas del arnés local para install.tests.ps1 (solo pruebas).
+# Ayudas del arnes local para install.tests.ps1 (solo pruebas).
 #
-# El servidor falso (support/Serve.ps1, HTTP en 127.0.0.1 con puerto efímero)
+# El servidor falso (support/Serve.ps1, HTTP en 127.0.0.1 con puerto efimero)
 # sirve el asset de Windows y un SHA256SUMS.txt coherente o corrupto. La base
-# se fija con AVI_DOWNLOAD_BASE_URL y las cuatro raíces se reubican a
-# temporales. La versión de prueba es 9.9.9: lo inexistente (8.8.8) falla con
-# error de red, lo que demuestra qué resolución se eligió.
+# se fija con AVI_DOWNLOAD_BASE_URL y las cuatro raices se reubican a
+# temporales. La version de prueba es 9.9.9: lo inexistente (8.8.8) falla con
+# error de red, lo que demuestra que resolucion se eligio.
 #
 # El falso ai-voice-interconnector.exe (doble de `self install`, compilado una
-# vez por ejecución con csc.exe) registra sus argumentos en AVI_FAKE_LOG,
+# vez por ejecucion con csc.exe) registra sus argumentos en AVI_FAKE_LOG,
 # con AVI_FAKE_MODE=noexec no arranca (binario incompatible) y, cuando se le
 # pide con AVI_FAKE_PATH_SUBKEY, emula el contrato PATH de `self install`
-# contra esa subclave de prueba: sin --no-modify-path añade el directorio de
+# contra esa subclave de prueba: sin --no-modify-path anade el directorio de
 # programa al valor Path, con --no-modify-path no toca el registro.
 
 $script:HarnessVersion = "9.9.9"
 $script:SavedEnv = @{}
 $script:ChildEngine = ""
 
-# Motor del hijo: powershell.exe (5.1, el del executor CI) si existe.
+# Motor del hijo por defecto: powershell.exe (5.1, el del executor CI) si existe.
 function Get-ChildEngine {
     if ([string]::IsNullOrEmpty($script:ChildEngine)) {
         $desktop = Get-Command powershell.exe -ErrorAction SilentlyContinue
@@ -27,17 +27,18 @@ function Get-ChildEngine {
     return $script:ChildEngine
 }
 
-# El hijo hereda el PSModulePath del anfitrión: bajo PowerShell 7 el directorio
+# El hijo hereda el PSModulePath del anfitrion: bajo PowerShell 7 el directorio
 # de PS7 precede al del motor hijo y su `Microsoft.PowerShell.Utility` (.NET
 # Core) hace sombra al de Windows PowerShell (la autocarga falla). El
-# directorio del motor hijo va primero, se mueva o se añada.
+# directorio del motor hijo va primero, se mueva o se anada. -Engine vacio
+# usa el motor por defecto (Get-ChildEngine).
 function Get-ChildModulePath {
-    param([string]$Current)
-    $engine = Get-ChildEngine
-    if ($engine -match "powershell\.exe$") {
+    param([string]$Current, [string]$Engine = "")
+    if ([string]::IsNullOrEmpty($Engine)) { $Engine = Get-ChildEngine }
+    if ($Engine -match "powershell\.exe$") {
         $needDir = Join-Path ([Environment]::GetFolderPath("System")) "WindowsPowerShell\v1.0\Modules"
     } else {
-        $needDir = Join-Path (Split-Path $engine -Parent) "Modules"
+        $needDir = Join-Path (Split-Path $Engine -Parent) "Modules"
     }
     $rest = @($Current -split ";" | Where-Object { $_ -ne "" -and $_ -ne $needDir })
     return (@($needDir) + $rest) -join ";"
@@ -97,11 +98,11 @@ public static class AviFakeBootstrap {
 }
 '@
     $csc = Join-Path ([Environment]::GetFolderPath("Windows")) "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-    if (-not (Test-Path $csc)) { throw "no se encontró csc.exe en $csc" }
+    if (-not (Test-Path $csc)) { throw "no se encontro csc.exe en $csc" }
     $csFile = [IO.Path]::ChangeExtension($Path, ".cs")
     Set-Content -Path $csFile -Value $source -Encoding ASCII
     & $csc /nologo /target:exe /out:"$Path" "$csFile"
-    if ($LASTEXITCODE -ne 0) { throw "csc falló con código $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "csc fallo con codigo $LASTEXITCODE" }
     Remove-Item -Force $csFile -ErrorAction SilentlyContinue
 }# Empaqueta el asset de Windows (zip con el falso exe) en <Dir>/v<ver>/.
 function New-HarnessAsset {
@@ -120,7 +121,7 @@ function New-HarnessAsset {
     return $zip
 }
 
-# Escribe SHA256SUMS.txt: coherente, corrupto o sin línea para el asset.
+# Escribe SHA256SUMS.txt: coherente, corrupto o sin linea para el asset.
 function Write-HarnessChecksum {
     param([string]$Dir, [string]$Mode = "ok")
     $version = $script:HarnessVersion
@@ -129,7 +130,7 @@ function Write-HarnessChecksum {
     $zip = Join-Path $vdir $zipName
     $sums = Join-Path $vdir "SHA256SUMS.txt"
     if ($Mode -eq "missing") {
-        Set-Content -Path $sums -Value "# sin línea para el asset" -NoNewline
+        Set-Content -Path $sums -Value "# sin linea para el asset" -NoNewline
         return
     }
     $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -158,50 +159,53 @@ function Start-HarnessServer {
                     $task = $tcp.BeginConnect("127.0.0.1", [int]$port, $null, $null)
                     if ($task.AsyncWaitHandle.WaitOne(500)) { $tcp.EndConnect($task); $tcp.Close(); break }
                     $tcp.Close()
-                } catch { Write-Verbose "puerto aún no listo, se reintenta" }
+                } catch { Write-Verbose "puerto aun no listo, se reintenta" }
             }
         }
         Start-Sleep -Milliseconds 200
     }
     if ($port -notmatch "^\d+$") {
         Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue
-        throw "el servidor falso no arrancó"
+        throw "el servidor falso no arranco"
     }
     return @{ Process = $proc; Port = $port; RequestLog = $requestLog }
 }
 
 # Detiene el servidor de Start-HarnessServer. Tolera que ya haya terminado:
-# el AfterEach corre también cuando el arranque falló y el objeto es de la
+# el AfterEach corre tambien cuando el arranque fallo y el objeto es de la
 # prueba anterior, ya detenida.
 function Stop-HarnessServer {
     param($Server)
     if ($null -ne $Server) {
         Stop-Process -InputObject $Server.Process -Force -ErrorAction SilentlyContinue
-        try { $Server.Process.WaitForExit(5000) } catch { Write-Verbose "el servidor ya había terminado" }
+        try { $Server.Process.WaitForExit(5000) } catch { Write-Verbose "el servidor ya habia terminado" }
     }
 }
 
 # Ejecuta el bootstrap en un hijo: por fichero (-File + argumentos) o por
-# tubería (estilo `irm | iex`, con -StdinText). Devuelve ExitCode/Stdout/Stderr.
+# stdin (-StdinText alimenta `-Command -`; las pruebas de tuberia pasan por
+# ahi la linea `irm <url> | iex`). -Engine elige el motor del hijo (vacio =
+# Get-ChildEngine). Devuelve ExitCode/Stdout/Stderr.
 #
-# -ExtraEnv vive en el anfitrión (heredado por el hijo y restaurado después).
-# -ChildEnv vive SOLO en el hijo (prefijo `set` en la línea de cmd): las
+# -ExtraEnv vive en el anfitrion (heredado por el hijo y restaurado despues).
+# -ChildEnv vive SOLO en el hijo (prefijo `set` en la linea de cmd): las
 # variables de sistema como PROCESSOR_ARCHITECTURE no deben tocarse en el
-# anfitrión —sobrescribirlas rompe su herencia a los nietos en PowerShell 7
-# (comprobado: el hijo las ve vacías aunque el padre lea el valor restaurado).
+# anfitrion -sobrescribirlas rompe su herencia a los nietos en PowerShell 7
+# (comprobado: el hijo las ve vacias aunque el padre lea el valor restaurado).
 # Los valores de -ChildEnv no admiten comillas dobles.
 #
-# El hijo cuelga de cmd.exe con redirección a ficheros, a propósito:
+# El hijo cuelga de cmd.exe con redireccion a ficheros, a proposito:
 # `Start-Process -PassThru` devuelve en Windows PowerShell 5.1 un proceso cuyo
-# ExitCode se lee vacío (comprobado), mientras que Process::Start lo expone
+# ExitCode se lee vacio (comprobado), mientras que Process::Start lo expone
 # bien; y el error del bootstrap vuelca todo el bloque `& {}` (~12 KB), que
-# interbloquearía la lectura secuencial de los tubos. Con ficheros no hay
-# límite ni interbloqueo posible.
+# interbloquearia la lectura secuencial de los tubos. Con ficheros no hay
+# limite ni interbloqueo posible.
 function Invoke-ChildBootstrap {
-    param([string]$Bootstrap = "", [string[]]$Arguments = @(), [hashtable]$ExtraEnv = @{}, [hashtable]$ChildEnv = @{}, [string]$StdinText)
+    param([string]$Bootstrap = "", [string[]]$Arguments = @(), [hashtable]$ExtraEnv = @{}, [hashtable]$ChildEnv = @{}, [string]$StdinText, [string]$Engine = "")
+    if ([string]::IsNullOrEmpty($Engine)) { $Engine = Get-ChildEngine }
     Enter-HarnessEnv $ExtraEnv
     $origModulePath = [Environment]::GetEnvironmentVariable("PSModulePath")
-    [Environment]::SetEnvironmentVariable("PSModulePath", (Get-ChildModulePath $origModulePath))
+    [Environment]::SetEnvironmentVariable("PSModulePath", (Get-ChildModulePath $origModulePath -Engine $Engine))
     try {
         $viaStdin = $PSBoundParameters.ContainsKey("StdinText")
         $ioDir = Join-Path ([IO.Path]::GetTempPath()) ("avi-io-" + [guid]::NewGuid().ToString("N"))
@@ -213,7 +217,7 @@ function Invoke-ChildBootstrap {
             foreach ($key in $ChildEnv.Keys) {
                 $setPrefix += "set `"$key=$($ChildEnv[$key])`" && "
             }
-            $parts = @("`"" + (Get-ChildEngine) + "`"", "-NoProfile", "-ExecutionPolicy", "Bypass")
+            $parts = @("`"" + $Engine + "`"", "-NoProfile", "-ExecutionPolicy", "Bypass")
             if ($viaStdin) {
                 $parts += @("-Command", "-")
             } else {
@@ -233,8 +237,8 @@ function Invoke-ChildBootstrap {
             $psi.CreateNoWindow = $true
             $child = [System.Diagnostics.Process]::Start($psi)
             if (-not $child.WaitForExit(120000)) {
-                try { $child.Kill() } catch { Write-Verbose "el hijo ya había terminado" }
-                throw "el hijo del bootstrap no terminó en 120 s"
+                try { $child.Kill() } catch { Write-Verbose "el hijo ya habia terminado" }
+                throw "el hijo del bootstrap no termino en 120 s"
             }
             $stdout = ""
             $stderr = ""

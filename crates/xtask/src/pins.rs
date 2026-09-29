@@ -64,7 +64,7 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
 }
 
 /// Las nueve claves con su valor, en el orden del manifiesto.
-fn all_pins(pins: &Pins) -> [(&'static str, &String); 9] {
+fn all_pins(pins: &Pins) -> [(&'static str, &String); 10] {
     [
         ("rust", &pins.rust),
         ("ort", &pins.ort),
@@ -75,6 +75,7 @@ fn all_pins(pins: &Pins) -> [(&'static str, &String); 9] {
         ("msys2_make", &pins.msys2_make),
         ("ninja", &pins.ninja),
         ("bats", &pins.bats),
+        ("pwsh", &pins.pwsh),
     ]
 }
 
@@ -217,6 +218,7 @@ mod tests {
             msys2_make: "4.4.1-5".to_string(),
             ninja: "1.13.2".to_string(),
             bats: "1.14.0".to_string(),
+            pwsh: "7.6.6".to_string(),
         }
     }
 
@@ -321,7 +323,7 @@ mod tests {
                 "rust": "1.96.0", "ort": "1.28.0", "sccache": "0.8.2",
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
-                "ninja": "1.13.2", "bats": "1.14.0",
+                "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6",
             }))
             .unwrap(),
         )
@@ -343,7 +345,7 @@ mod tests {
                 "rust": "1.96.0", "ort": "1.28.0", "sccache": "0.8.2",
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
-                "ninja": "1.13.2", "bats": "1.14.0",
+                "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6",
             }))
             .unwrap(),
         )

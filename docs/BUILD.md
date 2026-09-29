@@ -219,7 +219,9 @@ completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
   la misma versión en Linux y macOS, y `test-bootstrap-linux` corre sobre
   `cimg/base` pineada por digest. `test-bootstrap-windows` instala Pester 5.8.0
   desde PSGallery con `$ErrorActionPreference = "Stop"`, de modo que un fallo de
-  instalación o de importación hace fallar el paso.
+  instalación o de importación hace fallar el paso. Además instala PowerShell 7
+  según el parámetro `pwsh_pin` (7.6.6, zip del release oficial verificado con
+  su versión) para ejecutar `irm | iex` en 5.1 y 7.
 
 **Feedback pre-release.** El repo es trunk-based sobre `main` (flujo de un solo
 desarrollador, sin ramas de larga vida); los commits de rama **no** disparan CI

@@ -90,6 +90,8 @@ Además de `cargo test`, los bootstrap tienen suites en `tests/bootstrap/`, que 
 - `install.bats` — `packaging/bootstrap/install.sh` (Linux y macOS), con [bats-core](https://github.com/bats-core/bats-core) (`bats tests/bootstrap/install.bats`).
 - `install.tests.ps1` — `packaging/bootstrap/install.ps1` (Windows), con **Pester v5** (`Invoke-Pester tests/bootstrap/install.tests.ps1 -CI`).
 
+Todo `.ps1` del repositorio (bootstrap y suite) se escribe en ASCII puro y sin BOM: comentarios sin tildes y mensajes al usuario compuestos con `[char]`. `install.tests.ps1` lo verifica. Sus pruebas de tubería (`irm | iex`) necesitan `pwsh` en el PATH para no omitirse.
+
 Si modificas un bootstrap, actualiza su suite; los tres jobs (`test-bootstrap-*`) son puerta de los 4 builds en CI.
 
 ## Dependencias y lockfile

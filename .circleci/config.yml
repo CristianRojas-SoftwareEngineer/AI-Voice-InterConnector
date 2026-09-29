@@ -87,6 +87,14 @@ parameters:
       Versión de bats-core de la suite del bootstrap (Linux y macOS).
       Se instala desde el tag de git en $HOME/.local y la instalación aborta si
       `bats --version` no coincide: misma versión en ambos SO, sin apt/brew.
+  pwsh_pin:
+    type: string
+    default: "7.6.6"
+    description: >
+      Versión de PowerShell 7 con la que la suite de Windows ejecuta
+      `irm | iex` (además de Windows PowerShell 5.1). Se instala desde el zip
+      del release oficial en C:\pwsh y el paso aborta si `pwsh` informa una
+      versión distinta.
 
 # Cachés compartidas por los jobs Rust (restore/save nativos, idénticos en bash
 # y PowerShell). Ninguna clave depende del código fuente del workspace: editar
@@ -959,9 +967,23 @@ jobs:
     # Suite Windows (tests/bootstrap/install.tests.ps1) con Pester v5 pineado
     # (el executor trae Pester 3.x; un release nuevo no debe romper el job sin
     # cambios). El arnés (support/Serve.ps1) es HTTP local sin dependencias.
+    # Las pruebas de tubería ejecutan `irm | iex` con los dos motores:
+    # powershell.exe (5.1, del executor) y pwsh (7, pineado e instalado aquí).
     executor: win/server-2022
     steps:
       - checkout
+      - run:
+          name: Instalar PowerShell 7 (pineado << pipeline.parameters.pwsh_pin >>)
+          command: |
+            Write-Host "[STEP] Instalar PowerShell 7 (pineado << pipeline.parameters.pwsh_pin >>) - INICIO"
+            $ErrorActionPreference = "Stop"
+            $pin = "<< pipeline.parameters.pwsh_pin >>"
+            $zip = Join-Path $env:TEMP "PowerShell-$pin-win-x64.zip"
+            Invoke-WebRequest -Uri "https://github.com/PowerShell/PowerShell/releases/download/v$pin/PowerShell-$pin-win-x64.zip" -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath "C:\pwsh" -Force
+            $got = & C:\pwsh\pwsh.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+            if ($got -ne $pin) { throw "pwsh: $got != $pin" }
+            Write-Host "[STEP] Instalar PowerShell 7 (pineado << pipeline.parameters.pwsh_pin >>) - FIN"
       - run:
           name: Instalar Pester (pineado 5.8.0)
           command: |
@@ -978,6 +1000,8 @@ jobs:
             Write-Host "[STEP] Ejecutar suite del bootstrap Windows (Pester) - INICIO"
             $ErrorActionPreference = "Stop"
             Import-Module Pester -RequiredVersion 5.8.0
+            # Las pruebas de tubería resuelven `pwsh` por el PATH.
+            $env:Path = "C:\pwsh;$env:Path"
             Invoke-Pester tests/bootstrap/install.tests.ps1 -CI
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Ejecutar suite del bootstrap Windows (Pester) - FIN"

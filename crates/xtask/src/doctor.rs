@@ -1055,6 +1055,7 @@ mod tests {
             msys2_make: "4.4.1-5".to_string(),
             ninja: "1.13.2".to_string(),
             bats: "1.14.0".to_string(),
+            pwsh: "7.6.6".to_string(),
         }
     }
 
