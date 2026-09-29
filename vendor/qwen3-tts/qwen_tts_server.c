@@ -28,6 +28,9 @@
 #include <errno.h>
 #include <sys/time.h>
 #include <pthread.h>
+#ifndef _WIN32
+#include <sys/select.h>
+#endif
 
 /* Max accepted request text length (chars). Guards against a single huge body
  * blowing up the tokenizer / generation time / memory. ~1500 words of TTS is
@@ -201,12 +204,36 @@ static int stream_http_callback(const float *samples, int n_samples, void *userd
     int data_len = n_samples * 2;
     char chunk_header[32];
     int chlen = snprintf(chunk_header, sizeof(chunk_header), "%x\r\n", data_len);
-    write(st->fd, chunk_header, chlen);
-    write(st->fd, pcm, data_len);
-    write(st->fd, "\r\n", 2);
+    /* Un write fallido significa que el cliente cerró la conexión: se cancela
+     * la generación en vez de seguir produciendo audio para nadie. */
+    int ok = write(st->fd, chunk_header, chlen) > 0
+          && write(st->fd, pcm, data_len) > 0
+          && write(st->fd, "\r\n", 2) > 0;
     free(pcm);
+    if (!ok) return -1;
     st->total_samples += n_samples;
     return 0;
+}
+
+/* Callback de cancelación de handle_tts. La petición ya se leyó entera, así que
+ * el socket del cliente solo se vuelve legible si el cliente lo cerró: FIN
+ * (recv devuelve 0) o RST (recv devuelve < 0). Nunca bloquea: select con
+ * timeout cero y MSG_PEEK para no consumir nada. */
+static int client_disconnected(void *ud) {
+    int fd = *(const int *)ud;
+    fd_set rd;
+    FD_ZERO(&rd);
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
+    char c;
+#ifdef _WIN32
+    FD_SET((SOCKET)fd, &rd);
+    if (select(0, &rd, NULL, NULL, &tv) <= 0) return 0;
+    return recv((SOCKET)fd, &c, 1, MSG_PEEK) <= 0;
+#else
+    FD_SET(fd, &rd);
+    if (select(fd + 1, &rd, NULL, NULL, &tv) <= 0) return 0;
+    return recv(fd, &c, 1, MSG_PEEK) <= 0;
+#endif
 }
 
 static void send_chunked_end(int fd) {
@@ -453,13 +480,20 @@ static void handle_tts(qwen_tts_ctx_t *ctx, int fd, const char *body) {
     float *audio = NULL;
     int n_samples = 0;
 
+    /* Si el cliente cierra la conexión, la generación se cancela en el siguiente
+     * fotograma: el servidor atiende una conexión a la vez y no debe quedarse
+     * ocupado con un trabajo que nadie espera. */
+    qwen_tts_set_abort_callback(ctx, client_disconnected, &fd);
+
     /* Per-sentence dynamic emotion: if the text carries inline markup ([joy]…[sad]…, [pause],
      * fillers), synthesize span-by-span with each span's own emotion and concatenate — same
      * mechanism as the CLI --compose / auto-detected --text. Plain text takes the fast path. */
+    int gen_failed;
     if (qwen_compose_has_markup(text)) {
         char *language = json_extract_string(body, "language");
         qwen_cspan_t *spans = NULL; int nspans = 0;
         if (qwen_compose_parse(text, &spans, &nspans) != 0 || nspans == 0) {
+            qwen_tts_set_abort_callback(ctx, NULL, NULL);
             send_error(fd, 500, "markup parse failed");
             free(language); free(text); return;
         }
@@ -467,12 +501,17 @@ static void handle_tts(qwen_tts_ctx_t *ctx, int fd, const char *body) {
         int rc = qwen_compose_render_buffer(ctx, spans, nspans, language, 0.12f, &audio, &n_samples, 1);
         qwen_compose_free_spans(spans, nspans);
         free(language);
-        if (rc != 0 || !audio || n_samples == 0) {
+        gen_failed = (rc != 0 || !audio || n_samples == 0);
+    } else {
+        gen_failed = (qwen_tts_generate(ctx, text, &audio, &n_samples) != 0 || !audio || n_samples == 0);
+    }
+    qwen_tts_set_abort_callback(ctx, NULL, NULL);
+    if (gen_failed) {
+        if (client_disconnected(&fd))
+            fprintf(stderr, "[HTTP] TTS cancelado: el cliente se desconectó tras %.1f s\n",
+                    (server_time_ms() - t0) / 1000.0);
+        else
             send_error(fd, 500, "generation failed");
-            free(audio); free(text); return;
-        }
-    } else if (qwen_tts_generate(ctx, text, &audio, &n_samples) != 0 || !audio || n_samples == 0) {
-        send_error(fd, 500, "generation failed");
         free(text);
         free(audio);
         return;

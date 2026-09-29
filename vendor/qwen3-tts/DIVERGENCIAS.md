@@ -38,6 +38,14 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Por qué**: obtener un `qwen_tts.exe` autocontenido en Windows y binarios portables en ARM.
 - **Si se pierde**: no compila en Windows, o el binario ARM no es portable a CPUs más antiguas.
 
+### Cancelación de la generación al desconectarse el cliente
+
+- **Archivos**: `qwen_tts.h`, `qwen_tts.c`, `qwen_tts_server.c`.
+- **Qué cambia**: `qwen_tts_set_abort_callback` registra un callback que `qwen_tts_generate` consulta al inicio de cada fotograma; si devuelve distinto de cero, el decodificador descarta lo pendiente y la generación devuelve `-1` sin audio. `handle_tts` lo registra con `client_disconnected`, que detecta el cierre del socket del cliente sin bloquear (`select` con timeout cero y `recv` con `MSG_PEEK`), y registra `[HTTP] TTS cancelado…` en vez de responder un error. El streaming también se cancela: `stream_http_callback` devuelve `-1` cuando un `write` falla.
+- **Por qué**: el servidor atiende una conexión a la vez, ni siquiera `/v1/health` mientras genera. Sin esto, un trabajo abandonado por el cliente (plazo vencido, Ctrl+C o desconexión) lo bloquea hasta terminar.
+- **Requisito del cliente**: no cerrar la mitad de escritura del socket tras enviar la petición; el motor lo interpretaría como un abandono y cancelaría la generación.
+- **Si se pierde**: cada vencimiento deja el residente ocupado y el lanzador lo reemplaza en frío antes de la siguiente síntesis.
+
 ### Bloqueo del tokenizer y EOS de textos cortos
 
 - **Archivos**: `qwen_tts_tokenizer.c` (validación UTF-8 y guarda de progreso), `qwen_tts.c` (refuerzo de EOS para textos cortos).

@@ -863,6 +863,7 @@ qwen_tts_ctx_t *qwen_tts_clone_for_worker(const qwen_tts_ctx_t *base) {
     w->instruct = NULL;
     w->tf_ref_codes = NULL;
     w->stream = 0; w->audio_cb = NULL; w->audio_cb_userdata = NULL;
+    w->abort_cb = NULL; w->abort_cb_userdata = NULL;
 
     return w;
 }
@@ -897,6 +898,11 @@ void qwen_tts_free_clone(qwen_tts_ctx_t *ctx) {
 void qwen_tts_set_audio_callback(qwen_tts_ctx_t *ctx, qwen_tts_audio_cb cb, void *userdata) {
     ctx->audio_cb = cb;
     ctx->audio_cb_userdata = userdata;
+}
+
+void qwen_tts_set_abort_callback(qwen_tts_ctx_t *ctx, qwen_tts_abort_cb cb, void *userdata) {
+    ctx->abort_cb = cb;
+    ctx->abort_cb_userdata = userdata;
 }
 
 void qwen_tts_set_speaker(qwen_tts_ctx_t *ctx, int speaker_id) { ctx->speaker_id = speaker_id; }
@@ -1646,6 +1652,21 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
     }
 
     for (int frame = 0; frame < max_frames; frame++) {
+        /* Cancelación pedida por el llamante: el decodificador descarta lo pendiente
+         * y se libera todo por el mismo camino que el fallo del Talker, sin audio. */
+        if (ctx->abort_cb && ctx->abort_cb(ctx->abort_cb_userdata)) {
+            if (!ctx->silent) fprintf(stderr, "\n  Generación cancelada en el fotograma %d\n", frame);
+            dt_state.cb_aborted = 1;
+            free(step_embed); free(last_hidden);
+            if (tf_codes) { free(tf_codes); ctx->tf_ref_codes = NULL; }
+            if (code0_fp) fclose(code0_fp);
+            dt_finish(&dt_state);
+            if (dt_no_overlap) decoder_thread_fn(&dt_state); else pthread_join(dt_thread, NULL);
+            qwen_blas_set_threads(qwen_get_threads());
+            qwen_sd_stream_free(&ctx->sd_stream); dt_free(&dt_state);
+            return -1;
+        }
+
         /* Codec head: logits = codec_head @ last_hidden */
         matvec_bf16(ctx->logits, ctx->codec_head_bf16, last_hidden, ctx->config.codec_vocab_size, h);
 
