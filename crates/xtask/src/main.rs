@@ -420,6 +420,8 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Bootstrap: consola en UTF-8 antes de cualquier salida.
+    avi_shared::force_utf8_console();
     let cmd = localize_command(Cli::command());
     let matches = cmd
         .try_get_matches()
@@ -1462,6 +1464,30 @@ fn check_code_quality_gate() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ambos binarios arrancan con el helper compartido de consola y el
+    /// producto ya no duplica la función local.
+    #[test]
+    fn test_console_bootstrap_uses_shared_helper() {
+        let xtask_main = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+        let product_main = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/main.rs");
+        // La aguja se compone por partes para que este mismo test no la
+        // contenga literalmente y dispare su propia comprobación.
+        let local: String = ["fn force_utf8", "("].concat();
+        for main in [&xtask_main, &product_main] {
+            let text = std::fs::read_to_string(main).unwrap();
+            assert!(
+                text.contains("avi_shared::force_utf8_console"),
+                "{} debe llamar al helper compartido",
+                main.display()
+            );
+            assert!(
+                !text.contains(&local),
+                "{} no debe duplicar la función local",
+                main.display()
+            );
+        }
+    }
 
     fn sample_sums() -> String {
         let macos = "a".repeat(64);

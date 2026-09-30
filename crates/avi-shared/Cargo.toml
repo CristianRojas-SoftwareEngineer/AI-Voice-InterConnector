@@ -9,3 +9,8 @@ description = "Fuente única pura del bundle, las rutas y los pines (sin red ni 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 directories = "5.0"
+
+[target.'cfg(windows)'.dependencies]
+# Arranque de consola en UTF-8 (`console`): solo Windows, Unix sigue puro.
+# `Win32_Foundation` lo exige el BOOL que devuelven las fijaciones.
+windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Globalization"] }

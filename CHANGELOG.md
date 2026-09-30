@@ -141,7 +141,8 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - `MODEL_REVISIONS` pasa de tuplas a `&[ModelPin]` (`name`, `repo`, `revision`, `approx_bytes`) en `avi-shared`, y `MODEL_DOWNLOAD_ESTIMATE` desaparece: el tamaño de cada repo viaja junto a su revisión.
  - El formateador de tamaños (`human_bytes`) vive en `avi-shared` y lo comparten el producto y `cargo xtask clean`, que deja de etiquetar como `MB`/`GB` cifras divididas por 1024 y lista en escala binaria.
  - `cargo xtask clean --prune` poda solo lo regenerable barato de `target/` (`incremental/`, cachés efímeras, targets cruzados ajenos al host y `.pdb` de más de 7 días) y conserva la compilación vigente; el defecto sin flag no cambia. El hook `post-merge` de `.githooks/` (opt-in con `git config core.hooksPath .githooks`) lo ejecuta tras integrar en `main` cuando el merge invalida cachés y `target/` supera 10 GiB, `cargo xtask doctor` avisa con la fila opcional `target-hygiene`, y `docs/BRANCHING.md` fija la estrategia de ramas (`main` + transitorias con `merge --no-ff`) para mantenedores y agentes.
-- La clave de caché `target-v3` de CI incluye la identidad de los dos parches vendorizados.
+ - La clave de caché `target-v3` de CI incluye la identidad de los dos parches vendorizados.
+ - El ajuste de consola a UTF-8 deja de vivir solo en el producto: es el helper compartido `avi_shared::force_utf8_console` (`avi-shared`, dependencia del sistema solo en Windows), llamado al arrancar por el producto y por `cargo xtask`, así que `doctor` y demás subcomandos muestran las tildes bien en la PowerShell tal como viene configurada.
 
 ### Documentación
 

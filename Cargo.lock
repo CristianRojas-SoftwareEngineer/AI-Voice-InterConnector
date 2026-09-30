@@ -41,6 +41,7 @@ dependencies = [
  "avi-daemon",
  "avi-lifecycle",
  "avi-process",
+ "avi-shared",
  "avi-store",
  "avi-stt",
  "avi-translation",
@@ -274,6 +275,7 @@ dependencies = [
  "directories",
  "serde",
  "serde_json",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

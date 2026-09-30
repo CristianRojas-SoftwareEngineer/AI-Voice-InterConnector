@@ -660,20 +660,6 @@ enum DaemonCommands {
 
 // ─── Bootstrap ───────────────────────────────────────────────────────
 
-/// Fija la página de códigos UTF-8 de entrada y salida de la consola heredada.
-/// Sin consola no hace nada.
-fn force_utf8() {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Globalization::CP_UTF8;
-        use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
-        unsafe {
-            SetConsoleOutputCP(CP_UTF8);
-            SetConsoleCP(CP_UTF8);
-        }
-    }
-}
-
 /// Instalar handler de SIGINT → limpieza acotada + exit 130.
 ///
 /// Preserva el código 130 en todos los modos; antes de salir mata el árbol
@@ -827,7 +813,7 @@ fn restore_sigpipe_default() {
 #[tokio::main]
 async fn main() {
     // Bootstrap: UTF-8, tracing, SIGINT
-    force_utf8();
+    avi_shared::force_utf8_console();
     // Los logs van a stderr: stdout queda reservado para el contrato JSON
     // (envelope schema_version="3"), igual que el oráculo Python.
     tracing_subscriber::fmt()

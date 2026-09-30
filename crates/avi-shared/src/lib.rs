@@ -4,11 +4,15 @@
 //! canónicos del producto con sus revisiones de modelos, lectura de
 //! `packaging/pins.json` y el formateador de tamaños. Sin red ni TLS a
 //! propósito, de modo que `xtask` puede depender de él sin arrastrar el árbol
-//! de `hf-hub` que impide usar `avi-store` desde el tooling.
+//! de `hf-hub` que impide usar `avi-store` desde el tooling. Única excepción:
+//! el arranque de consola (`console`) usa la API del sistema solo en Windows.
 
+pub mod console;
 pub mod manifest;
 pub mod paths;
 pub mod pins;
+
+pub use console::force_utf8_console;
 
 /// Tamaño legible en escala binaria (B, KiB, MiB, GiB, TiB) con un decimal.
 /// Es el único formateador de tamaños del workspace, compartido por el producto
