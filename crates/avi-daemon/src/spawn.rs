@@ -24,16 +24,22 @@ use std::process::Command;
 /// sistema por la misma ruta que POST `/shutdown`, el CLI reclama el residual
 /// degradado al arrancar (matar-y-rearrancar) y toda parada mata el árbol preciso
 /// por PID con deadline y verificación (`kill_tree_by_pid` + `pid_alive`).
-/// `ready_file` designa el fichero de señalización del evento
-/// `avi-daemon-ready` y viaja al hijo como flag `--ready-file` (transporte
-/// flag+fichero, nunca pipe heredable). `Stdio::null` en los tres flujos se
-/// mantiene: el evento ya no depende de stdio heredado.
+/// `ready_file` viaja al hijo como flag `--ready-file` (transporte
+/// flag+fichero, nunca pipe heredable): en él el hijo publica el registro de
+/// éxito (dirección real) o el de fallo (causa tipada) de su arranque.
+/// `Stdio::null` en los tres flujos se mantiene: la señal no depende de stdio
+/// heredado.
+///
+/// El llamante es dueño del `Child` devuelto: debe vigilarlo durante el
+/// arranque (`try_wait` detecta una muerte que no publicó registro, con su
+/// estado de salida real) y recolectarlo tras matar el árbol ante un fallo.
+/// Mientras no se recolecta, su PID no puede reutilizarse.
 pub fn spawn_background(
     auto_restart: bool,
     max_retries: u32,
     warm_voice: &str,
     ready_file: Option<&std::path::Path>,
-) -> anyhow::Result<u32> {
+) -> anyhow::Result<std::process::Child> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
     cmd.arg("daemon").arg("serve");
@@ -82,8 +88,6 @@ pub fn spawn_background(
         }
     }
 
-    let child = cmd.spawn()?;
-    let pid = child.id();
     // Grupo propio ya garantizado por flags (Windows: CREATE_NEW_PROCESS_GROUP;
     // Unix: setsid): el árbol es matable de forma precisa por PID con
     // `kill_tree_by_pid` (alternativa admitida: taskkill `/F /T` por PID con
@@ -91,7 +95,8 @@ pub fn spawn_background(
     // aquí en el padre efímero (moriría con él y mataría al daemon recién
     // lanzado): lo instala el daemon longevo al arrancar vía
     // `install_job_with_tree_kill` (lado servidor).
-    Ok(pid)
+    let child = cmd.spawn()?;
+    Ok(child)
 }
 
 /// Viveza real de un PID a nivel de sistema (sin probe HTTP ni pidfile).

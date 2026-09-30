@@ -174,7 +174,7 @@ Recogida en cada observación.
 
 - **Síntoma:** cada arranque del motor crea `data/logs/qwen3-tts_<pid>_<ms>.log`; al
   final de la sesión había 21. El daemon no escribe log propio, así que sus errores
-  (por ejemplo, un bind fallido) no quedan en ningún sitio.
+  (por ejemplo, una caída del servidor después de estar listo) no quedan en ningún sitio.
 - **Causa (confirmada):** `crates/avi-tts/src/lib.rs` nombra un archivo nuevo por
   proceso y nada los poda. El hijo del daemon se lanza con stdout y stderr descartados
   (`spawn_background`, `crates/avi-daemon/src/spawn.rs`).
@@ -375,7 +375,5 @@ todas están cerradas o separadas a su propio documento.
 
 ## Relacionados
 
-- [daemon-start-puerto-ocupado.md](daemon-start-puerto-ocupado.md) (observación 9:
-  falta de log del daemon).
 - Contrato de la CLI, reglas de `--text` y de `--audio` (observaciones 13 a 15: la
   clasificación de un audio inválido, y la unidad y el rechazo del tope de `--text`).

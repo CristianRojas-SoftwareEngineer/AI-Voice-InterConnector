@@ -187,7 +187,7 @@ fn check_guard(phase: &str) {
 // El producto reclama el residual al arrancar (matar-y-rearrancar con payload
 // `started`) y para con deadline global y verificación (`src/main.rs`:
 // `classify_residual`, `reclaim_degraded_residual`,
-// `stop_daemon_and_resident`; ayudantes SO `avi_daemon::{pid_alive,
+// `lifecycle::daemon_stop::stop`; ayudantes SO `avi_daemon::{pid_alive,
 // kill_tree_by_pid, wait_for_pid_death}`). La fixture verifica esa conducta
 // a nivel de sistema en vez de suponerla por HTTP. Fuente única de
 // matar/verificar: `avi_daemon`, sin duplicar lógica SO en el harness.
@@ -878,9 +878,11 @@ fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
 }
 
 // ─── Fichero ready (transporte del evento de readiness por instancia) ──
-// El hijo publica `addr=<real>` tras el bind y `warm=<estado>` tras el
-// warmup en el fichero designado por `--ready-file` (escritura atómica:
-// temporal hermano + rename). La lectura es tolerante a fichero a medio
+// El hijo publica `addr=<real>` tras enlazar el puerto y cargar su estado, y
+// `warm=<estado>` tras el warmup, en el fichero designado por `--ready-file`
+// (escritura atómica: temporal hermano + rename). Si el arranque falla antes
+// de estar listo, el hijo publica en su lugar un registro de fallo sin
+// `addr=`, que `read_ready_file` trata como aún-no-listo. La lectura es tolerante a fichero a medio
 // escribir: contenido ausente o incompleto equivale a aún-no-listo (None),
 // nunca a error fatal. La ruta es absoluta dentro del sandbox (`AVI_DATA_DIR`)
 // para no depender de la unidad del proceso en Windows.
@@ -3211,6 +3213,134 @@ mod tts {
             "tras stop no debe reintentar"
         );
         hit_end("tts::daemon_start_con_auto_restart");
+    }
+
+    /// Sustituye el puerto de la instancia por uno ocupado por un listener
+    /// propio, que la prueba mantiene vivo mientras lo necesite.
+    fn occupy_instance_port(inst: &mut IsolatedInstance) -> std::net::TcpListener {
+        let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("ocupar un puerto");
+        let port = holder.local_addr().unwrap().port();
+        for (k, v) in inst.envs.iter_mut() {
+            if k == "AVI_DAEMON_PORT" {
+                *v = port.to_string();
+            }
+        }
+        holder
+    }
+
+    /// Afirma el fallo por puerto ocupado de `daemon start`: exit 6
+    /// `port_in_use` con el puerto y `AVI_DAEMON_PORT` en el mensaje, en menos
+    /// de 5 s (la regresión esperaría 10 s), sin `daemon.pid` ni `daemon.ready`.
+    fn assert_start_port_in_use(inst: &IsolatedInstance, port: u16, extra: &[&str]) {
+        let mut args = vec!["--json", "daemon", "start"];
+        args.extend_from_slice(extra);
+        let t0 = Instant::now();
+        let (code, actual) = run_json_env(&args, &inst.args());
+        let elapsed = t0.elapsed();
+        assert_eq!(code, 6, "puerto ocupado debe salir con exit 6: {}", actual);
+        assert_eq!(actual["reason"], "port_in_use", "{}", actual);
+        let error = actual["error"].as_str().unwrap_or_default();
+        assert!(error.contains(&port.to_string()), "{}", actual);
+        assert!(error.contains("AVI_DAEMON_PORT"), "{}", actual);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "el fallo debe ser inmediato, no esperar el deadline: {:?}",
+            elapsed
+        );
+        assert!(
+            !inst.dir.join("daemon.pid").exists(),
+            "no debe quedar daemon.pid"
+        );
+        assert!(
+            !inst.dir.join("daemon.ready").exists(),
+            "no debe quedar daemon.ready"
+        );
+    }
+
+    /// `daemon start` con el puerto de la instancia ocupado falla al instante
+    /// con `port_in_use` (exit 6), con y sin `--auto-restart`, y no deja
+    /// huérfano: tras liberar el puerto nadie lo enlaza (un daemon supervisado
+    /// huérfano reintentaría a los 500 ms y lo tomaría en cuanto quedara libre).
+    /// No toma `lock_tts`: ningún modelo llega a cargarse.
+    #[test]
+    fn daemon_start_port_in_use_fails_fast_with_state_conflict() {
+        let _reaper = arm_reaper("daemon_start_port_in_use");
+        // Sin provisión `start` saldría antes por `model_missing`.
+        if !tts_model_registered() {
+            eprintln!("[daemon] skip: sin modelo TTS provisionado para puerto ocupado");
+            return;
+        }
+        let mut inst = IsolatedInstance::new("start_port_in_use");
+        let holder = occupy_instance_port(&mut inst);
+        let port = holder.local_addr().unwrap().port();
+        assert_start_port_in_use(&inst, port, &[]);
+        assert_start_port_in_use(&inst, port, &["--auto-restart"]);
+        drop(holder);
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(
+            !port_open(port),
+            "tras un arranque fallido ningún daemon debe enlazar el puerto liberado"
+        );
+    }
+
+    /// `daemon serve` con el puerto ocupado sale con `port_in_use` (exit 6) y
+    /// el puerto en el mensaje, sin esperar: el fallo ocurre antes de cargar
+    /// modelos, así que no necesita provisión.
+    #[test]
+    fn daemon_serve_port_in_use_exits_state_conflict() {
+        let _reaper = arm_reaper("daemon_serve_port_in_use");
+        let mut inst = IsolatedInstance::new("serve_port_in_use");
+        let holder = occupy_instance_port(&mut inst);
+        let port = holder.local_addr().unwrap().port();
+        let t0 = Instant::now();
+        let (code, actual) = run_json_env(&["--json", "daemon", "serve"], &inst.args());
+        let elapsed = t0.elapsed();
+        assert_eq!(code, 6, "puerto ocupado debe salir con exit 6: {}", actual);
+        assert_eq!(actual["reason"], "port_in_use", "{}", actual);
+        assert!(
+            actual["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&port.to_string()),
+            "{}",
+            actual
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "el fallo debe ser inmediato: {:?}",
+            elapsed
+        );
+        drop(holder);
+    }
+
+    /// `daemon start --warm-voice <inexistente>` sale con `voice_not_found`
+    /// (exit 3) sin cargar modelos y sin dejar `daemon.pid`.
+    #[test]
+    fn daemon_start_missing_warm_voice_exits_not_found() {
+        let _reaper = arm_reaper("daemon_start_missing_warm_voice");
+        if !tts_model_registered() {
+            eprintln!("[daemon] skip: sin modelo TTS provisionado para voz de warmup");
+            return;
+        }
+        let inst = IsolatedInstance::new("start_missing_warm_voice");
+        let voice = format!("warm_inexistente_{}", std::process::id());
+        let t0 = Instant::now();
+        let (code, actual) = run_json_env(
+            &["--json", "daemon", "start", "--warm-voice", &voice],
+            &inst.args(),
+        );
+        let elapsed = t0.elapsed();
+        assert_eq!(code, 3, "voz inexistente debe salir con exit 3: {}", actual);
+        assert_eq!(actual["reason"], "voice_not_found", "{}", actual);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "el fallo debe ser inmediato: {:?}",
+            elapsed
+        );
+        assert!(
+            !inst.dir.join("daemon.pid").exists(),
+            "no debe quedar daemon.pid"
+        );
     }
 
     /// Prueba pesada de limpieza: cero huérfanos tras aborto simulado, en dos

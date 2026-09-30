@@ -111,9 +111,13 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - `POST /synthesize` del daemon responde HTTP 400 con `{schema_version, error, reason, message}` ante un texto vacío o demasiado largo, en lugar de un 200 con cuerpo de error.
 - El plazo de síntesis pasa a ser proporcional al texto (30 s + 0,30 s por carácter, 180 s para 500 caracteres) y el techo total de una petición del cliente sube de 120 s a 240 s, en lugar de los límites fijos anteriores.
 - `warm` de `/health` refleja también el resultado de la última síntesis completada, y el warmup de arranque deja de tener un plazo propio de 40 s: lo acotan el arranque del motor y el presupuesto de síntesis del testigo.
+- Una `--warm-voice` inexistente en `daemon start` o `daemon serve` sale al instante con `voice_not_found` (exit 3), antes de enlazar el puerto y de cargar los modelos.
+- Si el daemon muere durante el arranque, `daemon start` y `daemon restart` lo detectan al momento y salen con `daemon_error` (exit 1), con el estado de salida del proceso en el mensaje, en lugar de agotar la espera de 10 s.
+- `--auto-restart` ya no reintenta los fallos previos a que el daemon esté listo (puerto ocupado, voz inexistente, fallo al cargar el estado): son terminales y salen con su código. Solo se reintentan las caídas de un daemon que llegó a servir.
 
 ### Corregido
 
+- `daemon start`, `daemon restart` y `daemon serve` con el puerto del daemon ocupado fallan al instante con `port_in_use` (exit 6) y un mensaje que nombra el puerto y `AVI_DAEMON_PORT`, en lugar de esperar 10 s y salir con `daemon_unreachable` y un error sobre un fichero interno. Con `--auto-restart`, un arranque fallido ya no deja un daemon vivo sin pidfile.
 - `speech transcribe` y `speech dub` con un `--audio` inexistente salen con `audio_not_found` (exit 3), un WAV corrupto con `invalid_audio` (exit 2) y un fallo de E/S con `io_error` (exit 1); el exit 10 queda para fallos del pipeline de transcripción o del micrófono.
 - La síntesis de textos largos ya no expira con `synthesis_timeout` antes de tiempo: el plazo se calcula con la longitud del texto realmente sintetizado (el traducido, en `dub`).
 - Una petición de síntesis que espera el lock o el calentamiento del motor emite latidos `queued` o `warming` en lugar de quedar muda, por lo que ya no agota el timeout de inactividad del cliente.

@@ -1691,17 +1691,62 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()>
 /// el padre solo conoce el flag y el fichero resultante.
 pub const READY_FILE_ENV: &str = "AVI_READY_FILE";
 
-/// Publica `addr` + `warm` en el fichero ready con escritura atómica
-/// (temporal hermano + rename). Best-effort con diagnóstico: un fallo de
-/// señalización no derriba el daemon (el evento en stderr sigue valiendo
-/// como diagnóstico redundante).
-fn write_ready_file(path: &std::path::Path, addr: &SocketAddr, warm: &str) {
+/// Fallo del arranque ocurrido antes de que el daemon esté listo (antes de
+/// publicar el registro de éxito). Clasifica la causa para que el llamante la
+/// traduzca a un código de salida propio, y la supervisión lo trata como
+/// terminal: es un fallo de configuración o de recursos que un reintento no
+/// arregla.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupError {
+    /// El puerto pedido está en uso o reservado por otro proceso.
+    PortInUse { port: u16 },
+    /// La voz de `--warm-voice` no existe en el almacén de voces.
+    WarmVoiceMissing { voice: String },
+    /// Cualquier otro fallo previo a estar listo, con su causa legible.
+    Failed { message: String },
+}
+
+impl std::fmt::Display for StartupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartupError::PortInUse { port } => write!(
+                f,
+                "El puerto {} está en uso o reservado por otro proceso: libéralo o arranca el daemon en otro puerto con AVI_DAEMON_PORT=<puerto> (0 = efímero).",
+                port
+            ),
+            StartupError::WarmVoiceMissing { voice } => write!(
+                f,
+                "La voz de warmup '{}' no existe: clónala o elige otra con --warm-voice.",
+                voice
+            ),
+            StartupError::Failed { message } => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for StartupError {}
+
+/// Señal leída del fichero ready: el daemon está listo en `addr` (con el PID
+/// que publicó, si es legible) o falló antes de estarlo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadySignal {
+    Ready { addr: String, pid: Option<u32> },
+    Failed(StartupError),
+}
+
+// El fichero ready admite dos registros, ambos `clave=valor` por línea:
+// - éxito: `addr=<dirección real>`, `warm=<estado>` y `pid=<pid del daemon>`;
+// - fallo: `error=port_in_use` + `port=`, `error=warm_voice_missing` + `voice=`
+//   o `error=startup_failed` + `message=`.
+// El registro de fallo nunca lleva `addr=`: los lectores toman `addr=` como
+// señal de listo, y uno que no conozca `error=` debe seguir viendo aún-no-listo.
+
+/// Publica `content` en el fichero ready con escritura atómica (temporal
+/// hermano + rename), de modo que un lector nunca ve un registro a medias.
+/// Best-effort con diagnóstico: un fallo de señalización no derriba el daemon
+/// (el evento en stderr sigue valiendo como diagnóstico redundante).
+fn publish_ready_record(path: &std::path::Path, content: &str) {
     let tmp = path.with_extension("ready.tmp");
-    // Recuperación de reclamo: además de `addr`/`warm`, el hijo publica
-    // su propio PID. Con puertos efímeros, `addr` y PID vivían solo en el
-    // pidfile; si el padre cae sin limpiarlo, el ready es la única pista para
-    // reclamar el árbol huérfano por PID.
-    let content = format!("addr={}\nwarm={}\npid={}\n", addr, warm, std::process::id());
     if std::fs::write(&tmp, content).is_err() {
         eprintln!(
             "aviso: no se pudo escribir el fichero ready {}",
@@ -1717,49 +1762,152 @@ fn write_ready_file(path: &std::path::Path, addr: &SocketAddr, warm: &str) {
     }
 }
 
-/// Inicia el daemon nativo escuchando en `addr`. Construye el estado (propagando
-/// errores de inicialización de motores), enlaza el listener y comienza a servir
-/// de inmediato; el warmup TTS corre en segundo plano (`spawn_blocking`) sin
-/// bloquear el bind, acotado por el arranque del residente más el presupuesto
-/// del testigo. Readiness (enlazado + motor construido) queda así desacoplado
-/// del pre-calentamiento: un warmup fallido o vencido degrada —pero no
-/// derriba— el daemon.
-pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::Result<()> {
-    let state = Arc::new(DaemonState::new()?);
-    let app = build_router_with_state(state.clone());
+/// Publica el registro de éxito: `addr` + `warm` + el PID propio.
+fn write_ready_file(path: &std::path::Path, addr: &SocketAddr, warm: &str) {
+    // El PID propio permite reclamar el árbol si el padre cae sin escribir o
+    // sin limpiar el pidfile: con puertos efímeros el ready es entonces la
+    // única pista de qué proceso matar.
+    let content = format!("addr={}\nwarm={}\npid={}\n", addr, warm, std::process::id());
+    publish_ready_record(path, &content);
+}
 
+/// Publica el registro de fallo de un arranque que no llegó a estar listo.
+fn write_ready_failure(path: &std::path::Path, err: &StartupError) {
+    let content = match err {
+        StartupError::PortInUse { port } => format!("error=port_in_use\nport={}\n", port),
+        StartupError::WarmVoiceMissing { voice } => {
+            format!("error=warm_voice_missing\nvoice={}\n", voice)
+        }
+        // El formato es de una línea por clave: los saltos del mensaje se
+        // aplanan para que no corten el registro.
+        StartupError::Failed { message } => format!(
+            "error=startup_failed\nmessage={}\n",
+            message.replace(['\r', '\n'], " ")
+        ),
+    };
+    publish_ready_record(path, &content);
+}
+
+/// Lee el fichero ready. Devuelve `None` si no existe o aún no contiene un
+/// registro completo (el llamante sigue esperando). `error=` tiene prioridad
+/// sobre `addr=`; una clase de error desconocida se entrega como `Failed` con
+/// la clase en el mensaje, y un `pid=` ausente, ilegible o `0` da `pid: None`.
+pub fn read_ready_signal(path: &std::path::Path) -> Option<ReadySignal> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let field = |key: &str| {
+        content.lines().find_map(|line| {
+            line.strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix('='))
+                .map(|v| v.trim().to_string())
+        })
+    };
+    if let Some(class) = field("error") {
+        let err = match class.as_str() {
+            "port_in_use" => match field("port").and_then(|p| p.parse().ok()) {
+                Some(port) => StartupError::PortInUse { port },
+                None => return None,
+            },
+            "warm_voice_missing" => StartupError::WarmVoiceMissing {
+                voice: field("voice")?,
+            },
+            "startup_failed" => StartupError::Failed {
+                message: field("message")?,
+            },
+            other => StartupError::Failed {
+                message: format!(
+                    "el daemon publicó un fallo de arranque desconocido: {}",
+                    other
+                ),
+            },
+        };
+        return Some(ReadySignal::Failed(err));
+    }
+    let addr = field("addr").filter(|a| !a.is_empty())?;
+    let pid = field("pid")
+        .and_then(|p| p.parse::<u32>().ok())
+        .filter(|&p| p != 0);
+    Some(ReadySignal::Ready { addr, pid })
+}
+
+/// Fase previa a servir, ordenada de lo barato a lo caro para fallar antes de
+/// pagar la carga de modelos: valida la voz de warmup, enlaza el puerto y solo
+/// entonces construye el estado. Todo fallo sale clasificado como
+/// `StartupError`.
+async fn prepare_server(
+    addr: SocketAddr,
+    warm_voice: &str,
+) -> Result<(TcpListener, SocketAddr, Arc<DaemonState>), StartupError> {
     // Habilitador: materializar las voces de fábrica en la instancia
     // (idempotente, desde el asset embebido). Sin esto, un `data_dir` virgen
-    // (sandbox de estado por instancia vía `AVI_DATA_DIR`) aborta el fail-fast
-    // de `--warm-voice` antes del bind porque `default` aún no existe en
-    // disco. Tras esto, una voz inexistente sigue abortando igual (no es de
-    // fábrica).
-    state
-        .voice_store
+    // (sandbox de estado por instancia vía `AVI_DATA_DIR`) rechazaría
+    // `--warm-voice default` porque `default` aún no existe en disco. Tras
+    // esto, una voz inexistente se rechaza igual (no es de fábrica).
+    let voices = VoiceStore::new();
+    voices
         .ensure_initialized()
-        .map_err(|e| anyhow::anyhow!("No se pudo inicializar el almacén de voces: {}", e))?;
+        .map_err(|e| StartupError::Failed {
+            message: format!("No se pudo inicializar el almacén de voces: {}", e),
+        })?;
 
-    // Fail-fast (D): una `--warm-voice` inexistente aborta el arranque antes del
-    // bind, sin degradar en silencio ni caer a `default`.
-    if state.voice_store.find_reference(&warm_voice).is_none() {
-        return Err(anyhow::anyhow!(
-            "La voz de warmup '{}' no existe: clónala o elige otra con --warm-voice.",
-            warm_voice
-        ));
+    // Fail-fast: una `--warm-voice` inexistente aborta el arranque antes de
+    // enlazar y de cargar modelos, sin degradar en silencio ni caer a `default`.
+    if voices.find_reference(warm_voice).is_none() {
+        return Err(StartupError::WarmVoiceMissing {
+            voice: warm_voice.to_string(),
+        });
     }
 
-    // Sin reclamo aquí; el reclamo activo del árbol propio previo con
-    // deadline y verificación vive solo en `run_supervised` (entre reintentos).
-    let listener = TcpListener::bind(addr).await?;
+    // El puerto se enlaza antes de cargar los modelos: un puerto ocupado falla
+    // en milisegundos y el puerto queda reservado durante la carga. Mientras
+    // tanto no se sirve: una conexión espera en el backlog hasta `axum::serve`
+    // y el registro de éxito solo se publica tras cargar el estado. En Windows,
+    // WSAEACCES (10013) es el bind contra un puerto retenido en uso exclusivo o
+    // en un rango reservado: el remedio es el mismo que el de un puerto en uso.
+    // Sin reclamo aquí; el reclamo del árbol propio previo entre reintentos
+    // vive solo en `run_supervised`.
+    let listener = TcpListener::bind(addr).await.map_err(|e| {
+        let reserved = cfg!(windows) && e.raw_os_error() == Some(10013);
+        if e.kind() == std::io::ErrorKind::AddrInUse || reserved {
+            StartupError::PortInUse { port: addr.port() }
+        } else {
+            StartupError::Failed {
+                message: format!("No se pudo enlazar {}: {}", addr, e),
+            }
+        }
+    })?;
     // Puerto efímero por instancia: publicar la dirección REALMENTE enlazada
     // (con `:0` el SO asigna, nunca el literal pedido).
-    let bound = listener.local_addr()?;
+    let bound = listener.local_addr().map_err(|e| StartupError::Failed {
+        message: format!("No se pudo leer la dirección enlazada: {}", e),
+    })?;
+
+    let state = DaemonState::new().map_err(|e| StartupError::Failed {
+        message: format!("No se pudo inicializar el estado del daemon: {}", e),
+    })?;
+    Ok((listener, bound, Arc::new(state)))
+}
+
+/// Inicia el daemon nativo escuchando en `addr`. Valida la voz de warmup,
+/// enlaza el listener y construye el estado (en ese orden); todo fallo de esa
+/// fase se devuelve como `StartupError` sin escribir el fichero ready (lo
+/// publica `run_supervised`, que decide si es terminal). Después anuncia la
+/// dirección, publica el registro de éxito y comienza a servir; el warmup TTS
+/// corre en segundo plano (`spawn_blocking`), acotado por el arranque del
+/// residente más el presupuesto del testigo. Readiness (enlazado + motor
+/// construido) queda así desacoplado del pre-calentamiento: un warmup fallido
+/// o vencido degrada —pero no derriba— el daemon.
+pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::Result<()> {
+    let (listener, bound, state) = prepare_server(addr, &warm_voice)
+        .await
+        .map_err(anyhow::Error::new)?;
+    let app = build_router_with_state(state.clone());
     println!("Daemon nativo escuchando en http://{}", bound);
 
     // Transporte flag+fichero: si el padre designó fichero ready
-    // (`--ready-file`), publicar la `addr` real tras el bind y el estado
-    // warm tras el warmup. Escritura atómica; el evento en stderr se
-    // conserva como diagnóstico redundante. Sin flag no se escribe nada.
+    // (`--ready-file`), publicar la `addr` real tras enlazar y cargar el
+    // estado, y el estado warm tras el warmup. Escritura atómica; el evento en
+    // stderr se conserva como diagnóstico redundante. Sin flag no se escribe
+    // nada.
     let ready_file: Option<std::path::PathBuf> =
         std::env::var_os(READY_FILE_ENV).map(std::path::PathBuf::from);
     if let Some(ref path) = ready_file {
@@ -1845,7 +1993,24 @@ const SUPERVISION_PROGRESS_MIN: std::time::Duration = std::time::Duration::from_
 /// el bucle de supervisión con fallo explícito.
 const SUPERVISION_STREAK_MAX: u32 = 3;
 
+/// Si `err` es un fallo previo a estar listo y el padre designó fichero ready,
+/// publica en él el registro de fallo para que el padre salga con su causa.
+fn publish_startup_failure(err: &anyhow::Error) {
+    if let (Some(startup), Some(path)) = (
+        err.downcast_ref::<StartupError>(),
+        std::env::var_os(READY_FILE_ENV),
+    ) {
+        write_ready_failure(std::path::Path::new(&path), startup);
+    }
+}
+
 /// Ejecuta el daemon con supervisión configurable de reinicios.
+///
+/// Un fallo previo a estar listo (`StartupError`: puerto ocupado, voz de
+/// warmup inexistente, fallo al cargar el estado) antes de que el daemon haya
+/// servido alguna vez es de configuración: se publica en el fichero ready y se
+/// devuelve sin reintentar, en ambos modos. La supervisión solo recupera
+/// caídas de un daemon que llegó a servir.
 ///
 /// Si `auto_restart` es `false`, ejecuta `run_daemon_server` una sola vez.
 /// Si es `true`, reintenta hasta `max_retries` veces tras un fallo no graceful
@@ -1865,7 +2030,11 @@ pub async fn run_supervised(
     warm_voice: String,
 ) -> anyhow::Result<()> {
     if !auto_restart {
-        return run_daemon_server(addr, warm_voice).await;
+        let result = run_daemon_server(addr, warm_voice).await;
+        if let Err(ref e) = result {
+            publish_startup_failure(e);
+        }
+        return result;
     }
     // Watchdog del bucle de supervisión (acotado a este bucle, primitivas
     // portables `Instant`): una vida del daemon menor a `SUPERVISION_PROGRESS_MIN`
@@ -1874,9 +2043,13 @@ pub async fn run_supervised(
     // en un crash-loop silencioso. Sin falsos positivos en el camino feliz: el
     // apagado graceful retorna `Ok` antes de contar, y una vida larga resetea
     // la racha (la patología de cola de los tests la corrige el reloj tras
-    // locks del harness, no este watchdog).
+    // locks del harness, no este watchdog). Los fallos previos a estar listo
+    // no llegan a este conteo: se devuelven antes (ver abajo).
     let mut fast_streak: u32 = 0;
     let mut retries: u32 = 0;
+    // Verdadero en cuanto una iteración llegó a estar lista: un error que no
+    // es `StartupError` solo puede salir de un servidor que ya servía.
+    let mut ready_once = false;
     loop {
         let iteration_start = std::time::Instant::now();
         match run_daemon_server(addr, warm_voice.clone()).await {
@@ -1885,6 +2058,17 @@ pub async fn run_supervised(
                 return Ok(());
             }
             Err(e) => {
+                if e.downcast_ref::<StartupError>().is_none() {
+                    ready_once = true;
+                } else if !ready_once {
+                    // Fallo de configuración antes de servir nunca: terminal.
+                    // Si ya sirvió, se reintenta como una caída y no se
+                    // publica nada: el registro de éxito conserva el `pid=` de
+                    // este proceso, todavía vivo, y el reclamo de huérfanos
+                    // lo necesita.
+                    publish_startup_failure(&e);
+                    return Err(e);
+                }
                 if retries >= max_retries {
                     return Err(e);
                 }
@@ -2368,5 +2552,90 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["reason"], "audio_too_long");
+    }
+
+    /// Ruta de fichero ready en un directorio temporal propio de cada prueba.
+    fn ready_path(test: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("avi_daemon_ready_{}_{}", test, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("crear directorio temporal");
+        dir.join("daemon.ready")
+    }
+
+    /// Cada clase de fallo sobrevive la ida y vuelta por el fichero ready.
+    #[test]
+    fn ready_failure_round_trips_each_class() {
+        let path = ready_path("failure_round_trip");
+        for err in [
+            StartupError::PortInUse { port: 8765 },
+            StartupError::WarmVoiceMissing {
+                voice: "nadie".to_string(),
+            },
+            StartupError::Failed {
+                message: "motor caído".to_string(),
+            },
+        ] {
+            write_ready_failure(&path, &err);
+            assert_eq!(read_ready_signal(&path), Some(ReadySignal::Failed(err)));
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// El registro de éxito se lee como `Ready` con el PID propio y sin `error`.
+    #[test]
+    fn ready_success_reads_addr_and_pid() {
+        let path = ready_path("success");
+        let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
+        write_ready_file(&path, &addr, "warming");
+        assert_eq!(
+            read_ready_signal(&path),
+            Some(ReadySignal::Ready {
+                addr: "127.0.0.1:8765".to_string(),
+                pid: Some(std::process::id()),
+            })
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Fichero ausente o vacío: aún no hay señal.
+    #[test]
+    fn ready_missing_or_empty_is_none() {
+        let path = ready_path("missing");
+        assert_eq!(read_ready_signal(&path), None);
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(read_ready_signal(&path), None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Una clase desconocida se entrega como `Failed` con la clase en el mensaje.
+    #[test]
+    fn ready_unknown_failure_class_is_failed() {
+        let path = ready_path("unknown_class");
+        std::fs::write(&path, "error=cosa_nueva\n").unwrap();
+        match read_ready_signal(&path) {
+            Some(ReadySignal::Failed(StartupError::Failed { message })) => {
+                assert!(message.contains("cosa_nueva"), "{}", message)
+            }
+            other => panic!("se esperaba Failed, llegó {:?}", other),
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Un mensaje multilínea queda en una sola línea del registro.
+    #[test]
+    fn ready_failure_message_is_flattened() {
+        let path = ready_path("flatten");
+        let err = StartupError::Failed {
+            message: "línea uno\r\nlínea dos\nlínea tres".to_string(),
+        };
+        write_ready_failure(&path, &err);
+        assert_eq!(
+            read_ready_signal(&path),
+            Some(ReadySignal::Failed(StartupError::Failed {
+                message: "línea uno  línea dos línea tres".to_string(),
+            }))
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

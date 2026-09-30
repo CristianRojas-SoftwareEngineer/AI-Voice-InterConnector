@@ -8,7 +8,8 @@ cuándo se da por resuelto.
 ## Convenciones
 
 - **Un defecto por archivo.** El nombre es semántico, en español y en kebab-case, y
-  describe el síntoma (`daemon-start-puerto-ocupado.md`), no un identificador numérico.
+  describe el síntoma (por ejemplo, `daemon-stop-deja-fichero-ready.md`), no un
+  identificador numérico.
 - **Autocontenido.** El documento se entiende sin haber vivido la sesión en que se
   detectó: se copian la salida literal y los comandos exactos, sin remitir a registros
   transitorios.
@@ -109,5 +110,4 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 | Documento | Severidad | Síntoma |
 |---|---|---|
-| [daemon-start-puerto-ocupado.md](daemon-start-puerto-ocupado.md) | Baja | `daemon start` con el puerto ocupado espera 10 s y da un error opaco |
 | [observaciones-menores.md](observaciones-menores.md) | Baja (media en 13 y 17) | Diecisiete defectos menores de mensajes, residuos, ruido de salida, documentación, límites de entrada, contratos entre vías y límites de tamaño o tiempo del daemon con audio largo |

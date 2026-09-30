@@ -437,22 +437,26 @@ async fn voices_clone_daemon_precomputed_true() {
     let _ = VoiceStore::new().remove(&name);
 }
 
-/// Warm-voice configurable (D): `run_daemon_server` con una `--warm-voice`
-/// inexistente aborta fail-fast (Err antes del bind), y una voz existente pasa
-/// la validación de arranque. La rama de aceptación se verifica sobre el mismo
-/// predicado que usa la guarda (`find_reference(...).is_some()`): arrancar el
-/// servidor real con voz válida bloquearía sirviendo, así que no se invoca.
+/// Warm-voice configurable: `run_daemon_server` con una `--warm-voice`
+/// inexistente aborta con `StartupError::WarmVoiceMissing`, porque la voz se
+/// valida antes de enlazar y de cargar modelos (por eso esta prueba no
+/// necesita modelos provisionados), y una voz existente pasa la validación de
+/// arranque. La rama de aceptación se verifica sobre el mismo predicado que
+/// usa la guarda (`find_reference(...).is_some()`): arrancar el servidor real
+/// con voz válida bloquearía sirviendo, así que no se invoca.
 #[tokio::test]
 async fn warm_voice_fail_fast_and_acceptance() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
     // Fail-fast: voz inexistente → Err antes del bind.
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let nonexistent_voice = format!("warm_inexistente_{}", std::process::id());
     let res = avi_daemon::run_daemon_server(addr, nonexistent_voice.clone()).await;
     let err = res.expect_err("una --warm-voice inexistente debe abortar el arranque");
+    assert_eq!(
+        err.downcast_ref::<avi_daemon::StartupError>(),
+        Some(&avi_daemon::StartupError::WarmVoiceMissing {
+            voice: nonexistent_voice.clone()
+        })
+    );
     assert!(
         err.to_string().contains("--warm-voice"),
         "el error fail-fast debe mencionar --warm-voice: {err}"
@@ -472,6 +476,51 @@ async fn warm_voice_fail_fast_and_acceptance() {
         "la voz registrada debe pasar la validación de --warm-voice"
     );
     let _ = store.remove(&name);
+}
+
+/// Puerto ocupado: `run_daemon_server` devuelve `StartupError::PortInUse` con
+/// el puerto pedido en menos de 2 s, porque enlaza antes de cargar los
+/// modelos. No necesita modelos provisionados.
+#[tokio::test]
+async fn port_in_use_fails_before_loading_models() {
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("ocupar un puerto");
+    let busy = holder.local_addr().unwrap();
+    let start = std::time::Instant::now();
+    let err = avi_daemon::run_daemon_server(busy, "default".into())
+        .await
+        .expect_err("un puerto ocupado debe abortar el arranque");
+    assert_eq!(
+        err.downcast_ref::<avi_daemon::StartupError>(),
+        Some(&avi_daemon::StartupError::PortInUse { port: busy.port() })
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "el fallo por puerto ocupado debe ser inmediato: {:?}",
+        start.elapsed()
+    );
+}
+
+/// La supervisión no reintenta un fallo previo a estar listo: con el puerto
+/// ocupado, `run_supervised` con `--auto-restart` devuelve `PortInUse` en
+/// menos de 2 s. Un reintento costaría al menos el primer backoff (500 ms) más
+/// la espera de puerto libre (hasta 5 s).
+#[tokio::test]
+async fn supervised_startup_failure_is_terminal() {
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("ocupar un puerto");
+    let busy = holder.local_addr().unwrap();
+    let start = std::time::Instant::now();
+    let err = avi_daemon::run_supervised(busy, true, 3, "default".into())
+        .await
+        .expect_err("un puerto ocupado debe abortar la supervisión");
+    assert_eq!(
+        err.downcast_ref::<avi_daemon::StartupError>(),
+        Some(&avi_daemon::StartupError::PortInUse { port: busy.port() })
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "la supervisión no debe reintentar un fallo de arranque: {:?}",
+        start.elapsed()
+    );
 }
 
 /// Par de idiomas no soportado vía IPC → 400 con `unsupported_language_pair`.

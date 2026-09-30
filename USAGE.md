@@ -1035,14 +1035,16 @@ ai-voice-interconnector daemon serve --auto-restart --max-retries 3
 ```
 
 **Qué esperar:** `daemon start` verifica que los modelos estén provisionados, lanza el servidor en segundo plano
-con `spawn_background` + PID file `data_dir()/daemon.pid` (incluyendo `resident_pid` plano; esquema conservado, el `addr` efímero en el pidfile queda diferido) + poll `await_daemon_ready` (`10s` deadline, `250ms` poll —sondeo vigente; el evento `avi-daemon-ready` en stderr es el contrato de señal, su consumo por `recv` queda diferido), y confirma con
-`Daemon iniciado correctamente (pid ...)`. Luego `daemon status` muestra estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
+y espera hasta `10s` el resultado de su arranque: listo (el daemon publica su dirección real, que se confirma por `/health`), un fallo con su causa (puerto ocupado, voz inexistente) o la muerte del proceso. Si arranca, escribe el PID file `data_dir()/daemon.pid` (con `resident_pid` y la dirección real) y confirma con
+`Daemon iniciado correctamente (pid ...)`. Si falla, sale con un código que nombra la causa y no deja proceso ni PID file. Luego `daemon status` muestra estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
 
-Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^retries` capado a `4s` y protección por watchdog de supervisión contra bucles de reinicio rápidos; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Sin `--auto-restart`, el daemon es `fail-stop`.
+Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^retries` capado a `4s` y protección por watchdog de supervisión contra bucles de reinicio rápidos; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Tampoco se reintentan los fallos previos a que el daemon esté listo (puerto ocupado, voz inexistente): son de configuración y salen al instante con su código. Sin `--auto-restart`, el daemon es `fail-stop`.
 
-Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque (fail-fast, antes del bind). El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
+Puerto ocupado: si otro proceso usa o reserva el puerto del daemon, `daemon start`, `daemon restart` y `daemon serve` salen al instante con exit 6 (`port_in_use`) y un mensaje que nombra el puerto. Libera el puerto o arranca el daemon en otro con `AVI_DAEMON_PORT=<puerto>` (`0` = puerto efímero).
 
-`daemon stop` responde `Señal de apagado enviada al daemon en <addr>.` (parada unificada de daemon y residente con verificación y borrado de `daemon.pid`) y `daemon restart` orquesta `stop_daemon_and_resident` → arranque fresco con `spawn_background` → poll `running`.
+Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
+
+`daemon stop` responde `Señal de apagado enviada al daemon en <addr>.` (parada unificada de daemon y residente con verificación y borrado de `daemon.pid`) y `daemon restart` hace la misma parada unificada seguida del mismo lanzamiento que `daemon start`, con los mismos códigos de fallo.
 
 ### Uso con daemon
 

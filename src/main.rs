@@ -48,15 +48,18 @@ fn resolve_daemon_addr() -> SocketAddr {
         .parse()
         .expect("la dirección por defecto del daemon debe parsear")
 }
-/// Techo temporal para esperar que el daemon sea alcanzable en `daemon start/restart`.
-/// Dimensionado solo para spawn + bind del proceso (el warmup TTS corre en segundo
-/// plano, ya no bloquea el arranque). Es el timeout diagnóstico de la espera
-/// del evento (fichero ready); el intervalo es la cadencia de lectura del fichero.
-/// El warmup corre en segundo plano, acotado por el arranque del residente más el
-/// presupuesto del testigo; este techo solo cubre bind+publicación (~1-2 s sanos).
+/// Techo de la espera del resultado de arranque en `daemon start/restart`: el
+/// registro de éxito, el de fallo o la muerte del hijo, más la confirmación por
+/// `/health`. Cubre spawn + validación + bind + carga del estado (~1-2 s sanos);
+/// el warmup TTS corre en segundo plano y no cuenta. Vencerlo con el hijo vivo
+/// es un diagnóstico (`daemon_unreachable`), no un flake a reintentar.
 const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-/// Cadencia de lectura del fichero ready (antes intervalo del sondeo).
+/// Cadencia de lectura del fichero ready, de vigilancia del hijo y del sondeo
+/// de `/health`.
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// Deadline para recolectar al hijo tras matar su árbol ante un arranque
+/// fallido.
+const DAEMON_LAUNCH_CLEANUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 /// Deadline breve para la limpieza acotada ante Ctrl+C: mata el árbol
 /// preciso con verificación; vencido, sale igualmente con 130 sin colgarse.
 const CTRL_C_CLEANUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -66,7 +69,8 @@ const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs
 
 /// PID hijo en memoria desde el `spawn`: estrecha la ventana
 /// spawn→write del pidfile. El handler Ctrl+C lo reclama cuando aún no hay
-/// pidfile; se fija en la secuencia `Start` justo tras `spawn_background`.
+/// pidfile; lo fija `launch_daemon` (en `start` y `restart`) justo tras
+/// `spawn_background` y lo pone a 0 al abortar un arranque fallido.
 static IN_MEMORY_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 // CT2 derivado obligatorio de Marian HF en la raíz de modelos vigente, bajo
@@ -646,9 +650,9 @@ enum DaemonCommands {
         /// Voz a precalentar al arranque (fail-fast si no existe)
         #[arg(long, default_value = "default")]
         warm_voice: String,
-        /// Fichero donde el hijo publica su `addr` real tras el bind y su
-        /// estado warm tras el warmup (transporte del evento
-        /// `avi-daemon-ready`; el padre lo consume con espera acotada).
+        /// Fichero donde el hijo publica el resultado de su arranque: su `addr`
+        /// real y su estado warm cuando está listo, o la causa tipada si falla
+        /// antes (el padre lo consume con espera acotada).
         #[arg(long)]
         ready_file: Option<PathBuf>,
     },
@@ -2078,9 +2082,9 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let addr: SocketAddr = resolve_daemon_addr();
             // Transporte flag+fichero: el flag designa el fichero de
             // señalización y viaja intra-proceso por env hasta
-            // `run_daemon_server` (la firma del servidor queda intacta para
-            // no tocar `crates/avi-daemon/tests/golden.rs`, fuera del
-            // alcance). Ruta absoluta: las relativas dependen de la unidad
+            // `run_supervised`/`run_daemon_server`, de modo que la firma del
+            // servidor no depende del transporte de señalización. Ruta
+            // absoluta: las relativas dependen de la unidad
             // del proceso en Windows y los limpiadores de `%TEMP%` pueden
             // barrer ficheros fuera del sandbox.
             if let Some(path) = ready_file.as_ref() {
@@ -2101,10 +2105,15 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // protege al `serve` en foreground).
             #[cfg(windows)]
             install_job_with_tree_kill();
+            // Un fallo previo a estar listo sale con el código de su causa; el
+            // de un servidor que ya servía conserva exit 5 `daemon_error`.
             daemon::run_supervised(addr, auto_restart, max_retries, warm_voice)
                 .await
-                .map_err(|e| {
-                    CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string())
+                .map_err(|e| match e.downcast_ref::<daemon::StartupError>() {
+                    Some(startup) => startup_error_to_cli(startup),
+                    None => {
+                        CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string())
+                    }
                 })
         }
         DaemonCommands::Start {
@@ -2138,59 +2147,14 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                 }
                 ResidualState::Stopped => {}
             }
-            // El hijo publica su `addr` real en el fichero ready de la
-            // instancia (ruta absoluta bajo el `data_dir` vigente); el padre
-            // la espera, la verifica por probe y la persiste en el pidfile.
-            let ready_path = ready_file_path();
-            if let Some(parent) = ready_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "daemon_error",
-                        format!("No se pudo crear el dir del fichero ready: {}", e),
-                    )
-                })?;
-            }
-            // Invalidar la señal previa: el fichero es determinista por
-            // instancia y un contenido rancio se leería como evento válido.
-            let _ = std::fs::remove_file(&ready_path);
-            let pid =
-                daemon::spawn_background(auto_restart, max_retries, &warm_voice, Some(&ready_path))
-                    .map_err(|e| {
-                        CliError::new(
-                            ExitCode::Error,
-                            "daemon_error",
-                            format!("No se pudo lanzar el daemon: {}", e),
-                        )
-                    })?;
-            // Conservar el PID hijo en memoria desde el spawn para que el
-            // handler Ctrl+C lo reclame aunque aún no haya pidfile (ventana
-            // spawn → await → write).
-            IN_MEMORY_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
-            let addr_real = await_ready_file_addr(&ready_path, DAEMON_READY_DEADLINE)
-                .await
-                .map_err(|e| {
-                    CliError::new(
-                        ExitCode::DaemonUnreachable,
-                        "daemon_unreachable",
-                        e.to_string(),
-                    )
-                })?;
-            await_daemon_ready(
+            let (pid, addr_real) = launch_daemon(
                 &client,
-                &addr_real,
-                Some(&ready_path),
+                auto_restart,
+                max_retries,
+                &warm_voice,
                 DAEMON_READY_DEADLINE,
-                DAEMON_POLL_INTERVAL,
             )
-            .await
-            .map_err(|e| {
-                CliError::new(
-                    ExitCode::DaemonUnreachable,
-                    "daemon_unreachable",
-                    e.to_string(),
-                )
-            })?;
+            .await?;
             lifecycle::daemon_stop::write_pid(&effective_data_dir(), pid, &addr_real, 0).map_err(
                 |e| {
                     CliError::new(
@@ -2250,59 +2214,17 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             lifecycle::daemon_stop::stop(&effective_data_dir(), DAEMON_ADDR, &ProductProcesses)
                 .await;
             require_model_provisioned()?;
-            // Igual que `Start`: fichero ready propio de la instancia,
-            // espera de la `addr` real y persistencia en el pidfile.
-            let ready_path = ready_file_path();
-            if let Some(parent) = ready_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "daemon_error",
-                        format!("No se pudo crear el dir del fichero ready: {}", e),
-                    )
-                })?;
-            }
-            // Invalidar la señal previa (ver `Start`): sin esto el
-            // `esperar` leería la `addr` de la instancia detenida.
-            let _ = std::fs::remove_file(&ready_path);
-            let pid =
-                daemon::spawn_background(false, 3, "default", Some(&ready_path)).map_err(|e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "daemon_error",
-                        format!("No se pudo lanzar el daemon: {}", e),
-                    )
-                })?;
             let elapsed = t_total.elapsed();
             let remaining = budget
                 .checked_sub(elapsed)
                 .unwrap_or(std::time::Duration::from_millis(800));
-            // ready acotado al restante del presupuesto global — nunca >10s vigente
+            // Espera del arranque acotada al restante del presupuesto global,
+            // nunca por encima de `DAEMON_READY_DEADLINE`.
             let ready_deadline = std::cmp::min(remaining, DAEMON_READY_DEADLINE);
-            let addr_real = await_ready_file_addr(&ready_path, ready_deadline)
-                .await
-                .map_err(|e| {
-                    CliError::new(
-                        ExitCode::DaemonUnreachable,
-                        "daemon_unreachable",
-                        e.to_string(),
-                    )
-                })?;
-            let ready_res = await_daemon_ready(
-                &client,
-                &addr_real,
-                Some(&ready_path),
-                ready_deadline,
-                DAEMON_POLL_INTERVAL,
-            )
-            .await;
-            ready_res.map_err(|e| {
-                CliError::new(
-                    ExitCode::DaemonUnreachable,
-                    "daemon_unreachable",
-                    e.to_string(),
-                )
-            })?;
+            // Mismo lanzamiento que `Start`, con sus mismos resultados y
+            // códigos de fallo.
+            let (pid, addr_real) =
+                launch_daemon(&client, false, 3, "default", ready_deadline).await?;
             lifecycle::daemon_stop::write_pid(&effective_data_dir(), pid, &addr_real, 0).map_err(
                 |e| {
                     CliError::new(
@@ -2517,8 +2439,12 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
     // limpiar), el `daemon.ready` sobrevive y conserva el PID del árbol
     // efímero. El fallback solo aplica sin pidfile; `pid_alive` gatea después,
     // así que un ready rancio con PID muerto sigue cayendo a `Stopped`.
-    let pid = lifecycle::daemon_stop::read_pid(&effective_data_dir())
-        .or_else(|| read_ready_pid(&ready_file_path()));
+    let pid = lifecycle::daemon_stop::read_pid(&effective_data_dir()).or_else(|| {
+        match daemon::read_ready_signal(&ready_file_path()) {
+            Some(daemon::ReadySignal::Ready { pid, .. }) => pid,
+            _ => None,
+        }
+    });
     // El probe apunta a la dirección descubierta (fallback idéntico sin
     // pidfile; vía nueva solo con pidfile vivo de addr efímera).
     let client_addr = resolve_client_addr();
@@ -3344,6 +3270,19 @@ fn require_model_provisioned() -> Result<(), CliError> {
     Ok(())
 }
 
+/// Traduce un fallo de arranque del daemon a código de salida y `reason`. Es el
+/// único punto de traducción, compartido por `start`, `restart` y `serve`, para
+/// que la misma causa dé el mismo código en los tres: conflicto de puerto (6),
+/// recurso inexistente (3) o error no clasificado (1).
+fn startup_error_to_cli(err: &daemon::StartupError) -> CliError {
+    let (code, reason) = match err {
+        daemon::StartupError::PortInUse { .. } => (ExitCode::StateConflict, "port_in_use"),
+        daemon::StartupError::WarmVoiceMissing { .. } => (ExitCode::NotFound, "voice_not_found"),
+        daemon::StartupError::Failed { .. } => (ExitCode::Error, "daemon_error"),
+    };
+    CliError::new(code, reason, err.to_string())
+}
+
 /// Valida identificadores de voz/etiqueta contra el regex del oráculo
 /// (`^[A-Za-z0-9._-]+$`; paridad con el oráculo) → exit 2.
 fn is_valid_identifier(ids: Option<&str>, more: Option<&str>) -> Result<(), CliError> {
@@ -3388,24 +3327,6 @@ fn resolve_client_addr() -> String {
     lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir())
 }
 
-/// Lee el `pid` publicado en el fichero ready (recuperación de reclamo):
-/// habilita reclamar el árbol de un daemon efímero cuyo pidfile se perdió
-/// (padre caído sin limpiar), única pista de PID cuando `addr` ya no es
-/// descubrible. Tolerante: fichero ausente, ilegible, sin campo o `0` = `None`.
-fn read_ready_pid(path: &std::path::Path) -> Option<u32> {
-    let content = std::fs::read_to_string(path).ok()?;
-    for line in content.lines() {
-        if let Some(v) = line.trim().strip_prefix("pid=") {
-            if let Ok(p) = v.trim().parse::<u32>() {
-                if p != 0 {
-                    return Some(p);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Ruta del fichero ready de esta instancia: absoluta bajo el
 /// `data_dir` vigente, de modo que cada sandbox (`AVI_DATA_DIR`) posee el
 /// suyo sin depender de la unidad del proceso ni de `%TEMP%`.
@@ -3413,71 +3334,134 @@ fn ready_file_path() -> PathBuf {
     store::data_dir().join("daemon.ready")
 }
 
-/// Lee la `addr` del fichero ready de forma tolerante (lado producto):
-/// ausente o a medio escribir = aún-no-listo (`None`), nunca error fatal.
-fn read_ready_addr(path: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    for line in content.lines() {
-        if let Some(v) = line.trim().strip_prefix("addr=") {
-            let v = v.trim();
-            if !v.is_empty() {
-                return Some(v.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Espera async acotada de la `addr` en el fichero ready: poll con
-/// cadencia `DAEMON_POLL_INTERVAL`; al vencer el deadline falla con
-/// diagnóstico del último contenido (timeout = bug, no flake).
-async fn await_ready_file_addr(
-    path: &std::path::Path,
+/// Lanza el daemon en segundo plano y espera el resultado de su arranque. Es la
+/// única secuencia de lanzamiento, compartida por `start` y `restart`, y
+/// termina siempre en uno de tres resultados:
+/// - listo: el hijo publicó su dirección real y `/health` responde → `(pid, addr)`;
+/// - fallo tipado: el hijo publicó un registro de fallo → el código de su causa
+///   (`startup_error_to_cli`);
+/// - muerte: el hijo terminó sin registro → exit 1 `daemon_error` con su estado
+///   de salida.
+///
+/// Un hijo vivo que no publica antes de `deadline`, o que publica y no responde
+/// a `/health`, sale con exit 5 `daemon_unreachable`. Ante cualquier fallo no
+/// deja nada vivo: mata el árbol del hijo si sigue vivo, lo recolecta y borra
+/// `daemon.ready`. No escribe el pidfile: lo hace el llamante con el resultado.
+async fn launch_daemon(
+    client: &reqwest::Client,
+    auto_restart: bool,
+    max_retries: u32,
+    warm_voice: &str,
     deadline: std::time::Duration,
-) -> anyhow::Result<String> {
+) -> Result<(u32, String), CliError> {
     let start = std::time::Instant::now();
-    let mut last = String::new();
-    while start.elapsed() < deadline {
-        if let Some(addr) = read_ready_addr(path) {
-            return Ok(addr);
-        }
-        last = std::fs::read_to_string(path).unwrap_or_default();
-        tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
+    // El hijo publica su registro en el fichero ready de la instancia (ruta
+    // absoluta bajo el `data_dir` vigente).
+    let ready_path = ready_file_path();
+    if let Some(parent) = ready_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "daemon_error",
+                format!("No se pudo crear el dir del fichero ready: {}", e),
+            )
+        })?;
     }
-    anyhow::bail!(
-        "el fichero ready {} no publicó addr válida tras {:?} (último contenido: {:?})",
-        path.display(),
-        deadline,
-        last
-    )
+    // Invalidar la señal previa: el fichero es determinista por instancia y
+    // un contenido rancio se leería como resultado de este arranque.
+    let _ = std::fs::remove_file(&ready_path);
+    let mut child =
+        daemon::spawn_background(auto_restart, max_retries, warm_voice, Some(&ready_path))
+            .map_err(|e| {
+                CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("No se pudo lanzar el daemon: {}", e),
+                )
+            })?;
+    let pid = child.id();
+    // PID hijo en memoria desde el spawn para que el handler Ctrl+C lo
+    // reclame aunque aún no haya pidfile (ventana spawn → espera → write).
+    IN_MEMORY_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
+
+    let addr = loop {
+        match daemon::read_ready_signal(&ready_path) {
+            Some(daemon::ReadySignal::Ready { addr, .. }) => break addr,
+            Some(daemon::ReadySignal::Failed(e)) => {
+                abort_launch(&mut child, &ready_path).await;
+                return Err(startup_error_to_cli(&e));
+            }
+            None => {}
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            // El hijo pudo publicar su fallo justo antes de morir.
+            if let Some(daemon::ReadySignal::Failed(e)) = daemon::read_ready_signal(&ready_path) {
+                abort_launch(&mut child, &ready_path).await;
+                return Err(startup_error_to_cli(&e));
+            }
+            abort_launch(&mut child, &ready_path).await;
+            return Err(CliError::new(
+                ExitCode::Error,
+                "daemon_error",
+                format!("el daemon terminó durante el arranque ({})", status),
+            ));
+        }
+        if start.elapsed() >= deadline {
+            abort_launch(&mut child, &ready_path).await;
+            return Err(CliError::new(
+                ExitCode::DaemonUnreachable,
+                "daemon_unreachable",
+                format!(
+                    "el daemon (pid {}) no publicó su dirección tras {:?}",
+                    pid, deadline
+                ),
+            ));
+        }
+        tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
+    };
+
+    let remaining = deadline.saturating_sub(start.elapsed());
+    if let Err(e) = await_daemon_ready(client, &addr, remaining, DAEMON_POLL_INTERVAL).await {
+        abort_launch(&mut child, &ready_path).await;
+        return Err(CliError::new(
+            ExitCode::DaemonUnreachable,
+            "daemon_unreachable",
+            format!("el daemon publicó {} pero {}", addr, e),
+        ));
+    }
+    Ok((pid, addr))
 }
 
-/// Espera acotada a que el daemon sea alcanzable (`/health` responde) tras el
-/// spawn+bind. Con fichero ready (`Some`) espera el evento (la `addr`
-/// publicada) y luego verifica por probe una sola vez — el timeout es bug a
-/// diagnosticar, no flake a reintentar. Sin fichero (`None`: `serve` manual sin
-/// flag o el unitario hermético) conserva el sondeo clásico como reversión
-/// declarada. Con el warmup en segundo plano, «alcanzable = listo».
+/// Limpieza de un arranque fallido: si el hijo sigue vivo, mata su árbol y lo
+/// recolecta (hasta `DAEMON_LAUNCH_CLEANUP_DEADLINE`); después borra el fichero
+/// ready y olvida el PID en memoria. Mientras el hijo no se recolecta su PID no
+/// puede reutilizarse, así que el kill por PID no alcanza a un proceso ajeno;
+/// si ya había terminado no se mata nada (en el arranque aún no existe el
+/// residente TTS, que solo lanza el warmup posterior a estar listo).
+async fn abort_launch(child: &mut std::process::Child, ready_path: &std::path::Path) {
+    if let Ok(None) = child.try_wait() {
+        daemon::kill_tree_by_pid(child.id());
+        let start = std::time::Instant::now();
+        while start.elapsed() < DAEMON_LAUNCH_CLEANUP_DEADLINE {
+            if !matches!(child.try_wait(), Ok(None)) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+    let _ = std::fs::remove_file(ready_path);
+    IN_MEMORY_PID.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Sondeo acotado de `/health` tras la publicación de la dirección: con el
+/// warmup en segundo plano, «alcanzable = listo». Agota `deadline` por reloj
+/// de pared con cadencia `interval`.
 async fn await_daemon_ready(
     client: &reqwest::Client,
     addr: &str,
-    ready: Option<&std::path::Path>,
     deadline: std::time::Duration,
     interval: std::time::Duration,
 ) -> anyhow::Result<()> {
-    if let Some(path) = ready {
-        // Vía evento: la `addr` publicada manda (debe coincidir con `addr`;
-        // si difiere se diagnostica pero se verifica la publicada).
-        let published = await_ready_file_addr(path, deadline).await?;
-        let target = if published == addr { addr } else { &published };
-        if probe_health(client, target).await {
-            return Ok(());
-        }
-        anyhow::bail!(
-            "el daemon publicó {} pero /health no responde tras el evento",
-            published
-        );
-    }
     let start = std::time::Instant::now();
     while start.elapsed() < deadline {
         if probe_health(client, addr).await {
@@ -4554,8 +4538,7 @@ mod tests {
         let deadline = std::time::Duration::from_millis(800);
         let interval = std::time::Duration::from_millis(100);
         let start = std::time::Instant::now();
-        // Sin fichero: ejercita el sondeo clásico (reversión declarada).
-        let res = await_daemon_ready(&daemon_client(), &addr, None, deadline, interval).await;
+        let res = await_daemon_ready(&daemon_client(), &addr, deadline, interval).await;
         let elapsed = start.elapsed();
 
         assert!(res.is_err(), "esperado Err contra puerto cerrado");
@@ -4570,6 +4553,31 @@ mod tests {
             "no debe exceder holgadamente el deadline: elapsed={:?}",
             elapsed
         );
+    }
+
+    /// Cada clase de fallo de arranque sale con su código y `reason`, y el
+    /// mensaje de puerto ocupado nombra el puerto y `AVI_DAEMON_PORT`.
+    #[test]
+    fn startup_error_to_cli_maps_each_class() {
+        let port = startup_error_to_cli(&daemon::StartupError::PortInUse { port: 8765 });
+        assert_eq!(port.code, ExitCode::StateConflict);
+        assert_eq!(port.reason, "port_in_use");
+        assert!(port.message.contains("8765"), "{}", port.message);
+        assert!(port.message.contains("AVI_DAEMON_PORT"), "{}", port.message);
+
+        let voice = startup_error_to_cli(&daemon::StartupError::WarmVoiceMissing {
+            voice: "nadie".to_string(),
+        });
+        assert_eq!(voice.code, ExitCode::NotFound);
+        assert_eq!(voice.reason, "voice_not_found");
+        assert!(voice.message.contains("nadie"), "{}", voice.message);
+
+        let failed = startup_error_to_cli(&daemon::StartupError::Failed {
+            message: "motor caído".to_string(),
+        });
+        assert_eq!(failed.code, ExitCode::Error);
+        assert_eq!(failed.reason, "daemon_error");
+        assert_eq!(failed.message, "motor caído");
     }
 
     /// `status_body` mapea los tres casos del contrato de `daemon status`:
