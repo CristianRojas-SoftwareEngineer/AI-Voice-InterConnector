@@ -2591,8 +2591,11 @@ mod tests {
     #[cfg(feature = "native-stt")]
     #[tokio::test]
     async fn transcribe_handler_bad_base64_is_400_invalid_audio() {
-        let (status, bytes) =
-            post_json("/transcribe", json!({ "audio_b64": "%%% no es base64 %%%" })).await;
+        let (status, bytes) = post_json(
+            "/transcribe",
+            json!({ "audio_b64": "%%% no es base64 %%%" }),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["reason"], "invalid_audio");
@@ -2670,7 +2673,10 @@ mod tests {
                 );
             }
         }
-        assert!(found > 0, "la búsqueda de literales no encontró ningún reason");
+        assert!(
+            found > 0,
+            "la búsqueda de literales no encontró ningún reason"
+        );
     }
 
     /// Ruta de fichero ready en un directorio temporal propio de cada prueba.

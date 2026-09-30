@@ -2700,7 +2700,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 }
             }
             match partial {
-                Some(failure) => Ok(Outcome::Verdict(ExitCode::from_reason(failure.reason).code())),
+                Some(failure) => Ok(Outcome::Verdict(
+                    ExitCode::from_reason(failure.reason).code(),
+                )),
                 None => Ok(Outcome::Done),
             }
         }
@@ -2770,7 +2772,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     if !json_mode {
                         eprintln!("{}", failure.message);
                     }
-                    Ok(Outcome::Verdict(ExitCode::from_reason(failure.reason).code()))
+                    Ok(Outcome::Verdict(
+                        ExitCode::from_reason(failure.reason).code(),
+                    ))
                 }
                 None => Ok(Outcome::Done),
             }
@@ -3026,7 +3030,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 }
             }
             if partial {
-                Ok(Outcome::Verdict(ExitCode::from_reason("setup_failed").code()))
+                Ok(Outcome::Verdict(
+                    ExitCode::from_reason("setup_failed").code(),
+                ))
             } else {
                 Ok(Outcome::Done)
             }
@@ -4521,10 +4527,9 @@ mod tests {
                 line
             );
         }
-        let e = process_stream_line(
-            r#"{"event":"error","reason":"voice_exists","message":"existe"}"#,
-        )
-        .expect_err("error debe fallar");
+        let e =
+            process_stream_line(r#"{"event":"error","reason":"voice_exists","message":"existe"}"#)
+                .expect_err("error debe fallar");
         assert_eq!(e.code, ExitCode::StateConflict);
         assert_eq!(e.reason, "voice_exists");
         assert!(
