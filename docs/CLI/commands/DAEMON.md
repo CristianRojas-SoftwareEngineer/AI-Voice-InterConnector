@@ -94,8 +94,7 @@ Los fallos del arranque se traducen a código en un único punto, compartido por
 | `model_missing` | 4 | No hay modelo TTS provisionado | `start`, `restart` |
 | `port_in_use` | 6 | El puerto del daemon está en uso o reservado por otro proceso. Remedio: liberar el puerto o arrancar en otro con `AVI_DAEMON_PORT=<puerto>` (`0` = puerto efímero) | `start`, `restart`, `serve` |
 | `voice_not_found` | 3 | La voz de `--warm-voice` no existe | `start`, `serve` |
-| `daemon_error` | 1 | Fallo al lanzar el hijo, muerte del hijo durante el arranque (el mensaje incluye su estado de salida) o fallo no clasificado previo a estar listo | `start`, `restart`, `serve` |
-| `daemon_error` | 5 | Fallo del servidor ya en marcha | `serve` |
+| `daemon_error` | 1 | Fallo al lanzar el hijo, muerte del hijo durante el arranque (el mensaje incluye su estado de salida), fallo no clasificado previo a estar listo o fallo del servidor ya en marcha | `start`, `restart`, `serve` |
 | `daemon_unreachable` | 5 | El hijo sigue vivo sin publicar su dirección al vencer el deadline, `/health` no responde tras publicarla, o el árbol sigue vivo tras la parada | `start`, `restart`, `stop` |
 
 Tras un fallo de `start` o `restart` no quedan proceso hijo, `daemon.pid` ni `daemon.ready`.
