@@ -37,7 +37,8 @@ use crate::daemon_stop::{self, ProcessControl};
 use crate::receipt::InstallReceipt;
 use crate::recovery::{self, Roots as RecoveryRoots, SweepPreview};
 use crate::LifecycleError;
-use std::collections::BTreeMap;
+use same_file::Handle;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Categoría a la que pertenece un destino, para el mensaje humano y para
@@ -411,7 +412,9 @@ fn push(collected: &mut Vec<Target>, path: PathBuf, category: Category) {
 }
 
 /// Tamaño total de `path`, recursivo si es un directorio. Best-effort: un archivo que
-/// no se puede abrir no detiene el plan.
+/// no se puede abrir no detiene el plan. Un mismo archivo con varios enlaces duros
+/// dentro del árbol (los blobs y snapshots de la caché de modelos en Windows) cuenta
+/// una sola vez; los enlaces simbólicos no se siguen y cuentan por su propia longitud.
 pub fn path_size(path: &Path) -> u64 {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -424,6 +427,7 @@ pub fn path_size(path: &Path) -> u64 {
         return 0;
     }
     let mut total = 0;
+    let mut seen = HashSet::new();
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
@@ -433,6 +437,17 @@ pub fn path_size(path: &Path) -> u64 {
         for entry in entries.flatten() {
             match entry.metadata() {
                 Ok(meta) if meta.is_dir() => stack.push(entry.path()),
+                Ok(meta) if meta.is_file() => {
+                    // Si no se puede abrir para identificarlo, se cuenta igualmente:
+                    // sobrestimar un archivo es mejor que omitirlo del plan.
+                    let first_time = match Handle::from_path(entry.path()) {
+                        Ok(handle) => seen.insert(handle),
+                        Err(_) => true,
+                    };
+                    if first_time {
+                        total += meta.len();
+                    }
+                }
                 Ok(meta) => total += meta.len(),
                 Err(_) => {}
             }
@@ -744,5 +759,28 @@ fn daemon_addr() -> String {
     match std::env::var("AVI_DAEMON_PORT") {
         Ok(port) if port == "0" => "127.0.0.1:0".to_string(),
         _ => addr.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod path_size_tests {
+    use super::*;
+    use crate::test_support::{scratch, write_file};
+
+    #[test]
+    fn hard_linked_file_is_counted_once() {
+        let root = scratch("path-size-hardlink");
+        write_file(&root.join("blobs/abc"), "0123456789");
+        std::fs::create_dir_all(root.join("snapshots/rev")).expect("se crea el snapshot");
+        std::fs::hard_link(root.join("blobs/abc"), root.join("snapshots/rev/model.bin"))
+            .expect("se crea el enlace duro");
+        write_file(&root.join("other.txt"), "12345");
+
+        assert_eq!(
+            path_size(&root),
+            15,
+            "el blob y su enlace duro suman una vez, más el archivo independiente"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
