@@ -35,7 +35,7 @@
     },
     "C1": {
       "status": "in_progress",
-      "phase": "verification",
+      "phase": "result_gate",
       "gates": [
         { "gate": "plan", "verdict": "approved", "date": "2026-09-30", "notes": "P1 a P4, todas A" },
         { "gate": "tests", "verdict": "approved", "date": "2026-09-30", "notes": "15 pruebas en rojo por aserción" },
@@ -52,7 +52,7 @@
         { "id": "C1.8", "status": "done", "attempts": 1, "files": ["docs/CLI/CONTRACT.md", "docs/CLI/commands/SPEECH.md", "docs/CLI/commands/VOICE.md", "docs/CLI/commands/DAEMON.md", "docs/DAEMON-MODE.md", "CHANGELOG.md", "docs/issues/README.md", "docs/issues/daemon-rechaza-o-corta-audios-largos.md", "docs/issues/mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md"] }
       ],
       "foreign_changes": [],
-      "commits": ["28de66f", "c01e026", "9bd7117", "259889a", "ec2d9c3", "f96d711", "110e685"]
+      "commits": ["28de66f", "c01e026", "9bd7117", "259889a", "ec2d9c3", "f96d711", "110e685", "dfd461b", "5215e38"]
     },
     "C2": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C3": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
