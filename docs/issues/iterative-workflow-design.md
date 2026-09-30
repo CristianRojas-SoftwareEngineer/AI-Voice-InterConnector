@@ -789,24 +789,40 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Causa raíz:** no hay un único sitio que traduzca las causas de error a `reason` y a
   código de salida.
 - **Síntomas:** S4, S5, S11 y S12.
-- **Decisiones:** D4, D5 y D13 (la subida del protocolo del daemon).
+- **Decisiones:** D4, D5 y D13 (la subida del protocolo del daemon), resueltas en G0.
+  En el G-Plan (2026-09-30), todas A:
+  - P1: `/transcribe` señala sus errores con un estado HTTP de error, no con 200 y
+    `status: "error"`.
+  - P2: el daemon renombra `audio_decode_error` a `invalid_audio` y `audio_missing` a
+    `usage_error`.
+  - P3: `avi-lifecycle` depende de `avi-core` y usa la tabla única; se retira el código
+    propio de `LifecycleError`.
+  - P4: `DAEMON-MODE.md` deja de describir un handshake de `schema_version` que el
+    cliente no hace.
 - **Tareas:**
-  1. Tabla única de `reason` a código de salida y lectura del `reason` en cualquier
-     respuesta de error del daemon (D4).
+  1. Tabla única de `reason` a código de salida en `avi-core`, que sustituye a
+     `exit_code_for`, a las copias de los clientes y al código de `LifecycleError`; todos
+     los clientes de la vía daemon, incluidas la síntesis y la transcripción, leen el
+     `reason` de cualquier respuesta de error; un `reason` desconocido sale con 1 (D4,
+     P3).
   2. La síntesis por daemon sale con el código del contrato (S4).
   3. `--daemon` en los comandos solo locales (D5).
   4. Un solo prefijo `Error:` (S11).
-  5. `text_length` en caracteres y protocolo del daemon en la versión 4 (S12, D13).
+  5. `text_length` en caracteres y protocolo del daemon en la versión 4, con los errores
+     de `/transcribe` por estado HTTP y sus `reason` del contrato (S12, D13, P1, P2).
 - **Pruebas en rojo:**
   - la tabla cubre todos los `reason` del contrato, y el código explícito de la vía
     directa coincide con ella en los compartidos;
   - la síntesis por daemon sin modelo sale con 4 y `model_missing`;
+  - una respuesta 500 de `/transcribe` con `transcription_failed` sale con 10;
+  - `/transcribe` responde 400 con `usage_error` si falta el audio y 400 con
+    `invalid_audio` si el base64 no es válido;
   - `--daemon` en `voice list`, `voice remove`, `speech list`, `speech play` y
     `speech remove` sale con exit 2 y `daemon_not_supported`;
   - golden de `--temperature` fuera de rango, con un solo prefijo;
   - el `text_length` de «canción» es 7.
 - **Documentación:** el contrato, `speech`, `voice` y la descripción del protocolo del
-  daemon.
+  daemon (`DAEMON-MODE.md`, incluido el handshake de P4).
 - **Cierra:** `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md`.
 
 ### C2 · Límites de la vía daemon

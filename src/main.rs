@@ -3910,6 +3910,26 @@ async fn consume_ndjson_stream(
     }
 }
 
+async fn daemon_error_from_response(resp: reqwest::Response) -> CliError {
+    CliError::new(
+        ExitCode::Error,
+        "daemon_error",
+        format!("El daemon devolvió {}", resp.status()),
+    )
+}
+
+fn stream_error_event(ev: &Value) -> CliError {
+    let reason = ev
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("daemon_error");
+    let msg = ev
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("error del daemon");
+    CliError::new(ExitCode::Error, reason, msg.to_string())
+}
+
 /// Procesa una línea del stream: `result` → `Some(evento)`, `error` → `Err`
 /// mapeado, resto (`started`/latidos/desconocidos) → `Some` nada (`Ok(None)`).
 fn process_stream_line(
@@ -4703,6 +4723,81 @@ mod tests {
             }
         });
         addr
+    }
+
+    /// Sirve una única respuesta HTTP con el estado y el cuerpo JSON elegidos, para
+    /// obtener un `reqwest::Response` de error sin daemon (doble determinista).
+    async fn serve_status_json(status: u16, body: Value) -> reqwest::Response {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind efímero");
+        let addr = listener.local_addr().expect("addr").to_string();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = vec![0u8; 8192];
+            let mut read = 0;
+            loop {
+                let n = sock.read(&mut buf[read..]).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                read += n;
+                if buf[..read].windows(4).any(|w| w == b"\r\n\r\n") || read >= buf.len() {
+                    break;
+                }
+            }
+            let body = body.to_string();
+            let response = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(response.as_bytes()).await;
+        });
+        reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("respuesta del doble")
+    }
+
+    /// Un 500 de `/transcribe` con `transcription_failed` sale con 10 y conserva el
+    /// `reason` del cuerpo.
+    #[tokio::test]
+    async fn daemon_error_from_response_maps_transcription_failed() {
+        let resp = serve_status_json(
+            500,
+            json!({ "status": "error", "reason": "transcription_failed", "message": "fallo" }),
+        )
+        .await;
+        let err = daemon_error_from_response(resp).await;
+        assert_eq!(err.code.code(), 10);
+        assert_eq!(err.reason, "transcription_failed");
+    }
+
+    /// Un 404 con `model_missing` sale con 4, sin importar el estado HTTP.
+    #[tokio::test]
+    async fn daemon_error_from_response_maps_model_missing() {
+        let resp = serve_status_json(
+            404,
+            json!({ "error": "model_missing", "reason": "model_missing", "message": "falta" }),
+        )
+        .await;
+        let err = daemon_error_from_response(resp).await;
+        assert_eq!(err.code.code(), 4);
+        assert_eq!(err.reason, "model_missing");
+    }
+
+    /// Un evento `error` del stream de síntesis con `model_missing` sale con 4.
+    #[test]
+    fn stream_error_event_maps_model_missing() {
+        let err = stream_error_event(
+            &json!({ "event": "error", "reason": "model_missing", "message": "falta" }),
+        );
+        assert_eq!(err.code.code(), 4);
+        assert_eq!(err.reason, "model_missing");
     }
 
     /// El consumo entrega el evento final tras la secuencia

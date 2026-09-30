@@ -4085,6 +4085,43 @@ fn speech_invalid_temperature_exits_2() {
         let code = output.status.code().expect("el proceso debe terminar");
         assert_eq!(code, 2, "temperatura inválida debe salir 2: {:?}", args);
     }
+    // Sin `--json`, el mensaje humano va a stderr y `main` le pone el único prefijo.
+    let output = Command::new(BIN)
+        .args(["speech", "say", "--text", "Hola", "--temperature", "0"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("el binario debe ejecutarse");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches("Error:").count(),
+        1,
+        "el prefijo `Error:` debe aparecer una sola vez: {}",
+        stderr
+    );
+}
+
+/// `--daemon` en un comando que siempre se ejecuta en local es un error de
+/// invocación: exit 2 con `daemon_not_supported`, sin culpar al daemon.
+#[test]
+fn daemon_flag_on_local_commands_exits_2() {
+    for args in [
+        vec!["voice", "list"],
+        vec!["voice", "remove", "--name", "voz-inexistente"],
+        vec!["speech", "list"],
+        vec!["speech", "play", "--label", "etiqueta-inexistente"],
+        vec!["speech", "remove", "--label", "etiqueta-inexistente"],
+    ] {
+        let mut full = vec!["--json", "--daemon"];
+        full.extend(args.iter().copied());
+        let (code, actual) = run_json(&full);
+        assert_eq!(code, 2, "--daemon en {:?} debe salir 2", args);
+        assert_eq!(
+            actual["reason"], "daemon_not_supported",
+            "--daemon en {:?} debe dar daemon_not_supported",
+            args
+        );
+    }
 }
 
 /// `dub` sin `--source-language`: el parser lo exige → exit 2.

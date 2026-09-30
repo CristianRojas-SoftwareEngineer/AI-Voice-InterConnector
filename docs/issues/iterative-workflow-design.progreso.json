@@ -33,7 +33,21 @@
       "foreign_changes": [],
       "commits": []
     },
-    "C1": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C1": {
+      "status": "in_progress",
+      "phase": "implementation",
+      "gates": [
+        { "gate": "plan", "verdict": "approved", "date": "2026-09-30", "notes": "P1 a P4, todas A" },
+        { "gate": "tests", "verdict": "approved", "date": "2026-09-30", "notes": "15 pruebas en rojo por aserción" },
+        { "gate": "deviation", "verdict": "approved", "date": "2026-09-30", "notes": "daemon_error tenía dos códigos: daemon serve pasa de exit 5 a 1, alineado con la tabla" }
+      ],
+      "tasks": [
+        { "id": "C1.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
+        { "id": "C1.2", "status": "done", "attempts": 1, "files": ["crates/avi-core/src/exit_codes.rs", "crates/avi-core/src/lib.rs", "src/main.rs", "crates/avi-daemon/src/lib.rs", "tests/cli_golden.rs"] }
+      ],
+      "foreign_changes": [],
+      "commits": []
+    },
     "C2": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C3": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C4": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },

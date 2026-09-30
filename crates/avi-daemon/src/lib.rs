@@ -2560,6 +2560,121 @@ mod tests {
         assert_eq!(v["reason"], "audio_too_long");
     }
 
+    /// Envía un POST JSON al router y devuelve el estado y el cuerpo completo.
+    async fn post_json(uri: &str, body: Value) -> (StatusCode, Vec<u8>) {
+        use axum::body::Body;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let app = build_router_with_state(state);
+        let req = axum::http::Request::builder()
+            .uri(uri)
+            .method(axum::http::Method::POST)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, bytes.to_vec())
+    }
+
+    /// `/transcribe` sin `audio_b64` es un error de invocación: 400 con `usage_error`.
+    #[cfg(feature = "native-stt")]
+    #[tokio::test]
+    async fn transcribe_handler_missing_audio_is_400_usage_error() {
+        let (status, bytes) = post_json("/transcribe", json!({ "source_language": "es" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["reason"], "usage_error");
+    }
+
+    /// `/transcribe` con un base64 inválido es audio ilegible: 400 con `invalid_audio`.
+    #[cfg(feature = "native-stt")]
+    #[tokio::test]
+    async fn transcribe_handler_bad_base64_is_400_invalid_audio() {
+        let (status, bytes) =
+            post_json("/transcribe", json!({ "audio_b64": "%%% no es base64 %%%" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["reason"], "invalid_audio");
+    }
+
+    /// El evento `start` de `/synthesize` mide `text_length` en caracteres: «canción»
+    /// tiene 7 caracteres y 8 bytes. La temperatura fuera de rango cierra el stream
+    /// sin llegar al motor.
+    #[tokio::test]
+    async fn synthesize_start_event_counts_chars() {
+        let (_, bytes) = post_json(
+            "/synthesize",
+            json!({ "text": "canción", "voice": "default", "temperature": 5.0 }),
+        )
+        .await;
+        let body = String::from_utf8_lossy(&bytes);
+        let start: Value = body
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|ev| ev["event"] == "start")
+            .expect("el stream emite el evento start");
+        assert_eq!(start["text_length"], 7);
+    }
+
+    /// Ningún mensaje del daemon lleva el prefijo que el cliente ya añade al
+    /// imprimirlo: se revisa cada literal `"message"` del código fuente.
+    #[test]
+    fn no_message_literal_starts_with_error_prefix() {
+        let prefix = format!("{}:", "Error");
+        for line in include_str!("lib.rs").lines() {
+            let Some((_, rest)) = line.split_once("\"message\":") else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let rest = rest.strip_prefix("format!(").unwrap_or(rest);
+            assert!(
+                !rest.starts_with(&format!("\"{prefix}")),
+                "mensaje con prefijo duplicado: {line}"
+            );
+        }
+    }
+
+    /// Cada `reason` literal que emite el daemon (en `reason` o en su espejo `error`)
+    /// está en la tabla única de códigos de salida: o la tabla le asigna un código
+    /// propio, o es uno de los que el contrato deja en el 1 genérico.
+    #[test]
+    fn every_daemon_reason_is_in_exit_code_table() {
+        const GENERIC: &[&str] = &[
+            "io_error",
+            "synthesis_failed",
+            "synthesis_timeout",
+            "stt_unsupported",
+            "translation_unsupported",
+            "voice_clone_failed",
+            "daemon_error",
+        ];
+        let source = include_str!("lib.rs");
+        let mut found = 0;
+        for key in ["\"reason\": \"", "\"error\": \""] {
+            for (i, _) in source.match_indices(key) {
+                let rest = &source[i + key.len()..];
+                let reason: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                    .collect();
+                if reason.is_empty() || !rest[reason.len()..].starts_with('"') {
+                    continue;
+                }
+                found += 1;
+                assert!(
+                    avi_core::exit_codes::ExitCode::from_reason(&reason)
+                        != avi_core::exit_codes::ExitCode::Error
+                        || GENERIC.contains(&reason.as_str()),
+                    "el reason {reason} que emite el daemon no está en la tabla"
+                );
+            }
+        }
+        assert!(found > 0, "la búsqueda de literales no encontró ningún reason");
+    }
+
     /// Ruta de fichero ready en un directorio temporal propio de cada prueba.
     fn ready_path(test: &str) -> std::path::PathBuf {
         let dir =
