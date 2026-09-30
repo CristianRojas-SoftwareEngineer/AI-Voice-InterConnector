@@ -212,18 +212,27 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S12 | El evento `start` mide `text_length` en bytes, no en caracteres | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja | C1 |
 | S13 | El dub por composición (daemon sin `/dub`) corta la transcripción a los 1500 ms | `daemon-rechaza-o-corta-audios-largos.md` | Baja | C2 |
 | S14 | Una referencia de clonado de más de unos 1,5 MB se rechaza con 413 por la vía daemon (por reproducir) | `daemon-rechaza-o-corta-audios-largos.md` | Media | C2 |
+| S15 | Un 404 de `/dub` con `reason` propio (`voice_not_found`, `model_missing`) no se traduce con la tabla: el cliente lo toma por un daemon sin `/dub` | Revisión de C1 | Baja | C2 |
+| S16 | El contrato promete exit 5 cuando el daemon no tiene `/transcribe`; el cliente sale con 1 y no indica reiniciar el daemon | Revisión de C1 | Baja | C2 |
+| S17 | `sudo_not_supported` se emite, pero no está en el contrato ni en el oráculo de la tabla | Revisión de C1 | Baja | C1 |
+| S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C6 |
+| S19 | `/synthesize` responde `model_missing` a una temperatura fuera de rango si falta el modelo de síntesis | Revisión de C1 | Baja | C1 |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
+
+S15 a S19 los detectó el revisor de C1 y no tienen informe propio: se asignan al ciclo
+que ya trata su causa raíz. S17 y S19 se corrigieron dentro de C1; S18 espera a C6
+porque la subida del sobre a `"5"` edita esas mismas líneas.
 
 ## 8. Orden de los ciclos y dependencias
 
 ```text
 C0 Preparación y decisiones ──G0──►
-  C1 Contrato de errores (S4 S5 S11 S12)
+  C1 Contrato de errores (S4 S5 S11 S12 S17 S19)
     │  C2 usa la tabla única de reason→exit y la lectura del reason en los errores del daemon
     ▼
-  C2 Límites de la vía daemon (S1 S13 S14)
+  C2 Límites de la vía daemon (S1 S13 S14 S15 S16)
     │
     ▼
   C3 Observabilidad (S3 S10)
@@ -235,7 +244,7 @@ C0 Preparación y decisiones ──G0──►
   C5 Artefactos de self update (S6)
     │
     ▼
-  C6 JSON veraz y temporales (S7 S8)
+  C6 JSON veraz y temporales (S7 S8 S18)
 
 G-Release: una sola vez, tras cerrar e integrar C6
 ```
@@ -352,6 +361,19 @@ reiniciar el daemon lo resuelve siempre. Si en el futuro se añade una comprobac
 versión al conectar, será el momento de un `reason` propio.
 
 **Decisión:** A con A1 (2026-09-30).
+
+**Ampliación (2026-09-30, G-Resultado de C1; S15 y S16).** La regla vale para cualquier
+ruta, no solo para `/dub`, y distingue dos clases de 404:
+
+- Un 404 **sin** `reason` en el cuerpo significa que la ruta no existe, es decir, un
+  daemon de una versión anterior: sale `daemon_error` (exit 1) con un mensaje que indica
+  reiniciar el daemon.
+- Un 404 **con** `reason` (`voice_not_found`, `model_missing`) es un error legítimo de
+  la ruta y se traduce con la tabla única (3 y 4).
+
+La regla vive en un solo sitio, la lectura común de las respuestas de error del daemon,
+y el contrato deja de prometer exit 5 para `transcribe` y `dub` ante un daemon sin la
+ruta.
 
 ### D4 · Traducción única de `reason` a código de salida (S4, y base de C2) — C1
 
@@ -788,7 +810,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 
 - **Causa raíz:** no hay un único sitio que traduzca las causas de error a `reason` y a
   código de salida.
-- **Síntomas:** S4, S5, S11 y S12.
+- **Síntomas:** S4, S5, S11 y S12; S17 y S19, añadidos en G-Resultado.
 - **Decisiones:** D4, D5 y D13 (la subida del protocolo del daemon), resueltas en G0.
   En el G-Plan (2026-09-30), todas A:
   - P1: `/transcribe` señala sus errores con un estado HTTP de error, no con 200 y
@@ -810,6 +832,10 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   4. Un solo prefijo `Error:` (S11).
   5. `text_length` en caracteres y protocolo del daemon en la versión 4, con los errores
      de `/transcribe` por estado HTTP y sus `reason` del contrato (S12, D13, P1, P2).
+  6. Ajustes de G-Resultado (2026-09-30, veredicto «ajustar»):
+     `sudo_not_supported` se declara con exit 1 en el oráculo, el contrato y las guías
+     de `self` y `cleanup` (S17), y `/synthesize` valida la temperatura antes de
+     comprobar el modelo (S19).
 - **Pruebas en rojo:**
   - la tabla cubre todos los `reason` del contrato, y el código explícito de la vía
     directa coincide con ella en los compartidos;
@@ -820,7 +846,9 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   - `--daemon` en `voice list`, `voice remove`, `speech list`, `speech play` y
     `speech remove` sale con exit 2 y `daemon_not_supported`;
   - golden de `--temperature` fuera de rango, con un solo prefijo;
-  - el `text_length` de «canción» es 7.
+  - el `text_length` de «canción» es 7;
+  - `/synthesize` con una temperatura fuera de rango responde `usage_error` aunque
+    falte el modelo de síntesis.
 - **Documentación:** el contrato, `speech`, `voice` y la descripción del protocolo del
   daemon (`DAEMON-MODE.md`, incluido el handshake de P4).
 - **Cierra:** `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md`.
@@ -830,20 +858,25 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Causa raíz:** la vía daemon tiene límites de transporte ajenos a los del producto y
   un camino de compatibilidad con su propio límite de tiempo.
 - **Depende de:** C1.
-- **Síntomas:** S1, S13 y S14.
-- **Decisiones:** D1, D2 y D3.
+- **Síntomas:** S1, S13, S14, S15 y S16.
+- **Decisiones:** D1, D2 y D3, con su ampliación a cualquier ruta.
 - **Tareas:**
   1. Tope de transcripción y límite de cuerpo derivado de él (D1).
   2. Reproducción de S14 y tope de la referencia del clonado (D2).
-  3. Eliminar el dub por composición (D3).
+  3. Eliminar el dub por composición y aplicar la regla del 404 a todas las rutas en
+     la lectura común de los errores del daemon: sin `reason`, daemon desfasado; con
+     `reason`, la tabla (D3, S15, S16).
 - **Pruebas en rojo:**
   - la ruta de transcripción acepta un cuerpo de más de 2 MB y por debajo del tope;
   - un audio por encima del tope se rechaza con `audio_too_long` y exit 2 en las dos
     vías;
   - una referencia de clonado mayor que 1,5 MB y dentro del tope se acepta por daemon;
-  - un 404 en `/dub` produce el error decidido.
-- **Documentación:** el contrato, `speech`, `voice` y la descripción del protocolo del
-  daemon.
+  - un 404 sin `reason` en `/dub` o en `/transcribe` sale con `daemon_error`, exit 1 y
+    un mensaje que indica reiniciar el daemon;
+  - un 404 de `/dub` con `voice_not_found` sale con 3, y con `model_missing`, con 4.
+- **Documentación:** el contrato (incluidas las secciones de `transcribe` y `dub`, que
+  dejan de prometer exit 5 ante un daemon sin la ruta), `speech`, `voice` y la
+  descripción del protocolo del daemon.
 - **Cierra:** `daemon-rechaza-o-corta-audios-largos.md`.
 
 ### C3 · Observabilidad
@@ -934,7 +967,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 
 - **Causa raíz:** algunos sobres JSON describen lo que se pidió o lo que habría pasado,
   no lo que pasó, y quien crea un fichero temporal no siempre lo borra.
-- **Síntomas:** S7 y S8.
+- **Síntomas:** S7, S8 y S18.
 - **Decisiones:** D6, D7, D8 y D13 (la subida del sobre de la CLI), resueltas en G0.
 - **Tareas:**
   1. `daemon stop` sin daemon responde `status: "not_running"` y «El daemon no estaba
@@ -947,7 +980,9 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   4. Retirar `dry_run` de los sobres de `self uninstall` y `cleanup` (D7.3).
   5. Un guardián único del WAV temporal en `say` y `dub`, por todas sus vías; se retira
      `audio_path` del JSON y la ruta del texto humano (D8.1, D8.2).
-  6. Sobre de la CLI en la versión 5 (D13).
+  6. Sobre de la CLI en la versión 5 (D13), también en las guías que aún lo declaran en
+     `"3"`: `DEVICES.md`, `TRANSLATE.md`, `VOICE.md` y el `status` de `DAEMON.md`
+     (S18).
 - **Pruebas en rojo:**
   - golden de `daemon stop` sin daemon, con `not_running` y exit 0;
   - golden de `self uninstall --dry-run` y de `cleanup --dry-run`, con `planned`, sin
@@ -959,7 +994,8 @@ aprobar. Las pruebas que se enumeran son las mínimas.
     contiene `audio_path`;
   - el sobre de la CLI declara `schema_version` 5.
 - **Documentación:** el contrato (valores de `status`, claves retiradas y versión 5 del
-  sobre), `speech`, `daemon`, `self`, `cleanup` y la entrada del CHANGELOG.
+  sobre), `speech`, `daemon`, `self`, `cleanup`, `devices`, `translate`, `voice` y la
+  entrada del CHANGELOG.
 - **Cierra:** `status-json-afirma-operaciones-no-realizadas.md` y
   `residuos-en-disco-tras-comandos-correctos.md`, que para entonces se queda sin fichas.
 - **Cierre de la iteración:** el agente propone eliminar este documento y su registro
