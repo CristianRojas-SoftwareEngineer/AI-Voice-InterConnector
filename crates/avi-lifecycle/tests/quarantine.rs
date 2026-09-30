@@ -1170,6 +1170,10 @@ impl Sandbox {
             shell: avi_lifecycle::path_unix::Shell::from_env(Some(Self::shell())),
             zdotdir: None,
             registry_subkey: String::new(),
+            #[cfg(windows)]
+            registry_path: None,
+            #[cfg(unix)]
+            link_state: avi_lifecycle::path_unix::Existing::Absent,
             daemon_addr: "127.0.0.1:1".to_string(),
             source: None,
         }

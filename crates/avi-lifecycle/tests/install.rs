@@ -155,6 +155,19 @@ impl Sandbox {
             shell: avi_lifecycle::path_unix::Shell::Bash,
             zdotdir: None,
             registry_subkey: self.registry_subkey.clone(),
+            // Estado de integración leído en el momento de construir el entorno.
+            #[cfg(windows)]
+            registry_path: avi_lifecycle::path_windows::read_path(&self.registry_subkey)
+                .expect("se lee la clave de registro de prueba"),
+            #[cfg(unix)]
+            link_state: avi_lifecycle::path_unix::classify_existing(
+                &self.bin_dir.join("ai-voice-interconnector"),
+                &self.program_dir.join(
+                    avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
+                        .expect("el target del host tiene sección en el manifiesto")
+                        .executable_path(),
+                ),
+            ),
             // Puerto donde no hay nada: la parada del daemon es un no-op.
             daemon_addr: dead_port(),
             source: None,
@@ -537,6 +550,56 @@ async fn no_modify_path_leaves_path_untouched() {
             .path_integration
             == PathIntegration::none(),
         "el recibo dice que no se integró nada"
+    );
+    sandbox.clear();
+}
+
+/// Sobre una instalación ya integrada el plan del `PATH` es un no-op y el resumen
+/// previo lo dice; antes de integrar, el mismo resumen anuncia el cambio.
+#[tokio::test]
+async fn integrated_install_announces_no_path_change() {
+    let sandbox = Sandbox::new("integrada");
+    let exe = sandbox.write_bundle(&sandbox.staging);
+    let options = Sandbox::options();
+
+    // Sin integrar: el plan anuncia el cambio.
+    let before = sandbox.env(&exe);
+    assert!(
+        !install::plan_path(&before, &options).is_noop(),
+        "antes de integrar hay algo que anunciar"
+    );
+
+    install::install(&before, &options, &Inert)
+        .await
+        .expect("la primera instalación se completa");
+
+    // Integrada: el bundle se repone porque la colocación lo mueve, y el `PATH` de la
+    // sesión incluye ya el directorio del enlace, como tras abrir una terminal nueva.
+    let exe = sandbox.write_bundle(&sandbox.staging);
+    let mut env = sandbox.env(&exe);
+    env.path_env = format!("/usr/bin:{}", sandbox.bin_dir.display());
+    assert!(
+        install::plan_path(&env, &options).is_noop(),
+        "con la integración hecha no hay nada que cambiar"
+    );
+    let second = install::install(&env, &options, &Inert)
+        .await
+        .expect("la segunda instalación se completa");
+    let expected = if cfg!(windows) {
+        format!(
+            "  PATH:      {} ya está en el PATH del usuario; no se modifica",
+            sandbox.bin_dir.display()
+        )
+    } else {
+        format!(
+            "  PATH:      {} ya está en el PATH; no se modifica",
+            sandbox.bin_dir.display()
+        )
+    };
+    assert!(
+        second.summary_before.contains(&expected),
+        "{:?}",
+        second.summary_before
     );
     sandbox.clear();
 }

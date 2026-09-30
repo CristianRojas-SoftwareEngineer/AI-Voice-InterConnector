@@ -129,6 +129,7 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - En Windows los archivos de `snapshots/` dejan de duplicar el blob: `hf-hub` (vendorizado y fijado a `=1.0.0`) los publica como enlaces duros, y como enlaces simbólicos en Unix. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), se copia el blob y el disco se duplica.
 - `cleanup` y `doctor` cuentan una sola vez los archivos con varios enlaces al medir el tamaño de la caché de modelos.
 - La documentación declara que `hf-hub` no reanuda las descargas por `Range`: una descarga interrumpida se repite completa.
+- El resumen previo de `self install` refleja el estado real del `PATH`: si la entrada del registro (Windows) o el enlace del comando (Unix) ya están en su sitio, dice «ya está en el PATH; no se modifica» en lugar de anunciar un cambio que no ocurre. Un registro ilegible al planificar sale con `path_conflict` (exit 14), como al aplicar.
 
 ### Interno
 

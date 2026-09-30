@@ -447,6 +447,14 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
    ¿Continuar? [S/n]
    ```
 
+   Con la integración del `PATH` ya hecha (entrada del registro en Windows, enlace del comando en Unix), la línea del `PATH` no anuncia cambios:
+
+   ```text
+     PATH:      ~/.local/bin ya está en el PATH; no se modifica
+   ```
+
+   En Windows dice «ya está en el PATH del usuario; no se modifica».
+
    Instalar una versión menor que la instalada es una degradación y se confirma como operación destructiva.
 5. **Parar el daemon** si está activo, incluido el proceso residente del motor, con el protocolo estable entre versiones (`daemon.pid` + `POST /shutdown` + árbol de procesos). Si no se detiene → `daemon_stop_failed`, sin modificar nada.
 6. **Reemplazo transaccional**, con el mismo algoritmo en los cuatro targets:

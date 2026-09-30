@@ -261,6 +261,19 @@ impl Sandbox {
             shell: avi_lifecycle::path_unix::Shell::Bash,
             zdotdir: None,
             registry_subkey: self.registry_subkey.clone(),
+            // Estado de integración leído del sandbox al construir el entorno.
+            #[cfg(windows)]
+            registry_path: avi_lifecycle::path_windows::read_path(&self.registry_subkey)
+                .expect("se lee la clave de registro de prueba"),
+            #[cfg(unix)]
+            link_state: avi_lifecycle::path_unix::classify_existing(
+                &self.bin_dir.join("ai-voice-interconnector"),
+                &self.program_dir.join(
+                    avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
+                        .expect("el target del host tiene sección en el manifiesto")
+                        .executable_path(),
+                ),
+            ),
             // Puerto donde no hay nada: la parada del daemon es un no-op.
             daemon_addr: dead_port(),
             source: None,

@@ -98,6 +98,14 @@ pub struct Env {
     /// la prueba de integración opere sobre una clave propia en vez de la del
     /// usuario. Vacía en Unix, donde no hay registro.
     pub registry_subkey: String,
+    /// Valor `Path` de la subclave, leído al construir el entorno, para que el plan
+    /// anuncie solo lo que va a cambiar. `None` si la clave o el valor no existen.
+    #[cfg(windows)]
+    pub registry_path: Option<crate::path_windows::RawPath>,
+    /// Estado del enlace del comando, clasificado al construir el entorno contra el
+    /// ejecutable del directorio de programa.
+    #[cfg(unix)]
+    pub link_state: path_unix::Existing,
     /// Dirección a la que se conecta el protocolo de parada cuando no hay pidfile.
     /// Parámetro por lo mismo que en `daemon_stop::stop`.
     pub daemon_addr: String,
@@ -122,12 +130,26 @@ impl Env {
     pub fn from_current_exe(exe: PathBuf, product_version: &str) -> anyhow::Result<Self> {
         let target = target::host_triple();
         target::ensure_supported(target)?;
+        let program_dir = crate::install_dir();
+        let bin_dir = crate::bin_dir();
+        let registry_subkey = registry_subkey_default();
+        // Un registro ilegible se trata igual que al aplicar: `path_conflict`.
+        #[cfg(windows)]
+        let registry_path = crate::path_windows::read_path(&registry_subkey).map_err(|e| {
+            LifecycleError::new("path_conflict", 14, format!("integración del PATH: {e}"))
+        })?;
+        // Se clasifica contra el mismo ejecutable que `run` pasa a `apply_path`.
+        #[cfg(unix)]
+        let link_state = path_unix::classify_existing(
+            &bin_dir.join(crate::APP_NAME),
+            &program_dir.join(manifest::target_section(target)?.executable_path()),
+        );
         Ok(Self {
             exe,
             version: product_version.to_string(),
             target: target.to_string(),
-            program_dir: crate::install_dir(),
-            bin_dir: crate::bin_dir(),
+            program_dir,
+            bin_dir,
             data_dir: crate::data_dir(),
             models_dir: crate::models_cache_dir(),
             temp_root: std::env::temp_dir(),
@@ -135,7 +157,11 @@ impl Env {
             path_env: std::env::var("PATH").unwrap_or_default(),
             shell: path_unix::Shell::from_env(std::env::var("SHELL").ok().as_deref()),
             zdotdir: std::env::var("ZDOTDIR").ok().map(PathBuf::from),
-            registry_subkey: registry_subkey_default(),
+            registry_subkey,
+            #[cfg(windows)]
+            registry_path,
+            #[cfg(unix)]
+            link_state,
             daemon_addr: daemon_stop::DEFAULT_ADDR.to_string(),
             source: std::env::var("AVI_SOURCE_URL").ok(),
         })
@@ -581,24 +607,31 @@ pub struct PathPlan {
 }
 
 impl PathPlan {
-    /// `true` si el plan no toca nada: el caso de `--no-modify-path` y el de
-    /// `~/.local/bin` ya presente en el `PATH`.
+    /// `true` si el plan no toca nada: el caso de `--no-modify-path` y el de una
+    /// integración que ya está hecha.
     pub fn is_noop(&self) -> bool {
         !self.registry && !self.symlink && self.block_file.is_none()
     }
 }
 
-/// Calcula el plan de `PATH` sin tocar nada. Es el mismo cálculo que usa
-/// [`apply_path`], para que el resumen previo anuncie lo que de verdad va a pasar.
+/// Calcula el plan de `PATH` sin tocar nada, a partir del estado que `Env` leyó del
+/// registro (Windows) o del enlace (Unix): anuncia solo lo que va a cambiar, y es el
+/// mismo cálculo que usa [`apply_path`].
 pub fn plan_path(env: &Env, options: &Options) -> PathPlan {
     if options.no_modify_path {
         return PathPlan::default();
     }
-    let mut plan = PathPlan {
-        symlink: cfg!(unix),
-        registry: cfg!(windows),
-        block_file: None,
-    };
+    #[allow(unused_mut)]
+    let mut plan = PathPlan::default();
+    #[cfg(windows)]
+    {
+        plan.registry =
+            crate::path_windows::plan_integrate(env.registry_path.as_ref(), &env.bin_dir).changed;
+    }
+    #[cfg(unix)]
+    {
+        plan.symlink = !matches!(env.link_state, path_unix::Existing::Ours(_));
+    }
     if cfg!(unix) && path_unix::needs_block(&env.path_env, &env.bin_dir, &env.home) {
         plan.block_file =
             path_unix::profile_targets(&env.home, env.zdotdir.as_deref(), env.shell, |p| {
@@ -846,8 +879,9 @@ fn compose_summary(
             .to_string()
     } else if path_plan.is_noop() {
         format!(
-            "  PATH:      {} ya está en el PATH; no se modifica",
-            env.bin_dir.display()
+            "  PATH:      {} ya está en el PATH{}; no se modifica",
+            env.bin_dir.display(),
+            if cfg!(windows) { " del usuario" } else { "" }
         )
     } else if let Some(block) = &path_plan.block_file {
         format!(
@@ -1301,8 +1335,74 @@ mod tests {
             shell: path_unix::Shell::Bash,
             zdotdir: None,
             registry_subkey: String::new(),
+            #[cfg(windows)]
+            registry_path: None,
+            #[cfg(unix)]
+            link_state: path_unix::Existing::Absent,
             daemon_addr: "127.0.0.1:1".to_string(),
             source: None,
         }
+    }
+
+    /// Resumen previo de `Env` con las opciones por defecto y sin nada pendiente de
+    /// descargar.
+    fn summary_of(env: &Env) -> Vec<String> {
+        compose_summary(
+            env,
+            &Options::default(),
+            Mode::Install,
+            &None,
+            &plan_path(env, &Options::default()),
+            &setup::Pending {
+                models: Vec::new(),
+                ct2: Vec::new(),
+            },
+        )
+    }
+
+    /// Con la integración pendiente el plan la anuncia y no es un no-op.
+    #[test]
+    fn path_plan_announces_the_pending_integration() {
+        let env = test_env();
+        let plan = plan_path(&env, &Options::default());
+        assert!(!plan.is_noop(), "{plan:?}");
+        let summary = summary_of(&env);
+        assert!(
+            summary.iter().any(|l| l.contains("PATH:      se ")),
+            "{summary:?}"
+        );
+    }
+
+    /// Con la integración ya hecha el plan es un no-op y el resumen lo dice.
+    #[test]
+    fn path_plan_is_noop_when_already_integrated() {
+        let mut env = test_env();
+        #[cfg(windows)]
+        {
+            env.registry_path = Some(crate::path_windows::RawPath {
+                value: format!(r"C:\Windows;{}", env.bin_dir.display()),
+                kind: windows_sys::Win32::System::Registry::REG_EXPAND_SZ,
+            });
+        }
+        #[cfg(unix)]
+        {
+            env.link_state = path_unix::Existing::Ours(env.program_dir.join("avi"));
+            env.path_env = format!("/usr/bin:{}", env.bin_dir.display());
+        }
+        let plan = plan_path(&env, &Options::default());
+        assert!(plan.is_noop(), "{plan:?}");
+        let expected = if cfg!(windows) {
+            format!(
+                "  PATH:      {} ya está en el PATH del usuario; no se modifica",
+                env.bin_dir.display()
+            )
+        } else {
+            format!(
+                "  PATH:      {} ya está en el PATH; no se modifica",
+                env.bin_dir.display()
+            )
+        };
+        let summary = summary_of(&env);
+        assert!(summary.contains(&expected), "{summary:?}");
     }
 }

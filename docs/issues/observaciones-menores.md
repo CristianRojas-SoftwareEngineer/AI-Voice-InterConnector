@@ -1,25 +1,24 @@
-# Observaciones menores: plan de instalación y WAV truncado
+# Observaciones menores: WAV truncado
 
 | Campo | Valor |
 |---|---|
 | Estado | abierto |
-| Severidad | baja; media en la observación 2 (cada ficha indica la suya) |
-| Tipo | diagnóstico (plan de instalación), funcional (carga de audio) |
-| Componente | varios; se indica en cada observación |
+| Severidad | media |
+| Tipo | funcional (carga de audio) |
+| Componente | `avi-audio`, `avi-tts`, `avi-daemon` y CLI (`voice clone`) |
 | Versión detectada | 0.25.0 |
-| Plataforma | observación 1: Windows y Unix; la observación 2 no depende de la plataforma |
+| Plataforma | no depende de la plataforma |
 | Reproducibilidad | siempre, salvo que se indique otra cosa |
-| Detectado en | prueba E2E de v0.25.0, 2026-09-28 (1); revisión del código al diseñar la corrección de `--audio` inexistente, 2026-09-29 (2) |
+| Detectado en | revisión del código al diseñar la corrección de `--audio` inexistente, 2026-09-29 |
 
 ## Resumen
 
-Dos defectos sueltos, sin causa común con otros, agrupados aquí porque ninguno
-justifica, por ahora, un documento propio. En el primero el comando termina con el
-resultado correcto, pero el mensaje engaña. El segundo salió de leer el código y puede
-producir un resultado incorrecto sin aviso (severidad media). Las dos causas están
-confirmadas por lectura del código. Cada observación tiene
-una ficha breve (síntoma, reproducción, causa, alternativas, recomendación y criterio).
-Si alguna crece, se separa a su propio documento con la plantilla completa.
+Un defecto suelto, sin causa común con otros, agrupado aquí porque no justifica, por
+ahora, un documento propio. Salió de leer el código y puede producir un resultado
+incorrecto sin aviso (severidad media). La causa está confirmada por lectura del código.
+La observación tiene una ficha breve (síntoma, reproducción, causa, alternativas,
+recomendación y criterio). Si crece, se separa a su propio documento con la plantilla
+completa.
 
 Las recomendaciones no añaden ni conservan mecanismos de retrocompatibilidad: cuando el
 arreglo cambia un comportamiento o una razón de error, el comportamiento anterior se
@@ -27,99 +26,39 @@ retira en vez de mantenerse como reserva o excepción.
 
 ## Entorno
 
-Observación 1: binario v0.25.0 instalado desde cero en Windows 11 con
-PowerShell 5.1. La causa sale además de la lectura del código de v0.25.0.
-
-Observación 2: lectura del código fuente de v0.25.0 y de `hound` 3.5.1, la versión
-fijada en `Cargo.lock`. No se ha reproducido todavía; la ficha indica cómo hacerlo.
+Lectura del código fuente de v0.25.0 y de `hound` 3.5.1, la versión fijada en
+`Cargo.lock`. No se ha reproducido todavía; la ficha indica cómo hacerlo.
 
 ## Precondiciones
 
-Las propias de cada observación.
+Las propias de la observación.
 
 ## Pasos para reproducir
 
-Se detallan en cada observación, dentro de «Análisis de causa».
+Se detallan en la observación, dentro de «Análisis de causa».
 
 ## Resultado observado
 
-Se detalla en cada observación.
+Se detalla en la observación.
 
 ## Resultado esperado
 
-Se detalla en cada observación.
+Se detalla en la observación.
 
 ## Impacto y workaround
 
-La observación 1 no bloquea nada: solo confunde al leer el plan de instalación.
-
-La observación 2 sí puede afectar al resultado: un WAV truncado se transcribe o se
-dobla incompleto sin ningún aviso. Workaround: comprobar la integridad del WAV antes de
-pasarlo.
+Puede afectar al resultado: un WAV truncado se transcribe o se dobla incompleto sin
+ningún aviso. Workaround: comprobar la integridad del WAV antes de pasarlo.
 
 ## Evidencia
 
-Recogida en cada observación.
+Recogida en la observación.
 
 ## Análisis de causa
 
-### Instalación
-
-#### 1. El plan de `self install` anuncia «se añadirá» un PATH que ya existe
-
-- **Síntoma:** al reinstalar (`self install` sobre una instalación existente, estado
-  `repaired`), el resumen previo dice `PATH: se añadirá <bin> en el PATH del usuario`,
-  aunque la entrada ya está en `HKCU\Environment\Path`. En Unix pasa lo mismo con el
-  enlace: el resumen dice `se creará el enlace <bin>/ai-voice-interconnector` aunque ya
-  exista y apunte al mismo ejecutable.
-- **Causa (confirmada por lectura):** `plan_path` (`crates/avi-lifecycle/src/install.rs`)
-  no consulta el estado real. Fija `registry` a `true` siempre en Windows y `symlink` a
-  `true` siempre en Unix, así que `PathPlan::is_noop()` solo es cierto con
-  `--no-modify-path`, caso que `compose_summary` atiende antes. La rama «ya está en el
-  PATH; no se modifica» es inalcanzable en las dos plataformas. La comparación de
-  entradas no tiene la culpa: `path_windows::plan_integrate` reconoce la entrada ya
-  registrada con una comparación canónica, y por eso la aplicación no la duplica
-  (`changed: false`). El resumen y la aplicación calculan el plan por caminos distintos.
-- **Alternativas:**
-  - *A. Calcular el plan con la misma función que lo aplica.* En Windows,
-    `registry = plan_integrate(read_path(subkey), bin_dir).changed`; en Unix,
-    `symlink` es falso si `path_unix::classify_existing` devuelve `Ours`, la misma
-    clasificación que usa `create_symlink`. A favor: el resumen no puede divergir de la
-    aplicación y la rama no-op vuelve a ser alcanzable. En contra: una lectura del
-    registro al planificar (barata y de solo lectura), y `plan_path` necesita la ruta del
-    ejecutable del directorio de programa para clasificar el enlace, que hoy no recibe.
-  - *B. Redactar el mensaje en neutro* («se asegurará <bin> en el PATH»). A favor:
-    trivial. En contra: oculta la información en vez de corregirla y deja la rama no-op
-    muerta.
-  - *C. Usar el PATH de la sesión*, como hace Unix con el bloque del perfil. En contra:
-    en Windows es la fuente equivocada; justo después de instalar, la sesión todavía no
-    ve el cambio del registro y el mensaje mentiría en la otra dirección.
-- **Recomendación:** A en las dos plataformas, porque el síntoma y el arreglo son
-  simétricos. Si la lectura del registro falla al planificar, el plan falla con el mismo
-  error que daría la aplicación (`path_conflict`, exit 14), en lugar de volver al
-  anuncio incondicional actual: la aplicación leería el mismo valor y fallaría igual,
-  así que no hay nada que salvar con ese anuncio. Tres detalles de la implementación:
-  - El valor del registro se lee al construir `Env`, que ya lleva `path_env` y
-    `registry_subkey`, y `plan_path` lo recibe ya leído. Así la función sigue siendo
-    pura y la prueba del criterio no toca el registro real; el fallo de esa lectura es el
-    que produce el `path_conflict` anterior.
-  - En Unix, `apply_path` vuelve a calcular el plan después de crear el enlace, así que
-    ahí `symlink` sale falso; no importa, porque en ese punto solo usa `block_file`, y
-    debe seguir siendo así.
-  - En Windows, el mensaje no-op dice «ya está en el PATH del usuario»: la entrada está
-    en el registro, pero una terminal abierta antes de la primera instalación todavía no
-    la ve.
-- **Fuera de alcance:** en Unix, un enlace ajeno sin `--force` se sigue anunciando como
-  «se creará» aunque la aplicación falle después con `path_conflict`. La clasificación
-  de A permitiría anunciarlo, pero es una funcionalidad aparte.
-- **Esperado:** «ya está en el PATH; no se modifica» (en Windows, «en el PATH del
-  usuario») cuando no hay nada que cambiar.
-- **Criterio:** una prueba del plan con la entrada ya registrada (Windows) y otra con el
-  enlace ya correcto (Unix) afirman que `is_noop()` es cierto y que el resumen lo dice.
-
 ### Límites de entrada
 
-#### 2. Un WAV truncado se carga incompleto sin error
+#### 1. Un WAV truncado se carga incompleto sin error
 
 - **Severidad:** media. El resultado es incorrecto y no hay aviso, aunque la entrada
   dañada es poco frecuente.
@@ -200,15 +139,15 @@ Recogida en cada observación.
 
 ## Diagnóstico sugerido
 
-Las dos causas están confirmadas por lectura del código; no queda ninguna medida pendiente.
+La causa está confirmada por lectura del código; no queda ninguna medida pendiente.
 
 ## Criterio de aceptación
 
-Cada observación tiene su criterio en su ficha. El documento se da por resuelto cuando
-todas están cerradas o separadas a su propio documento.
+La observación tiene su criterio en su ficha. El documento se da por resuelto cuando
+está cerrada o separada a su propio documento.
 
 ## Relacionados
 
-- Contrato de la CLI, reglas de `--audio` (observación 2: la clasificación de un audio
-  inválido) y de `voice clone` (observación 2: la razón de una referencia inválida pasa
-  de `voice_clone_failed` a `invalid_audio`).
+- Contrato de la CLI, reglas de `--audio` (la clasificación de un audio inválido) y de
+  `voice clone` (la razón de una referencia inválida pasa de `voice_clone_failed` a
+  `invalid_audio`).
