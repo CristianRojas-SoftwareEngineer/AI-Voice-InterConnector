@@ -107,7 +107,7 @@ fn validate_temperature(temperature: Option<f32>) -> Result<(), CliError> {
             return Err(CliError::new(
                 ExitCode::InvalidInput,
                 "usage_error",
-                "Error: --temperature debe ser mayor que 0 y como máximo 2.0.",
+                "--temperature debe ser mayor que 0 y como máximo 2.0.",
             ));
         }
     }
@@ -1115,7 +1115,7 @@ async fn handle_voice(
 
     match action {
         VoiceCommands::List => {
-            // List es local-only; ForceDaemon debe fallar con DaemonUnreachable (paridad con speech dub/play)
+            // List es local-only; ForceDaemon falla con `daemon_not_supported` (paridad con speech list/play/remove)
             require_local(daemon_mode)?;
             let voices = voice_store
                 .list()
@@ -3530,13 +3530,14 @@ async fn route_to_daemon(mode: DaemonMode, client: &reqwest::Client) -> bool {
     }
 }
 
-/// Acciones local-only rechazan ForceDaemon con DaemonUnreachable.
+/// Acciones local-only rechazan ForceDaemon como error de invocación
+/// (`daemon_not_supported`, exit 2): el daemon no interviene en ellas.
 fn require_local(daemon_mode: DaemonMode) -> Result<(), CliError> {
     if daemon_mode == DaemonMode::ForceDaemon {
         Err(CliError::new(
-            ExitCode::DaemonUnreachable,
-            "daemon_unreachable",
-            format!("Daemon inalcanzable en {}", resolve_client_addr()),
+            ExitCode::from_reason("daemon_not_supported"),
+            "daemon_not_supported",
+            "Este comando se ejecuta siempre en local; no admite --daemon.",
         ))
     } else {
         Ok(())
