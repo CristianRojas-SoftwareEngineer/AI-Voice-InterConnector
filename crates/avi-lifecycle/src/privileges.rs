@@ -54,7 +54,7 @@ pub fn inspect() -> Report {
 pub fn ensure_per_user() -> Result<Report, LifecycleError> {
     let report = inspect();
     if report.via_sudo {
-        return Err(LifecycleError::new("sudo_not_supported", 1, sudo_message()));
+        return Err(LifecycleError::new("sudo_not_supported", sudo_message()));
     }
     Ok(report)
 }

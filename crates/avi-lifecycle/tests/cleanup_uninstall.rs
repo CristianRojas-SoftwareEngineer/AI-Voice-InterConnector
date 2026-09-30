@@ -10,6 +10,7 @@
 
 #![allow(clippy::disallowed_methods)]
 
+use avi_core::exit_codes::ExitCode;
 use avi_lifecycle::channel::Channel;
 use avi_lifecycle::cleanup::{self, Options as CleanupOptions, Roots};
 use avi_lifecycle::daemon_stop::ProcessControl;
@@ -482,7 +483,11 @@ fn cleanup_without_category_is_usage_error() {
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("es un LifecycleError");
     assert_eq!(lifecycle.reason, "usage_error");
-    assert_eq!(lifecycle.exit_code, 2, "error de uso");
+    assert_eq!(
+        ExitCode::from_reason(lifecycle.reason).code(),
+        2,
+        "error de uso"
+    );
     assert_eq!(
         sandbox.snapshot(),
         before,
@@ -840,7 +845,7 @@ fn uninstall_homebrew_is_externally_managed() {
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("es un LifecycleError");
     assert_eq!(lifecycle.reason, "externally_managed");
-    assert_eq!(lifecycle.exit_code, 12);
+    assert_eq!(ExitCode::from_reason(lifecycle.reason).code(), 12);
     assert!(
         lifecycle.message.contains(uninstall::HOMEBREW_UNINSTALL),
         "el mensaje lleva el comando correcto: {}",
@@ -994,7 +999,7 @@ fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
         .lifecycle_error()
         .expect("hay un reason de contrato");
     assert_eq!(error.reason, "program_dir_kept");
-    assert_eq!(error.exit_code, 22);
+    assert_eq!(ExitCode::from_reason(error.reason).code(), 22);
     assert_eq!(
         names_of(&sandbox.program_dir),
         before,

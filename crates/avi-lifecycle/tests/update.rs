@@ -24,6 +24,7 @@
 
 mod support;
 
+use avi_core::exit_codes::ExitCode;
 use avi_lifecycle::channel::{self, Channel};
 use avi_lifecycle::confirm;
 use avi_lifecycle::daemon_stop::{self, ProcessControl};
@@ -551,8 +552,9 @@ fn criterion_15_managed_channels_are_externally_managed() {
     );
     assert_eq!(failure.reason, "externally_managed");
     assert_eq!(
-        failure.exit_code, 12,
-        "`ExternallyManaged = 12` de la tabla cerrada"
+        ExitCode::from_reason(failure.reason).code(),
+        12,
+        "`ExternallyManaged = 12` de la tabla única"
     );
     assert!(
         failure.message.contains("brew upgrade --cask"),
@@ -598,7 +600,7 @@ fn criterion_15_managed_channels_are_externally_managed() {
         "esta instalación es del canal dev: actualiza con `cargo xtask install`",
     );
     assert_eq!(failure.reason, "externally_managed");
-    assert_eq!(failure.exit_code, 12);
+    assert_eq!(ExitCode::from_reason(failure.reason).code(), 12);
     assert!(
         failure.message.contains("cargo xtask install"),
         "criterio 15: el mensaje indica el comando correcto"
@@ -816,7 +818,11 @@ fn criterion_update_checksum_mismatch_cleans_staging() {
     FakeReleaseServer::clear_download_base();
 
     assert_eq!(error.reason, "checksum_mismatch");
-    assert_eq!(error.exit_code, 21, "el 21 de la tabla cerrada");
+    assert_eq!(
+        ExitCode::from_reason(error.reason).code(),
+        21,
+        "el 21 de la tabla única"
+    );
     assert_eq!(
         server.asset_downloads(),
         1,
@@ -888,10 +894,15 @@ fn child_destructive_without_terminal() {
         .downcast_ref::<LifecycleError>()
         .expect("la negativa viaja como `LifecycleError`");
     assert_eq!(failure.reason, "confirmation_required");
-    assert_eq!(failure.exit_code, 2, "error de uso");
+    assert_eq!(
+        ExitCode::from_reason(failure.reason).code(),
+        2,
+        "error de uso"
+    );
     support::report_line(&format!(
         "destructive={}/{}",
-        failure.reason, failure.exit_code
+        failure.reason,
+        ExitCode::from_reason(failure.reason).code()
     ));
 }
 
@@ -923,7 +934,11 @@ fn criterion_update_daemon_stop_failure_aborts() {
     let error = daemon_stop::require_stopped(&outcome)
         .expect_err("la parada que no completa es `daemon_stop_failed`");
     assert_eq!(error.reason, "daemon_stop_failed");
-    assert_eq!(error.exit_code, 16, "el 16 de la tabla cerrada");
+    assert_eq!(
+        ExitCode::from_reason(error.reason).code(),
+        16,
+        "el 16 de la tabla única"
+    );
     assert_eq!(
         sandbox.snapshot(),
         before,

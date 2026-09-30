@@ -194,6 +194,7 @@ fn is_version_shape(bare: &str) -> bool {
 mod tests {
     use super::*;
     use crate::test_support::{serve_responses, FakeResponse};
+    use avi_core::exit_codes::ExitCode;
 
     /// Petición sobre la instalada 0.23.1, la versión del contrato vigente.
     fn request(installed: &str, explicit: Option<&str>, force: bool) -> ResolveRequest {
@@ -252,7 +253,7 @@ mod tests {
     fn update_resolve_implicit_downgrade_is_rejected() {
         let err = resolve(&request("0.24.0", None, false), "0.23.1").unwrap_err();
         assert_eq!(err.reason, "usage_error");
-        assert_eq!(err.exit_code, 2);
+        assert_eq!(ExitCode::from_reason(err.reason).code(), 2);
     }
 
     /// `--version` con forma inválida: se rechaza como error de uso.
@@ -360,7 +361,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.reason, "network_error");
-        assert_eq!(err.exit_code, 20);
+        assert_eq!(ExitCode::from_reason(err.reason).code(), 20);
         handle.await.expect("el servidor local termina");
     }
 

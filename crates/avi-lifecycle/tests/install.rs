@@ -17,6 +17,7 @@
 
 #![allow(clippy::disallowed_methods)]
 
+use avi_core::exit_codes::ExitCode;
 use avi_lifecycle::daemon_stop::ProcessControl;
 use avi_lifecycle::install::{self, Env, Mode, Options};
 use avi_lifecycle::receipt::{self, PathIntegration};
@@ -500,8 +501,9 @@ async fn bundle_without_required_files_is_rejected() {
         .unwrap_or_else(|| panic!("el fallo declara un `reason`: {err:#}"));
     assert_eq!(failure.reason, "bundle_invalid");
     assert_eq!(
-        failure.exit_code, 15,
-        "`BundleInvalid = 15` de la tabla cerrada"
+        ExitCode::from_reason(failure.reason).code(),
+        15,
+        "`BundleInvalid = 15` de la tabla única"
     );
     assert!(
         failure.message.contains("faltan") && failure.message.contains("archivo(s)"),
@@ -640,8 +642,9 @@ async fn foreign_path_is_conflict_and_installs_nothing() {
         .unwrap_or_else(|| panic!("el fallo declara un `reason`: {err:#}"));
     assert_eq!(failure.reason, "path_conflict");
     assert_eq!(
-        failure.exit_code, 14,
-        "`PathConflict = 14` de la tabla cerrada"
+        ExitCode::from_reason(failure.reason).code(),
+        14,
+        "`PathConflict = 14` de la tabla única"
     );
     assert_eq!(
         std::fs::read_to_string(&busy).unwrap(),

@@ -29,6 +29,7 @@
 
 mod support;
 
+use avi_core::exit_codes::ExitCode;
 use avi_lifecycle::channel::Channel;
 use avi_lifecycle::cleanup;
 use avi_lifecycle::install::{self, ModelsState};
@@ -550,7 +551,8 @@ fn criterion_6_setup_failure_keeps_install() {
          `docs/CLI/commands/SETUP.md` publica para una conversión fallida"
     );
     assert_eq!(
-        cause.exit_code, 1,
+        ExitCode::from_reason(cause.reason).code(),
+        1,
         "criterio 6: y el código genérico, porque la tabla no le declara fila propia; el código \
          de salida del proceso es el de la operación, no este"
     );
@@ -564,14 +566,14 @@ fn criterion_6_setup_failure_keeps_install() {
         "criterio 6: el `reason` de la operación es `setup_failed`"
     );
     assert_eq!(
-        failure.exit_code, 11,
-        "criterio 6: y el código es `SetupFailed = 11` de la tabla cerrada"
+        ExitCode::from_reason(failure.reason).code(),
+        11,
+        "criterio 6: y el código es `SetupFailed = 11` de la tabla única"
     );
     assert_eq!(
-        contract_exit_code("setup_failed"),
-        Some(11),
-        "criterio 6: el cableado traduce ese `reason` al mismo entero, que es lo que evita \
-         que las dos copias del 11 diverjan"
+        ExitCode::from_reason("setup_failed").code(),
+        11,
+        "criterio 6: el código de `setup_failed` sale de la tabla única, sin copia propia"
     );
     // El mensaje dice las dos cosas que promete el paso 11: qué no se completó y que
     // basta reintentar con `setup`.
@@ -727,27 +729,6 @@ fn criterion_6_successful_provisioning_has_no_reason() {
         "criterio 6: y el resumen no dice nada de un fallo que no ha habido: {:?}",
         outcome.summary
     );
-}
-
-/// El entero que el cableado traduce a cada `reason` con variante propia, leído de la
-/// tabla que `src/main.rs` usa.
-///
-/// La tabla **no** es accesible desde aquí —vive en el binario—, así que se reproduce su
-/// parte declarada y se comprueba contra el `exit_code` que el motor emite. Si alguien
-/// cambiara uno de los dos, esta comparación falla; si cambiara el otro sin cambiar el
-/// primero, la puerta de `cli_golden` lo es.
-fn contract_exit_code(reason: &str) -> Option<i32> {
-    match reason {
-        "setup_failed" => Some(11),
-        "externally_managed" => Some(12),
-        "rolled_back" => Some(13),
-        "path_conflict" => Some(14),
-        "bundle_invalid" => Some(15),
-        "daemon_stop_failed" => Some(16),
-        "lifecycle_locked" => Some(17),
-        "confirmation_required" | "usage_error" => Some(2),
-        _ => None,
-    }
 }
 
 // ─── Criterio 17 ──────────────────────────────────────────────────────────────────
@@ -1106,10 +1087,15 @@ fn child_without_terminal() {
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("criterio 19: el fallo es un `LifecycleError`");
     assert_eq!(failure.reason, "confirmation_required");
-    assert_eq!(failure.exit_code, 2, "criterio 19: error de uso");
+    assert_eq!(
+        ExitCode::from_reason(failure.reason).code(),
+        2,
+        "criterio 19: error de uso"
+    );
     support::report_line(&format!(
         "uninstall={}/{}",
-        failure.reason, failure.exit_code
+        failure.reason,
+        ExitCode::from_reason(failure.reason).code()
     ));
 
     // 2. `cleanup --all` sin `--yes`.
@@ -1127,8 +1113,16 @@ fn child_without_terminal() {
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("criterio 19: el fallo es un `LifecycleError`");
     assert_eq!(failure.reason, "confirmation_required");
-    assert_eq!(failure.exit_code, 2, "criterio 19: error de uso");
-    support::report_line(&format!("cleanup={}/{}", failure.reason, failure.exit_code));
+    assert_eq!(
+        ExitCode::from_reason(failure.reason).code(),
+        2,
+        "criterio 19: error de uso"
+    );
+    support::report_line(&format!(
+        "cleanup={}/{}",
+        failure.reason,
+        ExitCode::from_reason(failure.reason).code()
+    ));
 
     // Y el disco está intacto. Sin `--yes` no se puede haber borrado nada, y esta
     // comprobación es la que convierte la negativa en una garantía.
@@ -1423,7 +1417,11 @@ fn criterion_22_cleanup_scope_and_usage_error() {
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .expect("criterio 22: el fallo declara un `reason`");
     assert_eq!(failure.reason, "usage_error");
-    assert_eq!(failure.exit_code, 2, "criterio 22: error de uso");
+    assert_eq!(
+        ExitCode::from_reason(failure.reason).code(),
+        2,
+        "criterio 22: error de uso"
+    );
     assert_eq!(
         sandbox.snapshot(),
         before,

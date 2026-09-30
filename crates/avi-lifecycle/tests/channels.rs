@@ -26,6 +26,7 @@
 
 mod support;
 
+use avi_core::exit_codes::ExitCode;
 use avi_lifecycle::channel::{self, Channel};
 use avi_lifecycle::cleanup;
 use avi_lifecycle::install::{self, Options as InstallOptions};
@@ -164,8 +165,9 @@ fn channels_behave_per_spec() {
         .expect("el fallo declara un `reason`");
     assert_eq!(failure.reason, "externally_managed");
     assert_eq!(
-        failure.exit_code, 12,
-        "`ExternallyManaged = 12` de la tabla cerrada"
+        ExitCode::from_reason(failure.reason).code(),
+        12,
+        "`ExternallyManaged = 12` de la tabla única"
     );
     assert!(
         failure.message.contains(uninstall::HOMEBREW_UNINSTALL),
