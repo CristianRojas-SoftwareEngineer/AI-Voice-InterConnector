@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | Pendiente de la compuerta de decisiones (G0) |
+| Estado | G0 aprobada, C1 siguiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -17,7 +17,7 @@
 6. [Anatomía de un ciclo](#6-anatomía-de-un-ciclo)
 7. [Mapa de síntomas](#7-mapa-de-síntomas)
 8. [Orden de los ciclos y dependencias](#8-orden-de-los-ciclos-y-dependencias)
-9. [Decisiones abiertas (compuerta G0)](#9-decisiones-abiertas-compuerta-g0)
+9. [Decisiones (compuerta G0)](#9-decisiones-compuerta-g0)
 10. [Ciclos](#10-ciclos)
 11. [Registro de progreso](#11-registro-de-progreso)
 12. [Riesgos](#12-riesgos)
@@ -90,6 +90,14 @@ leer el código ni haber estado en la sesión en que se diseñó.
 9. **Nada entra en git sin aprobación.** Los commits de un ciclo se hacen al aprobar su
    compuerta de resultado, con el formato de la skill `conventional-commits`. Publicar
    una versión es una compuerta aparte que sigue la skill `release`.
+10. **Una rama por ciclo, un solo release al final.** Cada ciclo trabaja en su propia
+    rama transitoria, creada desde `main` al abrirlo: `docs/decisiones-g0` para C0 y
+    `fix/<síntoma>` para C1 a C6. Al aprobarse su G-Resultado, la rama se integra en
+    `main` con `git merge --no-ff` y se elimina, de modo que cada ciclo parte de lo ya
+    aprobado y queda como un merge revertible por separado. Integrar no publica: las
+    entradas de cada ciclo se acumulan en `## [No publicado]` y la versión se publica una
+    sola vez, cuando todos los ciclos planificados están cerrados. Si hay que corregir un
+    ciclo ya cerrado, se hace en una rama `fix/` nueva, sin reabrir la anterior.
 
 ## 4. Roles
 
@@ -114,9 +122,9 @@ pedidas se anotan en el registro de progreso.
 | **G-Plan** | Al abrir cada ciclo | La ficha del ciclo: síntomas dentro y fuera del alcance, decisiones que aplica, tareas y su verificación, pruebas previstas, archivos y símbolos que cambian, contratos y documentos afectados, riesgos | Si el plan resuelve bien ese conjunto de problemas |
 | **G-Diag** | Solo en los ciclos cuya causa hay que diagnosticar, entre el diagnóstico y la corrección | Los hallazgos con su evidencia, la causa confirmada o las hipótesis descartadas y, si la corrección abre decisiones nuevas, sus alternativas con argumentos y recomendación | La causa aceptada y la dirección de la corrección |
 | **G-Pruebas** | Tras escribir las pruebas, antes de corregir | Las pruebas nuevas y las modificadas, la evidencia de que fallan por la razón esperada y, para cada una, qué síntoma y qué decisión fija | Si las pruebas expresan el comportamiento decidido |
-| **G-Resultado** | Al terminar la implementación y la verificación del agente | El paquete de resultado de la sección 5.3 | Si el código, las pruebas, los comentarios y la documentación se aceptan y se confirman en git |
+| **G-Resultado** | Al terminar la implementación y la verificación del agente | El paquete de resultado de la sección 5.3 | Si el código, las pruebas, los comentarios y la documentación se aceptan, se confirman en la rama del ciclo y se integran en `main` |
 | **G-Desvío** | En cualquier momento, si un hecho invalida algo aprobado | El hecho, su evidencia, qué decisión o plan afecta y las alternativas | Cómo seguir |
-| **G-Release** | Cuando el humano quiera, tras cualquier ciclo cerrado | El contenido de `## [No publicado]`, los cambios incompatibles y la versión propuesta | Si se publica, y con qué número |
+| **G-Release** | Una sola vez, cuando todos los ciclos planificados están cerrados e integrados en `main` | El contenido de `## [No publicado]`, los cambios incompatibles y la versión propuesta | Si se publica, y con qué número |
 
 G-Pruebas existe porque un malentendido del contrato detectado en las pruebas cuesta
 unas líneas, y detectado en el resultado cuesta rehacer la implementación.
@@ -125,7 +133,7 @@ unas líneas, y detectado en el resultado cuesta rehacer la implementación.
 
 | Veredicto | Efecto |
 |---|---|
-| **Aprobar** | El agente avanza al paso siguiente. En G-Resultado, además, hace los commits. |
+| **Aprobar** | El agente avanza al paso siguiente. En G-Resultado, además, hace los commits en la rama del ciclo y la integra en `main`. |
 | **Corregir** | El humano indica qué cambiar. El agente lo incorpora y vuelve a presentar en la misma compuerta, señalando qué cambió. No avanza hasta obtener una aprobación. |
 | **Rechazar** | El agente descarta el trabajo del paso: <br>• en G-Plan, el ciclo se replantea o se aplaza; <br>• en G-Diag, se diagnostica con otra hipótesis; <br>• en G-Pruebas, se reescriben las pruebas desde el plan; <br>• en G-Resultado, se revierten los archivos del ciclo y se vuelve a G-Plan. <br>Si el rechazo cuestiona una decisión de G0, esa decisión se reabre con sus alternativas. |
 
@@ -171,19 +179,20 @@ Implementación (código, comentarios, documentación, CHANGELOG, cierre del inf
 Verificación del agente (pruebas, lint, formato de lo tocado, subagente revisor)
      │
      ▼
-G-Resultado ──► commits ──► registro de progreso actualizado ──► siguiente ciclo
+G-Resultado ──► commits ──► merge --no-ff a main ──► registro de progreso actualizado ──► siguiente ciclo
 ```
 
-1. **Preparación.** Se contrasta el informe del defecto con el código actual y se
-   corrige si se ha desfasado, se comprueba el estado del árbol de trabajo y se redacta
-   la ficha del ciclo.
+1. **Preparación.** Se crea la rama del ciclo desde `main`, se contrasta el informe del
+   defecto con el código actual y se corrige si se ha desfasado, se comprueba el estado
+   del árbol de trabajo y se redacta la ficha del ciclo.
 2. **G-Plan.**
 3. **Diagnóstico y G-Diag**, solo si el ciclo lo requiere.
 4. **Pruebas en rojo y G-Pruebas.**
 5. **Implementación.** Código, comentarios, documentación canónica, CHANGELOG y cierre
    del informe.
 6. **Verificación del agente.**
-7. **G-Resultado**, seguida de los commits y la actualización del registro de progreso.
+7. **G-Resultado**, seguida de los commits, la integración de la rama en `main` y la
+   actualización del registro de progreso.
 
 ## 7. Mapa de síntomas
 
@@ -218,17 +227,17 @@ C0 Preparación y decisiones ──G0──►
     │
     ▼
   C3 Observabilidad (S3 S10)
-    │  el diagnóstico de C4 necesita el log del daemon
+    │  C4 toca el mismo lanzamiento del clonado y se verifica con el log del daemon
     ▼
-  C4 Vida de los procesos (S2 S9) ········· con G-Diag
+  C4 Vida de los procesos (S2 S9)
     │
     ▼
-  C5 Artefactos de self update (S6) ······· con G-Diag
+  C5 Artefactos de self update (S6)
     │
     ▼
   C6 JSON veraz y temporales (S7 S8)
 
-G-Release: a criterio del humano, tras cualquier ciclo cerrado
+G-Release: una sola vez, tras cerrar e integrar C6
 ```
 
 Justificación del orden:
@@ -237,21 +246,22 @@ Justificación del orden:
   que la transcripción lea el `reason` de una respuesta de error y lo traduzca al código
   del contrato, y eso es justo lo que construye C1. Si C2 fuera primero, crearía otra
   tabla local que C1 tendría que deshacer. C1 es pequeño, así que el retraso es mínimo.
-- **C3 va antes que C4 por una dependencia dura.** Sin el log del daemon, un fallo del Job
-  Object no deja rastro, y el diagnóstico de S2 sería a ciegas.
+- **C3 va antes que C4 por una dependencia dura.** Los dos cambian cómo se lanza el
+  motor de clonado: C3 lleva su salida a un log y C4 le conecta la tubería de D11.1. Además,
+  sin el log del daemon, un fallo al matarlo no deja rastro y la verificación de S2 sería
+  a ciegas.
 - **C5 y C6 no dependen entre sí.** C5 va antes por severidad. El humano puede
   invertirlos en el G-Plan de C5.
 - **Los ciclos no se ejecutan en paralelo.** Casi todos tocan el binario principal
   (`src/main.rs`), y en paralelo la revisión humana tendría que separar cambios
   entrelazados.
 
-## 9. Decisiones abiertas (compuerta G0)
+## 9. Decisiones (compuerta G0)
 
 Todas las decisiones siguen el mismo esquema: el problema, las alternativas con sus
 argumentos a favor y en contra, la recomendación y el ciclo que la aplica. El campo
-**Decisión** lo rellena el humano en G0, salvo las partes que dependen de un
-diagnóstico (la de Windows en D11 y la combinación con C en D12), que se deciden en el
-G-Diag de su ciclo.
+**Decisión** lo rellena el humano en G0. Ninguna depende de un diagnóstico, así que
+ningún ciclo tiene G-Diag.
 
 ### D1 · Tope del audio de transcripción en las dos vías (S1) — C2
 
@@ -286,7 +296,7 @@ Si no se quiere acotar la vía directa, la segunda opción es A: el límite se c
 partir del techo del push-to-talk, el rechazo con `audio_too_long` se aplica solo por la
 vía daemon y la diferencia entre vías queda documentada.
 
-**Decisión:** pendiente.
+**Decisión:** B, con un tope de 300 s (2026-09-30).
 
 ### D2 · Tamaño de la referencia del clonado (S14) — C2
 
@@ -311,7 +321,7 @@ vía daemon y la diferencia entre vías queda documentada.
 duración de referencia que el motor aprovecha realmente. Si el motor recorta la
 referencia a N segundos, el tope es N.
 
-**Decisión:** pendiente.
+**Decisión:** A; el valor del tope, en el G-Plan de C2 (2026-09-30).
 
 ### D3 · Dub por composición para daemons sin `/dub` (S13) — C2
 
@@ -341,7 +351,7 @@ Subdecisión de A, el `reason` del error:
 reiniciar el daemon lo resuelve siempre. Si en el futuro se añade una comprobación de
 versión al conectar, será el momento de un `reason` propio.
 
-**Decisión:** pendiente.
+**Decisión:** A con A1 (2026-09-30).
 
 ### D4 · Traducción única de `reason` a código de salida (S4, y base de C2) — C1
 
@@ -371,7 +381,7 @@ versión al conectar, será el momento de un `reason` propio.
   el de la tabla.
 - Migrar la vía directa a la tabla queda fuera de alcance, salvo que el humano lo pida.
 
-**Decisión:** pendiente.
+**Decisión:** B (2026-09-30).
 
 ### D5 · `--daemon` en comandos que siempre se ejecutan en local (S5) — C1
 
@@ -395,13 +405,17 @@ versión al conectar, será el momento de un `reason` propio.
 flag, que es exactamente lo que significa el código 2. El nombre del `reason` lo decide
 el humano.
 
-**Decisión:** pendiente.
+**Decisión:** B, con el `reason` `daemon_not_supported` (2026-09-30).
 
 ### D6 · `status` de `daemon stop` cuando no había daemon (S7) — C6
 
-**Problema.** Con el daemon detenido, `daemon stop` borra el pidfile y responde con
-`status: "shutdown_sent"` y el texto «Señal de apagado enviada», aunque no envió nada.
-El exit 0 es correcto, porque la operación es idempotente.
+**Problema.**
+
+- Con el daemon detenido, `daemon stop` borra el pidfile y responde con
+  `status: "shutdown_sent"` y el texto «Señal de apagado enviada», aunque no envió nada.
+- El exit 0 es correcto, porque la operación es idempotente.
+- La función de parada ya calcula si el daemon estaba en ejecución antes de tocar nada,
+  pero la CLI descarta ese dato y vuelve a sondear.
 
 | Alternativa | A favor | En contra |
 |---|---|---|
@@ -409,62 +423,116 @@ El exit 0 es correcto, porque la operación es idempotente.
 | **B. Mantener `shutdown_sent` y añadir la clave `was_running: false`** | Cambio aditivo, que no sube el esquema | El `status` sigue afirmando algo falso; es una reserva de compatibilidad |
 | **C. Salir con otro código, por ejemplo 7** | Señal inequívoca | Rompe la idempotencia de la que dependen los scripts de parada |
 
-**Recomendación: A.**
+**Recomendación: A.** Usa el dato que la parada ya calcula; el texto humano sigue al
+`status`.
 
-**Decisión:** pendiente.
+**Decisión:** A (2026-09-30).
 
-### D7 · `status` de los simulacros (S7) — C6
+### D7 · Los simulacros de `self uninstall` y `cleanup` (S7) — C6
 
-**Problema.** `self uninstall --dry-run` responde `status: "uninstalled"` y
-`cleanup --dry-run` responde `status: "cleanup_complete"`, los dos con `dry_run: true`.
-Un consumidor que lea solo el `status` concluye que la operación ocurrió. En `cleanup`,
-además, la lista `removed` contiene las rutas que se borrarían: el simulacro reutiliza a
-propósito el resultado de la limpieza real para que los dos se puedan comparar.
+**Problema.**
+
+- `self uninstall --dry-run` responde `status: "uninstalled"` y
+  `cleanup --dry-run` responde `status: "cleanup_complete"`, los dos con
+  `dry_run: true`. Un consumidor que lea solo el `status` concluye que la operación
+  ocurrió.
+- En modo humano, `self uninstall --dry-run` imprime «Desinstalación completada».
+- El simulacro de `cleanup` reutiliza a propósito el resultado de la limpieza real para
+  que los dos se puedan comparar: su `removed` contiene las rutas que se borrarían.
+- El de `self uninstall` no cumple esa propiedad:
+  - su `removed` incluye las rutas del barrido de restos, que en la ejecución real no
+    van en `removed`;
+  - su `path_reverted` vale siempre `false`, aunque la ejecución real revertiría el
+    PATH.
+
+**D7.1 · `status` del simulacro.**
 
 | Alternativa | A favor | En contra |
 |---|---|---|
-| **A. Un único `status: "planned"` para todo simulacro** (`self uninstall` y `cleanup`), conservando `dry_run` como eco de la entrada | Veraz y uniforme: un solo valor que aprender | Cambio incompatible en dos comandos |
+| **A. Un único `status: "planned"` para todo simulacro** (`self uninstall` y `cleanup`) | Veraz y uniforme: un solo valor que aprender | Cambio incompatible en dos comandos |
 | **B. Mantener los valores y documentar la convención** «con `dry_run: true`, el `status` describe el resultado previsto» | Ningún cambio de código ni de contrato | El `status` sigue afirmando un hecho que no ocurrió |
 | **C. Corregir solo `self uninstall`** | Cambio mínimo | Dos convenciones distintas para lo mismo |
 | **D. Un valor por comando** (`would_uninstall`, `would_clean`) | Explícito | Multiplica los valores sin aportar información que `planned` no dé |
 
 **Recomendación: A, conservando las claves del resultado.** Con `status: "planned"`, el
-sobre entero se lee como un plan, incluida la lista `removed` de `cleanup`. Renombrar
-las claves en el simulacro rompería la comparación entre simulacro y ejecución real,
-que es la razón por la que comparten resultado.
+sobre entero se lee como un plan, incluida la lista `removed`. Renombrar las claves en
+el simulacro rompería la comparación entre simulacro y ejecución real, que es la razón
+por la que comparten resultado. El texto humano de `self uninstall --dry-run` se
+corrige en la misma tarea.
 
-**Decisión:** pendiente.
+**Decisión:** A (2026-09-30).
+
+**D7.2 · Claves del simulacro de `self uninstall` que difieren de la ejecución real.**
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Alinear el simulacro con la ejecución**: `removed` solo con las entradas del plan, como en `cleanup`, y `path_reverted` con el valor previsto según el recibo | El sobre entero es un plan veraz y comparable; los dos comandos siguen la misma regla | Algo más de código en el simulacro |
+| **B. Documentar la diferencia** | Ningún cambio de código | El sobre `planned` contiene un dato falso y una lista que no se puede comparar |
+| **C. Quitar esas claves del simulacro** | No afirma nada falso | Rompe la comparación entre simulacro y ejecución real |
+
+**Recomendación: A.** Sin ella, D7.1 corrige el `status` y deja mentir a las claves que
+lo acompañan.
+
+**Decisión:** A (2026-09-30).
+
+**D7.3 · La clave `dry_run`.** Con `status: "planned"` es redundante: solo un simulacro
+da `planned`, y un simulacro nunca da otro valor.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Retirarla de los sobres de `self uninstall` y `cleanup`** | Cada hecho se dice en un solo sitio; sin dos campos que mantener coherentes | Otra clave retirada, dentro de la misma subida del esquema |
+| **B. Conservarla como eco de la entrada** | El sobre conserva su forma | Redundante; en la ejecución real es ruido; solo se justifica por compatibilidad |
+
+**Recomendación: A.**
+
+**Decisión:** A (2026-09-30).
 
 ### D8 · WAV temporales de `speech say` y `speech dub` (S8) — C6
 
 **Problema.** `say` y `dub` sintetizan a un WAV temporal para reproducirlo y devuelven
-su ruta en `audio_path`.
+su ruta en `audio_path` y en el texto humano («Reproduciendo: …», «Doblaje
+reproducido: …»).
 
 - `say` por la vía directa conserva el fichero.
 - `say` por la vía daemon lo borra, pero después de emitir su ruta; si la reproducción
   falla, sale antes de borrarlo.
-- `dub` lo conserva siempre, en sus tres vías.
+- `dub` lo conserva siempre, en sus dos vías, la directa y la daemon; C2 elimina la
+  composición (D3).
+- Cada vía gestiona el fichero a mano, y cualquier error intermedio lo deja atrás.
 
 Para guardar un audio ya existe `speech synthesize`, que devuelve la ruta de un WAV
 persistente.
 
+**D8.1 · El temporal y `audio_path`.**
+
 | Alternativa | A favor | En contra |
 |---|---|---|
-| **A. Borrar el temporal al terminar la reproducción, también si falla, y retirar `audio_path` de `say` y `dub`** | Sin residuos; el JSON solo afirma lo que existe; `synthesize` sigue cubriendo el caso de querer el fichero | Cambio incompatible: se retira una clave |
+| **A. Borrar el temporal al terminar la reproducción, también si falla, y retirar `audio_path` de `say` y `dub`**; el texto humano deja de mostrar la ruta | Sin residuos; el JSON solo afirma lo que existe; `synthesize` sigue cubriendo el caso de querer el fichero | Cambio incompatible: se retira una clave |
 | **B. Conservar el fichero y la clave en todas las vías** y dejar la limpieza a `cleanup` | Ningún cambio de contrato | Los residuos se acumulan; contradice la regla de que quien crea un fichero temporal lo borra |
 | **C. Borrar el fichero y conservar la clave** | Sin residuos | El JSON apunta a algo que no existe, que es justo el defecto actual de la vía daemon |
 | **D. Borrar, salvo que un flag nuevo pida conservarlo** | Flexible | Funcionalidad que nadie ha pedido, y duplica `synthesize` |
 
 **Recomendación: A.**
 
-**Decisión:** pendiente.
+**Decisión:** A (2026-09-30).
+
+**D8.2 · Cómo se garantiza el borrado en cualquier salida.**
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Un guardián único del temporal**: un tipo que borra el fichero al salir de ámbito, en todas las vías | Un solo mecanismo que cubre el éxito, el fallo de la síntesis y el de la reproducción; se prueba una vez | Tras un kill duro el fichero queda, y lo recoge `cleanup` |
+| **B. La vía daemon reproduce desde memoria y la directa usa el guardián** | La vía daemon no escribe en disco | Dos mecanismos; la vía directa necesita el fichero igualmente, porque el motor escribe su salida en una ruta; hay que añadir una reproducción desde bytes |
+
+**Recomendación: A.**
+
+**Decisión:** A (2026-09-30).
 
 ### D9 · Log del daemon y retención de los logs (S3) — C3
 
 **Problema.**
 
 - El daemon en segundo plano se lanza con sus salidas descartadas, así que se pierden
-  sus errores, incluidos los del Job Object que investiga C4.
+  sus errores.
 - El motor crea un log nuevo en cada arranque (`qwen3-tts_<pid>_<ms>.log`) y nada los
   borra.
 
@@ -484,10 +552,10 @@ Retención de las dos familias de logs, la del motor y la del daemon:
 | **R3. Por tamaño total** | Acota el disco | Más lógica; la poda depende del tamaño, no del número de ficheros |
 
 **Recomendación: A con R1 y K = 10 por familia.** La poda la hace el código que crea el
-log. Es lo más simple que cumple el criterio del informe y da el log que necesita el
-diagnóstico de C4.
+log. Es lo más simple que cumple el criterio del informe y da el log que necesita la
+verificación de C4.
 
-**Decisión:** pendiente.
+**Decisión:** A con R1 y K = 10 por familia (2026-09-30).
 
 ### D10 · Trazas internas en la terminal (S10) — C3
 
@@ -515,78 +583,153 @@ Nivel de las trazas:
 **Recomendación: A con N1.** Las trazas útiles para diagnosticar quedan en los logs del
 daemon y del motor. De paso, se corrige el comentario obsoleto de la inicialización.
 
-**Decisión:** pendiente.
+**Decisión:** A con N2 (2026-09-30). Sin `RUST_LOG`, los comandos de la CLI usan `warn` y
+el daemon `info`, que va a su log; si la variable está definida, manda en los dos.
 
-### D11 · Que el motor residente muera con el daemon (S2) — C4
+### D11 · Que el motor muera con el daemon (S2) — C4
 
-**Problema.** Si el daemon muere de forma abrupta, el motor residente sigue vivo, con el
-modelo en memoria y el puerto 8766 ocupado. Los dos sistemas están en situaciones
-distintas:
+**Problema.** El daemon lanza el motor en dos modos: el residente, que vive
+indefinidamente, y el de clonado, que dura decenas de segundos y también se lanza desde
+la CLI. Si el daemon muere de forma abrupta, los dos siguen vivos; el residente, con el
+modelo en memoria y el puerto 8766 ocupado.
 
-- **Windows.** Existe un Job Object que debería impedirlo, pero una prueba de extremo a
-  extremo vio sobrevivir al motor, y un fallo de ese mecanismo no deja rastro.
+- **Windows.** Un Job Object debería impedirlo, pero una prueba de extremo a extremo vio
+  sobrevivir al residente, y un fallo de ese mecanismo no deja rastro.
 - **Linux y macOS.** No existe ningún mecanismo.
 
 El motor es código C del repositorio y se puede modificar, registrando la divergencia.
 
-**Windows: la decisión se aplaza a la compuerta G-Diag de C4.** No hay causa confirmada.
-El ciclo registra en el log del daemon cada fallo de la asociación al Job y reproduce el
-kill duro. Hipótesis que contrastar:
-
-- **H1.** Falla una de las llamadas al Job, por ejemplo porque el proceso ya pertenece a
-  otro Job que impide la asociación.
-- **H2.** Otro proceso retiene por herencia un handle al Job, y el Job no se cierra al
-  morir el daemon.
-- **H3.** El proceso que se mató no es el asociado al Job; por ejemplo, con
-  `--auto-restart`.
-- **H4.** Un Job padre con permisos de salida deja al motor fuera del Job del daemon.
-
-**Unix: decisión que se puede tomar ya.**
+**D11.1 · Mecanismo y alcance.**
 
 | Alternativa | A favor | En contra |
 |---|---|---|
-| **A. `PR_SET_PDEATHSIG` al lanzar el motor** | No toca el motor; lo garantiza el kernel | Solo existe en Linux, no en macOS; la señal se dispara al morir el *hilo* que lanzó el proceso, no el proceso, así que hay que lanzar el motor desde un hilo que viva tanto como el daemon |
-| **B. El motor vigila a su padre**: el daemon mantiene abierto el extremo de escritura de una tubería conectada a la entrada estándar del motor, y el motor termina cuando lee fin de fichero | Funciona igual en Linux, macOS y Windows, así que también sirve de segunda defensa si el Job Object falla; lo garantiza el sistema operativo al cerrar los handles del proceso muerto | Modifica el motor vendorizado, lo que hay que registrar en sus divergencias; falta comprobar cómo trata hoy el motor su entrada estándar, y con ello el coste real del cambio |
-| **C. Grupo de procesos y kill al grupo desde el supervisor** | Sencillo | No sirve si el daemon muere por `SIGKILL`, que es justo el caso |
-| **D. No hacer nada en Unix** y documentar que el siguiente `daemon start` o `daemon stop` reclama al huérfano | Ningún trabajo | El huérfano retiene la memoria y el puerto hasta entonces |
+| **A. `PR_SET_PDEATHSIG` al lanzar el motor** | No toca el motor; lo garantiza el kernel | Solo existe en Linux, no en macOS; la señal se dispara al morir el *hilo* que lanzó el proceso, no el proceso |
+| **B. El motor vigila a su padre, en sus dos modos, y se retira el Job Object**: quien lanza el motor mantiene abierto el extremo de escritura de una tubería conectada a su entrada estándar, y el motor termina al leer fin de fichero | Un solo mecanismo en las tres plataformas, que cubre a los dos hijos de larga vida del daemon y también al clonado lanzado por la CLI; lo garantiza el sistema operativo al cerrar los handles del proceso muerto | Modifica el motor vendorizado; si el vigía falla no hay respaldo; un auxiliar de larga vida futuro necesitaría su propia tubería |
+| **C. B, conservando el Job Object como segunda defensa** | Doble protección en Windows | Dos mecanismos para lo mismo, y el Job ya falló sin dejar rastro |
+| **D. B solo para el residente, conservando el Job Object** | No toca el clonado | Dos mecanismos en Windows y el clonado huérfano en Linux y macOS |
+| **E. Grupo de procesos y kill al grupo desde el supervisor** | Sencillo | No sirve si el daemon muere por `SIGKILL`, que es justo el caso |
 
-**Recomendación: B.** Es el único mecanismo portable y cubre el caso del `SIGKILL`. Si
-en G-Diag se confirma que B también basta en Windows, el humano puede decidir allí si
-se conserva el Job Object como segunda defensa o se sustituye.
+Lo que respalda a B, comprobado en el código y con un experimento en Windows:
 
-**Decisión (Unix):** pendiente. **Decisión (Windows):** en el G-Diag de C4.
+- Los únicos hijos de larga vida del daemon son el residente y el clonado; `taskkill`,
+  `tasklist` y `kill` son instantáneos. El audio, la transcripción y la traducción
+  corren dentro del proceso. Así, el Job no cubre nada que B no cubra.
+- Ninguna prueba ejerce el Job; solo lo citan comentarios y documentación.
+- Ningún modo del motor lee su entrada estándar. El vigía es un hilo que lee hasta fin
+  de fichero y termina el proceso: unas 20-30 líneas en `main.c`, con el `pthread` que
+  el motor ya enlaza en las tres plataformas.
+- Tras un `TerminateProcess` del padre, sus hijos con la entrada en tubería vieron fin de
+  fichero en 2-3 s en 9 ejecuciones de 9, con otros lanzamientos concurrentes: el
+  extremo de escritura de una tubería de Rust no se hereda.
+- Terminar de golpe no deja un `.qvoice` roto en el almacén: el clonado escribe en un
+  temporal, que solo se entrega si terminó bien.
+
+Dos condiciones de diseño:
+
+- **El vigía se activa con un flag.** Hoy la entrada estándar del motor es nula y da
+  fin de fichero inmediato; sin el flag, el vigía mataría al motor al arrancar.
+- **El clonado deja de usar `Command::status()`.** Esa llamada cierra la tubería antes
+  de esperar al hijo; hay que lanzarlo con `spawn()`, conservar la tubería y esperar.
+
+**Recomendación: B.** Es el único mecanismo portable, cubre el `SIGKILL` y deja uno solo
+donde hoy hay uno que falla en Windows y ninguno en Unix. Con él, averiguar por qué falló
+el Job deja de ser necesario.
+
+**Decisión:** B (2026-09-30).
+
+**D11.2 · Herencia de la tubería en macOS.** En macOS, si el daemon lanza dos procesos a
+la vez, uno podría heredar el extremo de escritura de la tubería del otro y retrasar su
+cierre como mucho lo que dura un clonado. Es un riesgo teórico, sin verificar.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Aceptarlo y documentarlo** | Ningún código; el retraso está acotado y se resuelve solo | En ese caso, el motor tarda más en morir |
+| **B. Lanzar los procesos del daemon de uno en uno** | Elimina la ventana | Un cerrojo para un riesgo que nadie ha observado y que no se puede verificar sin un Mac |
+
+**Recomendación: A.**
+
+**Decisión:** A (2026-09-30).
 
 ### D12 · Artefactos de `self update` y el veredicto de `doctor` (S6) — C5
 
-**Problema.**
+**Problema.** Tras `self update` en Windows quedan dos restos, y `doctor` los cuenta como
+fallo (exit 1) hasta que otra operación de ciclo de vida los barre.
 
-- En Windows, un binario en ejecución no se puede borrar, así que `self update` aparca
-  el anterior como `.old-*`.
-- Ese aparcado solo lo recoge el barrido de la siguiente operación de ciclo de vida.
-  Mientras tanto, `doctor` lo cuenta como fallo y sale con exit 1.
-- El `.zip` descargado vive en un directorio de staging hermano del directorio del
-  programa. Su limpieza intenta borrarlo en el acto; si falla, programa un proceso
-  auxiliar que espera a que termine la CLI y lo borra; si también falla, lo deja para la
-  recuperación. En la prueba de extremo a extremo el staging quedó en disco, así que
-  alguno de esos pasos falló sin que se sepa cuál; se diagnostica en C5.
+- **El aparcado `.old-*` queda siempre.** Contiene el exe de la CLI que ejecuta la
+  actualización, y un binario en ejecución no se puede borrar. La transacción calcula la
+  lista de lo que no pudo borrar, pero la instalación la descarta y nadie programa su
+  borrado.
+- **El staging del `.zip` quedó en la prueba de extremo a extremo** aunque su limpieza
+  programa un auxiliar PowerShell que espera a que termine la CLI y lo borra. Ese
+  auxiliar falla sin dejar rastro, da por arrancado un script que no llegó a ejecutarse
+  si vence el plazo de espera, y no se separa del Job Object de la terminal, que lo mata
+  junto con la CLI. La causa concreta no está confirmada: un antivirus que retiene el
+  archivo, un Job externo o un script que no se ejecutó.
+- **Hoy no hay forma barata de pedir la limpieza.** Solo barren `self update`,
+  `self uninstall` y `cleanup`, y este último solo con una categoría de datos que borrar.
+- En Linux y macOS no hay problema: un binario en ejecución se puede borrar.
+
+**D12.1 · Borrado inmediato en Windows.**
 
 | Alternativa | A favor | En contra |
 |---|---|---|
-| **A. Barrer los aparcados al inicio de cualquier invocación** | El residuo desaparece en la invocación siguiente, `doctor` incluido; `doctor` sigue siendo estricto | Añade un listado de directorio a cada comando y una escritura a comandos de solo lectura; no debe tocar un binario que otra instancia esté usando |
-| **B. `doctor` trata los aparcados como aviso, no como fallo** | `doctor` no modifica nada | El residuo persiste hasta la próxima operación de ciclo de vida, que puede no llegar nunca |
-| **C. Programar el borrado del aparcado con el auxiliar que ya se usa para el staging** | Limpieza inmediata, sin esperar a otra invocación; reutiliza un mecanismo existente, pensado ya para los aparcados | Ese auxiliar no evitó que el staging quedara en disco en la prueba de extremo a extremo; hasta que el diagnóstico de C5 explique por qué, no se puede confiar en él |
-| **D. `doctor` barre antes de comprobar** | Arregla el caso de `doctor` | Un comando de diagnóstico que modifica el sistema; los demás comandos siguen sin barrer |
+| **A. Corregir el auxiliar PowerShell**: programar con él el borrado del aparcado a partir de la lista de restos; que deje rastro de su resultado y no dé por bueno un arranque sin confirmar; lanzarlo separado del Job Object de la terminal, y sin separarlo si el Job no lo permite | Un único mecanismo para el staging, el aparcado y `self uninstall`; ataca las tres causas candidatas del staging residual; cambio acotado | Sigue dependiendo de PowerShell, que una directiva de grupo puede bloquear; ese caso queda para la red de D12.2 |
+| **B. Un auxiliar en Rust: el binario nuevo se relanza en un modo oculto que borra** | Sin PowerShell; se prueba en Rust y escribe en el log del producto | No sirve para `self uninstall`, porque el binario está dentro del directorio que hay que borrar, así que quedarían dos mecanismos; añade un subcomando oculto al contrato |
+| **C. Invertir el traspaso: la CLI vieja lanza la nueva y termina, y la nueva reemplaza** | Nadie retiene el aparcado | Reescribe la transacción, con su diario, su rollback y su recuperación; desproporcionado para un síntoma de severidad baja o media |
+| **D. `MoveFileEx` con borrado al reiniciar** | Lo hace el sistema operativo | Exige privilegios de administrador, y ninguna operación del producto los pide; el resto dura hasta el siguiente reinicio |
 
-**Recomendación: A, y decidir en el G-Diag de C5 si se combina con C.**
+**Recomendación: A.** Es la única que cubre las tres rutas con un solo mecanismo y sin
+pedir elevación.
 
-- A reutiliza el barrido existente, que ya distingue qué aparcados se pueden recoger, y
-  hace de red de seguridad para cualquier residuo que el auxiliar no llegue a borrar.
-- C solo se añade si el diagnóstico de C5 encuentra y corrige el fallo del auxiliar;
-  entonces el aparcado desaparece sin esperar a la invocación siguiente.
-- Si el cambio deja sin uso la lista de restos de la transacción, se elimina en el mismo
-  ciclo.
+**Decisión:** A (2026-09-30).
 
-**Decisión:** la parte A, pendiente en G0; la combinación con C, en el G-Diag de C5.
+**D12.2 · Red para lo que el auxiliar no borre.** Hace falta aunque el auxiliar funcione:
+una directiva de grupo que bloquee PowerShell, un antivirus que retenga el archivo más
+que los reintentos, o un `doctor` ejecutado en el segundo que el auxiliar tarda en borrar.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. `doctor --repair`**, que toma el bloqueo y ejecuta el barrido existente | El arreglo está donde el usuario ve el fallo; `doctor` sin el flag sigue sin modificar nada; el barrido ya distingue lo que está en uso; no cuesta nada a los demás comandos | Un flag más en el contrato; la limpieza solo ocurre si el usuario la pide |
+| **B. `cleanup` sin categoría ejecuta solo el barrido** | Reutiliza un comando que ya barre | Cambia su contrato (sin categoría es `usage_error`) y mezcla la limpieza de restos con el borrado de datos del usuario, que es destructivo y pide confirmación |
+| **C. Barrido automático, en cada invocación o dentro de `doctor`** | No hay que pedirlo | En cada invocación, un listado de directorio y escrituras en todos los comandos, incluidos los de solo lectura; dentro de `doctor`, un diagnóstico que modifica el sistema |
+| **D. Solo el barrido actual** | Ningún código | La única pista posible es `self update`, que sale a la red, o `cleanup` con una categoría, que borra datos |
+
+**Recomendación: A.**
+
+**Decisión:** A (2026-09-30).
+
+**D12.3 · Veredicto de `doctor` sin `--repair` ante restos.**
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Fallo (exit 1) con la pista `doctor --repair`** | Con el auxiliar corregido, un resto que perdura es una anomalía real; el contrato de `checks` no cambia | Justo después de `self update`, mientras el auxiliar borra, falla por una carrera que la pista resuelve en un paso |
+| **B. Aviso con exit 0** | Sin falsos fallos en esa carrera | Requiere un nivel de severidad nuevo en el contrato de `checks` y oculta los restos que el auxiliar no pudo borrar |
+
+**Recomendación: A.**
+
+**Decisión:** A (2026-09-30).
+
+**D12.4 · Alcance de `--repair`.**
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Solo lo que recoge el barrido** (diario, aparcados, stagings huérfanos y temporales); después, `doctor` vuelve a evaluar y sale según el resultado | Acotado; reutiliza la lógica que ya decide qué es seguro borrar | No arregla otras filas, como las entradas duplicadas del PATH o los modelos que faltan |
+| **B. Todo lo que `doctor` sepa arreglar** | Un solo comando lo arregla todo | Descargas y cambios en el PATH desde un diagnóstico; alcance que ningún síntoma pide |
+
+**Recomendación: A.**
+
+**Decisión:** A (2026-09-30).
+
+**D12.5 · Diagnóstico previo.**
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Sin diagnóstico previo**: la verificación del ciclo reproduce `self update --force` y lee el rastro del auxiliar; si el staging sigue quedando, se abre un G-Desvío | La causa exacta no cambia el plan: D12.1 cubre las tres candidatas y D12.2 recoge el resto; una fase y una compuerta menos | La causa se confirma después de corregir, no antes |
+| **B. Reproducción instrumentada y G-Diag antes de corregir** | La causa se confirma antes de tocar el código | Instrumenta a mano un auxiliar que se va a reescribir, sin que el resultado cambie lo que se implementa |
+
+**Recomendación: A.**
+
+**Decisión:** A (2026-09-30).
 
 ### D13 · Versión de los esquemas (transversal)
 
@@ -601,13 +744,13 @@ Los cambios de esta iteración que suben un esquema son estos:
 
 - **Protocolo del daemon:** la unidad de `text_length` pasa a caracteres (C1).
 - **Sobre de la CLI:** los nuevos valores de `status` (D6 y D7) y la retirada de
-  `audio_path` (D8), los tres en C6.
+  `dry_run` (D7.3) y de `audio_path` (D8), todos en C6.
 - **Ninguno de los dos:** el cambio de código de salida de D5 no toca ninguna clave.
   Cambia el contrato, pero no el esquema, y se documenta en el CHANGELOG.
 
 | Alternativa | A favor | En contra |
 |---|---|---|
-| **A. Una subida por versión publicada**: la hace el primer ciclo que rompe un esquema, y los siguientes no la repiten hasta la publicación | El consumidor ve un solo salto por versión; los ciclos pueden publicarse por separado sin coordinarse | Si se publica entre dos ciclos que rompen el mismo esquema, habrá dos saltos, que es lo correcto |
+| **A. Una subida por versión publicada**: la hace el primer ciclo que rompe un esquema, y los siguientes no la repiten hasta la publicación | El consumidor ve un solo salto por versión; sigue siendo correcta si un ciclo posterior rompe otra vez el mismo esquema o si un hotfix obliga a publicar a mitad de la iteración | Si se publica entre dos ciclos que rompen el mismo esquema, habrá dos saltos, que es lo correcto |
 | **B. Una subida por ciclo** | Mecánico | Saltos de versión que ningún consumidor llega a ver |
 | **C. No subir** | Ningún trabajo | Incumple la política del propio contrato |
 
@@ -617,7 +760,11 @@ Los cambios de esta iteración que suben un esquema son estos:
   misma unidad que el tope de 500 caracteres de `--text`.
 - C6 sube el sobre de la CLI de 4 a 5.
 
-**Decisión:** pendiente.
+Con un solo release al final de la iteración y cada esquema roto en un único ciclo, A y
+B producen hoy el mismo resultado; A se prefiere porque sigue siendo correcta si eso
+cambia.
+
+**Decisión:** A (2026-09-30).
 
 ## 10. Ciclos
 
@@ -626,16 +773,16 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 
 ### C0 · Preparación y decisiones
 
-- **Objetivo:** dejar resueltas todas las decisiones que no dependen de un diagnóstico,
-  y los informes, al día.
+- **Objetivo:** dejar resueltas todas las decisiones y los informes, al día.
 - **Tarea del agente antes de G0:** presentar la sección 9.
 - **Compuerta:** G0. Si el humano elige una alternativa distinta de la recomendada, el
   agente ajusta las fichas de los ciclos afectados y las vuelve a presentar antes de
   abrir C1.
 - **Salida:**
-  - las decisiones D1 a D10, D13, la parte A de D12 y la parte Unix de D11, resueltas;
+  - las decisiones D1 a D13, resueltas;
   - el registro de progreso, creado;
-  - los informes actualizados, incluidos en el primer commit tras aprobar G0.
+  - los informes actualizados, incluidos en el primer commit tras aprobar G0;
+  - la rama `docs/decisiones-g0` integrada en `main`.
 
 ### C1 · Contrato de errores
 
@@ -655,7 +802,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
     directa coincide con ella en los compartidos;
   - la síntesis por daemon sin modelo sale con 4 y `model_missing`;
   - `--daemon` en `voice list`, `voice remove`, `speech list`, `speech play` y
-    `speech remove` sale con el código y el `reason` decididos;
+    `speech remove` sale con exit 2 y `daemon_not_supported`;
   - golden de `--temperature` fuera de rango, con un solo prefijo;
   - el `text_length` de «canción» es 7.
 - **Documentación:** el contrato, `speech`, `voice` y la descripción del protocolo del
@@ -693,14 +840,17 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   1. Log del daemon.
   2. Poda al crear un log, en las dos familias.
   3. Salida del motor durante el clonado hacia su log.
-  4. Nivel de trazas por proceso, corrigiendo de paso el comentario de la inicialización
-     de las trazas, que cita un esquema del sobre JSON ya superado.
+  4. Filtro de trazas configurable con `RUST_LOG`: sin la variable, `warn` en los
+     comandos de la CLI e `info` en el daemon. Corrige de paso el comentario de la
+     inicialización de las trazas, que cita un esquema del sobre JSON ya superado.
 - **Pruebas en rojo:**
   - tras N creaciones de log quedan K por familia;
   - un error del daemon en segundo plano aparece en su log;
-  - la salida humana de `voice clone` y de `setup` no contiene trazas internas.
+  - la salida humana de `voice clone` y de `setup` no contiene trazas internas;
+  - con `RUST_LOG=info`, `setup` vuelve a mostrar las trazas de la descarga.
 - **Documentación:** la política de logs en la documentación del daemon y de
-  `cleanup`.
+  `cleanup`, y la variable `RUST_LOG` allí donde se documentan las variables de
+  entorno.
 - **Cierra:** la ficha de logs de `residuos-en-disco-tras-comandos-correctos.md` y la
   ficha de trazas de `motor-residente-huerfano-y-trazas-fuera-del-log.md`.
 
@@ -710,40 +860,58 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   forma ordenada ni abrupta.
 - **Depende de:** C3.
 - **Síntomas:** S2 y S9.
-- **Decisiones:** D11, la parte Unix ya resuelta en G0 y la de Windows en G-Diag.
-- **Diagnóstico:**
-  - registrar en el log cada fallo de la asociación al Job;
-  - reproducir el kill duro con y sin `--auto-restart`;
-  - contrastar las hipótesis H1 a H4.
-- **G-Diag:** la causa confirmada y, si la corrección abre alternativas, su explicación
-  con argumentos y recomendación.
+- **Decisiones:** D11.1 (vigía por tubería en la entrada estándar y retirada del Job
+  Object) y D11.2 (retraso acotado en macOS, aceptado), resueltas en G0.
+- **Tareas:**
+  1. Vigía en el motor: un flag que arranca un hilo que lee la entrada estándar hasta
+     fin de fichero y termina el proceso, en los dos modos.
+  2. El residente y el clonado se lanzan con el flag y la entrada en tubería; el
+     clonado, con `spawn()` en lugar de `Command::status()`, conservando la tubería
+     hasta que termina.
+  3. Retirar el Job Object, su llamada y la feature de `windows-sys` si nada más la usa.
+  4. `daemon stop` borra `daemon.ready` además de `daemon.pid`.
 - **Pruebas en rojo:**
-  - tras matar el daemon a la fuerza no queda ningún proceso del motor ni nadie
-    escuchando en el puerto 8766; si no se puede automatizar, se documenta como
-    verificación manual;
-  - un fallo de la asociación al Job queda en el log;
+  - tras matar el daemon a la fuerza, con y sin `--auto-restart`, no queda ningún
+    proceso del motor ni nadie escuchando en el puerto 8766; si no se puede
+    automatizar, se documenta como verificación manual;
+  - lo mismo con un clonado en curso, sin que quede su `.qvoice` en el almacén;
+  - sin el flag, un motor lanzado con la entrada nula no termina al arrancar;
   - tras `daemon stop` no quedan ni `daemon.ready` ni `daemon.pid`;
   - la recuperación de un daemon caído a partir de `daemon.ready` sigue funcionando.
-- **Documentación:** la descripción del daemon, `MANUAL-VALIDATION.md` y las
-  divergencias del motor, si se aplica D11-B.
+- **Documentación:** la descripción del daemon sin el Job Object, `MANUAL-VALIDATION.md`,
+  las divergencias del motor, el retraso acotado de D11.2 en macOS y la entrada del
+  CHANGELOG.
 - **Cierra:** `motor-residente-huerfano-y-trazas-fuera-del-log.md` y la ficha de
   `daemon.ready` de `residuos-en-disco-tras-comandos-correctos.md`.
 
 ### C5 · Artefactos de `self update`
 
-- **Causa raíz:** los artefactos de la actualización solo se recogen en la siguiente
-  operación de ciclo de vida, y `doctor` los cuenta como fallo mientras tanto.
+- **Causa raíz:** nadie programa el borrado del aparcado, el auxiliar de borrado
+  diferido falla sin dejar rastro, y no hay forma de pedir la limpieza sin una operación
+  de ciclo de vida.
 - **Síntomas:** S6.
-- **Decisiones:** la parte A de D12, resuelta en G0, y su combinación con C, en G-Diag.
-- **Diagnóstico:** reproducir `self update --force` registrando el resultado de cada
-  paso de la limpieza del staging (borrado inmediato, borrado programado o conservación)
-  para ver cuál falla y por qué.
-- **G-Diag:** la causa del staging residual, la dirección de la corrección y si el
-  borrado programado es fiable para combinar D12-A con D12-C.
+- **Decisiones:** D12.1 a D12.5, resueltas en G0. Sin diagnóstico previo (D12.5).
+- **Tareas:**
+  1. Programar el borrado del aparcado con el auxiliar a partir de la lista de restos de
+     la transacción (D12.1).
+  2. Corregir el auxiliar: deja rastro de su resultado, no da por bueno un arranque sin
+     confirmar y se lanza separado del Job Object de la terminal, o sin separarlo si el
+     Job no lo permite (D12.1).
+  3. `doctor --repair`: toma el bloqueo, ejecuta el barrido y vuelve a evaluar (D12.2,
+     D12.4).
+  4. La fila de restos de `doctor` falla con la pista `doctor --repair` (D12.3).
 - **Pruebas en rojo:**
-  - tras `self update` y cualquier invocación posterior, solo queda lo instalado;
-  - `doctor` pasa.
-- **Documentación:** `self` y `doctor`.
+  - el auxiliar borra una ruta cuando el proceso que la bloquea termina, también
+    lanzado desde un proceso dentro de un Job Object con cierre por muerte;
+  - el auxiliar informa del fallo si la ruta sigue bloqueada al agotar los reintentos;
+  - tras `self update`, el aparcado y el staging desaparecen al terminar la CLI;
+  - `doctor` con restos sale con exit 1 y la pista; `doctor --repair` los recoge, no
+    toca lo que está en uso y sale con exit 0 si no queda ninguno;
+  - `doctor` sin el flag no modifica nada.
+- **Verificación:** reproducir `self update --force` en Windows y leer el rastro del
+  auxiliar. Si el staging sigue quedando, G-Desvío.
+- **Documentación:** `self`, `doctor` (el flag nuevo y su alcance) y la entrada del
+  CHANGELOG.
 - **Cierra:** la ficha de `self update` de `residuos-en-disco-tras-comandos-correctos.md`.
 
 ### C6 · JSON veraz y temporales
@@ -751,19 +919,36 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Causa raíz:** algunos sobres JSON describen lo que se pidió o lo que habría pasado,
   no lo que pasó, y quien crea un fichero temporal no siempre lo borra.
 - **Síntomas:** S7 y S8.
-- **Decisiones:** D6, D7, D8 y D13 (la subida del sobre de la CLI).
+- **Decisiones:** D6, D7, D8 y D13 (la subida del sobre de la CLI), resueltas en G0.
+- **Tareas:**
+  1. `daemon stop` sin daemon responde `status: "not_running"` y «El daemon no estaba
+     en ejecución», a partir del dato de la parada (D6).
+  2. Los simulacros de `self uninstall` y `cleanup` responden `status: "planned"`, y el
+     texto humano de `self uninstall --dry-run` deja de anunciar la desinstalación
+     (D7.1).
+  3. El simulacro de `self uninstall` alinea `removed` y `path_reverted` con la
+     ejecución real (D7.2).
+  4. Retirar `dry_run` de los sobres de `self uninstall` y `cleanup` (D7.3).
+  5. Un guardián único del WAV temporal en `say` y `dub`, por todas sus vías; se retira
+     `audio_path` del JSON y la ruta del texto humano (D8.1, D8.2).
+  6. Sobre de la CLI en la versión 5 (D13).
 - **Pruebas en rojo:**
-  - golden de `daemon stop` sin daemon, con el `status` decidido;
-  - golden de `self uninstall --dry-run` y de `cleanup --dry-run`, con el `status`
-    decidido y las mismas claves que la ejecución real;
-  - tras `speech say` (vía directa y daemon) y `speech dub` (vía directa, daemon y
-    composición), también cuando falla la reproducción, no queda ningún WAV temporal y
-    el JSON no contiene `audio_path`.
-- **Documentación:** el contrato, `speech`, `daemon`, `self` y `cleanup`.
+  - golden de `daemon stop` sin daemon, con `not_running` y exit 0;
+  - golden de `self uninstall --dry-run` y de `cleanup --dry-run`, con `planned`, sin
+    `dry_run` y con las mismas claves que la ejecución real;
+  - el `removed` del simulacro de `self uninstall` no incluye las rutas del barrido, y
+    su `path_reverted` coincide con el de la ejecución real sobre el mismo recibo;
+  - tras `speech say` y `speech dub`, por la vía directa y la daemon, también cuando
+    fallan la síntesis o la reproducción, no queda ningún WAV temporal y el JSON no
+    contiene `audio_path`;
+  - el sobre de la CLI declara `schema_version` 5.
+- **Documentación:** el contrato (valores de `status`, claves retiradas y versión 5 del
+  sobre), `speech`, `daemon`, `self`, `cleanup` y la entrada del CHANGELOG.
 - **Cierra:** `status-json-afirma-operaciones-no-realizadas.md` y
   `residuos-en-disco-tras-comandos-correctos.md`, que para entonces se queda sin fichas.
 - **Cierre de la iteración:** el agente propone eliminar este documento y su registro
-  de progreso, y lo presenta en la misma G-Resultado.
+  de progreso, y lo presenta en la misma G-Resultado. Con C6 integrado en `main`, se
+  abre G-Release.
 
 ## 11. Registro de progreso
 
@@ -775,7 +960,8 @@ disco y con `git log`.
 ```json
 {
   "decisions": {
-    "D1": { "status": "resolved", "choice": "B", "notes": "tope de 300 s", "date": "2026-10-01" }
+    "D1": { "status": "resolved", "choice": "B", "notes": "tope de 300 s", "date": "2026-10-01" },
+    "D11.1": { "status": "resolved", "choice": "B", "notes": "vigía por tubería en stdin", "date": "2026-10-01" }
   },
   "cycles": {
     "C1": {
@@ -790,12 +976,25 @@ disco y con `git log`.
       "foreign_changes": ["crates/xtask/src/clean.rs"],
       "commits": []
     }
-  }
+  },
+  "release": { "status": "pending", "gates": [], "version": null }
 }
 ```
 
+- **Subdecisiones.** Las subdecisiones numeradas (las de D7, D8, D11 y D12) se
+  registran con clave propia, como `D11.1` o `D12.3`, cada una con su estado, su
+  elección y su fecha. Las variantes de una alternativa sin numerar, como el A1 de D3,
+  van en `choice` (`"A con A1"`).
+- **`gate`** toma uno de estos valores, que corresponden a las compuertas del catálogo
+  de la sección 5.1: `g0`, `plan`, `diagnosis`, `tests`, `result`, `deviation` o
+  `release`. G-Desvío se registra en el ciclo donde ocurre.
+- **`release`** es un objeto de primer nivel, fuera de `cycles`, porque G-Release no
+  pertenece a ningún ciclo: guarda su estado, sus compuertas y la versión publicada.
 - **`phase`** toma uno de estos valores: `preparation`, `plan`, `diagnosis`,
-  `tests_red`, `implementation`, `verification`, `result` o `closed`.
+  `tests_red`, `implementation`, `verification`, `result` o `closed`. Cada uno
+  corresponde al paso de la sección 6 del mismo nombre: `plan` es G-Plan, `diagnosis` es
+  el diagnóstico y G-Diag, `tests_red` incluye G-Pruebas, `result` es G-Resultado y
+  `closed` marca el ciclo con sus commits integrados en `main`.
 - **`foreign_changes`** enumera los cambios que el humano tenía en el árbol de trabajo
   al abrir el ciclo. Nunca se incluyen en los commits del ciclo, y un rechazo no los
   revierte.
@@ -806,10 +1005,10 @@ disco y con `git log`.
 
 | Riesgo | Tratamiento |
 |---|---|
-| Un diagnóstico (C4, C5) no confirma ninguna hipótesis | G-Diag con los hallazgos parciales; el humano decide si se amplía el diagnóstico, se aplaza el ciclo o se acepta una mitigación documentada |
+| Tras corregir el auxiliar (C5), el staging sigue quedando en disco | G-Desvío con el rastro del auxiliar; el humano decide si se diagnostica la causa, se aplaza el ciclo o se acepta la red de `doctor --repair` como mitigación documentada |
 | Una decisión de G0 resulta inviable al implementarla | G-Desvío; la decisión se reabre con las alternativas actualizadas |
 | S14 no se reproduce | En el G-Plan de C2, D2 y su tarea salen del alcance y el síntoma se retira del informe |
 | La verificación del agente falla de forma repetida | Tras tres intentos, G-Desvío en lugar de seguir intentándolo |
 | El índice estructural del código queda desfasado entre ciclos | Resincronizarlo al cerrar cada ciclo que añada o elimine símbolos |
 | La sesión se interrumpe a mitad de un ciclo | Reanudar desde el registro de progreso, contrastándolo con el disco y con `git log` |
-| Los cambios incompatibles quedan repartidos entre varias versiones publicadas | La regla de D13: un salto por versión publicada y por esquema, y el CHANGELOG los acumula en `## [No publicado]` |
+| Un hotfix obliga a publicar a mitad de la iteración y reparte los cambios incompatibles entre dos versiones | La regla de D13: un salto por versión publicada y por esquema, y el CHANGELOG los acumula en `## [No publicado]` |
