@@ -112,17 +112,6 @@ fn size_of(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-pub(crate) fn human_size(bytes: u64) -> String {
-    const MB: f64 = 1024.0 * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else {
-        format!("{:.1} MB", b / MB)
-    }
-}
-
 /// Líneas del listado con su tamaño: directorios uno por línea; ficheros
 /// sueltos agrupados por (directorio, extensión) cuando hay 3 o más.
 fn summarize(paths: &[PathBuf]) -> Vec<(String, u64)> {
@@ -291,9 +280,9 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool) -> Result<()> {
         let mut total = 0u64;
         for (label, size) in summarize(&repo_paths) {
             total += size;
-            println!("  {:>9}  {}", human_size(size), label);
+            println!("  {:>10}  {}", avi_shared::human_bytes(size), label);
         }
-        println!("Total repo: {}", human_size(total));
+        println!("Total repo: {}", avi_shared::human_bytes(total));
     }
     if layer.wants_app() {
         println!(
@@ -504,11 +493,5 @@ mod tests {
                 "xtask/Cargo.toml no debe depender de `{dep}` (fin de la réplica)"
             );
         }
-    }
-
-    #[test]
-    fn human_size_units() {
-        assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
-        assert_eq!(human_size(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
     }
 }

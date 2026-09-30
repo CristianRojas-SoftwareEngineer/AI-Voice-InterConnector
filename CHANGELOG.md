@@ -139,6 +139,7 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - Todos los `.ps1` del repositorio pasan a ASCII puro y sin BOM: se retira la política anterior del BOM.
 - El job `test-bootstrap-windows` instala PowerShell 7 pineado (parámetro `pwsh_pin`) para que la suite no omita ese motor.
 - `MODEL_REVISIONS` pasa de tuplas a `&[ModelPin]` (`name`, `repo`, `revision`, `approx_bytes`) en `avi-shared`, y `MODEL_DOWNLOAD_ESTIMATE` desaparece: el tamaño de cada repo viaja junto a su revisión.
+- El formateador de tamaños (`human_bytes`) vive en `avi-shared` y lo comparten el producto y `cargo xtask clean`, que deja de etiquetar como `MB`/`GB` cifras divididas por 1024 y lista en escala binaria.
 - La clave de caché `target-v3` de CI incluye la identidad de los dos parches vendorizados.
 
 ### Documentación
