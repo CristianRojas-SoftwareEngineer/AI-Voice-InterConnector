@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 use serde_json::{json, Value};
@@ -85,14 +85,14 @@ impl AudioService {
                 let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
                 reader
                     .into_samples::<i32>()
-                    .filter_map(Result::ok)
-                    .map(|s| s as f32 / max_val)
-                    .collect()
+                    .map(|s| s.map(|s| s as f32 / max_val))
+                    .collect::<Result<Vec<f32>, _>>()
+                    .context("El archivo WAV está truncado o tiene muestras ilegibles")?
             }
             hound::SampleFormat::Float => reader
                 .into_samples::<f32>()
-                .filter_map(Result::ok)
-                .collect(),
+                .collect::<Result<Vec<f32>, _>>()
+                .context("El archivo WAV está truncado o tiene muestras ilegibles")?,
         };
 
         if spec.sample_rate != device_rate {
@@ -381,6 +381,9 @@ impl std::error::Error for WavLoadError {
     }
 }
 
+/// Mensaje con el que `hound` reporta una lectura que se queda sin bytes.
+const HOUND_SHORT_READ_MESSAGE: &str = "Failed to read enough bytes.";
+
 impl From<hound::Error> for WavLoadError {
     fn from(err: hound::Error) -> Self {
         match err {
@@ -388,6 +391,11 @@ impl From<hound::Error> for WavLoadError {
                 std::io::ErrorKind::NotFound => WavLoadError::NotFound,
                 // Un archivo truncado o vacío es contenido inválido, no un fallo del sistema.
                 std::io::ErrorKind::UnexpectedEof => WavLoadError::Invalid(io.to_string()),
+                // `hound` señala el fin de archivo prematuro con `ErrorKind::Other` y
+                // este texto fijo, no con `UnexpectedEof`; un WAV truncado es inválido.
+                std::io::ErrorKind::Other if io.to_string() == HOUND_SHORT_READ_MESSAGE => {
+                    WavLoadError::Invalid(io.to_string())
+                }
                 _ => WavLoadError::Io(io),
             },
             other => WavLoadError::Invalid(other.to_string()),
@@ -399,7 +407,8 @@ impl From<hound::Error> for WavLoadError {
 /// a PCM `i16` mono a 16 kHz, mismo formato que exige Parakeet y que ya produce
 /// `capture_16k_mono_pcm` para el micrófono. Los fallos se devuelven como
 /// `WavLoadError`: `NotFound` si el archivo no existe, `Invalid` si no es un WAV
-/// válido o soportado e `Io` para el resto de fallos de lectura.
+/// válido o soportado (incluido un WAV truncado, cuyas muestras declaradas no están
+/// en el archivo) e `Io` para el resto de fallos de lectura.
 pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
     let reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
@@ -409,14 +418,12 @@ pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoad
             let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
             reader
                 .into_samples::<i32>()
-                .filter_map(Result::ok)
-                .map(|s| s as f32 / max_val)
-                .collect()
+                .map(|s| s.map(|s| s as f32 / max_val))
+                .collect::<Result<Vec<f32>, _>>()?
         }
         hound::SampleFormat::Float => reader
             .into_samples::<f32>()
-            .filter_map(Result::ok)
-            .collect(),
+            .collect::<Result<Vec<f32>, _>>()?,
     };
 
     let mono = to_mono(&samples, spec.channels as usize);
@@ -426,8 +433,10 @@ pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoad
 
 /// Carga un WAV arbitrario y lo normaliza a PCM `i16` mono a 24 kHz, el formato
 /// que exige el clonado del motor Qwen3-TTS en `--ref-audio`. Simétrica a
-/// `load_wav_16k_mono_pcm` (que sirve a Whisper), pero a 24 kHz.
-pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>> {
+/// `load_wav_16k_mono_pcm` (que sirve a Whisper), pero a 24 kHz. Los fallos se
+/// devuelven como `WavLoadError` con la misma clasificación: un WAV truncado o que
+/// no es un WAV válido es `Invalid`.
+pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
     let reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
 
@@ -436,14 +445,12 @@ pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>> {
             let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
             reader
                 .into_samples::<i32>()
-                .filter_map(Result::ok)
-                .map(|s| s as f32 / max_val)
-                .collect()
+                .map(|s| s.map(|s| s as f32 / max_val))
+                .collect::<Result<Vec<f32>, _>>()?
         }
         hound::SampleFormat::Float => reader
             .into_samples::<f32>()
-            .filter_map(Result::ok)
-            .collect(),
+            .collect::<Result<Vec<f32>, _>>()?,
     };
 
     let mono = to_mono(&samples, spec.channels as usize);
@@ -662,6 +669,72 @@ mod tests {
         assert!(
             pcm.len() > 160,
             "debe quedar sobremuestreado a una tasa mayor"
+        );
+    }
+
+    /// Escribe en el directorio temporal un WAV válido de 200 muestras al que se le
+    /// recortan los últimos bytes, de modo que la cabecera declara más datos de los
+    /// que contiene el archivo.
+    fn write_truncated_wav(name: &str) -> std::path::PathBuf {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+        {
+            let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for i in 0..200 {
+                writer.write_sample((i * 100) as i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        let mut bytes = cursor.into_inner();
+        bytes.truncate(bytes.len() - 100);
+        let path =
+            std::env::temp_dir().join(format!("avi_audio_test_{name}_{}.wav", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_load_wav_16k_mono_pcm_truncated_is_invalid() {
+        let path = write_truncated_wav("truncado_16k");
+        let result = crate::load_wav_16k_mono_pcm(&path);
+        std::fs::remove_file(&path).ok();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::WavLoadError::Invalid(_)),
+            "obtenido: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_wav_24k_mono_pcm_truncated_is_invalid() {
+        let path = write_truncated_wav("truncado_24k");
+        let result = crate::load_wav_24k_mono_pcm(&path);
+        std::fs::remove_file(&path).ok();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::WavLoadError::Invalid(_)),
+            "obtenido: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_wav_24k_mono_pcm_garbage_bytes_is_invalid() {
+        let path = std::env::temp_dir().join(format!(
+            "avi_audio_test_basura_24k_{}.wav",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"esto no es un archivo wav, solo bytes basura").unwrap();
+        let result = crate::load_wav_24k_mono_pcm(&path);
+        std::fs::remove_file(&path).ok();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::WavLoadError::Invalid(_)),
+            "obtenido: {err:?}"
         );
     }
 

@@ -797,8 +797,9 @@ Si hay un [daemon](#modo-daemon) activo, el clonado corre en él y además preca
 la voz nueva en segundo plano (`"precomputed": true` con `--json`); en modo directo
 `precomputed` es siempre `false`.
 
-Si el clonado falla (por ejemplo, con un audio problemático), el comando termina
-con el código `voice_clone_failed` y no registra la voz.
+Si la referencia no es un WAV válido o está truncada, el comando termina con el
+código `invalid_audio` (exit 2) y no registra la voz; si falla el propio clonado,
+con `voice_clone_failed`.
 
 **Opciones:**
 - `--name, -n` (requerido): Nombre para la voz

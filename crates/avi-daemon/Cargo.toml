@@ -10,6 +10,7 @@ serde_json = "1.0"
 tokio = { version = "1.35", features = ["full"] }
 tokio-stream = "0.1"
 axum = "0.7"
+avi-audio = { path = "../avi-audio" }
 avi-core = { path = "../avi-core" }
 avi-process = { path = "../avi-process" }
 avi-store = { path = "../avi-store" }
@@ -32,5 +33,3 @@ native-translation = ["avi-translation/native-translation"]
 # sin abrir un socket TCP real (tower::ServiceExt::oneshot).
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-# Normalización de WAV a PCM 16 kHz mono para el test dorado de audio largo.
-avi-audio = { path = "../avi-audio" }

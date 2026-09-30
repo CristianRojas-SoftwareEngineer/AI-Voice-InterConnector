@@ -830,7 +830,9 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String)> {
 /// Normaliza `ref_audio` (WAV de cualquier tasa/canales) al formato que exige el
 /// clonado del motor —24 kHz / 16-bit / mono— escribiéndolo en un WAV temporal
 /// único y devolviendo su ruta. El motor rechaza referencias que no sean 24 kHz;
-/// el benchmark preprocesaba la referencia de la misma forma.
+/// el benchmark preprocesaba la referencia de la misma forma. El fallo de carga se
+/// propaga como `avi_audio::WavLoadError` dentro del `anyhow::Error`, de modo que
+/// quien llama lo recupera con `downcast_ref`.
 fn reference_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
     let pcm = avi_audio::load_wav_24k_mono_pcm(ref_audio)?;
     let unique = format!(
@@ -860,7 +862,9 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
 /// (`.qvoice` graft ICL) vía subprocess: `<bin> -d <model_dir> --ref-audio
 /// <ref> --save-voice <out> --voice-name <name> -l <language>`. La referencia se
 /// normaliza antes a 24 kHz mono (requisito del motor). Propaga el error con el
-/// exit code del proceso.
+/// exit code del proceso. Si la referencia no se puede cargar (WAV inválido,
+/// truncado o fallo de lectura), el error conserva el `avi_audio::WavLoadError`
+/// recuperable con `downcast_ref`.
 pub fn clone_voice(
     model_dir: impl AsRef<Path>,
     ref_audio: &Path,
@@ -868,9 +872,15 @@ pub fn clone_voice(
     name: &str,
     language: &str,
 ) -> Result<()> {
-    let bin = resolve_binary()
-        .ok_or_else(|| anyhow!("El binario de clonado Qwen3-TTS no está provisionado."))?;
+    // La referencia se carga antes de buscar el binario: un audio inválido se
+    // rechaza sin depender de que el motor esté provisionado.
     let ref_wav = reference_24k_mono(ref_audio)?;
+    let Some(bin) = resolve_binary() else {
+        let _ = std::fs::remove_file(&ref_wav);
+        return Err(anyhow!(
+            "El binario de clonado Qwen3-TTS no está provisionado."
+        ));
+    };
     let status = Command::new(&bin)
         .arg("-d")
         .arg(model_dir.as_ref())

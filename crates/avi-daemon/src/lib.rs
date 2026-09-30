@@ -1063,12 +1063,18 @@ async fn voices_clone_handler(
             }
             Some(Ok(Ok(v))) => v,
             Some(Ok(Err(e))) => {
+                // Una referencia ilegible se clasifica igual que en transcripción.
+                let reason = match e.downcast_ref::<avi_audio::WavLoadError>() {
+                    Some(avi_audio::WavLoadError::Invalid(_)) => "invalid_audio",
+                    Some(avi_audio::WavLoadError::Io(_)) => "io_error",
+                    _ => "voice_clone_failed",
+                };
                 emit_ndjson(
                     &tx,
                     json!({
                         "event": "error",
                         "name": event_name,
-                        "reason": "voice_clone_failed",
+                        "reason": reason,
                         "message": e.to_string(),
                     }),
                 )

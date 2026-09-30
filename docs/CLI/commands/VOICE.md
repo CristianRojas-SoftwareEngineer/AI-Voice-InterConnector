@@ -117,7 +117,7 @@ handler de clonado.
 5. Tras superar las validaciones baratas anteriores, el handler abre una respuesta streaming NDJSON (`application/x-ndjson`) emitiendo el evento inicial `{"event":"started", "name": "..."}`.
 6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `with_heartbeats`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) cada 500 ms (`STREAM_HEARTBEAT`). Si el cliente se desconecta, el daemon descarta el resultado; el clonado termina en segundo plano.
 7. Al completar el clonado, `voice_store.save_reference(name, tmp_qvoice)` persiste `reference.qvoice` (único archivo que el motor consulta; sin copia de los WAV de entrada).
-8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`warm_voice_engine`, emitiendo `{"event":"progress", "stage":"warmup"}`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "timbre": ..., "precomputed": true}` + `schema_version`. El calentamiento (~18-20 s en frío, acotado por el arranque del residente más el presupuesto del testigo) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada». Si el clonado falla, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
+8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`warm_voice_engine`, emitiendo `{"event":"progress", "stage":"warmup"}`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "timbre": ..., "precomputed": true}` + `schema_version`. El calentamiento (~18-20 s en frío, acotado por el arranque del residente más el presupuesto del testigo) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada». Si la referencia no se puede cargar, el clonado se interrumpe y emite `{"event":"error", "reason":"invalid_audio", "message": "..."}` (WAV inválido o truncado) o `{"event":"error", "reason":"io_error", "message": "..."}` (fallo de lectura); si falla el propio clonado o el guardado, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
 
 El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_stream` con un timeout de inactividad entre latidos de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`) y un deadline failsafe de 240 s (`STREAM_TOTAL_DEADLINE`), mapeando `reason` a exit code:
 
@@ -126,7 +126,8 @@ El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_strea
 | `invalid_voice_name` | 2 (`InvalidInput`) |
 | `voice_exists` | 6 (`StateConflict`) |
 | `model_missing` | 4 (`ModelMissing`) |
-| `audio_missing` / `audio_decode_error` | 2 (`InvalidInput`) |
+| `audio_missing` / `audio_decode_error` / `invalid_audio` | 2 (`InvalidInput`) |
+| `io_error` | 1 (`Error`) |
 | `voice_clone_failed` | 1 (`Error`) |
 | otro / desconocido | 1 (`Error`) |
 
@@ -224,7 +225,9 @@ copia).
 | Modelo de síntesis (`qwen3-tts-0.6b`) no provisionado | clone (ruta local) | 4 | `model_missing` |
 | Voz ya existe sin `--force` | clone | 6 | `voice_exists` |
 | Modelo Base de clonado no provisionado | clone (ruta local) | 4 | `model_missing` |
-| Falla `avi_tts::clone_voice` o `save_reference` | clone | 1 | `voice_clone_failed` |
+| Referencia que no es un WAV válido o está truncada | clone | 2 | `invalid_audio` |
+| Fallo de E/S al leer la referencia | clone | 1 | `io_error` |
+| Falla el motor de `avi_tts::clone_voice` o `save_reference` | clone | 1 | `voice_clone_failed` |
 | Daemon inalcanzable (inactividad 1500 ms / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
 | Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |
 | Voz de fábrica (`default`/`ryan`/`vivian`) | remove | 2 | `cannot_remove_default` |

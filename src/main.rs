@@ -1218,8 +1218,18 @@ async fn handle_voice(
             let cloned = avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name, "es")
                 .and_then(|()| voice_store.save_reference(&name, &tmp_qvoice));
             let _ = std::fs::remove_file(&tmp_qvoice);
-            let saved_qvoice = cloned
-                .map_err(|e| CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()))?;
+            let saved_qvoice = cloned.map_err(|e| {
+                // Una referencia ilegible se clasifica igual que en transcripción.
+                match e.downcast_ref::<avi_audio::WavLoadError>() {
+                    Some(avi_audio::WavLoadError::Invalid(_)) => {
+                        CliError::new(ExitCode::InvalidInput, "invalid_audio", e.to_string())
+                    }
+                    Some(avi_audio::WavLoadError::Io(_)) => {
+                        CliError::new(ExitCode::Error, "io_error", e.to_string())
+                    }
+                    _ => CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()),
+                }
+            })?;
             // El timbre y el habla quedan fundidos en `reference.qvoice` durante el
             // clonado; no se persisten WAV de referencia separados (nadie los lee).
             if json_mode {
@@ -4175,7 +4185,7 @@ async fn clone_via_daemon(
             "invalid_voice_name" => ExitCode::InvalidInput,
             "voice_exists" => ExitCode::StateConflict,
             "model_missing" => ExitCode::ModelMissing,
-            "audio_missing" | "audio_decode_error" => ExitCode::InvalidInput,
+            "audio_missing" | "audio_decode_error" | "invalid_audio" => ExitCode::InvalidInput,
             _ => ExitCode::Error,
         };
         return Err(CliError::new(
@@ -4188,7 +4198,7 @@ async fn clone_via_daemon(
         "invalid_voice_name" => ExitCode::InvalidInput,
         "voice_exists" => ExitCode::StateConflict,
         "model_missing" => ExitCode::ModelMissing,
-        "audio_missing" | "audio_decode_error" => ExitCode::InvalidInput,
+        "audio_missing" | "audio_decode_error" | "invalid_audio" => ExitCode::InvalidInput,
         _ => ExitCode::Error,
     })
     .await?;

@@ -118,4 +118,3 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 | [residuos-en-disco-tras-comandos-correctos.md](residuos-en-disco-tras-comandos-correctos.md) | Media | WAV temporales, `daemon.ready`, logs sin rotación ni log del daemon, y artefactos de `self update` |
 | [mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md](mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md) | Baja (media en la síntesis por daemon sin modelo) | Sin mapeo único de `reason` a código de salida: prefijo `Error:` duplicado, `daemon_unreachable` como comodín, síntesis por daemon con exit 1 y `text_length` en bytes |
 | [status-json-afirma-operaciones-no-realizadas.md](status-json-afirma-operaciones-no-realizadas.md) | Baja | `daemon stop` sin daemon dice `shutdown_sent` y el simulacro de `self uninstall` dice `uninstalled` |
-| [observaciones-menores.md](observaciones-menores.md) | Media | WAV truncado cargado sin error |

@@ -2126,6 +2126,30 @@ mod tts {
         format!("{}{}_{}", prefix, nanos, std::process::id())
     }
 
+    /// Escribe en el directorio temporal un WAV válido al que se le recortan los
+    /// últimos bytes: la cabecera declara más datos de los que contiene el archivo.
+    fn write_truncated_wav(label: &str) -> PathBuf {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+        {
+            let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for i in 0..1_600 {
+                writer.write_sample((i % 200) as i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        let mut bytes = cursor.into_inner();
+        bytes.truncate(bytes.len() - 400);
+        let path = std::env::temp_dir().join(format!("avi_{}.wav", unique_label(label)));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
     /// El WAV producido debe ser PCM s16le mono 24 kHz con muestras (spec del motor).
     /// Solo lo usan los E2E de síntesis que verifican WER real (native-stt).
     #[cfg(feature = "native-stt")]
@@ -2876,6 +2900,32 @@ mod tts {
         );
     }
 
+    /// Referencia truncada en la ruta local → 2 con `invalid_audio`.
+    #[test]
+    fn voice_clone_truncated_audio_exits_2() {
+        if !tts_clone_provisioned() {
+            eprintln!("[tts] skip: el clonado exige el modelo Base del motor Qwen3-TTS");
+            return;
+        }
+        let _guard = lock_tts();
+        let wav = write_truncated_wav("clon_truncado");
+        let name = unique_label("clon");
+        let (code, actual) = run_json(&[
+            "--json",
+            "--no-daemon",
+            "voice",
+            "clone",
+            "--name",
+            &name,
+            "--speech-reference",
+            wav.to_str().unwrap(),
+        ]);
+        std::fs::remove_file(&wav).ok();
+        let _ = avi_store::VoiceStore::new().remove(&name);
+        assert_eq!(code, 2, "referencia truncada → ExitCode::InvalidInput");
+        assert_eq!(actual["reason"], Value::String("invalid_audio".to_string()));
+    }
+
     // ─── daemon start/status/restart ────────────────────────────────
 
     /// IPv4 de la interfaz de salida, descubierta sin enviar tráfico (un `connect`
@@ -2901,7 +2951,9 @@ mod tts {
             return;
         }
         let inst = IsolatedInstance::new("loopback");
-        let port = inst.tts_port().expect("la instancia debe fijar QWEN3_TTS_PORT");
+        let port = inst
+            .tts_port()
+            .expect("la instancia debe fijar QWEN3_TTS_PORT");
         start_instance(&inst, &[]);
         let timeout = Duration::from_secs(3);
         let loopback = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -2920,7 +2972,9 @@ mod tts {
                     port
                 );
             }
-            None => eprintln!("[daemon] salto parcial: sin IPv4 no loopback, se omite la aserción de red"),
+            None => eprintln!(
+                "[daemon] salto parcial: sin IPv4 no loopback, se omite la aserción de red"
+            ),
         }
         stop_instance(&inst, "resident_listens_only_on_loopback");
         hit_end("tts::resident_listens_only_on_loopback");
@@ -2939,7 +2993,11 @@ mod tts {
             .expect("debe poder ejecutar el motor");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr);
-        assert!(stderr.contains("--host"), "stderr debe mencionar --host: {}", stderr);
+        assert!(
+            stderr.contains("--host"),
+            "stderr debe mencionar --host: {}",
+            stderr
+        );
     }
 
     #[test]
@@ -3749,6 +3807,43 @@ mod tts {
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "clone_delegates_to_daemon");
         hit_end("tts::clone_delegates_to_daemon");
+    }
+
+    /// Referencia truncada por daemon → 2 con `invalid_audio`, igual que en local.
+    #[test]
+    fn clone_daemon_truncated_audio_exits_2() {
+        let _tts = lock_tts();
+        hit_start_heavy("tts::clone_daemon_truncated_audio_exits_2");
+        let _reaper = arm_reaper("clone_daemon_truncado");
+        if !tts_clone_provisioned() {
+            eprintln!("[tts] skip: clonado exige Base");
+            hit_end("tts::clone_daemon_truncated_audio_exits_2 (skip sin Base)");
+            return;
+        }
+        let inst = IsolatedInstance::new("clone_truncado");
+        start_instance(&inst, &[]);
+        let a = inst.args();
+        let wav = write_truncated_wav("clon_daemon_truncado");
+        let name = unique_label("clon_daemon");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                wav.to_str().unwrap(),
+            ],
+            &a,
+        );
+        std::fs::remove_file(&wav).ok();
+        let _ = avi_store::VoiceStore::new().remove(&name);
+        stop_instance(&inst, "clone_daemon_truncado");
+        assert_eq!(code, 2, "referencia truncada por daemon → InvalidInput");
+        assert_eq!(actual["reason"], Value::String("invalid_audio".to_string()));
+        hit_end("tts::clone_daemon_truncated_audio_exits_2");
     }
 
     #[cfg(feature = "native-stt")]

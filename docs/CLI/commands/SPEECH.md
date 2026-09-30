@@ -382,7 +382,7 @@ solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 | `empty_text` | 2 | Texto a sintetizar o transcripción resultante vacíos |
 | `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera 500 caracteres Unicode |
 | `audio_too_long` | 2 | El audio de `dub` supera 40 s, o `--duration` es mayor que 40 |
-| `invalid_audio` | 2 | `--audio` no es un WAV decodificable (transcribe y dub) |
+| `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
 | `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `speech list --voice` ilegal) |
 | `unsupported_language_pair` | 2 | Traducción fuera de `{es-en, en-es}` |
 | `audio_not_found` | 3 | `--audio` en `transcribe` o `dub` apunta a un archivo inexistente |

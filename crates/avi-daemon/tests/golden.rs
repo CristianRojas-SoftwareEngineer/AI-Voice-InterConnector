@@ -437,6 +437,54 @@ async fn voices_clone_daemon_precomputed_true() {
     let _ = VoiceStore::new().remove(&name);
 }
 
+/// Una referencia WAV truncada (la cabecera declara más datos de los que hay)
+/// se rechaza en la carga, antes de invocar el motor de clonado, con un evento
+/// `error` de razón `invalid_audio`.
+/// Gate: modelo base TTS provisionado; sin él el handler responde `model_missing`
+/// antes de llegar a la carga del audio.
+#[tokio::test]
+async fn voices_clone_truncated_wav_emits_invalid_audio() {
+    if test_state().tts_engine.base_model_dir.is_none() {
+        eprintln!(
+            "[daemon] skip: modelo base TTS no provisionado — ejecuta setup --with-voice-cloning"
+        );
+        return;
+    }
+    // WAV PCM 16-bit mono 16 kHz: cabecera de 44 bytes que declara 3200 bytes de
+    // datos y solo 1000 presentes.
+    let mut wav = Vec::<u8>::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + 3200).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&3200u32.to_le_bytes());
+    wav.extend_from_slice(&[0u8; 1000]);
+    let name = format!("clon_truncado_{}", std::process::id());
+    let (status, bytes) = send(post_json(
+        "/voices/clone",
+        serde_json::json!({
+            "name": name,
+            "force": true,
+            "audio_b64": base64::engine::general_purpose::STANDARD.encode(&wav),
+        }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let last: Value = serde_json::from_str(text.lines().rfind(|l| !l.trim().is_empty()).unwrap())
+        .expect("cada línea debe ser JSON");
+    assert_eq!(last["event"], Value::String("error".to_string()));
+    assert_eq!(last["reason"], Value::String("invalid_audio".to_string()));
+    let _ = VoiceStore::new().remove(&name);
+}
+
 /// Warm-voice configurable: `run_daemon_server` con una `--warm-voice`
 /// inexistente aborta con `StartupError::WarmVoiceMissing`, porque la voz se
 /// valida antes de enlazar y de cargar modelos (por eso esta prueba no
