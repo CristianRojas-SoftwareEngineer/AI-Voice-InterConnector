@@ -1,0 +1,44 @@
+{
+  "decisions": {
+    "D1": { "status": "resolved", "choice": "B", "notes": "tope de duración de producto de 300 s en las dos vías; audio_too_long (exit 2)", "date": "2026-09-30" },
+    "D2": { "status": "resolved", "choice": "A", "notes": "tope de duración de la referencia en las dos vías; el valor se fija en el G-Plan de C2", "date": "2026-09-30" },
+    "D3": { "status": "resolved", "choice": "A con A1", "notes": "se elimina el dub por composición; un 404 en /dub da daemon_error (exit 1) pidiendo reiniciar el daemon", "date": "2026-09-30" },
+    "D4": { "status": "resolved", "choice": "B", "notes": "tabla única de reason a código de salida junto al enum ExitCode, en el crate del contrato", "date": "2026-09-30" },
+    "D5": { "status": "resolved", "choice": "B", "notes": "exit 2 con el reason daemon_not_supported", "date": "2026-09-30" },
+    "D6": { "status": "resolved", "choice": "A", "notes": "status not_running con exit 0, usando el was_running que ya calcula la parada", "date": "2026-09-30" },
+    "D7.1": { "status": "resolved", "choice": "A", "notes": "status planned único en los simulacros de self uninstall y cleanup; se corrige el texto humano", "date": "2026-09-30" },
+    "D7.2": { "status": "resolved", "choice": "A", "notes": "el simulacro de uninstall alinea removed (sin barrido) y path_reverted con la ejecución real", "date": "2026-09-30" },
+    "D7.3": { "status": "resolved", "choice": "A", "notes": "se retira la clave dry_run de self uninstall y cleanup", "date": "2026-09-30" },
+    "D8.1": { "status": "resolved", "choice": "A", "notes": "se borra el WAV temporal también si falla; se retira audio_path y la ruta del texto humano", "date": "2026-09-30" },
+    "D8.2": { "status": "resolved", "choice": "A", "notes": "guardián único que borra el temporal al salir de ámbito, en todas las vías", "date": "2026-09-30" },
+    "D9": { "status": "resolved", "choice": "A con R1", "notes": "stderr del daemon a un log por arranque; retención K = 10 por familia", "date": "2026-09-30" },
+    "D10": { "status": "resolved", "choice": "A con N2", "notes": "trazas del motor a su log; sin RUST_LOG, la CLI usa warn y el daemon info", "date": "2026-09-30" },
+    "D11.1": { "status": "resolved", "choice": "B", "notes": "vigía por tubería en la entrada estándar del motor; se retira el Job Object", "date": "2026-09-30" },
+    "D11.2": { "status": "resolved", "choice": "A", "notes": "el retraso acotado en macOS se acepta y se documenta", "date": "2026-09-30" },
+    "D12.1": { "status": "resolved", "choice": "A", "notes": "se corrige el auxiliar PowerShell de borrado diferido", "date": "2026-09-30" },
+    "D12.2": { "status": "resolved", "choice": "A", "notes": "doctor --repair ejecuta el barrido existente", "date": "2026-09-30" },
+    "D12.3": { "status": "resolved", "choice": "A", "notes": "doctor sin --repair falla (exit 1) ante restos, con la pista doctor --repair", "date": "2026-09-30" },
+    "D12.4": { "status": "resolved", "choice": "A", "notes": "--repair solo alcanza lo que recoge el barrido", "date": "2026-09-30" },
+    "D12.5": { "status": "resolved", "choice": "A", "notes": "sin diagnóstico previo; la verificación reproduce self update --force", "date": "2026-09-30" },
+    "D13": { "status": "resolved", "choice": "A", "notes": "una subida por versión publicada: protocolo del daemon 3 a 4 en C1, sobre de la CLI 4 a 5 en C6", "date": "2026-09-30" }
+  },
+  "cycles": {
+    "C0": {
+      "status": "closed",
+      "phase": "closed",
+      "gates": [
+        { "gate": "g0", "verdict": "approved", "date": "2026-09-30", "notes": "D1 a D13 resueltas" }
+      ],
+      "tasks": [],
+      "foreign_changes": [],
+      "commits": []
+    },
+    "C1": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C2": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C3": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C4": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C5": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C6": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] }
+  },
+  "release": { "status": "pending", "gates": [], "version": null }
+}
