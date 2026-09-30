@@ -173,7 +173,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `self update` | `status` (`updated` o `already_up_to_date` o `check`) · `reason` (`setup_failed` en el parcial) · `previous_version` · `version`/`latest` · `channel` · `current`/`update_available` (en `--check` y `already_up_to_date`) · `models_cause` (solo en el parcial) |
 | `self uninstall` | `status` · `reason` (`null`) · `removed` · `path_reverted` · `dry_run` |
 
-`status` toma los valores `installed` / `repaired` en `self install`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` en `self uninstall`. `schema_version` lo inyecta `emit_raw_json` y vale **`"4"`**; el protocolo del daemon sigue en `"3"` porque es otro contrato.
+`status` toma los valores `installed` / `repaired` en `self install`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` en `self uninstall`. `schema_version` lo inyecta `emit_raw_json` y vale **`"4"`**; el protocolo del daemon va por `"4"` porque es otro contrato.
 
 `--json` no cambia ninguna fila de éxito: el comando hace lo mismo y además emite su payload. La excepción es `setup_failed`, que sí cambia la salida, y por eso está declarado como salida por veredicto y no como error.
 

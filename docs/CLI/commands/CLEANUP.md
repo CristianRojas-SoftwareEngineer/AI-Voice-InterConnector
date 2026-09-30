@@ -45,7 +45,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 ## Ejecución, paso a paso
 
 1. **Gate de categoría**: sin categoría → `usage_error` (2), sin borrar nada.
-2. **Privilegios**: ninguna operación pide elevación. En Unix, si se detecta ejecución vía `sudo` (uid 0 con `SUDO_USER`), se aborta; root sin `sudo` (contenedores) sí se permite. En Windows, si el proceso está elevado, se avisa por stderr.
+2. **Privilegios**: ninguna operación pide elevación. En Unix, si se detecta ejecución vía `sudo` (uid 0 con `SUDO_USER`), se aborta con `sudo_not_supported` (1); root sin `sudo` (contenedores) sí se permite. En Windows, si el proceso está elevado, se avisa por stderr.
 3. **`--dry-run`**: imprime el plan, incluido el barrido que *se haría*, y termina con exit 0 **sin tomar el bloqueo, sin barrer y sin borrar**. El barrido no se ejecuta en la simulación porque lo que no puede coexistir con una simulación es modificar el disco (criterio 20); lo que sí hace es **anunciarlo con la misma decisión** del barrido real, de modo que lo que dice el `--dry-run` es lo que ocurriría.
 4. **Bloqueo y recuperación**: bloqueo exclusivo de SO y barrido transversal (aparcados `.old-*`, stagings huérfanos, temporales propios sin proceso vivo). El barrido va **antes** del plan, para que el plan que el usuario ve sea el que queda después y no una lista que el barrido va a invalidar.
 5. **Plan** y **confirmación destructiva** `[s/N]`.

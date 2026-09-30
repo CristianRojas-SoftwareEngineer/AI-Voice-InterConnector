@@ -34,7 +34,7 @@ ai-voice-interconnector doctor [--json]
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
 
-`schema_version` lo inyecta `emit_raw_json` y vale **`"4"`**. El protocolo del daemon sigue en `"3"`: son contratos independientes y este no lo toca.
+`schema_version` lo inyecta `emit_raw_json` y vale **`"4"`**. El protocolo del daemon va por `"4"`: son contratos independientes y este no lo toca.
 
 ### Las cuatro claves que se retiran
 

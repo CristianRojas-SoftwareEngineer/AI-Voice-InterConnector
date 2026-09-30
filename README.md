@@ -204,7 +204,7 @@ ai-voice-interconnector self update [--check] [--version X.Y.Z] [-f|--force] [--
 ai-voice-interconnector self uninstall [--keep-data] [--dry-run] [-y|--yes]
 ```
 
-Contrato estable (`--json` `schema_version="4"`, exit codes `0-22/130`) en `docs/CLI/CONTRACT.md`. El protocolo del daemon sigue en `schema_version="3"`: es un contrato independiente.
+Contrato estable (`--json` `schema_version="4"`, exit codes `0-22/130`) en `docs/CLI/CONTRACT.md`. El protocolo del daemon va por `schema_version="4"`: es un contrato independiente.
 
 ## Invocación desde cualquier lenguaje
 
