@@ -1764,13 +1764,14 @@ mod tests {
     }
 
     #[test]
-    fn test_target_v3_key_with_vendor_cmake_identity() {
+    fn test_target_v3_key_with_vendored_patches_identity() {
         let cfg = read_ci_config();
-        // El parche local de cmake se fingerprintea por mtime: el checkout lo marca
-        // Dirty y arrastra la cadena nativa. La clave exacta de target-v3 lleva el
-        // tree hash git del parche y NO tiene fallback, de modo que un acierto
-        // garantiza que target/ corresponde al contenido actual y fijar el mtime es
-        // seguro. Reintroducir un fallback fijaría mtimes sobre snapshots ajenos.
+        // Los parches locales de cmake y hf-hub se fingerprintean por mtime: el
+        // checkout los marca Dirty y arrastra lo que dependa de ellos. La clave
+        // exacta de target-v3 lleva el tree hash git de ambos y NO tiene fallback,
+        // de modo que un acierto garantiza que target/ corresponde al contenido
+        // actual y fijar el mtime es seguro. Reintroducir un fallback fijaría
+        // mtimes sobre snapshots ajenos.
         let restore_section = cfg
             .split("  cargo_restore_caches:")
             .nth(1)
@@ -1787,9 +1788,23 @@ mod tests {
             .unwrap_or("");
 
         let hash_cmd = "git rev-parse HEAD:vendor/cmake-0.1.58";
+        let touch_line = restore_section
+            .lines()
+            .find(|l| l.contains("touch -t 200001010000"))
+            .unwrap_or("");
+        for dir in ["vendor/cmake-0.1.58", "vendor/hf-hub-1.0.0"] {
+            assert!(
+                restore_section.contains(&format!("git rev-parse HEAD:{dir}")),
+                "cargo_restore_caches debe calcular el tree hash git de {dir}"
+            );
+            assert!(
+                touch_line.contains(dir),
+                "cargo_restore_caches debe fijar el mtime de {dir}"
+            );
+        }
         assert!(
-            restore_section.contains(hash_cmd),
-            "cargo_restore_caches debe calcular el tree hash git de vendor/cmake-0.1.58"
+            restore_section.contains(".vendor-patches.tree"),
+            "el tree hash de ambos parches debe escribirse en .vendor-patches.tree"
         );
         assert!(
             restore_section.contains("set -euo pipefail"),
@@ -1811,8 +1826,8 @@ mod tests {
             "target-v3 debe restaurarse con una única clave exacta, sin fallback por prefijo"
         );
         assert!(
-            restore_keys[0].contains(r#"checksum ".vendor-cmake.tree""#),
-            "la clave de target-v3 debe incluir el tree hash de vendor/cmake-0.1.58"
+            restore_keys[0].contains(r#"checksum ".vendor-patches.tree""#),
+            "la clave de target-v3 debe incluir el tree hash de los parches vendorizados"
         );
         let save_key = save_section
             .lines()
@@ -1830,17 +1845,22 @@ mod tests {
             .expect("cargo_restore_caches debe restaurar target-v3");
         let pos_touch = restore_section
             .find("touch -t 200001010000")
-            .expect("cargo_restore_caches debe fijar el mtime del parche");
+            .expect("cargo_restore_caches debe fijar el mtime de los parches");
         assert!(
             pos_hash < pos_restore,
             "el tree hash debe calcularse antes de restaurar target-v3"
         );
         assert!(
             pos_restore < pos_touch,
-            "el mtime del parche debe fijarse después de restaurar target-v3"
+            "el mtime de los parches debe fijarse después de restaurar target-v3"
         );
 
-        for leftover in ["sort -z", "sha256_hex", "target/.vendor-cmake.sha256"] {
+        for leftover in [
+            "sort -z",
+            "sha256_hex",
+            "target/.vendor-cmake.sha256",
+            ".vendor-cmake.tree",
+        ] {
             assert!(
                 !cfg.contains(leftover),
                 "la config no debe contener `{leftover}` (mecanismo de sello retirado)"
@@ -2052,7 +2072,10 @@ mod tests {
             .unwrap_or("");
         let cmd_lines: Vec<&str> = cmd.lines().collect();
         let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
-        for marker in ["- target-v3-", "name: Fijar mtime de vendor/cmake-0.1.58"] {
+        for marker in [
+            "- target-v3-",
+            "name: Fijar mtime de los parches vendorizados cmake y hf-hub",
+        ] {
             let i = cmd_lines
                 .iter()
                 .position(|l| l.trim().starts_with(marker))

@@ -370,7 +370,7 @@ externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 | Caché | Qué guarda | Jobs | Clave (se invalida cuando cambia…) |
 |-------|------------|------|------------------------------------|
 | `cargo-v2` (registry) | `~/.cargo/registry` y `~/.cargo/git`: las fuentes descargadas de crates | todos los que compilan | `arch`, `rust_pin` y el checksum de `Cargo.lock.cachekey`. Tiene fallback por prefijo. |
-| `target-v3` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58`. Sin fallback. |
+| `target-v3` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58` y de `vendor/hf-hub-1.0.0`. Sin fallback. |
 | `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (3 GiB) | los mismos jobs que `target-v3`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
 | `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_pin`. |
 | `msys2-v1` | la instalación de MSYS2 | `build-windows-x64` | los pines de MSYS2: release base, gcc, openblas y make. |
@@ -394,25 +394,49 @@ fallback, partiría siempre en frío. Se usa un transform de texto en lugar de
 `xtask` para no compilar `xtask` y su árbol de dependencias antes de restaurar
 la caché.
 
-#### Parche `vendor/cmake-0.1.58` en la clave de `target-v3`
+#### Parches vendorizados en la clave de `target-v3`
 
-El `Cargo.toml` raíz reemplaza el crate `cmake` por una copia parcheada local
-(`[patch.crates-io]`). Al ser un paquete local, cargo lo identifica por `mtime`,
-y el `mtime` nuevo del checkout lo marcaría `Dirty` en cada corrida, lo que
-arrastraría la recompilación de toda la cadena nativa que depende de él
-(`aws-lc-sys`, `onednn-src`, `sentencepiece-sys`, `ct2rs`) aunque su contenido
-no hubiera cambiado.
+El `Cargo.toml` raíz reemplaza dos crates por copias parcheadas locales
+(`[patch.crates-io]`): `cmake` (`vendor/cmake-0.1.58`) y `hf-hub`
+(`vendor/hf-hub-1.0.0`). Al ser paquetes locales, cargo los identifica por
+`mtime`, y el `mtime` nuevo del checkout los marcaría `Dirty` en cada corrida.
+Para `cmake` eso arrastraría la recompilación de toda la cadena nativa que
+depende de él (`aws-lc-sys`, `onednn-src`, `sentencepiece-sys`, `ct2rs`) aunque
+su contenido no hubiera cambiado.
 
-Para evitarlo, `cargo_restore_caches` escribe el tree hash git del parche
-(`git rev-parse HEAD:vendor/cmake-0.1.58`) en `.vendor-cmake.tree` y lo
+Para evitarlo, `cargo_restore_caches` escribe en `.vendor-patches.tree` el tree
+hash git de ambos directorios (`git rev-parse HEAD:vendor/cmake-0.1.58` y
+`git rev-parse HEAD:vendor/hf-hub-1.0.0`, una línea por directorio) y lo
 incorpora a la clave de `target-v3`. Como la clave no tiene fallback, un acierto
-garantiza que `target/` se compiló con el mismo contenido del parche, y es
-seguro fijarle un `mtime` antiguo (`touch -t 200001010000`) para que cargo lo
-vea `Fresh`. Si el parche cambia, cambia la clave y `target/` parte vacío. El
-paso aborta si el hash no tiene 40 caracteres hexadecimales, para no cachear
-nunca bajo una clave degenerada. Se usa git y no `find | sort` porque en el
-executor de Windows `sort` resuelve al `sort.exe` de System32, y el tree hash es
-además inmune a la conversión de fin de línea del checkout.
+garantiza que `target/` se compiló con el mismo contenido de los parches, y es
+seguro fijarles un `mtime` antiguo (`touch -t 200001010000`) para que cargo los
+vea `Fresh`. Si un parche cambia, cambia la clave y `target/` parte vacío. El
+paso aborta si alguna línea no tiene 40 caracteres hexadecimales, para no
+cachear nunca bajo una clave degenerada. Se usa git y no `find | sort` porque en
+el executor de Windows `sort` resuelve al `sort.exe` de System32, y el tree hash
+es además inmune a la conversión de fin de línea del checkout.
+
+##### Parche de `hf-hub`
+
+- **Qué cambia:** en la rama Windows de `create_pointer_symlink`
+  (`src/cache/storage.rs`), el puntero de `snapshots/` se crea como enlace duro
+  al blob en lugar de copiarlo. Si el sistema de archivos no admite enlaces
+  duros (FAT32, exFAT o algunos recursos de red), recurre a la copia, que es lo
+  que hace el crate original. En Unix el puntero sigue siendo un symlink.
+- **Por qué:** con la copia, cada archivo de modelo ocupaba el doble en disco
+  (`blobs/` y `snapshots/`). Con el enlace duro, el disco ocupado iguala a la
+  descarga y se conserva el layout de caché compartido con otras herramientas
+  de Hugging Face.
+- **Versión fijada:** la dependencia se declara como `=1.0.0`, de modo que
+  `[patch.crates-io]` no puede quedar sin efecto en silencio si el resolver
+  eligiera otra versión.
+- **Licencia y avisos:** la copia incluye el texto de Apache-2.0
+  (`LICENSE-APACHE`) y marca con `// Patch:` cada comentario o código
+  modificado en los archivos tocados (`src/cache/storage.rs` y
+  `src/repository/download.rs`).
+- **Cobertura:** la prueba `crates/avi-store/tests/hf_cache_layout.rs` descarga un
+  archivo desde un servidor local y afirma que puntero y blob son el mismo
+  archivo.
 
 #### Guardado
 
@@ -458,7 +482,7 @@ costo:
 | Cambio de fuentes del motor TTS (`vendor/qwen3-tts`, `third_party/ingot`) | `tts-v1` | Solo se recompila el motor TTS en `build-windows-x64`; el resto acierta. |
 | Cambio de los pines de MSYS2, gcc, openblas o make | `msys2-v1` y, con gcc u openblas, `tts-v1` | Reinstalación de MSYS2 y recompilación del motor TTS en `build-windows-x64`. |
 | Cambio real de dependencias Rust en `Cargo.lock` (añadir, quitar o actualizar crates sin tocar nativos) | `target-v3` (sin fallback) y `cargo-v2` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++: 2–5 min por job en Unix y ~11–15 min previstos en windows-x64. |
-| Edición del parche `vendor/cmake-0.1.58` o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | `target-v3`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
+| Edición del parche `vendor/cmake-0.1.58` o del parche `vendor/hf-hub-1.0.0`, o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | `target-v3`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche de cmake cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
 | Cambio de `rust_pin` | `toolchain-v1`, `cargo-v2`, `target-v3` y `sccache-v1` (todas llevan la versión en la clave) | Frío total: se reinstala Rust y se recompila todo, Rust y C/C++, sin ayuda de `sccache`. Referencia de `cargo build --release` en frío: `1969 s` en windows-x64, `1569 s` en linux-arm64, `956 s` en linux-x64 y `149 s` en darwin-arm64. |
 
 Causas ajenas al repositorio, que invalidan sin que cambie ningún archivo:
