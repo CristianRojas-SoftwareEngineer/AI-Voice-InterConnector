@@ -363,7 +363,7 @@ de `clap`); internamente se normalizan a `{es, en}` vía `resolve_stt_language`
 (daemon) — ambas funciones mapean
 `es-latam` → `es` y pasan cualquier otro valor verbatim. Los únicos pares de
 traducción provisionados por `setup` son `es-en` y `en-es`
-(`crates/avi-store/src/lib.rs`, `MODEL_REVISIONS`); cualquier otro par
+(`crates/avi-shared/src/paths.rs`, `MODEL_REVISIONS`); cualquier otro par
 resulta en exit 2 `unsupported_language_pair`.
 
 **Divergencia deliberada con `translate`.** El conjunto `{es-latam, en}` es

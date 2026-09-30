@@ -79,7 +79,7 @@ limitada, pero conviene explicitar sus supuestos:
 
 - El modelo se descarga desde HuggingFace con `ai-voice-interconnector setup` a la caché local,
   con la **revisión fijada por release** (commit hash auditado, declarado en
-  `crates/avi-store/src/lib.rs`, constante `MODEL_REVISIONS`): un push posterior al repo del modelo —
+  `crates/avi-shared/src/paths.rs`, constante `MODEL_REVISIONS`): un push posterior al repo del modelo —
   malicioso o accidental — no se propaga a los usuarios, y la detección de caché
   solo valida el snapshot de esa revisión en ambos repos (language pack y repo
   base). El alcance del pin es ese: protege contra cambios posteriores a la

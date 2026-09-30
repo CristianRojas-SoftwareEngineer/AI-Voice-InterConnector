@@ -537,7 +537,7 @@ quedan documentados aquí de forma autocontenida:
 - **La guarda de provisión TTS no aprovisiona.** `tts_model_registered()`
   solo consulta `doctor`; si faltan modelos, las pruebas pesadas se omiten.
   Para ejecutarlas hay que correr antes `ai-voice-interconnector setup`.
-  Reintroducir `setup` en la guarda descargaría ~9 GB en cada corrida de CI
+  Reintroducir `setup` en la guarda descargaría 4,4 GiB en cada corrida de CI
   sin obtener cobertura, porque el runner de tests no tiene el binario del
   motor ni los pesos locales.
 
@@ -690,20 +690,25 @@ de invocación (`--int4 -j 4 --stream`, `GenerationOptions::production()` temp
 
 `setup` descarga los pesos de HuggingFace Hub de forma nativa vía el crate
 **`hf-hub`** (rustls, sin OpenSSL: compila igual en los 4 targets) con barra de
-progreso **`indicatif`**, resume por Range y validación ETag/commit-hash del
-propio crate. No hay Python en la ruta de descarga.
+progreso **`indicatif`** y validación ETag/commit-hash del propio crate. `hf-hub`
+no reanuda por `Range`: una descarga interrumpida se repite completa. El crate está
+vendorizado y fijado a `=1.0.0` (`vendor/hf-hub-1.0.0`): los punteros de `snapshots/`
+son enlaces simbólicos en Unix y enlaces duros en Windows, por lo que el blob no se
+duplica en disco; si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos
+recursos de red), se copia el blob y el disco se duplica. No hay Python en la ruta de descarga.
 
 | Modelo lógico | Repo HF | Contenido |
 |---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Pesos TTS (síntesis) |
 | `marian-es-en` | `Helsinki-NLP/opus-mt-es-en` | Traducción es→en (CT2) |
 | `marian-en-es` | `Helsinki-NLP/opus-mt-en-es` | Traducción en→es (CT2) |
-| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (~600 MB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
+| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (640 MiB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz (opt-in `--with-voice-cloning`) |
 
-Los pines viven en `MODEL_REVISIONS` (`crates/avi-store/src/lib.rs`): tuplas
-`(nombre_lógico, repo, revisión)`. Actualizar una revisión es una acción
-deliberada y auditable.
+Los pines viven en `MODEL_REVISIONS` (`crates/avi-shared/src/paths.rs`): un `&[ModelPin]`
+con `name`, `repo`, `revision` y `approx_bytes` (tamaño medido de la descarga, del que sale la
+cifra que anuncia `setup`). Actualizar una revisión es una acción deliberada y auditable, y
+obliga a revisar también su tamaño.
 
 ### Ubicaciones en disco por SO
 

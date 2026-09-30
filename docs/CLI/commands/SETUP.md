@@ -14,7 +14,7 @@ ai-voice-interconnector setup [--with-voice-cloning] [--with-stt] [--force-updat
 
 | Flag | Default | Descripción |
 |---|---|---|
-| `--with-voice-cloning` | `false` | Añade a la selección el modelo Base de clonado `qwen3-tts-0.6b-base` (~2,5 GB), requerido por `voice clone` |
+| `--with-voice-cloning` | `false` | Añade a la selección el modelo Base de clonado `qwen3-tts-0.6b-base` (2,3 GiB), requerido por `voice clone` |
 | `--with-stt` | `false` | **Redundante**: `parakeet-tdt-v3` ya se provisiona siempre. Solo emite un aviso informativo por stderr |
 | `--force-update` | `false` | Purga la **selección** y la vuelve a provisionar. Es una operación destructiva: pide su propia confirmación |
 | `--yes`, `-y` | `false` | Omite la confirmación de la purga y la del tamaño pendiente |
@@ -49,7 +49,7 @@ El derivado es **obligatorio**, no opcional: sin él la traducción no funciona.
 
 ## Modelos provisionados (`MODEL_REVISIONS`)
 
-Cada modelo se fija por **commit hash** de HuggingFace, así que un push upstream no se propaga a los usuarios. Fuente: `crates/avi-store/src/lib.rs`.
+Cada modelo se fija por **commit hash** de HuggingFace, así que un push upstream no se propaga a los usuarios. Fuente: `crates/avi-shared/src/paths.rs`, donde cada entrada (`ModelPin`) lleva el nombre lógico, el repo, la revisión y el tamaño aproximado de su descarga.
 
 | Nombre lógico | Repo HF | Rol | Selección |
 |---|---|---|---|
@@ -59,7 +59,15 @@ Cada modelo se fija por **commit hash** de HuggingFace, así que un push upstrea
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (4 artefactos int8 vía `MODEL_FILE_PATTERNS`) | Siempre |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz | Opt-in `--with-voice-cloning` |
 
-Peso aproximado: ~9 GB la selección base, ~11,5 GB con `--with-voice-cloning`.
+**Tamaño.** La descarga es de 4,4 GiB para la selección base y de 6,8 GiB con `--with-voice-cloning` (el modelo de clonado suma 2,3 GiB). La cifra sale de la suma del tamaño medido de cada repo (`approx_bytes` de su `ModelPin`), y es la misma que anuncia la confirmación previa, en escala binaria y con un decimal:
+
+```
+Se descargarán 4 modelo(s), unos 4.4 GiB.
+```
+
+El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `snapshots/` como enlace simbólico en Unix y como enlace duro en Windows, así que el blob no se duplica. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), `hf-hub` copia el blob y el espacio en disco se duplica. Además, cada derivado CT2 ocupa unos 0,15 GiB.
+
+**Descarga interrumpida.** `hf-hub` no reanuda por `Range`: una descarga interrumpida se repite completa desde el primer byte del archivo afectado.
 
 **Dónde se descargan.** A la **caché exclusiva de la aplicación**, no a la caché HF del usuario: `models_cache_dir()` (`avi-store`), que es `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS y `$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux. La razón es que el borrado pueda ser de directorio entero sin tocar nada ajeno. **Si el usuario define `HF_HUB_CACHE` o `HF_HOME`, esa raíz pasa a ser compartida** y se respeta su elección: entonces `cleanup --model` limita el alcance a lo atribuible a la aplicación (regla R3) y `doctor` lo dice con `models.shared_root`.
 
@@ -135,7 +143,7 @@ No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a s
 
 ```bash
 ai-voice-interconnector setup                          # descarga la selección base (idempotente)
-ai-voice-interconnector setup --with-voice-cloning     # incluye el Base de clonado (~2,5 GB)
+ai-voice-interconnector setup --with-voice-cloning     # incluye el Base de clonado (2,3 GiB)
 ai-voice-interconnector setup --force-update           # purga la selección y re-descarga (confirma en TTY)
 ai-voice-interconnector setup --force-update --yes     # ídem, no interactivo
 ai-voice-interconnector --json setup                   # payload legible por máquina

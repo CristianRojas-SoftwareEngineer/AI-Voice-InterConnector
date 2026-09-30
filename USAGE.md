@@ -72,8 +72,11 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
 - **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
   funciona pero puede paginar (ralentizarse) en textos largos. `doctor` no mide
   ni la CPU ni la RAM.
-- **Disco**: ~9 GB para los modelos descargados (Qwen3-TTS ~4,7 GB + Marian
-  es↔en ~3 GB + Parakeet TDT v3 ~0,6 GB). El binario instalado ocupa ~40 MB.
+- **Disco**: 4,4 GiB para los modelos descargados (Qwen3-TTS 2,3 GiB + Marian
+  es↔en 1,5 GiB + Parakeet TDT v3 0,6 GiB), y 6,8 GiB con `--with-voice-cloning`. El disco
+  ocupa lo mismo que la descarga, salvo en sistemas de archivos sin enlaces duros (FAT32,
+  exFAT o algunos recursos de red), donde `hf-hub` copia cada archivo y el espacio se
+  duplica. El binario instalado ocupa ~40 MB.
 - **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
   funcionamiento.
 - **Linux — glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+ o equivalente):
@@ -137,15 +140,15 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 |---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
 | `marian-es-en` / `marian-en-es` | `Helsinki-NLP/opus-mt-*` | Traducción es↔en (derivado CT2: `model.bin` + `tokenizer.json` o `source.spm`+`target.spm`) |
-| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (~600 MB, ONNX int8) |
-| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (~2,5 GB, opt-in) | Clonado de voz (Base) |
+| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (0,6 GiB, ONNX int8) |
+| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (2,3 GiB, opt-in) | Clonado de voz (Base) |
 
 Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
-(`crates/avi-store/src/lib.rs`): mismo binario → mismos pesos. El Base es opt-in por peso (~11,5 GB total).
+(`crates/avi-shared/src/paths.rs`): mismo binario → mismos pesos. El Base es opt-in por peso (6,8 GiB en total con él). Una descarga interrumpida no se reanuda: `setup` repite el archivo completo.
 
 ```bash
 ai-voice-interconnector setup                        # descarga los 4 base (idempotente)
-ai-voice-interconnector setup --with-voice-cloning   # incluye Base para voice clone (~2,5 GB)
+ai-voice-interconnector setup --with-voice-cloning   # incluye Base para voice clone (2,3 GiB)
 ai-voice-interconnector setup --with-stt             # aceptado; redundante: STT ya va incluido
 ai-voice-interconnector setup --force-update         # purga los snapshots pinneados + xet y re-descarga
 ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación interactiva

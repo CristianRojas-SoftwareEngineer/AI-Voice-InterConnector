@@ -125,6 +125,10 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - La instalación de una línea en Windows (`irm … | iex`) funciona en PowerShell 5.1 y 7: `install.ps1` se publica en ASCII puro y sin BOM, y sus mensajes conservan las tildes cualquiera que sea la decodificación de `irm`.
 - `self install` sobre una caché vacía deja convertidos los derivados CT2 de traducción: install y `setup` comparten la provisión, que decide la conversión después de las descargas.
 - `doctor` pasa en una instalación sin clonado de voz: `models_provisioned` evalúa la selección guardada y el modelo Base opt-in no seleccionado ya no cuenta como faltante.
+- Los tamaños de los modelos que se publican coinciden con la realidad: la descarga es de 4,4 GiB para la selección base y de 6,8 GiB con `--with-voice-cloning`, y el disco ocupa lo mismo. La confirmación de `setup` y el resumen de `self install` anuncian la misma cifra, en escala binaria (`B`, `KiB`, `MiB`, `GiB`, `TiB`), calculada con el tamaño medido de cada repo fijado en lugar de una estimación fija por repo.
+- En Windows los archivos de `snapshots/` dejan de duplicar el blob: `hf-hub` (vendorizado y fijado a `=1.0.0`) los publica como enlaces duros, y como enlaces simbólicos en Unix. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), se copia el blob y el disco se duplica.
+- `cleanup` y `doctor` cuentan una sola vez los archivos con varios enlaces al medir el tamaño de la caché de modelos.
+- La documentación declara que `hf-hub` no reanuda las descargas por `Range`: una descarga interrumpida se repite completa.
 
 ### Interno
 
@@ -132,6 +136,8 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - La suite Pester ejecuta `irm | iex` real contra el servidor local con los dos motores (`powershell.exe` y `pwsh`), y una guarda rechaza BOM y bytes no ASCII en los `.ps1`.
 - Todos los `.ps1` del repositorio pasan a ASCII puro y sin BOM: se retira la política anterior del BOM.
 - El job `test-bootstrap-windows` instala PowerShell 7 pineado (parámetro `pwsh_pin`) para que la suite no omita ese motor.
+- `MODEL_REVISIONS` pasa de tuplas a `&[ModelPin]` (`name`, `repo`, `revision`, `approx_bytes`) en `avi-shared`, y `MODEL_DOWNLOAD_ESTIMATE` desaparece: el tamaño de cada repo viaja junto a su revisión.
+- La clave de caché `target-v3` de CI incluye la identidad de los dos parches vendorizados.
 
 ### Documentación
 
