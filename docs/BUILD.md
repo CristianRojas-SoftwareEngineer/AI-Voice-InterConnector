@@ -426,7 +426,9 @@ es además inmune a la conversión de fin de línea del checkout.
   (`src/cache/storage.rs`), el puntero de `snapshots/` se crea como enlace duro
   al blob en lugar de copiarlo. Si el sistema de archivos no admite enlaces
   duros (FAT32, exFAT o algunos recursos de red), recurre a la copia, que es lo
-  que hace el crate original. En Unix el puntero sigue siendo un symlink.
+  que hace el crate original. En Unix el puntero sigue siendo un symlink, y la
+  ruta relativa que necesita se calcula solo en esa rama: el original la
+  calcula para las dos y en Windows compila con un aviso de variable sin usar.
 - **Por qué:** con la copia, cada archivo de modelo ocupaba el doble en disco
   (`blobs/` y `snapshots/`). Con el enlace duro, el disco ocupado iguala a la
   descarga y se conserva el layout de caché compartido con otras herramientas

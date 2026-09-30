@@ -77,12 +77,14 @@ pub(crate) async fn create_pointer_symlink(
         std::fs::create_dir_all(parent)?;
     }
     let blob = blob_path(cache_dir, repo_folder, etag);
-    let pointer_parent = pointer.parent().unwrap();
-    let relative = pathdiff::diff_paths(&blob, pointer_parent).unwrap_or(blob);
     let _ = std::fs::remove_file(&pointer);
 
     #[cfg(not(windows))]
     {
+        // Patch: la ruta relativa del symlink se calcula solo aquí, la única rama
+        // que la usa; calculada fuera, Windows la dejaba sin usar.
+        let pointer_parent = pointer.parent().unwrap();
+        let relative = pathdiff::diff_paths(&blob, pointer_parent).unwrap_or(blob);
         match std::os::unix::fs::symlink(&relative, &pointer) {
             Ok(()) => {},
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
@@ -95,7 +97,6 @@ pub(crate) async fn create_pointer_symlink(
         // privilegios), de modo que puntero y blob ocupan el disco una sola vez.
         // Si el sistema de archivos no admite enlaces duros (FAT32/exFAT, algunos
         // recursos de red) se copia el blob, como hace el upstream.
-        let blob = blob_path(cache_dir, repo_folder, etag);
         match std::fs::hard_link(&blob, &pointer) {
             Ok(()) => {},
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
