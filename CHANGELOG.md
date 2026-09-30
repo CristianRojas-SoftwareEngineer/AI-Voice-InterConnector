@@ -114,6 +114,7 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - Una `--warm-voice` inexistente en `daemon start` o `daemon serve` sale al instante con `voice_not_found` (exit 3), antes de enlazar el puerto y de cargar los modelos.
 - Si el daemon muere durante el arranque, `daemon start` y `daemon restart` lo detectan al momento y salen con `daemon_error` (exit 1), con el estado de salida del proceso en el mensaje, en lugar de agotar la espera de 10 s.
 - `--auto-restart` ya no reintenta los fallos previos a que el daemon esté listo (puerto ocupado, voz inexistente, fallo al cargar el estado): son terminales y salen con su código. Solo se reintentan las caídas de un daemon que llegó a servir.
+- Todo tamaño que se muestra al usuario usa escala decimal (`B`, `KB`, `MB`, `GB`, `TB`), y la simulación de `cleanup` y `uninstall` lo anuncia con esa unidad en lugar de en bytes.
 
 ### Corregido
 
@@ -126,7 +127,7 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - La instalación de una línea en Windows (`irm … | iex`) funciona en PowerShell 5.1 y 7: `install.ps1` se publica en ASCII puro y sin BOM, y sus mensajes conservan las tildes cualquiera que sea la decodificación de `irm`.
 - `self install` sobre una caché vacía deja convertidos los derivados CT2 de traducción: install y `setup` comparten la provisión, que decide la conversión después de las descargas.
 - `doctor` pasa en una instalación sin clonado de voz: `models_provisioned` evalúa la selección guardada y el modelo Base opt-in no seleccionado ya no cuenta como faltante.
-- Los tamaños de los modelos que se publican coinciden con la realidad: la descarga es de 4,4 GiB para la selección base y de 6,8 GiB con `--with-voice-cloning`, y el disco ocupa lo mismo. La confirmación de `setup` y el resumen de `self install` anuncian la misma cifra, en escala binaria (`B`, `KiB`, `MiB`, `GiB`, `TiB`), calculada con el tamaño medido de cada repo fijado en lugar de una estimación fija por repo.
+- Los tamaños de los modelos que se publican coinciden con la realidad: la descarga es de 4,7 GB para la selección base y de 7,3 GB con `--with-voice-cloning`, y el disco ocupa lo mismo. La confirmación de `setup` y el resumen de `self install` anuncian la misma cifra, en escala decimal (`B`, `KB`, `MB`, `GB`, `TB`), calculada con el tamaño medido de cada repo fijado en lugar de una estimación fija por repo.
 - En Windows los archivos de `snapshots/` dejan de duplicar el blob: `hf-hub` (vendorizado y fijado a `=1.0.0`) los publica como enlaces duros, y como enlaces simbólicos en Unix. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), se copia el blob y el disco se duplica.
 - `cleanup` y `doctor` cuentan una sola vez los archivos con varios enlaces al medir el tamaño de la caché de modelos.
 - La documentación declara que `hf-hub` no reanuda las descargas por `Range`: una descarga interrumpida se repite completa.
@@ -139,11 +140,10 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - Todos los `.ps1` del repositorio pasan a ASCII puro y sin BOM: se retira la política anterior del BOM.
 - El job `test-bootstrap-windows` instala PowerShell 7 pineado (parámetro `pwsh_pin`) para que la suite no omita ese motor.
 - `MODEL_REVISIONS` pasa de tuplas a `&[ModelPin]` (`name`, `repo`, `revision`, `approx_bytes`) en `avi-shared`, y `MODEL_DOWNLOAD_ESTIMATE` desaparece: el tamaño de cada repo viaja junto a su revisión.
- - El formateador de tamaños (`human_bytes`) vive en `avi-shared` y lo comparten el producto y `cargo xtask clean`, que deja de etiquetar como `MB`/`GB` cifras divididas por 1024 y lista en escala binaria.
- - `cargo xtask clean --prune` poda solo lo regenerable barato de `target/` (`incremental/`, cachés efímeras, targets cruzados ajenos al host y `.pdb` de más de 7 días) y conserva la compilación vigente; el defecto sin flag no cambia. El hook `post-merge` de `.githooks/` (opt-in con `git config core.hooksPath .githooks`) lo ejecuta tras integrar en `main` cuando el merge invalida cachés y `target/` supera 10 GB, `cargo xtask doctor` avisa con la fila opcional `target-hygiene`, y `docs/BRANCHING.md` fija la estrategia de ramas (`main` + transitorias con `merge --no-ff`) para mantenedores y agentes.
- - La clave de caché `target-v3` de CI incluye la identidad de los dos parches vendorizados.
- - El ajuste de consola a UTF-8 deja de vivir solo en el producto: es el helper compartido `avi_shared::force_utf8_console` (`avi-shared`, dependencia del sistema solo en Windows), llamado al arrancar por el producto y por `cargo xtask`, así que `doctor` y demás subcomandos muestran las tildes bien en la PowerShell tal como viene configurada.
- - Los tamaños visibles pasan a escala decimal (`B`, `KB`, `MB`, `GB`, `TB`): `human_bytes` divide por 1000, la descarga base se anuncia como 4,7 GB (7,3 GB con clonado) y los umbrales de `target/` (`doctor` y hook `post-merge`) son 10 GB decimales (10 000 000 000 bytes, medidos en bytes en el hook).
+- El formateador de tamaños (`human_bytes`) vive en `avi-shared` y lo comparten el producto y `cargo xtask clean`, que deja de etiquetar como `MB`/`GB` cifras divididas por 1024.
+- `cargo xtask clean --prune` poda solo lo regenerable barato de `target/` (`incremental/`, cachés efímeras, targets cruzados ajenos al host y `.pdb` de más de 7 días) y conserva la compilación vigente; el defecto sin flag no cambia. El hook `post-merge` de `.githooks/` (opt-in con `git config core.hooksPath .githooks`) lo ejecuta tras integrar en `main` cuando el merge invalida cachés y `target/` supera 10 GB decimales (10 000 000 000 bytes, medidos con `du -sk`, portable entre Linux, macOS y Git Bash), `cargo xtask doctor` avisa con la fila opcional `target-hygiene`, y `docs/BRANCHING.md` fija la estrategia de ramas (`main` + transitorias con `merge --no-ff`) para mantenedores y agentes.
+- La clave de caché `target-v3` de CI incluye la identidad de los dos parches vendorizados.
+- El ajuste de consola a UTF-8 deja de vivir solo en el producto: es el helper compartido `avi_shared::force_utf8_console` (`avi-shared`, dependencia del sistema solo en Windows), llamado al arrancar por el producto y por `cargo xtask`, así que `doctor` y demás subcomandos muestran las tildes bien en la PowerShell tal como viene configurada.
 
 ### Documentación
 

@@ -8,7 +8,7 @@
 #   - la rama actual es `main` (los merges fuera de `main` no podan);
 #   - el merge tocó dependencias o toolchain (Cargo.lock, manifiestos,
 #     vendor/, toolchain o pines), que es lo que deja hashes obsoletos;
-#   - `target/` supera PRUNE_THRESHOLD_GB GB decimales (se mide en bytes).
+#   - `target/` supera PRUNE_THRESHOLD_GB GB decimales (10 000 000 000 bytes).
 #
 # La poda delega en `cargo xtask clean --prune --yes`, que conserva la
 # compilación vigente: el siguiente build sigue siendo incremental.
@@ -39,11 +39,14 @@ changed=$(git diff --name-only HEAD@{1} HEAD 2>/dev/null) || exit 0
 echo "$changed" | grep -qE '^(Cargo\.lock|Cargo\.toml|crates/[^/]+/Cargo\.toml|vendor/|rust-toolchain(\.toml)?|packaging/pins\.json)' || exit 0
 
 if [ -d target ]; then
-  size_bytes=$(du -sb target 2>/dev/null | cut -f1)
-  case "$size_bytes" in
+  # `-s` y `-k` son las únicas opciones de `du` que POSIX garantiza (GNU,
+  # macOS y Git Bash); `-b` es exclusiva de GNU y en macOS dejaría el gancho
+  # mudo. Se mide en KiB y se pasa a bytes para comparar con el umbral decimal.
+  size_kb=$(du -sk target 2>/dev/null | cut -f1)
+  case "$size_kb" in
     ''|*[!0-9]*) exit 0 ;;
   esac
-  [ "$size_bytes" -gt $((PRUNE_THRESHOLD_GB * 1000 * 1000 * 1000)) ] || exit 0
+  [ $((size_kb * 1024)) -gt $((PRUNE_THRESHOLD_GB * 1000 * 1000 * 1000)) ] || exit 0
 else
   exit 0
 fi
