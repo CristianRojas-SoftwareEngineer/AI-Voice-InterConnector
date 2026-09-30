@@ -8,8 +8,8 @@
 | Componente | daemon (`crates/avi-daemon/src/lib.rs`, router y handlers) y CLI (`src/main.rs`, clientes de la vía daemon) |
 | Versión detectada | 0.25.0 |
 | Plataforma | no depende de la plataforma |
-| Reproducibilidad | por verificar; ninguno de los dos síntomas se ha reproducido |
-| Detectado en | revisión del código de la vía daemon de transcripción y dub, 2026-09-29 |
+| Reproducibilidad | por verificar; ninguno de los tres síntomas se ha reproducido |
+| Detectado en | revisión del código de la vía daemon de transcripción, dub y clonado, 2026-09-29 y 2026-09-30 |
 
 ## Resumen
 
@@ -17,8 +17,9 @@ En la vía daemon hay dos límites de transporte que no tienen nada que ver con 
 límites del producto y que deciden qué audio se puede procesar: el tamaño máximo por
 defecto del cuerpo de las peticiones y un plazo de 1500 ms pensado para conectar que
 acota una inferencia completa. El resultado es que un audio largo que la vía directa
-transcribe bien falla por daemon con un error que no explica la causa. El síntoma 1
-afecta al daemon vigente y a grabaciones legítimas.
+procesa bien falla por daemon con un error que no explica la causa. Los síntomas 1 y 3
+afectan al daemon vigente: el 1 a la transcripción de grabaciones legítimas y el 3 a la
+referencia del clonado de voz.
 
 ## Entorno
 
@@ -26,7 +27,7 @@ Lectura del código fuente de v0.25.0, con axum 0.7.9 según `Cargo.lock`.
 
 ## Precondiciones
 
-Daemon activo y un WAV de 16 kHz mono de la duración indicada en cada síntoma.
+Daemon activo y un WAV del formato y la duración indicados en cada síntoma.
 
 ## Pasos para reproducir
 
@@ -50,6 +51,10 @@ límite, o dividir el audio.
 
 Síntoma 2: solo afecta a un daemon anterior a la ruta `/dub`. Workaround: actualizar el
 daemon.
+
+Síntoma 3: impide clonar por daemon con una referencia de alta calidad de pocos segundos
+(unos 9 s en WAV de 44,1 kHz estéreo). Workaround: `--no-daemon`, o convertir la
+referencia a 16 kHz mono.
 
 ## Evidencia
 
@@ -110,16 +115,48 @@ Recogida en cada síntoma.
 - **Criterio:** una prueba con un daemon simulado que tarda más de 1,5 s en responder a
   `/transcribe` comprueba que el dub por composición no falla con `daemon_unreachable`.
 
+### 3. El daemon rechaza con 413 las referencias de clonado de más de ~1,5 MB
+
+- **Severidad:** media. `voice clone --daemon` (y el modo automático con el daemon
+  activo) falla con referencias de pocos segundos si el WAV tiene alta frecuencia de
+  muestreo o es estéreo, y la vía directa las acepta.
+- **Síntoma (probable):** `voice clone --name prueba --speech-reference ref.wav` con una
+  referencia de más de ~1,5 MB y el daemon activo termina en exit 1 con `reason`
+  `daemon_error` y el mensaje «error del daemon (HTTP 413 Payload Too Large)». Con
+  `--no-daemon` la misma referencia se clona.
+- **Reproducción:** con el daemon activo, clonar por daemon con un WAV de 44,1 kHz
+  estéreo de 16 bits y 12 s (~2,1 MB).
+- **Causa (confirmada por lectura del código; el 413 concreto es probable, por el mismo
+  límite por defecto que el síntoma 1):** `clone_via_daemon` (`src/main.rs`) lee el
+  fichero de referencia completo, tal como está en disco, y lo envía en base64 dentro
+  del JSON, junto con la referencia de timbre si se indica. No comprueba la duración ni
+  el tamaño. `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`) recibe el cuerpo con
+  el extractor `Json`, sujeto al límite por defecto de 2 MB, y el base64 aumenta el
+  tamaño un tercio, así que las dos referencias juntas no pueden pasar de ~1,5 MB. Por
+  formato, eso son unos 49 s en WAV de 16 kHz mono (32 000 bytes por segundo) y unos 9 s
+  en WAV de 44,1 kHz estéreo (176 400 bytes por segundo). El 413 no trae cuerpo JSON,
+  así que el cliente lo convierte en `daemon_error`.
+- **Esperado:** una regla de producto sobre la referencia, igual en las dos vías, en
+  lugar de un límite de transporte que depende del formato del fichero: un tope de
+  duración que se rechaza con `reason` identificable y un límite de cuerpo coherente con
+  ese tope.
+- **Criterio:** una prueba de integración del router envía a `/voices/clone` una
+  referencia de más de 1,5 MB y dentro del tope decidido y no recibe 413; una referencia
+  por encima del tope recibe un rechazo con `reason` identificable en las dos vías.
+
 ## Diagnóstico sugerido
 
-Confirmar los dos síntomas con una reproducción: el 1 con un WAV de más de 49 s contra
-el daemon actual y el 2 con un daemon sin `/dub`. El 1 es el prioritario porque afecta
-al daemon vigente. Su corrección necesita decidir el techo del cuerpo y que el cliente
-lea el `reason` del rechazo, lo que enlaza con el mapeo único de errores.
+Confirmar los tres síntomas con una reproducción: el 1 con un WAV de más de 49 s contra
+el daemon actual, el 2 con un daemon sin `/dub` y el 3 con una referencia de 44,1 kHz
+estéreo de más de 9 s. Los síntomas 1 y 3 son los prioritarios porque afectan al daemon
+vigente y comparten corrección: decidir los topes de producto, derivar de ellos el
+límite del cuerpo y que el cliente lea el `reason` del rechazo, lo que enlaza con el
+mapeo único de errores. El tope de la referencia debe partir de cuánta referencia
+aprovecha realmente el motor al clonar.
 
 ## Criterio de aceptación
 
-Se cumplen los criterios de los dos síntomas.
+Se cumplen los criterios de los tres síntomas.
 
 ## Relacionados
 

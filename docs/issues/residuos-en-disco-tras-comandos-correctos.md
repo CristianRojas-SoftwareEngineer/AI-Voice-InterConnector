@@ -53,14 +53,27 @@ Al final de la sesión E2E había 21 logs del motor en `data/logs/`.
 
 ## Análisis de causa
 
-### 1. `speech say` deja WAV en `%TEMP%`
+### 1. `speech say` y `speech dub` dejan WAV en `%TEMP%` o informan de uno ya borrado
 
-- **Síntoma:** cada `speech say` deja un `avi_say_<pid>.wav` en el directorio temporal.
-  Solo desaparecen con `cleanup`.
-- **Causa (confirmada):** `src/main.rs` escribe `avi_say_{pid}.wav` en
-  `std::env::temp_dir()` en las vías directa y daemon, y no lo borra tras reproducirlo.
-- **Esperado:** el temporal se borra al terminar la reproducción, también si falla.
-- **Criterio:** tras `speech say`, `%TEMP%` no contiene `avi_say_*.wav`.
+- **Síntoma:** los dos comandos sintetizan a un WAV temporal para reproducirlo y
+  devuelven su ruta en `audio_path` (en modo humano, en «Reproduciendo: …» y «Doblaje
+  reproducido: …»). Según la vía:
+  - `speech say` por la vía directa deja `avi_say_<pid>.wav` en el directorio temporal;
+  - `speech say` por la vía daemon lo borra, pero después de emitir su ruta, así que
+    `audio_path` apunta a un fichero que ya no existe; si la reproducción falla, sale
+    antes de borrarlo y el WAV queda en disco;
+  - `speech dub` deja `avi_dub_<pid>.wav` en todas sus vías: directa, daemon y la
+    composición para daemons sin `/dub`.
+
+  Los que quedan solo desaparecen con `cleanup`.
+- **Causa (confirmada):** `src/main.rs` escribe los temporales en `std::env::temp_dir()`
+  y cada vía gestiona su vida por su cuenta: solo `say_via_daemon` borra el fichero, y lo
+  hace al final, sin cubrir el fallo de la reproducción ni retirar la ruta del JSON.
+- **Esperado:** quien crea el temporal lo borra al terminar la reproducción, también si
+  falla, en todas las vías, y el JSON no informa de una ruta que no va a existir.
+- **Criterio:** tras `speech say` y `speech dub`, por todas sus vías y también cuando
+  falla la reproducción, `%TEMP%` no contiene `avi_say_*.wav` ni `avi_dub_*.wav`, y el
+  JSON no contiene una ruta a un fichero inexistente.
 
 ### 2. `daemon.ready` queda en `data/` tras `daemon stop`
 
@@ -88,24 +101,36 @@ Al final de la sesión E2E había 21 logs del motor en `data/logs/`.
 - **Criterio:** tras N arranques quedan como mucho los K logs más recientes; existe un
   log del daemon con el arranque, el bind y los errores.
 
-### 4. `self update` deja `.old-*` y el `.zip` en el directorio del programa
+### 4. `self update` deja el binario aparcado y el staging con el `.zip`
 
-- **Síntoma:** tras `self update --force`, el directorio del programa contiene el
-  binario anterior aparcado (`.old-*`) y el `.zip` descargado. `doctor` informa
+- **Síntoma:** tras `self update --force` quedan el binario anterior aparcado (`.old-*`)
+  en el directorio del programa y el `.zip` descargado. `doctor` informa
   `pending_artifacts` con un aparcado hasta que el barrido lo recoge, un rato después.
-- **Causa (por verificar):** el binario anterior no se puede borrar en caliente en
-  Windows y se aparca por diseño; queda por ver por qué el `.zip` no se borra tras
-  extraerlo y por qué el barrido tarda.
-- **Esperado:** el `.zip` se borra al extraerlo, y el aparcado se recoge en la siguiente
-  invocación, sin que `doctor` lo marque como fallo mientras tanto.
-- **Criterio:** tras `self update` y otra invocación cualquiera, el directorio del
-  programa solo contiene lo instalado y `doctor` pasa.
+- **Causa (parcial):**
+  - El binario anterior no se puede borrar en caliente en Windows y se aparca por
+    diseño. Solo lo recoge el barrido que ejecutan las operaciones de ciclo de vida
+    (`self update`, instalación, desinstalación y `cleanup`); mientras tanto, `doctor`
+    lo cuenta como fallo.
+  - El `.zip` no se descarga en el directorio del programa, sino en un directorio de
+    staging hermano (`.ai-voice-interconnector-staging-update-<versión>`, junto al
+    directorio del programa). Al terminar, `cleanup_staging`
+    (`crates/avi-lifecycle/src/update.rs`) intenta borrarlo; si está en uso, en Windows
+    programa su borrado con un proceso auxiliar desacoplado que espera a que termine el
+    proceso en curso, y si tampoco puede, lo deja para el barrido. Queda por ver cuál de
+    esos pasos falló para que el staging sobreviviera.
+- **Esperado:** el staging desaparece al terminar la actualización, y el aparcado se
+  recoge sin esperar a otra operación de ciclo de vida, sin que `doctor` lo marque como
+  fallo mientras tanto.
+- **Criterio:** tras `self update` y otra invocación cualquiera, junto al directorio del
+  programa no queda ningún staging, el directorio del programa solo contiene lo
+  instalado y `doctor` pasa.
 
 ## Diagnóstico sugerido
 
 Los síntomas 1 y 2 tienen corrección local y caben en un mismo parche. El 3 es el
 prioritario porque el log del daemon es requisito para diagnosticar el residente
-huérfano. El 4 necesita una reproducción instrumentada de `self update`.
+huérfano. El 4 necesita una reproducción instrumentada de `self update` que registre el
+resultado de la limpieza del staging.
 
 ## Criterio de aceptación
 

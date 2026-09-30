@@ -5,7 +5,7 @@
 | Estado | abierto |
 | Severidad | baja |
 | Tipo | contrato |
-| Componente | CLI (`src/main.rs`, rama de `daemon stop`) y ciclo de vida (`self uninstall`) |
+| Componente | CLI (`src/main.rs`, rama de `daemon stop`) y ciclo de vida (`self uninstall` y `cleanup`) |
 | Versión detectada | 0.25.0 |
 | Plataforma | Windows 11 con PowerShell 5.1; ninguna de las causas depende de la plataforma |
 | Reproducibilidad | siempre |
@@ -13,10 +13,10 @@
 
 ## Resumen
 
-Dos comandos devuelven un `status` que describe una operación que no ha ocurrido:
-`daemon stop` sin daemon dice que envió el apagado, y `self uninstall --dry-run` dice
-que desinstaló. El código de salida es correcto en los dos, pero un consumidor que lea
-solo el `status` saca una conclusión falsa.
+Tres comandos devuelven un `status` que describe una operación que no ha ocurrido:
+`daemon stop` sin daemon dice que envió el apagado, `self uninstall --dry-run` dice que
+desinstaló y `cleanup --dry-run` dice que limpió. El código de salida es correcto en los
+tres, pero un consumidor que lea solo el `status` saca una conclusión falsa.
 
 ## Entorno
 
@@ -42,7 +42,7 @@ El `status` describe lo que ha pasado, no lo que habría pasado ni lo que se pid
 ## Impacto y workaround
 
 Afecta a los scripts que leen el `status`. Workaround: en `daemon stop`, consultar antes
-`daemon status`; en el simulacro, leer también `dry_run`.
+`daemon status`; en los simulacros, leer también `dry_run`.
 
 ## Evidencia
 
@@ -72,16 +72,30 @@ Recogida en cada síntoma.
   `would_uninstall`.
 - **Criterio:** prueba golden del dry-run con el `status` decidido.
 
+### 3. `cleanup --dry-run --json` devuelve `status: "cleanup_complete"`
+
+- **Síntoma:** el simulacro no modifica el disco (correcto), pero el sobre dice
+  `status: "cleanup_complete"` junto a `dry_run: true`, y la lista `removed` contiene
+  las rutas que se borrarían, no las borradas.
+- **Causa (confirmada por lectura del código):** `simulate`
+  (`crates/avi-lifecycle/src/cleanup.rs`) construye el mismo resultado que la limpieza
+  real, con el mismo `status` y las mismas claves, para que el simulacro y la ejecución
+  se puedan comparar. El único rastro de que no pasó nada es `dry_run: true`.
+- **Esperado:** el mismo criterio que en el síntoma 2: un `status` que no afirme el
+  hecho, conservando claves comparables con la ejecución real.
+- **Criterio:** prueba golden del dry-run con el `status` decidido.
+
 ## Diagnóstico sugerido
 
-Las causas están confirmadas y las correcciones son locales, pero las dos cambian un
+Las causas están confirmadas y las correcciones son locales, pero las tres cambian un
 contrato de máquina. Antes de implementarlas hay que decidir los valores nuevos de
 `status`, si el cambio exige subir `schema_version` y cómo se anuncia en el CHANGELOG.
-Conviene decidir las dos a la vez para que sigan el mismo criterio.
+Conviene decidir las tres a la vez para que sigan el mismo criterio, y los dos
+simulacros con un mismo valor.
 
 ## Criterio de aceptación
 
-Decisión registrada en el contrato JSON y se cumplen los criterios de los dos síntomas.
+Decisión registrada en el contrato JSON y se cumplen los criterios de los tres síntomas.
 
 ## Relacionados
 

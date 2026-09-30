@@ -90,8 +90,15 @@ Tras `Stop-Process -Force` sobre el daemon, `qwen_tts` seguía vivo y escuchando
 - **Síntoma:** en modo humano, la descarga de modelos (backend xet de Hugging Face) y
   `voice clone` vuelcan en la terminal las trazas de progreso y los logs del motor, que
   tapan el resumen del comando.
-- **Causa (por verificar):** la biblioteca de descarga escribe su propio progreso y el
-  motor hereda o reenvía su stderr durante el clonado.
+- **Causa (confirmada por lectura del código):**
+  - `main` (`src/main.rs`) inicializa el subscriber de `tracing` sin filtro: el nivel
+    queda fijo en `info` y todo sale por stderr. Así, cualquier traza `info` de una
+    dependencia, entre ellas las del backend xet durante la descarga, llega a la
+    terminal. El comentario de esa inicialización, además, cita el esquema 3 del sobre
+    JSON, cuando la CLI ya va por el 4.
+  - `clone_voice` (`crates/avi-tts/src/lib.rs`) lanza el motor con `.status()` sin
+    redirigir su salida, así que el motor hereda la terminal. El motor residente del
+    daemon, en cambio, sí escribe su stderr en un log.
 - **Esperado:** en modo humano, una sola línea de progreso del producto; las trazas
   internas van al log.
 - **Criterio:** `voice clone` y `setup` en modo humano muestran solo mensajes propios.

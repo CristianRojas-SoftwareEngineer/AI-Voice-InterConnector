@@ -113,8 +113,8 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 | Documento | Severidad | Síntoma |
 |---|---|---|
-| [daemon-rechaza-o-corta-audios-largos.md](daemon-rechaza-o-corta-audios-largos.md) | Media | La vía daemon rechaza con 413 los audios de más de ~49 s y el dub antiguo corta la transcripción a los 1500 ms |
+| [daemon-rechaza-o-corta-audios-largos.md](daemon-rechaza-o-corta-audios-largos.md) | Media | La vía daemon rechaza con 413 los audios de transcripción de más de ~49 s y las referencias de clonado de más de ~1,5 MB, y el dub antiguo corta la transcripción a los 1500 ms |
 | [motor-residente-huerfano-y-trazas-fuera-del-log.md](motor-residente-huerfano-y-trazas-fuera-del-log.md) | Media | Un kill duro del daemon deja vivo al motor residente pese al Job Object, y las trazas internas salen por la terminal |
 | [residuos-en-disco-tras-comandos-correctos.md](residuos-en-disco-tras-comandos-correctos.md) | Media | WAV temporales, `daemon.ready`, logs sin rotación ni log del daemon, y artefactos de `self update` |
 | [mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md](mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md) | Baja (media en la síntesis por daemon sin modelo) | Sin mapeo único de `reason` a código de salida: prefijo `Error:` duplicado, `daemon_unreachable` como comodín, síntesis por daemon con exit 1 y `text_length` en bytes |
-| [status-json-afirma-operaciones-no-realizadas.md](status-json-afirma-operaciones-no-realizadas.md) | Baja | `daemon stop` sin daemon dice `shutdown_sent` y el simulacro de `self uninstall` dice `uninstalled` |
+| [status-json-afirma-operaciones-no-realizadas.md](status-json-afirma-operaciones-no-realizadas.md) | Baja | `daemon stop` sin daemon dice `shutdown_sent`, y los simulacros de `self uninstall` y `cleanup` dicen `uninstalled` y `cleanup_complete` |

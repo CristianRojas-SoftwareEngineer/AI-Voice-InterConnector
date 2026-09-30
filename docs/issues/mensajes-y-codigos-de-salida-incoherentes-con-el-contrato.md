@@ -82,15 +82,17 @@ se emplea para errores que no son de conexión.
 
 ### 2. `--daemon` en comandos solo locales dice «Daemon inalcanzable»
 
-- **Síntoma:** con el daemon **activo**, `voice list --daemon`, `speech list --daemon` y
-  `speech play --daemon` salen con exit 5 y el mensaje «Daemon inalcanzable en
-  127.0.0.1:8765».
+- **Síntoma:** con el daemon **activo**, `voice list --daemon`, `voice remove --daemon`,
+  `speech list --daemon`, `speech play --daemon` y `speech remove --daemon` salen con
+  exit 5 y el mensaje «Daemon inalcanzable en 127.0.0.1:8765».
 - **Causa (confirmada):** `require_local` (`src/main.rs`) rechaza `--daemon` en los
   comandos que no se delegan, pero reutiliza el código, el `reason` y el texto del
-  daemon inalcanzable.
+  daemon inalcanzable. La documentación de `speech` y de `voice` recoge ese exit 5 con
+  `daemon_unreachable` como comportamiento, así que corregirlo es un cambio de contrato.
 - **Esperado:** rechazarlo es lo previsto. El mensaje debe decir que ese comando se
   ejecuta siempre en local y no admite `--daemon`, y el código más adecuado sería el de
-  uso inválido (2). Hay que decidirlo contra el contrato.
+  uso inválido (2). Hay que decidirlo contra el contrato y actualizar la documentación
+  de los dos comandos.
 - **Criterio:** con el daemon activo o detenido, el mensaje no afirma que el daemon sea
   inalcanzable.
 
