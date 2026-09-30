@@ -697,14 +697,14 @@ fn summary(plan: &DeletionPlan) -> Vec<String> {
         out.push(format!(
             "Se borrarán {} ruta(s), {} en total:",
             plan.targets.len(),
-            human_bytes(plan.total_bytes())
+            crate::human_bytes(plan.total_bytes())
         ));
         for target in &plan.targets {
             out.push(format!(
                 "  {} {} ({})",
                 target.category.as_str(),
                 target.path.display(),
-                human_bytes(target.size)
+                crate::human_bytes(target.size)
             ));
         }
     }
@@ -716,22 +716,6 @@ fn summary(plan: &DeletionPlan) -> Vec<String> {
         ));
     }
     out
-}
-
-/// Tamaño legible. Mismo criterio de unidades que el resto del producto.
-fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
 }
 
 /// Borra una ruta del plan, sea archivo o directorio.

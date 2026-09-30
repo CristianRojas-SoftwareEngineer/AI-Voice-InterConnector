@@ -196,6 +196,40 @@ impl std::fmt::Display for LifecycleError {
 
 impl std::error::Error for LifecycleError {}
 
+/// Tamaño legible en escala binaria (B, KiB, MiB, GiB, TiB) con un decimal.
+/// Es el único formateador de tamaños del producto: cada unidad vale 1024 de la
+/// anterior y la etiqueta lo dice.
+pub(crate) fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod human_bytes_tests {
+    use super::human_bytes;
+
+    #[test]
+    fn formats_binary_units_with_one_decimal() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+        assert_eq!(human_bytes(1024), "1.0 KiB");
+        assert_eq!(human_bytes(1536), "1.5 KiB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024 / 2), "1.5 GiB");
+        assert_eq!(human_bytes(1024u64.pow(4)), "1.0 TiB");
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::path::PathBuf;

@@ -190,24 +190,16 @@ fn print_plan(request: &Confirmation<'_>, out: &mut dyn Write) -> anyhow::Result
     }
     for entry in request.entries {
         match entry.size {
-            Some(size) => writeln!(out, "  {} ({})", entry.path.display(), human_size(size))?,
+            Some(size) => writeln!(
+                out,
+                "  {} ({})",
+                entry.path.display(),
+                crate::human_bytes(size)
+            )?,
             None => writeln!(out, "  {}", entry.path.display())?,
         }
     }
     Ok(())
-}
-
-/// Tamaño legible, con la misma escala que usa el resto del producto (MB y GB,
-/// un decimal).
-fn human_size(bytes: u64) -> String {
-    const MB: f64 = 1024.0 * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else {
-        format!("{:.1} MB", b / MB)
-    }
 }
 
 /// Categorías que acepta `cleanup`. La puerta de uso está aquí porque es la
@@ -290,7 +282,7 @@ mod tests {
         assert!(out.contains("[s/N]"), "literal de la celda: {out}");
         assert!(out.contains("Cancelado."), "cancela sin error: {out}");
         assert!(
-            out.contains(&dest.display().to_string()) && out.contains("MB"),
+            out.contains(&dest.display().to_string()) && out.contains("9 B)"),
             "la celda destructiva lista rutas con tamaños: {out}"
         );
 
@@ -469,7 +461,7 @@ mod tests {
             "se anuncia la simulación: {printed}"
         );
         assert!(
-            printed.contains(&model.display().to_string()) && printed.contains("0.0 MB"),
+            printed.contains(&model.display().to_string()) && printed.contains("2.0 KiB)"),
             "el plan se imprime con rutas y tamaños: {printed}"
         );
         assert!(

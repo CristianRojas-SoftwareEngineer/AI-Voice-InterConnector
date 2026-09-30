@@ -802,7 +802,7 @@ fn confirm_size(pending: &Pending, options: &Options) -> anyhow::Result<bool> {
     let summary = vec![format!(
         "Se descargarán {} modelo(s), unos {}.",
         pending.models.len(),
-        human_bytes(pending.estimated_bytes())
+        crate::human_bytes(pending.estimated_bytes())
     )];
     let decision = crate::confirm::confirm(
         &crate::confirm::Confirmation {
@@ -817,22 +817,6 @@ fn confirm_size(pending: &Pending, options: &Options) -> anyhow::Result<bool> {
         &mut std::io::stderr(),
     )?;
     Ok(decision != crate::confirm::Decision::Cancelled)
-}
-
-/// Tamaño legible con la misma escala que el resto del producto.
-fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
 }
 
 #[cfg(test)]
