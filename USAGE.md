@@ -798,8 +798,8 @@ la voz nueva en segundo plano (`"precomputed": true` con `--json`); en modo dire
 `precomputed` es siempre `false`.
 
 Si la referencia no es un WAV válido o está truncada, el comando termina con el
-código `invalid_audio` (exit 2) y no registra la voz; si falla el propio clonado,
-con `voice_clone_failed`.
+código `invalid_audio` (exit 2) y no registra la voz; si falla la lectura del
+archivo, con `io_error` (exit 1); si falla el propio clonado, con `voice_clone_failed`.
 
 **Opciones:**
 - `--name, -n` (requerido): Nombre para la voz
@@ -1007,7 +1007,7 @@ ai-voice-interconnector self update --no-setup --yes      # sin provisión y sin
 Los modelos descargados (en la caché de la aplicación, `~/.cache/ai-voice-interconnector/models` en Linux) se reutilizan tal cual.
 Cada versión del binario fija las revisiones exactas de los modelos que usa
 (`MODEL_REVISIONS`): si tu caché contiene otra revisión, `setup` la detecta como
-no provisionada y descarga la requerida (la caché deduplica por contenido). Tras el reemplazo, el `setup` de la versión nueva lee la selección guardada (`setup-selection.json`) y poda las revisiones propias obsoletas.
+no provisionada y descarga la requerida (los archivos que no cambian entre revisiones no se duplican: `snapshots/` los enlaza al mismo blob, con symlinks en Unix y enlaces duros en Windows, salvo en FAT32/exFAT, donde se copian). Tras el reemplazo, el `setup` de la versión nueva lee la selección guardada (`setup-selection.json`) y poda las revisiones propias obsoletas.
 
 ---
 

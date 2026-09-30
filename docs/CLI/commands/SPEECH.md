@@ -397,7 +397,7 @@ solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 | `translation_failed` | 9 | Fallo del motor CT2 |
 | `synthesis_error` / `playback_failed` | 1 | Fallo del motor Qwen3-TTS o de reproducción |
 | `synthesis_timeout` | 1 | La síntesis superó su presupuesto (`30 s + 0,30 s por carácter`) |
-| `io_error` | 1 | Fallo de E/S al leer el WAV de `--audio` |
+| `io_error` | 1 | Fallo de E/S al leer el WAV (`--audio` de transcribe y dub, referencia de `voice clone`) |
 
 ---
 
