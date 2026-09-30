@@ -285,6 +285,7 @@ dependencies = [
  "hf-hub",
  "hound",
  "indicatif 0.17.11",
+ "same-file",
  "serde",
  "serde_json",
  "tokio",
