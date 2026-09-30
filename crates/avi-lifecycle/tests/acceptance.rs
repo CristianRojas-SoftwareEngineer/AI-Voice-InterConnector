@@ -115,16 +115,16 @@ fn run_category(sandbox: &Sandbox, runtime: &tokio::runtime::Runtime, options: c
 /// de archivo que el producto espera, no con un marcador, porque `is_provisioned` decide
 /// por presencia y tamaño de esos archivos.
 fn provision_selection(sandbox: &Sandbox) {
-    for (name, repo, rev) in MODEL_REVISIONS {
-        if *name == setup::CLONING_MODEL {
+    for pin in MODEL_REVISIONS {
+        if pin.name == setup::CLONING_MODEL {
             continue;
         }
         let snapshot = sandbox
             .models_dir
-            .join(support::repo_dir(repo))
+            .join(support::repo_dir(pin.repo))
             .join("snapshots")
-            .join(rev);
-        match MODEL_FILE_PATTERNS.iter().find(|(n, _)| n == name) {
+            .join(pin.revision);
+        match MODEL_FILE_PATTERNS.iter().find(|(n, _)| *n == pin.name) {
             Some((_, patterns)) => {
                 for pattern in *patterns {
                     support::write(&snapshot.join(pattern), "pesos");
@@ -1605,8 +1605,8 @@ fn criterion_23_shared_resources_survive() {
     // Lo que R3 declara atribuible a la aplicación, y lo que nunca lo es.
     let (repo, rev) = MODEL_REVISIONS
         .iter()
-        .find(|(n, _, _)| *n == "marian-es-en")
-        .map(|(_, r, v)| (r.to_string(), v.to_string()))
+        .find(|pin| pin.name == "marian-es-en")
+        .map(|pin| (pin.repo.to_string(), pin.revision.to_string()))
         .expect("criterio 23: el repo de traducción está fijado");
     let our_repo = sandbox.models_dir.join(support::repo_dir(&repo));
     let our_snapshot = our_repo.join("snapshots").join(&rev);

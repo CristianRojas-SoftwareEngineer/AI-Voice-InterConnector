@@ -873,8 +873,8 @@ fn compose_summary(
         )
     } else {
         format!(
-            "  Modelos:   se descargarán ~{} GB en {}",
-            pending.estimated_bytes() / 1_000_000_000 + 1,
+            "  Modelos:   se descargarán unos {} en {}",
+            crate::human_bytes(pending.estimated_bytes()),
             env.models_dir.display()
         )
     });
@@ -1251,6 +1251,36 @@ mod tests {
             },
             None,
         )
+    }
+
+    /// El resumen previo anuncia la descarga con el tamaño de la tabla de pines en
+    /// escala binaria: la selección base (Qwen3-TTS, los dos Marian y Parakeet)
+    /// suma 4 734 735 847 bytes, que son 4.4 GiB.
+    #[test]
+    fn summary_announces_the_pinned_download_size() {
+        let env = test_env();
+        let pending = setup::Pending {
+            models: setup::selection_for(false)
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            ct2: Vec::new(),
+        };
+        let summary = compose_summary(
+            &env,
+            &Options::unattended(),
+            Mode::Install,
+            &None,
+            &PathPlan::default(),
+            &pending,
+        );
+        assert!(
+            summary.contains(&format!(
+                "  Modelos:   se descargarán unos 4.4 GiB en {}",
+                env.models_dir.display()
+            )),
+            "{summary:?}"
+        );
     }
 
     /// `Env` de pruebas. Las rutas son de Unix a propósito: solo se usan en cálculos

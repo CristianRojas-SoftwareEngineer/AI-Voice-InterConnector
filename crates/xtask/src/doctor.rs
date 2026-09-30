@@ -884,19 +884,20 @@ pub(crate) fn models_are_provisioned() -> bool {
 fn probe_models_drift() -> Vec<String> {
     let mut out = Vec::new();
     let models = avi_shared::paths::models_cache_dir();
-    for (name, repo, revision) in avi_shared::paths::MODEL_REVISIONS {
+    for pin in avi_shared::paths::MODEL_REVISIONS {
         // El clonado de voz es opt-in y el `setup` que lanza `bootstrap` no lo
         // solicita, así que su ausencia no es deriva.
-        if *name == avi_shared::paths::CLONING_MODEL {
+        if pin.name == avi_shared::paths::CLONING_MODEL {
             continue;
         }
         let snapshot = models
-            .join(format!("models--{}", repo.replace('/', "--")))
+            .join(format!("models--{}", pin.repo.replace('/', "--")))
             .join("snapshots")
-            .join(revision);
+            .join(pin.revision);
         if !snapshot.is_dir() {
             out.push(format!(
-                "modelo {name} sin provisionar (ejecuta `cargo xtask bootstrap --models`)"
+                "modelo {} sin provisionar (ejecuta `cargo xtask bootstrap --models`)",
+                pin.name
             ));
         }
     }

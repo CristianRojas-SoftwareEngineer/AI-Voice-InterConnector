@@ -330,8 +330,8 @@ fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec
         push(collected, models.clone(), Category::Model);
         return;
     }
-    for (_, repo, _) in avi_store::MODEL_REVISIONS {
-        let repo_dir = models.join(format!("models--{}", repo.replace('/', "--")));
+    for pin in avi_store::MODEL_REVISIONS {
+        let repo_dir = models.join(format!("models--{}", pin.repo.replace('/', "--")));
         push(collected, repo_dir.clone(), Category::Model);
         // Los locks de cada repo propio son atribuibles a la aplicación (R3 los
         // nombra explícitamente), así que caen con su repo. El `.locks` completo no.
@@ -339,7 +339,7 @@ fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec
             collected,
             models
                 .join(".locks")
-                .join(format!("models--{}", repo.replace('/', "--"))),
+                .join(format!("models--{}", pin.repo.replace('/', "--"))),
             Category::Model,
         );
     }

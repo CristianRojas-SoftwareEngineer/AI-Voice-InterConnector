@@ -395,7 +395,7 @@ enum Commands {
     Setup {
         #[arg(long)]
         with_stt: bool,
-        /// Incluye el modelo Base de clonado Qwen3-TTS (~2,5 GB)
+        /// Incluye el modelo Base de clonado Qwen3-TTS (unos 2.3 GiB)
         #[arg(long)]
         with_voice_cloning: bool,
         /// Purga los snapshots pinneados y la cache xet, luego re-descarga desde cero

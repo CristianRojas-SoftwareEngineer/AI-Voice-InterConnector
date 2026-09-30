@@ -678,15 +678,18 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
     );
 
     // La poda elimina solo la revisión fuera del pin y conserva la viva.
-    let (name, repo, revision) = MODEL_REVISIONS
+    let pin = MODEL_REVISIONS
         .iter()
-        .find(|(name, _, _)| *name == names[0])
+        .find(|pin| pin.name == names[0])
         .expect("criterio 16: el primer seleccionado tiene pin");
     let snapshots = sandbox
         .models_dir
-        .join(support::repo_dir(repo))
+        .join(support::repo_dir(pin.repo))
         .join("snapshots");
-    support::write(&snapshots.join(revision).join("pesos.bin"), "pin vigente");
+    support::write(
+        &snapshots.join(pin.revision).join("pesos.bin"),
+        "pin vigente",
+    );
     support::write(
         &snapshots.join("obsoleta-0000").join("pesos.bin"),
         "revisión vieja",
@@ -694,11 +697,11 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
     let outcome = setup::prune_obsolete_at(&sandbox.models_dir);
     assert_eq!(
         outcome.removed,
-        vec![format!("{name}/snapshots/obsoleta-0000")],
+        vec![format!("{}/snapshots/obsoleta-0000", pin.name)],
         "criterio 16: la poda elimina solo la revisión obsoleta"
     );
     assert!(
-        snapshots.join(revision).is_dir(),
+        snapshots.join(pin.revision).is_dir(),
         "criterio 16: y conserva la del pin vigente"
     );
     assert!(
@@ -712,9 +715,12 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
     shared.seed_env();
     let snapshots = shared
         .models_dir
-        .join(support::repo_dir(repo))
+        .join(support::repo_dir(pin.repo))
         .join("snapshots");
-    support::write(&snapshots.join(revision).join("pesos.bin"), "pin vigente");
+    support::write(
+        &snapshots.join(pin.revision).join("pesos.bin"),
+        "pin vigente",
+    );
     support::write(
         &snapshots.join("obsoleta-0000").join("pesos.bin"),
         "revisión vieja",
@@ -724,7 +730,7 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
         &shared
             .models_dir
             .join(".locks")
-            .join(support::repo_dir(repo))
+            .join(support::repo_dir(pin.repo))
             .join("lock"),
         "",
     );
@@ -738,7 +744,7 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
     let outcome = setup::prune_obsolete_at(&shared.models_dir);
     assert_eq!(
         outcome.removed,
-        vec![format!("{name}/snapshots/obsoleta-0000")],
+        vec![format!("{}/snapshots/obsoleta-0000", pin.name)],
         "criterio 16: en compartida también poda lo obsoleto propio"
     );
     for kept in [
@@ -759,15 +765,15 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
 /// Planta el snapshot del pin vigente de `name` con los archivos que
 /// `avi-store` exige para darlo por provisionado, sin tocar la red.
 fn plant_snapshot(sandbox: &Sandbox, name: &str) {
-    let (_, repo, revision) = MODEL_REVISIONS
+    let pin = MODEL_REVISIONS
         .iter()
-        .find(|(candidate, _, _)| *candidate == name)
+        .find(|pin| pin.name == name)
         .expect("el seleccionado tiene pin");
     let snapshot = sandbox
         .models_dir
-        .join(support::repo_dir(repo))
+        .join(support::repo_dir(pin.repo))
         .join("snapshots")
-        .join(revision);
+        .join(pin.revision);
     match MODEL_FILE_PATTERNS.iter().find(|(n, _)| *n == name) {
         Some((_, patterns)) => {
             for pattern in *patterns {

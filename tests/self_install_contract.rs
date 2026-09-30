@@ -198,17 +198,17 @@ impl Sandbox {
         }
 
         // La selección de modelos ya provisionada, para que la provisión no toque la red.
-        for (name, repo, rev) in avi_store::MODEL_REVISIONS {
-            if *name == avi_lifecycle::setup::CLONING_MODEL {
+        for pin in avi_store::MODEL_REVISIONS {
+            if pin.name == avi_lifecycle::setup::CLONING_MODEL {
                 continue;
             }
             let snapshot = models
-                .join(format!("models--{}", repo.replace('/', "--")))
+                .join(format!("models--{}", pin.repo.replace('/', "--")))
                 .join("snapshots")
-                .join(rev);
+                .join(pin.revision);
             match avi_store::MODEL_FILE_PATTERNS
                 .iter()
-                .find(|(n, _)| n == name)
+                .find(|(n, _)| *n == pin.name)
             {
                 Some((_, patterns)) => {
                     for pattern in *patterns {

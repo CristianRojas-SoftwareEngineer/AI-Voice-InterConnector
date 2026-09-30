@@ -555,11 +555,11 @@ fn models(roots: &cleanup::Roots) -> Models {
     );
     let mut provisioned = Vec::new();
     let mut missing = Vec::new();
-    for (name, _, _) in avi_store::MODEL_REVISIONS {
-        if store.is_provisioned(name) {
-            provisioned.push((*name).to_string());
-        } else if selection.contains(name) {
-            missing.push((*name).to_string());
+    for pin in avi_store::MODEL_REVISIONS {
+        if store.is_provisioned(pin.name) {
+            provisioned.push(pin.name.to_string());
+        } else if selection.contains(&pin.name) {
+            missing.push(pin.name.to_string());
         }
     }
     let base_ready = store.is_provisioned(crate::setup::CLONING_MODEL);
@@ -699,8 +699,8 @@ mod tests {
         // mano, para que un bump de pin no pueda volver obsoleta la prueba.
         let (repo, revision) = avi_store::MODEL_REVISIONS
             .iter()
-            .find(|(name, _, _)| *name == crate::setup::CLONING_MODEL)
-            .map(|(_, repo, revision)| (*repo, *revision))
+            .find(|pin| pin.name == crate::setup::CLONING_MODEL)
+            .map(|pin| (pin.repo, pin.revision))
             .expect("el modelo de clonación está pinneado");
         let snapshot = env
             .roots
@@ -733,19 +733,19 @@ mod tests {
     /// salvo el Base opt-in, con los archivos que el producto exige, y los derivados
     /// CT2 sanos.
     fn plant_required_models(env: &Env) {
-        for (name, repo, revision) in avi_store::MODEL_REVISIONS {
-            if *name == crate::setup::CLONING_MODEL {
+        for pin in avi_store::MODEL_REVISIONS {
+            if pin.name == crate::setup::CLONING_MODEL {
                 continue;
             }
             let snapshot = env
                 .roots
                 .models_dir
-                .join(format!("models--{}", repo.replace('/', "--")))
+                .join(format!("models--{}", pin.repo.replace('/', "--")))
                 .join("snapshots")
-                .join(revision);
+                .join(pin.revision);
             match avi_store::MODEL_FILE_PATTERNS
                 .iter()
-                .find(|(n, _)| n == name)
+                .find(|(n, _)| *n == pin.name)
             {
                 Some((_, patterns)) => {
                     for pattern in *patterns {

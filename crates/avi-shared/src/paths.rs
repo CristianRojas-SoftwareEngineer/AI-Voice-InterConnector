@@ -91,49 +91,69 @@ pub fn bin_dir() -> PathBuf {
     }
 }
 
-/// Nombre lógico del único modelo opt-in de `MODEL_REVISIONS`: el Base de clonado
+/// Nombre lógico del único modelo opt-in de la tabla de pines: el Base de clonado
 /// de voz. Solo se provisiona si la selección del usuario lo pide
 /// (`setup --with-voice-cloning`); los demás modelos de la tabla son obligatorios.
 pub const CLONING_MODEL: &str = "qwen3-tts-0.6b-base";
 
-/// Pines de modelos: `(nombre_lógico, repo HF, revisión)`.
+/// Pin de un modelo: nombre lógico, repo de HuggingFace, revisión y tamaño.
+///
 /// La revisión es un **commit hash** de HuggingFace: mismo binario → mismos
 /// bytes (reproducibilidad); actualizar un pin es una acción deliberada y
 /// auditable en THIRD-PARTY-LICENSES.md.
-pub const MODEL_REVISIONS: &[(&str, &str, &str)] = &[
+///
+/// `approx_bytes` es lo que se descarga, y por tanto lo que ocupa en disco, en
+/// la revisión fijada: la suma de los archivos del repo, o solo la de los que
+/// casan con `MODEL_FILE_PATTERNS` cuando el modelo los tiene. Hay que
+/// actualizarlo al cambiar la revisión.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelPin {
+    pub name: &'static str,
+    pub repo: &'static str,
+    pub revision: &'static str,
+    pub approx_bytes: u64,
+}
+
+/// Pines de los modelos que provisiona la aplicación.
+pub const MODEL_REVISIONS: &[ModelPin] = &[
     // Motor TTS Qwen3-TTS 0.6B CustomVoice (pesos safetensors BF16)
-    (
-        "qwen3-tts-0.6b",
-        "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
-        "85e237c12c027371202489a0ec509ded67b5e4b5",
-    ),
+    ModelPin {
+        name: "qwen3-tts-0.6b",
+        repo: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        revision: "85e237c12c027371202489a0ec509ded67b5e4b5",
+        approx_bytes: 2_498_388_392,
+    },
     // Traducción es→en / en→es (Marian opus-mt convertido a CTranslate2)
-    (
-        "marian-es-en",
-        "Helsinki-NLP/opus-mt-es-en",
-        "c96e2c5399ebfae4fc43d9669556b9afa74bb69d",
-    ),
-    (
-        "marian-en-es",
-        "Helsinki-NLP/opus-mt-en-es",
-        "5bc4493d463cf000c1f0b50f8d56886a392ed4ab",
-    ),
+    ModelPin {
+        name: "marian-es-en",
+        repo: "Helsinki-NLP/opus-mt-es-en",
+        revision: "c96e2c5399ebfae4fc43d9669556b9afa74bb69d",
+        approx_bytes: 627_891_360,
+    },
+    ModelPin {
+        name: "marian-en-es",
+        repo: "Helsinki-NLP/opus-mt-en-es",
+        revision: "5bc4493d463cf000c1f0b50f8d56886a392ed4ab",
+        approx_bytes: 937_836_389,
+    },
     // STT Parakeet TDT 0.6B v3 int8 (export istupakov/onnx-asr; 4 artefactos
     // canónicos — el repo upstream completo pesa decenas de GB)
-    (
-        "parakeet-tdt-v3",
-        "istupakov/parakeet-tdt-0.6b-v3-onnx",
-        "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
-    ),
+    ModelPin {
+        name: "parakeet-tdt-v3",
+        repo: "istupakov/parakeet-tdt-0.6b-v3-onnx",
+        revision: "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
+        approx_bytes: 670_619_706,
+    },
     // Modelo Base Qwen3-TTS 0.6B para clonado de voz (speaker encoder) — snapshot
     // completo. Repo público Qwen/Qwen3-TTS-12Hz-0.6B-Base verificado por dry-run:
     // config.json con "tts_model_type": "base" + speaker_encoder_config; artefactos
     // model.safetensors + speech_tokenizer/model.safetensors (no requiere allow_patterns).
-    (
-        "qwen3-tts-0.6b-base",
-        "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-        "5d83992436eae1d760afd27aff78a71d676296fc",
-    ),
+    ModelPin {
+        name: "qwen3-tts-0.6b-base",
+        repo: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        revision: "5d83992436eae1d760afd27aff78a71d676296fc",
+        approx_bytes: 2_516_106_051,
+    },
 ];
 
 /// Nombre del bloqueo de ciclo de vida, hermano del directorio de programa:

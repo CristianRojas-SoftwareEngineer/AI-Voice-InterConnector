@@ -320,20 +320,23 @@ impl Sandbox {
     /// del criterio, y sin los dos directorios no se puede ver.
     pub fn seed_state(&self) {
         let hub = &self.models_dir;
-        for (name, repo, rev) in avi_store::MODEL_REVISIONS {
-            if *name == avi_lifecycle::setup::CLONING_MODEL {
+        for pin in avi_store::MODEL_REVISIONS {
+            if pin.name == avi_lifecycle::setup::CLONING_MODEL {
                 continue;
             }
             // Snapshot propio, con el layout que `avi-store` resuelve.
             write(
-                &hub.join(repo_dir(repo))
+                &hub.join(repo_dir(pin.repo))
                     .join("snapshots")
-                    .join(rev)
+                    .join(pin.revision)
                     .join("pesos.bin"),
                 "pesos",
             );
             // Y su lock, que R3 declara atribuible a la aplicación.
-            write(&hub.join(".locks").join(repo_dir(repo)).join("lock"), "");
+            write(
+                &hub.join(".locks").join(repo_dir(pin.repo)).join("lock"),
+                "",
+            );
         }
         // El derivado CT2, que es atribuible aunque no cuelgue de un repo.
         write(

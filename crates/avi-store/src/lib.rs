@@ -9,8 +9,8 @@ pub use avi_shared::paths::{
     bin_dir, ct2_cache_dir, ct2_cache_dir_at, ct2_dir_missing_files, ct2_missing_files,
     ct2_model_dir, ct2_model_dir_at, data_dir, install_dir, is_ct2_provisioned,
     is_ct2_provisioned_at, models_cache_dir, models_root_is_shared, shared_hf_root, xet_cache_dir,
-    APP_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR, MODEL_FILE_PATTERNS, MODEL_REVISIONS,
-    PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
+    ModelPin, APP_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR, MODEL_FILE_PATTERNS,
+    MODEL_REVISIONS, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
 };
 
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (`qwen_tts.c:spk_table`)
@@ -589,8 +589,8 @@ impl ModelStore {
     pub fn revision_of(model_name: &str) -> Option<(&'static str, &'static str)> {
         MODEL_REVISIONS
             .iter()
-            .find(|(name, _, _)| *name == model_name)
-            .map(|(_, repo, rev)| (*repo, *rev))
+            .find(|pin| pin.name == model_name)
+            .map(|pin| (pin.repo, pin.revision))
     }
 
     /// Ruta del snapshot HF de un modelo.

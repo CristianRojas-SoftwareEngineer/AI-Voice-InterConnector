@@ -40,7 +40,8 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
   ]
 
   caveats <<~EOS
-    Los modelos de voz (es-mx-latam + en, ~6 GB en total) no vienen incluidos:
+    Los modelos de voz (traduccion, sintesis y transcripcion; unos 4.4 GiB, o 6.8 GiB con
+    clonado de voz) no vienen incluidos:
     descargalos una sola vez con:
       ai-voice-interconnector setup
 
@@ -1122,10 +1123,10 @@ fn cask_zap_entries() -> Vec<String> {
             avi_shared::paths::APP_NAME
         ),
     ];
-    for (_, repo, _) in avi_shared::paths::MODEL_REVISIONS {
+    for pin in avi_shared::paths::MODEL_REVISIONS {
         entries.push(format!(
             "~/.cache/huggingface/hub/models--{}",
-            repo.replace('/', "--")
+            pin.repo.replace('/', "--")
         ));
     }
     entries.push("~/.cache/huggingface/hub/ct2".to_string());
@@ -1493,8 +1494,8 @@ mod tests {
         assert!(c.contains("releases/download/v#{version}/"));
         assert!(c.contains("zap trash:"));
         // El `zap` deriva de las canónicas: un snapshot por modelo pineado.
-        for (_, repo, _) in avi_shared::paths::MODEL_REVISIONS {
-            let snapshot = format!("models--{}", repo.replace('/', "--"));
+        for pin in avi_shared::paths::MODEL_REVISIONS {
+            let snapshot = format!("models--{}", pin.repo.replace('/', "--"));
             assert!(
                 c.contains(&snapshot),
                 "el zap debe derivar el snapshot canónico {snapshot}"
@@ -1524,8 +1525,8 @@ mod tests {
             avi_shared::paths::APP_NAME
         )));
         // Un snapshot por modelo pineado, sin réplica literal.
-        for (_, repo, _) in avi_shared::paths::MODEL_REVISIONS {
-            let snapshot = format!("models--{}", repo.replace('/', "--"));
+        for pin in avi_shared::paths::MODEL_REVISIONS {
+            let snapshot = format!("models--{}", pin.repo.replace('/', "--"));
             assert!(
                 c.contains(&snapshot),
                 "el zap debe derivar el snapshot canónico {snapshot}"

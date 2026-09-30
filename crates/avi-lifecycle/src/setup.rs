@@ -214,17 +214,22 @@ impl Pending {
         self.models.is_empty() && self.ct2.is_empty()
     }
 
-    /// Tamaño estimado de la descarga pendiente, en bytes. Es una estimación
-    /// declarada: el número exacto depende de lo que reporte el servidor, y la regla
-    /// pide un orden de magnitud para la confirmación, no una cifra contable.
+    /// Tamaño estimado de la descarga pendiente, en bytes: la suma de
+    /// `approx_bytes` de los modelos pendientes, medida en la revisión fijada de
+    /// cada uno. Es una estimación declarada, no una cifra contable: los derivados
+    /// CT2 no descargan nada.
     pub fn estimated_bytes(&self) -> u64 {
-        MODEL_DOWNLOAD_ESTIMATE * self.models.len() as u64
+        self.models
+            .iter()
+            .filter_map(|name| {
+                avi_store::MODEL_REVISIONS
+                    .iter()
+                    .find(|pin| pin.name == name)
+            })
+            .map(|pin| pin.approx_bytes)
+            .sum()
     }
 }
-
-/// Estimación por repo pinneado. La suma del conjunto base ronda los 9 GB, que es
-/// la cifra que el resumen previo de la instalación usa como ejemplo.
-pub const MODEL_DOWNLOAD_ESTIMATE: u64 = 3_000_000_000;
 
 /// Repos de la selección, con el mismo filtro de clonado que usa el binario hoy.
 /// La función es pura para que el filtro se pueda afirmar sin almacén ni disco.
@@ -240,7 +245,7 @@ pub fn selection(options: &Options) -> Vec<&'static str> {
 pub fn selection_for(with_voice_cloning: bool) -> Vec<&'static str> {
     avi_store::MODEL_REVISIONS
         .iter()
-        .map(|(name, _, _)| *name)
+        .map(|pin| pin.name)
         .filter(|name| *name != CLONING_MODEL || with_voice_cloning)
         .collect()
 }
@@ -407,11 +412,11 @@ pub fn prune_obsolete() -> PruneOutcome {
 /// Núcleo comprobable de [`prune_obsolete`], con la raíz de modelos como dato.
 pub fn prune_obsolete_at(models_root: &Path) -> PruneOutcome {
     let mut outcome = PruneOutcome::default();
-    for (name, repo, revision) in avi_store::MODEL_REVISIONS {
+    for pin in avi_store::MODEL_REVISIONS {
         let snapshots = models_root
-            .join(format!("models--{}", repo.replace('/', "--")))
+            .join(format!("models--{}", pin.repo.replace('/', "--")))
             .join("snapshots");
-        let live = live_snapshot_name(&snapshots, revision);
+        let live = live_snapshot_name(&snapshots, pin.revision);
         let entries = match std::fs::read_dir(&snapshots) {
             Ok(entries) => entries,
             Err(_) => continue,
@@ -425,7 +430,7 @@ pub fn prune_obsolete_at(models_root: &Path) -> PruneOutcome {
             if live.as_deref() == Some(child.as_str()) {
                 continue;
             }
-            let label = format!("{name}/snapshots/{child}");
+            let label = format!("{}/snapshots/{child}", pin.name);
             match std::fs::remove_dir_all(&path) {
                 Ok(()) => outcome.removed.push(label),
                 Err(e) => outcome.failures.push((label, e.to_string())),
@@ -788,6 +793,15 @@ fn confirm_destructive(options: &Options) -> anyhow::Result<bool> {
     Ok(decision != crate::confirm::Decision::Cancelled)
 }
 
+/// Línea de la confirmación: cuántos modelos se descargan y su tamaño estimado.
+fn download_summary(pending: &Pending) -> String {
+    format!(
+        "Se descargarán {} modelo(s), unos {}.",
+        pending.models.len(),
+        crate::human_bytes(pending.estimated_bytes())
+    )
+}
+
 /// Confirmación del tamaño pendiente de la provisión: es no destructiva, así que sin
 /// terminal
 /// procede, y `--yes` la omite. Cuando la invoca `self install` después de su propio
@@ -799,11 +813,7 @@ fn confirm_size(pending: &Pending, options: &Options) -> anyhow::Result<bool> {
     if pending.estimated_bytes() == 0 {
         return Ok(true);
     }
-    let summary = vec![format!(
-        "Se descargarán {} modelo(s), unos {}.",
-        pending.models.len(),
-        crate::human_bytes(pending.estimated_bytes())
-    )];
+    let summary = vec![download_summary(pending)];
     let decision = crate::confirm::confirm(
         &crate::confirm::Confirmation {
             kind: crate::confirm::Kind::NonDestructive,
@@ -892,6 +902,32 @@ pub(crate) mod tests {
         write_file(&dir.join("source.spm"), "spm");
         write_file(&dir.join("target.spm"), "spm");
         dir
+    }
+
+    /// La confirmación anuncia la suma de los tamaños fijados en la tabla de
+    /// pines, en escala binaria: 4 734 735 847 bytes la selección base (4 modelos)
+    /// y 7 250 841 898 con el modelo de clonado (5 modelos).
+    #[test]
+    fn confirmation_announces_the_pinned_sizes() {
+        let pending_of = |with_voice_cloning| Pending {
+            models: selection_for(with_voice_cloning)
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            ct2: Vec::new(),
+        };
+        let base = pending_of(false);
+        assert_eq!(base.estimated_bytes(), 4_734_735_847);
+        assert_eq!(
+            download_summary(&base),
+            "Se descargarán 4 modelo(s), unos 4.4 GiB."
+        );
+        let cloning = pending_of(true);
+        assert_eq!(cloning.estimated_bytes(), 7_250_841_898);
+        assert_eq!(
+            download_summary(&cloning),
+            "Se descargarán 5 modelo(s), unos 6.8 GiB."
+        );
     }
 
     /// La provisión no hace trabajo cuando todo está ya provisionado:

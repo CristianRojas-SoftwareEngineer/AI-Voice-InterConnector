@@ -3154,7 +3154,7 @@ mod tts {
     fn setup_json_without_language_key() {
         // Contrato del payload --json: la clave `language` desaparece de la respuesta.
         // Idempotente sobre estado provisionado (no descarga); si no hay modelos,
-        // se omite para no forzar una descarga de ~9 GB en CI.
+        // se omite para no forzar una descarga de unos 4.4 GiB en CI.
         if !tts_model_registered() {
             eprintln!("[setup] skip: runtime no provisionado (setup --json exigiría descarga)");
             return;
