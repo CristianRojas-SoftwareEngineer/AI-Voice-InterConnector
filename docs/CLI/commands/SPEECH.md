@@ -33,9 +33,9 @@ comando raíz.
 | `speech remove` | No | Sí (`require_local`) |
 
 `require_local` hace que `list`/`play`/`remove` con
-`--daemon` forzado fallen con `daemon_unreachable` (exit 5) en vez de
+`--daemon` forzado fallen con `daemon_not_supported` (exit 2) en vez de
 ejecutarse localmente: son operaciones sobre `SpeechStore`, que el daemon no
-expone por HTTP.
+expone por HTTP, así que pedir el daemon es un error de invocación.
 
 ---
 
@@ -305,7 +305,7 @@ Al finalizar, emite el evento `result`:
 { "event": "result", "status": "dubbed", "text": "<transcrito>", "translated": "<texto final tras traducir/passthrough>", "audio_b64": "<WAV base64>", "voice": "<voz>", "work_ms": 1234 }
 ```
 
-En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo>", "message": "..."}` con el mapeo contractual correspondiente (`audio_missing`/`audio_decode_error`/`invalid_audio`/`audio_too_long`/`empty_text`/`text_too_long`/`unsupported_language_pair` → exit 2, `model_missing` → exit 4, `voice_not_found` → exit 3, `transcription_failed` → exit 10, `translation_failed` → exit 9, `synthesis_failed`/`synthesis_timeout`/`stt_unsupported`/`translation_unsupported` → exit 1).
+En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo>", "message": "..."}` con el mapeo contractual correspondiente (`usage_error`/`invalid_audio`/`audio_too_long`/`empty_text`/`text_too_long`/`unsupported_language_pair` → exit 2, `model_missing` → exit 4, `voice_not_found` → exit 3, `transcription_failed` → exit 10, `translation_failed` → exit 9, `synthesis_failed`/`synthesis_timeout`/`stt_unsupported`/`translation_unsupported` → exit 1).
 
 ### Contrato `--json` (CLI)
 
@@ -384,12 +384,13 @@ solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 | `audio_too_long` | 2 | El audio de `dub` supera 40 s, o `--duration` es mayor que 40 |
 | `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
 | `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `speech list --voice` ilegal) |
+| `daemon_not_supported` | 2 | `--daemon` en un subcomando local-only (`list`/`play`/`remove`) |
 | `unsupported_language_pair` | 2 | Traducción fuera de `{es-en, en-es}` |
 | `audio_not_found` | 3 | `--audio` en `transcribe` o `dub` apunta a un archivo inexistente |
 | `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (incluye `speech list --voice` sobre voz inexistente) |
 | `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente |
 | `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el derivado CT2 del par de traducción |
-| `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo, o local-only (`list`/`play`/`remove`) con `--daemon` |
+| `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
 | `label_exists` | 6 | `synthesize` sin `--force` sobre una etiqueta ya usada |
 | `stt_unsupported` | 1 | Binario compilado sin el feature `native-stt` (transcribe/dub) |
 | `translation_unsupported` | 1 | Binario compilado sin el feature `native-translation`, con par no-passthrough |

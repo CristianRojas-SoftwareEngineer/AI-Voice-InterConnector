@@ -35,7 +35,7 @@
     },
     "C1": {
       "status": "in_progress",
-      "phase": "implementation",
+      "phase": "verification",
       "gates": [
         { "gate": "plan", "verdict": "approved", "date": "2026-09-30", "notes": "P1 a P4, todas A" },
         { "gate": "tests", "verdict": "approved", "date": "2026-09-30", "notes": "15 pruebas en rojo por aserción" },
@@ -43,10 +43,16 @@
       ],
       "tasks": [
         { "id": "C1.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
-        { "id": "C1.2", "status": "done", "attempts": 1, "files": ["crates/avi-core/src/exit_codes.rs", "crates/avi-core/src/lib.rs", "src/main.rs", "crates/avi-daemon/src/lib.rs", "tests/cli_golden.rs"] }
+        { "id": "C1.2", "status": "done", "attempts": 1, "files": ["crates/avi-core/src/exit_codes.rs", "crates/avi-core/src/lib.rs", "src/main.rs", "crates/avi-daemon/src/lib.rs", "tests/cli_golden.rs"] },
+        { "id": "C1.3", "status": "done", "attempts": 1, "files": ["crates/avi-core/src/exit_codes.rs"] },
+        { "id": "C1.4", "status": "done", "attempts": 1, "files": ["src/main.rs", "docs/CLI/commands/DAEMON.md"] },
+        { "id": "C1.5", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/**", "Cargo.lock"] },
+        { "id": "C1.6", "status": "done", "attempts": 1, "files": ["crates/avi-daemon/src/lib.rs", "crates/avi-core/src/json_emitter.rs", "crates/avi-daemon/tests/golden.rs", "tests/golden/daemon_*.json"] },
+        { "id": "C1.7", "status": "done", "attempts": 1, "files": ["src/main.rs"] },
+        { "id": "C1.8", "status": "done", "attempts": 1, "files": ["docs/CLI/CONTRACT.md", "docs/CLI/commands/SPEECH.md", "docs/CLI/commands/VOICE.md", "docs/CLI/commands/DAEMON.md", "docs/DAEMON-MODE.md", "CHANGELOG.md", "docs/issues/README.md", "docs/issues/daemon-rechaza-o-corta-audios-largos.md", "docs/issues/mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md"] }
       ],
       "foreign_changes": [],
-      "commits": []
+      "commits": ["28de66f", "c01e026", "9bd7117", "259889a", "ec2d9c3", "f96d711", "110e685"]
     },
     "C2": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C3": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },

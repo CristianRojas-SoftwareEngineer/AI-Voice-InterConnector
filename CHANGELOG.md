@@ -115,11 +115,19 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - Si el daemon muere durante el arranque, `daemon start` y `daemon restart` lo detectan al momento y salen con `daemon_error` (exit 1), con el estado de salida del proceso en el mensaje, en lugar de agotar la espera de 10 s.
 - `--auto-restart` ya no reintenta los fallos previos a que el daemon esté listo (puerto ocupado, voz inexistente, fallo al cargar el estado): son terminales y salen con su código. Solo se reintentan las caídas de un daemon que llegó a servir.
 - Todo tamaño que se muestra al usuario usa escala decimal (`B`, `KB`, `MB`, `GB`, `TB`), y la simulación de `cleanup` y `uninstall` lo anuncia con esa unidad en lugar de en bytes.
+- **Cambio incompatible:** `--daemon` en `voice list`, `voice remove`, `speech list`, `speech play` y `speech remove` sale con `daemon_not_supported` (exit 2) y un mensaje que dice que el comando se ejecuta siempre en local, en lugar de `daemon_unreachable` (exit 5).
+- **Cambio incompatible:** el daemon deja de emitir `audio_missing` y `audio_decode_error` en `/transcribe`, `/voices/clone` y `/dub`: un audio ausente responde `usage_error` y un base64 inválido, `invalid_audio` (ambos exit 2).
+- **Cambio incompatible:** `POST /transcribe` del daemon señala sus errores con el estado HTTP (400 ante una petición inválida, 500 ante un fallo de transcripción) en lugar de un 200 con cuerpo de error.
+- **Cambio incompatible:** el protocolo del daemon pasa a `schema_version` `"4"` por los dos cambios anteriores. El sobre `--json` de la CLI sigue en `"4"`.
+- **Cambio incompatible:** un fallo de `daemon serve` con el servidor ya en marcha sale con `daemon_error` (exit 1), como cualquier otro `daemon_error`.
 
 ### Corregido
 
 - `daemon start`, `daemon restart` y `daemon serve` con el puerto del daemon ocupado fallan al instante con `port_in_use` (exit 6) y un mensaje que nombra el puerto y `AVI_DAEMON_PORT`, en lugar de esperar 10 s y salir con `daemon_unreachable` y un error sobre un fichero interno. Con `--auto-restart`, un arranque fallido ya no deja un daemon vivo sin pidfile.
 - `speech transcribe` y `speech dub` con un `--audio` inexistente salen con `audio_not_found` (exit 3), un WAV corrupto con `invalid_audio` (exit 2) y un fallo de E/S con `io_error` (exit 1); el exit 10 queda para fallos del pipeline de transcripción o del micrófono.
+- La vía daemon sale con el código del contrato para cada `reason`: la traducción vive en una sola tabla (`ExitCode::from_reason`) que usan todos los clientes, las respuestas no 2xx y los eventos `error` del stream. Antes, `model_missing` en el stream de síntesis salía con 1 en lugar de 4 y un fallo de `/transcribe` salía con 1 en lugar de 10, entre otras discrepancias según la vía.
+- El mensaje de `--temperature` fuera de rango ya no repite el prefijo `Error:`.
+- `text_length` del evento `start` de `/synthesize` cuenta caracteres en lugar de bytes.
 - Un WAV truncado se rechaza con `invalid_audio` (exit 2) en `speech transcribe`, `speech dub`, la reproducción de `speech play` (`playback_failed`, exit 1) y `voice clone`, en lugar de procesar solo la parte legible sin aviso. **Cambio incompatible:** `voice clone`, por la vía local y por la del daemon, deja de emitir `voice_clone_failed` ante una referencia inválida o ilegible y pasa a `invalid_audio` (exit 2) o `io_error` (exit 1); `voice_clone_failed` queda para los fallos del propio clonado o del guardado.
 - La síntesis de textos largos ya no expira con `synthesis_timeout` antes de tiempo: el plazo se calcula con la longitud del texto realmente sintetizado (el traducido, en `dub`).
 - Una petición de síntesis que espera el lock o el calentamiento del motor emite latidos `queued` o `warming` en lugar de quedar muda, por lo que ya no agota el timeout de inactividad del cliente.

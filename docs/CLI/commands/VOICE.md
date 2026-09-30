@@ -3,8 +3,8 @@
 Gestor del registro de voces (fábrica + clonadas): listar, clonar desde audio
 de referencia y eliminar. Es el único comando con despacho de 3 modos hacia el
 daemon para `clone` (delegable vía `POST /voices/clone`); `list` y `remove`
-son siempre locales (rechazan `--daemon` con `daemon_unreachable`, paridad con
-`speech dub`/`speech play`).
+son siempre locales (rechazan `--daemon` con exit 2 `daemon_not_supported`,
+paridad con `speech list`/`speech play`/`speech remove`).
 
 Implementación: `handle_voice` (`src/main.rs`), apoyado en `avi-store`
 (`crates/avi-store/src/lib.rs`: `VoiceStore`, `FACTORY_VOICES`,
@@ -112,21 +112,23 @@ handler de clonado.
 
 1. `VoiceStore::validate_name(name)` → `400` `invalid_voice_name` si falla.
 2. `!force && voice_store.exists(name)` → `409` `voice_exists`.
-3. Falta `audio_b64` → `400` `audio_missing`; no decodifica base64 → `400` `audio_decode_error`.
+3. Falta `audio_b64` → `400` `usage_error`; no decodifica base64 → `400` `invalid_audio`.
 4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
 5. Tras superar las validaciones baratas anteriores, el handler abre una respuesta streaming NDJSON (`application/x-ndjson`) emitiendo el evento inicial `{"event":"started", "name": "..."}`.
 6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `with_heartbeats`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) cada 500 ms (`STREAM_HEARTBEAT`). Si el cliente se desconecta, el daemon descarta el resultado; el clonado termina en segundo plano. Si la referencia no se puede cargar, el clonado se interrumpe y emite `{"event":"error", "reason":"invalid_audio", "message": "..."}` (WAV inválido o truncado) o `{"event":"error", "reason":"io_error", "message": "..."}` (fallo de lectura); si falla el propio clonado o el guardado, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
 7. Al completar el clonado, `voice_store.save_reference(name, tmp_qvoice)` persiste `reference.qvoice` (único archivo que el motor consulta; sin copia de los WAV de entrada).
 8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`warm_voice_engine`, emitiendo `{"event":"progress", "stage":"warmup"}`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "timbre": ..., "precomputed": true}` + `schema_version`. El calentamiento (~18-20 s en frío, acotado por el arranque del residente más el presupuesto del testigo) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada».
 
-El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_stream` con un timeout de inactividad entre latidos de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`) y un deadline failsafe de 240 s (`STREAM_TOTAL_DEADLINE`), mapeando `reason` a exit code:
+El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_stream` con un timeout de inactividad entre latidos de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`) y un deadline failsafe de 240 s (`STREAM_TOTAL_DEADLINE`), mapeando `reason` a exit code con la tabla única
+`ExitCode::from_reason`, tanto en las respuestas no 2xx como en los eventos
+`error` del stream:
 
 | `reason` del daemon | Exit code |
 |---|---|
 | `invalid_voice_name` | 2 (`InvalidInput`) |
 | `voice_exists` | 6 (`StateConflict`) |
 | `model_missing` | 4 (`ModelMissing`) |
-| `audio_missing` / `audio_decode_error` / `invalid_audio` | 2 (`InvalidInput`) |
+| `usage_error` / `invalid_audio` | 2 (`InvalidInput`) |
 | `io_error` | 1 (`Error`) |
 | `voice_clone_failed` | 1 (`Error`) |
 | otro / desconocido | 1 (`Error`) |
@@ -135,7 +137,8 @@ El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_strea
 
 ## `voice list`
 
-`require_local(daemon_mode)` rechaza `--daemon` explícito con exit 5 antes de
+`require_local(daemon_mode)` rechaza `--daemon` explícito con exit 2
+`daemon_not_supported` antes de
 tocar el store. Delega en `VoiceStore::list()` (`crates/avi-store/src/lib.rs`):
 escanea `<data_dir>/voices/`, marca `is_factory` con `is_factory_name` y
 ordena fábrica primero (`default`, `ryan`, `vivian`), luego clonadas
@@ -151,7 +154,8 @@ metadatos de ruta).
 
 ## `voice remove`
 
-`require_local(daemon_mode)` rechaza `--daemon` con exit 5. Flujo
+`require_local(daemon_mode)` rechaza `--daemon` con exit 2
+`daemon_not_supported`. Flujo
 (`src/main.rs`):
 
 1. `VoiceStore::validate_name(name)` → exit 2 `invalid_voice_name`.
@@ -232,7 +236,7 @@ copia).
 | Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |
 | Voz de fábrica (`default`/`ryan`/`vivian`) | remove | 2 | `cannot_remove_default` |
 | Voz no encontrada | remove | 3 | `voice_not_found` |
-| `--daemon` explícito en `list`/`remove` | list, remove | 5 | `daemon_unreachable` |
+| `--daemon` explícito en `list`/`remove` | list, remove | 2 | `daemon_not_supported` |
 
 ---
 

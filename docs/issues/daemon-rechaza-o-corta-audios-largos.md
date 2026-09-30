@@ -160,8 +160,7 @@ Se cumplen los criterios de los tres síntomas.
 
 ## Relacionados
 
-- [mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md](mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md):
-  el mapeo único de `reason` a código de salida que necesita el cliente para dar un
-  error identificable.
+- El mapeo único de `reason` a código de salida ya existe (`ExitCode::from_reason`): el
+  cliente lo usa para dar un error identificable en cualquier respuesta del daemon.
 - Techo de duración del push-to-talk (`AVI_PUSH_TO_TALK_MAX_SECS`) y tope de duración del
   dub.

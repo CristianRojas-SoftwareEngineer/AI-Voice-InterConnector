@@ -32,9 +32,9 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 
 | Ruta | Método | Función |
 |---|---|---|
-| `/health` | GET | `status:"ready"` + handshake de `schema_version` + estado `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla), que refleja el warmup en curso o la última síntesis completada (no certifica síntesis futura, ver salud observada por petición abajo) |
+| `/health` | GET | `status:"ready"` + `schema_version` (informativa, el cliente no la comprueba) + estado `warm` (`warming`/`warm`/`warm_failed`, con `warm_error` cuando falla), que refleja el warmup en curso o la última síntesis completada (no certifica síntesis futura, ver salud observada por petición abajo) |
 | `/synthesize` | POST | Síntesis con progreso streaming NDJSON, evento final `result` (`audio_b64`, WAV 24 kHz) |
-| `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), una sola pasada sin VAD (feature `native-stt`) |
+| `/transcribe` | POST | Transcripción PCM int16 base64 (`audio_b64`), una sola pasada sin VAD (feature `native-stt`); los errores responden 400 (`usage_error`, `invalid_audio`) o 500 (`transcription_failed`) |
 | `/translate` | POST | Traducción CT2 residente (feature `native-translation`) |
 | `/voices/clone` | POST | Clonado con streaming NDJSON y warm-on-clone (`{name, speech, precomputed:true}` = precarga en caliente iniciada; sin endpoint `precompute` separado) |
 | `/dub` | POST | Pipeline transcribe→translate→synthesize con streaming NDJSON y latidos |
@@ -42,7 +42,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 
 Son 7 rutas públicas (podados `GET /voices` y `POST /voices/precompute`; sin legado, ver `docs/CLI/commands/DAEMON.md`).
 
-El handshake es estricto: un daemon de otra `schema_version` se trata como no utilizable.
+No hay handshake de versión: el cliente no comprueba la `schema_version` del daemon (hoy `"4"`) antes de usarlo, porque el daemon es el mismo ejecutable relanzado como `daemon serve`.
 
 Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediato en cuanto el puerto está enlazado y el motor construido; warm indica si el precalentamiento en segundo plano ya terminó. `warm` lo fijan los warmups (de arranque y de clonado) y cada síntesis completada, que lo devuelve a `warm`; no refleja una degradación del residente posterior a la última síntesis y no certifica que una síntesis futura vaya a completarse. La salud efectiva de síntesis se observa por petición — antes de reutilizar el residente, el daemon ejecuta un healthcheck real (`synthesize_via_resident`, `crates/avi-tts/src/lib.rs`) y rearranca uno fresco si está degradado.
 
