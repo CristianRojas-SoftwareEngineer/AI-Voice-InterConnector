@@ -461,7 +461,7 @@ mod tests {
             "se anuncia la simulación: {printed}"
         );
         assert!(
-            printed.contains(&model.display().to_string()) && printed.contains("2.0 KiB)"),
+            printed.contains(&model.display().to_string()) && printed.contains("2.0 KB)"),
             "el plan se imprime con rutas y tamaños: {printed}"
         );
         assert!(

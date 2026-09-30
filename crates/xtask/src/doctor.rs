@@ -768,13 +768,14 @@ fn check_sccache(pins: &Pins) -> Row {
 
 /// Umbral de aviso de `target/`: por encima, `doctor` sugiere la poda
 /// fina. Comparte valor con el hook `post-merge` (ver `docs/BRANCHING.md`).
+/// Son 10 GB decimales (10 000 000 000 bytes).
 pub(crate) const TARGET_HYGIENE_MAX_GB: u64 = 10;
 
 /// Núcleo puro del aviso: hay que avisar si `target/` supera el umbral o el
 /// hook de poda no está activo. Pura sobre valores ya leídos, así se testea
 /// sin disco.
 pub(crate) fn target_hygiene_warn(size_bytes: u64, hook_active: Option<bool>) -> bool {
-    const LIMIT: u64 = TARGET_HYGIENE_MAX_GB * 1024 * 1024 * 1024;
+    const LIMIT: u64 = TARGET_HYGIENE_MAX_GB * 1000 * 1000 * 1000;
     size_bytes > LIMIT || hook_active == Some(false)
 }
 
@@ -804,7 +805,7 @@ fn check_target_hygiene(root: &Path) -> Row {
         None => "hook desconocido",
     };
     let mut hints = Vec::new();
-    if size > TARGET_HYGIENE_MAX_GB * 1024 * 1024 * 1024 {
+    if size > TARGET_HYGIENE_MAX_GB * 1000 * 1000 * 1000 {
         hints.push(
             "libera con `cargo xtask clean --prune --dry-run` (`--yes` para borrar)".to_string(),
         );
@@ -818,7 +819,7 @@ fn check_target_hygiene(root: &Path) -> Row {
         mandatory: false,
         status: if warn { Status::Mismatch } else { Status::Ok },
         found: Some(format!("{} ({hook_text})", avi_shared::human_bytes(size))),
-        want: Some(format!("máx. {TARGET_HYGIENE_MAX_GB} GiB")),
+        want: Some(format!("máx. {TARGET_HYGIENE_MAX_GB} GB")),
         hint: if hints.is_empty() {
             None
         } else {
@@ -1195,7 +1196,7 @@ mod tests {
     /// hook desconocido (sin git) no penaliza cuando el tamaño está bien.
     #[test]
     fn target_hygiene_predicate() {
-        const GB: u64 = 1024 * 1024 * 1024;
+        const GB: u64 = 1000 * 1000 * 1000;
         assert!(!target_hygiene_warn(0, Some(true)));
         assert!(!target_hygiene_warn(10 * GB, Some(true)));
         assert!(!target_hygiene_warn(0, None));

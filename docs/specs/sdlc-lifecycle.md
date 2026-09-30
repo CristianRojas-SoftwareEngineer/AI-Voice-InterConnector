@@ -443,7 +443,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
      Programa:  ~/.local/opt/ai-voice-interconnector   (reemplaza 0.23.1)
      Comando:   ~/.local/bin/ai-voice-interconnector
      PATH:      se añadirá ~/.local/bin en ~/.bashrc y ~/.profile
-     Modelos:   se descargarán unos 4.4 GiB en ~/.cache/ai-voice-interconnector/models
+     Modelos:   se descargarán unos 4.7 GB en ~/.cache/ai-voice-interconnector/models
    ¿Continuar? [S/n]
    ```
 

@@ -1288,8 +1288,8 @@ mod tests {
     }
 
     /// El resumen previo anuncia la descarga con el tamaño de la tabla de pines en
-    /// escala binaria: la selección base (Qwen3-TTS, los dos Marian y Parakeet)
-    /// suma 4 734 735 847 bytes, que son 4.4 GiB.
+    /// escala decimal: la selección base (Qwen3-TTS, los dos Marian y Parakeet)
+    /// suma 4 734 735 847 bytes, que son 4.7 GB.
     #[test]
     fn summary_announces_the_pinned_download_size() {
         let env = test_env();
@@ -1310,7 +1310,7 @@ mod tests {
         );
         assert!(
             summary.contains(&format!(
-                "  Modelos:   se descargarán unos 4.4 GiB en {}",
+                "  Modelos:   se descargarán unos 4.7 GB en {}",
                 env.models_dir.display()
             )),
             "{summary:?}"

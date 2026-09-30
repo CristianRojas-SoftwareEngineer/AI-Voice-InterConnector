@@ -8,7 +8,7 @@
 #   - la rama actual es `main` (los merges fuera de `main` no podan);
 #   - el merge tocó dependencias o toolchain (Cargo.lock, manifiestos,
 #     vendor/, toolchain o pines), que es lo que deja hashes obsoletos;
-#   - `target/` supera PRUNE_THRESHOLD_GB GiB.
+#   - `target/` supera PRUNE_THRESHOLD_GB GB decimales (se mide en bytes).
 #
 # La poda delega en `cargo xtask clean --prune --yes`, que conserva la
 # compilación vigente: el siguiente build sigue siendo incremental.
@@ -39,16 +39,16 @@ changed=$(git diff --name-only HEAD@{1} HEAD 2>/dev/null) || exit 0
 echo "$changed" | grep -qE '^(Cargo\.lock|Cargo\.toml|crates/[^/]+/Cargo\.toml|vendor/|rust-toolchain(\.toml)?|packaging/pins\.json)' || exit 0
 
 if [ -d target ]; then
-  size_kb=$(du -sk target 2>/dev/null | cut -f1)
-  case "$size_kb" in
+  size_bytes=$(du -sb target 2>/dev/null | cut -f1)
+  case "$size_bytes" in
     ''|*[!0-9]*) exit 0 ;;
   esac
-  [ "$size_kb" -gt $((PRUNE_THRESHOLD_GB * 1024 * 1024)) ] || exit 0
+  [ "$size_bytes" -gt $((PRUNE_THRESHOLD_GB * 1000 * 1000 * 1000)) ] || exit 0
 else
   exit 0
 fi
 
-echo "[post-merge] merge en main con dependencias nuevas y target/ sobre ${PRUNE_THRESHOLD_GB} GiB: poda fina…"
+echo "[post-merge] merge en main con dependencias nuevas y target/ sobre ${PRUNE_THRESHOLD_GB} GB: poda fina…"
 cargo xtask clean --prune --yes 2>&1 | tail -5
 ) || true
 exit 0

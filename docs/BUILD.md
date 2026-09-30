@@ -375,7 +375,7 @@ externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 |-------|------------|------|------------------------------------|
 | `cargo-v2` (registry) | `~/.cargo/registry` y `~/.cargo/git`: las fuentes descargadas de crates | todos los que compilan | `arch`, `rust_pin` y el checksum de `Cargo.lock.cachekey`. Tiene fallback por prefijo. |
 | `target-v3` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58` y de `vendor/hf-hub-1.0.0`. Sin fallback. |
-| `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (3 GiB) | los mismos jobs que `target-v3`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
+| `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (3,2 GB) | los mismos jobs que `target-v3`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
 | `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_pin`. |
 | `msys2-v1` | la instalación de MSYS2 | `build-windows-x64` | los pines de MSYS2: release base, gcc, openblas y make. |
 | `tts-v1` | el motor `qwen_tts.exe` compilado | `build-windows-x64` | `vendor/qwen3-tts/.engine-cachekey` (`Makefile`, `*.c`/`*.h` y `third_party/ingot`) y los pines de gcc y openblas. |
@@ -458,7 +458,7 @@ es además inmune a la conversión de fin de línea del checkout.
   acaba de compilar, y omitir el guardado haría que la siguiente corrida los
   volviera a fallar. Cada cambio de `Cargo.lock` agrega objetos que ya nadie
   usa, así que el tamaño se acota con `SCCACHE_CACHE_SIZE`, fijado por el
-  parámetro de pipeline `sccache_cache_size` (3 GiB, más del doble del working
+  parámetro de pipeline `sccache_cache_size` (3,2 GB, más del doble del working
   set de `build-windows-x64`, la variante más grande). Al superarlo, `sccache`
   desaloja por LRU: un acierto actualiza el `mtime` de la entrada, también en
   una caché recién restaurada desde el tar de CircleCI, así que se desalojan los
@@ -543,7 +543,7 @@ quedan documentados aquí de forma autocontenida:
 - **La guarda de provisión TTS no aprovisiona.** `tts_model_registered()`
   solo consulta `doctor`; si faltan modelos, las pruebas pesadas se omiten.
   Para ejecutarlas hay que correr antes `ai-voice-interconnector setup`.
-  Reintroducir `setup` en la guarda descargaría 4,4 GiB en cada corrida de CI
+  Reintroducir `setup` en la guarda descargaría 4,7 GB en cada corrida de CI
   sin obtener cobertura, porque el runner de tests no tiene el binario del
   motor ni los pesos locales.
 
@@ -708,7 +708,7 @@ recursos de red), se copia el blob y el disco se duplica. No hay Python en la ru
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Pesos TTS (síntesis) |
 | `marian-es-en` | `Helsinki-NLP/opus-mt-es-en` | Traducción es→en (CT2) |
 | `marian-en-es` | `Helsinki-NLP/opus-mt-en-es` | Traducción en→es (CT2) |
-| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (640 MiB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
+| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (671,1 MB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz (opt-in `--with-voice-cloning`) |
 
 Los pines viven en `MODEL_REVISIONS` (`crates/avi-shared/src/paths.rs`): un `&[ModelPin]`

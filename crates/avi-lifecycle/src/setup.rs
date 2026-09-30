@@ -905,7 +905,7 @@ pub(crate) mod tests {
     }
 
     /// La confirmación anuncia la suma de los tamaños fijados en la tabla de
-    /// pines, en escala binaria: 4 734 735 847 bytes la selección base (4 modelos)
+    /// pines, en escala decimal: 4 734 735 847 bytes la selección base (4 modelos)
     /// y 7 250 841 898 con el modelo de clonado (5 modelos).
     #[test]
     fn confirmation_announces_the_pinned_sizes() {
@@ -920,13 +920,13 @@ pub(crate) mod tests {
         assert_eq!(base.estimated_bytes(), 4_734_735_847);
         assert_eq!(
             download_summary(&base),
-            "Se descargarán 4 modelo(s), unos 4.4 GiB."
+            "Se descargarán 4 modelo(s), unos 4.7 GB."
         );
         let cloning = pending_of(true);
         assert_eq!(cloning.estimated_bytes(), 7_250_841_898);
         assert_eq!(
             download_summary(&cloning),
-            "Se descargarán 5 modelo(s), unos 6.8 GiB."
+            "Se descargarán 5 modelo(s), unos 7.3 GB."
         );
     }
 

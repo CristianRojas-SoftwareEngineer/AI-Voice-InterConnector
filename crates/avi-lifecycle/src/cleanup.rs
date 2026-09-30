@@ -625,10 +625,10 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     );
     for target in &plan.targets {
         eprintln!(
-            "  {} {} ({} bytes)",
+            "  {} {} ({})",
             target.category.as_str(),
             target.path.display(),
-            target.size
+            crate::human_bytes(target.size)
         );
     }
     for path in preview.all() {

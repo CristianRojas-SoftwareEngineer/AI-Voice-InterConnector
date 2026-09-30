@@ -131,12 +131,12 @@ La firma Authenticode/Apple notarization es goal a largo plazo (`docs/GOAL.md`).
 
 ### Provisión del/los modelo(s) (`setup`)
 
-Cinco modelos pinneados (4 + 1 opt-in) no vienen en el binario: `qwen3-tts-0.6b` (2,3 GiB),
-`marian-es-en`/`marian-en-es` (0,6 y 0,9 GiB), `parakeet-tdt-v3` (0,6 GiB, int8) y `qwen3-tts-0.6b-base` (2,3 GiB, opt-in con `setup --with-voice-cloning`). Se descargan a la
+Cinco modelos pinneados (4 + 1 opt-in) no vienen en el binario: `qwen3-tts-0.6b` (2,5 GB),
+`marian-es-en`/`marian-en-es` (0,6 y 0,9 GB), `parakeet-tdt-v3` (0,7 GB, int8) y `qwen3-tts-0.6b-base` (2,5 GB, opt-in con `setup --with-voice-cloning`). Se descargan a la
 **caché exclusiva de la aplicación** (`~/.cache/ai-voice-interconnector/models` en Linux,
 `~/Library/Caches/ai-voice-interconnector/models` en macOS,
 `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows; si defines `HF_HUB_CACHE` o
-`HF_HOME`, esa raíz se respeta y pasa a ser compartida) vía `setup` (4,4 GiB base, 6,8 GiB con `--with-voice-cloning`; el disco ocupa lo mismo que la descarga):
+`HF_HOME`, esa raíz se respeta y pasa a ser compartida) vía `setup` (4,7 GB base, 7,3 GB con `--with-voice-cloning`; el disco ocupa lo mismo que la descarga):
 
 ```bash
 ai-voice-interconnector setup

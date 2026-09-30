@@ -14,15 +14,15 @@ pub mod pins;
 
 pub use console::force_utf8_console;
 
-/// Tamaño legible en escala binaria (B, KiB, MiB, GiB, TiB) con un decimal.
+/// Tamaño legible en escala decimal (B, KB, MB, GB, TB) con un decimal.
 /// Es el único formateador de tamaños del workspace, compartido por el producto
-/// y por `xtask`: cada unidad vale 1024 de la anterior y la etiqueta lo dice.
+/// y por `xtask`: cada unidad vale 1000 de la anterior y la etiqueta lo dice.
 pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
     let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
+    while value >= 1000.0 && unit + 1 < UNITS.len() {
+        value /= 1000.0;
         unit += 1;
     }
     if unit == 0 {
@@ -37,13 +37,13 @@ mod human_bytes_tests {
     use super::human_bytes;
 
     #[test]
-    fn formats_binary_units_with_one_decimal() {
+    fn formats_decimal_units_with_one_decimal() {
         assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(1023), "1023 B");
-        assert_eq!(human_bytes(1024), "1.0 KiB");
-        assert_eq!(human_bytes(1536), "1.5 KiB");
-        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
-        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024 / 2), "1.5 GiB");
-        assert_eq!(human_bytes(1024u64.pow(4)), "1.0 TiB");
+        assert_eq!(human_bytes(999), "999 B");
+        assert_eq!(human_bytes(1000), "1.0 KB");
+        assert_eq!(human_bytes(1500), "1.5 KB");
+        assert_eq!(human_bytes(5 * 1000 * 1000), "5.0 MB");
+        assert_eq!(human_bytes(3 * 1000 * 1000 * 1000 / 2), "1.5 GB");
+        assert_eq!(human_bytes(1000u64.pow(4)), "1.0 TB");
     }
 }

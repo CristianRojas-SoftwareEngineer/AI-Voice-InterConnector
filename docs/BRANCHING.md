@@ -63,7 +63,7 @@ git config core.hooksPath .githooks
 - `post-merge`: poda fina tras integrar en `main`. Solo actúa si la rama
   actual es `main`, el merge tocó dependencias o toolchain (`Cargo.lock`,
   manifiestos, `vendor/`, toolchain o pines) y `target/` supera
-  `PRUNE_THRESHOLD_GB` (10 GiB, constante en la cabecera del hook).
+  `PRUNE_THRESHOLD_GB` (10 GB, constante en la cabecera del hook).
   Entonces ejecuta `cargo xtask clean --prune --yes`. Es best-effort y nunca
   falla el merge (sale siempre con 0).
 
@@ -82,6 +82,6 @@ cargo xtask clean --prune --yes
 
 El defecto de `clean` no cambia: sin `--prune` sigue borrando la capa
 entera. `cargo xtask doctor` incluye la fila opcional `target-hygiene`
-(tamaño frente al umbral de 10 GiB y estado del hook) con el comando exacto
+(tamaño frente al umbral de 10 GB y estado del hook) con el comando exacto
 cuando hay exceso. Los PDBs se consideran viejos a partir de
 `PRUNE_PDB_MAX_AGE_DAYS` (7 días, constante en `crates/xtask/src/clean.rs`).

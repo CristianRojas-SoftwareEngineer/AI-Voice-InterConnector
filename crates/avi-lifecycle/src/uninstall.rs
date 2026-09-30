@@ -480,7 +480,7 @@ pub fn simulate(
     );
     for entry in plan.entries() {
         match entry.size {
-            Some(size) => eprintln!("  {} ({size} bytes)", entry.path.display()),
+            Some(size) => eprintln!("  {} ({})", entry.path.display(), crate::human_bytes(size)),
             None => eprintln!("  {}", entry.path.display()),
         }
     }
@@ -534,10 +534,10 @@ fn compose_summary(plan: &Plan, options: &Options) -> Vec<String> {
     ));
     for target in &plan.state.targets {
         out.push(format!(
-            "  {} {} ({} bytes)",
+            "  {} {} ({})",
             target.category.as_str(),
             target.path.display(),
-            target.size
+            crate::human_bytes(target.size)
         ));
     }
     for item in &plan.preserved {
