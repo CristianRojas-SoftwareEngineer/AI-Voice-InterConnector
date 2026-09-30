@@ -11,11 +11,11 @@ pub const CLI_SCHEMA_VERSION: &str = "4";
 
 /// Versión del **protocolo del daemon** (NDJSON y cabecera `x-schema-version`).
 ///
-/// Sigue en `"3"` y este ciclo no la toca: es un contrato independiente, como el propio
-/// documento de contrato declara. Las dos versiones compartían una constante única, que
-/// es exactamente el defecto que este desacoplamiento arregla: subir la de la CLI
-/// habría arrastrado al daemon.
-pub const DAEMON_SCHEMA_VERSION: &str = "3";
+/// Es un contrato independiente del sobre de la CLI y sube por sus propios cambios
+/// incompatibles. Pasó a `"4"` cuando `/transcribe` empezó a señalar sus errores con el
+/// estado HTTP (400 y 500 en lugar de 200) y los `reason` de audio del daemon se
+/// alinearon con el contrato (`usage_error` e `invalid_audio`).
+pub const DAEMON_SCHEMA_VERSION: &str = "4";
 
 /// Inserta `schema_version` en un `Value` sin imprimirlo.
 ///

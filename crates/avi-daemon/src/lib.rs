@@ -493,7 +493,7 @@ async fn synthesize_handler(
             json!({
                 "event": "start",
                 "voice": voice_owned,
-                "text_length": text_owned.len(),
+                "text_length": text_owned.chars().count(),
             }),
         )
         .await;
@@ -535,7 +535,7 @@ async fn synthesize_handler(
                     json!({
                         "event": "error",
                         "reason": "usage_error",
-                        "message": "Error: --temperature debe ser mayor que 0 y como máximo 2.0.",
+                        "message": "--temperature debe ser mayor que 0 y como máximo 2.0.",
                     }),
                 )
                 .await;
@@ -727,24 +727,30 @@ async fn transcribe_handler(
     let audio_b64 = match audio_b64 {
         Some(s) => s,
         None => {
-            return Json(with_sv(json!({
-                "status": "error",
-                "reason": "audio_missing",
-                "message": "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono).",
-            })))
-            .into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": "usage_error",
+                    "message": "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono).",
+                }))),
+            )
+                .into_response();
         }
     };
 
     let audio_bytes = match base64::engine::general_purpose::STANDARD.decode(audio_b64) {
         Ok(b) => b,
         Err(e) => {
-            return Json(with_sv(json!({
-                "status": "error",
-                "reason": "audio_decode_error",
-                "message": format!("audio_b64 no decodificable como base64: {}", e),
-            })))
-            .into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": "invalid_audio",
+                    "message": format!("audio_b64 no decodificable como base64: {}", e),
+                }))),
+            )
+                .into_response();
         }
     };
 
@@ -970,8 +976,8 @@ async fn voices_clone_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
-                    "error": "audio_missing",
-                    "reason": "audio_missing",
+                    "error": "usage_error",
+                    "reason": "usage_error",
                     "message": "La petición no incluye el campo 'audio_b64'.",
                 }))),
             )
@@ -984,8 +990,8 @@ async fn voices_clone_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
-                    "error": "audio_decode_error",
-                    "reason": "audio_decode_error",
+                    "error": "invalid_audio",
+                    "reason": "invalid_audio",
                     "message": format!("audio_b64 no decodificable como base64: {}", e),
                 }))),
             )
@@ -1177,7 +1183,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
                     "status": "error",
-                    "reason": "audio_missing",
+                    "reason": "usage_error",
                     "message": "La petición no incluye el campo 'audio_b64'.",
                 }))),
             )
@@ -1191,7 +1197,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
                     "status": "error",
-                    "reason": "audio_decode_error",
+                    "reason": "invalid_audio",
                     "message": format!("audio_b64 no decodificable: {}", e),
                 }))),
             )
@@ -2515,21 +2521,13 @@ mod tests {
         assert_job_saw_cancel(&seen).await;
     }
 
-    /// Dub handler con audio_missing retorna error coherente sin panic
+    /// Dub sin `audio_b64` responde 400 con el `reason` de contrato `usage_error`
     #[tokio::test]
     async fn dub_handler_audio_missing() {
-        use axum::body::Body;
-        use tower::ServiceExt;
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
-        let app = build_router_with_state(state);
-        let req = axum::http::Request::builder()
-            .uri("/dub")
-            .method(axum::http::Method::POST)
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"voice":"default"}"#))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert!(resp.status().is_client_error() || resp.status().is_server_error());
+        let (status, body) = post_json("/dub", json!({"voice": "default"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["reason"], "usage_error");
     }
 
     /// Dub handler rechaza con 400 `audio_too_long` un audio que supera el tope

@@ -1,6 +1,6 @@
 {
-  "schema_version": "3",
+  "schema_version": "4",
   "status": "error",
-  "reason": "audio_missing",
+  "reason": "usage_error",
   "message": "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono)."
 }
