@@ -498,6 +498,25 @@ async fn synthesize_handler(
         )
         .await;
 
+        // Temperatura opcional del CLI (ya validada allí); aquí se defiende el
+        // rango para payloads directos al HTTP. Va antes de la comprobación del
+        // modelo: una invocación mal formada es un error de uso aunque el motor
+        // no esté provisionado.
+        if let Some(t) = temperature {
+            if !(t > 0.0 && t <= 2.0) {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "usage_error",
+                        "message": "--temperature debe ser mayor que 0 y como máximo 2.0.",
+                    }),
+                )
+                .await;
+                return;
+            }
+        }
+
         // Provisionamiento del motor: si binario/modelo no se resolvieron, la rama
         // `model_missing` es el contrato aceptado en entornos sin motor
         // (en el daemon real corre desde la raíz del repo, donde sí resuelve).
@@ -525,23 +544,6 @@ async fn synthesize_handler(
             }),
         )
         .await;
-
-        // Temperatura opcional del CLI (ya validada allí); aquí se defiende el
-        // rango para payloads directos al HTTP.
-        if let Some(t) = temperature {
-            if !(t > 0.0 && t <= 2.0) {
-                emit_ndjson(
-                    &tx,
-                    json!({
-                        "event": "error",
-                        "reason": "usage_error",
-                        "message": "--temperature debe ser mayor que 0 y como máximo 2.0.",
-                    }),
-                )
-                .await;
-                return;
-            }
-        }
 
         // Traducción opt-in con el motor residente: passthrough si coinciden.
         let source_iso = resolve_translation_language(&source_owned).to_string();
