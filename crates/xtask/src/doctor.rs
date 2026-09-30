@@ -15,7 +15,8 @@ use anyhow::Result;
 use avi_shared::pins::Pins;
 use std::path::{Path, PathBuf};
 
-/// Filas de la tabla de requisitos, en su orden. `sccache` es la única opcional.
+/// Filas de la tabla de requisitos, en su orden. `sccache` y
+/// `target-hygiene` son las únicas opcionales.
 pub(crate) const ROW_IDS: &[&str] = &[
     "rust",
     "c-compiler",
@@ -25,6 +26,7 @@ pub(crate) const ROW_IDS: &[&str] = &[
     "engine-toolchain",
     "onnx",
     "sccache",
+    "target-hygiene",
 ];
 
 /// Estado de un requisito: correcto, ausente o con versión distinta.
@@ -764,6 +766,67 @@ fn check_sccache(pins: &Pins) -> Row {
     }
 }
 
+/// Umbral de aviso de `target/`: por encima, `doctor` sugiere la poda
+/// fina. Comparte valor con el hook `post-merge` (ver `docs/BRANCHING.md`).
+pub(crate) const TARGET_HYGIENE_MAX_GB: u64 = 10;
+
+/// Núcleo puro del aviso: hay que avisar si `target/` supera el umbral o el
+/// hook de poda no está activo. Pura sobre valores ya leídos, así se testea
+/// sin disco.
+pub(crate) fn target_hygiene_warn(size_bytes: u64, hook_active: Option<bool>) -> bool {
+    const LIMIT: u64 = TARGET_HYGIENE_MAX_GB * 1024 * 1024 * 1024;
+    size_bytes > LIMIT || hook_active == Some(false)
+}
+
+/// ¿Apunta `core.hooksPath` a `.githooks`? `None` si git no responde: no
+/// penalizar un entorno sin git por un aviso de higiene.
+fn probe_hooks_path(root: &Path) -> Option<bool> {
+    let out = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["config", "core.hooksPath"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim() == ".githooks")
+}
+
+/// Sonda de higiene de `target/` (opcional): tamaño frente al umbral y
+/// estado del hook de poda. Solo lectura; nunca bloquea `ok()`.
+fn check_target_hygiene(root: &Path) -> Row {
+    let size = super::clean::size_of(&root.join("target"));
+    let hook = probe_hooks_path(root);
+    let warn = target_hygiene_warn(size, hook);
+    let hook_text = match hook {
+        Some(true) => "hook activo",
+        Some(false) => "hook inactivo",
+        None => "hook desconocido",
+    };
+    let mut hints = Vec::new();
+    if size > TARGET_HYGIENE_MAX_GB * 1024 * 1024 * 1024 {
+        hints.push(
+            "libera con `cargo xtask clean --prune --dry-run` (`--yes` para borrar)".to_string(),
+        );
+    }
+    if hook == Some(false) {
+        hints.push("activa el hook: `git config core.hooksPath .githooks`".to_string());
+    }
+    Row {
+        id: "target-hygiene",
+        label: "higiene de target",
+        mandatory: false,
+        status: if warn { Status::Mismatch } else { Status::Ok },
+        found: Some(format!("{} ({hook_text})", avi_shared::human_bytes(size))),
+        want: Some(format!("máx. {TARGET_HYGIENE_MAX_GB} GiB")),
+        hint: if hints.is_empty() {
+            None
+        } else {
+            Some(hints.join("; "))
+        },
+    }
+}
+
 /// Nombre del binario del motor según la plataforma.
 fn engine_bin_name() -> &'static str {
     if cfg!(windows) {
@@ -922,6 +985,7 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         check_engine_toolchain(pins),
         check_onnx(root, pins),
         check_sccache(pins),
+        check_target_hygiene(root),
     ];
     debug_assert_eq!(
         rows.iter().map(|r| r.id).collect::<Vec<_>>(),
@@ -1082,7 +1146,8 @@ mod tests {
                 "libclang",
                 "onnx",
                 "rust",
-                "sccache"
+                "sccache",
+                "target-hygiene"
             ]
         );
     }
@@ -1107,8 +1172,8 @@ mod tests {
         }
     }
 
-    /// `check` sobre fixtures produce las 8 filas en orden y `ok()` solo
-    /// exige las obligatorias (`sccache` no bloquea).
+    /// `check` sobre fixtures produce las 9 filas en orden y `ok()` solo
+    /// exige las obligatorias (`sccache` y `target-hygiene` no bloquean).
     #[test]
     fn check_yields_all_rows_in_order() {
         let root = std::env::temp_dir().join(format!("xtask_doctor_{}", std::process::id()));
@@ -1123,7 +1188,20 @@ mod tests {
             .filter(|r| !r.mandatory)
             .map(|r| r.id)
             .collect();
-        assert_eq!(optional, ["sccache"]);
+        assert_eq!(optional, ["sccache", "target-hygiene"]);
+    }
+
+    /// El aviso salta por tamaño sobre el umbral o por hook inactivo; un
+    /// hook desconocido (sin git) no penaliza cuando el tamaño está bien.
+    #[test]
+    fn target_hygiene_predicate() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        assert!(!target_hygiene_warn(0, Some(true)));
+        assert!(!target_hygiene_warn(10 * GB, Some(true)));
+        assert!(!target_hygiene_warn(0, None));
+        assert!(target_hygiene_warn(10 * GB + 1, Some(true)));
+        assert!(target_hygiene_warn(0, Some(false)));
+        assert!(target_hygiene_warn(10 * GB + 1, None));
     }
 
     #[test]

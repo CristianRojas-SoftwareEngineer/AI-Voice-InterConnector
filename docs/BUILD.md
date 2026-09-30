@@ -759,12 +759,24 @@ Cada capa tiene su comando:
 # Ver qué se borraría y cuánto ocupa, sin borrar nada
 cargo xtask clean --repo --dry-run
 
+# Poda fina: solo cachés, cruces ajenos y PDBs viejos, sin tocar la
+# compilación vigente (el siguiente build sigue siendo incremental)
+cargo xtask clean --prune --dry-run
+cargo xtask clean --prune --yes
+
 # Borrar el repositorio (pide confirmación [s/N]; --yes la omite, obligatorio sin TTY)
 cargo xtask clean --repo --yes
 
 # Aplicación y después repositorio
 cargo xtask clean --all --yes
 ```
+
+Tras integrar una rama en `main`, el hook `post-merge` de `.githooks/`
+(opt-in por clon con `git config core.hooksPath .githooks`) ejecuta la poda
+fina automáticamente cuando el merge invalida cachés y `target/` supera el
+umbral; `cargo xtask doctor` avisa con la fila `target-hygiene` cuando hay
+exceso. La estrategia de ramas y esta automatización se describen en
+`docs/BRANCHING.md`.
 
 `clean` se ejecuta desde la raíz del repo. Antes de borrar, la capa `--repo`
 detiene el daemon lanzado desde `target/`; la capa `--app` delega en el binario

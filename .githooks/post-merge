@@ -1,0 +1,54 @@
+#!/bin/sh
+# Gancho de post-merge: poda fina del entorno tras integrar una rama
+# transitoria en `main`. Solo actúa cuando el merge invalida cachés de
+# compilación y `target/` supera el umbral; en cualquier otro caso no hace
+# nada observable.
+#
+# Condiciones (todas deben cumplirse):
+#   - la rama actual es `main` (los merges fuera de `main` no podan);
+#   - el merge tocó dependencias o toolchain (Cargo.lock, manifiestos,
+#     vendor/, toolchain o pines), que es lo que deja hashes obsoletos;
+#   - `target/` supera PRUNE_THRESHOLD_GB GiB.
+#
+# La poda delega en `cargo xtask clean --prune --yes`, que conserva la
+# compilación vigente: el siguiente build sigue siendo incremental.
+# Este gancho es best-effort y nunca falla el merge (sale siempre con 0).
+#
+# `core.hooksPath` es configuración local de git y no se versiona, así que
+# este fichero no se activa por sí solo. Actívalo una vez por clon con:
+#
+#   git config core.hooksPath .githooks
+#
+# Sin Git Bash o sin ganas de automatizar, el equivalente manual es:
+#
+#   cargo xtask clean --prune --dry-run
+#   cargo xtask clean --prune --yes
+
+PRUNE_THRESHOLD_GB=10
+
+# Best-effort: ningún fallo de este gancho puede abortar el merge.
+(
+set -u
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$root" || exit 0
+
+[ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = "main" ] || exit 0
+
+changed=$(git diff --name-only HEAD@{1} HEAD 2>/dev/null) || exit 0
+echo "$changed" | grep -qE '^(Cargo\.lock|Cargo\.toml|crates/[^/]+/Cargo\.toml|vendor/|rust-toolchain(\.toml)?|packaging/pins\.json)' || exit 0
+
+if [ -d target ]; then
+  size_kb=$(du -sk target 2>/dev/null | cut -f1)
+  case "$size_kb" in
+    ''|*[!0-9]*) exit 0 ;;
+  esac
+  [ "$size_kb" -gt $((PRUNE_THRESHOLD_GB * 1024 * 1024)) ] || exit 0
+else
+  exit 0
+fi
+
+echo "[post-merge] merge en main con dependencias nuevas y target/ sobre ${PRUNE_THRESHOLD_GB} GiB: poda fina…"
+cargo xtask clean --prune --yes 2>&1 | tail -5
+) || true
+exit 0

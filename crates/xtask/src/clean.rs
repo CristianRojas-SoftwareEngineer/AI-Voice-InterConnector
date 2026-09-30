@@ -7,6 +7,11 @@
 //! | Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` (o `cleanup --all --yes` si el canal es `homebrew`), ejecutado con el binario del repositorio |
 //! | Ambas | `--all` | Aplicación y después repositorio | Ídem |
 //!
+//! Con `--prune`, la capa repo se modera: poda solo `incremental/`, cachés
+//! efímeras, targets cruzados ajenos al host y `.pdb` viejos de `deps/`, y
+//! conserva la compilación vigente para que el siguiente build siga siendo
+//! incremental en vez de frío.
+//!
 //! La capa global compartida (`~/.cargo`, caché de sccache, paquetes del
 //! sistema, MSYS2) nunca se toca (criterio 23); solo se informa. Detiene
 //! primero los daemons lanzados desde `target/`, nunca borra código fuente
@@ -67,6 +72,93 @@ const REPO_ENTRIES: &[&str] = &[
     "vendor/qwen3-tts/qwen3-tts-0.6b-base",
 ];
 
+/// Antigüedad a partir de la cual un `.pdb` de `deps/` cuenta como obsoleto
+/// para la poda fina: depurar esas unidades ya no interesa y el PDB se
+/// regenera al recompilar.
+pub(crate) const PRUNE_PDB_MAX_AGE_DAYS: u64 = 7;
+
+/// Triple del host deducido de la compilación en curso: la poda fina
+/// conserva el perfil nativo y retira los cruces ajenos a este equipo.
+pub(crate) fn host_triple() -> &'static str {
+    match (std::env::consts::ARCH, std::env::consts::OS) {
+        ("x86_64", "windows") => "x86_64-pc-windows-msvc",
+        ("x86_64", "linux") => "x86_64-unknown-linux-gnu",
+        ("aarch64", "linux") => "aarch64-unknown-linux-gnu",
+        ("aarch64", "macos") => "aarch64-apple-darwin",
+        _ => "unknown",
+    }
+}
+
+/// Añade el directorio si existe, sin fallar cuando falta.
+fn push_dir(out: &mut Vec<PathBuf>, dir: PathBuf) {
+    if dir.is_dir() {
+        out.push(dir);
+    }
+}
+
+/// `.pdb` de `deps/` más antiguos que el umbral: pesan cientos de MB por
+/// suite de tests y se regeneran al recompilar la unidad.
+fn prune_old_pdbs(deps: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(deps) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_pdb = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdb"));
+        if !is_pdb {
+            continue;
+        }
+        let old = path
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|d| d.as_secs() > PRUNE_PDB_MAX_AGE_DAYS * 86400);
+        if old {
+            out.push(path);
+        }
+    }
+}
+
+/// Entradas de la poda fina (`--prune`): cachés regenerables y artefactos
+/// obsoletos de `target/`. Nunca incluye fuentes ni la compilación vigente
+/// de dependencias, que es lo que mantiene rápido el siguiente build.
+pub(crate) fn prune_targets(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let target = root.join("target");
+    for profile in ["debug", "release"] {
+        let dir = target.join(profile);
+        push_dir(&mut out, dir.join("incremental"));
+        prune_old_pdbs(&dir.join("deps"), &mut out);
+    }
+    let Ok(entries) = std::fs::read_dir(&target) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Cachés efímeras de editores y compilaciones a medias.
+        if name.starts_with("flycheck") || name == "tmp" {
+            out.push(path);
+        // Directorio de target ajeno al host: otro triple no sirve a este
+        // equipo. Los marcadores de Cargo distinguen un target real de un
+        // directorio cualquiera con guiones en el nombre.
+        } else if name != host_triple()
+            && (path.join("CACHEDIR.TAG").is_file() || path.join("debug").is_dir())
+        {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// Rutas de la capa proyecto que existen bajo `root`.
 pub(crate) fn repo_targets(root: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = REPO_ENTRIES
@@ -100,7 +192,7 @@ fn collect_c_artifacts(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Tamaño en bytes de una ruta (recursivo, sin seguir symlinks).
-fn size_of(path: &Path) -> u64 {
+pub(crate) fn size_of(path: &Path) -> u64 {
     let Ok(meta) = path.symlink_metadata() else {
         return 0;
     };
@@ -249,15 +341,21 @@ fn delegate_app_layer(repo_bin: &Path, homebrew: bool, dry_run: bool) -> Result<
     Ok(())
 }
 
-/// Punto de entrada de `xtask clean`.
-pub fn run(layer: Layer, dry_run: bool, yes: bool) -> Result<()> {
+/// Punto de entrada de `xtask clean`. Con `prune`, la capa repo se limita
+/// a la poda fina y conserva la compilación vigente; el defecto (borrado
+/// total de la capa) no cambia.
+pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
     let root = std::env::current_dir()?;
     if !root.join("Cargo.toml").is_file() || !root.join("crates").join("xtask").is_dir() {
         bail!("ejecuta `cargo xtask clean` desde la raíz del repositorio");
     }
 
     let repo_paths = if layer.wants_repo() {
-        repo_targets(&root)
+        if prune {
+            prune_targets(&root)
+        } else {
+            repo_targets(&root)
+        }
     } else {
         Vec::new()
     };
@@ -268,8 +366,10 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool) -> Result<()> {
     };
 
     let title = match layer {
+        Layer::Repo if prune => "Capa proyecto (poda fina --prune)",
         Layer::Repo => "Capa proyecto (repo)",
         Layer::App => "Capa app (perfil de usuario, delegada)",
+        Layer::All if prune => "App y después poda fina (app + --prune)",
         Layer::All => "Ambas capas (app y después repo)",
     };
     println!("{title}:");
@@ -320,8 +420,10 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool) -> Result<()> {
         print!(
             "¿Borrar lo listado (capa {})? [s/N]: ",
             match layer {
+                Layer::Repo if prune => "poda fina",
                 Layer::Repo => "repo",
                 Layer::App => "app",
+                Layer::All if prune => "app + poda fina",
                 Layer::All => "app + repo",
             }
         );
@@ -477,6 +579,70 @@ mod tests {
             engine.join("third_party/ingot/libingot.a"),
         ] {
             assert!(got.contains(&gone), "falta {}", gone.display());
+        }
+    }
+
+    /// La poda fina retira cachés, cruces ajenos y PDBs viejos, y conserva
+    /// fuentes, la compilación vigente y el triple del host.
+    #[test]
+    fn prune_targets_selective() {
+        let root = std::env::temp_dir().join(format!("xtask_clean_prune_{}", std::process::id()));
+        let target = root.join("target");
+        let debug_deps = target.join("debug/deps");
+        std::fs::create_dir_all(target.join("debug/incremental")).unwrap();
+        std::fs::create_dir_all(target.join("release/incremental")).unwrap();
+        std::fs::create_dir_all(&debug_deps).unwrap();
+        std::fs::create_dir_all(target.join("flycheck0")).unwrap();
+        std::fs::create_dir_all(target.join("tmp")).unwrap();
+        std::fs::create_dir_all(target.join("cxxbridge")).unwrap();
+        // Cruce ajeno al host (con marcador de Cargo) y triple propio.
+        let foreign = if host_triple() == "aarch64-apple-darwin" {
+            "x86_64-unknown-linux-gnu"
+        } else {
+            "aarch64-apple-darwin"
+        };
+        let foreign_dir = target.join(foreign);
+        std::fs::create_dir_all(&foreign_dir).unwrap();
+        std::fs::write(foreign_dir.join("CACHEDIR.TAG"), b"x").unwrap();
+        let native_dir = target.join(host_triple());
+        std::fs::create_dir_all(native_dir.join("debug")).unwrap();
+        // PDB reciente (vigente) y PDB viejo (obsoleto).
+        let fresh = debug_deps.join("vigente.pdb");
+        let stale = debug_deps.join("obsoleto.pdb");
+        std::fs::write(&fresh, b"x").unwrap();
+        std::fs::write(&stale, b"x").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 86400);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        std::fs::write(debug_deps.join("libfoo.rlib"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), b"x").unwrap();
+
+        let got = prune_targets(&root);
+        let _ = std::fs::remove_dir_all(&root);
+
+        for gone in [
+            target.join("debug/incremental"),
+            target.join("release/incremental"),
+            target.join("flycheck0"),
+            target.join("tmp"),
+            foreign_dir,
+            stale,
+        ] {
+            assert!(got.contains(&gone), "falta {}", gone.display());
+        }
+        for keep in [
+            debug_deps.join("libfoo.rlib"),
+            fresh,
+            native_dir,
+            target.join("cxxbridge"),
+            root.join("src/main.rs"),
+        ] {
+            assert!(!got.contains(&keep), "no debe borrar {}", keep.display());
         }
     }
 

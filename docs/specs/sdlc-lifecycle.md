@@ -656,6 +656,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Global compartida | — | `~/.cargo`, caché de sccache, paquetes del sistema, MSYS2 | Nunca; solo se informa |
 
 - Detiene primero los daemons lanzados desde `target/`.
+- `--prune` modera la capa repo a la poda fina (cachés, cruces ajenos y PDBs viejos) y conserva la compilación vigente; el defecto sin flag no cambia. Ver `docs/BRANCHING.md`.
 - Nunca borra código fuente versionado.
 - Aplica las reglas de confirmación de [§8.1](#81-reglas-transversales): `--dry-run`, y `--yes` obligatorio sin terminal.
 - En Windows, el `xtask.exe` en ejecución se borra con la misma implementación de borrado diferido que el producto (el crate `avi-process`).

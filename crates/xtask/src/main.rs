@@ -364,6 +364,10 @@ enum Commands {
         /// Ambas capas: aplicación y después repositorio
         #[arg(long)]
         all: bool,
+        /// Poda fina de la capa repo: solo cachés, cruces ajenos y PDBs
+        /// viejos, sin tocar la compilación vigente (el defecto no cambia)
+        #[arg(long)]
+        prune: bool,
         /// Lista rutas y tamaños sin borrar nada
         #[arg(long)]
         dry_run: bool,
@@ -552,6 +556,7 @@ fn main() -> Result<()> {
             repo,
             app,
             all,
+            prune,
             dry_run,
             yes,
         } => {
@@ -562,7 +567,7 @@ fn main() -> Result<()> {
             } else {
                 clean::Layer::Repo
             };
-            clean::run(layer, dry_run, yes)?
+            clean::run(layer, dry_run, yes, prune)?
         }
         Commands::Doctor { json } => doctor::run(json)?,
         Commands::Bootstrap {
