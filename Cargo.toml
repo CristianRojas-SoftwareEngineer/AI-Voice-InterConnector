@@ -35,11 +35,12 @@ avi-lifecycle = { path = "crates/avi-lifecycle" }
 # para localhost); el daemon expone solo rutas HTTP en 127.0.0.1:8765.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 base64 = "0.22"
-# Descargador nativo de modelos desde HuggingFace Hub: maneja cache en
-# ~/.cache/huggingface/hub, resume por Range y validación ETag. `rustls` evita
-# OpenSSL nativo: compila igual en Windows x64, Linux x64/arm64 y macOS arm64
-# (4 targets de distribución).
-hf-hub = { version = "1.0", default-features = false, features = ["rustls-tls"] }
+# Descargador nativo de modelos desde HuggingFace Hub: maneja el layout de caché
+# (la ubicación la fija `models_cache_dir()`) y la validación ETag; no reanuda
+# descargas parciales. `rustls` evita OpenSSL nativo: compila igual en Windows
+# x64, Linux x64/arm64 y macOS arm64 (4 targets de distribución). La versión es
+# exacta porque es la que parchea la copia vendorizada de `[patch.crates-io]`.
+hf-hub = { version = "=1.0.0", default-features = false, features = ["rustls-tls"] }
 indicatif = "0.17"
 chrono = "0.4"
 anyhow = "1.0"
@@ -72,3 +73,7 @@ avi-lifecycle = { path = "crates/avi-lifecycle", features = ["faults"] }
 
 [patch.crates-io]
 cmake = { path = "vendor/cmake-0.1.58" }
+# hf-hub crea en Windows cada puntero de `snapshots/` copiando el blob, lo que
+# duplica en disco cada modelo; la copia vendorizada usa un enlace duro (con
+# copia como alternativa donde el sistema de archivos no lo admite).
+hf-hub = { path = "vendor/hf-hub-1.0.0" }

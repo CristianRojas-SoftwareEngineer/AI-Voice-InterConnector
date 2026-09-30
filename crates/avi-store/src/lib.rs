@@ -749,8 +749,10 @@ impl ModelStore {
     /// Descarga nativa de un modelo pinneado vía HuggingFace Hub.
     ///
     /// Usa `hf-hub` (`snapshot_download` con revisión de `MODEL_REVISIONS`): cache
-    /// estándar en `models_cache_dir()`, resume por Range, ETag/commit-hash y reintentos
-    /// del propio crate. La barra `indicatif` refleja archivos/bytes agregados vía
+    /// estándar en `models_cache_dir()`, ETag/commit-hash y reintentos del propio
+    /// crate. No reanuda: ante una descarga interrumpida vuelve a bajar el archivo
+    /// completo sobre `.incomplete`. Los punteros de `snapshots/` son symlinks en
+    /// Unix y enlaces duros en Windows. La barra `indicatif` refleja archivos/bytes agregados vía
     /// `ProgressHandler`. Idempotente: si el snapshot ya existe y no es
     /// `force_download`, HF resuelve desde cache sin red. Compila igual en los 4
     /// targets (rustls, sin OpenSSL nativo).
