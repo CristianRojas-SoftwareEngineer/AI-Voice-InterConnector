@@ -354,6 +354,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 | `daemon_stop_failed` | `self *`, `cleanup` | No se pudo detener el daemon | Error; nada modificado |
 | `path_conflict` | `self install` | En la ruta del enlace hay un archivo ajeno | Error, salvo `--force` |
 | `lifecycle_locked` | Todas | Hay otra operación de ciclo de vida en curso | Error |
+| `sudo_not_supported` | `self install`, `self uninstall`, `cleanup` | Unix: la ejecución vino de `sudo` | Error genérico (1); nada modificado |
 | `confirmation_required` | Destructivas | Sin terminal y sin `--yes` | Error de uso (2) |
 | `usage_error` | `cleanup` | Sin categoría | Error de uso (2) |
 | `setup_failed` | `self install`, `self update` | Programa instalado, pero la provisión de modelos falló | Éxito parcial (código propio), reintentable con `setup` |

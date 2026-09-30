@@ -167,6 +167,7 @@ mod tests {
         ("stt_unsupported", 1),
         ("translation_unsupported", 1),
         ("daemon_error", 1),
+        ("sudo_not_supported", 1),
     ];
 
     #[test]

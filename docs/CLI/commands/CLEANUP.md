@@ -88,7 +88,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 
 `status` toma `cleanup_complete` o `cancelled`. `removed` son las rutas del plan con lo que la operación borró, o —con `--dry-run`— lo que habría borrado. Exactamente un objeto JSON por invocación, incluso cuando falla: sin categoría con `--json` sale el objeto de error de §10 del contrato (`error` + `reason`), y nada más.
 
-`schema_version` vale **`"4"`** (el sobre de la CLI); el protocolo del daemon sigue en `"3"` porque es otro contrato.
+`schema_version` vale **`"4"`** (el sobre de la CLI); el protocolo del daemon va por `"4"` porque es otro contrato.
 
 ---
 
@@ -118,6 +118,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 | Sin terminal y sin `--yes` | 2 | `confirmation_required` |
 | No se pudo detener el daemon | 16 | `daemon_stop_failed` |
 | Otra operación de ciclo de vida tiene el bloqueo | 17 | `lifecycle_locked` |
+| Unix: ejecución lanzada con `sudo` | 1 | `sudo_not_supported` |
 | Cancelación del usuario | 0 | — (`status` `cancelled`, no es un error) |
 | Destino que no se pudo borrar | 0 | — (va en `failed`, no tumba la operación) |
 

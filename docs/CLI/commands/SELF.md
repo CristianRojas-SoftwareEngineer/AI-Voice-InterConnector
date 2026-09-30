@@ -185,6 +185,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 |---|---|---|
 | `bundle_invalid` | 15 | Falta un archivo obligatorio del bundle; nada modificado |
 | `lifecycle_locked` | 17 | Otra operación de ciclo de vida tiene el bloqueo |
+| `sudo_not_supported` | 1 | Unix: `self install` o `self uninstall` lanzado con `sudo`; nada modificado |
 | `path_conflict` | 14 | Hay un archivo ajeno en la ruta del enlace; nada aplicado, salvo `--force` |
 | `daemon_stop_failed` | 16 | No se pudo detener el daemon; nada del plan se aplicó |
 | `rolled_back` | 13 | Fallo en el reemplazo; la versión anterior quedó restaurada |
