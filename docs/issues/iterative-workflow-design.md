@@ -201,7 +201,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 
 | Id | Síntoma | Informe | Severidad | Ciclo |
 |---|---|---|---|---|
-| S1 | La vía daemon rechaza con 413 los audios de transcripción de más de unos 49 s | `daemon-rechaza-o-corta-audios-largos.md` | Media; se propone alta | C3 |
+| S1 | La vía daemon rechaza con 413 los audios de transcripción de más de unos 49 s | `daemon-rechaza-o-corta-audios-largos.md` (eliminado al cerrar C3) | Media; se propone alta | C3 |
 | S2 | Un kill duro del daemon deja huérfano al motor residente | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Media | C5 |
 | S3 | El daemon no escribe log y los logs del motor no rotan | `residuos-en-disco-tras-comandos-correctos.md` | Media | C4 |
 | S4 | La síntesis por daemon sale con exit 1 donde el contrato asigna otro código (4 si falta el modelo) | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja; media sin modelo | C1 |
@@ -213,8 +213,8 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S10 | Trazas internas de la descarga y del motor en la terminal | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Baja | C4 |
 | S11 | Prefijo `Error:` duplicado | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja | C1 |
 | S12 | El evento `start` mide `text_length` en bytes, no en caracteres | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja | C1 |
-| S13 | El dub por composición (daemon sin `/dub`) corta la transcripción a los 1500 ms | `daemon-rechaza-o-corta-audios-largos.md` | Baja | C3 |
-| S14 | Una referencia de clonado de más de unos 1,5 MB se rechaza con 413 por la vía daemon (por reproducir) | `daemon-rechaza-o-corta-audios-largos.md` | Media | C3 |
+| S13 | El dub por composición (daemon sin `/dub`) corta la transcripción a los 1500 ms | `daemon-rechaza-o-corta-audios-largos.md` (eliminado al cerrar C3) | Baja | C3 |
+| S14 | Una referencia de clonado de más de unos 1,5 MB se rechaza con 413 por la vía daemon (por reproducir) | `daemon-rechaza-o-corta-audios-largos.md` (eliminado al cerrar C3) | Media | C3 |
 | S15 | Un 404 de `/dub` con `reason` propio (`voice_not_found`, `model_missing`) no se traduce con la tabla: el cliente lo toma por un daemon sin `/dub` | Revisión de C1 | Baja | C3 |
 | S16 | El contrato promete exit 5 cuando el daemon no tiene `/transcribe`; el cliente sale con 1 y no indica reiniciar el daemon | Revisión de C1 | Baja | C3 |
 | S17 | `sudo_not_supported` se emite, pero no está en el contrato ni en el oráculo de la tabla | Revisión de C1 | Baja | C1 |

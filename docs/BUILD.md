@@ -423,7 +423,7 @@ es además inmune a la conversión de fin de línea del checkout.
 ##### Parche de `hf-hub`
 
 - **Qué cambia:** en la rama Windows de `create_pointer_symlink`
-  (`src/cache/storage.rs`), el puntero de `snapshots/` se crea como enlace duro
+  (`vendor/hf-hub-1.0.0/src/cache/storage.rs`), el puntero de `snapshots/` se crea como enlace duro
   al blob en lugar de copiarlo. Si el sistema de archivos no admite enlaces
   duros (FAT32, exFAT o algunos recursos de red), recurre a la copia, que es lo
   que hace el crate original. En Unix el puntero sigue siendo un symlink, y la
@@ -438,8 +438,8 @@ es además inmune a la conversión de fin de línea del checkout.
   eligiera otra versión.
 - **Licencia y avisos:** la copia incluye el texto de Apache-2.0
   (`LICENSE-APACHE`) y marca con `// Patch:` cada comentario o código
-  modificado en los archivos tocados (`src/cache/storage.rs` y
-  `src/repository/download.rs`).
+  modificado en los archivos tocados (`vendor/hf-hub-1.0.0/src/cache/storage.rs`
+  y `vendor/hf-hub-1.0.0/src/repository/download.rs`).
 - **Cobertura:** la prueba `crates/avi-store/tests/hf_cache_layout.rs` descarga un
   archivo desde un servidor local y afirma que puntero y blob son el mismo
   archivo.
