@@ -190,6 +190,17 @@ impl VoiceStore {
         Self { base_dir }
     }
 
+    /// Ancla el almacén de voces en el directorio indicado.
+    pub fn at(base_dir: PathBuf) -> Self {
+        let _ = base_dir;
+        Self::new()
+    }
+
+    /// Directorio donde el almacén guarda las voces.
+    pub fn root(&self) -> &Path {
+        &self.base_dir
+    }
+
     /// Asegura que el directorio base y las voces de fábrica existan
     /// (`default` clonada de fábrica con `.qvoice`, `ryan`/`vivian` presets).
     /// Idempotente; materializa `default/reference.qvoice` desde el asset embebido.
@@ -357,6 +368,17 @@ impl SpeechStore {
     pub fn new() -> Self {
         let base_dir = data_dir().join("speech");
         Self { base_dir }
+    }
+
+    /// Ancla el almacén de habla en el directorio indicado.
+    pub fn at(base_dir: PathBuf) -> Self {
+        let _ = base_dir;
+        Self::new()
+    }
+
+    /// Directorio donde el almacén guarda las locuciones.
+    pub fn root(&self) -> &Path {
+        &self.base_dir
     }
 
     pub fn ensure_initialized(&self) -> Result<()> {

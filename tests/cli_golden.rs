@@ -169,7 +169,7 @@ fn check_guard(phase: &str) {
         if elapsed > lim {
             let _ = std::io::stderr().flush();
             TEST_LIMIT.with(|c| *c.borrow_mut() = None);
-            reaper_on_failure(&format!("guard:{}", phase));
+            reaper_on_failure(&format!("guard:{}", phase), true);
             panic!(
                 "guardia de tiempo: test '{}' superó techo {:?} en fase '{}' (transcurrido {:.1} s; último hito: {})",
                 name,
@@ -289,7 +289,10 @@ fn resident_present_by_image() -> bool {
 /// verificación acotada (8 s, deadline global del producto) y lo registra como
 /// hito. Nunca falla: un reaper que fallara enmascararía la causa original del
 /// `panic!` que lo invocó.
-fn reaper_on_failure(phase: &str) {
+fn reaper_on_failure(phase: &str, sweep_by_image: bool) {
+    // `sweep_by_image` indica si se permite el barrido por imagen `qwen_tts`;
+    // el comportamiento que lo respeta se implementa en otra tarea.
+    let _ = sweep_by_image;
     match read_daemon_pid() {
         Some(pid) if avi_daemon::pid_alive(pid) => {
             milestone(&format!(
@@ -375,7 +378,7 @@ fn sweep_resident(phase: &str) {
 /// best-effort antes del `panic!` para no abandonar daemon ni motor vivos.
 /// Todo `panic!`/`assert!` fuera de `wait_for_daemon_state` pasa por aquí.
 fn fail_with_reaper(phase: &str, message: String) -> ! {
-    reaper_on_failure(phase);
+    reaper_on_failure(phase, true);
     panic!("{}", message);
 }
 
@@ -395,7 +398,7 @@ fn arm_reaper(phase: &'static str) -> GuardReaper {
 impl Drop for GuardReaper {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            reaper_on_failure(self.phase);
+            reaper_on_failure(self.phase, true);
             TEST_LIMIT.with(|c| *c.borrow_mut() = None);
         }
     }
@@ -472,7 +475,7 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
             check_guard(&format!("wait_for_daemon_state({})", expected));
             if let Some((_, warm)) = read_ready_file(&path) {
                 if warm == "warm_failed" {
-                    reaper_on_failure("wait_for_daemon_state(warm_failed)");
+                    reaper_on_failure("wait_for_daemon_state(warm_failed)", true);
                     panic!(
                         "el warmup del daemon falló en {} (addr {}; último: {})",
                         path.display(),
@@ -495,7 +498,7 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
                 }
             }
             if start.elapsed() >= timeout {
-                reaper_on_failure(&format!("wait_for_daemon_state({})-agotado", expected));
+                reaper_on_failure(&format!("wait_for_daemon_state({})-agotado", expected), true);
                 panic!(
                     "el daemon no publicó 'warm' con estado running tras {:?} (último: {}; fichero: {})",
                     timeout, last, path.display()
@@ -519,7 +522,7 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
-    reaper_on_failure(&format!("wait_for_daemon_state({})-agotado", expected));
+    reaper_on_failure(&format!("wait_for_daemon_state({})-agotado", expected), true);
     panic!(
         "el daemon no alcanzó el estado '{}' tras {} reintentos (último: {})",
         expected, retries, last
@@ -562,7 +565,7 @@ fn wait_for_running_without_warm(retries: u32, envs: &[(&str, &str)]) -> Value {
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
-    reaper_on_failure("wait_for_running_without_warm(running)-agotado");
+    reaper_on_failure("wait_for_running_without_warm(running)-agotado", true);
     panic!(
         "el daemon no alcanzó el estado 'running' (sin exigir warm) tras {} reintentos (último: {})",
         retries, last
@@ -606,16 +609,13 @@ fn d03_poisoned_lock_propagates() {
 /// cerrado a la entrada) no falla: retorna sin borrar el pidfile de su sandbox.
 /// Hermético (sin daemon real); su reaper solo mata un PID ya muerto, nunca abre
 /// el 8765 ni arranca un residente, así que no puede dejar huérfanos propios.
-/// La guarda de entrada salta el test si hay daemon/residente vivos al empezar.
+/// Llama al reaper sin barrido por imagen, de modo que un residente `qwen_tts`
+/// ajeno que esté vivo no se toca ni condiciona el resultado.
 /// El pidfile rancio vive en un directorio de estado propio de la instancia
 /// (`AVI_DATA_DIR`), sin tocar el `data_dir` real (reversión: volver a
 /// `avi_store::data_dir()`).
 #[test]
 fn d03_reaper_without_live_pid_does_not_fail() {
-    if port_open(8765) || resident_present_by_image() {
-        eprintln!("[d03] skip: daemon (8765) o residente por imagen vivos");
-        return;
-    }
     let (sandbox, _envs) = sandbox_unique_state("d03reaper");
     CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = Some(sandbox.clone()));
     // Pidfile rancio: PID garantizado muerto, solo en el sandbox.
@@ -629,7 +629,7 @@ fn d03_reaper_without_live_pid_does_not_fail() {
         .expect("escribir pidfile rancio en el sandbox");
     // El reaper best-effort no debe fallar con PID muerto y sin residente:
     // llegar hasta aquí ya prueba que retornó sin hacer panic.
-    reaper_on_failure("d03-prueba");
+    reaper_on_failure("d03-prueba", false);
     // No aseveramos quiescencia global de máquina: el reaper de d03 solo mata un
     // PID ya muerto —nunca abre el 8765 ni arranca un residente `qwen_tts`—, así
     // que cualquier puerto/residente presente aquí proviene de un daemon test
@@ -931,7 +931,7 @@ fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, St
         last = std::fs::read_to_string(path).unwrap_or_default();
         std::thread::sleep(Duration::from_millis(15));
     }
-    reaper_on_failure("wait_for_ready_file-agotado");
+    reaper_on_failure("wait_for_ready_file-agotado", true);
     panic!(
         "el fichero ready {} no publicó addr válida tras {:?} (último contenido: {:?})",
         path.display(),
@@ -3211,13 +3211,41 @@ mod tts {
     #[test]
     fn setup_json_without_language_key() {
         // Contrato del payload --json: la clave `language` desaparece de la respuesta.
-        // Idempotente sobre estado provisionado (no descarga); si no hay modelos,
-        // se omite para no forzar una descarga de unos 4.7 GB en CI.
-        if !tts_model_registered() {
-            eprintln!("[setup] skip: runtime no provisionado (setup --json exigiría descarga)");
-            return;
+        // Corre el binario real en un sandbox con la selección por defecto ya
+        // sembrada (snapshots fijados y derivados CT2 sanos), de modo que `setup`
+        // no descarga ni convierte nada. Un proxy inalcanzable garantiza que, si el
+        // sembrado no bastara, la descarga fallaría en lugar de bajar gigabytes.
+        let inst = IsolatedInstance::new("setup_json");
+        let models_root = inst.dir.join("cache");
+        for pin in avi_store::MODEL_REVISIONS
+            .iter()
+            .filter(|pin| pin.name != "qwen3-tts-0.6b-base")
+        {
+            let snapshot = models_root
+                .join(format!("models--{}", pin.repo.replace('/', "--")))
+                .join("snapshots")
+                .join(pin.revision);
+            std::fs::create_dir_all(&snapshot).expect("crear snapshot sembrado");
+            let files: Vec<&str> = avi_store::MODEL_FILE_PATTERNS
+                .iter()
+                .find(|(name, _)| *name == pin.name)
+                .map(|(_, patterns)| patterns.to_vec())
+                .unwrap_or_else(|| vec!["config.json"]);
+            for file in files {
+                std::fs::write(snapshot.join(file), b"marker").expect("sembrar fichero");
+            }
         }
-        let (code, payload) = run_json(&["--json", "setup"]);
+        for pair in ["es-en", "en-es"] {
+            let ct2 = models_root.join("ct2").join(format!("opus-mt-{pair}"));
+            std::fs::create_dir_all(&ct2).expect("crear derivado CT2 sembrado");
+            std::fs::write(ct2.join("model.bin"), b"marker").expect("sembrar model.bin");
+            std::fs::write(ct2.join("tokenizer.json"), b"{}").expect("sembrar tokenizer");
+        }
+        let mut envs = inst.args();
+        envs.push(("HTTPS_PROXY", "http://127.0.0.1:9"));
+        envs.push(("HTTP_PROXY", "http://127.0.0.1:9"));
+        let (code, payload) = run_json_env(&["--json", "setup"], &envs);
+        let _ = std::fs::remove_dir_all(&inst.dir);
         assert_eq!(code, 0, "setup --json debe completar, payload: {}", payload);
         assert_eq!(payload["status"], "completed");
         assert!(

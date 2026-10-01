@@ -153,6 +153,13 @@ impl DaemonState {
         })
     }
 
+    /// Constructor con los almacenes de voces y de habla ya anclados, para que
+    /// pruebas y sandboxes no dependan del directorio de datos del usuario.
+    pub fn with_stores(voice_store: VoiceStore, speech_store: SpeechStore) -> anyhow::Result<Self> {
+        let _ = (voice_store, speech_store);
+        Self::new()
+    }
+
     /// Marca el motor como en calentamiento (`Warm`/`Failed` → `Warming`) cuando un
     /// warmup empieza a sintetizar su testigo.
     pub fn set_warming(&self) {
@@ -813,6 +820,45 @@ fn resolve_translation_language(token: &str) -> &str {
         "es-latam" => "es",
         other => other,
     }
+}
+
+/// Error de validación de una petición: `reason` es el código del contrato y
+/// `message` el texto para el usuario.
+#[derive(Debug, PartialEq)]
+pub struct InputError {
+    pub reason: &'static str,
+    pub message: String,
+}
+
+/// Resultado de validar una petición de traducción.
+#[derive(Debug, PartialEq)]
+pub enum TranslateInput {
+    /// Idioma de origen y destino coinciden: se devuelve el texto sin traducir.
+    Same,
+    /// Par distinto y soportado, con el texto y los idiomas ya resueltos a ISO.
+    Pair {
+        text: String,
+        source: String,
+        target: String,
+    },
+}
+
+/// Valida el cuerpo de `/transcribe` y devuelve el PCM i16 decodificado.
+pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
+    let _ = body;
+    Err(InputError {
+        reason: "unimplemented",
+        message: String::new(),
+    })
+}
+
+/// Valida el cuerpo de `/translate`: texto no vacío y par de idiomas soportado.
+pub fn validate_translate_input(body: &Value) -> Result<TranslateInput, InputError> {
+    let _ = body;
+    Err(InputError {
+        reason: "unimplemented",
+        message: String::new(),
+    })
 }
 
 /// POST /translate — traducción texto→texto con CT2 residente
@@ -2558,6 +2604,67 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["reason"], "audio_too_long");
+    }
+
+    /// Una petición de transcripción sin `audio_b64` es un error de invocación.
+    #[test]
+    fn validate_transcribe_missing_audio_is_usage_error() {
+        let result = validate_transcribe_input(&json!({ "source_language": "es" }));
+        assert_eq!(result.err().map(|e| e.reason), Some("usage_error"));
+    }
+
+    /// Un `audio_b64` que no es base64 válido es audio ilegible.
+    #[test]
+    fn validate_transcribe_bad_base64_is_invalid_audio() {
+        let result = validate_transcribe_input(&json!({ "audio_b64": "%%% no es base64 %%%" }));
+        assert_eq!(result.err().map(|e| e.reason), Some("invalid_audio"));
+    }
+
+    /// Un texto vacío o solo de espacios no se traduce.
+    #[test]
+    fn validate_translate_empty_text_is_empty_text() {
+        let result = validate_translate_input(&json!({ "text": "   ", "from": "es", "to": "en" }));
+        assert_eq!(result.err().map(|e| e.reason), Some("empty_text"));
+    }
+
+    /// Con el mismo idioma de origen y destino no hay nada que traducir.
+    #[test]
+    fn validate_translate_same_language_is_same() {
+        let result = validate_translate_input(&json!({ "text": "hola", "from": "es-latam", "to": "es" }));
+        assert!(matches!(result, Ok(TranslateInput::Same)), "resultado: {result:?}");
+    }
+
+    /// Un par distinto de es↔en no está soportado.
+    #[test]
+    fn validate_translate_unsupported_pair_is_rejected() {
+        let result = validate_translate_input(&json!({ "text": "hola", "from": "es", "to": "fr" }));
+        assert_eq!(result.err().map(|e| e.reason), Some("unsupported_language_pair"));
+    }
+
+    /// `with_stores` ancla los almacenes bajo el directorio recibido: la raíz se
+    /// afirma antes de inicializar para no escribir nunca en la instalación real.
+    #[test]
+    fn with_stores_anchors_stores_under_given_dir() {
+        let tmp = std::env::temp_dir().join(format!("avi_daemon_stores_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let state = DaemonState::with_stores(
+            VoiceStore::at(tmp.join("voices")),
+            SpeechStore::at(tmp.join("speech")),
+        )
+        .expect("estado del daemon");
+        assert!(
+            state.voice_store.root().starts_with(&tmp),
+            "raíz de voces fuera del temporal: {}",
+            state.voice_store.root().display()
+        );
+        assert!(
+            state.speech_store.root().starts_with(&tmp),
+            "raíz de habla fuera del temporal: {}",
+            state.speech_store.root().display()
+        );
+        state.voice_store.ensure_initialized().expect("inicializar voces");
+        assert!(tmp.join("voices").join("default").is_dir());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Envía un POST JSON al router y devuelve el estado y el cuerpo completo.

@@ -145,6 +145,24 @@ fn models_present() -> bool {
 
 #[tokio::test]
 async fn health_matches_fixture() {
+    // Los almacenes del estado deben anclarse bajo un directorio temporal propio
+    // y no en el directorio de datos del usuario; se afirma antes de escribir.
+    let tmp = std::env::temp_dir().join(format!("avi_golden_health_{}", std::process::id()));
+    let state = DaemonState::with_stores(
+        VoiceStore::at(tmp.join("voices")),
+        SpeechStore::at(tmp.join("speech")),
+    )
+    .expect("estado del daemon con almacenes temporales");
+    assert!(
+        state.voice_store.root().starts_with(&tmp),
+        "raíz de voces fuera del temporal: {}",
+        state.voice_store.root().display()
+    );
+    assert!(
+        state.speech_store.root().starts_with(&tmp),
+        "raíz de habla fuera del temporal: {}",
+        state.speech_store.root().display()
+    );
     if !models_present() {
         eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
         return;

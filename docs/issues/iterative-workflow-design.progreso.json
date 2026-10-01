@@ -64,13 +64,16 @@
     },
     "C2": {
       "status": "in_progress",
-      "phase": "tests_red",
+      "phase": "implementation",
       "gates": [
-        { "gate": "plan", "verdict": "approved", "date": "2026-09-30", "notes": "P1: reaper_on_failure recibe si barre por imagen y d03 lo desactiva; P2: las pruebas que solo exigen el modelo aprovisionado usan un snapshot falso y quedan de contrato; P3: setup_json_without_language_key corre en un sandbox con la selección por defecto sembrada; P5: la puerta de release va tras las validaciones de solo lectura y antes de cualquier escritura" }
+        { "gate": "plan", "verdict": "approved", "date": "2026-09-30", "notes": "P1: reaper_on_failure recibe si barre por imagen y d03 lo desactiva; P2: las pruebas que solo exigen el modelo aprovisionado usan un snapshot falso y quedan de contrato; P3: setup_json_without_language_key corre en un sandbox con la selección por defecto sembrada; P5: la puerta de release va tras las validaciones de solo lectura y antes de cualquier escritura" },
+        { "gate": "tests", "verdict": "approved", "date": "2026-10-01", "notes": "8 pruebas en rojo por aserción; setup_json_without_language_key ya en verde al correr aislada; d03 sin rojo posible, se verifica tras implementar P1" },
+        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "la CLI sin pidfile busca el daemon en 8765: los daemon_start_* siembran un daemon.pid con addr a un puerto cerrado y PID fuera de rango" },
+        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "cleanup_model_real_run_reports_paths barría qwen_tts por imagen y usaba el directorio de programa real: fija AVI_INSTALL_DIR al sandbox y siembra un daemon.pid con resident_pid distinto de 0 y fuera de rango" }
       ],
       "tasks": [
         { "id": "C2.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
-        { "id": "C2.2", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C2.2", "status": "done", "attempts": 1, "files": ["crates/avi-store/src/lib.rs", "crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs", "tests/test_classes.rs", "tests/cli_golden.rs"] },
         { "id": "C2.3", "status": "pending", "attempts": 0, "files": [] },
         { "id": "C2.4", "status": "pending", "attempts": 0, "files": [] },
         { "id": "C2.5", "status": "pending", "attempts": 0, "files": [] },
