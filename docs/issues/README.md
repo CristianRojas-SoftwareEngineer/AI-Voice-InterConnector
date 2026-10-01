@@ -113,7 +113,6 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 | Documento | Severidad | Síntoma |
 |---|---|---|
-| [daemon-rechaza-o-corta-audios-largos.md](daemon-rechaza-o-corta-audios-largos.md) | Media | La vía daemon rechaza con 413 los audios de transcripción de más de ~49 s y las referencias de clonado de más de ~1,5 MB, y el dub antiguo corta la transcripción a los 1500 ms |
 | [motor-residente-huerfano-y-trazas-fuera-del-log.md](motor-residente-huerfano-y-trazas-fuera-del-log.md) | Media | Un kill duro del daemon deja vivo al motor residente pese al Job Object, y las trazas internas salen por la terminal |
 | [residuos-en-disco-tras-comandos-correctos.md](residuos-en-disco-tras-comandos-correctos.md) | Media | WAV temporales, `daemon.ready`, logs sin rotación ni log del daemon, y artefactos de `self update` |
 | [status-json-afirma-operaciones-no-realizadas.md](status-json-afirma-operaciones-no-realizadas.md) | Baja | `daemon stop` sin daemon dice `shutdown_sent`, y los simulacros de `self uninstall` y `cleanup` dicen `uninstalled` y `cleanup_complete` |
