@@ -136,13 +136,21 @@ pub fn read_addr(data_dir: &Path) -> Option<String> {
         .filter(|addr| !addr.is_empty())
 }
 
-/// Dirección del cliente: la del pidfile cuando existe, y la literal cuando no.
+/// Dirección del cliente: la del pidfile cuando existe, y cuando no la derivada de
+/// `AVI_DAEMON_PORT` (`127.0.0.1:8765` si la variable falta o no es un puerto).
 ///
 /// Este es el **supuesto asumido de D4**: la raíz de datos es la vigente, así que un
 /// daemon de la versión anterior, con su pidfile en la raíz antigua, no se
-/// encuentra y la conexión va a la literal.
+/// encuentra y la conexión va a la dirección de respaldo.
 pub fn resolve_client_addr(data_dir: &Path) -> String {
-    read_addr(data_dir).unwrap_or_else(|| DEFAULT_ADDR.to_string())
+    resolve_client_addr_with(data_dir, std::env::var("AVI_DAEMON_PORT").ok().as_deref())
+}
+
+/// Variante de [`resolve_client_addr`] que recibe el valor crudo de
+/// `AVI_DAEMON_PORT` en lugar de leer el entorno, para poder probarla sin
+/// tocar variables del proceso.
+pub fn resolve_client_addr_with(data_dir: &Path, port_env: Option<&str>) -> String {
+    read_addr(data_dir).unwrap_or_else(|| addr_for_port_env(port_env))
 }
 
 /// Dirección de parada a partir del valor crudo de `AVI_DAEMON_PORT`: el daemon
@@ -552,6 +560,26 @@ mod tests {
         assert_eq!(addr_for_port_env(Some("abc")), DEFAULT_ADDR);
     }
 
+    /// Sin pidfile, el cliente busca el daemon en el puerto de `AVI_DAEMON_PORT`;
+    /// con pidfile manda la dirección publicada en él.
+    #[test]
+    fn client_addr_without_pidfile_follows_daemon_port() {
+        let data = scratch("client-addr-port");
+        assert_eq!(
+            resolve_client_addr_with(&data, Some("9123")),
+            "127.0.0.1:9123"
+        );
+        assert_eq!(resolve_client_addr_with(&data, None), DEFAULT_ADDR);
+
+        write_pid(&data, 4242, "127.0.0.1:7001", 77).unwrap();
+        assert_eq!(
+            resolve_client_addr_with(&data, Some("9123")),
+            "127.0.0.1:7001",
+            "el pidfile prevalece sobre la variable"
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
     /// El pidfile sobrevive a un fichero a medio escribir, y el protocolo no se
     /// cae: lectura tolerante, escritura atómica y ninguna mezcla de datos entre
     /// dos escrituras.
@@ -568,7 +596,7 @@ mod tests {
         assert_eq!(read_resident_pid(&data), 0, "ni PID de residente");
         assert_eq!(read_addr(&data), None, "ni dirección");
         assert_eq!(
-            resolve_client_addr(&data),
+            resolve_client_addr_with(&data, None),
             DEFAULT_ADDR,
             "se cae al valor por defecto"
         );
@@ -582,7 +610,7 @@ mod tests {
         assert_eq!(read_pid(&data), Some(4242));
         assert_eq!(read_resident_pid(&data), 0, "sin el campo, desconocido");
         assert_eq!(read_addr(&data), None);
-        assert_eq!(resolve_client_addr(&data), DEFAULT_ADDR);
+        assert_eq!(resolve_client_addr_with(&data, None), DEFAULT_ADDR);
 
         // 3. Un `pid` inválido no se interpreta.
         for garbage in ["{}", r#"{"pid": "x"}"#, "[]", "no soy json", ""] {

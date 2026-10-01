@@ -1,6 +1,6 @@
 # Comando `daemon` — ciclo de vida del daemon nativo
 
-El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Qwen3-TTS, Parakeet TDT v3 y CT2 `es↔en` en memoria, evitando la carga en cada invocación (~15–30 s). El CLI actúa como cliente HTTP sobre `127.0.0.1:8765` por defecto (`DAEMON_ADDR`), con override por instancia vía `AVI_DAEMON_PORT` (`0` = puerto efímero, el servidor imprime la dirección realmente enlazada con `local_addr()`). El cliente CLI descubre la dirección efímera leyendo el campo `addr` del pidfile (`resolve_client_addr`); sin pidfile, o con pidfile de esquema viejo sin ese campo, cae a `DAEMON_ADDR`.
+El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Qwen3-TTS, Parakeet TDT v3 y CT2 `es↔en` en memoria, evitando la carga en cada invocación (~15–30 s). El CLI actúa como cliente HTTP sobre `127.0.0.1:8765` por defecto (`DAEMON_ADDR`), con override por instancia vía `AVI_DAEMON_PORT` (`0` = puerto efímero, el servidor imprime la dirección realmente enlazada con `local_addr()`). El cliente CLI descubre la dirección efímera leyendo el campo `addr` del pidfile (`resolve_client_addr`); sin pidfile, o con pidfile de esquema viejo sin ese campo, cae a la dirección derivada de `AVI_DAEMON_PORT` (`127.0.0.1:8765` si la variable falta o no es un puerto).
 
 ## Definición CLI
 

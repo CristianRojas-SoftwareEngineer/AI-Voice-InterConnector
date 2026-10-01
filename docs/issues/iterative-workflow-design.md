@@ -227,7 +227,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S24 | El estado del daemon en las pruebas se construye de dos formas: a mano en las goldens, con un comentario de cabecera desfasado, y con `DaemonState::new()` en las pruebas de la biblioteca, que con `native-stt` carga Parakeet y escribe en el directorio de datos real | Revisión de C1 | Media | C2 |
 | S25 | `docs/BRANCHING.md` afirma que los jobs de test corren en `main` y en ramas, y solo corren en tags | Revisión de C1 | Baja | C2 |
 | S26 | La verificación de los ciclos usa órdenes ad hoc (como `cargo test -p avi-daemon --features native-stt` en C1) que dependen de la instalación real del mantenedor | Revisión de C1 | Baja | C2 |
-| S27 | `self install`, `self uninstall` y `self update` detienen el daemon siempre en `127.0.0.1:8765` y `cleanup` solo respeta `AVI_DAEMON_PORT=0`; diez pruebas de contrato llamaban así a `daemon_stop::stop` contra el daemon real del mantenedor | Verificación de C2 | Media | C2 |
+| S27 | `self install`, `self uninstall` y `self update` detienen el daemon siempre en `127.0.0.1:8765` y `cleanup` solo respeta `AVI_DAEMON_PORT=0`; sin pidfile, `daemon stop`, `daemon status` y el resto de clientes del daemon lo buscan siempre en 8765; diez pruebas de contrato llamaban así a `daemon_stop::stop` contra el daemon real del mantenedor | Verificación de C2 | Media | C2 |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
@@ -1046,11 +1046,16 @@ aprobar. Las pruebas que se enumeran son las mínimas.
      el puerto de `AVI_DAEMON_PORT`, como lo arranca el daemon: `daemon_stop::default_addr`
      (sobre la función pura `addr_for_port_env`) sustituye a `DEFAULT_ADDR` en los cuatro
      comandos, y las pruebas que ejecutan `cleanup::run` en su proceso fijan
-     `AVI_DAEMON_PORT=0` (S27).
+     `AVI_DAEMON_PORT=0` (S27). Por la misma causa, el cliente sin pidfile
+     (`daemon_stop::resolve_client_addr`, que usan `daemon stop`, `daemon status` y los
+     demás comandos que contactan con el daemon) toma como respaldo `default_addr` en
+     lugar de `DEFAULT_ADDR` (S27).
 - **Pruebas en rojo:**
   - la función pura de dirección (`addr_for_port_env`) da `127.0.0.1:<puerto>` para un
     puerto válido, `0` incluido y con espacios recortados, y la dirección por defecto si
     falta o no es un puerto;
+  - la dirección del cliente sin pidfile (`resolve_client_addr_with`) sigue el puerto de
+    `AVI_DAEMON_PORT`, y con pidfile manda la dirección publicada en él (S27);
   - una prueba de contrato recorre los `.rs` de `src/`, `tests/` y `crates/*/{src,tests}`
     y falla si alguno contiene un `eprintln!` con `skip:`;
   - la golden de `/health` corre y pasa sin features nativas y sin modelos;

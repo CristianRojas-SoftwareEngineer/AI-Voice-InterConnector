@@ -3305,8 +3305,7 @@ fn home_dir() -> PathBuf {
 }
 
 /// Resuelve la dirección del cliente CLI: `addr` del pidfile cuando existe; sin pidfile
-/// usa `DAEMON_ADDR` con comportamiento idéntico al anterior. Solo el caso "pidfile vivo
-/// con addr efímera" toma la vía nueva.
+/// usa la dirección derivada de `AVI_DAEMON_PORT` (`127.0.0.1:8765` si falta).
 fn resolve_client_addr() -> String {
     lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir())
 }
