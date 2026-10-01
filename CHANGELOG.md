@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.26.0 — 2026-10-01](#0260--2026-10-01)
 - [0.25.0 — 2026-09-28](#0250--2026-09-28)
 - [0.24.0 — 2026-09-27](#0240--2026-09-27)
 - [0.23.1 — 2026-09-25](#0231--2026-09-25)
@@ -96,7 +96,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.26.0] — 2026-10-01
 
 Recupera el canal de instalación de una línea en Windows, que abortaba con un error de análisis antes de ejecutar nada, y hace que la suite de Pester pruebe ese canal tal como lo usa el usuario. Además, una instalación correcta deja la traducción operativa y `doctor` en verde sin clonado de voz. La CLI y el daemon salían con códigos distintos de los del contrato y la vía daemon rechazaba o cortaba los audios largos: ahora cada `reason` tiene un único código de salida en las dos vías, y la transcripción, el dub y la referencia de clonado tienen topes de duración iguales en las dos vías, que se rechazan con `audio_too_long` antes de cargar modelos o contactar con el daemon.
 
@@ -2812,3 +2812,4 @@ estado con el que nace el producto.
 [0.23.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.23.0...v0.23.1
 [0.24.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.23.1...v0.24.0
 [0.25.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.24.0...v0.25.0
+[0.26.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.25.0...v0.26.0
