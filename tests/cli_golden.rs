@@ -2169,11 +2169,6 @@ mod tts {
         None
     }
 
-    /// Pesos del modelo Qwen3-TTS 0.6B presentes.
-    fn tts_weights() -> bool {
-        Path::new("vendor/qwen3-tts/qwen3-tts-0.6b").is_dir()
-    }
-
     /// Exige el snapshot del modelo CustomVoice `qwen3-tts-0.6b` (su
     /// `config.json`) en la raíz de modelos vigente.
     fn require_tts_model() {
@@ -2210,9 +2205,9 @@ mod tts {
     }
 
     /// Exige el binario del motor (`QWEN3_TTS_BIN` o
-    /// `vendor/qwen3-tts/qwen_tts.exe`) y los pesos
-    /// `vendor/qwen3-tts/qwen3-tts-0.6b`.
-    fn require_tts_binary_and_weights() {
+    /// `vendor/qwen3-tts/qwen_tts.exe`). Los pesos no se exigen aparte: el motor
+    /// usa el snapshot de la raíz de modelos que exige `require_tts_model()`.
+    fn require_tts_binary() {
         let binary = tts_binary().expect(
             "falta el binario del motor (QWEN3_TTS_BIN o vendor/qwen3-tts/qwen_tts.exe): \
              constrúyelo con `cargo xtask build-engine`",
@@ -2221,10 +2216,6 @@ mod tts {
             binary.is_file(),
             "falta {}: constrúyelo con `cargo xtask build-engine`",
             binary.display()
-        );
-        assert!(
-            tts_weights(),
-            "faltan los pesos vendor/qwen3-tts/qwen3-tts-0.6b: aprovisiónalos con `cargo xtask build-engine`"
         );
     }
 
@@ -2400,10 +2391,10 @@ mod tts {
     /// modelos tampoco están, así que no se pierde cobertura).
     #[cfg(feature = "native-stt")]
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS, el binario y los pesos del motor y el modelo Parakeet"]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y el modelo Parakeet"]
     fn synthesize_ok_with_label() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         require_parakeet();
         // Serie + ciclo: excluye cleanup (STATE) y paradas del ciclo durante la
         // vía caliente; el orden STATE→TTS coincide con el resto de la suite.
@@ -2467,20 +2458,23 @@ mod tts {
     /// texto de 2-4 palabras (`"Hola mundo"`) con voz `default` (preset ryan).
     /// Verifica `WAV 24kHz mono 16-bit` y `WER ≤ 0.25` vía Parakeet (`native-stt`),
     /// mismo patrón que `synthesize_ok_with_label` (11 palabras): requiere
-    /// el modelo TTS, el binario con sus pesos y `require_parakeet()`, usa
+    /// el modelo TTS, el binario y `require_parakeet()`, usa
     /// `valid_wav_24k` y `wer_vs_text`, falla la E2E/gate si `WER > 0.25`.
     #[cfg(feature = "native-stt")]
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS, el binario y los pesos del motor y el modelo Parakeet"]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y el modelo Parakeet"]
     fn synthesize_short_text_wer_gate() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         require_parakeet();
         // Instancia aislada sin daemon (este test es ruta directa): el
         // sandbox propio aísla su estado (WAV + sidecar) del data_dir
         // compartido; `TTS_LOCK` actúa como semáforo de inferencia.
         let _guard = lock_tts();
         let inst = IsolatedInstance::new("wer_gate");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
         let a = inst.args();
         let short_text = "Hola mundo";
         let label = unique_label("golden_corto");
@@ -2831,10 +2825,10 @@ mod tts {
     // Verifica WER real vía Parakeet (native-stt); sin el feature no se compila.
     #[cfg(feature = "native-stt")]
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS, el binario y los pesos del motor, el modelo Parakeet y un dispositivo de audio"]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
     fn say_success_plays() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         require_audio_device();
         require_parakeet();
         let _guard = lock_tts();
@@ -2846,6 +2840,9 @@ mod tts {
         // verificación es sobre el archivo (WAV válido + WER), no sobre el
         // altavoz. Gate de dispositivo como hoy (sin mezclador no hay humo).
         let inst = IsolatedInstance::new("say_plays");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -2884,10 +2881,10 @@ mod tts {
     /// así que exige `native-stt`; sin el feature no se compila.
     #[cfg(feature = "native-stt")]
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS, el binario y los pesos del motor, el modelo Parakeet y un dispositivo de audio"]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
     fn dub_audio_passthrough_es_es() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         require_parakeet();
         require_audio_device();
         let _guard = lock_tts();
@@ -2900,6 +2897,9 @@ mod tts {
         // mezclador el comando falla con `playback_failed` y no hay archivo
         // que verificar.
         let inst = IsolatedInstance::new("dub_passthrough_direct");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -2948,10 +2948,10 @@ mod tts {
     // ─── voice clone ───────────────────────────────────────────────────
 
     #[test]
-    #[ignore = "requiere el modelo Base de Qwen3-TTS, el binario y los pesos del motor"]
+    #[ignore = "requiere el modelo Base de Qwen3-TTS, el binario del motor"]
     fn voice_clone_ok() {
         require_tts_base_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _guard = lock_tts();
         let name = unique_label("clon");
         // Testigo en directo de `clone`: ruta local fijada con
@@ -3125,10 +3125,10 @@ mod tts {
 
     /// El residente acepta conexiones por loopback y las rechaza por la IPv4 de la LAN.
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS y el binario y los pesos del motor"]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn resident_listens_only_on_loopback() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::resident_listens_only_on_loopback");
         let _reaper = arm_reaper("resident_listens_only_on_loopback");
@@ -3164,10 +3164,10 @@ mod tts {
 
     /// El motor rechaza un `--host` inválido al parsear los argumentos, sin cargar el modelo.
     #[test]
-    #[ignore = "requiere el binario y los pesos del motor"]
+    #[ignore = "requiere el binario del motor"]
     fn engine_rejects_invalid_host() {
-        require_tts_binary_and_weights();
-        let bin = tts_binary().expect("require_tts_binary_and_weights garantiza el binario");
+        require_tts_binary();
+        let bin = tts_binary().expect("require_tts_binary garantiza el binario");
         let out = Command::new(bin)
             .args(["--serve", "1", "--host", "no-es-ip"])
             .output()
@@ -3182,10 +3182,10 @@ mod tts {
     }
 
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS y el binario y los pesos del motor"]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_start_ok() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_start_ok");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
@@ -3224,10 +3224,10 @@ mod tts {
     }
 
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS y el binario y los pesos del motor"]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_restart_rewarms() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_restart_rearma");
         // Reaper best-effort en todo `panic!` fuera de los polls.
@@ -3270,10 +3270,10 @@ mod tts {
     }
 
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS y el binario y los pesos del motor"]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_status_running() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_status_running");
         // Reaper best-effort en todo `panic!` fuera de los polls.
@@ -3416,10 +3416,10 @@ mod tts {
     }
 
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS y el binario y los pesos del motor"]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_start_with_auto_restart() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_start_con_auto_restart");
         // Reaper best-effort en todo `panic!` fuera de los polls.
@@ -3597,10 +3597,10 @@ mod tts {
     /// `start` parte de cero con `started`. Cierra con cero huérfanos
     /// verificados a nivel SO.
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS y el binario y los pesos del motor"]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn h01_simulated_abort_reclaims_and_leaves_no_orphans() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::h01_simulated_abort_reclaims_and_leaves_no_orphans");
         // Reaper best-effort en todo `panic!` fuera de los polls.
@@ -3704,10 +3704,10 @@ mod tts {
     /// motor (residente en 8766) y comprueba si el pipe sigue bloqueado;
     /// luego mata el árbol del daemon y comprueba que se libera.
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS y el binario y los pesos del motor"]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn h03_pipe_stdio_must_not_remain_blocked() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::h03_pipe_stdio_must_not_remain_blocked");
         let _reaper = arm_reaper("h03_pipe_stdio_must_not_remain_blocked");
@@ -3836,10 +3836,10 @@ mod tts {
     // La traducción solo existe con `native-translation`.
     #[cfg(feature = "native-translation")]
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS, el binario y los pesos del motor y los modelos CT2"]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y los modelos CT2"]
     fn translate_delegates_to_daemon() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         require_ct2();
         let _tts = lock_tts();
         hit_start_heavy("tts::translate_delegates_to_daemon");
@@ -3930,11 +3930,11 @@ mod tts {
     }
 
     #[test]
-    #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario y los pesos del motor"]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario del motor"]
     fn clone_delegates_to_daemon() {
         require_tts_model();
         require_tts_base_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::clone_delegates_to_daemon");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
@@ -3985,11 +3985,11 @@ mod tts {
 
     /// Referencia truncada por daemon → 2 con `invalid_audio`, igual que en local.
     #[test]
-    #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario y los pesos del motor"]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario del motor"]
     fn clone_daemon_truncated_audio_exits_2() {
         require_tts_model();
         require_tts_base_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::clone_daemon_truncated_audio_exits_2");
         let _reaper = arm_reaper("clone_daemon_truncado");
@@ -4021,10 +4021,10 @@ mod tts {
 
     #[cfg(feature = "native-stt")]
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS, el binario y los pesos del motor, el modelo Parakeet y un dispositivo de audio"]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
     fn dub_daemon_passthrough() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         require_parakeet();
         require_audio_device();
         let _tts = lock_tts();
@@ -4082,10 +4082,10 @@ mod tts {
     // La traducción solo existe con `native-translation`.
     #[cfg(all(feature = "native-stt", feature = "native-translation"))]
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS, el binario y los pesos del motor, el modelo Parakeet, los modelos CT2 y un dispositivo de audio"]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet, los modelos CT2 y un dispositivo de audio"]
     fn dub_daemon_with_translation() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         require_parakeet();
         require_ct2();
         require_audio_device();
@@ -4143,10 +4143,10 @@ mod tts {
     /// sobre un daemon ya en ejecución responda holgadamente dentro del presupuesto
     /// de 1500 ms (típico < 100 ms).
     #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS y el binario y los pesos del motor"]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn perf_daemon_status_while_running() {
         require_tts_model();
-        require_tts_binary_and_weights();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::perf_daemon_status_while_running");
         let _reaper = arm_reaper("perf_daemon_status_while_running");

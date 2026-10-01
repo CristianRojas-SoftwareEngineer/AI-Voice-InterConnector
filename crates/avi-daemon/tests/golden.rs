@@ -143,6 +143,27 @@ fn require_base_model() {
     });
 }
 
+/// Exige el binario del motor y lo fija en `QWEN3_TTS_BIN`: la prueba corre con
+/// el directorio del crate como cwd, así que el binario de `vendor/qwen3-tts`
+/// del workspace no se resolvería por sí solo. Lo construye
+/// `cargo xtask build-engine`.
+fn require_clone_binary() {
+    if std::env::var_os("QWEN3_TTS_BIN").is_some() {
+        return;
+    }
+    let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+        "../../vendor/qwen3-tts/qwen_tts.exe"
+    } else {
+        "../../vendor/qwen3-tts/qwen_tts"
+    });
+    assert!(
+        binary.is_file(),
+        "falta {}: constrúyelo con `cargo xtask build-engine`",
+        binary.display()
+    );
+    std::env::set_var("QWEN3_TTS_BIN", &binary);
+}
+
 #[tokio::test]
 #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn health_matches_fixture() {
@@ -363,9 +384,10 @@ async fn transcribe_long_audio_transcribes_in_one_pass() {
 /// Requiere el modelo Base de clonado: sin él el handler retorna
 /// `model_missing` en vez de clonar.
 #[tokio::test]
-#[ignore = "requiere el modelo Base de clonado"]
+#[ignore = "requiere el modelo Base de clonado y el binario del motor"]
 async fn voices_clone_daemon_precomputed_true() {
     require_base_model();
+    require_clone_binary();
     let wav = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../avi-stt/tests/assets/parakeet_sample_16k.wav");
     let audio_bytes = std::fs::read(&wav).expect("el WAV de muestra debe leerse");
