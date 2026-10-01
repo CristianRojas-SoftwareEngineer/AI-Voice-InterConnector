@@ -38,7 +38,8 @@ trazabilidad que el merge conserva.
 
 Las releases se cortan con tags `v*` sobre `main` (`cargo xtask release`
 promociona la sección `## [No publicado]` del CHANGELOG). El pipeline de
-build solo corre en tags; los jobs de test corren en `main` y ramas.
+build y las pruebas de CI solo corren en tags `v*`; la validación previa es
+local (`cargo xtask release`).
 
 ## Worktrees
 

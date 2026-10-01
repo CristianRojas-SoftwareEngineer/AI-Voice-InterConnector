@@ -81,7 +81,7 @@
         { "id": "C2.5", "status": "done", "attempts": 2, "files": ["crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs", "crates/avi-translation/src/lib.rs", "crates/avi-stt/src/lib.rs", "src/main.rs", "tests/cli_golden.rs"] },
         { "id": "C2.6", "status": "done", "attempts": 1, "files": ["tests/cli_golden.rs"] },
         { "id": "C2.7", "status": "done", "attempts": 1, "files": ["crates/xtask/src/main.rs"] },
-        { "id": "C2.8", "status": "pending", "attempts": 0, "files": [] }
+        { "id": "C2.8", "status": "done", "attempts": 1, "files": ["docs/BRANCHING.md", "docs/RELEASING.md", "docs/BUILD.md", "CHANGELOG.md", ".claude/skills/release/SKILL.md"] }
       ],
       "foreign_changes": [],
       "commits": []

@@ -70,7 +70,6 @@ disparador de CI.
 
 ```bash
 cargo xtask release X.Y.Z   # o /release X.Y.Z (skill orquestadora)
-cargo test --all                      # recomendado: la triple puerta de CI lo exige
 git add -A
 git commit -m "release: vX.Y.Z"      # conventional-commits
 git tag -a vX.Y.Z -m "vX.Y.Z"
@@ -86,7 +85,14 @@ git push origin main --tags           # sin --tags el tag no dispara build-all
    - el código pasa `cargo fmt --all --check`;
    - `cargo clippy --all-targets -- -D warnings` no reporta avisos;
    - el árbol está limpio;
-   - hay commits desde el último tag.
+   - hay commits desde el último tag;
+   - `cargo test --workspace --features full -- --include-ignored` pasa. Es la
+     última puerta de solo lectura y la más lenta: ejecuta las pruebas de
+     contrato y las que requieren recursos locales (modelos, motor, instalación
+     real), así que exige tenerlos aprovisionados en la máquina
+     (`ai-voice-interconnector setup`, `setup --with-voice-cloning` y
+     `cargo xtask build-engine`). Si falla, aborta antes del bump sin modificar
+     nada.
 2. **Bump.** Escribe `X.Y.Z` en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
    `tests/golden/cli_version.json` y `SOURCE-OFFER.md`. `SOURCE-OFFER.md` es la
    oferta de código fuente GPLv3 §6 que viaja dentro de los 4 artefactos.
