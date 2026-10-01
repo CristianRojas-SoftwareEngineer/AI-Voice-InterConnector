@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 siguiente |
+| Estado | G0 aprobada, C1 cerrado, C2 siguiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -144,7 +144,9 @@ ciclo no se abre mientras tenga una decisión aplazada.
 ### 5.3 Paquete y lista de verificación de G-Resultado
 
 Antes de presentar G-Resultado, el agente ejecuta su propia verificación: la batería de
-pruebas del workspace, el lint, el formato solo sobre los archivos tocados y la revisión
+pruebas del workspace (desde C2, con la orden única de la clase con recursos locales,
+`cargo test --workspace --features full -- --include-ignored`, y no con órdenes ad hoc),
+el lint, el formato solo sobre los archivos tocados y la revisión
 del subagente revisor. Si esa verificación falla tres veces seguidas, abre G-Desvío en
 lugar de seguir intentándolo.
 
@@ -217,6 +219,13 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S17 | `sudo_not_supported` se emite, pero no está en el contrato ni en el oráculo de la tabla | Revisión de C1 | Baja | C1 |
 | S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C7 |
 | S19 | `/synthesize` responde `model_missing` a una temperatura fuera de rango si falta el modelo de síntesis | Revisión de C1 | Baja | C1 |
+| S20 | Unas 60 pruebas se aprueban solas cuando falta un recurso externo (modelos, binario del motor, dispositivo de audio, `ModelStore` escribible, puerto 8765 libre): imprimen `skip: …` y hacen `return`; cada una decide con sus propios auxiliares, uno de ellos duplicado | Revisión de C1 | Alta; un verde no demuestra que la prueba se ejecutó | C2 |
+| S21 | Nada ejecuta las pruebas con recursos locales antes de publicar: CircleCI corre solo en tags, sin features nativas ni modelos, y ni la skill `release` ni `cargo xtask release` piden más que `cargo test --all` (o nada); esas pruebas cuentan como verdes sin haberse ejecutado | Revisión de C1 | Alta; los falsos verdes llegan hasta la puerta de la release | C2 |
+| S22 | La golden de `/health` se salta sin Parakeet y, sin `native-stt`, nunca corre en CI; `voices_clone_daemon_precomputed_true` se salta por el modelo de transcripción cuando necesita el de síntesis | Revisión de C1 | Media | C2 |
+| S23 | La validación de entrada de `/transcribe` (`usage_error` sin audio, `invalid_audio` con base64 inválido) vive dentro de la función que exige `native-stt` aunque no usa el motor, y sus pruebas solo corren con el feature | Revisión de C1 | Baja | C2 |
+| S24 | El estado del daemon en las pruebas se construye de dos formas: a mano en las goldens, con un comentario de cabecera desfasado, y con `DaemonState::new()` en las pruebas de la biblioteca, que con `native-stt` carga Parakeet y escribe en el directorio de datos real | Revisión de C1 | Media | C2 |
+| S25 | `docs/BRANCHING.md` afirma que los jobs de test corren en `main` y en ramas, y solo corren en tags | Revisión de C1 | Baja | C2 |
+| S26 | La verificación de los ciclos usa órdenes ad hoc (como `cargo test -p avi-daemon --features native-stt` en C1) que dependen de la instalación real del mantenedor | Revisión de C1 | Baja | C2 |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
@@ -225,12 +234,20 @@ S15 a S19 los detectó el revisor de C1 y no tienen informe propio: se asignan a
 que ya trata su causa raíz. S17 y S19 se corrigieron dentro de C1; S18 espera a C7
 porque la subida del sobre a `"5"` edita esas mismas líneas.
 
+S20 a S26 también salieron de la revisión de C1 y no tienen informe propio: forman un ciclo
+nuevo, C2, porque comparten una causa raíz que no pertenece a ningún informe: las pruebas no
+declaran qué recursos necesitan y nada comprueba que se ejecuten con ellos. C2 se intercala
+entre C1 y C3 para que las pruebas de C3 nazcan ya en su esquema.
+
 ## 8. Orden de los ciclos y dependencias
 
 ```text
 C0 Preparación y decisiones ──G0──►
   C1 Contrato de errores (S4 S5 S11 S12 S17 S19)
     │  C3 usa la tabla única de reason→exit y la lectura del reason en los errores del daemon
+    ▼
+  C2 Clases de pruebas (S20 S21 S22 S23 S24 S25 S26)
+    │  C3 escribe sus pruebas en el esquema de clases y pone su tope de audio sobre la validación de /transcribe que C2 extrae
     ▼
   C3 Límites de la vía daemon (S1 S13 S14 S15 S16)
     │
@@ -255,6 +272,11 @@ Justificación del orden:
   que la transcripción lea el `reason` de una respuesta de error y lo traduzca al código
   del contrato, y eso es justo lo que construye C1. Si C3 fuera primero, crearía otra
   tabla local que C1 tendría que deshacer. C1 es pequeño, así que el retraso es mínimo.
+- **C2 va entre C1 y C3.** Las pruebas nuevas de C3 sobre `/transcribe` y sobre los topes
+  deben nacer ya en el esquema de dos clases; si C3 fuera primero, habría que reclasificarlas
+  después. Además, la validación de `/transcribe` que C2 extrae a una función pura es la base
+  sobre la que C3 añade su tope de audio. C2 parte de lo que C1 ya dejó en `main` en las
+  mismas pruebas, y desde su cierre todos los ciclos verifican con una sola orden.
 - **C4 va antes que C5 por una dependencia dura.** Los dos cambian cómo se lanza el
   motor de clonado: C4 lleva su salida a un log y C5 le conecta la tubería de D11.1. Además,
   sin el log del daemon, un fallo al matarlo no deja rastro y la verificación de S2 sería
@@ -788,6 +810,69 @@ cambia.
 
 **Decisión:** A (2026-09-30).
 
+### D14 · Pruebas que dependen del dispositivo de audio (S20) — C2
+
+**Problema.**
+
+- Varias pruebas necesitan un dispositivo de salida de audio real y hoy se saltan en
+  silencio si no lo hay.
+- El esquema de C2 tiene dos clases: contrato, que no usa nada externo y corre en todas
+  partes, y con recursos locales, marcada con `#[ignore = "requiere …"]`, que `cargo test
+  --all` solo muestra como *ignored* y se ejecuta con `--include-ignored`.
+- Un servidor de integración de CircleCI no tiene dispositivo de audio.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Clase con recursos locales** (`#[ignore]`, con fallo explícito si falta el dispositivo) | Una sola regla para todo recurso externo; prueba el camino real de reproducción; no cambia el código de producción | Solo se ejecutan donde hay dispositivo, es decir, en la puerta local de la release |
+| **B. Simular la salida de audio con un doble** | Corren en todas partes, también en CI | Exige abstraer la salida de audio en producción solo para las pruebas, y el doble no prueba el dispositivo real |
+| **C. Fuera de este ciclo** | Ningún trabajo ahora | Dejaría en el ciclo pruebas con `skip` en silencio, y el criterio de que ninguna prueba se salte no se cumpliría |
+
+**Recomendación: A.** Es la misma regla que se aplica a los modelos y al binario del
+motor, sin tocar la producción.
+
+**Decisión:** A (2026-09-30).
+
+### D15 · Pruebas que se saltan por `ModelStore` no escribible o por un daemon vivo en 8765 (S20) — C2
+
+**Problema.**
+
+- Unas pruebas se saltan si el almacén de modelos no se puede escribir o si ya hay un
+  daemon en `127.0.0.1:8765`: dependen del entorno del que las ejecuta, no de un recurso
+  que haya que proveer.
+- `cli_golden.rs` ya tiene el patrón `IsolatedInstance`, que levanta una instancia con
+  directorios temporales y puerto efímero.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Aislarlas con directorios temporales y puerto efímero (patrón `IsolatedInstance`)** | Dejan de depender del entorno; no tocan datos reales ni chocan con un daemon vivo; después quedan en la clase que corresponda por lo que de verdad necesiten | Hay que adaptar cada prueba al patrón |
+| **B. Clase con recursos locales (`#[ignore]`)** | Trabajo mínimo | Marca como recurso lo que es un defecto de aislamiento, y la prueba seguiría fallando si el mantenedor tiene un daemon vivo |
+| **C. Fuera de este ciclo** | Ningún trabajo ahora | Quedarían pruebas con `skip` en silencio |
+
+**Recomendación: A.**
+
+**Decisión:** A (2026-09-30).
+
+### D16 · Dónde vive la puerta de release de las pruebas con recursos locales (S21) — C2
+
+**Problema.**
+
+- CircleCI no puede ejecutar la clase con recursos locales, porque los modelos pesan varios
+  GB y habría que descargarlos en cada tag.
+- Hoy la release pide `cargo test --all`, que deja esas pruebas como *ignored*; la skill
+  `release` y `docs/RELEASING.md` lo describen así, y `cargo xtask release` no ejecuta
+  ninguna prueba.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Dentro de `cargo xtask release`**: ejecuta `cargo test --workspace --features full -- --include-ignored` como condición previa y aborta si algo falla o falta un recurso; sin modo para saltarla | Mecánica: no se puede publicar sin haber ejecutado la suite completa; una sola orden, la misma que usa cada ciclo | La release tarda lo que dure la suite con modelos; solo puede cortarla quien tenga los recursos instalados |
+| **B. Solo un paso documentado en la skill `release`** | Sin código | Depende de que el agente o el humano lo recuerden; es el origen de S21 |
+
+**Recomendación: A.** Un paso solo documentado es lo que ya falló: lo que no se comprueba
+mecánicamente se omite. La skill y `docs/RELEASING.md` se actualizan para describir la
+puerta, no para sustituirla.
+
+**Decisión:** A (2026-09-30).
+
 ## 10. Ciclos
 
 Cada ficha resume lo que el G-Plan del ciclo concretará y lo que el humano deberá
@@ -853,11 +938,76 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   daemon (`DAEMON-MODE.md`, incluido el handshake de P4).
 - **Cierra:** `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md`.
 
+### C2 · Clases de pruebas
+
+- **Causa raíz:** las pruebas no declaran en su definición qué recursos externos
+  necesitan: lo deciden en tiempo de ejecución y, si falta algo, se aprueban solas. Nada
+  ejecuta las que necesitan recursos antes de publicar.
+- **Principio:** cada prueba declara su clase en su definición y ninguna se salta en
+  silencio. Ninguna prueba que pueda prescindir de un modelo lo carga, y ninguna que lo
+  necesite corre donde haya que descargarlo (los modelos pesan varios GB).
+  - **Clase contrato:** no usa nada externo (ni modelos, ni hardware, ni la instalación
+    real). Corre en todas partes: `cargo test --all` en local y en la puerta del tag.
+  - **Clase con recursos locales** (modelos, binario del motor, dispositivo de audio):
+    `#[ignore = "requiere …"]`. `cargo test --all` la muestra como *ignored* sin descargar
+    nada, así que CircleCI no cambia. Se ejecuta con
+    `cargo test --workspace --features full -- --include-ignored`; dentro, la ausencia
+    del recurso es un fallo explícito (`expect` con la orden que lo provisiona, como
+    `setup --with-stt`), no un `return`.
+- **Depende de:** C1.
+- **Síntomas:** S20, S21, S22, S23, S24, S25 y S26.
+- **Decisiones:** D14, D15 y D16, resueltas el 2026-09-30. El hook `post-merge` que poda
+  `target/` no se toca: no bloquea, es opcional y mezclaría responsabilidades.
+- **Tareas:**
+  1. Extraer la validación de entrada de `/transcribe` a una función pura sin `cfg` que
+     devuelve el PCM o la respuesta de error; el handler con `native-stt` solo llama al
+     motor. Las goldens de los 400 pasan a la clase contrato (S23). C3 añade su tope de
+     audio sobre esa base.
+  2. Una sola construcción del estado del daemon para las pruebas, sin cargar modelos y
+     con el directorio de datos en un temporal; se retiran el montaje manual de las
+     goldens, su comentario desfasado y el uso de `DaemonState::new()` en las pruebas. El
+     estado de producción no cambia (S24).
+  3. Reclasificar cada prueba que hoy se omite: contrato sin compuerta (como la golden de
+     `/health`), `#[ignore]` con fallo explícito, o `#[cfg(feature = …)]` sobre la prueba
+     cuando depende de un feature. Eliminar todos los `skip: … return`, los auxiliares de
+     omisión que no usa la producción y los `#[allow(unreachable_code)]`; la cabecera de
+     `tests/cli_golden.rs` pasa a describir las dos clases (S20, S22).
+  4. Aislar las pruebas que se saltan por `ModelStore` no escribible o por un daemon vivo
+     en 8765, con directorios temporales y puerto efímero (patrón `IsolatedInstance`);
+     luego quedan en la clase que corresponda por lo que necesiten (D15, S20).
+  5. Puerta mecánica en `cargo xtask release`: ejecuta
+     `cargo test --workspace --features full -- --include-ignored` como condición previa
+     y aborta si algo falla o falta un recurso, sin modo para saltarla; se actualizan el
+     paso 4 de la skill `release` y `docs/RELEASING.md` (D16, S21).
+  6. Corregir `docs/BRANCHING.md`: los jobs de test corren solo en tags (S25).
+  7. El flujo iterativo usa esa misma orden en la verificación de cada ciclo (sección 5.3),
+     en lugar de órdenes ad hoc (S26).
+- **Pruebas en rojo:**
+  - una prueba-meta falla si en las pruebas del workspace queda algún `skip:` seguido de
+    `return`;
+  - la golden de `/health` corre y pasa sin features nativas y sin modelos;
+  - la validación de `/transcribe` (`usage_error` sin audio, `invalid_audio` con base64
+    inválido) se prueba sin `native-stt`;
+  - las pruebas del daemon construyen su estado sin cargar modelos y sin escribir en el
+    directorio de datos real;
+  - las pruebas que se saltaban por `ModelStore` o por el puerto 8765 pasan con uno de
+    esos recursos ocupado, porque usan directorios temporales y puerto efímero;
+  - `cargo xtask release` aborta si la suite con recursos locales falla o falta un
+    recurso, y no tiene ningún modo para saltarla.
+- **Verificación:** `cargo test --all` muestra las pruebas con recursos como *ignored* y
+  pasa sin modelos; `cargo test --workspace --features full -- --include-ignored` pasa en
+  la instalación del mantenedor.
+- **Documentación:** `docs/BRANCHING.md`, `docs/RELEASING.md`, el paso 4 de la skill
+  `release`, la cabecera de `tests/cli_golden.rs` y, si el G-Plan lo considera procedente,
+  la sección `## [No publicado]` del CHANGELOG (el cambio no toca el contrato de la CLI).
+- **Cierra:** ningún informe: los síntomas no tienen informe propio.
+
 ### C3 · Límites de la vía daemon
 
 - **Causa raíz:** la vía daemon tiene límites de transporte ajenos a los del producto y
   un camino de compatibilidad con su propio límite de tiempo.
-- **Depende de:** C1.
+- **Depende de:** C1 y C2 (las pruebas nuevas nacen en el esquema de clases y el tope de
+  audio se añade sobre la validación de `/transcribe` extraída).
 - **Síntomas:** S1, S13, S14, S15 y S16.
 - **Decisiones:** D1, D2 y D3, con su ampliación a cualquier ruta.
 - **Tareas:**
@@ -1058,6 +1208,8 @@ disco y con `git log`.
 | Riesgo | Tratamiento |
 |---|---|
 | Tras corregir el auxiliar (C6), el staging sigue quedando en disco | G-Desvío con el rastro del auxiliar; el humano decide si se diagnostica la causa, se aplaza el ciclo o se acepta la red de `doctor --repair` como mitigación documentada |
+| Una prueba con recursos locales falla al dejar de saltarse, porque llevaba tiempo sin ejecutarse | Se corrige la prueba o el código en C2 si es un defecto pequeño; si destapa un defecto del producto, G-Desvío y el humano decide si se corrige dentro del ciclo o se registra como síntoma nuevo |
+| `cargo xtask release` tarda lo que dura la suite con modelos y exige tener los recursos instalados | Es el coste buscado de la puerta; la orden es la misma que se usa en cada ciclo, así que el tiempo no es una sorpresa al publicar |
 | Una decisión de G0 resulta inviable al implementarla | G-Desvío; la decisión se reabre con las alternativas actualizadas |
 | S14 no se reproduce | En el G-Plan de C3, D2 y su tarea salen del alcance y el síntoma se retira del informe |
 | La verificación del agente falla de forma repetida | Tras tres intentos, G-Desvío en lugar de seguir intentándolo |
