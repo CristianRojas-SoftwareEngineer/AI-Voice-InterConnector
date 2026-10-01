@@ -811,12 +811,8 @@ pub struct InputError {
 pub enum TranslateInput {
     /// Idioma de origen y destino coinciden: se devuelve el texto sin traducir.
     Same,
-    /// Par distinto y soportado, con el texto y los idiomas ya resueltos a ISO.
-    Pair {
-        text: String,
-        source: String,
-        target: String,
-    },
+    /// Par distinto y soportado, con los idiomas ya resueltos a ISO.
+    Pair { source: String, target: String },
 }
 
 /// Valida el cuerpo de `/transcribe` y devuelve el PCM i16 decodificado.
@@ -881,11 +877,7 @@ pub fn validate_translate_input(body: &Value) -> Result<TranslateInput, InputErr
         return Ok(TranslateInput::Same);
     }
     match (source.as_str(), target.as_str()) {
-        ("es", "en") | ("en", "es") => Ok(TranslateInput::Pair {
-            text,
-            source,
-            target,
-        }),
+        ("es", "en") | ("en", "es") => Ok(TranslateInput::Pair { source, target }),
         _ => Err(InputError {
             reason: "unsupported_language_pair",
             message: format!(
@@ -923,7 +915,7 @@ async fn translate_handler(
             })))
             .into_response();
         }
-        Ok(TranslateInput::Pair { source, target, .. }) => (source, target),
+        Ok(TranslateInput::Pair { source, target }) => (source, target),
     };
     let pair = if source == "es" { "es-en" } else { "en-es" };
     let ct2_dir = avi_store::ct2_model_dir(pair);
@@ -2249,9 +2241,27 @@ mod tests {
         let _ = body.get("stt");
     }
 
+    /// Exige `nemo128.onnx` del snapshot de Parakeet, que el estado del daemon
+    /// carga con `native-stt`: la raíz de modelos vive fuera del repo y la
+    /// provisiona `ai-voice-interconnector setup`.
+    #[cfg(feature = "native-stt")]
+    fn require_parakeet() {
+        let preprocessor = avi_store::ModelStore::new()
+            .model_snapshot_path("parakeet-tdt-v3")
+            .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión")
+            .join("nemo128.onnx");
+        assert!(
+            preprocessor.is_file(),
+            "falta {}: provisiona Parakeet con `ai-voice-interconnector setup`",
+            preprocessor.display()
+        );
+    }
+
     /// Estado del daemon con los almacenes anclados en un directorio temporal
     /// único por llamada (pid + contador), sin tocar el directorio de datos real.
     fn test_state() -> DaemonState {
+        #[cfg(feature = "native-stt")]
+        require_parakeet();
         static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let tmp = std::env::temp_dir().join(format!(
@@ -2693,7 +2703,10 @@ mod tests {
     /// `with_stores` ancla los almacenes bajo el directorio recibido: la raíz se
     /// afirma antes de inicializar para no escribir nunca en la instalación real.
     #[test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     fn with_stores_anchors_stores_under_given_dir() {
+        #[cfg(feature = "native-stt")]
+        require_parakeet();
         let tmp = std::env::temp_dir().join(format!("avi_daemon_stores_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let state = DaemonState::with_stores(

@@ -17,6 +17,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Once;
 use std::sync::OnceLock;
 
 use axum::body::Body;
@@ -29,26 +30,78 @@ use tower::ServiceExt;
 use avi_daemon::{build_router_with_state, DaemonState, WarmState};
 use avi_store::{SpeechStore, VoiceStore};
 
-/// Estado de test único, reutilizable entre tests. Los almacenes de voces y de
-/// habla se anclan en un directorio temporal propio del proceso, y
-/// `AVI_DATA_DIR` apunta a ese mismo directorio para que los logs del motor
-/// residente que lanza el clonado no caigan en el directorio de datos del
-/// usuario. `warm` nace en `Warming` porque aquí no corre `run_daemon_server`
+/// Prepara una sola vez por proceso el entorno que comparten los dos estados:
+/// `AVI_DATA_DIR` apunta al directorio temporal propio del proceso para que los
+/// logs del motor residente que lanza el clonado no caigan en el directorio de
+/// datos del usuario, y el motor residente escucha en un puerto efímero propio
+/// (`QWEN3_TTS_PORT`) para no chocar con el del daemon del usuario.
+fn prepare_shared_env() {
+    static PREPARED: Once = Once::new();
+    PREPARED.call_once(|| {
+        let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
+        std::env::set_var("AVI_DATA_DIR", &tmp);
+        let tts_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("reservar un puerto efímero para el motor residente")
+            .port();
+        std::env::set_var("QWEN3_TTS_PORT", tts_port.to_string());
+    });
+}
+
+/// Estado de contrato único, reutilizable entre tests. Los almacenes de voces y
+/// de habla se anclan en un directorio temporal propio del proceso. Su motor TTS
+/// no tiene binario (`binary_path = None`) aunque exista vendor, `qwen_tts` en
+/// el `PATH` o `QWEN3_TTS_BIN`, así que ninguna prueba de contrato puede lanzar
+/// el motor real. Con `native-stt` el estado carga Parakeet, que se exige
+/// antes. `warm` nace en `Warming` porque aquí no corre `run_daemon_server`
 /// (sin bind ni warmup real); los tests de contrato leen el estado tal cual.
 static TEST_STATE: OnceLock<Arc<DaemonState>> = OnceLock::new();
 
 fn test_state() -> Arc<DaemonState> {
     TEST_STATE
         .get_or_init(|| {
+            #[cfg(feature = "native-stt")]
+            require_parakeet();
+            prepare_shared_env();
             let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
-            std::env::set_var("AVI_DATA_DIR", &tmp);
-            Arc::new(
-                DaemonState::with_stores(
-                    VoiceStore::at(tmp.join("voices")),
-                    SpeechStore::at(tmp.join("speech")),
-                )
-                .expect("estado del daemon con almacenes temporales"),
+            let mut state = DaemonState::with_stores(
+                VoiceStore::at(tmp.join("voices")),
+                SpeechStore::at(tmp.join("speech")),
             )
+            .expect("estado del daemon con almacenes temporales");
+            state.tts_engine.binary_path = None;
+            Arc::new(state)
+        })
+        .clone()
+}
+
+/// Estado de clonado, solo para las pruebas que ejercen el motor real. Usa
+/// almacenes en otro directorio temporal propio del proceso y su motor TTS
+/// apunta a `QWEN3_TTS_BIN` si está definida o, si no, al binario de
+/// `vendor/qwen3-tts`, porque el cwd del crate no ve el vendor del workspace.
+/// El clonado y el arranque del residente buscan el binario en `QWEN3_TTS_BIN`
+/// y no en el campo, así que se fija también la variable; el estado de contrato
+/// no la ve porque su `binary_path = None` corta `/synthesize` antes del motor.
+static CLONE_STATE: OnceLock<Arc<DaemonState>> = OnceLock::new();
+
+fn clone_state() -> Arc<DaemonState> {
+    CLONE_STATE
+        .get_or_init(|| {
+            #[cfg(feature = "native-stt")]
+            require_parakeet();
+            prepare_shared_env();
+            let tmp = std::env::temp_dir().join(format!("avi_golden_clone_{}", std::process::id()));
+            let mut state = DaemonState::with_stores(
+                VoiceStore::at(tmp.join("voices")),
+                SpeechStore::at(tmp.join("speech")),
+            )
+            .expect("estado del daemon con almacenes temporales");
+            let binary = std::env::var_os("QWEN3_TTS_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(vendor_binary);
+            std::env::set_var("QWEN3_TTS_BIN", &binary);
+            state.tts_engine.binary_path = Some(binary);
+            Arc::new(state)
         })
         .clone()
 }
@@ -66,7 +119,12 @@ fn fixture(name: &str) -> Value {
 
 /// Envía una petición al router y devuelve (status, cuerpo crudo en bytes).
 async fn send(req: Request<Body>) -> (StatusCode, Vec<u8>) {
-    let response = build_router_with_state(test_state())
+    send_to(test_state(), req).await
+}
+
+/// Envía una petición al router construido sobre el estado indicado.
+async fn send_to(state: Arc<DaemonState>, req: Request<Body>) -> (StatusCode, Vec<u8>) {
+    let response = build_router_with_state(state)
         .oneshot(req)
         .await
         .expect("el router debe responder");
@@ -145,25 +203,27 @@ fn require_base_model() {
     });
 }
 
-/// Exige el binario del motor y lo fija en `QWEN3_TTS_BIN`: la prueba corre con
-/// el directorio del crate como cwd, así que el binario de `vendor/qwen3-tts`
-/// del workspace no se resolvería por sí solo. Lo construye
-/// `cargo xtask build-engine`.
+/// Binario del motor en `vendor/qwen3-tts` del workspace.
+fn vendor_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+        "../../vendor/qwen3-tts/qwen_tts.exe"
+    } else {
+        "../../vendor/qwen3-tts/qwen_tts"
+    })
+}
+
+/// Exige el binario del motor, salvo que `QWEN3_TTS_BIN` ya apunte a otro. Lo
+/// construye `cargo xtask build-engine`.
 fn require_clone_binary() {
     if std::env::var_os("QWEN3_TTS_BIN").is_some() {
         return;
     }
-    let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
-        "../../vendor/qwen3-tts/qwen_tts.exe"
-    } else {
-        "../../vendor/qwen3-tts/qwen_tts"
-    });
+    let binary = vendor_binary();
     assert!(
         binary.is_file(),
         "falta {}: constrúyelo con `cargo xtask build-engine`",
         binary.display()
     );
-    std::env::set_var("QWEN3_TTS_BIN", &binary);
 }
 
 #[tokio::test]
@@ -171,12 +231,8 @@ fn require_clone_binary() {
 async fn health_matches_fixture() {
     // Los almacenes del estado deben anclarse bajo un directorio temporal propio
     // y no en el directorio de datos del usuario; se afirma antes de escribir.
-    let tmp = std::env::temp_dir().join(format!("avi_golden_health_{}", std::process::id()));
-    let state = DaemonState::with_stores(
-        VoiceStore::at(tmp.join("voices")),
-        SpeechStore::at(tmp.join("speech")),
-    )
-    .expect("estado del daemon con almacenes temporales");
+    let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
+    let state = test_state();
     assert!(
         state.voice_store.root().starts_with(&tmp),
         "raíz de voces fuera del temporal: {}",
@@ -309,19 +365,23 @@ async fn synthesize_emits_contract_ndjson_stream() {
         "el stream NDJSON debe comenzar con `start`"
     );
 
-    // Invariante: evento final `result` con `audio_b64` no vacío, O `error`.
-    // En este entorno de test el motor TTS no es localizable desde CWD
-    // (el directorio de trabajo de este crate), por lo que el evento final esperado es
-    // `error` con
-    // `reason` `model_missing` — rama aceptada en este entorno de test. La
-    // síntesis real con audio verdadero se verifica por separado contra el motor.
+    // Invariante: evento final `error` por falta de motor.
+    // El estado de contrato no tiene binario del motor, así que el evento final
+    // es `error` con `reason` `model_missing`. La síntesis real con audio
+    // verdadero se verifica por separado contra el motor.
     let final_event = events.last().unwrap();
-    let invariant = match final_event["event"].as_str() {
-        Some("result") => !final_event["audio_b64"].as_str().unwrap_or("").is_empty(),
-        Some("error") => final_event.get("reason").is_some(),
-        _ => false,
-    };
-    assert!(invariant, "evento final insuficiente: {:?}", final_event);
+    assert_eq!(
+        final_event["event"],
+        Value::String("error".to_string()),
+        "evento final insuficiente: {:?}",
+        final_event
+    );
+    assert_eq!(
+        final_event["reason"],
+        Value::String("model_missing".to_string()),
+        "evento final insuficiente: {:?}",
+        final_event
+    );
 }
 
 /// Audio largo (~22 s, concatenación de 4 corpus): Parakeet no necesita chunking VAD
@@ -394,14 +454,17 @@ async fn voices_clone_daemon_precomputed_true() {
         .join("../avi-stt/tests/assets/parakeet_sample_16k.wav");
     let audio_bytes = std::fs::read(&wav).expect("el WAV de muestra debe leerse");
     let name = format!("clon_warm_{}", std::process::id());
-    let (status, bytes) = send(post_json(
-        "/voices/clone",
-        serde_json::json!({
-            "name": name,
-            "force": true,
-            "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
-        }),
-    ))
+    let (status, bytes) = send_to(
+        clone_state(),
+        post_json(
+            "/voices/clone",
+            serde_json::json!({
+                "name": name,
+                "force": true,
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
+            }),
+        ),
+    )
     .await;
     assert_eq!(status, StatusCode::OK);
     // El cuerpo es NDJSON: una línea JSON por evento.
@@ -415,7 +478,7 @@ async fn voices_clone_daemon_precomputed_true() {
     // motor residente; se espera a que termine y se detiene el residente antes
     // de las aserciones para que no sobreviva al proceso de pruebas.
     if events.last().is_some_and(|e| e["event"] == "result") {
-        let state = test_state();
+        let state = clone_state();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         while matches!(*state.warm.read().unwrap(), WarmState::Warming) {
             assert!(
@@ -451,7 +514,8 @@ async fn voices_clone_daemon_precomputed_true() {
         final_event
     );
     assert_eq!(final_event["name"], Value::String(name.clone()));
-    assert_eq!(final_event["precomputed"], Value::Bool(true)); // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
+    assert_eq!(final_event["precomputed"], Value::Bool(true));
+    // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
     if events.len() > 2 {
         for e in &events[1..events.len() - 1] {
             let ev = e["event"].as_str().unwrap_or("");
@@ -462,7 +526,7 @@ async fn voices_clone_daemon_precomputed_true() {
             );
         }
     }
-    let _ = test_state().voice_store.remove(&name);
+    let _ = clone_state().voice_store.remove(&name);
 }
 
 /// Una referencia WAV truncada (la cabecera declara más datos de los que hay)

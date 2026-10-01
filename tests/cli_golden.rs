@@ -2308,7 +2308,7 @@ mod tts {
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
         let snapshot = avi_store::ModelStore::new()
             .model_snapshot_path("parakeet-tdt-v3")
-            .expect("snapshot HF parakeet-tdt-v3 no provisionado — ejecuta setup --with-stt");
+            .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
         let engine =
             avi_stt::ParakeetEngine::new(snapshot).expect("el modelo Parakeet TDT v3 debe existir");
         let transcribed = engine
@@ -3144,20 +3144,15 @@ mod tts {
             "el residente debe aceptar conexiones en 127.0.0.1:{}",
             port
         );
-        match non_loopback_ipv4() {
-            Some(ip) => {
-                let lan = std::net::SocketAddr::from((ip, port));
-                assert!(
-                    std::net::TcpStream::connect_timeout(&lan, timeout).is_err(),
-                    "el residente está expuesto a la red: acepta conexiones en {}:{}",
-                    ip,
-                    port
-                );
-            }
-            None => eprintln!(
-                "[daemon] salto parcial: sin IPv4 no loopback, se omite la aserción de red"
-            ),
-        }
+        let ip = non_loopback_ipv4()
+            .expect("la máquina no tiene IPv4 fuera de loopback: conéctala a una red");
+        let lan = std::net::SocketAddr::from((ip, port));
+        assert!(
+            std::net::TcpStream::connect_timeout(&lan, timeout).is_err(),
+            "el residente está expuesto a la red: acepta conexiones en {}:{}",
+            ip,
+            port
+        );
         stop_instance(&inst, "resident_listens_only_on_loopback");
         hit_end("tts::resident_listens_only_on_loopback");
     }

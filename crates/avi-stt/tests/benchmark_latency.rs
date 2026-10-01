@@ -16,11 +16,17 @@ use avi_core::engine::SttEngine;
 ///
 /// Ejecutar con: `cargo test -p avi-stt --test benchmark_latency -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "requiere Parakeet"]
 fn benchmark_latency_quality() {
     let model_dir = avi_store::ModelStore::new()
         .model_snapshot_path("parakeet-tdt-v3")
-        .expect("snapshot parakeet-tdt-v3 no provisionado en la raíz de modelos — ejecuta setup --with-stt");
+        .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
+    let preprocessor = model_dir.join("nemo128.onnx");
+    assert!(
+        preprocessor.is_file(),
+        "falta {}: provisiona Parakeet con `ai-voice-interconnector setup`",
+        preprocessor.display()
+    );
     let assets = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/assets");
     let files = [
         (
