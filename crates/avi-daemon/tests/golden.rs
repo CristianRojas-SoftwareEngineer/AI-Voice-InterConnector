@@ -412,7 +412,7 @@ async fn voices_clone_daemon_precomputed_true() {
         final_event
     );
     assert_eq!(final_event["name"], Value::String(name.clone()));
-    assert_eq!(final_event["precomputed"], Value::Bool(true));    // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
+    assert_eq!(final_event["precomputed"], Value::Bool(true)); // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
     if events.len() > 2 {
         for e in &events[1..events.len() - 1] {
             let ev = e["event"].as_str().unwrap_or("");
