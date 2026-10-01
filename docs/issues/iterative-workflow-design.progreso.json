@@ -64,7 +64,7 @@
     },
     "C2": {
       "status": "in_progress",
-      "phase": "implementation",
+      "phase": "result",
       "gates": [
         { "gate": "plan", "verdict": "approved", "date": "2026-09-30", "notes": "P1: reaper_on_failure recibe si barre por imagen y d03 lo desactiva; P2: las pruebas que solo exigen el modelo aprovisionado usan un snapshot falso y quedan de contrato; P3: setup_json_without_language_key corre en un sandbox con la selección por defecto sembrada; P5: la puerta de release va tras las validaciones de solo lectura y antes de cualquier escritura" },
         { "gate": "tests", "verdict": "approved", "date": "2026-10-01", "notes": "8 pruebas en rojo por aserción; setup_json_without_language_key ya en verde al correr aislada; d03 sin rojo posible, se verifica tras implementar P1" },
@@ -73,7 +73,9 @@
         { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "tres goldens arrancan run_daemon_server/run_supervised, que creaban sus stores sobre el directorio de datos real: esas funciones y prepare_server reciben los dos stores y usan with_stores; src/main.rs pasa VoiceStore::new() y SpeechStore::new()" },
         { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "unas 40 pruebas de contrato fuera de las 53 llamaban a run_json/run_text sin sandbox y una sintetizó en la instalación real: run_json/run_text crean un sandbox por llamada con pidfile señuelo y translate_force_daemon_no_daemon_exits_5 deja de exigir el 8765 libre; se borraron los tres archivos que dejó la prueba" },
         { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "la verificación final encontró un comentario mal alineado en golden.rs, anterior a la rama, que hacía abortar cargo xtask release en fmt antes de la puerta: se corrige aquí. Faltaban los pesos de Qwen3-TTS y el modelo Base para --include-ignored: se autoriza a aprovisionarlos con cargo xtask build-engine y setup --with-voice-cloning" },
-        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "build-engine no descarga pesos y el motor usa el snapshot de la raíz de modelos: las pruebas de TTS exigen solo el binario (require_tts_binary) y se borraron los 2,4 GB de vendor/qwen3-tts/qwen3-tts-0.6b bajados con download_model.sh. La reverificación destapó dos fallos de pruebas que antes se omitían: tres pruebas --no-daemon sin voces de fábrica en el sandbox y la de clonado del daemon sin QWEN3_TTS_BIN resoluble desde el cwd del crate" }
+        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "build-engine no descarga pesos y el motor usa el snapshot de la raíz de modelos: las pruebas de TTS exigen solo el binario (require_tts_binary) y se borraron los 2,4 GB de vendor/qwen3-tts/qwen3-tts-0.6b bajados con download_model.sh. La reverificación destapó dos fallos de pruebas que antes se omitían: tres pruebas --no-daemon sin voces de fábrica en el sandbox y la de clonado del daemon sin QWEN3_TTS_BIN resoluble desde el cwd del crate" },
+        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "el revisor halló en resident_listens_only_on_loopback, fuera de las 53, un «salto parcial» que pasaba en verde sin IPv4 fuera de loopback: se sustituye por un expect que pide conectar la máquina a una red" },
+        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "la verificación final halló dos defectos. Uno: con QWEN3_TTS_BIN fijada en test_state, synthesize_emits_contract_ndjson_stream lanzaba el motor real y lo dejaba huérfano; se separan el estado de contrato, con binary_path a None, y el del clonado, con el binario de vendor también en QWEN3_TTS_BIN porque el clonado y el residente lo resuelven por la variable. Dos: diez pruebas de self_install_contract y avi-lifecycle llamaban a daemon_stop::stop sin pidfile y contactaban 127.0.0.1:8765. Se corrige en producción (S27): self install, self uninstall, self update y cleanup respetan AVI_DAEMON_PORT, y las pruebas de cleanup lo fijan en su proceso. Las de self_install_contract siembran un daemon.pid señuelo para no barrer qwen_tts por imagen" }
       ],
       "tasks": [
         { "id": "C2.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
@@ -86,7 +88,7 @@
         { "id": "C2.8", "status": "done", "attempts": 1, "files": ["docs/BRANCHING.md", "docs/RELEASING.md", "docs/BUILD.md", "CHANGELOG.md", ".claude/skills/release/SKILL.md"] }
       ],
       "foreign_changes": [],
-      "commits": []
+      "commits": ["b32097a", "a91451b", "dd9f6d5", "3b461d6", "9d3843d", "7d00afb", "121f53f", "4aa4fe3", "5512aae", "3b7f1da", "7b8fa37", "e4cb09b", "28346a2", "a44514b", "52b15ce"]
     },
     "C3": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C4": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
