@@ -513,7 +513,10 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
                 }
             }
             if start.elapsed() >= timeout {
-                reaper_on_failure(&format!("wait_for_daemon_state({})-agotado", expected), true);
+                reaper_on_failure(
+                    &format!("wait_for_daemon_state({})-agotado", expected),
+                    true,
+                );
                 panic!(
                     "el daemon no publicó 'warm' con estado running tras {:?} (último: {}; fichero: {})",
                     timeout, last, path.display()
@@ -537,7 +540,10 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
-    reaper_on_failure(&format!("wait_for_daemon_state({})-agotado", expected), true);
+    reaper_on_failure(
+        &format!("wait_for_daemon_state({})-agotado", expected),
+        true,
+    );
     panic!(
         "el daemon no alcanzó el estado '{}' tras {} reintentos (último: {})",
         expected, retries, last
@@ -725,10 +731,7 @@ fn contract_sandbox(tag: &str) -> (PathBuf, Vec<(String, String)>) {
 /// varias llamadas debe usar un único sandbox con `run_json_env`.
 fn run_json(args: &[&str]) -> (i32, Value) {
     let (dir, envs) = contract_sandbox("run_json");
-    let envs: Vec<(&str, &str)> = envs
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let result = run_json_env(args, &envs);
     let _ = std::fs::remove_dir_all(&dir);
     result
@@ -1021,9 +1024,7 @@ impl IsolatedInstance {
         // variable de caché, de modo que el daemon hijo hereda la del entorno y ve
         // los modelos provisionados; el sandbox solo aísla estado (pidfile/almacén).
         // Las pruebas de contrato la sustituyen por la del sandbox con `contract_args`.
-        envs.retain(|(k, _)| {
-            !matches!(k.as_str(), "AVI_CACHE_DIR" | "HF_HUB_CACHE" | "HF_HOME")
-        });
+        envs.retain(|(k, _)| !matches!(k.as_str(), "AVI_CACHE_DIR" | "HF_HUB_CACHE" | "HF_HOME"));
         CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = Some(dir.clone()));
         let contract_cache = dir.join("cache").to_string_lossy().to_string();
         IsolatedInstance {

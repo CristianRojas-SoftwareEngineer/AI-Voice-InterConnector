@@ -2672,15 +2672,22 @@ mod tests {
     /// Con el mismo idioma de origen y destino no hay nada que traducir.
     #[test]
     fn validate_translate_same_language_is_same() {
-        let result = validate_translate_input(&json!({ "text": "hola", "from": "es-latam", "to": "es" }));
-        assert!(matches!(result, Ok(TranslateInput::Same)), "resultado: {result:?}");
+        let result =
+            validate_translate_input(&json!({ "text": "hola", "from": "es-latam", "to": "es" }));
+        assert!(
+            matches!(result, Ok(TranslateInput::Same)),
+            "resultado: {result:?}"
+        );
     }
 
     /// Un par distinto de es↔en no está soportado.
     #[test]
     fn validate_translate_unsupported_pair_is_rejected() {
         let result = validate_translate_input(&json!({ "text": "hola", "from": "es", "to": "fr" }));
-        assert_eq!(result.err().map(|e| e.reason), Some("unsupported_language_pair"));
+        assert_eq!(
+            result.err().map(|e| e.reason),
+            Some("unsupported_language_pair")
+        );
     }
 
     /// `with_stores` ancla los almacenes bajo el directorio recibido: la raíz se
@@ -2704,7 +2711,10 @@ mod tests {
             "raíz de habla fuera del temporal: {}",
             state.speech_store.root().display()
         );
-        state.voice_store.ensure_initialized().expect("inicializar voces");
+        state
+            .voice_store
+            .ensure_initialized()
+            .expect("inicializar voces");
         assert!(tmp.join("voices").join("default").is_dir());
         let _ = std::fs::remove_dir_all(&tmp);
     }
