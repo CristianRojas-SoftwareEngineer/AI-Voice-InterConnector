@@ -296,7 +296,7 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
-    /// Corta una release: bump de versión + promoción de la sección [No publicado] del CHANGELOG
+    /// Corta una release: valida (licencias, fmt, clippy, árbol limpio, commits nuevos y pruebas con recursos) y luego hace el bump de versión + promoción de la sección [No publicado] del CHANGELOG
     Release {
         #[arg(value_name = "X.Y.Z")]
         version: String,
@@ -470,7 +470,8 @@ fn main() -> Result<()> {
             }
             // Pre-validación atómica: abortar antes de mutar si las licencias están
             // desincronizadas, si el código no pasa `cargo fmt` o clippy, si el árbol
-            // está sucio o si no hay commits nuevos desde el último tag.
+            // está sucio, si no hay commits nuevos desde el último tag o si fallan las
+            // pruebas con recursos.
             {
                 check_licenses_gate()?;
                 check_code_quality_gate()?;
@@ -499,6 +500,8 @@ fn main() -> Result<()> {
                         last
                     );
                 }
+                // Última puerta de solo lectura (la más lenta): pruebas con recursos.
+                check_resource_tests_gate()?;
             }
             bump_version(version)?;
             // El inventario incluye la versión del crate raíz: regenerarlo tras el bump.
@@ -528,7 +531,7 @@ fn main() -> Result<()> {
             println!("  - SOURCE-OFFER.md (oferta GPLv3 §6 versionada)");
             println!("  - CHANGELOG.md (sección promovida desde [No publicado] + ToC + enlace)");
             println!(
-                "Comprobaciones: formato (cargo fmt), clippy sin avisos; licencias, SOURCE-OFFER.md y CHANGELOG.md en sincronía"
+                "Comprobaciones: formato (cargo fmt), clippy sin avisos, pruebas con recursos (--include-ignored); licencias, SOURCE-OFFER.md y CHANGELOG.md en sincronía"
             );
             println!(
                 "Revisa el diff, commitea con conventional-commits y crea el tag v{}",
@@ -1456,6 +1459,28 @@ fn check_code_quality_gate() -> Result<()> {
     if !clippy_status.success() {
         anyhow::bail!(
             "clippy reporta avisos: corrígelos y commitea antes de release (`cargo clippy --all-targets -- -D warnings`)"
+        );
+    }
+    Ok(())
+}
+
+/// Gate de pruebas con recursos: ejecuta toda la suite del workspace, incluidas
+/// las pruebas marcadas como `#[ignore]` (modelos, daemon, instalación real),
+/// con el entorno y la salida heredados. No tiene modo de omisión.
+fn check_resource_tests_gate() -> Result<()> {
+    let status = std::process::Command::new("cargo")
+        .args([
+            "test",
+            "--workspace",
+            "--features",
+            "full",
+            "--",
+            "--include-ignored",
+        ])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!(
+            "las pruebas con recursos fallaron y no se ha modificado nada: corrígelas antes de release (reprodúcelo con `cargo test --workspace --features full -- --include-ignored`)"
         );
     }
     Ok(())
