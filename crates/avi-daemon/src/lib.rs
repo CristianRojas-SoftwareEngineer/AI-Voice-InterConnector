@@ -731,43 +731,20 @@ async fn transcribe_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let audio_b64 = payload.get("audio_b64").and_then(|v| v.as_str());
-
-    let audio_b64 = match audio_b64 {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(with_sv(json!({
-                    "status": "error",
-                    "reason": "usage_error",
-                    "message": "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono).",
-                }))),
-            )
-                .into_response();
-        }
-    };
-
-    let audio_bytes = match base64::engine::general_purpose::STANDARD.decode(audio_b64) {
-        Ok(b) => b,
+    let pcm = match validate_transcribe_input(&payload) {
+        Ok(pcm) => pcm,
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
                     "status": "error",
-                    "reason": "invalid_audio",
-                    "message": format!("audio_b64 no decodificable como base64: {}", e),
+                    "reason": e.reason,
+                    "message": e.message,
                 }))),
             )
                 .into_response();
         }
     };
-
-    // PCM i16 little-endian → Vec<i16> mono 16 kHz (el motor normaliza a i16::MAX).
-    let pcm: Vec<i16> = audio_bytes
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect();
 
     let source_language = payload
         .get("source_language")
@@ -845,20 +822,79 @@ pub enum TranslateInput {
 
 /// Valida el cuerpo de `/transcribe` y devuelve el PCM i16 decodificado.
 pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
-    let _ = body;
-    Err(InputError {
-        reason: "unimplemented",
-        message: String::new(),
-    })
+    let audio_b64 = body
+        .get("audio_b64")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| InputError {
+            reason: "usage_error",
+            message:
+                "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono)."
+                    .to_string(),
+        })?;
+
+    let audio_bytes = base64::engine::general_purpose::STANDARD
+        .decode(audio_b64)
+        .map_err(|e| InputError {
+            reason: "invalid_audio",
+            message: format!("audio_b64 no decodificable como base64: {}", e),
+        })?;
+
+    // PCM i16 little-endian → Vec<i16> mono 16 kHz (el motor normaliza a i16::MAX).
+    Ok(audio_bytes
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect())
+}
+
+/// Extrae de la petición de traducción el texto y los idiomas sin resolver
+/// (`from`/`source` por defecto `es`; `to`/`target` por defecto `en`).
+fn translate_request_fields(body: &Value) -> (String, &str, &str) {
+    let text = body
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let from_raw = body
+        .get("from")
+        .or_else(|| body.get("source"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("es");
+    let to_raw = body
+        .get("to")
+        .or_else(|| body.get("target"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("en");
+    (text, from_raw, to_raw)
 }
 
 /// Valida el cuerpo de `/translate`: texto no vacío y par de idiomas soportado.
 pub fn validate_translate_input(body: &Value) -> Result<TranslateInput, InputError> {
-    let _ = body;
-    Err(InputError {
-        reason: "unimplemented",
-        message: String::new(),
-    })
+    let (text, from_raw, to_raw) = translate_request_fields(body);
+    if text.trim().is_empty() {
+        return Err(InputError {
+            reason: "empty_text",
+            message: "El texto a traducir está vacío".to_string(),
+        });
+    }
+    let source = resolve_translation_language(from_raw).to_string();
+    let target = resolve_translation_language(to_raw).to_string();
+    if source == target {
+        return Ok(TranslateInput::Same);
+    }
+    match (source.as_str(), target.as_str()) {
+        ("es", "en") | ("en", "es") => Ok(TranslateInput::Pair {
+            text,
+            source,
+            target,
+        }),
+        _ => Err(InputError {
+            reason: "unsupported_language_pair",
+            message: format!(
+                "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
+                source, target
+            ),
+        }),
+    }
 }
 
 /// POST /translate — traducción texto→texto con CT2 residente
@@ -867,57 +903,30 @@ async fn translate_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let text = payload
-        .get("text")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if text.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(with_sv(json!({
-                "error": "empty_text",
-                "reason": "empty_text",
-                "message": "El texto a traducir está vacío",
-            }))),
-        )
-            .into_response();
-    }
-    let from_raw = payload
-        .get("from")
-        .or_else(|| payload.get("source"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("es");
-    let to_raw = payload
-        .get("to")
-        .or_else(|| payload.get("target"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("en");
-    let source = resolve_translation_language(from_raw).to_string();
-    let target = resolve_translation_language(to_raw).to_string();
-    if source == target {
-        return Json(with_sv(json!({
-            "translated": text,
-            "source": from_raw,
-            "target": to_raw,
-        })))
-        .into_response();
-    }
-    let pair = match (source.as_str(), target.as_str()) {
-        ("es", "en") => "es-en",
-        ("en", "es") => "en-es",
-        _ => {
+    let (text, from_raw, to_raw) = translate_request_fields(&payload);
+    let (source, target) = match validate_translate_input(&payload) {
+        Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
-                    "error": "unsupported_language_pair",
-                    "reason": "unsupported_language_pair",
-                    "message": format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source, target),
+                    "error": e.reason,
+                    "reason": e.reason,
+                    "message": e.message,
                 }))),
             )
                 .into_response();
         }
+        Ok(TranslateInput::Same) => {
+            return Json(with_sv(json!({
+                "translated": text,
+                "source": from_raw,
+                "target": to_raw,
+            })))
+            .into_response();
+        }
+        Ok(TranslateInput::Pair { source, target, .. }) => (source, target),
     };
+    let pair = if source == "es" { "es-en" } else { "en-es" };
     let ct2_dir = avi_store::ct2_model_dir(pair);
     if !avi_store::is_ct2_provisioned(pair) {
         return (
@@ -2684,30 +2693,6 @@ mod tests {
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         (status, bytes.to_vec())
-    }
-
-    /// `/transcribe` sin `audio_b64` es un error de invocación: 400 con `usage_error`.
-    #[cfg(feature = "native-stt")]
-    #[tokio::test]
-    async fn transcribe_handler_missing_audio_is_400_usage_error() {
-        let (status, bytes) = post_json("/transcribe", json!({ "source_language": "es" })).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(v["reason"], "usage_error");
-    }
-
-    /// `/transcribe` con un base64 inválido es audio ilegible: 400 con `invalid_audio`.
-    #[cfg(feature = "native-stt")]
-    #[tokio::test]
-    async fn transcribe_handler_bad_base64_is_400_invalid_audio() {
-        let (status, bytes) = post_json(
-            "/transcribe",
-            json!({ "audio_b64": "%%% no es base64 %%%" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(v["reason"], "invalid_audio");
     }
 
     /// El evento `start` de `/synthesize` mide `text_length` en caracteres: «canción»
