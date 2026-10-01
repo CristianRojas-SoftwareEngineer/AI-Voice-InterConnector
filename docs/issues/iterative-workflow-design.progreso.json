@@ -75,7 +75,7 @@
         { "id": "C2.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
         { "id": "C2.2", "status": "done", "attempts": 1, "files": ["crates/avi-store/src/lib.rs", "crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs", "tests/test_classes.rs", "tests/cli_golden.rs"] },
         { "id": "C2.3", "status": "done", "attempts": 1, "files": ["crates/avi-daemon/src/lib.rs"] },
-        { "id": "C2.4", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C2.4", "status": "done", "attempts": 1, "files": ["crates/avi-store/src/lib.rs", "crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs"] },
         { "id": "C2.5", "status": "pending", "attempts": 0, "files": [] },
         { "id": "C2.6", "status": "pending", "attempts": 0, "files": [] },
         { "id": "C2.7", "status": "pending", "attempts": 0, "files": [] },

@@ -186,14 +186,13 @@ impl Default for VoiceStore {
 
 impl VoiceStore {
     pub fn new() -> Self {
-        let base_dir = data_dir().join("voices");
-        Self { base_dir }
+        Self::at(data_dir().join("voices"))
     }
 
-    /// Ancla el almacén de voces en el directorio indicado.
+    /// Ancla el almacén de voces en el directorio indicado (el del propio
+    /// almacén, no la raíz de datos).
     pub fn at(base_dir: PathBuf) -> Self {
-        let _ = base_dir;
-        Self::new()
+        Self { base_dir }
     }
 
     /// Directorio donde el almacén guarda las voces.
@@ -366,14 +365,13 @@ impl Default for SpeechStore {
 
 impl SpeechStore {
     pub fn new() -> Self {
-        let base_dir = data_dir().join("speech");
-        Self { base_dir }
+        Self::at(data_dir().join("speech"))
     }
 
-    /// Ancla el almacén de habla en el directorio indicado.
+    /// Ancla el almacén de habla en el directorio indicado (el del propio
+    /// almacén, no la raíz de datos).
     pub fn at(base_dir: PathBuf) -> Self {
-        let _ = base_dir;
-        Self::new()
+        Self { base_dir }
     }
 
     /// Directorio donde el almacén guarda las locuciones.

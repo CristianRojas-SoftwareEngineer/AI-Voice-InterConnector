@@ -106,6 +106,12 @@ impl DaemonState {
     /// workspace, correcto cuando `daemon serve` se lanza desde la raíz del repo.
     /// Devuelve error si el motor STT no puede inicializarse (modelo inexistente).
     pub fn new() -> anyhow::Result<Self> {
+        Self::with_stores(VoiceStore::new(), SpeechStore::new())
+    }
+
+    /// Constructor con los almacenes de voces y de habla ya anclados, para que
+    /// pruebas y sandboxes no dependan del directorio de datos del usuario.
+    pub fn with_stores(voice_store: VoiceStore, speech_store: SpeechStore) -> anyhow::Result<Self> {
         #[cfg(feature = "native-stt")]
         let stt_dir = ModelStore::new().model_dir("parakeet-tdt-v3");
         #[cfg(feature = "native-stt")]
@@ -141,8 +147,8 @@ impl DaemonState {
         };
         Ok(Self {
             synthesis_lock: Mutex::new(()),
-            voice_store: VoiceStore::new(),
-            speech_store: SpeechStore::new(),
+            voice_store,
+            speech_store,
             tts_engine: Qwen3TtsEngine::new(None),
             #[cfg(feature = "native-stt")]
             stt_engine,
@@ -151,13 +157,6 @@ impl DaemonState {
             warm: std::sync::RwLock::new(WarmState::Warming),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         })
-    }
-
-    /// Constructor con los almacenes de voces y de habla ya anclados, para que
-    /// pruebas y sandboxes no dependan del directorio de datos del usuario.
-    pub fn with_stores(voice_store: VoiceStore, speech_store: SpeechStore) -> anyhow::Result<Self> {
-        let _ = (voice_store, speech_store);
-        Self::new()
     }
 
     /// Marca el motor como en calentamiento (`Warm`/`Failed` → `Warming`) cuando un
@@ -2242,10 +2241,28 @@ mod tests {
         let _ = body.get("stt");
     }
 
+    /// Estado del daemon con los almacenes anclados en un directorio temporal
+    /// único por llamada (pid + contador), sin tocar el directorio de datos real.
+    fn test_state() -> DaemonState {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let tmp = std::env::temp_dir().join(format!(
+            "avi_daemon_test_state_{}_{}",
+            std::process::id(),
+            n
+        ));
+        DaemonState::with_stores(
+            VoiceStore::at(tmp.join("voices")),
+            SpeechStore::at(tmp.join("speech")),
+        )
+        .expect("daemon state")
+    }
+
     /// Router expone `/health` y endpoints `/translate`, `/voices/clone`, `/dub` (7 rutas públicas)
     #[test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     fn build_router_exposes_new_endpoints() {
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         // El router debe construirse sin panic con el estado del daemon; la
         // existencia de cada ruta se ejercita en los tests de handlers (p. ej.
         // `dub_handler_audio_missing`), no vía el `Debug` del `Router` — axum no
@@ -2337,8 +2354,9 @@ mod tests {
     /// Mientras otra síntesis retiene el lock, la fase emite latidos `queued` y,
     /// al soltarse, ejecuta el trabajo y entrega su resultado.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_emits_queued_heartbeats_while_lock_held() {
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         state.set_warm();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let guard = state.synthesis_lock.lock().await;
@@ -2365,8 +2383,9 @@ mod tests {
 
     /// Si el daemon está calentando, la espera del lock late con `warming`.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_emits_warming_stage_during_warmup() {
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         state.set_warming();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let guard = state.synthesis_lock.lock().await;
@@ -2393,8 +2412,9 @@ mod tests {
     /// Un trabajo más largo que varios latidos, pero dentro del presupuesto,
     /// mantiene los latidos `synthesis` y termina con `Ok`.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_slow_job_keeps_heartbeats_and_succeeds() {
-        let state = DaemonState::new().expect("daemon state");
+        let state = test_state();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let res = run_synthesis_phase_with(
             &tx,
@@ -2446,8 +2466,9 @@ mod tests {
     /// cancelación del trabajo, tanto por el deadline como por el timeout
     /// tipado que devuelve el propio trabajo.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_timeout_cancels_job_and_emits_reason() {
-        let state = DaemonState::new().expect("daemon state");
+        let state = test_state();
 
         // Deadline de la fase: el trabajo tarda más que presupuesto + margen.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -2509,8 +2530,9 @@ mod tests {
     /// Una síntesis correcta devuelve el estado a `warm` aunque el último warmup
     /// hubiera fallado.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_success_marks_warm() {
-        let state = DaemonState::new().expect("daemon state");
+        let state = test_state();
         state.set_warm_failed("fallo previo".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel::<String>(64);
         let res = run_synthesis_phase_with(
@@ -2532,8 +2554,9 @@ mod tests {
     /// trabajo, tanto en la cola como durante la síntesis, y en este último
     /// caso activa la cancelación del trabajo.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_disconnect_cancels_job() {
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
 
         // Desconexión durante la espera del lock.
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -2580,6 +2603,7 @@ mod tests {
 
     /// Dub sin `audio_b64` responde 400 con el `reason` de contrato `usage_error`
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn dub_handler_audio_missing() {
         let (status, body) = post_json("/dub", json!({"voice": "default"})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2590,12 +2614,13 @@ mod tests {
     /// Dub handler rechaza con 400 `audio_too_long` un audio que supera el tope
     #[cfg(feature = "native-stt")]
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn dub_handler_audio_too_long() {
         use axum::body::Body;
         use base64::Engine;
         use http_body_util::BodyExt;
         use tower::ServiceExt;
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         let app = build_router_with_state(state);
         // 41 s de silencio PCM 16 kHz mono (i16 little-endian).
         let silence = vec![0u8; 41 * 16_000 * 2];
@@ -2681,7 +2706,7 @@ mod tests {
         use axum::body::Body;
         use http_body_util::BodyExt;
         use tower::ServiceExt;
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         let app = build_router_with_state(state);
         let req = axum::http::Request::builder()
             .uri(uri)
@@ -2699,6 +2724,7 @@ mod tests {
     /// tiene 7 caracteres y 8 bytes. La temperatura fuera de rango cierra el stream
     /// sin llegar al motor.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesize_start_event_counts_chars() {
         let (_, bytes) = post_json(
             "/synthesize",

@@ -26,48 +26,27 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use avi_daemon::{build_router_with_state, DaemonState, WarmState};
+use avi_daemon::{build_router_with_state, DaemonState};
 use avi_store::{SpeechStore, VoiceStore};
 
-/// Estado de test único: carga el motor STT real una sola vez (ruta relativa a
-/// `CARGO_MANIFEST_DIR`), reutilizable entre tests. El motor TTS se construye con
-/// resolución por defecto (no provisionado desde CWD → branch `model_missing`).
-///
-/// Divergencia aceptada frente al evento de readiness por señal (documentada, no corregida):
-/// `warm` nace en `Warming` eterno porque aquí no corre `run_daemon_server`
-/// (sin bind ni warmup real); los tests de contrato leen el estado tal cual y
-/// nunca esperan la señal `avi-daemon-ready`. La espera por señal solo aplica
-/// a la clase E2E-con-proceso.
+/// Estado de test único, reutilizable entre tests. Los almacenes de voces y de
+/// habla se anclan en un directorio temporal propio del proceso para no tocar el
+/// directorio de datos del usuario. `warm` nace en `Warming` porque aquí no corre
+/// `run_daemon_server` (sin bind ni warmup real); los tests de contrato leen el
+/// estado tal cual.
 static TEST_STATE: OnceLock<Arc<DaemonState>> = OnceLock::new();
 
 fn test_state() -> Arc<DaemonState> {
     TEST_STATE
         .get_or_init(|| {
-            // Construcción única y `cfg`-gated por campo (no duplicada por
-            // `native-stt`): añadir un campo nuevo a `DaemonState` solo exige
-            // tocar este sitio, no dos literales. `stt_engine` se carga solo
-            // con `native-stt`; `ct2_engine` se incluye solo con
-            // `native-translation` (None en tests — sin `model.bin` no residente).
-            #[cfg(feature = "native-stt")]
-            let stt_engine = {
-                let stt_model_dir = avi_store::ModelStore::new()
-                    .model_snapshot_path("parakeet-tdt-v3")
-                    .expect("el modelo STT de test debe estar provisionado en la raíz de modelos — ejecuta setup --with-stt");
-                avi_stt::ParakeetEngine::new(&stt_model_dir)
-                    .expect("el modelo STT de test debe cargarse")
-            };
-            Arc::new(DaemonState {
-                synthesis_lock: tokio::sync::Mutex::new(()),
-                voice_store: VoiceStore::new(),
-                speech_store: SpeechStore::new(),
-                tts_engine: avi_tts::Qwen3TtsEngine::new(None),
-                #[cfg(feature = "native-stt")]
-                stt_engine,
-                #[cfg(feature = "native-translation")]
-                ct2_engine: None,
-                warm: std::sync::RwLock::new(WarmState::Warming),
-                shutdown_notify: Arc::new(tokio::sync::Notify::new()),
-            })
+            let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
+            Arc::new(
+                DaemonState::with_stores(
+                    VoiceStore::at(tmp.join("voices")),
+                    SpeechStore::at(tmp.join("speech")),
+                )
+                .expect("estado del daemon con almacenes temporales"),
+            )
         })
         .clone()
 }
@@ -440,8 +419,7 @@ async fn voices_clone_daemon_precomputed_true() {
         final_event
     );
     assert_eq!(final_event["name"], Value::String(name.clone()));
-    assert_eq!(final_event["precomputed"], Value::Bool(true));
-    // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
+    assert_eq!(final_event["precomputed"], Value::Bool(true));    // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
     if events.len() > 2 {
         for e in &events[1..events.len() - 1] {
             let ev = e["event"].as_str().unwrap_or("");
@@ -452,7 +430,7 @@ async fn voices_clone_daemon_precomputed_true() {
             );
         }
     }
-    let _ = VoiceStore::new().remove(&name);
+    let _ = test_state().voice_store.remove(&name);
 }
 
 /// Una referencia WAV truncada (la cabecera declara más datos de los que hay)
@@ -500,7 +478,7 @@ async fn voices_clone_truncated_wav_emits_invalid_audio() {
         .expect("cada línea debe ser JSON");
     assert_eq!(last["event"], Value::String("error".to_string()));
     assert_eq!(last["reason"], Value::String("invalid_audio".to_string()));
-    let _ = VoiceStore::new().remove(&name);
+    let _ = test_state().voice_store.remove(&name);
 }
 
 /// Warm-voice configurable: `run_daemon_server` con una `--warm-voice`
@@ -529,7 +507,9 @@ async fn warm_voice_fail_fast_and_acceptance() {
     );
 
     // Aceptación: una voz existente satisface el predicado de la guarda.
-    let store = VoiceStore::new();
+    let store = VoiceStore::at(
+        std::env::temp_dir().join(format!("avi_golden_warm_ok_{}", std::process::id())),
+    );
     let tmp = std::env::temp_dir().join(format!("warm_ok_{}.qvoice", std::process::id()));
     std::fs::write(&tmp, b"qvoice-fixture").expect("escribir fixture qvoice");
     let name = format!("warm_ok_{}", std::process::id());
