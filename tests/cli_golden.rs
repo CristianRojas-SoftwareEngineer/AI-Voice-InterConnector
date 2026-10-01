@@ -1726,6 +1726,85 @@ fn clone_reference_over_limit_is_audio_too_long() {
     }
 }
 
+/// Un audio de doblaje de 41 s supera el tope de 40 s y se rechaza con
+/// `audio_too_long` antes de contactar con el daemon, de comprobar el modelo o de
+/// `stt_unsupported`, en la vía local y en la vía daemon.
+#[test]
+fn dub_audio_over_limit_is_audio_too_long() {
+    for mode in ["--no-daemon", "--daemon"] {
+        let (dir, envs) = contract_sandbox("dub_limit");
+        let wav = dir.join("doblaje_41s.wav");
+        write_silent_wav(&wav, 41);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let result = run_json_env(
+            &[
+                "--json",
+                mode,
+                "speech",
+                "dub",
+                "--audio",
+                wav.to_str().expect("ruta UTF-8"),
+                "--source-language",
+                "es-latam",
+                "--target-language",
+                "es-latam",
+            ],
+            &envs,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_audio_too_long(&format!("speech dub {mode}"), result);
+    }
+}
+
+/// Escribe en `path` un WAV PCM 16-bit mono con `sample_rate` 0 y 100 muestras:
+/// `hound` no valida la frecuencia, así que la cabecera se arma a mano.
+fn write_zero_rate_wav(path: &std::path::Path) {
+    let data_len = 200u32;
+    let mut wav = Vec::<u8>::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&0u32.to_le_bytes());
+    wav.extend_from_slice(&0u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(wav.len() + data_len as usize, 1);
+    std::fs::write(path, wav).expect("escribir el WAV de frecuencia nula");
+}
+
+/// Una referencia de clonado con `sample_rate` 0 es un WAV inválido: sale con
+/// exit 2 e `invalid_audio` en las dos vías, sin pánico.
+#[test]
+fn clone_reference_zero_sample_rate_is_invalid_audio() {
+    for mode in ["--no-daemon", "--daemon"] {
+        let (dir, envs) = contract_sandbox("clone_zero_rate");
+        let wav = dir.join("referencia_rate0.wav");
+        write_zero_rate_wav(&wav);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                mode,
+                "voice",
+                "clone",
+                "--name",
+                "referencia_rate0",
+                "--speech-reference",
+                wav.to_str().expect("ruta UTF-8"),
+            ],
+            &envs,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 2, "voice clone {mode}: exit 2 esperado ({actual})");
+        assert_eq!(actual["reason"], "invalid_audio", "{mode}: {actual}");
+    }
+}
+
 /// `--mic --duration 301` supera el tope de transcripción y se rechaza antes de
 /// grabar. El sandbox no tiene modelos, así que mientras falte el tope la
 /// invocación termina en `model_missing` sin abrir el micrófono.

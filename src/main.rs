@@ -1341,13 +1341,20 @@ fn ensure_pcm_within_limit(pcm: &[i16], operation: &str, max_secs: u64) -> Resul
 }
 
 /// Rechaza la referencia de clonado de más de `MAX_CLONE_REFERENCE_SECS`: primero
-/// por la cabecera y, si es legible, por el PCM decodificado.
+/// por la cabecera y, si es legible, por el PCM decodificado. Un WAV inválido
+/// (p. ej. con frecuencia de muestreo nula) se rechaza aquí con `invalid_audio`,
+/// igual en las dos vías.
 fn ensure_clone_reference_within_limit(path: &std::path::Path) -> Result<(), CliError> {
     const OPERATION: &str = "La referencia de clonado";
     ensure_wav_within_limit(path, OPERATION, avi_core::MAX_CLONE_REFERENCE_SECS)?;
     match avi_audio::load_wav_16k_mono_pcm(path) {
         Ok(pcm) => ensure_pcm_within_limit(&pcm, OPERATION, avi_core::MAX_CLONE_REFERENCE_SECS),
-        // Una referencia ilegible o ausente la clasifica el clonado.
+        Err(e @ avi_audio::WavLoadError::Invalid(_)) => Err(CliError::new(
+            ExitCode::InvalidInput,
+            "invalid_audio",
+            e.to_string(),
+        )),
+        // Una referencia ausente o con fallo de E/S la clasifica el clonado.
         Err(_) => Ok(()),
     }
 }
@@ -1889,6 +1896,13 @@ async fn handle_speech(
             }
             if let Some(a) = &audio {
                 validate_audio_arg(std::path::Path::new(a))?;
+                // El tope se mide por la cabecera antes de contactar con el daemon
+                // o de comprobar modelos, igual que en transcribe y clone.
+                ensure_wav_within_limit(
+                    std::path::Path::new(a),
+                    "El audio del doblaje",
+                    avi_core::MAX_DUB_AUDIO_SECS,
+                )?;
             }
             // Despacho 3 modos: delega a POST /dub si daemon activo
             {

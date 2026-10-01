@@ -265,7 +265,9 @@ Validaciones puras (en este orden):
 6. Duración del audio: el audio de entrada dura como máximo 40 s. Un WAV que
  lo supera, o un `--duration` mayor que 40, sale con exit 2 `audio_too_long`;
  el push-to-talk se corta a 40 s (además del techo
- `AVI_PUSH_TO_TALK_MAX_SECS`). Un WAV corrupto sale con exit 2
+ `AVI_PUSH_TO_TALK_MAX_SECS`). La duración del `--audio` se mide por la
+ cabecera del WAV antes de contactar con el daemon, de comprobar los modelos y
+ de `stt_unsupported`, igual en las dos vías. Un WAV corrupto sale con exit 2
  `invalid_audio` y un fallo de E/S al leerlo con exit 1 `io_error`.
 7. El texto traducido, que es el que se sintetiza, no supera 500 caracteres
  Unicode: si no, exit 2 `text_too_long`.

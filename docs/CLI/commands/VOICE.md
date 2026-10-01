@@ -233,7 +233,7 @@ copia).
 | Modelo de síntesis (`qwen3-tts-0.6b`) no provisionado | clone (ruta local) | 4 | `model_missing` |
 | Voz ya existe sin `--force` | clone | 6 | `voice_exists` |
 | Modelo Base de clonado no provisionado | clone (ruta local) | 4 | `model_missing` |
-| Referencia que no es un WAV válido o está truncada | clone | 2 | `invalid_audio` |
+| Referencia que no es un WAV válido, está truncada o declara una frecuencia de muestreo nula | clone | 2 | `invalid_audio` |
 | Fallo de E/S al leer la referencia | clone | 1 | `io_error` |
 | Falla el motor de `avi_tts::clone_voice` o `save_reference` | clone | 1 | `voice_clone_failed` |
 | Daemon inalcanzable (inactividad 1500 ms / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |

@@ -428,6 +428,17 @@ impl From<hound::Error> for WavLoadError {
     }
 }
 
+/// Rechaza como WAV inválido el que declara una frecuencia de muestreo nula:
+/// `hound` no la valida y el remuestreo dividiría por cero.
+fn ensure_nonzero_sample_rate(spec: &hound::WavSpec) -> Result<(), WavLoadError> {
+    if spec.sample_rate == 0 {
+        return Err(WavLoadError::Invalid(
+            "la frecuencia de muestreo es 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Cargar un WAV arbitrario (`hound`, cualquier tasa/canales/formato) y normalizarlo
 /// a PCM `i16` mono a 16 kHz, mismo formato que exige Parakeet y que ya produce
 /// `capture_16k_mono_pcm` para el micrófono. Los fallos se devuelven como
@@ -437,6 +448,7 @@ impl From<hound::Error> for WavLoadError {
 pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
     let reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
+    ensure_nonzero_sample_rate(&spec)?;
 
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
@@ -464,6 +476,7 @@ pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoad
 pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
     let reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
+    ensure_nonzero_sample_rate(&spec)?;
 
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
@@ -721,6 +734,54 @@ mod tests {
             std::env::temp_dir().join(format!("avi_audio_test_{name}_{}.wav", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         path
+    }
+
+    /// Escribe un WAV mono 16 bits con `sample_rate` 0 y 100 muestras; `hound` no
+    /// valida la frecuencia, así que la cabecera se arma a mano.
+    fn write_zero_rate_wav(name: &str) -> std::path::PathBuf {
+        let data_len = 200u32;
+        let mut wav = Vec::<u8>::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&0u32.to_le_bytes());
+        wav.extend_from_slice(&0u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.resize(wav.len() + data_len as usize, 1);
+        let path =
+            std::env::temp_dir().join(format!("avi_audio_test_{name}_{}.wav", std::process::id()));
+        std::fs::write(&path, wav).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_load_wav_16k_mono_pcm_zero_sample_rate_is_invalid() {
+        let path = write_zero_rate_wav("rate0_16k");
+        let result = crate::load_wav_16k_mono_pcm(&path);
+        std::fs::remove_file(&path).ok();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::WavLoadError::Invalid(_)),
+            "obtenido: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_wav_24k_mono_pcm_zero_sample_rate_is_invalid() {
+        let path = write_zero_rate_wav("rate0_24k");
+        let result = crate::load_wav_24k_mono_pcm(&path);
+        std::fs::remove_file(&path).ok();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::WavLoadError::Invalid(_)),
+            "obtenido: {err:?}"
+        );
     }
 
     #[test]
