@@ -3915,14 +3915,29 @@ async fn consume_ndjson_stream(
 
 /// Traduce una respuesta no 2xx del daemon a `CliError`: el `reason` sale del cuerpo
 /// (o de su espejo `error`, o `daemon_error` si falta) y el código, de la tabla única.
+/// Un 404 sin `reason` ni `error` indica una ruta ausente: o el daemon en marcha es
+/// anterior al binario, o el build no incluye la función; el mensaje nombra ambas causas.
 async fn daemon_error_from_response(resp: reqwest::Response) -> CliError {
     let status = resp.status();
     let body: Value = resp.json().await.unwrap_or(json!({}));
     let reason = body
         .get("reason")
         .and_then(|v| v.as_str())
-        .or_else(|| body.get("error").and_then(|v| v.as_str()))
-        .unwrap_or("daemon_error");
+        .or_else(|| body.get("error").and_then(|v| v.as_str()));
+    let Some(reason) = reason else {
+        let msg = if status == reqwest::StatusCode::NOT_FOUND {
+            "El daemon no expone esta ruta (HTTP 404): reinícialo con el binario actual \
+             ejecutando `avi daemon restart`, o usa un build que incluya la función."
+                .to_string()
+        } else {
+            let msg = body
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("error del daemon");
+            format!("{} (HTTP {})", msg, status)
+        };
+        return CliError::new(ExitCode::Error, "daemon_error", msg);
+    };
     let msg = body
         .get("message")
         .and_then(|v| v.as_str())
@@ -4250,20 +4265,6 @@ async fn dub_via_daemon(
             )
         })?;
     if !resp.status().is_success() {
-        let status = resp.status();
-        // Si 404, el daemon es viejo sin /dub → degradar a composición
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return dub_compose_via_daemon(
-                json_mode,
-                client,
-                Some(pcm),
-                source_language,
-                target_language,
-                temperature,
-                voice,
-            )
-            .await;
-        }
         return Err(daemon_error_from_response(resp).await);
     }
     // El evento final del stream trae la forma contractual
@@ -4292,153 +4293,6 @@ async fn dub_via_daemon(
         .or_else(|| val["text"].as_str())
         .unwrap_or("")
         .to_string();
-    let tmp_wav = std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
-    std::fs::write(&tmp_wav, &wav_bytes)
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-    audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
-        CliError::new(
-            ExitCode::Error,
-            "playback_failed",
-            format!("Fallo al reproducir el doblaje: {}", e),
-        )
-    })?;
-    if json_mode {
-        emit_raw_json(json!({
-            "status": "dubbed",
-            "text": final_text,
-            "audio_path": tmp_wav.to_string_lossy(),
-        }));
-    } else {
-        println!("Doblaje reproducido: {}", tmp_wav.display());
-    }
-    Ok(())
-}
-
-async fn dub_compose_via_daemon(
-    json_mode: bool,
-    client: &reqwest::Client,
-    pcm_opt: Option<Vec<i16>>,
-    from: &str,
-    to: &str,
-    temperature: Option<f32>,
-    voice: &str,
-) -> Result<(), CliError> {
-    // Transcribe vía daemon (reusa PCM ya capturado)
-    let pcm = pcm_opt.expect("pcm ya capturado");
-    let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
-    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    // El POST apunta a la dirección descubierta.
-    let client_addr = resolve_client_addr();
-    let fut = client
-        .post(format!("http://{}/transcribe", client_addr))
-        .json(&serde_json::json!({ "audio_b64": audio_b64, "source_language": from }))
-        .send();
-    let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
-        .await
-        .map_err(|_| {
-            CliError::new(
-                ExitCode::DaemonUnreachable,
-                "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout 1500ms)", client_addr),
-            )
-        })?
-        .map_err(|e| {
-            CliError::new(
-                ExitCode::DaemonUnreachable,
-                "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", client_addr, e),
-            )
-        })?;
-    if !resp.status().is_success() {
-        return Err(CliError::new(
-            ExitCode::Error,
-            "daemon_error",
-            format!("El daemon devolvió {}", resp.status()),
-        ));
-    }
-    let val: Value = resp.json().await.map_err(|e| {
-        CliError::new(
-            ExitCode::Error,
-            "daemon_error",
-            format!("Respuesta del daemon no es JSON: {}", e),
-        )
-    })?;
-    let transcribed = val["text"]
-        .as_str()
-        .ok_or_else(|| {
-            CliError::new(
-                ExitCode::TranscriptionFailed,
-                "transcription_failed",
-                "El daemon no devolvió 'text'.",
-            )
-        })?
-        .to_string();
-    if transcribed.trim().is_empty() {
-        return Err(CliError::new(
-            ExitCode::InvalidInput,
-            "empty_text",
-            "El texto transcrito está vacío",
-        ));
-    }
-    let source = resolve_stt_language(from);
-    let target = resolve_stt_language(to);
-    let final_text = if source == target {
-        transcribed.clone()
-    } else {
-        let pair = match (source, target) {
-            ("es", "en") => "es-en",
-            ("en", "es") => "en-es",
-            _ => {
-                return Err(CliError::new(
-                    ExitCode::InvalidInput,
-                    "unsupported_language_pair",
-                    format!(
-                        "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
-                        source, target
-                    ),
-                ));
-            }
-        };
-        let ct2_dir = store::ct2_model_dir(pair);
-        if !store::is_ct2_provisioned(pair) {
-            return Err(CliError::new(
-                ExitCode::ModelMissing,
-                "model_missing",
-                format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), store::ct2_missing_files(pair).join(", ")),
-            ));
-        }
-        #[cfg(not(feature = "native-translation"))]
-        {
-            let _ = ct2_dir.as_os_str();
-            return Err(CliError::new(
-                ExitCode::Error,
-                "translation_unsupported",
-                "Este binario se compiló sin soporte de traducción (feature 'native-translation').",
-            ));
-        }
-        #[cfg(feature = "native-translation")]
-        {
-            translation::translate(&transcribed, source, target, &ct2_dir).map_err(|e| {
-                CliError::new(
-                    ExitCode::TranslationFailed,
-                    "translation_failed",
-                    e.to_string(),
-                )
-            })?
-        }
-    };
-    // El texto traducido puede exceder el tope aunque el transcrito no.
-    avi_core::validate_synthesis_text(&final_text)?;
-    let voice_store = VoiceStore::new();
-    if !voice_store.exists(voice) {
-        return Err(CliError::new(
-            ExitCode::NotFound,
-            "voice_not_found",
-            format!("La voz '{}' no existe.", voice),
-        ));
-    }
-    let wav_bytes =
-        daemon_synthesize_wav(client, &final_text, voice, target, target, temperature).await?;
     let tmp_wav = std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
     std::fs::write(&tmp_wav, &wav_bytes)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
