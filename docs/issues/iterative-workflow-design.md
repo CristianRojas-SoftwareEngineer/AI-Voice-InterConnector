@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 cerrado, C2 siguiente |
+| Estado | G0 aprobada, C1, C2 y C3 cerrados, C4 siguiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
