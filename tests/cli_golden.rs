@@ -1727,8 +1727,10 @@ fn clone_reference_over_limit_is_audio_too_long() {
 }
 
 /// Un audio de doblaje de 41 s supera el tope de 40 s y se rechaza con
-/// `audio_too_long` antes de contactar con el daemon, de comprobar el modelo o de
-/// `stt_unsupported`, en la vía local y en la vía daemon.
+/// `audio_too_long`. La mitad `--no-daemon` prueba el orden: el tope se comprueba
+/// antes de `model_missing` y de `stt_unsupported`. La mitad `--daemon` protege
+/// frente a regresiones: la vía daemon da el mismo `audio_too_long` sin enviar el
+/// audio.
 #[test]
 fn dub_audio_over_limit_is_audio_too_long() {
     for mode in ["--no-daemon", "--daemon"] {
@@ -1756,27 +1758,6 @@ fn dub_audio_over_limit_is_audio_too_long() {
     }
 }
 
-/// Escribe en `path` un WAV PCM 16-bit mono con `sample_rate` 0 y 100 muestras:
-/// `hound` no valida la frecuencia, así que la cabecera se arma a mano.
-fn write_zero_rate_wav(path: &std::path::Path) {
-    let data_len = 200u32;
-    let mut wav = Vec::<u8>::with_capacity(44 + data_len as usize);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&0u32.to_le_bytes());
-    wav.extend_from_slice(&0u32.to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_len.to_le_bytes());
-    wav.resize(wav.len() + data_len as usize, 1);
-    std::fs::write(path, wav).expect("escribir el WAV de frecuencia nula");
-}
-
 /// Una referencia de clonado con `sample_rate` 0 es un WAV inválido: sale con
 /// exit 2 e `invalid_audio` en las dos vías, sin pánico.
 #[test]
@@ -1784,7 +1765,7 @@ fn clone_reference_zero_sample_rate_is_invalid_audio() {
     for mode in ["--no-daemon", "--daemon"] {
         let (dir, envs) = contract_sandbox("clone_zero_rate");
         let wav = dir.join("referencia_rate0.wav");
-        write_zero_rate_wav(&wav);
+        avi_audio::write_zero_rate_wav(&wav);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (code, actual) = run_json_env(
             &[

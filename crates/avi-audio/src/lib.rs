@@ -589,6 +589,29 @@ pub fn get_devices_json() -> Result<Vec<Value>> {
     Ok(json_devs)
 }
 
+/// Escribe en `path` un WAV PCM 16-bit mono con `sample_rate` 0 y 100 muestras.
+/// Solo es para pruebas: `hound` no permite escribir frecuencia 0, así que la
+/// cabecera se arma a mano.
+#[cfg(any(test, feature = "test-support"))]
+pub fn write_zero_rate_wav(path: &Path) {
+    let data_len = 200u32;
+    let mut wav = Vec::<u8>::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&0u32.to_le_bytes());
+    wav.extend_from_slice(&0u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(wav.len() + data_len as usize, 1);
+    std::fs::write(path, wav).expect("escribir el WAV de frecuencia nula");
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -736,33 +759,17 @@ mod tests {
         path
     }
 
-    /// Escribe un WAV mono 16 bits con `sample_rate` 0 y 100 muestras; `hound` no
-    /// valida la frecuencia, así que la cabecera se arma a mano.
-    fn write_zero_rate_wav(name: &str) -> std::path::PathBuf {
-        let data_len = 200u32;
-        let mut wav = Vec::<u8>::new();
-        wav.extend_from_slice(b"RIFF");
-        wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
-        wav.extend_from_slice(b"WAVEfmt ");
-        wav.extend_from_slice(&16u32.to_le_bytes());
-        wav.extend_from_slice(&1u16.to_le_bytes());
-        wav.extend_from_slice(&1u16.to_le_bytes());
-        wav.extend_from_slice(&0u32.to_le_bytes());
-        wav.extend_from_slice(&0u32.to_le_bytes());
-        wav.extend_from_slice(&2u16.to_le_bytes());
-        wav.extend_from_slice(&16u16.to_le_bytes());
-        wav.extend_from_slice(b"data");
-        wav.extend_from_slice(&data_len.to_le_bytes());
-        wav.resize(wav.len() + data_len as usize, 1);
+    /// Escribe el WAV de frecuencia nula en un archivo temporal propio de la prueba.
+    fn zero_rate_wav_in_temp(name: &str) -> std::path::PathBuf {
         let path =
             std::env::temp_dir().join(format!("avi_audio_test_{name}_{}.wav", std::process::id()));
-        std::fs::write(&path, wav).unwrap();
+        crate::write_zero_rate_wav(&path);
         path
     }
 
     #[test]
     fn test_load_wav_16k_mono_pcm_zero_sample_rate_is_invalid() {
-        let path = write_zero_rate_wav("rate0_16k");
+        let path = zero_rate_wav_in_temp("rate0_16k");
         let result = crate::load_wav_16k_mono_pcm(&path);
         std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();
@@ -774,7 +781,7 @@ mod tests {
 
     #[test]
     fn test_load_wav_24k_mono_pcm_zero_sample_rate_is_invalid() {
-        let path = write_zero_rate_wav("rate0_24k");
+        let path = zero_rate_wav_in_temp("rate0_24k");
         let result = crate::load_wav_24k_mono_pcm(&path);
         std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();

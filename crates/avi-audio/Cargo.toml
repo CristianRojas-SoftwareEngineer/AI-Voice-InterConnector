@@ -10,3 +10,7 @@ cpal = "0.15"
 hound = "3.5"
 rubato = "0.16"
 serde_json = "1.0"
+
+[features]
+# Expone helpers de prueba (WAV de frecuencia nula) a las pruebas del binario.
+test-support = []
