@@ -1097,14 +1097,36 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   un camino de compatibilidad con su propio límite de tiempo.
 - **Depende de:** C1 y C2 (las pruebas nuevas nacen en el esquema de clases y el tope de
   audio se añade sobre la validación de `/transcribe` extraída).
-- **Síntomas:** S1, S13, S14, S15 y S16.
-- **Decisiones:** D1, D2 y D3, con su ampliación a cualquier ruta.
+- **Síntomas:** S1, S13, S14, S15 y S16. La preparación añade al alcance dos hallazgos
+  sin síntoma propio: la vía daemon del clonado envía `timbre_b64`, que el daemon no lee,
+  y la captura por micrófono no tiene un tope explícito.
+- **Decisiones:** D1, D2 y D3, con su ampliación a cualquier ruta. El G-Plan
+  (2026-10-01) fija:
+  - **P1:** el tope de la referencia del clonado es de 30 s, holgado para una muestra de
+    voz y pequeño frente al de la transcripción.
+  - **P2:** el límite de cuerpo de cada ruta es el base64 del peor caso de su tope más
+    1 MiB fijo para el resto del JSON; lo calcula una función pura y se aplica por ruta.
+  - **P3:** la duración se mide por la cabecera WAV, sin decodificar; el PCM decodificado
+    se comprueba después como respaldo, que cubre también los formatos que no son WAV.
+  - **P4:** un 404 sin `reason` da `daemon_error`, exit 1, y un mensaje único con las dos
+    causas: reiniciar el daemon con el binario actual o usar un build con la función.
+  - **P5:** el clonado por daemon deja de enviar `timbre_b64`, pero el archivo de timbre
+    se sigue exigiendo.
+  - **P6:** el protocolo se queda en "4": el cuerpo de las peticiones no cambia de forma,
+    y el campo retirado nunca se leía.
+  - **P7:** las tres operaciones (dub de 40 s, transcripción de 300 s y referencia de
+    30 s) rechazan con un único `reason`, `audio_too_long`, y exit 2; el mensaje nombra
+    la operación.
+  - **P8:** antes de grabar se rechazan con `audio_too_long` un `--duration` mayor de 300
+    y un `AVI_PUSH_TO_TALK_MAX_SECS` mayor de 300.
 - **Tareas:**
   1. Tope de transcripción y límite de cuerpo derivado de él (D1).
   2. Reproducción de S14 y tope de la referencia del clonado (D2).
   3. Eliminar el dub por composición y aplicar la regla del 404 a todas las rutas en
      la lectura común de los errores del daemon: sin `reason`, daemon desfasado; con
      `reason`, la tabla (D3, S15, S16).
+  4. Retirar el envío de `timbre_b64` (P5) y aplicar el tope de la transcripción a la
+     captura por micrófono (P8).
 - **Pruebas en rojo:**
   - la ruta de transcripción acepta un cuerpo de más de 2 MB y por debajo del tope;
   - un audio por encima del tope se rechaza con `audio_too_long` y exit 2 en las dos

@@ -93,7 +93,24 @@
       "foreign_changes": [],
       "commits": ["b32097a", "a91451b", "dd9f6d5", "3b461d6", "9d3843d", "7d00afb", "121f53f", "4aa4fe3", "5512aae", "3b7f1da", "7b8fa37", "e4cb09b", "28346a2", "a44514b", "52b15ce", "9c0589c", "de5965e", "51c0fb7"]
     },
-    "C3": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C3": {
+      "status": "in_progress",
+      "phase": "tests_red",
+      "gates": [
+        { "gate": "plan", "verdict": "approved", "date": "2026-10-01", "notes": "P1: referencia del clonado hasta 30 s; P2: límite de cuerpo = base64 del peor caso del tope + 1 MiB, por ruta; P3: duración por la cabecera WAV y el PCM como respaldo; P4: 404 sin reason da daemon_error, exit 1, con reiniciar el daemon o usar un build con la función; P5: el clonado por daemon no envía timbre_b64 pero exige el archivo; P6: protocolo en \"4\"; P7: audio_too_long y exit 2 para dub 40 s, transcripción 300 s y referencia 30 s; P8: --duration y AVI_PUSH_TO_TALK_MAX_SECS mayores de 300 se rechazan antes de grabar" }
+      ],
+      "tasks": [
+        { "id": "C3.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
+        { "id": "C3.2", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C3.3", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C3.4", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C3.5", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C3.6", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C3.7", "status": "pending", "attempts": 0, "files": [] }
+      ],
+      "foreign_changes": [],
+      "commits": []
+    },
     "C4": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C5": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C6": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
