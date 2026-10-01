@@ -20,8 +20,9 @@ pub const MAX_CLONE_REFERENCE_SECS: u64 = 30;
 /// `secs` segundos a `bytes_per_sec` codificado en base64 (factor 4/3, redondeado
 /// hacia arriba) más 1 MiB de holgura para el resto del JSON.
 pub fn body_limit_for(secs: u64, bytes_per_sec: u64) -> usize {
-    let _ = (secs, bytes_per_sec);
-    2 * 1024 * 1024
+    const HEADROOM: u64 = 1024 * 1024;
+    let raw = secs * bytes_per_sec;
+    (raw * 4).div_ceil(3).saturating_add(HEADROOM) as usize
 }
 
 /// Tiempo fijo del presupuesto de síntesis, en milisegundos: cubre el arranque de

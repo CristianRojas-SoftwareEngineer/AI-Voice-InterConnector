@@ -63,16 +63,32 @@ fn test_state() -> Arc<DaemonState> {
             #[cfg(feature = "native-stt")]
             require_parakeet();
             prepare_shared_env();
-            let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
-            let mut state = DaemonState::with_stores(
-                VoiceStore::at(tmp.join("voices")),
-                SpeechStore::at(tmp.join("speech")),
-            )
-            .expect("estado del daemon con almacenes temporales");
-            state.tts_engine.binary_path = None;
-            Arc::new(state)
+            Arc::new(contract_state("avi_golden_state"))
         })
         .clone()
+}
+
+/// Estado de contrato con los almacenes en el directorio temporal `dir_prefix`
+/// del proceso y el motor TTS sin binario.
+fn contract_state(dir_prefix: &str) -> DaemonState {
+    let tmp = std::env::temp_dir().join(format!("{dir_prefix}_{}", std::process::id()));
+    let mut state = DaemonState::with_stores(
+        VoiceStore::at(tmp.join("voices")),
+        SpeechStore::at(tmp.join("speech")),
+    )
+    .expect("estado del daemon con almacenes temporales");
+    state.tts_engine.binary_path = None;
+    state
+}
+
+/// Estado de contrato sin modelo Base de clonado, para que una prueba que debe
+/// cortar antes de buscarlo no pueda lanzar el clonado real aunque el modelo
+/// esté provisionado en el equipo.
+fn state_without_base_model() -> Arc<DaemonState> {
+    prepare_shared_env();
+    let mut state = contract_state("avi_golden_reflimit");
+    state.tts_engine.base_model_dir = None;
+    Arc::new(state)
 }
 
 /// Estado de clonado, solo para las pruebas que ejercen el motor real. Usa
@@ -516,17 +532,8 @@ async fn voices_clone_oversized_body_reports_invalid_name_not_413() {
 async fn voices_clone_reference_over_limit_is_audio_too_long() {
     #[cfg(feature = "native-stt")]
     require_parakeet();
-    prepare_shared_env();
-    let tmp = std::env::temp_dir().join(format!("avi_golden_reflimit_{}", std::process::id()));
-    let mut state = DaemonState::with_stores(
-        VoiceStore::at(tmp.join("voices")),
-        SpeechStore::at(tmp.join("speech")),
-    )
-    .expect("estado del daemon con almacenes temporales");
-    state.tts_engine.binary_path = None;
-    state.tts_engine.base_model_dir = None;
     let (status, bytes) = send_to(
-        Arc::new(state),
+        state_without_base_model(),
         post_json(
             "/voices/clone",
             serde_json::json!({
@@ -545,7 +552,6 @@ async fn voices_clone_reference_over_limit_is_audio_too_long() {
     );
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
     assert_eq!(actual["reason"], "audio_too_long");
-    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 /// Warm-on-clone: `POST /voices/clone` por daemon sirve un stream

@@ -17,8 +17,21 @@ pub fn push_to_talk_max_secs() -> u64 {
 /// Duración, en segundos, de un WAV leída de su cabecera sin decodificar las
 /// muestras; `None` si el archivo no existe o no es un WAV legible.
 pub fn wav_duration_secs(path: &Path) -> Option<f64> {
-    let _ = path;
-    None
+    let reader = hound::WavReader::open(path).ok()?;
+    wav_reader_duration_secs(&reader)
+}
+
+/// Igual que [`wav_duration_secs`] pero sobre un WAV ya en memoria; `None` si los
+/// bytes no son un WAV legible.
+pub fn wav_bytes_duration_secs(bytes: &[u8]) -> Option<f64> {
+    let reader = hound::WavReader::new(std::io::Cursor::new(bytes)).ok()?;
+    wav_reader_duration_secs(&reader)
+}
+
+/// Duración de la cabecera: tramas (muestras por canal) entre la frecuencia.
+fn wav_reader_duration_secs<R: std::io::Read>(reader: &hound::WavReader<R>) -> Option<f64> {
+    let rate = reader.spec().sample_rate;
+    (rate > 0).then(|| reader.duration() as f64 / rate as f64)
 }
 
 /// Representación pública de un dispositivo de audio
