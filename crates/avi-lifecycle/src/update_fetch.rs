@@ -518,6 +518,7 @@ const APP: &str = "ai-voice-interconnector";
 mod tests {
     use super::*;
     use crate::test_support::{scratch, serve_responses, FakeResponse};
+    use avi_core::exit_codes::ExitCode;
 
     /// Serializa las pruebas que redefinen `AVI_DOWNLOAD_BASE_URL`: el entorno
     /// es global y dos pruebas que lo muten a la vez se contaminarían. Es un
@@ -563,7 +564,7 @@ mod tests {
         let sums = format!("{}  {asset}\n", "0".repeat(64));
         let err = verify_sums_bytes(&sums, asset, b"contenido manipulado").unwrap_err();
         assert_eq!(err.reason, "checksum_mismatch");
-        assert_eq!(err.exit_code, 21);
+        assert_eq!(ExitCode::from_reason(err.reason).code(), 21);
     }
 
     /// Entrada ausente: `checksum_mismatch`, y el staging se borra sin tocar lo demás.
@@ -573,7 +574,7 @@ mod tests {
         let sums = format!("{}  otro-archivo.tar.gz\n", "0".repeat(64));
         let err = verify_sums_bytes(&sums, asset, b"contenido").unwrap_err();
         assert_eq!(err.reason, "checksum_mismatch");
-        assert_eq!(err.exit_code, 21);
+        assert_eq!(ExitCode::from_reason(err.reason).code(), 21);
     }
 
     /// El nombre se exige exacto: un sufijo de más no cuela.
@@ -804,7 +805,7 @@ mod tests {
         .unwrap_err();
         std::env::remove_var(crate::update_resolve::DOWNLOAD_BASE_ENV);
         assert_eq!(err.reason, "checksum_mismatch");
-        assert_eq!(err.exit_code, 21);
+        assert_eq!(ExitCode::from_reason(err.reason).code(), 21);
         assert!(
             !staging_dir_for(&program_dir, version).exists(),
             "el staging se borra"
@@ -836,14 +837,14 @@ mod tests {
                 .expect("se hace ejecutable");
             let err = verify_boot(&sandbox, triple, "0.24.0").await.unwrap_err();
             assert_eq!(err.reason, "binary_incompatible");
-            assert_eq!(err.exit_code, 19);
+            assert_eq!(ExitCode::from_reason(err.reason).code(), 19);
         }
         #[cfg(windows)]
         {
             std::fs::write(&exe, "esto no es un ejecutable").expect("se planta el señuelo");
             let err = verify_boot(&sandbox, triple, "0.24.0").await.unwrap_err();
             assert_eq!(err.reason, "binary_incompatible");
-            assert_eq!(err.exit_code, 19);
+            assert_eq!(ExitCode::from_reason(err.reason).code(), 19);
         }
         std::fs::remove_dir_all(&sandbox).ok();
     }

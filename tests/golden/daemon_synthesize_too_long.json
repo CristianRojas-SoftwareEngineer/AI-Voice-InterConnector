@@ -1,5 +1,5 @@
 {
-  "schema_version": "3",
+  "schema_version": "4",
   "error": "text_too_long",
   "reason": "text_too_long",
   "message": "El texto a sintetizar supera el máximo de 500 caracteres (recibidos: 501)"

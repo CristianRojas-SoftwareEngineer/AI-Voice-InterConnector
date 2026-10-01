@@ -217,7 +217,6 @@ pub async fn run(
     if env.channel == Channel::Homebrew {
         return Err(LifecycleError::new(
             "externally_managed",
-            12,
             format!(
                 "esta copia la gestiona Homebrew: ejecuta `{HOMEBREW_UNINSTALL}`, y \
                  `cleanup --all` para el estado de usuario"

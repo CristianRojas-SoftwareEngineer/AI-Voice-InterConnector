@@ -2,7 +2,7 @@
   "decisions": {
     "D1": { "status": "resolved", "choice": "B", "notes": "tope de duración de producto de 300 s en las dos vías; audio_too_long (exit 2)", "date": "2026-09-30" },
     "D2": { "status": "resolved", "choice": "A", "notes": "tope de duración de la referencia en las dos vías; el valor se fija en el G-Plan de C2", "date": "2026-09-30" },
-    "D3": { "status": "resolved", "choice": "A con A1", "notes": "se elimina el dub por composición; un 404 en /dub da daemon_error (exit 1) pidiendo reiniciar el daemon", "date": "2026-09-30" },
+    "D3": { "status": "resolved", "choice": "A con A1", "notes": "se elimina el dub por composición; un 404 en /dub da daemon_error (exit 1) pidiendo reiniciar el daemon. Ampliada en G-Resultado de C1 a cualquier ruta: 404 sin reason es daemon desfasado; 404 con reason va por la tabla", "date": "2026-09-30" },
     "D4": { "status": "resolved", "choice": "B", "notes": "tabla única de reason a código de salida junto al enum ExitCode, en el crate del contrato", "date": "2026-09-30" },
     "D5": { "status": "resolved", "choice": "B", "notes": "exit 2 con el reason daemon_not_supported", "date": "2026-09-30" },
     "D6": { "status": "resolved", "choice": "A", "notes": "status not_running con exit 0, usando el was_running que ya calcula la parada", "date": "2026-09-30" },
@@ -33,7 +33,30 @@
       "foreign_changes": [],
       "commits": []
     },
-    "C1": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C1": {
+      "status": "closed",
+      "phase": "closed",
+      "gates": [
+        { "gate": "plan", "verdict": "approved", "date": "2026-09-30", "notes": "P1 a P4, todas A" },
+        { "gate": "tests", "verdict": "approved", "date": "2026-09-30", "notes": "15 pruebas en rojo por aserción" },
+        { "gate": "deviation", "verdict": "approved", "date": "2026-09-30", "notes": "daemon_error tenía dos códigos: daemon serve pasa de exit 5 a 1, alineado con la tabla" },
+        { "gate": "result", "verdict": "adjust", "date": "2026-09-30", "notes": "hallazgos del revisor: S17 y S19 a C1; S15 y S16 a C2 con D3 ampliada; S18 a C6; /transcribe sin modelo STT descartado por inalcanzable" },
+        { "gate": "result", "verdict": "approved", "date": "2026-09-30", "notes": "desviaciones aceptadas: avi-core entra en avi-lifecycle como dev-dependency y no como dependencia normal, porque solo lo usan sus pruebas; el \"3\" residual del protocolo del daemon en cinco documentos se alineó a \"4\"; sudo_not_supported se declaró también en docs/specs/sdlc-lifecycle.md" }
+      ],
+      "tasks": [
+        { "id": "C1.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
+        { "id": "C1.2", "status": "done", "attempts": 1, "files": ["crates/avi-core/src/exit_codes.rs", "crates/avi-core/src/lib.rs", "src/main.rs", "crates/avi-daemon/src/lib.rs", "tests/cli_golden.rs"] },
+        { "id": "C1.3", "status": "done", "attempts": 1, "files": ["crates/avi-core/src/exit_codes.rs"] },
+        { "id": "C1.4", "status": "done", "attempts": 1, "files": ["src/main.rs", "docs/CLI/commands/DAEMON.md"] },
+        { "id": "C1.5", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/**", "Cargo.lock"] },
+        { "id": "C1.6", "status": "done", "attempts": 1, "files": ["crates/avi-daemon/src/lib.rs", "crates/avi-core/src/json_emitter.rs", "crates/avi-daemon/tests/golden.rs", "tests/golden/daemon_*.json"] },
+        { "id": "C1.7", "status": "done", "attempts": 1, "files": ["src/main.rs"] },
+        { "id": "C1.8", "status": "done", "attempts": 1, "files": ["docs/CLI/CONTRACT.md", "docs/CLI/commands/SPEECH.md", "docs/CLI/commands/VOICE.md", "docs/CLI/commands/DAEMON.md", "docs/DAEMON-MODE.md", "CHANGELOG.md", "docs/issues/README.md", "docs/issues/daemon-rechaza-o-corta-audios-largos.md", "docs/issues/mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md"] },
+        { "id": "C1.9", "status": "done", "attempts": 1, "files": ["crates/avi-core/src/exit_codes.rs", "crates/avi-daemon/src/lib.rs", "CHANGELOG.md", "README.md", "docs/CLI/CONTRACT.md", "docs/CLI/README.md", "docs/CLI/commands/SELF.md", "docs/CLI/commands/CLEANUP.md", "docs/CLI/commands/DOCTOR.md", "docs/specs/sdlc-lifecycle.md", "docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] }
+      ],
+      "foreign_changes": [],
+      "commits": ["28de66f", "c01e026", "9bd7117", "259889a", "ec2d9c3", "f96d711", "110e685", "dfd461b", "5215e38", "e0ddd89", "a7a009b", "c0a0d22", "fa07a5b"]
+    },
     "C2": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C3": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C4": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },

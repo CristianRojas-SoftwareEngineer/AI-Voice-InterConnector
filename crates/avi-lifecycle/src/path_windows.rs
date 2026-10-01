@@ -363,7 +363,6 @@ fn check(code: u32, what: &str) -> anyhow::Result<()> {
     }
     Err(LifecycleError::new(
         "path_conflict",
-        14,
         format!("no se pudo {what} el valor {PATH_VALUE} de HKCU (código de Windows {code})"),
     )
     .into())

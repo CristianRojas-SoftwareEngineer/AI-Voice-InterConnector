@@ -45,6 +45,12 @@ flate2 = "1.0"
 # modelos en Windows no deben contarse dos veces.
 same-file = "1"
 
+[dev-dependencies]
+# Las pruebas del crate afirman el código de salida de cada `reason` con la tabla
+# única `ExitCode::from_reason` de `avi-core`, en lugar de guardar un entero propio
+# en el error.
+avi-core = { path = "../avi-core" }
+
 [target.'cfg(windows)'.dependencies]
 # Acceso directo a `HKCU\Environment` para la integracion de PATH: se accede con
 # `windows-sys` para no arrastrar un envoltorio de registro adicional.

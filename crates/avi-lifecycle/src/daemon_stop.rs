@@ -212,7 +212,6 @@ pub fn require_stopped(outcome: &StopOutcome) -> Result<(), LifecycleError> {
     }
     Err(LifecycleError::new(
         "daemon_stop_failed",
-        16,
         format!(
             "no se pudo detener el daemon de {}: {}",
             crate::APP_NAME,
@@ -387,6 +386,7 @@ async fn wait_health_down(addr: &str, timeout: Duration) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use avi_core::exit_codes::ExitCode;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// Puerto efímero que se enlaza y se suelta: garantiza que no hay nada
@@ -662,8 +662,9 @@ mod tests {
         let err = require_stopped(&outcome).expect_err("sin parada no hay `self install`");
         assert_eq!(err.reason, "daemon_stop_failed");
         assert_eq!(
-            err.exit_code, 16,
-            "`DaemonStopFailed = 16` de la tabla cerrada"
+            ExitCode::from_reason(err.reason).code(),
+            16,
+            "`DaemonStopFailed = 16` de la tabla única"
         );
         std::fs::remove_dir_all(&data).ok();
     }

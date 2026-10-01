@@ -140,6 +140,7 @@ fn open_lock_file(path: &Path) -> Result<File, LifecycleError> {
 mod tests {
     use super::*;
     use crate::test_support::scratch;
+    use avi_core::exit_codes::ExitCode;
 
     /// Dos operaciones concurrentes: la segunda falla con `lifecycle_locked` sin
     /// haber modificado nada, y al soltar la primera el bloqueo queda libre.
@@ -162,7 +163,11 @@ mod tests {
 
         let err = acquire_at(&path).unwrap_err();
         assert_eq!(err.reason, "lifecycle_locked");
-        assert_eq!(err.exit_code, 17, "LifecycleLocked = 17");
+        assert_eq!(
+            ExitCode::from_reason(err.reason).code(),
+            17,
+            "LifecycleLocked = 17"
+        );
         assert!(err.message.contains("en curso"), "{}", err.message);
 
         drop(first);

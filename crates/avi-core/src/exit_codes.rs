@@ -70,6 +70,44 @@ impl ExitCode {
     pub fn code(&self) -> i32 {
         *self as i32
     }
+
+    /// Traduce un `reason` del contrato a su código de salida.
+    ///
+    /// Es la única traducción de `reason` a código de la CLI: la usan los clientes de
+    /// la vía daemon, el ciclo de vida y las pruebas, así que añadir un `reason` con
+    /// código propio solo exige tocar este `match`. Un `reason` desconocido se trata
+    /// como ausente y sale con `ExitCode::Error`.
+    pub fn from_reason(reason: &str) -> ExitCode {
+        match reason {
+            "confirmation_required"
+            | "usage_error"
+            | "daemon_not_supported"
+            | "empty_text"
+            | "text_too_long"
+            | "unsupported_language_pair"
+            | "invalid_voice_name"
+            | "invalid_audio"
+            | "audio_too_long" => ExitCode::InvalidInput,
+            "voice_not_found" => ExitCode::NotFound,
+            "model_missing" => ExitCode::ModelMissing,
+            "voice_exists" => ExitCode::StateConflict,
+            "translation_failed" => ExitCode::TranslationFailed,
+            "transcription_failed" => ExitCode::TranscriptionFailed,
+            "setup_failed" => ExitCode::SetupFailed,
+            "externally_managed" => ExitCode::ExternallyManaged,
+            "rolled_back" => ExitCode::RolledBack,
+            "path_conflict" => ExitCode::PathConflict,
+            "bundle_invalid" => ExitCode::BundleInvalid,
+            "daemon_stop_failed" => ExitCode::DaemonStopFailed,
+            "lifecycle_locked" => ExitCode::LifecycleLocked,
+            "unsupported_platform" => ExitCode::UnsupportedPlatform,
+            "binary_incompatible" => ExitCode::BinaryIncompatible,
+            "network_error" => ExitCode::NetworkError,
+            "checksum_mismatch" => ExitCode::ChecksumMismatch,
+            "program_dir_kept" => ExitCode::ProgramDirKept,
+            _ => ExitCode::Error,
+        }
+    }
 }
 
 #[derive(Error, Debug)]
@@ -87,5 +125,64 @@ impl CliError {
             reason: reason.into(),
             message: message.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExitCode;
+
+    /// Oráculo literal de la traducción de `reason` a código de salida. Los enteros se
+    /// escriben a mano, no a través de las variantes, para que un intercambio de
+    /// valores en el enum también haga fallar la prueba.
+    const ORACLE: &[(&str, i32)] = &[
+        ("confirmation_required", 2),
+        ("usage_error", 2),
+        ("daemon_not_supported", 2),
+        ("empty_text", 2),
+        ("text_too_long", 2),
+        ("unsupported_language_pair", 2),
+        ("invalid_voice_name", 2),
+        ("invalid_audio", 2),
+        ("audio_too_long", 2),
+        ("voice_not_found", 3),
+        ("model_missing", 4),
+        ("voice_exists", 6),
+        ("translation_failed", 9),
+        ("transcription_failed", 10),
+        ("setup_failed", 11),
+        ("externally_managed", 12),
+        ("rolled_back", 13),
+        ("path_conflict", 14),
+        ("bundle_invalid", 15),
+        ("daemon_stop_failed", 16),
+        ("lifecycle_locked", 17),
+        ("unsupported_platform", 18),
+        ("binary_incompatible", 19),
+        ("network_error", 20),
+        ("checksum_mismatch", 21),
+        ("program_dir_kept", 22),
+        ("synthesis_failed", 1),
+        ("synthesis_timeout", 1),
+        ("stt_unsupported", 1),
+        ("translation_unsupported", 1),
+        ("daemon_error", 1),
+        ("sudo_not_supported", 1),
+    ];
+
+    #[test]
+    fn from_reason_matches_oracle() {
+        for (reason, code) in ORACLE {
+            assert_eq!(
+                ExitCode::from_reason(reason).code(),
+                *code,
+                "el reason {reason} debe salir con {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_reason_unknown_is_generic_error() {
+        assert_eq!(ExitCode::from_reason("motivo_del_futuro"), ExitCode::Error);
     }
 }

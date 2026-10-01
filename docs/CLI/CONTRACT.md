@@ -486,7 +486,7 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 |---|---|---|
 | `0` | `ExitCode::Ok` | Éxito |
 | `1` | `ExitCode::Error` | Error genérico |
-| `2` | `ExitCode::InvalidInput` | Uso incorrecto: la invocación está mal formada |
+| `2` | `ExitCode::InvalidInput` | Uso incorrecto: la invocación está mal formada, incluido `--daemon` en un comando que se ejecuta siempre en local (`daemon_not_supported`) |
 | `3` | `ExitCode::NotFound` | El recurso nombrado no existe |
 | `4` | `ExitCode::ModelMissing` | Modelo no provisionado |
 | `5` | `ExitCode::DaemonUnreachable` | Daemon inalcanzable |
@@ -514,7 +514,7 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 - **El 11 no es un error.** `setup_failed` es un **éxito parcial**: el programa está instalado, el resumen y el sobre se emiten igual, y lo único que cambia es el `reason` del sobre y el código de salida. Por eso el sobre de `self install` sale por *veredicto* y no por el objeto `error` de §10.
 - **El 15 y el 17 son los que el ejecutable sin bundle alrededor y el bloqueo ya tomado producen**, y son los dos que un usuario se encuentra sin haber hecho nada mal: `target\debug\ai-voice-interconnector.exe self install` responde `bundle_invalid` (15) porque no hay bundle alrededor, no porque la instalación esté rota.
 
-`unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20), `checksum_mismatch` (21) y `program_dir_kept` (22) **tienen variante propia**: los emiten `self update`, la descarga de `setup`, la comprobación de arranque del bundle y el paso 8 de `self uninstall`, con la traducción en `exit_code_for` (`src/main.rs`) y las variantes en la cabecera de `crates/avi-core/src/exit_codes.rs`.
+`unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20), `checksum_mismatch` (21) y `program_dir_kept` (22) **tienen variante propia**: los emiten `self update`, la descarga de `setup`, la comprobación de arranque del bundle y el paso 8 de `self uninstall`, con la traducción en `ExitCode::from_reason` y las variantes en la cabecera de `crates/avi-core/src/exit_codes.rs`.
 
 ### Cómo se reparten los enteros
 
@@ -587,7 +587,7 @@ El payload de error usa **dos claves de primer nivel** —`error` con el mensaje
 {"schema_version": "4", "error": "El texto a traducir está vacío", "reason": "empty_text"}
 ```
 
-`reason` es la clave de la causa fina y es **aditiva**: los `reason` del ciclo de vida (`lifecycle_locked`, `bundle_invalid`, `daemon_stop_failed`, `path_conflict`, `rolled_back`, `externally_managed`, `confirmation_required`, `usage_error`, `unsupported_platform`, `binary_incompatible`, `network_error`, `checksum_mismatch`, `program_dir_kept`, `ct2_conversion_failed`) viajan por ella; los del ciclo de vida tienen además entero propio del 11 al 22, salvo `confirmation_required` y `usage_error` (2) y `ct2_conversion_failed` anidado (1), y un `reason` desconocido se trata como ausente. El fallo de parseo lleva `reason: "usage_error"`.
+`reason` es la clave de la causa fina y es **aditiva**: los `reason` del ciclo de vida (`lifecycle_locked`, `bundle_invalid`, `daemon_stop_failed`, `path_conflict`, `rolled_back`, `externally_managed`, `confirmation_required`, `usage_error`, `unsupported_platform`, `binary_incompatible`, `network_error`, `checksum_mismatch`, `program_dir_kept`, `ct2_conversion_failed`, `sudo_not_supported`) viajan por ella; los del ciclo de vida tienen además entero propio del 11 al 22, salvo `confirmation_required` y `usage_error` (2), `ct2_conversion_failed` anidado (1) y `sudo_not_supported` (1), que rechaza en Unix `self install`, `self uninstall` y `cleanup` lanzados con `sudo`, y un `reason` desconocido se trata como ausente. El fallo de parseo lleva `reason: "usage_error"`.
 
 Las tres reglas de compatibilidad y la regla de promoción son contrato **de consumo** además de emisión: `USAGE.md` declara explícitamente que un `reason` desconocido se trata como ausente.
 
@@ -598,6 +598,7 @@ Las tres reglas de compatibilidad y la regla de promoción son contrato **de con
 - Los sitios de fallo retornan **`ExitCode` + `reason` + `message`** (tipo `CliError` en `crates/avi-core/src/exit_codes.rs` / `crates/avi-core/src/json_emitter.rs`) en vez de imprimir y salir.
 - **`src/main.rs` (`main` / `handle_*` / `emit_raw_json`) es el único punto que lo traduce**: mensaje humano a stderr, payload a stdout si se pidió `--json`, y salida con el código. No queda otro camino hasta la salida, así que la invariante no necesita vigilancia.
 - El invariante que la protege es mecanizable: **ninguna salida no-cero fuera de `src/main.rs`**.
+- **La traducción de `reason` a código vive en una sola tabla**, `ExitCode::from_reason` (`crates/avi-core/src/exit_codes.rs`). La usan todos los sitios que reciben un `reason` ya formado: la vía daemon (respuestas HTTP no 2xx y eventos `error` del stream NDJSON), el ciclo de vida y sus pruebas. Así la misma causa sale con el mismo código por cualquier vía, y añadir un `reason` obliga a tocar un solo sitio. Un `reason` que la tabla no conoce sale con 1.
 
 **La salida por veredicto entra por el mismo punto único.** Un comando que ya emitió su payload propio y quiere salir con código ≠ 0 sin adjuntar objeto `error` **devuelve el entero** del código; `src/main.rs` honra un retorno `ExitCode` ≠ 0 y sale con ese código. No hay tipo de error nuevo disperso: la salida sigue pasando por `main`, así que **ninguna salida no-cero fuera de `src/main.rs`** se mantiene. `doctor` es el caso que lo usa: emite su reporte y retorna `ExitCode::Error` cuando hay FAIL.
 
@@ -633,12 +634,12 @@ Los payloads de `daemon start`, `stop` y `restart` no llevan clave booleana prop
 
 ### Las dos versiones de esquema
 
-Son **dos, independientes**, y ya **no valen lo mismo**: el sobre de la CLI va por `"4"` y el protocolo del daemon sigue en `"3"`.
+Son **dos, independientes**: el sobre de la CLI va por `"4"` y el protocolo del daemon, también por `"4"`, pero cada uno llegó ahí por motivos propios.
 
-- **`crates/avi-daemon/src/lib.rs` (`DaemonState`, `run_daemon_server`) — protocolo IPC del daemon, `DAEMON_SCHEMA_VERSION = "3"`.** Subió a `"2"` porque `/synthesize` identifica la voz por su nombre y no transporta rutas: una forma que no es aditiva y por tanto exige versión propia. Subió otra vez a `"3"` con el rediseño cross-lingual: `model_loaded` pasó de `bool` a `dict[str, bool]` (un modelo cargado por idioma en vez de uno solo), un cambio incompatible de un campo existente (`crates/avi-core/src/engine.rs` `SttEngine`/`TtsEngine`, estados `warm`/`warm_failed`). **El ciclo de vida no lo toca**: ni `self install`, ni `self uninstall`, ni `cleanup`, ni la sección de ciclo de vida de `doctor` cambian una clave del protocolo del daemon, así que su versión no se mueve.
+- **`crates/avi-daemon/src/lib.rs` (`DaemonState`, `run_daemon_server`) — protocolo IPC del daemon, `DAEMON_SCHEMA_VERSION = "4"`.** Subió a `"2"` porque `/synthesize` identifica la voz por su nombre y no transporta rutas: una forma que no es aditiva y por tanto exige versión propia. Subió otra vez a `"3"` con el rediseño cross-lingual: `model_loaded` pasó de `bool` a `dict[str, bool]` (un modelo cargado por idioma en vez de uno solo), un cambio incompatible de un campo existente (`crates/avi-core/src/engine.rs` `SttEngine`/`TtsEngine`, estados `warm`/`warm_failed`). Subió a `"4"` al alinear sus errores con este contrato: `/transcribe` pasó de responder 200 ante un error a responder 400 (`usage_error`, `invalid_audio`) y 500, y los `reason` propios de audio (`audio_missing`, `audio_decode_error`) se sustituyeron por `usage_error` e `invalid_audio`, un renombrado de valores existentes que no es aditivo. **El ciclo de vida no lo toca**: ni `self install`, ni `self uninstall`, ni `cleanup`, ni la sección de ciclo de vida de `doctor` cambian una clave del protocolo del daemon, así que su versión no se mueve.
 - **`src/main.rs` / `crates/avi-core/src/json_emitter.rs` (`CLI_SCHEMA_VERSION = "4"`) — payloads `--json` de la CLI.** Subió a `"2"` porque el payload de síntesis no lleva clave de ruta de salida, y a `"3"` por la misma razón que el protocolo del daemon (`model_loaded` de booleano a objeto por idioma). Subió a `"4"` con el ciclo de vida, y el motivo es un **cambio incompatible y no aditivo**: `doctor --json` retira cuatro claves de primer nivel —`data_dir`, `hf_cache`, `base_status` e `issues`— y las sustituye por la sección de ciclo de vida (`version`, `target`, `channel`, `install`, `path`, `pending`, `models`), con `checks` y `failed` como veredicto. Retirar claves es incompatible por la asimetría de reversibilidad de §1, y por eso exige subir la versión en vez de dejarse como adición.
 
-**La política de compatibilidad es la misma en ambas**: añadir claves no incrementa la versión; solo lo hace un cambio incompatible de las existentes. Y el **número de versión no es comparable entre las dos**: un cliente que valide `"4"` para el sobre de la CLI y `"3"` para el protocolo del daemon no está ante una contradicción, sino ante dos contratos que suben por separado.
+**La política de compatibilidad es la misma en ambas**: añadir claves no incrementa la versión; solo lo hace un cambio incompatible de las existentes. Y el **número de versión no es comparable entre las dos**: que ambos valgan hoy `"4"` es una coincidencia, no un acoplamiento: son dos contratos que suben por separado.
 
 ## 11. `self`, `setup`, `cleanup` y `voice`
 

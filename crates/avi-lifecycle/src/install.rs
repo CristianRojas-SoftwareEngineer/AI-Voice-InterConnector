@@ -136,7 +136,7 @@ impl Env {
         // Un registro ilegible se trata igual que al aplicar: `path_conflict`.
         #[cfg(windows)]
         let registry_path = crate::path_windows::read_path(&registry_subkey).map_err(|e| {
-            LifecycleError::new("path_conflict", 14, format!("integración del PATH: {e}"))
+            LifecycleError::new("path_conflict", format!("integración del PATH: {e}"))
         })?;
         // Se clasifica contra el mismo ejecutable que `run` pasa a `apply_path`.
         #[cfg(unix)]
@@ -671,7 +671,6 @@ pub fn apply_path(
             if path_unix::write_block(&block, &env.bin_dir, &env.home).map_err(|e| {
                 LifecycleError::new(
                     "path_conflict",
-                    14,
                     format!("no se pudo escribir {}: {e}", block.display()),
                 )
             })? {
@@ -688,7 +687,7 @@ pub fn apply_path(
         let _ = program_exe;
         let outcome =
             crate::path_windows::integrate(&env.registry_subkey, &env.bin_dir).map_err(|e| {
-                LifecycleError::new("path_conflict", 14, format!("integración del PATH: {e}"))
+                LifecycleError::new("path_conflict", format!("integración del PATH: {e}"))
             })?;
         // La entrada se registra siempre que la integración se aplicó: después de la
         // operación está en el `PATH`, y eso es lo que hay que revertir. El
@@ -818,7 +817,7 @@ async fn provision(options: &Options, provisioner: &impl setup::Provisioner) -> 
 /// anidado, y el código de salida es el de la operación —`SetupFailed = 11`—. Anidarlo con
 /// un 11 haría que un consumidor leyera un 11 donde la tabla de códigos no lo promises.
 fn ct2_failure(pair: &str, reason: &str) -> LifecycleError {
-    LifecycleError::new("ct2_conversion_failed", 1, format!("CT2 {pair}: {reason}"))
+    LifecycleError::new("ct2_conversion_failed", format!("CT2 {pair}: {reason}"))
 }
 
 /// Prose de `setup_failed`: el programa queda instalado y basta

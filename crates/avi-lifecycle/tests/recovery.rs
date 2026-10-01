@@ -444,6 +444,7 @@ fn interrupted_transaction_is_recovered_next_run() {
 #[cfg(feature = "faults")]
 #[test]
 fn interrupted_install_recovers_next_run() {
+    use avi_core::exit_codes::ExitCode;
     use avi_lifecycle::faults::{self, FaultPoint};
 
     let _guard = support::exclusively();
@@ -485,8 +486,9 @@ fn interrupted_install_recovers_next_run() {
                 .expect("criterio 14: dentro de la transacción el fallo lleva `reason`");
             assert_eq!(failure.reason, "rolled_back");
             assert_eq!(
-                failure.exit_code, 13,
-                "`RolledBack = 13` de la tabla cerrada"
+                ExitCode::from_reason(failure.reason).code(),
+                13,
+                "`RolledBack = 13` de la tabla única"
             );
             assert!(
                 operational_previous_version(&sandbox),

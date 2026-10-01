@@ -165,12 +165,9 @@ mod tests {
             "el sobre --json de la CLI subió a \"4\": retira y renombra claves de `doctor`"
         );
         assert_eq!(
-            DAEMON_SCHEMA_VERSION, "3",
-            "el protocolo NDJSON del daemon se queda en \"3\": este ciclo no lo toca"
-        );
-        assert_ne!(
-            CLI_SCHEMA_VERSION, DAEMON_SCHEMA_VERSION,
-            "son contratos distintos y sus versiones se gobiernan por separado"
+            DAEMON_SCHEMA_VERSION, "4",
+            "el protocolo NDJSON del daemon subió a \"4\": `/transcribe` señala sus errores \
+             con el estado HTTP, los `reason` de audio cambian y `text_length` cuenta caracteres"
         );
         let val = with_schema_version(json!({ "status": "ok" }), CLI_SCHEMA_VERSION);
         assert_eq!(

@@ -101,6 +101,7 @@ pub fn release_asset_name(triple: &str, version: &str) -> Result<String, Lifecyc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use avi_core::exit_codes::ExitCode;
 
     /// La tabla de targets y el nombre del archivo de release se derivan de la misma
     /// definición, sin depender de la plataforma donde corra la prueba.
@@ -166,7 +167,8 @@ mod tests {
             let err = ensure_supported(triple).unwrap_err();
             assert_eq!(err.reason, "unsupported_platform", "reason de {triple}");
             assert_eq!(
-                err.exit_code, 18,
+                ExitCode::from_reason(err.reason).code(),
+                18,
                 "con variante propia del Ciclo 2, el código es el 18"
             );
             assert!(
@@ -181,7 +183,8 @@ mod tests {
                 "nombre de release de {triple}"
             );
             assert_eq!(
-                release_asset_name(triple, "0.24.0").unwrap_err().exit_code,
+                ExitCode::from_reason(release_asset_name(triple, "0.24.0").unwrap_err().reason)
+                    .code(),
                 18
             );
         }

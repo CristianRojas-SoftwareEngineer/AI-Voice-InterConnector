@@ -58,9 +58,9 @@ CLI (ai-voice-interconnector)
 
 | Endpoint | Método | Request | Response | Descripción |
 |---|---|---|---|---|
-| `/health` | GET | — | `{status:"ready", warm, engine, warm_error?, ct2?, stt?}` + `schema_version="3"` | Readiness + warmup (7 rutas) |
+| `/health` | GET | — | `{status:"ready", warm, engine, warm_error?, ct2?, stt?}` + `schema_version="4"` | Readiness + warmup (7 rutas) |
 | `/synthesize` | POST | `{text, voice}` | NDJSON `start → progress → result{audio_b64}` o `error` | Síntesis streaming 24 kHz |
-| `/transcribe` | POST | `{audio_b64, source_language}` | `{text}` o `error` | Transcripción Parakeet (feature `native-stt`) |
+| `/transcribe` | POST | `{audio_b64, source_language}` | `{text}` + `schema_version="4"`; error con `{status:"error", reason, message}`: 400 (`usage_error` sin audio, `invalid_audio` si el base64 no es válido) o 500 (`transcription_failed`) | Transcripción Parakeet (feature `native-stt`) |
 | `/translate` | POST | `{text, from, to}` | `{translated, source, target}` o `error` | Traducción CT2 residente (feature `native-translation`) |
 | `/voices/clone` | POST | `{name, audio_b64, timbre_b64?, force?}` | NDJSON `started → heartbeat/progress → result{name, speech, precomputed:true}` o `error` | Clonar voz (audio base64) con streaming NDJSON y warm-on-clone (`precomputed:true` = precarga iniciada) |
 | `/dub` | POST | `{audio_b64, from, to, voice}` | NDJSON `started → heartbeat → result{status:"dubbed", text, translated, audio_b64, voice, work_ms}` o `error` | Pipeline transcribe→translate→synthesize con streaming NDJSON |
@@ -94,8 +94,7 @@ Los fallos del arranque se traducen a código en un único punto, compartido por
 | `model_missing` | 4 | No hay modelo TTS provisionado | `start`, `restart` |
 | `port_in_use` | 6 | El puerto del daemon está en uso o reservado por otro proceso. Remedio: liberar el puerto o arrancar en otro con `AVI_DAEMON_PORT=<puerto>` (`0` = puerto efímero) | `start`, `restart`, `serve` |
 | `voice_not_found` | 3 | La voz de `--warm-voice` no existe | `start`, `serve` |
-| `daemon_error` | 1 | Fallo al lanzar el hijo, muerte del hijo durante el arranque (el mensaje incluye su estado de salida) o fallo no clasificado previo a estar listo | `start`, `restart`, `serve` |
-| `daemon_error` | 5 | Fallo del servidor ya en marcha | `serve` |
+| `daemon_error` | 1 | Fallo al lanzar el hijo, muerte del hijo durante el arranque (el mensaje incluye su estado de salida), fallo no clasificado previo a estar listo o fallo del servidor ya en marcha | `start`, `restart`, `serve` |
 | `daemon_unreachable` | 5 | El hijo sigue vivo sin publicar su dirección al vencer el deadline, `/health` no responde tras publicarla, o el árbol sigue vivo tras la parada | `start`, `restart`, `stop` |
 
 Tras un fallo de `start` o `restart` no quedan proceso hijo, `daemon.pid` ni `daemon.ready`.

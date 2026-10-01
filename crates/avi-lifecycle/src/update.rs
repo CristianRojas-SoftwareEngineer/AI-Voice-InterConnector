@@ -194,6 +194,7 @@ pub fn cleanup_staging(staging: &Path, remover: &dyn PathRemover) -> StagingClea
 #[cfg(test)]
 mod tests {
     use super::*;
+    use avi_core::exit_codes::ExitCode;
 
     /// Los argumentos del `install` interno llevan `--yes` siempre y heredan
     /// `--no-modify-path`, `--no-setup` y `--force` solo cuando tocan.
@@ -250,7 +251,7 @@ mod tests {
             .downcast_ref::<LifecycleError>()
             .expect("`rolled_back` viaja como `LifecycleError`");
         assert_eq!(failure.reason, "rolled_back");
-        assert_eq!(failure.exit_code, 13);
+        assert_eq!(ExitCode::from_reason(failure.reason).code(), 13);
         for code in [Some(1), Some(2), Some(101), None] {
             assert!(
                 interpret_handover_status(code).is_err(),

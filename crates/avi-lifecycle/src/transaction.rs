@@ -585,6 +585,8 @@ mod tests {
     #[test]
     #[cfg(feature = "faults")]
     fn interrupted_transaction_leaves_previous_version_usable() {
+        use avi_core::exit_codes::ExitCode;
+
         let triple = target::host_triple();
         let executable = manifest::target_section(triple).unwrap().executable;
 
@@ -615,7 +617,11 @@ mod tests {
                 "{}: la versión anterior se restaura",
                 point.as_str()
             );
-            assert_eq!(failure.exit_code, 13, "RolledBack = 13");
+            assert_eq!(
+                ExitCode::from_reason(failure.reason).code(),
+                13,
+                "RolledBack = 13"
+            );
 
             // La versión anterior sigue siendo la operativa: el ejecutable se
             // puede leer y ejecutar como antes de la interrupción.

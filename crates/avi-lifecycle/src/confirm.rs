@@ -224,6 +224,7 @@ pub fn require_cleanup_category(selected: &[&str]) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::test_support::{scratch, snapshot, write_file};
+    use avi_core::exit_codes::ExitCode;
     use std::io::Cursor;
 
     fn request<'a>(
@@ -323,7 +324,7 @@ mod tests {
             .downcast_ref::<LifecycleError>()
             .expect("reason de contrato");
         assert_eq!(failure.reason, "confirmation_required");
-        assert_eq!(failure.exit_code, 2);
+        assert_eq!(ExitCode::from_reason(failure.reason).code(), 2);
         let mut out = Vec::new();
         assert_eq!(
             confirm(
@@ -347,7 +348,7 @@ mod tests {
         let err = require_cleanup_category(&[]).unwrap_err();
         let failure = err.downcast_ref::<LifecycleError>().unwrap();
         assert_eq!(failure.reason, "usage_error");
-        assert_eq!(failure.exit_code, 2);
+        assert_eq!(ExitCode::from_reason(failure.reason).code(), 2);
         assert!(failure.message.contains("model"), "{}", failure.message);
 
         // Lectura de respuestas: `Enter` sigue el valor por defecto de cada
@@ -396,7 +397,11 @@ mod tests {
             .downcast_ref::<LifecycleError>()
             .expect("reason de contrato");
         assert_eq!(failure.reason, "confirmation_required");
-        assert_eq!(failure.exit_code, 2, "error de uso, no un error genérico");
+        assert_eq!(
+            ExitCode::from_reason(failure.reason).code(),
+            2,
+            "error de uso, no un error genérico"
+        );
         // Que la respuesta fuera `y` no cambia nada: sin terminal no hay a quién
         // preguntarle, y el criterio es exigir `--yes`.
         assert_eq!(snapshot(&dir), before, "no se borra nada sin `--yes`");

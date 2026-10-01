@@ -493,10 +493,29 @@ async fn synthesize_handler(
             json!({
                 "event": "start",
                 "voice": voice_owned,
-                "text_length": text_owned.len(),
+                "text_length": text_owned.chars().count(),
             }),
         )
         .await;
+
+        // Temperatura opcional del CLI (ya validada allí); aquí se defiende el
+        // rango para payloads directos al HTTP. Va antes de la comprobación del
+        // modelo: una invocación mal formada es un error de uso aunque el motor
+        // no esté provisionado.
+        if let Some(t) = temperature {
+            if !(t > 0.0 && t <= 2.0) {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "usage_error",
+                        "message": "--temperature debe ser mayor que 0 y como máximo 2.0.",
+                    }),
+                )
+                .await;
+                return;
+            }
+        }
 
         // Provisionamiento del motor: si binario/modelo no se resolvieron, la rama
         // `model_missing` es el contrato aceptado en entornos sin motor
@@ -525,23 +544,6 @@ async fn synthesize_handler(
             }),
         )
         .await;
-
-        // Temperatura opcional del CLI (ya validada allí); aquí se defiende el
-        // rango para payloads directos al HTTP.
-        if let Some(t) = temperature {
-            if !(t > 0.0 && t <= 2.0) {
-                emit_ndjson(
-                    &tx,
-                    json!({
-                        "event": "error",
-                        "reason": "usage_error",
-                        "message": "Error: --temperature debe ser mayor que 0 y como máximo 2.0.",
-                    }),
-                )
-                .await;
-                return;
-            }
-        }
 
         // Traducción opt-in con el motor residente: passthrough si coinciden.
         let source_iso = resolve_translation_language(&source_owned).to_string();
@@ -727,24 +729,30 @@ async fn transcribe_handler(
     let audio_b64 = match audio_b64 {
         Some(s) => s,
         None => {
-            return Json(with_sv(json!({
-                "status": "error",
-                "reason": "audio_missing",
-                "message": "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono).",
-            })))
-            .into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": "usage_error",
+                    "message": "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono).",
+                }))),
+            )
+                .into_response();
         }
     };
 
     let audio_bytes = match base64::engine::general_purpose::STANDARD.decode(audio_b64) {
         Ok(b) => b,
         Err(e) => {
-            return Json(with_sv(json!({
-                "status": "error",
-                "reason": "audio_decode_error",
-                "message": format!("audio_b64 no decodificable como base64: {}", e),
-            })))
-            .into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": "invalid_audio",
+                    "message": format!("audio_b64 no decodificable como base64: {}", e),
+                }))),
+            )
+                .into_response();
         }
     };
 
@@ -970,8 +978,8 @@ async fn voices_clone_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
-                    "error": "audio_missing",
-                    "reason": "audio_missing",
+                    "error": "usage_error",
+                    "reason": "usage_error",
                     "message": "La petición no incluye el campo 'audio_b64'.",
                 }))),
             )
@@ -984,8 +992,8 @@ async fn voices_clone_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
-                    "error": "audio_decode_error",
-                    "reason": "audio_decode_error",
+                    "error": "invalid_audio",
+                    "reason": "invalid_audio",
                     "message": format!("audio_b64 no decodificable como base64: {}", e),
                 }))),
             )
@@ -1177,7 +1185,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
                     "status": "error",
-                    "reason": "audio_missing",
+                    "reason": "usage_error",
                     "message": "La petición no incluye el campo 'audio_b64'.",
                 }))),
             )
@@ -1191,7 +1199,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
                     "status": "error",
-                    "reason": "audio_decode_error",
+                    "reason": "invalid_audio",
                     "message": format!("audio_b64 no decodificable: {}", e),
                 }))),
             )
@@ -2515,21 +2523,13 @@ mod tests {
         assert_job_saw_cancel(&seen).await;
     }
 
-    /// Dub handler con audio_missing retorna error coherente sin panic
+    /// Dub sin `audio_b64` responde 400 con el `reason` de contrato `usage_error`
     #[tokio::test]
     async fn dub_handler_audio_missing() {
-        use axum::body::Body;
-        use tower::ServiceExt;
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
-        let app = build_router_with_state(state);
-        let req = axum::http::Request::builder()
-            .uri("/dub")
-            .method(axum::http::Method::POST)
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"voice":"default"}"#))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert!(resp.status().is_client_error() || resp.status().is_server_error());
+        let (status, body) = post_json("/dub", json!({"voice": "default"})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["reason"], "usage_error");
     }
 
     /// Dub handler rechaza con 400 `audio_too_long` un audio que supera el tope
@@ -2558,6 +2558,127 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["reason"], "audio_too_long");
+    }
+
+    /// Envía un POST JSON al router y devuelve el estado y el cuerpo completo.
+    async fn post_json(uri: &str, body: Value) -> (StatusCode, Vec<u8>) {
+        use axum::body::Body;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let app = build_router_with_state(state);
+        let req = axum::http::Request::builder()
+            .uri(uri)
+            .method(axum::http::Method::POST)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, bytes.to_vec())
+    }
+
+    /// `/transcribe` sin `audio_b64` es un error de invocación: 400 con `usage_error`.
+    #[cfg(feature = "native-stt")]
+    #[tokio::test]
+    async fn transcribe_handler_missing_audio_is_400_usage_error() {
+        let (status, bytes) = post_json("/transcribe", json!({ "source_language": "es" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["reason"], "usage_error");
+    }
+
+    /// `/transcribe` con un base64 inválido es audio ilegible: 400 con `invalid_audio`.
+    #[cfg(feature = "native-stt")]
+    #[tokio::test]
+    async fn transcribe_handler_bad_base64_is_400_invalid_audio() {
+        let (status, bytes) = post_json(
+            "/transcribe",
+            json!({ "audio_b64": "%%% no es base64 %%%" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["reason"], "invalid_audio");
+    }
+
+    /// El evento `start` de `/synthesize` mide `text_length` en caracteres: «canción»
+    /// tiene 7 caracteres y 8 bytes. La temperatura fuera de rango cierra el stream
+    /// sin llegar al motor.
+    #[tokio::test]
+    async fn synthesize_start_event_counts_chars() {
+        let (_, bytes) = post_json(
+            "/synthesize",
+            json!({ "text": "canción", "voice": "default", "temperature": 5.0 }),
+        )
+        .await;
+        let body = String::from_utf8_lossy(&bytes);
+        let start: Value = body
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|ev| ev["event"] == "start")
+            .expect("el stream emite el evento start");
+        assert_eq!(start["text_length"], 7);
+    }
+
+    /// Ningún mensaje del daemon lleva el prefijo que el cliente ya añade al
+    /// imprimirlo: se revisa cada literal `"message"` del código fuente.
+    #[test]
+    fn no_message_literal_starts_with_error_prefix() {
+        let prefix = format!("{}:", "Error");
+        for line in include_str!("lib.rs").lines() {
+            let Some((_, rest)) = line.split_once("\"message\":") else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let rest = rest.strip_prefix("format!(").unwrap_or(rest);
+            assert!(
+                !rest.starts_with(&format!("\"{prefix}")),
+                "mensaje con prefijo duplicado: {line}"
+            );
+        }
+    }
+
+    /// Cada `reason` literal que emite el daemon (en `reason` o en su espejo `error`)
+    /// está en la tabla única de códigos de salida: o la tabla le asigna un código
+    /// propio, o es uno de los que el contrato deja en el 1 genérico.
+    #[test]
+    fn every_daemon_reason_is_in_exit_code_table() {
+        const GENERIC: &[&str] = &[
+            "io_error",
+            "synthesis_failed",
+            "synthesis_timeout",
+            "stt_unsupported",
+            "translation_unsupported",
+            "voice_clone_failed",
+            "daemon_error",
+        ];
+        let source = include_str!("lib.rs");
+        let mut found = 0;
+        for key in ["\"reason\": \"", "\"error\": \""] {
+            for (i, _) in source.match_indices(key) {
+                let rest = &source[i + key.len()..];
+                let reason: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                    .collect();
+                if reason.is_empty() || !rest[reason.len()..].starts_with('"') {
+                    continue;
+                }
+                found += 1;
+                assert!(
+                    avi_core::exit_codes::ExitCode::from_reason(&reason)
+                        != avi_core::exit_codes::ExitCode::Error
+                        || GENERIC.contains(&reason.as_str()),
+                    "el reason {reason} que emite el daemon no está en la tabla"
+                );
+            }
+        }
+        assert!(
+            found > 0,
+            "la búsqueda de literales no encontró ningún reason"
+        );
     }
 
     /// Ruta de fichero ready en un directorio temporal propio de cada prueba.

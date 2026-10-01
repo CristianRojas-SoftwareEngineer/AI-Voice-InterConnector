@@ -84,6 +84,7 @@ pub fn validate_bundle(triple: &str, dir: &Path) -> Result<Vec<String>, Lifecycl
 mod tests {
     use super::*;
     use crate::test_support::{scratch, write_file};
+    use avi_core::exit_codes::ExitCode;
 
     /// Monta un bundle completo del target pedido y devuelve su raíz.
     fn complete_bundle(tag: &str, triple: &str) -> std::path::PathBuf {
@@ -230,7 +231,11 @@ mod tests {
             std::fs::remove_file(dir.join(relative_path(&missing))).unwrap();
             let err = validate_bundle(triple, &dir).unwrap_err();
             assert_eq!(err.reason, "bundle_invalid");
-            assert_eq!(err.exit_code, 15, "código de bundle_invalid");
+            assert_eq!(
+                ExitCode::from_reason(err.reason).code(),
+                15,
+                "código de bundle_invalid"
+            );
             assert!(
                 err.message.contains(&missing),
                 "el mensaje nombra la ruta ausente con `/`: {}",

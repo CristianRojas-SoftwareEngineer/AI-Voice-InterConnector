@@ -107,7 +107,7 @@ fn validate_temperature(temperature: Option<f32>) -> Result<(), CliError> {
             return Err(CliError::new(
                 ExitCode::InvalidInput,
                 "usage_error",
-                "Error: --temperature debe ser mayor que 0 y como máximo 2.0.",
+                "--temperature debe ser mayor que 0 y como máximo 2.0.",
             ));
         }
     }
@@ -1115,7 +1115,7 @@ async fn handle_voice(
 
     match action {
         VoiceCommands::List => {
-            // List es local-only; ForceDaemon debe fallar con DaemonUnreachable (paridad con speech dub/play)
+            // List es local-only; ForceDaemon falla con `daemon_not_supported` (paridad con speech list/play/remove)
             require_local(daemon_mode)?;
             let voices = voice_store
                 .list()
@@ -2102,14 +2102,13 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             #[cfg(windows)]
             install_job_with_tree_kill();
             // Un fallo previo a estar listo sale con el código de su causa; el
-            // de un servidor que ya servía conserva exit 5 `daemon_error`.
+            // de un servidor que ya servía sale con exit 1 `daemon_error`, como
+            // cualquier otro `daemon_error`.
             daemon::run_supervised(addr, auto_restart, max_retries, warm_voice)
                 .await
                 .map_err(|e| match e.downcast_ref::<daemon::StartupError>() {
                     Some(startup) => startup_error_to_cli(startup),
-                    None => {
-                        CliError::new(ExitCode::DaemonUnreachable, "daemon_error", e.to_string())
-                    }
+                    None => CliError::new(ExitCode::Error, "daemon_error", e.to_string()),
                 })
         }
         DaemonCommands::Start {
@@ -2701,7 +2700,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 }
             }
             match partial {
-                Some(failure) => Ok(Outcome::Verdict(exit_code_for(failure.reason).code())),
+                Some(failure) => Ok(Outcome::Verdict(
+                    ExitCode::from_reason(failure.reason).code(),
+                )),
                 None => Ok(Outcome::Done),
             }
         }
@@ -2771,7 +2772,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     if !json_mode {
                         eprintln!("{}", failure.message);
                     }
-                    Ok(Outcome::Verdict(exit_code_for(failure.reason).code()))
+                    Ok(Outcome::Verdict(
+                        ExitCode::from_reason(failure.reason).code(),
+                    ))
                 }
                 None => Ok(Outcome::Done),
             }
@@ -3027,7 +3030,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 }
             }
             if partial {
-                Ok(Outcome::Verdict(exit_code_for("setup_failed").code()))
+                Ok(Outcome::Verdict(
+                    ExitCode::from_reason("setup_failed").code(),
+                ))
             } else {
                 Ok(Outcome::Done)
             }
@@ -3081,40 +3086,16 @@ fn handle_doctor(json_mode: bool) -> Result<Outcome, CliError> {
 
 /// Traduce un `reason` del motor a la variante de `ExitCode` que le corresponde.
 ///
-/// El motor no depende de `avi-core`, así que el par `reason` + código viaja
-/// como dato y esta es la traducción. Los enteros salen de la misma tabla cerrada, y
-/// cada `reason` sin variante propia —los que el ciclo 3 declare— cae en
-/// `ExitCode::Error`, que es lo que la tabla permite mientras su ciclo no la declare.
+/// El motor solo transporta el `reason`; el código sale de la tabla única
+/// `ExitCode::from_reason`, y un `reason` sin variante propia cae en `ExitCode::Error`.
 fn lifecycle_error_to_cli(err: anyhow::Error) -> CliError {
     match err.downcast_ref::<lifecycle::LifecycleError>() {
         Some(failure) => CliError::new(
-            exit_code_for(failure.reason),
+            ExitCode::from_reason(failure.reason),
             failure.reason,
             failure.message.clone(),
         ),
         None => CliError::new(ExitCode::Error, "lifecycle_failed", err.to_string()),
-    }
-}
-
-/// Variante de `ExitCode` de cada `reason` de contrato.
-fn exit_code_for(reason: &str) -> ExitCode {
-    match reason {
-        "confirmation_required" | "usage_error" => ExitCode::InvalidInput,
-        "setup_failed" => ExitCode::SetupFailed,
-        "externally_managed" => ExitCode::ExternallyManaged,
-        "rolled_back" => ExitCode::RolledBack,
-        "path_conflict" => ExitCode::PathConflict,
-        "bundle_invalid" => ExitCode::BundleInvalid,
-        "daemon_stop_failed" => ExitCode::DaemonStopFailed,
-        "lifecycle_locked" => ExitCode::LifecycleLocked,
-        "unsupported_platform" => ExitCode::UnsupportedPlatform,
-        "binary_incompatible" => ExitCode::BinaryIncompatible,
-        "network_error" => ExitCode::NetworkError,
-        "checksum_mismatch" => ExitCode::ChecksumMismatch,
-        "program_dir_kept" => ExitCode::ProgramDirKept,
-        // Los `reason` del ciclo 3 no tienen variante en este ciclo: salen con
-        // el 1 genérico.
-        _ => ExitCode::Error,
     }
 }
 
@@ -3555,13 +3536,14 @@ async fn route_to_daemon(mode: DaemonMode, client: &reqwest::Client) -> bool {
     }
 }
 
-/// Acciones local-only rechazan ForceDaemon con DaemonUnreachable.
+/// Acciones local-only rechazan ForceDaemon como error de invocación
+/// (`daemon_not_supported`, exit 2): el daemon no interviene en ellas.
 fn require_local(daemon_mode: DaemonMode) -> Result<(), CliError> {
     if daemon_mode == DaemonMode::ForceDaemon {
         Err(CliError::new(
-            ExitCode::DaemonUnreachable,
-            "daemon_unreachable",
-            format!("Daemon inalcanzable en {}", resolve_client_addr()),
+            ExitCode::from_reason("daemon_not_supported"),
+            "daemon_not_supported",
+            "Este comando se ejecuta siempre en local; no admite --daemon.",
         ))
     } else {
         Ok(())
@@ -3597,11 +3579,7 @@ async fn transcribe_via_daemon(
             )
         })?;
     if !resp.status().is_success() {
-        return Err(CliError::new(
-            ExitCode::Error,
-            "daemon_error",
-            format!("El daemon devolvió {}", resp.status()),
-        ));
+        return Err(daemon_error_from_response(resp).await);
     }
     let val: Value = resp.json().await.map_err(|e| {
         CliError::new(
@@ -3656,27 +3634,7 @@ async fn translate_via_daemon(
             )
         })?;
     if !resp.status().is_success() {
-        let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(json!({}));
-        let reason = body
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("daemon_error");
-        let msg = body
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("error del daemon");
-        let code = match reason {
-            "empty_text" | "unsupported_language_pair" => ExitCode::InvalidInput,
-            "model_missing" => ExitCode::ModelMissing,
-            "translation_failed" => ExitCode::TranslationFailed,
-            _ => ExitCode::Error,
-        };
-        return Err(CliError::new(
-            code,
-            reason,
-            format!("{} (HTTP {})", msg, status),
-        ));
+        return Err(daemon_error_from_response(resp).await);
     }
     let val: Value = resp.json().await.map_err(|e| {
         CliError::new(
@@ -3688,13 +3646,11 @@ async fn translate_via_daemon(
     if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
         let reason = val.get("reason").and_then(|v| v.as_str()).unwrap_or(err);
         let msg = val.get("message").and_then(|v| v.as_str()).unwrap_or(err);
-        let code = match reason {
-            "empty_text" | "unsupported_language_pair" => ExitCode::InvalidInput,
-            "model_missing" => ExitCode::ModelMissing,
-            "translation_failed" => ExitCode::TranslationFailed,
-            _ => ExitCode::Error,
-        };
-        return Err(CliError::new(code, reason, msg.to_string()));
+        return Err(CliError::new(
+            ExitCode::from_reason(reason),
+            reason,
+            msg.to_string(),
+        ));
     }
     let translated = val["translated"].as_str().ok_or_else(|| {
         CliError::new(
@@ -3741,25 +3697,8 @@ async fn daemon_synthesize_wav(
                 format!("Daemon inalcanzable en {}: {}", client_addr, e),
             )
         })?;
-    // Un 400 lleva la validación de entrada del daemon (`reason` y `message`).
-    if resp.status() == reqwest::StatusCode::BAD_REQUEST {
-        let body: Value = resp.json().await.unwrap_or(json!({}));
-        let reason = body
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("invalid_input");
-        let message = body
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("El daemon rechazó la petición");
-        return Err(CliError::new(ExitCode::InvalidInput, reason, message));
-    }
     if !resp.status().is_success() {
-        return Err(CliError::new(
-            ExitCode::Error,
-            "daemon_error",
-            format!("El daemon devolvió {}", resp.status()),
-        ));
+        return Err(daemon_error_from_response(resp).await);
     }
     let bytes = resp.bytes().await.map_err(|e| {
         CliError::new(
@@ -3803,11 +3742,7 @@ async fn daemon_synthesize_wav(
                         })?,
                 );
             }
-            Some("error") => {
-                let reason = ev["reason"].as_str().unwrap_or("daemon_error").to_string();
-                let msg = ev["message"].as_str().unwrap_or("").to_string();
-                return Err(CliError::new(ExitCode::Error, reason, msg));
-            }
+            Some("error") => return Err(stream_error_event(&ev)),
             _ => {}
         }
     }
@@ -3831,13 +3766,12 @@ const STREAM_TOTAL_DEADLINE: std::time::Duration = avi_core::REQUEST_FAILSAFE;
 
 /// Consume un stream NDJSON del daemon (`started` → latidos → `result`/`error`)
 /// con timeout de inactividad + failsafe total. Retorna el evento final
-/// `result`; el evento `error` se mapea a `CliError` con `code_for(reason)`.
+/// `result`; el evento `error` se mapea a `CliError` con la tabla única.
 /// Sin `result` (stream truncado, NDJSON inválido, inactividad o failsafe) el
 /// fallo es ruidoso: nunca se reemite un éxito parcial.
 async fn consume_ndjson_stream(
     mut resp: reqwest::Response,
     stage: &str,
-    code_for: impl Fn(&str) -> ExitCode,
 ) -> Result<Value, CliError> {
     let start = std::time::Instant::now();
     let mut rest = String::new();
@@ -3886,7 +3820,7 @@ async fn consume_ndjson_stream(
                 // final) y exigir el evento final.
                 let line = std::mem::take(&mut rest);
                 if !line.trim().is_empty() {
-                    if let Some(v) = process_stream_line(&line, &code_for)? {
+                    if let Some(v) = process_stream_line(&line)? {
                         return Ok(v);
                     }
                 }
@@ -3903,19 +3837,51 @@ async fn consume_ndjson_stream(
         rest.push_str(&String::from_utf8_lossy(&bytes));
         while let Some(pos) = rest.find('\n') {
             let line: String = rest.drain(..=pos).collect();
-            if let Some(v) = process_stream_line(line.trim(), &code_for)? {
+            if let Some(v) = process_stream_line(line.trim())? {
                 return Ok(v);
             }
         }
     }
 }
 
+/// Traduce una respuesta no 2xx del daemon a `CliError`: el `reason` sale del cuerpo
+/// (o de su espejo `error`, o `daemon_error` si falta) y el código, de la tabla única.
+async fn daemon_error_from_response(resp: reqwest::Response) -> CliError {
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap_or(json!({}));
+    let reason = body
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .or_else(|| body.get("error").and_then(|v| v.as_str()))
+        .unwrap_or("daemon_error");
+    let msg = body
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("error del daemon");
+    CliError::new(
+        ExitCode::from_reason(reason),
+        reason,
+        format!("{} (HTTP {})", msg, status),
+    )
+}
+
+/// Traduce un evento `error` de un stream NDJSON del daemon a `CliError`, con el
+/// código de la tabla única.
+fn stream_error_event(ev: &Value) -> CliError {
+    let reason = ev
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("daemon_error");
+    let msg = ev
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("error del daemon");
+    CliError::new(ExitCode::from_reason(reason), reason, msg.to_string())
+}
+
 /// Procesa una línea del stream: `result` → `Some(evento)`, `error` → `Err`
 /// mapeado, resto (`started`/latidos/desconocidos) → `Some` nada (`Ok(None)`).
-fn process_stream_line(
-    line: &str,
-    code_for: &impl Fn(&str) -> ExitCode,
-) -> Result<Option<Value>, CliError> {
+fn process_stream_line(line: &str) -> Result<Option<Value>, CliError> {
     let line = line.trim();
     if line.is_empty() {
         return Ok(None);
@@ -3929,17 +3895,7 @@ fn process_stream_line(
     })?;
     match ev.get("event").and_then(|v| v.as_str()) {
         Some("result") => Ok(Some(ev)),
-        Some("error") => {
-            let reason = ev
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("daemon_error");
-            let msg = ev
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("error del daemon");
-            Err(CliError::new(code_for(reason), reason, msg.to_string()))
-        }
+        Some("error") => Err(stream_error_event(&ev)),
         _ => Ok(None),
     }
 }
@@ -4156,38 +4112,9 @@ async fn clone_via_daemon(
             )
         })?;
     if !resp.status().is_success() {
-        let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(json!({}));
-        let reason = body
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .or_else(|| body.get("error").and_then(|v| v.as_str()))
-            .unwrap_or("daemon_error");
-        let msg = body
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("error del daemon");
-        let code = match reason {
-            "invalid_voice_name" => ExitCode::InvalidInput,
-            "voice_exists" => ExitCode::StateConflict,
-            "model_missing" => ExitCode::ModelMissing,
-            "audio_missing" | "audio_decode_error" | "invalid_audio" => ExitCode::InvalidInput,
-            _ => ExitCode::Error,
-        };
-        return Err(CliError::new(
-            code,
-            reason,
-            format!("{} (HTTP {})", msg, status),
-        ));
+        return Err(daemon_error_from_response(resp).await);
     }
-    let val: Value = consume_ndjson_stream(resp, "clone", |reason| match reason {
-        "invalid_voice_name" => ExitCode::InvalidInput,
-        "voice_exists" => ExitCode::StateConflict,
-        "model_missing" => ExitCode::ModelMissing,
-        "audio_missing" | "audio_decode_error" | "invalid_audio" => ExitCode::InvalidInput,
-        _ => ExitCode::Error,
-    })
-    .await?;
+    let val: Value = consume_ndjson_stream(resp, "clone").await?;
     if json_mode {
         emit_raw_json(json!({
             "name": val["name"].as_str().unwrap_or(name),
@@ -4273,57 +4200,12 @@ async fn dub_via_daemon(
             )
             .await;
         }
-        let body: Value = resp.json().await.unwrap_or(json!({}));
-        let reason = body
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("daemon_error");
-        let msg = body
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("error del daemon");
-        let code = match reason {
-            "audio_missing"
-            | "audio_decode_error"
-            | "empty_text"
-            | "text_too_long"
-            | "audio_too_long"
-            | "invalid_audio"
-            | "unsupported_language_pair" => ExitCode::InvalidInput,
-            "model_missing" => ExitCode::ModelMissing,
-            "transcription_failed" => ExitCode::TranscriptionFailed,
-            "translation_failed" => ExitCode::TranslationFailed,
-            "voice_not_found" => ExitCode::NotFound,
-            "synthesis_failed" | "synthesis_timeout" => ExitCode::Error,
-            "stt_unsupported" | "translation_unsupported" => ExitCode::Error,
-            _ => ExitCode::Error,
-        };
-        return Err(CliError::new(
-            code,
-            reason,
-            format!("{} (HTTP {})", msg, status),
-        ));
+        return Err(daemon_error_from_response(resp).await);
     }
     // El evento final del stream trae la forma contractual
-    // {status:"dubbed", text, translated, audio_b64, voice}; los mapeos
-    // reason→exit se preservan también para los eventos `error` del stream.
-    let val: Value = consume_ndjson_stream(resp, "dub", |reason| match reason {
-        "audio_missing"
-        | "audio_decode_error"
-        | "empty_text"
-        | "text_too_long"
-        | "audio_too_long"
-        | "invalid_audio"
-        | "unsupported_language_pair" => ExitCode::InvalidInput,
-        "model_missing" => ExitCode::ModelMissing,
-        "transcription_failed" => ExitCode::TranscriptionFailed,
-        "translation_failed" => ExitCode::TranslationFailed,
-        "voice_not_found" => ExitCode::NotFound,
-        "synthesis_failed" | "synthesis_timeout" => ExitCode::Error,
-        "stt_unsupported" | "translation_unsupported" => ExitCode::Error,
-        _ => ExitCode::Error,
-    })
-    .await?;
+    // {status:"dubbed", text, translated, audio_b64, voice}; los eventos `error`
+    // del stream se traducen con la misma tabla única.
+    let val: Value = consume_ndjson_stream(resp, "dub").await?;
     // Respuesta esperada {status:"dubbed", text, translated, audio_b64}
     let audio_b64_resp = val["audio_b64"].as_str().ok_or_else(|| {
         CliError::new(
@@ -4623,15 +4505,11 @@ mod tests {
     }
 
     /// `process_stream_line` clasifica cada línea NDJSON sin reloj
-    /// (determinista): `result` se entrega, `error` se mapea por reason,
-    /// `started`/latidos se ignoran y el NDJSON inválido falla ruidoso.
+    /// (determinista): `result` se entrega, `error` se mapea por reason con la
+    /// tabla única, `started`/latidos se ignoran y el NDJSON inválido falla ruidoso.
     #[test]
     fn process_stream_line_classifies_events() {
-        let code = |reason: &str| match reason {
-            "voice_exists" => ExitCode::StateConflict,
-            _ => ExitCode::Error,
-        };
-        let r = process_stream_line(r#"{"event":"result","name":"v","precomputed":true}"#, &code)
+        let r = process_stream_line(r#"{"event":"result","name":"v","precomputed":true}"#)
             .expect("result no falla");
         assert_eq!(r.expect("result se entrega")["name"], "v");
         for line in [
@@ -4642,22 +4520,20 @@ mod tests {
             "   ",
         ] {
             assert!(
-                process_stream_line(line, &code)
+                process_stream_line(line)
                     .expect("no-final no falla")
                     .is_none(),
                 "línea no-final se ignora: {:?}",
                 line
             );
         }
-        let e = process_stream_line(
-            r#"{"event":"error","reason":"voice_exists","message":"existe"}"#,
-            &code,
-        )
-        .expect_err("error debe fallar");
+        let e =
+            process_stream_line(r#"{"event":"error","reason":"voice_exists","message":"existe"}"#)
+                .expect_err("error debe fallar");
         assert_eq!(e.code, ExitCode::StateConflict);
         assert_eq!(e.reason, "voice_exists");
         assert!(
-            process_stream_line("{no json", &code).is_err(),
+            process_stream_line("{no json").is_err(),
             "NDJSON inválido falla ruidoso"
         );
     }
@@ -4705,6 +4581,81 @@ mod tests {
         addr
     }
 
+    /// Sirve una única respuesta HTTP con el estado y el cuerpo JSON elegidos, para
+    /// obtener un `reqwest::Response` de error sin daemon (doble determinista).
+    async fn serve_status_json(status: u16, body: Value) -> reqwest::Response {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind efímero");
+        let addr = listener.local_addr().expect("addr").to_string();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = vec![0u8; 8192];
+            let mut read = 0;
+            loop {
+                let n = sock.read(&mut buf[read..]).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                read += n;
+                if buf[..read].windows(4).any(|w| w == b"\r\n\r\n") || read >= buf.len() {
+                    break;
+                }
+            }
+            let body = body.to_string();
+            let response = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(response.as_bytes()).await;
+        });
+        reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("respuesta del doble")
+    }
+
+    /// Un 500 de `/transcribe` con `transcription_failed` sale con 10 y conserva el
+    /// `reason` del cuerpo.
+    #[tokio::test]
+    async fn daemon_error_from_response_maps_transcription_failed() {
+        let resp = serve_status_json(
+            500,
+            json!({ "status": "error", "reason": "transcription_failed", "message": "fallo" }),
+        )
+        .await;
+        let err = daemon_error_from_response(resp).await;
+        assert_eq!(err.code.code(), 10);
+        assert_eq!(err.reason, "transcription_failed");
+    }
+
+    /// Un 404 con `model_missing` sale con 4, sin importar el estado HTTP.
+    #[tokio::test]
+    async fn daemon_error_from_response_maps_model_missing() {
+        let resp = serve_status_json(
+            404,
+            json!({ "error": "model_missing", "reason": "model_missing", "message": "falta" }),
+        )
+        .await;
+        let err = daemon_error_from_response(resp).await;
+        assert_eq!(err.code.code(), 4);
+        assert_eq!(err.reason, "model_missing");
+    }
+
+    /// Un evento `error` del stream de síntesis con `model_missing` sale con 4.
+    #[test]
+    fn stream_error_event_maps_model_missing() {
+        let err = stream_error_event(
+            &json!({ "event": "error", "reason": "model_missing", "message": "falta" }),
+        );
+        assert_eq!(err.code.code(), 4);
+        assert_eq!(err.reason, "model_missing");
+    }
+
     /// El consumo entrega el evento final tras la secuencia
     /// `started` → latidos → `result` (doble con secuencia de éxito).
     #[tokio::test]
@@ -4724,7 +4675,7 @@ mod tests {
             .send()
             .await
             .expect("el doble debe responder");
-        let val = consume_ndjson_stream(resp, "clone", |_| ExitCode::Error)
+        let val = consume_ndjson_stream(resp, "clone")
             .await
             .expect("la secuencia de éxito entrega el final");
         assert_eq!(val["event"], "result");
@@ -4751,12 +4702,9 @@ mod tests {
             .await
             .expect("el doble debe responder");
         let start = std::time::Instant::now();
-        let e = consume_ndjson_stream(resp, "clone", |reason| match reason {
-            "voice_exists" => ExitCode::StateConflict,
-            _ => ExitCode::Error,
-        })
-        .await
-        .expect_err("el evento de fallo debe fallar");
+        let e = consume_ndjson_stream(resp, "clone")
+            .await
+            .expect_err("el evento de fallo debe fallar");
         assert_eq!(e.code, ExitCode::StateConflict);
         assert_eq!(e.reason, "voice_exists");
         assert!(
@@ -4778,7 +4726,7 @@ mod tests {
             .await
             .expect("el doble debe responder cabeceras");
         let start = std::time::Instant::now();
-        let e = consume_ndjson_stream(resp, "clone", |_| ExitCode::Error)
+        let e = consume_ndjson_stream(resp, "clone")
             .await
             .expect_err("el atasco debe fallar");
         assert_eq!(e.code, ExitCode::DaemonUnreachable);
@@ -4809,37 +4757,10 @@ mod tests {
             .send()
             .await
             .expect("el doble debe responder");
-        let e = consume_ndjson_stream(resp, "clone", |_| ExitCode::Error)
+        let e = consume_ndjson_stream(resp, "clone")
             .await
             .expect_err("el truncado debe fallar");
         assert_eq!(e.code, ExitCode::Error);
         assert_eq!(e.reason, "daemon_error");
-    }
-
-    /// El cableado de `exit_code_for` para los `reason` de red e integridad
-    /// del Ciclo 2: enteros 18–21 de la tabla cerrada (decisión 1). Lo
-    /// desconocido sigue saliendo con el 1 genérico hasta que su ciclo lo
-    /// declare.
-    #[test]
-    fn exit_code_for_maps_update_reasons() {
-        assert_eq!(exit_code_for("unsupported_platform").code(), 18);
-        assert_eq!(exit_code_for("binary_incompatible").code(), 19);
-        assert_eq!(exit_code_for("network_error").code(), 20);
-        assert_eq!(exit_code_for("checksum_mismatch").code(), 21);
-        assert_eq!(exit_code_for("program_dir_kept").code(), 22);
-        assert_eq!(
-            exit_code_for("unsupported_platform"),
-            ExitCode::UnsupportedPlatform
-        );
-        assert_eq!(
-            exit_code_for("binary_incompatible"),
-            ExitCode::BinaryIncompatible
-        );
-        assert_eq!(exit_code_for("network_error"), ExitCode::NetworkError);
-        assert_eq!(
-            exit_code_for("checksum_mismatch"),
-            ExitCode::ChecksumMismatch
-        );
-        assert_eq!(exit_code_for("motivo_del_futuro").code(), 1);
     }
 }

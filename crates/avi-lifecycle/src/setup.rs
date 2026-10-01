@@ -559,7 +559,7 @@ fn convert_body(hf_snapshot: &Path, tmp_dir: &Path) -> anyhow::Result<()> {
 /// para que `self install` no tenga que distinguir el origen del fallo: lo que le
 /// importa es que el programa queda instalado y basta reintentar con `setup`.
 pub fn map_download_failure(model: &str, cause: &anyhow::Error) -> LifecycleError {
-    LifecycleError::new("network_error", 1, format!("{model}: {cause}"))
+    LifecycleError::new("network_error", format!("{model}: {cause}"))
 }
 
 /// Costura de la provisión: la descarga (red) y la conversión (Python) se inyectan
@@ -768,7 +768,6 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
 fn conversion_error(pair: &str, reason: &str) -> LifecycleError {
     LifecycleError::new(
         "setup_failed",
-        11,
         format!("No se pudo convertir CT2 {pair}: {reason}"),
     )
 }

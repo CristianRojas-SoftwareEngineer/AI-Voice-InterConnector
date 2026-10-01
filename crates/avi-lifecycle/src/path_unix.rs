@@ -231,7 +231,6 @@ pub fn decide_existing(
         Existing::Ours(_) => Ok(()),
         Existing::Foreign if !force => Err(LifecycleError::new(
             "path_conflict",
-            14,
             format!(
                 "ya hay algo en {} que no es el enlace de {}: quítalo o repite la \
                  operación con `--force`",
@@ -298,7 +297,7 @@ pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<()
     decide_existing(&existing, link, force)?;
     if let Some(parent) = link.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
-            LifecycleError::new("path_conflict", 14, format!("{}: {e}", parent.display()))
+            LifecycleError::new("path_conflict", format!("{}: {e}", parent.display()))
         })?;
     }
     let temp = link.with_extension(format!("avi-link-{}", std::process::id()));
@@ -306,7 +305,6 @@ pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<()
     std::os::unix::fs::symlink(program_exe, &temp).map_err(|e| {
         LifecycleError::new(
             "path_conflict",
-            14,
             format!(
                 "no se pudo crear el enlace temporal {}: {e}",
                 temp.display()
@@ -348,6 +346,7 @@ pub fn revert_symlink(link: &Path, program_exe: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::test_support::write_file;
+    use avi_core::exit_codes::ExitCode;
 
     fn sandbox(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("path-unix-{}-{tag}", std::process::id()));
@@ -502,7 +501,11 @@ mod tests {
         let err = decide_existing(&Existing::Foreign, &link, false)
             .expect_err("una ruta ajena es conflicto");
         assert_eq!(err.reason, "path_conflict");
-        assert_eq!(err.exit_code, 14, "`PathConflict = 14` de la tabla cerrada");
+        assert_eq!(
+            ExitCode::from_reason(err.reason).code(),
+            14,
+            "`PathConflict = 14` de la tabla única"
+        );
         assert!(
             err.message.contains("--force"),
             "el mensaje dice cómo se resuelve"

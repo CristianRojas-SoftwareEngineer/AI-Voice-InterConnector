@@ -155,7 +155,7 @@ async fn health_matches_fixture() {
     let fixture_val = fixture("daemon_health.json");
     assert_eq!(actual["status"], fixture_val["status"]);
     assert_eq!(actual["warm"], fixture_val["warm"]);
-    assert_eq!(actual["schema_version"], Value::String("3".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     // Tolerar claves aditivas ct2/stt sin bump schema_version
     assert_eq!(actual["engine"], fixture_val["engine"]);
 }
@@ -167,9 +167,9 @@ async fn transcribe_matches_fixture() {
         return;
     }
     // Payload `{}` (campo audio_b64 ausente) → rama de error de campo ausente
-    // diseñada a propósito (no un stub `transcription_pending`).
+    // diseñada a propósito (no un stub `transcription_pending`), con estado 400.
     let (status, bytes) = send(post_json("/transcribe", serde_json::json!({}))).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
     assert_eq!(actual, fixture("daemon_transcribe.json"));
 }
@@ -271,11 +271,11 @@ async fn synthesize_emits_contract_ndjson_stream() {
         .collect();
     assert!(!events.is_empty(), "debe haber al menos un evento");
 
-    // Invariante de envelope: schema_version=3 en todo evento.
+    // Invariante de envelope: schema_version=4 en todo evento.
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("3".to_string()),
+            Value::String("4".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -398,11 +398,11 @@ async fn voices_clone_daemon_precomputed_true() {
         .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
         .collect();
     assert!(!events.is_empty(), "debe haber al menos un evento");
-    // Invariante de envelope: schema_version=3 en todo evento.
+    // Invariante de envelope: schema_version=4 en todo evento.
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("3".to_string()),
+            Value::String("4".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
