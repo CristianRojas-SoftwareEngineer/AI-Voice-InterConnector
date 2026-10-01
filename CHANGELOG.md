@@ -98,7 +98,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-Recupera el canal de instalación de una línea en Windows, que abortaba con un error de análisis antes de ejecutar nada, y hace que la suite de Pester pruebe ese canal tal como lo usa el usuario. Además, una instalación correcta deja la traducción operativa y `doctor` en verde sin clonado de voz.
+Recupera el canal de instalación de una línea en Windows, que abortaba con un error de análisis antes de ejecutar nada, y hace que la suite de Pester pruebe ese canal tal como lo usa el usuario. Además, una instalación correcta deja la traducción operativa y `doctor` en verde sin clonado de voz. La CLI y el daemon salían con códigos distintos de los del contrato y la vía daemon rechazaba o cortaba los audios largos: ahora cada `reason` tiene un único código de salida en las dos vías, y la transcripción, el dub y la referencia de clonado tienen topes de duración iguales en las dos vías, que se rechazan con `audio_too_long` antes de cargar modelos o contactar con el daemon.
 
 ### Seguridad
 
