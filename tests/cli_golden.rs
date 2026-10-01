@@ -9,6 +9,21 @@
 //! porque capturar `stdout` + exit code con fidelidad exige ejecutar el binario real,
 //! y `CARGO_BIN_EXE_*` solo está disponible para tests de integración.
 //!
+//! ### Clases de pruebas
+//! - **Contrato** (sin `#[ignore]`): corren siempre. Cada prueba usa un sandbox
+//!   propio con estado, caché de modelos y directorio de programa propios, y
+//!   siembra modelos falsos si los necesita. Un `daemon.pid` señuelo (puerto
+//!   cerrado y PID fuera de rango) o `--no-daemon` impiden que el cliente
+//!   contacte 127.0.0.1:8765 o barra procesos `qwen_tts` de la máquina.
+//! - **Recursos** (`#[ignore = "requiere …"]`): necesitan modelos o motores
+//!   reales y se ejecutan con
+//!   `cargo test --workspace --features full -- --include-ignored`. Si falta
+//!   un recurso fallan con un mensaje que nombra el comando de
+//!   aprovisionamiento: `ai-voice-interconnector setup`,
+//!   `ai-voice-interconnector setup --with-voice-cloning` o
+//!   `cargo xtask build-engine`. Usan la raíz de modelos real en solo lectura
+//!   y estado, puerto y `QWEN3_TTS_PORT` propios (`IsolatedInstance`).
+//!
 //! ### Taxonomía de tests y filtros de ejecución rápida:
 //! - **Rendimiento y comandos rápidos (< 100 ms)**: `cargo test --test cli_golden -- perf_ --nocapture`
 //! - **Contratos de salida pura y ayuda CLI**: `cargo test --test cli_golden -- _help --nocapture`
@@ -696,9 +711,27 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
     (code, json)
 }
 
-/// Ejecuta el binario con `args` (sin envs extra). Delega en [`run_json_env`].
+/// Crea un sandbox de contrato nuevo y único: datos, caché de modelos y
+/// programa propios, sin modelos y con un `daemon.pid` señuelo para que el
+/// binario no consulte 127.0.0.1:8765 ni barra los `qwen_tts` de la máquina.
+fn contract_sandbox(tag: &str) -> (PathBuf, Vec<(String, String)>) {
+    let (dir, envs) = sandbox_unique_state(tag);
+    seed_decoy_daemon_pidfile(&dir);
+    (dir, envs)
+}
+
+/// Ejecuta el binario con `args` en un sandbox de contrato nuevo que borra al
+/// terminar. Delega en [`run_json_env`]; una prueba que comparta estado entre
+/// varias llamadas debe usar un único sandbox con `run_json_env`.
 fn run_json(args: &[&str]) -> (i32, Value) {
-    run_json_env(args, &[])
+    let (dir, envs) = contract_sandbox("run_json");
+    let envs: Vec<(&str, &str)> = envs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let result = run_json_env(args, &envs);
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 /// Crea un tempfile único con semántica atómica `O_CREAT|O_EXCL` (`create_new`).
@@ -948,9 +981,11 @@ fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, St
 // absoluta) más espera del evento. La fixture por sesión queda eliminada:
 // ningún test la usa (reversión: devolver a cada test su forma con sesión).
 //
-// Las caches HF (`HF_HUB_CACHE`/`HF_HOME`) se COMPARTEN con el proceso (solo
-// lectura en estos tests): el daemon necesita los modelos provisionados, que
-// viven fuera del sandbox. `LOCALAPPDATA` sí se aísla (install_dir).
+// La raíz de modelos (`AVI_CACHE_DIR`, `HF_HUB_CACHE`, `HF_HOME`) NO se fija en
+// la instancia: se hereda del proceso (solo lectura en las pruebas de recursos),
+// porque el daemon necesita los modelos provisionados, que viven fuera del
+// sandbox. Las pruebas de contrato usan `contract_args`, que la reubica al
+// sandbox. `AVI_INSTALL_DIR` y `AVI_DATA_DIR` sí se aíslan siempre.
 //
 // Límite físico razonado (no deuda): la detección/limpieza/verificación del
 // residente ya se re-ancló a su identidad estable (PID registrado + imagen
@@ -963,6 +998,8 @@ fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, St
 struct IsolatedInstance {
     dir: PathBuf,
     envs: Vec<(String, String)>,
+    /// Raíz de modelos del sandbox, usada solo por `contract_args`.
+    contract_cache: String,
 }
 
 impl IsolatedInstance {
@@ -980,11 +1017,28 @@ impl IsolatedInstance {
         if tts_port > 0 {
             envs.push(("QWEN3_TTS_PORT".to_string(), tts_port.to_string()));
         }
-        // Caches HF reales (solo lectura): el daemon necesita los modelos
-        // provisionados; el sandbox solo aísla estado (pidfile/almacén).
-        envs.retain(|(k, _)| k != "HF_HUB_CACHE" && k != "HF_HOME");
+        // Raíz de modelos real (solo lectura): la instancia no fija ninguna
+        // variable de caché, de modo que el daemon hijo hereda la del entorno y ve
+        // los modelos provisionados; el sandbox solo aísla estado (pidfile/almacén).
+        // Las pruebas de contrato la sustituyen por la del sandbox con `contract_args`.
+        envs.retain(|(k, _)| {
+            !matches!(k.as_str(), "AVI_CACHE_DIR" | "HF_HUB_CACHE" | "HF_HOME")
+        });
         CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = Some(dir.clone()));
-        IsolatedInstance { dir, envs }
+        let contract_cache = dir.join("cache").to_string_lossy().to_string();
+        IsolatedInstance {
+            dir,
+            envs,
+            contract_cache,
+        }
+    }
+
+    /// Envs de la clase contrato: los de `args` más `AVI_CACHE_DIR` apuntando a
+    /// `<sandbox>/cache`, de modo que la prueba solo ve los modelos que siembra.
+    fn contract_args(&self) -> Vec<(&str, &str)> {
+        let mut envs = self.args();
+        envs.push(("AVI_CACHE_DIR", self.contract_cache.as_str()));
+        envs
     }
 
     /// Puerto del motor TTS residente de la instancia (`QWEN3_TTS_PORT`).
@@ -1273,22 +1327,24 @@ fn version_matches_fixture() {
 #[ignore = "requiere Parakeet"]
 fn speech_transcribe_with_audio_matches_contract() {
     require_parakeet();
-    // Régimen con fixture de sesión compartida (sin instancia aislada propia):
-    // testigo natural del despacho `Auto`
-    // con sesión en ejecución delega al daemon, sin
-    // ella cae a directo; ambas rutas emiten {text, source}+schema, así que
-    // las invariantes no dependen de la ruta efectiva. El lock excluye
-    // paradas del ciclo durante la petición (sin reenrute forzado: sin flags
-    // `--daemon`/`--no-daemon`).
-    let (code, actual) = run_json(&[
-        "--json",
-        "speech",
-        "transcribe",
-        "--audio",
-        "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-        "--source-language",
-        "es-latam",
-    ]);
+    // Instancia aislada con la raíz de modelos real heredada (solo lectura): el
+    // estado es propio y la ruta directa fijada con `--no-daemon` impide que el
+    // cliente consulte el 8765 del usuario. Ambas rutas emiten
+    // {text, source}+schema, así que las invariantes no dependen de la ruta.
+    let inst = IsolatedInstance::new("transcribe_contract");
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "--no-daemon",
+            "speech",
+            "transcribe",
+            "--audio",
+            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            "--source-language",
+            "es-latam",
+        ],
+        &inst.args(),
+    );
     assert_eq!(code, 0);
     assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     assert_eq!(actual["source"], Value::String("es-latam".to_string()));
@@ -1445,6 +1501,7 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
         "speech_transcribe_mic_duration_no_tty_no_panic",
         Duration::from_secs(30),
     );
+    let (dir, envs) = contract_sandbox("mic_transcribe");
     let output = Command::new(BIN)
         .args([
             "--json",
@@ -1456,9 +1513,11 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
             "--source-language",
             "es-latam",
         ])
+        .envs(envs)
         .stdin(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         output.status.code().is_some(),
         "el proceso no debe abortar/panicar: {:?}",
@@ -1520,6 +1579,7 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
         "speech_dub_mic_duration_no_tty_no_panic",
         Duration::from_secs(30),
     );
+    let (dir, envs) = contract_sandbox("mic_dub");
     let output = Command::new(BIN)
         .args([
             "--json",
@@ -1533,9 +1593,11 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
             "--target-language",
             "es-latam",
         ])
+        .envs(envs)
         .stdin(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         output.status.code().is_some(),
         "el proceso no debe abortar/panicar: {:?}",
@@ -1979,25 +2041,26 @@ fn translate_empty_text_exits_2() {
 #[ignore = "requiere los modelos CT2 es-en y en-es"]
 fn translate_es_to_en_produces_translation() {
     require_ct2();
-    // Ruta local fijada con `--no-daemon` (evita depender de instancia
-    // aislada o de sesión compartida), sin envs
-    // propios ni lock de ciclo. Las invariantes (vacío/passthrough/par,
-    // envelope) son comunes antes del despacho y no dependen de la ruta
-    // efectiva, así que fijar la ruta elimina el acople al ciclo sin cambiar
-    // lo verificado. Sin lock: no toca daemon ni estado compartido.
-    // El texto traducido depende del motor real; se verifican invariantes de
-    // contrato (mismo patrón que `speech_transcribe_with_audio_matches_contract`).
-    let (code, actual) = run_json(&[
-        "--json",
-        "--no-daemon",
-        "translate",
-        "--text",
-        "Hola, ¿cómo estás?",
-        "--from",
-        "es",
-        "--to",
-        "en",
-    ]);
+    // Ruta local fijada con `--no-daemon` sobre una instancia aislada con la
+    // raíz de modelos real heredada (solo lectura): no toca daemon ni estado
+    // compartido. El texto traducido depende del motor real; se verifican
+    // invariantes de contrato (mismo patrón que
+    // `speech_transcribe_with_audio_matches_contract`).
+    let inst = IsolatedInstance::new("translate_contract");
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "--no-daemon",
+            "translate",
+            "--text",
+            "Hola, ¿cómo estás?",
+            "--from",
+            "es",
+            "--to",
+            "en",
+        ],
+        &inst.args(),
+    );
     assert_eq!(code, 0);
     assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     assert_eq!(actual["source"], Value::String("es".to_string()));
@@ -2392,7 +2455,7 @@ mod tts {
             "Hola, este es un mensaje de prueba para la verificación.",
         );
         assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
-        let _ = avi_store::SpeechStore::new().remove("default", &label);
+        let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove("default", &label);
         stop_instance(&inst, "synthesize_ok_with_label");
         hit_end("tts::synthesize_ok_with_label");
     }
@@ -2457,7 +2520,7 @@ mod tts {
             short_text,
             wer
         );
-        let _ = avi_store::SpeechStore::new().remove("default", &label);
+        let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove("default", &label);
     }
 
     #[test]
@@ -2501,8 +2564,9 @@ mod tts {
 
     #[test]
     fn synthesize_text_at_limit_is_not_rejected_by_validation() {
-        // Con 500 caracteres la validación pasa; el resultado puede ser otro
-        // `reason` (por ejemplo, modelos ausentes), pero nunca `text_too_long`.
+        // Con 500 caracteres la validación pasa; el sandbox no tiene modelos, así
+        // que el resultado es otro `reason` (modelo ausente) y no se sintetiza
+        // nada, pero nunca `text_too_long`.
         let limit_text = "a".repeat(500);
         let (_code, actual) = run_json(&[
             "--json",
@@ -2516,6 +2580,10 @@ mod tts {
         ]);
         assert_ne!(actual["reason"], Value::String("text_too_long".to_string()));
         assert_ne!(actual["reason"], Value::String("empty_text".to_string()));
+        assert!(
+            actual.get("audio_path").is_none(),
+            "sin modelos no debe sintetizarse audio: {actual}"
+        );
     }
 
     #[test]
@@ -2524,7 +2592,7 @@ mod tts {
         // búsqueda de la voz sin cargar el motor ni tocar la instalación real.
         let inst = IsolatedInstance::new("synth_missing_voice");
         seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
-        let a = inst.args();
+        let a = inst.contract_args();
         // Ruta directa fijada (colateral del régimen con fixture): la
         // existencia de la voz solo se verifica en la rama local; la vía daemon la
         // resuelve el residente.
@@ -2562,7 +2630,7 @@ mod tts {
         // locuciones fabricado vive en el directorio de datos del sandbox.
         let inst = IsolatedInstance::new("synth_collision");
         seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
-        let a = inst.args();
+        let a = inst.contract_args();
         let label = unique_label("colision");
         let wav_min = {
             let spec = hound::WavSpec {
@@ -2612,9 +2680,10 @@ mod tts {
         let _ = store.remove("default", &label);
     }
 
-    /// Fábrica de locuciones sin síntesis: sidecar + WAV mínimo en la voz indicada, mismo patrón que `synthesize_label_collision_exits_6`.
-    /// voz indicada, mismo patrón que `synthesize_label_collision_exits_6`.
-    fn create_utterance(voice: &str, label: &str) {
+    /// Fábrica de locuciones sin síntesis: sidecar + WAV mínimo en la voz indicada,
+    /// guardados en el almacén de locuciones del sandbox de `inst`; mismo patrón
+    /// que `synthesize_label_collision_exits_6`.
+    fn create_utterance(inst: &IsolatedInstance, voice: &str, label: &str) {
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 24_000,
@@ -2627,9 +2696,9 @@ mod tts {
             w.write_sample(0i16).unwrap();
             w.finalize().unwrap();
         }
-        let src = std::env::temp_dir().join(format!("{}_min.wav", label));
+        let src = inst.dir.join(format!("{}_min.wav", label));
         std::fs::write(&src, cursor.into_inner()).unwrap();
-        avi_store::SpeechStore::new()
+        avi_store::SpeechStore::at(inst.dir.join("speech"))
             .save(voice, label, "fabricado", &src)
             .expect("el sidecar fabricado debe guardarse");
         let _ = std::fs::remove_file(&src);
@@ -2639,21 +2708,25 @@ mod tts {
     /// solo esa voz).
     #[test]
     fn speech_list_filters_by_existing_voice() {
-        avi_store::VoiceStore::new()
+        let inst = IsolatedInstance::new("list_filters");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
             .ensure_initialized()
             .expect("voces de fábrica inicializadas");
         let label_def = unique_label("listdef");
         let label_ryan = unique_label("listryan");
-        create_utterance("default", &label_def);
-        create_utterance("ryan", &label_ryan);
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "speech",
-            "list",
-            "--voice",
-            "default",
-        ]);
+        create_utterance(&inst, "default", &label_def);
+        create_utterance(&inst, "ryan", &label_ryan);
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "list",
+                "--voice",
+                "default",
+            ],
+            &inst.contract_args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         let entries = actual["speech"]
@@ -2672,9 +2745,6 @@ mod tts {
                 "el filtro debe devolver solo la voz pedida"
             );
         }
-        let store = avi_store::SpeechStore::new();
-        let _ = store.remove("default", &label_def);
-        let _ = store.remove("ryan", &label_ryan);
     }
 
     /// `speech list --voice <inexistente>` sale con 3 (`voice_not_found`) porque el parser valida la voz antes de listar.
@@ -2724,14 +2794,18 @@ mod tts {
     /// `speech list` sin `--voice` devuelve todas las locuciones (exit 0).
     #[test]
     fn speech_list_without_voice_returns_all() {
-        avi_store::VoiceStore::new()
+        let inst = IsolatedInstance::new("list_all");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
             .ensure_initialized()
             .expect("voces de fábrica inicializadas");
         let label_def = unique_label("listalldef");
         let label_ryan = unique_label("listallryan");
-        create_utterance("default", &label_def);
-        create_utterance("ryan", &label_ryan);
-        let (code, actual) = run_json(&["--json", "--no-daemon", "speech", "list"]);
+        create_utterance(&inst, "default", &label_def);
+        create_utterance(&inst, "ryan", &label_ryan);
+        let (code, actual) = run_json_env(
+            &["--json", "--no-daemon", "speech", "list"],
+            &inst.contract_args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         let entries = actual["speech"]
@@ -2749,9 +2823,6 @@ mod tts {
                 .any(|e| e["label"] == Value::String(label_ryan.clone())),
             "sin filtro debe aparecer la locución de ryan"
         );
-        let store = avi_store::SpeechStore::new();
-        let _ = store.remove("default", &label_def);
-        let _ = store.remove("ryan", &label_ryan);
     }
 
     // ─── say ───────────────────────────────────────────────────────────
@@ -2773,16 +2844,20 @@ mod tts {
         // la suite, acotada a un texto corto ("Hola mundo", <2 s); la
         // verificación es sobre el archivo (WAV válido + WER), no sobre el
         // altavoz. Gate de dispositivo como hoy (sin mezclador no hay humo).
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "speech",
-            "say",
-            "--text",
-            "Hola mundo",
-            "--voice",
-            "default",
-        ]);
+        let inst = IsolatedInstance::new("say_plays");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "say",
+                "--text",
+                "Hola mundo",
+                "--voice",
+                "default",
+            ],
+            &inst.args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("reproduced".to_string()));
         let audio = actual["audio_path"]
@@ -2823,18 +2898,22 @@ mod tts {
         // y en traducción: sin
         // mezclador el comando falla con `playback_failed` y no hay archivo
         // que verificar.
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "speech",
-            "dub",
-            "--audio",
-            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-            "--source-language",
-            "es-latam",
-            "--target-language",
-            "es-latam",
-        ]);
+        let inst = IsolatedInstance::new("dub_passthrough_direct");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "dub",
+                "--audio",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+                "--source-language",
+                "es-latam",
+                "--target-language",
+                "es-latam",
+            ],
+            &inst.args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
         let audio = actual["audio_path"]
@@ -2876,16 +2955,20 @@ mod tts {
         let name = unique_label("clon");
         // Testigo en directo de `clone`: ruta local fijada con
         // `--no-daemon` para que la sesión en ejecución no lo reenrute.
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "voice",
-            "clone",
-            "--name",
-            &name,
-            "--speech-reference",
-            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-        ]);
+        let inst = IsolatedInstance::new("clone_ok");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &inst.args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
@@ -2899,7 +2982,7 @@ mod tts {
             "el .qvoice debe pesar > 1 MB (era {})",
             size
         );
-        let _ = avi_store::VoiceStore::new().remove(&name);
+        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
     }
 
     /// Clonado repetido → 6. La voz existente se fabrica con un `.qvoice` mínimo.
@@ -2912,7 +2995,7 @@ mod tts {
             &inst.dir.join("cache"),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
-        let a = inst.args();
+        let a = inst.contract_args();
         let name = unique_label("clon");
         let voices = avi_store::VoiceStore::at(inst.dir.join("voices"));
         let dir = voices.voice_dir(&name);
@@ -2944,7 +3027,7 @@ mod tts {
             &inst.dir.join("cache"),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
-        let a = inst.args();
+        let a = inst.contract_args();
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -2974,7 +3057,7 @@ mod tts {
             &inst.dir.join("cache"),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
-        let a = inst.args();
+        let a = inst.contract_args();
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -3005,7 +3088,7 @@ mod tts {
             &inst.dir.join("cache"),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
-        let a = inst.args();
+        let a = inst.contract_args();
         let wav = write_truncated_wav("clon_truncado");
         let name = unique_label("clon");
         let (code, actual) = run_json_env(
@@ -3317,7 +3400,7 @@ mod tts {
             std::fs::write(ct2.join("model.bin"), b"marker").expect("sembrar model.bin");
             std::fs::write(ct2.join("tokenizer.json"), b"{}").expect("sembrar tokenizer");
         }
-        let mut envs = inst.args();
+        let mut envs = inst.contract_args();
         envs.push(("HTTPS_PROXY", "http://127.0.0.1:9"));
         envs.push(("HTTP_PROXY", "http://127.0.0.1:9"));
         let (code, payload) = run_json_env(&["--json", "setup"], &envs);
@@ -3396,7 +3479,7 @@ mod tts {
         args.extend_from_slice(extra);
         let pidfile_before = std::fs::read(inst.dir.join("daemon.pid")).ok();
         let t0 = Instant::now();
-        let (code, actual) = run_json_env(&args, &inst.args());
+        let (code, actual) = run_json_env(&args, &inst.contract_args());
         let elapsed = t0.elapsed();
         assert_eq!(code, 6, "puerto ocupado debe salir con exit 6: {}", actual);
         assert_eq!(actual["reason"], "port_in_use", "{}", actual);
@@ -3454,7 +3537,7 @@ mod tts {
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
         let t0 = Instant::now();
-        let (code, actual) = run_json_env(&["--json", "daemon", "serve"], &inst.args());
+        let (code, actual) = run_json_env(&["--json", "daemon", "serve"], &inst.contract_args());
         let elapsed = t0.elapsed();
         assert_eq!(code, 6, "puerto ocupado debe salir con exit 6: {}", actual);
         assert_eq!(actual["reason"], "port_in_use", "{}", actual);
@@ -3489,7 +3572,7 @@ mod tts {
         let t0 = Instant::now();
         let (code, actual) = run_json_env(
             &["--json", "daemon", "start", "--warm-voice", &voice],
-            &inst.args(),
+            &inst.contract_args(),
         );
         let elapsed = t0.elapsed();
         assert_eq!(code, 3, "voz inexistente debe salir con exit 3: {}", actual);
@@ -3799,18 +3882,22 @@ mod tts {
         // Partición orden-sensible eliminada por aislamiento por instancia: antes este
         // test apagaba la SESIÓN global (orden-sensible con la serie: si otro
         // test necesitaba la sesión, el orden importaba y el próximo `ensure`
-        // la reparaba bajo demanda). Ahora observa un sandbox virgen sin
-        // arrancar nada: sin pidfile el cliente usa el fallback idéntico a
-        // hoy (8765) y el exit 5 es observable sin tocar estado compartido —
-        // el orden de ejecución ya no importa por construcción.
+        // la reparaba bajo demanda). Ahora observa un sandbox sin arrancar
+        // nada: el pidfile señuelo dirige al cliente a un puerto cerrado y el
+        // exit 5 es observable sin tocar estado compartido — el orden de
+        // ejecución ya no importa por construcción.
         let inst = IsolatedInstance::new("force_sin_daemon");
-        let a = inst.args();
+        // El pidfile señuelo apunta a un puerto cerrado: el cliente no cae al
+        // 8765 del usuario, que puede tener un daemon real.
+        seed_decoy_daemon_pidfile(&inst.dir);
+        let a = inst.contract_args();
         // La ausencia es real a nivel SO (no solo HTTP): con matar-y-rearrancar
         // el `start` solo ocurre explícito, nunca implícito en delegación, así
         // que el exit 5 sigue observable.
+        let decoy_port = inst.port();
         assert!(
-            !port_open(8765),
-            "sin daemon el puerto 8765 debe estar cerrado a nivel SO"
+            !port_open(decoy_port),
+            "sin daemon el puerto {decoy_port} del señuelo debe estar cerrado a nivel SO"
         );
         assert!(
             !inst
@@ -3889,7 +3976,7 @@ mod tts {
             Value::Bool(true),
             "vía daemon el evento final trae precomputed:true (precarga iniciada)"
         );
-        let _ = avi_store::VoiceStore::new().remove(&name);
+        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "clone_delegates_to_daemon");
         hit_end("tts::clone_delegates_to_daemon");
@@ -3924,7 +4011,7 @@ mod tts {
             &a,
         );
         std::fs::remove_file(&wav).ok();
-        let _ = avi_store::VoiceStore::new().remove(&name);
+        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
         stop_instance(&inst, "clone_daemon_truncado");
         assert_eq!(code, 2, "referencia truncada por daemon → InvalidInput");
         assert_eq!(actual["reason"], Value::String("invalid_audio".to_string()));
@@ -4083,13 +4170,17 @@ mod tts {
 
 /// Ejecuta el binario con `args` capturando stdout como texto plano y
 /// devolviendo (código de salida, stdout). Para aserciones sobre `--help`.
+/// Cada llamada usa un sandbox de contrato nuevo que se borra al terminar.
 fn run_text(args: &[&str]) -> (i32, String) {
+    let (dir, envs) = contract_sandbox("run_text");
     let output = Command::new(BIN)
         .args(args)
+        .envs(envs)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
+    let _ = std::fs::remove_dir_all(&dir);
     let code = output
         .status
         .code()
