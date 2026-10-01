@@ -187,13 +187,20 @@ mod tests {
     use avi_core::engine::TranslationEngine;
     use avi_core::engine::{HierarchicalSegmenter, Segmenter};
 
-    /// Modelo CT2 derivado presente en la raíz de modelos
-    /// (`models_cache_dir()/ct2`). Esa raíz vive fuera del repo: en un checkout
-    /// limpio (CI) los E2E se saltan.
+    /// Directorio del modelo CT2 derivado del par, exigiendo `model.bin`. La raíz
+    /// de modelos (`models_cache_dir()/ct2`) vive fuera del repo y la provisiona
+    /// `ai-voice-interconnector setup`.
     #[cfg(feature = "native-translation")]
-    fn ct2_model_available(subdir: &str) -> bool {
-        let pair = subdir.strip_prefix("opus-mt-").unwrap_or(subdir);
-        avi_store::is_ct2_provisioned(pair)
+    fn require_ct2(pair: &str) -> std::path::PathBuf {
+        let model_dir = avi_store::ct2_model_dir(pair);
+        let weights = model_dir.join("model.bin");
+        std::fs::metadata(&weights).unwrap_or_else(|e| {
+            panic!(
+                "falta {} ({e}): provisiona el modelo CT2 con `ai-voice-interconnector setup`",
+                weights.display()
+            )
+        });
+        model_dir
     }
 
     /// Carga el modelo opus-mt es→en real (ya convertido a CT2 y provisionado)
@@ -201,14 +208,11 @@ mod tests {
     /// resultado no esté vacío.
     #[cfg(feature = "native-translation")]
     #[test]
+    #[ignore = "requiere el modelo CT2 es-en"]
     fn ct2translationengine_translates_real_text() {
         use crate::Ct2TranslationEngine;
 
-        let model_dir = avi_store::ct2_model_dir("es-en");
-        if !ct2_model_available("opus-mt-es-en") {
-            eprintln!("[translate] skip: sin modelo CT2 es→en");
-            return;
-        }
+        let model_dir = require_ct2("es-en");
 
         let engine = Ct2TranslationEngine::new(&model_dir)
             .expect("el modelo opus-mt-es-en debe cargar pesos CT2 reales desde disco");
@@ -240,14 +244,11 @@ mod tests {
     /// equivalente debe insertarlo).
     #[cfg(feature = "native-translation")]
     #[test]
+    #[ignore = "requiere el modelo CT2 es-en"]
     fn ct2rs_loads_opus_mt_model_and_translates() {
         use ct2rs::{Config, Translator};
 
-        let model_dir = avi_store::ct2_model_dir("es-en");
-        if !ct2_model_available("opus-mt-es-en") {
-            eprintln!("[translate] skip: sin modelo CT2 es→en");
-            return;
-        }
+        let model_dir = require_ct2("es-en");
 
         let translator = Translator::new(&model_dir, &Config::default())
             .expect("el modelo opus-mt-es-en debe cargar pesos CT2 reales desde disco");
@@ -329,13 +330,12 @@ mod tests {
     /// funcionales: salida no vacía, sin `</s>` ni `<unk>`.
     #[cfg(feature = "native-translation")]
     #[test]
+    #[ignore = "requiere los modelos CT2 es-en y en-es"]
     fn ct2translationengine_matches_python_oracle() {
         use crate::Ct2TranslationEngine;
 
-        if !ct2_model_available("opus-mt-es-en") || !ct2_model_available("opus-mt-en-es") {
-            eprintln!("[translate] skip: sin modelos CT2 es↔en");
-            return;
-        }
+        require_ct2("es-en");
+        require_ct2("en-es");
 
         // Pares (subdirectorio de modelo, fixture del corpus del oráculo),
         // ambos dentro de la raíz del crate.
@@ -461,16 +461,13 @@ mod tests {
     /// preservando la separación de párrafos en la salida.
     #[cfg(feature = "native-translation")]
     #[test]
+    #[ignore = "requiere el modelo CT2 es-en"]
     fn translate_multi_paragraph_preserves_separators() {
-        if !ct2_model_available("opus-mt-es-en") {
-            eprintln!("[translate] skip: sin modelo CT2 es→en");
-            return;
-        }
         let result = crate::translate(
             "Hola, ¿cómo estás?\n\nBuenos días, señor.",
             "es",
             "en",
-            avi_store::ct2_model_dir("es-en"),
+            require_ct2("es-en"),
         );
 
         let translated = result.expect("la traducción multi-párrafo debe completarse");
@@ -779,11 +776,9 @@ mod tests {
     /// eso esta cobertura del lote se añade aquí).
     #[cfg(feature = "native-translation")]
     #[test]
+    #[ignore = "requiere el modelo CT2 es-en"]
     fn translate_paragraph_of_11_sentences_splits_without_losing_text() {
-        if !ct2_model_available("opus-mt-es-en") {
-            eprintln!("[translate] skip: sin modelo CT2 es→en");
-            return;
-        }
+        let model_dir = require_ct2("es-en");
         let sentences: Vec<String> = (1..=11)
             .map(|i| {
                 format!(
@@ -795,7 +790,7 @@ mod tests {
             .collect();
         let text = sentences.join(" ");
 
-        let translated = crate::translate(&text, "es", "en", avi_store::ct2_model_dir("es-en"))
+        let translated = crate::translate(&text, "es", "en", model_dir)
             .expect("el párrafo de 11 oraciones debe traducirse");
 
         assert!(
@@ -839,11 +834,9 @@ mod tests {
     /// los dos separadores `"\n\n"` y sin filtrar `</s>`/`<unk>`.
     #[cfg(feature = "native-translation")]
     #[test]
+    #[ignore = "requiere el modelo CT2 es-en"]
     fn translate_long_multi_paragraph_preserves_paragraphs() {
-        if !ct2_model_available("opus-mt-es-en") {
-            eprintln!("[translate] skip: sin modelo CT2 es→en");
-            return;
-        }
+        let model_dir = require_ct2("es-en");
         let sentences: Vec<String> = (1..=12)
             .map(|i| {
                 format!(
@@ -858,7 +851,7 @@ mod tests {
             sentences.join(" ")
         );
 
-        let translated = crate::translate(&text, "es", "en", avi_store::ct2_model_dir("es-en"))
+        let translated = crate::translate(&text, "es", "en", model_dir)
             .expect("el multipárrafo largo debe traducirse");
 
         assert!(

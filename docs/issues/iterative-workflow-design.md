@@ -220,13 +220,15 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S17 | `sudo_not_supported` se emite, pero no está en el contrato ni en el oráculo de la tabla | Revisión de C1 | Baja | C1 |
 | S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C7 |
 | S19 | `/synthesize` responde `model_missing` a una temperatura fuera de rango si falta el modelo de síntesis | Revisión de C1 | Baja | C1 |
-| S20 | Unas 60 pruebas se aprueban solas cuando falta un recurso externo (modelos, binario del motor, dispositivo de audio, `ModelStore` escribible, puerto 8765 libre): imprimen `skip: …` y hacen `return`; cada una decide con sus propios auxiliares, uno de ellos duplicado, y uno de ellos ejecuta el `doctor` real sobre la instalación del mantenedor; otras cuatro comprueban un feature en tiempo de ejecución en lugar de declararlo con `cfg` | Revisión de C1 | Alta; un verde no demuestra que la prueba se ejecutó | C2 |
+| S20 | 53 pruebas, en 66 puntos del código, se aprueban solas cuando falta un recurso externo (modelos, binario del motor, dispositivo de audio, `ModelStore` escribible, puerto 8765 libre): imprimen `skip: …` y hacen `return`; cada una decide con sus propios auxiliares, uno de ellos duplicado, y uno de ellos ejecuta el `doctor` real sobre la instalación del mantenedor; otras cuatro comprueban un feature en tiempo de ejecución en lugar de declararlo con `cfg` | Revisión de C1 | Alta; un verde no demuestra que la prueba se ejecutó | C2 |
 | S21 | Nada ejecuta las pruebas con recursos locales antes de publicar: CircleCI corre solo en tags, sin features nativas ni modelos, y ni la skill `release` ni `cargo xtask release` piden más que `cargo test --all` (o nada); esas pruebas cuentan como verdes sin haberse ejecutado | Revisión de C1 | Alta; los falsos verdes llegan hasta la puerta de la release | C2 |
 | S22 | La golden de `/health` se salta sin Parakeet y, sin `native-stt`, nunca corre en CI; `voices_clone_daemon_precomputed_true` se salta por el modelo de transcripción cuando necesita el de síntesis | Revisión de C1 | Media | C2 |
 | S23 | La validación de entrada de `/transcribe` (`usage_error` sin audio, `invalid_audio` con base64 inválido) y la de `/translate` (`empty_text`, mismo idioma, `unsupported_language_pair`) viven dentro de funciones que exigen `native-stt` o `native-translation` aunque no usan el motor, y sus pruebas solo corren con el feature | Revisión de C1 | Baja | C2 |
 | S24 | El estado del daemon en las pruebas se construye de dos formas: a mano en las goldens, con un comentario de cabecera desfasado, y con `DaemonState::new()` en las pruebas de la biblioteca, que con `native-stt` carga Parakeet y escribe en el directorio de datos real | Revisión de C1 | Media | C2 |
 | S25 | `docs/BRANCHING.md` afirma que los jobs de test corren en `main` y en ramas, y solo corren en tags | Revisión de C1 | Baja | C2 |
 | S26 | La verificación de los ciclos usa órdenes ad hoc (como `cargo test -p avi-daemon --features native-stt` en C1) que dependen de la instalación real del mantenedor | Revisión de C1 | Baja | C2 |
+| S27 | `self install`, `self uninstall` y `self update` detienen el daemon siempre en `127.0.0.1:8765` y `cleanup` solo respeta `AVI_DAEMON_PORT=0`; sin pidfile, `daemon stop`, `daemon status` y el resto de clientes del daemon lo buscan siempre en 8765; diez pruebas de contrato llamaban así a `daemon_stop::stop` contra el daemon real del mantenedor | Verificación de C2 | Media | C2 |
+| S28 | `tts::dub_audio_passthrough_es_es`, de la clase con recursos, falla de forma intermitente (1 de 4 intentos): el proceso `--no-daemon speech dub --audio parakeet_sample_16k.wav --source-language es-latam --target-language es-latam` termina a los 13,9 s con el código 0xC0000409 (caída nativa), sin fallo de aserción; la puerta de `cargo xtask release` aborta cuando ocurre | Verificación de C2 | Media | En observación |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
@@ -240,6 +242,18 @@ nuevo, C2, porque comparten una causa raíz que no pertenece a ningún informe: 
 declaran qué recursos necesitan y nada comprueba que se ejecuten con ellos. C2 se intercala
 entre C1 y C3 para que las pruebas de C3 nazcan ya en su esquema.
 
+S27 salió de la verificación de C2 y se corrige en C2.
+
+S28 también salió de la verificación de C2. Antes de C2 la prueba se omitía sin modelos,
+así que la caída pudo existir sin verse. Un diagnóstico posterior no la reprodujo en 31
+ejecuciones aisladas del mismo comando; la única caída ocurrió con la suite completa, que
+ejecuta en paralelo otras pruebas con modelos. La duración coincide con la de una
+ejecución completa, y la hipótesis más probable es una carrera en el cierre del proceso
+entre la liberación de las sesiones de ONNX Runtime de Parakeet y la del stream de audio,
+sin demostrar. Queda en observación, sin ciclo: las pruebas de la CLI muestran ahora el
+stderr del proceso hijo cuando fallan, y si la caída se repite, con ese rastro se abre un
+G-Desvío en el ciclo en curso o un ciclo propio.
+
 ## 8. Orden de los ciclos y dependencias
 
 ```text
@@ -247,7 +261,7 @@ C0 Preparación y decisiones ──G0──►
   C1 Contrato de errores (S4 S5 S11 S12 S17 S19)
     │  C3 usa la tabla única de reason→exit y la lectura del reason en los errores del daemon
     ▼
-  C2 Clases de pruebas (S20 S21 S22 S23 S24 S25 S26)
+  C2 Clases de pruebas (S20 S21 S22 S23 S24 S25 S26 S27)
     │  C3 escribe sus pruebas en el esquema de clases y pone su tope de audio sobre la validación de /transcribe que C2 extrae
     ▼
   C3 Límites de la vía daemon (S1 S13 S14 S15 S16)
@@ -1006,7 +1020,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   - Ninguna prueba escribe en la instalación real: los recursos de la instalación se
     leen sin modificarlos y todo lo que la prueba escribe va a directorios temporales.
 - **Depende de:** C1.
-- **Síntomas:** S20, S21, S22, S23, S24, S25 y S26.
+- **Síntomas:** S20, S21, S22, S23, S24, S25, S26 y S27.
 - **Decisiones:** D14 a D18, resueltas el 2026-09-30. El hook `post-merge` que poda
   `target/` no se toca: no bloquea, es opcional y mezclaría responsabilidades.
 - **Tareas:**
@@ -1033,13 +1047,26 @@ aprobar. Las pruebas que se enumeran son las mínimas.
      `IsolatedInstance`); luego quedan en la clase que corresponda por lo que necesiten
      (D15, S20).
   5. Puerta mecánica en `cargo xtask release`: ejecuta
-     `cargo test --workspace --features full -- --include-ignored` como primer paso,
-     antes del bump y de cualquier otra escritura, y aborta si algo falla o falta un
+     `cargo test --workspace --features full -- --include-ignored` tras las
+     validaciones de solo lectura y antes de cualquier escritura (el bump incluido), y aborta si algo falla o falta un
      recurso, sin modo para saltarla. El paso 4 de la skill `release` conserva
      `cargo test --all` como réplica local de CI sin features, y la skill y
      `docs/RELEASING.md` describen la puerta (D16, S21).
   6. Corregir `docs/BRANCHING.md`: los jobs de test corren solo en tags (S25).
+  7. Que `self install`, `self uninstall`, `self update` y `cleanup` detengan el daemon en
+     el puerto de `AVI_DAEMON_PORT`, como lo arranca el daemon: `daemon_stop::default_addr`
+     (sobre la función pura `addr_for_port_env`) sustituye a `DEFAULT_ADDR` en los cuatro
+     comandos, y las pruebas que ejecutan `cleanup::run` en su proceso fijan
+     `AVI_DAEMON_PORT=0` (S27). Por la misma causa, el cliente sin pidfile
+     (`daemon_stop::resolve_client_addr`, que usan `daemon stop`, `daemon status` y los
+     demás comandos que contactan con el daemon) toma como respaldo `default_addr` en
+     lugar de `DEFAULT_ADDR` (S27).
 - **Pruebas en rojo:**
+  - la función pura de dirección (`addr_for_port_env`) da `127.0.0.1:<puerto>` para un
+    puerto válido, `0` incluido y con espacios recortados, y la dirección por defecto si
+    falta o no es un puerto;
+  - la dirección del cliente sin pidfile (`resolve_client_addr_with`) sigue el puerto de
+    `AVI_DAEMON_PORT`, y con pidfile manda la dirección publicada en él (S27);
   - una prueba de contrato recorre los `.rs` de `src/`, `tests/` y `crates/*/{src,tests}`
     y falla si alguno contiene un `eprintln!` con `skip:`;
   - la golden de `/health` corre y pasa sin features nativas y sin modelos;
@@ -1058,8 +1085,9 @@ aprobar. Las pruebas que se enumeran son las mínimas.
     puerta y deja el árbol sin cambios (`git status` limpio). La puerta no lleva prueba
     automática porque tendría que lanzar la suite dentro de la suite.
 - **Documentación:** `docs/BRANCHING.md`, `docs/RELEASING.md`, el paso 4 de la skill
-  `release`, la cabecera de `tests/cli_golden.rs` y la sección «Interno» de
-  `## [No publicado]` del CHANGELOG (la release exige la suite con recursos locales).
+  `release`, la cabecera de `tests/cli_golden.rs`, la sección «Interno» de
+  `## [No publicado]` del CHANGELOG (la release exige la suite con recursos locales) y
+  su sección «Corregido» (S27).
   S26 ya queda resuelto en la sección 5.3 de este documento.
 - **Cierra:** ningún informe: los síntomas no tienen informe propio.
 

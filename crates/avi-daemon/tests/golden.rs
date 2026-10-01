@@ -17,6 +17,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Once;
 use std::sync::OnceLock;
 
 use axum::body::Body;
@@ -29,45 +30,78 @@ use tower::ServiceExt;
 use avi_daemon::{build_router_with_state, DaemonState, WarmState};
 use avi_store::{SpeechStore, VoiceStore};
 
-/// Estado de test único: carga el motor STT real una sola vez (ruta relativa a
-/// `CARGO_MANIFEST_DIR`), reutilizable entre tests. El motor TTS se construye con
-/// resolución por defecto (no provisionado desde CWD → branch `model_missing`).
-///
-/// Divergencia aceptada frente al evento de readiness por señal (documentada, no corregida):
-/// `warm` nace en `Warming` eterno porque aquí no corre `run_daemon_server`
-/// (sin bind ni warmup real); los tests de contrato leen el estado tal cual y
-/// nunca esperan la señal `avi-daemon-ready`. La espera por señal solo aplica
-/// a la clase E2E-con-proceso.
+/// Prepara una sola vez por proceso el entorno que comparten los dos estados:
+/// `AVI_DATA_DIR` apunta al directorio temporal propio del proceso para que los
+/// logs del motor residente que lanza el clonado no caigan en el directorio de
+/// datos del usuario, y el motor residente escucha en un puerto efímero propio
+/// (`QWEN3_TTS_PORT`) para no chocar con el del daemon del usuario.
+fn prepare_shared_env() {
+    static PREPARED: Once = Once::new();
+    PREPARED.call_once(|| {
+        let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
+        std::env::set_var("AVI_DATA_DIR", &tmp);
+        let tts_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("reservar un puerto efímero para el motor residente")
+            .port();
+        std::env::set_var("QWEN3_TTS_PORT", tts_port.to_string());
+    });
+}
+
+/// Estado de contrato único, reutilizable entre tests. Los almacenes de voces y
+/// de habla se anclan en un directorio temporal propio del proceso. Su motor TTS
+/// no tiene binario (`binary_path = None`) aunque exista vendor, `qwen_tts` en
+/// el `PATH` o `QWEN3_TTS_BIN`, así que ninguna prueba de contrato puede lanzar
+/// el motor real. Con `native-stt` el estado carga Parakeet, que se exige
+/// antes. `warm` nace en `Warming` porque aquí no corre `run_daemon_server`
+/// (sin bind ni warmup real); los tests de contrato leen el estado tal cual.
 static TEST_STATE: OnceLock<Arc<DaemonState>> = OnceLock::new();
 
 fn test_state() -> Arc<DaemonState> {
     TEST_STATE
         .get_or_init(|| {
-            // Construcción única y `cfg`-gated por campo (no duplicada por
-            // `native-stt`): añadir un campo nuevo a `DaemonState` solo exige
-            // tocar este sitio, no dos literales. `stt_engine` se carga solo
-            // con `native-stt`; `ct2_engine` se incluye solo con
-            // `native-translation` (None en tests — sin `model.bin` no residente).
             #[cfg(feature = "native-stt")]
-            let stt_engine = {
-                let stt_model_dir = avi_store::ModelStore::new()
-                    .model_snapshot_path("parakeet-tdt-v3")
-                    .expect("el modelo STT de test debe estar provisionado en la raíz de modelos — ejecuta setup --with-stt");
-                avi_stt::ParakeetEngine::new(&stt_model_dir)
-                    .expect("el modelo STT de test debe cargarse")
-            };
-            Arc::new(DaemonState {
-                synthesis_lock: tokio::sync::Mutex::new(()),
-                voice_store: VoiceStore::new(),
-                speech_store: SpeechStore::new(),
-                tts_engine: avi_tts::Qwen3TtsEngine::new(None),
-                #[cfg(feature = "native-stt")]
-                stt_engine,
-                #[cfg(feature = "native-translation")]
-                ct2_engine: None,
-                warm: std::sync::RwLock::new(WarmState::Warming),
-                shutdown_notify: Arc::new(tokio::sync::Notify::new()),
-            })
+            require_parakeet();
+            prepare_shared_env();
+            let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
+            let mut state = DaemonState::with_stores(
+                VoiceStore::at(tmp.join("voices")),
+                SpeechStore::at(tmp.join("speech")),
+            )
+            .expect("estado del daemon con almacenes temporales");
+            state.tts_engine.binary_path = None;
+            Arc::new(state)
+        })
+        .clone()
+}
+
+/// Estado de clonado, solo para las pruebas que ejercen el motor real. Usa
+/// almacenes en otro directorio temporal propio del proceso y su motor TTS
+/// apunta a `QWEN3_TTS_BIN` si está definida o, si no, al binario de
+/// `vendor/qwen3-tts`, porque el cwd del crate no ve el vendor del workspace.
+/// El clonado y el arranque del residente buscan el binario en `QWEN3_TTS_BIN`
+/// y no en el campo, así que se fija también la variable; el estado de contrato
+/// no la ve porque su `binary_path = None` corta `/synthesize` antes del motor.
+static CLONE_STATE: OnceLock<Arc<DaemonState>> = OnceLock::new();
+
+fn clone_state() -> Arc<DaemonState> {
+    CLONE_STATE
+        .get_or_init(|| {
+            #[cfg(feature = "native-stt")]
+            require_parakeet();
+            prepare_shared_env();
+            let tmp = std::env::temp_dir().join(format!("avi_golden_clone_{}", std::process::id()));
+            let mut state = DaemonState::with_stores(
+                VoiceStore::at(tmp.join("voices")),
+                SpeechStore::at(tmp.join("speech")),
+            )
+            .expect("estado del daemon con almacenes temporales");
+            let binary = std::env::var_os("QWEN3_TTS_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(vendor_binary);
+            std::env::set_var("QWEN3_TTS_BIN", &binary);
+            state.tts_engine.binary_path = Some(binary);
+            Arc::new(state)
         })
         .clone()
 }
@@ -85,7 +119,12 @@ fn fixture(name: &str) -> Value {
 
 /// Envía una petición al router y devuelve (status, cuerpo crudo en bytes).
 async fn send(req: Request<Body>) -> (StatusCode, Vec<u8>) {
-    let response = build_router_with_state(test_state())
+    send_to(test_state(), req).await
+}
+
+/// Envía una petición al router construido sobre el estado indicado.
+async fn send_to(state: Arc<DaemonState>, req: Request<Body>) -> (StatusCode, Vec<u8>) {
+    let response = build_router_with_state(state)
         .oneshot(req)
         .await
         .expect("el router debe responder");
@@ -133,22 +172,77 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 // sistema operativo solo la verifica la serie de tests pesada
 // (con reaper ruidoso y `verificar_cero_huerfanos`).
 
-/// Modelos reales de STT (Parakeet TDT v3 int8: 4 archivos) presentes. La raíz de
-/// modelos vive fuera del repo: en un checkout limpio (CI) estos tests dorados
-/// se saltan con aviso; en desarrollo corren completos.
-fn models_present() -> bool {
-    #[cfg(not(feature = "native-stt"))]
-    return false;
-    #[cfg(feature = "native-stt")]
-    return avi_store::ModelStore::new().is_provisioned("parakeet-tdt-v3");
+/// Exige `nemo128.onnx` del snapshot de Parakeet: la raíz de modelos vive fuera
+/// del repo y la provisiona `ai-voice-interconnector setup`.
+#[cfg(feature = "native-stt")]
+fn require_parakeet() {
+    let model_dir = avi_store::ModelStore::new()
+        .model_snapshot_path("parakeet-tdt-v3")
+        .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
+    let preprocessor = model_dir.join("nemo128.onnx");
+    std::fs::metadata(&preprocessor).unwrap_or_else(|e| {
+        panic!(
+            "falta {} ({e}): provisiona Parakeet con `ai-voice-interconnector setup`",
+            preprocessor.display()
+        )
+    });
+}
+
+/// Exige `model.safetensors` del snapshot del modelo Base de clonado: lo
+/// provisiona `ai-voice-interconnector setup --with-voice-cloning`.
+fn require_base_model() {
+    let model_dir = avi_store::ModelStore::new()
+        .model_snapshot_path("qwen3-tts-0.6b-base")
+        .expect("el modelo qwen3-tts-0.6b-base debe tener un pin de revisión");
+    let weights = model_dir.join("model.safetensors");
+    std::fs::metadata(&weights).unwrap_or_else(|e| {
+        panic!(
+            "falta {} ({e}): provisiona el modelo Base con `ai-voice-interconnector setup --with-voice-cloning`",
+            weights.display()
+        )
+    });
+}
+
+/// Binario del motor en `vendor/qwen3-tts` del workspace.
+fn vendor_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+        "../../vendor/qwen3-tts/qwen_tts.exe"
+    } else {
+        "../../vendor/qwen3-tts/qwen_tts"
+    })
+}
+
+/// Exige el binario del motor, salvo que `QWEN3_TTS_BIN` ya apunte a otro. Lo
+/// construye `cargo xtask build-engine`.
+fn require_clone_binary() {
+    if std::env::var_os("QWEN3_TTS_BIN").is_some() {
+        return;
+    }
+    let binary = vendor_binary();
+    assert!(
+        binary.is_file(),
+        "falta {}: constrúyelo con `cargo xtask build-engine`",
+        binary.display()
+    );
 }
 
 #[tokio::test]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn health_matches_fixture() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
+    // Los almacenes del estado deben anclarse bajo un directorio temporal propio
+    // y no en el directorio de datos del usuario; se afirma antes de escribir.
+    let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
+    let state = test_state();
+    assert!(
+        state.voice_store.root().starts_with(&tmp),
+        "raíz de voces fuera del temporal: {}",
+        state.voice_store.root().display()
+    );
+    assert!(
+        state.speech_store.root().starts_with(&tmp),
+        "raíz de habla fuera del temporal: {}",
+        state.speech_store.root().display()
+    );
     let (status, bytes) = send(get("/health")).await;
     assert_eq!(status, StatusCode::OK);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
@@ -160,12 +254,11 @@ async fn health_matches_fixture() {
     assert_eq!(actual["engine"], fixture_val["engine"]);
 }
 
+#[cfg(feature = "native-stt")]
 #[tokio::test]
+#[ignore = "requiere Parakeet"]
 async fn transcribe_matches_fixture() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
+    require_parakeet();
     // Payload `{}` (campo audio_b64 ausente) → rama de error de campo ausente
     // diseñada a propósito (no un stub `transcription_pending`), con estado 400.
     let (status, bytes) = send(post_json("/transcribe", serde_json::json!({}))).await;
@@ -175,11 +268,8 @@ async fn transcribe_matches_fixture() {
 }
 
 #[tokio::test]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_empty_text_is_contract_error() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
     let (status, bytes) = send(post_json("/synthesize", serde_json::json!({ "text": "" }))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
@@ -188,11 +278,8 @@ async fn synthesize_empty_text_is_contract_error() {
 
 /// Texto de 501 caracteres: el daemon lo rechaza con 400 y `text_too_long`.
 #[tokio::test]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_text_too_long_is_contract_error() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
     let (status, bytes) = send(post_json(
         "/synthesize",
         serde_json::json!({ "text": "a".repeat(501) }),
@@ -206,11 +293,8 @@ async fn synthesize_text_too_long_is_contract_error() {
 /// Los campos de idioma y temperatura son opcionales: un payload que solo trae
 /// `text` y `voice` se valida igual (mismo error de contrato ante texto vacío).
 #[tokio::test]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_old_payload_without_new_fields() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
     let (status, bytes) = send(post_json(
         "/synthesize",
         serde_json::json!({ "text": "", "voice": "default" }),
@@ -224,11 +308,8 @@ async fn synthesize_old_payload_without_new_fields() {
 /// Temperatura fuera de rango (`0`): el stream NDJSON termina en error con
 /// motivo `usage_error`, sin llegar a la síntesis.
 #[tokio::test]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_invalid_temperature_is_usage_error() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
     let (status, bytes) = send(post_json(
         "/synthesize",
         serde_json::json!({ "text": "hola", "voice": "default", "temperature": 0.0 }),
@@ -250,11 +331,8 @@ async fn synthesize_invalid_temperature_is_usage_error() {
 }
 
 #[tokio::test]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_emits_contract_ndjson_stream() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
     let (status, bytes) = send(post_json(
         "/synthesize",
         serde_json::json!({ "text": "hola", "voice": "default" }),
@@ -287,29 +365,32 @@ async fn synthesize_emits_contract_ndjson_stream() {
         "el stream NDJSON debe comenzar con `start`"
     );
 
-    // Invariante: evento final `result` con `audio_b64` no vacío, O `error`.
-    // En este entorno de test el motor TTS no es localizable desde CWD
-    // (el directorio de trabajo de este crate), por lo que el evento final esperado es
-    // `error` con
-    // `reason` `model_missing` — rama aceptada en este entorno de test. La
-    // síntesis real con audio verdadero se verifica por separado contra el motor.
+    // Invariante: evento final `error` por falta de motor.
+    // El estado de contrato no tiene binario del motor, así que el evento final
+    // es `error` con `reason` `model_missing`. La síntesis real con audio
+    // verdadero se verifica por separado contra el motor.
     let final_event = events.last().unwrap();
-    let invariant = match final_event["event"].as_str() {
-        Some("result") => !final_event["audio_b64"].as_str().unwrap_or("").is_empty(),
-        Some("error") => final_event.get("reason").is_some(),
-        _ => false,
-    };
-    assert!(invariant, "evento final insuficiente: {:?}", final_event);
+    assert_eq!(
+        final_event["event"],
+        Value::String("error".to_string()),
+        "evento final insuficiente: {:?}",
+        final_event
+    );
+    assert_eq!(
+        final_event["reason"],
+        Value::String("model_missing".to_string()),
+        "evento final insuficiente: {:?}",
+        final_event
+    );
 }
 
 /// Audio largo (~22 s, concatenación de 4 corpus): Parakeet no necesita chunking VAD
 /// (RTF ~0.11 lineal); se transcribe de una sola pasada y se verifica el texto unido.
+#[cfg(feature = "native-stt")]
 #[tokio::test]
+#[ignore = "requiere Parakeet"]
 async fn transcribe_long_audio_transcribes_in_one_pass() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
+    require_parakeet();
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
     let corpus = [
         "corpus_sintesis_16k.wav",
@@ -362,32 +443,28 @@ async fn transcribe_long_audio_transcribes_in_one_pass() {
 /// `precomputed: true` («precarga en caliente iniciada»; la completitud se
 /// refleja en `/health`). Invierte el «éxito inmediato»: el test solo pasa si
 /// la secuencia completa llega hasta el final.
-/// Gate: modelo base TTS provisionado (`base_model_dir`), sin el cual el handler
-/// retorna `model_missing` en vez de clonar.
+/// Requiere el modelo Base de clonado: sin él el handler retorna
+/// `model_missing` en vez de clonar.
 #[tokio::test]
+#[ignore = "requiere el modelo Base de clonado y el binario del motor"]
 async fn voices_clone_daemon_precomputed_true() {
-    if !models_present() {
-        eprintln!("[daemon] skip: sin modelo STT Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-        return;
-    }
-    if test_state().tts_engine.base_model_dir.is_none() {
-        eprintln!(
-            "[daemon] skip: modelo base TTS no provisionado — ejecuta setup --with-voice-cloning"
-        );
-        return;
-    }
+    require_base_model();
+    require_clone_binary();
     let wav = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../avi-stt/tests/assets/parakeet_sample_16k.wav");
     let audio_bytes = std::fs::read(&wav).expect("el WAV de muestra debe leerse");
     let name = format!("clon_warm_{}", std::process::id());
-    let (status, bytes) = send(post_json(
-        "/voices/clone",
-        serde_json::json!({
-            "name": name,
-            "force": true,
-            "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
-        }),
-    ))
+    let (status, bytes) = send_to(
+        clone_state(),
+        post_json(
+            "/voices/clone",
+            serde_json::json!({
+                "name": name,
+                "force": true,
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
+            }),
+        ),
+    )
     .await;
     assert_eq!(status, StatusCode::OK);
     // El cuerpo es NDJSON: una línea JSON por evento.
@@ -397,6 +474,21 @@ async fn voices_clone_daemon_precomputed_true() {
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
         .collect();
+    // Un clonado con éxito deja en segundo plano una precarga que arranca el
+    // motor residente; se espera a que termine y se detiene el residente antes
+    // de las aserciones para que no sobreviva al proceso de pruebas.
+    if events.last().is_some_and(|e| e["event"] == "result") {
+        let state = clone_state();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        while matches!(*state.warm.read().unwrap(), WarmState::Warming) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "la precarga del clon no terminó en 300 s"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        state.tts_engine.shutdown();
+    }
     assert!(!events.is_empty(), "debe haber al menos un evento");
     // Invariante de envelope: schema_version=4 en todo evento.
     for e in &events {
@@ -434,22 +526,18 @@ async fn voices_clone_daemon_precomputed_true() {
             );
         }
     }
-    let _ = VoiceStore::new().remove(&name);
+    let _ = clone_state().voice_store.remove(&name);
 }
 
 /// Una referencia WAV truncada (la cabecera declara más datos de los que hay)
 /// se rechaza en la carga, antes de invocar el motor de clonado, con un evento
 /// `error` de razón `invalid_audio`.
-/// Gate: modelo base TTS provisionado; sin él el handler responde `model_missing`
-/// antes de llegar a la carga del audio.
+/// Requiere el modelo Base de clonado: sin él el handler responde
+/// `model_missing` antes de llegar a la carga del audio.
 #[tokio::test]
+#[ignore = "requiere el modelo Base de clonado"]
 async fn voices_clone_truncated_wav_emits_invalid_audio() {
-    if test_state().tts_engine.base_model_dir.is_none() {
-        eprintln!(
-            "[daemon] skip: modelo base TTS no provisionado — ejecuta setup --with-voice-cloning"
-        );
-        return;
-    }
+    require_base_model();
     // WAV PCM 16-bit mono 16 kHz: cabecera de 44 bytes que declara 3200 bytes de
     // datos y solo 1000 presentes.
     let mut wav = Vec::<u8>::new();
@@ -482,7 +570,7 @@ async fn voices_clone_truncated_wav_emits_invalid_audio() {
         .expect("cada línea debe ser JSON");
     assert_eq!(last["event"], Value::String("error".to_string()));
     assert_eq!(last["reason"], Value::String("invalid_audio".to_string()));
-    let _ = VoiceStore::new().remove(&name);
+    let _ = test_state().voice_store.remove(&name);
 }
 
 /// Warm-voice configurable: `run_daemon_server` con una `--warm-voice`
@@ -497,7 +585,14 @@ async fn warm_voice_fail_fast_and_acceptance() {
     // Fail-fast: voz inexistente → Err antes del bind.
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let nonexistent_voice = format!("warm_inexistente_{}", std::process::id());
-    let res = avi_daemon::run_daemon_server(addr, nonexistent_voice.clone()).await;
+    let tmp = std::env::temp_dir().join(format!("avi_golden_warm_missing_{}", std::process::id()));
+    let res = avi_daemon::run_daemon_server(
+        addr,
+        nonexistent_voice.clone(),
+        VoiceStore::at(tmp.join("voices")),
+        SpeechStore::at(tmp.join("speech")),
+    )
+    .await;
     let err = res.expect_err("una --warm-voice inexistente debe abortar el arranque");
     assert_eq!(
         err.downcast_ref::<avi_daemon::StartupError>(),
@@ -511,7 +606,9 @@ async fn warm_voice_fail_fast_and_acceptance() {
     );
 
     // Aceptación: una voz existente satisface el predicado de la guarda.
-    let store = VoiceStore::new();
+    let store = VoiceStore::at(
+        std::env::temp_dir().join(format!("avi_golden_warm_ok_{}", std::process::id())),
+    );
     let tmp = std::env::temp_dir().join(format!("warm_ok_{}.qvoice", std::process::id()));
     std::fs::write(&tmp, b"qvoice-fixture").expect("escribir fixture qvoice");
     let name = format!("warm_ok_{}", std::process::id());
@@ -534,9 +631,15 @@ async fn port_in_use_fails_before_loading_models() {
     let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("ocupar un puerto");
     let busy = holder.local_addr().unwrap();
     let start = std::time::Instant::now();
-    let err = avi_daemon::run_daemon_server(busy, "default".into())
-        .await
-        .expect_err("un puerto ocupado debe abortar el arranque");
+    let tmp = std::env::temp_dir().join(format!("avi_golden_port_busy_{}", std::process::id()));
+    let err = avi_daemon::run_daemon_server(
+        busy,
+        "default".into(),
+        VoiceStore::at(tmp.join("voices")),
+        SpeechStore::at(tmp.join("speech")),
+    )
+    .await
+    .expect_err("un puerto ocupado debe abortar el arranque");
     assert_eq!(
         err.downcast_ref::<avi_daemon::StartupError>(),
         Some(&avi_daemon::StartupError::PortInUse { port: busy.port() })
@@ -557,9 +660,17 @@ async fn supervised_startup_failure_is_terminal() {
     let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("ocupar un puerto");
     let busy = holder.local_addr().unwrap();
     let start = std::time::Instant::now();
-    let err = avi_daemon::run_supervised(busy, true, 3, "default".into())
-        .await
-        .expect_err("un puerto ocupado debe abortar la supervisión");
+    let tmp = std::env::temp_dir().join(format!("avi_golden_supervised_{}", std::process::id()));
+    let err = avi_daemon::run_supervised(
+        busy,
+        true,
+        3,
+        "default".into(),
+        VoiceStore::at(tmp.join("voices")),
+        SpeechStore::at(tmp.join("speech")),
+    )
+    .await
+    .expect_err("un puerto ocupado debe abortar la supervisión");
     assert_eq!(
         err.downcast_ref::<avi_daemon::StartupError>(),
         Some(&avi_daemon::StartupError::PortInUse { port: busy.port() })
@@ -573,14 +684,10 @@ async fn supervised_startup_failure_is_terminal() {
 
 /// Par de idiomas no soportado vía IPC → 400 con `unsupported_language_pair`.
 /// La guarda de par corre antes de tocar el modelo: sin CT2 ni TCP.
+#[cfg(feature = "native-translation")]
 #[tokio::test]
-#[allow(unreachable_code)]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn translate_unsupported_pair_returns_400() {
-    #[cfg(not(feature = "native-translation"))]
-    {
-        eprintln!("[translate] skip: sin feature native-translation");
-        return;
-    }
     let (status, bytes) = send(post_json(
         "/translate",
         serde_json::json!({ "text": "Bonjour", "from": "fr", "to": "de" }),
@@ -596,14 +703,10 @@ async fn translate_unsupported_pair_returns_400() {
 
 /// La vía daemon conserva la normalización `es-latam`→`es`:
 /// passthrough con texto intacto aunque el CLI ya rechace ese token.
+#[cfg(feature = "native-translation")]
 #[tokio::test]
-#[allow(unreachable_code)]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn translate_es_latam_passthrough_ipc_returns_intact_text() {
-    #[cfg(not(feature = "native-translation"))]
-    {
-        eprintln!("[translate] skip: sin feature native-translation");
-        return;
-    }
     let (status, bytes) = send(post_json(
         "/translate",
         serde_json::json!({ "text": "Hola", "from": "es-latam", "to": "es" }),

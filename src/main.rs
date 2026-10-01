@@ -2104,12 +2104,19 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // Un fallo previo a estar listo sale con el código de su causa; el
             // de un servidor que ya servía sale con exit 1 `daemon_error`, como
             // cualquier otro `daemon_error`.
-            daemon::run_supervised(addr, auto_restart, max_retries, warm_voice)
-                .await
-                .map_err(|e| match e.downcast_ref::<daemon::StartupError>() {
-                    Some(startup) => startup_error_to_cli(startup),
-                    None => CliError::new(ExitCode::Error, "daemon_error", e.to_string()),
-                })
+            daemon::run_supervised(
+                addr,
+                auto_restart,
+                max_retries,
+                warm_voice,
+                VoiceStore::new(),
+                SpeechStore::new(),
+            )
+            .await
+            .map_err(|e| match e.downcast_ref::<daemon::StartupError>() {
+                Some(startup) => startup_error_to_cli(startup),
+                None => CliError::new(ExitCode::Error, "daemon_error", e.to_string()),
+            })
         }
         DaemonCommands::Start {
             auto_restart,
@@ -2729,7 +2736,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 receipt: receipt.as_ref(),
                 channel: lifecycle::channel::detect(&exe, receipt.as_ref()),
                 program_dir: registered_program_dir,
-                daemon_addr: lifecycle::daemon_stop::DEFAULT_ADDR.to_string(),
+                daemon_addr: lifecycle::daemon_stop::default_addr(),
                 home: home_dir(),
             };
             let outcome = lifecycle::uninstall::run(
@@ -2956,7 +2963,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // instalación sigue intacta y el staging se retira.
             let daemon = lifecycle::daemon_stop::stop(
                 &roots.data_dir,
-                lifecycle::daemon_stop::DEFAULT_ADDR,
+                &lifecycle::daemon_stop::default_addr(),
                 &ProductProcesses,
             )
             .await;
@@ -3298,8 +3305,7 @@ fn home_dir() -> PathBuf {
 }
 
 /// Resuelve la dirección del cliente CLI: `addr` del pidfile cuando existe; sin pidfile
-/// usa `DAEMON_ADDR` con comportamiento idéntico al anterior. Solo el caso "pidfile vivo
-/// con addr efímera" toma la vía nueva.
+/// usa la dirección derivada de `AVI_DAEMON_PORT` (`127.0.0.1:8765` si falta).
 fn resolve_client_addr() -> String {
     lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir())
 }

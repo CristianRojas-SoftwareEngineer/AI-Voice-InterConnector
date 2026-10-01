@@ -9,6 +9,21 @@
 //! porque capturar `stdout` + exit code con fidelidad exige ejecutar el binario real,
 //! y `CARGO_BIN_EXE_*` solo está disponible para tests de integración.
 //!
+//! ### Clases de pruebas
+//! - **Contrato** (sin `#[ignore]`): corren siempre. Cada prueba usa un sandbox
+//!   propio con estado, caché de modelos y directorio de programa propios, y
+//!   siembra modelos falsos si los necesita. Un `daemon.pid` señuelo (puerto
+//!   cerrado y PID fuera de rango) o `--no-daemon` impiden que el cliente
+//!   contacte 127.0.0.1:8765 o barra procesos `qwen_tts` de la máquina.
+//! - **Recursos** (`#[ignore = "requiere …"]`): necesitan modelos o motores
+//!   reales y se ejecutan con
+//!   `cargo test --workspace --features full -- --include-ignored`. Si falta
+//!   un recurso fallan con un mensaje que nombra el comando de
+//!   aprovisionamiento: `ai-voice-interconnector setup`,
+//!   `ai-voice-interconnector setup --with-voice-cloning` o
+//!   `cargo xtask build-engine`. Usan la raíz de modelos real en solo lectura
+//!   y estado, puerto y `QWEN3_TTS_PORT` propios (`IsolatedInstance`).
+//!
 //! ### Taxonomía de tests y filtros de ejecución rápida:
 //! - **Rendimiento y comandos rápidos (< 100 ms)**: `cargo test --test cli_golden -- perf_ --nocapture`
 //! - **Contratos de salida pura y ayuda CLI**: `cargo test --test cli_golden -- _help --nocapture`
@@ -169,7 +184,7 @@ fn check_guard(phase: &str) {
         if elapsed > lim {
             let _ = std::io::stderr().flush();
             TEST_LIMIT.with(|c| *c.borrow_mut() = None);
-            reaper_on_failure(&format!("guard:{}", phase));
+            reaper_on_failure(&format!("guard:{}", phase), true);
             panic!(
                 "guardia de tiempo: test '{}' superó techo {:?} en fase '{}' (transcurrido {:.1} s; último hito: {})",
                 name,
@@ -289,7 +304,10 @@ fn resident_present_by_image() -> bool {
 /// verificación acotada (8 s, deadline global del producto) y lo registra como
 /// hito. Nunca falla: un reaper que fallara enmascararía la causa original del
 /// `panic!` que lo invocó.
-fn reaper_on_failure(phase: &str) {
+fn reaper_on_failure(phase: &str, sweep_by_image: bool) {
+    // `sweep_by_image` indica si se permite el barrido por imagen `qwen_tts`;
+    // el comportamiento que lo respeta se implementa en otra tarea.
+    let _ = sweep_by_image;
     match read_daemon_pid() {
         Some(pid) if avi_daemon::pid_alive(pid) => {
             milestone(&format!(
@@ -375,7 +393,7 @@ fn sweep_resident(phase: &str) {
 /// best-effort antes del `panic!` para no abandonar daemon ni motor vivos.
 /// Todo `panic!`/`assert!` fuera de `wait_for_daemon_state` pasa por aquí.
 fn fail_with_reaper(phase: &str, message: String) -> ! {
-    reaper_on_failure(phase);
+    reaper_on_failure(phase, true);
     panic!("{}", message);
 }
 
@@ -395,7 +413,7 @@ fn arm_reaper(phase: &'static str) -> GuardReaper {
 impl Drop for GuardReaper {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            reaper_on_failure(self.phase);
+            reaper_on_failure(self.phase, true);
             TEST_LIMIT.with(|c| *c.borrow_mut() = None);
         }
     }
@@ -472,7 +490,7 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
             check_guard(&format!("wait_for_daemon_state({})", expected));
             if let Some((_, warm)) = read_ready_file(&path) {
                 if warm == "warm_failed" {
-                    reaper_on_failure("wait_for_daemon_state(warm_failed)");
+                    reaper_on_failure("wait_for_daemon_state(warm_failed)", true);
                     panic!(
                         "el warmup del daemon falló en {} (addr {}; último: {})",
                         path.display(),
@@ -495,7 +513,10 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
                 }
             }
             if start.elapsed() >= timeout {
-                reaper_on_failure(&format!("wait_for_daemon_state({})-agotado", expected));
+                reaper_on_failure(
+                    &format!("wait_for_daemon_state({})-agotado", expected),
+                    true,
+                );
                 panic!(
                     "el daemon no publicó 'warm' con estado running tras {:?} (último: {}; fichero: {})",
                     timeout, last, path.display()
@@ -519,7 +540,10 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
-    reaper_on_failure(&format!("wait_for_daemon_state({})-agotado", expected));
+    reaper_on_failure(
+        &format!("wait_for_daemon_state({})-agotado", expected),
+        true,
+    );
     panic!(
         "el daemon no alcanzó el estado '{}' tras {} reintentos (último: {})",
         expected, retries, last
@@ -562,7 +586,7 @@ fn wait_for_running_without_warm(retries: u32, envs: &[(&str, &str)]) -> Value {
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
-    reaper_on_failure("wait_for_running_without_warm(running)-agotado");
+    reaper_on_failure("wait_for_running_without_warm(running)-agotado", true);
     panic!(
         "el daemon no alcanzó el estado 'running' (sin exigir warm) tras {} reintentos (último: {})",
         retries, last
@@ -606,16 +630,13 @@ fn d03_poisoned_lock_propagates() {
 /// cerrado a la entrada) no falla: retorna sin borrar el pidfile de su sandbox.
 /// Hermético (sin daemon real); su reaper solo mata un PID ya muerto, nunca abre
 /// el 8765 ni arranca un residente, así que no puede dejar huérfanos propios.
-/// La guarda de entrada salta el test si hay daemon/residente vivos al empezar.
+/// Llama al reaper sin barrido por imagen, de modo que un residente `qwen_tts`
+/// ajeno que esté vivo no se toca ni condiciona el resultado.
 /// El pidfile rancio vive en un directorio de estado propio de la instancia
 /// (`AVI_DATA_DIR`), sin tocar el `data_dir` real (reversión: volver a
 /// `avi_store::data_dir()`).
 #[test]
 fn d03_reaper_without_live_pid_does_not_fail() {
-    if port_open(8765) || resident_present_by_image() {
-        eprintln!("[d03] skip: daemon (8765) o residente por imagen vivos");
-        return;
-    }
     let (sandbox, _envs) = sandbox_unique_state("d03reaper");
     CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = Some(sandbox.clone()));
     // Pidfile rancio: PID garantizado muerto, solo en el sandbox.
@@ -629,7 +650,7 @@ fn d03_reaper_without_live_pid_does_not_fail() {
         .expect("escribir pidfile rancio en el sandbox");
     // El reaper best-effort no debe fallar con PID muerto y sin residente:
     // llegar hasta aquí ya prueba que retornó sin hacer panic.
-    reaper_on_failure("d03-prueba");
+    reaper_on_failure("d03-prueba", false);
     // No aseveramos quiescencia global de máquina: el reaper de d03 solo mata un
     // PID ya muerto —nunca abre el 8765 ni arranca un residente `qwen_tts`—, así
     // que cualquier puerto/residente presente aquí proviene de un daemon test
@@ -666,14 +687,19 @@ fn d03_reaper_without_live_pid_does_not_fail() {
 ///
 /// Patrón equivalente al del legacy Python: el daemon no comparte I/O (pipe) con el
 /// proceso que lo lanza.
+///
+/// `stderr` va a otro tempfile por la misma razón y se imprime con `eprintln!`: el
+/// harness de pruebas lo captura y solo lo muestra si la prueba falla, así que una
+/// caída del hijo (un `abort` o un pánico) deja su rastro en el informe del fallo.
 fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
     let t_cmd = Instant::now();
     let (tmp, file) = open_atomic_tmp();
+    let (tmp_err, file_err) = open_atomic_tmp();
     let mut cmd = Command::new(BIN);
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(file)
-        .stderr(std::process::Stdio::null());
+        .stderr(file_err);
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -682,6 +708,11 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
     let stdout = std::fs::read_to_string(&tmp)
         .unwrap_or_else(|e| panic!("no se pudo leer tempfile {}: {}", tmp.display(), e));
     let _ = std::fs::remove_file(&tmp);
+    let stderr = std::fs::read_to_string(&tmp_err).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp_err);
+    if !stderr.trim().is_empty() {
+        eprintln!("stderr del hijo `{}`:\n{}", args.join(" "), stderr);
+    }
     let code = status
         .code()
         .expect("el proceso debe terminar con un código");
@@ -696,9 +727,24 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
     (code, json)
 }
 
-/// Ejecuta el binario con `args` (sin envs extra). Delega en [`run_json_env`].
+/// Crea un sandbox de contrato nuevo y único: datos, caché de modelos y
+/// programa propios, sin modelos y con un `daemon.pid` señuelo para que el
+/// binario no consulte 127.0.0.1:8765 ni barra los `qwen_tts` de la máquina.
+fn contract_sandbox(tag: &str) -> (PathBuf, Vec<(String, String)>) {
+    let (dir, envs) = sandbox_unique_state(tag);
+    seed_decoy_daemon_pidfile(&dir);
+    (dir, envs)
+}
+
+/// Ejecuta el binario con `args` en un sandbox de contrato nuevo que borra al
+/// terminar. Delega en [`run_json_env`]; una prueba que comparta estado entre
+/// varias llamadas debe usar un único sandbox con `run_json_env`.
 fn run_json(args: &[&str]) -> (i32, Value) {
-    run_json_env(args, &[])
+    let (dir, envs) = contract_sandbox("run_json");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let result = run_json_env(args, &envs);
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 /// Crea un tempfile único con semántica atómica `O_CREAT|O_EXCL` (`create_new`).
@@ -931,7 +977,7 @@ fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, St
         last = std::fs::read_to_string(path).unwrap_or_default();
         std::thread::sleep(Duration::from_millis(15));
     }
-    reaper_on_failure("wait_for_ready_file-agotado");
+    reaper_on_failure("wait_for_ready_file-agotado", true);
     panic!(
         "el fichero ready {} no publicó addr válida tras {:?} (último contenido: {:?})",
         path.display(),
@@ -948,9 +994,11 @@ fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, St
 // absoluta) más espera del evento. La fixture por sesión queda eliminada:
 // ningún test la usa (reversión: devolver a cada test su forma con sesión).
 //
-// Las caches HF (`HF_HUB_CACHE`/`HF_HOME`) se COMPARTEN con el proceso (solo
-// lectura en estos tests): el daemon necesita los modelos provisionados, que
-// viven fuera del sandbox. `LOCALAPPDATA` sí se aísla (install_dir).
+// La raíz de modelos (`AVI_CACHE_DIR`, `HF_HUB_CACHE`, `HF_HOME`) NO se fija en
+// la instancia: se hereda del proceso (solo lectura en las pruebas de recursos),
+// porque el daemon necesita los modelos provisionados, que viven fuera del
+// sandbox. Las pruebas de contrato usan `contract_args`, que la reubica al
+// sandbox. `AVI_INSTALL_DIR` y `AVI_DATA_DIR` sí se aíslan siempre.
 //
 // Límite físico razonado (no deuda): la detección/limpieza/verificación del
 // residente ya se re-ancló a su identidad estable (PID registrado + imagen
@@ -963,6 +1011,8 @@ fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, St
 struct IsolatedInstance {
     dir: PathBuf,
     envs: Vec<(String, String)>,
+    /// Raíz de modelos del sandbox, usada solo por `contract_args`.
+    contract_cache: String,
 }
 
 impl IsolatedInstance {
@@ -980,11 +1030,26 @@ impl IsolatedInstance {
         if tts_port > 0 {
             envs.push(("QWEN3_TTS_PORT".to_string(), tts_port.to_string()));
         }
-        // Caches HF reales (solo lectura): el daemon necesita los modelos
-        // provisionados; el sandbox solo aísla estado (pidfile/almacén).
-        envs.retain(|(k, _)| k != "HF_HUB_CACHE" && k != "HF_HOME");
+        // Raíz de modelos real (solo lectura): la instancia no fija ninguna
+        // variable de caché, de modo que el daemon hijo hereda la del entorno y ve
+        // los modelos provisionados; el sandbox solo aísla estado (pidfile/almacén).
+        // Las pruebas de contrato la sustituyen por la del sandbox con `contract_args`.
+        envs.retain(|(k, _)| !matches!(k.as_str(), "AVI_CACHE_DIR" | "HF_HUB_CACHE" | "HF_HOME"));
         CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = Some(dir.clone()));
-        IsolatedInstance { dir, envs }
+        let contract_cache = dir.join("cache").to_string_lossy().to_string();
+        IsolatedInstance {
+            dir,
+            envs,
+            contract_cache,
+        }
+    }
+
+    /// Envs de la clase contrato: los de `args` más `AVI_CACHE_DIR` apuntando a
+    /// `<sandbox>/cache`, de modo que la prueba solo ve los modelos que siembra.
+    fn contract_args(&self) -> Vec<(&str, &str)> {
+        let mut envs = self.args();
+        envs.push(("AVI_CACHE_DIR", self.contract_cache.as_str()));
+        envs
     }
 
     /// Puerto del motor TTS residente de la instancia (`QWEN3_TTS_PORT`).
@@ -1178,22 +1243,84 @@ fn verify_zero_orphans_instance(context: &str, inst: &IsolatedInstance, port: u1
     ));
 }
 
-/// Modelo Parakeet TDT v3 presente. Los binarios bajo `models/` están
-/// gitignoreados: en un checkout limpio (CI) los E2E que los requieren se
-/// saltan con aviso; en desarrollo corren completos. Solo se compila con
-/// `native-stt`: sin el feature el binario no transcribe, así que los E2E que
-/// dependen de él se gatean por feature (no solo por presencia de modelo).
+/// Exige el modelo Parakeet TDT v3 en la raíz de modelos vigente: falla con un
+/// mensaje accionable si falta `nemo128.onnx`, el archivo que usa la
+/// transcripción. Las pruebas que lo llaman son de la clase recursos y van
+/// marcadas `#[ignore]`. Solo se compila con `native-stt`: sin el feature el
+/// binario no transcribe.
 #[cfg(feature = "native-stt")]
-fn parakeet_model_available() -> bool {
-    avi_store::ModelStore::new().is_provisioned("parakeet-tdt-v3")
+fn require_parakeet() {
+    let file = avi_store::ModelStore::new()
+        .model_snapshot_path("parakeet-tdt-v3")
+        .expect("el pin de parakeet-tdt-v3 debe existir en MODEL_REVISIONS")
+        .join("nemo128.onnx");
+    assert!(
+        file.is_file(),
+        "falta {}: aprovisiona Parakeet con `ai-voice-interconnector setup`",
+        file.display()
+    );
 }
 
-/// Modelo CT2 es→en presente (mismo criterio de skip que el Parakeet). Solo se
-/// compila con `native-translation`: sin el feature el binario no traduce, así
-/// que el E2E que lo usa se gatea por feature (no solo por presencia de modelo).
+/// Exige los derivados CT2 es-en y en-es: falla con un mensaje accionable si
+/// falta el `model.bin` de alguno de los dos pares. Solo se compila con
+/// `native-translation`: sin el feature el binario no traduce.
 #[cfg(feature = "native-translation")]
-fn ct2_model_available() -> bool {
-    avi_store::is_ct2_provisioned("es-en") && avi_store::is_ct2_provisioned("en-es")
+fn require_ct2() {
+    for pair in ["es-en", "en-es"] {
+        let file = avi_store::ct2_model_dir(pair).join("model.bin");
+        assert!(
+            file.is_file(),
+            "falta {}: aprovisiona los modelos CT2 con `ai-voice-interconnector setup`",
+            file.display()
+        );
+    }
+}
+
+/// Siembra en `models_root` un snapshot por cada modelo de `names`, en la
+/// revisión fijada del pin real. Cada snapshot lleva los archivos de
+/// `MODEL_FILE_PATTERNS` del modelo, o un `config.json` si no declara patrones,
+/// de modo que `is_provisioned` los da por provisionados sin descargar nada.
+fn seed_pinned_models(models_root: &std::path::Path, names: &[&str]) {
+    for pin in avi_store::MODEL_REVISIONS
+        .iter()
+        .filter(|pin| names.contains(&pin.name))
+    {
+        let snapshot = models_root
+            .join(format!("models--{}", pin.repo.replace('/', "--")))
+            .join("snapshots")
+            .join(pin.revision);
+        std::fs::create_dir_all(&snapshot).expect("crear snapshot sembrado");
+        let files: Vec<&str> = avi_store::MODEL_FILE_PATTERNS
+            .iter()
+            .find(|(name, _)| *name == pin.name)
+            .map(|(_, patterns)| patterns.to_vec())
+            .unwrap_or_else(|| vec!["config.json"]);
+        for file in files {
+            std::fs::write(snapshot.join(file), b"marker").expect("sembrar fichero");
+        }
+    }
+}
+
+/// Siembra en `data_dir` un `daemon.pid` señuelo: su dirección apunta a un
+/// puerto TCP efímero ya cerrado y sus PID están fuera de rango. Así una orden
+/// que consulte o detenga el daemon no cae a 127.0.0.1:8765 (el del usuario)
+/// ni barre por imagen los `qwen_tts` de la máquina, porque el `resident_pid`
+/// registrado no es 0.
+fn seed_decoy_daemon_pidfile(data_dir: &std::path::Path) {
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .expect("reservar puerto efímero")
+        .local_addr()
+        .expect("dirección del puerto reservado")
+        .port();
+    let dead_pid = u32::MAX - 1;
+    let content = serde_json::json!({
+        "pid": dead_pid,
+        "addr": format!("127.0.0.1:{port}"),
+        "resident_pid": dead_pid,
+    });
+    std::fs::create_dir_all(data_dir).expect("crear directorio de datos");
+    std::fs::write(data_dir.join("daemon.pid"), content.to_string())
+        .expect("sembrar daemon.pid señuelo");
 }
 
 #[test]
@@ -1208,27 +1335,27 @@ fn version_matches_fixture() {
 // feature activo (en CI featureless no se compila).
 #[cfg(feature = "native-stt")]
 #[test]
+#[ignore = "requiere Parakeet"]
 fn speech_transcribe_with_audio_matches_contract() {
-    if !parakeet_model_available() {
-        eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
-        return;
-    }
-    // Régimen con fixture de sesión compartida (sin instancia aislada propia):
-    // testigo natural del despacho `Auto`
-    // con sesión en ejecución delega al daemon, sin
-    // ella cae a directo; ambas rutas emiten {text, source}+schema, así que
-    // las invariantes no dependen de la ruta efectiva. El lock excluye
-    // paradas del ciclo durante la petición (sin reenrute forzado: sin flags
-    // `--daemon`/`--no-daemon`).
-    let (code, actual) = run_json(&[
-        "--json",
-        "speech",
-        "transcribe",
-        "--audio",
-        "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-        "--source-language",
-        "es-latam",
-    ]);
+    require_parakeet();
+    // Instancia aislada con la raíz de modelos real heredada (solo lectura): el
+    // estado es propio y la ruta directa fijada con `--no-daemon` impide que el
+    // cliente consulte el 8765 del usuario. Ambas rutas emiten
+    // {text, source}+schema, así que las invariantes no dependen de la ruta.
+    let inst = IsolatedInstance::new("transcribe_contract");
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "--no-daemon",
+            "speech",
+            "transcribe",
+            "--audio",
+            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            "--source-language",
+            "es-latam",
+        ],
+        &inst.args(),
+    );
     assert_eq!(code, 0);
     assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     assert_eq!(actual["source"], Value::String("es-latam".to_string()));
@@ -1296,27 +1423,30 @@ fn dub_missing_audio_exits_3() {
 /// Un archivo que no es un WAV válido sale con exit 2 y `invalid_audio`.
 /// La lectura del audio ocurre tras comprobar el modelo, y sin `native-stt`
 /// el binario no llega a leerla, por eso se gatea por el feature y por la
-/// presencia del modelo.
+/// presencia del modelo. Corre sobre un sandbox con Parakeet sembrado, así que
+/// no depende de la instalación de la máquina.
 #[cfg(feature = "native-stt")]
 #[test]
 fn transcribe_invalid_wav_exits_2() {
-    if !parakeet_model_available() {
-        eprintln!("[transcribe_invalid_wav] skip: modelo Parakeet ausente");
-        return;
-    }
-    let path = std::env::temp_dir().join(format!("avi_invalid_{}.wav", std::process::id()));
+    let (dir, envs) = sandbox_unique_state("invalid_wav");
+    seed_pinned_models(&dir.join("cache"), &["parakeet-tdt-v3"]);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let path = dir.join("invalid.wav");
     std::fs::write(&path, b"esto no es un wav").expect("debe escribirse el archivo basura");
-    let (code, actual) = run_json(&[
-        "--json",
-        "--no-daemon",
-        "speech",
-        "transcribe",
-        "--audio",
-        path.to_str().expect("ruta UTF-8"),
-        "--source-language",
-        "es-latam",
-    ]);
-    let _ = std::fs::remove_file(&path);
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "--no-daemon",
+            "speech",
+            "transcribe",
+            "--audio",
+            path.to_str().expect("ruta UTF-8"),
+            "--source-language",
+            "es-latam",
+        ],
+        &envs,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(code, 2, "WAV inválido debe mapear a exit 2");
     assert_eq!(actual["reason"], "invalid_audio");
 }
@@ -1382,6 +1512,7 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
         "speech_transcribe_mic_duration_no_tty_no_panic",
         Duration::from_secs(30),
     );
+    let (dir, envs) = contract_sandbox("mic_transcribe");
     let output = Command::new(BIN)
         .args([
             "--json",
@@ -1393,9 +1524,11 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
             "--source-language",
             "es-latam",
         ])
+        .envs(envs)
         .stdin(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         output.status.code().is_some(),
         "el proceso no debe abortar/panicar: {:?}",
@@ -1457,6 +1590,7 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
         "speech_dub_mic_duration_no_tty_no_panic",
         Duration::from_secs(30),
     );
+    let (dir, envs) = contract_sandbox("mic_dub");
     let output = Command::new(BIN)
         .args([
             "--json",
@@ -1470,9 +1604,11 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
             "--target-language",
             "es-latam",
         ])
+        .envs(envs)
         .stdin(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         output.status.code().is_some(),
         "el proceso no debe abortar/panicar: {:?}",
@@ -1650,12 +1786,6 @@ fn cleanup_dry_run_matches_fixture() {
 ///   segundo punto heredado que este lote absorbe.
 #[test]
 fn cleanup_model_real_run_reports_paths() {
-    // Sin pidfile, `cleanup` apaga el daemon de 127.0.0.1:8765: no tocar el del usuario.
-    let (_, status) = run_json(&["--json", "daemon", "status"]);
-    if status["daemon"] == Value::String("running".to_string()) {
-        eprintln!("[cleanup] skip: daemon activo en 127.0.0.1:8765");
-        return;
-    }
     let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
     let sandbox = std::env::temp_dir().join(format!("cleanup_sandbox_{}_{n}", std::process::id()));
     let data = sandbox.join("data");
@@ -1673,8 +1803,11 @@ fn cleanup_model_real_run_reports_paths() {
     // haría que la raíz se resolviera a otro sitio y la prueba probaría otra cosa.
     let exclusive = sandbox.join("models-exclusiva");
     seed_models(&exclusive);
+    let install = sandbox.join("install");
+    std::fs::create_dir_all(&install).unwrap();
     let exclusive_envs = [
         ("AVI_DATA_DIR", data.to_str().unwrap()),
+        ("AVI_INSTALL_DIR", install.to_str().unwrap()),
         ("AVI_DAEMON_PORT", "0"),
         ("AVI_CACHE_DIR", exclusive.to_str().unwrap()),
         ("HF_HUB_CACHE", ""),
@@ -1684,11 +1817,17 @@ fn cleanup_model_real_run_reports_paths() {
         ("TMPDIR", tmp.to_str().unwrap()),
     ];
 
+    // `cleanup` detiene el daemon y, sin `resident_pid` registrado, barre por imagen
+    // los `qwen_tts` de la máquina. El pidfile señuelo (puerto cerrado, PID muertos,
+    // `resident_pid` distinto de 0) evita ambos efectos; se resiembra antes de cada
+    // ejecución porque la parada lo puede borrar.
+    seed_decoy_daemon_pidfile(&data);
     let (code, dry) = run_json_env(
         &["--json", "cleanup", "--model", "--dry-run"],
         &exclusive_envs,
     );
     assert_eq!(code, 0, "{}", dry);
+    seed_decoy_daemon_pidfile(&data);
     let (code, real) = run_json_env(&["--json", "cleanup", "--model", "--yes"], &exclusive_envs);
     assert_eq!(code, 0, "{}", real);
 
@@ -1736,6 +1875,7 @@ fn cleanup_model_real_run_reports_paths() {
     let foreign = shared.join("models--otra--herramienta");
     let shared_envs = [
         ("AVI_DATA_DIR", data.to_str().unwrap()),
+        ("AVI_INSTALL_DIR", install.to_str().unwrap()),
         ("AVI_DAEMON_PORT", "0"),
         ("AVI_CACHE_DIR", ""),
         ("HF_HUB_CACHE", shared.to_str().unwrap()),
@@ -1745,6 +1885,7 @@ fn cleanup_model_real_run_reports_paths() {
         ("TMPDIR", tmp.to_str().unwrap()),
     ];
 
+    seed_decoy_daemon_pidfile(&data);
     let (code, really_shared) =
         run_json_env(&["--json", "cleanup", "--model", "--yes"], &shared_envs);
     assert_eq!(code, 0, "{}", really_shared);
@@ -1908,30 +2049,29 @@ fn translate_empty_text_exits_2() {
 // activo (en CI featureless no se compila).
 #[cfg(feature = "native-translation")]
 #[test]
+#[ignore = "requiere los modelos CT2 es-en y en-es"]
 fn translate_es_to_en_produces_translation() {
-    if !ct2_model_available() {
-        eprintln!("[translate] skip: sin modelo CT2 es→en");
-        return;
-    }
-    // Ruta local fijada con `--no-daemon` (evita depender de instancia
-    // aislada o de sesión compartida), sin envs
-    // propios ni lock de ciclo. Las invariantes (vacío/passthrough/par,
-    // envelope) son comunes antes del despacho y no dependen de la ruta
-    // efectiva, así que fijar la ruta elimina el acople al ciclo sin cambiar
-    // lo verificado. Sin lock: no toca daemon ni estado compartido.
-    // El texto traducido depende del motor real; se verifican invariantes de
-    // contrato (mismo patrón que `speech_transcribe_with_audio_matches_contract`).
-    let (code, actual) = run_json(&[
-        "--json",
-        "--no-daemon",
-        "translate",
-        "--text",
-        "Hola, ¿cómo estás?",
-        "--from",
-        "es",
-        "--to",
-        "en",
-    ]);
+    require_ct2();
+    // Ruta local fijada con `--no-daemon` sobre una instancia aislada con la
+    // raíz de modelos real heredada (solo lectura): no toca daemon ni estado
+    // compartido. El texto traducido depende del motor real; se verifican
+    // invariantes de contrato (mismo patrón que
+    // `speech_transcribe_with_audio_matches_contract`).
+    let inst = IsolatedInstance::new("translate_contract");
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "--no-daemon",
+            "translate",
+            "--text",
+            "Hola, ¿cómo estás?",
+            "--from",
+            "es",
+            "--to",
+            "en",
+        ],
+        &inst.args(),
+    );
     assert_eq!(code, 0);
     assert_eq!(actual["schema_version"], Value::String("4".to_string()));
     assert_eq!(actual["source"], Value::String("es".to_string()));
@@ -2039,47 +2179,54 @@ mod tts {
         None
     }
 
-    /// Pesos del modelo Qwen3-TTS 0.6B presentes.
-    fn tts_weights() -> bool {
-        Path::new("vendor/qwen3-tts/qwen3-tts-0.6b").is_dir()
+    /// Exige el snapshot del modelo CustomVoice `qwen3-tts-0.6b` (su
+    /// `config.json`) en la raíz de modelos vigente.
+    fn require_tts_model() {
+        let file = avi_store::ModelStore::new()
+            .model_snapshot_path("qwen3-tts-0.6b")
+            .expect("el pin de qwen3-tts-0.6b debe existir en MODEL_REVISIONS")
+            .join("config.json");
+        assert!(
+            file.is_file(),
+            "falta {}: aprovisiona el modelo con `ai-voice-interconnector setup`",
+            file.display()
+        );
     }
 
-    /// Estado de provisión VERIFICADO AHORA (no cacheado): `doctor` consulta los
-    /// snapshots HF vigentes. La guarda nunca aprovisiona: sin modelos, las
-    /// pruebas pesadas se omiten; para ejecutarlas hay que correr antes
-    /// `ai-voice-interconnector setup`. No se cachea el resultado porque
-    /// `cleanup_matches_fixture` puede borrar la provisión en otro hilo
-    /// entre tests: un caché obsoleto hacía que tests TTS posteriores a cleanup
-    /// confiaran en estado ya eliminado (`model_missing`).
-    fn tts_model_registered() -> bool {
-        Command::new(BIN)
-            .args(["doctor"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+    /// Exige el modelo Base `qwen3-tts-0.6b-base` que necesita el clonado: su
+    /// snapshot (`config.json`) o, si no, el directorio vendored con
+    /// `"tts_model_type": "base"`.
+    fn require_tts_base_model() {
+        let snapshot = avi_store::ModelStore::new()
+            .model_snapshot_path("qwen3-tts-0.6b-base")
+            .expect("el pin de qwen3-tts-0.6b-base debe existir en MODEL_REVISIONS")
+            .join("config.json");
+        let vendored = Path::new("vendor/qwen3-tts/qwen3-tts-0.6b-base/config.json");
+        let vendored_is_base = std::fs::read_to_string(vendored)
+            .map(|c| c.contains("\"tts_model_type\": \"base\""))
+            .unwrap_or(false);
+        assert!(
+            snapshot.is_file() || vendored_is_base,
+            "falta {} (ni {} con tts_model_type base): aprovisiona el modelo Base con \
+             `ai-voice-interconnector setup --with-voice-cloning`",
+            snapshot.display(),
+            vendored.display()
+        );
     }
 
-    /// Provisto = modelo registrado + binario + pesos.
-    fn tts_provisioned() -> bool {
-        tts_model_registered() && tts_binary().is_some() && tts_weights()
-    }
-
-    /// El clonado de voz exige el modelo Base del motor (graft ICL); el modelo
-    /// CustomVoice vendorizado (`qwen3-tts-0.6b/`) no sirve para clonado. El
-    /// modelo Base se provisiona vía `ModelStore` snapshot HF o directorio vendored
-    /// (`qwen3-tts-0.6b-base/`, `config.json: "tts_model_type": "base"`).
-    fn tts_clone_provisioned() -> bool {
-        if !tts_provisioned() {
-            return false;
-        }
-        if avi_store::ModelStore::new().is_provisioned("qwen3-tts-0.6b-base") {
-            return true;
-        }
-        let config = Path::new("vendor/qwen3-tts/qwen3-tts-0.6b-base/config.json");
-        match std::fs::read_to_string(config) {
-            Ok(c) => c.contains("\"tts_model_type\": \"base\""),
-            Err(_) => false,
-        }
+    /// Exige el binario del motor (`QWEN3_TTS_BIN` o
+    /// `vendor/qwen3-tts/qwen_tts.exe`). Los pesos no se exigen aparte: el motor
+    /// usa el snapshot de la raíz de modelos que exige `require_tts_model()`.
+    fn require_tts_binary() {
+        let binary = tts_binary().expect(
+            "falta el binario del motor (QWEN3_TTS_BIN o vendor/qwen3-tts/qwen_tts.exe): \
+             constrúyelo con `cargo xtask build-engine`",
+        );
+        assert!(
+            binary.is_file(),
+            "falta {}: constrúyelo con `cargo xtask build-engine`",
+            binary.display()
+        );
     }
 
     /// Mutex global para serializar los tests TTS pesados (cada corrida ocupa
@@ -2171,7 +2318,7 @@ mod tts {
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
         let snapshot = avi_store::ModelStore::new()
             .model_snapshot_path("parakeet-tdt-v3")
-            .expect("snapshot HF parakeet-tdt-v3 no provisionado — ejecuta setup --with-stt");
+            .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
         let engine =
             avi_stt::ParakeetEngine::new(snapshot).expect("el modelo Parakeet TDT v3 debe existir");
         let transcribed = engine
@@ -2237,6 +2384,15 @@ mod tts {
         }
     }
 
+    /// Exige al menos un dispositivo de salida de audio.
+    #[cfg(feature = "native-stt")]
+    fn require_audio_device() {
+        assert!(
+            has_audio_device(),
+            "no hay ningún dispositivo de salida de audio disponible en esta máquina"
+        );
+    }
+
     // ─── synthesize ─────────────────────────────────────────────────────
 
     /// Éxito con `--label`: exit 0, WAV persistido en `speech/`, envelope y
@@ -2245,7 +2401,11 @@ mod tts {
     /// modelos tampoco están, así que no se pierde cobertura).
     #[cfg(feature = "native-stt")]
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y el modelo Parakeet"]
     fn synthesize_ok_with_label() {
+        require_tts_model();
+        require_tts_binary();
+        require_parakeet();
         // Serie + ciclo: excluye cleanup (STATE) y paradas del ciclo durante la
         // vía caliente; el orden STATE→TTS coincide con el resto de la suite.
         let _guard = lock_tts();
@@ -2253,16 +2413,6 @@ mod tts {
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = arm_reaper("synthesize_ok_with_label");
-        if !tts_provisioned() {
-            eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
-            hit_end("tts::synthesize_ok_with_label (skip sin provisión)");
-            return;
-        }
-        if !parakeet_model_available() {
-            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
-            hit_end("tts::synthesize_ok_with_label (skip sin STT)");
-            return;
-        }
         let label = unique_label("golden");
         // Vía daemon caliente de la instancia propia (instancia aislada): la instancia ya
         // pagó la carga del motor una sola vez; este test no recarga en frío.
@@ -2307,7 +2457,7 @@ mod tts {
             "Hola, este es un mensaje de prueba para la verificación.",
         );
         assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
-        let _ = avi_store::SpeechStore::new().remove("default", &label);
+        let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove("default", &label);
         stop_instance(&inst, "synthesize_ok_with_label");
         hit_end("tts::synthesize_ok_with_label");
     }
@@ -2318,24 +2468,23 @@ mod tts {
     /// texto de 2-4 palabras (`"Hola mundo"`) con voz `default` (preset ryan).
     /// Verifica `WAV 24kHz mono 16-bit` y `WER ≤ 0.25` vía Parakeet (`native-stt`),
     /// mismo patrón que `synthesize_ok_with_label` (11 palabras): requiere
-    /// `tts_provisioned()` + `parakeet_model_available()`, usa `valid_wav_24k`
-    /// y `wer_vs_text`, falla la E2E/gate si `WER > 0.25`.
+    /// el modelo TTS, el binario y `require_parakeet()`, usa
+    /// `valid_wav_24k` y `wer_vs_text`, falla la E2E/gate si `WER > 0.25`.
     #[cfg(feature = "native-stt")]
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y el modelo Parakeet"]
     fn synthesize_short_text_wer_gate() {
-        if !tts_provisioned() {
-            eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
-            return;
-        }
-        if !parakeet_model_available() {
-            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
-            return;
-        }
+        require_tts_model();
+        require_tts_binary();
+        require_parakeet();
         // Instancia aislada sin daemon (este test es ruta directa): el
         // sandbox propio aísla su estado (WAV + sidecar) del data_dir
         // compartido; `TTS_LOCK` actúa como semáforo de inferencia.
         let _guard = lock_tts();
         let inst = IsolatedInstance::new("wer_gate");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
         let a = inst.args();
         let short_text = "Hola mundo";
         let label = unique_label("golden_corto");
@@ -2376,7 +2525,7 @@ mod tts {
             short_text,
             wer
         );
-        let _ = avi_store::SpeechStore::new().remove("default", &label);
+        let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove("default", &label);
     }
 
     #[test]
@@ -2420,8 +2569,9 @@ mod tts {
 
     #[test]
     fn synthesize_text_at_limit_is_not_rejected_by_validation() {
-        // Con 500 caracteres la validación pasa; el resultado puede ser otro
-        // `reason` (por ejemplo, modelos ausentes), pero nunca `text_too_long`.
+        // Con 500 caracteres la validación pasa; el sandbox no tiene modelos, así
+        // que el resultado es otro `reason` (modelo ausente) y no se sintetiza
+        // nada, pero nunca `text_too_long`.
         let limit_text = "a".repeat(500);
         let (_code, actual) = run_json(&[
             "--json",
@@ -2435,29 +2585,37 @@ mod tts {
         ]);
         assert_ne!(actual["reason"], Value::String("text_too_long".to_string()));
         assert_ne!(actual["reason"], Value::String("empty_text".to_string()));
+        assert!(
+            actual.get("audio_path").is_none(),
+            "sin modelos no debe sintetizarse audio: {actual}"
+        );
     }
 
     #[test]
     fn synthesize_missing_voice_exits_3() {
-        if !tts_model_registered() {
-            eprintln!("[tts] skip: sin ModelStore escribible");
-            return;
-        }
+        // Sandbox propio con el modelo CustomVoice sembrado: la ruta llega a la
+        // búsqueda de la voz sin cargar el motor ni tocar la instalación real.
+        let inst = IsolatedInstance::new("synth_missing_voice");
+        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        let a = inst.contract_args();
         // Ruta directa fijada (colateral del régimen con fixture): la
         // existencia de la voz solo se verifica en la rama local; la vía daemon la
         // resuelve el residente.
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "speech",
-            "synthesize",
-            "--text",
-            "Hola",
-            "--voice",
-            "voz_inexistente_xyz",
-            "--label",
-            "x",
-        ]);
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "synthesize",
+                "--text",
+                "Hola",
+                "--voice",
+                "voz_inexistente_xyz",
+                "--label",
+                "x",
+            ],
+            &a,
+        );
         assert_eq!(
             code, 3,
             "voz inexistente → ExitCode::NotFound (reason={:?})",
@@ -2473,10 +2631,11 @@ mod tts {
     /// sidecar + WAV mínimo (sin síntesis real).
     #[test]
     fn synthesize_label_collision_exits_6() {
-        if !tts_model_registered() {
-            eprintln!("[tts] skip: sin ModelStore escribible");
-            return;
-        }
+        // Sandbox propio con el modelo CustomVoice sembrado; el almacén de
+        // locuciones fabricado vive en el directorio de datos del sandbox.
+        let inst = IsolatedInstance::new("synth_collision");
+        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        let a = inst.contract_args();
         let label = unique_label("colision");
         let wav_min = {
             let spec = hound::WavSpec {
@@ -2493,22 +2652,30 @@ mod tts {
             }
             cursor.into_inner()
         };
-        let src = std::env::temp_dir().join(format!("{}_min.wav", label));
+        let src = inst.dir.join(format!("{}_min.wav", label));
         std::fs::write(&src, &wav_min).unwrap();
-        let store = avi_store::SpeechStore::new();
+        // La voz de fábrica debe existir en el almacén de voces del sandbox: la
+        // ruta la verifica antes de comprobar la colisión de etiqueta.
+        std::fs::create_dir_all(inst.dir.join("voices").join("default"))
+            .expect("crear la voz de fábrica del sandbox");
+        let store = avi_store::SpeechStore::at(inst.dir.join("speech"));
         store
             .save("default", &label, "fabricado", &src)
             .expect("el sidecar fabricado debe guardarse");
         let _ = std::fs::remove_file(&src);
-        let (code, actual) = run_json(&[
-            "--json",
-            "speech",
-            "synthesize",
-            "--text",
-            "Hola",
-            "--label",
-            &label,
-        ]);
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "synthesize",
+                "--text",
+                "Hola",
+                "--label",
+                &label,
+            ],
+            &a,
+        );
         assert_eq!(
             code, 6,
             "colisión de etiqueta → ExitCode::StateConflict (reason={:?})",
@@ -2518,9 +2685,10 @@ mod tts {
         let _ = store.remove("default", &label);
     }
 
-    /// Fábrica de locuciones sin síntesis: sidecar + WAV mínimo en la voz indicada, mismo patrón que `synthesize_label_collision_exits_6`.
-    /// voz indicada, mismo patrón que `synthesize_label_collision_exits_6`.
-    fn create_utterance(voice: &str, label: &str) {
+    /// Fábrica de locuciones sin síntesis: sidecar + WAV mínimo en la voz indicada,
+    /// guardados en el almacén de locuciones del sandbox de `inst`; mismo patrón
+    /// que `synthesize_label_collision_exits_6`.
+    fn create_utterance(inst: &IsolatedInstance, voice: &str, label: &str) {
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 24_000,
@@ -2533,9 +2701,9 @@ mod tts {
             w.write_sample(0i16).unwrap();
             w.finalize().unwrap();
         }
-        let src = std::env::temp_dir().join(format!("{}_min.wav", label));
+        let src = inst.dir.join(format!("{}_min.wav", label));
         std::fs::write(&src, cursor.into_inner()).unwrap();
-        avi_store::SpeechStore::new()
+        avi_store::SpeechStore::at(inst.dir.join("speech"))
             .save(voice, label, "fabricado", &src)
             .expect("el sidecar fabricado debe guardarse");
         let _ = std::fs::remove_file(&src);
@@ -2545,21 +2713,25 @@ mod tts {
     /// solo esa voz).
     #[test]
     fn speech_list_filters_by_existing_voice() {
-        avi_store::VoiceStore::new()
+        let inst = IsolatedInstance::new("list_filters");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
             .ensure_initialized()
             .expect("voces de fábrica inicializadas");
         let label_def = unique_label("listdef");
         let label_ryan = unique_label("listryan");
-        create_utterance("default", &label_def);
-        create_utterance("ryan", &label_ryan);
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "speech",
-            "list",
-            "--voice",
-            "default",
-        ]);
+        create_utterance(&inst, "default", &label_def);
+        create_utterance(&inst, "ryan", &label_ryan);
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "list",
+                "--voice",
+                "default",
+            ],
+            &inst.contract_args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         let entries = actual["speech"]
@@ -2578,9 +2750,6 @@ mod tts {
                 "el filtro debe devolver solo la voz pedida"
             );
         }
-        let store = avi_store::SpeechStore::new();
-        let _ = store.remove("default", &label_def);
-        let _ = store.remove("ryan", &label_ryan);
     }
 
     /// `speech list --voice <inexistente>` sale con 3 (`voice_not_found`) porque el parser valida la voz antes de listar.
@@ -2630,14 +2799,18 @@ mod tts {
     /// `speech list` sin `--voice` devuelve todas las locuciones (exit 0).
     #[test]
     fn speech_list_without_voice_returns_all() {
-        avi_store::VoiceStore::new()
+        let inst = IsolatedInstance::new("list_all");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
             .ensure_initialized()
             .expect("voces de fábrica inicializadas");
         let label_def = unique_label("listalldef");
         let label_ryan = unique_label("listallryan");
-        create_utterance("default", &label_def);
-        create_utterance("ryan", &label_ryan);
-        let (code, actual) = run_json(&["--json", "--no-daemon", "speech", "list"]);
+        create_utterance(&inst, "default", &label_def);
+        create_utterance(&inst, "ryan", &label_ryan);
+        let (code, actual) = run_json_env(
+            &["--json", "--no-daemon", "speech", "list"],
+            &inst.contract_args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         let entries = actual["speech"]
@@ -2655,9 +2828,6 @@ mod tts {
                 .any(|e| e["label"] == Value::String(label_ryan.clone())),
             "sin filtro debe aparecer la locución de ryan"
         );
-        let store = avi_store::SpeechStore::new();
-        let _ = store.remove("default", &label_def);
-        let _ = store.remove("ryan", &label_ryan);
     }
 
     // ─── say ───────────────────────────────────────────────────────────
@@ -2665,19 +2835,12 @@ mod tts {
     // Verifica WER real vía Parakeet (native-stt); sin el feature no se compila.
     #[cfg(feature = "native-stt")]
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
     fn say_success_plays() {
-        if !tts_provisioned() {
-            eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
-            return;
-        }
-        if !has_audio_device() {
-            eprintln!("[tts] skip: sin dispositivo de salida de audio");
-            return;
-        }
-        if !parakeet_model_available() {
-            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
-            return;
-        }
+        require_tts_model();
+        require_tts_binary();
+        require_audio_device();
+        require_parakeet();
         let _guard = lock_tts();
         // Testigo en directo de `say`: ruta local fijada con
         // `--no-daemon` — la vía daemon borra su WAV efímero tras reproducir y
@@ -2686,16 +2849,23 @@ mod tts {
         // la suite, acotada a un texto corto ("Hola mundo", <2 s); la
         // verificación es sobre el archivo (WAV válido + WER), no sobre el
         // altavoz. Gate de dispositivo como hoy (sin mezclador no hay humo).
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "speech",
-            "say",
-            "--text",
-            "Hola mundo",
-            "--voice",
-            "default",
-        ]);
+        let inst = IsolatedInstance::new("say_plays");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "say",
+                "--text",
+                "Hola mundo",
+                "--voice",
+                "default",
+            ],
+            &inst.args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("reproduced".to_string()));
         let audio = actual["audio_path"]
@@ -2721,19 +2891,12 @@ mod tts {
     /// así que exige `native-stt`; sin el feature no se compila.
     #[cfg(feature = "native-stt")]
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
     fn dub_audio_passthrough_es_es() {
-        if !tts_provisioned() {
-            eprintln!("[tts] skip: sin modelo/binario Qwen3-TTS provisionados");
-            return;
-        }
-        if !avi_store::ModelStore::new().is_provisioned("parakeet-tdt-v3") {
-            eprintln!("[stt] skip: sin modelo Parakeet TDT v3 (hf_cache_dir/ gitignoreado — ejecuta setup --with-stt)");
-            return;
-        }
-        if !has_audio_device() {
-            eprintln!("[tts] skip: sin dispositivo de salida de audio");
-            return;
-        }
+        require_tts_model();
+        require_tts_binary();
+        require_parakeet();
+        require_audio_device();
         let _guard = lock_tts();
         // Testigo en directo de `dub`: ruta local fijada con
         // `--no-daemon` para que la sesión en ejecución no lo reenrute.
@@ -2743,18 +2906,25 @@ mod tts {
         // y en traducción: sin
         // mezclador el comando falla con `playback_failed` y no hay archivo
         // que verificar.
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "speech",
-            "dub",
-            "--audio",
-            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-            "--source-language",
-            "es-latam",
-            "--target-language",
-            "es-latam",
-        ]);
+        let inst = IsolatedInstance::new("dub_passthrough_direct");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "dub",
+                "--audio",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+                "--source-language",
+                "es-latam",
+                "--target-language",
+                "es-latam",
+            ],
+            &inst.args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
         let audio = actual["audio_path"]
@@ -2788,28 +2958,28 @@ mod tts {
     // ─── voice clone ───────────────────────────────────────────────────
 
     #[test]
+    #[ignore = "requiere el modelo Base de Qwen3-TTS, el binario del motor"]
     fn voice_clone_ok() {
-        if !tts_clone_provisioned() {
-            eprintln!(
-                "[tts] skip: el clonado exige el modelo Base del motor Qwen3-TTS \
-                 (usa setup --with-voice-cloning)"
-            );
-            return;
-        }
+        require_tts_base_model();
+        require_tts_binary();
         let _guard = lock_tts();
         let name = unique_label("clon");
         // Testigo en directo de `clone`: ruta local fijada con
         // `--no-daemon` para que la sesión en ejecución no lo reenrute.
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "voice",
-            "clone",
-            "--name",
-            &name,
-            "--speech-reference",
-            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-        ]);
+        let inst = IsolatedInstance::new("clone_ok");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &inst.args(),
+        );
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
@@ -2823,50 +2993,65 @@ mod tts {
             "el .qvoice debe pesar > 1 MB (era {})",
             size
         );
-        let _ = avi_store::VoiceStore::new().remove(&name);
+        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
     }
 
     /// Clonado repetido → 6. La voz existente se fabrica con un `.qvoice` mínimo.
     #[test]
     fn voice_clone_duplicate_exits_6() {
-        if !tts_model_registered() {
-            eprintln!("[tts] skip: sin ModelStore escribible");
-            return;
-        }
+        // Sandbox propio con los modelos CustomVoice y Base sembrados; la voz
+        // existente se fabrica en el almacén de voces del sandbox.
+        let inst = IsolatedInstance::new("clone_duplicate");
+        seed_pinned_models(
+            &inst.dir.join("cache"),
+            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
+        );
+        let a = inst.contract_args();
         let name = unique_label("clon");
-        let voices = avi_store::VoiceStore::new();
+        let voices = avi_store::VoiceStore::at(inst.dir.join("voices"));
         let dir = voices.voice_dir(&name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("reference.qvoice"), b"QVCE").unwrap();
-        let (code, actual) = run_json(&[
-            "--json",
-            "voice",
-            "clone",
-            "--name",
-            &name,
-            "--speech-reference",
-            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-        ]);
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &a,
+        );
         assert_eq!(code, 6, "voz existente → ExitCode::StateConflict");
         assert_eq!(actual["reason"], Value::String("voice_exists".to_string()));
-        let _ = voices.remove(&name);
     }
 
     #[test]
     fn voice_clone_invalid_name_exits_2() {
-        if !tts_model_registered() {
-            eprintln!("[tts] skip: sin ModelStore escribible");
-            return;
-        }
-        let (code, actual) = run_json(&[
-            "--json",
-            "voice",
-            "clone",
-            "--name",
-            "voz invalida",
-            "--speech-reference",
-            "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-        ]);
+        // Sandbox propio con los modelos CustomVoice y Base sembrados; el nombre
+        // se rechaza antes de cargar el motor.
+        let inst = IsolatedInstance::new("clone_invalid_name");
+        seed_pinned_models(
+            &inst.dir.join("cache"),
+            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
+        );
+        let a = inst.contract_args();
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                "voz invalida",
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &a,
+        );
         assert_eq!(code, 2, "nombre inválido → ExitCode::InvalidInput");
         assert_eq!(
             actual["reason"],
@@ -2876,23 +3061,27 @@ mod tts {
 
     #[test]
     fn voice_clone_missing_audio_exits_3() {
-        // Serializa con el resto de la suite (patrón de los demás `voice_clone_*`):
-        // los E2E de daemon, al apagarse, matan `qwen_tts.exe` por nombre de imagen
-        // (global), y sin este lock la síntesis de este test podría cruzarse con ese
-        // kill en paralelo y salir con un código distinto de 3.
-        if !tts_model_registered() {
-            eprintln!("[tts] skip: sin ModelStore escribible");
-            return;
-        }
-        let (code, actual) = run_json(&[
-            "--json",
-            "voice",
-            "clone",
-            "--name",
-            "clon_ok",
-            "--speech-reference",
-            "no-existe.wav",
-        ]);
+        // Sandbox propio con los modelos CustomVoice y Base sembrados; la ruta
+        // directa falla por el audio inexistente antes de cargar el motor.
+        let inst = IsolatedInstance::new("clone_missing_audio");
+        seed_pinned_models(
+            &inst.dir.join("cache"),
+            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
+        );
+        let a = inst.contract_args();
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                "clon_ok",
+                "--speech-reference",
+                "no-existe.wav",
+            ],
+            &a,
+        );
         assert_eq!(code, 3, "audio inexistente → ExitCode::NotFound");
         assert_eq!(
             actual["reason"],
@@ -2903,25 +3092,30 @@ mod tts {
     /// Referencia truncada en la ruta local → 2 con `invalid_audio`.
     #[test]
     fn voice_clone_truncated_audio_exits_2() {
-        if !tts_clone_provisioned() {
-            eprintln!("[tts] skip: el clonado exige el modelo Base del motor Qwen3-TTS");
-            return;
-        }
-        let _guard = lock_tts();
+        // Sandbox propio con los modelos CustomVoice y Base sembrados; el WAV
+        // truncado se escribe en el temporal del sandbox.
+        let inst = IsolatedInstance::new("clone_truncated");
+        seed_pinned_models(
+            &inst.dir.join("cache"),
+            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
+        );
+        let a = inst.contract_args();
         let wav = write_truncated_wav("clon_truncado");
         let name = unique_label("clon");
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "voice",
-            "clone",
-            "--name",
-            &name,
-            "--speech-reference",
-            wav.to_str().unwrap(),
-        ]);
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                wav.to_str().unwrap(),
+            ],
+            &a,
+        );
         std::fs::remove_file(&wav).ok();
-        let _ = avi_store::VoiceStore::new().remove(&name);
         assert_eq!(code, 2, "referencia truncada → ExitCode::InvalidInput");
         assert_eq!(actual["reason"], Value::String("invalid_audio".to_string()));
     }
@@ -2941,15 +3135,13 @@ mod tts {
 
     /// El residente acepta conexiones por loopback y las rechaza por la IPv4 de la LAN.
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn resident_listens_only_on_loopback() {
+        require_tts_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::resident_listens_only_on_loopback");
         let _reaper = arm_reaper("resident_listens_only_on_loopback");
-        if !tts_provisioned() {
-            eprintln!("[daemon] skip: sin provisión TTS para el residente");
-            hit_end("tts::resident_listens_only_on_loopback (skip sin provisión)");
-            return;
-        }
         let inst = IsolatedInstance::new("loopback");
         let port = inst
             .tts_port()
@@ -2962,31 +3154,25 @@ mod tts {
             "el residente debe aceptar conexiones en 127.0.0.1:{}",
             port
         );
-        match non_loopback_ipv4() {
-            Some(ip) => {
-                let lan = std::net::SocketAddr::from((ip, port));
-                assert!(
-                    std::net::TcpStream::connect_timeout(&lan, timeout).is_err(),
-                    "el residente está expuesto a la red: acepta conexiones en {}:{}",
-                    ip,
-                    port
-                );
-            }
-            None => eprintln!(
-                "[daemon] salto parcial: sin IPv4 no loopback, se omite la aserción de red"
-            ),
-        }
+        let ip = non_loopback_ipv4()
+            .expect("la máquina no tiene IPv4 fuera de loopback: conéctala a una red");
+        let lan = std::net::SocketAddr::from((ip, port));
+        assert!(
+            std::net::TcpStream::connect_timeout(&lan, timeout).is_err(),
+            "el residente está expuesto a la red: acepta conexiones en {}:{}",
+            ip,
+            port
+        );
         stop_instance(&inst, "resident_listens_only_on_loopback");
         hit_end("tts::resident_listens_only_on_loopback");
     }
 
     /// El motor rechaza un `--host` inválido al parsear los argumentos, sin cargar el modelo.
     #[test]
+    #[ignore = "requiere el binario del motor"]
     fn engine_rejects_invalid_host() {
-        let Some(bin) = tts_binary() else {
-            eprintln!("[tts] skip: sin binario del motor");
-            return;
-        };
+        require_tts_binary();
+        let bin = tts_binary().expect("require_tts_binary garantiza el binario");
         let out = Command::new(bin)
             .args(["--serve", "1", "--host", "no-es-ip"])
             .output()
@@ -3001,19 +3187,16 @@ mod tts {
     }
 
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_start_ok() {
+        require_tts_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_start_ok");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         // La ventana spawn→write ya no ciega al handler (PID en memoria).
         let _reaper = arm_reaper("daemon_start_ok");
-        // Skip sin efectos: no tocar el ciclo si no hay provisión.
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS provisionado para daemon start");
-            hit_end("tts::daemon_start_ok (skip sin provisión)");
-            return;
-        }
         // Instancia aislada propia (puerto efímero + sandbox + evento);
         // sin precondición de sesión: el sandbox nace detenido y vacío.
         let inst = IsolatedInstance::new("start_ok");
@@ -3046,17 +3229,14 @@ mod tts {
     }
 
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_restart_rewarms() {
+        require_tts_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_restart_rearma");
         // Reaper best-effort en todo `panic!` fuera de los polls.
         let _reaper = arm_reaper("daemon_restart_rearma");
-        // Skip sin efectos: no tocar el ciclo si no hay provisión.
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS provisionado para daemon restart");
-            hit_end("tts::daemon_restart_rearma (skip sin provisión)");
-            return;
-        }
         // Instancia aislada propia; base observada en ejecución.
         let inst = IsolatedInstance::new("restart_rearma");
         start_instance_running_only(&inst, &[]);
@@ -3095,17 +3275,14 @@ mod tts {
     }
 
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_status_running() {
+        require_tts_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_status_running");
         // Reaper best-effort en todo `panic!` fuera de los polls.
         let _reaper = arm_reaper("daemon_status_running");
-        // Skip sin efectos: no tocar el ciclo si no hay provisión.
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS provisionado");
-            hit_end("tts::daemon_status_running (skip sin provisión)");
-            return;
-        }
         // Instancia aislada propia; `status` contra daemon en ejecución.
         let inst = IsolatedInstance::new("status_running");
         start_instance_running_only(&inst, &[]);
@@ -3211,13 +3388,29 @@ mod tts {
     #[test]
     fn setup_json_without_language_key() {
         // Contrato del payload --json: la clave `language` desaparece de la respuesta.
-        // Idempotente sobre estado provisionado (no descarga); si no hay modelos,
-        // se omite para no forzar una descarga de unos 4.7 GB en CI.
-        if !tts_model_registered() {
-            eprintln!("[setup] skip: runtime no provisionado (setup --json exigiría descarga)");
-            return;
+        // Corre el binario real en un sandbox con la selección por defecto ya
+        // sembrada (snapshots fijados y derivados CT2 sanos), de modo que `setup`
+        // no descarga ni convierte nada. Un proxy inalcanzable garantiza que, si el
+        // sembrado no bastara, la descarga fallaría en lugar de bajar gigabytes.
+        let inst = IsolatedInstance::new("setup_json");
+        let models_root = inst.dir.join("cache");
+        let names: Vec<&str> = avi_store::MODEL_REVISIONS
+            .iter()
+            .map(|pin| pin.name)
+            .filter(|name| *name != "qwen3-tts-0.6b-base")
+            .collect();
+        seed_pinned_models(&models_root, &names);
+        for pair in ["es-en", "en-es"] {
+            let ct2 = models_root.join("ct2").join(format!("opus-mt-{pair}"));
+            std::fs::create_dir_all(&ct2).expect("crear derivado CT2 sembrado");
+            std::fs::write(ct2.join("model.bin"), b"marker").expect("sembrar model.bin");
+            std::fs::write(ct2.join("tokenizer.json"), b"{}").expect("sembrar tokenizer");
         }
-        let (code, payload) = run_json(&["--json", "setup"]);
+        let mut envs = inst.contract_args();
+        envs.push(("HTTPS_PROXY", "http://127.0.0.1:9"));
+        envs.push(("HTTP_PROXY", "http://127.0.0.1:9"));
+        let (code, payload) = run_json_env(&["--json", "setup"], &envs);
+        let _ = std::fs::remove_dir_all(&inst.dir);
         assert_eq!(code, 0, "setup --json debe completar, payload: {}", payload);
         assert_eq!(payload["status"], "completed");
         assert!(
@@ -3228,17 +3421,14 @@ mod tts {
     }
 
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_start_with_auto_restart() {
+        require_tts_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_start_con_auto_restart");
         // Reaper best-effort en todo `panic!` fuera de los polls.
         let _reaper = arm_reaper("daemon_start_con_auto_restart");
-        // Skip sin efectos: no tocar el ciclo si no hay provisión.
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS provisionado para auto-restart");
-            hit_end("tts::daemon_start_con_auto_restart (skip sin provisión)");
-            return;
-        }
         // Instancia aislada propia; el sandbox nace detenido y vacío.
         let inst = IsolatedInstance::new("start_auto_restart");
         // Start con supervisor habilitado y max 1 (no debe fallar en estado sano).
@@ -3288,12 +3478,14 @@ mod tts {
 
     /// Afirma el fallo por puerto ocupado de `daemon start`: exit 6
     /// `port_in_use` con el puerto y `AVI_DAEMON_PORT` en el mensaje, en menos
-    /// de 5 s (la regresión esperaría 10 s), sin `daemon.pid` ni `daemon.ready`.
+    /// de 5 s (la regresión esperaría 10 s), sin `daemon.ready` y sin tocar el
+    /// `daemon.pid` previo (el señuelo sembrado o su ausencia).
     fn assert_start_port_in_use(inst: &IsolatedInstance, port: u16, extra: &[&str]) {
         let mut args = vec!["--json", "daemon", "start"];
         args.extend_from_slice(extra);
+        let pidfile_before = std::fs::read(inst.dir.join("daemon.pid")).ok();
         let t0 = Instant::now();
-        let (code, actual) = run_json_env(&args, &inst.args());
+        let (code, actual) = run_json_env(&args, &inst.contract_args());
         let elapsed = t0.elapsed();
         assert_eq!(code, 6, "puerto ocupado debe salir con exit 6: {}", actual);
         assert_eq!(actual["reason"], "port_in_use", "{}", actual);
@@ -3305,9 +3497,10 @@ mod tts {
             "el fallo debe ser inmediato, no esperar el deadline: {:?}",
             elapsed
         );
-        assert!(
-            !inst.dir.join("daemon.pid").exists(),
-            "no debe quedar daemon.pid"
+        assert_eq!(
+            std::fs::read(inst.dir.join("daemon.pid")).ok(),
+            pidfile_before,
+            "un arranque fallido no debe escribir ni borrar daemon.pid"
         );
         assert!(
             !inst.dir.join("daemon.ready").exists(),
@@ -3323,12 +3516,11 @@ mod tts {
     #[test]
     fn daemon_start_port_in_use_fails_fast_with_state_conflict() {
         let _reaper = arm_reaper("daemon_start_port_in_use");
-        // Sin provisión `start` saldría antes por `model_missing`.
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS provisionado para puerto ocupado");
-            return;
-        }
         let mut inst = IsolatedInstance::new("start_port_in_use");
+        // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
+        // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
+        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        seed_decoy_daemon_pidfile(&inst.dir);
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
         assert_start_port_in_use(&inst, port, &[]);
@@ -3351,7 +3543,7 @@ mod tts {
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
         let t0 = Instant::now();
-        let (code, actual) = run_json_env(&["--json", "daemon", "serve"], &inst.args());
+        let (code, actual) = run_json_env(&["--json", "daemon", "serve"], &inst.contract_args());
         let elapsed = t0.elapsed();
         assert_eq!(code, 6, "puerto ocupado debe salir con exit 6: {}", actual);
         assert_eq!(actual["reason"], "port_in_use", "{}", actual);
@@ -3372,20 +3564,21 @@ mod tts {
     }
 
     /// `daemon start --warm-voice <inexistente>` sale con `voice_not_found`
-    /// (exit 3) sin cargar modelos y sin dejar `daemon.pid`.
+    /// (exit 3) sin cargar modelos y sin tocar el `daemon.pid` previo.
     #[test]
     fn daemon_start_missing_warm_voice_exits_not_found() {
         let _reaper = arm_reaper("daemon_start_missing_warm_voice");
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS provisionado para voz de warmup");
-            return;
-        }
         let inst = IsolatedInstance::new("start_missing_warm_voice");
+        // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
+        // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
+        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        seed_decoy_daemon_pidfile(&inst.dir);
+        let pidfile_before = std::fs::read(inst.dir.join("daemon.pid")).ok();
         let voice = format!("warm_inexistente_{}", std::process::id());
         let t0 = Instant::now();
         let (code, actual) = run_json_env(
             &["--json", "daemon", "start", "--warm-voice", &voice],
-            &inst.args(),
+            &inst.contract_args(),
         );
         let elapsed = t0.elapsed();
         assert_eq!(code, 3, "voz inexistente debe salir con exit 3: {}", actual);
@@ -3395,9 +3588,10 @@ mod tts {
             "el fallo debe ser inmediato: {:?}",
             elapsed
         );
-        assert!(
-            !inst.dir.join("daemon.pid").exists(),
-            "no debe quedar daemon.pid"
+        assert_eq!(
+            std::fs::read(inst.dir.join("daemon.pid")).ok(),
+            pidfile_before,
+            "un arranque fallido no debe escribir ni borrar daemon.pid"
         );
     }
 
@@ -3408,7 +3602,10 @@ mod tts {
     /// `start` parte de cero con `started`. Cierra con cero huérfanos
     /// verificados a nivel SO.
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn h01_simulated_abort_reclaims_and_leaves_no_orphans() {
+        require_tts_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::h01_simulated_abort_reclaims_and_leaves_no_orphans");
         // Reaper best-effort en todo `panic!` fuera de los polls.
@@ -3417,12 +3614,6 @@ mod tts {
         // verde se declara no probatorio (runtime Unix diferido a CI).
         // La ventana spawn→write ya no ciega al handler (PID en memoria).
         let _reaper = arm_reaper("h01_aborto_simulado");
-        // Skip sin efectos: no tocar el ciclo si no hay provisión.
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS provisionado para aborto simulado");
-            hit_end("tts::h01_simulated_abort_reclaims_and_leaves_no_orphans (skip sin provisión)");
-            return;
-        }
         // Instancia aislada propia; el sandbox nace detenido y vacío.
         let inst = IsolatedInstance::new("h01_aborto");
         let a = inst.args();
@@ -3518,15 +3709,13 @@ mod tts {
     /// motor (residente en 8766) y comprueba si el pipe sigue bloqueado;
     /// luego mata el árbol del daemon y comprueba que se libera.
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn h03_pipe_stdio_must_not_remain_blocked() {
+        require_tts_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::h03_pipe_stdio_must_not_remain_blocked");
         let _reaper = arm_reaper("h03_pipe_stdio_must_not_remain_blocked");
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS provisionado para diagnóstico");
-            hit_end("tts::h03_pipe_stdio_must_not_remain_blocked (skip sin provisión)");
-            return;
-        }
         // Instancia aislada propia (puerto efímero + sandbox); el sandbox
         // nace detenido y vacío, sin precondición de sesión.
         let inst = IsolatedInstance::new("h03_pipe");
@@ -3649,32 +3838,19 @@ mod tts {
         }
     }
 
+    // La traducción solo existe con `native-translation`.
+    #[cfg(feature = "native-translation")]
     #[test]
-    #[allow(unreachable_code)]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y los modelos CT2"]
     fn translate_delegates_to_daemon() {
+        require_tts_model();
+        require_tts_binary();
+        require_ct2();
         let _tts = lock_tts();
         hit_start_heavy("tts::translate_delegates_to_daemon");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = arm_reaper("translate_delegates_to_daemon");
-        #[cfg(not(feature = "native-translation"))]
-        {
-            eprintln!("[translate] skip: sin feature native-translation");
-            hit_end("tts::translate_delegates_to_daemon (skip sin feature)");
-            return;
-        }
-        #[cfg(feature = "native-translation")]
-        if !ct2_model_available() {
-            eprintln!("[translate] skip: sin modelo CT2 es→en");
-            hit_end("tts::translate_delegates_to_daemon (skip sin CT2)");
-            return;
-        }
-        // Skip sin efectos antes de tocar el ciclo.
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS para daemon warm");
-            hit_end("tts::translate_delegates_to_daemon (skip sin provisión)");
-            return;
-        }
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
         let inst = IsolatedInstance::new("translate_delega");
         start_instance_running_only(&inst, &[]);
@@ -3712,18 +3888,22 @@ mod tts {
         // Partición orden-sensible eliminada por aislamiento por instancia: antes este
         // test apagaba la SESIÓN global (orden-sensible con la serie: si otro
         // test necesitaba la sesión, el orden importaba y el próximo `ensure`
-        // la reparaba bajo demanda). Ahora observa un sandbox virgen sin
-        // arrancar nada: sin pidfile el cliente usa el fallback idéntico a
-        // hoy (8765) y el exit 5 es observable sin tocar estado compartido —
-        // el orden de ejecución ya no importa por construcción.
+        // la reparaba bajo demanda). Ahora observa un sandbox sin arrancar
+        // nada: el pidfile señuelo dirige al cliente a un puerto cerrado y el
+        // exit 5 es observable sin tocar estado compartido — el orden de
+        // ejecución ya no importa por construcción.
         let inst = IsolatedInstance::new("force_sin_daemon");
-        let a = inst.args();
+        // El pidfile señuelo apunta a un puerto cerrado: el cliente no cae al
+        // 8765 del usuario, que puede tener un daemon real.
+        seed_decoy_daemon_pidfile(&inst.dir);
+        let a = inst.contract_args();
         // La ausencia es real a nivel SO (no solo HTTP): con matar-y-rearrancar
         // el `start` solo ocurre explícito, nunca implícito en delegación, así
         // que el exit 5 sigue observable.
+        let decoy_port = inst.port();
         assert!(
-            !port_open(8765),
-            "sin daemon el puerto 8765 debe estar cerrado a nivel SO"
+            !port_open(decoy_port),
+            "sin daemon el puerto {decoy_port} del señuelo debe estar cerrado a nivel SO"
         );
         assert!(
             !inst
@@ -3755,17 +3935,16 @@ mod tts {
     }
 
     #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario del motor"]
     fn clone_delegates_to_daemon() {
+        require_tts_model();
+        require_tts_base_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::clone_delegates_to_daemon");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = arm_reaper("clone_delegates_to_daemon");
-        if !tts_clone_provisioned() {
-            eprintln!("[tts] skip: clonado exige Base");
-            hit_end("tts::clone_delegates_to_daemon (skip sin Base)");
-            return;
-        }
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
         let inst = IsolatedInstance::new("clone_delega");
         start_instance(&inst, &[]);
@@ -3803,7 +3982,7 @@ mod tts {
             Value::Bool(true),
             "vía daemon el evento final trae precomputed:true (precarga iniciada)"
         );
-        let _ = avi_store::VoiceStore::new().remove(&name);
+        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "clone_delegates_to_daemon");
         hit_end("tts::clone_delegates_to_daemon");
@@ -3811,15 +3990,14 @@ mod tts {
 
     /// Referencia truncada por daemon → 2 con `invalid_audio`, igual que en local.
     #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario del motor"]
     fn clone_daemon_truncated_audio_exits_2() {
+        require_tts_model();
+        require_tts_base_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::clone_daemon_truncated_audio_exits_2");
         let _reaper = arm_reaper("clone_daemon_truncado");
-        if !tts_clone_provisioned() {
-            eprintln!("[tts] skip: clonado exige Base");
-            hit_end("tts::clone_daemon_truncated_audio_exits_2 (skip sin Base)");
-            return;
-        }
         let inst = IsolatedInstance::new("clone_truncado");
         start_instance(&inst, &[]);
         let a = inst.args();
@@ -3839,7 +4017,7 @@ mod tts {
             &a,
         );
         std::fs::remove_file(&wav).ok();
-        let _ = avi_store::VoiceStore::new().remove(&name);
+        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
         stop_instance(&inst, "clone_daemon_truncado");
         assert_eq!(code, 2, "referencia truncada por daemon → InvalidInput");
         assert_eq!(actual["reason"], Value::String("invalid_audio".to_string()));
@@ -3848,17 +4026,17 @@ mod tts {
 
     #[cfg(feature = "native-stt")]
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
     fn dub_daemon_passthrough() {
+        require_tts_model();
+        require_tts_binary();
+        require_parakeet();
+        require_audio_device();
         let _tts = lock_tts();
         hit_start_dub("tts::dub_daemon_passthrough");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = arm_reaper("dub_daemon_passthrough");
-        if !tts_provisioned() || !parakeet_model_available() || !has_audio_device() {
-            eprintln!("[dub] skip: sin modelos/audio");
-            hit_end("tts::dub_daemon_passthrough (skip sin modelos/audio)");
-            return;
-        }
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
         let inst = IsolatedInstance::new("dub_passthrough");
         start_instance(&inst, &[]);
@@ -3906,32 +4084,21 @@ mod tts {
         hit_end("tts::dub_daemon_passthrough");
     }
 
-    #[cfg(feature = "native-stt")]
+    // La traducción solo existe con `native-translation`.
+    #[cfg(all(feature = "native-stt", feature = "native-translation"))]
     #[test]
-    #[allow(unreachable_code)]
+    #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet, los modelos CT2 y un dispositivo de audio"]
     fn dub_daemon_with_translation() {
+        require_tts_model();
+        require_tts_binary();
+        require_parakeet();
+        require_ct2();
+        require_audio_device();
         let _tts = lock_tts();
         hit_start_dub("tts::dub_daemon_with_translation");
         // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = arm_reaper("dub_daemon_with_translation");
-        if !tts_provisioned() || !parakeet_model_available() || !has_audio_device() {
-            eprintln!("[dub] skip: sin modelos/audio");
-            hit_end("tts::dub_daemon_with_translation (skip sin modelos/audio)");
-            return;
-        }
-        #[cfg(not(feature = "native-translation"))]
-        {
-            eprintln!("[dub] skip: sin native-translation");
-            hit_end("tts::dub_daemon_with_translation (skip sin feature)");
-            return;
-        }
-        #[cfg(feature = "native-translation")]
-        if !ct2_model_available() {
-            eprintln!("[translate] skip: sin CT2");
-            hit_end("tts::dub_daemon_with_translation (skip sin CT2)");
-            return;
-        }
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
         let inst = IsolatedInstance::new("dub_traduccion");
         start_instance(&inst, &[]);
@@ -3981,15 +4148,13 @@ mod tts {
     /// sobre un daemon ya en ejecución responda holgadamente dentro del presupuesto
     /// de 1500 ms (típico < 100 ms).
     #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn perf_daemon_status_while_running() {
+        require_tts_model();
+        require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::perf_daemon_status_while_running");
         let _reaper = arm_reaper("perf_daemon_status_while_running");
-        if !tts_model_registered() {
-            eprintln!("[daemon] skip: sin modelo TTS provisionado");
-            hit_end("tts::perf_daemon_status_while_running (skip sin provisión)");
-            return;
-        }
         // Instancia aislada propia; `status` sobre daemon en ejecución.
         let inst = IsolatedInstance::new("perf_status");
         start_instance_running_only(&inst, &[]);
@@ -4011,13 +4176,17 @@ mod tts {
 
 /// Ejecuta el binario con `args` capturando stdout como texto plano y
 /// devolviendo (código de salida, stdout). Para aserciones sobre `--help`.
+/// Cada llamada usa un sandbox de contrato nuevo que se borra al terminar.
 fn run_text(args: &[&str]) -> (i32, String) {
+    let (dir, envs) = contract_sandbox("run_text");
     let output = Command::new(BIN)
         .args(args)
+        .envs(envs)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
+    let _ = std::fs::remove_dir_all(&dir);
     let code = output
         .status
         .code()

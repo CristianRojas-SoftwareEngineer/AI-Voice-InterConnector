@@ -145,6 +145,28 @@ fn system_crt_dll(_relative: &str) -> Option<PathBuf> {
     None
 }
 
+/// Siembra en `data_dir` un `daemon.pid` señuelo: su dirección apunta a un
+/// puerto TCP efímero ya cerrado y sus PID están fuera de rango. Así una orden
+/// que consulte o detenga el daemon no cae a 127.0.0.1:8765 (el del usuario)
+/// ni barre por imagen los `qwen_tts` de la máquina, porque el `resident_pid`
+/// registrado no es 0.
+fn seed_decoy_daemon_pidfile(data_dir: &Path) {
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .expect("reservar puerto efímero")
+        .local_addr()
+        .expect("dirección del puerto reservado")
+        .port();
+    let dead_pid = u32::MAX - 1;
+    let content = serde_json::json!({
+        "pid": dead_pid,
+        "addr": format!("127.0.0.1:{port}"),
+        "resident_pid": dead_pid,
+    });
+    std::fs::create_dir_all(data_dir).expect("crear directorio de datos");
+    std::fs::write(data_dir.join("daemon.pid"), content.to_string())
+        .expect("sembrar daemon.pid señuelo");
+}
+
 /// Sandbox del contrato: un directorio con las raíces del hijo, un `tmp` aislado y un
 /// staging con el bundle completo alrededor de una copia del binario.
 struct Sandbox {
@@ -177,6 +199,7 @@ impl Sandbox {
         for dir in [&staging, &data, &models, &temp, &hf] {
             std::fs::create_dir_all(dir).expect("crear raíces del sandbox");
         }
+        seed_decoy_daemon_pidfile(&data);
 
         // El bundle: la copia del ejecutable con el nombre del manifiesto y el resto de
         // archivos obligatorios con contenido de marcador. La lista no se escribe a mano.

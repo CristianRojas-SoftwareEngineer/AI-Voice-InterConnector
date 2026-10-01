@@ -106,6 +106,12 @@ impl DaemonState {
     /// workspace, correcto cuando `daemon serve` se lanza desde la raíz del repo.
     /// Devuelve error si el motor STT no puede inicializarse (modelo inexistente).
     pub fn new() -> anyhow::Result<Self> {
+        Self::with_stores(VoiceStore::new(), SpeechStore::new())
+    }
+
+    /// Constructor con los almacenes de voces y de habla ya anclados, para que
+    /// pruebas y sandboxes no dependan del directorio de datos del usuario.
+    pub fn with_stores(voice_store: VoiceStore, speech_store: SpeechStore) -> anyhow::Result<Self> {
         #[cfg(feature = "native-stt")]
         let stt_dir = ModelStore::new().model_dir("parakeet-tdt-v3");
         #[cfg(feature = "native-stt")]
@@ -141,8 +147,8 @@ impl DaemonState {
         };
         Ok(Self {
             synthesis_lock: Mutex::new(()),
-            voice_store: VoiceStore::new(),
-            speech_store: SpeechStore::new(),
+            voice_store,
+            speech_store,
             tts_engine: Qwen3TtsEngine::new(None),
             #[cfg(feature = "native-stt")]
             stt_engine,
@@ -724,43 +730,20 @@ async fn transcribe_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let audio_b64 = payload.get("audio_b64").and_then(|v| v.as_str());
-
-    let audio_b64 = match audio_b64 {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(with_sv(json!({
-                    "status": "error",
-                    "reason": "usage_error",
-                    "message": "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono).",
-                }))),
-            )
-                .into_response();
-        }
-    };
-
-    let audio_bytes = match base64::engine::general_purpose::STANDARD.decode(audio_b64) {
-        Ok(b) => b,
+    let pcm = match validate_transcribe_input(&payload) {
+        Ok(pcm) => pcm,
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
                     "status": "error",
-                    "reason": "invalid_audio",
-                    "message": format!("audio_b64 no decodificable como base64: {}", e),
+                    "reason": e.reason,
+                    "message": e.message,
                 }))),
             )
                 .into_response();
         }
     };
-
-    // PCM i16 little-endian → Vec<i16> mono 16 kHz (el motor normaliza a i16::MAX).
-    let pcm: Vec<i16> = audio_bytes
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect();
 
     let source_language = payload
         .get("source_language")
@@ -815,63 +798,126 @@ fn resolve_translation_language(token: &str) -> &str {
     }
 }
 
+/// Error de validación de una petición: `reason` es el código del contrato y
+/// `message` el texto para el usuario.
+#[derive(Debug, PartialEq)]
+pub struct InputError {
+    pub reason: &'static str,
+    pub message: String,
+}
+
+/// Resultado de validar una petición de traducción.
+#[derive(Debug, PartialEq)]
+pub enum TranslateInput {
+    /// Idioma de origen y destino coinciden: se devuelve el texto sin traducir.
+    Same,
+    /// Par distinto y soportado, con los idiomas ya resueltos a ISO.
+    Pair { source: String, target: String },
+}
+
+/// Valida el cuerpo de `/transcribe` y devuelve el PCM i16 decodificado.
+pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
+    let audio_b64 = body
+        .get("audio_b64")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| InputError {
+            reason: "usage_error",
+            message:
+                "La petición no incluye el campo 'audio_b64' (PCM int16 little-endian 16 kHz mono)."
+                    .to_string(),
+        })?;
+
+    let audio_bytes = base64::engine::general_purpose::STANDARD
+        .decode(audio_b64)
+        .map_err(|e| InputError {
+            reason: "invalid_audio",
+            message: format!("audio_b64 no decodificable como base64: {}", e),
+        })?;
+
+    // PCM i16 little-endian → Vec<i16> mono 16 kHz (el motor normaliza a i16::MAX).
+    Ok(audio_bytes
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect())
+}
+
+/// Extrae de la petición de traducción el texto y los idiomas sin resolver
+/// (`from`/`source` por defecto `es`; `to`/`target` por defecto `en`).
+fn translate_request_fields(body: &Value) -> (String, &str, &str) {
+    let text = body
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let from_raw = body
+        .get("from")
+        .or_else(|| body.get("source"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("es");
+    let to_raw = body
+        .get("to")
+        .or_else(|| body.get("target"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("en");
+    (text, from_raw, to_raw)
+}
+
+/// Valida el cuerpo de `/translate`: texto no vacío y par de idiomas soportado.
+pub fn validate_translate_input(body: &Value) -> Result<TranslateInput, InputError> {
+    let (text, from_raw, to_raw) = translate_request_fields(body);
+    if text.trim().is_empty() {
+        return Err(InputError {
+            reason: "empty_text",
+            message: "El texto a traducir está vacío".to_string(),
+        });
+    }
+    let source = resolve_translation_language(from_raw).to_string();
+    let target = resolve_translation_language(to_raw).to_string();
+    if source == target {
+        return Ok(TranslateInput::Same);
+    }
+    match (source.as_str(), target.as_str()) {
+        ("es", "en") | ("en", "es") => Ok(TranslateInput::Pair { source, target }),
+        _ => Err(InputError {
+            reason: "unsupported_language_pair",
+            message: format!(
+                "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
+                source, target
+            ),
+        }),
+    }
+}
+
 /// POST /translate — traducción texto→texto con CT2 residente
 #[cfg(feature = "native-translation")]
 async fn translate_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let text = payload
-        .get("text")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if text.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(with_sv(json!({
-                "error": "empty_text",
-                "reason": "empty_text",
-                "message": "El texto a traducir está vacío",
-            }))),
-        )
-            .into_response();
-    }
-    let from_raw = payload
-        .get("from")
-        .or_else(|| payload.get("source"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("es");
-    let to_raw = payload
-        .get("to")
-        .or_else(|| payload.get("target"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("en");
-    let source = resolve_translation_language(from_raw).to_string();
-    let target = resolve_translation_language(to_raw).to_string();
-    if source == target {
-        return Json(with_sv(json!({
-            "translated": text,
-            "source": from_raw,
-            "target": to_raw,
-        })))
-        .into_response();
-    }
-    let pair = match (source.as_str(), target.as_str()) {
-        ("es", "en") => "es-en",
-        ("en", "es") => "en-es",
-        _ => {
+    let (text, from_raw, to_raw) = translate_request_fields(&payload);
+    let (source, target) = match validate_translate_input(&payload) {
+        Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(with_sv(json!({
-                    "error": "unsupported_language_pair",
-                    "reason": "unsupported_language_pair",
-                    "message": format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source, target),
+                    "error": e.reason,
+                    "reason": e.reason,
+                    "message": e.message,
                 }))),
             )
                 .into_response();
         }
+        Ok(TranslateInput::Same) => {
+            return Json(with_sv(json!({
+                "translated": text,
+                "source": from_raw,
+                "target": to_raw,
+            })))
+            .into_response();
+        }
+        Ok(TranslateInput::Pair { source, target }) => (source, target),
     };
+    let pair = if source == "es" { "es-en" } else { "en-es" };
     let ct2_dir = avi_store::ct2_model_dir(pair);
     if !avi_store::is_ct2_provisioned(pair) {
         return (
@@ -1850,13 +1896,14 @@ pub fn read_ready_signal(path: &std::path::Path) -> Option<ReadySignal> {
 async fn prepare_server(
     addr: SocketAddr,
     warm_voice: &str,
+    voices: VoiceStore,
+    speech: SpeechStore,
 ) -> Result<(TcpListener, SocketAddr, Arc<DaemonState>), StartupError> {
     // Habilitador: materializar las voces de fábrica en la instancia
     // (idempotente, desde el asset embebido). Sin esto, un `data_dir` virgen
     // (sandbox de estado por instancia vía `AVI_DATA_DIR`) rechazaría
     // `--warm-voice default` porque `default` aún no existe en disco. Tras
     // esto, una voz inexistente se rechaza igual (no es de fábrica).
-    let voices = VoiceStore::new();
     voices
         .ensure_initialized()
         .map_err(|e| StartupError::Failed {
@@ -1895,7 +1942,7 @@ async fn prepare_server(
         message: format!("No se pudo leer la dirección enlazada: {}", e),
     })?;
 
-    let state = DaemonState::new().map_err(|e| StartupError::Failed {
+    let state = DaemonState::with_stores(voices, speech).map_err(|e| StartupError::Failed {
         message: format!("No se pudo inicializar el estado del daemon: {}", e),
     })?;
     Ok((listener, bound, Arc::new(state)))
@@ -1910,8 +1957,13 @@ async fn prepare_server(
 /// residente más el presupuesto del testigo. Readiness (enlazado + motor
 /// construido) queda así desacoplado del pre-calentamiento: un warmup fallido
 /// o vencido degrada —pero no derriba— el daemon.
-pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::Result<()> {
-    let (listener, bound, state) = prepare_server(addr, &warm_voice)
+pub async fn run_daemon_server(
+    addr: SocketAddr,
+    warm_voice: String,
+    voices: VoiceStore,
+    speech: SpeechStore,
+) -> anyhow::Result<()> {
+    let (listener, bound, state) = prepare_server(addr, &warm_voice, voices, speech)
         .await
         .map_err(anyhow::Error::new)?;
     let app = build_router_with_state(state.clone());
@@ -2042,9 +2094,11 @@ pub async fn run_supervised(
     auto_restart: bool,
     max_retries: u32,
     warm_voice: String,
+    voices: VoiceStore,
+    speech: SpeechStore,
 ) -> anyhow::Result<()> {
     if !auto_restart {
-        let result = run_daemon_server(addr, warm_voice).await;
+        let result = run_daemon_server(addr, warm_voice, voices, speech).await;
         if let Err(ref e) = result {
             publish_startup_failure(e);
         }
@@ -2066,7 +2120,7 @@ pub async fn run_supervised(
     let mut ready_once = false;
     loop {
         let iteration_start = std::time::Instant::now();
-        match run_daemon_server(addr, warm_voice.clone()).await {
+        match run_daemon_server(addr, warm_voice.clone(), voices.clone(), speech.clone()).await {
             Ok(()) => {
                 // Apagado graceful (stop) — no reintentar
                 return Ok(());
@@ -2187,10 +2241,46 @@ mod tests {
         let _ = body.get("stt");
     }
 
+    /// Exige `nemo128.onnx` del snapshot de Parakeet, que el estado del daemon
+    /// carga con `native-stt`: la raíz de modelos vive fuera del repo y la
+    /// provisiona `ai-voice-interconnector setup`.
+    #[cfg(feature = "native-stt")]
+    fn require_parakeet() {
+        let preprocessor = avi_store::ModelStore::new()
+            .model_snapshot_path("parakeet-tdt-v3")
+            .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión")
+            .join("nemo128.onnx");
+        assert!(
+            preprocessor.is_file(),
+            "falta {}: provisiona Parakeet con `ai-voice-interconnector setup`",
+            preprocessor.display()
+        );
+    }
+
+    /// Estado del daemon con los almacenes anclados en un directorio temporal
+    /// único por llamada (pid + contador), sin tocar el directorio de datos real.
+    fn test_state() -> DaemonState {
+        #[cfg(feature = "native-stt")]
+        require_parakeet();
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let tmp = std::env::temp_dir().join(format!(
+            "avi_daemon_test_state_{}_{}",
+            std::process::id(),
+            n
+        ));
+        DaemonState::with_stores(
+            VoiceStore::at(tmp.join("voices")),
+            SpeechStore::at(tmp.join("speech")),
+        )
+        .expect("daemon state")
+    }
+
     /// Router expone `/health` y endpoints `/translate`, `/voices/clone`, `/dub` (7 rutas públicas)
     #[test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     fn build_router_exposes_new_endpoints() {
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         // El router debe construirse sin panic con el estado del daemon; la
         // existencia de cada ruta se ejercita en los tests de handlers (p. ej.
         // `dub_handler_audio_missing`), no vía el `Debug` del `Router` — axum no
@@ -2282,8 +2372,9 @@ mod tests {
     /// Mientras otra síntesis retiene el lock, la fase emite latidos `queued` y,
     /// al soltarse, ejecuta el trabajo y entrega su resultado.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_emits_queued_heartbeats_while_lock_held() {
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         state.set_warm();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let guard = state.synthesis_lock.lock().await;
@@ -2310,8 +2401,9 @@ mod tests {
 
     /// Si el daemon está calentando, la espera del lock late con `warming`.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_emits_warming_stage_during_warmup() {
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         state.set_warming();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let guard = state.synthesis_lock.lock().await;
@@ -2338,8 +2430,9 @@ mod tests {
     /// Un trabajo más largo que varios latidos, pero dentro del presupuesto,
     /// mantiene los latidos `synthesis` y termina con `Ok`.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_slow_job_keeps_heartbeats_and_succeeds() {
-        let state = DaemonState::new().expect("daemon state");
+        let state = test_state();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let res = run_synthesis_phase_with(
             &tx,
@@ -2391,8 +2484,9 @@ mod tests {
     /// cancelación del trabajo, tanto por el deadline como por el timeout
     /// tipado que devuelve el propio trabajo.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_timeout_cancels_job_and_emits_reason() {
-        let state = DaemonState::new().expect("daemon state");
+        let state = test_state();
 
         // Deadline de la fase: el trabajo tarda más que presupuesto + margen.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -2454,8 +2548,9 @@ mod tests {
     /// Una síntesis correcta devuelve el estado a `warm` aunque el último warmup
     /// hubiera fallado.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_success_marks_warm() {
-        let state = DaemonState::new().expect("daemon state");
+        let state = test_state();
         state.set_warm_failed("fallo previo".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel::<String>(64);
         let res = run_synthesis_phase_with(
@@ -2477,8 +2572,9 @@ mod tests {
     /// trabajo, tanto en la cola como durante la síntesis, y en este último
     /// caso activa la cancelación del trabajo.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_disconnect_cancels_job() {
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
 
         // Desconexión durante la espera del lock.
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -2525,6 +2621,7 @@ mod tests {
 
     /// Dub sin `audio_b64` responde 400 con el `reason` de contrato `usage_error`
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn dub_handler_audio_missing() {
         let (status, body) = post_json("/dub", json!({"voice": "default"})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2535,12 +2632,13 @@ mod tests {
     /// Dub handler rechaza con 400 `audio_too_long` un audio que supera el tope
     #[cfg(feature = "native-stt")]
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn dub_handler_audio_too_long() {
         use axum::body::Body;
         use base64::Engine;
         use http_body_util::BodyExt;
         use tower::ServiceExt;
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         let app = build_router_with_state(state);
         // 41 s de silencio PCM 16 kHz mono (i16 little-endian).
         let silence = vec![0u8; 41 * 16_000 * 2];
@@ -2560,12 +2658,86 @@ mod tests {
         assert_eq!(v["reason"], "audio_too_long");
     }
 
+    /// Una petición de transcripción sin `audio_b64` es un error de invocación.
+    #[test]
+    fn validate_transcribe_missing_audio_is_usage_error() {
+        let result = validate_transcribe_input(&json!({ "source_language": "es" }));
+        assert_eq!(result.err().map(|e| e.reason), Some("usage_error"));
+    }
+
+    /// Un `audio_b64` que no es base64 válido es audio ilegible.
+    #[test]
+    fn validate_transcribe_bad_base64_is_invalid_audio() {
+        let result = validate_transcribe_input(&json!({ "audio_b64": "%%% no es base64 %%%" }));
+        assert_eq!(result.err().map(|e| e.reason), Some("invalid_audio"));
+    }
+
+    /// Un texto vacío o solo de espacios no se traduce.
+    #[test]
+    fn validate_translate_empty_text_is_empty_text() {
+        let result = validate_translate_input(&json!({ "text": "   ", "from": "es", "to": "en" }));
+        assert_eq!(result.err().map(|e| e.reason), Some("empty_text"));
+    }
+
+    /// Con el mismo idioma de origen y destino no hay nada que traducir.
+    #[test]
+    fn validate_translate_same_language_is_same() {
+        let result =
+            validate_translate_input(&json!({ "text": "hola", "from": "es-latam", "to": "es" }));
+        assert!(
+            matches!(result, Ok(TranslateInput::Same)),
+            "resultado: {result:?}"
+        );
+    }
+
+    /// Un par distinto de es↔en no está soportado.
+    #[test]
+    fn validate_translate_unsupported_pair_is_rejected() {
+        let result = validate_translate_input(&json!({ "text": "hola", "from": "es", "to": "fr" }));
+        assert_eq!(
+            result.err().map(|e| e.reason),
+            Some("unsupported_language_pair")
+        );
+    }
+
+    /// `with_stores` ancla los almacenes bajo el directorio recibido: la raíz se
+    /// afirma antes de inicializar para no escribir nunca en la instalación real.
+    #[test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
+    fn with_stores_anchors_stores_under_given_dir() {
+        #[cfg(feature = "native-stt")]
+        require_parakeet();
+        let tmp = std::env::temp_dir().join(format!("avi_daemon_stores_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let state = DaemonState::with_stores(
+            VoiceStore::at(tmp.join("voices")),
+            SpeechStore::at(tmp.join("speech")),
+        )
+        .expect("estado del daemon");
+        assert!(
+            state.voice_store.root().starts_with(&tmp),
+            "raíz de voces fuera del temporal: {}",
+            state.voice_store.root().display()
+        );
+        assert!(
+            state.speech_store.root().starts_with(&tmp),
+            "raíz de habla fuera del temporal: {}",
+            state.speech_store.root().display()
+        );
+        state
+            .voice_store
+            .ensure_initialized()
+            .expect("inicializar voces");
+        assert!(tmp.join("voices").join("default").is_dir());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// Envía un POST JSON al router y devuelve el estado y el cuerpo completo.
     async fn post_json(uri: &str, body: Value) -> (StatusCode, Vec<u8>) {
         use axum::body::Body;
         use http_body_util::BodyExt;
         use tower::ServiceExt;
-        let state = Arc::new(DaemonState::new().expect("daemon state"));
+        let state = Arc::new(test_state());
         let app = build_router_with_state(state);
         let req = axum::http::Request::builder()
             .uri(uri)
@@ -2579,34 +2751,11 @@ mod tests {
         (status, bytes.to_vec())
     }
 
-    /// `/transcribe` sin `audio_b64` es un error de invocación: 400 con `usage_error`.
-    #[cfg(feature = "native-stt")]
-    #[tokio::test]
-    async fn transcribe_handler_missing_audio_is_400_usage_error() {
-        let (status, bytes) = post_json("/transcribe", json!({ "source_language": "es" })).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(v["reason"], "usage_error");
-    }
-
-    /// `/transcribe` con un base64 inválido es audio ilegible: 400 con `invalid_audio`.
-    #[cfg(feature = "native-stt")]
-    #[tokio::test]
-    async fn transcribe_handler_bad_base64_is_400_invalid_audio() {
-        let (status, bytes) = post_json(
-            "/transcribe",
-            json!({ "audio_b64": "%%% no es base64 %%%" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(v["reason"], "invalid_audio");
-    }
-
     /// El evento `start` de `/synthesize` mide `text_length` en caracteres: «canción»
     /// tiene 7 caracteres y 8 bytes. La temperatura fuera de rango cierra el stream
     /// sin llegar al motor.
     #[tokio::test]
+    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesize_start_event_counts_chars() {
         let (_, bytes) = post_json(
             "/synthesize",

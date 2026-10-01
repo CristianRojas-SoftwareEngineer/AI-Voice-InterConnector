@@ -16,23 +16,30 @@ mod tests {
     use crate::{detect_language, normalize_text, ParakeetEngine};
     use avi_core::engine::SttEngine;
 
+    /// Directorio del snapshot de Parakeet, exigiendo `nemo128.onnx`: la raíz de
+    /// modelos vive fuera del repo y la provisiona `ai-voice-interconnector setup`.
+    fn require_parakeet() -> std::path::PathBuf {
+        let model_dir = avi_store::ModelStore::new()
+            .model_snapshot_path("parakeet-tdt-v3")
+            .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
+        let preprocessor = model_dir.join("nemo128.onnx");
+        std::fs::metadata(&preprocessor).unwrap_or_else(|e| {
+            panic!(
+                "falta {} ({e}): provisiona Parakeet con `ai-voice-interconnector setup`",
+                preprocessor.display()
+            )
+        });
+        model_dir
+    }
+
     /// Carga el modelo Parakeet (raíz de modelos `models_cache_dir()` vía
     /// `ModelStore`) vía `ParakeetEngine` y transcribe una muestra corta de voz
     /// real, verificando que la salida no esté vacía.
     #[cfg(feature = "native-stt")]
     #[test]
+    #[ignore = "requiere Parakeet"]
     fn parakeet_loads_model_and_transcribes() {
-        let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3")
-        else {
-            eprintln!("[stt] skip: sin modelo Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-            return;
-        };
-        // La raíz de modelos está fuera del repo: en un checkout limpio (CI) este
-        // E2E se salta con aviso; en desarrollo corre completo.
-        if !model_dir.join("nemo128.onnx").exists() {
-            eprintln!("[stt] skip: sin modelo Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-            return;
-        }
+        let model_dir = require_parakeet();
         let engine = ParakeetEngine::new(model_dir)
             .expect("el modelo Parakeet debe cargar pesos reales desde disco");
 
@@ -88,16 +95,9 @@ mod tests {
     ///   real).
     #[cfg(feature = "native-stt")]
     #[test]
+    #[ignore = "requiere Parakeet"]
     fn parakeet_engine_matches_oracle() {
-        let Some(model_dir) = avi_store::ModelStore::new().model_snapshot_path("parakeet-tdt-v3")
-        else {
-            eprintln!("[stt] skip: sin modelo Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-            return;
-        };
-        if !model_dir.join("nemo128.onnx").exists() {
-            eprintln!("[stt] skip: sin modelo Parakeet (raíz de modelos no provisionada — ejecuta setup --with-stt)");
-            return;
-        }
+        let model_dir = require_parakeet();
         let engine = ParakeetEngine::new(model_dir).expect("el modelo Parakeet debe cargar");
 
         // Pares (audio, fixture, ¿esperado en inglés?). El directorio

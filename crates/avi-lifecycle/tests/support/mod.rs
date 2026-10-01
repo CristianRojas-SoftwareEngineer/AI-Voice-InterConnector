@@ -219,6 +219,10 @@ impl Sandbox {
         std::env::set_var("AVI_INSTALL_DIR", value(&self.program_dir));
         std::env::set_var("AVI_BIN_DIR", value(&self.bin_dir));
         std::env::set_var("AVI_DATA_DIR", value(&self.data_dir));
+        // `cleanup::run` detiene el daemon en el puerto de `AVI_DAEMON_PORT`; el
+        // puerto `0` no apunta a ningún daemon real y nunca conecta con el del
+        // usuario. El valor es constante, así que no altera a otras pruebas.
+        std::env::set_var("AVI_DAEMON_PORT", "0");
     }
 
     /// Borra las seis variables de reubicación. Lo llama [`Self::limpiar`].

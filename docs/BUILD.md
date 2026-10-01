@@ -105,7 +105,7 @@ con esas versiones exactas. Un reporte de fallo reabriría la decisión.
 cargo fmt --all --check
 cargo clippy --all-targets
 cargo test --all
-cargo test --all --verbose   # suite completa (≈70 tests en cli_golden)
+cargo test --all --verbose   # pruebas de contrato (≈70 tests en cli_golden); las de recursos locales salen como ignored
 ```
 
 ### Build de distribución (binario autocontenido)
@@ -540,12 +540,15 @@ quedan documentados aquí de forma autocontenida:
   de la serie pesada "has been running for over 60 seconds" mientras espera
   turno para adquirir `TTS_LOCK`. Es espera de mutex esperada, no trabajo
   atascado: no se le añaden reintentos ni timeouts para silenciarlo.
-- **La guarda de provisión TTS no aprovisiona.** `tts_model_registered()`
-  solo consulta `doctor`; si faltan modelos, las pruebas pesadas se omiten.
-  Para ejecutarlas hay que correr antes `ai-voice-interconnector setup`.
-  Reintroducir `setup` en la guarda descargaría 4,7 GB en cada corrida de CI
-  sin obtener cobertura, porque el runner de tests no tiene el binario del
-  motor ni los pesos locales.
+- **Las pruebas con recursos no se omiten ni aprovisionan.** Las pruebas pesadas
+  llevan `#[ignore = "requiere …"]`: `cargo test --all` las muestra como
+  *ignored* y, con `--include-ignored`, fallan con un mensaje que nombra el
+  archivo que falta y el comando que lo aprovisiona
+  (`ai-voice-interconnector setup`, `setup --with-voice-cloning` o
+  `cargo xtask build-engine`). Ninguna descarga nada por su cuenta: hacerlo
+  costaría 4,7 GB en cada corrida de CI sin obtener cobertura, porque el runner
+  de tests no tiene el binario del motor ni los pesos locales. `cargo xtask
+  release` las ejecuta antes del bump.
 
 ---
 

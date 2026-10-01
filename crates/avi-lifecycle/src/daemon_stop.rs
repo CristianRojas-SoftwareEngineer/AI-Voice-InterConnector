@@ -136,13 +136,37 @@ pub fn read_addr(data_dir: &Path) -> Option<String> {
         .filter(|addr| !addr.is_empty())
 }
 
-/// Dirección del cliente: la del pidfile cuando existe, y la literal cuando no.
+/// Dirección del cliente: la del pidfile cuando existe, y cuando no la derivada de
+/// `AVI_DAEMON_PORT` (`127.0.0.1:8765` si la variable falta o no es un puerto).
 ///
 /// Este es el **supuesto asumido de D4**: la raíz de datos es la vigente, así que un
 /// daemon de la versión anterior, con su pidfile en la raíz antigua, no se
-/// encuentra y la conexión va a la literal.
+/// encuentra y la conexión va a la dirección de respaldo.
 pub fn resolve_client_addr(data_dir: &Path) -> String {
-    read_addr(data_dir).unwrap_or_else(|| DEFAULT_ADDR.to_string())
+    resolve_client_addr_with(data_dir, std::env::var("AVI_DAEMON_PORT").ok().as_deref())
+}
+
+/// Variante de [`resolve_client_addr`] que recibe el valor crudo de
+/// `AVI_DAEMON_PORT` en lugar de leer el entorno, para poder probarla sin
+/// tocar variables del proceso.
+pub fn resolve_client_addr_with(data_dir: &Path, port_env: Option<&str>) -> String {
+    read_addr(data_dir).unwrap_or_else(|| addr_for_port_env(port_env))
+}
+
+/// Dirección de parada a partir del valor crudo de `AVI_DAEMON_PORT`: el daemon
+/// escucha en `127.0.0.1:<puerto>` con el puerto recortado (`0` pide uno
+/// efímero), y un valor ausente o que no es un `u16` deja la dirección por
+/// defecto.
+pub fn addr_for_port_env(raw: Option<&str>) -> String {
+    match raw.and_then(|value| value.trim().parse::<u16>().ok()) {
+        Some(port) => format!("127.0.0.1:{port}"),
+        None => DEFAULT_ADDR.to_string(),
+    }
+}
+
+/// Dirección en la que detener el daemon, según `AVI_DAEMON_PORT` del entorno.
+pub fn default_addr() -> String {
+    addr_for_port_env(std::env::var("AVI_DAEMON_PORT").ok().as_deref())
 }
 
 /// Borra el pidfile. Solo lo hace quien ha comprobado antes que el daemon está
@@ -524,6 +548,38 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
+    /// La dirección de parada sigue el puerto de `AVI_DAEMON_PORT` como el
+    /// arranque del daemon: recorta espacios, acepta `0` y cae al valor por
+    /// defecto si falta o no es un puerto válido.
+    #[test]
+    fn addr_for_port_env_follows_daemon_port() {
+        assert_eq!(addr_for_port_env(Some("9123")), "127.0.0.1:9123");
+        assert_eq!(addr_for_port_env(Some("0")), "127.0.0.1:0");
+        assert_eq!(addr_for_port_env(Some(" 9123 ")), "127.0.0.1:9123");
+        assert_eq!(addr_for_port_env(None), DEFAULT_ADDR);
+        assert_eq!(addr_for_port_env(Some("abc")), DEFAULT_ADDR);
+    }
+
+    /// Sin pidfile, el cliente busca el daemon en el puerto de `AVI_DAEMON_PORT`;
+    /// con pidfile manda la dirección publicada en él.
+    #[test]
+    fn client_addr_without_pidfile_follows_daemon_port() {
+        let data = scratch("client-addr-port");
+        assert_eq!(
+            resolve_client_addr_with(&data, Some("9123")),
+            "127.0.0.1:9123"
+        );
+        assert_eq!(resolve_client_addr_with(&data, None), DEFAULT_ADDR);
+
+        write_pid(&data, 4242, "127.0.0.1:7001", 77).unwrap();
+        assert_eq!(
+            resolve_client_addr_with(&data, Some("9123")),
+            "127.0.0.1:7001",
+            "el pidfile prevalece sobre la variable"
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
     /// El pidfile sobrevive a un fichero a medio escribir, y el protocolo no se
     /// cae: lectura tolerante, escritura atómica y ninguna mezcla de datos entre
     /// dos escrituras.
@@ -540,7 +596,7 @@ mod tests {
         assert_eq!(read_resident_pid(&data), 0, "ni PID de residente");
         assert_eq!(read_addr(&data), None, "ni dirección");
         assert_eq!(
-            resolve_client_addr(&data),
+            resolve_client_addr_with(&data, None),
             DEFAULT_ADDR,
             "se cae al valor por defecto"
         );
@@ -554,7 +610,7 @@ mod tests {
         assert_eq!(read_pid(&data), Some(4242));
         assert_eq!(read_resident_pid(&data), 0, "sin el campo, desconocido");
         assert_eq!(read_addr(&data), None);
-        assert_eq!(resolve_client_addr(&data), DEFAULT_ADDR);
+        assert_eq!(resolve_client_addr_with(&data, None), DEFAULT_ADDR);
 
         // 3. Un `pid` inválido no se interpreta.
         for garbage in ["{}", r#"{"pid": "x"}"#, "[]", "no soy json", ""] {

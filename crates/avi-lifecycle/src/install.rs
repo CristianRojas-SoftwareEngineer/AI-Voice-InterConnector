@@ -162,7 +162,7 @@ impl Env {
             registry_path,
             #[cfg(unix)]
             link_state,
-            daemon_addr: daemon_stop::DEFAULT_ADDR.to_string(),
+            daemon_addr: daemon_stop::default_addr(),
             source: std::env::var("AVI_SOURCE_URL").ok(),
         })
     }

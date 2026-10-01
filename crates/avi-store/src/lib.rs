@@ -174,6 +174,7 @@ pub struct VoiceEntry {
 
 /// Almacén de voces: gestión de voces clonadas + fábrica.
 /// Layout en disco: `<data_dir>/voices/<nombre>/`
+#[derive(Clone)]
 pub struct VoiceStore {
     base_dir: PathBuf,
 }
@@ -186,8 +187,18 @@ impl Default for VoiceStore {
 
 impl VoiceStore {
     pub fn new() -> Self {
-        let base_dir = data_dir().join("voices");
+        Self::at(data_dir().join("voices"))
+    }
+
+    /// Ancla el almacén de voces en el directorio indicado (el del propio
+    /// almacén, no la raíz de datos).
+    pub fn at(base_dir: PathBuf) -> Self {
         Self { base_dir }
+    }
+
+    /// Directorio donde el almacén guarda las voces.
+    pub fn root(&self) -> &Path {
+        &self.base_dir
     }
 
     /// Asegura que el directorio base y las voces de fábrica existan
@@ -343,6 +354,7 @@ pub struct SpeechEntry {
 
 /// Almacén de habla sintética persistida.
 /// Layout en disco: `<data_dir>/speech/<voz>/<etiqueta>.wav` + `<etiqueta>.json`
+#[derive(Clone)]
 pub struct SpeechStore {
     base_dir: PathBuf,
 }
@@ -355,8 +367,18 @@ impl Default for SpeechStore {
 
 impl SpeechStore {
     pub fn new() -> Self {
-        let base_dir = data_dir().join("speech");
+        Self::at(data_dir().join("speech"))
+    }
+
+    /// Ancla el almacén de habla en el directorio indicado (el del propio
+    /// almacén, no la raíz de datos).
+    pub fn at(base_dir: PathBuf) -> Self {
         Self { base_dir }
+    }
+
+    /// Directorio donde el almacén guarda las locuciones.
+    pub fn root(&self) -> &Path {
+        &self.base_dir
     }
 
     pub fn ensure_initialized(&self) -> Result<()> {
