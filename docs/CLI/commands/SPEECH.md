@@ -7,8 +7,7 @@ el único punto de la superficie donde conviven los tres motores nativos
 daemon.
 
 Implementación: `handle_speech`, enum `SpeechCommands`. Helpers de despacho al daemon: `route_to_daemon`, `transcribe_via_daemon`,
-`daemon_synthesize_wav`, `synthesize_via_daemon`, `say_via_daemon`, `dub_via_daemon`, `dub_compose_via_daemon` (fallback si
-el daemon responde 404 en `/dub`, es decir, un binario viejo sin esa ruta).
+`daemon_synthesize_wav`, `synthesize_via_daemon`, `say_via_daemon`, `dub_via_daemon`.
 
 ---
 
@@ -107,11 +106,21 @@ Validaciones puras antes de despachar:
  (default 300 s): al alcanzarlo, detiene la grabación, avisa por stderr y
  devuelve lo grabado hasta ese punto con exit **0** (no es un error). No hay
  panic por `duration` ausente: el modo push-to-talk cubre ese caso.
+- Duración del audio: el audio de entrada dura como máximo 300 s, igual en la
+ vía local y en la del daemon. Un WAV que lo supera sale con exit 2
+ `audio_too_long`; la duración se mide por la cabecera del WAV y luego por el
+ PCM decodificado, y solo se admiten WAV. Con `--mic`, un `--duration` mayor
+ que 300 y un `AVI_PUSH_TO_TALK_MAX_SECS` mayor que 300 (push-to-talk) salen
+ con el mismo `audio_too_long` antes de grabar (y, en el segundo caso, antes
+ de exigir terminal). Esta comprobación precede a la de `model_missing`, a la
+ de `stt_unsupported` y al contacto con el daemon.
 
 Despacho:
 1. `route_to_daemon` → si aplica, `transcribe_via_daemon`:
  codifica el PCM a `audio_b64`, hace `POST /transcribe` y emite el mismo
- envelope que la rama local.
+ envelope que la rama local. Un error HTTP del daemon se traduce por su
+ `reason` con la tabla única; un 404 sin `reason` ni `error` sale con exit 1
+ `daemon_error` y el mensaje de reiniciar el daemon con `avi daemon restart`.
 2. Rama directa: verifica que `parakeet-tdt-v3/nemo128.onnx` exista (si no,
  exit 4 `model_missing` antes de instanciar nada); si el binario se compiló
  sin el feature `native-stt`, exit 1 `stt_unsupported`; si el feature está
@@ -256,7 +265,9 @@ Validaciones puras (en este orden):
 6. Duración del audio: el audio de entrada dura como máximo 40 s. Un WAV que
  lo supera, o un `--duration` mayor que 40, sale con exit 2 `audio_too_long`;
  el push-to-talk se corta a 40 s (además del techo
- `AVI_PUSH_TO_TALK_MAX_SECS`). Un WAV corrupto sale con exit 2
+ `AVI_PUSH_TO_TALK_MAX_SECS`). La duración del `--audio` se mide por la
+ cabecera del WAV antes de contactar con el daemon, de comprobar los modelos y
+ de `stt_unsupported`, igual en las dos vías. Un WAV corrupto sale con exit 2
  `invalid_audio` y un fallo de E/S al leerlo con exit 1 `io_error`.
 7. El texto traducido, que es el que se sintetiza, no supera 500 caracteres
  Unicode: si no, exit 2 `text_too_long`.
@@ -265,10 +276,12 @@ Despacho: si aplica, `dub_via_daemon` hace `POST /dub`
 consumiendo el stream NDJSON con un timeout de inactividad entre latidos de
 1500 ms (`STREAM_INACTIVITY_TIMEOUT`) y un deadline total failsafe de 240 s
 (`STREAM_TOTAL_DEADLINE`, el techo `REQUEST_FAILSAFE`).
-Si el daemon responde `404` (binario viejo sin esa ruta), degrada
-automáticamente a `dub_compose_via_daemon`: transcribe
-vía `POST /transcribe`, traduce localmente con `avi_translation::translate` si
-`source != target`, y sintetiza vía `POST /synthesize` (`daemon_synthesize_wav`).
+Todo error de la ruta (404 incluido) se traduce por su `reason` con la tabla
+única, sin degradar a otra vía: 404 `voice_not_found` sale con exit 3 y 404
+`model_missing` con exit 4. Un 404 sin `reason` ni `error` sale con exit 1
+`daemon_error` y el mensaje «El daemon no expone esta ruta (HTTP 404):
+reinícialo con el binario actual ejecutando `avi daemon restart`, o usa un
+build que incluya la función.»
 
 Rama directa (requiere feature `native-stt`; sin
 ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
@@ -313,7 +326,7 @@ En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo
 { "status": "dubbed", "text": "<texto final, traducido o passthrough>", "audio_path": "<ruta temporal del WAV reproducido>" }
 ```
 
-(Mismo envelope en las tres rutas —local, vía `/dub` y vía composición—;
+(Mismo envelope en las dos rutas —local y vía `/dub`—;
 nótese que el campo del CLI se llama `text`, aunque el handler del daemon
 distingue internamente `text`/`translated`.)
 
@@ -381,7 +394,7 @@ solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 | `usage_error` | 2 | Falta `--audio`/`--mic`, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango |
 | `empty_text` | 2 | Texto a sintetizar o transcripción resultante vacíos |
 | `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera 500 caracteres Unicode |
-| `audio_too_long` | 2 | El audio de `dub` supera 40 s, o `--duration` es mayor que 40 |
+| `audio_too_long` | 2 | El audio de `dub` supera 40 s, o `--duration` es mayor que 40; el de `transcribe` supera 300 s, o `--duration` o `AVI_PUSH_TO_TALK_MAX_SECS` son mayores que 300 |
 | `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
 | `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `speech list --voice` ilegal) |
 | `daemon_not_supported` | 2 | `--daemon` en un subcomando local-only (`list`/`play`/`remove`) |

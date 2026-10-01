@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 cerrado, C2 siguiente |
+| Estado | G0 aprobada, C1, C2 y C3 cerrados, C4 siguiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -229,6 +229,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S26 | La verificación de los ciclos usa órdenes ad hoc (como `cargo test -p avi-daemon --features native-stt` en C1) que dependen de la instalación real del mantenedor | Revisión de C1 | Baja | C2 |
 | S27 | `self install`, `self uninstall` y `self update` detienen el daemon siempre en `127.0.0.1:8765` y `cleanup` solo respeta `AVI_DAEMON_PORT=0`; sin pidfile, `daemon stop`, `daemon status` y el resto de clientes del daemon lo buscan siempre en 8765; diez pruebas de contrato llamaban así a `daemon_stop::stop` contra el daemon real del mantenedor | Verificación de C2 | Media | C2 |
 | S28 | `tts::dub_audio_passthrough_es_es`, de la clase con recursos, falla de forma intermitente (1 de 4 intentos): el proceso `--no-daemon speech dub --audio parakeet_sample_16k.wav --source-language es-latam --target-language es-latam` termina a los 13,9 s con el código 0xC0000409 (caída nativa), sin fallo de aserción; la puerta de `cargo xtask release` aborta cuando ocurre | Verificación de C2 | Media | En observación |
+| S29 | `tts::h03_pipe_stdio_must_not_remain_blocked`, de la clase con recursos, falla de forma intermitente (en la suite completa y en 1 de 3 repeticiones aisladas): el pipe del lanzador sigue bloqueado a los 5 s y solo se libera al matar el daemon, como si el daemon retuviera el stdio heredado pese a `disinherit_standard_handles` | Verificación de C3 | Media | En observación |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
@@ -253,6 +254,11 @@ entre la liberación de las sesiones de ONNX Runtime de Parakeet y la del stream
 sin demostrar. Queda en observación, sin ciclo: las pruebas de la CLI muestran ahora el
 stderr del proceso hijo cuando fallan, y si la caída se repite, con ese rastro se abre un
 G-Desvío en el ciclo en curso o un ciclo propio.
+
+S29 salió de la verificación de C3, que no toca el arranque del daemon ni la herencia de
+handles; la misma prueba pasó en la verificación anterior del ciclo. Queda en observación,
+sin ciclo: si se repite, se diagnostica la herencia del stdio en el arranque del daemon
+en un ciclo propio.
 
 ## 8. Orden de los ciclos y dependencias
 
@@ -1097,14 +1103,37 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   un camino de compatibilidad con su propio límite de tiempo.
 - **Depende de:** C1 y C2 (las pruebas nuevas nacen en el esquema de clases y el tope de
   audio se añade sobre la validación de `/transcribe` extraída).
-- **Síntomas:** S1, S13, S14, S15 y S16.
-- **Decisiones:** D1, D2 y D3, con su ampliación a cualquier ruta.
+- **Síntomas:** S1, S13, S14, S15 y S16. La preparación añade al alcance dos hallazgos
+  sin síntoma propio: la vía daemon del clonado envía `timbre_b64`, que el daemon no lee,
+  y la captura por micrófono no tiene un tope explícito.
+- **Decisiones:** D1, D2 y D3, con su ampliación a cualquier ruta. El G-Plan
+  (2026-10-01) fija:
+  - **P1:** el tope de la referencia del clonado es de 30 s, holgado para una muestra de
+    voz y pequeño frente al de la transcripción.
+  - **P2:** el límite de cuerpo de cada ruta es el base64 del peor caso de su tope más
+    1 MiB fijo para el resto del JSON; lo calcula una función pura y se aplica por ruta.
+  - **P3:** la duración se mide por la cabecera WAV, sin decodificar; el PCM decodificado
+    se comprueba después como respaldo. Solo se admiten WAV, así que el respaldo no
+    cubre ningún otro formato.
+  - **P4:** un 404 sin `reason` da `daemon_error`, exit 1, y un mensaje único con las dos
+    causas: reiniciar el daemon con el binario actual o usar un build con la función.
+  - **P5:** el clonado por daemon deja de enviar `timbre_b64`, pero el archivo de timbre
+    se sigue exigiendo.
+  - **P6:** el protocolo se queda en "4": el cuerpo de las peticiones no cambia de forma,
+    y el campo retirado nunca se leía.
+  - **P7:** las tres operaciones (dub de 40 s, transcripción de 300 s y referencia de
+    30 s) rechazan con un único `reason`, `audio_too_long`, y exit 2; el mensaje nombra
+    la operación.
+  - **P8:** antes de grabar se rechazan con `audio_too_long` un `--duration` mayor de 300
+    y un `AVI_PUSH_TO_TALK_MAX_SECS` mayor de 300.
 - **Tareas:**
   1. Tope de transcripción y límite de cuerpo derivado de él (D1).
   2. Reproducción de S14 y tope de la referencia del clonado (D2).
   3. Eliminar el dub por composición y aplicar la regla del 404 a todas las rutas en
      la lectura común de los errores del daemon: sin `reason`, daemon desfasado; con
      `reason`, la tabla (D3, S15, S16).
+  4. Retirar el envío de `timbre_b64` (P5) y aplicar el tope de la transcripción a la
+     captura por micrófono (P8).
 - **Pruebas en rojo:**
   - la ruta de transcripción acepta un cuerpo de más de 2 MB y por debajo del tope;
   - un audio por encima del tope se rechaza con `audio_too_long` y exit 2 en las dos

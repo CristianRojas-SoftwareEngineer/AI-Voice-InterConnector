@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -834,6 +834,16 @@ pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
             message: format!("audio_b64 no decodificable como base64: {}", e),
         })?;
 
+    if audio_bytes.len() / 2 > avi_core::MAX_TRANSCRIBE_AUDIO_SECS as usize * 16_000 {
+        return Err(InputError {
+            reason: "audio_too_long",
+            message: format!(
+                "El audio de la transcripción no puede superar {} segundos.",
+                avi_core::MAX_TRANSCRIBE_AUDIO_SECS
+            ),
+        });
+    }
+
     // PCM i16 little-endian → Vec<i16> mono 16 kHz (el motor normaliza a i16::MAX).
     Ok(audio_bytes
         .chunks_exact(2)
@@ -1046,6 +1056,24 @@ async fn voices_clone_handler(
                 .into_response();
         }
     };
+    // La duración se mide por la cabecera, antes de buscar el modelo; un audio que
+    // no es WAV no tiene cabecera que medir y lo rechaza después el clonado.
+    if avi_audio::wav_bytes_duration_secs(&audio_bytes)
+        .is_some_and(|secs| secs > avi_core::MAX_CLONE_REFERENCE_SECS as f64)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(with_sv(json!({
+                "error": "audio_too_long",
+                "reason": "audio_too_long",
+                "message": format!(
+                    "La referencia de clonado no puede superar {} segundos.",
+                    avi_core::MAX_CLONE_REFERENCE_SECS
+                ),
+            }))),
+        )
+            .into_response();
+    }
     let base_model_dir = match state.tts_engine.base_model_dir.as_ref() {
         Some(d) => d.clone(),
         None => {
@@ -1662,9 +1690,19 @@ async fn shutdown_handler(State(state): State<SharedState>) -> impl IntoResponse
 /// ejercer las rutas en tests de integración inyectando un estado con rutas de
 /// modelo apuntando a `CARGO_MANIFEST_DIR`.
 pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
+    // Peor caso de la referencia de clonado: el daemon no restringe su formato
+    // (cualquier WAV que lea `hound`), así que se dimensiona para 96 kHz, estéreo,
+    // 32 bits; un WAV más pesado se rechaza con 413 aunque esté dentro del tope.
+    const CLONE_REFERENCE_BYTES_PER_SEC: u64 = 96_000 * 2 * 4;
     let router = Router::new()
         .route("/health", get(health_handler))
-        .route("/voices/clone", post(voices_clone_handler))
+        .route(
+            "/voices/clone",
+            post(voices_clone_handler).layer(DefaultBodyLimit::max(avi_core::body_limit_for(
+                avi_core::MAX_CLONE_REFERENCE_SECS,
+                CLONE_REFERENCE_BYTES_PER_SEC,
+            ))),
+        )
         .route("/dub", post(dub_handler))
         .route("/synthesize", post(synthesize_handler))
         .route("/shutdown", post(shutdown_handler));
@@ -1673,7 +1711,14 @@ pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
     // aplica a un método builder distinto (no como argumento anidado, que el macro
     // de axum 0.7 no parsea en Rust 2021/Windows → error E0061).
     #[cfg(feature = "native-stt")]
-    let router = router.route("/transcribe", post(transcribe_handler));
+    let router = router.route(
+        "/transcribe",
+        // PCM de 16 kHz, mono, 16 bits: 32000 bytes por segundo.
+        post(transcribe_handler).layer(DefaultBodyLimit::max(avi_core::body_limit_for(
+            avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
+            32_000,
+        ))),
+    );
     #[cfg(feature = "native-translation")]
     let router = router.route("/translate", post(translate_handler));
     router.with_state(state)
@@ -2670,6 +2715,28 @@ mod tests {
     fn validate_transcribe_bad_base64_is_invalid_audio() {
         let result = validate_transcribe_input(&json!({ "audio_b64": "%%% no es base64 %%%" }));
         assert_eq!(result.err().map(|e| e.reason), Some("invalid_audio"));
+    }
+
+    /// Codifica `samples` muestras de silencio PCM i16 como el `audio_b64` de `/transcribe`.
+    fn silence_transcribe_body(samples: usize) -> Value {
+        use base64::Engine;
+        json!({ "audio_b64": base64::engine::general_purpose::STANDARD.encode(vec![0u8; samples * 2]) })
+    }
+
+    /// Un audio de exactamente 300 s (el tope de transcripción) se acepta.
+    #[test]
+    fn validate_transcribe_accepts_audio_at_limit() {
+        let body = silence_transcribe_body(300 * 16_000);
+        let result = validate_transcribe_input(&body);
+        assert_eq!(result.map(|pcm| pcm.len()).ok(), Some(300 * 16_000));
+    }
+
+    /// Una sola muestra por encima de los 300 s se rechaza como `audio_too_long`.
+    #[test]
+    fn validate_transcribe_rejects_audio_over_limit() {
+        let body = silence_transcribe_body(300 * 16_000 + 1);
+        let result = validate_transcribe_input(&body);
+        assert_eq!(result.err().map(|e| e.reason), Some("audio_too_long"));
     }
 
     /// Un texto vacío o solo de espacios no se traduce.

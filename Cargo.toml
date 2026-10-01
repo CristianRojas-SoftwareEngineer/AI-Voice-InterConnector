@@ -68,6 +68,8 @@ libc = "0.2"
 [dev-dependencies]
 hound = "3"
 avi-stt = { path = "crates/avi-stt" }
+# Solo para los tests: expone el generador de WAV de frecuencia nula.
+avi-audio = { path = "crates/avi-audio", features = ["test-support"] }
 # Solo para los tests: habilita el feature `faults` del motor, de modo que
 # `cargo test --all` disponga del punto de inyección de fallo sin que
 # `cargo build --release` lo lleve.

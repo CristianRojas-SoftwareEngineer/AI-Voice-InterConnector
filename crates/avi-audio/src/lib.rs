@@ -5,6 +5,35 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// Techo de seguridad, en segundos, de la grabación push-to-talk: el valor de
+/// `AVI_PUSH_TO_TALK_MAX_SECS` o 300 si falta o no es un entero válido.
+pub fn push_to_talk_max_secs() -> u64 {
+    std::env::var("AVI_PUSH_TO_TALK_MAX_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300)
+}
+
+/// Duración, en segundos, de un WAV leída de su cabecera sin decodificar las
+/// muestras; `None` si el archivo no existe o no es un WAV legible.
+pub fn wav_duration_secs(path: &Path) -> Option<f64> {
+    let reader = hound::WavReader::open(path).ok()?;
+    wav_reader_duration_secs(&reader)
+}
+
+/// Igual que [`wav_duration_secs`] pero sobre un WAV ya en memoria; `None` si los
+/// bytes no son un WAV legible.
+pub fn wav_bytes_duration_secs(bytes: &[u8]) -> Option<f64> {
+    let reader = hound::WavReader::new(std::io::Cursor::new(bytes)).ok()?;
+    wav_reader_duration_secs(&reader)
+}
+
+/// Duración de la cabecera: tramas (muestras por canal) entre la frecuencia.
+fn wav_reader_duration_secs<R: std::io::Read>(reader: &hound::WavReader<R>) -> Option<f64> {
+    let rate = reader.spec().sample_rate;
+    (rate > 0).then(|| reader.duration() as f64 / rate as f64)
+}
+
 /// Representación pública de un dispositivo de audio
 pub struct AudioDevice {
     pub id: usize,
@@ -301,11 +330,7 @@ impl AudioService {
             _ => return Err(anyhow!("Formato de muestra no soportado para captura")),
         };
 
-        let env_max_secs: u64 = std::env::var("AVI_PUSH_TO_TALK_MAX_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(300);
-        let max_secs = max_secs.min(env_max_secs);
+        let max_secs = max_secs.min(push_to_talk_max_secs());
 
         stream.play()?;
         eprintln!("Grabando… pulsa Enter para detener.");
@@ -403,6 +428,17 @@ impl From<hound::Error> for WavLoadError {
     }
 }
 
+/// Rechaza como WAV inválido el que declara una frecuencia de muestreo nula:
+/// `hound` no la valida y el remuestreo dividiría por cero.
+fn ensure_nonzero_sample_rate(spec: &hound::WavSpec) -> Result<(), WavLoadError> {
+    if spec.sample_rate == 0 {
+        return Err(WavLoadError::Invalid(
+            "la frecuencia de muestreo es 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Cargar un WAV arbitrario (`hound`, cualquier tasa/canales/formato) y normalizarlo
 /// a PCM `i16` mono a 16 kHz, mismo formato que exige Parakeet y que ya produce
 /// `capture_16k_mono_pcm` para el micrófono. Los fallos se devuelven como
@@ -412,6 +448,7 @@ impl From<hound::Error> for WavLoadError {
 pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
     let reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
+    ensure_nonzero_sample_rate(&spec)?;
 
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
@@ -439,6 +476,7 @@ pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoad
 pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
     let reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
+    ensure_nonzero_sample_rate(&spec)?;
 
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
@@ -549,6 +587,29 @@ pub fn get_devices_json() -> Result<Vec<Value>> {
         })
         .collect();
     Ok(json_devs)
+}
+
+/// Escribe en `path` un WAV PCM 16-bit mono con `sample_rate` 0 y 100 muestras.
+/// Solo es para pruebas: `hound` no permite escribir frecuencia 0, así que la
+/// cabecera se arma a mano.
+#[cfg(any(test, feature = "test-support"))]
+pub fn write_zero_rate_wav(path: &Path) {
+    let data_len = 200u32;
+    let mut wav = Vec::<u8>::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&0u32.to_le_bytes());
+    wav.extend_from_slice(&0u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(wav.len() + data_len as usize, 1);
+    std::fs::write(path, wav).expect("escribir el WAV de frecuencia nula");
 }
 
 #[cfg(test)]
@@ -696,6 +757,38 @@ mod tests {
             std::env::temp_dir().join(format!("avi_audio_test_{name}_{}.wav", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         path
+    }
+
+    /// Escribe el WAV de frecuencia nula en un archivo temporal propio de la prueba.
+    fn zero_rate_wav_in_temp(name: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("avi_audio_test_{name}_{}.wav", std::process::id()));
+        crate::write_zero_rate_wav(&path);
+        path
+    }
+
+    #[test]
+    fn test_load_wav_16k_mono_pcm_zero_sample_rate_is_invalid() {
+        let path = zero_rate_wav_in_temp("rate0_16k");
+        let result = crate::load_wav_16k_mono_pcm(&path);
+        std::fs::remove_file(&path).ok();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::WavLoadError::Invalid(_)),
+            "obtenido: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_wav_24k_mono_pcm_zero_sample_rate_is_invalid() {
+        let path = zero_rate_wav_in_temp("rate0_24k");
+        let result = crate::load_wav_24k_mono_pcm(&path);
+        std::fs::remove_file(&path).ok();
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::WavLoadError::Invalid(_)),
+            "obtenido: {err:?}"
+        );
     }
 
     #[test]

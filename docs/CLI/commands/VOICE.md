@@ -54,7 +54,8 @@ name.to_lowercase() + VoiceStore::validate_name(name)   ← exit 2 "invalid_voic
 route_to_daemon(daemon_mode, client)?
     │
     ├─ Sí ──► clone_via_daemon
-    │           lee speech/timbre a base64 → POST /voices/clone (cabeceras ≤1500ms)
+    │           (previo al POST: referencia > 30 s → exit 2 "audio_too_long")
+    │           lee speech a base64 (el timbre no se envía) → POST /voices/clone (cabeceras ≤1500ms)
     │           timeout o conexión fallida → exit 5 "daemon_unreachable"
     │           HTTP no-2xx → mapea `reason` del body a exit code (ver tabla de errores)
     │           stream NDJSON: started → latidos (500ms) / warmup → result {name, speech, timbre, precomputed:true}
@@ -102,17 +103,19 @@ handler de clonado.
 
 ## Ruta daemon: `POST /voices/clone`
 
-`clone_via_daemon` (`src/main.rs`) codifica los audios a base64 y envía:
+`clone_via_daemon` (`src/main.rs`) codifica la referencia a base64 y envía:
 
 ```json
-{ "name": "...", "audio_b64": "...", "force": false, "timbre_b64": "..." }
+{ "name": "...", "audio_b64": "...", "force": false }
 ```
+
+La petición no lleva el timbre, aunque la CLI sigue exigiendo que el archivo de timbre exista (exit 3 `audio_not_found`). La referencia dura como máximo 30 s (`MAX_CLONE_REFERENCE_SECS`), solo se admiten WAV, y la CLI lo comprueba, midiendo la cabecera y luego el PCM decodificado, antes de contactar con el daemon y antes de comprobar el modelo; un exceso sale con exit 2 `audio_too_long`, igual en la vía local. El cuerpo de la petición admite hasta 31 768 576 B (30 s de referencia a 96 kHz, estéreo y 32 bits, en base64, más 1 MiB): un WAV más pesado recibe 413 aunque dure menos de 30 s.
 
 `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`):
 
 1. `VoiceStore::validate_name(name)` → `400` `invalid_voice_name` si falla.
 2. `!force && voice_store.exists(name)` → `409` `voice_exists`.
-3. Falta `audio_b64` → `400` `usage_error`; no decodifica base64 → `400` `invalid_audio`.
+3. Falta `audio_b64` → `400` `usage_error`; no decodifica base64 → `400` `invalid_audio`; la referencia dura más de 30 s (medida por su cabecera WAV) → `400` `audio_too_long`.
 4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
 5. Tras superar las validaciones baratas anteriores, el handler abre una respuesta streaming NDJSON (`application/x-ndjson`) emitiendo el evento inicial `{"event":"started", "name": "..."}`.
 6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `with_heartbeats`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) cada 500 ms (`STREAM_HEARTBEAT`). Si el cliente se desconecta, el daemon descarta el resultado; el clonado termina en segundo plano. Si la referencia no se puede cargar, el clonado se interrumpe y emite `{"event":"error", "reason":"invalid_audio", "message": "..."}` (WAV inválido o truncado) o `{"event":"error", "reason":"io_error", "message": "..."}` (fallo de lectura); si falla el propio clonado o el guardado, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
@@ -129,6 +132,7 @@ El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_strea
 | `voice_exists` | 6 (`StateConflict`) |
 | `model_missing` | 4 (`ModelMissing`) |
 | `usage_error` / `invalid_audio` | 2 (`InvalidInput`) |
+| `audio_too_long` | 2 (`InvalidInput`) |
 | `io_error` | 1 (`Error`) |
 | `voice_clone_failed` | 1 (`Error`) |
 | otro / desconocido | 1 (`Error`) |
@@ -229,7 +233,7 @@ copia).
 | Modelo de síntesis (`qwen3-tts-0.6b`) no provisionado | clone (ruta local) | 4 | `model_missing` |
 | Voz ya existe sin `--force` | clone | 6 | `voice_exists` |
 | Modelo Base de clonado no provisionado | clone (ruta local) | 4 | `model_missing` |
-| Referencia que no es un WAV válido o está truncada | clone | 2 | `invalid_audio` |
+| Referencia que no es un WAV válido, está truncada o declara una frecuencia de muestreo nula | clone | 2 | `invalid_audio` |
 | Fallo de E/S al leer la referencia | clone | 1 | `io_error` |
 | Falla el motor de `avi_tts::clone_voice` o `save_reference` | clone | 1 | `voice_clone_failed` |
 | Daemon inalcanzable (inactividad 1500 ms / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
