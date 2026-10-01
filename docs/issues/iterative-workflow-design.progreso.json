@@ -95,14 +95,14 @@
     },
     "C3": {
       "status": "in_progress",
-      "phase": "tests_red",
+      "phase": "implementation",
       "gates": [
         { "gate": "plan", "verdict": "approved", "date": "2026-10-01", "notes": "P1: referencia del clonado hasta 30 s; P2: límite de cuerpo = base64 del peor caso del tope + 1 MiB, por ruta; P3: duración por la cabecera WAV y el PCM como respaldo; P4: 404 sin reason da daemon_error, exit 1, con reiniciar el daemon o usar un build con la función; P5: el clonado por daemon no envía timbre_b64 pero exige el archivo; P6: protocolo en \"4\"; P7: audio_too_long y exit 2 para dub 40 s, transcripción 300 s y referencia 30 s; P8: --duration y AVI_PUSH_TO_TALK_MAX_SECS mayores de 300 se rechazan antes de grabar" },
-        { "gate": "tests", "verdict": "pending", "date": "2026-10-01", "notes": "15 pruebas nuevas; 14 en rojo por aserción: body_limit_for devuelve 2 MiB (2), validate_transcribe_input sin tope, /voices/clone da 413 con más de 2 MiB y model_missing con 31 s, el 404 sin reason no menciona daemon restart, transcribe y clone de más del tope dan exit 4 model_missing, --duration 301 da model_missing, AVI_PUSH_TO_TALK_MAX_SECS=301 da usage_error por falta de TTY, y los 404 de /dub degradan a /transcribe con exit 1. validate_transcribe_accepts_audio_at_limit pasa como guarda de regresión. La prueba de 70 s de /transcribe (requiere Parakeet) no se ejecutó: su rojo se deduce del límite de 2 MiB" }
+        { "gate": "tests", "verdict": "approved", "date": "2026-10-01", "notes": "15 pruebas nuevas; 14 en rojo por aserción: body_limit_for devuelve 2 MiB (2), validate_transcribe_input sin tope, /voices/clone da 413 con más de 2 MiB y model_missing con 31 s, el 404 sin reason no menciona daemon restart, transcribe y clone de más del tope dan exit 4 model_missing, --duration 301 da model_missing, AVI_PUSH_TO_TALK_MAX_SECS=301 da usage_error por falta de TTY, y los 404 de /dub degradan a /transcribe con exit 1. validate_transcribe_accepts_audio_at_limit pasa como guarda de regresión. La prueba de 70 s de /transcribe (requiere Parakeet) no se ejecutó: su rojo se deduce del límite de 2 MiB y se comprueba en la verificación. Se decide además: la comprobación de AVI_PUSH_TO_TALK_MAX_SECS va antes de exigir una terminal, y el estado del daemon sin modelo Base de la golden de 31 s se extrae a un helper de golden.rs en lugar de construirse a mano" }
       ],
       "tasks": [
         { "id": "C3.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
-        { "id": "C3.2", "status": "in_progress", "attempts": 1, "files": ["crates/avi-core/src/limits.rs", "crates/avi-core/src/lib.rs", "crates/avi-audio/src/lib.rs", "crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs", "src/main.rs", "tests/cli_golden.rs", "docs/issues/iterative-workflow-design.progreso.json"] },
+        { "id": "C3.2", "status": "done", "attempts": 1, "files": ["crates/avi-core/src/limits.rs", "crates/avi-core/src/lib.rs", "crates/avi-audio/src/lib.rs", "crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs", "src/main.rs", "tests/cli_golden.rs", "docs/issues/iterative-workflow-design.progreso.json"] },
         { "id": "C3.3", "status": "pending", "attempts": 0, "files": [] },
         { "id": "C3.4", "status": "pending", "attempts": 0, "files": [] },
         { "id": "C3.5", "status": "pending", "attempts": 0, "files": [] },
