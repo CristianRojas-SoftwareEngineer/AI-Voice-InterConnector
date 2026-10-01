@@ -92,7 +92,7 @@ leer el código ni haber estado en la sesión en que se diseñó.
    una versión es una compuerta aparte que sigue la skill `release`.
 10. **Una rama por ciclo, un solo release al final.** Cada ciclo trabaja en su propia
     rama transitoria, creada desde `main` al abrirlo: `docs/decisiones-g0` para C0 y
-    `fix/<síntoma>` para C1 a C6. Al aprobarse su G-Resultado, la rama se integra en
+    `fix/<síntoma>` para C1 a C7. Al aprobarse su G-Resultado, la rama se integra en
     `main` con `git merge --no-ff` y se elimina, de modo que cada ciclo parte de lo ya
     aprobado y queda como un merge revertible por separado. Integrar no publica: las
     entradas de cada ciclo se acumulan en `## [No publicado]` y la versión se publica una
@@ -198,31 +198,31 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 
 | Id | Síntoma | Informe | Severidad | Ciclo |
 |---|---|---|---|---|
-| S1 | La vía daemon rechaza con 413 los audios de transcripción de más de unos 49 s | `daemon-rechaza-o-corta-audios-largos.md` | Media; se propone alta | C2 |
-| S2 | Un kill duro del daemon deja huérfano al motor residente | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Media | C4 |
-| S3 | El daemon no escribe log y los logs del motor no rotan | `residuos-en-disco-tras-comandos-correctos.md` | Media | C3 |
+| S1 | La vía daemon rechaza con 413 los audios de transcripción de más de unos 49 s | `daemon-rechaza-o-corta-audios-largos.md` | Media; se propone alta | C3 |
+| S2 | Un kill duro del daemon deja huérfano al motor residente | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Media | C5 |
+| S3 | El daemon no escribe log y los logs del motor no rotan | `residuos-en-disco-tras-comandos-correctos.md` | Media | C4 |
 | S4 | La síntesis por daemon sale con exit 1 donde el contrato asigna otro código (4 si falta el modelo) | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja; media sin modelo | C1 |
 | S5 | `--daemon` en los cinco comandos solo locales (`list`, `remove` y `play`) responde «Daemon inalcanzable» con exit 5 | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja; se propone media | C1 |
-| S6 | `self update` deja artefactos y `doctor` falla hasta la siguiente operación de ciclo de vida | `residuos-en-disco-tras-comandos-correctos.md` | Baja; se propone media | C5 |
-| S7 | El `status` JSON afirma operaciones que no ocurrieron (`daemon stop` sin daemon y los simulacros de `self uninstall` y `cleanup`) | `status-json-afirma-operaciones-no-realizadas.md` | Baja | C6 |
-| S8 | `speech say` y `speech dub` dejan WAV temporales o informan en `audio_path` de uno ya borrado | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C6 |
-| S9 | `daemon.ready` queda en disco tras `daemon stop` | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C4 |
-| S10 | Trazas internas de la descarga y del motor en la terminal | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Baja | C3 |
+| S6 | `self update` deja artefactos y `doctor` falla hasta la siguiente operación de ciclo de vida | `residuos-en-disco-tras-comandos-correctos.md` | Baja; se propone media | C6 |
+| S7 | El `status` JSON afirma operaciones que no ocurrieron (`daemon stop` sin daemon y los simulacros de `self uninstall` y `cleanup`) | `status-json-afirma-operaciones-no-realizadas.md` | Baja | C7 |
+| S8 | `speech say` y `speech dub` dejan WAV temporales o informan en `audio_path` de uno ya borrado | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C7 |
+| S9 | `daemon.ready` queda en disco tras `daemon stop` | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C5 |
+| S10 | Trazas internas de la descarga y del motor en la terminal | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Baja | C4 |
 | S11 | Prefijo `Error:` duplicado | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja | C1 |
 | S12 | El evento `start` mide `text_length` en bytes, no en caracteres | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja | C1 |
-| S13 | El dub por composición (daemon sin `/dub`) corta la transcripción a los 1500 ms | `daemon-rechaza-o-corta-audios-largos.md` | Baja | C2 |
-| S14 | Una referencia de clonado de más de unos 1,5 MB se rechaza con 413 por la vía daemon (por reproducir) | `daemon-rechaza-o-corta-audios-largos.md` | Media | C2 |
-| S15 | Un 404 de `/dub` con `reason` propio (`voice_not_found`, `model_missing`) no se traduce con la tabla: el cliente lo toma por un daemon sin `/dub` | Revisión de C1 | Baja | C2 |
-| S16 | El contrato promete exit 5 cuando el daemon no tiene `/transcribe`; el cliente sale con 1 y no indica reiniciar el daemon | Revisión de C1 | Baja | C2 |
+| S13 | El dub por composición (daemon sin `/dub`) corta la transcripción a los 1500 ms | `daemon-rechaza-o-corta-audios-largos.md` | Baja | C3 |
+| S14 | Una referencia de clonado de más de unos 1,5 MB se rechaza con 413 por la vía daemon (por reproducir) | `daemon-rechaza-o-corta-audios-largos.md` | Media | C3 |
+| S15 | Un 404 de `/dub` con `reason` propio (`voice_not_found`, `model_missing`) no se traduce con la tabla: el cliente lo toma por un daemon sin `/dub` | Revisión de C1 | Baja | C3 |
+| S16 | El contrato promete exit 5 cuando el daemon no tiene `/transcribe`; el cliente sale con 1 y no indica reiniciar el daemon | Revisión de C1 | Baja | C3 |
 | S17 | `sudo_not_supported` se emite, pero no está en el contrato ni en el oráculo de la tabla | Revisión de C1 | Baja | C1 |
-| S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C6 |
+| S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C7 |
 | S19 | `/synthesize` responde `model_missing` a una temperatura fuera de rango si falta el modelo de síntesis | Revisión de C1 | Baja | C1 |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
 
 S15 a S19 los detectó el revisor de C1 y no tienen informe propio: se asignan al ciclo
-que ya trata su causa raíz. S17 y S19 se corrigieron dentro de C1; S18 espera a C6
+que ya trata su causa raíz. S17 y S19 se corrigieron dentro de C1; S18 espera a C7
 porque la subida del sobre a `"5"` edita esas mismas líneas.
 
 ## 8. Orden de los ciclos y dependencias
@@ -230,37 +230,37 @@ porque la subida del sobre a `"5"` edita esas mismas líneas.
 ```text
 C0 Preparación y decisiones ──G0──►
   C1 Contrato de errores (S4 S5 S11 S12 S17 S19)
-    │  C2 usa la tabla única de reason→exit y la lectura del reason en los errores del daemon
+    │  C3 usa la tabla única de reason→exit y la lectura del reason en los errores del daemon
     ▼
-  C2 Límites de la vía daemon (S1 S13 S14 S15 S16)
+  C3 Límites de la vía daemon (S1 S13 S14 S15 S16)
     │
     ▼
-  C3 Observabilidad (S3 S10)
-    │  C4 toca el mismo lanzamiento del clonado y se verifica con el log del daemon
+  C4 Observabilidad (S3 S10)
+    │  C5 toca el mismo lanzamiento del clonado y se verifica con el log del daemon
     ▼
-  C4 Vida de los procesos (S2 S9)
+  C5 Vida de los procesos (S2 S9)
     │
     ▼
-  C5 Artefactos de self update (S6)
+  C6 Artefactos de self update (S6)
     │
     ▼
-  C6 JSON veraz y temporales (S7 S8 S18)
+  C7 JSON veraz y temporales (S7 S8 S18)
 
-G-Release: una sola vez, tras cerrar e integrar C6
+G-Release: una sola vez, tras cerrar e integrar C7
 ```
 
 Justificación del orden:
 
-- **C1 va antes que C2, aunque S1 es el síntoma más grave.** La corrección de S1 exige
+- **C1 va antes que C3, aunque S1 es el síntoma más grave.** La corrección de S1 exige
   que la transcripción lea el `reason` de una respuesta de error y lo traduzca al código
-  del contrato, y eso es justo lo que construye C1. Si C2 fuera primero, crearía otra
+  del contrato, y eso es justo lo que construye C1. Si C3 fuera primero, crearía otra
   tabla local que C1 tendría que deshacer. C1 es pequeño, así que el retraso es mínimo.
-- **C3 va antes que C4 por una dependencia dura.** Los dos cambian cómo se lanza el
-  motor de clonado: C3 lleva su salida a un log y C4 le conecta la tubería de D11.1. Además,
+- **C4 va antes que C5 por una dependencia dura.** Los dos cambian cómo se lanza el
+  motor de clonado: C4 lleva su salida a un log y C5 le conecta la tubería de D11.1. Además,
   sin el log del daemon, un fallo al matarlo no deja rastro y la verificación de S2 sería
   a ciegas.
-- **C5 y C6 no dependen entre sí.** C5 va antes por severidad. El humano puede
-  invertirlos en el G-Plan de C5.
+- **C6 y C7 no dependen entre sí.** C6 va antes por severidad. El humano puede
+  invertirlos en el G-Plan de C6.
 - **Los ciclos no se ejecutan en paralelo.** Casi todos tocan el binario principal
   (`src/main.rs`), y en paralelo la revisión humana tendría que separar cambios
   entrelazados.
@@ -272,7 +272,7 @@ argumentos a favor y en contra, la recomendación y el ciclo que la aplica. El c
 **Decisión** lo rellena el humano en G0. Ninguna depende de un diagnóstico, así que
 ningún ciclo tiene G-Diag.
 
-### D1 · Tope del audio de transcripción en las dos vías (S1) — C2
+### D1 · Tope del audio de transcripción en las dos vías (S1) — C3
 
 **Problema.**
 
@@ -307,7 +307,7 @@ vía daemon y la diferencia entre vías queda documentada.
 
 **Decisión:** B, con un tope de 300 s (2026-09-30).
 
-### D2 · Tamaño de la referencia del clonado (S14) — C2
+### D2 · Tamaño de la referencia del clonado (S14) — C3
 
 **Problema.**
 
@@ -317,7 +317,7 @@ vía daemon y la diferencia entre vías queda documentada.
   unos 1,5 MB (una sola de unos 9 s en WAV de 44,1 kHz estéreo) chocan con el mismo
   límite de 2 MB.
 - La vía directa no tiene ese límite.
-- El síntoma está deducido del código. C2 lo reproduce con una prueba antes de
+- El síntoma está deducido del código. C3 lo reproduce con una prueba antes de
   corregirlo; si no se reproduce, esta decisión se descarta en su G-Plan.
 
 | Alternativa | A favor | En contra |
@@ -326,13 +326,13 @@ vía daemon y la diferencia entre vías queda documentada.
 | **B. Límite de cuerpo fijo y generoso** (por ejemplo, 32 MB) solo en el daemon | Simple | La regla depende del formato del fichero; las dos vías siguen comportándose distinto |
 | **C. El cliente convierte la referencia a 16 kHz mono antes de enviarla** | Reduce el tamaño en cualquier formato | Cambia la entrada del motor y puede degradar el clonado; es trabajo de audio adicional |
 
-**Recomendación: A.** El valor del tope se fija en el G-Plan de C2, a partir de la
+**Recomendación: A.** El valor del tope se fija en el G-Plan de C3, a partir de la
 duración de referencia que el motor aprovecha realmente. Si el motor recorta la
 referencia a N segundos, el tope es N.
 
-**Decisión:** A; el valor del tope, en el G-Plan de C2 (2026-09-30).
+**Decisión:** A; el valor del tope, en el G-Plan de C3 (2026-09-30).
 
-### D3 · Dub por composición para daemons sin `/dub` (S13) — C2
+### D3 · Dub por composición para daemons sin `/dub` (S13) — C3
 
 **Problema.**
 
@@ -375,7 +375,7 @@ La regla vive en un solo sitio, la lectura común de las respuestas de error del
 y el contrato deja de prometer exit 5 para `transcribe` y `dub` ante un daemon sin la
 ruta.
 
-### D4 · Traducción única de `reason` a código de salida (S4, y base de C2) — C1
+### D4 · Traducción única de `reason` a código de salida (S4, y base de C3) — C1
 
 **Problema.**
 
@@ -429,7 +429,7 @@ el humano.
 
 **Decisión:** B, con el `reason` `daemon_not_supported` (2026-09-30).
 
-### D6 · `status` de `daemon stop` cuando no había daemon (S7) — C6
+### D6 · `status` de `daemon stop` cuando no había daemon (S7) — C7
 
 **Problema.**
 
@@ -450,7 +450,7 @@ el humano.
 
 **Decisión:** A (2026-09-30).
 
-### D7 · Los simulacros de `self uninstall` y `cleanup` (S7) — C6
+### D7 · Los simulacros de `self uninstall` y `cleanup` (S7) — C7
 
 **Problema.**
 
@@ -509,7 +509,7 @@ da `planned`, y un simulacro nunca da otro valor.
 
 **Decisión:** A (2026-09-30).
 
-### D8 · WAV temporales de `speech say` y `speech dub` (S8) — C6
+### D8 · WAV temporales de `speech say` y `speech dub` (S8) — C7
 
 **Problema.** `say` y `dub` sintetizan a un WAV temporal para reproducirlo y devuelven
 su ruta en `audio_path` y en el texto humano («Reproduciendo: …», «Doblaje
@@ -518,7 +518,7 @@ reproducido: …»).
 - `say` por la vía directa conserva el fichero.
 - `say` por la vía daemon lo borra, pero después de emitir su ruta; si la reproducción
   falla, sale antes de borrarlo.
-- `dub` lo conserva siempre, en sus dos vías, la directa y la daemon; C2 elimina la
+- `dub` lo conserva siempre, en sus dos vías, la directa y la daemon; C3 elimina la
   composición (D3).
 - Cada vía gestiona el fichero a mano, y cualquier error intermedio lo deja atrás.
 
@@ -549,7 +549,7 @@ persistente.
 
 **Decisión:** A (2026-09-30).
 
-### D9 · Log del daemon y retención de los logs (S3) — C3
+### D9 · Log del daemon y retención de los logs (S3) — C4
 
 **Problema.**
 
@@ -575,11 +575,11 @@ Retención de las dos familias de logs, la del motor y la del daemon:
 
 **Recomendación: A con R1 y K = 10 por familia.** La poda la hace el código que crea el
 log. Es lo más simple que cumple el criterio del informe y da el log que necesita la
-verificación de C4.
+verificación de C5.
 
 **Decisión:** A con R1 y K = 10 por familia (2026-09-30).
 
-### D10 · Trazas internas en la terminal (S10) — C3
+### D10 · Trazas internas en la terminal (S10) — C4
 
 **Problema.**
 
@@ -608,7 +608,7 @@ daemon y del motor. De paso, se corrige el comentario obsoleto de la inicializac
 **Decisión:** A con N2 (2026-09-30). Sin `RUST_LOG`, los comandos de la CLI usan `warn` y
 el daemon `info`, que va a su log; si la variable está definida, manda en los dos.
 
-### D11 · Que el motor muera con el daemon (S2) — C4
+### D11 · Que el motor muera con el daemon (S2) — C5
 
 **Problema.** El daemon lanza el motor en dos modos: el residente, que vive
 indefinidamente, y el de clonado, que dura decenas de segundos y también se lanza desde
@@ -672,7 +672,7 @@ cierre como mucho lo que dura un clonado. Es un riesgo teórico, sin verificar.
 
 **Decisión:** A (2026-09-30).
 
-### D12 · Artefactos de `self update` y el veredicto de `doctor` (S6) — C5
+### D12 · Artefactos de `self update` y el veredicto de `doctor` (S6) — C6
 
 **Problema.** Tras `self update` en Windows quedan dos restos, y `doctor` los cuenta como
 fallo (exit 1) hasta que otra operación de ciclo de vida los barre.
@@ -766,7 +766,7 @@ Los cambios de esta iteración que suben un esquema son estos:
 
 - **Protocolo del daemon:** la unidad de `text_length` pasa a caracteres (C1).
 - **Sobre de la CLI:** los nuevos valores de `status` (D6 y D7) y la retirada de
-  `dry_run` (D7.3) y de `audio_path` (D8), todos en C6.
+  `dry_run` (D7.3) y de `audio_path` (D8), todos en C7.
 - **Ninguno de los dos:** el cambio de código de salida de D5 no toca ninguna clave.
   Cambia el contrato, pero no el esquema, y se documenta en el CHANGELOG.
 
@@ -780,7 +780,7 @@ Los cambios de esta iteración que suben un esquema son estos:
 
 - C1 sube el protocolo del daemon de 3 a 4 y documenta `text_length` en caracteres, la
   misma unidad que el tope de 500 caracteres de `--text`.
-- C6 sube el sobre de la CLI de 4 a 5.
+- C7 sube el sobre de la CLI de 4 a 5.
 
 Con un solo release al final de la iteración y cada esquema roto en un único ciclo, A y
 B producen hoy el mismo resultado; A se prefiere porque sigue siendo correcta si eso
@@ -853,7 +853,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   daemon (`DAEMON-MODE.md`, incluido el handshake de P4).
 - **Cierra:** `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md`.
 
-### C2 · Límites de la vía daemon
+### C3 · Límites de la vía daemon
 
 - **Causa raíz:** la vía daemon tiene límites de transporte ajenos a los del producto y
   un camino de compatibilidad con su propio límite de tiempo.
@@ -879,7 +879,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   descripción del protocolo del daemon.
 - **Cierra:** `daemon-rechaza-o-corta-audios-largos.md`.
 
-### C3 · Observabilidad
+### C4 · Observabilidad
 
 - **Causa raíz:** las trazas no llegan a su destino: las del daemon se pierden y las
   internas aparecen en la terminal.
@@ -903,11 +903,11 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Cierra:** la ficha de logs de `residuos-en-disco-tras-comandos-correctos.md` y la
   ficha de trazas de `motor-residente-huerfano-y-trazas-fuera-del-log.md`.
 
-### C4 · Vida de los procesos
+### C5 · Vida de los procesos
 
 - **Causa raíz:** los procesos del daemon no dejan limpio su estado al terminar, ni de
   forma ordenada ni abrupta.
-- **Depende de:** C3.
+- **Depende de:** C4.
 - **Síntomas:** S2 y S9.
 - **Decisiones:** D11.1 (vigía por tubería en la entrada estándar y retirada del Job
   Object) y D11.2 (retraso acotado en macOS, aceptado), resueltas en G0.
@@ -933,7 +933,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Cierra:** `motor-residente-huerfano-y-trazas-fuera-del-log.md` y la ficha de
   `daemon.ready` de `residuos-en-disco-tras-comandos-correctos.md`.
 
-### C5 · Artefactos de `self update`
+### C6 · Artefactos de `self update`
 
 - **Causa raíz:** nadie programa el borrado del aparcado, el auxiliar de borrado
   diferido falla sin dejar rastro, y no hay forma de pedir la limpieza sin una operación
@@ -963,7 +963,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   CHANGELOG.
 - **Cierra:** la ficha de `self update` de `residuos-en-disco-tras-comandos-correctos.md`.
 
-### C6 · JSON veraz y temporales
+### C7 · JSON veraz y temporales
 
 - **Causa raíz:** algunos sobres JSON describen lo que se pidió o lo que habría pasado,
   no lo que pasó, y quien crea un fichero temporal no siempre lo borra.
@@ -999,7 +999,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Cierra:** `status-json-afirma-operaciones-no-realizadas.md` y
   `residuos-en-disco-tras-comandos-correctos.md`, que para entonces se queda sin fichas.
 - **Cierre de la iteración:** el agente propone eliminar este documento y su registro
-  de progreso, y lo presenta en la misma G-Resultado. Con C6 integrado en `main`, se
+  de progreso, y lo presenta en la misma G-Resultado. Con C7 integrado en `main`, se
   abre G-Release.
 
 ## 11. Registro de progreso
@@ -1057,9 +1057,9 @@ disco y con `git log`.
 
 | Riesgo | Tratamiento |
 |---|---|
-| Tras corregir el auxiliar (C5), el staging sigue quedando en disco | G-Desvío con el rastro del auxiliar; el humano decide si se diagnostica la causa, se aplaza el ciclo o se acepta la red de `doctor --repair` como mitigación documentada |
+| Tras corregir el auxiliar (C6), el staging sigue quedando en disco | G-Desvío con el rastro del auxiliar; el humano decide si se diagnostica la causa, se aplaza el ciclo o se acepta la red de `doctor --repair` como mitigación documentada |
 | Una decisión de G0 resulta inviable al implementarla | G-Desvío; la decisión se reabre con las alternativas actualizadas |
-| S14 no se reproduce | En el G-Plan de C2, D2 y su tarea salen del alcance y el síntoma se retira del informe |
+| S14 no se reproduce | En el G-Plan de C3, D2 y su tarea salen del alcance y el síntoma se retira del informe |
 | La verificación del agente falla de forma repetida | Tras tres intentos, G-Desvío en lugar de seguir intentándolo |
 | El índice estructural del código queda desfasado entre ciclos | Resincronizarlo al cerrar cada ciclo que añada o elimine símbolos |
 | La sesión se interrumpe a mitad de un ciclo | Reanudar desde el registro de progreso, contrastándolo con el disco y con `git log` |
