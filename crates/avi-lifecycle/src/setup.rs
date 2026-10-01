@@ -498,6 +498,11 @@ fn convert_body(hf_snapshot: &Path, tmp_dir: &Path) -> anyhow::Result<()> {
     let try_converter = |bin: &str| {
         std::process::Command::new(bin)
             .args([
+                // `ctranslate2.converters` ya importa el módulo al cargarse, así que
+                // `runpy` avisa de que lo vuelve a ejecutar con un RuntimeWarning
+                // inofensivo que solo ensucia la terminal; se silencia ese aviso.
+                "-W",
+                "ignore::RuntimeWarning:runpy",
                 "-m",
                 "ctranslate2.converters.transformers",
                 "--model",

@@ -150,6 +150,7 @@ Recupera el canal de instalación de una línea en Windows, que abortaba con un 
 - En Windows los archivos de `snapshots/` dejan de duplicar el blob: `hf-hub` (vendorizado y fijado a `=1.0.0`) los publica como enlaces duros, y como enlaces simbólicos en Unix. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), se copia el blob y el disco se duplica.
 - `self install`, `self uninstall`, `self update` y `cleanup` detienen el daemon en el puerto de `AVI_DAEMON_PORT` (el mismo en el que escucha) en lugar de hacerlo siempre en `127.0.0.1:8765`. Sin pidfile, `daemon stop`, `daemon status` y el resto de comandos que contactan con el daemon también lo buscan en ese puerto.
 - `cleanup` y `doctor` cuentan una sola vez los archivos con varios enlaces al medir el tamaño de la caché de modelos.
+- La conversión de los modelos de traducción a CTranslate2 ya no muestra en la terminal el `RuntimeWarning` de `runpy` que emitía Python al invocar el conversor.
 - La documentación declara que `hf-hub` no reanuda las descargas por `Range`: una descarga interrumpida se repite completa.
 - El resumen previo de `self install` refleja el estado real del `PATH`: si la entrada del registro (Windows) o el enlace del comando (Unix) ya están en su sitio, dice «ya está en el PATH; no se modifica» en lugar de anunciar un cambio que no ocurre. Un registro ilegible al planificar sale con `path_conflict` (exit 14), como al aplicar.
 
