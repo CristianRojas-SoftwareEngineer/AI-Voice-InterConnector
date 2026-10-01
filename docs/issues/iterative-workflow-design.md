@@ -227,6 +227,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S24 | El estado del daemon en las pruebas se construye de dos formas: a mano en las goldens, con un comentario de cabecera desfasado, y con `DaemonState::new()` en las pruebas de la biblioteca, que con `native-stt` carga Parakeet y escribe en el directorio de datos real | Revisión de C1 | Media | C2 |
 | S25 | `docs/BRANCHING.md` afirma que los jobs de test corren en `main` y en ramas, y solo corren en tags | Revisión de C1 | Baja | C2 |
 | S26 | La verificación de los ciclos usa órdenes ad hoc (como `cargo test -p avi-daemon --features native-stt` en C1) que dependen de la instalación real del mantenedor | Revisión de C1 | Baja | C2 |
+| S27 | `self install`, `self uninstall` y `self update` detienen el daemon siempre en `127.0.0.1:8765` y `cleanup` solo respeta `AVI_DAEMON_PORT=0`; diez pruebas de contrato llamaban así a `daemon_stop::stop` contra el daemon real del mantenedor | Verificación de C2 | Media | C2 |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
@@ -240,6 +241,8 @@ nuevo, C2, porque comparten una causa raíz que no pertenece a ningún informe: 
 declaran qué recursos necesitan y nada comprueba que se ejecuten con ellos. C2 se intercala
 entre C1 y C3 para que las pruebas de C3 nazcan ya en su esquema.
 
+S27 salió de la verificación de C2 y se corrige en C2.
+
 ## 8. Orden de los ciclos y dependencias
 
 ```text
@@ -247,7 +250,7 @@ C0 Preparación y decisiones ──G0──►
   C1 Contrato de errores (S4 S5 S11 S12 S17 S19)
     │  C3 usa la tabla única de reason→exit y la lectura del reason en los errores del daemon
     ▼
-  C2 Clases de pruebas (S20 S21 S22 S23 S24 S25 S26)
+  C2 Clases de pruebas (S20 S21 S22 S23 S24 S25 S26 S27)
     │  C3 escribe sus pruebas en el esquema de clases y pone su tope de audio sobre la validación de /transcribe que C2 extrae
     ▼
   C3 Límites de la vía daemon (S1 S13 S14 S15 S16)
@@ -1006,7 +1009,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   - Ninguna prueba escribe en la instalación real: los recursos de la instalación se
     leen sin modificarlos y todo lo que la prueba escribe va a directorios temporales.
 - **Depende de:** C1.
-- **Síntomas:** S20, S21, S22, S23, S24, S25 y S26.
+- **Síntomas:** S20, S21, S22, S23, S24, S25, S26 y S27.
 - **Decisiones:** D14 a D18, resueltas el 2026-09-30. El hook `post-merge` que poda
   `target/` no se toca: no bloquea, es opcional y mezclaría responsabilidades.
 - **Tareas:**
@@ -1039,7 +1042,15 @@ aprobar. Las pruebas que se enumeran son las mínimas.
      `cargo test --all` como réplica local de CI sin features, y la skill y
      `docs/RELEASING.md` describen la puerta (D16, S21).
   6. Corregir `docs/BRANCHING.md`: los jobs de test corren solo en tags (S25).
+  7. Que `self install`, `self uninstall`, `self update` y `cleanup` detengan el daemon en
+     el puerto de `AVI_DAEMON_PORT`, como lo arranca el daemon: `daemon_stop::default_addr`
+     (sobre la función pura `addr_for_port_env`) sustituye a `DEFAULT_ADDR` en los cuatro
+     comandos, y las pruebas que ejecutan `cleanup::run` en su proceso fijan
+     `AVI_DAEMON_PORT=0` (S27).
 - **Pruebas en rojo:**
+  - la función pura de dirección (`addr_for_port_env`) da `127.0.0.1:<puerto>` para un
+    puerto válido, `0` incluido y con espacios recortados, y la dirección por defecto si
+    falta o no es un puerto;
   - una prueba de contrato recorre los `.rs` de `src/`, `tests/` y `crates/*/{src,tests}`
     y falla si alguno contiene un `eprintln!` con `skip:`;
   - la golden de `/health` corre y pasa sin features nativas y sin modelos;
@@ -1058,8 +1069,9 @@ aprobar. Las pruebas que se enumeran son las mínimas.
     puerta y deja el árbol sin cambios (`git status` limpio). La puerta no lleva prueba
     automática porque tendría que lanzar la suite dentro de la suite.
 - **Documentación:** `docs/BRANCHING.md`, `docs/RELEASING.md`, el paso 4 de la skill
-  `release`, la cabecera de `tests/cli_golden.rs` y la sección «Interno» de
-  `## [No publicado]` del CHANGELOG (la release exige la suite con recursos locales).
+  `release`, la cabecera de `tests/cli_golden.rs`, la sección «Interno» de
+  `## [No publicado]` del CHANGELOG (la release exige la suite con recursos locales) y
+  su sección «Corregido» (S27).
   S26 ya queda resuelto en la sección 5.3 de este documento.
 - **Cierra:** ningún informe: los síntomas no tienen informe propio.
 

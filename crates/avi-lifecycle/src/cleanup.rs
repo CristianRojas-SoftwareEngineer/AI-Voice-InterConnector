@@ -567,7 +567,7 @@ pub async fn run(
 
     // Antes de borrar recursos que el daemon usa, se detiene el daemon. Si no
     // se detiene, `daemon_stop_failed` y nada del plan se borra.
-    let daemon = daemon_stop::stop(&roots.data_dir, &daemon_addr(), control).await;
+    let daemon = daemon_stop::stop(&roots.data_dir, &daemon_stop::default_addr(), control).await;
     daemon_stop::require_stopped(&daemon)?;
 
     let mut removed = Vec::new();
@@ -733,16 +733,6 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
     match outcome {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         other => other,
-    }
-}
-
-/// Dirección del protocolo de parada, con el mismo override que el resto del
-/// producto: `AVI_DAEMON_PORT = 0` pide puerto efímero.
-fn daemon_addr() -> String {
-    let addr = crate::daemon_stop::DEFAULT_ADDR;
-    match std::env::var("AVI_DAEMON_PORT") {
-        Ok(port) if port == "0" => "127.0.0.1:0".to_string(),
-        _ => addr.to_string(),
     }
 }
 

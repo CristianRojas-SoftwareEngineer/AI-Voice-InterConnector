@@ -107,6 +107,11 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
+        // `cleanup::run` detiene el daemon en el puerto de `AVI_DAEMON_PORT`; el
+        // puerto `0` no apunta a ningún daemon real y nunca conecta con el del
+        // usuario. El valor es constante, así que escribirlo desde pruebas
+        // concurrentes no altera el resultado.
+        std::env::set_var("AVI_DAEMON_PORT", "0");
         let n = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())

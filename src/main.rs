@@ -2736,7 +2736,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 receipt: receipt.as_ref(),
                 channel: lifecycle::channel::detect(&exe, receipt.as_ref()),
                 program_dir: registered_program_dir,
-                daemon_addr: lifecycle::daemon_stop::DEFAULT_ADDR.to_string(),
+                daemon_addr: lifecycle::daemon_stop::default_addr(),
                 home: home_dir(),
             };
             let outcome = lifecycle::uninstall::run(
@@ -2963,7 +2963,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // instalación sigue intacta y el staging se retira.
             let daemon = lifecycle::daemon_stop::stop(
                 &roots.data_dir,
-                lifecycle::daemon_stop::DEFAULT_ADDR,
+                &lifecycle::daemon_stop::default_addr(),
                 &ProductProcesses,
             )
             .await;

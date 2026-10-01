@@ -145,6 +145,22 @@ pub fn resolve_client_addr(data_dir: &Path) -> String {
     read_addr(data_dir).unwrap_or_else(|| DEFAULT_ADDR.to_string())
 }
 
+/// Dirección de parada a partir del valor crudo de `AVI_DAEMON_PORT`: el daemon
+/// escucha en `127.0.0.1:<puerto>` con el puerto recortado (`0` pide uno
+/// efímero), y un valor ausente o que no es un `u16` deja la dirección por
+/// defecto.
+pub fn addr_for_port_env(raw: Option<&str>) -> String {
+    match raw.and_then(|value| value.trim().parse::<u16>().ok()) {
+        Some(port) => format!("127.0.0.1:{port}"),
+        None => DEFAULT_ADDR.to_string(),
+    }
+}
+
+/// Dirección en la que detener el daemon, según `AVI_DAEMON_PORT` del entorno.
+pub fn default_addr() -> String {
+    addr_for_port_env(std::env::var("AVI_DAEMON_PORT").ok().as_deref())
+}
+
 /// Borra el pidfile. Solo lo hace quien ha comprobado antes que el daemon está
 /// muerto: borrarlo con el daemon vivo dejaría sin pista al siguiente `start`.
 pub fn remove_pid_file(data_dir: &Path) -> std::io::Result<()> {
@@ -522,6 +538,18 @@ mod tests {
         );
         assert!(!pid_path(&data).exists());
         std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// La dirección de parada sigue el puerto de `AVI_DAEMON_PORT` como el
+    /// arranque del daemon: recorta espacios, acepta `0` y cae al valor por
+    /// defecto si falta o no es un puerto válido.
+    #[test]
+    fn addr_for_port_env_follows_daemon_port() {
+        assert_eq!(addr_for_port_env(Some("9123")), "127.0.0.1:9123");
+        assert_eq!(addr_for_port_env(Some("0")), "127.0.0.1:0");
+        assert_eq!(addr_for_port_env(Some(" 9123 ")), "127.0.0.1:9123");
+        assert_eq!(addr_for_port_env(None), DEFAULT_ADDR);
+        assert_eq!(addr_for_port_env(Some("abc")), DEFAULT_ADDR);
     }
 
     /// El pidfile sobrevive a un fichero a medio escribir, y el protocolo no se
