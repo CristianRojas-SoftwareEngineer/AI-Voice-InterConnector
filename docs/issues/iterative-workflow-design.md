@@ -1107,7 +1107,8 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   - **P2:** el límite de cuerpo de cada ruta es el base64 del peor caso de su tope más
     1 MiB fijo para el resto del JSON; lo calcula una función pura y se aplica por ruta.
   - **P3:** la duración se mide por la cabecera WAV, sin decodificar; el PCM decodificado
-    se comprueba después como respaldo, que cubre también los formatos que no son WAV.
+    se comprueba después como respaldo. Solo se admiten WAV, así que el respaldo no
+    cubre ningún otro formato.
   - **P4:** un 404 sin `reason` da `daemon_error`, exit 1, y un mensaje único con las dos
     causas: reiniciar el daemon con el binario actual o usar un build con la función.
   - **P5:** el clonado por daemon deja de enviar `timbre_b64`, pero el archivo de timbre

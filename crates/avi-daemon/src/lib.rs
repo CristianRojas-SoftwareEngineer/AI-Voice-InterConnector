@@ -1691,9 +1691,9 @@ async fn shutdown_handler(State(state): State<SharedState>) -> impl IntoResponse
 /// modelo apuntando a `CARGO_MANIFEST_DIR`.
 pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
     // Peor caso de la referencia de clonado: el daemon no restringe su formato
-    // (cualquier WAV que lea `hound`), así que se dimensiona para 48 kHz, estéreo,
-    // 16 bits.
-    const CLONE_REFERENCE_BYTES_PER_SEC: u64 = 48_000 * 2 * 2;
+    // (cualquier WAV que lea `hound`), así que se dimensiona para 96 kHz, estéreo,
+    // 32 bits; un WAV más pesado se rechaza con 413 aunque esté dentro del tope.
+    const CLONE_REFERENCE_BYTES_PER_SEC: u64 = 96_000 * 2 * 4;
     let router = Router::new()
         .route("/health", get(health_handler))
         .route(
