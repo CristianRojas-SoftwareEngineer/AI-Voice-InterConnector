@@ -62,7 +62,25 @@
       "foreign_changes": [],
       "commits": ["28de66f", "c01e026", "9bd7117", "259889a", "ec2d9c3", "f96d711", "110e685", "dfd461b", "5215e38", "e0ddd89", "a7a009b", "c0a0d22", "fa07a5b"]
     },
-    "C2": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C2": {
+      "status": "in_progress",
+      "phase": "tests_red",
+      "gates": [
+        { "gate": "plan", "verdict": "approved", "date": "2026-09-30", "notes": "P1: reaper_on_failure recibe si barre por imagen y d03 lo desactiva; P2: las pruebas que solo exigen el modelo aprovisionado usan un snapshot falso y quedan de contrato; P3: setup_json_without_language_key corre en un sandbox con la selección por defecto sembrada; P5: la puerta de release va tras las validaciones de solo lectura y antes de cualquier escritura" }
+      ],
+      "tasks": [
+        { "id": "C2.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
+        { "id": "C2.2", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C2.3", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C2.4", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C2.5", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C2.6", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C2.7", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C2.8", "status": "pending", "attempts": 0, "files": [] }
+      ],
+      "foreign_changes": [],
+      "commits": []
+    },
     "C3": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C4": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
     "C5": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },

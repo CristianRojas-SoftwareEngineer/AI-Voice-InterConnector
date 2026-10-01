@@ -220,7 +220,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S17 | `sudo_not_supported` se emite, pero no está en el contrato ni en el oráculo de la tabla | Revisión de C1 | Baja | C1 |
 | S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C7 |
 | S19 | `/synthesize` responde `model_missing` a una temperatura fuera de rango si falta el modelo de síntesis | Revisión de C1 | Baja | C1 |
-| S20 | Unas 60 pruebas se aprueban solas cuando falta un recurso externo (modelos, binario del motor, dispositivo de audio, `ModelStore` escribible, puerto 8765 libre): imprimen `skip: …` y hacen `return`; cada una decide con sus propios auxiliares, uno de ellos duplicado, y uno de ellos ejecuta el `doctor` real sobre la instalación del mantenedor; otras cuatro comprueban un feature en tiempo de ejecución en lugar de declararlo con `cfg` | Revisión de C1 | Alta; un verde no demuestra que la prueba se ejecutó | C2 |
+| S20 | 53 pruebas, en 66 puntos del código, se aprueban solas cuando falta un recurso externo (modelos, binario del motor, dispositivo de audio, `ModelStore` escribible, puerto 8765 libre): imprimen `skip: …` y hacen `return`; cada una decide con sus propios auxiliares, uno de ellos duplicado, y uno de ellos ejecuta el `doctor` real sobre la instalación del mantenedor; otras cuatro comprueban un feature en tiempo de ejecución en lugar de declararlo con `cfg` | Revisión de C1 | Alta; un verde no demuestra que la prueba se ejecutó | C2 |
 | S21 | Nada ejecuta las pruebas con recursos locales antes de publicar: CircleCI corre solo en tags, sin features nativas ni modelos, y ni la skill `release` ni `cargo xtask release` piden más que `cargo test --all` (o nada); esas pruebas cuentan como verdes sin haberse ejecutado | Revisión de C1 | Alta; los falsos verdes llegan hasta la puerta de la release | C2 |
 | S22 | La golden de `/health` se salta sin Parakeet y, sin `native-stt`, nunca corre en CI; `voices_clone_daemon_precomputed_true` se salta por el modelo de transcripción cuando necesita el de síntesis | Revisión de C1 | Media | C2 |
 | S23 | La validación de entrada de `/transcribe` (`usage_error` sin audio, `invalid_audio` con base64 inválido) y la de `/translate` (`empty_text`, mismo idioma, `unsupported_language_pair`) viven dentro de funciones que exigen `native-stt` o `native-translation` aunque no usan el motor, y sus pruebas solo corren con el feature | Revisión de C1 | Baja | C2 |
@@ -1033,8 +1033,8 @@ aprobar. Las pruebas que se enumeran son las mínimas.
      `IsolatedInstance`); luego quedan en la clase que corresponda por lo que necesiten
      (D15, S20).
   5. Puerta mecánica en `cargo xtask release`: ejecuta
-     `cargo test --workspace --features full -- --include-ignored` como primer paso,
-     antes del bump y de cualquier otra escritura, y aborta si algo falla o falta un
+     `cargo test --workspace --features full -- --include-ignored` tras las
+     validaciones de solo lectura y antes de cualquier escritura (el bump incluido), y aborta si algo falla o falta un
      recurso, sin modo para saltarla. El paso 4 de la skill `release` conserva
      `cargo test --all` como réplica local de CI sin features, y la skill y
      `docs/RELEASING.md` describen la puerta (D16, S21).
