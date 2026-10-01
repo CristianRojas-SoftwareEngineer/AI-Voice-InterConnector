@@ -26,20 +26,22 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use avi_daemon::{build_router_with_state, DaemonState};
+use avi_daemon::{build_router_with_state, DaemonState, WarmState};
 use avi_store::{SpeechStore, VoiceStore};
 
 /// Estado de test único, reutilizable entre tests. Los almacenes de voces y de
-/// habla se anclan en un directorio temporal propio del proceso para no tocar el
-/// directorio de datos del usuario. `warm` nace en `Warming` porque aquí no corre
-/// `run_daemon_server` (sin bind ni warmup real); los tests de contrato leen el
-/// estado tal cual.
+/// habla se anclan en un directorio temporal propio del proceso, y
+/// `AVI_DATA_DIR` apunta a ese mismo directorio para que los logs del motor
+/// residente que lanza el clonado no caigan en el directorio de datos del
+/// usuario. `warm` nace en `Warming` porque aquí no corre `run_daemon_server`
+/// (sin bind ni warmup real); los tests de contrato leen el estado tal cual.
 static TEST_STATE: OnceLock<Arc<DaemonState>> = OnceLock::new();
 
 fn test_state() -> Arc<DaemonState> {
     TEST_STATE
         .get_or_init(|| {
             let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
+            std::env::set_var("AVI_DATA_DIR", &tmp);
             Arc::new(
                 DaemonState::with_stores(
                     VoiceStore::at(tmp.join("voices")),
@@ -409,6 +411,21 @@ async fn voices_clone_daemon_precomputed_true() {
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
         .collect();
+    // Un clonado con éxito deja en segundo plano una precarga que arranca el
+    // motor residente; se espera a que termine y se detiene el residente antes
+    // de las aserciones para que no sobreviva al proceso de pruebas.
+    if events.last().is_some_and(|e| e["event"] == "result") {
+        let state = test_state();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        while matches!(*state.warm.read().unwrap(), WarmState::Warming) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "la precarga del clon no terminó en 300 s"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        state.tts_engine.shutdown();
+    }
     assert!(!events.is_empty(), "debe haber al menos un evento");
     // Invariante de envelope: schema_version=4 en todo evento.
     for e in &events {
