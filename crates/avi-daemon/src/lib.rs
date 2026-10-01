@@ -1904,13 +1904,14 @@ pub fn read_ready_signal(path: &std::path::Path) -> Option<ReadySignal> {
 async fn prepare_server(
     addr: SocketAddr,
     warm_voice: &str,
+    voices: VoiceStore,
+    speech: SpeechStore,
 ) -> Result<(TcpListener, SocketAddr, Arc<DaemonState>), StartupError> {
     // Habilitador: materializar las voces de fábrica en la instancia
     // (idempotente, desde el asset embebido). Sin esto, un `data_dir` virgen
     // (sandbox de estado por instancia vía `AVI_DATA_DIR`) rechazaría
     // `--warm-voice default` porque `default` aún no existe en disco. Tras
     // esto, una voz inexistente se rechaza igual (no es de fábrica).
-    let voices = VoiceStore::new();
     voices
         .ensure_initialized()
         .map_err(|e| StartupError::Failed {
@@ -1949,7 +1950,7 @@ async fn prepare_server(
         message: format!("No se pudo leer la dirección enlazada: {}", e),
     })?;
 
-    let state = DaemonState::new().map_err(|e| StartupError::Failed {
+    let state = DaemonState::with_stores(voices, speech).map_err(|e| StartupError::Failed {
         message: format!("No se pudo inicializar el estado del daemon: {}", e),
     })?;
     Ok((listener, bound, Arc::new(state)))
@@ -1964,8 +1965,13 @@ async fn prepare_server(
 /// residente más el presupuesto del testigo. Readiness (enlazado + motor
 /// construido) queda así desacoplado del pre-calentamiento: un warmup fallido
 /// o vencido degrada —pero no derriba— el daemon.
-pub async fn run_daemon_server(addr: SocketAddr, warm_voice: String) -> anyhow::Result<()> {
-    let (listener, bound, state) = prepare_server(addr, &warm_voice)
+pub async fn run_daemon_server(
+    addr: SocketAddr,
+    warm_voice: String,
+    voices: VoiceStore,
+    speech: SpeechStore,
+) -> anyhow::Result<()> {
+    let (listener, bound, state) = prepare_server(addr, &warm_voice, voices, speech)
         .await
         .map_err(anyhow::Error::new)?;
     let app = build_router_with_state(state.clone());
@@ -2096,9 +2102,11 @@ pub async fn run_supervised(
     auto_restart: bool,
     max_retries: u32,
     warm_voice: String,
+    voices: VoiceStore,
+    speech: SpeechStore,
 ) -> anyhow::Result<()> {
     if !auto_restart {
-        let result = run_daemon_server(addr, warm_voice).await;
+        let result = run_daemon_server(addr, warm_voice, voices, speech).await;
         if let Err(ref e) = result {
             publish_startup_failure(e);
         }
@@ -2120,7 +2128,7 @@ pub async fn run_supervised(
     let mut ready_once = false;
     loop {
         let iteration_start = std::time::Instant::now();
-        match run_daemon_server(addr, warm_voice.clone()).await {
+        match run_daemon_server(addr, warm_voice.clone(), voices.clone(), speech.clone()).await {
             Ok(()) => {
                 // Apagado graceful (stop) — no reintentar
                 return Ok(());

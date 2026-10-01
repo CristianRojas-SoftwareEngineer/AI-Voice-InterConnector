@@ -2104,12 +2104,19 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // Un fallo previo a estar listo sale con el código de su causa; el
             // de un servidor que ya servía sale con exit 1 `daemon_error`, como
             // cualquier otro `daemon_error`.
-            daemon::run_supervised(addr, auto_restart, max_retries, warm_voice)
-                .await
-                .map_err(|e| match e.downcast_ref::<daemon::StartupError>() {
-                    Some(startup) => startup_error_to_cli(startup),
-                    None => CliError::new(ExitCode::Error, "daemon_error", e.to_string()),
-                })
+            daemon::run_supervised(
+                addr,
+                auto_restart,
+                max_retries,
+                warm_voice,
+                VoiceStore::new(),
+                SpeechStore::new(),
+            )
+            .await
+            .map_err(|e| match e.downcast_ref::<daemon::StartupError>() {
+                Some(startup) => startup_error_to_cli(startup),
+                None => CliError::new(ExitCode::Error, "daemon_error", e.to_string()),
+            })
         }
         DaemonCommands::Start {
             auto_restart,
