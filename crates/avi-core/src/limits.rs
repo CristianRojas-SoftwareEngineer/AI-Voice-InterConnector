@@ -10,6 +10,20 @@ pub const MAX_TEXT_LENGTH: usize = 500;
 /// Duración máxima, en segundos, del audio que acepta `speech dub`.
 pub const MAX_DUB_AUDIO_SECS: u64 = 40;
 
+/// Duración máxima, en segundos, del audio que acepta `speech transcribe`.
+pub const MAX_TRANSCRIBE_AUDIO_SECS: u64 = 300;
+
+/// Duración máxima, en segundos, de la referencia de voz de `voice clone`.
+pub const MAX_CLONE_REFERENCE_SECS: u64 = 30;
+
+/// Límite de cuerpo, en bytes, de una ruta que recibe audio: el tamaño de
+/// `secs` segundos a `bytes_per_sec` codificado en base64 (factor 4/3, redondeado
+/// hacia arriba) más 1 MiB de holgura para el resto del JSON.
+pub fn body_limit_for(secs: u64, bytes_per_sec: u64) -> usize {
+    let _ = (secs, bytes_per_sec);
+    2 * 1024 * 1024
+}
+
 /// Tiempo fijo del presupuesto de síntesis, en milisegundos: cubre el arranque de
 /// la petición con independencia de la longitud del texto, incluida la primera
 /// inferencia de un motor residente recién lanzado, que tarda bastante más que las
@@ -115,6 +129,19 @@ mod tests {
         assert_eq!(synthesis_budget(0), Duration::from_secs(30));
         assert_eq!(synthesis_budget(20), Duration::from_secs(36));
         assert_eq!(synthesis_budget(500), Duration::from_secs(180));
+    }
+
+    #[test]
+    fn body_limit_is_base64_size_plus_one_mebibyte() {
+        // 10 s a 32000 B/s = 320000 B; en base64 son 426667 B (redondeo hacia arriba).
+        assert_eq!(body_limit_for(10, 32_000), 426_667 + 1_048_576);
+    }
+
+    #[test]
+    fn transcribe_body_limit_exceeds_twelve_point_eight_megabytes() {
+        // PCM de 16 kHz, mono, 16 bits: 32000 B/s durante el tope de transcripción.
+        let limit = body_limit_for(MAX_TRANSCRIBE_AUDIO_SECS, 32_000);
+        assert!(limit > 12_800_000, "límite insuficiente: {limit}");
     }
 
     #[test]

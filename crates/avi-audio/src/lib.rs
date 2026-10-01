@@ -5,6 +5,22 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// Techo de seguridad, en segundos, de la grabación push-to-talk: el valor de
+/// `AVI_PUSH_TO_TALK_MAX_SECS` o 300 si falta o no es un entero válido.
+pub fn push_to_talk_max_secs() -> u64 {
+    std::env::var("AVI_PUSH_TO_TALK_MAX_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300)
+}
+
+/// Duración, en segundos, de un WAV leída de su cabecera sin decodificar las
+/// muestras; `None` si el archivo no existe o no es un WAV legible.
+pub fn wav_duration_secs(path: &Path) -> Option<f64> {
+    let _ = path;
+    None
+}
+
 /// Representación pública de un dispositivo de audio
 pub struct AudioDevice {
     pub id: usize,
@@ -301,11 +317,7 @@ impl AudioService {
             _ => return Err(anyhow!("Formato de muestra no soportado para captura")),
         };
 
-        let env_max_secs: u64 = std::env::var("AVI_PUSH_TO_TALK_MAX_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(300);
-        let max_secs = max_secs.min(env_max_secs);
+        let max_secs = max_secs.min(push_to_talk_max_secs());
 
         stream.play()?;
         eprintln!("Grabando… pulsa Enter para detener.");

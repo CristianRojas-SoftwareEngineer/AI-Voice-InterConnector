@@ -438,6 +438,116 @@ async fn transcribe_long_audio_transcribes_in_one_pass() {
     }
 }
 
+/// Audio de ~70 s (PCM 16 kHz mono, ~3 MB de cuerpo en base64): supera el límite
+/// de cuerpo por defecto de 2 MiB pero cabe en el tope de transcripción de 300 s,
+/// así que `/transcribe` debe procesarlo y responder 200.
+#[cfg(feature = "native-stt")]
+#[tokio::test]
+#[ignore = "requiere Parakeet"]
+async fn transcribe_audio_over_default_body_limit_is_accepted() {
+    require_parakeet();
+    let silence = vec![0u8; 70 * 16_000 * 2];
+    let (status, bytes) = send(post_json(
+        "/transcribe",
+        serde_json::json!({
+            "audio_b64": base64::engine::general_purpose::STANDARD.encode(&silence),
+            "source_language": "es-latam",
+        }),
+    ))
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "cuerpo: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+}
+
+/// WAV PCM 16-bit mono 16 kHz de silencio con la duración indicada.
+fn silent_wav(secs: u32) -> Vec<u8> {
+    let data_len = secs * 16_000 * 2;
+    let mut wav = Vec::<u8>::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(wav.len() + data_len as usize, 0);
+    wav
+}
+
+/// Un cuerpo de más de 2 MiB con nombre de voz inválido se valida y responde 400
+/// `invalid_voice_name`: el límite de cuerpo de la ruta no puede cortar antes con 413.
+#[tokio::test]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
+async fn voices_clone_oversized_body_reports_invalid_name_not_413() {
+    let oversized = vec![0u8; 3 * 1024 * 1024];
+    let (status, bytes) = send(post_json(
+        "/voices/clone",
+        serde_json::json!({
+            "name": "../invalida",
+            "audio_b64": base64::engine::general_purpose::STANDARD.encode(&oversized),
+        }),
+    ))
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "cuerpo: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(actual["reason"], "invalid_voice_name");
+}
+
+/// Una referencia WAV de 31 s supera el tope de 30 s y se rechaza con 400
+/// `audio_too_long` antes de buscar el modelo Base. El estado se construye sin
+/// modelo Base para que, mientras falte el tope, la prueba no pueda lanzar el
+/// clonado real aunque el modelo esté provisionado en el equipo.
+#[tokio::test]
+#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
+async fn voices_clone_reference_over_limit_is_audio_too_long() {
+    #[cfg(feature = "native-stt")]
+    require_parakeet();
+    prepare_shared_env();
+    let tmp = std::env::temp_dir().join(format!("avi_golden_reflimit_{}", std::process::id()));
+    let mut state = DaemonState::with_stores(
+        VoiceStore::at(tmp.join("voices")),
+        SpeechStore::at(tmp.join("speech")),
+    )
+    .expect("estado del daemon con almacenes temporales");
+    state.tts_engine.binary_path = None;
+    state.tts_engine.base_model_dir = None;
+    let (status, bytes) = send_to(
+        Arc::new(state),
+        post_json(
+            "/voices/clone",
+            serde_json::json!({
+                "name": "referencia_larga",
+                "force": true,
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(silent_wav(31)),
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "cuerpo: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(actual["reason"], "audio_too_long");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// Warm-on-clone: `POST /voices/clone` por daemon sirve un stream
 /// NDJSON (`started` → latidos → `result`), y el evento final conserva
 /// `precomputed: true` («precarga en caliente iniciada»; la completitud se

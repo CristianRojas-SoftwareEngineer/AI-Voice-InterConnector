@@ -1623,6 +1623,348 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
     hit_end("speech_dub_mic_duration_no_tty_no_panic");
 }
 
+// ─── Límites de la vía daemon ──────────────────────────────────────────
+//
+// Los topes de duración (transcripción 300 s, referencia de clonado 30 s) se
+// comprueban en la CLI antes de `model_missing`, de `stt_unsupported` y de
+// contactar con el daemon, así que se ejercen con un sandbox sin modelos y con
+// el pidfile señuelo o con `--no-daemon`, sin tocar el 8765 del usuario.
+
+/// Escribe en `path` un WAV PCM 16-bit mono 16 kHz de silencio con `secs` segundos.
+/// Los WAV largos viven solo en el sandbox temporal de la prueba.
+fn write_silent_wav(path: &std::path::Path, secs: u32) {
+    let data_len = secs * 16_000 * 2;
+    let mut wav = Vec::<u8>::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.resize(wav.len() + data_len as usize, 0);
+    std::fs::write(path, wav).expect("escribir el WAV de silencio");
+}
+
+/// Ejecuta `args` en un sandbox de contrato con los `extra_envs` añadidos y
+/// devuelve (código, JSON). El sandbox se borra al terminar.
+fn run_in_contract_sandbox(tag: &str, args: &[&str], extra_envs: &[(&str, &str)]) -> (i32, Value) {
+    let (dir, envs) = contract_sandbox(tag);
+    let mut all: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    all.extend_from_slice(extra_envs);
+    let result = run_json_env(args, &all);
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// Afirma que el resultado de `what` es exit 2 con `reason == audio_too_long`.
+fn assert_audio_too_long(what: &str, result: (i32, Value)) {
+    let (code, actual) = result;
+    assert_eq!(
+        code, 2,
+        "{what}: exceder el tope debe salir con exit 2 ({actual})"
+    );
+    assert_eq!(actual["reason"], "audio_too_long", "{what}: {actual}");
+}
+
+/// Una transcripción de 301 s supera el tope de 300 s y se rechaza con
+/// `audio_too_long` en la vía local y en la vía daemon.
+#[test]
+fn transcribe_audio_over_limit_is_audio_too_long() {
+    for mode in ["--no-daemon", "--daemon"] {
+        let (dir, envs) = contract_sandbox("transcribe_limit");
+        let wav = dir.join("largo_301s.wav");
+        write_silent_wav(&wav, 301);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let result = run_json_env(
+            &[
+                "--json",
+                mode,
+                "speech",
+                "transcribe",
+                "--audio",
+                wav.to_str().expect("ruta UTF-8"),
+                "--source-language",
+                "es-latam",
+            ],
+            &envs,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_audio_too_long(&format!("transcribe {mode}"), result);
+    }
+}
+
+/// Una referencia de clonado de 31 s supera el tope de 30 s y se rechaza con
+/// `audio_too_long` en la vía local y en la vía daemon.
+#[test]
+fn clone_reference_over_limit_is_audio_too_long() {
+    for mode in ["--no-daemon", "--daemon"] {
+        let (dir, envs) = contract_sandbox("clone_limit");
+        let wav = dir.join("referencia_31s.wav");
+        write_silent_wav(&wav, 31);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let result = run_json_env(
+            &[
+                "--json",
+                mode,
+                "voice",
+                "clone",
+                "--name",
+                "referencia_larga",
+                "--speech-reference",
+                wav.to_str().expect("ruta UTF-8"),
+            ],
+            &envs,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_audio_too_long(&format!("voice clone {mode}"), result);
+    }
+}
+
+/// `--mic --duration 301` supera el tope de transcripción y se rechaza antes de
+/// grabar. El sandbox no tiene modelos, así que mientras falte el tope la
+/// invocación termina en `model_missing` sin abrir el micrófono.
+#[test]
+fn transcribe_mic_duration_over_limit_is_audio_too_long() {
+    let result = run_in_contract_sandbox(
+        "mic_duration_limit",
+        &[
+            "--json",
+            "--no-daemon",
+            "speech",
+            "transcribe",
+            "--mic",
+            "--duration",
+            "301",
+            "--source-language",
+            "es-latam",
+        ],
+        &[],
+    );
+    assert_audio_too_long("transcribe --mic --duration 301", result);
+}
+
+/// Un `AVI_PUSH_TO_TALK_MAX_SECS` de 301 supera el tope de transcripción y el
+/// push-to-talk se rechaza antes de grabar. Sin TTY (stdin nulo) el estado actual
+/// corta antes con `usage_error`, así que nunca llega a abrir el micrófono.
+#[test]
+fn transcribe_mic_env_over_limit_is_audio_too_long() {
+    let result = run_in_contract_sandbox(
+        "mic_env_limit",
+        &[
+            "--json",
+            "--no-daemon",
+            "speech",
+            "transcribe",
+            "--mic",
+            "--source-language",
+            "es-latam",
+        ],
+        &[("AVI_PUSH_TO_TALK_MAX_SECS", "301")],
+    );
+    assert_audio_too_long("transcribe --mic con AVI_PUSH_TO_TALK_MAX_SECS=301", result);
+}
+
+/// Daemon falso en un puerto efímero de 127.0.0.1: responde 200 a `/health` y
+/// un estado fijo con cuerpo fijo a cualquier otra ruta, y registra las rutas
+/// que recibe. Se publica en el pidfile del sandbox para que la CLI lo
+/// descubra sin tocar el 8765.
+struct FakeDaemon {
+    addr: std::net::SocketAddr,
+    paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FakeDaemon {
+    /// Arranca el servidor; toda ruta distinta de `/health` responde `status` con `body`.
+    fn start(status: u16, body: Value) -> Self {
+        use std::io::Read;
+        use std::sync::atomic::Ordering;
+        use std::sync::{Arc, Mutex};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("puerto efímero");
+        let addr = listener.local_addr().expect("dirección del servidor falso");
+        let paths = Arc::new(Mutex::new(Vec::<String>::new()));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (paths_t, stop_t) = (paths.clone(), stop.clone());
+        let handle = std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                if stop_t.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut sock) = conn else { continue };
+                let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
+                // Lee cabeceras y, si las hay, el cuerpo completo según content-length.
+                let mut raw = Vec::<u8>::new();
+                let mut chunk = [0u8; 8192];
+                let mut header_end = None;
+                let mut needed = usize::MAX;
+                while raw.len() < needed {
+                    match sock.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => raw.extend_from_slice(&chunk[..n]),
+                    }
+                    if header_end.is_none() {
+                        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&raw[..pos]).to_lowercase();
+                            let len = head
+                                .lines()
+                                .find_map(|l| l.strip_prefix("content-length:"))
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                                .unwrap_or(0);
+                            header_end = Some(pos + 4);
+                            needed = pos + 4 + len;
+                        }
+                    }
+                }
+                let head = String::from_utf8_lossy(&raw);
+                let path = head
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("")
+                    .to_string();
+                paths_t.lock().unwrap().push(path.clone());
+                let (code, payload) = if path == "/health" {
+                    (
+                        200,
+                        serde_json::json!({ "status": "ok", "schema_version": "4", "warm": "ready" }),
+                    )
+                } else {
+                    (status, body.clone())
+                };
+                let payload = payload.to_string();
+                let response = format!(
+                    "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = sock.write_all(response.as_bytes());
+            }
+        });
+        FakeDaemon {
+            addr,
+            paths,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    /// Sustituye el pidfile señuelo del sandbox por uno que apunta a este servidor.
+    fn publish_in(&self, data_dir: &std::path::Path) {
+        let dead_pid = u32::MAX - 1;
+        let content = serde_json::json!({
+            "pid": dead_pid,
+            "addr": self.addr.to_string(),
+            "resident_pid": dead_pid,
+        });
+        std::fs::write(data_dir.join("daemon.pid"), content.to_string())
+            .expect("publicar el pidfile del daemon falso");
+    }
+
+    /// Rutas recibidas hasta ahora, en orden de llegada.
+    fn requested_paths(&self) -> Vec<String> {
+        self.paths.lock().unwrap().clone()
+    }
+}
+
+impl Drop for FakeDaemon {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Una conexión vacía desbloquea el `accept` pendiente para que el hilo termine.
+        let _ = std::net::TcpStream::connect(self.addr);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Ejecuta `speech dub` por la vía daemon contra un servidor falso que responde
+/// 404 con `body` a `/dub`, y devuelve (código, JSON, rutas recibidas).
+fn dub_against_fake_daemon_404(tag: &str, body: Value) -> (i32, Value, Vec<String>) {
+    let fake = FakeDaemon::start(404, body);
+    let (dir, envs) = contract_sandbox(tag);
+    fake.publish_in(&dir);
+    let wav = dir.join("entrada_1s.wav");
+    write_silent_wav(&wav, 1);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "--daemon",
+            "speech",
+            "dub",
+            "--audio",
+            wav.to_str().expect("ruta UTF-8"),
+            "--source-language",
+            "es-latam",
+            "--target-language",
+            "es-latam",
+        ],
+        &envs,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    (code, actual, fake.requested_paths())
+}
+
+/// Un 404 de `/dub` con `reason` `voice_not_found` sale con exit 3 y no degrada
+/// a una composición que transcriba por separado.
+#[test]
+fn dub_daemon_404_voice_not_found_exits_3_without_transcribe() {
+    let (code, actual, paths) = dub_against_fake_daemon_404(
+        "dub_404_voice",
+        serde_json::json!({ "reason": "voice_not_found", "message": "La voz no existe." }),
+    );
+    assert_eq!(code, 3, "voice_not_found debe salir con exit 3 ({actual})");
+    assert_eq!(actual["reason"], "voice_not_found");
+    assert!(
+        !paths.iter().any(|p| p == "/transcribe"),
+        "no debe haber petición a /transcribe: {paths:?}"
+    );
+}
+
+/// Un 404 de `/dub` con `reason` `model_missing` sale con exit 4 y no degrada
+/// a una composición que transcriba por separado.
+#[test]
+fn dub_daemon_404_model_missing_exits_4_without_transcribe() {
+    let (code, actual, paths) = dub_against_fake_daemon_404(
+        "dub_404_model",
+        serde_json::json!({ "reason": "model_missing", "message": "Falta el modelo." }),
+    );
+    assert_eq!(code, 4, "model_missing debe salir con exit 4 ({actual})");
+    assert_eq!(actual["reason"], "model_missing");
+    assert!(
+        !paths.iter().any(|p| p == "/transcribe"),
+        "no debe haber petición a /transcribe: {paths:?}"
+    );
+}
+
+/// Un 404 de `/dub` sin `reason` ni `error` es un daemon antiguo sin la ruta:
+/// sale con exit 1, un mensaje que indica reiniciarlo y ninguna petición a
+/// `/transcribe`.
+#[test]
+fn dub_daemon_bare_404_exits_1_with_restart_hint_without_transcribe() {
+    let (code, actual, paths) = dub_against_fake_daemon_404("dub_404_bare", serde_json::json!({}));
+    assert_eq!(
+        code, 1,
+        "un 404 sin reason debe salir con exit 1 ({actual})"
+    );
+    assert_eq!(actual["reason"], "daemon_error");
+    let message = actual["error"].as_str().unwrap_or("");
+    assert!(
+        message.contains("daemon restart"),
+        "el mensaje debe indicar `daemon restart`: {message}"
+    );
+    assert!(
+        !paths.iter().any(|p| p == "/transcribe"),
+        "no debe haber petición a /transcribe: {paths:?}"
+    );
+}
+
 #[test]
 fn daemon_status_matches_fixture() {
     // Desdoble por régimen de sesión (con o sin sesión compartida en ejecución):

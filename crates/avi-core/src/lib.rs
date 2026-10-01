@@ -4,8 +4,8 @@ pub mod json_emitter;
 pub mod limits;
 
 pub use limits::{
-    synthesis_budget, validate_synthesis_text, MAX_DUB_AUDIO_SECS, MAX_TEXT_LENGTH,
-    REQUEST_FAILSAFE,
+    body_limit_for, synthesis_budget, validate_synthesis_text, MAX_CLONE_REFERENCE_SECS,
+    MAX_DUB_AUDIO_SECS, MAX_TEXT_LENGTH, MAX_TRANSCRIBE_AUDIO_SECS, REQUEST_FAILSAFE,
 };
 
 #[cfg(test)]

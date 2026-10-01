@@ -4652,6 +4652,21 @@ mod tests {
         assert_eq!(err.reason, "model_missing");
     }
 
+    /// Un 404 sin `reason` ni `error` es un daemon antiguo sin la ruta: sale como
+    /// `daemon_error` (exit 1) con un mensaje que indica reiniciarlo.
+    #[tokio::test]
+    async fn daemon_error_from_response_maps_bare_404_to_restart_hint() {
+        let resp = serve_status_json(404, json!({})).await;
+        let err = daemon_error_from_response(resp).await;
+        assert_eq!(err.code.code(), 1);
+        assert_eq!(err.reason, "daemon_error");
+        assert!(
+            err.message.contains("daemon restart"),
+            "mensaje sin la indicación de reinicio: {}",
+            err.message
+        );
+    }
+
     /// Un evento `error` del stream de síntesis con `model_missing` sale con 4.
     #[test]
     fn stream_error_event_maps_model_missing() {

@@ -2672,6 +2672,28 @@ mod tests {
         assert_eq!(result.err().map(|e| e.reason), Some("invalid_audio"));
     }
 
+    /// Codifica `samples` muestras de silencio PCM i16 como el `audio_b64` de `/transcribe`.
+    fn silence_transcribe_body(samples: usize) -> Value {
+        use base64::Engine;
+        json!({ "audio_b64": base64::engine::general_purpose::STANDARD.encode(vec![0u8; samples * 2]) })
+    }
+
+    /// Un audio de exactamente 300 s (el tope de transcripción) se acepta.
+    #[test]
+    fn validate_transcribe_accepts_audio_at_limit() {
+        let body = silence_transcribe_body(300 * 16_000);
+        let result = validate_transcribe_input(&body);
+        assert_eq!(result.map(|pcm| pcm.len()).ok(), Some(300 * 16_000));
+    }
+
+    /// Una sola muestra por encima de los 300 s se rechaza como `audio_too_long`.
+    #[test]
+    fn validate_transcribe_rejects_audio_over_limit() {
+        let body = silence_transcribe_body(300 * 16_000 + 1);
+        let result = validate_transcribe_input(&body);
+        assert_eq!(result.err().map(|e| e.reason), Some("audio_too_long"));
+    }
+
     /// Un texto vacío o solo de espacios no se traduce.
     #[test]
     fn validate_translate_empty_text_is_empty_text() {
