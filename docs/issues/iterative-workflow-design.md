@@ -228,6 +228,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S25 | `docs/BRANCHING.md` afirma que los jobs de test corren en `main` y en ramas, y solo corren en tags | Revisión de C1 | Baja | C2 |
 | S26 | La verificación de los ciclos usa órdenes ad hoc (como `cargo test -p avi-daemon --features native-stt` en C1) que dependen de la instalación real del mantenedor | Revisión de C1 | Baja | C2 |
 | S27 | `self install`, `self uninstall` y `self update` detienen el daemon siempre en `127.0.0.1:8765` y `cleanup` solo respeta `AVI_DAEMON_PORT=0`; sin pidfile, `daemon stop`, `daemon status` y el resto de clientes del daemon lo buscan siempre en 8765; diez pruebas de contrato llamaban así a `daemon_stop::stop` contra el daemon real del mantenedor | Verificación de C2 | Media | C2 |
+| S28 | `tts::dub_audio_passthrough_es_es`, de la clase con recursos, falla de forma intermitente (1 de 4 intentos): el proceso `--no-daemon speech dub --audio parakeet_sample_16k.wav --source-language es-latam --target-language es-latam` termina a los 13,9 s con el código 0xC0000409 (caída nativa), sin fallo de aserción; la puerta de `cargo xtask release` aborta cuando ocurre | Verificación de C2 | Media | Sin asignar |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
@@ -242,6 +243,10 @@ declaran qué recursos necesitan y nada comprueba que se ejecuten con ellos. C2 
 entre C1 y C3 para que las pruebas de C3 nazcan ya en su esquema.
 
 S27 salió de la verificación de C2 y se corrige en C2.
+
+S28 también salió de la verificación de C2. Antes de C2 la prueba se omitía sin modelos,
+así que la caída pudo existir sin verse. Queda sin ciclo hasta que un diagnóstico propio
+identifique qué componente nativo cae.
 
 ## 8. Orden de los ciclos y dependencias
 
