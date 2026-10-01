@@ -687,14 +687,19 @@ fn d03_reaper_without_live_pid_does_not_fail() {
 ///
 /// Patrón equivalente al del legacy Python: el daemon no comparte I/O (pipe) con el
 /// proceso que lo lanza.
+///
+/// `stderr` va a otro tempfile por la misma razón y se imprime con `eprintln!`: el
+/// harness de pruebas lo captura y solo lo muestra si la prueba falla, así que una
+/// caída del hijo (un `abort` o un pánico) deja su rastro en el informe del fallo.
 fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
     let t_cmd = Instant::now();
     let (tmp, file) = open_atomic_tmp();
+    let (tmp_err, file_err) = open_atomic_tmp();
     let mut cmd = Command::new(BIN);
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(file)
-        .stderr(std::process::Stdio::null());
+        .stderr(file_err);
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -703,6 +708,11 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
     let stdout = std::fs::read_to_string(&tmp)
         .unwrap_or_else(|e| panic!("no se pudo leer tempfile {}: {}", tmp.display(), e));
     let _ = std::fs::remove_file(&tmp);
+    let stderr = std::fs::read_to_string(&tmp_err).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp_err);
+    if !stderr.trim().is_empty() {
+        eprintln!("stderr del hijo `{}`:\n{}", args.join(" "), stderr);
+    }
     let code = status
         .code()
         .expect("el proceso debe terminar con un código");
