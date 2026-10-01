@@ -22,8 +22,10 @@
     "D12.5": { "status": "resolved", "choice": "A", "notes": "sin diagnóstico previo; la verificación reproduce self update --force", "date": "2026-09-30" },
     "D13": { "status": "resolved", "choice": "A", "notes": "una subida por versión publicada: protocolo del daemon 3 a 4 en C1, sobre de la CLI 4 a 5 en C7", "date": "2026-09-30" },
     "D14": { "status": "resolved", "choice": "A", "notes": "las pruebas que dependen del dispositivo de audio son de la clase con recursos locales (#[ignore] con fallo explícito si falta)", "date": "2026-09-30" },
-    "D15": { "status": "resolved", "choice": "A", "notes": "las pruebas que se saltaban por ModelStore no escribible o daemon vivo en 8765 se aíslan con directorios temporales y puerto efímero (patrón IsolatedInstance)", "date": "2026-09-30" },
-    "D16": { "status": "resolved", "choice": "A", "notes": "la puerta de las pruebas con recursos locales vive dentro de cargo xtask release, sin modo para saltarla", "date": "2026-09-30" }
+    "D15": { "status": "resolved", "choice": "A", "notes": "las pruebas que se saltaban por el doctor real (mensaje «sin ModelStore escribible») o por un daemon vivo en 8765 se aíslan con directorios temporales y puerto efímero (patrón IsolatedInstance)", "date": "2026-09-30" },
+    "D16": { "status": "resolved", "choice": "A", "notes": "la puerta de las pruebas con recursos locales vive dentro de cargo xtask release, sin modo para saltarla", "date": "2026-09-30" },
+    "D17": { "status": "resolved", "choice": "A", "notes": "validaciones de entrada en funciones puras de contrato; las pruebas del router son contrato sin native-stt e ignore con él; stt_engine no pasa a opcional. Resuelta por el agente a petición del humano", "date": "2026-09-30" },
+    "D18": { "status": "resolved", "choice": "A", "notes": "VoiceStore::at y SpeechStore::at, como ModelStore::at; sin mutar AVI_DATA_DIR", "date": "2026-09-30" }
   },
   "cycles": {
     "C0": {

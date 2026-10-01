@@ -144,9 +144,10 @@ ciclo no se abre mientras tenga una decisión aplazada.
 ### 5.3 Paquete y lista de verificación de G-Resultado
 
 Antes de presentar G-Resultado, el agente ejecuta su propia verificación: la batería de
-pruebas del workspace (desde C2, con la orden única de la clase con recursos locales,
-`cargo test --workspace --features full -- --include-ignored`, y no con órdenes ad hoc),
-el lint, el formato solo sobre los archivos tocados y la revisión
+pruebas del workspace (desde C2, con las dos órdenes fijas y no con órdenes ad hoc:
+`cargo test --all`, que replica CI sin features, y
+`cargo test --workspace --features full -- --include-ignored`, la de la puerta de la
+release), el lint, el formato solo sobre los archivos tocados y la revisión
 del subagente revisor. Si esa verificación falla tres veces seguidas, abre G-Desvío en
 lugar de seguir intentándolo.
 
@@ -219,10 +220,10 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S17 | `sudo_not_supported` se emite, pero no está en el contrato ni en el oráculo de la tabla | Revisión de C1 | Baja | C1 |
 | S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C7 |
 | S19 | `/synthesize` responde `model_missing` a una temperatura fuera de rango si falta el modelo de síntesis | Revisión de C1 | Baja | C1 |
-| S20 | Unas 60 pruebas se aprueban solas cuando falta un recurso externo (modelos, binario del motor, dispositivo de audio, `ModelStore` escribible, puerto 8765 libre): imprimen `skip: …` y hacen `return`; cada una decide con sus propios auxiliares, uno de ellos duplicado | Revisión de C1 | Alta; un verde no demuestra que la prueba se ejecutó | C2 |
+| S20 | Unas 60 pruebas se aprueban solas cuando falta un recurso externo (modelos, binario del motor, dispositivo de audio, `ModelStore` escribible, puerto 8765 libre): imprimen `skip: …` y hacen `return`; cada una decide con sus propios auxiliares, uno de ellos duplicado, y uno de ellos ejecuta el `doctor` real sobre la instalación del mantenedor; otras cuatro comprueban un feature en tiempo de ejecución en lugar de declararlo con `cfg` | Revisión de C1 | Alta; un verde no demuestra que la prueba se ejecutó | C2 |
 | S21 | Nada ejecuta las pruebas con recursos locales antes de publicar: CircleCI corre solo en tags, sin features nativas ni modelos, y ni la skill `release` ni `cargo xtask release` piden más que `cargo test --all` (o nada); esas pruebas cuentan como verdes sin haberse ejecutado | Revisión de C1 | Alta; los falsos verdes llegan hasta la puerta de la release | C2 |
 | S22 | La golden de `/health` se salta sin Parakeet y, sin `native-stt`, nunca corre en CI; `voices_clone_daemon_precomputed_true` se salta por el modelo de transcripción cuando necesita el de síntesis | Revisión de C1 | Media | C2 |
-| S23 | La validación de entrada de `/transcribe` (`usage_error` sin audio, `invalid_audio` con base64 inválido) vive dentro de la función que exige `native-stt` aunque no usa el motor, y sus pruebas solo corren con el feature | Revisión de C1 | Baja | C2 |
+| S23 | La validación de entrada de `/transcribe` (`usage_error` sin audio, `invalid_audio` con base64 inválido) y la de `/translate` (`empty_text`, mismo idioma, `unsupported_language_pair`) viven dentro de funciones que exigen `native-stt` o `native-translation` aunque no usan el motor, y sus pruebas solo corren con el feature | Revisión de C1 | Baja | C2 |
 | S24 | El estado del daemon en las pruebas se construye de dos formas: a mano en las goldens, con un comentario de cabecera desfasado, y con `DaemonState::new()` en las pruebas de la biblioteca, que con `native-stt` carga Parakeet y escribe en el directorio de datos real | Revisión de C1 | Media | C2 |
 | S25 | `docs/BRANCHING.md` afirma que los jobs de test corren en `main` y en ramas, y solo corren en tags | Revisión de C1 | Baja | C2 |
 | S26 | La verificación de los ciclos usa órdenes ad hoc (como `cargo test -p avi-daemon --features native-stt` en C1) que dependen de la instalación real del mantenedor | Revisión de C1 | Baja | C2 |
@@ -836,9 +837,11 @@ motor, sin tocar la producción.
 
 **Problema.**
 
-- Unas pruebas se saltan si el almacén de modelos no se puede escribir o si ya hay un
-  daemon en `127.0.0.1:8765`: dependen del entorno del que las ejecuta, no de un recurso
-  que haya que proveer.
+- Unas pruebas se saltan si ya hay un daemon en `127.0.0.1:8765`, y otras con el mensaje
+  «sin ModelStore escribible», que en realidad ejecuta el `doctor` real sobre la
+  instalación del mantenedor y se salta si no sale con 0. Dependen del entorno del que las
+  ejecuta, no de un recurso que haya que proveer, y la segunda cambiaría de resultado
+  cuando C6 haga que `doctor` falle ante restos (D12.3).
 - `cli_golden.rs` ya tiene el patrón `IsolatedInstance`, que levanta una instancia con
   directorios temporales y puerto efímero.
 
@@ -870,6 +873,46 @@ motor, sin tocar la producción.
 **Recomendación: A.** Un paso solo documentado es lo que ya falló: lo que no se comprueba
 mecánicamente se omite. La skill y `docs/RELEASING.md` se actualizan para describir la
 puerta, no para sustituirla.
+
+**Decisión:** A (2026-09-30).
+
+### D17 · Estado del daemon en las pruebas con `native-stt` (S23, S24) — C2
+
+**Problema.**
+
+- Con `native-stt`, el campo `stt_engine` de `DaemonState` no es opcional: no existe un
+  estado del daemon sin cargar Parakeet. La puerta de D16 compila justo así.
+- Parakeet está en la selección por defecto de `setup`, y el daemon no arranca sin él: un
+  daemon sin STT no es un estado del producto.
+- Casi todas las pruebas del daemon atraviesan el router con ese estado.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. El contrato en funciones puras y la clase según el feature**: las validaciones de entrada se extraen a funciones puras que se prueban sin estado y son contrato con cualquier feature; las pruebas que atraviesan el router son contrato sin `native-stt` y llevan `#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]` con él | La producción no cambia; cada prueba corre en algún sitio (sin features en CI, con `full` en la puerta); la lógica de contrato queda separada del motor | La clase de las pruebas del router depende del feature |
+| **B. `stt_engine` opcional, como `ct2_engine`** | El estado de prueba nunca carga modelos | Añade a la producción una rama `None` que ninguna instalación alcanza, solo para las pruebas |
+| **C. El motor STT tras un trait, con un doble en las pruebas** | Prueba la ruta completa sin modelos | Abstracción en producción solo para las pruebas; el doble no prueba el motor real |
+
+**Recomendación: A.** El defecto estructural es que la lógica de contrato vive dentro del
+handler que necesita el motor; separarla resuelve la clase de esas pruebas sin inventar
+estados que el producto no tiene.
+
+**Decisión:** A (2026-09-30), resuelta por el agente a petición del humano.
+
+### D18 · Cómo apuntan los almacenes del daemon a un temporal en las pruebas (S24) — C2
+
+**Problema.**
+
+- `VoiceStore` y `SpeechStore` solo leen el directorio de datos del proceso
+  (`AVI_DATA_DIR` o la ruta real); solo `ModelStore` tiene un constructor con raíz propia
+  (`ModelStore::at`).
+- Las pruebas de la biblioteca corren en paralelo dentro del mismo proceso.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Constructores `VoiceStore::at` y `SpeechStore::at`**, que el estado de prueba recibe con un temporal | No muta el entorno del proceso; seguro en paralelo; mismo patrón que `ModelStore::at` | Dos constructores públicos más |
+| **B. Fijar `AVI_DATA_DIR` antes de construir el estado** | No toca `avi-store` | La variable es global al proceso y compite entre pruebas en paralelo |
+
+**Recomendación: A.**
 
 **Decisión:** A (2026-09-30).
 
@@ -953,53 +996,71 @@ aprobar. Las pruebas que se enumeran son las mínimas.
     nada, así que CircleCI no cambia. Se ejecuta con
     `cargo test --workspace --features full -- --include-ignored`; dentro, la ausencia
     del recurso es un fallo explícito (`expect` con la orden que lo provisiona, como
-    `setup --with-stt`), no un `return`.
+    `setup`), no un `return`.
+  - **Clase según el feature** (D17): las pruebas que atraviesan el router del daemon son
+    contrato sin `native-stt` y llevan
+    `#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]` con él, porque
+    con ese feature el estado del daemon carga el motor. Así corren sin features en CI y
+    con `full` en la puerta. La lógica de contrato que no necesita el motor no depende de
+    esto: vive en funciones puras que se prueban sin estado.
+  - Ninguna prueba escribe en la instalación real: los recursos de la instalación se
+    leen sin modificarlos y todo lo que la prueba escribe va a directorios temporales.
 - **Depende de:** C1.
 - **Síntomas:** S20, S21, S22, S23, S24, S25 y S26.
-- **Decisiones:** D14, D15 y D16, resueltas el 2026-09-30. El hook `post-merge` que poda
+- **Decisiones:** D14 a D18, resueltas el 2026-09-30. El hook `post-merge` que poda
   `target/` no se toca: no bloquea, es opcional y mezclaría responsabilidades.
 - **Tareas:**
-  1. Extraer la validación de entrada de `/transcribe` a una función pura sin `cfg` que
-     devuelve el PCM o la respuesta de error; el handler con `native-stt` solo llama al
-     motor. Las goldens de los 400 pasan a la clase contrato (S23). C3 añade su tope de
-     audio sobre esa base.
-  2. Una sola construcción del estado del daemon para las pruebas, sin cargar modelos y
-     con el directorio de datos en un temporal; se retiran el montaje manual de las
-     goldens, su comentario desfasado y el uso de `DaemonState::new()` en las pruebas. El
-     estado de producción no cambia (S24).
+  1. Extraer la validación de entrada de `/transcribe` (devuelve el PCM o la respuesta de
+     error) y la de `/translate` (texto vacío, mismo idioma y par no soportado) a funciones
+     puras sin `cfg`; los handlers con feature solo llaman al motor. Sus pruebas pasan a la
+     clase contrato con cualquier feature (S23, D17). C3 añade su tope de audio sobre la
+     función de `/transcribe`.
+  2. Un solo constructor `DaemonState::with_stores(voice_store, speech_store)`, que
+     también usa `new()`, y `VoiceStore::at` y `SpeechStore::at`, como `ModelStore::at`
+     (D18). Las goldens y las pruebas de la biblioteca construyen su estado con él y
+     almacenes en un temporal; se retiran el montaje manual de las goldens, su comentario
+     desfasado y el uso de `DaemonState::new()` en las pruebas. Sin `native-stt` el
+     estado no carga ningún modelo, y con él carga solo Parakeet (S24, D17).
   3. Reclasificar cada prueba que hoy se omite: contrato sin compuerta (como la golden de
-     `/health`), `#[ignore]` con fallo explícito, o `#[cfg(feature = …)]` sobre la prueba
-     cuando depende de un feature. Eliminar todos los `skip: … return`, los auxiliares de
-     omisión que no usa la producción y los `#[allow(unreachable_code)]`; la cabecera de
-     `tests/cli_golden.rs` pasa a describir las dos clases (S20, S22).
-  4. Aislar las pruebas que se saltan por `ModelStore` no escribible o por un daemon vivo
-     en 8765, con directorios temporales y puerto efímero (patrón `IsolatedInstance`);
-     luego quedan en la clase que corresponda por lo que necesiten (D15, S20).
+     `/health`), `#[ignore]` con fallo explícito, `#[cfg_attr(…, ignore)]` según D17, o
+     `#[cfg(feature = …)]` sobre la prueba cuando el código que prueba solo existe con un
+     feature. Las pruebas con recursos comprueban el archivo concreto que necesitan, no
+     ejecutan `doctor`. Eliminar todos los `skip: … return`, los auxiliares de omisión y
+     los `#[allow(unreachable_code)]`; la cabecera de `tests/cli_golden.rs` pasa a
+     describir las clases (S20, S22).
+  4. Aislar las pruebas que se saltan por un daemon vivo en 8765 o por el resultado del
+     `doctor` real, con directorios temporales y puerto efímero (patrón
+     `IsolatedInstance`); luego quedan en la clase que corresponda por lo que necesiten
+     (D15, S20).
   5. Puerta mecánica en `cargo xtask release`: ejecuta
-     `cargo test --workspace --features full -- --include-ignored` como condición previa
-     y aborta si algo falla o falta un recurso, sin modo para saltarla; se actualizan el
-     paso 4 de la skill `release` y `docs/RELEASING.md` (D16, S21).
+     `cargo test --workspace --features full -- --include-ignored` como primer paso,
+     antes del bump y de cualquier otra escritura, y aborta si algo falla o falta un
+     recurso, sin modo para saltarla. El paso 4 de la skill `release` conserva
+     `cargo test --all` como réplica local de CI sin features, y la skill y
+     `docs/RELEASING.md` describen la puerta (D16, S21).
   6. Corregir `docs/BRANCHING.md`: los jobs de test corren solo en tags (S25).
-  7. El flujo iterativo usa esa misma orden en la verificación de cada ciclo (sección 5.3),
-     en lugar de órdenes ad hoc (S26).
 - **Pruebas en rojo:**
-  - una prueba-meta falla si en las pruebas del workspace queda algún `skip:` seguido de
-    `return`;
+  - una prueba de contrato recorre los `.rs` de `src/`, `tests/` y `crates/*/{src,tests}`
+    y falla si alguno contiene un `eprintln!` con `skip:`;
   - la golden de `/health` corre y pasa sin features nativas y sin modelos;
-  - la validación de `/transcribe` (`usage_error` sin audio, `invalid_audio` con base64
-    inválido) se prueba sin `native-stt`;
-  - las pruebas del daemon construyen su estado sin cargar modelos y sin escribir en el
-    directorio de datos real;
-  - las pruebas que se saltaban por `ModelStore` o por el puerto 8765 pasan con uno de
-    esos recursos ocupado, porque usan directorios temporales y puerto efímero;
-  - `cargo xtask release` aborta si la suite con recursos locales falla o falta un
-    recurso, y no tiene ningún modo para saltarla.
-- **Verificación:** `cargo test --all` muestra las pruebas con recursos como *ignored* y
-  pasa sin modelos; `cargo test --workspace --features full -- --include-ignored` pasa en
-  la instalación del mantenedor.
+  - las funciones de validación de `/transcribe` (`usage_error` sin audio,
+    `invalid_audio` con base64 inválido) y de `/translate` (`empty_text`, mismo idioma,
+    `unsupported_language_pair`) se prueban sin ningún feature;
+  - el estado de prueba del daemon tiene la raíz de sus almacenes bajo un temporal y, sin
+    `native-stt`, se construye sin ningún modelo provisionado;
+  - las pruebas que se saltaban por el puerto 8765 o por `doctor` pasan con un daemon
+    vivo en 8765.
+- **Verificación:**
+  - `cargo test --all` muestra las pruebas con recursos como *ignored* y pasa sin modelos.
+  - `cargo test --workspace --features full -- --include-ignored` pasa en la instalación
+    del mantenedor.
+  - `cargo xtask release` con `AVI_CACHE_DIR` apuntando a un temporal vacío aborta en la
+    puerta y deja el árbol sin cambios (`git status` limpio). La puerta no lleva prueba
+    automática porque tendría que lanzar la suite dentro de la suite.
 - **Documentación:** `docs/BRANCHING.md`, `docs/RELEASING.md`, el paso 4 de la skill
-  `release`, la cabecera de `tests/cli_golden.rs` y, si el G-Plan lo considera procedente,
-  la sección `## [No publicado]` del CHANGELOG (el cambio no toca el contrato de la CLI).
+  `release`, la cabecera de `tests/cli_golden.rs` y la sección «Interno» de
+  `## [No publicado]` del CHANGELOG (la release exige la suite con recursos locales).
+  S26 ya queda resuelto en la sección 5.3 de este documento.
 - **Cierra:** ningún informe: los síntomas no tienen informe propio.
 
 ### C3 · Límites de la vía daemon
