@@ -69,14 +69,16 @@
         { "gate": "plan", "verdict": "approved", "date": "2026-09-30", "notes": "P1: reaper_on_failure recibe si barre por imagen y d03 lo desactiva; P2: las pruebas que solo exigen el modelo aprovisionado usan un snapshot falso y quedan de contrato; P3: setup_json_without_language_key corre en un sandbox con la selección por defecto sembrada; P5: la puerta de release va tras las validaciones de solo lectura y antes de cualquier escritura" },
         { "gate": "tests", "verdict": "approved", "date": "2026-10-01", "notes": "8 pruebas en rojo por aserción; setup_json_without_language_key ya en verde al correr aislada; d03 sin rojo posible, se verifica tras implementar P1" },
         { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "la CLI sin pidfile busca el daemon en 8765: los daemon_start_* siembran un daemon.pid con addr a un puerto cerrado y PID fuera de rango" },
-        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "cleanup_model_real_run_reports_paths barría qwen_tts por imagen y usaba el directorio de programa real: fija AVI_INSTALL_DIR al sandbox y siembra un daemon.pid con resident_pid distinto de 0 y fuera de rango" }
+        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "cleanup_model_real_run_reports_paths barría qwen_tts por imagen y usaba el directorio de programa real: fija AVI_INSTALL_DIR al sandbox y siembra un daemon.pid con resident_pid distinto de 0 y fuera de rango" },
+        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "tres goldens arrancan run_daemon_server/run_supervised, que creaban sus stores sobre el directorio de datos real: esas funciones y prepare_server reciben los dos stores y usan with_stores; src/main.rs pasa VoiceStore::new() y SpeechStore::new()" },
+        { "gate": "deviation", "verdict": "approved", "date": "2026-10-01", "notes": "unas 40 pruebas de contrato fuera de las 53 llamaban a run_json/run_text sin sandbox y una sintetizó en la instalación real: run_json/run_text crean un sandbox por llamada con pidfile señuelo y translate_force_daemon_no_daemon_exits_5 deja de exigir el 8765 libre; se borraron los tres archivos que dejó la prueba" }
       ],
       "tasks": [
         { "id": "C2.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"] },
         { "id": "C2.2", "status": "done", "attempts": 1, "files": ["crates/avi-store/src/lib.rs", "crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs", "tests/test_classes.rs", "tests/cli_golden.rs"] },
         { "id": "C2.3", "status": "done", "attempts": 1, "files": ["crates/avi-daemon/src/lib.rs"] },
         { "id": "C2.4", "status": "done", "attempts": 1, "files": ["crates/avi-store/src/lib.rs", "crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs"] },
-        { "id": "C2.5", "status": "pending", "attempts": 0, "files": [] },
+        { "id": "C2.5", "status": "done", "attempts": 2, "files": ["crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs", "crates/avi-translation/src/lib.rs", "crates/avi-stt/src/lib.rs", "src/main.rs", "tests/cli_golden.rs"] },
         { "id": "C2.6", "status": "pending", "attempts": 0, "files": [] },
         { "id": "C2.7", "status": "pending", "attempts": 0, "files": [] },
         { "id": "C2.8", "status": "pending", "attempts": 0, "files": [] }
