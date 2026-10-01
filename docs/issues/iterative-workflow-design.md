@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 siguiente |
+| Estado | G0 aprobada, C1 cerrado, C2 siguiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -92,7 +92,7 @@ leer el código ni haber estado en la sesión en que se diseñó.
    una versión es una compuerta aparte que sigue la skill `release`.
 10. **Una rama por ciclo, un solo release al final.** Cada ciclo trabaja en su propia
     rama transitoria, creada desde `main` al abrirlo: `docs/decisiones-g0` para C0 y
-    `fix/<síntoma>` para C1 a C6. Al aprobarse su G-Resultado, la rama se integra en
+    `fix/<síntoma>` para C1 a C7. Al aprobarse su G-Resultado, la rama se integra en
     `main` con `git merge --no-ff` y se elimina, de modo que cada ciclo parte de lo ya
     aprobado y queda como un merge revertible por separado. Integrar no publica: las
     entradas de cada ciclo se acumulan en `## [No publicado]` y la versión se publica una
@@ -144,7 +144,10 @@ ciclo no se abre mientras tenga una decisión aplazada.
 ### 5.3 Paquete y lista de verificación de G-Resultado
 
 Antes de presentar G-Resultado, el agente ejecuta su propia verificación: la batería de
-pruebas del workspace, el lint, el formato solo sobre los archivos tocados y la revisión
+pruebas del workspace (desde C2, con las dos órdenes fijas y no con órdenes ad hoc:
+`cargo test --all`, que replica CI sin features, y
+`cargo test --workspace --features full -- --include-ignored`, la de la puerta de la
+release), el lint, el formato solo sobre los archivos tocados y la revisión
 del subagente revisor. Si esa verificación falla tres veces seguidas, abre G-Desvío en
 lugar de seguir intentándolo.
 
@@ -198,69 +201,89 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 
 | Id | Síntoma | Informe | Severidad | Ciclo |
 |---|---|---|---|---|
-| S1 | La vía daemon rechaza con 413 los audios de transcripción de más de unos 49 s | `daemon-rechaza-o-corta-audios-largos.md` | Media; se propone alta | C2 |
-| S2 | Un kill duro del daemon deja huérfano al motor residente | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Media | C4 |
-| S3 | El daemon no escribe log y los logs del motor no rotan | `residuos-en-disco-tras-comandos-correctos.md` | Media | C3 |
+| S1 | La vía daemon rechaza con 413 los audios de transcripción de más de unos 49 s | `daemon-rechaza-o-corta-audios-largos.md` | Media; se propone alta | C3 |
+| S2 | Un kill duro del daemon deja huérfano al motor residente | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Media | C5 |
+| S3 | El daemon no escribe log y los logs del motor no rotan | `residuos-en-disco-tras-comandos-correctos.md` | Media | C4 |
 | S4 | La síntesis por daemon sale con exit 1 donde el contrato asigna otro código (4 si falta el modelo) | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja; media sin modelo | C1 |
 | S5 | `--daemon` en los cinco comandos solo locales (`list`, `remove` y `play`) responde «Daemon inalcanzable» con exit 5 | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja; se propone media | C1 |
-| S6 | `self update` deja artefactos y `doctor` falla hasta la siguiente operación de ciclo de vida | `residuos-en-disco-tras-comandos-correctos.md` | Baja; se propone media | C5 |
-| S7 | El `status` JSON afirma operaciones que no ocurrieron (`daemon stop` sin daemon y los simulacros de `self uninstall` y `cleanup`) | `status-json-afirma-operaciones-no-realizadas.md` | Baja | C6 |
-| S8 | `speech say` y `speech dub` dejan WAV temporales o informan en `audio_path` de uno ya borrado | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C6 |
-| S9 | `daemon.ready` queda en disco tras `daemon stop` | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C4 |
-| S10 | Trazas internas de la descarga y del motor en la terminal | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Baja | C3 |
+| S6 | `self update` deja artefactos y `doctor` falla hasta la siguiente operación de ciclo de vida | `residuos-en-disco-tras-comandos-correctos.md` | Baja; se propone media | C6 |
+| S7 | El `status` JSON afirma operaciones que no ocurrieron (`daemon stop` sin daemon y los simulacros de `self uninstall` y `cleanup`) | `status-json-afirma-operaciones-no-realizadas.md` | Baja | C7 |
+| S8 | `speech say` y `speech dub` dejan WAV temporales o informan en `audio_path` de uno ya borrado | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C7 |
+| S9 | `daemon.ready` queda en disco tras `daemon stop` | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C5 |
+| S10 | Trazas internas de la descarga y del motor en la terminal | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Baja | C4 |
 | S11 | Prefijo `Error:` duplicado | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja | C1 |
 | S12 | El evento `start` mide `text_length` en bytes, no en caracteres | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja | C1 |
-| S13 | El dub por composición (daemon sin `/dub`) corta la transcripción a los 1500 ms | `daemon-rechaza-o-corta-audios-largos.md` | Baja | C2 |
-| S14 | Una referencia de clonado de más de unos 1,5 MB se rechaza con 413 por la vía daemon (por reproducir) | `daemon-rechaza-o-corta-audios-largos.md` | Media | C2 |
-| S15 | Un 404 de `/dub` con `reason` propio (`voice_not_found`, `model_missing`) no se traduce con la tabla: el cliente lo toma por un daemon sin `/dub` | Revisión de C1 | Baja | C2 |
-| S16 | El contrato promete exit 5 cuando el daemon no tiene `/transcribe`; el cliente sale con 1 y no indica reiniciar el daemon | Revisión de C1 | Baja | C2 |
+| S13 | El dub por composición (daemon sin `/dub`) corta la transcripción a los 1500 ms | `daemon-rechaza-o-corta-audios-largos.md` | Baja | C3 |
+| S14 | Una referencia de clonado de más de unos 1,5 MB se rechaza con 413 por la vía daemon (por reproducir) | `daemon-rechaza-o-corta-audios-largos.md` | Media | C3 |
+| S15 | Un 404 de `/dub` con `reason` propio (`voice_not_found`, `model_missing`) no se traduce con la tabla: el cliente lo toma por un daemon sin `/dub` | Revisión de C1 | Baja | C3 |
+| S16 | El contrato promete exit 5 cuando el daemon no tiene `/transcribe`; el cliente sale con 1 y no indica reiniciar el daemon | Revisión de C1 | Baja | C3 |
 | S17 | `sudo_not_supported` se emite, pero no está en el contrato ni en el oráculo de la tabla | Revisión de C1 | Baja | C1 |
-| S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C6 |
+| S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C7 |
 | S19 | `/synthesize` responde `model_missing` a una temperatura fuera de rango si falta el modelo de síntesis | Revisión de C1 | Baja | C1 |
+| S20 | Unas 60 pruebas se aprueban solas cuando falta un recurso externo (modelos, binario del motor, dispositivo de audio, `ModelStore` escribible, puerto 8765 libre): imprimen `skip: …` y hacen `return`; cada una decide con sus propios auxiliares, uno de ellos duplicado, y uno de ellos ejecuta el `doctor` real sobre la instalación del mantenedor; otras cuatro comprueban un feature en tiempo de ejecución en lugar de declararlo con `cfg` | Revisión de C1 | Alta; un verde no demuestra que la prueba se ejecutó | C2 |
+| S21 | Nada ejecuta las pruebas con recursos locales antes de publicar: CircleCI corre solo en tags, sin features nativas ni modelos, y ni la skill `release` ni `cargo xtask release` piden más que `cargo test --all` (o nada); esas pruebas cuentan como verdes sin haberse ejecutado | Revisión de C1 | Alta; los falsos verdes llegan hasta la puerta de la release | C2 |
+| S22 | La golden de `/health` se salta sin Parakeet y, sin `native-stt`, nunca corre en CI; `voices_clone_daemon_precomputed_true` se salta por el modelo de transcripción cuando necesita el de síntesis | Revisión de C1 | Media | C2 |
+| S23 | La validación de entrada de `/transcribe` (`usage_error` sin audio, `invalid_audio` con base64 inválido) y la de `/translate` (`empty_text`, mismo idioma, `unsupported_language_pair`) viven dentro de funciones que exigen `native-stt` o `native-translation` aunque no usan el motor, y sus pruebas solo corren con el feature | Revisión de C1 | Baja | C2 |
+| S24 | El estado del daemon en las pruebas se construye de dos formas: a mano en las goldens, con un comentario de cabecera desfasado, y con `DaemonState::new()` en las pruebas de la biblioteca, que con `native-stt` carga Parakeet y escribe en el directorio de datos real | Revisión de C1 | Media | C2 |
+| S25 | `docs/BRANCHING.md` afirma que los jobs de test corren en `main` y en ramas, y solo corren en tags | Revisión de C1 | Baja | C2 |
+| S26 | La verificación de los ciclos usa órdenes ad hoc (como `cargo test -p avi-daemon --features native-stt` en C1) que dependen de la instalación real del mantenedor | Revisión de C1 | Baja | C2 |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
 
 S15 a S19 los detectó el revisor de C1 y no tienen informe propio: se asignan al ciclo
-que ya trata su causa raíz. S17 y S19 se corrigieron dentro de C1; S18 espera a C6
+que ya trata su causa raíz. S17 y S19 se corrigieron dentro de C1; S18 espera a C7
 porque la subida del sobre a `"5"` edita esas mismas líneas.
+
+S20 a S26 también salieron de la revisión de C1 y no tienen informe propio: forman un ciclo
+nuevo, C2, porque comparten una causa raíz que no pertenece a ningún informe: las pruebas no
+declaran qué recursos necesitan y nada comprueba que se ejecuten con ellos. C2 se intercala
+entre C1 y C3 para que las pruebas de C3 nazcan ya en su esquema.
 
 ## 8. Orden de los ciclos y dependencias
 
 ```text
 C0 Preparación y decisiones ──G0──►
   C1 Contrato de errores (S4 S5 S11 S12 S17 S19)
-    │  C2 usa la tabla única de reason→exit y la lectura del reason en los errores del daemon
+    │  C3 usa la tabla única de reason→exit y la lectura del reason en los errores del daemon
     ▼
-  C2 Límites de la vía daemon (S1 S13 S14 S15 S16)
+  C2 Clases de pruebas (S20 S21 S22 S23 S24 S25 S26)
+    │  C3 escribe sus pruebas en el esquema de clases y pone su tope de audio sobre la validación de /transcribe que C2 extrae
+    ▼
+  C3 Límites de la vía daemon (S1 S13 S14 S15 S16)
     │
     ▼
-  C3 Observabilidad (S3 S10)
-    │  C4 toca el mismo lanzamiento del clonado y se verifica con el log del daemon
+  C4 Observabilidad (S3 S10)
+    │  C5 toca el mismo lanzamiento del clonado y se verifica con el log del daemon
     ▼
-  C4 Vida de los procesos (S2 S9)
+  C5 Vida de los procesos (S2 S9)
     │
     ▼
-  C5 Artefactos de self update (S6)
+  C6 Artefactos de self update (S6)
     │
     ▼
-  C6 JSON veraz y temporales (S7 S8 S18)
+  C7 JSON veraz y temporales (S7 S8 S18)
 
-G-Release: una sola vez, tras cerrar e integrar C6
+G-Release: una sola vez, tras cerrar e integrar C7
 ```
 
 Justificación del orden:
 
-- **C1 va antes que C2, aunque S1 es el síntoma más grave.** La corrección de S1 exige
+- **C1 va antes que C3, aunque S1 es el síntoma más grave.** La corrección de S1 exige
   que la transcripción lea el `reason` de una respuesta de error y lo traduzca al código
-  del contrato, y eso es justo lo que construye C1. Si C2 fuera primero, crearía otra
+  del contrato, y eso es justo lo que construye C1. Si C3 fuera primero, crearía otra
   tabla local que C1 tendría que deshacer. C1 es pequeño, así que el retraso es mínimo.
-- **C3 va antes que C4 por una dependencia dura.** Los dos cambian cómo se lanza el
-  motor de clonado: C3 lleva su salida a un log y C4 le conecta la tubería de D11.1. Además,
+- **C2 va entre C1 y C3.** Las pruebas nuevas de C3 sobre `/transcribe` y sobre los topes
+  deben nacer ya en el esquema de dos clases; si C3 fuera primero, habría que reclasificarlas
+  después. Además, la validación de `/transcribe` que C2 extrae a una función pura es la base
+  sobre la que C3 añade su tope de audio. C2 parte de lo que C1 ya dejó en `main` en las
+  mismas pruebas, y desde su cierre todos los ciclos verifican con una sola orden.
+- **C4 va antes que C5 por una dependencia dura.** Los dos cambian cómo se lanza el
+  motor de clonado: C4 lleva su salida a un log y C5 le conecta la tubería de D11.1. Además,
   sin el log del daemon, un fallo al matarlo no deja rastro y la verificación de S2 sería
   a ciegas.
-- **C5 y C6 no dependen entre sí.** C5 va antes por severidad. El humano puede
-  invertirlos en el G-Plan de C5.
+- **C6 y C7 no dependen entre sí.** C6 va antes por severidad. El humano puede
+  invertirlos en el G-Plan de C6.
 - **Los ciclos no se ejecutan en paralelo.** Casi todos tocan el binario principal
   (`src/main.rs`), y en paralelo la revisión humana tendría que separar cambios
   entrelazados.
@@ -272,7 +295,7 @@ argumentos a favor y en contra, la recomendación y el ciclo que la aplica. El c
 **Decisión** lo rellena el humano en G0. Ninguna depende de un diagnóstico, así que
 ningún ciclo tiene G-Diag.
 
-### D1 · Tope del audio de transcripción en las dos vías (S1) — C2
+### D1 · Tope del audio de transcripción en las dos vías (S1) — C3
 
 **Problema.**
 
@@ -307,7 +330,7 @@ vía daemon y la diferencia entre vías queda documentada.
 
 **Decisión:** B, con un tope de 300 s (2026-09-30).
 
-### D2 · Tamaño de la referencia del clonado (S14) — C2
+### D2 · Tamaño de la referencia del clonado (S14) — C3
 
 **Problema.**
 
@@ -317,7 +340,7 @@ vía daemon y la diferencia entre vías queda documentada.
   unos 1,5 MB (una sola de unos 9 s en WAV de 44,1 kHz estéreo) chocan con el mismo
   límite de 2 MB.
 - La vía directa no tiene ese límite.
-- El síntoma está deducido del código. C2 lo reproduce con una prueba antes de
+- El síntoma está deducido del código. C3 lo reproduce con una prueba antes de
   corregirlo; si no se reproduce, esta decisión se descarta en su G-Plan.
 
 | Alternativa | A favor | En contra |
@@ -326,13 +349,13 @@ vía daemon y la diferencia entre vías queda documentada.
 | **B. Límite de cuerpo fijo y generoso** (por ejemplo, 32 MB) solo en el daemon | Simple | La regla depende del formato del fichero; las dos vías siguen comportándose distinto |
 | **C. El cliente convierte la referencia a 16 kHz mono antes de enviarla** | Reduce el tamaño en cualquier formato | Cambia la entrada del motor y puede degradar el clonado; es trabajo de audio adicional |
 
-**Recomendación: A.** El valor del tope se fija en el G-Plan de C2, a partir de la
+**Recomendación: A.** El valor del tope se fija en el G-Plan de C3, a partir de la
 duración de referencia que el motor aprovecha realmente. Si el motor recorta la
 referencia a N segundos, el tope es N.
 
-**Decisión:** A; el valor del tope, en el G-Plan de C2 (2026-09-30).
+**Decisión:** A; el valor del tope, en el G-Plan de C3 (2026-09-30).
 
-### D3 · Dub por composición para daemons sin `/dub` (S13) — C2
+### D3 · Dub por composición para daemons sin `/dub` (S13) — C3
 
 **Problema.**
 
@@ -375,7 +398,7 @@ La regla vive en un solo sitio, la lectura común de las respuestas de error del
 y el contrato deja de prometer exit 5 para `transcribe` y `dub` ante un daemon sin la
 ruta.
 
-### D4 · Traducción única de `reason` a código de salida (S4, y base de C2) — C1
+### D4 · Traducción única de `reason` a código de salida (S4, y base de C3) — C1
 
 **Problema.**
 
@@ -429,7 +452,7 @@ el humano.
 
 **Decisión:** B, con el `reason` `daemon_not_supported` (2026-09-30).
 
-### D6 · `status` de `daemon stop` cuando no había daemon (S7) — C6
+### D6 · `status` de `daemon stop` cuando no había daemon (S7) — C7
 
 **Problema.**
 
@@ -450,7 +473,7 @@ el humano.
 
 **Decisión:** A (2026-09-30).
 
-### D7 · Los simulacros de `self uninstall` y `cleanup` (S7) — C6
+### D7 · Los simulacros de `self uninstall` y `cleanup` (S7) — C7
 
 **Problema.**
 
@@ -509,7 +532,7 @@ da `planned`, y un simulacro nunca da otro valor.
 
 **Decisión:** A (2026-09-30).
 
-### D8 · WAV temporales de `speech say` y `speech dub` (S8) — C6
+### D8 · WAV temporales de `speech say` y `speech dub` (S8) — C7
 
 **Problema.** `say` y `dub` sintetizan a un WAV temporal para reproducirlo y devuelven
 su ruta en `audio_path` y en el texto humano («Reproduciendo: …», «Doblaje
@@ -518,7 +541,7 @@ reproducido: …»).
 - `say` por la vía directa conserva el fichero.
 - `say` por la vía daemon lo borra, pero después de emitir su ruta; si la reproducción
   falla, sale antes de borrarlo.
-- `dub` lo conserva siempre, en sus dos vías, la directa y la daemon; C2 elimina la
+- `dub` lo conserva siempre, en sus dos vías, la directa y la daemon; C3 elimina la
   composición (D3).
 - Cada vía gestiona el fichero a mano, y cualquier error intermedio lo deja atrás.
 
@@ -549,7 +572,7 @@ persistente.
 
 **Decisión:** A (2026-09-30).
 
-### D9 · Log del daemon y retención de los logs (S3) — C3
+### D9 · Log del daemon y retención de los logs (S3) — C4
 
 **Problema.**
 
@@ -575,11 +598,11 @@ Retención de las dos familias de logs, la del motor y la del daemon:
 
 **Recomendación: A con R1 y K = 10 por familia.** La poda la hace el código que crea el
 log. Es lo más simple que cumple el criterio del informe y da el log que necesita la
-verificación de C4.
+verificación de C5.
 
 **Decisión:** A con R1 y K = 10 por familia (2026-09-30).
 
-### D10 · Trazas internas en la terminal (S10) — C3
+### D10 · Trazas internas en la terminal (S10) — C4
 
 **Problema.**
 
@@ -608,7 +631,7 @@ daemon y del motor. De paso, se corrige el comentario obsoleto de la inicializac
 **Decisión:** A con N2 (2026-09-30). Sin `RUST_LOG`, los comandos de la CLI usan `warn` y
 el daemon `info`, que va a su log; si la variable está definida, manda en los dos.
 
-### D11 · Que el motor muera con el daemon (S2) — C4
+### D11 · Que el motor muera con el daemon (S2) — C5
 
 **Problema.** El daemon lanza el motor en dos modos: el residente, que vive
 indefinidamente, y el de clonado, que dura decenas de segundos y también se lanza desde
@@ -672,7 +695,7 @@ cierre como mucho lo que dura un clonado. Es un riesgo teórico, sin verificar.
 
 **Decisión:** A (2026-09-30).
 
-### D12 · Artefactos de `self update` y el veredicto de `doctor` (S6) — C5
+### D12 · Artefactos de `self update` y el veredicto de `doctor` (S6) — C6
 
 **Problema.** Tras `self update` en Windows quedan dos restos, y `doctor` los cuenta como
 fallo (exit 1) hasta que otra operación de ciclo de vida los barre.
@@ -766,7 +789,7 @@ Los cambios de esta iteración que suben un esquema son estos:
 
 - **Protocolo del daemon:** la unidad de `text_length` pasa a caracteres (C1).
 - **Sobre de la CLI:** los nuevos valores de `status` (D6 y D7) y la retirada de
-  `dry_run` (D7.3) y de `audio_path` (D8), todos en C6.
+  `dry_run` (D7.3) y de `audio_path` (D8), todos en C7.
 - **Ninguno de los dos:** el cambio de código de salida de D5 no toca ninguna clave.
   Cambia el contrato, pero no el esquema, y se documenta en el CHANGELOG.
 
@@ -780,11 +803,116 @@ Los cambios de esta iteración que suben un esquema son estos:
 
 - C1 sube el protocolo del daemon de 3 a 4 y documenta `text_length` en caracteres, la
   misma unidad que el tope de 500 caracteres de `--text`.
-- C6 sube el sobre de la CLI de 4 a 5.
+- C7 sube el sobre de la CLI de 4 a 5.
 
 Con un solo release al final de la iteración y cada esquema roto en un único ciclo, A y
 B producen hoy el mismo resultado; A se prefiere porque sigue siendo correcta si eso
 cambia.
+
+**Decisión:** A (2026-09-30).
+
+### D14 · Pruebas que dependen del dispositivo de audio (S20) — C2
+
+**Problema.**
+
+- Varias pruebas necesitan un dispositivo de salida de audio real y hoy se saltan en
+  silencio si no lo hay.
+- El esquema de C2 tiene dos clases: contrato, que no usa nada externo y corre en todas
+  partes, y con recursos locales, marcada con `#[ignore = "requiere …"]`, que `cargo test
+  --all` solo muestra como *ignored* y se ejecuta con `--include-ignored`.
+- Un servidor de integración de CircleCI no tiene dispositivo de audio.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Clase con recursos locales** (`#[ignore]`, con fallo explícito si falta el dispositivo) | Una sola regla para todo recurso externo; prueba el camino real de reproducción; no cambia el código de producción | Solo se ejecutan donde hay dispositivo, es decir, en la puerta local de la release |
+| **B. Simular la salida de audio con un doble** | Corren en todas partes, también en CI | Exige abstraer la salida de audio en producción solo para las pruebas, y el doble no prueba el dispositivo real |
+| **C. Fuera de este ciclo** | Ningún trabajo ahora | Dejaría en el ciclo pruebas con `skip` en silencio, y el criterio de que ninguna prueba se salte no se cumpliría |
+
+**Recomendación: A.** Es la misma regla que se aplica a los modelos y al binario del
+motor, sin tocar la producción.
+
+**Decisión:** A (2026-09-30).
+
+### D15 · Pruebas que se saltan por `ModelStore` no escribible o por un daemon vivo en 8765 (S20) — C2
+
+**Problema.**
+
+- Unas pruebas se saltan si ya hay un daemon en `127.0.0.1:8765`, y otras con el mensaje
+  «sin ModelStore escribible», que en realidad ejecuta el `doctor` real sobre la
+  instalación del mantenedor y se salta si no sale con 0. Dependen del entorno del que las
+  ejecuta, no de un recurso que haya que proveer, y la segunda cambiaría de resultado
+  cuando C6 haga que `doctor` falle ante restos (D12.3).
+- `cli_golden.rs` ya tiene el patrón `IsolatedInstance`, que levanta una instancia con
+  directorios temporales y puerto efímero.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Aislarlas con directorios temporales y puerto efímero (patrón `IsolatedInstance`)** | Dejan de depender del entorno; no tocan datos reales ni chocan con un daemon vivo; después quedan en la clase que corresponda por lo que de verdad necesiten | Hay que adaptar cada prueba al patrón |
+| **B. Clase con recursos locales (`#[ignore]`)** | Trabajo mínimo | Marca como recurso lo que es un defecto de aislamiento, y la prueba seguiría fallando si el mantenedor tiene un daemon vivo |
+| **C. Fuera de este ciclo** | Ningún trabajo ahora | Quedarían pruebas con `skip` en silencio |
+
+**Recomendación: A.**
+
+**Decisión:** A (2026-09-30).
+
+### D16 · Dónde vive la puerta de release de las pruebas con recursos locales (S21) — C2
+
+**Problema.**
+
+- CircleCI no puede ejecutar la clase con recursos locales, porque los modelos pesan varios
+  GB y habría que descargarlos en cada tag.
+- Hoy la release pide `cargo test --all`, que deja esas pruebas como *ignored*; la skill
+  `release` y `docs/RELEASING.md` lo describen así, y `cargo xtask release` no ejecuta
+  ninguna prueba.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Dentro de `cargo xtask release`**: ejecuta `cargo test --workspace --features full -- --include-ignored` como condición previa y aborta si algo falla o falta un recurso; sin modo para saltarla | Mecánica: no se puede publicar sin haber ejecutado la suite completa; una sola orden, la misma que usa cada ciclo | La release tarda lo que dure la suite con modelos; solo puede cortarla quien tenga los recursos instalados |
+| **B. Solo un paso documentado en la skill `release`** | Sin código | Depende de que el agente o el humano lo recuerden; es el origen de S21 |
+
+**Recomendación: A.** Un paso solo documentado es lo que ya falló: lo que no se comprueba
+mecánicamente se omite. La skill y `docs/RELEASING.md` se actualizan para describir la
+puerta, no para sustituirla.
+
+**Decisión:** A (2026-09-30).
+
+### D17 · Estado del daemon en las pruebas con `native-stt` (S23, S24) — C2
+
+**Problema.**
+
+- Con `native-stt`, el campo `stt_engine` de `DaemonState` no es opcional: no existe un
+  estado del daemon sin cargar Parakeet. La puerta de D16 compila justo así.
+- Parakeet está en la selección por defecto de `setup`, y el daemon no arranca sin él: un
+  daemon sin STT no es un estado del producto.
+- Casi todas las pruebas del daemon atraviesan el router con ese estado.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. El contrato en funciones puras y la clase según el feature**: las validaciones de entrada se extraen a funciones puras que se prueban sin estado y son contrato con cualquier feature; las pruebas que atraviesan el router son contrato sin `native-stt` y llevan `#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]` con él | La producción no cambia; cada prueba corre en algún sitio (sin features en CI, con `full` en la puerta); la lógica de contrato queda separada del motor | La clase de las pruebas del router depende del feature |
+| **B. `stt_engine` opcional, como `ct2_engine`** | El estado de prueba nunca carga modelos | Añade a la producción una rama `None` que ninguna instalación alcanza, solo para las pruebas |
+| **C. El motor STT tras un trait, con un doble en las pruebas** | Prueba la ruta completa sin modelos | Abstracción en producción solo para las pruebas; el doble no prueba el motor real |
+
+**Recomendación: A.** El defecto estructural es que la lógica de contrato vive dentro del
+handler que necesita el motor; separarla resuelve la clase de esas pruebas sin inventar
+estados que el producto no tiene.
+
+**Decisión:** A (2026-09-30), resuelta por el agente a petición del humano.
+
+### D18 · Cómo apuntan los almacenes del daemon a un temporal en las pruebas (S24) — C2
+
+**Problema.**
+
+- `VoiceStore` y `SpeechStore` solo leen el directorio de datos del proceso
+  (`AVI_DATA_DIR` o la ruta real); solo `ModelStore` tiene un constructor con raíz propia
+  (`ModelStore::at`).
+- Las pruebas de la biblioteca corren en paralelo dentro del mismo proceso.
+
+| Alternativa | A favor | En contra |
+|---|---|---|
+| **A. Constructores `VoiceStore::at` y `SpeechStore::at`**, que el estado de prueba recibe con un temporal | No muta el entorno del proceso; seguro en paralelo; mismo patrón que `ModelStore::at` | Dos constructores públicos más |
+| **B. Fijar `AVI_DATA_DIR` antes de construir el estado** | No toca `avi-store` | La variable es global al proceso y compite entre pruebas en paralelo |
+
+**Recomendación: A.**
 
 **Decisión:** A (2026-09-30).
 
@@ -853,11 +981,94 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   daemon (`DAEMON-MODE.md`, incluido el handshake de P4).
 - **Cierra:** `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md`.
 
-### C2 · Límites de la vía daemon
+### C2 · Clases de pruebas
+
+- **Causa raíz:** las pruebas no declaran en su definición qué recursos externos
+  necesitan: lo deciden en tiempo de ejecución y, si falta algo, se aprueban solas. Nada
+  ejecuta las que necesitan recursos antes de publicar.
+- **Principio:** cada prueba declara su clase en su definición y ninguna se salta en
+  silencio. Ninguna prueba que pueda prescindir de un modelo lo carga, y ninguna que lo
+  necesite corre donde haya que descargarlo (los modelos pesan varios GB).
+  - **Clase contrato:** no usa nada externo (ni modelos, ni hardware, ni la instalación
+    real). Corre en todas partes: `cargo test --all` en local y en la puerta del tag.
+  - **Clase con recursos locales** (modelos, binario del motor, dispositivo de audio):
+    `#[ignore = "requiere …"]`. `cargo test --all` la muestra como *ignored* sin descargar
+    nada, así que CircleCI no cambia. Se ejecuta con
+    `cargo test --workspace --features full -- --include-ignored`; dentro, la ausencia
+    del recurso es un fallo explícito (`expect` con la orden que lo provisiona, como
+    `setup`), no un `return`.
+  - **Clase según el feature** (D17): las pruebas que atraviesan el router del daemon son
+    contrato sin `native-stt` y llevan
+    `#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]` con él, porque
+    con ese feature el estado del daemon carga el motor. Así corren sin features en CI y
+    con `full` en la puerta. La lógica de contrato que no necesita el motor no depende de
+    esto: vive en funciones puras que se prueban sin estado.
+  - Ninguna prueba escribe en la instalación real: los recursos de la instalación se
+    leen sin modificarlos y todo lo que la prueba escribe va a directorios temporales.
+- **Depende de:** C1.
+- **Síntomas:** S20, S21, S22, S23, S24, S25 y S26.
+- **Decisiones:** D14 a D18, resueltas el 2026-09-30. El hook `post-merge` que poda
+  `target/` no se toca: no bloquea, es opcional y mezclaría responsabilidades.
+- **Tareas:**
+  1. Extraer la validación de entrada de `/transcribe` (devuelve el PCM o la respuesta de
+     error) y la de `/translate` (texto vacío, mismo idioma y par no soportado) a funciones
+     puras sin `cfg`; los handlers con feature solo llaman al motor. Sus pruebas pasan a la
+     clase contrato con cualquier feature (S23, D17). C3 añade su tope de audio sobre la
+     función de `/transcribe`.
+  2. Un solo constructor `DaemonState::with_stores(voice_store, speech_store)`, que
+     también usa `new()`, y `VoiceStore::at` y `SpeechStore::at`, como `ModelStore::at`
+     (D18). Las goldens y las pruebas de la biblioteca construyen su estado con él y
+     almacenes en un temporal; se retiran el montaje manual de las goldens, su comentario
+     desfasado y el uso de `DaemonState::new()` en las pruebas. Sin `native-stt` el
+     estado no carga ningún modelo, y con él carga solo Parakeet (S24, D17).
+  3. Reclasificar cada prueba que hoy se omite: contrato sin compuerta (como la golden de
+     `/health`), `#[ignore]` con fallo explícito, `#[cfg_attr(…, ignore)]` según D17, o
+     `#[cfg(feature = …)]` sobre la prueba cuando el código que prueba solo existe con un
+     feature. Las pruebas con recursos comprueban el archivo concreto que necesitan, no
+     ejecutan `doctor`. Eliminar todos los `skip: … return`, los auxiliares de omisión y
+     los `#[allow(unreachable_code)]`; la cabecera de `tests/cli_golden.rs` pasa a
+     describir las clases (S20, S22).
+  4. Aislar las pruebas que se saltan por un daemon vivo en 8765 o por el resultado del
+     `doctor` real, con directorios temporales y puerto efímero (patrón
+     `IsolatedInstance`); luego quedan en la clase que corresponda por lo que necesiten
+     (D15, S20).
+  5. Puerta mecánica en `cargo xtask release`: ejecuta
+     `cargo test --workspace --features full -- --include-ignored` como primer paso,
+     antes del bump y de cualquier otra escritura, y aborta si algo falla o falta un
+     recurso, sin modo para saltarla. El paso 4 de la skill `release` conserva
+     `cargo test --all` como réplica local de CI sin features, y la skill y
+     `docs/RELEASING.md` describen la puerta (D16, S21).
+  6. Corregir `docs/BRANCHING.md`: los jobs de test corren solo en tags (S25).
+- **Pruebas en rojo:**
+  - una prueba de contrato recorre los `.rs` de `src/`, `tests/` y `crates/*/{src,tests}`
+    y falla si alguno contiene un `eprintln!` con `skip:`;
+  - la golden de `/health` corre y pasa sin features nativas y sin modelos;
+  - las funciones de validación de `/transcribe` (`usage_error` sin audio,
+    `invalid_audio` con base64 inválido) y de `/translate` (`empty_text`, mismo idioma,
+    `unsupported_language_pair`) se prueban sin ningún feature;
+  - el estado de prueba del daemon tiene la raíz de sus almacenes bajo un temporal y, sin
+    `native-stt`, se construye sin ningún modelo provisionado;
+  - las pruebas que se saltaban por el puerto 8765 o por `doctor` pasan con un daemon
+    vivo en 8765.
+- **Verificación:**
+  - `cargo test --all` muestra las pruebas con recursos como *ignored* y pasa sin modelos.
+  - `cargo test --workspace --features full -- --include-ignored` pasa en la instalación
+    del mantenedor.
+  - `cargo xtask release` con `AVI_CACHE_DIR` apuntando a un temporal vacío aborta en la
+    puerta y deja el árbol sin cambios (`git status` limpio). La puerta no lleva prueba
+    automática porque tendría que lanzar la suite dentro de la suite.
+- **Documentación:** `docs/BRANCHING.md`, `docs/RELEASING.md`, el paso 4 de la skill
+  `release`, la cabecera de `tests/cli_golden.rs` y la sección «Interno» de
+  `## [No publicado]` del CHANGELOG (la release exige la suite con recursos locales).
+  S26 ya queda resuelto en la sección 5.3 de este documento.
+- **Cierra:** ningún informe: los síntomas no tienen informe propio.
+
+### C3 · Límites de la vía daemon
 
 - **Causa raíz:** la vía daemon tiene límites de transporte ajenos a los del producto y
   un camino de compatibilidad con su propio límite de tiempo.
-- **Depende de:** C1.
+- **Depende de:** C1 y C2 (las pruebas nuevas nacen en el esquema de clases y el tope de
+  audio se añade sobre la validación de `/transcribe` extraída).
 - **Síntomas:** S1, S13, S14, S15 y S16.
 - **Decisiones:** D1, D2 y D3, con su ampliación a cualquier ruta.
 - **Tareas:**
@@ -879,7 +1090,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   descripción del protocolo del daemon.
 - **Cierra:** `daemon-rechaza-o-corta-audios-largos.md`.
 
-### C3 · Observabilidad
+### C4 · Observabilidad
 
 - **Causa raíz:** las trazas no llegan a su destino: las del daemon se pierden y las
   internas aparecen en la terminal.
@@ -903,11 +1114,11 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Cierra:** la ficha de logs de `residuos-en-disco-tras-comandos-correctos.md` y la
   ficha de trazas de `motor-residente-huerfano-y-trazas-fuera-del-log.md`.
 
-### C4 · Vida de los procesos
+### C5 · Vida de los procesos
 
 - **Causa raíz:** los procesos del daemon no dejan limpio su estado al terminar, ni de
   forma ordenada ni abrupta.
-- **Depende de:** C3.
+- **Depende de:** C4.
 - **Síntomas:** S2 y S9.
 - **Decisiones:** D11.1 (vigía por tubería en la entrada estándar y retirada del Job
   Object) y D11.2 (retraso acotado en macOS, aceptado), resueltas en G0.
@@ -933,7 +1144,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Cierra:** `motor-residente-huerfano-y-trazas-fuera-del-log.md` y la ficha de
   `daemon.ready` de `residuos-en-disco-tras-comandos-correctos.md`.
 
-### C5 · Artefactos de `self update`
+### C6 · Artefactos de `self update`
 
 - **Causa raíz:** nadie programa el borrado del aparcado, el auxiliar de borrado
   diferido falla sin dejar rastro, y no hay forma de pedir la limpieza sin una operación
@@ -963,7 +1174,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   CHANGELOG.
 - **Cierra:** la ficha de `self update` de `residuos-en-disco-tras-comandos-correctos.md`.
 
-### C6 · JSON veraz y temporales
+### C7 · JSON veraz y temporales
 
 - **Causa raíz:** algunos sobres JSON describen lo que se pidió o lo que habría pasado,
   no lo que pasó, y quien crea un fichero temporal no siempre lo borra.
@@ -999,7 +1210,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Cierra:** `status-json-afirma-operaciones-no-realizadas.md` y
   `residuos-en-disco-tras-comandos-correctos.md`, que para entonces se queda sin fichas.
 - **Cierre de la iteración:** el agente propone eliminar este documento y su registro
-  de progreso, y lo presenta en la misma G-Resultado. Con C6 integrado en `main`, se
+  de progreso, y lo presenta en la misma G-Resultado. Con C7 integrado en `main`, se
   abre G-Release.
 
 ## 11. Registro de progreso
@@ -1057,9 +1268,11 @@ disco y con `git log`.
 
 | Riesgo | Tratamiento |
 |---|---|
-| Tras corregir el auxiliar (C5), el staging sigue quedando en disco | G-Desvío con el rastro del auxiliar; el humano decide si se diagnostica la causa, se aplaza el ciclo o se acepta la red de `doctor --repair` como mitigación documentada |
+| Tras corregir el auxiliar (C6), el staging sigue quedando en disco | G-Desvío con el rastro del auxiliar; el humano decide si se diagnostica la causa, se aplaza el ciclo o se acepta la red de `doctor --repair` como mitigación documentada |
+| Una prueba con recursos locales falla al dejar de saltarse, porque llevaba tiempo sin ejecutarse | Se corrige la prueba o el código en C2 si es un defecto pequeño; si destapa un defecto del producto, G-Desvío y el humano decide si se corrige dentro del ciclo o se registra como síntoma nuevo |
+| `cargo xtask release` tarda lo que dura la suite con modelos y exige tener los recursos instalados | Es el coste buscado de la puerta; la orden es la misma que se usa en cada ciclo, así que el tiempo no es una sorpresa al publicar |
 | Una decisión de G0 resulta inviable al implementarla | G-Desvío; la decisión se reabre con las alternativas actualizadas |
-| S14 no se reproduce | En el G-Plan de C2, D2 y su tarea salen del alcance y el síntoma se retira del informe |
+| S14 no se reproduce | En el G-Plan de C3, D2 y su tarea salen del alcance y el síntoma se retira del informe |
 | La verificación del agente falla de forma repetida | Tras tres intentos, G-Desvío en lugar de seguir intentándolo |
 | El índice estructural del código queda desfasado entre ciclos | Resincronizarlo al cerrar cada ciclo que añada o elimine símbolos |
 | La sesión se interrumpe a mitad de un ciclo | Reanudar desde el registro de progreso, contrastándolo con el disco y con `git log` |
