@@ -325,7 +325,6 @@ pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<()
             let _ = std::fs::remove_file(&temp);
             Err(LifecycleError::new(
                 "path_conflict",
-                14,
                 format!("no se pudo poner el enlace en {}: {e}", link.display()),
             ))
         }
