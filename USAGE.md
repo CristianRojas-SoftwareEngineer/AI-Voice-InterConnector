@@ -72,8 +72,8 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
 - **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
   funciona pero puede paginar (ralentizarse) en textos largos. `doctor` no mide
   ni la CPU ni la RAM.
-- **Disco**: 4,7 GB para los modelos descargados (Qwen3-TTS 2,5 GB + Marian
-  es↔en 1,6 GB + Parakeet TDT v3 0,7 GB), y 7,3 GB con `--with-voice-cloning`. El disco
+- **Disco**: 3,3 GB para los modelos descargados (Qwen3-TTS 2,5 GB + opus-mt
+  es↔en 0,17 GB + Parakeet TDT v3 0,7 GB), y 5,85 GB con `--with-voice-cloning`. El disco
   ocupa lo mismo que la descarga, salvo en sistemas de archivos sin enlaces duros (FAT32,
   exFAT o algunos recursos de red), donde `hf-hub` copia cada archivo y el espacio se
   duplica. El binario instalado ocupa ~40 MB.
@@ -139,12 +139,12 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 | Modelo | Repo HF | Uso |
 |---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
-| `marian-es-en` / `marian-en-es` | `Helsinki-NLP/opus-mt-*` | Traducción es↔en (derivado CT2: `model.bin` + `tokenizer.json` o `source.spm`+`target.spm`) |
+| `opus-mt-es-en` / `opus-mt-en-es` | `CristianRojaas/opus-mt-es-en-ct2-int8` / `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción es↔en (0,08 GB cada uno; derivados int8 de Helsinki-NLP/opus-mt, CC-BY-4.0, ya convertidos a CTranslate2) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (0,7 GB, ONNX int8) |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (2,5 GB, opt-in) | Clonado de voz (Base) |
 
 Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
-(`crates/avi-shared/src/paths.rs`): mismo binario → mismos pesos. El Base es opt-in por peso (7,3 GB en total con él). Una descarga interrumpida no se reanuda: `setup` repite el archivo completo.
+(`crates/avi-shared/src/paths.rs`): mismo binario → mismos pesos. El Base es opt-in por peso (5,85 GB en total con él). Una descarga interrumpida no se reanuda: `setup` repite el archivo completo.
 
 ```bash
 ai-voice-interconnector setup                        # descarga los 4 base (idempotente)
@@ -263,7 +263,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `install` | objeto | `dir`, `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`) y `version` |
 | `path` | objeto | Resolución y duplicados en el `PATH`, integración y coexistencia |
 | `pending` | objeto | Restos de operaciones anteriores (transacción, aparcados, stagings, temporales) |
-| `models` | objeto | `root`, `shared_root`, `provisioned`, `missing` (solo la selección guardada), `base` (`ready`/`missing_opt_in`), `ct2_incomplete`, `size_bytes` |
+| `models` | objeto | `root`, `shared_root`, `provisioned`, `missing` (solo la selección guardada), `base` (`ready`/`missing_opt_in`), `size_bytes` |
 | `checks` | array de objetos | `{name, ok, detail}` por chequeo |
 | `failed` | array de strings | Nombres de los chequeos fallidos (vacío si todo correcto); exit 1 si no está vacío |
 
@@ -292,7 +292,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 |-------|------|-------------|
 | `status` | string | `"completed"` |
 | `with_stt` | boolean | Espejo del flag `--with-stt` (redundante: STT ya va incluido) |
-| `models_provisioned` | array de strings | Los 4 modelos base + 1 opt-in si `--with-voice-cloning` (`qwen3-tts-0.6b`, `marian-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
+| `models_provisioned` | array de strings | Los 4 modelos base + 1 opt-in si `--with-voice-cloning` (`qwen3-tts-0.6b`, `opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
 
 **`cleanup --json` / `self uninstall --json`**
 
@@ -313,7 +313,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `install_dir` / `version` / `channel` | string | Lo que queda en el recibo de la instalación |
 | `path_integrated` | boolean | Si la integración de `PATH` está en pie (estado, no diff de esta pasada) |
 | `models` | string | `"skipped"` (`--no-setup`), `"already_provisioned"`, `"provisioned"` o `"failed"` |
-| `models_cause` | objeto | **Solo si `models` es `"failed"`**: `{reason, message}` con `network_error` o `ct2_conversion_failed` |
+| `models_cause` | objeto | **Solo si `models` es `"failed"`**: `{reason, message}` con `network_error` |
 
 **`self update --json`**
 
@@ -386,11 +386,10 @@ Diagnóstico: todo correcto.
 Cache HF: C:\Users\<tu-usuario>\.cache\huggingface\hub
 ```
 
-`doctor` ejecuta seis chequeos: recibo de instalación, resolución y duplicados en
-el `PATH`, artefactos pendientes, `models_provisioned` (los modelos de la
-selección guardada: TTS Qwen3-TTS, traducción Marian es→en y en→es y STT
-Parakeet TDT v3, más el Base si activaste el clonado) y `models_ct2` (derivados
-CT2 de traducción). Si alguno falla, lo lista y remite a
+`doctor` ejecuta cinco chequeos: recibo de instalación, resolución y duplicados en
+el `PATH`, artefactos pendientes y `models_provisioned` (los modelos de la
+selección guardada: TTS Qwen3-TTS, traducción opus-mt es→en y en→es y STT
+Parakeet TDT v3, más el Base si activaste el clonado). Si alguno falla, lo lista y remite a
 `ai-voice-interconnector setup`.
 
 El modelo Base de clonado es opcional: si no lo pediste, su ausencia no es un
@@ -898,10 +897,8 @@ de esquemas) y nada por stdout salvo ese objeto.
 - `--json`: Emite `{"translated", "source", "target"}`
 
 **Passthrough:** si `--from` y `--to` coinciden, devuelve el texto intacto sin
-cargar ningún modelo. El derivado CT2 exigido es `model.bin` más tokenizador
-(`tokenizer.json`, o `source.spm`+`target.spm` copiados desde el snapshot por
-`setup`); si el dir está roto (sin tokenizador), `setup` lo reconvierte de
-forma atómica. Si el modelo de traducción no está provisionado, falla
+cargar ningún modelo. El modelo de traducción exigido es `opus-mt-<par>`, con sus
+cinco ficheros presentes y de más de 0 bytes. Si no está provisionado, falla
 remitiendo a `ai-voice-interconnector setup` (exit **4**); si la traducción falla con el
 modelo ya cargado, sale con exit **9**.
 
@@ -921,7 +918,7 @@ ai-voice-interconnector cleanup --all --dry-run       # lista sin borrar (exit 0
 ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y alias)
 ```
 
-**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o la raíz de modelos. En la raíz de modelos **exclusiva** el borrado es de directorio entero (snapshots, derivado CT2, locks y `xet` cuelgan de ella); si el usuario eligió una caché HF compartida con `HF_HUB_CACHE`/`HF_HOME`, solo se borran los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `Helsinki-NLP/opus-mt-*`, `istupakov/parakeet-tdt-0.6b-v3-onnx`), sus locks y el derivado `ct2`, y **`xet` y el `.locks` completo se conservan y se anuncian** (`doctor` dice si la raíz es compartida con `models.shared_root`). `--all` es la unión de las tres categorías **sin programa ni PATH** — solo `self uninstall` borra el programa y el `PATH`. El borrado es quirúrgico: nunca toca modelos de otros proyectos en una caché compartida. `--dry-run` lista el plan sin borrar **y sin tomar el bloqueo**; `--yes/-y` omite la confirmación interactiva, y **sin terminal es obligatorio**: sin él sale con `confirmation_required` (2) y no borra nada. Con `--json` emite `{"schema_version":"4","status":"cleanup_complete","reason":null,"removed":[...],"dry_run":bool}`. Todo es recuperable: `setup` re-descarga los modelos y
+**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o la raíz de modelos. En la raíz de modelos **exclusiva** el borrado es de directorio entero (snapshots, locks y `xet` cuelgan de ella); si el usuario eligió una caché HF compartida con `HF_HUB_CACHE`/`HF_HOME`, solo se borran los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `CristianRojaas/opus-mt-*-ct2-int8`, `istupakov/parakeet-tdt-0.6b-v3-onnx`) y sus locks, y **`xet` y el `.locks` completo se conservan y se anuncian** (`doctor` dice si la raíz es compartida con `models.shared_root`). `--all` es la unión de las tres categorías **sin programa ni PATH** — solo `self uninstall` borra el programa y el `PATH`. El borrado es quirúrgico: nunca toca modelos de otros proyectos en una caché compartida. `--dry-run` lista el plan sin borrar **y sin tomar el bloqueo**; `--yes/-y` omite la confirmación interactiva, y **sin terminal es obligatorio**: sin él sale con `confirmation_required` (2) y no borra nada. Con `--json` emite `{"schema_version":"4","status":"cleanup_complete","reason":null,"removed":[...],"dry_run":bool}`. Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
 
 ---
@@ -983,7 +980,7 @@ instalación rota, es que no hay nada alrededor que instalar.
 
 Si la provisión de modelos falla al final, el programa **queda instalado**, el `status` es
 `installed`, el `reason` es `setup_failed`, el código de salida es **11** y el motivo del
-fallo viaja anidado en `models_cause` (`network_error` o `ct2_conversion_failed`). Es un
+fallo viaja anidado en `models_cause` (`network_error`). Es un
 **éxito parcial**: basta reintentar con `setup`.
 
 ---

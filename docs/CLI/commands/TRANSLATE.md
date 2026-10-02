@@ -79,10 +79,10 @@ route_to_daemon(daemon_mode, client)   ← Auto: probe /health; ForceDaemon: sie
     ├─ true  → translate_via_daemon: POST /translate (timeout 1500ms) al daemon
     │
     └─ false → rama local:
-                is_ct2_provisioned(pair)? ──no──► Err ModelMissing "model_missing" (exit 4)
+                is_provisioned(modelo del par)? ──no──► Err ModelMissing "model_missing" (exit 4)
                     │ sí
                     ▼
-                avi_translation::translate(text, source, target, ct2_dir)
+                avi_translation::translate(text, source, target, model_dir)
                     │
                     ├─ Ok  → emitir {translated, source, target}
                     └─ Err → Err TranslationFailed "translation_failed" (exit 9)
@@ -98,7 +98,7 @@ que las invariantes de contrato no dependen de si el daemon está activo.
 
 Cuando `from` y `to` normalizan al mismo idioma ISO, `handle_translate`
 devuelve el texto de entrada intacto sin instanciar ningún motor
-(`src/main.rs`). Es el único caso donde no se exige el modelo CT2
+(`src/main.rs`). Es el único caso donde no se exige el modelo de traducción
 provisionado.
 
 ---
@@ -108,19 +108,20 @@ provisionado.
 Sin daemon activo (o con `--no-daemon`), la traducción corre en el propio
 proceso CLI:
 
-- `store::is_ct2_provisioned(pair)` (`crates/avi-store`) exige el derivado
-  sano: `model.bin` más tokenizador (`tokenizer.json`, o
-  `source.spm`+`target.spm`), el mismo gate documentado en `setup`
-  (`docs/CLI/commands/SETUP.md`).
+- `ModelStore::is_provisioned("opus-mt-<par>")` (`crates/avi-store`) exige
+  que cada fichero de `MODEL_FILE_PATTERNS` del snapshot esté presente y pese
+  más de 0 bytes (`config.json`, `model.bin`, `shared_vocabulary.json`,
+  `source.spm`, `target.spm`). El motor lee el modelo directo del snapshot
+  (`ModelStore::new().model_dir("opus-mt-<par>")`).
 - `avi_translation::translate` (`crates/avi-translation/src/lib.rs`)
   segmenta el texto jerárquicamente con `HierarchicalSegmenter`
   (`avi-core::engine`), agrupa las oraciones de cada párrafo en lotes de a lo
   sumo `MAX_SENTENCES_PER_BATCH = 10` (`crates/avi-translation/src/lib.rs`)
   y traduce cada lote con una única llamada a `translate_batch`.
 - `Ct2TranslationEngine` (`crates/avi-translation/src/lib.rs`) envuelve
-  `ct2rs::Translator` sobre el modelo Marian/opus-mt convertido a CT2
+  `ct2rs::Translator` sobre el modelo opus-mt publicado ya convertido a CT2 int8
   (`ComputeType::INT8`); anexa manualmente el token `</s>` al origen de cada
-  oración (el encoder Marian lo exige y el conversor CT2 no lo añade) y sanea
+  oración (el encoder Marian lo exige y el modelo publicado no lo añade) y sanea
   la hipótesis del decoder quitando el `</s>` final.
 - El reensamblado une las oraciones de cada párrafo con espacio y los párrafos
   entre sí con `"\n\n"`, preservando la separación de la entrada
@@ -139,7 +140,7 @@ ningún modelo (`src/main.rs`).
 a `ExitCode::DaemonUnreachable` (`daemon_unreachable`). El endpoint
 `translate_handler` (`crates/avi-daemon/src/lib.rs`) replica la misma
 validación (`empty_text` → 400, `unsupported_language_pair` → 400,
-`model_missing` → 404 si `is_ct2_provisioned` falla) y, si el motor CT2 del
+`model_missing` → 404 si `is_provisioned` falla) y, si el motor CT2 del
 par ya está precargado en `DaemonState::ct2_engine`, traduce con el residente;
 si no, cae a carga bajo demanda con `avi_translation::translate` (misma
 función que la rama local). El CLI mapea el `reason` del cuerpo de error del
@@ -188,7 +189,7 @@ daemon, que lo normaliza internamente a `es` para el enrutado y la validación
 | valor fuera de alfabeto (`--from`/`--to` ∉ `{es, en}`) | 2 (rechazo del parser, sin `reason` de envelope) | `clap` rechaza el valor antes del handler (`value_parser`, `src/main.rs`); incluye `es-latam` vía CLI |
 | `empty_text` | 2 (`InvalidInput`) | `--text` vacío o solo espacios |
 | `unsupported_language_pair` | 2 (`InvalidInput`) | Par distinto de `es→en`/`en→es` tras normalizar; solo alcanzable vía handler local programático o vía IPC del daemon (por CLI el parser rechaza primero) |
-| `model_missing` | 4 (`ModelMissing`) | Derivado CT2 no provisionado para el par (`is_ct2_provisioned` falla); ejecutar `setup` |
+| `model_missing` | 4 (`ModelMissing`) | Modelo de traducción no provisionado para el par (`is_provisioned` falla); ejecutar `setup` |
 | `translation_failed` | 9 (`TranslationFailed`) | El motor CT2 cargó pero la inferencia falló |
 | `translation_unsupported` | 1 (`Error`) | Binario compilado sin el feature `native-translation` (solo rama local) |
 | `daemon_unreachable` | 5 (`DaemonUnreachable`) | `--daemon` sin daemon activo, o timeout/fallo de conexión en la ruta `Auto`/`ForceDaemon` |

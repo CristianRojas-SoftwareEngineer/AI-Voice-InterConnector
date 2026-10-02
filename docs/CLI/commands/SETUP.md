@@ -1,8 +1,8 @@
 # `setup`
 
-Provisiona el runtime: descarga los modelos pinneados desde HuggingFace Hub y convierte el derivado CT2 de traducción. Es **idempotente**: una segunda ejecución con todo presente no descarga nada.
+Provisiona el runtime: descarga los modelos pinneados desde HuggingFace Hub, incluidos los modelos de traducción, que ya vienen convertidos. Es **idempotente**: una segunda ejecución con todo presente no descarga nada.
 
-**Implementación:** el motor es el módulo `setup` de `avi-lifecycle` (`crates/avi-lifecycle/src/setup.rs`), que es una **traducción fiel, no un rediseño**: conserva la semántica que ya existía —selección por banderas, idempotencia por presencia del snapshot, purga de `--force-update` sobre la selección y conversión del derivado con directorio temporal atómico y el mismo gate que la acepta—. En `src/main.rs` quedan solo `handle_setup` y el sobre `--json`, porque el parseo de la CLI y el emisor no viven en ese crate.
+**Implementación:** el motor es el módulo `setup` de `avi-lifecycle` (`crates/avi-lifecycle/src/setup.rs`), que es una **traducción fiel, no un rediseño**: conserva la semántica que ya existía —selección por banderas, idempotencia por presencia del snapshot, purga de `--force-update` sobre la selección y validación de cada modelo por presencia de sus ficheros—. En `src/main.rs` quedan solo `handle_setup` y el sobre `--json`, porque el parseo de la CLI y el emisor no viven en ese crate.
 
 ---
 
@@ -29,19 +29,11 @@ No existe `--language`: el conjunto provisionado es fijo (es+en offline completo
 1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio de datos y materializa la voz de fábrica `default`.
 2. **`--with-stt`**: aviso informativo, nada más.
 3. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar. Purgar el modelo de clonado cuando el usuario no lo pidió dejaría la instalación sin lo que sí quiere. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
-4. **Calcular lo pendiente** para el resumen previo: repos sin snapshot y derivados CT2 que haya que convertir o revalidar (incluido el de un Marian que está por descargarse). Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§8.7).
+4. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§8.7).
 5. **Descargar** lo pendiente, repo a repo, en la revisión fijada.
-6. **Convertir los derivados CT2** de los pares `es-en` y `en-es` cuyo repo esté provisionado y cuyo derivado no pase el gate. La decisión se toma **después** de las descargas, según el estado real del almacén, con la misma regla que aplica `self install`.
-7. **Sobre `--json`** o mensaje humano.
+6. **Sobre `--json`** o mensaje humano.
 
-### La conversión del derivado CT2
-
-El derivado es **obligatorio**, no opcional: sin él la traducción no funciona. Vive en `avi_store::ct2_model_dir(pair)` = `<models_cache_dir>/ct2/opus-mt-<pair>/` y se genera con `ctranslate2` desde el snapshot de Marian.
-
-- **Atómica**: se convierte en un directorio temporal **hermano** del destino y se publica con `rename`. Hermano y no dentro, porque el renombrado final tiene que ser del mismo volumen: si el temporal estuviera dentro del destino, la escritura no sería atómica porque el destino se borra antes.
-- **Verificada antes de declarar éxito**: se comprueba con el mismo criterio del gate que usa el loader (`ct2_dir_missing_files`), de modo que un temporal incompleto nunca se publica.
-- **Los `.spm` se aseguran**: si el conversor no los depositó —una versión sin `--copy_files`— se copian desde el snapshot pinneado, porque sin ellos el derivado no puede tokenizar. Si el snapshot tampoco los trae, es un fallo con diagnóstico.
-- **Idempotente por fecha**: solo se reconvierte cuando el `model.bin` del derivado es más viejo que el snapshot. Si alguna de las dos fechas no se puede leer, el derivado se da por bueno: reconvertir porque no se pudo leer una fecha convertiría en fallo lo que es un no-op.
+La traducción es **obligatoria**: `setup` siempre provisiona `opus-mt-es-en` y `opus-mt-en-es`, que son modelos CTranslate2 int8 ya convertidos y publicados, sin pasos locales de conversión. Cada uno se lee directo del snapshot de HuggingFace y se valida por presencia de sus cinco ficheros (`config.json`, `model.bin`, `shared_vocabulary.json`, `source.spm`, `target.spm`), todos con tamaño mayor que cero.
 
 **La provisión no depende de nada que sobreviva a `cleanup --model`**, y por eso `setup` es el mecanismo de reintento: tras `cleanup --model` la aplicación queda operativa en cuanto `setup` vuelve a descargar.
 
@@ -54,19 +46,18 @@ Cada modelo se fija por **commit hash** de HuggingFace, así que un push upstrea
 | Nombre lógico | Repo HF | Rol | Selección |
 |---|---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Motor TTS (síntesis) | Siempre |
-| `marian-es-en` | `Helsinki-NLP/opus-mt-es-en` | Traducción es→en (derivado a CT2) | Siempre |
-| `marian-en-es` | `Helsinki-NLP/opus-mt-en-es` | Traducción en→es (derivado a CT2) | Siempre |
+| `opus-mt-es-en` | `CristianRojaas/opus-mt-es-en-ct2-int8` | Traducción es→en (CTranslate2 int8, derivado de Helsinki-NLP/opus-mt, CC-BY-4.0) | Siempre |
+| `opus-mt-en-es` | `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción en→es (CTranslate2 int8, derivado de Helsinki-NLP/opus-mt, CC-BY-4.0) | Siempre |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (4 artefactos int8 vía `MODEL_FILE_PATTERNS`) | Siempre |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz | Opt-in `--with-voice-cloning` |
 
-**Tamaño.** La descarga es de 4,7 GB para la selección base y de 7,3 GB con `--with-voice-cloning` (el modelo de clonado suma 2,5 GB). La cifra sale de la suma del tamaño medido de cada repo (`approx_bytes` de su `ModelPin`), y es la misma que anuncia la confirmación previa, en escala decimal y con un decimal:
+**Tamaño.** La descarga es de 3,33 GB para la selección base y de 5,85 GB con `--with-voice-cloning` (el modelo de clonado suma 2,5 GB). La cifra sale de la suma del tamaño medido de cada repo (`approx_bytes` de su `ModelPin`), y es la misma que anuncia la confirmación previa, en escala decimal y con un decimal:
 
 ```
-Se descargarán 4 modelo(s), unos 4.7 GB.
+Se descargarán 4 modelo(s), unos 3.3 GB.
 ```
 
-El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `snapshots/` como enlace simbólico en Unix y como enlace duro en Windows, así que el blob no se duplica. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), `hf-hub` copia el blob y el espacio en disco se duplica. Además, cada derivado CT2 ocupa unos 0,16 GB.
-
+El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `snapshots/` como enlace simbólico en Unix y como enlace duro en Windows, así que el blob no se duplica. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), `hf-hub` copia el blob y el espacio en disco se duplica.
 **Descarga interrumpida.** `hf-hub` no reanuda por `Range`: una descarga interrumpida se repite completa desde el primer byte del archivo afectado.
 
 **Dónde se descargan.** A la **caché exclusiva de la aplicación**, no a la caché HF del usuario: `models_cache_dir()` (`avi-store`), que es `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS y `$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux. La razón es que el borrado pueda ser de directorio entero sin tocar nada ajeno. **Si el usuario define `HF_HUB_CACHE` o `HF_HOME`, esa raíz pasa a ser compartida** y se respeta su elección: entonces `cleanup --model` limita el alcance a lo atribuible a la aplicación (regla R3) y `doctor` lo dice con `models.shared_root`.
@@ -79,21 +70,20 @@ El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `
 
 - `is_provisioned(name)` valida no solo la existencia del snapshot sino también los ficheros críticos con `size > 0`, lo que evita una caché truncada que pasa `.exists()` y revienta al cargar.
 - `ensure_downloaded` valida y hace rollback de snapshot y blobs ante una descarga parcial.
-- La conversión CT2 es atómica y verificada (§«La conversión del derivado CT2»).
 - `Pending::is_empty()` es la condición de idempotencia: si no hay nada pendiente, no se descarga nada y no se pregunta el tamaño.
 
 ---
 
 ## `setup` al final de una instalación: `setup_failed`
 
-`self install` aplica **la misma provisión que `setup`** (descarga de la selección y conversión CT2 según el estado real del almacén) en el mismo proceso (salvo `--no-setup`), sin repetir la confirmación ni escribir la selección, y su fallo **no es un fallo de la instalación**:
+`self install` aplica **la misma provisión que `setup`** (descarga de la selección según el estado real del almacén) en el mismo proceso (salvo `--no-setup`), sin repetir la confirmación ni escribir la selección, y su fallo **no es un fallo de la instalación**:
 
 | | Valor |
 |---|---|
 | `status` | `installed` — el programa **queda instalado** |
 | `reason` | `setup_failed` |
 | Código de salida | **11** (`ExitCode::SetupFailed`) |
-| Causa del fallo de provisión | Anidada en `models_cause.reason`: `network_error` o `ct2_conversion_failed` |
+| Causa del fallo de provisión | Anidada en `models_cause.reason`: `network_error` |
 | Qué hacer | Reintentar con `setup` |
 
 Es un **éxito parcial**, y por eso el sobre de `self install` sale por veredicto y no con el objeto `error` detrás. El detalle está en [`SELF.md`](SELF.md) y en §11 de [`../CONTRACT.md`](../CONTRACT.md).
@@ -132,10 +122,7 @@ No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a s
 |---|---|---|
 | No se pudo inicializar el registro de voces | `voice_store_init_failed` | 1 |
 | Fallo de descarga de un snapshot (invocación directa) | `network_error` | 20 |
-| Fallo de conversión de un derivado (invocación directa) | `setup_failed` | 11 |
-| El mismo fallo, invocado desde `self install` | `setup_failed` (11) con la causa en `models_cause` | 11 |
-
-`ct2_conversion_failed` **no es un `reason` de primer nivel de la invocación directa**: es el `reason` anidado que viaja en `models_cause` cuando el fallo lo sufre `self install`. Su valor declarado es **1**, el del error genérico, y el proceso sale con el de la operación.
+| Fallo de descarga, invocado desde `self install` | `setup_failed` (11) con la causa en `models_cause` | 11 |
 
 ---
 

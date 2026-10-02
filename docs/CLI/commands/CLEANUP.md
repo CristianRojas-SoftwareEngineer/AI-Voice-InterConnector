@@ -34,7 +34,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 - **R1**: solo se borra dentro de raíces de propiedad exclusiva. Una ruta fuera de ellas es un error interno y nunca se borra.
 - **El directorio de programa no lo toca `cleanup`** —eso es `self uninstall`— y aparece en el plan como recurso **conservado**, con su motivo, porque un plan que no dice qué se queda no permite saber que los modelos de otra herramienta siguen ahí.
-- **R3**: en la raíz de modelos **exclusiva** el borrado es de **directorio entero** (snapshots, derivado CT2, locks y `xet` cuelgan de ella). En la raíz **compartida** que el usuario eligió con `HF_HUB_CACHE`/`HF_HOME` solo se borran los repos fijados (`MODEL_REVISIONS`), sus locks y el derivado `ct2`: nunca `xet` ni el `.locks` completo, ni un repo de otra herramienta (criterio 23).
+- **R3**: en la raíz de modelos **exclusiva** el borrado es de **directorio entero** (snapshots, locks y `xet` cuelgan de ella). En la raíz **compartida** que el usuario eligió con `HF_HUB_CACHE`/`HF_HOME` solo se borran los repos fijados (`MODEL_REVISIONS`), y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de otra herramienta (criterio 23).
 
 **La exclusividad se decide por identidad de ruta, no por el valor de la variable**: la raíz registrada en el recibo era exclusiva en el momento de instalar, y que el usuario después apunte `HF_HUB_CACHE` a otro sitio no convierte la raíz registrada en compartida. Es lo que evita que un recibo viejo autorice borrar lo ajeno o, al revés, que una variable obsoleta impida borrar lo propio.
 
@@ -100,7 +100,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 | Borrar muchas locuciones | `cleanup --synthetic-speech` |
 | Borrar una voz clonada | `voice remove --name X` |
 | Borrar las voces del usuario | `cleanup --voices` |
-| Liberar los 4,7 GB de los modelos base (7,3 GB con el de clonado) y volver a descargarlos con `setup` | `cleanup --model` |
+| Liberar los 3,3 GB de los modelos base (5,85 GB con el de clonado) y volver a descargarlos con `setup` | `cleanup --model` |
 | Desinstalar el programa y su `PATH` | `self uninstall` |
 | Desinstalar conservando modelos, voces y habla | `self uninstall --keep-data` |
 

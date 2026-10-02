@@ -546,7 +546,7 @@ quedan documentados aquí de forma autocontenida:
   archivo que falta y el comando que lo aprovisiona
   (`ai-voice-interconnector setup`, `setup --with-voice-cloning` o
   `cargo xtask build-engine`). Ninguna descarga nada por su cuenta: hacerlo
-  costaría 4,7 GB en cada corrida de CI sin obtener cobertura, porque el runner
+  costaría 3,3 GB en cada corrida de CI sin obtener cobertura, porque el runner
   de tests no tiene el binario del motor ni los pesos locales. `cargo xtask
   release` las ejecuta antes del bump.
 
@@ -709,8 +709,8 @@ recursos de red), se copia el blob y el disco se duplica. No hay Python en la ru
 | Modelo lógico | Repo HF | Contenido |
 |---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Pesos TTS (síntesis) |
-| `marian-es-en` | `Helsinki-NLP/opus-mt-es-en` | Traducción es→en (CT2) |
-| `marian-en-es` | `Helsinki-NLP/opus-mt-en-es` | Traducción en→es (CT2) |
+| `opus-mt-es-en` | `CristianRojaas/opus-mt-es-en-ct2-int8` | Traducción es→en (CTranslate2 int8, 82.536.565 bytes) |
+| `opus-mt-en-es` | `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción en→es (CTranslate2 int8, 82.536.565 bytes) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (671,1 MB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz (opt-in `--with-voice-cloning`) |
 
@@ -718,6 +718,12 @@ Los pines viven en `MODEL_REVISIONS` (`crates/avi-shared/src/paths.rs`): un `&[M
 con `name`, `repo`, `revision` y `approx_bytes` (tamaño medido de la descarga, del que sale la
 cifra que anuncia `setup`). Actualizar una revisión es una acción deliberada y auditable, y
 obliga a revisar también su tamaño.
+
+Los dos modelos de traducción son derivados int8 de Helsinki-NLP/opus-mt (CC-BY-4.0),
+convertidos una sola vez a CTranslate2 y publicados en los repos `CristianRojaas/*-ct2-int8`.
+Si una versión de `ct2rs`/CTranslate2 rompe la compatibilidad con ese formato, hay que
+reconvertir con `ctranslate2` (4.8.1 en la conversión actual, con `--quantization int8
+--copy_files source.spm target.spm`) y publicar una revisión nueva.
 
 ### Ubicaciones en disco por SO
 
@@ -760,9 +766,9 @@ Cada capa tiene su comando:
 | Capa | Qué contiene | Comando |
 |------|--------------|---------|
 | Proyecto (repo) | `target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario/objetos/`output.wav` del motor y pesos locales obsoletos en `vendor/qwen3-tts` | `cargo xtask clean --repo` (capa por defecto) |
-| App (perfil de usuario) | Instalación, `data_dir()`, raíz de modelos, derivados CT2 y temporales `avi_*`/`avi-*`/`*.qvoice` | `cargo xtask clean --app` (delega en `ai-voice-interconnector self uninstall --yes`, o `cleanup --all --yes` en canal `homebrew`) |
+| App (perfil de usuario) | Instalación, `data_dir()`, raíz de modelos y temporales `avi_*`/`avi-*`/`*.qvoice` | `cargo xtask clean --app` (delega en `ai-voice-interconnector self uninstall --yes`, o `cleanup --all --yes` en canal `homebrew`) |
 | Ambas | Aplicación y después repositorio | `cargo xtask clean --all` |
-| Global compartida | `~/.cargo/registry`, `~/.cargo/git`, caché de `sccache`, paquetes `pip` del conversor CTranslate2 | Manual: la comparten otros proyectos |
+| Global compartida | `~/.cargo/registry`, `~/.cargo/git`, caché de `sccache` | Manual: la comparten otros proyectos |
 
 ```bash
 # Ver qué se borraría y cuánto ocupa, sin borrar nada

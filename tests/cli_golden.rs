@@ -2298,15 +2298,11 @@ fn cleanup_model_real_run_reports_paths() {
     assert!(
         removed.contains(
             &shared
-                .join("models--Helsinki-NLP--opus-mt-es-en")
+                .join("models--CristianRojaas--opus-mt-es-en-ct2-int8")
                 .display()
                 .to_string()
         ),
         "el repo propio sí se borra: {removed:?}"
-    );
-    assert!(
-        removed.contains(&shared.join("ct2").display().to_string()),
-        "y el derivado CT2, que es atribuible a la aplicación"
     );
     // R3: nada de esto se toca.
     assert!(
@@ -2335,26 +2331,23 @@ fn cleanup_model_real_run_reports_paths() {
     );
     assert!(shared.exists(), "y la raíz compartida no se borra entera");
     assert!(
-        !shared.join("models--Helsinki-NLP--opus-mt-es-en").exists(),
+        !shared.join("models--CristianRojaas--opus-mt-es-en-ct2-int8").exists(),
         "mientras el repo propio sí desaparece"
     );
 
     let _ = std::fs::remove_dir_all(&sandbox);
 }
 
-/// Planta el layout de modelos vigente: un repo fijado, el derivado CT2, los locks y
-/// `xet` colgando de la raíz, más un repo de otra herramienta.
+/// Planta el layout de modelos vigente: un repo fijado, los locks y `xet` colgando
+/// de la raíz, más un repo de otra herramienta.
 fn seed_models(root: &std::path::Path) {
-    let repo = root.join("models--Helsinki-NLP--opus-mt-es-en");
+    let repo = root.join("models--CristianRojaas--opus-mt-es-en-ct2-int8");
     std::fs::create_dir_all(repo.join("snapshots").join("abc")).unwrap();
     std::fs::write(
         repo.join("snapshots").join("abc").join("config.json"),
         b"{}",
     )
     .unwrap();
-    let ct2 = root.join("ct2").join("opus-mt-es-en");
-    std::fs::create_dir_all(&ct2).unwrap();
-    std::fs::write(ct2.join("model.bin"), b"marker").unwrap();
     std::fs::create_dir_all(root.join(".locks").join("models--x--y")).unwrap();
     std::fs::create_dir_all(root.join("xet")).unwrap();
     std::fs::create_dir_all(root.join("models--otra--herramienta")).unwrap();
@@ -3793,8 +3786,8 @@ mod tts {
     fn setup_json_without_language_key() {
         // Contrato del payload --json: la clave `language` desaparece de la respuesta.
         // Corre el binario real en un sandbox con la selección por defecto ya
-        // sembrada (snapshots fijados y derivados CT2 sanos), de modo que `setup`
-        // no descarga ni convierte nada. Un proxy inalcanzable garantiza que, si el
+        // sembrada (snapshots fijados completos), de modo que `setup`
+        // no descarga nada. Un proxy inalcanzable garantiza que, si el
         // sembrado no bastara, la descarga fallaría en lugar de bajar gigabytes.
         let inst = IsolatedInstance::new("setup_json");
         let models_root = inst.dir.join("cache");
@@ -3804,12 +3797,6 @@ mod tts {
             .filter(|name| *name != "qwen3-tts-0.6b-base")
             .collect();
         seed_pinned_models(&models_root, &names);
-        for pair in ["es-en", "en-es"] {
-            let ct2 = models_root.join("ct2").join(format!("opus-mt-{pair}"));
-            std::fs::create_dir_all(&ct2).expect("crear derivado CT2 sembrado");
-            std::fs::write(ct2.join("model.bin"), b"marker").expect("sembrar model.bin");
-            std::fs::write(ct2.join("tokenizer.json"), b"{}").expect("sembrar tokenizer");
-        }
         let mut envs = inst.contract_args();
         envs.push(("HTTPS_PROXY", "http://127.0.0.1:9"));
         envs.push(("HTTP_PROXY", "http://127.0.0.1:9"));

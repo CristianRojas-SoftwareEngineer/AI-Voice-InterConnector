@@ -40,7 +40,7 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
   ]
 
   caveats <<~EOS
-    Los modelos de voz (traduccion, sintesis y transcripcion; unos 4.7 GB, o 7.3 GB con
+    Los modelos de voz (traduccion, sintesis y transcripcion; unos 3.3 GB, o 5.85 GB con
     clonado de voz) no vienen incluidos:
     descargalos una sola vez con:
       ai-voice-interconnector setup
@@ -1114,7 +1114,7 @@ fn parse_macos_sha256(sums_text: &str, version: &str) -> Result<String> {
 /// Entradas `zap trash:` del Cask derivadas de las canónicas de `avi-shared`
 /// (decisión (b), vía (f)): la raíz de modelos **exclusiva** de la
 /// aplicación, el directorio de soporte de la aplicación, un snapshot por
-/// modelo pineado en `MODEL_REVISIONS` y el derivado CT2. Sin `xet` ni
+/// modelo pineado en `MODEL_REVISIONS`. Sin `xet` ni
 /// `.locks` globales: en caché compartida rige R3 y esos directorios no son
 /// atribuibles a la aplicación.
 fn cask_zap_entries() -> Vec<String> {
@@ -1139,7 +1139,6 @@ fn cask_zap_entries() -> Vec<String> {
             pin.repo.replace('/', "--")
         ));
     }
-    entries.push("~/.cache/huggingface/hub/ct2".to_string());
     entries
 }
 
@@ -1588,7 +1587,6 @@ mod tests {
                 "el zap debe derivar el snapshot canónico {snapshot}"
             );
         }
-        assert!(c.contains("~/.cache/huggingface/hub/ct2"));
         // R3: sin globales compartidos.
         for forbidden in [
             "~/.cache/huggingface/xet",
@@ -1599,7 +1597,7 @@ mod tests {
                 "el zap no debe incluir el global {forbidden} (R3)"
             );
         }
-        // Conteo exacto: modelos + soporte + un snapshot por modelo + CT2.
+        // Conteo exacto: modelos + soporte + un snapshot por modelo.
         let zap_block = c
             .split("zap trash: [")
             .nth(1)
@@ -1610,8 +1608,8 @@ mod tests {
         let trash_lines = zap_block.lines().filter(|l| l.contains('"')).count();
         assert_eq!(
             trash_lines,
-            3 + avi_shared::paths::MODEL_REVISIONS.len(),
-            "el zap debe listar exactamente modelos + soporte + snapshots + CT2"
+            2 + avi_shared::paths::MODEL_REVISIONS.len(),
+            "el zap debe listar exactamente modelos + soporte + snapshots"
         );
     }
 

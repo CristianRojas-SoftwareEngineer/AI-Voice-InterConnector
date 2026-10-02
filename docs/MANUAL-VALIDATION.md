@@ -7,7 +7,7 @@ ejecuta en Windows sobre cada release, y que sirve de guion para el feedback de
 usuarios reales en Linux y macOS. El pipeline de CI solo corre un **smoke test
 automatizado** del binario congelado (`ai-voice-interconnector version`, exit 0); la matriz de
 comandos de abajo es la parte que **no** cabe en un runner de CI porque exige
-cargar Qwen3-TTS + Parakeet, descargar 4,7 GB base (7,3 GB con `--with-voice-cloning`),
+cargar Qwen3-TTS + Parakeet, descargar 3,3 GB base (5,85 GB con `--with-voice-cloning`),
 sintetizar audio real y —en las rutas interactivas— un micrófono y una terminal
 con una persona pulsando teclas.
 
@@ -346,10 +346,10 @@ en **español a stderr** (con `reason` legible por máquina) y dejan stdout limp
 |---|---|---|
 | **2** | Entrada inválida (`usage_error`) | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es-latam < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica) |
 | **3** | Recurso no encontrado | `speech play --label etiqueta_que_no_existe`; `voice remove --name voz_que_no_existe`; `speech transcribe --audio no_existe.wav --source-language es-latam` |
-| **4** | Modelo no provisionado | cualquier síntesis/transcripción **sin** haber corrido `setup`; también `dub`/`say`/`synthesize`/`translate` con idiomas distintos y el derivado CT2 del par sin provisionar (`model_missing`) |
+| **4** | Modelo no provisionado | cualquier síntesis/transcripción **sin** haber corrido `setup`; también `dub`/`say`/`synthesize`/`translate` con idiomas distintos y el modelo de traducción del par sin provisionar (`model_missing`) |
 | **5** | Daemon inalcanzable | `speech say --text x --daemon` con el daemon detenido |
 | **6** | Conflicto de estado | `speech synthesize --text x --label ya_existe` sin `--force` (colisión de etiqueta) |
-| **9** | Fallo del pipeline de traducción | `dub`/`say`/`synthesize`/`translate` con idiomas que difieren, el derivado CT2 **ya provisionado**, y la inferencia falla en tiempo de ejecución (`translation_failed`) |
+| **9** | Fallo del pipeline de traducción | `dub`/`say`/`synthesize`/`translate` con idiomas que difieren, el modelo de traducción **ya provisionado**, y la inferencia falla en tiempo de ejecución (`translation_failed`) |
 | **10** | Fallo del pipeline de transcripción o de la captura del micrófono | difícil de sondear a mano: un `--audio` inexistente sale con 3, ilegible con 2 y con error de E/S con 1 |
 
 ```bash

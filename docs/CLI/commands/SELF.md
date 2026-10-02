@@ -52,7 +52,7 @@ El orden es el de §8.3 y está escrito en el propio código, con el número de 
 8. **Integración de `PATH`** ([`../CONTRACT.md` §11](../CONTRACT.md) y §8.3.1 de la especificación). En Unix el `PATH` se modifica **por defecto** (decisión D2) y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
 9. **Windows**: si el `PATH` de máquina parece llevar una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. **HKLM nunca se modifica**, ni para escribir ni para leer.
 10. **Escribir el recibo** de forma atómica y liberar el bloqueo.
-11. **La misma provisión que `setup`**, salvo `--no-setup`: descarga de la selección guardada y conversión CT2 obligatoria según el estado real del almacén, sin repetir la confirmación ni escribir la selección.
+11. **La misma provisión que `setup`**, salvo `--no-setup`: descarga de la selección guardada según el estado real del almacén, sin repetir la confirmación ni escribir la selección.
 12. **Resumen final**: versión, rutas, estado del `PATH` y estado de los modelos.
 
 **Lo que el recibo registra es el estado, no el diff de esta pasada.** El recibo dice qué integración de `PATH` está en pie, no qué cambió en esta ejecución: si registrara solo el diff, una segunda instalación desde el mismo bundle escribiría un recibo sin entrada de `PATH` y `self uninstall` no podría revertir la que puso la primera —dejando residuo, que es el criterio 17—. El diff vive aparte, en `Outcome::path_rewritten`, y es lo único que decide si el resumen pide abrir una terminal nueva.
@@ -93,7 +93,7 @@ Si el `setup` del paso 11 falla, **la instalación no falla**. §8.1 lo declara 
 | Forma de salida | **Por veredicto**: el sobre y el resumen se emiten igual, y **no** se adjunta el objeto `error` |
 | Qué hacer | Reintentar con `setup`: el programa está instalado |
 
-El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cause`, con su propio `reason` —`network_error` para un fallo de descarga, `ct2_conversion_failed` para uno de conversión— y su mensaje. Los dos `reason` dicen cosas distintas y por eso no se funden: uno dice **qué** falló y el otro **qué dejó de completarse**.
+El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cause`, con su propio `reason` —`network_error` para un fallo de descarga— y su mensaje. Ese `reason` y `setup_failed` dicen cosas distintas y por eso no se funden: uno dice **qué** falló y el otro **qué dejó de completarse**.
 
 ```json
 {
@@ -111,9 +111,7 @@ El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cau
 
 `models_cause` **solo existe si hubo fallo**: un sobre estable es más fácil de leer que uno con nulos. Los cuatro valores de `models` son `skipped` (`--no-setup`), `already_provisioned`, `provisioned` y `failed`.
 
-**`ct2_conversion_failed` no es nunca el código de salida del proceso.** Es un `reason` anidado cuyo valor declarado es **1**, el del error genérico, y el proceso sale con el de la operación (`setup_failed`, 11). Anidarlo con un 11 haría que un consumidor leyera un 11 donde la tabla de §8.1 no lo promete.
-
-Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de conversión sale con `reason` `setup_failed` y 11, y un fallo de descarga sale con `network_error` y **20**. El `self update` propaga el mismo parcial: si el `setup` del binario nuevo falla, el resultado es `updated` con `reason` `setup_failed`, salida 11 y causa anidada en `models_cause`.
+Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de descarga sale con `network_error` y **20**. El `self update` propaga el mismo parcial: si el `setup` del binario nuevo falla, el resultado es `updated` con `reason` `setup_failed`, salida 11 y causa anidada en `models_cause`.
 
 ---
 

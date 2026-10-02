@@ -30,7 +30,7 @@ docs/CLI/
 | [commands/VOICE.md](commands/VOICE.md) | Investigación de `voice`: clonación, listado y eliminación de voces |
 | [commands/DEVICES.md](commands/DEVICES.md) | Investigación de `devices`: enumeración de dispositivos de audio |
 | [commands/DOCTOR.md](commands/DOCTOR.md) | Investigación de `doctor`: diagnósticos del sistema, sección de ciclo de vida y patrón de veredicto |
-| [commands/SETUP.md](commands/SETUP.md) | Investigación de `setup`: provisión del runtime, modelos, derivados CT2 y el papel de `setup_failed` |
+| [commands/SETUP.md](commands/SETUP.md) | Investigación de `setup`: provisión del runtime, modelos y el papel de `setup_failed` |
 | [commands/CLEANUP.md](commands/CLEANUP.md) | Investigación de `cleanup`: borrado por categorías, reglas de propiedad y confirmación |
 | [commands/SELF.md](commands/SELF.md) | Investigación del grupo `self`: `self install` (con reparación) y `self uninstall`, sobre el motor `avi-lifecycle` |
 | [commands/DAEMON.md](commands/DAEMON.md) | Investigación de `daemon`: ciclo de vida, endpoints Axum, protocolo IPC |
@@ -56,7 +56,7 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 |---|---|
 | `devices` | Lista dispositivos de audio del sistema |
 | `doctor` | Diagnóstico del sistema y del estado del ciclo de vida (recibo, canal, `PATH`, pendientes, modelos) |
-| `setup` | Descarga los modelos pinneados vía HuggingFace Hub (sin índice: solo presencia de snapshot) y convierte sus derivados CT2 |
+| `setup` | Descarga los modelos pinneados vía HuggingFace Hub (sin índice: solo presencia de snapshot) |
 | `cleanup` | Borra el estado por categorías (`--voices`/`--synthetic-speech`/`--model`/`--all`, `--dry-run`, `--yes/-y`; sin categoría → exit 2) sin tocar el programa ni el `PATH` |
 | `version` | Muestra la versión |
 | `translate` | Traduce texto es↔en sin síntesis de audio |

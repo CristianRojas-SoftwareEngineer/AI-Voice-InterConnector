@@ -30,7 +30,7 @@ ai-voice-interconnector doctor [--json]
 | `install` | `dir` (directorio de programa), `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`) y `version` (la del recibo, si lo hay) |
 | `path` | `resolves_to_this_install`, `duplicate_entries`, `integration` (`present`/`absent`/`not_modified`) y `coexisting` (instalaciones ajenas, con su canal y cuál tiene precedencia) |
 | `pending` | `transaction_journal`, `parked`, `stagings`, `temporaries` y `temporaries_kept` |
-| `models` | `root`, `shared_root`, `provisioned`, `missing` (solo repos de la selección guardada sin provisionar), `base`, `ct2_incomplete` y `size_bytes` |
+| `models` | `root`, `shared_root`, `provisioned`, `missing` (solo repos de la selección guardada sin provisionar), `base` y `size_bytes` |
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
 
@@ -53,7 +53,7 @@ ai-voice-interconnector doctor [--json]
 
 ---
 
-## Los seis chequeos
+## Los cinco chequeos
 
 `checks` y `failed` son el veredicto, y `failed` no está vacío si y solo si hay algún `ok: false`:
 
@@ -64,11 +64,7 @@ ai-voice-interconnector doctor [--json]
 | `path_duplicates` | Más de una entrada del `PATH` apunta a una instalación | Coexistencia (Cask + `script`) |
 | `pending_artifacts` | Quedan aparcados, stagings o temporales por recoger | Transacción interrumpida |
 | `models_provisioned` | Falta algún repo de la selección efectiva (los obligatorios más Base si el usuario activó el clonado) | Solo presencia de snapshot, con los ficheros críticos |
-| `models_ct2` | Hay `Marian` provisionado y su derivado CT2 no pasa el gate | `model.bin` más tokenizador completo |
-
 **El modelo Base de clonado no es un chequeo.** `qwen3-tts-0.6b-base` es opt-in: su ausencia es un dato (`models.base = "missing_opt_in"`), nunca un fallo, porque no es obligatorio para que el producto funcione.
-
-**El chequeo de CT2 depende del snapshot de Marian.** Si `marian-es-en` no está provisionado, lo que se informa es el modelo ausente, no un derivado incompleto: son ramas excluyentes por dirección.
 
 **Nada de esto escribe en disco.** La recuperación de §8.1 se ejecuta aquí en **modo informe**: `doctor` **calcula** lo que la recuperación haría —con la misma decisión que usa el barrido real— y lo publica en `pending`, sin tomar el bloqueo y sin modificar nada. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del producto en uno que borra temporales de la máquina que lo invoca.
 
@@ -116,10 +112,9 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
   "models": {
     "root": "C:\\Users\\…\\AppData\\Local\\ai-voice-interconnector\\cache\\models",
     "shared_root": false,
-    "provisioned": ["qwen3-tts-0.6b", "marian-es-en", "marian-en-es", "parakeet-tdt-v3"],
+    "provisioned": ["qwen3-tts-0.6b", "opus-mt-es-en", "opus-mt-en-es", "parakeet-tdt-v3"],
     "missing": [],
     "base": "missing_opt_in",
-    "ct2_incomplete": [],
     "size_bytes": 9876543210
   },
   "checks": [

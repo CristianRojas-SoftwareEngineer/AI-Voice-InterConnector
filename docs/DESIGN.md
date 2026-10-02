@@ -119,7 +119,7 @@ Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato 
 
 ## Traducción cross-lingual (opus-mt / CTranslate2)
 
-Subsistema `crates/avi-translation` que traduce `es<->en` antes de la síntesis (`--source-language`/`--target-language` en `speech say`/`synthesize`) o de forma aislada (`translate`). Usa `Helsinki-NLP/opus-mt-es-en` / `opus-mt-en-es` (CC-BY-4.0) convertidos a CT2 en `setup`.
+Subsistema `crates/avi-translation` que traduce `es<->en` antes de la síntesis (`--source-language`/`--target-language` en `speech say`/`synthesize`) o de forma aislada (`translate`). Usa los derivados int8 de `Helsinki-NLP/opus-mt-es-en` / `opus-mt-en-es` (CC-BY-4.0), convertidos una sola vez a CT2 y publicados en `CristianRojaas/opus-mt-es-en-ct2-int8` y `CristianRojaas/opus-mt-en-es-ct2-int8`; `setup` solo los descarga.
 
 ## Transcripción STT (Parakeet TDT v3 int8 / ort)
 

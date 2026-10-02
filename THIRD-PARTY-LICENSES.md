@@ -23,7 +23,7 @@ completitud.
 | Modelo | Licencia (verificada en HuggingFace) | Fuente |
 |--------|--------------------------------------|--------|
 | `qwen3-tts-0.6b` / `qwen3-tts-0.6b-base` (motor Qwen3-TTS, Base opt-in) | **MIT / Apache-2.0** | <https://github.com/QwenLM/Qwen3-TTS> |
-| `Helsinki-NLP/opus-mt-es-en` / `opus-mt-en-es` (traducción) | **CC-BY-4.0** | <https://huggingface.co/Helsinki-NLP/opus-mt-es-en> |
+| `CristianRojaas/opus-mt-es-en-ct2-int8` / `CristianRojaas/opus-mt-en-es-ct2-int8` (traducción; derivados int8 de Helsinki-NLP/opus-mt) | **CC-BY-4.0** | <https://huggingface.co/CristianRojaas/opus-mt-es-en-ct2-int8>, <https://huggingface.co/CristianRojaas/opus-mt-en-es-ct2-int8>; origen: <https://huggingface.co/Helsinki-NLP/opus-mt-es-en> |
 | `istupakov/parakeet-tdt-0.6b-v3-onnx` (Parakeet TDT 0.6B v3 int8, ONNX) | **CC-BY-4.0** | <https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx> |
 
 ---

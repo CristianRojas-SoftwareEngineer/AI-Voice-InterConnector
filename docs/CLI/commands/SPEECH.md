@@ -180,8 +180,8 @@ Validaciones y flujo local:
  `is_valid_identifier` sobre la etiqueta normalizada (exit 2
  `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) → comprobación fast-fail
  de colisión de etiqueta (exit 6 sin `--force`) → `traducir_si_difiere`
- (passthrough si `source == target`; si no, exige el derivado CT2 sano,
- exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_temperature` → sin
+ (passthrough si `source == target`; si no, exige el modelo de traducción
+ provisionado, exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_temperature` → sin
  `--play`, persiste directamente; con `--play`, entra al bucle de 4
  opciones y persiste solo al aceptar (con recomprobación de colisión) →
  si `--output`, copia el WAV persistido a esa ruta.
@@ -288,8 +288,8 @@ ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
 4) y el modelo de síntesis provisionado (`require_model_provisioned`) →
 captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito está
 vacío, exit 2 `empty_text` → si `source != target`, exige el par
-`{es-en, en-es}` (si no, exit 2 `unsupported_language_pair`) y el derivado CT2
-sano (exit 4 `model_missing` con los ficheros faltantes si no); sin el feature
+`{es-en, en-es}` (si no, exit 2 `unsupported_language_pair`) y el modelo de
+traducción provisionado (exit 4 `model_missing` si no); sin el feature
 `native-translation`, exit 1 `translation_unsupported` → la voz debe existir
 (exit 3 `voice_not_found`) → `Qwen3TtsEngine::synthesize_with_temperature` →
 `AudioService::play_wav`.
@@ -402,7 +402,7 @@ solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 | `audio_not_found` | 3 | `--audio` en `transcribe` o `dub` apunta a un archivo inexistente |
 | `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (incluye `speech list --voice` sobre voz inexistente) |
 | `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente |
-| `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el derivado CT2 del par de traducción |
+| `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`) |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
 | `label_exists` | 6 | `synthesize` sin `--force` sobre una etiqueta ya usada |
 | `stt_unsupported` | 1 | Binario compilado sin el feature `native-stt` (transcribe/dub) |

@@ -47,7 +47,8 @@
       "notes": "log_filter con Targets; aplicado en el init de main.rs dentro del mismo commit que T5 porque ambas editan main.rs"
     },
     "7": {
-      "status": "pending"
+      "status": "done",
+      "notes": "docs delegadas a subagente y revisadas; zap del Cask sin hub/ct2 y tests de cli_golden alineados"
     },
     "8": {
       "status": "pending"

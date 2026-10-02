@@ -50,7 +50,7 @@ impl Ct2TranslationEngine {
         // El motor se instancia para una dirección fija según el `model_dir`
         // con el que se construyó; `source_lang`/`target_lang` no se usan aquí.
         // Se anexa `</s>` manualmente al origen: el encoder
-        // Marian/opus-mt lo exige y `ct2-transformers-converter` no lo añade
+        // Marian/opus-mt lo exige y el modelo convertido no lo añade
         // automáticamente (ver nota técnica en el test
         // `ct2rs_loads_opus_mt_model_and_translates` de este mismo archivo).
         let sources: Vec<String> = sentences

@@ -43,7 +43,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 - **Clonación de voz**: ~10 segundos de audio de referencia (`speech-reference.wav` obligatorio, `timbre-reference.wav` opcional)
 - **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés (`--target-language`)
 - **Transcripción STT**: `speech transcribe` (Parakeet TDT 0.6B v3 int8, ONNX Runtime)
-- **Traducción**: `translate` es↔en (CTranslate2, opt-in)
+- **Traducción**: `translate` es↔en (CTranslate2)
 - **Daemon**: `daemon start/status/stop/restart/serve` (Axum, `127.0.0.1:8765` por defecto con override `AVI_DAEMON_PORT`, streaming NDJSON)
 - **100% offline**: Sin APIs externas ni conexiones a internet (modelos en la caché de la aplicación, `~/.cache/ai-voice-interconnector/models` en Linux)
 - **Binario autocontenido por plataforma**: `tar.gz` (Linux/macOS) / `.zip` (Windows) con `LICENSE`/`THIRD-PARTY-LICENSES.md`/`SOURCE-OFFER.md`
@@ -132,11 +132,11 @@ La firma Authenticode/Apple notarization es goal a largo plazo (`docs/GOAL.md`).
 ### Provisión del/los modelo(s) (`setup`)
 
 Cinco modelos pinneados (4 + 1 opt-in) no vienen en el binario: `qwen3-tts-0.6b` (2,5 GB),
-`marian-es-en`/`marian-en-es` (0,6 y 0,9 GB), `parakeet-tdt-v3` (0,7 GB, int8) y `qwen3-tts-0.6b-base` (2,5 GB, opt-in con `setup --with-voice-cloning`). Se descargan a la
+`opus-mt-es-en`/`opus-mt-en-es` (0,08 GB cada uno), `parakeet-tdt-v3` (0,7 GB, int8) y `qwen3-tts-0.6b-base` (2,5 GB, opt-in con `setup --with-voice-cloning`). Se descargan a la
 **caché exclusiva de la aplicación** (`~/.cache/ai-voice-interconnector/models` en Linux,
 `~/Library/Caches/ai-voice-interconnector/models` en macOS,
 `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows; si defines `HF_HUB_CACHE` o
-`HF_HOME`, esa raíz se respeta y pasa a ser compartida) vía `setup` (4,7 GB base, 7,3 GB con `--with-voice-cloning`; el disco ocupa lo mismo que la descarga):
+`HF_HOME`, esa raíz se respeta y pasa a ser compartida) vía `setup` (3,3 GB base, 5,85 GB con `--with-voice-cloning`; el disco ocupa lo mismo que la descarga):
 
 ```bash
 ai-voice-interconnector setup

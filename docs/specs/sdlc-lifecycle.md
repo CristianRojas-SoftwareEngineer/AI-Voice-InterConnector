@@ -361,9 +361,6 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 | `rolled_back` | `self install`, `self update` | Fallo durante el reemplazo; versión anterior restaurada | Error |
 | `removal_scheduled` | `self uninstall` | Windows: el directorio se borra al terminar el proceso | Éxito |
 | `program_dir_kept` | `self uninstall` | Todas: el resto se completó, pero el directorio de programa no se pudo borrar ni programar su borrado | Error con código propio (22) |
-| `ct2_conversion_failed` | `self install`, `self update` | Falló la conversión de un derivado CT2 durante la provisión | **`reason` anidado**, no código de salida: viaja en `models_cause.reason` del sobre, con su mensaje, y su valor declarado es **1**, el del error genérico. El proceso sale con el de la operación, que es `setup_failed` (11) |
-
-**`ct2_conversion_failed` es el único `reason` de la tabla que no es de primer nivel.** No aparece en `reason` del sobre ni determina el código de salida: es la causa **anidada** del fallo de provisión, la que dice *qué* falló, mientras que `setup_failed` —que sí es de primer nivel— dice *qué dejó de completarse*. Los dos se necesitan y no se funden: fundirlos perdería el `reason` que la reserva a cada caso. Su valor es 1 y no 11 a propósito, porque el 11 es el código de la operación y un consumidor que leyera un 11 anidado vería un código que la tabla no promete ahí. Cuando `setup` se invoca **directamente**, el mismo fallo sale como `setup_failed` de primer nivel con 11, porque entonces sí es la operación la que falla.
 
 **Bloqueo.** Las operaciones de ciclo de vida toman un bloqueo exclusivo de SO (`flock` o `LockFileEx`) sobre el archivo de bloqueo de [§6](#6-modelo-de-rutas-y-propiedad). El SO lo libera aunque el proceso muera. Mientras está tomado, los comandos que lanzan el daemon automáticamente no lo lanzan y terminan con `lifecycle_locked`, para que no arranque un daemon de la versión saliente en mitad de una actualización.
 
@@ -444,7 +441,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
      Programa:  ~/.local/opt/ai-voice-interconnector   (reemplaza 0.23.1)
      Comando:   ~/.local/bin/ai-voice-interconnector
      PATH:      se añadirá ~/.local/bin en ~/.bashrc y ~/.profile
-     Modelos:   se descargarán unos 4.7 GB en ~/.cache/ai-voice-interconnector/models
+     Modelos:   se descargarán unos 3.3 GB en ~/.cache/ai-voice-interconnector/models
    ¿Continuar? [S/n]
    ```
 
@@ -468,7 +465,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 8. **Integración de PATH** ([§8.3.1](#831-integración-de-path)).
 9. **Windows**: si el PATH de máquina contiene una entrada de una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. HKLM nunca se modifica.
 10. **Escribir el recibo** (de forma atómica) y liberar el bloqueo.
-11. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga y conversión CT2 según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`.
+11. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`.
 12. **Resumen final**: versión, rutas, estado del PATH (con "abre una terminal nueva" cuando corresponda) y estado de los modelos.
 
 #### 8.3.1 Integración de PATH
@@ -563,7 +560,7 @@ ai-voice-interconnector cleanup (--model | --voices | --synthetic-speech | --all
 
 | Flag | Borra | Nunca borra |
 |---|---|---|
-| `--model` | Modelos provisionados: todas las revisiones de los repos propios y sus derivados (CT2). Con la caché exclusiva de la aplicación, el directorio se borra entero | Modelos de otras herramientas en una caché compartida, si el usuario eligió `HF_HUB_CACHE` o `HF_HOME` (regla R3) |
+| `--model` | Modelos provisionados: todas las revisiones de los repos propios. Con la caché exclusiva de la aplicación, el directorio se borra entero | Modelos de otras herramientas en una caché compartida, si el usuario eligió `HF_HUB_CACHE` o `HF_HOME` (regla R3) |
 | `--voices` | Voces de usuario (clonadas o importadas) y su registro | Voces de fábrica (van embebidas en el binario) |
 | `--synthetic-speech` | Audio sintetizado guardado | — |
 | `--all` | Todo lo anterior, más configuración, logs y `daemon.pid` | Programa e integración de PATH (eso es `self uninstall`) |
@@ -741,7 +738,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/CLI/CONTRACT.md` | Contrato de `self *`, `setup`, `cleanup` y `doctor`: flags, `reason` y códigos de salida, sobre `--json` y las dos versiones de esquema |
 | `docs/CLI/commands/SELF.md` | Documento del grupo `self`, creado en el ciclo 1 y con 201 líneas: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
 | `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1–R3, el gate de categoría y la confirmación destructiva |
-| `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, conversión CT2, caché exclusiva de modelos y lo que llega en el Ciclo 2 |
+| `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y lo que llega en el Ciclo 2 |
 | `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del sobre, las cuatro retiradas, los seis chequeos y el veredicto de un solo objeto |
 | `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |

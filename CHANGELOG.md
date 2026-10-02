@@ -96,6 +96,27 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
+## [No publicado]
+
+La traducción `es↔en` se instala sin Python: los modelos Marian ya vienen convertidos a CTranslate2 int8 desde repositorios propios de Hugging Face, y la descarga base baja de 4,7 GB a 3,3 GB.
+
+### Cambios incompatibles
+
+- Los modelos de traducción cambian de caché y de nombre: `marian-es-en`/`marian-en-es` pasan a `opus-mt-es-en`/`opus-mt-en-es` y se descargan de `CristianRojaas/opus-mt-es-en-ct2-int8` y `CristianRojaas/opus-mt-en-es-ct2-int8`. Hay que volver a ejecutar `setup`.
+- `cleanup` y `self uninstall` ya no reconocen como propios los restos de la versión anterior (~1,5 GB). Para recuperar ese espacio, borra a mano `models--Helsinki-NLP--opus-mt-es-en`, `models--Helsinki-NLP--opus-mt-en-es` y `ct2` dentro de la caché de modelos (o de `$HF_HOME/hub` si la caché es compartida): `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS y `$XDG_CACHE_HOME/ai-voice-interconnector/models` (por defecto `~/.cache/ai-voice-interconnector/models`) en Linux. `cleanup --model` no sirve para esto: en la caché por defecto borraría también Parakeet y Qwen.
+- `doctor` deja de emitir el chequeo `models_ct2` y el campo `models.ct2_incomplete`; `self install` y `self update` dejan de emitir el reason anidado `ct2_conversion_failed`, y un fallo de provisión solo se informa como `network_error`.
+- El mensaje de `model_missing` de traducción nombra el modelo y la ruta (`El modelo de traducción opus-mt-<par> no está provisionado en '<ruta>' — ejecuta setup.`) y ya no enumera los ficheros que faltan.
+
+### Cambiado
+
+- `setup` y `self install` ya no ejecutan Python ni descargan el modelo original (~1,5 GB en varios formatos): bajan los 5 ficheros del modelo convertido (~83 MB por par) y los leen directamente del snapshot, como el resto de los modelos. La descarga base es de 3,3 GB (5,85 GB con `--with-voice-cloning`).
+- Desaparece el directorio derivado `ct2/`: el daemon, la CLI y `cargo xtask doctor` validan el snapshot del modelo con la misma regla que Parakeet y Qwen.
+
+### Corregido
+
+- Los logs de las dependencias (`xet_*`, `hf_hub`, `reqwest`, `ort`) dejan de llenar stderr con líneas `INFO` durante las descargas: el subscriber muestra `INFO` solo de los crates propios y `WARN` de lo demás.
+- `setup` deja de exigir Python, `ctranslate2`, `transformers` y `torch`, en contradicción con la promesa de no instalar nada más de `docs/GOAL.md`.
+
 ## [0.26.0] — 2026-10-01
 
 Recupera el canal de instalación de una línea en Windows, que abortaba con un error de análisis antes de ejecutar nada, y hace que la suite de Pester pruebe ese canal tal como lo usa el usuario. Además, una instalación correcta deja la traducción operativa y `doctor` en verde sin clonado de voz. La CLI y el daemon salían con códigos distintos de los del contrato y la vía daemon rechazaba o cortaba los audios largos: ahora cada `reason` tiene un único código de salida en las dos vías, y la transcripción, el dub y la referencia de clonado tienen topes de duración iguales en las dos vías, que se rechazan con `audio_too_long` antes de cargar modelos o contactar con el daemon.
