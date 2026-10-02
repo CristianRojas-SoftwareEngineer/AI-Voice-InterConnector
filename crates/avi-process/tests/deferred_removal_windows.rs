@@ -54,5 +54,8 @@ fn deferred_removal_deletes_path_and_self_deletes_script() {
     helper.expect("el auxiliar debe arrancar");
     assert!(!dir_left, "el directorio debe haberse borrado");
     assert!(!helper_left, "el script debe autoborrarse");
-    assert!(!ready_left, "la marca de arranque debe borrarla el auxiliar");
+    assert!(
+        !ready_left,
+        "la marca de arranque debe borrarla el auxiliar"
+    );
 }
