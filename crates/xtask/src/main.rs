@@ -1626,6 +1626,32 @@ mod tests {
         std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
     }
 
+    /// En Windows `CARGO_INCREMENTAL=0` se fija a nivel de job: PowerShell no tiene
+    /// `$BASH_ENV` y los pasos que compilan `xtask` en debug (como `xtask package`)
+    /// no lo exportaban. Con un `target/` restaurado, el estado incremental viejo
+    /// reutilizaba objetos que esperaban instancias genéricas que el crate de arriba
+    /// ya no exportaba, y el enlazado fallaba con símbolos sin resolver.
+    #[test]
+    fn test_windows_jobs_disable_incremental_at_job_level() {
+        let cfg = read_ci_config();
+        for (job, next) in [
+            ("test-windows", "\n  test-macos:"),
+            ("build-windows-x64", "\n  build-linux-x64:"),
+        ] {
+            let section = cfg
+                .split(&format!("\n  {job}:"))
+                .nth(1)
+                .unwrap_or("")
+                .split(next)
+                .next()
+                .unwrap_or("");
+            assert!(
+                section.contains("    environment:\n      CARGO_INCREMENTAL: \"0\""),
+                "{job} debe fijar CARGO_INCREMENTAL=0 en el environment del job"
+            );
+        }
+    }
+
     #[test]
     fn test_pipeline_heterogeneous_and_unconditional_sccache() {
         let cfg = read_ci_config();

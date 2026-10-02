@@ -629,7 +629,9 @@ jobs:
     executor: win/server-2022
     # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
     # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
+    # CARGO_INCREMENTAL=0 en todo el job (mismo motivo que build-windows-x64).
     environment:
+      CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     steps:
       - checkout
@@ -1055,7 +1057,11 @@ jobs:
     executor: win/server-2022
     # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
     # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
+    # CARGO_INCREMENTAL=0 en todo el job: el estado incremental restaurado con target/
+    # puede reutilizar objetos que esperan instancias genéricas que el crate de
+    # arriba ya no exporta, y el enlazado falla con símbolos sin resolver.
     environment:
+      CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     parameters:
       probe:
