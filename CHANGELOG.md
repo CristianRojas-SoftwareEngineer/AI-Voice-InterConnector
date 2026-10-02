@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.26.0 — 2026-10-01](#0260--2026-10-01)
 - [0.25.0 — 2026-09-28](#0250--2026-09-28)
 - [0.24.0 — 2026-09-27](#0240--2026-09-27)
