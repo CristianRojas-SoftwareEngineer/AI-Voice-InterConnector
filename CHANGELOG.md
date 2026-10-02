@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.27.0 — 2026-10-02](#0270--2026-10-02)
 - [0.26.0 — 2026-10-01](#0260--2026-10-01)
 - [0.25.0 — 2026-09-28](#0250--2026-09-28)
 - [0.24.0 — 2026-09-27](#0240--2026-09-27)
@@ -97,7 +97,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.27.0] — 2026-10-02
 
 La traducción `es↔en` se instala sin Python: los modelos Marian ya vienen convertidos a CTranslate2 int8 desde repositorios propios de Hugging Face, y la descarga base baja de 4,7 GB a 3,3 GB.
 
@@ -2837,3 +2837,4 @@ estado con el que nace el producto.
 [0.24.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.23.1...v0.24.0
 [0.25.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.24.0...v0.25.0
 [0.26.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.25.0...v0.26.0
+[0.27.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.26.0...v0.27.0
