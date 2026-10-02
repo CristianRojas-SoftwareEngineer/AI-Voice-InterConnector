@@ -285,7 +285,7 @@ mod tests {
         );
     }
 
-    /// Regresión C-05/E1: un dir con solo `model.bin` (sin tokenizador) lo
+    /// Regresión: un dir con solo `model.bin` (sin tokenizador) lo
     /// rechaza el loader con `Err`, sin depender de modelos reales.
     #[cfg(feature = "native-translation")]
     #[test]
