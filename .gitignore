@@ -1,15 +1,8 @@
-node_modules/
 build/
 dist/
 dist_test/
 # Artefactos de build de Cargo/Rust
 target/
-# Voces de usuario ignoradas, pero la voz de fábrica 'default' se versiona
-# (se empaqueta vía --add-data y sirve de voz por defecto).
-voices/*
-!voices/default/
-ai-voice-interconnector.png
-*.spec
 # Config de Claude Code: ignorar todo el contenido de .claude/ (incluido el prompt
 # de continuidad — se genera localmente y no se versiona).
 .claude/*
@@ -17,9 +10,6 @@ ai-voice-interconnector.png
 .coverage
 coverage.json
 coverage.xml
-
-# Bus de orquestación (artefactos de proceso, nunca se commitean)
-.claude/orchestration/
 
 # --- Runtime nativo Rust/CT2 y motor Qwen (desbloqueo de Fase 0) ---
 # Pesos de modelos en el directorio de modelos de la aplicación, multi-GB, nunca se versionan.
@@ -57,6 +47,3 @@ vendor/qwen3-tts/compile_commands.json
 Cargo.lock.cachekey
 vendor/qwen3-tts/.engine-cachekey
 ort-bundle/
-
-# Ignorar .claude/skills/ (skills locales del agente, no se versionan).
-.claude/skills/

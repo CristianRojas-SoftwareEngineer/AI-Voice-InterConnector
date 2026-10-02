@@ -86,3 +86,8 @@ entera. `cargo xtask doctor` incluye la fila opcional `target-hygiene`
 (tamaño frente al umbral de 10 GB y estado del hook) con el comando exacto
 cuando hay exceso. Los PDBs se consideran viejos a partir de
 `PRUNE_PDB_MAX_AGE_DAYS` (7 días, constante en `crates/xtask/src/clean.rs`).
+
+La poda fina no alcanza los artefactos de hashes obsoletos, y el corte de
+release, que es un commit directo en `main`, no dispara `post-merge`. Por eso
+cada release termina con `cargo clean` una vez verificado el Release publicado
+(ver `docs/RELEASING.md`, «Verificación post-publicación»).

@@ -100,6 +100,10 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+### Cambiado
+
+- El cierre de cada release vacía `target/` con `cargo clean` una vez verificado el Release publicado. El corte es un commit directo en `main` y no dispara el hook `post-merge`, y la poda fina conserva los artefactos de hashes obsoletos, así que hasta ahora ningún mecanismo limpiaba esas copias. `.gitignore` retira las reglas que ya no apuntan a nada (`node_modules/`, `voices/`, `*.spec` y el PNG suelto, heredados del empaquetado con PyInstaller) y las de `.claude/orchestration/` y `.claude/skills/`, que ya cubre `.claude/*`.
+
 ### Corregido
 
 - La CI compilaba `xtask` en las puertas de pines y de features antes de restaurar la caché de `target/`, así que la restauración se extraía sobre un `target/` ya poblado y este quedaba con el estado de dos ejecuciones. En `build-windows-x64`, `cargo xtask package` reutilizó objetos de esa mezcla y el enlazado falló de forma determinista con `LNK1120`. Los 11 jobs que usan cargo cumplen ahora dos invariantes: ninguna compilación precede a la restauración de cachés (las puertas son la primera compilación del workspace, tras activar `sccache`) y las variables que cambian los artefactos (`CARGO_INCREMENTAL=0` en todos, `RUSTFLAGS` en `test-windows`) se declaran una sola vez en el `environment:` del job. La clave de la caché de `target/` pasa a `target-v5`, que descarta la caché contaminada. `validate-licenses` deja de repetir `pins --check`. Dos pruebas de contrato (`test_cargo_jobs_compile_only_after_cache_restore` y `test_cargo_jobs_disable_incremental_at_job_level`) vigilan ambas invariantes sobre todos los jobs.

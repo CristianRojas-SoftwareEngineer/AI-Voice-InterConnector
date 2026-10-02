@@ -192,6 +192,18 @@ Verifica:
 - **El Release publicado tiene un defecto.** Borra el Release
   (`gh release delete vX.Y.Z --yes`) y el tag, corrige y vuelve a crear el tag.
 
+**Cierre:** con el Release verificado, y con el daemon y rust-analyzer cerrados
+(en Windows `cargo clean` falla si algún proceso tiene archivos abiertos en
+`target/`), vacía `target/`:
+
+```bash
+cargo clean
+```
+
+El corte es un commit directo en `main`, así que no dispara el hook
+`post-merge`, y la poda fina conserva los artefactos de hashes obsoletos. Vaciar
+`target/` al cerrar cada release acota su crecimiento a un ciclo de trabajo.
+
 ## 4. Verificación del usuario final
 
 El usuario final verifica la integridad de su descarga contra el

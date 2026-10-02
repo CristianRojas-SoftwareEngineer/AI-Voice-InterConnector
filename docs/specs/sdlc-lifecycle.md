@@ -751,8 +751,8 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `THIRD-PARTY-LICENSES.md` | Inventario de licencias de terceros, con la región generada por `cargo xtask licenses` y la región curada arriba; gobierna el aviso de atribución de los pesos de modelo |
 | `SECURITY.md` | Política y runbook: Mark-of-the-Web, los dos bootstrap como única ejecución previa al binario, y el aviso de binarios sin firmar diferido al goal a largo plazo |
 | `AGENTS.md` | Directrices de trabajo en este repositorio: idioma, surgicalidad, disciplina de versionado y prohibiciones; gobierna a quien modifica el proyecto, no al usuario final |
-| `.claude/skills/test-windows-e2e-as-final-user/SKILL.md` | Receta reutilizable del recorrido E2E en Windows como usuario final. **Fuera de git** (`.gitignore:62`): su corrección no entra en ningún commit y su reversión es el texto anterior, no `git checkout` |
-| `.claude/skills/release/SKILL.md` | Receta del corte de release en siete pasos, del gate de confirmación a la verificación del release. También **fuera de git** (`.gitignore:62`), con la misma consecuencia |
+| `.claude/skills/test-windows-e2e-as-final-user/SKILL.md` | Receta reutilizable del recorrido E2E en Windows como usuario final. **Fuera de git** (regla `.claude/*` de `.gitignore`): su corrección no entra en ningún commit y su reversión es el texto anterior, no `git checkout` |
+| `.claude/skills/release/SKILL.md` | Receta del corte de release en ocho pasos, del gate de confirmación a la limpieza de `target/` tras verificar el release. También **fuera de git** (regla `.claude/*` de `.gitignore`), con la misma consecuencia |
 | Memorias del agente (`~/.claude/projects/…/memory/`) | Índice de lo aprendido entre sesiones, **fuera de git** y mantenido por el orquestador. No documenta el producto, así que no es parte de su documentación de primera parte |
 
 ## 14. Criterios de aceptación
