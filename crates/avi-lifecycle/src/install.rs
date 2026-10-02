@@ -233,8 +233,7 @@ pub enum ModelsState {
     /// con `setup`, que es lo que se llama éxito parcial de `setup_failed`.
     ///
     /// `cause` es el fallo **de la provisión**, con su propio `reason`: un fallo de
-    /// descarga es `network_error` y un fallo de conversión de CT2 es
-    /// `ct2_conversion_failed`. No es el `reason` de la operación, que es
+    /// descarga es `network_error`. No es el `reason` de la operación, que es
     /// `setup_failed` y vive en [`Outcome::lifecycle_error`]: uno dice *qué* falló y el
     /// otro *qué dejó de completarse*, y confundirlos perdería el `reason` que la tabla
     /// de reasons reserva a cada caso.
@@ -780,44 +779,27 @@ fn setup_options(options: &Options) -> setup::Options {
     }
 }
 
-/// Paso 11: la misma provisión que `setup` (descarga de la selección y después
-/// conversión CT2 según el estado real del almacén), sin la confirmación, que ya
-/// mostró el resumen del paso 4, y sin la escritura de la selección.
+/// Paso 11: la misma provisión que `setup` (descarga de la selección según el
+/// estado real del almacén), sin la confirmación, que ya mostró el resumen del
+/// paso 4, y sin la escritura de la selección.
 ///
 /// Un fallo **no** es un `Err`: `setup_failed` es éxito parcial con el
 /// programa instalado y reintentable con `setup`, así que es un estado del desenlace y
 /// no un fallo de la instalación. El `reason` de la operación lo decide
 /// [`Outcome::lifecycle_error`]; lo que viaja aquí es el **fallo de la provisión**, con su
 /// propio `reason`, que es lo que la tabla de reasons reserva a cada caso:
-/// `network_error` para un fallo de descarga y `ct2_conversion_failed` para uno de
-/// conversión.
+/// `network_error` para un fallo de descarga.
 async fn provision(options: &Options, provisioner: &impl setup::Provisioner) -> ModelsState {
     let store = avi_store::ModelStore::new();
     match setup::provision(&store, &setup_options(options), provisioner).await {
-        Ok(done) if done.downloaded.is_empty() && done.converted.is_empty() => {
-            ModelsState::AlreadyProvisioned
-        }
+        Ok(done) if done.downloaded.is_empty() => ModelsState::AlreadyProvisioned,
         Ok(done) => ModelsState::Provisioned {
-            count: done.downloaded.len() + done.converted.len(),
+            count: done.downloaded.len(),
         },
         Err(setup::ProvisionError::Download { name, cause }) => ModelsState::Failed {
             cause: setup::map_download_failure(&name, &cause),
         },
-        Err(setup::ProvisionError::Conversion { pair, reason }) => ModelsState::Failed {
-            cause: ct2_failure(&pair, &reason),
-        },
     }
-}
-
-/// Fallo de conversión de un derivado CT2, con el `reason` que la documentación
-/// publica para él y el **código genérico**, porque la tabla de reasons no le declara
-/// fila propia y la tabla cerrada del plan reserva eso al ciclo que lo declare.
-///
-/// El código de este `reason` nunca es el código de salida del proceso: es un `reason`
-/// anidado, y el código de salida es el de la operación —`SetupFailed = 11`—. Anidarlo con
-/// un 11 haría que un consumidor leyera un 11 donde la tabla de códigos no lo promises.
-fn ct2_failure(pair: &str, reason: &str) -> LifecycleError {
-    LifecycleError::new("ct2_conversion_failed", format!("CT2 {pair}: {reason}"))
 }
 
 /// Prose de `setup_failed`: el programa queda instalado y basta
@@ -1037,16 +1019,16 @@ fn lock_path_for(program_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// Regresión: con un almacén sin Marian, la provisión de install convierte
-    /// ambos derivados CT2 después de descargar, sin ejecutar `setup`.
+    /// Regresión: con un almacén vacío, la provisión de install descarga los dos
+    /// modelos de traducción ya convertidos, sin ejecutar `setup`.
     #[test]
-    fn install_provision_converts_ct2_from_empty_store() {
+    fn install_provision_downloads_translation_from_empty_store() {
         let (_guard, root) = setup::tests::cache_relocated("install-provision-vacio");
         std::env::set_var("AVI_DATA_DIR", root.join("data"));
         let options = Options::unattended();
         let plan = setup::pending(&avi_store::ModelStore::new(), &setup_options(&options));
-        for pair in setup::CT2_PAIRS {
-            assert!(plan.models.contains(&format!("marian-{pair}")));
+        for pair in ["opus-mt-es-en", "opus-mt-en-es"] {
+            assert!(plan.models.contains(&pair.to_string()));
         }
         let models = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -1056,8 +1038,8 @@ mod tests {
             matches!(models, ModelsState::Provisioned { .. }),
             "{models:?}"
         );
-        for pair in setup::CT2_PAIRS {
-            assert!(avi_store::is_ct2_provisioned(pair), "CT2 {pair}");
+        for pair in ["opus-mt-es-en", "opus-mt-en-es"] {
+            assert!(avi_store::ModelStore::new().is_provisioned(pair), "{pair}");
         }
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1287,8 +1269,8 @@ mod tests {
     }
 
     /// El resumen previo anuncia la descarga con el tamaño de la tabla de pines en
-    /// escala decimal: la selección base (Qwen3-TTS, los dos Marian y Parakeet)
-    /// suma 4 734 735 847 bytes, que son 4.7 GB.
+    /// escala decimal: la selección base (Qwen3-TTS, los dos opus-mt y Parakeet)
+    /// suma 3 334 081 228 bytes, que son 3.3 GB.
     #[test]
     fn summary_announces_the_pinned_download_size() {
         let env = test_env();
@@ -1297,7 +1279,6 @@ mod tests {
                 .into_iter()
                 .map(String::from)
                 .collect(),
-            ct2: Vec::new(),
         };
         let summary = compose_summary(
             &env,
@@ -1309,7 +1290,7 @@ mod tests {
         );
         assert!(
             summary.contains(&format!(
-                "  Modelos:   se descargarán unos 4.7 GB en {}",
+                "  Modelos:   se descargarán unos 3.3 GB en {}",
                 env.models_dir.display()
             )),
             "{summary:?}"
@@ -1352,10 +1333,7 @@ mod tests {
             Mode::Install,
             &None,
             &plan_path(env, &Options::default()),
-            &setup::Pending {
-                models: Vec::new(),
-                ct2: Vec::new(),
-            },
+            &setup::Pending { models: Vec::new() },
         )
     }
 

@@ -1261,16 +1261,18 @@ fn require_parakeet() {
     );
 }
 
-/// Exige los derivados CT2 es-en y en-es: falla con un mensaje accionable si
+/// Exige los modelos opus-mt es-en y en-es: falla con un mensaje accionable si
 /// falta el `model.bin` de alguno de los dos pares. Solo se compila con
 /// `native-translation`: sin el feature el binario no traduce.
 #[cfg(feature = "native-translation")]
 fn require_ct2() {
     for pair in ["es-en", "en-es"] {
-        let file = avi_store::ct2_model_dir(pair).join("model.bin");
+        let file = avi_store::ModelStore::new()
+            .model_dir(&format!("opus-mt-{pair}"))
+            .join("model.bin");
         assert!(
             file.is_file(),
-            "falta {}: aprovisiona los modelos CT2 con `ai-voice-interconnector setup`",
+            "falta {}: aprovisiona los modelos de traducción con `ai-voice-interconnector setup`",
             file.display()
         );
     }

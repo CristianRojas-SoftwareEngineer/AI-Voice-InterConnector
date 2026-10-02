@@ -187,21 +187,13 @@ impl Sandbox {
     /// Planta el estado completo: modelos, voces de fábrica y de usuario, habla
     /// sintetizada, configuración, logs y pidfile.
     fn seed_state(&self) {
-        // Modelos: un repo fijado, el derivado CT2, los locks, `xet` y un repo ajeno.
+        // Modelos: un repo fijado, los locks, `xet` y un repo ajeno.
         write(
             &self
                 .models_dir
-                .join("models--Helsinki-NLP--opus-mt-es-en")
-                .join("model.safetensors"),
-            "pesos",
-        );
-        write(
-            &self
-                .models_dir
-                .join("ct2")
-                .join("opus-mt-es-en")
+                .join("models--CristianRojaas--opus-mt-es-en-ct2-int8")
                 .join("model.bin"),
-            "ct2",
+            "pesos",
         );
         write(
             &self
@@ -558,8 +550,8 @@ fn dry_run_lists_paths_without_touching_disk() {
     let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
-/// Con la raíz de modelos compartida, R3 manda: se borran los repos propios, el
-/// derivado y sus locks, y **no** `xet`, ni el `.locks` completo, ni el repos de otra
+/// Con la raíz de modelos compartida, R3 manda: se borran los repos propios y sus
+/// locks, y **no** `xet`, ni el `.locks` completo, ni el repos de otra
 /// herramienta (criterio 23).
 ///
 /// Y la misma lista es la que anuncian el plan, la simulación y la ejecución: el
@@ -573,7 +565,7 @@ fn shared_hf_cache_keeps_foreign_entries() {
     let hub = sandbox.models_dir.clone();
     let foreign = hub.join("models--otra--herramienta");
     write(
-        &hub.join("models--Helsinki-NLP--opus-mt-es-en")
+        &hub.join("models--CristianRojaas--opus-mt-es-en-ct2-int8")
             .join("snapshots")
             .join("abc")
             .join("config.json"),
@@ -599,15 +591,11 @@ fn shared_hf_cache_keeps_foreign_entries() {
     }
     assert!(
         planned_removed.contains(
-            &hub.join("models--Helsinki-NLP--opus-mt-es-en")
+            &hub.join("models--CristianRojaas--opus-mt-es-en-ct2-int8")
                 .display()
                 .to_string()
         ),
         "el repo propio sí está: {planned_removed:?}"
-    );
-    assert!(
-        planned_removed.contains(&hub.join("ct2").display().to_string()),
-        "y el derivado CT2, que es atribuible a la aplicación"
     );
 
     // Lo que se conserva se anuncia **por regla**: la raíz compartida, `xet` y el
@@ -642,8 +630,9 @@ fn shared_hf_cache_keeps_foreign_entries() {
         "el plan y la ejecución coinciden bajo raíz compartida"
     );
 
-    assert!(!exists(&hub.join("models--Helsinki-NLP--opus-mt-es-en")));
-    assert!(!exists(&hub.join("ct2")));
+    assert!(!exists(
+        &hub.join("models--CristianRojaas--opus-mt-es-en-ct2-int8")
+    ));
     assert!(exists(&hub.join("xet")), "R3: `xet` sobrevive");
     assert!(
         exists(&hub.join(".locks")),

@@ -39,10 +39,12 @@
       }
     },
     "5": {
-      "status": "pending"
+      "status": "done",
+      "notes": "pruebas rojas en verde; self_install fallo de descarga: suite de 3 tests en ~22 s (reintentos de hf-hub contra puerto cerrado)"
     },
     "6": {
-      "status": "pending"
+      "status": "done",
+      "notes": "log_filter con Targets; aplicado en el init de main.rs dentro del mismo commit que T5 porque ambas editan main.rs"
     },
     "7": {
       "status": "pending"

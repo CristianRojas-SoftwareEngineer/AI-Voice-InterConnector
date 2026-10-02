@@ -672,12 +672,6 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
         "criterio 16: provisionado el pin, no queda nada que descargar: {:?}",
         pending.models
     );
-    assert_eq!(
-        pending.ct2.len(),
-        setup::CT2_PAIRS.len(),
-        "criterio 16: solo queda la conversión local de CT2, que no es descarga: {:?}",
-        pending.ct2
-    );
 
     // La poda elimina solo la revisión fuera del pin y conserva la viva.
     let pin = MODEL_REVISIONS

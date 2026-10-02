@@ -6,11 +6,9 @@ use std::path::{Path, PathBuf};
 // (fuente única del ciclo 4) y aquí se reexportan para conservar la API; los
 // llamadores no cambian.
 pub use avi_shared::paths::{
-    bin_dir, ct2_cache_dir, ct2_cache_dir_at, ct2_dir_missing_files, ct2_missing_files,
-    ct2_model_dir, ct2_model_dir_at, data_dir, install_dir, is_ct2_provisioned,
-    is_ct2_provisioned_at, models_cache_dir, models_root_is_shared, shared_hf_root, xet_cache_dir,
-    ModelPin, APP_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR, MODEL_FILE_PATTERNS,
-    MODEL_REVISIONS, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
+    bin_dir, data_dir, install_dir, models_cache_dir, models_root_is_shared, shared_hf_root,
+    xet_cache_dir, ModelPin, APP_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR,
+    MODEL_FILE_PATTERNS, MODEL_REVISIONS, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
 };
 
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (`qwen_tts.c:spk_table`)
@@ -544,18 +542,6 @@ impl SpeechStore {
 
 // ─── ModelStore ──────────────────────────────────────────────────────
 
-/// Purga determinista del derivado CT2 en `models_cache_dir()/ct2`. El derivado
-/// es atribuible a la aplicación, así que se purga tanto en la raíz exclusiva
-/// como en la compartida (R3).
-pub fn remove_ct2_cache() -> Result<bool> {
-    let ct2 = ct2_cache_dir();
-    if ct2.is_dir() {
-        std::fs::remove_dir_all(&ct2)?;
-        return Ok(true);
-    }
-    Ok(false)
-}
-
 /// Almacén de modelos descargados.
 ///
 /// Fuente de verdad única: snapshots de HuggingFace en la raíz de modelos del
@@ -751,11 +737,11 @@ impl ModelStore {
         Ok(false)
     }
 
-    /// Borra la raíz de modelos **entera** cuando es exclusiva, `xet` y derivados
-    /// incluidos. Es el alcance que `cleanup --model` y `self uninstall` usan
+    /// Borra la raíz de modelos **entera** cuando es exclusiva, y `xet`
+    /// incluido. Es el alcance que `cleanup --model` y `self uninstall` usan
     /// para dejar residuo cero dentro de las raíces de propiedad exclusiva; con
     /// una raíz compartida devuelve `Ok(false)` y el llamador se limita a los
-    /// repos fijados, sus derivados y sus locks.
+    /// repos fijados y sus locks.
     pub fn remove_models_root() -> Result<bool> {
         if models_root_is_shared() {
             return Ok(false);
@@ -972,7 +958,7 @@ mod tests {
 
     /// Sin `HF_HUB_CACHE` ni `HF_HOME` la raíz de modelos es la **exclusiva de
     /// la aplicación** (D3): nunca la caché compartida de HuggingFace, y con
-    /// el derivado CT2 y `xet` colgando de ella.
+    /// `xet` colgando de ella.
     #[test]
     fn models_root_is_exclusive_by_default() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1016,7 +1002,6 @@ mod tests {
             !rendered.contains("huggingface"),
             "la raíz por defecto no puede ser la caché HF: {rendered}"
         );
-        assert!(ct2_cache_dir().starts_with(&root));
         assert_eq!(xet_cache_dir(), root.join(MODELS_XET_SUBDIR));
 
         env_restore(saved);
@@ -1338,70 +1323,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    /// Contrato del gate del derivado CT2. Acepta exactamente los layouts
-    /// que `setup` produce (`source.spm`+`target.spm`) o el snapshot HF
-    /// (`tokenizer.json`), y rechaza cualquier otro. El layout BPE
-    /// `vocab.json`+`merges.txt` NO se acepta: no lo genera `convert_marian_to_ct2`,
-    /// por lo que admitirlo sería especulativo y enmascararía dirs incompletos.
-    #[test]
-    fn ct2_dir_missing_files_contract_of_gate() {
-        let dir = temp_dir("ct2_gate");
-        let touch = |name: &str| std::fs::write(dir.join(name), b"x").unwrap();
-        let clean = || {
-            for f in [
-                "model.bin",
-                "tokenizer.json",
-                "source.spm",
-                "target.spm",
-                "vocab.json",
-                "merges.txt",
-            ] {
-                let _ = std::fs::remove_file(dir.join(f));
-            }
-        };
-
-        // 1. Dir vacío: faltan model.bin + tokenizador completo.
-        clean();
-        assert_eq!(
-            ct2_dir_missing_files(&dir),
-            vec!["model.bin", "tokenizer.json", "source.spm", "target.spm"]
-        );
-
-        // 2. Layout SentencePiece (el que produce `setup`): completo.
-        clean();
-        touch("model.bin");
-        touch("source.spm");
-        touch("target.spm");
-        assert!(ct2_dir_missing_files(&dir).is_empty());
-
-        // 3. Layout HuggingFace (`tokenizer.json`): completo.
-        clean();
-        touch("model.bin");
-        touch("tokenizer.json");
-        assert!(ct2_dir_missing_files(&dir).is_empty());
-
-        // 4. Layout BPE (`vocab.json`+`merges.txt`): rechazado a propósito.
-        clean();
-        touch("model.bin");
-        touch("vocab.json");
-        touch("merges.txt");
-        assert_eq!(
-            ct2_dir_missing_files(&dir),
-            vec!["tokenizer.json", "source.spm", "target.spm"]
-        );
-
-        // 5. SentencePiece a medias (solo `source.spm`): incompleto.
-        clean();
-        touch("model.bin");
-        touch("source.spm");
-        assert_eq!(
-            ct2_dir_missing_files(&dir),
-            vec!["tokenizer.json", "target.spm"]
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Normalización de mayúsculas en todas las operaciones del almacén, con la

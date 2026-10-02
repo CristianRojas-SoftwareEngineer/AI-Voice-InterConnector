@@ -19,9 +19,7 @@ pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_deat
 #[cfg(feature = "native-stt")]
 use avi_core::engine::SttEngine;
 use avi_core::json_emitter;
-#[cfg(feature = "native-stt")]
-use avi_store::ModelStore;
-use avi_store::{SpeechStore, VoiceStore};
+use avi_store::{ModelStore, SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_stt::{detect_language, ParakeetEngine};
 #[cfg(feature = "native-translation")]
@@ -81,10 +79,9 @@ pub struct DaemonState {
     #[cfg(feature = "native-stt")]
     pub stt_engine: ParakeetEngine,
     /// Motores CT2 residentes para traducción `es↔en` (uno por dirección).
-    /// Se precargan en `DaemonState::new` si el derivado está provisionado según
-    /// el gate coincidente (`model.bin` más tokenizador); `None` significa motor
-    /// ausente o roto (`model.bin` huérfano sin tokenizador: se registra el motivo
-    /// y se arranca igual, sin derribar `run_daemon_server:614`).
+    /// Se precargan en `DaemonState::new` para cada par cuyo snapshot `opus-mt-<par>`
+    /// está provisionado; `None` significa que ningún par lo está, y la petición
+    /// responde `model_missing`.
     /// El warmup CT2 no duplica `warm_voice_engine`: la primera petición paga frío si
     /// el residente no estaba; documentado sin warmup separado.
     #[cfg(feature = "native-translation")]
@@ -124,19 +121,13 @@ impl DaemonState {
         #[cfg(feature = "native-translation")]
         let ct2_engine = {
             let mut map = std::collections::HashMap::new();
+            let store = ModelStore::new();
             for pair in &["es-en", "en-es"] {
-                let dir = avi_store::ct2_model_dir(pair);
-                if avi_store::is_ct2_provisioned(pair) {
-                    if let Ok(engine) = Ct2TranslationEngine::new(&dir) {
+                let name = format!("opus-mt-{pair}");
+                if store.is_provisioned(&name) {
+                    if let Ok(engine) = Ct2TranslationEngine::new(&store.model_dir(&name)) {
                         map.insert(pair.to_string(), engine);
                     }
-                } else if dir.join("model.bin").is_file() {
-                    eprintln!(
-                        "[daemon] CT2 {} roto en '{}' (faltan: {}) — arranca sin residente, ejecuta setup",
-                        pair,
-                        dir.display(),
-                        avi_store::ct2_missing_files(pair).join(", ")
-                    );
                 }
             }
             if map.is_empty() {
@@ -573,14 +564,15 @@ async fn synthesize_handler(
                     return;
                 }
             };
-            let ct2_dir = avi_store::ct2_model_dir(pair);
-            if !avi_store::is_ct2_provisioned(pair) {
+            let model_name = format!("opus-mt-{pair}");
+            let ct2_dir = ModelStore::new().model_dir(&model_name);
+            if !ModelStore::new().is_provisioned(&model_name) {
                 emit_ndjson(
                     &tx,
                     json!({
                         "event": "error",
                         "reason": "model_missing",
-                        "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_missing_files(pair).join(", ")),
+                        "message": format!("El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.", model_name, ct2_dir.display()),
                     }),
                 )
                 .await;
@@ -928,14 +920,15 @@ async fn translate_handler(
         Ok(TranslateInput::Pair { source, target }) => (source, target),
     };
     let pair = if source == "es" { "es-en" } else { "en-es" };
-    let ct2_dir = avi_store::ct2_model_dir(pair);
-    if !avi_store::is_ct2_provisioned(pair) {
+    let model_name = format!("opus-mt-{pair}");
+    let ct2_dir = ModelStore::new().model_dir(&model_name);
+    if !ModelStore::new().is_provisioned(&model_name) {
         return (
             StatusCode::NOT_FOUND,
             Json(with_sv(json!({
                 "error": "model_missing",
                 "reason": "model_missing",
-                "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_missing_files(pair).join(", ")),
+                "message": format!("El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.", model_name, ct2_dir.display()),
             }))),
         )
             .into_response();
@@ -1365,14 +1358,15 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
     };
     #[cfg(feature = "native-stt")]
     if let Some(pair) = translation_pair.as_deref() {
-        let ct2_dir = avi_store::ct2_model_dir(pair);
-        if !avi_store::is_ct2_provisioned(pair) {
+        let model_name = format!("opus-mt-{pair}");
+        let ct2_dir = ModelStore::new().model_dir(&model_name);
+        if !ModelStore::new().is_provisioned(&model_name) {
             return (
                 StatusCode::NOT_FOUND,
                 Json(with_sv(json!({
                     "status": "error",
                     "reason": "model_missing",
-                    "message": format!("El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.", ct2_dir.display(), avi_store::ct2_missing_files(pair).join(", ")),
+                    "message": format!("El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.", model_name, ct2_dir.display()),
                 }))),
             )
                 .into_response();
@@ -1495,7 +1489,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                     let pair = translation_pair
                         .clone()
                         .expect("la validación barata garantizó el par");
-                    let dir = avi_store::ct2_model_dir(&pair);
+                    let dir = ModelStore::new().model_dir(&format!("opus-mt-{pair}"));
                     let ct2_state = state.clone();
                     let text = transcribed.clone();
                     let source = source_iso.clone();

@@ -4,7 +4,7 @@
 //! `avi-lifecycle` y `xtask clean`: `avi-store` las reexporta para conservar su
 //! API, y los llamadores no cambian.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Nombre canónico del producto: directorio de programa, directorio del
 /// enlace, nombre del bloqueo y nombre del ejecutable. Fuente única.
@@ -123,18 +123,20 @@ pub const MODEL_REVISIONS: &[ModelPin] = &[
         revision: "85e237c12c027371202489a0ec509ded67b5e4b5",
         approx_bytes: 2_498_388_392,
     },
-    // Traducción es→en / en→es (Marian opus-mt convertido a CTranslate2)
+    // Traducción es→en / en→es: Helsinki-NLP/opus-mt (CC-BY 4.0) convertido una
+    // sola vez a CTranslate2 int8 y publicado en repos propios; el motor lo lee
+    // directamente del snapshot, sin conversión local.
     ModelPin {
-        name: "marian-es-en",
-        repo: "Helsinki-NLP/opus-mt-es-en",
-        revision: "c96e2c5399ebfae4fc43d9669556b9afa74bb69d",
-        approx_bytes: 627_891_360,
+        name: "opus-mt-es-en",
+        repo: "CristianRojaas/opus-mt-es-en-ct2-int8",
+        revision: "6eabf2f7d9f92dd52e38fe95c9da29f219613c19",
+        approx_bytes: 82_536_565,
     },
     ModelPin {
-        name: "marian-en-es",
-        repo: "Helsinki-NLP/opus-mt-en-es",
-        revision: "5bc4493d463cf000c1f0b50f8d56886a392ed4ab",
-        approx_bytes: 937_836_389,
+        name: "opus-mt-en-es",
+        repo: "CristianRojaas/opus-mt-en-es-ct2-int8",
+        revision: "452971fec59e5a4093f8630e55022909dc5beceb",
+        approx_bytes: 82_536_565,
     },
     // STT Parakeet TDT 0.6B v3 int8 (export istupakov/onnx-asr; 4 artefactos
     // canónicos — el repo upstream completo pesa decenas de GB)
@@ -190,15 +192,39 @@ pub const TEMP_PREFIXES: &[&str] = &["avi-", "avi_"];
 /// Vacío = snapshot completo (repos pequeños/cohesivos). Para `parakeet-tdt-v3`
 /// se acota a los 4 artefactos que consume `ParakeetEngine`
 /// (`DEFAULT_PARAKEET_MODEL_DIR`); sin esto se bajarían ~40 GB de formatos no usados.
-pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[(
-    "parakeet-tdt-v3",
-    &[
-        "encoder-model.int8.onnx",
-        "decoder_joint-model.int8.onnx",
-        "nemo128.onnx",
-        "vocab.txt",
-    ],
-)];
+/// Los modelos de traducción se acotan a los cinco ficheros del modelo CTranslate2
+/// y excluyen el README y `.gitattributes` del repo.
+pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[
+    (
+        "parakeet-tdt-v3",
+        &[
+            "encoder-model.int8.onnx",
+            "decoder_joint-model.int8.onnx",
+            "nemo128.onnx",
+            "vocab.txt",
+        ],
+    ),
+    (
+        "opus-mt-es-en",
+        &[
+            "config.json",
+            "model.bin",
+            "shared_vocabulary.json",
+            "source.spm",
+            "target.spm",
+        ],
+    ),
+    (
+        "opus-mt-en-es",
+        &[
+            "config.json",
+            "model.bin",
+            "shared_vocabulary.json",
+            "source.spm",
+            "target.spm",
+        ],
+    ),
+];
 
 /// Raíz de la caché de HuggingFace que el usuario eligió compartir, si la
 /// eligió: `HF_HUB_CACHE` o, en su defecto, `HF_HOME/hub`. `None` significa
@@ -221,7 +247,7 @@ pub fn models_root_is_shared() -> bool {
 }
 
 /// Raíz de modelos: caché regenerable y **exclusiva de la aplicación** por
-/// defecto (D3). Snapshots, derivado CT2, locks y `xet` cuelgan todos de
+/// defecto (D3). Snapshots, locks y `xet` cuelgan todos de
 /// ella, y es la única ubicación de modelos que existe.
 ///
 /// `AVI_CACHE_DIR` tiene precedencia sobre las variables de HuggingFace: es la
@@ -276,73 +302,6 @@ pub fn xet_cache_dir() -> PathBuf {
     models_cache_dir().join(MODELS_XET_SUBDIR)
 }
 
-/// Directorio CT2 derivado obligatorio de Marian HF en
-/// `models_cache_dir()/ct2`.
-/// Layout: `models_cache_dir()/ct2/opus-mt-es-en` y `opus-mt-en-es`, cada uno con
-/// `model.bin` CT2 más tokenizador utilizable por el loader (`tokenizer.json`,
-/// o `source.spm` más `target.spm` copiados desde el snapshot por `setup`).
-/// Invariante: provisionado equivale a lo que `setup` deposita y, por tanto, a
-/// cargable por `Translator::new` — el gate `is_ct2_provisioned` acepta
-/// exactamente los layouts que `convert_marian_to_ct2` produce (`src/main.rs`),
-/// no todo lo que `auto::Tokenizer` sabría cargar; la idempotencia por `mtime`
-/// solo aplica a dirs sanos (un dir roto es no provisionado y fuerza reconversión).
-pub fn ct2_cache_dir() -> PathBuf {
-    ct2_cache_dir_at(&models_cache_dir())
-}
-/// Caché de derivados CT2 bajo una raíz de modelos dada. La raíz del usuario es
-/// un caso de esta función y no su fuente: un sandbox necesita la misma
-/// disposición sin tocar la caché real.
-pub fn ct2_cache_dir_at(models_root: &Path) -> PathBuf {
-    models_root.join("ct2")
-}
-pub fn ct2_model_dir(pair: &str) -> PathBuf {
-    ct2_model_dir_at(&models_cache_dir(), pair)
-}
-/// Directorio del derivado CT2 de un par bajo una raíz de modelos dada.
-pub fn ct2_model_dir_at(models_root: &Path, pair: &str) -> PathBuf {
-    ct2_cache_dir_at(models_root).join(format!("opus-mt-{}", pair))
-}
-/// Ficheros ausentes del derivado CT2 en `dir`: vacío equivale a cargable por
-/// el loader (`model.bin` presente más tokenizador completo). Nombra cada
-/// candidato ausente para errores accionables.
-///
-/// El tokenizador se da por válido con `tokenizer.json` (layout HF) o
-/// `source.spm`+`target.spm` (SentencePiece/Marian). El layout BPE
-/// `vocab.json`+`merges.txt` se rechaza a propósito: `convert_marian_to_ct2`
-/// fija la salida a `source.spm`+`target.spm` (`--copy_files`) y aborta si el
-/// snapshot no los trae (`src/main.rs`), así que ningún derivado de este
-/// pipeline lo usa. Admitir esa rama sería especulativo y podría enmascarar un
-/// dir incompleto; se añadiría solo si un pin de modelo futuro la exigiera.
-pub fn ct2_dir_missing_files(dir: &Path) -> Vec<String> {
-    let mut missing = Vec::new();
-    if !dir.join("model.bin").is_file() {
-        missing.push("model.bin".to_string());
-    }
-    let tokenizer_ok = dir.join("tokenizer.json").is_file()
-        || (dir.join("source.spm").is_file() && dir.join("target.spm").is_file());
-    if !tokenizer_ok {
-        for candidate in ["tokenizer.json", "source.spm", "target.spm"] {
-            if !dir.join(candidate).is_file() {
-                missing.push(candidate.to_string());
-            }
-        }
-    }
-    missing
-}
-/// Ficheros ausentes del derivado CT2 del par (`es-en`/`en-es`).
-pub fn ct2_missing_files(pair: &str) -> Vec<String> {
-    ct2_dir_missing_files(&ct2_model_dir(pair))
-}
-/// Si el derivado CT2 de un par está completo bajo una raíz de modelos dada.
-/// La comprobación viaja con la raíz para que quien describe un árbol de
-/// modelos describa ese árbol y no el del usuario.
-pub fn is_ct2_provisioned_at(models_root: &Path, pair: &str) -> bool {
-    ct2_dir_missing_files(&ct2_model_dir_at(models_root, pair)).is_empty()
-}
-pub fn is_ct2_provisioned(pair: &str) -> bool {
-    is_ct2_provisioned_at(&models_cache_dir(), pair)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,52 +350,5 @@ mod tests {
             MODEL_REVISIONS.iter().all(|p| !p.name.starts_with("marian-")),
             "no queda ningún pin marian-*"
         );
-    }
-
-    /// El derivado de un par vive en `ct2/opus-mt-<par>` bajo la raíz que recibe
-    /// la función, y la variante global es la misma disposición aplicada a la raíz
-    /// del usuario. La paridad importa porque ambas son una sola disposición
-    /// declarada en un sitio, no dos: si divergieran, un reporte describiría un
-    /// árbol y el motor leería otro.
-    #[test]
-    fn ct2_layout_depends_on_the_given_root() {
-        let sandbox = Path::new("/sandbox/models");
-        assert_eq!(
-            ct2_model_dir_at(sandbox, "es-en"),
-            Path::new("/sandbox/models/ct2/opus-mt-es-en")
-        );
-        assert_eq!(
-            ct2_model_dir("es-en"),
-            ct2_model_dir_at(&models_cache_dir(), "es-en")
-        );
-    }
-
-    /// La provisión consulta la raíz que recibe y no otra: una raíz vacía no
-    /// declara provisionado un derivado que sí existe en una raíz hermana. Esta
-    /// es la comprobación que da valor a la anterior: si la función mirase la
-    /// caché global, el sandbox vacío lo declararía completo en cualquier máquina
-    /// que tenga el par convertido.
-    #[test]
-    fn ct2_provisioning_does_not_leak_from_a_sibling_root() {
-        let base = std::env::temp_dir().join(format!("ct2-at-{}", std::process::id()));
-        let empty = base.join("vacio");
-        let full = base.join("lleno");
-        std::fs::create_dir_all(&empty).expect("se crea la raíz vacía");
-        let derived = ct2_model_dir_at(&full, "es-en");
-        std::fs::create_dir_all(&derived).expect("se crea el derivado");
-        std::fs::write(derived.join("model.bin"), b"pesos").expect("se escribe el modelo");
-        std::fs::write(derived.join("source.spm"), b"tok").expect("se escribe el tokenizador");
-        std::fs::write(derived.join("target.spm"), b"tok").expect("se escribe el tokenizador");
-
-        assert!(
-            is_ct2_provisioned_at(&full, "es-en"),
-            "el derivado completo se declara provisionado en su propia raíz"
-        );
-        assert!(
-            !is_ct2_provisioned_at(&empty, "es-en"),
-            "una raíz sin el derivado no lo declara provisionado por tener otra raíz completo"
-        );
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

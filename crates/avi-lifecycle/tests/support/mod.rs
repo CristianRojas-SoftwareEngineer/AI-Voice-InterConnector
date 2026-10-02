@@ -10,7 +10,7 @@
 //!
 //! 1. **Declara las cuatro variables** (`AVI_INSTALL_DIR`, `AVI_BIN_DIR`, `AVI_DATA_DIR`
 //!    y `AVI_CACHE_DIR`) apuntando al sandbox, para que lo que el motor resuelve por el
-//!    entorno —`ModelStore::new()` en los pasos 4 y 11 de la instalación, `ct2_model_dir()`—
+//!    entorno —`ModelStore::new()` en los pasos 4 y 11 de la instalación—
 //!    caiga dentro del sandbox y no en la máquina que ejecuta la puerta.
 //! 2. **Pasa las mismas rutas como dato** en `install::Env`, `cleanup::Roots` y
 //!    `uninstall::Env`, que es como las reciben en producción. Si las dos mitudes
@@ -355,11 +355,6 @@ impl Sandbox {
                 "",
             );
         }
-        // El derivado CT2, que es atribuible aunque no cuelgue de un repo.
-        write(
-            &hub.join("ct2").join("marian-es-en").join("model.bin"),
-            "ct2",
-        );
         // `xet` y el `.locks` completo: globales de la caché, nunca nuestros.
         write(&hub.join("xet").join("shard"), "xet");
         write(

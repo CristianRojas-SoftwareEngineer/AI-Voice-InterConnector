@@ -73,12 +73,6 @@ const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs
 /// `spawn_background` y lo pone a 0 al abortar un arranque fallido.
 static IN_MEMORY_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-// CT2 derivado obligatorio de Marian HF en la raíz de modelos vigente, bajo
-// `ct2/opus-mt-<par>/` (`ct2_model_dir`) → `model.bin`
-// más tokenizador (`tokenizer.json`, o `source.spm`+`target.spm` autocontenidos).
-// Incondicional cuando Marian está provisionado; idempotente por `mtime` solo sobre dirs
-// sanos (dir roto ⇒ reconversión); escritura atómica (temporal hermano + rename).
-
 /// Resuelve un token de idioma de la CLI (`es-latam`/`en`) al código ISO que
 /// exige el motor STT: `es-latam` -> `es`; cualquier otro valor pasa verbatim
 /// (espeja `resolve_language` del oráculo Python).
@@ -810,10 +804,29 @@ fn restore_sigpipe_default() {
 
 // ─── Punto de entrada ────────────────────────────────────────────────
 
-/// Filtro de los logs por target.
+/// Filtro de los logs por target: `INFO` para los crates propios y `WARN` para las
+/// dependencias, cuyo `INFO` (p. ej. `xet_*` durante las descargas) solo es ruido.
+/// `Targets` filtra por prefijo de la ruta de módulo y no admite comodines, así que
+/// cada crate propio se enumera.
 fn log_filter() -> tracing_subscriber::filter::Targets {
-    tracing_subscriber::filter::Targets::new()
-        .with_default(tracing_subscriber::filter::LevelFilter::INFO)
+    use tracing_subscriber::filter::LevelFilter;
+    const OWN_CRATES: [&str; 11] = [
+        "avi_core",
+        "avi_audio",
+        "avi_tts",
+        "avi_store",
+        "avi_daemon",
+        "avi_process",
+        "avi_stt",
+        "avi_translation",
+        "avi_lifecycle",
+        "avi_shared",
+        "ai_voice_interconnector",
+    ];
+    OWN_CRATES.iter().fold(
+        tracing_subscriber::filter::Targets::new().with_default(LevelFilter::WARN),
+        |targets, name| targets.with_target(*name, LevelFilter::INFO),
+    )
 }
 
 #[tokio::main]
@@ -822,9 +835,18 @@ async fn main() {
     avi_shared::force_utf8_console();
     // Los logs van a stderr: stdout queda reservado para el contrato JSON
     // (envelope schema_version="3"), igual que el oráculo Python.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .init();
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        use tracing_subscriber::Layer;
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_filter(log_filter()),
+            )
+            .init();
+    }
     install_sigint_handler();
 
     let cmd = localize_command(Cli::command());
@@ -1011,15 +1033,16 @@ async fn handle_translate(
         ("en", "es") => "en-es",
         _ => unreachable!(),
     };
-    let ct2_dir = store::ct2_model_dir(pair);
-    if !store::is_ct2_provisioned(pair) {
+    let model_name = format!("opus-mt-{pair}");
+    let ct2_dir = ModelStore::new().model_dir(&model_name);
+    if !ModelStore::new().is_provisioned(&model_name) {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
             format!(
-                "El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.",
+                "El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.",
+                model_name,
                 ct2_dir.display(),
-                store::ct2_missing_files(pair).join(", "),
             ),
         ));
     }
@@ -1077,15 +1100,16 @@ fn translate_if_different(
             ));
         }
     };
-    let ct2_dir = store::ct2_model_dir(pair);
-    if !store::is_ct2_provisioned(pair) {
+    let model_name = format!("opus-mt-{pair}");
+    let ct2_dir = ModelStore::new().model_dir(&model_name);
+    if !ModelStore::new().is_provisioned(&model_name) {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
             format!(
-                "El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.",
+                "El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.",
+                model_name,
                 ct2_dir.display(),
-                store::ct2_missing_files(pair).join(", "),
             ),
         ));
     }
@@ -2013,15 +2037,16 @@ async fn handle_speech(
                             ));
                         }
                     };
-                    let ct2_dir = store::ct2_model_dir(pair);
-                    if !store::is_ct2_provisioned(pair) {
+                    let model_name = format!("opus-mt-{pair}");
+                    let ct2_dir = ModelStore::new().model_dir(&model_name);
+                    if !ModelStore::new().is_provisioned(&model_name) {
                         return Err(CliError::new(
                             ExitCode::ModelMissing,
                             "model_missing",
                             format!(
-                                "El modelo de traducción no está provisionado en '{}' (faltan: {}) — ejecuta setup.",
+                                "El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.",
+                                model_name,
                                 ct2_dir.display(),
-                                store::ct2_missing_files(pair).join(", "),
                             ),
                         ));
                     }
@@ -2388,11 +2413,9 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
 // ─── Setup / Cleanup / Doctor ────────────────────────────────────────
 /// `setup`: delega en el motor y compone el sobre `--json`.
 ///
-/// Todo el cuerpo —la purga por plan, la idempotencia por presencia del snapshot, la
-/// reconversión por fecha del derivado y la escritura atómica— vive en
-/// `lifecycle::setup`. Aquí solo queda la prosa y el sobre, porque el parseo de la CLI
-/// y el emisor no están en ese crate. `convert_marian_to_ct2` desaparece con
-/// este cableado: su equivalente es `lifecycle::setup::convert`.
+/// Todo el cuerpo —la purga por plan y la idempotencia por presencia del snapshot—
+/// vive en `lifecycle::setup`. Aquí solo queda la prosa y el sobre, porque el parseo
+/// de la CLI y el emisor no están en ese crate.
 async fn handle_setup(
     json_mode: bool,
     with_stt: bool,

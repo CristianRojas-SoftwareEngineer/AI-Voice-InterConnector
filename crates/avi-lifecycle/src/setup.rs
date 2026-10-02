@@ -1,10 +1,9 @@
-//! `setup` trasladado al motor: provisión de modelos y conversión del derivado,
-//! que es el paso 11 de la instalación.
+//! `setup` trasladado al motor: provisión de modelos, que es el paso 11 de la
+//! instalación.
 //!
 //! Es una **traducción fiel, no un rediseño**. Se traslada tal cual la semántica
 //! que ya existe: la selección por banderas, la idempotencia por presencia del
-//! snapshot, la purga de `--force-update` y la conversión del derivado con su
-//! directorio temporal atómico y el mismo gate que la acepta.
+//! snapshot y la purga de `--force-update`.
 //!
 //! **Lo que el Ciclo 2 añade, y dónde.** La **selección persistida en
 //! configuración** (`setup-selection.json`), la **poda de revisiones obsoletas**
@@ -26,11 +25,6 @@
 use crate::LifecycleError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-
-/// Los pares de traducción cuyo derivado CT2 hay que tener, en el orden en que se
-/// procesan. El derivado es obligatorio, no opcional: sin él la traducción no
-/// funciona.
-pub const CT2_PAIRS: [&str; 2] = ["es-en", "en-es"];
 
 /// Modelo cuya provisión depende de `--with-voice-cloning`. Es el único caso de
 /// selección opcional que el producto tiene hoy, y por eso el filtro es una
@@ -202,22 +196,18 @@ pub fn migrate_at(data_dir: &Path) -> anyhow::Result<MigrationOutcome> {
 pub struct Pending {
     /// Repos de los que hay que descargar, con el nombre corto que usa el producto.
     pub models: Vec<String>,
-    /// Pares de traducción cuyo derivado CT2 hay que convertir o revalidar,
-    /// incluido el de un Marian que se va a descargar en esta pasada.
-    pub ct2: Vec<String>,
 }
 
 impl Pending {
     /// `true` si no hay nada que hacer, que es la condición de idempotencia
     /// y la que hace que `setup` no descargue nada cuando todo está provisionado.
     pub fn is_empty(&self) -> bool {
-        self.models.is_empty() && self.ct2.is_empty()
+        self.models.is_empty()
     }
 
     /// Tamaño estimado de la descarga pendiente, en bytes: la suma de
     /// `approx_bytes` de los modelos pendientes, medida en la revisión fijada de
-    /// cada uno. Es una estimación declarada, no una cifra contable: los derivados
-    /// CT2 no descargan nada.
+    /// cada uno. Es una estimación declarada, no una cifra contable.
     pub fn estimated_bytes(&self) -> u64 {
         self.models
             .iter()
@@ -270,54 +260,7 @@ pub fn pending(store: &avi_store::ModelStore, options: &Options) -> Pending {
             out.models.push(name.to_string());
         }
     }
-    for pair in CT2_PAIRS {
-        // Un derivado está pendiente si su Marian se va a descargar en esta
-        // pasada, o si el Marian ya existe y el derivado no pasa el gate.
-        let marian = format!("marian-{pair}");
-        if out.models.contains(&marian) {
-            out.ct2.push(pair.to_string());
-            continue;
-        }
-        if !store.is_provisioned(&marian) {
-            continue;
-        }
-        let ct2_dir = avi_store::ct2_model_dir(pair);
-        if needs_reconversion(&ct2_dir, store, &format!("marian-{pair}")) {
-            out.ct2.push(pair.to_string());
-        }
-    }
     out
-}
-
-/// ¿Hay que reconvertir el derivado?
-///
-/// La regla es la del binario: si el derivado existe y es sano, solo se
-/// reconvierte cuando su `model.bin` es **más viejo** que el snapshot. Si alguna de
-/// las dos fechas no se puede leer, se da el derivado por bueno: reconvertir porque
-/// no se pudo leer una fecha convertiría en un fallo lo que es un no-op.
-pub fn needs_reconversion(ct2_dir: &Path, store: &avi_store::ModelStore, hf_name: &str) -> bool {
-    if !avi_store::ct2_dir_missing_files(ct2_dir).is_empty() {
-        return true;
-    }
-    let Some(snapshot) = store.model_snapshot_path(hf_name) else {
-        return true;
-    };
-    if !snapshot.is_dir() {
-        return true;
-    }
-    let ct2_time = std::fs::metadata(ct2_dir.join("model.bin"))
-        .and_then(|m| m.modified())
-        .ok();
-    let hf_time = std::fs::metadata(snapshot.join("pytorch_model.bin"))
-        .or_else(|_| std::fs::metadata(snapshot.join("model.safetensors")))
-        .and_then(|m| m.modified())
-        .ok();
-    match (ct2_time, hf_time) {
-        (Some(ct2), Some(hf)) => ct2 <= hf,
-        // Sin fechas legibles el derivado se acepta: el criterio del binario es
-        // "ya existe, se omite".
-        _ => false,
-    }
 }
 
 /// Ejecuta la purga de `--force-update` por el **plan de borrado de modelos**, de
@@ -347,13 +290,6 @@ pub fn purge(store: &avi_store::ModelStore, options: &Options) -> PurgeOutcome {
     if let Err(e) = avi_store::ModelStore::remove_hf_locks() {
         outcome.failures.push((".locks".to_string(), e.to_string()));
     }
-    // Y el derivado CT2, que el binario no purgaba en `--force-update` y que es
-    // lo que hace que la reconversión tenga sentido.
-    match avi_store::remove_ct2_cache() {
-        Ok(true) => outcome.ct2 = true,
-        Ok(false) => {}
-        Err(e) => outcome.failures.push(("ct2".to_string(), e.to_string())),
-    }
     outcome
 }
 
@@ -364,8 +300,6 @@ pub struct PurgeOutcome {
     pub snapshots: Vec<String>,
     /// La caché `xet` se borró. `false` en raíz compartida, donde R3 lo prohíbe.
     pub xet: bool,
-    /// El derivado CT2 se borró.
-    pub ct2: bool,
     /// Lo que no se pudo borrar, con su motivo.
     pub failures: Vec<(String, String)>,
 }
@@ -400,7 +334,7 @@ impl PruneOutcome {
 ///
 /// Solo toca directorios de snapshots de repos propios, que son atribuibles a
 /// la aplicación: procede tanto en la raíz exclusiva como en la compartida
-/// (R3), y nunca toca `xet`, `.locks` ni el derivado CT2. Idempotente: una
+/// (R3), y nunca toca `xet` ni `.locks`. Idempotente: una
 /// segunda pasada no encuentra nada que borrar.
 ///
 /// La confirmación de tamaño y `called_from_lifecycle` siguen vigentes: la
@@ -457,105 +391,6 @@ fn live_snapshot_name(snapshots: &Path, revision: &str) -> Option<String> {
     None
 }
 
-/// Convierte el snapshot de Marian al derivado CT2 con **escritura atómica**.
-///
-/// El conversor vuelca en un directorio temporal hermano y solo tras verificar el
-/// derivado completo con el mismo gate que lo acepta se renombra sobre el destino.
-/// Así un fallo nunca deja un parcial que el gate aceptaría, y un derivado previo
-/// roto se sustituye entero.
-///
-/// La razón de cada fallo nombra lo que hay que hacer para reintentar, como nombra
-/// el original: son las que el usuario lee cuando la conversión falla y no hay
-/// ninguna otra fuente del mismo mensaje.
-pub fn convert(hf_snapshot: &Path, ct2_dir: &Path) -> anyhow::Result<()> {
-    let tmp_dir = tmp_dir_for(ct2_dir);
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)?;
-    }
-    std::fs::create_dir_all(&tmp_dir)?;
-    if let Err(e) = convert_body(hf_snapshot, &tmp_dir) {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        return Err(e);
-    }
-    if ct2_dir.exists() {
-        std::fs::remove_dir_all(ct2_dir)?;
-    }
-    std::fs::rename(&tmp_dir, ct2_dir)?;
-    Ok(())
-}
-
-/// Directorio temporal hermano del derivado. Hermano y no dentro, porque el
-/// renombrado final tiene que ser del mismo volumen: si estuviera dentro del
-/// destino, la escritura no sería atómica porque el destino se borra antes.
-pub fn tmp_dir_for(ct2_dir: &Path) -> PathBuf {
-    ct2_dir.with_extension(format!("tmp-{}", std::process::id()))
-}
-
-/// El cuerpo de la conversión: invocar el conversor, asegurar los `.spm` y pasar
-/// el gate. Aislado para que `convert` tenga una única salida de error y el
-/// temporal se limpie siempre.
-fn convert_body(hf_snapshot: &Path, tmp_dir: &Path) -> anyhow::Result<()> {
-    let try_converter = |bin: &str| {
-        std::process::Command::new(bin)
-            .args([
-                // `ctranslate2.converters` ya importa el módulo al cargarse, así que
-                // `runpy` avisa de que lo vuelve a ejecutar con un RuntimeWarning
-                // inofensivo que solo ensucia la terminal; se silencia ese aviso.
-                "-W",
-                "ignore::RuntimeWarning:runpy",
-                "-m",
-                "ctranslate2.converters.transformers",
-                "--model",
-                &hf_snapshot.to_string_lossy(),
-                "--output_dir",
-                &tmp_dir.to_string_lossy(),
-                "--quantization",
-                "int8",
-                "--copy_files",
-                "source.spm",
-                "target.spm",
-                "--force",
-            ])
-            .status()
-    };
-    match try_converter("python") {
-        Ok(s) if s.success() => {}
-        Ok(s) => anyhow::bail!("el conversor python terminó con {s}"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match try_converter("python3") {
-            Ok(s) if s.success() => {}
-            Ok(s) => anyhow::bail!("el conversor python3 terminó con {s}"),
-            Err(e2) => anyhow::bail!("python no encontrado: {e} / {e2}"),
-        },
-        Err(e) => anyhow::bail!("fallo al ejecutar converter: {e}"),
-    }
-    // Copia posterior verificada: si el conversor no depositó los `.spm` —una
-    // versión sin `--copy_files`— se copian desde el snapshot pinneado, porque sin
-    // ellos el derivado no puede tokenizar.
-    for spm in ["source.spm", "target.spm"] {
-        if !tmp_dir.join(spm).is_file() {
-            let source = hf_snapshot.join(spm);
-            if !source.is_file() {
-                anyhow::bail!(
-                    "el snapshot {} no contiene {spm} (revisión inesperada) — limpia la \
-                     caché de modelos y reintenta setup",
-                    hf_snapshot.display()
-                );
-            }
-            std::fs::copy(&source, tmp_dir.join(spm))?;
-        }
-    }
-    // Verificación con el mismo criterio del gate antes de declarar éxito.
-    let missing = avi_store::ct2_dir_missing_files(tmp_dir);
-    if !missing.is_empty() {
-        anyhow::bail!(
-            "derivado CT2 incompleto (faltan: {}) — limpia la caché de modelos y \
-             reintenta setup",
-            missing.join(", ")
-        );
-    }
-    Ok(())
-}
-
 /// Traduce un fallo de provisión al `reason` de contrato que corresponde.
 ///
 /// `setup_failed` es el que el resumen de `self install` emite ("Programa
@@ -567,17 +402,15 @@ pub fn map_download_failure(model: &str, cause: &anyhow::Error) -> LifecycleErro
     LifecycleError::new("network_error", format!("{model}: {cause}"))
 }
 
-/// Costura de la provisión: la descarga (red) y la conversión (Python) se inyectan
-/// para poder comprobar la regla sin ninguna de las dos.
+/// Costura de la provisión: la descarga (red) se inyecta para poder comprobar la
+/// regla sin ella.
 #[allow(async_fn_in_trait)]
 pub trait Provisioner {
     /// Descarga el modelo `name` al almacén.
     async fn download(&self, name: &str) -> anyhow::Result<()>;
-    /// Convierte el snapshot de Marian al derivado CT2 de `ct2_dir`.
-    fn convert(&self, snapshot: &Path, ct2_dir: &Path) -> anyhow::Result<()>;
 }
 
-/// Implementación de producción: `ModelStore::ensure_downloaded` y [`convert`].
+/// Implementación de producción: `ModelStore::ensure_downloaded`.
 pub struct HubProvisioner;
 
 impl Provisioner for HubProvisioner {
@@ -585,10 +418,6 @@ impl Provisioner for HubProvisioner {
         avi_store::ModelStore::ensure_downloaded(name)
             .await
             .map(|_| ())
-    }
-
-    fn convert(&self, snapshot: &Path, ct2_dir: &Path) -> anyhow::Result<()> {
-        convert(snapshot, ct2_dir)
     }
 }
 
@@ -599,8 +428,6 @@ pub struct Provisioned {
     pub provisioned: Vec<String>,
     /// Repos que hubo que descargar en esta pasada.
     pub downloaded: Vec<String>,
-    /// Derivados CT2 convertidos en esta pasada.
-    pub converted: Vec<String>,
 }
 
 /// Fallo de [`provision`], sin traducir todavía al `reason` de contrato: cada
@@ -609,17 +436,10 @@ pub struct Provisioned {
 pub enum ProvisionError {
     /// Falló la descarga de `name`.
     Download { name: String, cause: anyhow::Error },
-    /// Falló la conversión del derivado del par `pair`.
-    Conversion { pair: String, reason: String },
 }
 
 /// Provisión compartida por `setup` y `self install`: descarga la selección no
-/// provisionada y después convierte los derivados CT2 según el estado real del
-/// almacén. No confirma nada ni escribe la selección.
-///
-/// La conversión se decide **después** de las descargas porque depende del
-/// snapshot descargado: en un almacén vacío no hay nada que convertir antes de
-/// bajar Marian.
+/// provisionada. No confirma nada ni escribe la selección.
 pub async fn provision(
     store: &avi_store::ModelStore,
     options: &Options,
@@ -641,35 +461,6 @@ pub async fn provision(
         }
         out.provisioned.push(name.to_string());
     }
-
-    // 2. Derivados CT2: obligatorios, e idempotentes por fecha sobre directorios sanos.
-    for pair in CT2_PAIRS {
-        let hf_name = format!("marian-{pair}");
-        if !store.is_provisioned(&hf_name) {
-            continue;
-        }
-        let conversion = |reason: String| ProvisionError::Conversion {
-            pair: pair.to_string(),
-            reason,
-        };
-        let Some(snapshot) = store.model_snapshot_path(&hf_name) else {
-            return Err(conversion(format!(
-                "snapshot HF de '{hf_name}' no resoluble"
-            )));
-        };
-        if !snapshot.is_dir() {
-            return Err(conversion(format!("snapshot HF de '{hf_name}' ausente")));
-        }
-        let ct2_dir = avi_store::ct2_model_dir(pair);
-        if !needs_reconversion(&ct2_dir, store, &hf_name) {
-            eprintln!("CT2 {pair} ya convertido, se omite");
-            continue;
-        }
-        provisioner
-            .convert(&snapshot, &ct2_dir)
-            .map_err(|e| conversion(format!("{e:#}")))?;
-        out.converted.push(pair.to_string());
-    }
     Ok(out)
 }
 
@@ -685,21 +476,11 @@ pub struct Outcome {
     /// publica como `models_provisioned`, y no distingue los que se descargaron de los
     /// que ya estaban: el contrato solo promete el conjunto disponible.
     pub provisioned: Vec<String>,
-    /// Derivados CT2 convertidos en esta pasada.
-    pub converted: Vec<String>,
 }
 
-impl Outcome {
-    /// `true` si no provisionó nada porque ya estaba todo, que es la condición de
-    /// idempotencia del `setup`.
-    pub fn is_already_provisioned(&self) -> bool {
-        self.converted.is_empty() && self.provisioned.iter().all(|_| true)
-    }
-}
-
-/// Ejecuta `setup`: purga si toca, provisiona la selección y convierte los derivados.
+/// Ejecuta `setup`: purga si toca y provisiona la selección.
 ///
-/// Es el punto de entrada que el binario cablea. La descarga y la conversión viven en
+/// Es el punto de entrada que el binario cablea. La descarga vive en
 /// [`provision`], compartida con `self install`; `run` añade la migración, la
 /// persistencia de la selección, la purga, la confirmación y la poda. Lo único que se
 /// queda en el binario es el sobre `--json` y la prosa, porque el parseo de la CLI y
@@ -736,7 +517,7 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
     }
 
     // 2. Resumen previo y confirmación con el plan de lo pendiente; después,
-    //    la provisión compartida (descarga y conversión CT2 según el estado real).
+    //    la provisión compartida (descarga según el estado real).
     let pending = pending(store, options);
     if (options.force_update || !pending.is_empty()) && !confirm_size(&pending, options)? {
         return Ok(outcome);
@@ -747,16 +528,8 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
             ProvisionError::Download { name, cause } => {
                 anyhow::Error::from(map_download_failure(&name, &cause))
             }
-            ProvisionError::Conversion { pair, reason } => conversion_error(
-                &pair,
-                &format!(
-                    "{reason} — instala ctranslate2 (pip install ctranslate2) y reintenta setup"
-                ),
-            )
-            .into(),
         })?;
     outcome.provisioned = provisioned.provisioned;
-    outcome.converted = provisioned.converted;
 
     // 4. Poda tras éxito: las revisiones fuera del pin vigente.
     //    Un fallo aquí no invalida lo provisionado: se informa y se sigue.
@@ -766,15 +539,6 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
     }
 
     Ok(outcome)
-}
-
-/// Error de conversión con el motivo ya redactado: el usuario lee este mensaje y no
-/// hay otra fuente para él.
-fn conversion_error(pair: &str, reason: &str) -> LifecycleError {
-    LifecycleError::new(
-        "setup_failed",
-        format!("No se pudo convertir CT2 {pair}: {reason}"),
-    )
 }
 
 /// Confirmación destructiva de `--force-update`. `false` es "el usuario dijo
@@ -839,8 +603,7 @@ pub(crate) mod tests {
     use crate::test_support::{scratch, write_file, ENV_LOCK};
     use std::sync::MutexGuard;
 
-    /// Provisionador simulado: la descarga planta el snapshot pinneado y la
-    /// conversión escribe un derivado sano, sin red ni Python.
+    /// Provisionador simulado: la descarga planta el snapshot pinneado, sin red.
     pub(crate) struct FakeProvisioner;
 
     impl Provisioner for FakeProvisioner {
@@ -848,16 +611,6 @@ pub(crate) mod tests {
             let (repo, revision) = avi_store::ModelStore::revision_of(name)
                 .ok_or_else(|| anyhow::anyhow!("sin pin: {name}"))?;
             fake_snapshot(&repo.replace('/', "--"), revision);
-            Ok(())
-        }
-
-        fn convert(&self, _snapshot: &Path, ct2_dir: &Path) -> anyhow::Result<()> {
-            let pair = ct2_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|n| n.strip_prefix("opus-mt-"))
-                .ok_or_else(|| anyhow::anyhow!("directorio CT2 inesperado"))?;
-            derived_healthy(pair);
             Ok(())
         }
     }
@@ -877,10 +630,7 @@ pub(crate) mod tests {
     /// Lleva `config.json`, que es lo que `is_provisioned` exige para un repo sin
     /// `MODEL_FILE_PATTERNS` —"algún fichero con tamaño > 0"—, y los ficheros que el
     /// gate de parakeet exige. Deliberadamente **no** se crea
-    /// `model.safetensors` ni `pytorch_model.bin`: así la comparación de fechas de
-    /// `needs_reconversion` cae en la rama "no se pudo leer una fecha, el derivado se
-    /// acepta", que es determinista y no depende de la resolución del reloj del
-    /// sistema de ficheros.
+    /// `model.safetensors` ni `pytorch_model.bin`.
     pub(crate) fn fake_snapshot(repo: &str, revision: &str) -> PathBuf {
         let dir = avi_store::models_cache_dir()
             .join(format!("models--{repo}"))
@@ -899,18 +649,9 @@ pub(crate) mod tests {
         dir
     }
 
-    /// Crea un derivado CT2 sano, el que el gate acepta.
-    pub(crate) fn derived_healthy(pair: &str) -> PathBuf {
-        let dir = avi_store::ct2_model_dir(pair);
-        write_file(&dir.join("model.bin"), "pesos");
-        write_file(&dir.join("source.spm"), "spm");
-        write_file(&dir.join("target.spm"), "spm");
-        dir
-    }
-
     /// La confirmación anuncia la suma de los tamaños fijados en la tabla de
-    /// pines, en escala decimal: 4 734 735 847 bytes la selección base (4 modelos)
-    /// y 7 250 841 898 con el modelo de clonado (5 modelos).
+    /// pines, en escala decimal: 3 334 081 228 bytes la selección base (4 modelos)
+    /// y 5 850 187 279 con el modelo de clonado (5 modelos).
     #[test]
     fn confirmation_announces_the_pinned_sizes() {
         let pending_of = |with_voice_cloning| Pending {
@@ -918,19 +659,18 @@ pub(crate) mod tests {
                 .into_iter()
                 .map(String::from)
                 .collect(),
-            ct2: Vec::new(),
         };
         let base = pending_of(false);
-        assert_eq!(base.estimated_bytes(), 4_734_735_847);
+        assert_eq!(base.estimated_bytes(), 3_334_081_228);
         assert_eq!(
             download_summary(&base),
-            "Se descargarán 4 modelo(s), unos 4.7 GB."
+            "Se descargarán 4 modelo(s), unos 3.3 GB."
         );
         let cloning = pending_of(true);
-        assert_eq!(cloning.estimated_bytes(), 7_250_841_898);
+        assert_eq!(cloning.estimated_bytes(), 5_850_187_279);
         assert_eq!(
             download_summary(&cloning),
-            "Se descargarán 5 modelo(s), unos 7.3 GB."
+            "Se descargarán 5 modelo(s), unos 5.9 GB."
         );
     }
 
@@ -949,15 +689,11 @@ pub(crate) mod tests {
         assert!(!initial.is_empty(), "nada provisionado, todo pendiente");
         assert!(initial.estimated_bytes() > 0, "hay tamaño que anunciar");
 
-        // 2. Se provisiona todo lo de la selección, derivado incluido: `pending`
-        //    queda vacío.
+        // 2. Se provisiona todo lo de la selección: `pending` queda vacío.
         for name in selection(&with_clone) {
             let (repo, revision) = avi_store::ModelStore::revision_of(name)
                 .expect("todo repo pinneado tiene revisión");
             fake_snapshot(&repo.replace('/', "--"), revision);
-        }
-        for pair in CT2_PAIRS {
-            derived_healthy(pair);
         }
         let after = pending(&store, &with_clone);
         assert!(
@@ -993,39 +729,6 @@ pub(crate) mod tests {
         let store = avi_store::ModelStore::new();
         let plan = pending(&store, &Options::user(true, false, true));
         assert!(plan.is_empty(), "con todos los pines sembrados no queda nada: {plan:?}");
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    /// Sobre un almacén vacío, `pending` cuenta también el CT2 de los Marian que
-    /// se van a descargar: el resumen previo no puede omitirlo.
-    #[test]
-    fn pending_counts_ct2_of_marian_about_to_download() {
-        let (_guard, root) = cache_relocated("setup-pending-ct2");
-        let store = avi_store::ModelStore::new();
-        let plan = pending(&store, &Options::user(false, false, true));
-        assert_eq!(plan.ct2, CT2_PAIRS.map(String::from).to_vec());
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    /// Regresión: desde un almacén vacío, la provisión convierte el CT2 tras
-    /// descargar, porque decide con el estado real y no con un plan previo.
-    #[test]
-    fn provision_converts_ct2_after_downloading() {
-        let (_guard, root) = cache_relocated("setup-provision-vacio");
-        let store = avi_store::ModelStore::new();
-        let options = Options::user(false, false, true);
-        let result = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime de la prueba")
-            .block_on(provision(&store, &options, &FakeProvisioner))
-            .expect("la provisión simulada se completa");
-        assert_eq!(result.converted, CT2_PAIRS.map(String::from).to_vec());
-        for pair in CT2_PAIRS {
-            assert!(
-                avi_store::is_ct2_provisioned(pair),
-                "CT2 {pair} provisionado"
-            );
-        }
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -1075,78 +778,6 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Un fallo de conversión no deja un directorio parcial: ni el destino ni el
-    /// temporal hermano sobreviven, de modo que un reintento no hereda medio
-    /// derivado.
-    #[test]
-    fn failed_conversion_leaves_no_partial_dir() {
-        let root = scratch("setup-conversion");
-        let snapshot = root.join("snapshot-vacio");
-        let ct2_dir = root.join("models/ct2/marian-es-en");
-        std::fs::create_dir_all(&snapshot).unwrap();
-
-        let err = convert(&snapshot, &ct2_dir).expect_err("sin pesos ni conversor no hay derivado");
-        let message = format!("{err:#}");
-        assert!(
-            !ct2_dir.exists(),
-            "no queda un directorio de destino parcial: {message}"
-        );
-        assert!(
-            !tmp_dir_for(&ct2_dir).exists(),
-            "ni el temporal hermano: {message}"
-        );
-
-        // Un derivado previo tampoco se destruye por un fallo: se conserva para
-        // que el gate siga aceptándolo y el reintento tenga de dónde partir.
-        write_file(&ct2_dir.join("model.bin"), "derivado bueno");
-        assert!(convert(&snapshot, &ct2_dir).is_err());
-        assert!(
-            ct2_dir.join("model.bin").is_file(),
-            "el derivado previo sobrevive a un intento fallido"
-        );
-        assert!(!tmp_dir_for(&ct2_dir).exists());
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    /// La conversión que sí funciona, con el gate como única condición: si el
-    /// temporal pasa el gate, se renombra; y el gate es el mismo que acepta el
-    /// derivado definitivo.
-    #[test]
-    fn conversion_verifies_with_the_accepting_gate() {
-        let root = scratch("setup-gate");
-        let ct2_dir = root.join("marian-es-en");
-        let tmp = tmp_dir_for(&ct2_dir);
-        // El gate exige `model.bin` **y** un tokenizador: `tokenizer.json` o los dos
-        // `.spm`. Sin tokenizer el derivado no puede tokenizar aunque tenga pesos.
-        write_file(&tmp.join("model.bin"), "pesos");
-        assert_eq!(
-            avi_store::ct2_dir_missing_files(&tmp),
-            vec![
-                "tokenizer.json".to_string(),
-                "source.spm".to_string(),
-                "target.spm".to_string()
-            ],
-            "pesos sin tokenizador no pasan el gate"
-        );
-        write_file(&tmp.join("source.spm"), "spm");
-        write_file(&tmp.join("target.spm"), "spm");
-        assert!(
-            avi_store::ct2_dir_missing_files(&tmp).is_empty(),
-            "con los dos `.spm` el gate acepta"
-        );
-        std::fs::remove_file(tmp.join("model.bin")).unwrap();
-        assert_eq!(
-            avi_store::ct2_dir_missing_files(&tmp),
-            vec!["model.bin".to_string()],
-            "y sin `model.bin` el gate lo rechaza nombrándolo"
-        );
-        // El temporal es hermano, no hijo: el renombrado final tiene que ser del
-        // mismo volumen, y un temporal dentro del destino no lo sería.
-        assert_eq!(tmp.parent(), ct2_dir.parent());
-        assert_ne!(tmp, ct2_dir);
-        std::fs::remove_dir_all(&root).ok();
-    }
-
     /// La selección sobrevive a un update, desde el Ciclo 2: `setup
     /// --with-voice-cloning` la guarda, y el `setup` invocado por el traspaso
     /// (`called_from_lifecycle`) lee la guardada en vez de los flags.
@@ -1164,9 +795,6 @@ pub(crate) mod tests {
             let (repo, revision) = avi_store::ModelStore::revision_of(name)
                 .expect("todo repo pinneado tiene revisión");
             fake_snapshot(&repo.replace('/', "--"), revision);
-        }
-        for pair in CT2_PAIRS {
-            derived_healthy(pair);
         }
 
         // 1. El `setup` directo con `--with-voice-cloning` guarda la selección.
@@ -1221,28 +849,28 @@ pub(crate) mod tests {
         write_file(&snapshots.join("LEEME.txt"), "no es un snapshot");
 
         // Pin por `refs/`: el hash vivo se conserva y el resto se poda.
-        let (marian_repo, marian_rev) =
-            avi_store::ModelStore::revision_of("marian-es-en").expect("marian tiene pin");
-        let marian_snaps = root
-            .join(format!("models--{}", marian_repo.replace('/', "--")))
+        let (translation_repo, translation_rev) =
+            avi_store::ModelStore::revision_of("opus-mt-es-en").expect("opus-mt-es-en tiene pin");
+        let translation_snaps = root
+            .join(format!("models--{}", translation_repo.replace('/', "--")))
             .join("snapshots");
         let live_hash = "def456def456def456def456def456def456def4";
         let stale_hash = "0011220011220011220011220011220011220011";
         write_file(
             &root
-                .join(format!("models--{}", marian_repo.replace('/', "--")))
+                .join(format!("models--{}", translation_repo.replace('/', "--")))
                 .join("refs")
-                .join(marian_rev),
+                .join(translation_rev),
             live_hash,
         );
-        write_file(&marian_snaps.join(live_hash).join("config.json"), "{}");
-        write_file(&marian_snaps.join(stale_hash).join("config.json"), "{}");
+        write_file(&translation_snaps.join(live_hash).join("config.json"), "{}");
+        write_file(&translation_snaps.join(stale_hash).join("config.json"), "{}");
 
         let outcome = prune_obsolete_at(&root);
         assert_eq!(
             outcome.removed,
             vec![
-                format!("marian-es-en/snapshots/{stale_hash}"),
+                format!("opus-mt-es-en/snapshots/{stale_hash}"),
                 format!("qwen3-tts-0.6b/snapshots/{old}"),
             ],
             "poda exacta: solo lo obsoleto, en orden"
@@ -1250,7 +878,7 @@ pub(crate) mod tests {
         assert!(outcome.is_clean(), "sin fallos: {:?}", outcome.failures);
         assert!(snapshots.join(revision).is_dir(), "el pin se queda");
         assert!(
-            marian_snaps.join(live_hash).is_dir(),
+            translation_snaps.join(live_hash).is_dir(),
             "el vivo por `refs/` se queda"
         );
         assert!(!snapshots.join(old).exists(), "lo obsoleto se va");

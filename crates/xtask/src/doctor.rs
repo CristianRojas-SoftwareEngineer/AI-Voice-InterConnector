@@ -943,8 +943,7 @@ pub(crate) fn models_are_provisioned() -> bool {
     probe_models_drift().is_empty()
 }
 
-/// Deriva de modelos obligatorios: snapshots ausentes y derivados CT2 sin
-/// provisionar. Solo lectura sobre la caché.
+/// Deriva de modelos obligatorios: snapshots ausentes. Solo lectura sobre la caché.
 fn probe_models_drift() -> Vec<String> {
     let mut out = Vec::new();
     let models = avi_shared::paths::models_cache_dir();
@@ -962,13 +961,6 @@ fn probe_models_drift() -> Vec<String> {
             out.push(format!(
                 "modelo {} sin provisionar (ejecuta `cargo xtask bootstrap --models`)",
                 pin.name
-            ));
-        }
-    }
-    for pair in ["es-en", "en-es"] {
-        if !avi_shared::paths::is_ct2_provisioned(pair) {
-            out.push(format!(
-                "derivado CT2 opus-mt-{pair} sin provisionar (ejecuta `cargo xtask bootstrap --models`)"
             ));
         }
     }

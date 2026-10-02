@@ -19,10 +19,10 @@
 //! exclusiva. El directorio de programa no lo toca `cleanup` en absoluto —eso es
 //! `self uninstall`— y aparece en el plan solo como recurso compartido que se
 //! conserva. En la raíz de modelos **exclusiva** el borrado es de directorio
-//! entero, con los snapshots, el derivado CT2, los locks y `xet` dentro, porque
+//! entero, con los snapshots, los locks y `xet` dentro, porque
 //! `xet` cuelga de ella (decisión 1 del plan). En la raíz **compartida** que el
-//! usuario eligió con `HF_HUB_CACHE` o `HF_HOME` solo se borran los repos fijados,
-//! sus derivados y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de
+//! usuario eligió con `HF_HUB_CACHE` o `HF_HOME` solo se borran los repos fijados
+//! y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de
 //! otra herramienta (criterio 23).
 //!
 //! **Nada de lo que el daemon usa se borra sin pararlo antes**, y el fallo
@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 /// que el sobre pueda decir qué se borró y por qué.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Category {
-    /// `--model`: los modelos provisionados y sus derivados.
+    /// `--model`: los modelos provisionados.
     Model,
     /// `--voices`: las voces que puede borrar y el arrastre de su habla.
     Voices,
@@ -87,7 +87,7 @@ pub struct Roots {
     pub program_dir: PathBuf,
     /// Raíz de datos: voces, habla sintetizada, configuración, logs y pidfile.
     pub data_dir: PathBuf,
-    /// Raíz de modelos: snapshots, derivado CT2, locks y `xet`.
+    /// Raíz de modelos: snapshots, locks y `xet`.
     pub models_dir: PathBuf,
     /// Directorio de temporales del sistema, para el barrido transversal.
     pub temp_root: PathBuf,
@@ -315,11 +315,11 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
 
 /// Alcance de `--model`.
 ///
-/// **Raíz exclusiva**: un único destino, la raíz entera. Los snapshots, el derivado
-/// CT2, los locks y `xet` cuelgan de ella, así que el borrado es de directorio y no
-/// hay aritmética que acertar. Es el residuo cero del criterio 17.
+/// **Raíz exclusiva**: un único destino, la raíz entera. Los snapshots, los locks y
+/// `xet` cuelgan de ella, así que el borrado es de directorio y no hay aritmética
+/// que acertar. Es el residuo cero del criterio 17.
 ///
-/// **Raíz compartida**: solo los repos fijados, sus locks y el derivado CT2. `xet` y
+/// **Raíz compartida**: solo los repos fijados y sus locks. `xet` y
 /// el `.locks` completo se conservan y se anuncian como compartidos (R3).
 fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec<Preserved>) {
     let models = &roots.models_dir;
@@ -343,7 +343,6 @@ fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec
             Category::Model,
         );
     }
-    push(collected, models.join("ct2"), Category::Model);
     // Lo que se conserva se anuncia por **regla**, no entrada por entrada: una caché
     // HF compartida puede tener cientos de repos de otras herramientas, y listarlos uno
     // a uno convertiría el resumen en ruido sin decir más que la regla. Se nombra la
@@ -351,7 +350,7 @@ fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec
     preserved.push(Preserved {
         path: models.clone(),
         reason: "R3: la raíz es una caché compartida; solo se borran los repos \
-                 fijados, sus derivados y sus locks",
+                 fijados y sus locks",
     });
     preserved.push(Preserved {
         path: models.join("xet"),

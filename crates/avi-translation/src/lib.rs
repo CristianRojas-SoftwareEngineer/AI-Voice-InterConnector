@@ -187,12 +187,12 @@ mod tests {
     use avi_core::engine::TranslationEngine;
     use avi_core::engine::{HierarchicalSegmenter, Segmenter};
 
-    /// Directorio del modelo CT2 derivado del par, exigiendo `model.bin`. La raíz
-    /// de modelos (`models_cache_dir()/ct2`) vive fuera del repo y la provisiona
+    /// Directorio del snapshot del modelo `opus-mt-<par>`, exigiendo `model.bin`. La
+    /// caché de modelos vive fuera del repo y la provisiona
     /// `ai-voice-interconnector setup`.
     #[cfg(feature = "native-translation")]
     fn require_ct2(pair: &str) -> std::path::PathBuf {
-        let model_dir = avi_store::ct2_model_dir(pair);
+        let model_dir = avi_store::ModelStore::new().model_dir(&format!("opus-mt-{pair}"));
         let weights = model_dir.join("model.bin");
         std::fs::metadata(&weights).unwrap_or_else(|e| {
             panic!(
@@ -285,12 +285,11 @@ mod tests {
         );
     }
 
-    /// Regresión C-05/E1: un dir con solo `model.bin` (sin tokenizador) no es
-    /// provisionado y el loader lo rechaza con `Err` — el gate coincide con el
-    /// loader por construcción, sin depender de modelos reales.
+    /// Regresión C-05/E1: un dir con solo `model.bin` (sin tokenizador) lo
+    /// rechaza el loader con `Err`, sin depender de modelos reales.
     #[cfg(feature = "native-translation")]
     #[test]
-    fn ct2_dir_with_only_model_bin_not_provisioned_and_loader_fails() {
+    fn ct2_dir_with_only_model_bin_loader_fails() {
         use crate::Ct2TranslationEngine;
 
         let dir = std::env::temp_dir().join(format!("avi_ct2_roto_{}", std::process::id()));
@@ -299,10 +298,6 @@ mod tests {
         std::fs::write(dir.join("model.bin"), b"senyuelo-sin-tokenizador")
             .expect("escribir model.bin señuelo");
 
-        assert!(
-            !avi_store::ct2_dir_missing_files(&dir).is_empty(),
-            "un dir sin tokenizador no debe pasar el gate"
-        );
         assert!(
             Ct2TranslationEngine::new(&dir).is_err(),
             "el loader debe rechazar un dir sin tokenizador"
@@ -349,7 +344,7 @@ mod tests {
 
         for (model, fixture) in corpus {
             let pair = model.strip_prefix("opus-mt-").unwrap_or(model);
-            let model_dir = avi_store::ct2_model_dir(pair);
+            let model_dir = avi_store::ModelStore::new().model_dir(&format!("opus-mt-{pair}"));
             let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/assets")
                 .join(fixture);

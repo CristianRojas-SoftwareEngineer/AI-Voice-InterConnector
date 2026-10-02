@@ -16,9 +16,8 @@
 //!
 //! Ninguna prueba depende de red, de ONNX Runtime ni del motor TTS: el bundle es
 //! sintético y sale de `packaging/bundle-manifest.json`. El único proceso externo que
-//! aparece en todo el archivo es el conversor de CT2 del criterio 6, y su **fallo** es
-//! precisamente lo que esa prueba necesita, de modo que no depende de qué tenga
-//! instalado la máquina que ejecuta.
+//! aparece en todo el archivo es la descarga del criterio 6, que apunta a un puerto local
+//! cerrado y por eso falla sin tocar la red real.
 //!
 //! El criterio 6 tiene dos mitades y por eso dos pruebas: `--no-setup` no provisiona
 //! nada, y un fallo de `setup` deja el programa instalado. La segunda tiene una mitad del
@@ -39,6 +38,9 @@ use avi_lifecycle::uninstall;
 use avi_store::{ModelStore, MODEL_FILE_PATTERNS, MODEL_REVISIONS};
 use std::path::{Path, PathBuf};
 use support::{Inert, Models, Now, Sandbox};
+
+/// Pin que el criterio 6 deja sin sembrar para que la descarga falle.
+const UNSEEDED_PIN: &str = "opus-mt-es-en";
 
 /// Recibo con el instante de instalación neutralizado, para comparar dos pasadas por
 /// todo lo demás. `installed_at` es lo único que el esquema declara que cambia entre dos
@@ -110,10 +112,8 @@ fn run_category(sandbox: &Sandbox, runtime: &tokio::runtime::Runtime, options: c
 /// `avi-store` exige para dar cada uno por provisionado.
 ///
 /// Es lo que permite que la provisión **no toque la red**: con los snapshots ya en su
-/// sitio, la provisión no tiene repos que descargar y solo puede llegar a la conversión
-/// de CT2, que es local (se decide tras las descargas, con la regla compartida con
-/// `setup`). Cada repo de pruebas se planta con los nombres
-/// de archivo que el producto espera, no con un marcador, porque `is_provisioned` decide
+/// sitio, la provisión no tiene repos que descargar. Cada repo de pruebas se planta con
+/// los nombres de archivo que el producto espera, no con un marcador, porque `is_provisioned` decide
 /// por presencia y tamaño de esos archivos.
 fn provision_selection(sandbox: &Sandbox) {
     for pin in MODEL_REVISIONS {
@@ -398,7 +398,7 @@ fn criterion_2_final_summary_reports_the_path_state_once() {
 /// justo el defecto que el criterio prohíbe.
 ///
 /// Y la segunda mitad es que la raíz de modelos **sigue vacía**: no basta con que el
-/// resumen diga `skipped`, tiene que no haber quedado ni un repo, ni `ct2`, ni `xet`.
+/// resumen diga `skipped`, tiene que no haber quedado ni un repo ni `xet`.
 #[test]
 fn criterion_6_no_setup_provisions_nothing() {
     let _guard = support::exclusively();
@@ -446,10 +446,10 @@ fn criterion_6_no_setup_provisions_nothing() {
     assert_eq!(
         support::list(&sandbox.models_dir),
         Vec::<String>::new(),
-        "criterio 6: la raíz de modelos sigue vacía: no hay repo, ni `ct2`, ni `xet`"
+        "criterio 6: la raíz de modelos sigue vacía: no hay repo ni `xet`"
     );
     assert!(
-        !ModelStore::new().is_provisioned("marian-es-en"),
+        !ModelStore::new().is_provisioned("opus-mt-es-en"),
         "criterio 6: y nada quedó provisionado en el almacén"
     );
     assert!(
@@ -463,13 +463,9 @@ fn criterion_6_no_setup_provisions_nothing() {
 /// **Criterio 6, segunda mitad.** Sin `--no-setup`, un fallo de `setup` deja el programa
 /// instalado y termina con `setup_failed`.
 ///
-/// El fallo se provoca **sin red**: se provisionan en el sandbox los repos de la
-/// selección, de modo que no queda nada que descargar y la provisión solo llega a la
-/// conversión del derivado CT2, que es local (la conversión se decide tras las
-/// descargas, con la regla compartida con `setup`). Que la conversión
-/// falle es lo que la prueba necesita, y es independiente de qué conversores tenga
-/// instalados la máquina: si no hay `python`, falla por no encontrarlo; si lo hay, falla
-/// porque el conversor no encuentra un modelo donde está el snapshot de pruebas.
+/// El fallo se provoca **sin red real**: se provisionan en el sandbox los repos de la
+/// selección salvo uno, y `HF_ENDPOINT` apunta a un puerto local cerrado. Lo único que
+/// queda por hacer es descargar ese modelo, y falla de forma independiente de la máquina.
 ///
 /// Se afirman las **dos** mitades del criterio. La del programa instalado es la que se
 /// comprueba contra el disco. La del `reason` se comprueba sobre
@@ -479,7 +475,7 @@ fn criterion_6_no_setup_provisions_nothing() {
 /// en código de
 /// salida. Y se afirma también la separación de los dos `reason`, que es lo que mantiene
 /// intacto el criterio del ciclo 2: el de la **operación** es `setup_failed` y el del
-/// **fallo de provisión** viaja anidado, y en este caso es `ct2_conversion_failed`.
+/// **fallo de provisión** viaja anidado, y en este caso es `network_error`.
 ///
 /// El resumen en texto se afirma por las dos mitades —el estado de los modelos y el aviso
 /// con el motivo de la causa y la instrucción de reintentar—, porque es la otra salida de
@@ -491,19 +487,27 @@ fn criterion_6_setup_failure_keeps_install() {
     sandbox.seed_env();
     provision_selection(&sandbox);
 
-    // No vacuidad del camino de fallo: queda CT2 por convertir y **nada** por descargar.
+    // Un solo pin sin sembrar y el endpoint de HuggingFace en un puerto local cerrado:
+    // la descarga falla sin tocar la red real.
+    let unseeded = MODEL_REVISIONS
+        .iter()
+        .find(|pin| pin.name == UNSEEDED_PIN)
+        .expect("criterio 6: el pin sin sembrar existe");
+    std::fs::remove_dir_all(sandbox.models_dir.join(support::repo_dir(unseeded.repo)))
+        .expect("criterio 6: se quita el snapshot del pin");
+    let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("criterio 6: se reserva un puerto local")
+        .port();
+    std::env::set_var("HF_ENDPOINT", format!("http://127.0.0.1:{closed_port}"));
+
+    // No vacuidad del camino de fallo: solo queda por descargar ese pin.
     let setup_options = setup::Options::user(false, false, true);
     let pending = setup::pending(&ModelStore::new(), &setup_options);
-    assert!(
-        pending.models.is_empty(),
-        "criterio 6: no queda nada que descargar, así que la prueba no toca la red: {:?}",
-        pending.models
-    );
     assert_eq!(
-        pending.ct2.len(),
-        setup::CT2_PAIRS.len(),
-        "criterio 6: los dos derivados CT2 están pendientes de conversión: {:?}",
-        pending.ct2
+        pending.models,
+        vec![UNSEEDED_PIN.to_string()],
+        "criterio 6: solo ese modelo queda por descargar"
     );
 
     let exe = sandbox.write_bundle(&sandbox.staging);
@@ -546,15 +550,15 @@ fn criterion_6_setup_failure_keeps_install() {
     };
     assert_eq!(outcome.models.as_str(), "failed");
     assert_eq!(
-        cause.reason, "ct2_conversion_failed",
+        cause.reason, "network_error",
         "criterio 6: el fallo de provisión conserva su `reason`, que es el que \
-         `docs/CLI/commands/SETUP.md` publica para una conversión fallida"
+         `docs/CLI/commands/SETUP.md` publica para una descarga fallida"
     );
     assert_eq!(
         ExitCode::from_reason(cause.reason).code(),
-        1,
-        "criterio 6: y el código genérico, porque la tabla no le declara fila propia; el código \
-         de salida del proceso es el de la operación, no este"
+        20,
+        "criterio 6: y el código de la tabla; el código de salida del proceso es el de la \
+         operación, no este"
     );
 
     // ── Mitad 2: termina con `setup_failed` y el código 11 ────────────────────
@@ -626,25 +630,19 @@ fn criterion_6_setup_failure_keeps_install() {
         outcome
             .summary
             .iter()
-            .any(|l| l.contains("Causa:") && l.contains("ct2_conversion_failed")),
+            .any(|l| l.contains("Causa:") && l.contains("network_error")),
         "criterio 6: y nombra la causa, con el `reason` anidado: {:?}",
         outcome.summary
     );
 
-    // Y es reintentable con `setup`: el derivado sigue sin existir, así que un `setup`
+    // Y es reintentable con `setup`: el modelo sigue sin existir, así que un `setup`
     // posterior lo vuelve a pedir.
-    for pair in setup::CT2_PAIRS {
-        assert!(
-            !avi_store::ct2_missing_files(pair).is_empty(),
-            "criterio 6: el derivado CT2 de {pair} sigue pendiente, así que `setup` reintenta"
-        );
-    }
-    assert!(
-        !setup::pending(&ModelStore::new(), &setup_options)
-            .ct2
-            .is_empty(),
+    assert_eq!(
+        setup::pending(&ModelStore::new(), &setup_options).models,
+        vec![UNSEEDED_PIN.to_string()],
         "criterio 6: y `setup` lo ve pendiente otra vez"
     );
+    std::env::remove_var("HF_ENDPOINT");
 }
 
 /// **La otra mitad del criterio 6: con `setup` correcto, la operación sale limpia.**
@@ -654,29 +652,14 @@ fn criterion_6_setup_failure_keeps_install() {
 /// `AlreadyProvisioned`, sin `reason` de contrato, que es lo que hace que el cableado salga
 /// por `Hecho` con código 0 en vez de por veredicto.
 ///
-/// El sandbox tiene los repos de la selección **y** los dos derivados CT2 sanos y más
-/// nuevos que sus snapshots, que es lo que `needs_reconversion` exige para no pedirlos. Por
-/// eso lleva una espera de más de un segundo entre escribir el snapshot y escribir el
-/// derivado: la comparación es por `mtime` y dos escrituras seguidas pueden caer en el mismo
-/// tick en un sistema de ficheros de resolución gruesa, con lo que la prueba probaría el
-/// reloj y no el código. Es la misma espera que ya usa `repair_from_inside_program_dir_copies_nothing`.
+/// El sandbox tiene los repos de la selección ya provisionados, así que no queda nada que
+/// descargar.
 #[test]
 fn criterion_6_successful_provisioning_has_no_reason() {
     let _guard = support::exclusively();
     let sandbox = Sandbox::new("c6-ok");
     sandbox.seed_env();
     provision_selection(&sandbox);
-
-    // Los derivados, después de una espera que garantiza que su `mtime` es posterior al
-    // del snapshot: `needs_reconversion` compara `ct2_time <= hf_time` y devuelve
-    // `true` —o sea, hay que convertir— cuando el derivado no es más nuevo.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
-    for pair in setup::CT2_PAIRS {
-        let dir = avi_store::ct2_model_dir(pair);
-        support::write(&dir.join("model.bin"), "ct2");
-        support::write(&dir.join("source.spm"), "spm");
-        support::write(&dir.join("target.spm"), "spm");
-    }
 
     // No vacuidad: `setup` no tiene nada que hacer, y eso es lo que la prueba comprueba.
     let pending = setup::pending(
@@ -685,16 +668,9 @@ fn criterion_6_successful_provisioning_has_no_reason() {
     );
     assert!(
         pending.is_empty(),
-        "criterio 6: con los repos y los derivados ya provisionados no queda nada pendiente: \
-         {:?}",
+        "criterio 6: con los repos ya provisionados no queda nada pendiente: {:?}",
         pending
     );
-    for pair in setup::CT2_PAIRS {
-        assert!(
-            avi_store::ct2_missing_files(pair).is_empty(),
-            "criterio 6: el derivado de {pair} está sano"
-        );
-    }
 
     let exe = sandbox.write_bundle(&sandbox.staging);
     let runtime = support::runtime();
@@ -931,7 +907,13 @@ fn criterion_18_keep_data_preserves_state() {
     // Lo que se conserva.
     assert!(
         support::exists(&sandbox.models_dir.join("xet"))
-            && support::exists(&sandbox.models_dir.join("ct2").join("marian-es-en")),
+            && support::exists(&sandbox.models_dir.join(support::repo_dir(
+                MODEL_REVISIONS
+                    .iter()
+                    .find(|pin| pin.name == "opus-mt-es-en")
+                    .expect("criterio 18: el modelo de traducción está fijado")
+                    .repo
+            ))),
         "criterio 18: los modelos se quedan: {:?}",
         outcome.preserved
     );
@@ -1603,7 +1585,7 @@ fn criterion_23_shared_resources_survive() {
     // Lo que R3 declara atribuible a la aplicación, y lo que nunca lo es.
     let (repo, rev) = MODEL_REVISIONS
         .iter()
-        .find(|pin| pin.name == "marian-es-en")
+        .find(|pin| pin.name == "opus-mt-es-en")
         .map(|pin| (pin.repo.to_string(), pin.revision.to_string()))
         .expect("criterio 23: el repo de traducción está fijado");
     let our_repo = sandbox.models_dir.join(support::repo_dir(&repo));
@@ -1619,7 +1601,6 @@ fn criterion_23_shared_resources_survive() {
         .join("models--otra--herramienta");
     let xet = sandbox.models_dir.join("xet");
     let locks = sandbox.models_dir.join(".locks");
-    let ct2 = sandbox.models_dir.join("ct2");
     let cargo = sandbox.home.join(".cargo");
     let sccache_home = sandbox.home.join(".cache").join("sccache");
     let sccache_temp = sandbox.temp_root.join("sccache");
@@ -1630,7 +1611,6 @@ fn criterion_23_shared_resources_survive() {
         &foreign_lock,
         &xet,
         &locks,
-        &ct2,
         &cargo,
         &sccache_home,
         &sccache_temp,
@@ -1650,7 +1630,7 @@ fn criterion_23_shared_resources_survive() {
     let plan = cleanup::plan(&sandbox.roots(), &options);
     let planned_removed = support::paths(&plan);
 
-    for (case, our) in [("1", &our_repo), ("2", &our_lock), ("3", &ct2)] {
+    for (case, our) in [("1", &our_repo), ("2", &our_lock)] {
         assert!(
             planned_removed.contains(&our.display().to_string()),
             "criterio 23, caso {case}: lo atribuible a la aplicación está en el plan: {planned_removed:?}"
@@ -1703,10 +1683,6 @@ fn criterion_23_shared_resources_survive() {
     assert!(
         !support::exists(&our_lock),
         "criterio 23, caso 2: el lock del repo propio sí se borró"
-    );
-    assert!(
-        !support::exists(&ct2),
-        "criterio 23, caso 3: el derivado `ct2` sí se borró"
     );
     assert!(
         support::exists(&xet),

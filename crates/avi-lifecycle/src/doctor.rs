@@ -177,8 +177,6 @@ pub struct Models {
     pub missing: Vec<String>,
     /// Estado del modelo Base de clonado: `ready` o `missing_opt_in`.
     pub base: &'static str,
-    /// Pares de traducción cuyo derivado CT2 no pasa el gate.
-    pub ct2_incomplete: Vec<String>,
     pub size_bytes: u64,
 }
 
@@ -311,18 +309,6 @@ pub fn report(env: &Env, exe: &Path, product_version: &str) -> Report {
             "todos los modelos de la selección están provisionados".to_string()
         } else {
             format!("faltan: {}", models.missing.join(", "))
-        },
-    );
-    check(
-        "models_ct2",
-        models.ct2_incomplete.is_empty(),
-        if models.ct2_incomplete.is_empty() {
-            "los derivados CT2 pasan el gate".to_string()
-        } else {
-            format!(
-                "derivado CT2 incompleto: {}",
-                models.ct2_incomplete.join(", ")
-            )
         },
     );
 
@@ -563,14 +549,6 @@ fn models(roots: &cleanup::Roots) -> Models {
         }
     }
     let base_ready = store.is_provisioned(crate::setup::CLONING_MODEL);
-    let mut ct2_incomplete = Vec::new();
-    for pair in crate::setup::CT2_PAIRS {
-        if store.is_provisioned(&format!("marian-{pair}"))
-            && !avi_store::is_ct2_provisioned_at(&roots.models_dir, pair)
-        {
-            ct2_incomplete.push(pair.to_string());
-        }
-    }
     Models {
         root: roots.models_dir.clone(),
         shared_root: roots.models_shared,
@@ -581,7 +559,6 @@ fn models(roots: &cleanup::Roots) -> Models {
         } else {
             "missing_opt_in"
         },
-        ct2_incomplete,
         size_bytes: cleanup::path_size(&roots.models_dir),
     }
 }
@@ -677,7 +654,7 @@ mod tests {
         assert_eq!(report.models.root, env.roots.models_dir);
         assert!(!report.models.shared_root);
         assert_eq!(report.models.base, "missing_opt_in");
-        assert_eq!(report.checks.len(), 6, "seis comprobaciones");
+        assert_eq!(report.checks.len(), 5, "cinco comprobaciones");
         assert!(
             report.is_failure(),
             "sin nada instalado, el veredicto es negativo"
@@ -730,8 +707,7 @@ mod tests {
     }
 
     /// Planta en la raíz del sandbox los snapshots pinneados de todos los modelos
-    /// salvo el Base opt-in, con los archivos que el producto exige, y los derivados
-    /// CT2 sanos.
+    /// salvo el Base opt-in, con los archivos que el producto exige.
     fn plant_required_models(env: &Env) {
         for pin in avi_store::MODEL_REVISIONS {
             if pin.name == crate::setup::CLONING_MODEL {
@@ -754,12 +730,6 @@ mod tests {
                 }
                 None => write_file(&snapshot.join("model.safetensors"), "pesos"),
             }
-        }
-        for pair in crate::setup::CT2_PAIRS {
-            let dir = avi_store::ct2_model_dir_at(&env.roots.models_dir, pair);
-            write_file(&dir.join("model.bin"), "pesos");
-            write_file(&dir.join("source.spm"), "spm");
-            write_file(&dir.join("target.spm"), "spm");
         }
     }
 
