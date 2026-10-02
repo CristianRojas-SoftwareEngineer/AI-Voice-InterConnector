@@ -126,6 +126,9 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(unix)]
     {
+        if !fits_pid_t(pid) {
+            return false;
+        }
         std::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
             .stdin(std::process::Stdio::null())
@@ -135,6 +138,15 @@ pub fn pid_alive(pid: u32) -> bool {
             .map(|s| s.success())
             .unwrap_or(false)
     }
+}
+
+/// Un PID de Unix es un `pid_t` con signo de 32 bits. `kill` trunca a ese tipo
+/// el número que recibe, así que un valor mayor (de un pidfile corrupto) señala
+/// a otro proceso: 4294967294 se convierte en el grupo -2 y su negativo, en el
+/// PID 2. Un PID que no cabe no es un proceso y nunca se pasa a `kill`.
+#[cfg(unix)]
+fn fits_pid_t(pid: u32) -> bool {
+    i32::try_from(pid).is_ok()
 }
 
 /// Mata el árbol preciso por PID con la alternativa admitida (sin Job en el
@@ -164,6 +176,9 @@ pub fn kill_tree_by_pid(pid: u32) -> bool {
     }
     #[cfg(unix)]
     {
+        if !fits_pid_t(pid) {
+            return false;
+        }
         let _ = std::process::Command::new("kill")
             .args(["-9", &format!("-{}", pid)])
             .stdin(std::process::Stdio::null())
@@ -193,6 +208,20 @@ pub fn wait_for_pid_death(pid: u32, deadline: std::time::Duration) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     !pid_alive(pid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Un PID que no cabe en `pid_t` no está vivo ni se puede matar: nunca llega
+    /// a `kill`, que lo truncaría a otro proceso.
+    #[test]
+    fn out_of_range_pid_is_neither_alive_nor_killed() {
+        let pid = u32::MAX - 1;
+        assert!(!pid_alive(pid));
+        assert!(!kill_tree_by_pid(pid));
+    }
 }
 
 // Instala en el proceso actual (lado daemon longevo) un Job Object con
