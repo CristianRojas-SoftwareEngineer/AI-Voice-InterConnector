@@ -100,6 +100,8 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+El build de Windows de CI fallaba al enlazar porque reutilizaba objetos de una caché de `target/` contaminada: ahora ningún job compila antes de restaurar sus cachés, y cada release termina vaciando `target/` para que las copias obsoletas no se acumulen entre versiones.
+
 ### Cambiado
 
 - El cierre de cada release vacía `target/` con `cargo clean` una vez verificado el Release publicado. El corte es un commit directo en `main` y no dispara el hook `post-merge`, y la poda fina conserva los artefactos de hashes obsoletos, así que hasta ahora ningún mecanismo limpiaba esas copias. `.gitignore` retira las reglas que ya no apuntan a nada (`node_modules/`, `voices/`, `*.spec` y el PNG suelto, heredados del empaquetado con PyInstaller) y las de `.claude/orchestration/` y `.claude/skills/`, que ya cubre `.claude/*`.
