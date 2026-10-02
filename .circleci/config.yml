@@ -108,7 +108,7 @@ parameters:
 # Invalidación por familia de caché:
 #   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock;
 #     conserva fallback por prefijo.
-#   - target (v4): cambia con dependencias reales en Cargo.lock y con el tree hash
+#   - target (v5): cambia con dependencias reales en Cargo.lock y con el tree hash
 #     git de vendor/cmake-0.1.58 y de vendor/hf-hub-1.0.0. Clave exacta SIN
 #     fallback: un acierto garantiza que lo compilado corresponde a los parches
 #     actuales, así que su mtime se fija tras restaurar y cargo no los marca Dirty.
@@ -133,8 +133,8 @@ commands:
     # apunta a copias locales, que cargo fingerprintea por mtime. El checkout les
     # da mtime nuevo en cada corrida, las marca Dirty y arrastra la re-ejecución
     # de lo que dependa de ellas (para cmake, toda la cadena nativa: aws-lc-sys,
-    # onednn-src, sentencepiece-sys, ct2rs…). Por eso la clave exacta de target-v4
-    # incluye el tree hash git de ambos parches y NO tiene fallback por prefijo:
+    # onednn-src, sentencepiece-sys, ct2rs…). Por eso la clave exacta de la caché
+    # de `target/` incluye el tree hash git de ambos parches y NO tiene fallback por prefijo:
     # un acierto garantiza que lo compilado en target/ corresponde al contenido
     # actual de los parches, y fijar su mtime antiguo es seguro sin comparar
     # nada. Un fallo de caché deja target/ vacío, donde la fijación es inocua. El
@@ -143,7 +143,7 @@ commands:
     # `/usr/bin/find` se usa por la misma razón (el find.exe de Windows).
     #
     # `target: false` (modo sonda de los build-*) omite la restauración de
-    # target-v4 y la fijación de mtime: cada corrida de sonda compila con
+    # la caché de `target/` y la fijación de mtime: cada corrida de sonda compila con
     # target/ frío y nunca depende de una clave de producción.
     parameters:
       variant:
@@ -161,16 +161,16 @@ commands:
       # working dir antes de restaurar. `shell: bash` está disponible en los tres
       # executors (nativo Linux/macOS, Git-bash en el orb de Windows) y `perl`
       # viene bundleado con Git-bash (presente también en los SO *nix). Generar la
-      # clave con un transform de texto evita compilar xtask (y su árbol, que en
-      # Windows tira de windows-sys/raw-dylib y necesita dlltool.exe, ausente antes
-      # de instalar MSYS2) desde cero en cada job. Un único mecanismo cross-platform,
-      # sin ramas por shell.
+      # clave con un transform de texto, y no con `cargo xtask`, porque ningún paso
+      # puede compilar antes de restaurar `target/`: una restauración extraída sobre
+      # un `target/` ya poblado mezcla el estado de dos ejecuciones. Un único
+      # mecanismo cross-platform, sin ramas por shell.
       - run:
           name: Generar Cargo.lock.cachekey (clave de caché normalizada)
           shell: bash
           command: perl -0777 -pe 's/(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/' Cargo.lock > Cargo.lock.cachekey
       - run:
-          name: Calcular identidad de contenido de los parches vendorizados (clave de target-v4)
+          name: Calcular identidad de contenido de los parches vendorizados (clave de target/)
           shell: bash
           command: |
             set -euo pipefail
@@ -190,7 +190,7 @@ commands:
           steps:
             - restore_cache:
                 keys:
-                  - target-v4-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
+                  - target-v5-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
             - run:
                 name: Fijar mtime de los parches vendorizados cmake y hf-hub (evita cascada Dirty)
                 shell: bash
@@ -226,10 +226,10 @@ commands:
     # ahí un fallo del job suele ser un test que falló, no una compilación
     # incompleta, así que guardar igual sigue siendo útil para acelerar la
     # próxima corrida. build-* (variant: full) pasa `when: on_success` de forma
-    # explícita: como la clave de `target-v4` es inmutable (el primer `save_cache`
-    # gana), un build-* que falla a medio `cargo build --release` persistiría un
-    # `target/` incompleto bajo esa clave para siempre — exactamente lo que
-    # ocurrió con `target-v2` `full` de linux-x64 en v0.20.9.
+    # explícita: como la clave de la caché de `target/` es inmutable (el primer
+    # `save_cache` gana), un build-* que falla a medio `cargo build --release`
+    # persistiría un `target/` incompleto bajo esa clave para siempre — exactamente
+    # lo que ocurrió con `target-v2` `full` de linux-x64 en v0.20.9.
     parameters:
       variant:
         type: string
@@ -242,13 +242,13 @@ commands:
         default: "always"
     steps:
       - save_cache:
-          key: target-v4-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
+          key: target-v5-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
           paths:
             - target
           when: << parameters.when >>
 
   cargo_restore_registry:
-    description: Restaura solo registry/git (sin target) — para los jobs pequeños xtask/changelog-gate (validate-licenses, validate-changelog, publish-metadata); test-linux/test-macos/test-windows/coverage y build-* usan cargo_restore_caches con target-v4
+    description: Restaura solo registry/git (sin target) — para los jobs pequeños xtask/changelog-gate (validate-licenses, validate-changelog, publish-metadata); test-linux/test-macos/test-windows/coverage y build-* usan cargo_restore_caches con la caché de target/
     steps:
       - run:
           name: Generar Cargo.lock.cachekey (clave de caché normalizada)
@@ -308,7 +308,7 @@ commands:
   # sccache: envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
   # hash de contenido en ~/.cache/sccache. Cada variante (test/full/cov) guarda
   # y restaura solo su propio blob (clave segmentada por variant, espejo de
-  # target-v4), sobreviviendo a bumps de Cargo.lock que invalidan target/.
+  # la caché de `target/`), sobreviviendo a bumps de Cargo.lock que invalidan target/.
   # Cobertura: `rustc`, los nativos compilados con el crate `cc` (que detecta
   # RUSTC_WRAPPER=sccache y lo usa como wrapper; en Windows solo si CC/CXX es la
   # ruta absoluta de cl.exe, ver build-windows-x64) y los proyectos CMake
@@ -372,7 +372,6 @@ commands:
               sudo install -m 755 "/tmp/${SCCACHE_PKG}/sccache" /usr/local/bin/sccache
             fi
             # Persistir env a $BASH_ENV para los steps de compilación siguientes.
-            # CARGO_INCREMENTAL=0: sccache no cachea con compilación incremental.
             echo 'export RUSTC_WRAPPER=sccache' >> "$BASH_ENV"
             echo 'export SCCACHE_DIR=$HOME/.cache/sccache' >> "$BASH_ENV"
             # Límite de la caché rolling: sin él rige el máximo por defecto (10 GiB)
@@ -380,7 +379,6 @@ commands:
             # superarlo, sccache desaloja por LRU (un acierto refresca el mtime de
             # la entrada, también tras restaurar la caché desde el tar).
             echo 'export SCCACHE_CACHE_SIZE=<< pipeline.parameters.sccache_cache_size >>' >> "$BASH_ENV"
-            echo 'export CARGO_INCREMENTAL=0' >> "$BASH_ENV"
             sccache --version
             echo "[STEP] Configurar sccache - FIN"
   sccache_setup_windows:
@@ -505,9 +503,10 @@ commands:
 
   # Fuente única de pines: `packaging/pins.json` es la única tabla de versiones;
   # los parámetros del pipeline la espejan. Este paso invoca al validador único
-  # (`cargo xtask pins --check`) y falla antes de compilar si algún pin diverge
-  # del JSON. No genera pasos de instalación: la CI conserva sus comandos
-  # (`apt`, `brew`, MSYS2).
+  # (`cargo xtask pins --check`), que es la primera compilación del workspace,
+  # tras restaurar las cachés y activar `sccache`, y falla antes de compilar el
+  # producto si algún pin diverge del JSON. No genera pasos de instalación: la
+  # CI conserva sus comandos (`apt`, `brew`, MSYS2).
   validate_pins:
     description: Valida los pines del pipeline contra packaging/pins.json (falla si divergen)
     steps:
@@ -526,8 +525,10 @@ commands:
   # declaraciones: un eslabón ausente produce un binario que compila y arranca
   # pero que no incluye la pieza. Este paso invoca al validador único
   # (`cargo xtask features --check`), que exige que todo feature que el código
-  # usa sea alcanzable desde el paquete raíz, y falla antes de compilar si
-  # falta alguno. Es la misma forma que la puerta de pines y también sin C++.
+  # usa sea alcanzable desde el paquete raíz. Va junto a la puerta de pines,
+  # como primera compilación del workspace tras restaurar las cachés y activar
+  # `sccache`, y falla antes de compilar el producto si falta alguno. Es la
+  # misma forma que la puerta de pines y también sin C++.
   validate_features:
     description: Valida la cadena de features del workspace (falla si un eslabón falta)
     steps:
@@ -550,20 +551,23 @@ jobs:
     # arch-independiente y mockea el engine (Parakeet/Qwen no se ejercitan),
     # así que re-correrla en ARM64 no aportaría señal.
     # Es la arquitectura más barata/rápida disponible.
-    # Caché: registry + target-v4 + sccache autoconsistente (variant: test),
+    # Caché: registry + target/ + sccache autoconsistente (variant: test),
     # igual que test-windows/test-macos/coverage.
-    # target-v4 evita recompilar dependencias externas, pero los crates propios
-    # del workspace (path dependencies) recompilan siempre: el fingerprinting
+    # La caché de target/ evita recompilar dependencias externas, pero los crates
+    # propios del workspace (path dependencies) recompilan siempre: el fingerprinting
     # de cargo para dependencias de ruta local es por mtime en los tres SO
     # (evidencia v0.20.4: 264/290 Fresh en Linux). sccache por contenido es
     # inmune al mtime y cubre ese residuo con hits de su propio perfil.
+    # Las puertas validate_* son la primera compilación del workspace: van tras
+    # restaurar las cachés y activar sccache.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
     resource_class: medium
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     steps:
       - checkout
-      - validate_pins
-      - validate_features
       - run:
           # libasound2-dev + pkg-config exponen ALSA a cpal (sí se compila en la
           # suite). libclang-dev (bindgen/ct2rs, solo con native-translation) ya
@@ -601,6 +605,8 @@ jobs:
           os: linux
           variant: test
       - sccache_setup_unix
+      - validate_pins
+      - validate_features
       - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
@@ -621,17 +627,21 @@ jobs:
     # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
     # test-linux/macos: valida código específico de Windows (winsound, tray)
     # antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
-    # Caché: registry + target-v4 + sccache autoconsistente (cargo_restore_caches
-    # os: windows variant: test; sccache os: windows variant: test). target-v4
-    # tiene coste de I/O NTFS significativo en restore/save, pero sin él la
-    # recompilación en Windows es total (evidencia v0.20.4: 0 Fresh / 154
-    # Compiling con hit exacto de target-v4, incluyendo dependencias externas).
+    # Caché: registry + target/ + sccache autoconsistente (cargo_restore_caches
+    # os: windows variant: test; sccache os: windows variant: test). La caché de
+    # target/ tiene coste de I/O NTFS significativo en restore/save, pero sin ella
+    # la recompilación en Windows es total (evidencia v0.20.4: 0 Fresh / 154
+    # Compiling con hit exacto, incluyendo dependencias externas).
+    # Las puertas validate_* son la primera compilación del workspace: van tras
+    # restaurar las cachés y configurar sccache.
     executor: win/server-2022
     # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
     # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
-    # CARGO_INCREMENTAL=0 en todo el job (mismo motivo que build-windows-x64).
     environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
       CARGO_INCREMENTAL: "0"
+      # Puertas y suite comparten flags: RUSTFLAGS entra en el fingerprint de cargo y reemplaza los rustflags del target.
+      RUSTFLAGS: "-C linker=rust-lld"
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     steps:
       - checkout
@@ -670,8 +680,6 @@ jobs:
             rustc --version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
-      - validate_pins
-      - validate_features
       - toolchain_save_cache:
           os: windows
       - cargo_restore_caches:
@@ -690,6 +698,8 @@ jobs:
           os: windows
           variant: test
       - sccache_setup_windows
+      - validate_pins
+      - validate_features
       - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
@@ -698,8 +708,6 @@ jobs:
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
-            $env:CARGO_INCREMENTAL = "0"
-            $env:RUSTFLAGS = "-C linker=rust-lld"
             cargo test --all --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             sccache --show-stats
@@ -715,16 +723,21 @@ jobs:
     # Suite Rust en macOS nativo (Apple Silicon, Xcode 26.4.0). Valida código
     # específico de macOS (afplay/CoreAudio, rutas POSIX, señales) — sin Mac
     # físico, este gate en CI es la única validación antes del usuario real.
-    # Caché: registry + target-v4 + sccache autoconsistente (variant: test),
+    # Caché: registry + target/ + sccache autoconsistente (variant: test),
     # igual que test-linux/test-windows/coverage.
-    # target-v4 evita recompilar dependencias externas, pero los crates propios
-    # del workspace (path dependencies) recompilan siempre: el fingerprinting
+    # La caché de target/ evita recompilar dependencias externas, pero los crates
+    # propios del workspace (path dependencies) recompilan siempre: el fingerprinting
     # de cargo para dependencias de ruta local es por mtime en los tres SO
     # (evidencia v0.20.4: 287/313 Fresh en macOS). sccache por contenido es
     # inmune al mtime y cubre ese residuo con hits de su propio perfil.
+    # Las puertas validate_* son la primera compilación del workspace: van tras
+    # restaurar las cachés y activar sccache.
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     steps:
       - checkout
       - toolchain_restore_cache:
@@ -748,8 +761,6 @@ jobs:
             cargo --version
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
-      - validate_pins
-      - validate_features
       - toolchain_save_cache:
           os: macos
       - cargo_restore_caches:
@@ -781,6 +792,8 @@ jobs:
           os: macos
           variant: test
       - sccache_setup_unix
+      - validate_pins
+      - validate_features
       - run:
           name: Ejecutar suite Rust (cargo test --all)
           command: |
@@ -807,10 +820,11 @@ jobs:
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
     resource_class: medium
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     steps:
       - checkout
-      - validate_pins
-      - validate_features
       - run:
           # NOTA: con native-stt/native-translation off por defecto,
           # coverage compila la workspace SIN los stacks C++ (no aparece
@@ -854,6 +868,8 @@ jobs:
           os: linux
           variant: cov
       - sccache_setup_unix
+      - validate_pins
+      - validate_features
       - run:
           name: Ejecutar suite con cobertura (cargo llvm-cov)
           command: |
@@ -886,14 +902,17 @@ jobs:
     # Caché: registry + sccache (sin target) — xtask es pequeño, sccache basta.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     steps:
       - checkout
-      - validate_pins
-      - validate_features
       - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
       - sccache_setup_unix
+      - validate_pins
+      - validate_features
       - run:
           name: Verificar SOURCE-OFFER.md
           command: |
@@ -907,12 +926,11 @@ jobs:
             cargo --quiet xtask licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
       - run:
-          name: Verificar pines y comentarios (puertas de política en CI)
+          name: Verificar comentarios (puerta de política en CI)
           command: |
-            echo "[STEP] Verificar pines y comentarios - INICIO"
-            cargo --quiet xtask pins --check
+            echo "[STEP] Verificar comentarios - INICIO"
             cargo --quiet xtask comments --check
-            echo "[STEP] Verificar pines y comentarios - FIN"
+            echo "[STEP] Verificar comentarios - FIN"
 
   validate-changelog:
     # Gate de CHANGELOG: verifica que exista la sección ## [X.Y.Z] para la
@@ -922,14 +940,17 @@ jobs:
     # Caché: registry + sccache (sin target) — coherente con los jobs pequeños/xtask.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     steps:
       - checkout
-      - validate_pins
-      - validate_features
       - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
       - sccache_setup_unix
+      - validate_pins
+      - validate_features
       - run:
           name: Verificar sección de CHANGELOG
           command: |
@@ -1047,7 +1068,7 @@ jobs:
   # puerta + coverage + bootstrap (ver workflow build-all).
   # ──────────────────────────────────────────────────────────────
   # Parámetro `probe` (los 4 build-*): modo sonda del workflow
-  # `native-cache-probe`. Sin restaurar ni guardar target-v4 (target/ frío en
+  # `native-cache-probe`. Sin restaurar ni guardar la caché de target/ (target/ frío en
   # cada corrida), sin empaquetado (package, SHA-256, persist_to_workspace:
   # exigen CIRCLE_TAG == const VERSION) y con el diagnóstico de CMake. Sigue
   # ejecutando smoke test y motor TTS, y guarda sccache en la variante `full`
@@ -1057,10 +1078,8 @@ jobs:
     executor: win/server-2022
     # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
     # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
-    # CARGO_INCREMENTAL=0 en todo el job: el estado incremental restaurado con target/
-    # puede reutilizar objetos que esperan instancias genéricas que el crate de
-    # arriba ya no exporta, y el enlazado falla con símbolos sin resolver.
     environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     parameters:
@@ -1096,8 +1115,6 @@ jobs:
             cargo --version
             rustc --version
             Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
-      - validate_pins
-      - validate_features
       - toolchain_save_cache:
           os: windows
       - msys2_restore_cache
@@ -1179,6 +1196,8 @@ jobs:
           variant: full
       - sccache_setup_windows
       - native_sccache_setup_windows
+      - validate_pins
+      - validate_features
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1203,7 +1222,6 @@ jobs:
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
-            $env:CARGO_INCREMENTAL = "0"
             # Solo en modo sonda (target/ frío): el servidor sccache, que arranca
             # con la primera compilación de este step, registra sus errores en un
             # log publicado como artefacto (cargo oculta la salida de los build scripts).
@@ -1427,14 +1445,15 @@ jobs:
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
     resource_class: large
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     parameters:
       probe:
         type: boolean
         default: false
     steps:
       - checkout
-      - validate_pins
-      - validate_features
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
           # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
@@ -1471,6 +1490,8 @@ jobs:
           variant: full
       - sccache_setup_unix
       - native_sccache_setup_unix
+      - validate_pins
+      - validate_features
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1587,14 +1608,15 @@ jobs:
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
     resource_class: arm.medium
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     parameters:
       probe:
         type: boolean
         default: false
     steps:
       - checkout
-      - validate_pins
-      - validate_features
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
           # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
@@ -1631,6 +1653,8 @@ jobs:
           variant: full
       - sccache_setup_unix
       - native_sccache_setup_unix
+      - validate_pins
+      - validate_features
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -1747,6 +1771,9 @@ jobs:
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     parameters:
       probe:
         type: boolean
@@ -1775,8 +1802,6 @@ jobs:
             cargo --version
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
-      - validate_pins
-      - validate_features
       - toolchain_save_cache:
           os: macos
       - run:
@@ -1824,6 +1849,8 @@ jobs:
           variant: full
       - sccache_setup_unix
       - native_sccache_setup_unix
+      - validate_pins
+      - validate_features
       - run:
           name: Compilar binario release (cargo build --release)
           no_output_timeout: 25m
@@ -2054,15 +2081,18 @@ jobs:
     # `ai-voice-interconnector` desde la raíz del staged_path.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     steps:
       - checkout
-      - validate_pins
-      - validate_features
       # Caché: registry + sccache (sin target xtask) — coherente con los jobs pequeños/xtask.
       - cargo_restore_registry
       - sccache_restore_cache:
           os: linux
       - sccache_setup_unix
+      - validate_pins
+      - validate_features
       - run:
           name: Instalar gh CLI (repo apt oficial, firmado)
           command: |

@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.27.0 — 2026-10-02](#0270--2026-10-02)
 - [0.26.0 — 2026-10-01](#0260--2026-10-01)
 - [0.25.0 — 2026-09-28](#0250--2026-09-28)
@@ -96,6 +97,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Corregido
+
+- La CI compilaba `xtask` en las puertas de pines y de features antes de restaurar la caché de `target/`, así que la restauración se extraía sobre un `target/` ya poblado y este quedaba con el estado de dos ejecuciones. En `build-windows-x64`, `cargo xtask package` reutilizó objetos de esa mezcla y el enlazado falló de forma determinista con `LNK1120`. Los 11 jobs que usan cargo cumplen ahora dos invariantes: ninguna compilación precede a la restauración de cachés (las puertas son la primera compilación del workspace, tras activar `sccache`) y las variables que cambian los artefactos (`CARGO_INCREMENTAL=0` en todos, `RUSTFLAGS` en `test-windows`) se declaran una sola vez en el `environment:` del job. La clave de la caché de `target/` pasa a `target-v5`, que descarta la caché contaminada. `validate-licenses` deja de repetir `pins --check`. Dos pruebas de contrato (`test_cargo_jobs_compile_only_after_cache_restore` y `test_cargo_jobs_disable_incremental_at_job_level`) vigilan ambas invariantes sobre todos los jobs.
 
 ## [0.27.0] — 2026-10-02
 

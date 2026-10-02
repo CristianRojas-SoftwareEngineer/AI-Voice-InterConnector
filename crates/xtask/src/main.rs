@@ -1626,37 +1626,156 @@ mod tests {
         std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
     }
 
-    /// En Windows `CARGO_INCREMENTAL=0` se fija a nivel de job: PowerShell no tiene
-    /// `$BASH_ENV` y los pasos que compilan `xtask` en debug (como `xtask package`)
-    /// no lo exportaban. Con un `target/` restaurado, el estado incremental viejo
-    /// reutilizaba objetos que esperaban instancias genéricas que el crate de arriba
-    /// ya no exportaba, y el enlazado fallaba con símbolos sin resolver.
+    /// Jobs de la sección `jobs:` como pares (nombre, texto). Cada sección va
+    /// desde su clave a dos espacios de sangría hasta la siguiente clave del
+    /// mismo nivel (o hasta `workflows:` para el último).
+    fn ci_jobs(cfg: &str) -> Vec<(&str, &str)> {
+        let start = cfg
+            .find("\njobs:\n")
+            .expect("debe existir la sección jobs:")
+            + "\njobs:\n".len();
+        let end = cfg
+            .find("\nworkflows:")
+            .expect("debe existir la sección workflows:");
+        let body = &cfg[start..end];
+        let is_key = |l: &str| {
+            l.starts_with("  ")
+                && !l.starts_with("   ")
+                && !l.trim_start().starts_with('#')
+                && l.trim_end().ends_with(':')
+        };
+        let mut heads: Vec<(usize, &str)> = Vec::new();
+        let mut offset = 0;
+        for line in body.split_inclusive('\n') {
+            let bare = line.trim_end_matches(['\n', '\r']);
+            if is_key(bare) {
+                heads.push((offset, bare.trim().trim_end_matches(':')));
+            }
+            offset += line.len();
+        }
+        heads
+            .iter()
+            .enumerate()
+            .map(|(i, &(from, name))| {
+                let to = heads.get(i + 1).map_or(body.len(), |h| h.0);
+                (name, &body[from..to])
+            })
+            .collect()
+    }
+
+    /// Jobs que usan cargo: los que restauran `target/` o el registry.
+    fn cargo_jobs(cfg: &str) -> Vec<(&str, &str)> {
+        ci_jobs(cfg)
+            .into_iter()
+            .filter(|(_, s)| {
+                s.contains("- cargo_restore_caches") || s.contains("- cargo_restore_registry")
+            })
+            .collect()
+    }
+
+    /// Ninguna compilación precede a la restauración de cachés: una restauración
+    /// extraída sobre un `target/` ya poblado mezcla el estado de dos ejecuciones,
+    /// y una compilación anterior al entorno completo no usa el registry ni el
+    /// `sccache` del job. Las puertas `validate_*` son la primera compilación del
+    /// workspace, juntas y tras la configuración de `sccache`.
     #[test]
-    fn test_windows_jobs_disable_incremental_at_job_level() {
+    fn test_cargo_jobs_compile_only_after_cache_restore() {
         let cfg = read_ci_config();
-        for (job, next) in [
-            ("test-windows", "\n  test-macos:"),
-            ("build-windows-x64", "\n  build-linux-x64:"),
-        ] {
-            let section = cfg
-                .split(&format!("\n  {job}:"))
-                .nth(1)
-                .unwrap_or("")
-                .split(next)
-                .next()
-                .unwrap_or("");
+        let compiling = [
+            "cargo xtask",
+            "cargo --quiet xtask",
+            "cargo build",
+            "cargo test",
+            "cargo run",
+            "cargo llvm-cov",
+            "cargo install",
+        ];
+        let jobs = cargo_jobs(&cfg);
+        assert!(
+            jobs.len() >= 11,
+            "se esperaban al menos 11 jobs con cargo, hay {}",
+            jobs.len()
+        );
+        for (job, section) in jobs {
+            let lines: Vec<&str> = section
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("name:"))
+                .collect();
+            let restore = lines
+                .iter()
+                .position(|l| {
+                    l.starts_with("- cargo_restore_caches")
+                        || l.starts_with("- cargo_restore_registry")
+                })
+                .unwrap_or_else(|| panic!("{job} debe restaurar cachés de cargo"));
+            for l in &lines[..restore] {
+                assert!(
+                    !l.starts_with("- validate_pins") && !l.starts_with("- validate_features"),
+                    "{job}: `{l}` compila antes de restaurar las cachés de cargo"
+                );
+                assert!(
+                    !compiling.iter().any(|c| l.contains(c)),
+                    "{job}: `{l}` compila antes de restaurar las cachés de cargo"
+                );
+            }
+            let pins = lines
+                .iter()
+                .position(|l| *l == "- validate_pins")
+                .unwrap_or_else(|| panic!("{job} debe ejecutar validate_pins"));
+            assert_eq!(
+                lines.get(pins + 1),
+                Some(&"- validate_features"),
+                "{job}: validate_features debe ir inmediatamente después de validate_pins"
+            );
+            let last_sccache = lines
+                .iter()
+                .rposition(|l| {
+                    l.starts_with("- sccache_setup_") || l.starts_with("- native_sccache_setup_")
+                })
+                .unwrap_or_else(|| panic!("{job} debe configurar sccache"));
             assert!(
-                section.contains("    environment:\n      CARGO_INCREMENTAL: \"0\""),
+                pins > last_sccache,
+                "{job}: las puertas validate_* deben ir después de la configuración de sccache"
+            );
+        }
+    }
+
+    /// `CARGO_INCREMENTAL=0` es propiedad del entorno de cada job que usa cargo:
+    /// `sccache` no cachea compilaciones incrementales y el estado incremental no
+    /// debe viajar en la caché de `target/`. No se fija en ningún otro punto.
+    #[test]
+    fn test_cargo_jobs_disable_incremental_at_job_level() {
+        let cfg = read_ci_config();
+        let jobs = cargo_jobs(&cfg);
+        for (job, section) in &jobs {
+            let lines: Vec<&str> = section.lines().collect();
+            let env = lines
+                .iter()
+                .position(|l| *l == "    environment:")
+                .unwrap_or_else(|| panic!("{job} debe declarar environment:"));
+            let block: Vec<&str> = lines[env + 1..]
+                .iter()
+                .copied()
+                .take_while(|l| l.trim().is_empty() || indent(l) > 4)
+                .collect();
+            assert!(
+                block.iter().any(|l| l.trim() == "CARGO_INCREMENTAL: \"0\""),
                 "{job} debe fijar CARGO_INCREMENTAL=0 en el environment del job"
             );
         }
+        assert_eq!(
+            cfg.matches("CARGO_INCREMENTAL").count(),
+            jobs.len(),
+            "CARGO_INCREMENTAL solo puede aparecer una vez por job, en su environment"
+        );
     }
 
     #[test]
     fn test_pipeline_heterogeneous_and_unconditional_sccache() {
         let cfg = read_ci_config();
         // Modelo vigente (post remediación de caché): test-linux, test-windows, test-macos,
-        // coverage y build-* usan cargo_restore_caches (registry + target-v4) y sccache
+        // coverage y build-* usan cargo_restore_caches (registry + caché de target/) y sccache
         // autoconsistente por variante (cada job pesado restaura y guarda su propio blob).
         // Los jobs pequeños (validate-licenses/validate-changelog/publish-metadata) usan
         // cargo_restore_registry (solo registry + sccache restore-only), por lo que ambos
@@ -1684,16 +1803,10 @@ mod tests {
             "sccache_restore_cache debe usar clave por prefijo segmentada por variante"
         );
         // Secciones scoping por job (delimitadas por siguiente job header para evitar falso-positivo cross-job)
-        let linux_section = cfg
-            .split("  test-linux:")
-            .nth(1)
-            .unwrap_or("")
-            .split("  test-windows:")
-            .next()
-            .unwrap_or("");
+        let linux_section = build_section(&cfg, "test-linux");
         assert!(
             linux_section.contains("cargo_restore_caches"),
-            "test-linux debe usar cargo_restore_caches (registry + target-v4)"
+            "test-linux debe usar cargo_restore_caches (registry + caché de target/)"
         );
         assert!(
             linux_section.contains("variant: test"),
@@ -1701,7 +1814,7 @@ mod tests {
         );
         assert!(
             linux_section.contains("cargo_save_target"),
-            "test-linux debe guardar target-v4 (cargo_save_target)"
+            "test-linux debe guardar la caché de target/ (cargo_save_target)"
         );
         assert!(
             linux_section.contains("sccache_restore_cache"),
@@ -1711,13 +1824,7 @@ mod tests {
             linux_section.contains("sccache_save_cache"),
             "test-linux debe guardar sccache (sccache_save_cache)"
         );
-        let windows_section = cfg
-            .split("  test-windows:")
-            .nth(1)
-            .unwrap_or("")
-            .split("  test-macos:")
-            .next()
-            .unwrap_or("");
+        let windows_section = build_section(&cfg, "test-windows");
         assert!(
             windows_section.contains("cargo_restore_caches"),
             "test-windows debe usar cargo_restore_caches"
@@ -1732,7 +1839,7 @@ mod tests {
         );
         assert!(
             windows_section.contains("cargo_save_target"),
-            "test-windows debe guardar target-v4 (cargo_save_target)"
+            "test-windows debe guardar la caché de target/ (cargo_save_target)"
         );
         assert!(
             windows_section.contains("sccache_restore_cache"),
@@ -1742,14 +1849,8 @@ mod tests {
             windows_section.contains("sccache_save_cache"),
             "test-windows debe guardar sccache (sccache_save_cache)"
         );
-        // coverage debe usar cargo_restore_caches con os: linux y variant: cov y guardar target-v4
-        let coverage_section = cfg
-            .split("  coverage:")
-            .nth(1)
-            .unwrap_or("")
-            .split("  validate-licenses")
-            .next()
-            .unwrap_or("");
+        // coverage debe usar cargo_restore_caches con os: linux y variant: cov y guardar la caché de target/
+        let coverage_section = build_section(&cfg, "coverage");
         assert!(
             coverage_section.contains("cargo_restore_caches"),
             "coverage debe usar cargo_restore_caches"
@@ -1764,23 +1865,17 @@ mod tests {
         );
         assert!(
             coverage_section.contains("cargo_save_target"),
-            "coverage debe guardar target-v4 (cargo_save_target)"
+            "coverage debe guardar la caché de target/ (cargo_save_target)"
         );
         assert!(
             coverage_section.contains("sccache_save_cache"),
             "coverage debe guardar sccache (sccache_save_cache)"
         );
-        // test-macos usa cargo_restore_caches (registry + target-v4) y sccache autoconsistente (variant: test), igual que test-linux
-        let macos_section = cfg
-            .split("  test-macos:")
-            .nth(1)
-            .unwrap_or("")
-            .split("  coverage:")
-            .next()
-            .unwrap_or("");
+        // test-macos usa cargo_restore_caches (registry + caché de target/) y sccache autoconsistente (variant: test), igual que test-linux
+        let macos_section = build_section(&cfg, "test-macos");
         assert!(
             macos_section.contains("cargo_restore_caches"),
-            "test-macos debe usar cargo_restore_caches (registry + target-v4)"
+            "test-macos debe usar cargo_restore_caches (registry + caché de target/)"
         );
         assert!(
             macos_section.contains("variant: test"),
@@ -1796,9 +1891,9 @@ mod tests {
         );
         assert!(
             macos_section.contains("cargo_save_target"),
-            "test-macos debe guardar target-v4 (cargo_save_target)"
+            "test-macos debe guardar la caché de target/ (cargo_save_target)"
         );
-        // build-* deben usar cargo_restore_caches con target-v4 full (heterogéneo con target en build-*).
+        // build-* deben usar cargo_restore_caches con la caché de target/ full (heterogéneo con target en build-*).
         // NO deben ejecutar `cargo clean -p ai-voice-interconnector`: sin --release/--profile
         // es un no-op sobre el perfil release (limpia solo target/debug), y aunque no lo fuera
         // el bump de VERSION ya invalida el fingerprint de cargo por sí solo (mtime + -C
@@ -1810,20 +1905,10 @@ mod tests {
             "build-linux-arm64",
             "build-darwin-arm64",
         ] {
-            let header = format!("  {}:", job);
-            let section = cfg
-                .split(&header)
-                .nth(1)
-                .unwrap_or("")
-                .split("\n  build-")
-                .next()
-                .unwrap_or("")
-                .split("\n  publish-")
-                .next()
-                .unwrap_or("");
+            let section = build_section(&cfg, job);
             assert!(
                 section.contains("cargo_restore_caches"),
-                "{job} debe usar cargo_restore_caches (con target-v4)"
+                "{job} debe usar cargo_restore_caches (con la caché de target/)"
             );
             assert!(
                 section.contains("variant: full"),
@@ -1831,7 +1916,7 @@ mod tests {
             );
             assert!(
                 section.contains("cargo_save_target"),
-                "{job} debe guardar target-v4 (cargo_save_target)"
+                "{job} debe guardar la caché de target/ (cargo_save_target)"
             );
             assert!(
                 section.contains("sccache_save_cache"),
@@ -1845,11 +1930,11 @@ mod tests {
     }
 
     #[test]
-    fn test_target_v3_key_with_vendored_patches_identity() {
+    fn test_target_key_with_vendored_patches_identity() {
         let cfg = read_ci_config();
         // Los parches locales de cmake y hf-hub se fingerprintean por mtime: el
         // checkout los marca Dirty y arrastra lo que dependa de ellos. La clave
-        // exacta de target-v4 lleva el tree hash git de ambos y NO tiene fallback,
+        // exacta de la caché de target/ lleva el tree hash git de ambos y NO tiene fallback,
         // de modo que un acierto garantiza que target/ corresponde al contenido
         // actual y fijar el mtime es seguro. Reintroducir un fallback fijaría
         // mtimes sobre snapshots ajenos.
@@ -1899,41 +1984,41 @@ mod tests {
         let restore_keys: Vec<&str> = restore_section
             .lines()
             .map(str::trim)
-            .filter_map(|l| l.strip_prefix("- target-v4-"))
+            .filter_map(|l| l.strip_prefix("- target-v5-"))
             .collect();
         assert_eq!(
             restore_keys.len(),
             1,
-            "target-v4 debe restaurarse con una única clave exacta, sin fallback por prefijo"
+            "la caché de target/ debe restaurarse con una única clave exacta, sin fallback por prefijo"
         );
         assert!(
             restore_keys[0].contains(r#"checksum ".vendor-patches.tree""#),
-            "la clave de target-v4 debe incluir el tree hash de los parches vendorizados"
+            "la clave de target/ debe incluir el tree hash de los parches vendorizados"
         );
         let save_key = save_section
             .lines()
             .map(str::trim)
-            .find_map(|l| l.strip_prefix("key: target-v4-"))
+            .find_map(|l| l.strip_prefix("key: target-v5-"))
             .unwrap_or("");
         assert_eq!(
             restore_keys[0], save_key,
-            "las claves de restauración y guardado de target-v4 deben ser idénticas"
+            "las claves de restauración y guardado de la caché de target/ deben ser idénticas"
         );
 
         let pos_hash = restore_section.find(hash_cmd).unwrap();
         let pos_restore = restore_section
-            .find("- target-v4-")
-            .expect("cargo_restore_caches debe restaurar target-v4");
+            .find("- target-v5-")
+            .expect("cargo_restore_caches debe restaurar la caché de target/");
         let pos_touch = restore_section
             .find("touch -t 200001010000")
             .expect("cargo_restore_caches debe fijar el mtime de los parches");
         assert!(
             pos_hash < pos_restore,
-            "el tree hash debe calcularse antes de restaurar target-v4"
+            "el tree hash debe calcularse antes de restaurar la caché de target/"
         );
         assert!(
             pos_restore < pos_touch,
-            "el mtime de los parches debe fijarse después de restaurar target-v4"
+            "el mtime de los parches debe fijarse después de restaurar la caché de target/"
         );
 
         for leftover in [
@@ -1982,7 +2067,7 @@ mod tests {
         );
     }
 
-    /// `target-v4` usa clave inmutable (el primer `save_cache` gana): en
+    /// La caché de `target/` usa clave inmutable (el primer `save_cache` gana): en
     /// build-* (variant: full), guardar con `when: always` persistiría para
     /// siempre un `target/` incompleto si `cargo build --release` falla a
     /// medias (ya ocurrió con linux-x64 en v0.20.9). test-*/coverage sí
@@ -2022,17 +2107,12 @@ mod tests {
         "build-darwin-arm64",
     ];
 
-    /// Sección de la definición de un job build-* (hasta el siguiente job).
+    /// Sección de la definición de un job (hasta el siguiente job).
     fn build_section<'a>(cfg: &'a str, job: &str) -> &'a str {
-        cfg.split(&format!("\n  {}:\n", job))
-            .nth(1)
-            .unwrap_or("")
-            .split("\n  build-")
-            .next()
-            .unwrap_or("")
-            .split("\n  # ──")
-            .next()
-            .unwrap_or("")
+        ci_jobs(cfg)
+            .into_iter()
+            .find(|(name, _)| *name == job)
+            .map_or("", |(_, section)| section)
     }
 
     fn indent(l: &str) -> usize {
@@ -2135,15 +2215,15 @@ mod tests {
     }
 
     /// Modo sonda de los build-*: no restaura ni guarda la clave inmutable de
-    /// target-v4 (fijaría un target/ ajeno bajo una clave de producción) ni
+    /// la caché de target/ (fijaría un target/ ajeno bajo una clave de producción) ni
     /// empaqueta (el staging exige CIRCLE_TAG == const VERSION).
     #[test]
-    fn test_probe_mode_does_not_touch_target_v2() {
+    fn test_probe_mode_does_not_touch_target_cache() {
         let cfg = read_ci_config();
         let probe = ("when".to_string(), "<< parameters.probe >>".to_string());
         let not_probe = ("unless".to_string(), "<< parameters.probe >>".to_string());
 
-        // El comando solo restaura target-v4 (y fija mtime) con target: true.
+        // El comando solo restaura la caché de target/ (y fija mtime) con target: true.
         let cmd = cfg
             .split("\n  cargo_restore_caches:\n")
             .nth(1)
@@ -2154,7 +2234,7 @@ mod tests {
         let cmd_lines: Vec<&str> = cmd.lines().collect();
         let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
         for marker in [
-            "- target-v4-",
+            "- target-v5-",
             "name: Fijar mtime de los parches vendorizados cmake y hf-hub",
         ] {
             let i = cmd_lines
@@ -2166,7 +2246,7 @@ mod tests {
                 .rev()
                 .find(|&k| cmd_lines[k].trim().starts_with("- "))
                 .unwrap();
-            let item = if cmd_lines[item].trim().starts_with("- target-v4-") {
+            let item = if cmd_lines[item].trim().starts_with("- target-v5-") {
                 item - 2
             } else {
                 item
