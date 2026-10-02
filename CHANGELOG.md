@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.27.1 — 2026-10-02](#0271--2026-10-02)
 - [0.27.0 — 2026-10-02](#0270--2026-10-02)
 - [0.26.0 — 2026-10-01](#0260--2026-10-01)
 - [0.25.0 — 2026-09-28](#0250--2026-09-28)
@@ -98,7 +98,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.27.1] — 2026-10-02
 
 El build de Windows de CI fallaba al enlazar porque reutilizaba objetos de una caché de `target/` contaminada: ahora ningún job compila antes de restaurar sus cachés, y cada release termina vaciando `target/` para que las copias obsoletas no se acumulen entre versiones.
 
@@ -2851,3 +2851,4 @@ estado con el que nace el producto.
 [0.25.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.24.0...v0.25.0
 [0.26.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.25.0...v0.26.0
 [0.27.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.26.0...v0.27.0
+[0.27.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.27.0...v0.27.1
