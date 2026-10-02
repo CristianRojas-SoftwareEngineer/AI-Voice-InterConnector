@@ -51,7 +51,8 @@
       "notes": "docs delegadas a subagente y revisadas; zap del Cask sin hub/ct2 y tests de cli_golden alineados"
     },
     "8": {
-      "status": "pending"
+      "status": "done",
+      "note": "tests del workspace con full e include-ignored: solo fallan 5 tests de clonado por falta del modelo Base opt-in (3 cli_golden, 2 avi-daemon golden); clippy con y sin full sin avisos; rustfmt limpio; sin restos; setup real sin Python OK; revisión independiente sin bloqueantes (2 menores corregidos en la skill E2E y un comentario)"
     },
     "9": {
       "status": "pending"
