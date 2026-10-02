@@ -1212,16 +1212,19 @@ pub mod resident {
         log_path: &Path,
     ) -> Result<()> {
         let url = format!("http://{}:{}/v1/health", crate::RESIDENT_HOST, port);
+        let crashed = |status: std::process::ExitStatus| {
+            anyhow!(
+                "El servidor Qwen3-TTS terminó inesperadamente (exit {}) antes \
+                 de que el healthcheck pasara. Log de stderr: {}",
+                status.code().unwrap_or(-1),
+                log_path.display()
+            )
+        };
         for i in 0..retries {
             // Detecta crash inmediato: si el proceso terminó, el motor no va a
             // responder nunca. `try_wait` no bloquea.
             if let Some(status) = child.try_wait()? {
-                return Err(anyhow!(
-                    "El servidor Qwen3-TTS terminó inesperadamente (exit {}) antes \
-                     de que el healthcheck pasara. Log de stderr: {}",
-                    status.code().unwrap_or(-1),
-                    log_path.display()
-                ));
+                return Err(crashed(status));
             }
             let ok = http_exchange(&url, "GET", None, Duration::from_millis(interval_ms), None)
                 .map(|(status, _)| (200..300).contains(&status))
@@ -1232,6 +1235,11 @@ pub mod resident {
             if i + 1 < retries {
                 thread::sleep(Duration::from_millis(interval_ms));
             }
+        }
+        // Un motor que muere durante el último intervalo también es un crash: sin
+        // esta comprobación final se diagnosticaría como cuelgue.
+        if let Some(status) = child.try_wait()? {
+            return Err(crashed(status));
         }
         Err(anyhow!(
             "El servidor Qwen3-TTS no respondió a /v1/health en el puerto {} tras {} \
@@ -1682,6 +1690,9 @@ mod tests {
                 .spawn()
                 .expect("sh debe existir en Unix")
         };
+        // Se espera la muerte del hijo antes del healthcheck: lo que se prueba es
+        // el diagnóstico de un hijo muerto, no cuánto tarda el SO en terminarlo.
+        child.wait().expect("el proceso debe terminar");
         let log_path = resident::resident_log_path();
         let err = resident::wait_health(&mut child, 1, 3, 50, log_path.as_path())
             .expect_err("el healthcheck debe fallar si el proceso muere");
@@ -1694,6 +1705,35 @@ mod tests {
         assert!(
             msg.contains(log_path.to_str().unwrap()),
             "el error debe incluir la ruta del log: {}",
+            msg
+        );
+    }
+
+    /// Un hijo que muere cuando ya no quedan intentos sigue siendo un *crash*:
+    /// `wait_health` lo comprueba también al agotar los reintentos, en lugar de
+    /// informar de un cuelgue. Sin intentos, solo esa comprobación final lo ve.
+    #[test]
+    fn wait_health_detects_crash_after_retries_exhausted() {
+        let mut child = if cfg!(windows) {
+            Command::new("cmd")
+                .args(["/C", "exit 1"])
+                .spawn()
+                .expect("cmd debe existir en Windows")
+        } else {
+            Command::new("sh")
+                .arg("-c")
+                .arg("exit 1")
+                .spawn()
+                .expect("sh debe existir en Unix")
+        };
+        child.wait().expect("el proceso debe terminar");
+        let log_path = resident::resident_log_path();
+        let err = resident::wait_health(&mut child, 1, 0, 50, log_path.as_path())
+            .expect_err("el healthcheck debe fallar si el proceso muere");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("terminó inesperadamente"),
+            "el error debe indicar crash, no timeout: {}",
             msg
         );
     }
