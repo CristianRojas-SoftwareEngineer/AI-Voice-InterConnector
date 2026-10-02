@@ -1630,7 +1630,7 @@ mod tests {
     fn test_pipeline_heterogeneous_and_unconditional_sccache() {
         let cfg = read_ci_config();
         // Modelo vigente (post remediación de caché): test-linux, test-windows, test-macos,
-        // coverage y build-* usan cargo_restore_caches (registry + target-v3) y sccache
+        // coverage y build-* usan cargo_restore_caches (registry + target-v4) y sccache
         // autoconsistente por variante (cada job pesado restaura y guarda su propio blob).
         // Los jobs pequeños (validate-licenses/validate-changelog/publish-metadata) usan
         // cargo_restore_registry (solo registry + sccache restore-only), por lo que ambos
@@ -1667,7 +1667,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             linux_section.contains("cargo_restore_caches"),
-            "test-linux debe usar cargo_restore_caches (registry + target-v3)"
+            "test-linux debe usar cargo_restore_caches (registry + target-v4)"
         );
         assert!(
             linux_section.contains("variant: test"),
@@ -1675,7 +1675,7 @@ mod tests {
         );
         assert!(
             linux_section.contains("cargo_save_target"),
-            "test-linux debe guardar target-v3 (cargo_save_target)"
+            "test-linux debe guardar target-v4 (cargo_save_target)"
         );
         assert!(
             linux_section.contains("sccache_restore_cache"),
@@ -1706,7 +1706,7 @@ mod tests {
         );
         assert!(
             windows_section.contains("cargo_save_target"),
-            "test-windows debe guardar target-v3 (cargo_save_target)"
+            "test-windows debe guardar target-v4 (cargo_save_target)"
         );
         assert!(
             windows_section.contains("sccache_restore_cache"),
@@ -1716,7 +1716,7 @@ mod tests {
             windows_section.contains("sccache_save_cache"),
             "test-windows debe guardar sccache (sccache_save_cache)"
         );
-        // coverage debe usar cargo_restore_caches con os: linux y variant: cov y guardar target-v3
+        // coverage debe usar cargo_restore_caches con os: linux y variant: cov y guardar target-v4
         let coverage_section = cfg
             .split("  coverage:")
             .nth(1)
@@ -1738,13 +1738,13 @@ mod tests {
         );
         assert!(
             coverage_section.contains("cargo_save_target"),
-            "coverage debe guardar target-v3 (cargo_save_target)"
+            "coverage debe guardar target-v4 (cargo_save_target)"
         );
         assert!(
             coverage_section.contains("sccache_save_cache"),
             "coverage debe guardar sccache (sccache_save_cache)"
         );
-        // test-macos usa cargo_restore_caches (registry + target-v3) y sccache autoconsistente (variant: test), igual que test-linux
+        // test-macos usa cargo_restore_caches (registry + target-v4) y sccache autoconsistente (variant: test), igual que test-linux
         let macos_section = cfg
             .split("  test-macos:")
             .nth(1)
@@ -1754,7 +1754,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             macos_section.contains("cargo_restore_caches"),
-            "test-macos debe usar cargo_restore_caches (registry + target-v3)"
+            "test-macos debe usar cargo_restore_caches (registry + target-v4)"
         );
         assert!(
             macos_section.contains("variant: test"),
@@ -1770,9 +1770,9 @@ mod tests {
         );
         assert!(
             macos_section.contains("cargo_save_target"),
-            "test-macos debe guardar target-v3 (cargo_save_target)"
+            "test-macos debe guardar target-v4 (cargo_save_target)"
         );
-        // build-* deben usar cargo_restore_caches con target-v3 full (heterogéneo con target en build-*).
+        // build-* deben usar cargo_restore_caches con target-v4 full (heterogéneo con target en build-*).
         // NO deben ejecutar `cargo clean -p ai-voice-interconnector`: sin --release/--profile
         // es un no-op sobre el perfil release (limpia solo target/debug), y aunque no lo fuera
         // el bump de VERSION ya invalida el fingerprint de cargo por sí solo (mtime + -C
@@ -1797,7 +1797,7 @@ mod tests {
                 .unwrap_or("");
             assert!(
                 section.contains("cargo_restore_caches"),
-                "{job} debe usar cargo_restore_caches (con target-v3)"
+                "{job} debe usar cargo_restore_caches (con target-v4)"
             );
             assert!(
                 section.contains("variant: full"),
@@ -1805,7 +1805,7 @@ mod tests {
             );
             assert!(
                 section.contains("cargo_save_target"),
-                "{job} debe guardar target-v3 (cargo_save_target)"
+                "{job} debe guardar target-v4 (cargo_save_target)"
             );
             assert!(
                 section.contains("sccache_save_cache"),
@@ -1823,7 +1823,7 @@ mod tests {
         let cfg = read_ci_config();
         // Los parches locales de cmake y hf-hub se fingerprintean por mtime: el
         // checkout los marca Dirty y arrastra lo que dependa de ellos. La clave
-        // exacta de target-v3 lleva el tree hash git de ambos y NO tiene fallback,
+        // exacta de target-v4 lleva el tree hash git de ambos y NO tiene fallback,
         // de modo que un acierto garantiza que target/ corresponde al contenido
         // actual y fijar el mtime es seguro. Reintroducir un fallback fijaría
         // mtimes sobre snapshots ajenos.
@@ -1873,41 +1873,41 @@ mod tests {
         let restore_keys: Vec<&str> = restore_section
             .lines()
             .map(str::trim)
-            .filter_map(|l| l.strip_prefix("- target-v3-"))
+            .filter_map(|l| l.strip_prefix("- target-v4-"))
             .collect();
         assert_eq!(
             restore_keys.len(),
             1,
-            "target-v3 debe restaurarse con una única clave exacta, sin fallback por prefijo"
+            "target-v4 debe restaurarse con una única clave exacta, sin fallback por prefijo"
         );
         assert!(
             restore_keys[0].contains(r#"checksum ".vendor-patches.tree""#),
-            "la clave de target-v3 debe incluir el tree hash de los parches vendorizados"
+            "la clave de target-v4 debe incluir el tree hash de los parches vendorizados"
         );
         let save_key = save_section
             .lines()
             .map(str::trim)
-            .find_map(|l| l.strip_prefix("key: target-v3-"))
+            .find_map(|l| l.strip_prefix("key: target-v4-"))
             .unwrap_or("");
         assert_eq!(
             restore_keys[0], save_key,
-            "las claves de restauración y guardado de target-v3 deben ser idénticas"
+            "las claves de restauración y guardado de target-v4 deben ser idénticas"
         );
 
         let pos_hash = restore_section.find(hash_cmd).unwrap();
         let pos_restore = restore_section
-            .find("- target-v3-")
-            .expect("cargo_restore_caches debe restaurar target-v3");
+            .find("- target-v4-")
+            .expect("cargo_restore_caches debe restaurar target-v4");
         let pos_touch = restore_section
             .find("touch -t 200001010000")
             .expect("cargo_restore_caches debe fijar el mtime de los parches");
         assert!(
             pos_hash < pos_restore,
-            "el tree hash debe calcularse antes de restaurar target-v3"
+            "el tree hash debe calcularse antes de restaurar target-v4"
         );
         assert!(
             pos_restore < pos_touch,
-            "el mtime de los parches debe fijarse después de restaurar target-v3"
+            "el mtime de los parches debe fijarse después de restaurar target-v4"
         );
 
         for leftover in [
@@ -1956,7 +1956,7 @@ mod tests {
         );
     }
 
-    /// `target-v3` usa clave inmutable (el primer `save_cache` gana): en
+    /// `target-v4` usa clave inmutable (el primer `save_cache` gana): en
     /// build-* (variant: full), guardar con `when: always` persistiría para
     /// siempre un `target/` incompleto si `cargo build --release` falla a
     /// medias (ya ocurrió con linux-x64 en v0.20.9). test-*/coverage sí
@@ -2109,7 +2109,7 @@ mod tests {
     }
 
     /// Modo sonda de los build-*: no restaura ni guarda la clave inmutable de
-    /// target-v3 (fijaría un target/ ajeno bajo una clave de producción) ni
+    /// target-v4 (fijaría un target/ ajeno bajo una clave de producción) ni
     /// empaqueta (el staging exige CIRCLE_TAG == const VERSION).
     #[test]
     fn test_probe_mode_does_not_touch_target_v2() {
@@ -2117,7 +2117,7 @@ mod tests {
         let probe = ("when".to_string(), "<< parameters.probe >>".to_string());
         let not_probe = ("unless".to_string(), "<< parameters.probe >>".to_string());
 
-        // El comando solo restaura target-v3 (y fija mtime) con target: true.
+        // El comando solo restaura target-v4 (y fija mtime) con target: true.
         let cmd = cfg
             .split("\n  cargo_restore_caches:\n")
             .nth(1)
@@ -2128,7 +2128,7 @@ mod tests {
         let cmd_lines: Vec<&str> = cmd.lines().collect();
         let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
         for marker in [
-            "- target-v3-",
+            "- target-v4-",
             "name: Fijar mtime de los parches vendorizados cmake y hf-hub",
         ] {
             let i = cmd_lines
@@ -2140,7 +2140,7 @@ mod tests {
                 .rev()
                 .find(|&k| cmd_lines[k].trim().starts_with("- "))
                 .unwrap();
-            let item = if cmd_lines[item].trim().starts_with("- target-v3-") {
+            let item = if cmd_lines[item].trim().starts_with("- target-v4-") {
                 item - 2
             } else {
                 item

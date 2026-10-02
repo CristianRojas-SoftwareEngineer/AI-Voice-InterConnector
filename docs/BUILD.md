@@ -364,7 +364,7 @@ pipeline puede tardar pocos minutos.
 
 En consecuencia, un cambio en el código fuente no invalida ninguna caché y
 siempre se compila: su costo es solo el de recompilar los crates afectados. Lo
-que alarga el pipeline es un cambio de clave de `target-v3` (dependencias reales
+que alarga el pipeline es un cambio de clave de `target-v4` (dependencias reales
 o el parche de CMake), porque entonces `target/` parte vacío y las dependencias
 externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 [escenarios](#escenarios-de-invalidación-y-su-costo) resume cada caso.
@@ -374,8 +374,8 @@ externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 | Caché | Qué guarda | Jobs | Clave (se invalida cuando cambia…) |
 |-------|------------|------|------------------------------------|
 | `cargo-v2` (registry) | `~/.cargo/registry` y `~/.cargo/git`: las fuentes descargadas de crates | todos los que compilan | `arch`, `rust_pin` y el checksum de `Cargo.lock.cachekey`. Tiene fallback por prefijo. |
-| `target-v3` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58` y de `vendor/hf-hub-1.0.0`. Sin fallback. |
-| `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (3,2 GB) | los mismos jobs que `target-v3`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
+| `target-v4` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58` y de `vendor/hf-hub-1.0.0`. Sin fallback. |
+| `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (3,2 GB) | los mismos jobs que `target-v4`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
 | `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_pin`. |
 | `msys2-v1` | la instalación de MSYS2 | `build-windows-x64` | los pines de MSYS2: release base, gcc, openblas y make. |
 | `tts-v1` | el motor `qwen_tts.exe` compilado | `build-windows-x64` | `vendor/qwen3-tts/.engine-cachekey` (`Makefile`, `*.c`/`*.h` y `third_party/ingot`) y los pines de gcc y openblas. |
@@ -387,18 +387,18 @@ componentes, jobs distintos compartirían una entrada incompatible.
 
 #### Clave normalizada de `Cargo.lock`
 
-Las claves de `cargo-v2` y `target-v3` no usan `Cargo.lock` directamente sino
+Las claves de `cargo-v2` y `target-v4` no usan `Cargo.lock` directamente sino
 `Cargo.lock.cachekey`, que el primer paso de `cargo_restore_caches` (y de
 `cargo_restore_registry`, en los jobs que solo restauran `cargo-v2`) genera con
 `perl` (en `shell: bash`, disponible en los tres executors) reemplazando la
 versión del propio crate (`ai-voice-interconnector`) por `0.0.0`. Cada release
 cambia esa versión; sin la normalización, la clave cambiaría en cada corte
-aunque las dependencias fueran las mismas, y `target-v3`, que no tiene
+aunque las dependencias fueran las mismas, y `target-v4`, que no tiene
 fallback, partiría siempre en frío. Se usa un transform de texto en lugar de
 `xtask` para no compilar `xtask` y su árbol de dependencias antes de restaurar
 la caché.
 
-#### Parches vendorizados en la clave de `target-v3`
+#### Parches vendorizados en la clave de `target-v4`
 
 El `Cargo.toml` raíz reemplaza dos crates por copias parcheadas locales
 (`[patch.crates-io]`): `cmake` (`vendor/cmake-0.1.58`) y `hf-hub`
@@ -411,7 +411,7 @@ su contenido no hubiera cambiado.
 Para evitarlo, `cargo_restore_caches` escribe en `.vendor-patches.tree` el tree
 hash git de ambos directorios (`git rev-parse HEAD:vendor/cmake-0.1.58` y
 `git rev-parse HEAD:vendor/hf-hub-1.0.0`, una línea por directorio) y lo
-incorpora a la clave de `target-v3`. Como la clave no tiene fallback, un acierto
+incorpora a la clave de `target-v4`. Como la clave no tiene fallback, un acierto
 garantiza que `target/` se compiló con el mismo contenido de los parches, y es
 seguro fijarles un `mtime` antiguo (`touch -t 200001010000`) para que cargo los
 vea `Fresh`. Si un parche cambia, cambia la clave y `target/` parte vacío. El
@@ -446,7 +446,7 @@ es además inmune a la conversión de fin de línea del checkout.
 
 #### Guardado
 
-- **`target-v3` es inmutable:** `save_cache` solo escribe si la clave no existe,
+- **`target-v4` es inmutable:** `save_cache` solo escribe si la clave no existe,
   así que la entrada refleja la primera corrida que la creó. Los 4 `build-*` la
   guardan con `when: on_success`, para no persistir un `target/` a medio
   compilar bajo una clave que ya no se puede reescribir. Los jobs de test y
@@ -487,14 +487,14 @@ costo:
 | Cambio de `ort_pin` | `ort-v1` | Solo una descarga nueva de ONNX Runtime en `build-windows-x64`. |
 | Cambio de fuentes del motor TTS (`vendor/qwen3-tts`, `third_party/ingot`) | `tts-v1` | Solo se recompila el motor TTS en `build-windows-x64`; el resto acierta. |
 | Cambio de los pines de MSYS2, gcc, openblas o make | `msys2-v1` y, con gcc u openblas, `tts-v1` | Reinstalación de MSYS2 y recompilación del motor TTS en `build-windows-x64`. |
-| Cambio real de dependencias Rust en `Cargo.lock` (añadir, quitar o actualizar crates sin tocar nativos) | `target-v3` (sin fallback) y `cargo-v2` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++: 2–5 min por job en Unix y ~11–15 min previstos en windows-x64. |
-| Edición del parche `vendor/cmake-0.1.58` o del parche `vendor/hf-hub-1.0.0`, o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | `target-v3`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche de cmake cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
-| Cambio de `rust_pin` | `toolchain-v1`, `cargo-v2`, `target-v3` y `sccache-v1` (todas llevan la versión en la clave) | Frío total: se reinstala Rust y se recompila todo, Rust y C/C++, sin ayuda de `sccache`. Referencia de `cargo build --release` en frío: `1969 s` en windows-x64, `1569 s` en linux-arm64, `956 s` en linux-x64 y `149 s` en darwin-arm64. |
+| Cambio real de dependencias Rust en `Cargo.lock` (añadir, quitar o actualizar crates sin tocar nativos) | `target-v4` (sin fallback) y `cargo-v2` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++: 2–5 min por job en Unix y ~11–15 min previstos en windows-x64. |
+| Edición del parche `vendor/cmake-0.1.58` o del parche `vendor/hf-hub-1.0.0`, o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | `target-v4`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche de cmake cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
+| Cambio de `rust_pin` | `toolchain-v1`, `cargo-v2`, `target-v4` y `sccache-v1` (todas llevan la versión en la clave) | Frío total: se reinstala Rust y se recompila todo, Rust y C/C++, sin ayuda de `sccache`. Referencia de `cargo build --release` en frío: `1969 s` en windows-x64, `1569 s` en linux-arm64, `956 s` en linux-x64 y `149 s` en darwin-arm64. |
 
 Causas ajenas al repositorio, que invalidan sin que cambie ningún archivo:
 
 - **Cambio de `{{ arch }}` del executor.** Todas las claves llevan `{{ arch }}`, y en los executors Linux x86-64 ese valor incluye la familia y el modelo de CPU (por ejemplo `linux-amd64-6_85`). Si CircleCI asigna un hardware distinto, todas las familias de ese job fallan y la corrida es fría.
-- **Expiración por retención.** CircleCI borra las cachés según la política de retención de la organización (15 días por defecto). Tras un período sin corridas más largo que la retención, la siguiente es fría. Las familias rolling (`sccache`) se renuevan en cada corrida; las inmutables (`target-v3`) solo existen mientras no expiren.
+- **Expiración por retención.** CircleCI borra las cachés según la política de retención de la organización (15 días por defecto). Tras un período sin corridas más largo que la retención, la siguiente es fría. Las familias rolling (`sccache`) se renuevan en cada corrida; las inmutables (`target-v4`) solo existen mientras no expiren.
 - **Actualización de la imagen del executor.** Una versión nueva del compilador (MSVC, Xcode/clang, gcc) cambia la identidad del compilador que `sccache` hashea: la clave restaura, pero la primera corrida no obtiene aciertos C/C++ y vuelve a sembrar la caché. Ninja no se cachea: se descarga en cada corrida con la versión fijada en `ninja_pin`.
 
 #### Determinismo de releases (binario obsoleto)
