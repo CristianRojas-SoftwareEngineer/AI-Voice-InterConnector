@@ -771,6 +771,28 @@ mod tests {
             .expect("existe el chequeo models_provisioned")
     }
 
+    /// Los modelos de traducción se leen directamente de su snapshot publicado ya
+    /// convertido: el informe no tiene un chequeo del derivado y `provisioned`
+    /// lista los pines `opus-mt-*`.
+    #[test]
+    fn translation_models_have_no_derived_check() {
+        let env = env("traduccion-sin-derivado");
+        plant_required_models(&env);
+        let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
+        assert!(
+            report.checks.iter().all(|c| c.name != "models_ct2"),
+            "no hay chequeo del derivado CT2"
+        );
+        for name in ["opus-mt-es-en", "opus-mt-en-es"] {
+            assert!(
+                report.models.provisioned.iter().any(|m| m == name),
+                "{name} figura como provisionado: {:?}",
+                report.models.provisioned
+            );
+        }
+        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
+    }
+
     /// Sin clonado seleccionado, el modelo Base ausente no es un faltante: el
     /// chequeo pasa y `base` lo informa como opt-in.
     #[test]

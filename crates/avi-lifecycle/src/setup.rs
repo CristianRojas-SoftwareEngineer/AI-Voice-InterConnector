@@ -981,6 +981,21 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// Con todos los pines de la tabla provisionados no queda nada pendiente: los
+    /// modelos de traducción se publican ya convertidos, así que ningún derivado
+    /// local falta por producir.
+    #[test]
+    fn nothing_is_pending_when_every_pin_is_provisioned() {
+        let (_guard, root) = cache_relocated("setup-todo-pinneado");
+        for pin in avi_store::MODEL_REVISIONS {
+            fake_snapshot(&pin.repo.replace('/', "--"), pin.revision);
+        }
+        let store = avi_store::ModelStore::new();
+        let plan = pending(&store, &Options::user(true, false, true));
+        assert!(plan.is_empty(), "con todos los pines sembrados no queda nada: {plan:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// Sobre un almacén vacío, `pending` cuenta también el CT2 de los Marian que
     /// se van a descargar: el resumen previo no puede omitirlo.
     #[test]

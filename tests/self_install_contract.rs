@@ -10,14 +10,11 @@
 //! se puede observar desde el motor es el `reason` del sobre ni el **código de salida del
 //! proceso**, y eso solo se ve ejecutando el binario.
 //!
-//! Y aquí no cabe en `cli_golden.rs`, por una razón que semidió en vez de supusieron: el
-//! fallo de provisión se provoca con la conversión de CT2, que **invoca `python`**, y en una
-//! máquina con `ctranslate2` y `transformers` instalados esa importación tarda segundos. Las
-//! pruebas de presupuesto de `cli_golden.rs` —`perf_local_fast_commands_under_budget` y
-//! `perf_invalid_input_rejection_fail_fast`, con techos de 1500 ms— corren **en paralelo**
-//! dentro del mismo binario, así que una prueba que lance el stack de ML a la vez mide el
-//! disco y la CPU ajenos y falla por el motivo equivocado. Medido: con estas dos pruebas
-//! dentro de `cli_golden`, `speech synthesize --help` tardó 2435 ms contra un techo de 1500.
+//! Y aquí no cabe en `cli_golden.rs`: el fallo de provisión pasa por la descarga de un
+//! modelo contra un puerto local cerrado, con los reintentos del cliente de descarga, y esa
+//! espera compite con las pruebas de presupuesto de `cli_golden.rs` —
+//! `perf_local_fast_commands_under_budget` y `perf_invalid_input_rejection_fail_fast`, con
+//! techos de 1500 ms—, que corren **en paralelo** dentro del mismo binario.
 //!
 //! En su propio binario de prueba no hay problema: `cargo test` ejecuta los targets de
 //! prueba **uno a uno**, así que nada de esto se solapa con los presupuestos de `cli_golden`.
@@ -33,12 +30,10 @@
 //!
 //! ### Cómo se evita la red y el estado de la máquina
 //!
-//! - **Sin red**: se plantan en la raíz de modelos del sandbox los repos de la selección con
-//!   los archivos que `is_provisioned` exige, de modo que `setup::pending` no devuelve nada
-//!   que descargar. Lo único que queda es la conversión de CT2, que es local y falla porque
-//!   el snapshot de pruebas no es un modelo. Que falle es independiente de la máquina: sin
-//!   `python` falla por no encontrarlo, y con `python` falla porque el conversor no
-//!   encuentra un modelo.
+//! - **Sin red real**: se plantan en la raíz de modelos del sandbox los repos de la selección
+//!   con los archivos que `is_provisioned` exige, salvo `opus-mt-es-en`, y `HF_ENDPOINT`
+//!   apunta a un puerto local cerrado. Lo único que queda por hacer es descargar ese pin, y
+//!   falla con `network_error` de forma independiente de la máquina.
 //! - **Sin `PATH`**: `--no-modify-path` en las dos, porque en Windows la integración escribe
 //!   en `HKCU\Environment` y una puerta no puede tocar el entorno de quien la ejecuta.
 //! - **Sin el temporal de la máquina**: la tabla de rutas no declara variable de
@@ -169,6 +164,9 @@ fn seed_decoy_daemon_pidfile(data_dir: &Path) {
 
 /// Sandbox del contrato: un directorio con las raíces del hijo, un `tmp` aislado y un
 /// staging con el bundle completo alrededor de una copia del binario.
+/// Pin de modelo que `Sandbox::new` deja sin sembrar para provocar el fallo de descarga.
+const UNSEEDED_PIN: &str = "opus-mt-es-en";
+
 struct Sandbox {
     root: PathBuf,
     /// Ejecutable a invocar: la **copia** del staging, que es la que tiene el bundle alrededor.
@@ -222,7 +220,8 @@ impl Sandbox {
 
         // La selección de modelos ya provisionada, para que la provisión no toque la red.
         for pin in avi_store::MODEL_REVISIONS {
-            if pin.name == avi_lifecycle::setup::CLONING_MODEL {
+            // El pin sin sembrar es el que dispara el fallo de descarga.
+            if pin.name == avi_lifecycle::setup::CLONING_MODEL || pin.name == UNSEEDED_PIN {
                 continue;
             }
             let snapshot = models
@@ -247,6 +246,13 @@ impl Sandbox {
             }
         }
 
+        // Endpoint de HuggingFace en un puerto local cerrado: la descarga del pin sin
+        // sembrar falla de inmediato y sin tocar la red real.
+        let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("reservar un puerto local")
+            .port();
+
         let exe = staging.join(section.executable_path());
         let value = |p: &Path| p.display().to_string();
         let mut envs = vec![
@@ -267,6 +273,10 @@ impl Sandbox {
             ("TMPDIR".to_string(), value(&temp)),
             // Puerto efímero: la parada del daemon no tiene que poder tocar nada.
             ("AVI_DAEMON_PORT".to_string(), "0".to_string()),
+            (
+                "HF_ENDPOINT".to_string(),
+                format!("http://127.0.0.1:{closed_port}"),
+            ),
         ];
         envs.sort();
         Self { exe, envs, root }
@@ -445,9 +455,9 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
     assert_eq!(actual["models"], Value::String("failed".to_string()));
     assert_eq!(
         actual["models_cause"]["reason"],
-        Value::String("ct2_conversion_failed".to_string()),
+        Value::String("network_error".to_string()),
         "el `reason` del fallo de provisión viaja anidado, y es el que \
-         `docs/CLI/commands/SETUP.md` publica para una conversión fallida"
+         `docs/CLI/commands/SETUP.md` publica para una descarga fallida"
     );
     assert!(
         actual["models_cause"]["message"]

@@ -810,6 +810,12 @@ fn restore_sigpipe_default() {
 
 // ─── Punto de entrada ────────────────────────────────────────────────
 
+/// Filtro de los logs por target.
+fn log_filter() -> tracing_subscriber::filter::Targets {
+    tracing_subscriber::filter::Targets::new()
+        .with_default(tracing_subscriber::filter::LevelFilter::INFO)
+}
+
 #[tokio::main]
 async fn main() {
     // Bootstrap: UTF-8, tracing, SIGINT
@@ -4332,6 +4338,51 @@ async fn dub_via_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Las dependencias solo dejan pasar avisos y errores: sus líneas `INFO`
+    /// (en especial las de `xet_*` durante las descargas) ensuciaban la terminal.
+    #[test]
+    fn log_filter_silences_info_of_dependencies() {
+        use tracing::Level;
+        let filter = log_filter();
+        for target in ["xet_client", "xet_data", "hf_hub", "reqwest", "ort"] {
+            assert!(
+                !filter.would_enable(target, &Level::INFO),
+                "{target} en INFO queda deshabilitado"
+            );
+            assert!(
+                filter.would_enable(target, &Level::WARN),
+                "{target} en WARN queda habilitado"
+            );
+        }
+    }
+
+    /// Los crates propios conservan sus mensajes `INFO`, también los de sus
+    /// submódulos.
+    #[test]
+    fn log_filter_keeps_info_of_own_crates() {
+        use tracing::Level;
+        let filter = log_filter();
+        for target in [
+            "avi_core",
+            "avi_audio",
+            "avi_tts",
+            "avi_store",
+            "avi_daemon",
+            "avi_process",
+            "avi_stt",
+            "avi_translation",
+            "avi_lifecycle",
+            "avi_shared",
+            "ai_voice_interconnector",
+            "avi_lifecycle::setup",
+        ] {
+            assert!(
+                filter.would_enable(target, &Level::INFO),
+                "{target} en INFO queda habilitado"
+            );
+        }
+    }
 
     /// `await_daemon_ready` debe agotar el deadline por reloj de pared (no un
     /// recuento fijo de iteraciones) contra un puerto cerrado: retorna `Err` y el

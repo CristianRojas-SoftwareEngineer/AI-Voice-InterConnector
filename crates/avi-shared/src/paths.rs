@@ -347,6 +347,52 @@ pub fn is_ct2_provisioned(pair: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Los modelos de traducción se fijan a los repositorios publicados ya
+    /// convertidos y se acotan a los cinco ficheros del modelo; no queda ningún
+    /// pin `marian-*`.
+    #[test]
+    fn translation_pins_point_to_converted_repos() {
+        let expected = [
+            (
+                "opus-mt-es-en",
+                "CristianRojaas/opus-mt-es-en-ct2-int8",
+                "6eabf2f7d9f92dd52e38fe95c9da29f219613c19",
+            ),
+            (
+                "opus-mt-en-es",
+                "CristianRojaas/opus-mt-en-es-ct2-int8",
+                "452971fec59e5a4093f8630e55022909dc5beceb",
+            ),
+        ];
+        for (name, repo, revision) in expected {
+            let pin = MODEL_REVISIONS
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("falta el pin {name}"));
+            assert_eq!(pin.repo, repo);
+            assert_eq!(pin.revision, revision);
+            assert_eq!(pin.approx_bytes, 82_536_565);
+            let (_, patterns) = MODEL_FILE_PATTERNS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("faltan los patrones de {name}"));
+            assert_eq!(
+                *patterns,
+                [
+                    "config.json",
+                    "model.bin",
+                    "shared_vocabulary.json",
+                    "source.spm",
+                    "target.spm"
+                ]
+            );
+        }
+        assert!(
+            MODEL_REVISIONS.iter().all(|p| !p.name.starts_with("marian-")),
+            "no queda ningún pin marian-*"
+        );
+    }
+
     /// El derivado de un par vive en `ct2/opus-mt-<par>` bajo la raíz que recibe
     /// la función, y la variante global es la misma disposición aplicada a la raíz
     /// del usuario. La paridad importa porque ambas son una sola disposición
