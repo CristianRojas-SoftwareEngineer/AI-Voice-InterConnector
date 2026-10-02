@@ -102,13 +102,13 @@ pub(crate) fn await_ready(
     let start = Instant::now();
     loop {
         if ready.exists() {
-            let _ = std::fs::remove_file(ready);
+            remove_marker(ready);
             return Ok(());
         }
         if let Some(status) = child.try_wait()? {
             // La marca pudo aparecer justo antes de que el hijo terminara.
             if ready.exists() {
-                let _ = std::fs::remove_file(ready);
+                remove_marker(ready);
                 return Ok(());
             }
             anyhow::bail!("el auxiliar de borrado terminó sin ejecutar su script ({status})");
@@ -117,6 +117,22 @@ pub(crate) fn await_ready(
             return Ok(());
         }
         std::thread::sleep(READY_POLL);
+    }
+}
+
+/// Borra la marca de arranque. El auxiliar la crea sin compartir el borrado y la
+/// mantiene abierta unos instantes tras crearla, así que borrarla de inmediato
+/// puede fallar con una violación de uso compartido; se reintenta hasta que el
+/// escritor la suelta o la marca ya no existe.
+fn remove_marker(ready: &Path) {
+    let start = Instant::now();
+    loop {
+        match std::fs::remove_file(ready) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if start.elapsed() >= READY_DEADLINE => return,
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
     }
 }
 
