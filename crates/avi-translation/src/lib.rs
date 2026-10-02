@@ -236,7 +236,7 @@ mod tests {
     /// `ct2rs::Translator`, el runtime CT2 que este crate conserva.
     ///
     /// NOTA TÉCNICA: el encoder Marian/opus-mt exige el token `</s>` al final de
-    /// la secuencia de origen. `ct2-transformers-converter` NO lo añade
+    /// la secuencia de origen. El modelo convertido NO lo añade
     /// automáticamente (`config.json` del modelo trae `"add_source_eos": false`);
     /// sin ese token el decoder nunca converge a una traducción coherente. El
     /// motor real debe anexar `</s>` explícitamente al texto/tokens de origen

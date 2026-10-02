@@ -347,7 +347,9 @@ mod tests {
             );
         }
         assert!(
-            MODEL_REVISIONS.iter().all(|p| !p.name.starts_with("marian-")),
+            MODEL_REVISIONS
+                .iter()
+                .all(|p| !p.name.starts_with("marian-")),
             "no queda ningún pin marian-*"
         );
     }

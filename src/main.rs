@@ -2793,7 +2793,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 });
                 // El `reason` de la operación es `setup_failed`; el del fallo de provisión
                 // viaja anidado en `models_cause`, que es donde un consumidor encuentra
-                // `network_error` o `ct2_conversion_failed` sin perderlo. Solo existe si
+                // `network_error` sin perderlo. Solo existe si
                 // hubo fallo: un sobre estable es más fácil de leer que uno con nulos.
                 if let lifecycle::install::ModelsState::Failed { cause } = &outcome.models {
                     on["models_cause"] = json!({

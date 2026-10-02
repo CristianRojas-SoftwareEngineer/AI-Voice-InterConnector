@@ -125,7 +125,7 @@ impl DaemonState {
             for pair in &["es-en", "en-es"] {
                 let name = format!("opus-mt-{pair}");
                 if store.is_provisioned(&name) {
-                    if let Ok(engine) = Ct2TranslationEngine::new(&store.model_dir(&name)) {
+                    if let Ok(engine) = Ct2TranslationEngine::new(store.model_dir(&name)) {
                         map.insert(pair.to_string(), engine);
                     }
                 }

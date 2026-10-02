@@ -907,13 +907,15 @@ fn criterion_18_keep_data_preserves_state() {
     // Lo que se conserva.
     assert!(
         support::exists(&sandbox.models_dir.join("xet"))
-            && support::exists(&sandbox.models_dir.join(support::repo_dir(
-                MODEL_REVISIONS
-                    .iter()
-                    .find(|pin| pin.name == "opus-mt-es-en")
-                    .expect("criterio 18: el modelo de traducción está fijado")
-                    .repo
-            ))),
+            && support::exists(
+                &sandbox.models_dir.join(support::repo_dir(
+                    MODEL_REVISIONS
+                        .iter()
+                        .find(|pin| pin.name == "opus-mt-es-en")
+                        .expect("criterio 18: el modelo de traducción está fijado")
+                        .repo
+                ))
+            ),
         "criterio 18: los modelos se quedan: {:?}",
         outcome.preserved
     );

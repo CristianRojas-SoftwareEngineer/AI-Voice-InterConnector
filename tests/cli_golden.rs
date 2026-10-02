@@ -2331,7 +2331,9 @@ fn cleanup_model_real_run_reports_paths() {
     );
     assert!(shared.exists(), "y la raíz compartida no se borra entera");
     assert!(
-        !shared.join("models--CristianRojaas--opus-mt-es-en-ct2-int8").exists(),
+        !shared
+            .join("models--CristianRojaas--opus-mt-es-en-ct2-int8")
+            .exists(),
         "mientras el repo propio sí desaparece"
     );
 

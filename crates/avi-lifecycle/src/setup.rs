@@ -728,7 +728,10 @@ pub(crate) mod tests {
         }
         let store = avi_store::ModelStore::new();
         let plan = pending(&store, &Options::user(true, false, true));
-        assert!(plan.is_empty(), "con todos los pines sembrados no queda nada: {plan:?}");
+        assert!(
+            plan.is_empty(),
+            "con todos los pines sembrados no queda nada: {plan:?}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -864,7 +867,10 @@ pub(crate) mod tests {
             live_hash,
         );
         write_file(&translation_snaps.join(live_hash).join("config.json"), "{}");
-        write_file(&translation_snaps.join(stale_hash).join("config.json"), "{}");
+        write_file(
+            &translation_snaps.join(stale_hash).join("config.json"),
+            "{}",
+        );
 
         let outcome = prune_obsolete_at(&root);
         assert_eq!(
