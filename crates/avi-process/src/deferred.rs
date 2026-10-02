@@ -25,9 +25,10 @@ const READY_POLL: Duration = Duration::from_millis(50);
 /// Escribe un `.ps1` en `%TEMP%` que espera la muerte del `pid`, borra `path`
 /// con reintentos acotados y se borra a sí mismo. La primera instrucción del
 /// script crea una marca `.ready`: `Ok` solo se devuelve cuando la marca
-/// aparece, o cuando el auxiliar sigue vivo al vencer el plazo. Si el auxiliar
-/// muere sin marca, devuelve `Err` y borra el script y la marca. Ambos llevan
-/// el prefijo `avi-` que barre la recuperación.
+/// aparece, o cuando el auxiliar sigue vivo al vencer el plazo. La marca la
+/// borra el propio auxiliar al terminar, junto con su script: quien la crea es
+/// quien la borra. Si el auxiliar muere sin marca, devuelve `Err` y borra el
+/// script y la marca. Ambos llevan el prefijo `avi-` que barre la recuperación.
 pub fn spawn_deferred_removal(path: &Path, pid: u32) -> anyhow::Result<PathBuf> {
     let literal = path.to_string_lossy().replace('\'', "''");
     let attempts = DEFERRED_REMOVAL_ATTEMPTS;
@@ -52,7 +53,7 @@ pub fn spawn_deferred_removal(path: &Path, pid: u32) -> anyhow::Result<PathBuf> 
            if (-not (Test-Path -LiteralPath '{literal}')) {{ break }}; \
            Start-Sleep -Milliseconds {retry_ms} \
          }}; \
-         Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
+         Remove-Item -LiteralPath '{ready_literal}', $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
     );
     std::fs::write(&helper, script)?;
 
@@ -91,8 +92,8 @@ pub fn spawn_deferred_removal(path: &Path, pid: u32) -> anyhow::Result<PathBuf> 
 
 /// Espera la marca de arranque del auxiliar sondeando cada 50 ms.
 ///
-/// Con la marca presente la borra y devuelve `Ok`. Si el hijo termina antes de
-/// crearla, devuelve `Err` con su estado. Si vence el plazo con el hijo vivo,
+/// Con la marca presente devuelve `Ok` sin tocarla: la borra el auxiliar al
+/// terminar. Si el hijo termina antes de crearla, devuelve `Err` con su estado. Si vence el plazo con el hijo vivo,
 /// devuelve `Ok`: sigue en marcha aunque aún no haya llegado a la marca.
 pub(crate) fn await_ready(
     child: &mut Child,
@@ -102,13 +103,11 @@ pub(crate) fn await_ready(
     let start = Instant::now();
     loop {
         if ready.exists() {
-            remove_marker(ready);
             return Ok(());
         }
         if let Some(status) = child.try_wait()? {
             // La marca pudo aparecer justo antes de que el hijo terminara.
             if ready.exists() {
-                remove_marker(ready);
                 return Ok(());
             }
             anyhow::bail!("el auxiliar de borrado terminó sin ejecutar su script ({status})");
@@ -117,22 +116,6 @@ pub(crate) fn await_ready(
             return Ok(());
         }
         std::thread::sleep(READY_POLL);
-    }
-}
-
-/// Borra la marca de arranque. El auxiliar la crea sin compartir el borrado y la
-/// mantiene abierta unos instantes tras crearla, así que borrarla de inmediato
-/// puede fallar con una violación de uso compartido; se reintenta hasta que el
-/// escritor la suelta o la marca ya no existe.
-fn remove_marker(ready: &Path) {
-    let start = Instant::now();
-    loop {
-        match std::fs::remove_file(ready) {
-            Ok(()) => return,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-            Err(_) if start.elapsed() >= READY_DEADLINE => return,
-            Err(_) => std::thread::sleep(Duration::from_millis(10)),
-        }
     }
 }
 
@@ -168,6 +151,10 @@ mod tests {
             .unwrap();
         let result = await_ready(&mut child, &ready, Duration::from_secs(5));
         assert!(result.is_ok());
-        assert!(!ready.exists());
+        assert!(
+            ready.exists(),
+            "await_ready no borra la marca: es del auxiliar"
+        );
+        let _ = std::fs::remove_file(&ready);
     }
 }
