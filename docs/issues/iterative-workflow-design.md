@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1, C2 y C3 cerrados, C4 siguiente |
+| Estado | G0 aprobada, C1 a C4 cerrados, C5 siguiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -202,7 +202,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | Id | Síntoma | Informe | Severidad | Ciclo |
 |---|---|---|---|---|
 | S1 | La vía daemon rechaza con 413 los audios de transcripción de más de unos 49 s | `daemon-rechaza-o-corta-audios-largos.md` (eliminado al cerrar C3) | Media; se propone alta | C3 |
-| S2 | Un kill duro del daemon deja huérfano al motor residente | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Media | C5 |
+| S2 | Un kill duro del daemon deja huérfano al motor residente | `motor-residente-huerfano-tras-kill-del-daemon.md` | Media | C5 |
 | S3 | El daemon no escribe log y los logs del motor no rotan | `residuos-en-disco-tras-comandos-correctos.md` | Media | C4 |
 | S4 | La síntesis por daemon sale con exit 1 donde el contrato asigna otro código (4 si falta el modelo) | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja; media sin modelo | C1 |
 | S5 | `--daemon` en los cinco comandos solo locales (`list`, `remove` y `play`) responde «Daemon inalcanzable» con exit 5 | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja; se propone media | C1 |
@@ -210,7 +210,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S7 | El `status` JSON afirma operaciones que no ocurrieron (`daemon stop` sin daemon y los simulacros de `self uninstall` y `cleanup`) | `status-json-afirma-operaciones-no-realizadas.md` | Baja | C7 |
 | S8 | `speech say` y `speech dub` dejan WAV temporales o informan en `audio_path` de uno ya borrado | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C7 |
 | S9 | `daemon.ready` queda en disco tras `daemon stop` | `residuos-en-disco-tras-comandos-correctos.md` | Baja | C5 |
-| S10 | Trazas internas de la descarga y del motor en la terminal | `motor-residente-huerfano-y-trazas-fuera-del-log.md` | Baja | C4 |
+| S10 | Trazas internas de la descarga y del motor en la terminal | `motor-residente-huerfano-tras-kill-del-daemon.md` | Baja | C4 |
 | S11 | Prefijo `Error:` duplicado | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja | C1 |
 | S12 | El evento `start` mide `text_length` en bytes, no en caracteres | `mensajes-y-codigos-de-salida-incoherentes-con-el-contrato.md` | Baja | C1 |
 | S13 | El dub por composición (daemon sin `/dub`) corta la transcripción a los 1500 ms | `daemon-rechaza-o-corta-audios-largos.md` (eliminado al cerrar C3) | Baja | C3 |
@@ -230,6 +230,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S27 | `self install`, `self uninstall` y `self update` detienen el daemon siempre en `127.0.0.1:8765` y `cleanup` solo respeta `AVI_DAEMON_PORT=0`; sin pidfile, `daemon stop`, `daemon status` y el resto de clientes del daemon lo buscan siempre en 8765; diez pruebas de contrato llamaban así a `daemon_stop::stop` contra el daemon real del mantenedor | Verificación de C2 | Media | C2 |
 | S28 | `tts::dub_audio_passthrough_es_es`, de la clase con recursos, falla de forma intermitente (1 de 4 intentos): el proceso `--no-daemon speech dub --audio parakeet_sample_16k.wav --source-language es-latam --target-language es-latam` termina a los 13,9 s con el código 0xC0000409 (caída nativa), sin fallo de aserción; la puerta de `cargo xtask release` aborta cuando ocurre | Verificación de C2 | Media | En observación |
 | S29 | `tts::h03_pipe_stdio_must_not_remain_blocked`, de la clase con recursos, falla de forma intermitente (en la suite completa y en 1 de 3 repeticiones aisladas): el pipe del lanzador sigue bloqueado a los 5 s y solo se libera al matar el daemon, como si el daemon retuviera el stdio heredado pese a `disinherit_standard_handles` | Verificación de C3 | Media | En observación |
+| S30 | Cuando clap rechaza los argumentos (flag desconocido, valor inválido, subcomando inexistente), el binario imprime un mensaje de texto por stderr y sale con 2, incluso con `--json`; el contrato dice que ese fallo entra por el mismo canal JSON que los demás, con `reason` `usage_error` en stdout, así que un consumidor programado que pase `--json` no recibe sobre | Verificación de C4 | Baja | C7 |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
@@ -259,6 +260,12 @@ S29 salió de la verificación de C3, que no toca el arranque del daemon ni la h
 handles; la misma prueba pasó en la verificación anterior del ciclo. Queda en observación,
 sin ciclo: si se repite, se diagnostica la herencia del stdio en el arranque del daemon
 en un ciclo propio.
+
+S30 salió de la verificación de C4 y no tiene informe propio. Es una discrepancia entre el
+contrato y el binario sobre los fallos de parseo de la CLI, y comparte causa raíz con el
+resto de C7: un sobre JSON que no describe lo que pasó. Se asigna a C7 porque ese ciclo
+ya reescribe el contrato y sube el sobre a la versión 5, y una sola subida por versión
+publicada admite el cambio si se decide alinear el binario con el contrato.
 
 ## 8. Orden de los ciclos y dependencias
 
@@ -1160,6 +1167,17 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   4. Filtro de trazas configurable con `RUST_LOG`: sin la variable, `warn` en los
      comandos de la CLI e `info` en el daemon. Corrige de paso el comentario de la
      inicialización de las trazas, que cita un esquema del sobre JSON ya superado.
+  5. Retirada de `setup --with-stt` y de la clave `with_stt` del JSON de `setup`.
+- **Decisiones de plan:**
+  - **P1:** sin `RUST_LOG`, el daemon usa `info` para los crates propios y `warn` para
+    las dependencias, y la CLI `warn`.
+  - **P2:** un auxiliar común en `avi-shared` crea `<familia>_<pid>_<ms>.log` y poda a
+    10, ordenando por el `<ms>` del nombre e ignorando los ficheros en uso.
+  - **P3:** stdout y stderr del daemon van al mismo log.
+  - **P4:** los errores de clonado y de `daemon start` citan la ruta del log.
+  - **P5:** se retira `--with-stt`.
+  - **P6:** el informe del motor huérfano se renombra a
+    `motor-residente-huerfano-tras-kill-del-daemon.md`.
 - **Pruebas en rojo:**
   - tras N creaciones de log quedan K por familia;
   - un error del daemon en segundo plano aparece en su log;
@@ -1169,7 +1187,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   `cleanup`, y la variable `RUST_LOG` allí donde se documentan las variables de
   entorno.
 - **Cierra:** la ficha de logs de `residuos-en-disco-tras-comandos-correctos.md` y la
-  ficha de trazas de `motor-residente-huerfano-y-trazas-fuera-del-log.md`.
+  ficha de trazas de `motor-residente-huerfano-tras-kill-del-daemon.md`.
 
 ### C5 · Vida de los procesos
 
@@ -1198,7 +1216,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Documentación:** la descripción del daemon sin el Job Object, `MANUAL-VALIDATION.md`,
   las divergencias del motor, el retraso acotado de D11.2 en macOS y la entrada del
   CHANGELOG.
-- **Cierra:** `motor-residente-huerfano-y-trazas-fuera-del-log.md` y la ficha de
+- **Cierra:** `motor-residente-huerfano-tras-kill-del-daemon.md` y la ficha de
   `daemon.ready` de `residuos-en-disco-tras-comandos-correctos.md`.
 
 ### C6 · Artefactos de `self update`
@@ -1235,8 +1253,13 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 
 - **Causa raíz:** algunos sobres JSON describen lo que se pidió o lo que habría pasado,
   no lo que pasó, y quien crea un fichero temporal no siempre lo borra.
-- **Síntomas:** S7, S8 y S18.
-- **Decisiones:** D6, D7, D8 y D13 (la subida del sobre de la CLI), resueltas en G0.
+- **Síntomas:** S7, S8, S18 y S30.
+- **Decisiones:** D6, D7, D8 y D13 (la subida del sobre de la CLI), resueltas en G0. Queda
+  una abierta, que se resuelve en la G-Plan de C7: si el fallo de parseo de la CLI entra
+  por el canal JSON cuando se pide `--json` (se alinea el binario con el contrato) o si
+  el contrato pasa a documentar que ese fallo se imprime como texto por stderr con
+  exit 2 (se alinea el contrato con el binario). La recomendación es la primera, porque
+  `--json` promete un sobre en stdout y quien lo parsea hoy recibe un stdout vacío.
 - **Tareas:**
   1. `daemon stop` sin daemon responde `status: "not_running"` y «El daemon no estaba
      en ejecución», a partir del dato de la parada (D6).
@@ -1251,6 +1274,11 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   6. Sobre de la CLI en la versión 5 (D13), también en las guías que aún lo declaran en
      `"3"`: `DEVICES.md`, `TRANSLATE.md`, `VOICE.md` y el `status` de `DAEMON.md`
      (S18).
+  7. El fallo de parseo de la CLI, según lo que resuelva la decisión abierta: o se
+     traduce a un error `usage_error` con exit 2 que sale por el sobre JSON cuando se
+     pidió `--json` (hay que inspeccionar los argumentos crudos para saberlo, porque al
+     fallar el parseo no existe la estructura de la CLI), o se corrige el contrato
+     para describir el texto por stderr.
 - **Pruebas en rojo:**
   - golden de `daemon stop` sin daemon, con `not_running` y exit 0;
   - golden de `self uninstall --dry-run` y de `cleanup --dry-run`, con `planned`, sin
@@ -1260,9 +1288,13 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   - tras `speech say` y `speech dub`, por la vía directa y la daemon, también cuando
     fallan la síntesis o la reproducción, no queda ningún WAV temporal y el JSON no
     contiene `audio_path`;
-  - el sobre de la CLI declara `schema_version` 5.
-- **Documentación:** el contrato (valores de `status`, claves retiradas y versión 5 del
-  sobre), `speech`, `daemon`, `self`, `cleanup`, `devices`, `translate`, `voice` y la
+  - el sobre de la CLI declara `schema_version` 5;
+  - un flag desconocido, un valor inválido y un subcomando inexistente, con `--json`,
+    salen con exit 2 y un sobre `usage_error` en stdout sin texto suelto por stderr (si
+    la decisión alinea el binario con el contrato), y sin `--json` siguen mostrando el
+    mensaje en español con la línea `Uso:`.
+- **Documentación:** el contrato (valores de `status`, claves retiradas, versión 5 del
+  sobre y el canal por el que sale el fallo de parseo), `speech`, `daemon`, `self`, `cleanup`, `devices`, `translate`, `voice` y la
   entrada del CHANGELOG.
 - **Cierra:** `status-json-afirma-operaciones-no-realizadas.md` y
   `residuos-en-disco-tras-comandos-correctos.md`, que para entonces se queda sin fichas.

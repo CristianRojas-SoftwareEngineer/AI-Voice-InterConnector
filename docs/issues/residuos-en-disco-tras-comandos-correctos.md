@@ -3,9 +3,9 @@
 | Campo | Valor |
 |---|---|
 | Estado | abierto |
-| Severidad | media por el síntoma 3; baja en los demás |
+| Severidad | baja |
 | Tipo | funcional |
-| Componente | CLI (`src/main.rs`), motor TTS (`crates/avi-tts`), daemon (`crates/avi-daemon`) y ciclo de vida (`self update`) |
+| Componente | CLI (`src/main.rs`), daemon (`crates/avi-daemon`) y ciclo de vida (`self update`) |
 | Versión detectada | 0.25.0 |
 | Plataforma | Windows 11 con PowerShell 5.1 |
 | Reproducibilidad | siempre |
@@ -14,10 +14,9 @@
 ## Resumen
 
 Varios comandos que terminan con el resultado correcto dejan en disco ficheros que ya no
-sirven: WAV temporales, el fichero de listo del daemon, logs del motor sin límite y
-artefactos de la actualización. Todo queda a cargo de `cleanup`, cuando el criterio
-debería ser que quien crea un fichero lo borre. Además, el daemon no escribe log propio,
-así que sus fallos no quedan registrados en ningún sitio.
+sirven: WAV temporales, el fichero de listo del daemon y artefactos de la actualización.
+Todo queda a cargo de `cleanup`, cuando el criterio debería ser que quien crea un
+fichero lo borre.
 
 ## Entorno
 
@@ -38,18 +37,12 @@ Se detalla en cada síntoma.
 
 ## Resultado esperado
 
-Cada comando retira lo que crea al terminar, también si falla. Los logs tienen una
-retención acotada y el daemon escribe el suyo.
+Cada comando retira lo que crea al terminar, también si falla.
 
 ## Impacto y workaround
 
-Los residuos ocupan disco y ensucian `doctor`. Sin log del daemon no queda rastro de sus
-fallos, entre ellos el que deja huérfano al motor residente. Workaround: `cleanup` barre
-los temporales.
-
-## Evidencia
-
-Al final de la sesión E2E había 21 logs del motor en `data/logs/`.
+Los residuos ocupan disco y ensucian `doctor`. Workaround: `cleanup` barre los
+temporales.
 
 ## Análisis de causa
 
@@ -86,22 +79,7 @@ Al final de la sesión E2E había 21 logs del motor en `data/logs/`.
   reclamar al residente. Borrarlo en un apagado limpio no afecta a esa recuperación.
 - **Criterio:** tras `daemon stop`, `data/` no contiene `daemon.ready` ni `daemon.pid`.
 
-### 3. Logs del motor sin rotación y sin log propio del daemon
-
-- **Severidad:** media. Sin log del daemon no queda rastro de sus fallos, entre ellos el
-  que deja huérfano al motor residente.
-- **Síntoma:** cada arranque del motor crea `data/logs/qwen3-tts_<pid>_<ms>.log`; al
-  final de la sesión había 21. El daemon no escribe log propio, así que sus errores
-  (por ejemplo, una caída del servidor después de estar listo) no quedan en ningún sitio.
-- **Causa (confirmada):** `crates/avi-tts/src/lib.rs` nombra un archivo nuevo por
-  proceso y nada los poda. El hijo del daemon se lanza con stdout y stderr descartados
-  (`spawn_background`, `crates/avi-daemon/src/spawn.rs`).
-- **Esperado:** retención acotada de los logs del motor (por número o por antigüedad) y
-  un log del daemon en `data/logs/`.
-- **Criterio:** tras N arranques quedan como mucho los K logs más recientes; existe un
-  log del daemon con el arranque, el bind y los errores.
-
-### 4. `self update` deja el binario aparcado y el staging con el `.zip`
+### 3. `self update` deja el binario aparcado y el staging con el `.zip`
 
 - **Síntoma:** tras `self update --force` quedan el binario anterior aparcado (`.old-*`)
   en el directorio del programa y el `.zip` descargado. `doctor` informa
@@ -127,17 +105,14 @@ Al final de la sesión E2E había 21 logs del motor en `data/logs/`.
 
 ## Diagnóstico sugerido
 
-Los síntomas 1 y 2 tienen corrección local y caben en un mismo parche. El 3 es el
-prioritario porque el log del daemon es requisito para diagnosticar el residente
-huérfano. El 4 necesita una reproducción instrumentada de `self update` que registre el
-resultado de la limpieza del staging.
+Los síntomas 1 y 2 tienen corrección local y caben en un mismo parche. El 3 necesita
+una reproducción instrumentada de `self update` que registre el resultado de la
+limpieza del staging.
 
 ## Criterio de aceptación
 
-Se cumplen los criterios de los cuatro síntomas.
+Se cumplen los criterios de los tres síntomas.
 
 ## Relacionados
 
-- [motor-residente-huerfano-y-trazas-fuera-del-log.md](motor-residente-huerfano-y-trazas-fuera-del-log.md):
-  el diagnóstico del residente huérfano depende del log del daemon del síntoma 3.
 - Documentación de `cleanup` y de `doctor` (`pending_artifacts`).
