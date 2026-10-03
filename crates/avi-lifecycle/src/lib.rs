@@ -39,7 +39,7 @@ pub mod update_fetch;
 pub mod update_resolve;
 
 pub use avi_store::{
-    bin_dir, canonical_path_entry_matches, canonical_path_key, data_dir, install_dir,
+    bin_dir, canonical_path_entry_matches, canonical_path_key, data_dir, install_dir, logs_dir_in,
     models_cache_dir, models_root_is_shared, shared_hf_root, APP_NAME, LIFECYCLE_LOCK_NAME,
     MODELS_XET_SUBDIR, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
 };

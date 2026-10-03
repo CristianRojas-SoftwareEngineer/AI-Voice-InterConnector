@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 // Rutas canónicas, temporales y revisiones de modelos: viven en `avi-shared`
 // (fuente única del ciclo 4) y aquí se reexportan para conservar la API; los
 // llamadores no cambian.
+pub use avi_shared::logs::{create_log, LOG_RETENTION};
 pub use avi_shared::paths::{
-    bin_dir, data_dir, install_dir, models_cache_dir, models_root_is_shared, shared_hf_root,
-    xet_cache_dir, ModelPin, APP_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR, MODEL_FILE_PATTERNS,
-    MODEL_REVISIONS, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
+    bin_dir, data_dir, install_dir, logs_dir, logs_dir_in, models_cache_dir, models_root_is_shared,
+    shared_hf_root, xet_cache_dir, ModelPin, APP_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR,
+    MODEL_FILE_PATTERNS, MODEL_REVISIONS, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
 };
 
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (`qwen_tts.c:spk_table`)
