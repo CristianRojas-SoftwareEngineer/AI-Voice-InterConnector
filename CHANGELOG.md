@@ -109,6 +109,9 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 ### Cambiado
 
 - Todo el flujo de `install.sh` vive en una función `main` que se invoca en la última línea, así que una descarga cortada con `curl | sh` antes de esa línea no ejecuta nada.
+- El repositorio ya no contiene Python: la suite bats de los instaladores sirve los assets con `openssl s_server` en lugar de un servidor propio, así que quien ejecute `tests/bootstrap/install.bats` necesita `openssl` y `curl`; la CI lee el pin de `sccache` con `sed` y compara la salida de `--version` del binario release con el tag en lugar de validar `version --json`. `CONTRIBUTING.md` documenta cómo ejecutar las suites bats y Pester en local, incluido un contenedor Linux para Windows.
+- Las aserciones de las suites de los instaladores exigen el código de salida, el mensaje con el valor concreto y la ausencia real de efectos, y se verificaron con mutaciones de los scripts; antes varias pasaban con cualquier fallo.
+- Los fixtures de referencia de las pruebas de transcripción y traducción pasan de `*.oraculo.*` a `*.referencia.*`, y las pruebas que los usan cambian de nombre en consecuencia.
 
 ## [0.27.1] — 2026-10-02
 
