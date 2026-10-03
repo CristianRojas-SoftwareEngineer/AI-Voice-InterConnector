@@ -142,7 +142,7 @@
     },
     "C5": {
       "status": "closed",
-      "phase": "result",
+      "phase": "closed",
       "gates": [
         { "gate": "plan", "verdict": "approved", "date": "2026-10-03", "notes": "alcance S2, S9, S31 y S32. P1: flag --watch-stdin; P2: constante READY_FILE junto a PID_FILE en avi-lifecycle, usada también por cleanup y el binario principal; P3: kill duro con clonado se intenta automatizar y, si es intermitente, pasa a MANUAL-VALIDATION.md; P4: stop borra daemon.ready solo si el daemon quedó detenido y el PID del propio ready no está vivo; P5: con resident_pid registrado y vivo la parada no se da por completa, se conserva el pidfile y la rama daemon stop de la CLI no lo borra; P6: voz nueva preparada en un directorio junto a voices/ y renombrado de una vez; P7: plazo de 10 s en las pruebas de kill duro" },
         { "gate": "deviation", "verdict": "approved", "date": "2026-10-03", "notes": "decisiones del humano al revisar las pruebas en rojo: P8, la creación del proceso del residente se extrae a una función propia para probarla con un motor doble (cierra el hueco del lanzador y permite probar que un healthcheck fallido mata al motor); P9, la condición de borrado del pidfile de la rama daemon stop de la CLI se extrae a una función pura que considera al residente, y C7 se adapta a C5; P3 revisada: el kill duro con clonado en curso pasa a verificación manual porque la prueba no distingue si el motor murió por el kill o terminó solo; la rama .sh del motor doble de la prueba 5 se mantiene y se revisa" },
