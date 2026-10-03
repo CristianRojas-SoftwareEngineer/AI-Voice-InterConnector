@@ -287,6 +287,31 @@ Describe "bootstrap de Windows" {
         Assert-NoStagingLeft $script:TestDir
     }
 
+    It "con powershell.exe, un PSModulePath heredado de PowerShell 7 y la reparacion rota falla explicando la causa antes de descargar" {
+        if ($null -eq (Get-Command powershell.exe -ErrorAction SilentlyContinue) -or $null -eq (Get-Command pwsh -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because "powershell.exe o pwsh no disponible"
+            return
+        }
+        # Copia con el import apuntando a un directorio inexistente: la
+        # reparacion no puede restaurar los cmdlets.
+        $broken = Join-Path $script:TestDir "install-broken.ps1"
+        $text = (Get-Content -Raw $script:InstallPs1).Replace('"Modules", $module', '"ModulosInexistentes", $module')
+        $text | Should -Not -BeExactly (Get-Content -Raw $script:InstallPs1)
+        Set-Content -Path $broken -Value $text -NoNewline
+        $envBase = Get-TestEnvBase $script:TestDir
+        # Puerto cerrado: si intentara descargar, el error seria de red.
+        $envBase.AVI_DOWNLOAD_BASE_URL = "http://127.0.0.1:1"
+        $result = Invoke-ChildBootstrap -Bootstrap $broken `
+            -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase `
+            -Engine (Get-Command powershell.exe).Source -ChildEnv @{ PSModulePath = (Get-ContaminatedModulePath) }
+
+        $result.ExitCode | Should -Not -Be 0
+        $output = $result.Stdout + $result.Stderr
+        # Los nombres concretos solo aparecen si el mensaje salio de la ejecucion.
+        $output | Should -Match ([regex]::Escape("unsupported_platform]: ") + "faltan cmdlets est.ndar de PowerShell: Get-FileHash")
+        $output | Should -Not -Match "Instalando ai-voice-interconnector 9.9.9"
+    }
+
     It "sin -NoModifyPath integra el PATH en la subclave de prueba" {
         $script:RegSubkey = "Software\AviBootstrapTest\" + [guid]::NewGuid().ToString("N")
         $envBase = Get-TestEnvBase $script:TestDir

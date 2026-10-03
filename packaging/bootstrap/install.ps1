@@ -6,8 +6,10 @@ Detecta el target, resuelve la version (exactamente X.Y.Z), descarga por HTTPS, 
 con comparacion exacta, comprueba que el binario arranca y delega en
 `self install`. Sin -Check: con el binario instalado se usa
 `self update --check`. Toda opcion tiene variable de entorno equivalente,
-porque `irm | iex` no admite parametros. Su unico efecto sobre la sesion es
-anadir el directorio de programa al PATH de esa sesion.
+porque `irm | iex` no admite parametros. Su efecto sobre la sesion es anadir
+el directorio de programa al PATH de esa sesion y, solo si el entorno heredado
+sombrea los modulos estandar (PSModulePath de PowerShell 7 bajo Windows
+PowerShell 5.1), cargar en ella los modulos estandar del propio motor.
 .EXAMPLE
 irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex
 .EXAMPLE
@@ -51,6 +53,35 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
         param([string]$Name)
         $value = [Environment]::GetEnvironmentVariable($Name)
         return ($value -eq "1" -or $value -eq "true" -or $value -eq "yes")
+    }
+
+    function Initialize-BootstrapModules {
+        # Un PSModulePath heredado de PowerShell 7 hace que Windows PowerShell 5.1
+        # cargue sus modulos .NET Core, incompatibles, y los cmdlets estandar
+        # desaparecen. Si falta alguno se importa el modulo del propio motor por
+        # ruta absoluta bajo $PSHOME (sin tocar PSModulePath ni usar directorios
+        # escribibles por el usuario). Se evita Join-Path: es un cmdlet del
+        # modulo que podria faltar.
+        $required = [ordered]@{
+            "Microsoft.PowerShell.Utility"  = @("Get-FileHash", "New-Object")
+            "Microsoft.PowerShell.Security" = @("Get-Acl", "Set-Acl")
+            "Microsoft.PowerShell.Archive"  = @("Expand-Archive")
+            "Microsoft.PowerShell.Management" = @("Test-Path", "New-Item", "Join-Path", "Split-Path", "Remove-Item", "Get-Content")
+        }
+        $missing = @()
+        foreach ($module in $required.Keys) {
+            $absent = @($required[$module] | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+            if ($absent.Count -eq 0) { continue }
+            try {
+                Import-Module ([IO.Path]::Combine($PSHOME, "Modules", $module)) -ErrorAction Stop
+            } catch {
+                Write-Verbose "no se pudo importar ${module}: $_"
+            }
+            $missing += @($absent | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+        }
+        if ($missing.Count -gt 0) {
+            throw "ERROR [unsupported_platform]: faltan cmdlets est${a}ndar de PowerShell: $($missing -join ', '). Suele deberse a que esta consola hered${o} el entorno de m${o}dulos de PowerShell 7. Abre Windows PowerShell sin heredar ese entorno y vuelve a ejecutar el instalador."
+        }
     }
 
     function Test-BootstrapVersion {
@@ -120,6 +151,9 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             Write-BootstrapLog "AVISO: no se pudo forzar TLS 1.2: $_"
         }
 
+        # Antes de cualquier descarga o escritura en disco.
+        Initialize-BootstrapModules
+
         # Con sesion elevada se avisa: la instalacion es per-user, sin tocar HKLM.
         $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
         if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -144,6 +178,8 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
         if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
         $staging = Join-Path $parentDir (".ai-voice-interconnector-staging-" + [guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        # El aviso cubre solo fallos reales de ACL: la disponibilidad de los
+        # cmdlets ya se garantizo al arrancar.
         try {
             $acl = Get-Acl -Path $staging
             $acl.SetAccessRuleProtection($true, $false)
@@ -203,7 +239,8 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             & $exe @installArgs
             $code = $LASTEXITCODE
             if ($code -eq 0) {
-                # Unico efecto sobre la sesion: el programa en el PATH en curso.
+                # El programa en el PATH en curso (los modulos estandar, si hubo que
+                # repararlos, ya se cargaron al arrancar).
                 if (($env:Path -split ';') -notcontains $programDir) { $env:Path = "$env:Path;$programDir" }
             }
         } finally {
