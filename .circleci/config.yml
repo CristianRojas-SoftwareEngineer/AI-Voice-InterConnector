@@ -1054,6 +1054,9 @@ jobs:
             echo "export PATH=\"$(brew --prefix openssl@3)/bin:\$PATH\"" >> "$BASH_ENV"
             . "$BASH_ENV"
             openssl version
+            # Falla explícita si el PATH no resuelve a OpenSSL 3: la suite
+            # asume el mismo `s_server` que en Linux, no el LibreSSL del sistema.
+            openssl version | grep -q '^OpenSSL 3\.' || { echo "openssl: se esperaba OpenSSL 3.x" >&2; exit 1; }
             echo "[STEP] Instalar openssl@3 - FIN"
       - run:
           name: Instalar bats-core (pineado << pipeline.parameters.bats_pin >>)
@@ -1070,6 +1073,11 @@ jobs:
           name: Ejecutar suite del bootstrap POSIX (bats)
           command: |
             echo "[STEP] Ejecutar suite del bootstrap POSIX (bats) - INICIO"
+            # bats deriva el nombre de función de cada prueba carácter a
+            # carácter: fuera de una locale UTF-8 parte las letras con tilde
+            # en bytes sueltos y el nombre queda corrupto (bash 3.2 de macOS).
+            export LC_ALL=en_US.UTF-8
+            locale
             bats tests/bootstrap/install.bats
             echo "[STEP] Ejecutar suite del bootstrap POSIX (bats) - FIN"
 
