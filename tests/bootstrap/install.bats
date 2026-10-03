@@ -168,7 +168,9 @@ assert_no_staging_left() {
     done
 }
 
-@test "un script truncado antes de su última línea no ejecuta nada" {
+# El nombre evita la `í`: bats en macOS (bash 3.2) no resuelve nombres de
+# prueba que la contengan.
+@test "un script truncado antes de su última orden no ejecuta nada" {
     mock_uname x86_64
     export AVI_VERSION="9.9.9" AVI_NO_SETUP=1 AVI_NO_MODIFY_PATH=1 AVI_YES=1
 
