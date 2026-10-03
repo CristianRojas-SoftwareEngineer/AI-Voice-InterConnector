@@ -308,7 +308,9 @@ mod tests {
     #[test]
     fn live_sccache_read_is_accepted() {
         let mut cfg = toy_config();
-        cfg.push_str("            SCCACHE_VERSION=\"$(python3 -c 'pass')\"\n");
+        cfg.push_str(
+            "            SCCACHE_VERSION=\"$(sed -n 's/.*\"sccache\": *\"\\([^\"]*\\)\".*/\\1/p' packaging/pins.json)\"\n",
+        );
         cfg.push_str("            $SccacheVersion = (Get-Content packaging/pins.json -Raw | ConvertFrom-Json).sccache\n");
         assert!(check_text(&toy_pins(), &cfg, &toy_toolchain()).is_empty());
     }

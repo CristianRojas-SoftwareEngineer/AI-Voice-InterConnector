@@ -1332,6 +1332,30 @@ fn version_matches_fixture() {
     assert_eq!(actual, fixture("cli_version.json"));
 }
 
+/// La CI compara la salida plana de `version` y de `--version` con el tag del
+/// release: ambas deben imprimir el nombre y la versión del paquete.
+#[test]
+fn plain_version_outputs_name_and_package_version() {
+    let expected = format!("ai-voice-interconnector {}", env!("CARGO_PKG_VERSION"));
+    let (dir, envs) = contract_sandbox("plain_version");
+    for args in [["version"], ["--version"]] {
+        let salida = Command::new(BIN)
+            .args(args)
+            .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("el binario debe ejecutarse");
+        assert!(salida.status.success(), "`{}` debe salir con 0", args[0]);
+        assert_eq!(
+            String::from_utf8_lossy(&salida.stdout).trim(),
+            expected,
+            "salida de `{}`",
+            args[0]
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // Requiere `native-stt`: sin el motor Parakeet el binario responde
 // `stt_unsupported`, por lo que el contrato de transcripción solo aplica con el
 // feature activo (en CI featureless no se compila).
@@ -1783,7 +1807,7 @@ fn clone_reference_zero_sample_rate_is_invalid_audio() {
             &envs,
         );
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(code, 2, "voice clone {mode}: exit 2 esperado ({actual})");
+        assert_eq!(code, 2, "voice clone {mode}: exit 2 expected ({actual})");
         assert_eq!(actual["reason"], "invalid_audio", "{mode}: {actual}");
     }
 }
@@ -5019,7 +5043,7 @@ fn perf_invalid_input_rejection_fail_fast() {
     assert_eq!(code_say, 2);
     assert!(
         d_say < Duration::from_millis(1500),
-        "say con texto vacío tardó {:?} (fail-fast esperado < 1500 ms)",
+        "say con texto vacío tardó {:?} (fail-fast expected < 1500 ms)",
         d_say
     );
 
@@ -5038,7 +5062,7 @@ fn perf_invalid_input_rejection_fail_fast() {
     assert_eq!(code_play, 2);
     assert!(
         d_play < Duration::from_millis(1500),
-        "synthesize --play --json tardó {:?} (fail-fast esperado < 1500 ms)",
+        "synthesize --play --json tardó {:?} (fail-fast expected < 1500 ms)",
         d_play
     );
 }

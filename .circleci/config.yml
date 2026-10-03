@@ -354,7 +354,7 @@ commands:
           command: |
             echo "[STEP] Configurar sccache - INICIO"
             # Versión viva desde packaging/pins.json: sin literales que se desalineen.
-            SCCACHE_VERSION="$(python3 -c "import json; print(json.load(open('packaging/pins.json'))['sccache'])")"
+            SCCACHE_VERSION="$(sed -n 's/.*"sccache": *"\([^"]*\)".*/\1/p' packaging/pins.json)"
             if ! command -v sccache >/dev/null 2>&1; then
               case "$(uname -m)" in
                 x86_64|amd64) SCCACHE_ARCH="x86_64" ;;
@@ -960,12 +960,12 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # Suites del bootstrap de primera instalación (bats + Pester)
-  # Ejercitan packaging/bootstrap/ contra el servidor falso local de
-  # tests/bootstrap/support/, sin red real.
+  # Ejercitan packaging/bootstrap/ sin red real: bats contra
+  # `openssl s_server` (HTTPS) y Pester contra support/Serve.ps1 (HTTP).
   # ──────────────────────────────────────────────────────────────
   test-bootstrap-linux:
     # Suite POSIX (tests/bootstrap/install.bats) con `sh` (dash) contra el
-    # servidor falso HTTPS local: detección, resolución, integridad,
+    # `openssl s_server` HTTPS local: detección, resolución, integridad,
     # delegación y confirmación con terminal.
     docker:
       # Digest del índice multi-arch de cimg/base:2026.09 (pin reproducible;
@@ -1036,12 +1036,23 @@ jobs:
 
   test-bootstrap-macos:
     # Suite POSIX en el executor macOS real (bats): única validación del shell
-    # nativo de la plataforma sin un Mac físico. Misma suite que en Linux.
+    # nativo de la plataforma sin un Mac físico. Misma suite que en Linux; el
+    # servidor falso es `openssl s_server` de Homebrew (OpenSSL 3, como en
+    # Linux), no el LibreSSL del sistema.
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
     steps:
       - checkout
+      - run:
+          name: Instalar openssl@3 (servidor falso de la suite)
+          command: |
+            echo "[STEP] Instalar openssl@3 - INICIO"
+            brew install openssl@3
+            echo "export PATH=\"$(brew --prefix openssl@3)/bin:\$PATH\"" >> "$BASH_ENV"
+            . "$BASH_ENV"
+            openssl version
+            echo "[STEP] Instalar openssl@3 - FIN"
       - run:
           name: Instalar bats-core (pineado << pipeline.parameters.bats_pin >>)
           command: |
@@ -1525,10 +1536,9 @@ jobs:
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
-            # Contrato JSON determinista: `version --json` DEBE exponer name +
-            # version + schema_version. Python3 parsea sin depender de jq
-            # (cimg/rust ya lo provee, pero python3 es canónico).
-            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="4", "schema_version !=4: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
+            # La versión del binario release debe coincidir con el tag; el
+            # contrato JSON de `version --json` lo cubre el golden de la CLI.
+            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
@@ -1540,7 +1550,7 @@ jobs:
             # intermitente (visto en v0.20.9, build-linux-x64).
             voice_list_out="$(target/release/ai-voice-interconnector voice list)"
             printf '%s\n' "$voice_list_out" | grep -q '^  - default'
-            echo "Binario Linux x64 OK: version + voice list + version --json"
+            echo "Binario Linux x64 OK: version + voice list + versión del tag"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
@@ -1690,10 +1700,9 @@ jobs:
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
-            # Contrato JSON determinista: `version --json` DEBE exponer name +
-            # version + schema_version. Python3 parsea sin depender de jq
-            # (cimg/rust ya lo provee, pero python3 es canónico).
-            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="4", "schema_version !=4: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
+            # La versión del binario release debe coincidir con el tag; el
+            # contrato JSON de `version --json` lo cubre el golden de la CLI.
+            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
@@ -1705,7 +1714,7 @@ jobs:
             # intermitente (visto en v0.20.9, build-linux-x64).
             voice_list_out="$(target/release/ai-voice-interconnector voice list)"
             printf '%s\n' "$voice_list_out" | grep -q '^  - default'
-            echo "Binario Linux ARM64 OK: version + voice list + version --json"
+            echo "Binario Linux ARM64 OK: version + voice list + versión del tag"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
@@ -1888,10 +1897,9 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
-            # Contrato JSON determinista: `version --json` DEBE exponer name +
-            # version + schema_version. Python3 parsea sin depender de jq
-            # (cimg/rust ya lo provee, pero python3 es canónico).
-            target/release/ai-voice-interconnector version --json | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d.get("version"), "campo version ausente: %r" % d; assert d.get("name")=="ai-voice-interconnector", "name incorrecto: %r" % d; assert d.get("schema_version")=="4", "schema_version !=4: %r" % d; tag=os.environ.get("CIRCLE_TAG","").lstrip("v"); assert not tag or d["version"]==tag, "version %r != CIRCLE_TAG %r" % (d["version"], tag); print("version --json OK: %r" % d)'
+            # La versión del binario release debe coincidir con el tag; el
+            # contrato JSON de `version --json` lo cubre el golden de la CLI.
+            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
@@ -1903,7 +1911,7 @@ jobs:
             # intermitente (visto en v0.20.9, build-linux-x64).
             voice_list_out="$(target/release/ai-voice-interconnector voice list)"
             printf '%s\n' "$voice_list_out" | grep -q '^  - default'
-            echo "Binario macOS ARM64 OK: version + voice list + version --json"
+            echo "Binario macOS ARM64 OK: version + voice list + versión del tag"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
