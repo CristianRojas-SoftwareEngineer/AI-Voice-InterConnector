@@ -1048,7 +1048,9 @@ jobs:
           name: Instalar openssl@3 (servidor falso de la suite)
           command: |
             echo "[STEP] Instalar openssl@3 - INICIO"
-            brew install openssl@3
+            # La imagen ya trae openssl@3: reinstalarlo lo actualiza y su
+            # post-install devuelve error, así que solo se instala si falta.
+            brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
             echo "export PATH=\"$(brew --prefix openssl@3)/bin:\$PATH\"" >> "$BASH_ENV"
             . "$BASH_ENV"
             openssl version
