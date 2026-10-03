@@ -84,7 +84,7 @@ AI-Voice-InterConnector/
 └── tests/
     ├── cli_golden.rs                   # Harness dorado del CLI
     ├── self_install_contract.rs        # Contrato de self install (recibo, bloqueo, integracion de PATH)
-    └── bootstrap/                      # bats + Pester de los dos bootstrap (mismo servidor local de releases falsos)
+    └── bootstrap/                      # bats (openssl s_server) + Pester (Serve.ps1) de los dos bootstrap
 ├── Cargo.toml                          # Workspace Rust (version = X.Y.Z, espejo de src/main.rs)
 ├── Cargo.lock
 ├── rust-toolchain.toml                 # Versión de Rust fijada para desarrollo y CI (único archivo nuevo en la raíz)

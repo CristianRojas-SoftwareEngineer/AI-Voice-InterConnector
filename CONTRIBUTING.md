@@ -87,8 +87,20 @@ No hay gate de porcentaje aún; el job valida que la instrumentación no rompa l
 
 Además de `cargo test`, los bootstrap tienen suites en `tests/bootstrap/`, que corren **en CI, no en `cargo test`**:
 
-- `install.bats` — `packaging/bootstrap/install.sh` (Linux y macOS), con [bats-core](https://github.com/bats-core/bats-core) (`bats tests/bootstrap/install.bats`).
-- `install.tests.ps1` — `packaging/bootstrap/install.ps1` (Windows), con **Pester v5** (`Invoke-Pester tests/bootstrap/install.tests.ps1 -CI`).
+- `install.bats` — `packaging/bootstrap/install.sh` (Linux y macOS), con [bats-core](https://github.com/bats-core/bats-core) (`bats tests/bootstrap/install.bats`). Necesita `bats-core`, `openssl` y `curl`: el servidor falso es `openssl s_server` por HTTPS con una CA de prueba que genera la propia suite.
+- `install.tests.ps1` — `packaging/bootstrap/install.ps1` (Windows), con **Pester v5** (`Invoke-Pester tests/bootstrap/install.tests.ps1 -CI`). Necesita `pwsh`; su servidor falso HTTP es `support/Serve.ps1`.
+
+**Ejecución local.** La suite bats es para Linux y macOS: no corre en Git Bash de Windows. En una máquina Windows se ejecuta en WSL o en un contenedor Linux con el repositorio montado, por ejemplo (Ubuntu 24.04, bats-core en la versión del parámetro `bats_pin` de `.circleci/config.yml`):
+
+```sh
+docker run --rm -v "$PWD":/src:ro ubuntu:24.04 bash -c '
+  apt-get update -qq && apt-get install -y -qq git curl openssl ca-certificates >/dev/null &&
+  git clone -q --depth 1 --branch v1.14.0 https://github.com/bats-core/bats-core.git /tmp/bats &&
+  /tmp/bats/install.sh /usr/local >/dev/null &&
+  mkdir /work && cp -r /src/tests /src/packaging /work && cd /work && bats tests/bootstrap/install.bats'
+```
+
+En Git Bash de Windows, anteponer `MSYS_NO_PATHCONV=1` a `docker run` para que no reescriba las rutas del contenedor. La suite Pester corre en Windows con `pwsh -Command "Invoke-Pester tests/bootstrap/install.tests.ps1 -CI"`.
 
 Todo `.ps1` del repositorio (bootstrap y suite) se escribe en ASCII puro y sin BOM: comentarios sin tildes y mensajes al usuario compuestos con `[char]`. `install.tests.ps1` lo verifica. Sus pruebas de tubería (`irm | iex`) necesitan `pwsh` en el PATH para no omitirse.
 

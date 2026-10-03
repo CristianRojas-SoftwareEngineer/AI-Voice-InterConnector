@@ -115,7 +115,11 @@ un checksum que no coincide aborta la instalación sin ejecutar nada. Ninguno
 requiere privilegios elevados ni admite `--check` (sin binario instalado no hay
 consulta de versión; con el binario instalado se usa `self update --check`):
 
-- **Linux y macOS** (`install.sh`, POSIX sh): rechaza `sudo`, detecta el target
+- **Linux y macOS** (`install.sh`, POSIX sh): rechaza `sudo`, exige `curl`
+  (limita las redirecciones a HTTPS), valida que la versión sea exactamente
+  `X.Y.Z` (`usage_error`), ejecuta todo dentro de una función `main` que solo
+  se invoca en la última línea, de modo que una descarga cortada no ejecuta
+  nada, detecta el target
   del host (`unsupported_platform` antes de descargar), crea un staging hermano
   solo para el usuario, verifica el hash, comprueba que el binario arranca
   (`binary_incompatible` con diagnóstico de glibc ≥ 2.35 en Linux, sin tocar lo

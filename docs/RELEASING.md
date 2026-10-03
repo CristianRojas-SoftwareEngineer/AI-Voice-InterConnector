@@ -125,7 +125,7 @@ Con el tag pusheado, ejecuta sin intervención:
    |---|---|
    | `test-linux`, `test-windows`, `test-macos` | `cargo test --all` en cada SO nativo |
    | `coverage` | Cobertura de la suite |
-    | `test-bootstrap-linux`, `test-bootstrap-windows`, `test-bootstrap-macos` | Suites de los bootstrap (`tests/bootstrap/`, bats/Pester contra servidor local) |
+    | `test-bootstrap-linux`, `test-bootstrap-windows`, `test-bootstrap-macos` | Suites de los bootstrap (`tests/bootstrap/`, bats contra `openssl s_server`, Pester contra `Serve.ps1`) |
    | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render para la versión del tag (`source-offer --check`) y `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock` (`licenses --check`) |
    | `validate-changelog` | La promoción está completa (`changelog --check`): cabecera `[X.Y.Z]`, entrada del índice con el ancla de GitHub, enlace de comparación, sin `TODO: curar` y sin `[No publicado]` |
 

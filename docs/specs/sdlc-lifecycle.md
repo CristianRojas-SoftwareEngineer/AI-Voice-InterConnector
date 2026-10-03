@@ -356,7 +356,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 | `lifecycle_locked` | Todas | Hay otra operación de ciclo de vida en curso | Error |
 | `sudo_not_supported` | `self install`, `self uninstall`, `cleanup` | Unix: la ejecución vino de `sudo` | Error genérico (1); nada modificado |
 | `confirmation_required` | Destructivas | Sin terminal y sin `--yes` | Error de uso (2) |
-| `usage_error` | `cleanup` | Sin categoría | Error de uso (2) |
+| `usage_error` | Bootstrap, `cleanup` | Opción desconocida o versión que no es exactamente `X.Y.Z` (bootstrap); sin categoría (`cleanup`) | Error de uso (2) |
 | `setup_failed` | `self install`, `self update` | Programa instalado, pero la provisión de modelos falló | Éxito parcial (código propio), reintentable con `setup` |
 | `rolled_back` | `self install`, `self update` | Fallo durante el reemplazo; versión anterior restaurada | Error |
 | `removal_scheduled` | `self uninstall` | Windows: el directorio se borra al terminar el proceso | Éxito |
@@ -375,7 +375,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 
 ### 8.2 Bootstrap (primera instalación)
 
-El bootstrap es el único código que corre antes de que exista el binario. Su responsabilidad se limita a **obtener, verificar y ejecutar** el bundle correcto. No integra el PATH, no provisiona modelos, no consulta versiones instaladas ni conoce rutas de estado: todo eso lo hace `self install`. Cada script ocupa del orden de un centenar de líneas.
+El bootstrap es el único código que corre antes de que exista el binario. Su responsabilidad se limita a **obtener, verificar y ejecutar** el bundle correcto. No integra el PATH, no provisiona modelos, no consulta versiones instaladas ni conoce rutas de estado: todo eso lo hace `self install`. Cada script es lo bastante corto para leerse entero antes de ejecutarlo; `install.sh` encierra toda su lógica en una función `main` que se invoca en la última línea, así que una descarga cortada no ejecuta nada.
 
 **Publicación.** `install.sh` e `install.ps1` se publican como **assets de cada release**, con la versión estampada por el pipeline al publicar, y se incluyen en `SHA256SUMS.txt`. Así el bootstrap y el bundle de un release son siempre coherentes y la instalación no depende del estado de `main`.
 
@@ -389,7 +389,7 @@ El bootstrap es el único código que corre antes de que exista el binario. Su r
 
 | `install.sh` | `install.ps1` (como archivo) | Variable de entorno | Efecto |
 |---|---|---|---|
-| `--version X.Y.Z` | `-Version X.Y.Z` | `AVI_VERSION` | Instala esa versión en lugar de la estampada |
+| `--version X.Y.Z` | `-Version X.Y.Z` | `AVI_VERSION` | Instala esa versión en lugar de la estampada; debe ser exactamente `X.Y.Z` (si no, `usage_error`) |
 | `--no-setup` | `-NoSetup` | `AVI_NO_SETUP=1` | No provisiona modelos |
 | `--no-modify-path` | `-NoModifyPath` | `AVI_NO_MODIFY_PATH=1` | No modifica el PATH persistente |
 | `--yes` | `-Yes` | `AVI_YES=1` | Acepta la confirmación (modo desatendido) |
@@ -401,7 +401,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 
 1. **Detectar el target** según [§3](#3-targets-soportados). Si no está soportado → `unsupported_platform`, antes de descargar nada.
 2. **Unix: rechazar `sudo`** ([§8.1](#81-reglas-transversales), privilegios).
-3. **Resolver la versión**, por este orden: opción o variable, versión estampada, y (solo si el script se ejecuta sin estampar, desde el repositorio) la última estable, obtenida siguiendo la redirección de `https://github.com/<repo>/releases/latest`. No se usa la API REST de GitHub, así que no hay límite de peticiones ni hace falta parsear JSON.
+3. **Resolver la versión**, por este orden: opción o variable, versión estampada, y (solo si el script se ejecuta sin estampar, desde el repositorio) la última estable, obtenida siguiendo la redirección de `https://github.com/<repo>/releases/latest`. No se usa la API REST de GitHub, así que no hay límite de peticiones ni hace falta parsear JSON. La versión resuelta debe ser exactamente `X.Y.Z` (solo dígitos y puntos, tres componentes); si no → `usage_error` (código 2), antes de descargar nada.
 4. **Crear el staging** como hermano del directorio de programa (mismo volumen), con permisos solo del usuario.
 5. **Descargar** el archivo del target y `SHA256SUMS.txt` por HTTPS.
 6. **Verificar**: localizar en `SHA256SUMS.txt` la línea cuyo nombre coincide exactamente con el del archivo (comparación de cadenas, no expresión regular) y comparar el hash en minúsculas. Si el hash no coincide o falta la línea → `checksum_mismatch` y se borra el staging.
@@ -721,7 +721,7 @@ Al abrir o cerrar una brecha se actualiza esta tabla. El historial de las ya cer
 |---|---|---|
 | Unitarias (Rust) | Detección de target, comparación de versiones, lectura y escritura del recibo, edición de PATH (bloques de perfil; lista de PATH de Windows con conservación del tipo), planificador de transacciones y rollback, plan de limpieza (reglas de propiedad) | Las 3 puertas de test |
 | Integración (Rust, aislada) | Ciclos completos install → update → update sin cambios → uninstall; checksum inválido; interrupción y recuperación; daemon activo durante la actualización; canales `homebrew` y `dev`; confirmación sin terminal | Las 3 puertas, con las raíces reubicadas a temporales y un servidor HTTP local que sirve releases falsos (`AVI_DOWNLOAD_BASE_URL`). En Windows, la integración de PATH se prueba sobre una clave de registro de prueba |
-| Bootstrap | Detección de target, resolución de versión, checksum inválido, binario incompatible, paso de opciones y ausencia de efectos en la sesión de PowerShell; ejecución real de `irm | iex` contra el servidor local con PowerShell 5.1 y 7; guarda de codificación ASCII de los `.ps1` | bats (Linux, macOS) y Pester (Windows), contra el mismo servidor local |
+| Bootstrap | Detección de target, resolución de versión, checksum inválido, binario incompatible, paso de opciones y ausencia de efectos en la sesión de PowerShell; validación `X.Y.Z` de la versión; ejecución real de `irm | iex` contra el servidor local con PowerShell 5.1 y 7; guarda de codificación ASCII de los `.ps1` | bats (Linux, macOS), contra `openssl s_server` por HTTPS, y Pester (Windows), contra `Serve.ps1` por HTTP |
 | Humo del empaquetado | `cargo xtask package`, luego `self install --no-setup --no-modify-path` en un sandbox, luego `--version` | Los 4 jobs de build (cubre Linux arm64, que no tiene puerta de test propia) |
 | E2E real | One-liner contra el release publicado, en máquinas reales | Manual, fuera del pipeline, según la política actual de validación E2E |
 

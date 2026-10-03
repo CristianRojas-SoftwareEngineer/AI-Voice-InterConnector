@@ -2,7 +2,7 @@
 .SYNOPSIS
 Bootstrap de primera instalacion de ai-voice-interconnector para Windows.
 .DESCRIPTION
-Detecta el target, resuelve la version, descarga por HTTPS, verifica el hash
+Detecta el target, resuelve la version (exactamente X.Y.Z), descarga por HTTPS, verifica el hash
 con comparacion exacta, comprueba que el binario arranca y delega en
 `self install`. Sin -Check: con el binario instalado se usa
 `self update --check`. Toda opcion tiene variable de entorno equivalente,

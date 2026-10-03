@@ -8,7 +8,9 @@
 # terminal). Sin casos --check y sin red real.
 #
 # Ejecutar: bats tests/bootstrap/install.bats (necesita openssl y curl; con
-# `sh`, que es dash en WSL).
+# `sh`, que es dash en WSL). La suite es para Linux y macOS: no corre en Git
+# Bash de Windows; allí se ejecuta en WSL o en un contenedor Linux (comando en
+# CONTRIBUTING.md, sección «Smoke-tests de instaladores»).
 
 bats_require_minimum_version 1.5.0
 

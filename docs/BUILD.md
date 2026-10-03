@@ -214,7 +214,8 @@ completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
 - **Gates completos.** Además de la triple puerta: `coverage` (cargo-llvm-cov,
   **solo aquí**), las tres suites de bootstrap (`test-bootstrap-linux`
   bats, `test-bootstrap-windows` Pester, `test-bootstrap-macos` bats, en
-  `tests/bootstrap/`) y los gates
+  `tests/bootstrap/`; bats sirve los assets con `openssl s_server` por HTTPS
+  y Pester con `support/Serve.ps1` por HTTP) y los gates
   `validate-licenses` (SOURCE-OFFER/THIRD-PARTY) y `validate-changelog`. Esos
   **9 gates** son `requires:` de los 4 builds nativos, que compilan las 4
   plataformas en modo release (validación de compilación por plataforma).
@@ -297,7 +298,7 @@ Los tests de topología de `xtask` fallan si el workflow de sonda llega a conten
 | `coverage` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo llvm-cov --workspace --lcov` genera `lcov.info` (artefacto `coverage-lcov`) y `cargo llvm-cov report` imprime el resumen sin re-ejecutar la suite; sin umbral de % |
 | `validate-licenses` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo xtask source-offer --check` + `licenses --check` |
 | `validate-changelog` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo xtask changelog --check` |
-| `test-bootstrap-*` | `build-all` | por SO | bats/Pester | Suites de los bootstrap (`tests/bootstrap/`, contra servidor local) |
+| `test-bootstrap-*` | `build-all` | por SO | bats/Pester | Suites de los bootstrap (`tests/bootstrap/`; bats contra `openssl s_server`, Pester contra `Serve.ps1`) |
 | `build-windows-x64` | `build-all` | Windows x64 | `win/server-2022` | `cargo build --release --features full` + staging `.zip` |
 | `build-linux-x64` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
 | `build-linux-arm64` | `build-all` | Linux ARM64 | docker `cimg/rust:1.96.0` (`arm.medium`) | idem, nativo aarch64 |
