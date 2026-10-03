@@ -231,6 +231,8 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S28 | `tts::dub_audio_passthrough_es_es`, de la clase con recursos, falla de forma intermitente (1 de 4 intentos): el proceso `--no-daemon speech dub --audio parakeet_sample_16k.wav --source-language es-latam --target-language es-latam` termina a los 13,9 s con el código 0xC0000409 (caída nativa), sin fallo de aserción; la puerta de `cargo xtask release` aborta cuando ocurre | Verificación de C2 | Media | En observación |
 | S29 | `tts::h03_pipe_stdio_must_not_remain_blocked`, de la clase con recursos, falla de forma intermitente (en la suite completa y en 1 de 3 repeticiones aisladas): el pipe del lanzador sigue bloqueado a los 5 s y solo se libera al matar el daemon, como si el daemon retuviera el stdio heredado pese a `disinherit_standard_handles` | Verificación de C3 | Media | En observación |
 | S30 | Cuando clap rechaza los argumentos (flag desconocido, valor inválido, subcomando inexistente), el binario imprime un mensaje de texto por stderr y sale con 2, incluso con `--json`; el contrato dice que ese fallo entra por el mismo canal JSON que los demás, con `reason` `usage_error` en stdout, así que un consumidor programado que pase `--json` no recibe sobre | Verificación de C4 | Baja | C7 |
+| S31 | `daemon stop` y el resto de operaciones que reutilizan la parada dan el daemon por detenido sin comprobar que el residente murió: con el daemon muerto y el residente vivo, borran el pidfile y con él el `resident_pid`; la rama que informaría del residente es inalcanzable | Verificación del plan de C5 | Media | C5 |
+| S32 | Un proceso que muere mientras guarda la referencia de un clonado deja un directorio de voz vacío: `voice list` lo muestra y `voice_exists` impide clonar de nuevo con ese nombre | Verificación del plan de C5 | Baja | C5 |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
@@ -267,6 +269,12 @@ resto de C7: un sobre JSON que no describe lo que pasó. Se asigna a C7 porque e
 ya reescribe el contrato y sube el sobre a la versión 5, y una sola subida por versión
 publicada admite el cambio si se decide alinear el binario con el contrato.
 
+S31 y S32 salieron de la verificación del plan de C5 y no tienen informe propio. Comparten
+la causa raíz de C5, que los procesos del daemon no dejan limpio su estado, y se corrigen
+en ese ciclo: el primero porque el vigía solo hace improbable el residente huérfano y la
+parada debe verificarlo; el segundo porque contradecía la afirmación de que un clonado
+interrumpido no deja nada roto en el almacén.
+
 ## 8. Orden de los ciclos y dependencias
 
 ```text
@@ -283,7 +291,7 @@ C0 Preparación y decisiones ──G0──►
   C4 Observabilidad (S3 S10)
     │  C5 toca el mismo lanzamiento del clonado y se verifica con el log del daemon
     ▼
-  C5 Vida de los procesos (S2 S9)
+  C5 Vida de los procesos (S2 S9 S31 S32)
     │
     ▼
   C6 Artefactos de self update (S6)
@@ -693,8 +701,10 @@ Lo que respalda a B, comprobado en el código y con un experimento en Windows:
 - Tras un `TerminateProcess` del padre, sus hijos con la entrada en tubería vieron fin de
   fichero en 2-3 s en 9 ejecuciones de 9, con otros lanzamientos concurrentes: el
   extremo de escritura de una tubería de Rust no se hereda.
-- Terminar de golpe no deja un `.qvoice` roto en el almacén: el clonado escribe en un
-  temporal, que solo se entrega si terminó bien.
+- Terminar de golpe no deja un `.qvoice` roto en el almacén: el motor escribe en un
+  temporal fuera de él, que solo se entrega si el clonado terminó bien. Sí podía quedar
+  un directorio de voz vacío, porque el almacén lo creaba antes de copiar el fichero
+  (S32, que corrige C5).
 
 Dos condiciones de diseño:
 
@@ -1192,32 +1202,116 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 ### C5 · Vida de los procesos
 
 - **Causa raíz:** los procesos del daemon no dejan limpio su estado al terminar, ni de
-  forma ordenada ni abrupta.
+  forma ordenada ni abrupta:
+  - tras un kill duro, el motor sigue vivo;
+  - la parada ordenada deja `daemon.ready` y da por detenido al daemon sin comprobar
+    que el residente murió;
+  - un clonado interrumpido deja una voz vacía en el almacén.
 - **Depende de:** C4.
-- **Síntomas:** S2 y S9.
+- **Síntomas:** S2, S9, S31 y S32.
 - **Decisiones:** D11.1 (vigía por tubería en la entrada estándar y retirada del Job
   Object) y D11.2 (retraso acotado en macOS, aceptado), resueltas en G0.
+- **Decisiones de plan:**
+  - **P1:** el flag del motor se llama `--watch-stdin`. Sin él, el motor conserva su
+    comportamiento actual con la entrada nula.
+  - **P2:** la ruta de `daemon.ready` se define una sola vez, en una constante
+    `READY_FILE` junto a `PID_FILE` en `avi-lifecycle`, y la usan `daemon stop`,
+    `cleanup` y el binario principal.
+  - **P3:** el kill duro con un clonado en curso se verifica a mano en
+    `MANUAL-VALIDATION.md`: la prueba automática no distingue si el motor del clonado
+    murió por el kill o terminó solo, y lo que aporta lo cubren las pruebas del residente,
+    del lanzador del clonado y del almacén.
+  - **P4:** `daemon stop` borra `daemon.ready` solo si el daemon quedó detenido y el PID
+    que contiene el propio fichero no está vivo; un fichero ilegible o con el PID del
+    propio proceso es rancio y se borra. El fichero guarda el PID del daemon, no el del
+    residente, que solo vive en el pidfile.
+  - **P5:** si hay un `resident_pid` registrado y sigue vivo tras los intentos de parada,
+    la parada no se da por completa: se conserva el pidfile y se informa del residente.
+    El borrado del pidfile que repite la rama `daemon stop` del binario principal usa la
+    misma condición. Sin pidfile no hay `resident_pid` que verificar; ese límite queda
+    documentado y se conserva el barrido por imagen como intento.
+  - **P6:** al guardar la referencia de una voz nueva, el almacén prepara su directorio
+    junto a `voices/`, en la misma partición, y lo renombra de una vez a
+    `voices/<nombre>/`; si la voz ya existe, se conserva el renombrado atómico del
+    fichero. El nombre del directorio de preparación y su barrido por `cleanup` se
+    fijan en G-Pruebas.
+  - **P7:** el plazo de las pruebas de kill duro es de 10 s; el vigía tardó 2-3 s en las
+    9 ejecuciones medidas.
+  - **P8:** la creación del proceso del residente se extrae de `Qwen3TtsResident::spawn` a
+    una función que recibe el binario, los argumentos y el log, para probar con un motor
+    doble que recibe el flag, que su tubería sigue abierta mientras corre y que muere si
+    el healthcheck falla.
+  - **P9:** la condición con la que la rama `daemon stop` del binario principal da el
+    daemon por detenido y borra el pidfile se extrae a una función pura que considera
+    también al residente. C7, que reescribe esa rama, parte de lo que C5 deje.
+  - **P10:** el pidfile y el ready registran, junto a cada PID, la identidad del proceso
+    (hora de creación y nombre de imagen). Un PID cuenta como nuestro y vivo solo si
+    existe y su identidad observada coincide con la registrada; si existe pero no
+    coincide, o no se puede observar habiendo identidad registrada, es un proceso ajeno:
+    se trata como muerto y nunca se mata. Reserva única: un fichero sin identidad
+    registrada se comprueba solo por PID, como antes. Aplica a la parada, al reclamo de
+    `daemon start`, al predicado del residente y al manejador de Ctrl+C.
 - **Tareas:**
-  1. Vigía en el motor: un flag que arranca un hilo que lee la entrada estándar hasta
-     fin de fichero y termina el proceso, en los dos modos.
-  2. El residente y el clonado se lanzan con el flag y la entrada en tubería; el
-     clonado, con `spawn()` en lugar de `Command::status()`, conservando la tubería
-     hasta que termina.
-  3. Retirar el Job Object, su llamada y la feature de `windows-sys` si nada más la usa.
-  4. `daemon stop` borra `daemon.ready` además de `daemon.pid`.
+  1. Vigía en el motor: la opción `--watch-stdin`, sin valor. Con ella, justo tras
+     parsear los argumentos y antes de cargar el modelo, `main` arranca un hilo
+     `pthread` que lee la entrada estándar hasta fin de fichero o error distinto de
+     interrupción y llama a `_exit`, en los dos modos (residente y clonado). Se registra
+     en `vendor/qwen3-tts/DIVERGENCIAS.md` y se reconstruye el binario.
+  2. El residente y el clonado se lanzan con `--watch-stdin` y la entrada en tubería:
+     `build_resident_command` añade el flag, el residente conserva la tubería dentro de su
+     `Child` mientras vive, y el clonado pasa de `Command::status()` a `spawn()` y
+     `wait()` sin soltar la tubería antes. Afecta también al clonado lanzado desde la CLI.
+     La creación del proceso del residente vive en una función propia (P8).
+  3. Retirar el Job Object: `install_job_with_tree_kill`, su llamada, la feature
+     `Win32_System_JobObjects` de `windows-sys` (la usa solo esa función) y los
+     comentarios y la documentación que lo citan.
+  4. `daemon stop` borra `daemon.ready` además de `daemon.pid`, según P2 y P4. Lo hace
+     la función de parada de `avi-lifecycle`, así que alcanza también a `self install`,
+     `self uninstall`, `self update` y `cleanup`.
+  5. La parada considera al residente, según P5 (S31), y la rama `daemon stop` del
+     binario principal decide el borrado del pidfile con una función pura que lo
+     considera también (P9). Los comandos de ciclo de vida que reutilizan la parada
+     fallan con `daemon_stop_failed` si el residente no muere.
+  6. El almacén de voces no deja una voz vacía si el proceso muere durante un clonado,
+     según P6 (S32).
 - **Pruebas en rojo:**
-  - tras matar el daemon a la fuerza, con y sin `--auto-restart`, no queda ningún
-    proceso del motor ni nadie escuchando en el puerto 8766; si no se puede
-    automatizar, se documenta como verificación manual;
-  - lo mismo con un clonado en curso, sin que quede su `.qvoice` en el almacén;
+  - tras matar el daemon aislado a la fuerza, sin matar su árbol, con y sin
+    `--auto-restart`, en menos de 10 s no queda ningún proceso del motor ni nadie
+    escuchando en el puerto del residente; si no se puede automatizar, se documenta como
+    verificación manual;
+  - el kill duro con un clonado en curso no se automatiza (P3); se documenta como
+    verificación manual, con los temporales que deja un clonado interrumpido;
   - sin el flag, un motor lanzado con la entrada nula no termina al arrancar;
+  - con el flag, el motor termina al cerrarse la tubería;
+  - los lanzadores pasan el flag y mantienen la tubería abierta mientras el proceso
+    corre, en el residente y en el clonado, incluido el de la CLI, comprobado con un
+    motor doble que bloquea hasta fin de fichero;
+  - si el healthcheck del residente falla, el motor termina;
+  - los argumentos de `build_resident_command` incluyen el flag;
   - tras `daemon stop` no quedan ni `daemon.ready` ni `daemon.pid`;
-  - la recuperación de un daemon caído a partir de `daemon.ready` sigue funcionando.
-- **Documentación:** la descripción del daemon sin el Job Object, `MANUAL-VALIDATION.md`,
-  las divergencias del motor, el retraso acotado de D11.2 en macOS y la entrada del
-  CHANGELOG.
+  - `daemon stop` no borra `daemon.ready` si el PID que contiene sigue vivo;
+  - con el residente vivo, la parada no se da por completa y conserva el pidfile, y la
+    condición con la que la rama `daemon stop` de la CLI borra el pidfile también
+    considera al residente;
+  - un guardado de referencia interrumpido antes del renombrado no deja directorio de
+    voz;
+  - la recuperación de un daemon caído a partir de `daemon.ready` sigue funcionando (es
+    la recuperación del daemon, no la del residente);
+  - (P10) la identidad propia es estable, un PID ausente no tiene identidad y un hijo
+    tiene identidad distinta de la propia;
+  - (P10) el pidfile ida y vuelta con las identidades y sin ellas; la parada respeta un
+    PID de daemon o de residente con identidad ajena, mata con identidad coincidente,
+    comprueba solo por PID sin identidad registrada y borra un ready con PID ajeno;
+  - (P10) el ready publica la identidad propia y la actualización del residente registra
+    `resident_identity`;
+  - (P10) `daemon stop` y `daemon start` dejan vivo a un proceso ajeno que reutiliza el
+    PID del daemon o del residente.
+- **Documentación:** la descripción del daemon sin el Job Object, la parada que verifica
+  al residente, `MANUAL-VALIDATION.md`, las divergencias del motor, el retraso acotado
+  de D11.2 en macOS, la necesidad de reconstruir el motor y la entrada del CHANGELOG.
 - **Cierra:** `motor-residente-huerfano-tras-kill-del-daemon.md` y la ficha de
-  `daemon.ready` de `residuos-en-disco-tras-comandos-correctos.md`.
+  `daemon.ready` de `residuos-en-disco-tras-comandos-correctos.md`. S31 y S32 no tienen
+  informe propio.
 
 ### C6 · Artefactos de `self update`
 

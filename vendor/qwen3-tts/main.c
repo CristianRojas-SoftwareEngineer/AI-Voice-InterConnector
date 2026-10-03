@@ -22,6 +22,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <getopt.h>
+#include <errno.h>
+#include <unistd.h>
 #include <math.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -907,6 +909,22 @@ static int apply_expr_file(qwen_tts_ctx_t *ctx, const char *path, float expr_wei
     return loaded > 0 ? 0 : -1;
 }
 
+/* Hilo vigía de --watch-stdin: descarta lo que llegue por la entrada estándar y
+ * termina el proceso al fin de fichero o ante cualquier error de lectura salvo
+ * EINTR (que se reintenta). _exit evita ejecutar manejadores de salida con el
+ * motor a medio sintetizar. */
+static void *watch_stdin_thread(void *arg) {
+    (void)arg;
+    char buf[256];
+    for (;;) {
+        ssize_t n = read(0, buf, sizeof(buf));
+        if (n > 0) continue;
+        if (n < 0 && errno == EINTR) continue;
+        _exit(0);
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
 #if defined(_WIN32)
     /* Inicializa winsock antes de cualquier llamada socket()/bind() del servidor.
@@ -1011,6 +1029,7 @@ int main(int argc, char **argv) {
                                         (CV weights + instruct emote). Same file, emotive mode. */
     int use_int8 = 0;
     int use_int4 = 0;
+    int watch_stdin = 0;             /* --watch-stdin: terminar al cerrarse la entrada estandar */
     static struct option long_options[] = {
         {"model-dir",     required_argument, 0, 'd'},
         {"text",          required_argument, 0, 't'},
@@ -1089,6 +1108,7 @@ int main(int argc, char **argv) {
         {"seed-audition", required_argument, 0, 1059},
         {"audition-keep", no_argument,       0, 1060},
         {"host",          required_argument, 0, 1061},
+        {"watch-stdin",   no_argument,       0, 1075},
         {"help",          no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
@@ -1178,6 +1198,7 @@ int main(int argc, char **argv) {
                 serve_host = optarg;
                 break;
             }
+            case 1075: watch_stdin = 1; break;
             case 1016: list_voices_dir = optarg; break;
             case 1017: delete_voice = optarg; break;
             case 'S': silent = 1; break;
@@ -1206,6 +1227,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "  --workers <n>              Concurrent synthesis workers (server; default 1)\n");
                 fprintf(stderr, "  --batch-size <n>           Request-batching: step up to n concurrent users together (server; n>=2)\n");
                 fprintf(stderr, "  --host <ipv4>              Bind address for --serve (default 127.0.0.1; 0.0.0.0 exposes to the network)\n");
+                fprintf(stderr, "  --watch-stdin              Exit when stdin reaches EOF (the launcher died and the OS closed the pipe)\n");
                 fprintf(stderr, "  --seed <n>                 Random seed (default: time-based)\n");
                 fprintf(stderr, "  --max-duration <secs>      Max audio duration in seconds\n");
                 fprintf(stderr, "  --voice-design             VoiceDesign mode (create voice from --instruct)\n");
@@ -1400,6 +1422,19 @@ int main(int argc, char **argv) {
                 return 1;
             }
         }
+    }
+
+    /* Vigía de la entrada estándar: si quien lanza el motor muere, el sistema
+     * operativo cierra la tubería y el hilo ve fin de fichero. Se arranca antes
+     * de cargar el modelo para cubrir también esa fase. Un fallo al crearlo
+     * aborta: no se admite un motor sin vigía cuando se pidió. */
+    if (watch_stdin) {
+        pthread_t watch_thread;
+        if (pthread_create(&watch_thread, NULL, watch_stdin_thread, NULL) != 0) {
+            fprintf(stderr, "Error: --watch-stdin could not start the stdin watcher thread\n");
+            return 1;
+        }
+        pthread_detach(watch_thread);
     }
 
     /* Fail fast if this binary was built for an ISA the CPU lacks (avoid SIGILL

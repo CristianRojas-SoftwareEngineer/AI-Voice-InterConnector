@@ -667,14 +667,21 @@ enum DaemonCommands {
 fn install_sigint_handler() {
     ctrlc::set_handler(move || {
         // pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
-        let pid = lifecycle::daemon_stop::read_pid(&effective_data_dir()).or_else(|| {
-            let m = IN_MEMORY_PID.load(std::sync::atomic::Ordering::Relaxed);
-            if m != 0 {
-                Some(m)
-            } else {
-                None
+        // El PID del pidfile solo se mata si su identidad coincide con la
+        // registrada; el PID en memoria es de un hijo recién lanzado por este
+        // proceso y no necesita comprobación.
+        let pid = match registered_daemon(false) {
+            (Some(pid), lifecycle::daemon_stop::Registered::Ours) => Some(pid),
+            (Some(_), _) => None,
+            (None, _) => {
+                let m = IN_MEMORY_PID.load(std::sync::atomic::Ordering::Relaxed);
+                if m != 0 {
+                    Some(m)
+                } else {
+                    None
+                }
             }
-        });
+        };
         if let Some(pid) = pid {
             let own = std::process::id();
             if pid != 0 && pid != own {
@@ -687,47 +694,6 @@ fn install_sigint_handler() {
         exit(130);
     })
     .expect("Error al instalar el handler de Ctrl+C");
-}
-
-/// Job Object con cierre del árbol para el daemon longevo (Windows).
-///
-/// Crea un Job con `KILL_ON_JOB_CLOSE` y asigna el proceso actual: al morir el
-/// daemon, el SO cierra el árbol (residente incluido, que hereda el Job).
-/// Best-effort silencioso: si falla, el cierre sigue garantizado por
-/// `kill_tree_by_pid` con verificación (alternativa admitida). Se llama solo
-/// en la rama `Serve` (proceso longevo), nunca en el padre efímero de `Start`.
-#[cfg(windows)]
-fn install_job_with_tree_kill() {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicLimitInformation,
-        SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-    unsafe {
-        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-        if job == 0 {
-            return;
-        }
-        let mut info: JOBOBJECT_BASIC_LIMIT_INFORMATION = std::mem::zeroed();
-        info.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let ok = SetInformationJobObject(
-            job,
-            JobObjectBasicLimitInformation,
-            &info as *const _ as *const _,
-            std::mem::size_of::<JOBOBJECT_BASIC_LIMIT_INFORMATION>() as u32,
-        );
-        if ok == 0 {
-            CloseHandle(job);
-            return;
-        }
-        // Pseudo-handle del proceso actual (-1): evita necesitar OpenProcess.
-        let actual: isize = -1;
-        if AssignProcessToJobObject(job, actual) == 0 {
-            CloseHandle(job);
-        }
-        // Fuga intencionada del handle del Job: vive hasta la muerte del daemon.
-    }
 }
 
 /// Desactiva la herencia de los 3 handles estándar del proceso actual (Windows).
@@ -2213,14 +2179,11 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                 };
                 std::env::set_var(daemon::READY_FILE_ENV, &absolute_path);
             }
-            // Job con cierre del árbol en el proceso longevo (Windows).
             // El handler SIGINT ya quedó instalado en `main` para todos los modos;
             // la escucha de señales del servidor cierra por la misma ruta que
             // POST `/shutdown`. En Unix `serve` cierra por esa misma ruta
             // sin pidfile ni auto-muerte del CLI (la guarda `pid != own_pid`
             // protege al `serve` en foreground).
-            #[cfg(windows)]
-            install_job_with_tree_kill();
             // Un fallo previo a estar listo sale con el código de su causa; el
             // de un servidor que ya servía sale con exit 1 `daemon_error`, como
             // cualquier otro `daemon_error`.
@@ -2260,12 +2223,12 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     }
                     return Ok(());
                 }
-                ResidualState::Degraded { pid, reason } => {
+                ResidualState::Degraded { reason } => {
                     eprintln!(
                         "Daemon residual degradado ({}): se reclama el árbol y se rearranca.",
                         reason
                     );
-                    reclaim_degraded_residual(&client, pid).await;
+                    reclaim_degraded_residual(&client).await;
                 }
                 ResidualState::Stopped => {}
             }
@@ -2277,15 +2240,20 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                 DAEMON_READY_DEADLINE,
             )
             .await?;
-            lifecycle::daemon_stop::write_pid(&effective_data_dir(), pid, &addr_real, 0).map_err(
-                |e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "daemon_error",
-                        format!("No se pudo escribir daemon.pid: {}", e),
-                    )
-                },
-            )?;
+            lifecycle::daemon_stop::write_pid(
+                &effective_data_dir(),
+                pid,
+                &addr_real,
+                0,
+                avi_process::process_identity(pid),
+            )
+            .map_err(|e| {
+                CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("No se pudo escribir daemon.pid: {}", e),
+                )
+            })?;
             if json_mode {
                 emit_raw_json(json!({ "status": "started", "daemon": "running", "pid": pid }));
             } else {
@@ -2301,13 +2269,14 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             let client = daemon_client();
             lifecycle::daemon_stop::stop(&effective_data_dir(), DAEMON_ADDR, &ProductProcesses)
                 .await;
-            let pid = lifecycle::daemon_stop::read_pid(&effective_data_dir());
-            let alive = pid.map(daemon::pid_alive).unwrap_or(false);
+            let (pid, daemon_state) = registered_daemon(false);
+            let alive = daemon_state == lifecycle::daemon_stop::Registered::Ours;
             let active = daemon_active(&client).await;
             // Los mensajes diagnostican la dirección descubierta (con
             // pidfile efímero difiere del literal; sin pidfile es idéntica).
             let client_addr = resolve_client_addr();
-            if !active && !alive {
+            let resident_alive = resident_alive_by_pid();
+            if daemon_fully_stopped(active, alive, resident_alive) {
                 let _ = lifecycle::daemon_stop::remove_pid_file(&effective_data_dir());
                 if json_mode {
                     emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
@@ -2319,10 +2288,17 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                 Err(CliError::new(
                     ExitCode::DaemonUnreachable,
                     "daemon_unreachable",
-                    format!(
-                        "El daemon no se apagó tras el deadline (pid {:?} sigue vivo en {})",
-                        pid, client_addr
-                    ),
+                    if resident_alive {
+                        format!(
+                            "El daemon no se apagó tras el deadline (pid {:?} en {}); el residente sigue vivo",
+                            pid, client_addr
+                        )
+                    } else {
+                        format!(
+                            "El daemon no se apagó tras el deadline (pid {:?} sigue vivo en {})",
+                            pid, client_addr
+                        )
+                    },
                 ))
             }
         }
@@ -2347,15 +2323,20 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             // códigos de fallo.
             let (pid, addr_real) =
                 launch_daemon(&client, false, 3, "default", ready_deadline).await?;
-            lifecycle::daemon_stop::write_pid(&effective_data_dir(), pid, &addr_real, 0).map_err(
-                |e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "daemon_error",
-                        format!("No se pudo escribir daemon.pid: {}", e),
-                    )
-                },
-            )?;
+            lifecycle::daemon_stop::write_pid(
+                &effective_data_dir(),
+                pid,
+                &addr_real,
+                0,
+                avi_process::process_identity(pid),
+            )
+            .map_err(|e| {
+                CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("No se pudo escribir daemon.pid: {}", e),
+                )
+            })?;
             if json_mode {
                 emit_raw_json(json!({ "status": "restarted", "daemon": "running", "pid": pid }));
             } else {
@@ -2521,10 +2502,7 @@ enum ResidualState {
     /// Probe responde y el PID de la pista está vivo: instancia sana única.
     Healthy(u32),
     /// Probe y PID discrepan (colgado, pista rancia o sin pista): reclama y rearranca.
-    Degraded {
-        pid: Option<u32>,
-        reason: &'static str,
-    },
+    Degraded { reason: &'static str },
     /// Sin probe ni proceso: vía libre para arranque fresco.
     Stopped,
 }
@@ -2550,27 +2528,23 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
     // limpiar), el `daemon.ready` sobrevive y conserva el PID del árbol
     // efímero. El fallback solo aplica sin pidfile; `pid_alive` gatea después,
     // así que un ready rancio con PID muerto sigue cayendo a `Stopped`.
-    let pid = lifecycle::daemon_stop::read_pid(&effective_data_dir()).or_else(|| {
-        match daemon::read_ready_signal(&ready_file_path()) {
-            Some(daemon::ReadySignal::Ready { pid, .. }) => pid,
-            _ => None,
-        }
-    });
+    // Un PID cuya identidad no coincide con la registrada es de otro programa:
+    // cuenta como muerto.
+    let (pid, state) = registered_daemon(true);
+    let daemon_ours = state == lifecycle::daemon_stop::Registered::Ours;
     // El probe apunta a la dirección descubierta (fallback idéntico sin
     // pidfile; vía nueva solo con pidfile vivo de addr efímera).
     let client_addr = resolve_client_addr();
     let probe = probe_health(client, &client_addr).await;
     // `Stopped` con residente vivo no es vía libre.
-    if !probe && !pid.map(daemon::pid_alive).unwrap_or(false) && resident_alive_by_pid() {
+    if !probe && !daemon_ours && resident_alive_by_pid() {
         return ResidualState::Degraded {
-            pid,
             reason: "residente vivo sin daemon (Stopped con resident_pid vivo)",
         };
     }
     match pid {
-        Some(p) if probe && daemon::pid_alive(p) => ResidualState::Healthy(p),
-        None if !probe => ResidualState::Stopped,
-        Some(p) if !probe && !daemon::pid_alive(p) => ResidualState::Stopped,
+        Some(p) if probe && daemon_ours => ResidualState::Healthy(p),
+        _ if !probe && !daemon_ours => ResidualState::Stopped,
         _ => {
             let reason = if probe && pid.is_none() {
                 "probe responde sin pidfile"
@@ -2579,19 +2553,82 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
             } else {
                 "PID vivo sin probe (colgado)"
             };
-            ResidualState::Degraded { pid, reason }
+            ResidualState::Degraded { reason }
         }
     }
+}
+
+/// PID del daemon registrado y la identidad con la que se registró: la del
+/// pidfile y, con `with_ready` y sin pidfile, la del fichero ready, que sobrevive
+/// a un padre caído sin limpiar.
+fn recorded_daemon(with_ready: bool) -> Option<(u32, Option<avi_process::ProcessIdentity>)> {
+    if let Some(file) =
+        lifecycle::daemon_stop::read_pid_file(&effective_data_dir()).filter(|f| f.pid != 0)
+    {
+        return Some((file.pid, file.identity));
+    }
+    if !with_ready {
+        return None;
+    }
+    match daemon::read_ready_signal(&ready_file_path()) {
+        Some(daemon::ReadySignal::Ready {
+            pid: Some(pid),
+            identity,
+            ..
+        }) => Some((pid, identity)),
+        _ => None,
+    }
+}
+
+/// Clasifica el PID del daemon registrado: ausente, ajeno (PID reasignado) o nuestro.
+fn registered_daemon(with_ready: bool) -> (Option<u32>, lifecycle::daemon_stop::Registered) {
+    match recorded_daemon(with_ready) {
+        Some((pid, identity)) => (
+            Some(pid),
+            lifecycle::daemon_stop::classify_registered(
+                &ProductProcesses,
+                pid,
+                daemon::pid_alive(pid),
+                identity.as_ref(),
+            ),
+        ),
+        None => (None, lifecycle::daemon_stop::Registered::Absent),
+    }
+}
+
+/// Clasifica el PID del residente registrado en `daemon.pid`.
+fn registered_resident() -> (u32, lifecycle::daemon_stop::Registered) {
+    let (pid, identity) = lifecycle::daemon_stop::read_pid_file(&effective_data_dir())
+        .map(|f| (f.resident_pid, f.resident_identity))
+        .unwrap_or((0, None));
+    let state = lifecycle::daemon_stop::classify_registered(
+        &ProductProcesses,
+        pid,
+        pid != 0 && avi_tts::resident::resident_pid_alive(pid),
+        identity.as_ref(),
+    );
+    (pid, state)
 }
 
 /// ¿Sigue vivo el residente registrado en `daemon.pid`? Identidad estable del
 /// residente: el `resident_pid` del pidfile por instancia. Sin PID registrado
 /// (pidfile perdido tras aborto duro) devuelve `false`; en ese caso la
 /// ausencia se confirma con el barrido por imagen de último recurso
-/// (`avi_tts::resident::sweep_resident_by_image`), no con este predicado.
+/// (`avi_tts::resident::sweep_resident_by_image`), no con este predicado. Un PID
+/// reasignado a otro programa (identidad distinta de la registrada) no cuenta
+/// como vivo.
 fn resident_alive_by_pid() -> bool {
-    let pid = lifecycle::daemon_stop::read_resident_pid(&effective_data_dir());
-    pid != 0 && avi_tts::resident::resident_pid_alive(pid)
+    registered_resident().1 == lifecycle::daemon_stop::Registered::Ours
+}
+
+/// Predicado puro de la parada completa: el daemon no responde, su PID está
+/// muerto o ausente y el residente ya no está vivo.
+fn daemon_fully_stopped(
+    daemon_responds: bool,
+    daemon_pid_alive: bool,
+    resident_alive: bool,
+) -> bool {
+    !daemon_responds && !daemon_pid_alive && !resident_alive
 }
 
 /// Predicado puro del reclamo Unix ante líder muerto (testeable sin
@@ -2622,8 +2659,22 @@ fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, resident_alive: bool
 /// Ante `Stopped` con residente vivo (PID registrado o imagen) se reclama su
 /// árbol por PID registrado —o por imagen si no hay PID— antes de declarar
 /// fresco (imagen del daemon prohibida; sólo el residente tiene imagen propia).
-async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
+async fn reclaim_degraded_residual(client: &reqwest::Client) {
     let start = std::time::Instant::now();
+    // La identidad se clasifica antes del graceful, que puede borrar los
+    // ficheros de los que se lee. Un PID ajeno no se mata ni se reclama por grupo.
+    let (pid, recorded_identity) = match recorded_daemon(true) {
+        Some((pid, identity)) => (Some(pid), identity),
+        None => (None, None),
+    };
+    let daemon_state = pid.map_or(lifecycle::daemon_stop::Registered::Absent, |p| {
+        lifecycle::daemon_stop::classify_registered(
+            &ProductProcesses,
+            p,
+            daemon::pid_alive(p),
+            recorded_identity.as_ref(),
+        )
+    });
     // Graceful y verificación contra la dirección descubierta.
     let client_addr = resolve_client_addr();
     // 1) Graceful breve si el probe responde (no hereda el techo `REQUEST_FAILSAFE` del cliente HTTP).
@@ -2643,7 +2694,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     }
     // 2) Árbol preciso por PID con guarda anti-auto-muerte (imagen compartida).
     if let Some(p) = pid {
-        if p != 0 && p != std::process::id() && daemon::pid_alive(p) {
+        if p != std::process::id() && daemon_state == lifecycle::daemon_stop::Registered::Ours {
             daemon::kill_tree_by_pid(p);
         }
     }
@@ -2652,7 +2703,10 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     // de grupo de `kill_tree_by_pid`; la vía feliz Windows queda intacta).
     #[cfg(unix)]
     if let Some(p) = pid {
-        if p != 0 && p != std::process::id() && !daemon::pid_alive(p) {
+        if p != 0
+            && p != std::process::id()
+            && daemon_state == lifecycle::daemon_stop::Registered::Absent
+        {
             daemon::kill_tree_by_pid(p);
         }
     }
@@ -2660,10 +2714,10 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     // su árbol preciso; sin PID (pidfile perdido) el último recurso es el
     // barrido por imagen `qwen_tts` (seguro por imagen propia). La verificación
     // por `resident_pid` muerto vive en el paso 3.
-    let resident = lifecycle::daemon_stop::read_resident_pid(&effective_data_dir());
+    let (resident, resident_state) = registered_resident();
     if resident != 0
         && resident != std::process::id()
-        && avi_tts::resident::resident_pid_alive(resident)
+        && resident_state == lifecycle::daemon_stop::Registered::Ours
     {
         avi_tts::resident::kill_tree_resident_by_pid(resident);
     } else if resident == 0 {
@@ -2672,7 +2726,14 @@ async fn reclaim_degraded_residual(client: &reqwest::Client, pid: Option<u32>) {
     // 3) Verificación con el restante del deadline global (probe down + PID muerto;
     // en Unix además residente muerto ante líder muerto).
     while start.elapsed() < STOP_DEADLINE_GLOBAL {
-        let alive = pid.map(daemon::pid_alive).unwrap_or(false);
+        let alive = pid.is_some_and(|p| {
+            lifecycle::daemon_stop::classify_registered(
+                &ProductProcesses,
+                p,
+                daemon::pid_alive(p),
+                recorded_identity.as_ref(),
+            ) == lifecycle::daemon_stop::Registered::Ours
+        });
         let probe = probe_health(client, &client_addr).await;
         #[cfg(unix)]
         {
@@ -3244,6 +3305,10 @@ impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
     fn sweep_resident_by_image(&self) -> bool {
         avi_tts::resident::sweep_resident_by_image()
     }
+
+    fn identity(&self, pid: u32) -> Option<avi_process::ProcessIdentity> {
+        avi_process::process_identity(pid)
+    }
 }
 
 /// Borrado del directorio de programa, con el mecanismo de plataforma (paso 8 de
@@ -3423,7 +3488,7 @@ fn resolve_client_addr() -> String {
 /// `data_dir` vigente, de modo que cada sandbox (`AVI_DATA_DIR`) posee el
 /// suyo sin depender de la unidad del proceso ni de `%TEMP%`.
 fn ready_file_path() -> PathBuf {
-    store::data_dir().join("daemon.ready")
+    store::data_dir().join(lifecycle::daemon_stop::READY_FILE)
 }
 
 /// Lanza el daemon en segundo plano y espera el resultado de su arranque. Es la
@@ -4551,6 +4616,28 @@ mod tests {
         assert!(!unix_claim_verified(true, false, false));
         assert!(!unix_claim_verified(false, true, false));
         assert!(!unix_claim_verified(false, false, true));
+    }
+
+    /// La parada solo está completa si el daemon no responde, su PID está
+    /// muerto y el residente ya no está vivo: un residente vivo la invalida.
+    #[test]
+    fn daemon_fully_stopped_false_when_resident_alive() {
+        assert!(!daemon_fully_stopped(false, false, true));
+    }
+
+    /// Con todo detenido (daemon sin responder, PID muerto, residente muerto)
+    /// la parada se da por completa.
+    #[test]
+    fn daemon_fully_stopped_true_when_everything_down() {
+        assert!(daemon_fully_stopped(false, false, false));
+    }
+
+    /// Un daemon que responde o cuyo PID sigue vivo impide dar la parada por
+    /// completa aunque el residente esté muerto.
+    #[test]
+    fn daemon_fully_stopped_false_when_daemon_up_even_if_resident_dead() {
+        assert!(!daemon_fully_stopped(true, false, false));
+        assert!(!daemon_fully_stopped(false, true, false));
     }
 
     /// `Stopped` con residente vivo (resident_pid vivo) es degradado para

@@ -14,7 +14,7 @@
 ## Resumen
 
 Varios comandos que terminan con el resultado correcto dejan en disco ficheros que ya no
-sirven: WAV temporales, el fichero de listo del daemon y artefactos de la actualización.
+sirven: WAV temporales y artefactos de la actualización.
 Todo queda a cargo de `cleanup`, cuando el criterio debería ser que quien crea un
 fichero lo borre.
 
@@ -68,18 +68,7 @@ temporales.
   falla la reproducción, `%TEMP%` no contiene `avi_say_*.wav` ni `avi_dub_*.wav`, y el
   JSON no contiene una ruta a un fichero inexistente.
 
-### 2. `daemon.ready` queda en `data/` tras `daemon stop`
-
-- **Síntoma:** después de un `daemon stop` limpio, `data/daemon.ready` sigue en disco.
-- **Causa (probable):** el fichero solo se borra al empezar el siguiente `daemon start`,
-  que lo invalida antes de lanzar el hijo. El apagado no lo retira.
-- **Esperado:** `daemon stop` borra el fichero ready junto con el pidfile. Hay que
-  respetar un uso existente: cuando se pierde el pidfile tras una caída del padre,
-  `classify_residual` (`src/main.rs`) lee el PID del árbol desde `daemon.ready` para
-  reclamar al residente. Borrarlo en un apagado limpio no afecta a esa recuperación.
-- **Criterio:** tras `daemon stop`, `data/` no contiene `daemon.ready` ni `daemon.pid`.
-
-### 3. `self update` deja el binario aparcado y el staging con el `.zip`
+### 2. `self update` deja el binario aparcado y el staging con el `.zip`
 
 - **Síntoma:** tras `self update --force` quedan el binario anterior aparcado (`.old-*`)
   en el directorio del programa y el `.zip` descargado. `doctor` informa
@@ -105,13 +94,13 @@ temporales.
 
 ## Diagnóstico sugerido
 
-Los síntomas 1 y 2 tienen corrección local y caben en un mismo parche. El 3 necesita
+El síntoma 1 tiene corrección local. El 2 necesita
 una reproducción instrumentada de `self update` que registre el resultado de la
 limpieza del staging.
 
 ## Criterio de aceptación
 
-Se cumplen los criterios de los tres síntomas.
+Se cumplen los criterios de los dos síntomas.
 
 ## Relacionados
 
