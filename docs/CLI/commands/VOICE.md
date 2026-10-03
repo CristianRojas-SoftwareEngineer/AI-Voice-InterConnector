@@ -83,6 +83,8 @@ route_to_daemon(daemon_mode, client)?
               emitir {name, timbre, speech, precomputed:false}
 ```
 
+**La salida del motor no se vuelca en la terminal**, ni en la ruta directa ni en la del daemon: el motor de clonado escribe en `data/logs/qwen3-tts_<pid>_<ms>.log` (`<pid>` es el del proceso que lo crea: la CLI en la ruta directa, el daemon en la otra), con retención de los 10 más recientes. Cuando el clonado falla, el error `voice_clone_failed` termina con `Log del motor: <ruta>`.
+
 `route_to_daemon` (`src/main.rs`): `ForceDaemon` siempre delega (el POST
 falla con `daemon_unreachable` si no hay daemon corriendo); `ForceDirect`
 nunca delega; `Auto` delega solo si `GET /health` responde en ≤500 ms.
@@ -235,7 +237,7 @@ copia).
 | Modelo Base de clonado no provisionado | clone (ruta local) | 4 | `model_missing` |
 | Referencia que no es un WAV válido, está truncada o declara una frecuencia de muestreo nula | clone | 2 | `invalid_audio` |
 | Fallo de E/S al leer la referencia | clone | 1 | `io_error` |
-| Falla el motor de `avi_tts::clone_voice` o `save_reference` | clone | 1 | `voice_clone_failed` |
+| Falla el motor de `avi_tts::clone_voice` o `save_reference` (el mensaje termina con `Log del motor: <ruta>` a `data/logs/qwen3-tts_*.log`) | clone | 1 | `voice_clone_failed` |
 | Daemon inalcanzable (inactividad 1500 ms / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
 | Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |
 | Voz de fábrica (`default`/`ryan`/`vivian`) | remove | 2 | `cannot_remove_default` |

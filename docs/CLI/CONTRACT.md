@@ -165,7 +165,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | `self install` | `--no-setup` · `--no-modify-path` · `--force`/`-f` · `--yes` · `--json` | Vigente |
 | `self update` | `--check` · `--version X.Y.Z` · `--force`/`-f` · `--no-setup` · `--yes` · `--json` | Vigente |
 | `self uninstall` | `--keep-data` · `--dry-run` · `--yes` · `--json` | Vigente |
-| `setup` | `--with-stt` · `--with-voice-cloning` · `--force-update` · `--yes`/`-y` · `--json` | Vigente |
+| `setup` | `--with-voice-cloning` · `--force-update` · `--yes`/`-y` · `--json` | Vigente |
 | `cleanup` | `--model` · `--voices` · `--synthetic-speech` · `--all` · `--dry-run` · `--yes`/`-y` · `--json` | Vigente |
 | `doctor` | `--json` | Vigente |
 
@@ -610,6 +610,26 @@ Las tres reglas de compatibilidad y la regla de promoción son contrato **de con
 
 **`daemon serve` queda fuera del mecanismo, y por una razón concreta: no acepta `--json`.** No hay payload que emitir, así que la invariante del canal no tiene alcance ahí y ese comando sale directamente. Esa es la condición que lo autoriza y ninguna otra: darle `--json` reabriría el hueco.
 
+### stderr, trazas y logs
+
+**stderr solo lleva mensajes del producto y avisos**, nunca trazas internas por defecto. La verbosidad la gobierna `RUST_LOG`, con sintaxis de `tracing` y tolerante a directivas inválidas (se ignoran en vez de abortar):
+
+- **Con `RUST_LOG` definida, manda**: aplica tanto a la CLI como a `daemon serve`.
+- **Sin ella** (o vacía), la CLI emite `warn` y superiores; `daemon serve` emite `info` de los crates propios y `warn` de las dependencias.
+- Por esa razón, trazas de nivel `info` como el progreso de descarga de `setup` no salen por defecto: se piden con `RUST_LOG=info`.
+- stderr no lleva color ANSI cuando no es una terminal.
+
+**Los logs viven en `data/logs/`** y hay dos familias, ambas con nombre `<familia>_<pid>_<ms>.log` (`<ms>` es la marca de tiempo de creación en milisegundos):
+
+| Familia | Fichero | Contenido |
+|---|---|---|
+| Daemon | `daemon_<pid>_<ms>.log` | stdout y stderr del daemon; uno por cada `daemon start`/`restart` (`<pid>` es el de la CLI lanzadora) |
+| Motor Qwen3-TTS | `qwen3-tts_<pid>_<ms>.log` | salida del motor residente y del motor de `voice clone` (`<pid>` es el del proceso que lo crea: el daemon, o la CLI en la vía directa) |
+
+**Retención: los 10 logs más recientes por familia**, ordenados por el `<ms>` del nombre. La poda ocurre al crear un log nuevo; no toca otras familias ni ficheros ajenos, y un log en uso que no se pueda borrar se ignora.
+
+Cuando un arranque del daemon falla, el mensaje de error de la CLI termina con `Log del daemon: <ruta>` sin cambiar `reason` ni el exit code; si el log no se puede crear, el error es `daemon_error` («No se pudo crear el log del daemon»). El error `voice_clone_failed` termina con `Log del motor: <ruta>`.
+
 ### Los cinco payloads del grupo `speech`
 
 Ninguno emite ruta, por el criterio de la ruta en los payloads. Todos llevan además los campos transversales del sobre.
@@ -691,12 +711,11 @@ El detalle completo —los doce pasos de `self install`, los once de `self updat
 
 El chequeo de audio degrada a WARN en vez de FAIL, **con la premisa que lo sostiene**: el sidecar es instalable en hosts headless, SSH y CI porque existe un sumidero que no necesita subsistema de sonido —`speech synthesize --text T --label L` sintetiza y persiste sin reproducir nada—. `setup` es provisión, no diagnóstico.
 
-**`--with-stt`** se acepta por compatibilidad pero es **redundante**:
-`parakeet-tdt-v3` (int8, runtime `ort` load-dynamic vía `ParakeetEngine`) ya se
-provisiona siempre en `setup` base; el flag solo emite un aviso informativo.
-No existe `--language` en `setup`: el conjunto provisionado es fijo (es+en
-offline completo desde el primer uso). `setup --with-stt` sin más flags no
-provisiona nada adicional.
+`parakeet-tdt-v3` (int8, runtime `ort` load-dynamic vía `ParakeetEngine`) se
+provisiona siempre en `setup` base. No existe `--language` en `setup`: el
+conjunto provisionado es fijo (es+en offline completo desde el primer uso).
+`setup --with-stt` ya no existe: falla como argumento desconocido con exit 2
+(error de uso de `clap`, mensaje de texto por stderr).
 
 **Su flujo es el de siempre, ahora en el motor**: selección por banderas, idempotencia por presencia del snapshot, purga de `--force-update` **sobre la misma selección** (purgar el modelo de clonado que el usuario no pidió dejaría la instalación sin lo que sí quiere) y validación de cada modelo por presencia de sus ficheros.
 
@@ -746,7 +765,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 ### El rename `--language` → `--target-language`
 
-**Cambio incompatible y deliberado, sin alias de transición.** `speech say`/`speech synthesize` reemplazan `--language` por `--target-language`; ni `setup` ni `doctor` exponen `--language` (la provisión no traduce y el diagnóstico no filtra por idioma). `daemon` **no expone** `--language`/`--with-stt` (ver `docs/CLI/commands/DAEMON.md` — `native-stt`/`native-translation` son features de compilación, no flags de ejecución). El integrador de narración (§12) no se ve afectado: sus invocaciones nunca pasan `--language` en `speech say`, así que el rename no le rompe ningún flag en uso, aunque sí es parte del mismo contrato versionado.
+**Cambio incompatible y deliberado, sin alias de transición.** `speech say`/`speech synthesize` reemplazan `--language` por `--target-language`; ni `setup` ni `doctor` exponen `--language` (la provisión no traduce y el diagnóstico no filtra por idioma). `daemon` **no expone** `--language` (ver `docs/CLI/commands/DAEMON.md` — `native-stt`/`native-translation` son features de compilación, no flags de ejecución). El integrador de narración (§12) no se ve afectado: sus invocaciones nunca pasan `--language` en `speech say`, así que el rename no le rompe ningún flag en uso, aunque sí es parte del mismo contrato versionado.
 
 ### Provisión y daemon
 

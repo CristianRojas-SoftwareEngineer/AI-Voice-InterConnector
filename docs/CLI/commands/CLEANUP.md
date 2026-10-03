@@ -15,7 +15,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 | `--voices` | `bool` | datos | Voces no-fábrica y, con ellas, el arrastre `speech/<voz>` excepto `default` |
 | `--synthetic-speech` | `bool` | datos | La raíz `speech/` entera, `default` incluida |
 | `--model` | `bool` | datos | La raíz de modelos: entera si es exclusiva, o solo lo atribuible si es compartida |
-| `--all` | `bool` | datos | Las tres categorías **más** configuración, logs y estado del daemon |
+| `--all` | `bool` | datos | Las tres categorías **más** configuración, logs (`data/logs/`, con las familias `daemon_*` y `qwen3-tts_*`) y estado del daemon. La retención de 10 logs por familia no es una opción de `cleanup`: se aplica sola al crear cada log |
 | `--dry-run` | `bool` | — | Lista el plan sin borrar nada y **sin tomar el bloqueo** |
 | `--yes`, `-y` | `bool` | — | Omite la confirmación interactiva |
 | `--json` | `bool` | — | Global (`Cli::json`); con `cleanup` emite `status` + `reason` + `removed` + `dry_run` |

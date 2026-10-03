@@ -7,6 +7,7 @@ El daemon nativo (Rust, Axum) mantiene los motores calientes entre invocaciones 
 - [Arquitectura](#arquitectura)
 - [Contrato HTTP](#contrato-http)
 - [Comandos del daemon](#comandos-del-daemon)
+- [Logs y nivel de traza](#logs-y-nivel-de-traza)
 - [Streaming NDJSON](#streaming-ndjson)
 - [Resolución de binario y modelo](#resolución-de-binario-y-modelo)
 - [Decisiones de diseño](#decisiones-de-diseño)
@@ -61,6 +62,13 @@ Cierre: Ctrl+C ejecuta limpieza acotada de 2 s y sale con 130 preservado (con re
 
 Despacho desde el CLI: `--daemon` fuerza IPC (exit 5 si no responde), `--no-daemon` fuerza proceso local, sin flags autodetecta.
 
+## Logs y nivel de traza
+
+- **Log por arranque**: cada `daemon start`/`restart` crea `data/logs/daemon_<pid>_<ms>.log` (`<pid>` es el de la CLI lanzadora) con el stdout y el stderr del daemon. Si el arranque falla, el error de la CLI termina con `Log del daemon: <ruta>`.
+- **Log del motor**: el motor Qwen3-TTS residente (y el de `voice clone`) escribe en `data/logs/qwen3-tts_<pid>_<ms>.log`, donde `<pid>` es el del proceso que lo crea: el daemon, o la CLI en la vía directa. La salida del clonado nunca se vuelca en la terminal.
+- **Retención**: se conservan los 10 logs más recientes por familia (por el `<ms>` del nombre). La poda ocurre al crear un log nuevo y no toca otras familias ni ficheros ajenos; un log en uso que no se pueda borrar se ignora.
+- **Nivel de traza**: `RUST_LOG` manda si está definida (sintaxis de `tracing`, tolerante a directivas inválidas). Sin ella (o vacía), `daemon serve` emite `info` de los crates propios y `warn` de las dependencias. Es el nivel por defecto del daemon, distinto del de la CLI, que emite `warn` y superiores.
+
 ## Streaming NDJSON
 
 Las operaciones de síntesis (`POST /synthesize`), clonado (`POST /voices/clone`)
@@ -86,7 +94,7 @@ Este orden garantiza que `daemon start` calienta desde cualquier `CWD` sin neces
 
 - **Transporte HTTP (no stdio)**: contrato del transporte HTTP estable para clientes externos.
 - **Captura siempre de cliente**: el daemon recibe PCM base64, nunca rutas ni dispositivos.
-- **Sin multi-instancia soportada por el cliente**: el puerto por defecto es fijo y el cliente CLI aún apunta a él; correr dos daemons con puertos efímeros exige el descubrimiento por el cliente, cuya migración a instancia aislada queda diferida.
+- **Una carpeta de datos, un daemon**: el estado del daemon vive en un único `daemon.pid` por carpeta de datos, y la CLI descubre la dirección leyéndolo. Dos daemons que compartan carpeta con puertos distintos (`AVI_DAEMON_PORT`) no están soportados: el segundo sobrescribe el registro del primero y deja de ser controlable, y la poda de logs podría borrar el log de un daemon que sigue vivo. Para varias instancias hay que darle a cada una su propia carpeta con `AVI_DATA_DIR`, como hacen las pruebas aisladas.
 - **Motores residentes**: el TTS habla además con su propio servidor Qwen3-TTS (`127.0.0.1:8766`) gestionado por `avi-tts`. Ese puerto es el canal de servicio real (`DEFAULT_PORT`/`QWEN3_TTS_PORT`), no la identidad del proceso. Su PID se persiste en `daemon.pid` (`resident_pid` plano), y la parada, el reclamo y el reaper liquidan su proceso por su **identidad estable**: el `resident_pid` registrado (kill y verificación por viveza de PID) y, como faro independiente del pidfile cuando este se ha perdido, un barrido por imagen `qwen_tts` (`sweep_resident_by_image`, seguro porque el residente tiene imagen propia). No se descubre ni se verifica el cierre sondeando el puerto 8766.
 
 Ver también [docs/DESIGN.md](DESIGN.md) y el contrato normativo [docs/CLI/CONTRACT.md](CLI/CONTRACT.md).

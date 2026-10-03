@@ -149,7 +149,6 @@ Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
 ```bash
 ai-voice-interconnector setup                        # descarga los 4 base (idempotente)
 ai-voice-interconnector setup --with-voice-cloning   # incluye Base para voice clone (2,5 GB)
-ai-voice-interconnector setup --with-stt             # aceptado; redundante: STT ya va incluido
 ai-voice-interconnector setup --force-update         # purga los snapshots pinneados + xet y re-descarga
 ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación interactiva
 ```
@@ -291,7 +290,6 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `status` | string | `"completed"` |
-| `with_stt` | boolean | Espejo del flag `--with-stt` (redundante: STT ya va incluido) |
 | `models_provisioned` | array de strings | Los 4 modelos base + 1 opt-in si `--with-voice-cloning` (`qwen3-tts-0.6b`, `opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
 
 **`cleanup --json` / `self uninstall --json`**
@@ -705,7 +703,7 @@ terminal interactiva (no TTY) y sin `--duration`, `--mic` también sale con
 exit **2**, porque no hay forma de detectar la pulsación de Enter. Un archivo
 de audio inexistente (ruta `--audio`) sale con exit **3**. Si el modelo de
 transcripción no está provisionado, falla remitiendo a
-`ai-voice-interconnector setup --with-stt` con exit **4**; si la transcripción falla con
+`ai-voice-interconnector setup` con exit **4**; si la transcripción falla con
 el modelo ya cargado, sale con exit **10**. En la ruta daemon, un fallo de
 comunicación (daemon inactivo o de versión antigua sin `/transcribe`) sale con
 exit **5**.
@@ -752,7 +750,7 @@ captura en modo push-to-talk hasta que presiones Enter (o hasta el techo
 una terminal no interactiva (no TTY) también sale con exit **2**. Un `--audio`
 inexistente sale con exit **3**. Códigos de fallo de la cadena: exit **4**
 (modelo de transcripción no provisionado, remite a
-`ai-voice-interconnector setup --with-stt`), **5** (daemon exigido pero inactivo o de
+`ai-voice-interconnector setup`), **5** (daemon exigido pero inactivo o de
 versión antigua sin `/transcribe`), **9** (fallo de traducción con el modelo
 cargado) y **10** (fallo de transcripción con el modelo cargado).
 
@@ -1042,6 +1040,8 @@ y espera hasta `10s` el resultado de su arranque: listo (el daemon publica su di
 Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^retries` capado a `4s` y protección por watchdog de supervisión contra bucles de reinicio rápidos; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Tampoco se reintentan los fallos previos a que el daemon esté listo (puerto ocupado, voz inexistente): son de configuración y salen al instante con su código. Sin `--auto-restart`, el daemon es `fail-stop`.
 
 Puerto ocupado: si otro proceso usa o reserva el puerto del daemon, `daemon start`, `daemon restart` y `daemon serve` salen al instante con exit 6 (`port_in_use`) y un mensaje que nombra el puerto. Libera el puerto o arranca el daemon en otro con `AVI_DAEMON_PORT=<puerto>` (`0` = puerto efímero).
+
+Trazas y logs: `RUST_LOG` (sintaxis de `tracing`) fija el nivel de traza de la CLI y de `daemon serve` y manda sobre los valores por defecto; sin ella, la CLI muestra `warn` y superiores (trazas `info`, como la descarga de `setup`, se piden con `RUST_LOG=info`) y el daemon registra `info` de los crates propios. Cada `daemon start`/`restart` escribe `data/logs/daemon_<pid>_<ms>.log` y, si el arranque falla, el error termina con `Log del daemon: <ruta>`. El motor de síntesis escribe en `data/logs/qwen3-tts_<pid>_<ms>.log`, y la salida de `voice clone` ya no se vuelca en la terminal. Se conservan los 10 logs más recientes de cada familia.
 
 Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
 
