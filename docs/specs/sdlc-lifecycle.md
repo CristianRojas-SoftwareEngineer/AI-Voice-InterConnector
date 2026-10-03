@@ -346,7 +346,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 | `already_up_to_date` | `self update` | Ya se está en la versión objetivo | Éxito |
 | `not_installed` | `self update`, `self uninstall` | No hay instalación registrada | `uninstall`: éxito (idempotente); `update`: error, con el one-liner |
 | `externally_managed` | `self *` | La copia la gestiona otra herramienta | Error, con el comando correcto |
-| `unsupported_platform` | Bootstrap, `self install` | Target no soportado | Error |
+| `unsupported_platform` | Bootstrap, `self install` | Target no soportado; en el bootstrap de Windows, también un entorno de PowerShell sin los cmdlets estándar requeridos | Error |
 | `binary_incompatible` | Bootstrap, `self update` | El binario descargado no arranca en este sistema | Error, con diagnóstico |
 | `network_error` | Bootstrap, `self update`, `setup` | Fallo de descarga tras reintentos | Error |
 | `checksum_mismatch` | Bootstrap, `self update` | El hash no coincide o falta en `SHA256SUMS.txt` | Error; nada modificado |
@@ -417,8 +417,8 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 - Todo el script se ejecuta dentro de un bloque con ámbito propio: `$ErrorActionPreference`, `$ProgressPreference` y las funciones no se filtran a la sesión del usuario.
 - Bajo `irm | iex` nunca usa `exit` (un error no cierra la consola del usuario); ejecutado como archivo, termina con código ≠ 0 en caso de error.
 - Desactiva la barra de progreso durante las descargas (en PowerShell 5.1 ralentiza mucho `Invoke-WebRequest`) y habilita TLS 1.2 si falta.
-- Usa `Invoke-WebRequest -UseBasicParsing`, `Get-FileHash` y `Expand-Archive`.
-- Su único efecto sobre la sesión es añadir el directorio de programa al PATH de esa sesión, para que el comando funcione sin abrir otra terminal.
+- Usa `Invoke-WebRequest -UseBasicParsing`, `Get-FileHash`, `Get-Acl`, `Set-Acl` y `Expand-Archive`. Al arrancar, antes de descargar nada, verifica que esos cmdlets estén disponibles; si el entorno heredado los sombrea (el `PSModulePath` de PowerShell 7 bajo Windows PowerShell 5.1), importa los módulos estándar del propio motor desde su directorio de instalación, sin modificar `PSModulePath`, y si aun así faltan falla con `unsupported_platform` nombrando los cmdlets ausentes.
+- Su efecto sobre la sesión es añadir el directorio de programa al PATH de esa sesión, para que el comando funcione sin abrir otra terminal, y, solo si hubo que reparar el entorno, cargar en ella esos módulos estándar.
 - El archivo es ASCII puro y sin BOM. Bajo `irm | iex` el cuerpo llega como texto sin `charset` (ISO-8859-1 en PowerShell 5.1, UTF-8 que conserva `U+FEFF` en 7): un BOM impide el parseo y un byte no ASCII corrompe los mensajes. Las tildes de los mensajes se componen con variables `[char]` definidas al inicio del bloque de ámbito propio.
 
 ### 8.3 `self install`

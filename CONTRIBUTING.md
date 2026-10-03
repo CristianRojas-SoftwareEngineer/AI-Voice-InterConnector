@@ -102,7 +102,7 @@ docker run --rm -v "$PWD":/src:ro ubuntu:24.04 bash -c '
 
 En Git Bash de Windows, anteponer `MSYS_NO_PATHCONV=1` a `docker run` para que no reescriba las rutas del contenedor. La suite Pester corre en Windows con `pwsh -Command "Invoke-Pester tests/bootstrap/install.tests.ps1 -CI"`.
 
-Todo `.ps1` del repositorio (bootstrap y suite) se escribe en ASCII puro y sin BOM: comentarios sin tildes y mensajes al usuario compuestos con `[char]`. `install.tests.ps1` lo verifica. Sus pruebas de tubería (`irm | iex`) necesitan `pwsh` en el PATH para no omitirse.
+Todo `.ps1` del repositorio (bootstrap y suite) se escribe en ASCII puro y sin BOM: comentarios sin tildes y mensajes al usuario compuestos con `[char]`. `install.tests.ps1` lo verifica. Sus pruebas de tubería (`irm | iex`) necesitan `pwsh` en el PATH para no omitirse. La suite cubre también el entorno con `PSModulePath` heredado de PowerShell 7: la prueba construye esa contaminación a propósito (el directorio `Modules` de `pwsh` delante del `PSModulePath`), así que no depende del anfitrión que lance la suite.
 
 Si modificas un bootstrap, actualiza su suite; los tres jobs (`test-bootstrap-*`) son puerta de los 4 builds en CI.
 

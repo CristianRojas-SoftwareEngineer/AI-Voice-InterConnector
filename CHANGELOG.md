@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.28.0 — 2026-10-03](#0280--2026-10-03)
 - [0.27.1 — 2026-10-02](#0271--2026-10-02)
 - [0.27.0 — 2026-10-02](#0270--2026-10-02)
@@ -98,6 +99,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+`install.ps1` fallaba al ejecutarse en Windows PowerShell 5.1 desde una consola que heredaba el entorno de módulos de PowerShell 7, y la suite no lo detectaba porque su arnés lo saneaba: ahora el instalador repara el entorno por sí mismo o falla con una explicación, y la suite cubre ese escenario.
+
+### Corregido
+
+- `install.ps1` bajo Windows PowerShell 5.1 con el `PSModulePath` de PowerShell 7 (por ejemplo, al abrir `powershell.exe` desde una sesión `pwsh`) abortaba la verificación del checksum con un error opaco por la ausencia de `Get-FileHash`, y omitía en silencio la restricción de permisos del staging por la ausencia de `Get-Acl` y `Set-Acl`. Ahora verifica al arrancar los cmdlets estándar que usa, importa por ruta desde el directorio de instalación del propio motor el módulo que falte, sin modificar `PSModulePath`, y, si no basta, falla antes de descargar con `unsupported_platform` y un mensaje que nombra los cmdlets ausentes. La suite Pester construye ese entorno a propósito y ya no sanea el `PSModulePath` del hijo.
 
 ## [0.28.0] — 2026-10-03
 

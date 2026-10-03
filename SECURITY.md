@@ -133,9 +133,12 @@ consulta de versión; con el binario instalado se usa `self update --check`):
   SmartScreen. Microsoft Defender **Antivirus** es independiente del MOTW y
   puede marcar el binario sin firma — en ese caso aplica el runbook WDSI de
   más abajo. Como `irm | iex` no admite parámetros, toda opción tiene su
-  variable `AVI_*` equivalente; su único efecto sobre la sesión es añadir el
-  programa al PATH en curso, y bajo `irm | iex` nunca usa `exit`, así que un
-  error no cierra la consola. La alternativa inspeccionable es descargar
+  variable `AVI_*` equivalente; su efecto sobre la sesión es añadir el
+  programa al PATH en curso (y, solo si el entorno heredado sombrea los
+  módulos estándar, cargar los del propio motor), y bajo `irm | iex` nunca usa
+  `exit`, así que un error no cierra la consola. La verificación de integridad
+  usa los módulos estándar del propio motor, importados desde su directorio de
+  instalación, y no los de `PSModulePath`. La alternativa inspeccionable es descargar
   `install.ps1` desde `releases/latest/download` y ejecutarlo como archivo.
 
 ## Artefactos sin firmar
