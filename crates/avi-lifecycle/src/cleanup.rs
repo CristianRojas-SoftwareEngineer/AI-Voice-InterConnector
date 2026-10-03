@@ -282,7 +282,7 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
         );
         push(
             &mut collected,
-            roots.data_dir.join("daemon.ready"),
+            roots.data_dir.join(crate::daemon_stop::READY_FILE),
             Category::DaemonState,
         );
     }

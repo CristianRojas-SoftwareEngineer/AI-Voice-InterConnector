@@ -17,6 +17,13 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Por qué**: el original enlazaba en `INADDR_ANY` y el servidor no tiene autenticación, así que cualquier equipo de la red local podía sintetizar y enumerar voces. El valor por defecto de loopback y el rechazo de direcciones inválidas son de seguridad: nunca debe volverse en silencio a todas las interfaces.
 - **Si se pierde**: el motor vuelve a escuchar en todas las interfaces y queda expuesto a la red local, aunque el lanzador pase `--host` (el motor lo ignoraría o fallaría).
 
+### Vigía de la entrada estándar con `--watch-stdin`
+
+- **Archivos**: `main.c`.
+- **Qué cambia**: el flag `--watch-stdin` (sin valor) arranca, tras parsear y validar los argumentos y antes de cargar el modelo, un hilo desacoplado que lee la entrada estándar en bucle y descarta lo que llegue. Al fin de fichero (o ante un error de lectura distinto de `EINTR`) el hilo llama a `_exit(0)`. Si `pthread_create` falla, el motor escribe un error por stderr y sale con código 1. Sin el flag no cambia nada: ningún modo lee la entrada estándar.
+- **Por qué**: el lanzador mantiene abierto el extremo de escritura de una tubería conectada a la entrada estándar del motor; cuando el lanzador muere de forma abrupta el sistema operativo cierra la tubería y el motor termina en lugar de quedar huérfano. Un fallo al crear el hilo no puede ignorarse, porque se perdería en silencio la garantía de que el motor muere con quien lo lanzó.
+- **Si se pierde**: el motor sobrevive a la muerte abrupta de su lanzador, y el modo residente (`--serve`) sigue ocupando el puerto y la memoria indefinidamente.
+
 ### `WSAStartup` para `--serve` en Windows
 
 - **Archivos**: `main.c` (inicio de `main`).

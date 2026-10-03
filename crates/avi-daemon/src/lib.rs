@@ -1831,7 +1831,12 @@ impl std::error::Error for StartupError {}
 /// que publicó, si es legible) o falló antes de estarlo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadySignal {
-    Ready { addr: String, pid: Option<u32> },
+    Ready {
+        addr: String,
+        pid: Option<u32>,
+        /// Identidad del proceso del daemon publicada en el fichero, si la trae.
+        identity: Option<avi_process::ProcessIdentity>,
+    },
     Failed(StartupError),
 }
 
@@ -1868,7 +1873,15 @@ fn write_ready_file(path: &std::path::Path, addr: &SocketAddr, warm: &str) {
     // El PID propio permite reclamar el árbol si el padre cae sin escribir o
     // sin limpiar el pidfile: con puertos efímeros el ready es entonces la
     // única pista de qué proceso matar.
-    let content = format!("addr={}\nwarm={}\npid={}\n", addr, warm, std::process::id());
+    let mut content = format!("addr={}\nwarm={}\npid={}\n", addr, warm, std::process::id());
+    // La identidad propia permite distinguir, tras un apagado abrupto, a este
+    // proceso de otro programa al que el sistema reasigne el PID.
+    if let Some(identity) = avi_process::process_identity(std::process::id()) {
+        content.push_str(&format!(
+            "start={}\nimage={}\n",
+            identity.start, identity.image
+        ));
+    }
     publish_ready_record(path, &content);
 }
 
@@ -1927,7 +1940,15 @@ pub fn read_ready_signal(path: &std::path::Path) -> Option<ReadySignal> {
     let pid = field("pid")
         .and_then(|p| p.parse::<u32>().ok())
         .filter(|&p| p != 0);
-    Some(ReadySignal::Ready { addr, pid })
+    let identity = match (field("start"), field("image")) {
+        (Some(start), Some(image)) => Some(avi_process::ProcessIdentity { start, image }),
+        _ => None,
+    };
+    Some(ReadySignal::Ready {
+        addr,
+        pid,
+        identity,
+    })
 }
 
 /// Fase previa a servir, ordenada de lo barato a lo caro para fallar antes de
@@ -2927,13 +2948,34 @@ mod tests {
         let path = ready_path("success");
         let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
         write_ready_file(&path, &addr, "warming");
-        assert_eq!(
-            read_ready_signal(&path),
-            Some(ReadySignal::Ready {
-                addr: "127.0.0.1:8765".to_string(),
-                pid: Some(std::process::id()),
-            })
+        let Some(ReadySignal::Ready { addr, pid, .. }) = read_ready_signal(&path) else {
+            panic!("el registro de éxito se lee como Ready");
+        };
+        assert_eq!(addr, "127.0.0.1:8765");
+        assert_eq!(pid, Some(std::process::id()));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// El ready publica la identidad propia del daemon y el lector la devuelve.
+    #[test]
+    fn ready_file_publishes_own_identity() {
+        let path = ready_path("identity");
+        let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
+        write_ready_file(&path, &addr, "ok");
+        let own = avi_process::process_identity(std::process::id()).expect("identidad propia");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains(&format!("start={}", own.start)),
+            "{content}"
         );
+        assert!(
+            content.contains(&format!("image={}", own.image)),
+            "{content}"
+        );
+        let Some(ReadySignal::Ready { identity, .. }) = read_ready_signal(&path) else {
+            panic!("el registro de éxito se lee como Ready");
+        };
+        assert_eq!(identity, Some(own));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

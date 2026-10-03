@@ -113,6 +113,5 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 | Documento | Severidad | Síntoma |
 |---|---|---|
-| [motor-residente-huerfano-tras-kill-del-daemon.md](motor-residente-huerfano-tras-kill-del-daemon.md) | Media | Un kill duro del daemon deja vivo al motor residente pese al Job Object |
-| [residuos-en-disco-tras-comandos-correctos.md](residuos-en-disco-tras-comandos-correctos.md) | Baja | WAV temporales, `daemon.ready` y artefactos de `self update` |
+| [residuos-en-disco-tras-comandos-correctos.md](residuos-en-disco-tras-comandos-correctos.md) | Baja | WAV temporales y artefactos de `self update` |
 | [status-json-afirma-operaciones-no-realizadas.md](status-json-afirma-operaciones-no-realizadas.md) | Baja | `daemon stop` sin daemon dice `shutdown_sent`, y los simulacros de `self uninstall` y `cleanup` dicen `uninstalled` y `cleanup_complete` |

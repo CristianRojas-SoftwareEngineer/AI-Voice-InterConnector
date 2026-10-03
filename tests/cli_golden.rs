@@ -3564,6 +3564,117 @@ mod tts {
         );
     }
 
+    /// Escribe en `dir` un motor doble que sondea su entrada estándar y anota en
+    /// el fichero de `AVI_FAKE_ENGINE_REPORT` dos líneas: `flag=con|sin` según
+    /// reciba `--watch-stdin` entre sus argumentos, y `stdin=abierto|eof|datos`
+    /// según su entrada siga abierta pasado un plazo corto, devuelva fin de
+    /// fichero de inmediato o traiga datos. Sale por sí mismo con código 1: no
+    /// bloquea hasta fin de fichero, porque quien lo lanza espera a que termine
+    /// con la tubería aún abierta. Devuelve la ruta del ejecutable.
+    fn write_stdin_probe_engine(dir: &Path) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let script = dir.join("motor_sonda.ps1");
+            std::fs::write(
+                &script,
+                "$flag = if ($args -contains '--watch-stdin') { 'con' } else { 'sin' }\r\n\
+                 $in = [Console]::OpenStandardInput()\r\n\
+                 $buf = New-Object byte[] 1\r\n\
+                 $task = $in.ReadAsync($buf, 0, 1)\r\n\
+                 if ($task.Wait(500)) {\r\n\
+                 \x20 if ($task.Result -eq 0) { $stdin = 'eof' } else { $stdin = 'datos' }\r\n\
+                 } else { $stdin = 'abierto' }\r\n\
+                 Set-Content -Path $env:AVI_FAKE_ENGINE_REPORT -Value \"flag=$flag\", \"stdin=$stdin\"\r\n\
+                 exit 1\r\n",
+            )
+            .expect("escribir el script del motor sonda");
+            let path = dir.join("motor_sonda.cmd");
+            std::fs::write(
+                &path,
+                "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0motor_sonda.ps1\" %*\r\nexit /b 1\r\n",
+            )
+            .expect("escribir el motor sonda");
+            path
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.join("motor_sonda.sh");
+            std::fs::write(
+                &path,
+                "#!/bin/bash\n\
+                 flag=sin\n\
+                 for a in \"$@\"; do [ \"$a\" = \"--watch-stdin\" ] && flag=con; done\n\
+                 inicio=$(date +%s)\n\
+                 if read -t 2 -r line; then\n\
+                 \x20 stdin=datos\n\
+                 else\n\
+                 \x20 fin=$(date +%s)\n\
+                 \x20 if [ $((fin - inicio)) -ge 2 ]; then stdin=abierto; else stdin=eof; fi\n\
+                 fi\n\
+                 printf 'flag=%s\\nstdin=%s\\n' \"$flag\" \"$stdin\" > \"$AVI_FAKE_ENGINE_REPORT\"\n\
+                 exit 1\n",
+            )
+            .expect("escribir el motor sonda");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("hacer ejecutable el motor sonda");
+            path
+        }
+    }
+
+    /// El clonado lanzado desde la CLI directa pasa `--watch-stdin` al motor y
+    /// le deja la entrada estándar como una tubería abierta mientras corre: el
+    /// vigía del motor interpreta el fin de fichero como orden de terminar, así
+    /// que una entrada nula o cerrada lo mataría al arrancar.
+    #[test]
+    fn voice_clone_passes_watch_stdin_and_keeps_open_pipe() {
+        let inst = IsolatedInstance::new("clone_watch_stdin");
+        seed_pinned_models(
+            &inst.dir.join("cache"),
+            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
+        );
+        let engine = write_stdin_probe_engine(&inst.dir);
+        let engine_path = engine.to_string_lossy().to_string();
+        let report = inst.dir.join("informe_motor.txt");
+        let report_path = report.to_string_lossy().to_string();
+        let mut envs = inst.contract_args();
+        envs.push(("QWEN3_TTS_BIN", engine_path.as_str()));
+        envs.push(("AVI_FAKE_ENGINE_REPORT", report_path.as_str()));
+        let name = unique_label("clon");
+        let output = bin_command()
+            .args([
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ])
+            .envs(envs)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("el binario debe ejecutarse");
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+        let content = std::fs::read_to_string(&report).unwrap_or_else(|e| {
+            panic!(
+                "el motor doble no dejó informe en {}: {e}\n{stdout}\n{stderr}",
+                report.display()
+            )
+        });
+        assert!(
+            content.lines().any(|l| l == "flag=con"),
+            "el clonado debe lanzar el motor con argumentos con --watch-stdin: {content:?}"
+        );
+        assert!(
+            content.lines().any(|l| l == "stdin=abierto"),
+            "el clonado debe dejar el stdin del motor abierto mientras corre: {content:?}"
+        );
+    }
+
     #[test]
     fn voice_clone_invalid_name_exits_2() {
         // Sandbox propio con los modelos CustomVoice y Base sembrados; el nombre
@@ -4174,6 +4285,156 @@ mod tts {
         );
     }
 
+    /// `daemon stop` con un daemon ya muerto deja el directorio de datos sin
+    /// rastro de él: se borran `daemon.pid` y también `daemon.ready`, cuyo PID
+    /// (fuera de rango) ya no corresponde a ningún proceso vivo. Ambos ficheros
+    /// se siembran con la dirección de un puerto cerrado, de modo que la orden no
+    /// contacta con 127.0.0.1:8765.
+    #[test]
+    fn daemon_stop_removes_stale_ready_and_pid_files() {
+        let _reaper = arm_reaper("daemon_stop_stale_files");
+        let inst = IsolatedInstance::new("stop_stale_files");
+        seed_decoy_daemon_pidfile(&inst.dir);
+        let ready = inst.dir.join("daemon.ready");
+        std::fs::write(
+            &ready,
+            format!(
+                "addr=127.0.0.1:{}\nwarm=warm\npid={}\n",
+                inst.port(),
+                u32::MAX - 1
+            ),
+        )
+        .expect("sembrar daemon.ready rancio");
+        let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &inst.contract_args());
+        assert_eq!(
+            code, 0,
+            "daemon stop con daemon muerto debe salir 0: {actual}"
+        );
+        assert!(
+            !inst.dir.join("daemon.pid").exists(),
+            "tras daemon stop no debe quedar daemon.pid"
+        );
+        assert!(
+            !ready.exists(),
+            "tras daemon stop no debe quedar daemon.ready rancio"
+        );
+    }
+
+    /// Proceso ajeno de larga vida que simula un PID reasignado. Un guardián lo
+    /// mata al terminar la prueba, también si esta falla.
+    struct ForeignProcess(std::process::Child);
+
+    impl ForeignProcess {
+        fn spawn() -> Self {
+            #[cfg(windows)]
+            let child = Command::new("ping")
+                .args(["-n", "300", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .spawn();
+            #[cfg(not(windows))]
+            let child = Command::new("sleep").arg("300").spawn();
+            Self(child.expect("lanzar el proceso ajeno"))
+        }
+
+        fn pid(&self) -> u32 {
+            self.0.id()
+        }
+
+        /// ¿Sigue vivo? `try_wait` distingue un proceso vivo de uno muerto sin
+        /// depender del número de PID.
+        fn alive(&mut self) -> bool {
+            matches!(self.0.try_wait(), Ok(None))
+        }
+    }
+
+    impl Drop for ForeignProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Siembra un `daemon.pid` cuyos PID de daemon y de residente apuntan a
+    /// `daemon_pid` y `resident_pid`, con una identidad falsa en cada uno que
+    /// ningún proceso real tiene. La dirección es la de un puerto cerrado.
+    fn seed_pidfile_with_fake_identities(
+        data_dir: &std::path::Path,
+        daemon_pid: u32,
+        resident_pid: u32,
+    ) {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("reservar puerto efímero")
+            .local_addr()
+            .expect("dirección del puerto reservado")
+            .port();
+        let fake = serde_json::json!({ "start": "0", "image": "identidad-falsa.exe" });
+        let content = serde_json::json!({
+            "pid": daemon_pid,
+            "addr": format!("127.0.0.1:{port}"),
+            "resident_pid": resident_pid,
+            "identity": fake,
+            "resident_identity": fake,
+        });
+        std::fs::create_dir_all(data_dir).expect("crear directorio de datos");
+        std::fs::write(data_dir.join("daemon.pid"), content.to_string())
+            .expect("sembrar daemon.pid con identidades falsas");
+    }
+
+    /// Un PID de daemon reasignado a otro programa no bloquea `daemon stop` y no
+    /// se mata: sale 0, borra el pidfile y el proceso ajeno sigue vivo.
+    #[test]
+    fn daemon_stop_spares_foreign_process_on_reused_daemon_pid() {
+        let _reaper = arm_reaper("daemon_stop_foreign_daemon_pid");
+        let inst = IsolatedInstance::new("stop_foreign_daemon_pid");
+        let mut foreign = ForeignProcess::spawn();
+        seed_pidfile_with_fake_identities(&inst.dir, foreign.pid(), u32::MAX - 1);
+
+        let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &inst.contract_args());
+        assert_eq!(code, 0, "un PID ajeno no debe bloquear la parada: {actual}");
+        assert!(
+            !inst.dir.join("daemon.pid").exists(),
+            "la parada debe borrar el pidfile"
+        );
+        assert!(foreign.alive(), "el proceso ajeno no debe morir");
+    }
+
+    /// Un PID de residente reasignado a otro programa no bloquea `daemon stop` y
+    /// no se mata.
+    #[test]
+    fn daemon_stop_spares_foreign_process_on_reused_resident_pid() {
+        let _reaper = arm_reaper("daemon_stop_foreign_resident_pid");
+        let inst = IsolatedInstance::new("stop_foreign_resident_pid");
+        let mut foreign = ForeignProcess::spawn();
+        seed_pidfile_with_fake_identities(&inst.dir, u32::MAX - 1, foreign.pid());
+
+        let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &inst.contract_args());
+        assert_eq!(code, 0, "un PID ajeno no debe bloquear la parada: {actual}");
+        assert!(
+            !inst.dir.join("daemon.pid").exists(),
+            "la parada debe borrar el pidfile"
+        );
+        assert!(foreign.alive(), "el proceso ajeno no debe morir");
+    }
+
+    /// `daemon start` ante un pidfile cuyo PID de daemon fue reasignado no mata al
+    /// proceso ajeno al reclamar el residuo. Se usa el puerto ocupado para que el
+    /// arranque falle al instante sin modelo, después del reclamo.
+    #[test]
+    fn daemon_start_spares_foreign_process_on_reused_pid() {
+        let _reaper = arm_reaper("daemon_start_foreign_pid");
+        let mut inst = IsolatedInstance::new("start_foreign_pid");
+        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        let mut foreign = ForeignProcess::spawn();
+        seed_pidfile_with_fake_identities(&inst.dir, foreign.pid(), u32::MAX - 1);
+        let _holder = occupy_instance_port(&mut inst);
+
+        let _ = run_json_env(&["--json", "daemon", "start"], &inst.contract_args());
+        assert!(
+            foreign.alive(),
+            "el reclamo no debe matar a un proceso ajeno que reutiliza el PID"
+        );
+    }
+
     /// Prueba pesada de limpieza: cero huérfanos tras aborto simulado, en dos
     /// fases. Fase 1 (caída del padre: pidfile borrado con daemon vivo) →
     /// `start` reclama el árbol (payload `started`, PID previo muerto). Fase 2
@@ -4273,6 +4534,203 @@ mod tts {
         // Cierre: cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "h01_aborto_simulado");
         hit_end("tts::h01_simulated_abort_reclaims_and_leaves_no_orphans");
+    }
+
+    /// Plazo máximo para que, tras matar el daemon a la fuerza, el motor
+    /// residente muera por sí mismo y su puerto deje de escuchar.
+    const HARD_KILL_DEADLINE: Duration = Duration::from_secs(10);
+
+    /// PIDs de todos los procesos de la máquina con imagen `qwen_tts(.exe)`.
+    fn engine_pids() -> Vec<u32> {
+        #[cfg(windows)]
+        {
+            let output = Command::new("tasklist")
+                .args([
+                    "/FI",
+                    &format!("IMAGENAME eq {}", avi_tts::RESIDENT_IMAGE_NAME),
+                    "/FO",
+                    "CSV",
+                    "/NH",
+                ])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .output();
+            match output {
+                // Cada línea es `"imagen","pid","sesión",...`; las demás (sin tareas) no cuadran.
+                Ok(o) => String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let mut fields = line.split("\",\"");
+                        fields.next()?;
+                        fields.next()?.trim_matches('"').parse().ok()
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        }
+        #[cfg(unix)]
+        {
+            let output = Command::new("pgrep")
+                .args(["-x", avi_tts::RESIDENT_IMAGE_NAME])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .output();
+            match output {
+                Ok(o) => String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter_map(|line| line.trim().parse().ok())
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        }
+    }
+
+    /// Mata un único proceso por PID, sin arrastrar a sus hijos: Windows
+    /// `taskkill /F /PID` sin `/T`; Unix `kill -9` al PID, no al grupo. Simula
+    /// la muerte abrupta del daemon sin que el árbol enmascare al vigía.
+    fn kill_pid_only(pid: u32) {
+        #[cfg(windows)]
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        #[cfg(unix)]
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    /// Espera hasta `deadline` a que el residente `resident` haya muerto y su
+    /// puerto deje de escuchar. Devuelve `(residente_vivo, puerto_abierto)` en
+    /// el último sondeo. A diferencia de `verify_zero_orphans_instance`, tolera
+    /// que el pidfile siga existiendo tras un kill duro y no mira la imagen
+    /// global, sino el PID registrado y el puerto de la instancia.
+    fn wait_resident_gone(resident: u32, port: u16, deadline: Duration) -> (bool, bool) {
+        let t0 = Instant::now();
+        loop {
+            let alive = avi_tts::resident::resident_pid_alive(resident);
+            let listening = port_open(port);
+            if (!alive && !listening) || t0.elapsed() >= deadline {
+                return (alive, listening);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Guard que, también cuando una aserción falla, deja la máquina como
+    /// estaba: mata por PID el daemon de la instancia y todo `qwen_tts` que no
+    /// existiera al crearlo, y espera su muerte. Debe declararse después de la
+    /// `IsolatedInstance` para soltarse antes que ella.
+    struct HardKillGuard {
+        data_dir: PathBuf,
+        baseline: Vec<u32>,
+    }
+
+    impl HardKillGuard {
+        fn new(data_dir: &Path) -> Self {
+            HardKillGuard {
+                data_dir: data_dir.to_path_buf(),
+                baseline: engine_pids(),
+            }
+        }
+
+        /// Procesos `qwen_tts` vivos que no existían al crear el guard.
+        fn new_engine_pids(&self) -> Vec<u32> {
+            engine_pids()
+                .into_iter()
+                .filter(|pid| !self.baseline.contains(pid))
+                .collect()
+        }
+    }
+
+    impl Drop for HardKillGuard {
+        fn drop(&mut self) {
+            if let Some(pid) = read_daemon_pid_dir(&self.data_dir) {
+                if avi_daemon::pid_alive(pid) {
+                    avi_daemon::kill_tree_by_pid(pid);
+                    avi_daemon::wait_for_pid_death(pid, Duration::from_secs(8));
+                }
+            }
+            for pid in self.new_engine_pids() {
+                avi_tts::resident::kill_tree_resident_by_pid(pid);
+                avi_daemon::wait_for_pid_death(pid, Duration::from_secs(8));
+            }
+        }
+    }
+
+    /// Espera a que el residente de la instancia esté registrado, vivo y
+    /// escuchando en `port`, y devuelve su PID.
+    fn wait_for_live_resident(inst: &IsolatedInstance, port: u16) -> u32 {
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs(90) {
+            let resident = inst.read_resident_pid();
+            if resident != 0 && avi_tts::resident::resident_pid_alive(resident) && port_open(port) {
+                return resident;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        fail_with_reaper(
+            "wait_for_live_resident",
+            format!("el residente no llegó a estar vivo y escuchando en {port} tras 90 s"),
+        );
+    }
+
+    /// Cuerpo común de las pruebas de kill duro del daemon sin clonado: arranca
+    /// la instancia con `extra`, mata solo el PID del daemon y exige que el
+    /// residente muera y su puerto deje de escuchar dentro del plazo.
+    fn assert_hard_kill_stops_resident(tag: &'static str, extra: &[&str]) {
+        require_tts_model();
+        require_tts_binary();
+        let _tts = lock_tts();
+        hit_start_heavy(&format!("tts::{tag}"));
+        let _reaper = arm_reaper(tag);
+        let inst = IsolatedInstance::new(tag);
+        let _guard = HardKillGuard::new(&inst.dir);
+        start_instance_running_only(&inst, extra);
+        let port = inst
+            .tts_port()
+            .expect("la instancia debe fijar QWEN3_TTS_PORT");
+        let resident = wait_for_live_resident(&inst, port);
+        let daemon = inst
+            .read_daemon_pid()
+            .expect("tras start debe haber pidfile con el PID del daemon");
+        milestone(&format!(
+            "kill duro: daemon {daemon}, residente {resident}, puerto {port}"
+        ));
+        kill_pid_only(daemon);
+        assert!(
+            avi_daemon::wait_for_pid_death(daemon, Duration::from_secs(8)),
+            "el kill duro debe matar al daemon (pid {daemon})"
+        );
+        let (alive, listening) = wait_resident_gone(resident, port, HARD_KILL_DEADLINE);
+        assert!(
+            !alive && !listening,
+            "tras matar al daemon (pid {daemon}) el residente (pid {resident}) debe morir y su puerto {port} dejar de escuchar en {HARD_KILL_DEADLINE:?}: residente vivo={alive}, puerto abierto={listening}"
+        );
+        hit_end(&format!("tts::{tag}"));
+    }
+
+    /// Un kill duro del daemon, sin su árbol y sin `--auto-restart`, no deja al
+    /// motor residente vivo ni escuchando.
+    #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
+    fn hard_kill_of_daemon_leaves_no_resident() {
+        assert_hard_kill_stops_resident("hard_kill_no_supervisor", &[]);
+    }
+
+    /// Lo mismo con el daemon supervisado (`--auto-restart`): el supervisor vive
+    /// dentro del propio proceso, así que su muerte tampoco puede dejar residente.
+    #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
+    fn hard_kill_of_supervised_daemon_leaves_no_resident() {
+        assert_hard_kill_stops_resident("hard_kill_supervised", &["--auto-restart"]);
     }
 
     /// Regresión (daemon retiene el stdio del proceso que lo lanzó): reproduce

@@ -314,14 +314,44 @@ impl VoiceStore {
     }
 
     /// Guardar el `.qvoice` clonado como `reference.qvoice` de la voz
-    /// (copia con temporal + rename; layout del contrato del registro)
+    /// (copia con temporal + rename; layout del contrato del registro).
+    ///
+    /// Con la voz ya existente se sustituye el fichero con un renombrado atómico.
+    /// Con una voz nueva el contenido se prepara en un directorio hermano de
+    /// `voices/` (misma partición) y se renombra de una vez a `voices/<nombre>/`:
+    /// si la copia falla o el proceso muere, no aparece un directorio de voz
+    /// vacío que `list` mostraría y que impediría clonar de nuevo con ese nombre.
     pub fn save_reference(&self, name: &str, src: &Path) -> Result<PathBuf> {
         let dir = self.voice_dir(name);
-        std::fs::create_dir_all(&dir)?;
         let dest = dir.join("reference.qvoice");
-        let tmp = dir.join("reference.qvoice.tmp");
-        std::fs::copy(src, &tmp)?;
-        std::fs::rename(&tmp, &dest)?;
+        if dir.exists() {
+            let tmp = dir.join("reference.qvoice.tmp");
+            std::fs::copy(src, &tmp)?;
+            std::fs::rename(&tmp, &dest)?;
+            return Ok(dest);
+        }
+
+        let parent = self
+            .base_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("el directorio de voces no tiene directorio padre"))?;
+        let staging = parent.join(format!(
+            "avi-voice-staging-{}-{}",
+            name.to_lowercase(),
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging)?;
+        let published = std::fs::copy(src, staging.join("reference.qvoice"))
+            .map_err(anyhow::Error::from)
+            .and_then(|_| {
+                std::fs::create_dir_all(&self.base_dir)?;
+                std::fs::rename(&staging, &dir).map_err(anyhow::Error::from)
+            });
+        if let Err(e) = published {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
         Ok(dest)
     }
 
@@ -1480,6 +1510,44 @@ mod tests {
             voices.find_reference("OTRA").is_none(),
             "sin reference.qvoice no resuelve como clonada"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guardar la referencia de una voz nueva desde un origen inexistente
+    /// devuelve error y no deja ni el directorio de la voz ni una entrada en
+    /// el listado.
+    #[test]
+    fn save_reference_missing_source_leaves_no_voice_dir() {
+        let dir = temp_dir("ref_missing_new");
+        let voices_dir = dir.join("voices");
+        std::fs::create_dir_all(&voices_dir).unwrap();
+        let voices = VoiceStore::with_base_dir(voices_dir);
+        let missing = dir.join("no-existe.qvoice");
+        assert!(voices.save_reference("nueva", &missing).is_err());
+        assert!(
+            !voices.voice_dir("nueva").exists(),
+            "un guardado fallido no debe dejar el directorio de la voz"
+        );
+        assert!(
+            voices.list().unwrap().iter().all(|v| v.name != "nueva"),
+            "un guardado fallido no debe dejar la voz en el listado"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Con la voz ya existente, un guardado fallido por origen inexistente
+    /// conserva su `reference.qvoice` previo y su directorio.
+    #[test]
+    fn save_reference_missing_source_keeps_existing_reference() {
+        let dir = temp_dir("ref_missing_existing");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let src = dir.join("clon.qvoice");
+        std::fs::write(&src, b"QVCE").unwrap();
+        let saved = voices.save_reference("existente", &src).unwrap();
+        let missing = dir.join("no-existe.qvoice");
+        assert!(voices.save_reference("existente", &missing).is_err());
+        assert!(voices.voice_dir("existente").is_dir());
+        assert_eq!(std::fs::read(&saved).unwrap(), b"QVCE");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

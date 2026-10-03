@@ -320,8 +320,14 @@ fn criterion_13_daemon_stops_before_replacement() {
     // parada nunca reclama al invocador.
     let daemon_pid = 424_242u32;
     assert_ne!(daemon_pid, std::process::id());
-    daemon_stop::write_pid(&sandbox.data_dir, daemon_pid, &support::dead_port(), 0)
-        .expect("criterio 13: se planta el pidfile");
+    daemon_stop::write_pid(
+        &sandbox.data_dir,
+        daemon_pid,
+        &support::dead_port(),
+        0,
+        None,
+    )
+    .expect("criterio 13: se planta el pidfile");
     let control = Killable::new();
     let outcome = runtime.block_on(daemon_stop::stop(
         &sandbox.data_dir,
@@ -914,8 +920,14 @@ fn criterion_update_daemon_stop_failure_aborts() {
 
     let daemon_pid = 424_243u32;
     assert_ne!(daemon_pid, std::process::id());
-    daemon_stop::write_pid(&sandbox.data_dir, daemon_pid, &support::dead_port(), 0)
-        .expect("se planta el pidfile");
+    daemon_stop::write_pid(
+        &sandbox.data_dir,
+        daemon_pid,
+        &support::dead_port(),
+        0,
+        None,
+    )
+    .expect("se planta el pidfile");
     // El pidfile es estado previo de la prueba, no algo que la parada cree: la
     // foto del disco se toma después de plantarlo.
     let before = sandbox.snapshot();

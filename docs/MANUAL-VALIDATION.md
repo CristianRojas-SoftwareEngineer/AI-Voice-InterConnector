@@ -332,6 +332,56 @@ ai-voice-interconnector daemon status
 con `AVI_DAEMON_PORT=0` el puerto es efímero y con `AVI_DATA_DIR` el pidfile es por instancia
 (aislamiento de tests, no de este recorrido).
 
+**Kill duro del daemon con un clonado en curso** 🗣️ (una muestra de habla ≥10 s). El
+motor `qwen_tts` termina solo cuando muere quien lo lanzó, porque la entrada estándar
+que éste le mantiene abierta se cierra. Las pruebas automáticas cubren el kill duro del
+daemon sin clonado; el clonado interrumpido se verifica a mano, porque una prueba
+automática no distingue si el motor del clonado murió por el kill o terminó solo.
+
+```bash
+# Arrancar el daemon y anotar su PID (solo el del daemon, no el de su árbol)
+ai-voice-interconnector daemon start --json
+
+# En otra terminal: lanzar un clonado por la vía daemon, sin esperar a que termine
+ai-voice-interconnector voice clone --name voz_kill --speech-reference habla.wav --daemon
+
+# Sin esperar a que el clonado termine, matar solo el PID del daemon (sin su árbol)
+kill -9 <PID_DEL_DAEMON>
+
+# Pasados 10 s: no debe quedar ningún motor ni voz alguna con ese nombre
+sleep 10
+pgrep -x qwen_tts
+ai-voice-interconnector voice list
+```
+
+En PowerShell los mismos pasos:
+
+```powershell
+ai-voice-interconnector daemon start --json
+ai-voice-interconnector voice clone --name voz_kill --speech-reference habla.wav --daemon
+Stop-Process -Id <PID_DEL_DAEMON> -Force   # sin /T: no se mata el árbol
+Start-Sleep -Seconds 10
+Get-Process qwen_tts -ErrorAction SilentlyContinue
+ai-voice-interconnector voice list
+```
+
+**Esperado**: en 10 s no queda ningún proceso `qwen_tts` y `voice list` no muestra
+`voz_kill`; tampoco existe un directorio `voz_kill` —ni vacío— dentro de `voices/` del
+almacén de datos. Un clonado que no llegó a terminar no deja una voz a medias: la
+referencia se prepara junto a `voices/` y se renombra de una vez. Si el motor tarda más
+de 10 s en morir, o queda una voz vacía, es un fallo. Limpieza posterior: `daemon stop`
+retira el `daemon.pid` y el `daemon.ready` que dejó el daemon muerto.
+
+Un clonado interrumpido deja en el directorio temporal del sistema, a lo sumo,
+`avi_daemon_clone_<nombre>_<pid>.wav`, `avi_daemon_clone_<nombre>_<pid>.qvoice` y
+`avi_tts_ref24k_<pid>_<nanos>.wav` (el `<pid>` es el del daemon). Una pasada de
+`cleanup` los barre una vez que ese proceso ya no existe, porque su recuperación borra los
+temporales con prefijo `avi_`/`avi-` cuyo PID está muerto. Si el proceso muere durante el
+renombrado de la referencia puede quedar además un directorio
+`avi-voice-staging-<nombre>-<pid>` junto a `voices/` que ese barrido no recoge y se borra
+a mano. En macOS, un motor podría tardar en morir como mucho lo que dura un clonado si
+el daemon lanzó dos procesos a la vez (riesgo teórico, sin verificar).
+
 > Nota de cobertura: algunas variantes del reclamo de puerto/PID (reclamo por
 > grupo ante líder muerto en Unix, barrido del puerto de control por el reaper)
 > solo se alcanzan de forma fiable en Linux/CI o en entornos rápidos, no en la

@@ -550,8 +550,12 @@ impl Qwen3TtsEngine {
 /// no hay nada que actualizar y se ignora. La lectura tolerante vive en el CLI
 /// (`read_resident_pid`: ausente = 0/desconocido).
 fn update_resident_pid_in_pidfile(pid: u32) {
-    let path = avi_store::data_dir().join("daemon.pid");
-    let content = match std::fs::read_to_string(&path) {
+    update_resident_pid_at(&avi_store::data_dir().join("daemon.pid"), pid);
+}
+
+/// Cuerpo de [`update_resident_pid_in_pidfile`] sobre una ruta concreta.
+fn update_resident_pid_at(path: &Path, pid: u32) {
+    let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return,
     };
@@ -560,9 +564,13 @@ fn update_resident_pid_in_pidfile(pid: u32) {
         Err(_) => return,
     };
     v["resident_pid"] = serde_json::Value::from(pid);
+    // La identidad se observa ahora, con el residente recién creado: es la que
+    // la parada compara después para no confundir un PID reasignado con él.
+    v["resident_identity"] =
+        serde_json::to_value(avi_process::process_identity(pid)).unwrap_or(serde_json::Value::Null);
     let tmp = path.with_extension("pid.tmp");
     if std::fs::write(&tmp, serde_json::to_string_pretty(&v).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+        let _ = std::fs::rename(&tmp, path);
     }
 }
 
@@ -864,7 +872,7 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
 
 /// Clona una voz desde `ref_audio` (WAV de cualquier tasa/canales) a `out_qvoice`
 /// (`.qvoice` graft ICL) vía subprocess: `<bin> -d <model_dir> --ref-audio
-/// <ref> --save-voice <out> --voice-name <name> -l <language>`. La referencia se
+/// <ref> --save-voice <out> --voice-name <name> -l <language> --watch-stdin`. La referencia se
 /// normaliza antes a 24 kHz mono (requisito del motor). Propaga el error con el
 /// exit code del proceso. Si la referencia no se puede cargar (WAV inválido,
 /// truncado o fallo de lectura), el error conserva el `avi_audio::WavLoadError`
@@ -873,6 +881,10 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
 /// stdout y stderr del motor van al log de su familia (`qwen3-tts_*.log`), no a
 /// la terminal: en la vía directa tapaban el resumen del comando y en la vía
 /// daemon se perdían. El error de un clonado fallido cita la ruta de ese log.
+///
+/// La entrada estándar del motor es una tubería que este proceso mantiene
+/// abierta hasta que el motor termina; con `--watch-stdin` el motor se detiene
+/// si esa tubería se cierra, es decir, si este proceso muere.
 pub fn clone_voice(
     model_dir: impl AsRef<Path>,
     ref_audio: &Path,
@@ -897,11 +909,15 @@ pub fn clone_voice(
                 return Err(anyhow!("No se pudo crear el log del motor: {}", e));
             }
         };
-    // stdin en null: el motor de clonado no lee de la entrada estándar.
+    // La entrada del motor es una tubería con `--watch-stdin`: el motor termina
+    // si su entrada se cierra, así que el proceso que clona muere con él aunque
+    // sea abatido. `Child::wait` cierra el stdin del hijo antes de esperar, por lo
+    // que el extremo de escritura se extrae y se conserva en `_watch_pipe` hasta
+    // que `wait` devuelve; si no, el motor vería fin de fichero al instante.
     let status = (|| -> Result<std::process::ExitStatus> {
         let stdout = log_file.try_clone()?;
-        Ok(Command::new(&bin)
-            .stdin(std::process::Stdio::null())
+        let mut child = Command::new(&bin)
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::from(stdout))
             .stderr(std::process::Stdio::from(log_file))
             .arg("-d")
@@ -914,7 +930,10 @@ pub fn clone_voice(
             .arg(name)
             .arg("-l")
             .arg(language)
-            .status()?)
+            .arg("--watch-stdin")
+            .spawn()?;
+        let _watch_pipe = child.stdin.take();
+        Ok(child.wait()?)
     })();
     let _ = std::fs::remove_file(&ref_wav);
     let status = status?;
@@ -930,8 +949,11 @@ pub fn clone_voice(
 }
 
 /// Servidor residente del motor Qwen3-TTS: spawn perezoso con
-/// `--serve <puerto> --host 127.0.0.1 --int4 -j 4 --stream [--load-voice <qvoice> --icl-only]`, healthcheck
-/// `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
+/// `--serve <puerto> --host 127.0.0.1 --int4 -j 4 --stream --watch-stdin [--load-voice <qvoice> --icl-only]`,
+/// healthcheck `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
+/// El residente guarda abierto el extremo de escritura de la tubería de entrada
+/// del motor; si el daemon muere de forma abrupta, la tubería se cierra y el
+/// motor termina.
 pub mod resident {
     use super::*;
     #[cfg(test)]
@@ -955,7 +977,8 @@ pub mod resident {
 
     /// Construye el `Command` de arranque del residente, sin
     /// I/O real: `-d <model_dir> --serve <port> --host 127.0.0.1 --int4 -j 4 --stream
-    /// [--load-voice <qvoice> --icl-only]`.
+    /// --watch-stdin [--load-voice <qvoice> --icl-only]`. `--watch-stdin` hace que
+    /// el motor termine al cerrarse su entrada estándar.
     pub(crate) fn build_resident_command(
         bin: &Path,
         model_dir: &Path,
@@ -972,7 +995,8 @@ pub mod resident {
             .arg("--int4")
             .arg("-j")
             .arg("4")
-            .arg("--stream");
+            .arg("--stream")
+            .arg("--watch-stdin");
         if let Some(lv) = load_voice {
             cmd.arg("--load-voice").arg(lv).arg("--icl-only");
         }
@@ -990,16 +1014,40 @@ pub mod resident {
         ) -> Result<Self> {
             let bin = resolve_binary()
                 .ok_or_else(|| anyhow!("El binario Qwen3-TTS no está provisionado."))?;
-            let mut cmd = build_resident_command(&bin, model_dir.as_ref(), port, load_voice);
-            // Redirige stderr del motor a un log de la familia `qwen3-tts`, creado y
-            // podado por el auxiliar común (los 10 más recientes). stdin/stdout
-            // permanecen en null: el motor no necesita TTY ni stdin y su stdout no
-            // se consume. stderr captura los ~20 `fprintf(stderr, *)` del motor C
-            // (cuyos mensajes se perdían a null, dejando ciego el diagnóstico del
-            // warmup, la síntesis por petición y la terminación del residente).
+            // El stderr del motor va a un log de la familia `qwen3-tts`, creado y
+            // podado por el auxiliar común (los 10 más recientes). Captura los ~20
+            // `fprintf(stderr, *)` del motor C (cuyos mensajes se perdían a null,
+            // dejando ciego el diagnóstico del warmup, la síntesis por petición y
+            // la terminación del residente).
             let (log_path, log_file) =
                 avi_store::create_log(&avi_store::logs_dir(), crate::ENGINE_LOG_FAMILY)
                     .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
+            let child =
+                launch_resident_process(&bin, model_dir.as_ref(), port, load_voice, log_file)?;
+            Self::spawn_with_child(child, port, log_path, 60, 500)
+        }
+    }
+
+    /// Lanza el proceso del motor residente: construye el comando de arranque,
+    /// configura la entrada, la salida y el error estándar (el error va a
+    /// `log_file`) y los creation flags de Windows, y devuelve el `Child` sin
+    /// esperar a que el motor esté sano.
+    pub(crate) fn launch_resident_process(
+        bin: &Path,
+        model_dir: &Path,
+        port: u16,
+        load_voice: Option<&Path>,
+        log_file: std::fs::File,
+    ) -> Result<Child> {
+        let mut cmd = build_resident_command(bin, model_dir, port, load_voice);
+        {
+            // La entrada estándar es una tubería cuyo extremo de escritura queda
+            // dentro del `Child` devuelto (no se extrae ni se suelta): mientras el
+            // residente viva, quien lo guarda mantiene la tubería abierta. El motor,
+            // lanzado con `--watch-stdin`, lee su entrada hasta fin de fichero y
+            // termina; así, si el daemon muere de forma abrupta, el sistema cierra
+            // el extremo de escritura y el residente muere con él. El stdout va a
+            // null porque no se consume.
             use std::process::Stdio;
             // Windows: `qwen_tts.exe` NO debe heredar handles ni abrir terminal del
             // padre. `DETACHED_PROCESS` lo deja sin consola: `qwen_tts` no lanza
@@ -1008,40 +1056,41 @@ pub mod resident {
             // La herencia del pipe (write-end) del proceso abuelo (test CLI) se corta
             // en la raíz: el daemon que spawnea este motor ya desheredó sus STD vía
             // `SetHandleInformation` (`main::disinherit_standard_handles`); no existe
-            // una creation flag que desactive la herencia. `Stdio::null` en stdin/stdout
-            // cierra la herencia de stdin/tty; stderr va al log, que solo llega a este
+            // una creation flag que desactive la herencia. Los handles de stdin
+            // (tubería propia) y stdout (null) se crean para este hijo, así que no
+            // arrastran los del padre; stderr va al log, que solo llega a este
             // hijo porque el daemon ya desheredó sus handles estándar.
-            // Árbol matable: a propósito SIN `CREATE_NEW_PROCESS_GROUP` ni
-            // breakaway, para que el residente permanezca en el grupo/Job del daemon
-            // y `taskkill /F /T /PID <daemon>` (o el Job con cierre) lo alcance.
+            // Sin `CREATE_NEW_PROCESS_GROUP` ni breakaway, para que
+            // `taskkill /F /T /PID <daemon>` alcance al residente como descendiente.
             // En Unix tampoco se hace `setsid` aquí: hereda el grupo del daemon.
-            // Tras la muerte del líder el residente reparentado se verifica
-            // por PID y 8766 desde el CLI (`reclaim_degraded_residual`); los
-            // dobles de test nunca reproducen ese reparentado.
+            // Si el daemon muere de forma abrupta, la tubería de entrada se cierra y
+            // el residente termina por sí mismo; los dobles de test nunca
+            // reproducen la muerte abrupta del padre.
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
-                cmd.stdin(Stdio::null())
+                cmd.stdin(Stdio::piped())
                     .stdout(Stdio::null())
                     .stderr(Stdio::from(log_file))
                     .creation_flags(avi_process::DETACHED_PROCESS);
             }
             #[cfg(unix)]
             {
-                cmd.stdin(Stdio::null())
+                cmd.stdin(Stdio::piped())
                     .stdout(Stdio::null())
                     .stderr(Stdio::from(log_file));
             }
-            let child = cmd.spawn().map_err(|e| {
-                anyhow!(
-                    "No se pudo arrancar el servidor Qwen3-TTS ({}): {}",
-                    bin.display(),
-                    e
-                )
-            })?;
-            Self::spawn_with_child(child, port, log_path, 60, 500)
         }
+        cmd.spawn().map_err(|e| {
+            anyhow!(
+                "No se pudo arrancar el servidor Qwen3-TTS ({}): {}",
+                bin.display(),
+                e
+            )
+        })
+    }
 
+    impl Qwen3TtsResident {
         /// Arranca el healthcheck sobre un hijo ya lanzado (retries/intervalo
         /// configurables para los tests de reintentos). `log_path` se guarda en el
         /// struct para incluirse en errores de `wait_health`.
@@ -1053,7 +1102,15 @@ pub mod resident {
             interval_ms: u64,
         ) -> Result<Self> {
             let mut child = child;
-            wait_health(&mut child, port, retries, interval_ms, log_path.as_path())?;
+            if let Err(e) = wait_health(&mut child, port, retries, interval_ms, log_path.as_path())
+            {
+                // Un motor que no llegó a estar sano se termina y se recoge aquí:
+                // soltar el `Child` sin `wait` dejaría un zombi en Unix, que
+                // seguiría pareciendo vivo para una comprobación por PID.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
             Ok(Self {
                 child: Some(child),
                 port,
@@ -1350,6 +1407,33 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    /// Al registrar el residente, el pidfile trae su identidad y conserva el resto.
+    #[test]
+    fn resident_update_records_resident_identity() {
+        let dir = std::env::temp_dir().join(format!("avi_tts_pidfile_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("daemon.pid");
+        std::fs::write(
+            &path,
+            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 0}"#,
+        )
+        .unwrap();
+
+        let own_pid = std::process::id();
+        update_resident_pid_at(&path, own_pid);
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let own = avi_process::process_identity(own_pid).expect("identidad propia");
+        assert_eq!(v["resident_pid"], own_pid);
+        assert_eq!(v["resident_identity"]["start"], own.start.as_str());
+        assert_eq!(v["resident_identity"]["image"], own.image.as_str());
+        assert_eq!(v["pid"], 4242);
+        assert_eq!(v["addr"], "127.0.0.1:7001");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Los defaults del host deben coincidir con los defaults del motor
     /// (los del motor). Afirma los defaults del `struct`/motor sin
     /// cambios, no los valores de producción de `GenerationOptions::production()`
@@ -1423,6 +1507,7 @@ mod tests {
                 "-j",
                 "4",
                 "--stream",
+                "--watch-stdin",
             ]
         );
 
@@ -1449,10 +1534,281 @@ mod tests {
                 "-j",
                 "4",
                 "--stream",
+                "--watch-stdin",
                 "--load-voice",
                 "voz.qvoice",
                 "--icl-only",
             ]
+        );
+    }
+
+    /// Mata y recoge al motor al soltarse, también si la prueba falla, para no
+    /// dejar procesos `qwen_tts` vivos.
+    struct EngineGuard(std::process::Child);
+
+    impl Drop for EngineGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Lanza el motor real en modo `--serve` sobre un puerto efímero de
+    /// loopback, con stdout y stderr descartados. Exige el binario y los pesos:
+    /// si faltan, falla de forma explícita.
+    fn spawn_real_engine(watch_stdin: bool, stdin: Stdio) -> EngineGuard {
+        // El directorio de trabajo de `cargo test` es el del crate, así que la
+        // ruta relativa `vendor/…` se ancla a la raíz del repositorio.
+        let vendored = Path::new(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+            "../../vendor/qwen3-tts/qwen_tts.exe"
+        } else {
+            "../../vendor/qwen3-tts/qwen_tts"
+        });
+        let bin = std::env::var_os("QWEN3_TTS_BIN")
+            .map(PathBuf::from)
+            .or_else(|| vendored.is_file().then_some(vendored))
+            .expect(
+                "falta el binario del motor (QWEN3_TTS_BIN o vendor/qwen3-tts/qwen_tts.exe): \
+             constrúyelo con `cargo xtask build-engine`",
+            );
+        assert!(bin.is_file(), "falta {}", bin.display());
+        let model_dir = resolve_model_dir(Some(&bin)).expect(
+            "faltan los pesos qwen3-tts-0.6b: aprovisiónalos con `ai-voice-interconnector setup`",
+        );
+        let port = TcpListener::bind("127.0.0.1:0")
+            .expect("debe poder reservar un puerto efímero")
+            .local_addr()
+            .expect("el listener debe tener dirección")
+            .port();
+        let mut cmd = Command::new(&bin);
+        cmd.arg("-d")
+            .arg(&model_dir)
+            .arg("--serve")
+            .arg(port.to_string())
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--int4")
+            .arg("-j")
+            .arg("4");
+        if watch_stdin {
+            cmd.arg("--watch-stdin");
+        }
+        let child = cmd
+            .stdin(stdin)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("debe poder lanzar el motor");
+        EngineGuard(child)
+    }
+
+    /// Sin `--watch-stdin`, un motor lanzado con la entrada nula (que está en
+    /// fin de fichero desde el primer byte) no termina al arrancar: el
+    /// comportamiento sin el flag se conserva.
+    #[test]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    fn engine_without_watch_stdin_survives_null_stdin() {
+        let mut engine = spawn_real_engine(false, Stdio::null());
+        thread::sleep(Duration::from_secs(3));
+        let status = engine.0.try_wait().expect("debe poder consultar al motor");
+        assert!(
+            status.is_none(),
+            "sin --watch-stdin el motor no debe terminar con la entrada nula: {status:?}"
+        );
+    }
+
+    /// Con `--watch-stdin` y la entrada en tubería, el motor sigue vivo mientras
+    /// la tubería está abierta y termina en menos de 10 s al cerrarla.
+    #[test]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    fn engine_with_watch_stdin_exits_when_pipe_closes() {
+        let mut engine = spawn_real_engine(true, Stdio::piped());
+        let stdin = engine.0.stdin.take().expect("la entrada debe ser tubería");
+        thread::sleep(Duration::from_secs(3));
+        let status = engine.0.try_wait().expect("debe poder consultar al motor");
+        assert!(
+            status.is_none(),
+            "con la tubería abierta el motor debe seguir vivo: {status:?}"
+        );
+        drop(stdin);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut exited = false;
+        while std::time::Instant::now() < deadline {
+            if engine
+                .0
+                .try_wait()
+                .expect("debe poder consultar al motor")
+                .is_some()
+            {
+                exited = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            exited,
+            "al cerrar la tubería el motor debe terminar en menos de 10 s"
+        );
+    }
+
+    /// Limpieza del motor doble: mata su árbol por PID y borra su directorio
+    /// temporal al soltarse, también si la prueba falla, para no dejar procesos.
+    struct DoubleCleanup {
+        pid: u32,
+        dir: PathBuf,
+    }
+
+    impl Drop for DoubleCleanup {
+        fn drop(&mut self) {
+            let _ = resident::kill_tree_resident_by_pid(self.pid);
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Escribe un motor doble ejecutable en un directorio temporal propio y
+    /// devuelve su ruta y el directorio. Al arrancar registra sus argumentos en
+    /// `args.txt`, sondea su entrada estándar durante 500 ms y registra en
+    /// `stdin.txt` si vio `eof` (entrada nula o cerrada) u `open` (tubería
+    /// abierta). Con `hold`: si la tubería estaba abierta espera a que se cierre
+    /// y sale; si vio `eof` no sale por sí mismo (duerme 60 s). Sin `hold`
+    /// sale tras el sondeo.
+    fn write_engine_double(name: &str, hold: bool) -> (PathBuf, PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("avi-tts-double-{}-{}", name, std::process::id()));
+        std::fs::create_dir_all(&dir).expect("debe poder crear el directorio del doble");
+        // El doble se compila con `rustc` como ejecutable nativo en lugar de un
+        // script: un `.cmd` intermedio bajo `DETACHED_PROCESS` abre una consola
+        // nueva y el script hijo hereda su entrada de consola (siempre abierta)
+        // en vez de la entrada que pasó el lanzador, falseando el sondeo.
+        let source = r#"use std::io::Read;
+use std::sync::mpsc;
+use std::time::Duration;
+
+const DIR: &str = r"__DIR__";
+const HOLD: bool = __HOLD__;
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    std::fs::write(format!("{DIR}/args.txt"), args.join(" ")).unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut byte = [0u8; 1];
+        let read = std::io::stdin().read(&mut byte).unwrap_or(0);
+        let _ = tx.send(read);
+    });
+    let seen_eof = matches!(rx.recv_timeout(Duration::from_millis(500)), Ok(0));
+    let state = if seen_eof { "eof" } else { "open" };
+    std::fs::write(format!("{DIR}/stdin.txt"), state).unwrap();
+    if HOLD {
+        if seen_eof {
+            std::thread::sleep(Duration::from_secs(60));
+        } else {
+            let _ = rx.recv();
+        }
+    }
+}
+"#
+        .replace("__DIR__", &dir.display().to_string())
+        .replace("__HOLD__", if hold { "true" } else { "false" });
+        let src = dir.join("engine_double.rs");
+        std::fs::write(&src, source).expect("debe escribir el código del doble");
+        let bin = dir.join(if cfg!(windows) {
+            "engine_double.exe"
+        } else {
+            "engine_double"
+        });
+        let compiled = Command::new("rustc")
+            .arg("--edition")
+            .arg("2021")
+            .arg(&src)
+            .arg("-o")
+            .arg(&bin)
+            .output()
+            .expect("rustc debe estar disponible para compilar el doble");
+        assert!(
+            compiled.status.success(),
+            "no se pudo compilar el doble: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        (bin, dir)
+    }
+
+    /// Espera (hasta 20 s) a que `path` exista con contenido y lo devuelve
+    /// sin espacios en los extremos.
+    fn wait_for_marker(path: &Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if !text.trim().is_empty() {
+                    return text.trim().to_string();
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!("el motor doble no escribió {}", path.display());
+    }
+
+    /// Lanza el motor doble con la función de arranque del residente y un log
+    /// temporal propio. Devuelve el hijo y la limpieza.
+    fn launch_double(bin: &Path, dir: &Path) -> (std::process::Child, DoubleCleanup) {
+        let log_file = std::fs::File::create(dir.join("engine.log")).expect("log del doble");
+        let child =
+            resident::launch_resident_process(bin, Path::new("modelos"), 8766, None, log_file)
+                .expect("debe poder lanzar el motor doble");
+        let cleanup = DoubleCleanup {
+            pid: child.id(),
+            dir: dir.to_path_buf(),
+        };
+        (child, cleanup)
+    }
+
+    /// El arranque del residente pasa `--watch-stdin` al motor, para que
+    /// termine cuando su entrada se cierre.
+    #[test]
+    fn launch_resident_process_passes_watch_stdin() {
+        let (bin, dir) = write_engine_double("args", false);
+        let (_child, _cleanup) = launch_double(&bin, &dir);
+        let args = wait_for_marker(&dir.join("args.txt"));
+        assert!(
+            args.split_whitespace().any(|a| a == "--watch-stdin"),
+            "el motor debe recibir --watch-stdin; argumentos recibidos: {args}"
+        );
+    }
+
+    /// Mientras el motor corre, su entrada estándar es una tubería abierta
+    /// (no nula): si estuviera nula, el motor vería fin de fichero de inmediato.
+    #[test]
+    fn launch_resident_process_keeps_stdin_pipe_open() {
+        let (bin, dir) = write_engine_double("stdin", false);
+        let (_child, _cleanup) = launch_double(&bin, &dir);
+        let state = wait_for_marker(&dir.join("stdin.txt"));
+        assert_eq!(
+            state, "open",
+            "la entrada del motor debe ser una tubería abierta mientras corre"
+        );
+    }
+
+    /// Si el healthcheck falla, el motor muere en menos de 5 s: al perder la
+    /// tubería de entrada (o por terminación explícita) no queda vivo un
+    /// motor sin gestor. El doble solo sale tras ver su tubería abierta y luego
+    /// cerrada; con entrada nula duerme 60 s, así que la prueba lo distingue.
+    #[test]
+    fn spawn_with_child_failure_terminates_engine() {
+        let (bin, dir) = write_engine_double("health", true);
+        let (child, cleanup) = launch_double(&bin, &dir);
+        // El sondeo de entrada del doble debe haber concluido antes de provocar
+        // el fallo, para que el cierre de la tubería llegue después de verla abierta.
+        let _ = wait_for_marker(&dir.join("stdin.txt"));
+        let result = resident::Qwen3TtsResident::spawn_with_child(child, 1, test_log_path(), 2, 30);
+        assert!(result.is_err(), "sin servidor el healthcheck debe fallar");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && process_alive(cleanup.pid) {
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            !process_alive(cleanup.pid),
+            "el motor debe haber muerto en menos de 5 s tras el fallo del healthcheck (pid {})",
+            cleanup.pid
         );
     }
 

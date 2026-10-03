@@ -95,10 +95,8 @@ pub fn spawn_background(
     // Grupo propio ya garantizado por flags (Windows: CREATE_NEW_PROCESS_GROUP;
     // Unix: setsid): el árbol es matable de forma precisa por PID con
     // `kill_tree_by_pid` (alternativa admitida: taskkill `/F /T` por PID con
-    // verificación posterior). El Job Object con cierre del árbol NO se crea
-    // aquí en el padre efímero (moriría con él y mataría al daemon recién
-    // lanzado): lo instala el daemon longevo al arrancar vía
-    // `install_job_with_tree_kill` (lado servidor).
+    // verificación posterior). El motor muere con el daemon porque vigila su
+    // entrada estándar, no por un agrupamiento del sistema operativo.
     let child = cmd.spawn()?;
     Ok(child)
 }
@@ -153,8 +151,7 @@ fn fits_pid_t(pid: u32) -> bool {
     i32::try_from(pid).is_ok()
 }
 
-/// Mata el árbol preciso por PID con la alternativa admitida (sin Job en el
-/// padre): Windows `taskkill /F /T /PID` (mata el árbol); Unix `kill -9` al
+/// Mata el árbol preciso por PID: Windows `taskkill /F /T /PID` (mata el árbol); Unix `kill -9` al
 /// grupo (`-<pid>`, el daemon es líder de sesión por `setsid`) y luego al PID.
 /// No toca pidfile ni verifica: el llamante combina con `pid_alive` y deadline.
 /// Nunca mata el PID 0; la guarda contra auto-muerte (`pid != proceso propio`
@@ -227,10 +224,3 @@ mod tests {
         assert!(!kill_tree_by_pid(pid));
     }
 }
-
-// Instala en el proceso actual (lado daemon longevo) un Job Object con
-// `KILL_ON_JOB_CLOSE`. La implementación vive en el binario, en la rama
-// `Serve`, que sí dispone de `windows-sys` vía el workspace: este crate
-// no añade la dependencia para no exceder el alcance (alternativa admitida:
-// `kill_tree_by_pid` con verificación). La rama del CLI se llama
-// `install_job_with_tree_kill`.

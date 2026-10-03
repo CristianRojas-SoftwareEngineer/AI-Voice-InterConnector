@@ -7,6 +7,7 @@ description = "Primitivas de procesos del sistema operativo: flags de creación 
 
 [dependencies]
 anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 
 # Único crate que fija flags de creación de procesos: el resto del repositorio
 # las importa de aquí con los nombres oficiales de `windows-sys`.

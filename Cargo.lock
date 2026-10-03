@@ -246,6 +246,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "avi-core",
+ "avi-process",
  "avi-shared",
  "avi-store",
  "flate2",
@@ -266,6 +267,7 @@ name = "avi-process"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
  "windows-sys 0.52.0",
 ]
 
