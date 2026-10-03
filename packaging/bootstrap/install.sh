@@ -11,6 +11,11 @@
 # comprueba que el binario arranca y delega en `self install`. Sin `--check`:
 # con el binario instalado se usa `self update --check`. El PATH, los modelos y
 # las rutas de estado los decide `self install`, no este script.
+#
+# Todo el flujo vive en `main`, que se invoca en la última línea: con
+# `curl | sh`, una descarga cortada antes de esa línea no ejecuta nada.
+# La descarga exige `curl`: solo él permite limitar también las redirecciones a
+# HTTPS (`--proto '=https'`).
 
 set -eu
 umask 077
@@ -34,59 +39,8 @@ AVI_YES=1, AVI_DOWNLOAD_BASE_URL. Sin --check: usa `self update --check`.
 EOF
 }
 
-# Entradas: la opción manda; si falta, vale la variable de entorno.
-opt_version="${AVI_VERSION:-}"
-opt_no_setup=0; opt_no_modify_path=0; opt_yes=0
-case "${AVI_NO_SETUP:-}" in 1|true|yes|True|Yes|TRUE|YES) opt_no_setup=1 ;; esac
-case "${AVI_NO_MODIFY_PATH:-}" in 1|true|yes|True|Yes|TRUE|YES) opt_no_modify_path=1 ;; esac
-case "${AVI_YES:-}" in 1|true|yes|True|Yes|TRUE|YES) opt_yes=1 ;; esac
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --version) [ "$#" -ge 2 ] || fail "[usage_error] --version necesita un valor X.Y.Z." 2; opt_version="$2"; shift 2 ;;
-        --version=*) opt_version="${1#--version=}"; shift ;;
-        --no-setup) opt_no_setup=1; shift ;;
-        --no-modify-path) opt_no_modify_path=1; shift ;;
-        --yes) opt_yes=1; shift ;;
-        -h|--help) print_help; exit 0 ;;
-        --) shift; break ;;
-        -*) fail "[usage_error] opción desconocida: $1." 2 ;;
-        *) fail "[usage_error] argumento inesperado: $1." 2 ;;
-    esac
-done
-
-# Privilegios: instalación per-user; con sudo se aborta, root puro vale.
-if [ "$(id -u 2>/dev/null || printf '1000')" = "0" ] && [ -n "${SUDO_USER:-}" ]; then
-    fail "no ejecutes este instalador con sudo: la instalación es per-user y acabaría en el perfil de root."
-fi
-
-# Detección del target; en macOS manda sysctl aunque haya Rosetta.
-os="$(uname -s)"
-machine="$(uname -m)"
-case "$os" in
-    Linux)
-        case "$machine" in
-            x86_64|amd64) target="x86_64-unknown-linux-gnu"; asset_arch="x86_64"; asset_os="linux" ;;
-            aarch64|arm64) target="aarch64-unknown-linux-gnu"; asset_arch="arm64"; asset_os="linux" ;;
-            *) fail "[unsupported_platform] arquitectura no soportada: Linux/$machine (solo x86_64 y arm64). Alternativa: compila desde la fuente (docs/BUILD.md)." ;;
-        esac
-        ;;
-    Darwin)
-        if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || printf '0')" = "1" ]; then
-            target="aarch64-apple-darwin"; asset_arch="arm64"; asset_os="macos"
-        else
-            fail "[unsupported_platform] Mac Intel no soportado (solo Apple Silicon). Alternativa: compila desde la fuente (docs/BUILD.md)."
-        fi
-        ;;
-    *) fail "[unsupported_platform] sistema no soportado: $os (solo Linux y macOS; en Windows usa install.ps1)." ;;
-esac
-
-# Requisitos: POSIX sh más descarga, hash, extracción y temporales.
-for cmd in mktemp tar tr dirname; do have "$cmd" || fail "falta el comando requerido: $cmd."; done
-have curl || have wget || fail "se necesita curl o wget para descargar."
-have sha256sum || have shasum || fail "se necesita sha256sum o shasum para verificar."
-
 fetch() { # $1=url, $2=destino
-    if have curl; then curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1"; else wget -q -O "$2" "$1"; fi
+    curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1"
 }
 
 # Última estable sin API REST: se sigue la redirección de releases/latest.
@@ -100,8 +54,7 @@ resolve_latest_redirect() {
 # Respaldo con la API sin parsear JSON: solo se extrae tag_name con
 # expansiones de la shell (sin grep, sed, awk ni expresiones regulares).
 resolve_latest_api() {
-    if have curl; then body="$(curl -fsSL --proto '=https' --tlsv1.2 "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null || true)";
-    else body="$(wget -q -O - "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null || true)"; fi
+    body="$(curl -fsSL --proto '=https' --tlsv1.2 "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null || true)"
     rest="${body#*tag_name}"
     [ "$rest" != "$body" ] || return 1
     rest="${rest#*:}"
@@ -116,71 +69,129 @@ resolve_latest_api() {
     printf '%s' "${tag#v}"
 }
 
-# Resolución de versión: opción o variable, estampada, latest.
-version="${opt_version#v}"
-case "$version" in "") case "$stamped_version" in ""|__AVI_*) version="" ;; *) version="$stamped_version" ;; esac ;; esac
-case "$version" in
-    "") version="$(resolve_latest_redirect || resolve_latest_api || true)"
-        [ -n "$version" ] || fail "[network_error] no se pudo resolver la última versión (sin red o sin GitHub). Fija una con --version X.Y.Z o AVI_VERSION." ;;
-esac
-case "$version" in ""|*[!0-9.]*|*..*|.*|*.) fail "[usage_error] versión inválida: '$version' (se espera X.Y.Z)." 2 ;; esac
+main() {
+    # Entradas: la opción manda; si falta, vale la variable de entorno.
+    opt_version="${AVI_VERSION:-}"
+    opt_no_setup=0; opt_no_modify_path=0; opt_yes=0
+    case "${AVI_NO_SETUP:-}" in 1|true|yes|True|Yes|TRUE|YES) opt_no_setup=1 ;; esac
+    case "${AVI_NO_MODIFY_PATH:-}" in 1|true|yes|True|Yes|TRUE|YES) opt_no_modify_path=1 ;; esac
+    case "${AVI_YES:-}" in 1|true|yes|True|Yes|TRUE|YES) opt_yes=1 ;; esac
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --version) [ "$#" -ge 2 ] || fail "[usage_error] --version necesita un valor X.Y.Z." 2; opt_version="$2"; shift 2 ;;
+            --version=*) opt_version="${1#--version=}"; shift ;;
+            --no-setup) opt_no_setup=1; shift ;;
+            --no-modify-path) opt_no_modify_path=1; shift ;;
+            --yes) opt_yes=1; shift ;;
+            -h|--help) print_help; exit 0 ;;
+            --) shift; break ;;
+            -*) fail "[usage_error] opción desconocida: $1." 2 ;;
+            *) fail "[usage_error] argumento inesperado: $1." 2 ;;
+        esac
+    done
 
-# Staging hermano del programa (mismo volumen), solo para el usuario.
-program_dir="${AVI_INSTALL_DIR:-${HOME:-}/.local/opt/$app}"
-[ -n "$program_dir" ] && [ "$program_dir" != "/.local/opt/$app" ] || fail "no se puede situar el staging sin HOME ni AVI_INSTALL_DIR."
-program_parent="$(dirname "$program_dir")"
-mkdir -p "$program_parent" || fail "no se pudo crear $program_parent."
-staging="$(mktemp -d "$program_parent/.ai-voice-interconnector-staging-XXXXXX")" || fail "no se pudo crear el staging."
-chmod 700 "$staging"
-trap 'rm -rf "$staging"' EXIT INT TERM
+    # Privilegios: instalación per-user; con sudo se aborta, root puro vale.
+    if [ "$(id -u 2>/dev/null || printf '1000')" = "0" ] && [ -n "${SUDO_USER:-}" ]; then
+        fail "no ejecutes este instalador con sudo: la instalación es per-user y acabaría en el perfil de root."
+    fi
 
-base="${AVI_DOWNLOAD_BASE_URL:-https://github.com/$repo/releases/download}"
-archive="$app-$version-$asset_arch-$asset_os.tar.gz"
-log "Instalando $app $version ($target)..."
-fetch "$base/v$version/$archive" "$staging/$archive" || fail "[network_error] descarga fallida: $archive."
-fetch "$base/v$version/SHA256SUMS.txt" "$staging/SHA256SUMS.txt" || fail "[network_error] descarga fallida: SHA256SUMS.txt."
+    # Detección del target; en macOS manda sysctl aunque haya Rosetta.
+    os="$(uname -s)"
+    machine="$(uname -m)"
+    case "$os" in
+        Linux)
+            case "$machine" in
+                x86_64|amd64) target="x86_64-unknown-linux-gnu"; asset_arch="x86_64"; asset_os="linux" ;;
+                aarch64|arm64) target="aarch64-unknown-linux-gnu"; asset_arch="arm64"; asset_os="linux" ;;
+                *) fail "[unsupported_platform] arquitectura no soportada: Linux/$machine (solo x86_64 y arm64). Alternativa: compila desde la fuente (docs/BUILD.md)." ;;
+            esac
+            ;;
+        Darwin)
+            if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || printf '0')" = "1" ]; then
+                target="aarch64-apple-darwin"; asset_arch="arm64"; asset_os="macos"
+            else
+                fail "[unsupported_platform] Mac Intel no soportado (solo Apple Silicon). Alternativa: compila desde la fuente (docs/BUILD.md)."
+            fi
+            ;;
+        *) fail "[unsupported_platform] sistema no soportado: $os (solo Linux y macOS; en Windows usa install.ps1)." ;;
+    esac
 
-# Verificación exacta: el nombre debe coincidir cadena a cadena, sin regex.
-expected=""
-while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ""|\#*) continue ;; esac
-    # shellcheck disable=SC2086
-    set -- $line
-    entry="${2:-}"; entry="${entry#"*"}"
-    if [ "$entry" = "$archive" ]; then expected="${1:-}"; break; fi
-done < "$staging/SHA256SUMS.txt"
-[ -n "$expected" ] || fail "[checksum_mismatch] SHA256SUMS.txt no contiene ninguna línea para $archive; instalación abortada."
-if have sha256sum; then actual="$(sha256sum "$staging/$archive" || true)"; else actual="$(shasum -a 256 "$staging/$archive" || true)"; fi
-actual="${actual%% *}"
-expected="$(printf '%s' "$expected" | tr 'A-Z' 'a-z')"
-actual="$(printf '%s' "$actual" | tr 'A-Z' 'a-z')"
-[ "$actual" = "$expected" ] || fail "[checksum_mismatch] el checksum de $archive no coincide con SHA256SUMS.txt; instalación abortada."
-log "Checksum verificado: $archive"
+    # Requisitos: POSIX sh más descarga, hash, extracción y temporales.
+    for cmd in mktemp tar tr dirname curl; do have "$cmd" || fail "falta el comando requerido: $cmd."; done
+    have sha256sum || have shasum || fail "se necesita sha256sum o shasum para verificar."
 
-tar -xzf "$staging/$archive" -C "$staging" || fail "no se pudo extraer $archive."
-bin="$staging/$app"
-[ -x "$bin" ] || fail "[bundle_invalid] el archivo no contiene el binario esperado: $app."
-# Compatibilidad comprobada, no inferida: si no arranca se
-# diagnostica sin parsear la glibc y lo instalado queda intacto.
-if ! "$bin" --version >/dev/null 2>&1; then
-    log "ERROR [binary_incompatible]: el binario descargado ($target) no arranca en este sistema."
-    log "Causa probable en Linux: glibc insuficiente (se requiere glibc >= 2.35), musl (Alpine) o userland de 32 bits."
-    log "Alternativa: compila desde la fuente siguiendo docs/BUILD.md. La instalación existente no se ha modificado."
-    exit 1
-fi
+    # Resolución de versión: opción o variable, estampada, latest.
+    version="${opt_version#v}"
+    case "$version" in "") case "$stamped_version" in ""|__AVI_*) version="" ;; *) version="$stamped_version" ;; esac ;; esac
+    case "$version" in
+        "") version="$(resolve_latest_redirect || resolve_latest_api || true)"
+            [ -n "$version" ] || fail "[network_error] no se pudo resolver la última versión (sin red o sin GitHub). Fija una con --version X.Y.Z o AVI_VERSION." ;;
+    esac
+    # Exactamente X.Y.Z: solo dígitos y puntos, sin componentes vacíos y con tres
+    # componentes (se cuentan partiendo por `.`, sin expresiones regulares).
+    case "$version" in ""|*[!0-9.]*|*..*|.*|*.) fail "[usage_error] versión inválida: '$version' (se espera X.Y.Z)." 2 ;; esac
+    old_ifs="$IFS"; IFS=.; set -- $version; IFS="$old_ifs"
+    [ "$#" -eq 3 ] || fail "[usage_error] versión inválida: '$version' (se espera X.Y.Z)." 2
 
-# Delegación en el binario nuevo; con tubería, stdin va a /dev/tty
-# cuando se puede abrir (existe el nodo pero sin terminal rectora no se abre).
-set -- self install
-[ "$opt_no_setup" = "1" ] && set -- "$@" --no-setup
-[ "$opt_no_modify_path" = "1" ] && set -- "$@" --no-modify-path
-[ "$opt_yes" = "1" ] && set -- "$@" --yes
-code=0
-if [ ! -t 0 ] && ( : < /dev/tty ) 2>/dev/null; then
-    if "$bin" "$@" < /dev/tty; then code=0; else code=$?; fi
-else
-    if "$bin" "$@"; then code=0; else code=$?; fi
-fi
-rm -rf "$staging"
-trap - EXIT INT TERM
-exit "$code"
+    # Staging hermano del programa (mismo volumen), solo para el usuario.
+    program_dir="${AVI_INSTALL_DIR:-${HOME:-}/.local/opt/$app}"
+    [ -n "$program_dir" ] && [ "$program_dir" != "/.local/opt/$app" ] || fail "no se puede situar el staging sin HOME ni AVI_INSTALL_DIR."
+    program_parent="$(dirname "$program_dir")"
+    mkdir -p "$program_parent" || fail "no se pudo crear $program_parent."
+    staging="$(mktemp -d "$program_parent/.ai-voice-interconnector-staging-XXXXXX")" || fail "no se pudo crear el staging."
+    chmod 700 "$staging"
+    trap 'rm -rf "$staging"' EXIT INT TERM
+
+    base="${AVI_DOWNLOAD_BASE_URL:-https://github.com/$repo/releases/download}"
+    archive="$app-$version-$asset_arch-$asset_os.tar.gz"
+    log "Instalando $app $version ($target)..."
+    fetch "$base/v$version/$archive" "$staging/$archive" || fail "[network_error] descarga fallida: $archive."
+    fetch "$base/v$version/SHA256SUMS.txt" "$staging/SHA256SUMS.txt" || fail "[network_error] descarga fallida: SHA256SUMS.txt."
+
+    # Verificación exacta: el nombre debe coincidir cadena a cadena, sin regex.
+    expected=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ""|\#*) continue ;; esac
+        # shellcheck disable=SC2086
+        set -- $line
+        entry="${2:-}"; entry="${entry#"*"}"
+        if [ "$entry" = "$archive" ]; then expected="${1:-}"; break; fi
+    done < "$staging/SHA256SUMS.txt"
+    [ -n "$expected" ] || fail "[checksum_mismatch] SHA256SUMS.txt no contiene ninguna línea para $archive; instalación abortada."
+    if have sha256sum; then actual="$(sha256sum "$staging/$archive" || true)"; else actual="$(shasum -a 256 "$staging/$archive" || true)"; fi
+    actual="${actual%% *}"
+    expected="$(printf '%s' "$expected" | tr 'A-Z' 'a-z')"
+    actual="$(printf '%s' "$actual" | tr 'A-Z' 'a-z')"
+    [ "$actual" = "$expected" ] || fail "[checksum_mismatch] el checksum de $archive no coincide con SHA256SUMS.txt; instalación abortada."
+    log "Checksum verificado: $archive"
+
+    tar -xzf "$staging/$archive" -C "$staging" || fail "no se pudo extraer $archive."
+    bin="$staging/$app"
+    [ -x "$bin" ] || fail "[bundle_invalid] el archivo no contiene el binario esperado: $app."
+    # Compatibilidad comprobada, no inferida: si no arranca se
+    # diagnostica sin parsear la glibc y lo instalado queda intacto.
+    if ! "$bin" --version >/dev/null 2>&1; then
+        log "ERROR [binary_incompatible]: el binario descargado ($target) no arranca en este sistema."
+        log "Causa probable en Linux: glibc insuficiente (se requiere glibc >= 2.35), musl (Alpine) o userland de 32 bits."
+        log "Alternativa: compila desde la fuente siguiendo docs/BUILD.md. La instalación existente no se ha modificado."
+        exit 1
+    fi
+
+    # Delegación en el binario nuevo; con tubería, stdin va a /dev/tty
+    # cuando se puede abrir (existe el nodo pero sin terminal rectora no se abre).
+    set -- self install
+    [ "$opt_no_setup" = "1" ] && set -- "$@" --no-setup
+    [ "$opt_no_modify_path" = "1" ] && set -- "$@" --no-modify-path
+    [ "$opt_yes" = "1" ] && set -- "$@" --yes
+    code=0
+    if [ ! -t 0 ] && ( : < /dev/tty ) 2>/dev/null; then
+        if "$bin" "$@" < /dev/tty; then code=0; else code=$?; fi
+    else
+        if "$bin" "$@"; then code=0; else code=$?; fi
+    fi
+    rm -rf "$staging"
+    trap - EXIT INT TERM
+    exit "$code"
+}
+
+main "$@"

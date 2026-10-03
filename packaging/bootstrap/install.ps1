@@ -53,6 +53,13 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
         return ($value -eq "1" -or $value -eq "true" -or $value -eq "yes")
     }
 
+    function Test-BootstrapVersion {
+        # Exactamente X.Y.Z (tres componentes numericos). `\z` y no `$`: este
+        # ultimo aceptaria un salto de linea final.
+        param([string]$Value)
+        return ($Value -match '^[0-9]+\.[0-9]+\.[0-9]+\z')
+    }
+
     function Resolve-BootstrapLatest {
         # Ultima estable sin API REST: se sigue la redireccion de releases/latest.
         # La URL final vive en sitios distintos segun la version (5.1: respuesta
@@ -66,15 +73,13 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
                 $final = [string]$response.BaseResponse.ResponseUri.AbsoluteUri
             }
             $tag = $final.Substring($final.LastIndexOf("/") + 1).TrimStart("v")
-            $parsed = $null
-            if ([Version]::TryParse($tag, [ref]$parsed)) { return $tag }
+            if (Test-BootstrapVersion $tag) { return $tag }
         }
         # Respaldo con la API (objeto, sin parsear JSON a mano).
         $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing -Headers @{ "User-Agent" = "ai-voice-interconnector-bootstrap" } -ErrorAction SilentlyContinue
         if ($null -ne $release) {
             $tag = ([string]$release.tag_name).TrimStart("v")
-            $parsed = $null
-            if ([Version]::TryParse($tag, [ref]$parsed)) { return $tag }
+            if (Test-BootstrapVersion $tag) { return $tag }
         }
         return ""
     }
@@ -90,8 +95,7 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
                 throw "ERROR [network_error]: no se pudo resolver la ${u}ltima versi${o}n (sin red o sin GitHub). Fija una con -Version X.Y.Z o AVI_VERSION."
             }
         }
-        $parsed = $null
-        if (-not [Version]::TryParse($version, [ref]$parsed)) {
+        if (-not (Test-BootstrapVersion $version)) {
             throw "ERROR [usage_error]: versi${o}n inv${a}lida: '$version' (se espera X.Y.Z)."
         }
         return $version

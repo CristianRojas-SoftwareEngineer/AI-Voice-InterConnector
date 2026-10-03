@@ -183,6 +183,24 @@ Describe "bootstrap de Windows" {
         ($result.Stdout + $result.Stderr) | Should -Match "unsupported_platform"
     }
 
+    It "una version que no tiene exactamente tres componentes falla sin descargar" -ForEach @(
+        @{ Bad = "1" }, @{ Bad = "1.2" }, @{ Bad = "1.2.3.4" }, @{ Bad = "1.2.x" }, @{ Bad = "1..2" }
+    ) {
+        $envBase = Get-TestEnvBase $script:TestDir
+        # Puerto cerrado: si intentara descargar, el error seria de red.
+        $envBase.AVI_DOWNLOAD_BASE_URL = "http://127.0.0.1:1"
+        $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
+            -Arguments @("-Version", $Bad, "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
+
+        $result.ExitCode | Should -Not -Be 0
+        $output = $result.Stdout + $result.Stderr
+        # El mensaje lleva el valor concreto: la salida de error de PowerShell
+        # reproduce el texto del script (con `usage_error` sin expandir), asi
+        # que buscar solo el codigo daria falsos positivos.
+        $output | Should -Match ([regex]::Escape("usage_error]: ") + "versi.n inv.lida: '" + [regex]::Escape($Bad) + "'")
+        $output | Should -Not -Match ("Instalando ai-voice-interconnector " + [regex]::Escape($Bad))
+    }
+
     It "no deja variables ni funciones en la sesion tras dot-source (criterio 8)" {
         $varsBefore = Get-Variable -Scope Global | Select-Object -ExpandProperty Name
         $funcsBefore = Get-ChildItem function: | Select-Object -ExpandProperty Name

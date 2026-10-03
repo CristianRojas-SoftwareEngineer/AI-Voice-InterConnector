@@ -150,6 +150,32 @@ assert_no_staging_left() {
     [[ "$output" == *"usage_error"* ]]
 }
 
+@test "versión que no tiene exactamente tres componentes falla sin descargar" {
+    mock_uname x86_64
+    export AVI_DOWNLOAD_BASE_URL="http://127.0.0.1:1"
+
+    for bad in "1" "1.2" "1.2.3.4" "1.2.x" "1..2"; do
+        run sh "$INSTALL_SH" --version "$bad" --no-setup --no-modify-path --yes
+        [ "$status" -ne 0 ] || { echo "aceptó '$bad'"; return 1; }
+        [[ "$output" == *"usage_error"* ]] || { echo "sin usage_error para '$bad'"; return 1; }
+    done
+}
+
+@test "un script truncado antes de su última línea no ejecuta nada" {
+    mock_uname x86_64
+    export AVI_VERSION="9.9.9" AVI_NO_SETUP=1 AVI_NO_MODIFY_PATH=1 AVI_YES=1
+
+    # `sed '$d'` quita la última línea (la llamada final): lo que `curl | sh`
+    # ejecutaría si la descarga se cortara justo antes de ella.
+    run sh -c 'sed "\$d" "$1" | sh' _ "$INSTALL_SH"
+
+    [ "$status" -eq 0 ]
+    # El log del servidor ya trae la sonda de salud del arnés: lo que no debe
+    # haber es ninguna petición de descarga.
+    ! grep -q "GET /v9.9.9" "$SERVER_LOG"
+    [ ! -s "$AVI_FAKE_LOG" ]
+}
+
 @test "checksum corrupto falla con staging borrado y nada instalado (criterio 3)" {
     mock_uname x86_64
     harness_write_sums "$SERVE_DIR" corrupt "ai-voice-interconnector-9.9.9-x86_64-linux.tar.gz"

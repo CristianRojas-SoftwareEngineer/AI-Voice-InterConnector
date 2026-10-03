@@ -410,7 +410,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 9. **Delegar**: `<staging>/ai-voice-interconnector self install`, pasando las opciones. En Unix, si stdin no es una terminal y `/dev/tty` está disponible, stdin se redirige desde `/dev/tty`.
 10. **Terminar**: borrar el staging, tanto si hubo éxito como error, y propagar el código de salida de `self install`.
 
-**Requisitos de `install.sh`:** POSIX sh (dash, bash, busybox sh, zsh en modo sh); `curl` o, en su defecto, `wget`; `sha256sum` o `shasum -a 256`; `tar` y `mktemp`.
+**Requisitos de `install.sh`:** POSIX sh (dash, bash, busybox sh, zsh en modo sh); `curl` (exigido, sin `wget`: solo `curl` limita también las redirecciones a HTTPS); `sha256sum` o `shasum -a 256`; `tar` y `mktemp`.
 
 **Requisitos de `install.ps1`:** compatible con PowerShell 5.1 y 7+.
 

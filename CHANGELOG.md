@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.27.1 — 2026-10-02](#0271--2026-10-02)
 - [0.27.0 — 2026-10-02](#0270--2026-10-02)
 - [0.26.0 — 2026-10-01](#0260--2026-10-01)
@@ -97,6 +98,17 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Cambios incompatibles
+
+- `install.sh` exige `curl` y ya no usa `wget` como respaldo: solo `curl` permite limitar también las redirecciones a HTTPS (`--proto '=https'`). Quien solo tenga `wget` recibe `falta el comando requerido: curl`.
+- `install.sh` e `install.ps1` aceptan únicamente versiones `X.Y.Z` con tres componentes numéricos; `1`, `1.2` o `1.2.3.4` fallan con `usage_error` antes de descargar nada.
+
+### Cambiado
+
+- Todo el flujo de `install.sh` vive en una función `main` que se invoca en la última línea, así que una descarga cortada con `curl | sh` antes de esa línea no ejecuta nada.
 
 ## [0.27.1] — 2026-10-02
 
