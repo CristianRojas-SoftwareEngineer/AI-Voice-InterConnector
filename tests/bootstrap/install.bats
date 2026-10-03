@@ -10,6 +10,8 @@
 # Ejecutar: bats tests/bootstrap/install.bats (necesita openssl y curl; con
 # `sh`, que es dash en WSL).
 
+bats_require_minimum_version 1.5.0
+
 load "support/setup"
 
 setup() {
@@ -92,8 +94,8 @@ assert_no_staging_left() {
 
     run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"unsupported_platform"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Mac Intel no soportado"* ]]
 }
 
 @test "arquitectura no soportada falla antes de descargar" {
@@ -103,18 +105,20 @@ assert_no_staging_left() {
 
     run sh "$INSTALL_SH" --no-setup --no-modify-path --yes
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"unsupported_platform"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"arquitectura no soportada: Linux/riscv64"* ]]
 }
 
 @test "la opción --version manda sobre AVI_VERSION" {
     mock_uname x86_64
     export AVI_VERSION="8.8.8"
 
-    # El arnés solo sirve 9.9.9: si eligiera 8.8.8, la descarga fallaría.
+    # El arnés solo sirve 9.9.9: si eligiera 8.8.8, la instalación fallaría.
     run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
 
     [ "$status" -eq 0 ]
+    grep -q "^FILE:v9.9.9/" "$SERVER_LOG"
+    run ! grep -q "8.8.8" "$SERVER_LOG"
 }
 
 @test "AVI_VERSION se usa sin --version" {
@@ -147,8 +151,8 @@ assert_no_staging_left() {
 
     run sh "$INSTALL_SH" --version "abc" --no-setup --no-modify-path --yes
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"usage_error"* ]]
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"versión inválida: 'abc' (se espera X.Y.Z)"* ]]
 }
 
 @test "versión que no tiene exactamente tres componentes falla sin descargar" {
@@ -157,8 +161,8 @@ assert_no_staging_left() {
 
     for bad in "1" "1.2" "1.2.3.4" "1.2.x" "1..2"; do
         run sh "$INSTALL_SH" --version "$bad" --no-setup --no-modify-path --yes
-        [ "$status" -ne 0 ] || { echo "aceptó '$bad'"; return 1; }
-        [[ "$output" == *"usage_error"* ]] || { echo "sin usage_error para '$bad'"; return 1; }
+        [ "$status" -eq 2 ] || { echo "'$bad' no salió con 2: $status"; return 1; }
+        [[ "$output" == *"versión inválida: '$bad' (se espera X.Y.Z)"* ]] || { echo "sin mensaje para '$bad'"; return 1; }
     done
 }
 
@@ -171,9 +175,8 @@ assert_no_staging_left() {
     run sh -c 'sed "\$d" "$1" | sh' _ "$INSTALL_SH"
 
     [ "$status" -eq 0 ]
-    # El log del servidor ya trae la sonda de salud del arnés: lo que no debe
-    # haber es ninguna petición de descarga.
-    ! grep -q "GET /v9.9.9" "$SERVER_LOG"
+    # Ninguna descarga: el registro del servidor no nombra ningún archivo.
+    run ! grep -q "^FILE:" "$SERVER_LOG"
     [ ! -s "$AVI_FAKE_LOG" ]
 }
 
@@ -183,10 +186,11 @@ assert_no_staging_left() {
 
     run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"checksum_mismatch"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"el checksum de ai-voice-interconnector-9.9.9-x86_64-linux.tar.gz no coincide"* ]]
     assert_no_staging_left
-    [ ! -e "$AVI_INSTALL_DIR/ai-voice-interconnector" ]
+    # `self install` nunca se invocó: el doble no registró nada.
+    [ ! -s "$AVI_FAKE_LOG" ]
 }
 
 @test "falta el asset en SHA256SUMS y falla como checksum inválido" {
@@ -195,9 +199,10 @@ assert_no_staging_left() {
 
     run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"checksum_mismatch"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no contiene ninguna línea"* ]]
     assert_no_staging_left
+    [ ! -s "$AVI_FAKE_LOG" ]
 }
 
 @test "binario incompatible diagnostica glibc y deja lo instalado intacto (criterio 5)" {
@@ -250,8 +255,8 @@ assert_no_staging_left() {
         run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path < /dev/null
     fi
 
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"confirmación"* ]]
+    [ "$status" -eq 42 ]
+    [[ "$output" == *"se necesita confirmación interactiva o --yes"* ]]
 }
 
 @test "con terminal la confirmación procede sin --yes (criterio 10)" {
