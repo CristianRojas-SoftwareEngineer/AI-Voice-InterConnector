@@ -13,6 +13,8 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 pub mod spawn;
+/// Familia de los logs por arranque del daemon (`daemon_<pid>_<ms>.log`).
+pub const DAEMON_LOG_FAMILY: &str = "daemon";
 pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_death};
 // El trait `SttEngine` (`.transcribe`) solo lo consume la superficie STT,
 // gateada tras `native-stt`.

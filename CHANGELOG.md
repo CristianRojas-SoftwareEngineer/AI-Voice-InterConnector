@@ -104,8 +104,22 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 `install.ps1` fallaba al ejecutarse en Windows PowerShell 5.1 desde una consola que heredaba el entorno de módulos de PowerShell 7, y la suite no lo detectaba porque su arnés lo saneaba: ahora el instalador repara el entorno por sí mismo o falla con una explicación, y la suite cubre ese escenario.
 
+### Cambios incompatibles
+
+- Se retira `setup --with-stt` y la clave `with_stt` del JSON de `setup`: `parakeet-tdt-v3` ya se provisiona siempre. `setup --with-stt` falla ahora como argumento desconocido (exit 2, mensaje de texto de `clap` por stderr) y quien lea `with_stt` debe dejar de hacerlo.
+- La CLI muestra por defecto solo `warn` y superiores por stderr: trazas `info`, como el progreso de descarga de `setup`, ya no salen salvo que se pidan con `RUST_LOG=info`.
+
+### Cambiado
+
+- `RUST_LOG` manda sobre el nivel de traza por defecto, tanto en la CLI como en `daemon serve` (sintaxis de `tracing`, tolerante a directivas inválidas); sin ella, la CLI emite `warn` y `daemon serve` emite `info` de los crates propios y `warn` de las dependencias. stderr no lleva color ANSI cuando no es una terminal.
+- Cada `daemon start`/`restart` escribe el stdout y el stderr del daemon en `data/logs/daemon_<pid>_<ms>.log`, y los fallos de arranque terminan con `Log del daemon: <ruta>` sin cambiar `reason` ni exit code. El motor Qwen3-TTS escribe en `data/logs/qwen3-tts_<pid>_<ms>.log`.
+- Se conservan los 10 logs más recientes de cada familia (`daemon_*` y `qwen3-tts_*`); la poda ocurre al crear un log nuevo y no toca otros ficheros.
+
 ### Corregido
 
+- `voice clone` ya no vuelca la salida del motor en la terminal, ni por la vía directa ni por el daemon; el error `voice_clone_failed` termina con `Log del motor: <ruta>`.
+- Los errores del daemon en segundo plano ya quedan registrados: antes su salida se descartaba y un arranque fallido no dejaba rastro.
+- Los logs del motor ya no se acumulan sin límite en `data/logs/`.
 - `install.ps1` bajo Windows PowerShell 5.1 con el `PSModulePath` de PowerShell 7 (por ejemplo, al abrir `powershell.exe` desde una sesión `pwsh`) abortaba la verificación del checksum con un error opaco por la ausencia de `Get-FileHash`, y omitía en silencio la restricción de permisos del staging por la ausencia de `Get-Acl` y `Set-Acl`. Ahora verifica al arrancar los cmdlets estándar que usa, importa por ruta desde el directorio de instalación del propio motor el módulo que falte, sin modificar `PSModulePath`, y, si no basta, falla antes de descargar con `unsupported_platform` y un mensaje que nombra los cmdlets ausentes. La suite Pester construye ese entorno a propósito y ya no sanea el `PSModulePath` del hijo.
 
 ## [0.28.0] — 2026-10-03

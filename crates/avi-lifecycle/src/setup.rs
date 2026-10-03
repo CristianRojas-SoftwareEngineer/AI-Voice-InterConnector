@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 pub use avi_shared::paths::CLONING_MODEL;
 
 /// Opciones de `setup` que el motor necesita conocer. El resto de la superficie
-/// (`--json`, `--with-stt`) se queda en el binario, que es quien parsea la CLI.
+/// (`--json`) se queda en el binario, que es quien parsea la CLI.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Options {
     /// `--with-voice-cloning`: añade el modelo base de clonado a la selección.

@@ -9,13 +9,13 @@ use std::process::Command;
 /// `bInheritHandles=TRUE` (default de `CreateProcessW`, no forzable a FALSE en Rust
 /// estable) el daemon hijo —y `qwen_tts.exe`— heredan el handle de escritura del
 /// pipe. Como `output()` solo retorna cuando todos los holders del pipe lo cierran,
-/// el daemon (que vive ~10 s en graceful shutdown) colgaba el test. `Stdio::null`
-/// aquí no basta (fija los STD del hijo pero no impide heredar OTROS handles
+/// el daemon (que vive ~10 s en graceful shutdown) colgaba el test. Redirigir los
+/// STD del hijo aquí no basta (no impide heredar OTROS handles
 /// heredables del padre): la protección real es cortar la herencia en la raíz con
 /// `SetHandleInformation(HANDLE_FLAG_INHERIT, 0)` sobre los STD del proceso que
 /// spawnea (`main::disinherit_standard_handles`, llamado en `handle_daemon`). No
 /// existe una creation flag que desactive la herencia. En Unix `fork/exec` con
-/// `Stdio::null` + `setsid` + `FD_CLOEXEC` ya logra lo análogo.
+/// `setsid` + `FD_CLOEXEC` ya logra lo análogo.
 ///
 /// NOTA (cierre garantizado): el apagado ya no depende solo de
 /// `shutdown_handler` del crate vía `with_graceful_shutdown` + `tokio::sync::Notify`
@@ -27,8 +27,10 @@ use std::process::Command;
 /// `ready_file` viaja al hijo como flag `--ready-file` (transporte
 /// flag+fichero, nunca pipe heredable): en él el hijo publica el registro de
 /// éxito (dirección real) o el de fallo (causa tipada) de su arranque.
-/// `Stdio::null` en los tres flujos se mantiene: la señal no depende de stdio
-/// heredado.
+/// stdin va a `Stdio::null` para no heredar la tubería del abuelo; stdout y
+/// stderr van a `log`, un fichero que no tiene extremo de tubería que heredar y
+/// recoge trazas, pánicos, salida nativa y avisos del supervisor. La señal de
+/// arranque no depende de stdio.
 ///
 /// El llamante es dueño del `Child` devuelto: debe vigilarlo durante el
 /// arranque (`try_wait` detecta una muerte que no publicó registro, con su
@@ -39,6 +41,7 @@ pub fn spawn_background(
     max_retries: u32,
     warm_voice: &str,
     ready_file: Option<&std::path::Path>,
+    log: std::fs::File,
 ) -> anyhow::Result<std::process::Child> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
@@ -56,14 +59,15 @@ pub fn spawn_background(
     {
         use std::os::windows::process::CommandExt;
         use std::process::Stdio;
-        // `Stdio::null()` para stdin/stdout/stderr: en Windows Rust hereda por default
-        // `GetStdHandle(STD_*_HANDLE)` del padre. En los E2E `cli_golden` el padre es el
-        // CLI lanzado vía `Command::output()` (pipe): sin esto el daemon hijo hereda el
-        // write-end del pipe y `output()` del test no retorna hasta que el daemon (10 s)
-        // termine. Con null los STD son handles non-inheritable a NUL.
+        // En Windows Rust hereda por default `GetStdHandle(STD_*_HANDLE)` del padre. En
+        // los E2E `cli_golden` el padre es el CLI lanzado vía `Command::output()`
+        // (pipe): heredar el write-end haría que `output()` del test no retornara hasta
+        // que el daemon (10 s) termine. stdin va a NUL; stdout y stderr van a un
+        // fichero, que no tiene extremo de tubería. El daemon deshereda sus handles
+        // estándar al arrancar, así que el motor que lanza no hereda este log.
         cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::from(log.try_clone()?))
+            .stderr(Stdio::from(log));
         // CREATE_NO_WINDOW: el daemon tiene una consola oculta propia, que heredan
         // `cmd`, `tasklist` y `taskkill` lanzados por él. Con DETACHED_PROCESS cada
         // uno quedaría sin consola y abriría una ventana visible.
@@ -78,8 +82,8 @@ pub fn spawn_background(
         use std::os::unix::process::CommandExt;
         use std::process::Stdio;
         cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::from(log.try_clone()?))
+            .stderr(Stdio::from(log));
         unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();

@@ -270,7 +270,11 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
             roots.data_dir.join("config.json"),
             Category::Config,
         );
-        push(&mut collected, roots.data_dir.join("logs"), Category::Logs);
+        push(
+            &mut collected,
+            crate::logs_dir_in(&roots.data_dir),
+            Category::Logs,
+        );
         push(
             &mut collected,
             roots.data_dir.join(crate::daemon_stop::PID_FILE),

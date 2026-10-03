@@ -197,7 +197,7 @@ ai-voice-interconnector voice list / remove --name X
 ai-voice-interconnector translate --text "Hola" --from es --to en
 ai-voice-interconnector devices / doctor / version
 ai-voice-interconnector daemon start / status / stop / restart / serve
-ai-voice-interconnector setup [--with-voice-cloning] [--with-stt] [--force-update] [-y|--yes]
+ai-voice-interconnector setup [--with-voice-cloning] [--force-update] [-y|--yes]
 ai-voice-interconnector cleanup [--voices|--synthetic-speech|--model|--all] [--dry-run] [-y|--yes]
 ai-voice-interconnector self install [--no-setup] [--no-modify-path] [-f|--force] [-y|--yes]
 ai-voice-interconnector self update [--check] [--version X.Y.Z] [-f|--force] [--no-setup] [-y|--yes]

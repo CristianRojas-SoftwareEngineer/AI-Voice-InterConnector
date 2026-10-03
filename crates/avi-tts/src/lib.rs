@@ -34,6 +34,10 @@ pub const RESIDENT_IMAGE_NAME: &str = "qwen_tts.exe";
 #[cfg(unix)]
 pub const RESIDENT_IMAGE_NAME: &str = "qwen_tts";
 
+/// Familia de logs del motor, compartida por el residente y el clonado: ambos
+/// escriben `qwen3-tts_<pid>_<ms>.log` en `logs_dir()`.
+pub(crate) const ENGINE_LOG_FAMILY: &str = "qwen3-tts";
+
 /// Resuelve el puerto del servidor residente con override por `QWEN3_TTS_PORT`.
 pub fn default_port() -> u16 {
     std::env::var("QWEN3_TTS_PORT")
@@ -865,6 +869,10 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
 /// exit code del proceso. Si la referencia no se puede cargar (WAV inválido,
 /// truncado o fallo de lectura), el error conserva el `avi_audio::WavLoadError`
 /// recuperable con `downcast_ref`.
+///
+/// stdout y stderr del motor van al log de su familia (`qwen3-tts_*.log`), no a
+/// la terminal: en la vía directa tapaban el resumen del comando y en la vía
+/// daemon se perdían. El error de un clonado fallido cita la ruta de ese log.
 pub fn clone_voice(
     model_dir: impl AsRef<Path>,
     ref_audio: &Path,
@@ -881,26 +889,42 @@ pub fn clone_voice(
             "El binario de clonado Qwen3-TTS no está provisionado."
         ));
     };
-    let status = Command::new(&bin)
-        .arg("-d")
-        .arg(model_dir.as_ref())
-        .arg("--ref-audio")
-        .arg(&ref_wav)
-        .arg("--save-voice")
-        .arg(out_qvoice)
-        .arg("--voice-name")
-        .arg(name)
-        .arg("-l")
-        .arg(language)
-        .status();
+    let (log_path, log_file) =
+        match avi_store::create_log(&avi_store::logs_dir(), ENGINE_LOG_FAMILY) {
+            Ok(log) => log,
+            Err(e) => {
+                let _ = std::fs::remove_file(&ref_wav);
+                return Err(anyhow!("No se pudo crear el log del motor: {}", e));
+            }
+        };
+    // stdin en null: el motor de clonado no lee de la entrada estándar.
+    let status = (|| -> Result<std::process::ExitStatus> {
+        let stdout = log_file.try_clone()?;
+        Ok(Command::new(&bin)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(stdout))
+            .stderr(std::process::Stdio::from(log_file))
+            .arg("-d")
+            .arg(model_dir.as_ref())
+            .arg("--ref-audio")
+            .arg(&ref_wav)
+            .arg("--save-voice")
+            .arg(out_qvoice)
+            .arg("--voice-name")
+            .arg(name)
+            .arg("-l")
+            .arg(language)
+            .status()?)
+    })();
     let _ = std::fs::remove_file(&ref_wav);
     let status = status?;
     if status.success() {
         Ok(())
     } else {
         Err(anyhow!(
-            "El subproceso de clonado Qwen3-TTS finalizó con código de error: {:?}",
-            status.code()
+            "El subproceso de clonado Qwen3-TTS finalizó con código de error: {:?}. Log del motor: {}",
+            status.code(),
+            log_path.display()
         ))
     }
 }
@@ -967,24 +991,15 @@ pub mod resident {
             let bin = resolve_binary()
                 .ok_or_else(|| anyhow!("El binario Qwen3-TTS no está provisionado."))?;
             let mut cmd = build_resident_command(&bin, model_dir.as_ref(), port, load_voice);
-            // Redirige stderr del motor a un fichero de log (rotación por sesión).
-            // stdin/stdout permanecen en null: el motor no necesita TTY ni stdin y su
-            // stdout no se consume. stderr captura los ~20 `fprintf(stderr, *)` del
-            // motor C (cuyos mensajes se perdían a null, dejando ciego el
-            // diagnóstico del warmup, la síntesis por petición y la
-            // terminación del residente).
-            let log_path = resident_log_path();
-            let log_file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .map_err(|e| {
-                    anyhow!(
-                        "No se pudo abrir el log de stderr del motor ({}): {}",
-                        log_path.display(),
-                        e
-                    )
-                })?;
+            // Redirige stderr del motor a un log de la familia `qwen3-tts`, creado y
+            // podado por el auxiliar común (los 10 más recientes). stdin/stdout
+            // permanecen en null: el motor no necesita TTY ni stdin y su stdout no
+            // se consume. stderr captura los ~20 `fprintf(stderr, *)` del motor C
+            // (cuyos mensajes se perdían a null, dejando ciego el diagnóstico del
+            // warmup, la síntesis por petición y la terminación del residente).
+            let (log_path, log_file) =
+                avi_store::create_log(&avi_store::logs_dir(), crate::ENGINE_LOG_FAMILY)
+                    .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
             use std::process::Stdio;
             // Windows: `qwen_tts.exe` NO debe heredar handles ni abrir terminal del
             // padre. `DETACHED_PROCESS` lo deja sin consola: `qwen_tts` no lanza
@@ -994,8 +1009,8 @@ pub mod resident {
             // en la raíz: el daemon que spawnea este motor ya desheredó sus STD vía
             // `SetHandleInformation` (`main::disinherit_standard_handles`); no existe
             // una creation flag que desactive la herencia. `Stdio::null` en stdin/stdout
-            // cierra la herencia de stdin/tty; stderr va al log (Stdio::from marca el
-            // handle no-heredable).
+            // cierra la herencia de stdin/tty; stderr va al log, que solo llega a este
+            // hijo porque el daemon ya desheredó sus handles estándar.
             // Árbol matable: a propósito SIN `CREATE_NEW_PROCESS_GROUP` ni
             // breakaway, para que el residente permanezca en el grupo/Job del daemon
             // y `taskkill /F /T /PID <daemon>` (o el Job con cierre) lo alcance.
@@ -1186,19 +1201,6 @@ pub mod resident {
                 .map(|s| s.success())
                 .unwrap_or(false)
         }
-    }
-
-    /// Ruta del fichero de log de stderr del motor residente. Crea el directorio
-    /// `logs/` bajo `data_dir()` si no existe. El nombre incluye PID y timestamp
-    /// para unicidad por sesión (rotación simple: un fichero por spawn).
-    pub(crate) fn resident_log_path() -> PathBuf {
-        let dir = avi_store::data_dir().join("logs");
-        std::fs::create_dir_all(&dir).expect("no se pudo crear el directorio de logs");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("SystemTime antes del epoch");
-        let filename = format!("qwen3-tts_{}_{}.log", std::process::id(), now.as_millis());
-        dir.join(filename)
     }
 
     /// Healthcheck `GET /v1/health` con reintentos. Distingue *crash* del motor
@@ -1532,14 +1534,9 @@ mod tests {
         let (port, handle) = resident::simulate_server(Arc::new(Mutex::new(String::new())));
         let child = sleeping_process();
         let pid = child.id();
-        let resident = resident::Qwen3TtsResident::spawn_with_child(
-            child,
-            port,
-            resident::resident_log_path(),
-            10,
-            50,
-        )
-        .expect("el healthcheck debe pasar contra el listener simulado");
+        let resident =
+            resident::Qwen3TtsResident::spawn_with_child(child, port, test_log_path(), 10, 50)
+                .expect("el healthcheck debe pasar contra el listener simulado");
         drop(resident);
         // El servidor simulado no termina nunca: se desacopla el hilo.
         drop(handle);
@@ -1575,13 +1572,8 @@ mod tests {
             }
         });
         let child = sleeping_process();
-        let result = resident::Qwen3TtsResident::spawn_with_child(
-            child,
-            port,
-            resident::resident_log_path(),
-            5,
-            50,
-        );
+        let result =
+            resident::Qwen3TtsResident::spawn_with_child(child, port, test_log_path(), 5, 50);
         // El servidor simulado termina solo tras su N-ésima conexión: se
         // desacopla el hilo y se da margen para que drene las conexiones en vuelo.
         drop(handle);
@@ -1605,13 +1597,7 @@ mod tests {
     #[test]
     fn resident_healthcheck_fails_without_server() {
         let child = sleeping_process();
-        let result = resident::Qwen3TtsResident::spawn_with_child(
-            child,
-            1,
-            resident::resident_log_path(),
-            3,
-            30,
-        );
+        let result = resident::Qwen3TtsResident::spawn_with_child(child, 1, test_log_path(), 3, 30);
         assert!(result.is_err(), "sin servidor el healthcheck debe fallar");
     }
 
@@ -1632,7 +1618,7 @@ mod tests {
             }
         });
         let mut child = sleeping_process();
-        let log_path = resident::resident_log_path();
+        let log_path = test_log_path();
         let start = std::time::Instant::now();
         let result = resident::wait_health(&mut child, port, 1, 2000, log_path.as_path());
         let elapsed = start.elapsed();
@@ -1647,28 +1633,6 @@ mod tests {
             elapsed < Duration::from_secs(3),
             "wait_health no debe colgarse ante un sumidero TCP: tardó {:?}",
             elapsed
-        );
-    }
-
-    /// `resident_log_path()` crea el directorio `logs/` bajo `data_dir()` y
-    /// devuelve un filename con el patrón `qwen3-tts_<pid>_<ms>.log`.
-    #[test]
-    fn log_path_creates_directory_and_filename() {
-        let path = resident::resident_log_path();
-        let parent = path.parent().expect("el log debe tener directorio padre");
-        assert!(
-            parent.is_dir(),
-            "el directorio de logs/ debe crearse: {}",
-            parent.display()
-        );
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .expect("el filename debe ser UTF-8 válido");
-        assert!(
-            name.starts_with("qwen3-tts_") && name.ends_with(".log"),
-            "el filename debe seguir qwen3-tts_<pid>_<ms>.log: {}",
-            name
         );
     }
 
@@ -1693,7 +1657,7 @@ mod tests {
         // Se espera la muerte del hijo antes del healthcheck: lo que se prueba es
         // el diagnóstico de un hijo muerto, no cuánto tarda el SO en terminarlo.
         child.wait().expect("el proceso debe terminar");
-        let log_path = resident::resident_log_path();
+        let log_path = test_log_path();
         let err = resident::wait_health(&mut child, 1, 3, 50, log_path.as_path())
             .expect_err("el healthcheck debe fallar si el proceso muere");
         let msg = err.to_string();
@@ -1727,7 +1691,7 @@ mod tests {
                 .expect("sh debe existir en Unix")
         };
         child.wait().expect("el proceso debe terminar");
-        let log_path = resident::resident_log_path();
+        let log_path = test_log_path();
         let err = resident::wait_health(&mut child, 1, 0, 50, log_path.as_path())
             .expect_err("el healthcheck debe fallar si el proceso muere");
         let msg = err.to_string();
@@ -1908,6 +1872,12 @@ mod tests {
         );
         setter.join().unwrap();
         assert_eq!(handle.join().unwrap(), 0, "el servidor debe leer EOF");
+    }
+
+    /// Ruta de log de prueba bajo el directorio temporal: ninguna prueba toca los
+    /// logs reales de `data_dir()`. No se crea el fichero, solo se pasa la ruta.
+    fn test_log_path() -> PathBuf {
+        std::env::temp_dir().join("avi-tts-test-engine.log")
     }
 
     /// Proceso que duerme para simular el hijo del residente en tests. Hijo

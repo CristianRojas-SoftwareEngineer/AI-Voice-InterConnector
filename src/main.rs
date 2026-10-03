@@ -387,8 +387,6 @@ enum Commands {
     },
     /// Provisiona el runtime: chequeos + descarga de modelos
     Setup {
-        #[arg(long)]
-        with_stt: bool,
         /// Incluye el modelo Base de clonado Qwen3-TTS (unos 2.5 GB)
         #[arg(long)]
         with_voice_cloning: bool,
@@ -804,12 +802,16 @@ fn restore_sigpipe_default() {
 
 // ─── Punto de entrada ────────────────────────────────────────────────
 
-/// Filtro de los logs por target: `INFO` para los crates propios y `WARN` para las
-/// dependencias, cuyo `INFO` (p. ej. `xet_*` durante las descargas) solo es ruido.
-/// `Targets` filtra por prefijo de la ruta de módulo y no admite comodines, así que
-/// cada crate propio se enumera.
-fn log_filter() -> tracing_subscriber::filter::Targets {
-    use tracing_subscriber::filter::LevelFilter;
+/// Filtro de los logs, construido en un único punto.
+///
+/// Con `RUST_LOG` definida manda la variable, interpretada de forma tolerante
+/// (las directivas inválidas se ignoran, como en la convención de `tracing`).
+/// Sin ella, la CLI solo muestra `warn` y superiores: stderr queda para los
+/// mensajes del producto. El daemon (`daemon serve`) registra además el `info`
+/// de los crates propios, que se enumeran porque las directivas filtran por
+/// prefijo de módulo y no admiten comodines, y deja las dependencias en `warn`
+/// (su `info`, p. ej. `xet_*` durante las descargas, solo es ruido).
+fn log_filter(rust_log: Option<&str>, daemon_serve: bool) -> tracing_subscriber::EnvFilter {
     const OWN_CRATES: [&str; 11] = [
         "avi_core",
         "avi_audio",
@@ -823,30 +825,23 @@ fn log_filter() -> tracing_subscriber::filter::Targets {
         "avi_shared",
         "ai_voice_interconnector",
     ];
-    OWN_CRATES.iter().fold(
-        tracing_subscriber::filter::Targets::new().with_default(LevelFilter::WARN),
-        |targets, name| targets.with_target(*name, LevelFilter::INFO),
-    )
+    if let Some(value) = rust_log {
+        return tracing_subscriber::EnvFilter::builder().parse_lossy(value);
+    }
+    let directives = if daemon_serve {
+        OWN_CRATES.iter().fold(String::from("warn"), |acc, name| {
+            format!("{acc},{name}=info")
+        })
+    } else {
+        String::from("warn")
+    };
+    tracing_subscriber::EnvFilter::new(directives)
 }
 
 #[tokio::main]
 async fn main() {
-    // Bootstrap: UTF-8, tracing, SIGINT
+    // Bootstrap: UTF-8, SIGINT, parseo de la CLI y tracing
     avi_shared::force_utf8_console();
-    // Los logs van a stderr: stdout queda reservado para el contrato JSON
-    // (envelope schema_version="3"), según el contrato de la CLI.
-    {
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
-        use tracing_subscriber::Layer;
-        tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_writer(std::io::stderr)
-                    .with_filter(log_filter()),
-            )
-            .init();
-    }
     install_sigint_handler();
 
     let cmd = localize_command(Cli::command());
@@ -856,21 +851,44 @@ async fn main() {
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| render_clap_error(e));
     let json_mode = cli.json;
     let daemon_mode = cli.daemon_mode();
+    let daemon_serve = matches!(
+        cli.command,
+        Some(Commands::Daemon {
+            action: DaemonCommands::Serve { .. }
+        })
+    );
+
+    // Los logs van a stderr: stdout queda reservado al contrato JSON. Sin color
+    // cuando stderr no es una terminal (p. ej. el log del daemon), para que el
+    // fichero no lleve códigos ANSI. El parseo de la CLI no usa `tracing`, así que
+    // inicializarlo después es seguro.
+    {
+        use std::io::IsTerminal;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        use tracing_subscriber::Layer;
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_ansi(std::io::stderr().is_terminal())
+                    .with_filter(log_filter(
+                        std::env::var("RUST_LOG")
+                            .ok()
+                            .filter(|v| !v.is_empty())
+                            .as_deref(),
+                        daemon_serve,
+                    )),
+            )
+            .init();
+    }
 
     // SIGPIPE → SIG_DFL solo en modos CLI de primer plano; `daemon serve` (el
     // servidor longevo, mismo binario) queda excluido a propósito (ver doc de
     // `restore_sigpipe_default`).
     #[cfg(unix)]
-    {
-        let is_daemon_serve = matches!(
-            cli.command,
-            Some(Commands::Daemon {
-                action: DaemonCommands::Serve { .. }
-            })
-        );
-        if !is_daemon_serve {
-            restore_sigpipe_default();
-        }
+    if !daemon_serve {
+        restore_sigpipe_default();
     }
 
     let result = match cli.command {
@@ -885,11 +903,10 @@ async fn main() {
         }
         Some(Commands::Daemon { action }) => ok(handle_daemon(json_mode, action).await),
         Some(Commands::Setup {
-            with_stt,
             with_voice_cloning,
             force_update,
             yes,
-        }) => ok(handle_setup(json_mode, with_stt, with_voice_cloning, force_update, yes).await),
+        }) => ok(handle_setup(json_mode, with_voice_cloning, force_update, yes).await),
         Some(Commands::Cleanup {
             voices,
             synthetic_speech,
@@ -2418,7 +2435,6 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
 /// de la CLI y el emisor no están en ese crate.
 async fn handle_setup(
     json_mode: bool,
-    with_stt: bool,
     with_voice_cloning: bool,
     force_update: bool,
     yes: bool,
@@ -2431,13 +2447,6 @@ async fn handle_setup(
         .ensure_initialized()
         .map_err(|e| CliError::new(ExitCode::Error, "voice_store_init_failed", e.to_string()))?;
 
-    // `--with-stt` es redundante: `parakeet-tdt-v3` ya está en la selección por
-    // defecto. Se acepta por compatibilidad y se dice por stderr, que es donde va la
-    // información humana.
-    if with_stt {
-        tracing::info!("--with-stt es redundante: parakeet-tdt-v3 ya está incluido en setup");
-    }
-
     let options = lifecycle::setup::Options::user(with_voice_cloning, force_update, yes);
     let outcome = lifecycle::setup::run(&model_store, &options)
         .await
@@ -2446,7 +2455,6 @@ async fn handle_setup(
     if json_mode {
         emit_raw_json(json!({
             "status": "completed",
-            "with_stt": with_stt,
             "models_provisioned": outcome.provisioned
         }));
     } else {
@@ -3428,7 +3436,9 @@ fn ready_file_path() -> PathBuf {
 ///   de salida.
 ///
 /// Un hijo vivo que no publica antes de `deadline`, o que publica y no responde
-/// a `/health`, sale con exit 5 `daemon_unreachable`. Ante cualquier fallo no
+/// a `/health`, sale con exit 5 `daemon_unreachable`. Cada arranque crea un log
+/// `daemon_<pid>_<ms>.log` con stdout y stderr del hijo, y todo error posterior
+/// al lanzamiento cita su ruta sin cambiar `reason` ni el código. Ante cualquier fallo no
 /// deja nada vivo: mata el árbol del hijo si sigue vivo, lo recolecta y borra
 /// `daemon.ready`. No escribe el pidfile: lo hace el llamante con el resultado.
 async fn launch_daemon(
@@ -3454,15 +3464,37 @@ async fn launch_daemon(
     // Invalidar la señal previa: el fichero es determinista por instancia y
     // un contenido rancio se leería como resultado de este arranque.
     let _ = std::fs::remove_file(&ready_path);
-    let mut child =
-        daemon::spawn_background(auto_restart, max_retries, warm_voice, Some(&ready_path))
-            .map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "daemon_error",
-                    format!("No se pudo lanzar el daemon: {}", e),
-                )
-            })?;
+    let (log_path, log_file) = store::create_log(&store::logs_dir(), daemon::DAEMON_LOG_FAMILY)
+        .map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "daemon_error",
+                format!("No se pudo crear el log del daemon: {}", e),
+            )
+        })?;
+    let with_log = |mut e: CliError| {
+        e.message = format!(
+            "{}
+Log del daemon: {}",
+            e.message,
+            log_path.display()
+        );
+        e
+    };
+    let mut child = daemon::spawn_background(
+        auto_restart,
+        max_retries,
+        warm_voice,
+        Some(&ready_path),
+        log_file,
+    )
+    .map_err(|e| {
+        with_log(CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            format!("No se pudo lanzar el daemon: {}", e),
+        ))
+    })?;
     let pid = child.id();
     // PID hijo en memoria desde el spawn para que el handler Ctrl+C lo
     // reclame aunque aún no haya pidfile (ventana spawn → espera → write).
@@ -3473,7 +3505,7 @@ async fn launch_daemon(
             Some(daemon::ReadySignal::Ready { addr, .. }) => break addr,
             Some(daemon::ReadySignal::Failed(e)) => {
                 abort_launch(&mut child, &ready_path).await;
-                return Err(startup_error_to_cli(&e));
+                return Err(with_log(startup_error_to_cli(&e)));
             }
             None => {}
         }
@@ -3481,25 +3513,25 @@ async fn launch_daemon(
             // El hijo pudo publicar su fallo justo antes de morir.
             if let Some(daemon::ReadySignal::Failed(e)) = daemon::read_ready_signal(&ready_path) {
                 abort_launch(&mut child, &ready_path).await;
-                return Err(startup_error_to_cli(&e));
+                return Err(with_log(startup_error_to_cli(&e)));
             }
             abort_launch(&mut child, &ready_path).await;
-            return Err(CliError::new(
+            return Err(with_log(CliError::new(
                 ExitCode::Error,
                 "daemon_error",
-                format!("el daemon terminó durante el arranque ({})", status),
-            ));
+                format!("el daemon terminó durante el arranque ({}).", status),
+            )));
         }
         if start.elapsed() >= deadline {
             abort_launch(&mut child, &ready_path).await;
-            return Err(CliError::new(
+            return Err(with_log(CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
                 format!(
-                    "el daemon (pid {}) no publicó su dirección tras {:?}",
+                    "el daemon (pid {}) no publicó su dirección tras {:?}.",
                     pid, deadline
                 ),
-            ));
+            )));
         }
         tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
     };
@@ -3507,11 +3539,11 @@ async fn launch_daemon(
     let remaining = deadline.saturating_sub(start.elapsed());
     if let Err(e) = await_daemon_ready(client, &addr, remaining, DAEMON_POLL_INTERVAL).await {
         abort_launch(&mut child, &ready_path).await;
-        return Err(CliError::new(
+        return Err(with_log(CliError::new(
             ExitCode::DaemonUnreachable,
             "daemon_unreachable",
-            format!("el daemon publicó {} pero {}", addr, e),
-        ));
+            format!("el daemon publicó {} pero {}.", addr, e),
+        )));
     }
     Ok((pid, addr))
 }
@@ -4362,49 +4394,70 @@ async fn dub_via_daemon(
 mod tests {
     use super::*;
 
-    /// Las dependencias solo dejan pasar avisos y errores: sus líneas `INFO`
-    /// (en especial las de `xet_*` durante las descargas) ensuciaban la terminal.
-    #[test]
-    fn log_filter_silences_info_of_dependencies() {
-        use tracing::Level;
-        let filter = log_filter();
-        for target in ["xet_client", "xet_data", "hf_hub", "reqwest", "ort"] {
-            assert!(
-                !filter.would_enable(target, &Level::INFO),
-                "{target} en INFO queda deshabilitado"
-            );
-            assert!(
-                filter.would_enable(target, &Level::WARN),
-                "{target} en WARN queda habilitado"
-            );
+    /// Escritor en memoria para capturar lo que emite el `fmt` con un filtro dado.
+    #[derive(Clone, Default)]
+    struct MemWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for MemWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
         }
     }
 
-    /// Los crates propios conservan sus mensajes `INFO`, también los de sus
-    /// submódulos.
+    /// Emite un `INFO` y un `WARN` por target (uno propio y una dependencia) bajo
+    /// el filtro dado y devuelve lo que llegó al escritor.
+    fn captured_output(filter: tracing_subscriber::EnvFilter) -> String {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::Layer;
+        let writer = MemWriter::default();
+        let sink = writer.clone();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(move || sink.clone())
+                .with_filter(filter),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "avi_store", "info propio");
+            tracing::warn!(target: "avi_store", "warn propio");
+            tracing::info!(target: "xet_client", "info dependencia");
+            tracing::warn!(target: "xet_client", "warn dependencia");
+        });
+        let bytes = writer.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// Sin `RUST_LOG`, la CLI solo muestra `warn` y superiores, también
+    /// de los crates propios.
     #[test]
-    fn log_filter_keeps_info_of_own_crates() {
-        use tracing::Level;
-        let filter = log_filter();
-        for target in [
-            "avi_core",
-            "avi_audio",
-            "avi_tts",
-            "avi_store",
-            "avi_daemon",
-            "avi_process",
-            "avi_stt",
-            "avi_translation",
-            "avi_lifecycle",
-            "avi_shared",
-            "ai_voice_interconnector",
-            "avi_lifecycle::setup",
-        ] {
-            assert!(
-                filter.would_enable(target, &Level::INFO),
-                "{target} en INFO queda habilitado"
-            );
-        }
+    fn cli_default_filter_shows_only_warnings() {
+        let out = captured_output(log_filter(None, false));
+        assert!(out.contains("warn propio"), "{out}");
+        assert!(out.contains("warn dependencia"), "{out}");
+        assert!(!out.contains("info propio"), "{out}");
+        assert!(!out.contains("info dependencia"), "{out}");
+    }
+
+    /// Sin `RUST_LOG`, el daemon registra `info` de los crates propios y solo
+    /// `warn` de las dependencias.
+    #[test]
+    fn daemon_default_filter_keeps_own_info_and_silences_dependencies() {
+        let out = captured_output(log_filter(None, true));
+        assert!(out.contains("info propio"), "{out}");
+        assert!(out.contains("warn propio"), "{out}");
+        assert!(out.contains("warn dependencia"), "{out}");
+        assert!(!out.contains("info dependencia"), "{out}");
+    }
+
+    /// Con `RUST_LOG` definida, la variable manda sobre el filtro por defecto.
+    #[test]
+    fn rust_log_overrides_the_default_filter() {
+        let out = captured_output(log_filter(Some("info"), false));
+        assert!(out.contains("info propio"), "{out}");
     }
 
     /// `await_daemon_ready` debe agotar el deadline por reloj de pared (no un

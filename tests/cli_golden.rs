@@ -44,6 +44,15 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Ruta al binario bajo test, inyectada por Cargo en tests de integración.
 const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
 
+/// Único constructor del comando del binario bajo prueba. Quita `RUST_LOG` del
+/// entorno del hijo para que la variable del desarrollador no cambie los logs que
+/// las pruebas observan; una prueba que la necesite la fija con `.env`.
+fn bin_command() -> Command {
+    let mut cmd = Command::new(BIN);
+    cmd.env_remove("RUST_LOG");
+    cmd
+}
+
 // Las pruebas operan con aislamiento total por instancia (`IsolatedInstance`)
 // usando puertos efímeros (`AVI_DAEMON_PORT=0`, `QWEN3_TTS_PORT`) y directorios
 // temporales aislados (`CURRENT_SANDBOX_DIR`). Para la inferencia pesada residente
@@ -695,7 +704,7 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
     let t_cmd = Instant::now();
     let (tmp, file) = open_atomic_tmp();
     let (tmp_err, file_err) = open_atomic_tmp();
-    let mut cmd = Command::new(BIN);
+    let mut cmd = bin_command();
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(file)
@@ -1339,7 +1348,7 @@ fn plain_version_outputs_name_and_package_version() {
     let expected = format!("ai-voice-interconnector {}", env!("CARGO_PKG_VERSION"));
     let (dir, envs) = contract_sandbox("plain_version");
     for args in [["version"], ["--version"]] {
-        let salida = Command::new(BIN)
+        let salida = bin_command()
             .args(args)
             .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(std::process::Stdio::null())
@@ -1391,7 +1400,7 @@ fn speech_transcribe_with_audio_matches_contract() {
 
 #[test]
 fn speech_transcribe_without_audio_nor_mic_exits_2() {
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args([
             "--json",
             "speech",
@@ -1539,7 +1548,7 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
         Duration::from_secs(30),
     );
     let (dir, envs) = contract_sandbox("mic_transcribe");
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args([
             "--json",
             "speech",
@@ -1617,7 +1626,7 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
         Duration::from_secs(30),
     );
     let (dir, envs) = contract_sandbox("mic_dub");
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args([
             "--json",
             "speech",
@@ -2526,7 +2535,7 @@ fn translate_passthrough_same_lang_returns_intact() {
 fn translate_unsupported_pair_exits_2() {
     // El alfabeto estricto del parser (`es`/`en`) rechaza el par antes del handler → exit 2 de `clap`.
     // del handler → exit 2 de `clap`, sin envelope JSON que afirmar.
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args([
             "--json",
             "translate",
@@ -2553,7 +2562,7 @@ fn translate_unsupported_pair_exits_2() {
 fn translate_es_latam_rejected_by_parser_exits_2() {
     // Cambio deliberado: `es-latam` no pertenece al alfabeto del parser (`es`/`en`).
     // parser (`es`/`en`) aunque la vía IPC lo siga normalizando → exit 2.
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args([
             "--json",
             "translate",
@@ -3407,6 +3416,18 @@ mod tts {
         assert_eq!(actual["schema_version"], Value::String("4".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(actual["precomputed"], Value::Bool(false));
+        // La salida del motor de clonado queda en el log de su familia.
+        let engine_logs = std::fs::read_dir(inst.dir.join("logs"))
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().starts_with("qwen3-tts_"))
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(
+            engine_logs, 1,
+            "debe existir un único qwen3-tts_*.log del clonado"
+        );
         let speech = actual["speech"].as_str().expect("speech debe existir");
         let qvoice = Path::new(speech);
         assert!(qvoice.is_file(), "reference.qvoice debe existir");
@@ -3450,6 +3471,97 @@ mod tts {
         );
         assert_eq!(code, 6, "voz existente → ExitCode::StateConflict");
         assert_eq!(actual["reason"], Value::String("voice_exists".to_string()));
+    }
+
+    /// Escribe en `dir` un motor falso que imprime una marca por stdout y otra por
+    /// stderr y sale con 1; devuelve su ruta.
+    fn write_fake_engine(dir: &Path) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let path = dir.join("motor_falso.cmd");
+            std::fs::write(
+                &path,
+                "@echo off\r\necho MARCA_MOTOR_STDOUT\r\necho MARCA_MOTOR_STDERR 1>&2\r\nexit /b 1\r\n",
+            )
+            .expect("escribir motor falso");
+            path
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.join("motor_falso.sh");
+            std::fs::write(
+                &path,
+                "#!/bin/sh\necho MARCA_MOTOR_STDOUT\necho MARCA_MOTOR_STDERR 1>&2\nexit 1\n",
+            )
+            .expect("escribir motor falso");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("hacer ejecutable el motor falso");
+            path
+        }
+    }
+
+    /// La salida del motor durante el clonado va a
+    /// `data/logs/qwen3-tts_*.log` y no a la terminal, y el error de un clonado
+    /// fallido cita esa ruta.
+    #[test]
+    fn voice_clone_engine_output_goes_to_engine_log() {
+        let inst = IsolatedInstance::new("clone_engine_log");
+        seed_pinned_models(
+            &inst.dir.join("cache"),
+            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
+        );
+        let engine = write_fake_engine(&inst.dir);
+        let engine_path = engine.to_string_lossy().to_string();
+        let mut envs = inst.contract_args();
+        envs.push(("QWEN3_TTS_BIN", engine_path.as_str()));
+        let name = unique_label("clon");
+        let output = bin_command()
+            .args([
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ])
+            .envs(envs)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("el binario debe ejecutarse");
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+        assert!(
+            !stdout.contains("MARCA_MOTOR") && !stderr.contains("MARCA_MOTOR"),
+            "la salida del motor no debe llegar a la terminal:\n{stdout}\n{stderr}"
+        );
+        let actual: Value = serde_json::from_str(stdout.trim()).expect("stdout JSON");
+        assert_eq!(actual["reason"], "voice_clone_failed", "{actual}");
+        let logs: Vec<PathBuf> = std::fs::read_dir(inst.dir.join("logs"))
+            .map(|d| {
+                d.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("qwen3-tts_") && n.ends_with(".log"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(logs.len(), 1, "debe existir un log del motor: {logs:?}");
+        let content = std::fs::read_to_string(&logs[0]).unwrap_or_default();
+        assert!(
+            content.contains("MARCA_MOTOR_STDOUT") && content.contains("MARCA_MOTOR_STDERR"),
+            "el log debe recoger stdout y stderr del motor: {content:?}"
+        );
+        let error = actual["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains(&logs[0].to_string_lossy().to_string()),
+            "el error debe citar la ruta del log: {actual}"
+        );
     }
 
     #[test]
@@ -3736,7 +3848,7 @@ mod tts {
     #[test]
     fn daemon_help_lists_auto_restart() {
         // Verifica que --help de start/serve lista los flags restaurados
-        let out_start = Command::new(BIN)
+        let out_start = bin_command()
             .args(["daemon", "start", "--help"])
             .output()
             .expect("daemon start --help");
@@ -3753,7 +3865,7 @@ mod tts {
             "daemon start --help debe listar --max-retries, fue: {}",
             combined_start
         );
-        let out_serve = Command::new(BIN)
+        let out_serve = bin_command()
             .args(["daemon", "serve", "--help"])
             .output()
             .expect("daemon serve --help");
@@ -3776,7 +3888,7 @@ mod tts {
     fn setup_help_lists_current_surface() {
         // Fija el contrato de flags de `setup`: presencia de la superficie vigente y ausencia de los flags eliminados/renombrados.
         // superficie vigente y ausencia de los flags eliminados/renombrados.
-        let out = Command::new(BIN)
+        let out = bin_command()
             .args(["setup", "--help"])
             .output()
             .expect("setup --help");
@@ -3785,12 +3897,7 @@ mod tts {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        for flag in [
-            "--force-update",
-            "--yes",
-            "--with-voice-cloning",
-            "--with-stt",
-        ] {
+        for flag in ["--force-update", "--yes", "--with-voice-cloning"] {
             assert!(
                 combined.contains(flag),
                 "setup --help debe listar {}, fue: {}",
@@ -3798,7 +3905,13 @@ mod tts {
                 combined
             );
         }
-        for flag in ["--language", "--with-base", "--with-clone", "--clone"] {
+        for flag in [
+            "--language",
+            "--with-base",
+            "--with-clone",
+            "--clone",
+            "--with-stt",
+        ] {
             assert!(
                 !combined.contains(flag),
                 "setup --help no debe listar {}, fue: {}",
@@ -3806,6 +3919,17 @@ mod tts {
                 combined
             );
         }
+    }
+
+    /// `--with-stt` se retiró; clap lo rechaza como argumento desconocido.
+    #[test]
+    fn setup_with_stt_is_rejected_as_unknown_argument() {
+        let (code, _stdout, stderr) = run_text_with_stderr(&["setup", "--with-stt"]);
+        assert_eq!(code, 2, "{stderr}");
+        assert!(
+            stderr.contains("argumento inesperado '--with-stt'"),
+            "{stderr}"
+        );
     }
 
     #[test]
@@ -3948,6 +4072,44 @@ mod tts {
             !port_open(port),
             "tras un arranque fallido ningún daemon debe enlazar el puerto liberado"
         );
+    }
+
+    /// El fallo de un `daemon start` queda en
+    /// `data/logs/daemon_*.log` (stdout y stderr del hijo) y el mensaje de la CLI
+    /// cita esa ruta.
+    #[test]
+    fn daemon_start_failure_is_written_to_daemon_log() {
+        let _reaper = arm_reaper("daemon_start_failure_log");
+        let mut inst = IsolatedInstance::new("start_failure_log");
+        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        seed_decoy_daemon_pidfile(&inst.dir);
+        let holder = occupy_instance_port(&mut inst);
+        let port = holder.local_addr().unwrap().port();
+        let (code, actual) = run_json_env(&["--json", "daemon", "start"], &inst.contract_args());
+        assert_eq!(code, 6, "{actual}");
+        let logs: Vec<PathBuf> = std::fs::read_dir(inst.dir.join("logs"))
+            .map(|d| {
+                d.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("daemon_") && n.ends_with(".log"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(logs.len(), 1, "debe existir un log del daemon: {logs:?}");
+        let content = std::fs::read_to_string(&logs[0]).unwrap_or_default();
+        assert!(
+            content.contains(&port.to_string()),
+            "el log debe recoger el error del hijo: {content:?}"
+        );
+        let error = actual["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains(&logs[0].to_string_lossy().to_string()),
+            "el mensaje debe citar la ruta del log: {actual}"
+        );
+        drop(holder);
     }
 
     /// `daemon serve` con el puerto ocupado sale con `port_in_use` (exit 6) y
@@ -4160,7 +4322,7 @@ mod tts {
         let t0 = Instant::now();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let output = std::process::Command::new(BIN)
+            let output = bin_command()
                 .args(["--json", "daemon", "start"])
                 .envs(child_envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
                 .stdin(std::process::Stdio::null())
@@ -4596,7 +4758,7 @@ mod tts {
 /// Cada llamada usa un sandbox de contrato nuevo que se borra al terminar.
 fn run_text(args: &[&str]) -> (i32, String) {
     let (dir, envs) = contract_sandbox("run_text");
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args(args)
         .envs(envs)
         .stdin(std::process::Stdio::null())
@@ -4662,7 +4824,7 @@ fn speech_invalid_temperature_exits_2() {
         ],
         vec!["speech", "dub", "--temperature", "0"],
     ] {
-        let output = Command::new(BIN)
+        let output = bin_command()
             .args(&args)
             .arg("--json")
             .stdin(std::process::Stdio::null())
@@ -4672,7 +4834,7 @@ fn speech_invalid_temperature_exits_2() {
         assert_eq!(code, 2, "temperatura inválida debe salir 2: {:?}", args);
     }
     // Sin `--json`, el mensaje humano va a stderr y `main` le pone el único prefijo.
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args(["speech", "say", "--text", "Hola", "--temperature", "0"])
         .stdin(std::process::Stdio::null())
         .output()
@@ -4713,7 +4875,7 @@ fn daemon_flag_on_local_commands_exits_2() {
 /// `dub` sin `--source-language`: el parser lo exige → exit 2.
 #[test]
 fn speech_dub_without_source_exits_2() {
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args(["speech", "dub", "--audio", "no-existe.wav"])
         .output()
         .expect("el binario debe ejecutarse");
@@ -4762,7 +4924,7 @@ fn speech_synthesize_play_with_json_exits_2() {
 /// guarda RF-12.2 se ejercita con solo `--play`.
 #[test]
 fn speech_synthesize_play_without_tty_exits_2() {
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args([
             "speech",
             "synthesize",
@@ -4818,7 +4980,7 @@ fn speech_contract_matches_help() {
 
 /// Ejecuta el binario con `args` capturando stdout+stderr como texto plano.
 fn run_text_with_stderr(args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(BIN)
+    let output = bin_command()
         .args(args)
         .stdin(std::process::Stdio::null())
         .output()
@@ -5116,7 +5278,7 @@ fn test_voice_list_no_panic_on_sigpipe_closed_stdout_before_spawn() {
     // ya roto (write_fd sobrevive al close del otro extremo; Stdio adopta
     // el fd y lo cierra al soltar el Child).
     let broken_stdout = unsafe { Stdio::from_raw_fd(write_fd) };
-    let mut cmd = Command::new(BIN);
+    let mut cmd = bin_command();
     cmd.args(["voice", "list"])
         .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdout(broken_stdout)

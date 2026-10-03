@@ -9,29 +9,27 @@ Provisiona el runtime: descarga los modelos pinneados desde HuggingFace Hub, inc
 ## Definición CLI (parser)
 
 ```
-ai-voice-interconnector setup [--with-voice-cloning] [--with-stt] [--force-update] [--yes|-y] [--json]
+ai-voice-interconnector setup [--with-voice-cloning] [--force-update] [--yes|-y] [--json]
 ```
 
 | Flag | Default | Descripción |
 |---|---|---|
 | `--with-voice-cloning` | `false` | Añade a la selección el modelo Base de clonado `qwen3-tts-0.6b-base` (2,5 GB), requerido por `voice clone` |
-| `--with-stt` | `false` | **Redundante**: `parakeet-tdt-v3` ya se provisiona siempre. Solo emite un aviso informativo por stderr |
 | `--force-update` | `false` | Purga la **selección** y la vuelve a provisionar. Es una operación destructiva: pide su propia confirmación |
 | `--yes`, `-y` | `false` | Omite la confirmación de la purga y la del tamaño pendiente |
 | `--json` | `false` | Global; emite el payload en stdout |
 
-No existe `--language`: el conjunto provisionado es fijo (es+en offline completo desde el primer uso), así que la provisión es determinista para la instalación por defecto.
+No existe `--with-stt` (`parakeet-tdt-v3` se provisiona siempre): pasarlo falla como argumento desconocido con exit 2. Tampoco existe `--language`: el conjunto provisionado es fijo (es+en offline completo desde el primer uso), así que la provisión es determinista para la instalación por defecto.
 
 ---
 
 ## Flujo de provisión
 
 1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio de datos y materializa la voz de fábrica `default`.
-2. **`--with-stt`**: aviso informativo, nada más.
-3. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar. Purgar el modelo de clonado cuando el usuario no lo pidió dejaría la instalación sin lo que sí quiere. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
-4. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§8.7).
-5. **Descargar** lo pendiente, repo a repo, en la revisión fijada.
-6. **Sobre `--json`** o mensaje humano.
+2. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar. Purgar el modelo de clonado cuando el usuario no lo pidió dejaría la instalación sin lo que sí quiere. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
+3. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§8.7).
+4. **Descargar** lo pendiente, repo a repo, en la revisión fijada.
+5. **Sobre `--json`** o mensaje humano.
 
 La traducción es **obligatoria**: `setup` siempre provisiona `opus-mt-es-en` y `opus-mt-en-es`, que son modelos CTranslate2 int8 ya convertidos y publicados, sin pasos locales de conversión. Cada uno se lee directo del snapshot de HuggingFace y se valida por presencia de sus cinco ficheros (`config.json`, `model.bin`, `shared_vocabulary.json`, `source.spm`, `target.spm`), todos con tamaño mayor que cero.
 
@@ -109,7 +107,6 @@ Consecuencia práctica: la selección es **la guardada en la instalación**, no 
 | Clave | Tipo | Significado |
 |---|---|---|
 | `status` | string | `"completed"` |
-| `with_stt` | boolean | Espejo del flag `--with-stt` |
 | `models_provisioned` | array de strings | Los modelos de la selección disponibles tras la ejecución |
 
 No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a stderr, reservando stdout para el JSON; `schema_version` lo inyecta el emisor y vale **`"4"`**.

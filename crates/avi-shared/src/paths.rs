@@ -4,7 +4,7 @@
 //! `avi-lifecycle` y `xtask clean`: `avi-store` las reexporta para conservar su
 //! API, y los llamadores no cambian.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Nombre canónico del producto: directorio de programa, directorio del
 /// enlace, nombre del bloqueo y nombre del ejecutable. Fuente única.
@@ -41,7 +41,7 @@ fn cache_home() -> PathBuf {
 }
 
 /// Raíz de datos de usuario y estado: voces, habla sintetizada, configuración,
-/// `daemon.pid` y logs.
+/// `daemon.pid`; los logs viven en `logs_dir()`.
 ///
 /// `AVI_DATA_DIR` la desvía. Sin la variable, en Windows es
 /// `%LOCALAPPDATA%\ai-voice-interconnector\data` (D4), en Linux
@@ -59,6 +59,18 @@ pub fn data_dir() -> PathBuf {
             .map(|d| d.data_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from(".").join(APP_NAME))
     }
+}
+
+/// Directorio de logs bajo una raíz de datos dada: es la única definición de
+/// `<datos>/logs`, para quien trabaja con raíces reubicadas (`cleanup`).
+pub fn logs_dir_in(data_dir: &Path) -> PathBuf {
+    data_dir.join("logs")
+}
+
+/// Directorio de logs vigente: los del daemon (`daemon_*`) y los del motor
+/// (`qwen3-tts_*`), con retención por familia (ver `logs`).
+pub fn logs_dir() -> PathBuf {
+    logs_dir_in(&data_dir())
 }
 
 /// Directorio de programa: el bundle completo y el recibo. Existe en los

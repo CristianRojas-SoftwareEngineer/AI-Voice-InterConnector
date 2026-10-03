@@ -8,6 +8,7 @@
 //! el arranque de consola (`console`) usa la API del sistema solo en Windows.
 
 pub mod console;
+pub mod logs;
 pub mod manifest;
 pub mod paths;
 pub mod pins;
