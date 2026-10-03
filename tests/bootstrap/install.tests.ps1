@@ -137,9 +137,12 @@ Describe "bootstrap de Windows" {
             -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
 
         $result.ExitCode | Should -Not -Be 0
-        ($result.Stdout + $result.Stderr) | Should -Match "checksum_mismatch"
+        # El texto del script trae `$archiveName` sin expandir: solo el nombre
+        # concreto demuestra que el mensaje salio de la ejecucion.
+        ($result.Stdout + $result.Stderr) | Should -Match ([regex]::Escape("el checksum de ai-voice-interconnector-9.9.9-x86_64-windows.zip no coincide"))
         Assert-NoStagingLeft $script:TestDir
-        Test-Path (Join-Path $envBase.AVI_INSTALL_DIR "ai-voice-interconnector.exe") | Should -BeFalse
+        # `self install` nunca se invoco: el doble no registro nada.
+        Test-Path $envBase.AVI_FAKE_LOG | Should -BeFalse
     }
 
     It "SHA256SUMS sin linea para el asset aborta igual" {
@@ -149,8 +152,9 @@ Describe "bootstrap de Windows" {
             -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
 
         $result.ExitCode | Should -Not -Be 0
-        ($result.Stdout + $result.Stderr) | Should -Match "checksum_mismatch"
+        ($result.Stdout + $result.Stderr) | Should -Match ("no contiene ninguna l.nea para\s+" + [regex]::Escape("ai-voice-interconnector-9.9.9-x86_64-windows.zip"))
         Assert-NoStagingLeft $script:TestDir
+        Test-Path $envBase.AVI_FAKE_LOG | Should -BeFalse
     }
 
     It "binario incompatible diagnostica y deja lo instalado intacto (criterio 5)" {
@@ -162,9 +166,9 @@ Describe "bootstrap de Windows" {
             -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
 
         $result.ExitCode | Should -Not -Be 0
-        ($result.Stdout + $result.Stderr) | Should -Match "binary_incompatible"
-        ($result.Stdout + $result.Stderr) | Should -Match "x86_64-pc-windows-msvc"
-        ($result.Stdout + $result.Stderr) | Should -Match "BUILD\.md"
+        # El destino va interpolado en el mensaje; en el texto del script
+        # aparece como `$target` sin expandir.
+        ($result.Stdout + $result.Stderr) | Should -Match ([regex]::Escape("el binario descargado (x86_64-pc-windows-msvc) no arranca"))
         Get-Content -Raw $sentinel | Should -Be "instalacion previa"
         Assert-NoStagingLeft $script:TestDir
     }
@@ -180,7 +184,10 @@ Describe "bootstrap de Windows" {
             -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase -ChildEnv $childEnv
 
         $result.ExitCode | Should -Not -Be 0
-        ($result.Stdout + $result.Stderr) | Should -Match "unsupported_platform"
+        $output = $result.Stdout + $result.Stderr
+        # `$osArch` se expande a ARM64 solo en la ejecucion real.
+        $output | Should -Match ([regex]::Escape("arquitectura no soportada: ARM64"))
+        $output | Should -Not -Match "Instalando ai-voice-interconnector 9.9.9"
     }
 
     It "una version que no tiene exactamente tres componentes falla sin descargar" -ForEach @(
@@ -256,7 +263,8 @@ Describe "bootstrap de Windows" {
         $stdinText = "irm $($script:LastBaseUrl)/install.ps1 | iex`n[Console]::Out.WriteLine('PATH-EFFECT-ALIVE')"
         $result = Invoke-ChildBootstrap -StdinText $stdinText -ExtraEnv $envBase -Engine $cmd.Source
 
-        $result.Stderr | Should -Match "checksum_mismatch"
+        $result.Stderr | Should -Match ([regex]::Escape("el checksum de ai-voice-interconnector-9.9.9-x86_64-windows.zip no coincide"))
+        $result.Stdout | Should -Not -Match "Checksum verificado"
         # La consola sigue viva: el marcador posterior se imprime.
         $result.Stdout | Should -Match "PATH-EFFECT-ALIVE"
     }

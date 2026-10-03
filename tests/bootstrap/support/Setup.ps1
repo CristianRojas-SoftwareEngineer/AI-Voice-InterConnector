@@ -104,7 +104,9 @@ public static class AviFakeBootstrap {
     & $csc /nologo /target:exe /out:"$Path" "$csFile"
     if ($LASTEXITCODE -ne 0) { throw "csc fallo con codigo $LASTEXITCODE" }
     Remove-Item -Force $csFile -ErrorAction SilentlyContinue
-}# Empaqueta el asset de Windows (zip con el falso exe) en <Dir>/v<ver>/.
+}
+
+# Empaqueta el asset de Windows (zip con el falso exe) en <Dir>/v<ver>/.
 function New-HarnessAsset {
     param([string]$Dir, [string]$FakeExe)
     $version = $script:HarnessVersion
