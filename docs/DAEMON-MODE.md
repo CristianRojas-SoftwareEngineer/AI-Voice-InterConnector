@@ -84,7 +84,7 @@ Este orden garantiza que `daemon start` calienta desde cualquier `CWD` sin neces
 
 ## Decisiones de diseño
 
-- **Transporte HTTP (no stdio)**: mismo contrato que el canal Python previo; clientes externos no notan el cambio.
+- **Transporte HTTP (no stdio)**: contrato del transporte HTTP estable para clientes externos.
 - **Captura siempre de cliente**: el daemon recibe PCM base64, nunca rutas ni dispositivos.
 - **Sin multi-instancia soportada por el cliente**: el puerto por defecto es fijo y el cliente CLI aún apunta a él; correr dos daemons con puertos efímeros exige el descubrimiento por el cliente, cuya migración a instancia aislada queda diferida.
 - **Motores residentes**: el TTS habla además con su propio servidor Qwen3-TTS (`127.0.0.1:8766`) gestionado por `avi-tts`. Ese puerto es el canal de servicio real (`DEFAULT_PORT`/`QWEN3_TTS_PORT`), no la identidad del proceso. Su PID se persiste en `daemon.pid` (`resident_pid` plano), y la parada, el reclamo y el reaper liquidan su proceso por su **identidad estable**: el `resident_pid` registrado (kill y verificación por viveza de PID) y, como faro independiente del pidfile cuando este se ha perdido, un barrido por imagen `qwen_tts` (`sweep_resident_by_image`, seguro porque el residente tiene imagen propia). No se descubre ni se verifica el cierre sondeando el puerto 8766.

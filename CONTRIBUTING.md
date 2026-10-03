@@ -21,7 +21,7 @@ flujo de desarrollo, los estándares del proyecto y cómo proponer cambios.
 La tabla única de requisitos vive en el código: comprueba tu host con
 `cargo xtask doctor` (solo lectura; informa la deriva del entorno).
 
-- Git. El proyecto es 100% Rust: sin Python.
+- Git. El proyecto es 100% Rust.
 
 ## Configuración del entorno de desarrollo
 
@@ -50,7 +50,7 @@ cargo run -- voice list
 los gestores del sistema (con `sudo` o UAC), así que solo se usa cuando se pide
 de forma explícita.
 
-La voz `default` está embebida en el binario (`crates/avi-store/assets/default/`); no requiere `src/` ni Python.
+La voz `default` está embebida en el binario (`crates/avi-store/assets/default/`); no requiere `src/`.
 
 ## Tests
 

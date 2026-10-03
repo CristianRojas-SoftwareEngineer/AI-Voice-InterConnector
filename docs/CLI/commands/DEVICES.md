@@ -45,7 +45,7 @@ ramificación por sistema operativo).
    `(buffer_size / sample_rate) * 1000.0` para obtener milisegundos. Si
    `default_output_config()` falla, la latencia por defecto es `10.0` ms.
 
-No existe distinción `degraded`/no-degraded como en el oráculo Python: no hay
+No existe distinción `degraded`/no-degraded: no hay
 segundo valor de retorno ni dispositivo sintético `"Default"` — una
 enumeración vacía o fallida simplemente produce una lista vacía o un error,
 según dónde falle.

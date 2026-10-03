@@ -45,7 +45,7 @@ La tabla única de requisitos vive en el código y la comprueba
 `cargo xtask doctor` (solo lectura): ejecuta ese comando en tu host en lugar
 de contrastar esta guía.
 
-No se requiere Python, Node ni toolchain adicional para compilar o empaquetar.
+El toolchain de Rust basta para compilar y empaquetar; no se requiere ningún otro.
 
 ---
 
@@ -60,8 +60,8 @@ No se requiere Python, Node ni toolchain adicional para compilar o empaquetar.
 
 > **Por qué Linux publica 2 arquitecturas y Windows/macOS solo 1.** Cada
 > plataforma publica las arquitecturas que cumplen **a la vez** dos condiciones:
-> (a) población real de usuarios y (b) capacidad del toolchain Rust (sin
-> dependencia de wheels Python). Bajo ese criterio:
+> (a) población real de usuarios y (b) capacidad del toolchain Rust. Bajo ese
+> criterio:
 >
 > - **Windows → 1 (x86_64)** por **decisión**: Windows-on-ARM es marginal en la
 >   población objetivo.
@@ -716,7 +716,7 @@ no reanuda por `Range`: una descarga interrumpida se repite completa. El crate e
 vendorizado y fijado a `=1.0.0` (`vendor/hf-hub-1.0.0`): los punteros de `snapshots/`
 son enlaces simbólicos en Unix y enlaces duros en Windows, por lo que el blob no se
 duplica en disco; si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos
-recursos de red), se copia el blob y el disco se duplica. No hay Python en la ruta de descarga.
+recursos de red), se copia el blob y el disco se duplica. La descarga la hace el propio binario (crate `hf-hub`).
 
 | Modelo lógico | Repo HF | Contenido |
 |---|---|---|

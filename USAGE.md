@@ -60,7 +60,7 @@ en [Experiencia unificada entre sistemas operativos](#experiencia-unificada-entr
 
 Hay dos flujos según la audiencia: el del **usuario del binario** (canal nativo:
 one-liner o descarga desde Releases) y el del **desarrollador** (compila con
-`cargo` desde el código fuente). El canal PyPI fue retirado; detalle en
+`cargo` desde el código fuente). Detalle en
 [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
 ### Requisitos de hardware
@@ -130,7 +130,7 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 ## Primer uso: provisionar el/los modelo(s) (`setup`)
 
 `setup` descarga **los 4 modelos base + 1 opt-in** desde HuggingFace Hub de forma nativa
-(crate `hf-hub`, TLS rustls; sin Python) a la **caché exclusiva de la aplicación**
+(crate `hf-hub`, TLS rustls) a la **caché exclusiva de la aplicación**
 (`~/.cache/ai-voice-interconnector/models` en Linux,
 `~/Library/Caches/ai-voice-interconnector/models` en macOS,
 `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows; respeta

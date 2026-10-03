@@ -58,7 +58,7 @@ Motor TTS: **Qwen3-TTS 0.6B CustomVoice** - multilingüe, clonación de voz; lic
 
 Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre CTranslate2, modelos ya convertidos que `setup` descarga siempre) cierra el bucle de la clonación de voz: el usuario escribe en su idioma nativo y obtiene audio en el idioma destino con su propia voz clonada, en un solo comando (`speech say`/`synthesize --source-language ... --target-language ...`) o vía el comando `translate` cuando solo necesita el texto traducido. El eslabón de entrada de ese bucle (audio→texto) lo cubre `speech transcribe` (Parakeet TDT v3 int8 vía `ort` `load-dynamic`, incluido por defecto en `setup` base).
 
-**El sistema debe ser consumible via línea de comandos** para que cualquier aplicación en cualquier lenguaje de programación pueda invocarlo (Python, JavaScript/Node, Rust, Go, Java, C#, etc.)
+**El sistema debe ser consumible via línea de comandos** para que cualquier aplicación en cualquier lenguaje de programación pueda invocarlo (JavaScript/Node, Rust, Go, Java, C#, etc.)
 
 **La experiencia del usuario final debe ser equivalente en Windows, Linux y macOS**: instalar, usar, actualizar y desinstalar con la misma cantidad de fricción, privilegios y residuo en los tres SO. Las diferencias de empaquetado idiomáticas por SO (formatos `tar.gz`/`zip`/Cask) son aceptables; las diferencias de experiencia no. La matriz de equivalencia y las brechas pendientes se registran en [§10 de la especificación del ciclo de vida](specs/sdlc-lifecycle.md#10-matriz-de-paridad-por-target).
 
@@ -69,7 +69,7 @@ Implementar y validar la síntesis en español latinoamericano con voz propia de
 ### Restricciones
 
 - **100% local**: Sin APIs externas ni conexiones a internet para síntesis
-- **Instalador único por SO (canal nativo)**: Un archivo comprimido por plataforma (`tar.gz`/`.zip` con binario Rust); el canal PyPI fue retirado en la Fase 7 (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md))
+- **Instalador único por SO (canal nativo)**: Un archivo comprimido por plataforma (`tar.gz`/`.zip` con binario Rust); ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)
 - **Sin dependencias externas (canal nativo)**: El usuario final no necesita instalar nada más (binario autocontenido)
 - **Licencia**: El código propio se distribuye bajo GPL-3.0-or-later; todas las dependencias y los modelos usados deben tener licencias compatibles con GPLv3 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible, como LGPL-2.1+/MPL-2.0). El par de traducción `opus-mt` (derivados int8 de Helsinki-NLP/opus-mt, ya convertidos a CTranslate2 y publicados) se distribuye bajo CC-BY-4.0, con atribución registrada en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)
 
@@ -77,15 +77,15 @@ Implementar y validar la síntesis en español latinoamericano con voz propia de
 
 #### Instalador (canal nativo)
 
-Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO), que es el único canal de distribución desde la Fase 7:
+Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO), que es el único canal de distribución:
 
 - **Un solo artefacto por SO**: Windows (`.zip`), Linux (`tar.gz` x64/arm64), macOS (`tar.gz` arm64) — binario autocontenido + docs GPLv3, instala vía one-liner `curl|sh`/`irm|iex` o Cask de Homebrew
-- **Cero dependencias externas**: El usuario final no instala Python, Node, Rust ni nada más
+- **Cero dependencias externas**: El usuario final no instala ningún runtime ni toolchain
 - **Descarga + instalación + configuración** en un solo paso (one-liner verifica checksum, extrae, integra PATH y encadena `setup`)
 - **Audio nativo**: playback usando APIs nativas del SO (cpal)
 - **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero (`self uninstall` borra programa+PATH+estado; `cleanup --all` es la limpieza granular del estado sin tocar el programa — ver `docs/CLI/CONTRACT.md §11`), en los tres sistemas operativos por igual (ver [§10 de la especificación](specs/sdlc-lifecycle.md#10-matriz-de-paridad-por-target))
 
-El **canal PyPI fue retirado en la Fase 7** (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)): la distribución es 100% Rust por archivos comprimidos. La mención histórica se conserva solo para auditoría.
+La distribución es 100% Rust por archivos comprimidos (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)).
 
 #### Paridad de experiencia
 

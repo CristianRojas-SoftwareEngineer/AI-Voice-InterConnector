@@ -6,7 +6,7 @@ Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **espa
 - **Clonación de voz**: Usa tu propia voz como referencia (~10 s)
 - **Multiplataforma**: Windows x64, Linux x64/ARM64, macOS ARM64 (Apple Silicon)
 - **Consumible via CLI**: Invocable desde cualquier lenguaje de programación
-- **Binario autocontenido**: Rust (`cargo build --release --features full`), sin Python ni dependencias externas
+- **Binario autocontenido**: Rust (`cargo build --release --features full`), sin dependencias externas
 
 ## Tabla de contenidos
 

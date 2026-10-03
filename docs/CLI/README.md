@@ -89,4 +89,4 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 
 Los códigos 0–10 y el 130 son los del contrato de la CLI y no cambian. Los siete del 11 al 17 son la tabla cerrada del ciclo de vida, **uno por `reason` de §8.1** (`crates/avi-core/src/exit_codes.rs`).
 
-Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). El sobre de la CLI lleva `schema_version` `"4"`; el **protocolo del daemon va por `"4"`**, porque son contratos independientes. `CliError` vive en `crates/avi-core/src/exit_codes.rs` y se traduce en `src/main.rs` (`ExitCode` + `reason`), sin herencia Python.
+Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). El sobre de la CLI lleva `schema_version` `"4"`; el **protocolo del daemon va por `"4"`**, porque son contratos independientes. `CliError` vive en `crates/avi-core/src/exit_codes.rs` y se traduce en `src/main.rs` (`ExitCode` + `reason`).

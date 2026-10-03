@@ -3,9 +3,7 @@
 `ai-voice-interconnector` se distribuye por un **único canal nativo**, publicado
 en cada tag `v*`: **archivos comprimidos** (`tar.gz`/`.zip`) que agrupan el
 binario Rust autocontenido con los documentos de licencia GPLv3 (ver
-[docs/BUILD.md](BUILD.md)). El canal **PyPI** (`pip`/`uv tool`/`pipx`) fue
-**retirado en la Fase 7**: el motor real ya es Rust, así que el repositorio
-quedó 100 % Rust en su distribución.
+[docs/BUILD.md](BUILD.md)). La distribución es 100 % Rust.
 
 ## Tabla de contenidos
 
@@ -14,14 +12,13 @@ quedó 100 % Rust en su distribución.
 - [Instalación](#instalación)
 - [Por qué el one-liner evita SmartScreen/Gatekeeper](#por-qué-el-one-liner-evita-smartscreengatekeeper)
 - [Publicación, tap de Homebrew y antivirus](#publicación-tap-de-homebrew-y-antivirus)
-- [Canal PyPI retirado](#canal-pypi-retirado)
 - [Flujo de publicación (CI)](#flujo-de-publicación-ci)
 
 ## El canal nativo
 
 | | Canal nativo |
 |---|---|
-| **Audiencia** | Cualquier usuario final (no requiere Python ni toolchain) |
+| **Audiencia** | Cualquier usuario final (no requiere toolchain) |
 | **Instalación** | One-liner por SO (`curl \| sh` / `irm \| iex`) o Homebrew Cask (macOS) |
 | **Tamaño** | Binario Rust pequeño y autocontenido (el archivo total suma además `ort-bundle` + `qwen_tts` vendido; CTranslate2 (ct2rs) enlazado estático + Parakeet vía `ort` `load-dynamic` vía `crt-static`) |
 | **Dependencias del sistema** | Ninguna (autocontenido) |
@@ -165,21 +162,10 @@ versiones y esa recurrencia disminuye mucho.
 El estado de esta brecha por SO (mitigada, diferida a firma de código) vive en
 [brechas conocidas de la especificación del ciclo de vida](specs/sdlc-lifecycle.md#brechas-conocidas).
 
-## Canal PyPI retirado
-
-**Contexto histórico**: tras el release `v0.1.1`, los binarios nativos seguían
-sin firma de código, disparando SmartScreen/Gatekeeper en cada primer arranque.
-Se adoptaron dos estrategias no excluyentes: **A** (añadir el canal PyPI, sin el
-problema de Mark-of-the-Web) y **B** (firmar/notarizar los binarios nativos).
-
-Con la migración a Rust, el motor real dejó de ser Python: el paquete PyPI pasó
-a envolver un binario Rust y perdió su razón de ser. En la **Fase 7** se
-**retiró el canal PyPI** (job `publish-pypi`, su nodo en el workflow y el
-context `pypi-publish`), dejando la distribución 100 % Rust por archivos
-comprimidos. La estrategia **B** (firma/notarización) sigue registrada como goal
-a largo plazo en [docs/GOAL.md](GOAL.md#goal-a-largo-plazo) para cuando se
-cumplan sus condiciones de entrada; hasta entonces, el one-liner es la vía que
-evita la fricción de SmartScreen/Gatekeeper.
+La firma y notarización de los binarios sigue registrada como goal a largo plazo
+en [docs/GOAL.md](GOAL.md#goal-a-largo-plazo) para cuando se cumplan sus
+condiciones de entrada; hasta entonces, el one-liner es la vía que evita la
+fricción de SmartScreen/Gatekeeper.
 
 ## Flujo de publicación (CI)
 
@@ -194,5 +180,3 @@ persisten al workspace. Luego:
 2. `publish-metadata` (depende de `publish-release`) renderiza el Cask de
    Homebrew con `cargo xtask cask` — `binary` stanza sobre el `tar.gz` de
    macOS, con el `sha256` extraído de `SHA256SUMS.txt` — y lo empuja al tap.
-
-No hay job de publicación a PyPI: fue retirado en la Fase 7 (ver arriba).

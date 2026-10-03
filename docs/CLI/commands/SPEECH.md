@@ -240,8 +240,7 @@ ai-voice-interconnector speech dub (--audio <archivo.wav>|--file <archivo.wav> |
 ```
 
 Pipeline voz→voz: transcribe → traduce (si `source != target`) → sintetiza →
-reproduce. `--file` es alias de `--audio` (`alias = "file"`,
-paridad con el oráculo Python retirado).
+reproduce. `--file` es alias de `--audio` (`alias = "file"`, contrato del comando).
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
