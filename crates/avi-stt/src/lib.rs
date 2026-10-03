@@ -96,7 +96,7 @@ mod tests {
     #[cfg(feature = "native-stt")]
     #[test]
     #[ignore = "requiere Parakeet"]
-    fn parakeet_engine_matches_oracle() {
+    fn parakeet_engine_matches_reference() {
         let model_dir = require_parakeet();
         let engine = ParakeetEngine::new(model_dir).expect("el modelo Parakeet debe cargar");
 
@@ -107,22 +107,22 @@ mod tests {
         let corpus: [(&str, &str, bool); 4] = [
             (
                 "parakeet_sample_16k.wav",
-                "parakeet_sample_16k.oraculo.txt",
+                "parakeet_sample_16k.referencia.txt",
                 true,
             ),
             (
                 "corpus_watermark_16k.wav",
-                "corpus_watermark_16k.oraculo.txt",
+                "corpus_watermark_16k.referencia.txt",
                 false,
             ),
             (
                 "corpus_sintesis_16k.wav",
-                "corpus_sintesis_16k.oraculo.txt",
+                "corpus_sintesis_16k.referencia.txt",
                 false,
             ),
             (
                 "corpus_respuestas_16k.wav",
-                "corpus_respuestas_16k.oraculo.txt",
+                "corpus_respuestas_16k.referencia.txt",
                 false,
             ),
         ];
@@ -180,7 +180,7 @@ mod tests {
             // RTF ~0.10 pero WER real ~0.08–0.21 sobre fixtures de voz
             // sintética. Se valida paridad con WER ≤ 0.25, que abarca
             // el WER observado (0.083 watermark incluido el "jejeje" inicial no
-            // reflejado en el oráculo, 0.214 sintesis, 0.111 respuestas).
+            // reflejado en el fixture, 0.214 sintesis, 0.111 respuestas).
             let threshold = 0.25;
             assert!(
                 wer_value <= threshold,

@@ -248,8 +248,8 @@ impl VoiceStore {
         Ok(voices)
     }
 
-    /// Validar un nombre de voz (regex del oráculo `^[A-Za-z0-9._-]+$` +
-    /// reglas de seguridad anti-escape; paridad de contrato)
+    /// Validar un nombre de voz (regex del contrato `^[A-Za-z0-9._-]+$` +
+    /// reglas de seguridad anti-escape)
     pub fn validate_name(name: &str) -> Result<(), String> {
         if name.is_empty() {
             return Err("El nombre de la voz no puede estar vacío.".into());
@@ -275,8 +275,8 @@ impl VoiceStore {
         Ok(())
     }
 
-    /// Verificar si una voz existe, con el nombre normalizado a minúsculas como
-    /// hace el oráculo
+    /// Verificar si una voz existe, con el nombre normalizado a minúsculas, según
+    /// el contrato del registro
     pub fn exists(&self, name: &str) -> bool {
         self.base_dir.join(name.to_lowercase()).is_dir()
     }
@@ -313,7 +313,7 @@ impl VoiceStore {
     }
 
     /// Guardar el `.qvoice` clonado como `reference.qvoice` de la voz
-    /// (copia con temporal + rename; paridad con el layout del oráculo)
+    /// (copia con temporal + rename; layout del contrato del registro)
     pub fn save_reference(&self, name: &str, src: &Path) -> Result<PathBuf> {
         let dir = self.voice_dir(name);
         std::fs::create_dir_all(&dir)?;
@@ -1325,8 +1325,8 @@ mod tests {
         dir
     }
 
-    /// Normalización de mayúsculas en todas las operaciones del almacén, con la
-    /// misma paridad que el oráculo.
+    /// Normalización de mayúsculas en todas las operaciones del almacén, según
+    /// el contrato del registro.
     #[test]
     fn normalization_lowercase() {
         let dir = temp_dir("norm");
@@ -1422,8 +1422,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// sidecar ausente/corrupto es tolerable en `list` (conserva la
-    /// tolerancia previa del oráculo).
+    /// sidecar ausente/corrupto es tolerable en `list` (contrato
+    /// del registro).
     #[test]
     fn sidecar_missing_tolerable() {
         let dir = temp_dir("sidecar");
@@ -1441,9 +1441,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `validate_name` acepta el regex del oráculo y rechaza lo demás.
+    /// `validate_name` acepta el regex del contrato y rechaza lo demás.
     #[test]
-    fn validate_name_regex_oracle() {
+    fn validate_name_accepts_contract_regex() {
         assert!(VoiceStore::validate_name("Mi_Voz-2").is_ok());
         assert!(
             VoiceStore::validate_name("mi voz").is_err(),

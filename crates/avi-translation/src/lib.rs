@@ -2,9 +2,9 @@
 //!
 //! Expone `Ct2TranslationEngine`, implementación de
 //! `avi_core::engine::TranslationEngine` que carga un modelo opus-mt convertido
-//! a CT2 y traduce texto replicando la tokenización del oráculo Python
-//! (`_MarianCT2Model.translate`): SentencePiece embebido + token `</s>` manual,
-//! sin `sacremoses` ni `MarianTokenizer`.
+//! a CT2 y traduce texto con la tokenización del contrato del motor:
+//! SentencePiece embebido + token `</s>` manual, sin `sacremoses` ni
+//! `MarianTokenizer`.
 
 // Estos símbolos solo los consume el motor real (`Ct2TranslationEngine` y
 // `translate`), gateado tras `native-translation`; sin el feature quedarían sin
@@ -58,9 +58,9 @@ impl Ct2TranslationEngine {
             .map(|sentence| format!("{} </s>", sentence))
             .collect();
         // Mejora de calidad sobre el default de ct2rs: `disable_unk` suprime la
-        // generación del token `<unk>` en la hipótesis (mismo default sano del
-        // oráculo Python, `disable_unk=True` en ctranslate2), evitando `<unk>`
-        // crudo en la salida ante vocabulario fuera de cobertura.
+        // generación del token `<unk>` en la hipótesis (`disable_unk=True` en
+        // ctranslate2), evitando `<unk>` crudo en la salida ante vocabulario
+        // fuera de cobertura.
         let options = ct2rs::TranslationOptions {
             disable_unk: true,
             ..Default::default()
@@ -78,10 +78,9 @@ impl Ct2TranslationEngine {
             .map(|(translated, _)| {
                 // La hipótesis del decoder termina con el token `</s>` (EOS),
                 // que el detokenizador de ct2rs reconstruye como texto literal;
-                // el oráculo lo elimina al decodificar con el SentencePiece
+                // el contrato lo elimina al decodificar con el SentencePiece
                 // destino (los símbolos de control decodifican a cadena vacía).
-                // Se sanea aquí para preservar la paridad
-                // de salida.
+                // Se sanea aquí para preservar la salida esperada.
                 translated.trim_end_matches("</s>").trim_end().to_string()
             })
             .collect())
@@ -143,7 +142,7 @@ fn translate_batches_by_paragraph(
 }
 
 /// Traduce `text` de `source` a `target` segmentando jerárquicamente y
-/// reensamblando el resultado igual que el oráculo (`SegmentAssembler`):
+/// reensamblando el resultado así (`SegmentAssembler`):
 /// segmentos unidos con espacio dentro de cada párrafo y párrafos unidos con
 /// `"\n\n"`. Precondición: `source != target` — el passthrough se resuelve en
 /// la capa CLI antes de llamar a esta función.
@@ -305,20 +304,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Test de paridad funcional contra el oráculo Python.
+    /// Test de conformidad funcional contra el corpus de referencia.
     ///
-    /// El corpus de referencia son pares `{input, expected}` generados con el
-    /// pipeline de traducción del oráculo Python (`TranslationService` de
-    /// producción, SentencePiece crudo + `</s>` manual) sobre textos reales
-    /// del repositorio, en ambas direcciones es↔en.
+    /// El corpus de referencia son pares `{input, expected}` (SentencePiece
+    /// crudo + `</s>` manual) sobre textos reales del repositorio, en ambas
+    /// direcciones es↔en.
     ///
-    /// La paridad es FUNCIONAL, no byte a byte: la migración a Rust busca
-    /// calidad y eficiencia, no clonar el comportamiento del oráculo (decisión
-    /// del equipo). El corpus del oráculo se usa como referencia de CALIDAD,
-    /// no como verdad esperada: sobre estos textos la varianza de paráfrasis
-    /// entre dos hipótesis igualmente válidas alcanza WER 0.19 de media (p.
-    /// ej. «Don't» vs «Do not», «a watermark» vs «any watermark», «Optimizar
-    /// para la claridad externa» vs la forma conjugada del oráculo). Por eso
+    /// La conformidad es FUNCIONAL, no byte a byte: el motor busca calidad y
+    /// eficiencia, no reproducir literalmente cada hipótesis. El corpus se usa
+    /// como referencia de CALIDAD, no como verdad esperada: sobre estos textos
+    /// la varianza de paráfrasis entre dos hipótesis igualmente válidas
+    /// alcanza WER 0.19 de media (p. ej. «Don't» vs «Do not», «a watermark»
+    /// vs «any watermark», «Optimizar para la claridad externa» vs la forma
+    /// conjugada de la referencia). Por eso
     /// los umbrales separan «variación válida» de «motor roto» (modelo
     /// equivocado, tokenización rota o salida degradada dispararían el WER
     /// medio muy por encima de 0.35), y se complementan con checks
@@ -326,17 +324,17 @@ mod tests {
     #[cfg(feature = "native-translation")]
     #[test]
     #[ignore = "requiere los modelos CT2 es-en y en-es"]
-    fn ct2translationengine_matches_python_oracle() {
+    fn ct2translationengine_matches_reference() {
         use crate::Ct2TranslationEngine;
 
         require_ct2("es-en");
         require_ct2("en-es");
 
-        // Pares (subdirectorio de modelo, fixture del corpus del oráculo),
+        // Pares (subdirectorio de modelo, fixture del corpus de referencia),
         // ambos dentro de la raíz del crate.
         let corpus: [(&str, &str); 2] = [
-            ("opus-mt-es-en", "translate_es_en.oraculo.json"),
-            ("opus-mt-en-es", "translate_en_es.oraculo.json"),
+            ("opus-mt-es-en", "translate_es_en.referencia.json"),
+            ("opus-mt-en-es", "translate_en_es.referencia.json"),
         ];
 
         let mut wer_total = 0.0;
@@ -351,15 +349,15 @@ mod tests {
 
             let engine =
                 Ct2TranslationEngine::new(model_dir).expect("el modelo opus-mt debe cargar");
-            let oracle_pairs: Vec<OraclePair> = serde_json::from_str(
+            let reference_pairs: Vec<ReferencePair> = serde_json::from_str(
                 &std::fs::read_to_string(fixture_path)
-                    .expect("el corpus de referencia del oráculo debe existir"),
+                    .expect("el corpus de referencia debe existir"),
             )
-            .expect("el corpus del oráculo debe ser JSON válido");
+            .expect("el corpus de referencia debe ser JSON válido");
 
-            for oracle_pair in &oracle_pairs {
+            for reference_pair in &reference_pairs {
                 let actual = engine
-                    .translate(&oracle_pair.input, "es", "en")
+                    .translate(&reference_pair.input, "es", "en")
                     .expect("la traducción debe completarse")
                     .trim()
                     .to_string();
@@ -368,22 +366,22 @@ mod tests {
                     !actual.is_empty(),
                     "traducción vacía en {} para {:?}",
                     model,
-                    oracle_pair.input
+                    reference_pair.input
                 );
                 assert!(
                     !actual.contains("</s>"),
                     "el token EOS no debe filtrarse a la salida en {} para {:?}",
                     model,
-                    oracle_pair.input
+                    reference_pair.input
                 );
                 assert!(
                     !actual.contains("<unk>"),
                     "el token desconocido no debe filtrarse a la salida en {} para {:?}",
                     model,
-                    oracle_pair.input
+                    reference_pair.input
                 );
 
-                let expected = oracle_pair.expected.trim();
+                let expected = reference_pair.expected.trim();
                 let ref_words: Vec<&str> = expected.split_whitespace().collect();
                 let hyp_words: Vec<&str> = actual.split_whitespace().collect();
                 let distance = levenshtein_words(&ref_words, &hyp_words);
@@ -394,7 +392,7 @@ mod tests {
                     "WER por ítem {:.4} supera el tope 0.6 en {} ({:?}): esperado {:?}, obtenido {:?}",
                     wer,
                     model,
-                    oracle_pair.input,
+                    reference_pair.input,
                     expected,
                     actual
                 );
@@ -403,7 +401,7 @@ mod tests {
                 n_items += 1;
                 eprintln!(
                     "[corpus] {} | WER {:.4} | {:?} -> {:?}",
-                    model, wer, oracle_pair.input, actual
+                    model, wer, reference_pair.input, actual
                 );
             }
         }
@@ -417,10 +415,10 @@ mod tests {
     }
 
     /// Un par del corpus de paridad: texto de entrada y su traducción de
-    /// referencia emitida por el oráculo Python.
+    /// referencia.
     #[cfg(feature = "native-translation")]
     #[derive(serde::Deserialize)]
-    struct OraclePair {
+    struct ReferencePair {
         input: String,
         expected: String,
     }
@@ -767,7 +765,7 @@ mod tests {
     /// (supera los 512 caracteres del segmentador, forzando la partición a
     /// oraciones) se traduce completo en dos lotes (10 + 1) sin perder
     /// contenido: salida no vacía, sin `</s>`/`<unk>` y con longitud acorde a
-    /// la entrada (el corpus del oráculo solo cubre una oración por ítem, por
+    /// la entrada (el corpus de referencia solo cubre una oración por ítem, por
     /// eso esta cobertura del lote se añade aquí).
     #[cfg(feature = "native-translation")]
     #[test]

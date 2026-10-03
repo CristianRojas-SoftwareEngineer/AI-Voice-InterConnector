@@ -75,7 +75,7 @@ static IN_MEMORY_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 
 /// Resuelve un token de idioma de la CLI (`es-latam`/`en`) al código ISO que
 /// exige el motor STT: `es-latam` -> `es`; cualquier otro valor pasa verbatim
-/// (espeja `resolve_language` del oráculo Python).
+/// (contrato de la CLI para `resolve_language`).
 fn resolve_stt_language(token: &str) -> &str {
     match token {
         "es-latam" => "es",
@@ -492,7 +492,7 @@ enum VoiceCommands {
     Clone {
         #[arg(short, long)]
         name: String,
-        /// Audio de referencia de habla (obligatorio; paridad con el oráculo)
+        /// Audio de referencia de habla (obligatorio; contrato de la CLI)
         #[arg(short = 's', long)]
         speech_reference: String,
         /// Audio de referencia de timbre (opcional)
@@ -540,7 +540,7 @@ enum SpeechCommands {
         voice: String,
         #[arg(short, long)]
         output: Option<String>,
-        /// Etiqueta de la locución persistida (obligatorio; paridad con el oráculo)
+        /// Etiqueta de la locución persistida (obligatorio; contrato de la CLI)
         #[arg(short, long)]
         label: String,
         /// Sobrescribir una locución existente con la misma etiqueta
@@ -576,7 +576,7 @@ enum SpeechCommands {
     },
     /// Doblaje voz→voz: transcribe, traduce, sintetiza y reproduce
     Dub {
-        /// Archivo de audio a doblar (alias del oráculo: --file)
+        /// Archivo de audio a doblar (alias del contrato: --file)
         #[arg(short = 'a', long, alias = "file")]
         audio: Option<String>,
         #[arg(short, long, default_value = "default")]
@@ -834,7 +834,7 @@ async fn main() {
     // Bootstrap: UTF-8, tracing, SIGINT
     avi_shared::force_utf8_console();
     // Los logs van a stderr: stdout queda reservado para el contrato JSON
-    // (envelope schema_version="3"), igual que el oráculo Python.
+    // (envelope schema_version="3"), según el contrato de la CLI.
     {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
@@ -1168,7 +1168,7 @@ async fn handle_voice(
             timbre_reference,
             force,
         } => {
-            // Orden de validaciones del oráculo: el nombre se valida antes que el modelo.
+            // Orden de validaciones del contrato: el nombre se valida antes que el modelo.
             let name = name.to_lowercase();
             VoiceStore::validate_name(&name)
                 .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
@@ -1713,7 +1713,7 @@ async fn handle_speech(
                 ));
             }
             validate_temperature(temperature)?;
-            // Orden de validaciones del oráculo: la temperatura se comprueba antes que el texto.
+            // Orden de validaciones del contrato: la temperatura se comprueba antes que el texto.
             avi_core::validate_synthesis_text(&text)?;
             // Origen por defecto = destino (sin traducir).
             let source_eff = source_language.as_deref().unwrap_or(&target_language);
@@ -1896,7 +1896,7 @@ async fn handle_speech(
             temperature,
         } => {
             validate_temperature(temperature)?;
-            // Validaciones puras del oráculo, antes del despacho:
+            // Validaciones puras del contrato, antes del despacho:
             if duration.is_some() && !mic {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
@@ -3368,8 +3368,8 @@ fn startup_error_to_cli(err: &daemon::StartupError) -> CliError {
     CliError::new(code, reason, err.to_string())
 }
 
-/// Valida identificadores de voz/etiqueta contra el regex del oráculo
-/// (`^[A-Za-z0-9._-]+$`; paridad con el oráculo) → exit 2.
+/// Valida identificadores de voz/etiqueta contra el regex del contrato
+/// (`^[A-Za-z0-9._-]+$`) → exit 2.
 fn is_valid_identifier(ids: Option<&str>, more: Option<&str>) -> Result<(), CliError> {
     for id in ids.into_iter().chain(more) {
         if id.is_empty()

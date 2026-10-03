@@ -8,8 +8,8 @@ license = "GPL-3.0-or-later"
 avi-core = { path = "../avi-core" }
 anyhow = "1.0"
 
-# Backend oneDNN + OpenMP COMP (sin ruy): replica la configuración del wheel
-# de Python y es ~2.4x más rápido que ruy en CPU. Verificada por benchmarks.
+# Backend oneDNN + OpenMP COMP (sin ruy): es ~2.4x más rápido que ruy en CPU.
+# Verificada por benchmarks.
 # En Linux, ct2rs fuerza COMP igualmente cuando dnnl está activo (build.rs);
 # en Windows, COMP usa el runtime de MSVC (vcomp) sin link explícito.
 # Declarado en secciones por-target porque una misma dependencia en
@@ -34,8 +34,8 @@ ct2rs = { version = "0.10.0", optional = true, default-features = false, feature
 native-translation = ["dep:ct2rs"]
 
 [dev-dependencies]
-# Lectura del corpus de paridad contra el oráculo Python (pares {input, expected}
-# en JSON generados por el pipeline de traducción del oráculo).
+# Lectura del corpus de referencia de traducción (pares {input, expected} en
+# JSON).
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # Resolución por la raíz de modelos (`models_cache_dir()/ct2`) para tests sin path legado `models/ct2` CWD.

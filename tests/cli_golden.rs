@@ -1,8 +1,8 @@
 //! Harness de tests dorados del CLI.
 //!
 //! Invoca el binario compilado con argumentos fijos y compara `stdout` (JSON) y el
-//! código de salida contra fixtures en `tests/golden/`, replicando el contrato que
-//! cubrían los scripts Python eliminados: `schema_version == "4"` (vía
+//! código de salida contra fixtures en `tests/golden/`, verificando el contrato de
+//! la CLI: `schema_version == "4"` (vía
 //! `avi_core::json_emitter`) y los códigos de salida de `avi_core::exit_codes`.
 //!
 //! Se ubica como test de integración del paquete raíz (y no dentro de `src/main.rs`)
@@ -685,7 +685,7 @@ fn d03_reaper_without_live_pid_does_not_fail() {
 /// un tempfile **no hay pipe** para heredar: `spawn()`+`wait()` retorna en cuanto el CLI
 /// termina (~1.3 s tras `daemon start` con el bind-first).
 ///
-/// Patrón equivalente al del legacy Python: el daemon no comparte I/O (pipe) con el
+/// Patrón de espera: el daemon no comparte I/O (pipe) con el
 /// proceso que lo lanza.
 ///
 /// `stderr` va a otro tempfile por la misma razón y se imprime con `eprintln!`: el
@@ -2687,7 +2687,7 @@ mod tts {
     // fila. No se le añaden reintentos ni timeouts para "arreglarlo" — hacerlo
     // enmascararía un cuelgue real si alguna vez ocurriera uno.
 
-    /// Etiqueta/voz única por corrida (el oráculo normaliza a minúsculas).
+    /// Etiqueta/voz única por corrida (el contrato normaliza a minúsculas).
     fn unique_label(prefix: &str) -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

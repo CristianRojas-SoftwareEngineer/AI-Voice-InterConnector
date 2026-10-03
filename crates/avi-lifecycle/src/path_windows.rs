@@ -392,14 +392,14 @@ mod tests {
 
         // Sin la entrada, se añade al final y el tipo se conserva.
         let without_entry = RawPath {
-            value: r"C:\Windows;C:\Python".to_string(),
+            value: r"C:\Windows;C:\Tools".to_string(),
             kind: REG_EXPAND_SZ,
         };
         let plan = plan_integrate(Some(&without_entry), entry);
         assert!(plan.changed);
         assert_eq!(
             plan.value,
-            r"C:\Windows;C:\Python;C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector",
+            r"C:\Windows;C:\Tools;C:\Users\ana\AppData\Local\Programs\ai-voice-interconnector",
             "al final, con `;` y sin pisar lo anterior"
         );
         assert_eq!(plan.kind, REG_EXPAND_SZ, "el tipo leído se conserva");

@@ -20,7 +20,7 @@
     "expected": "Escribe pruebas para entradas inválidas y luego haz que pasen."
   },
   {
-    "input": "Preserve the existing layout on disk to allow mixed Python and Rust runs.",
-    "expected": "Preservar el diseño existente en el disco para permitir que se mezclen Python y Rust."
+    "input": "Preserve the existing layout on disk to allow mixed Go and Rust runs.",
+    "expected": "Preservar el diseño existente en el disco para permitir que se mezclen Go y Rust."
   }
 ]

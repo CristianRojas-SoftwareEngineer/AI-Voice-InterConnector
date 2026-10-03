@@ -106,12 +106,12 @@ fn section_re() -> &'static Regex {
 
 /// Localizador de línea: un nombre de fichero con extensión, dos puntos y dígitos. La
 /// lista de extensiones es la de los ficheros a los que este repositorio apunta, más
-/// `.py` y `.c` porque los oráculos y el motor vendorizado se citaban así y sus
-/// referencias quedaron colgando cuando esos ficheros se borraron.
+/// `.c` y `.h` porque el motor vendorizado se citaba así y sus referencias quedaron
+/// colgando cuando esos ficheros se borraron.
 fn locator_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"[A-Za-z0-9_./\\-]+\.(rs|md|json|sh|ps1|toml|yml|py|c|h):\d+").unwrap()
+        Regex::new(r"[A-Za-z0-9_./\\-]+\.(rs|md|json|sh|ps1|toml|yml|c|h):\d+").unwrap()
     })
 }
 

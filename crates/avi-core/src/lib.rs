@@ -43,9 +43,8 @@ mod tests {
 
     #[test]
     fn test_short_text_returns_single_segment() {
-        // Derivado de la prueba equivalente del segmentador en Python: un texto
-        // que cabe entero se
-        // devuelve como único párrafo con un único segmento igual al texto.
+        // Un texto que cabe entero se devuelve como único párrafo con un
+        // único segmento igual al texto.
         let segmenter = HierarchicalSegmenter::new(200);
         let result = segmenter.segment("Hola, ¿cómo estás?");
         assert_eq!(result, vec![vec!["Hola, ¿cómo estás?"]]);

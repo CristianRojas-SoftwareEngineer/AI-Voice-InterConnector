@@ -12,8 +12,7 @@ pub trait Segmenter: Send + Sync {
 }
 
 /// Segmentador jerárquico de cuatro niveles (párrafo → oración → puntuación
-/// fuerte → tokens), fiel a la estructura de `SentenceSegmenter` del oráculo
-/// Python: cada nivel solo se aplica a los fragmentos que aún exceden
+/// fuerte → tokens): cada nivel solo se aplica a los fragmentos que aún exceden
 /// `max_length`; el resto se deja intacto. Ningún nivel rompe una palabra ni
 /// pierde texto.
 ///
@@ -92,7 +91,7 @@ fn split_sentences(text: &str) -> Vec<String> {
 
 /// Nivel 3 (puntuación fuerte): separa tras cada `,`/`;`/`:` seguida de
 /// espacio en blanco, conservando la puntuación en el fragmento precedente
-/// (equivalente al lookbehind `(?<=[,;:])\s+` de Python). Si no hay nada que
+/// (equivale a cortar con la regex `(?<=[,;:])\s+`). Si no hay nada que
 /// particionar, delega directo a `split_tokens`; si no, cada parte que aún
 /// exceda `max_length` cae al nivel de tokens y el resto se deja intacto.
 fn split_strong_punctuation(text: &str, max_length: usize) -> Vec<String> {

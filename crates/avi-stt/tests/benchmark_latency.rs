@@ -32,22 +32,22 @@ fn benchmark_latency_quality() {
         (
             "parakeet_sample_16k.wav",
             "¡Hola! ¿Cómo estás?",
-            "parakeet_sample_16k.oraculo.txt",
+            "parakeet_sample_16k.referencia.txt",
         ),
         (
             "corpus_sintesis_16k.wav",
             "Sistema de síntesis de voz completamente local con clonación de voz en español latinoamericano.",
-            "corpus_sintesis_16k.oraculo.txt",
+            "corpus_sintesis_16k.referencia.txt",
         ),
         (
             "corpus_watermark_16k.wav",
             "Recuerda que el audio no contiene marca de agua que lo identifique.",
-            "corpus_watermark_16k.oraculo.txt",
+            "corpus_watermark_16k.referencia.txt",
         ),
         (
             "corpus_respuestas_16k.wav",
             "Las respuestas dirigidas al usuario deben estar en espejo.",
-            "corpus_respuestas_16k.oraculo.txt",
+            "corpus_respuestas_16k.referencia.txt",
         ),
     ];
 
