@@ -8,8 +8,9 @@
 # esa sesion; la consola sobrevive al error bajo tuberia) y 10 (paso de
 # parametros y variables). Cubre ademas el canal real `irm <url> | iex` en
 # PowerShell 5.1 y 7 (las pruebas de tuberia necesitan `pwsh` en el PATH para
-# no omitirse) y la guarda de codificacion ASCII de los .ps1. Sin casos --check
-# y sin red real.
+# no omitirse), el entorno con PSModulePath heredado de PowerShell 7 (se
+# construye a proposito, sin depender del anfitrion) y la guarda de
+# codificacion ASCII de los .ps1. Sin casos --check y sin red real.
 #
 # Ejecutar: Invoke-Pester tests/bootstrap/install.tests.ps1 -CI
 
@@ -267,6 +268,23 @@ Describe "bootstrap de Windows" {
         $result.Stdout | Should -Not -Match "Checksum verificado"
         # La consola sigue viva: el marcador posterior se imprime.
         $result.Stdout | Should -Match "PATH-EFFECT-ALIVE"
+    }
+
+    It "con powershell.exe y un PSModulePath heredado de PowerShell 7 instala y verifica el checksum" {
+        if ($null -eq (Get-Command powershell.exe -ErrorAction SilentlyContinue) -or $null -eq (Get-Command pwsh -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because "powershell.exe o pwsh no disponible"
+            return
+        }
+        $envBase = Get-TestEnvBase $script:TestDir
+        $contaminated = Get-ContaminatedModulePath
+        $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
+            -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase `
+            -Engine (Get-Command powershell.exe).Source -ChildEnv @{ PSModulePath = $contaminated }
+
+        $result.ExitCode | Should -Be 0
+        $result.Stdout | Should -Match "Checksum verificado"
+        ($result.Stdout + $result.Stderr) | Should -Not -Match "AVISO: no se pudieron restringir"
+        Assert-NoStagingLeft $script:TestDir
     }
 
     It "sin -NoModifyPath integra el PATH en la subclave de prueba" {

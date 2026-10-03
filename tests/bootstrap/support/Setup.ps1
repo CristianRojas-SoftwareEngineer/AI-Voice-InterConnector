@@ -27,21 +27,16 @@ function Get-ChildEngine {
     return $script:ChildEngine
 }
 
-# El hijo hereda el PSModulePath del anfitrion: bajo PowerShell 7 el directorio
-# de PS7 precede al del motor hijo y su `Microsoft.PowerShell.Utility` (.NET
-# Core) hace sombra al de Windows PowerShell (la autocarga falla). El
-# directorio del motor hijo va primero, se mueva o se anada. -Engine vacio
-# usa el motor por defecto (Get-ChildEngine).
-function Get-ChildModulePath {
-    param([string]$Current, [string]$Engine = "")
-    if ([string]::IsNullOrEmpty($Engine)) { $Engine = Get-ChildEngine }
-    if ($Engine -match "powershell\.exe$") {
-        $needDir = Join-Path ([Environment]::GetFolderPath("System")) "WindowsPowerShell\v1.0\Modules"
-    } else {
-        $needDir = Join-Path (Split-Path $Engine -Parent) "Modules"
-    }
-    $rest = @($Current -split ";" | Where-Object { $_ -ne "" -and $_ -ne $needDir })
-    return (@($needDir) + $rest) -join ";"
+# PSModulePath contaminado: el directorio Modules del `pwsh` del PATH delante
+# del PSModulePath actual. Es el entorno de quien abre Windows PowerShell 5.1
+# desde una sesion de PowerShell 7: los modulos .NET Core de PS7 hacen sombra a
+# los de 5.1 y sus cmdlets estandar dejan de cargarse. Se construye a
+# proposito para no depender del PSModulePath del anfitrion.
+function Get-ContaminatedModulePath {
+    $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+    $pwshModules = Join-Path (Split-Path $pwsh -Parent) "Modules"
+    $current = [Environment]::GetEnvironmentVariable("PSModulePath")
+    return (@($pwshModules) + @($current -split ";" | Where-Object { $_ -ne "" -and $_ -ne $pwshModules })) -join ";"
 }
 
 # Aplica las variables del hashtable (valor $null = ausente) guardando las previas.
@@ -194,7 +189,8 @@ function Stop-HarnessServer {
 # variables de sistema como PROCESSOR_ARCHITECTURE no deben tocarse en el
 # anfitrion -sobrescribirlas rompe su herencia a los nietos en PowerShell 7
 # (comprobado: el hijo las ve vacias aunque el padre lea el valor restaurado).
-# Los valores de -ChildEnv no admiten comillas dobles.
+# Los valores de -ChildEnv no admiten comillas dobles. Con -ChildEnv se puede
+# fijar tambien PSModulePath; si no, el hijo hereda el del anfitrion.
 #
 # El hijo cuelga de cmd.exe con redireccion a ficheros, a proposito:
 # `Start-Process -PassThru` devuelve en Windows PowerShell 5.1 un proceso cuyo
@@ -206,8 +202,6 @@ function Invoke-ChildBootstrap {
     param([string]$Bootstrap = "", [string[]]$Arguments = @(), [hashtable]$ExtraEnv = @{}, [hashtable]$ChildEnv = @{}, [string]$StdinText, [string]$Engine = "")
     if ([string]::IsNullOrEmpty($Engine)) { $Engine = Get-ChildEngine }
     Enter-HarnessEnv $ExtraEnv
-    $origModulePath = [Environment]::GetEnvironmentVariable("PSModulePath")
-    [Environment]::SetEnvironmentVariable("PSModulePath", (Get-ChildModulePath $origModulePath -Engine $Engine))
     try {
         $viaStdin = $PSBoundParameters.ContainsKey("StdinText")
         $ioDir = Join-Path ([IO.Path]::GetTempPath()) ("avi-io-" + [guid]::NewGuid().ToString("N"))
@@ -250,7 +244,6 @@ function Invoke-ChildBootstrap {
             if ($null -eq $stderr) { $stderr = "" }
             return @{ ExitCode = $child.ExitCode; Stdout = $stdout; Stderr = $stderr }
         } finally {
-            [Environment]::SetEnvironmentVariable("PSModulePath", $origModulePath)
             Remove-Item -Recurse -Force $ioDir -ErrorAction SilentlyContinue
         }
     } finally {
