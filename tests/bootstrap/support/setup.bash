@@ -1,12 +1,14 @@
 # Ayudas del arnés local para install.bats (solo pruebas, POSIX sh + bats).
 #
-# El servidor falso (support/serve.py) sirve por HTTPS con certificado propio
-# los assets por target y un SHA256SUMS.txt coherente o corrupto, porque el
-# bootstrap fija `curl --proto '=https'` y el http plano no llegaría al
-# servidor. `CURL_CA_BUNDLE` hace que el curl real confíe en la CA de prueba
-# sin relajar el TLS del bootstrap. La versión de prueba es 9.9.9 en todos
-# los casos: lo inexistente (8.8.8) falla con error de red, lo que demuestra
-# qué resolución se eligió sin inspeccionar el código.
+# El servidor falso es `openssl s_server -WWW`: sirve por HTTPS con certificado
+# propio los assets por target y un SHA256SUMS.txt coherente o corrupto,
+# porque el bootstrap fija `curl --proto '=https'` y el http plano no
+# llegaría al servidor. `CURL_CA_BUNDLE` hace que el curl real confíe en la
+# CA de prueba sin relajar el TLS del bootstrap. La versión de prueba es 9.9.9
+# en todos los casos: lo inexistente (8.8.8) responde 200 con un cuerpo de
+# error en vez de 404, así que la resolución elegida se demuestra porque solo
+# 9.9.9 puede instalarse y porque el registro de peticiones (`FILE:<ruta>`
+# por cada archivo existente servido) no nombra ninguna otra versión.
 #
 # El falso `ai-voice-interconnector` empaquetado en cada asset registra
 # `self install ...` en AVI_FAKE_LOG, exige terminal sin --yes (emula la
@@ -85,26 +87,27 @@ harness_write_sums() {
 harness_start_server() {
     root="$1"; certdir="$2"
     command -v curl >/dev/null 2>&1 || { echo "el arnés necesita curl" >&2; return 1; }
-    SERVER_PORT_FILE="$WORK/port"
+    command -v openssl >/dev/null 2>&1 || { echo "el arnés necesita openssl" >&2; return 1; }
+    # stdout trae la línea `ACCEPT 127.0.0.1:<puerto>` con el puerto efímero;
+    # stderr trae una línea `FILE:<ruta>` por cada archivo existente servido.
+    SERVER_OUT="$WORK/server.out"
     SERVER_LOG="$WORK/requests.log"
     : > "$SERVER_LOG"
-    python3 "$SUPPORT/serve.py" --dir "$root" --port-file "$SERVER_PORT_FILE" \
-        --request-log "$SERVER_LOG" --cert "$certdir/server.pem" --key "$certdir/server-key.pem" \
-        >"$WORK/server.out" 2>"$WORK/server.err" &
+    ( cd "$root" && exec openssl s_server -accept 127.0.0.1:0 \
+        -cert "$certdir/server.pem" -key "$certdir/server-key.pem" -WWW \
+        </dev/null >"$SERVER_OUT" 2>"$SERVER_LOG" ) &
     SERVER_PID="$!"
+    port=""
     for _ in $(seq 1 50); do
-        if [ -s "$SERVER_PORT_FILE" ]; then
-            port="$(cat "$SERVER_PORT_FILE")"
-            if curl -ksSf -o /dev/null "https://127.0.0.1:$port/" 2>/dev/null; then
-                break
-            fi
+        port="$(sed -n 's/^ACCEPT .*:\([0-9][0-9]*\)$/\1/p' "$SERVER_OUT" 2>/dev/null | head -n 1)"
+        if [ -n "$port" ] && curl -ksSf -o /dev/null "https://127.0.0.1:$port/" 2>/dev/null; then
+            break
         fi
         sleep 0.2
     done
-    port="$(cat "$SERVER_PORT_FILE" 2>/dev/null || true)"
-    if [ -z "${port:-}" ] || ! curl -ksSf -o /dev/null "https://127.0.0.1:$port/" 2>/dev/null; then
+    if [ -z "$port" ] || ! curl -ksSf -o /dev/null "https://127.0.0.1:$port/" 2>/dev/null; then
         echo "el servidor falso no arrancó" >&2
-        cat "$WORK/server.err" >&2 || true
+        cat "$SERVER_OUT" "$SERVER_LOG" >&2 || true
         return 1
     fi
     export AVI_DOWNLOAD_BASE_URL="https://127.0.0.1:$port"
