@@ -101,6 +101,8 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+Los instaladores aceptaban entradas ambiguas y sus suites de pruebas dejaban pasar fallos que no detectaban, además de depender de Python para servir los assets: ahora `install.sh` e `install.ps1` validan la versión `X.Y.Z`, `install.sh` exige `curl` y se protege de las descargas cortadas, y las suites sirven con `openssl s_server`, comprueban causas concretas y se pueden ejecutar en local.
+
 ### Cambios incompatibles
 
 - `install.sh` exige `curl` y ya no usa `wget` como respaldo: solo `curl` permite limitar también las redirecciones a HTTPS (`--proto '=https'`). Quien solo tenga `wget` recibe `falta el comando requerido: curl`.
@@ -109,7 +111,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 ### Cambiado
 
 - Todo el flujo de `install.sh` vive en una función `main` que se invoca en la última línea, así que una descarga cortada con `curl | sh` antes de esa línea no ejecuta nada.
-- El repositorio ya no contiene Python: la suite bats de los instaladores sirve los assets con `openssl s_server` en lugar de un servidor propio, así que quien ejecute `tests/bootstrap/install.bats` necesita `openssl` y `curl`; la CI lee el pin de `sccache` con `sed` y compara la salida de `--version` del binario release con el tag en lugar de validar `version --json`. `CONTRIBUTING.md` documenta cómo ejecutar las suites bats y Pester en local, incluido un contenedor Linux para Windows.
+- El repositorio ya no contiene Python: la suite bats de los instaladores sirve los assets con `openssl s_server` en lugar de un servidor propio, así que quien ejecute `tests/bootstrap/install.bats` necesita `openssl` y `curl`; la CI lee el pin de `sccache` con `sed` y compara la salida de `--version` del binario release con el tag en los builds de Linux y macOS. `CONTRIBUTING.md` documenta cómo ejecutar las suites bats y Pester en local, incluido un contenedor Linux para Windows.
 - Las aserciones de las suites de los instaladores exigen el código de salida, el mensaje con el valor concreto y la ausencia real de efectos, y se verificaron con mutaciones de los scripts; antes varias pasaban con cualquier fallo.
 - Los fixtures de referencia de las pruebas de transcripción y traducción pasan de `*.oraculo.*` a `*.referencia.*`, y las pruebas que los usan cambian de nombre en consecuencia.
 

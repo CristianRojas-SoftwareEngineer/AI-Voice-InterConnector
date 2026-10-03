@@ -521,8 +521,9 @@ versión vieja, y no hace falta ningún paso de limpieza:
 - **`sccache` no puede servir un binario viejo.** No cachea crates
   `--crate-type bin`: el binario final, los build scripts y `xtask` siempre
   pasan por `rustc`.
-- **El smoke test lo comprueba.** Cada `build-*` ejecuta `version --json` y
-  falla si la versión no coincide con `CIRCLE_TAG`.
+- **El smoke test lo comprueba.** Cada `build-*` compara la versión del
+  binario con `CIRCLE_TAG` (`--version` en Linux y macOS, `version --json` en
+  Windows) y falla si no coinciden.
 
 Las claves exactas de cada familia están en `.circleci/config.yml`.
 
