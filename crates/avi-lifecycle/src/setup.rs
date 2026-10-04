@@ -5,7 +5,7 @@
 //! que ya existe: la selección por banderas, la idempotencia por presencia del
 //! snapshot y la purga de `--force-update`.
 //!
-//! **Lo que el Ciclo 2 añade, y dónde.** La **selección persistida en
+//! **Lo que `self update` necesita, y dónde.** La **selección persistida en
 //! configuración** (`setup-selection.json`), la **poda de revisiones obsoletas**
 //! y las **migraciones** del `setup` nuevo viven en este módulo, tras `Options`: las
 //! necesita una actualización, y el `setup` invocado por el traspaso lee la
@@ -13,7 +13,7 @@
 //!
 //! **Dónde queda `HF_XET_CACHE`.** Toda la provisión pasa por
 //! `ModelStore::new()`, que ya la fija al subdirectorio `xet` de la raíz de modelos
-//! exclusiva antes de construir el cliente (`avi-store`, decisión 1 del plan). No
+//! exclusiva antes de construir el cliente (`avi-store`). No
 //! hay nada que hacer aquí para cumplirlo, y no se toca: si se fijara también desde
 //! el motor, habría dos sitios decidiendo lo mismo.
 //!
@@ -60,14 +60,13 @@ impl Options {
     }
 }
 
-/// Nombre del fichero de selección persistida en la raíz de datos, por decisión 4
-/// del Ciclo 2.
+/// Nombre del fichero de selección persistida en la raíz de datos.
 pub const SELECTION_FILE_NAME: &str = "setup-selection.json";
 
 /// Versión del esquema de la selección que esta versión del motor sabe leer.
 pub const SELECTION_SCHEMA_VERSION: u32 = 1;
 
-/// Selección de `setup` persistida, del Ciclo 2: hoy solo
+/// Selección de `setup` persistida: hoy solo
 /// `with_voice_cloning`, extensible a futuros opcionales.
 ///
 /// Sobrevive a los updates porque el reemplazo no toca la raíz de datos; se
@@ -162,7 +161,7 @@ pub struct MigrationOutcome {
     pub selection_created: bool,
 }
 
-/// Migraciones idempotentes hacia delante del `setup` nuevo, del Ciclo 2,
+/// Migraciones idempotentes hacia delante del `setup` nuevo,
 /// antes de provisionar: hoy, asegurar la selección en esquema 1.
 ///
 /// Idempotente: una segunda ejecución no escribe nada. No borra una selección
@@ -329,7 +328,7 @@ impl PruneOutcome {
     }
 }
 
-/// Poda tras éxito, del Ciclo 2: elimina las revisiones de los repos
+/// Poda tras éxito: elimina las revisiones de los repos
 /// propios que están fuera del pin vigente de `MODEL_REVISIONS`.
 ///
 /// Solo toca directorios de snapshots de repos propios, que son atribuibles a
@@ -469,7 +468,7 @@ pub async fn provision(
 pub struct Outcome {
     /// Qué borró la purga de `--force-update`. Vacío si no se pidió.
     pub purge: PurgeOutcome,
-    /// Revisiones obsoletas que podó el Ciclo 2 tras el éxito. Vacío si no
+    /// Revisiones obsoletas podadas tras el éxito. Vacío si no
     /// había ninguna fuera del pin vigente.
     pub pruned: PruneOutcome,
     /// Repos de la selección, en el orden en que se procesaron. Es lo que el resumen
@@ -781,7 +780,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// La selección sobrevive a un update, desde el Ciclo 2: `setup
+    /// La selección sobrevive a un update: `setup
     /// --with-voice-cloning` la guarda, y el `setup` invocado por el traspaso
     /// (`called_from_lifecycle`) lee la guardada en vez de los flags.
     #[test]

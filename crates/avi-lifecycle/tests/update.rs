@@ -8,7 +8,7 @@
 //! Además hay tres pruebas con el mismo prefijo fuera de los seis: checksum
 //! inválido, negativa sin terminal y daemon que no se deja parar.
 //!
-//! Todas las pruebas usan el mismo sandbox que el Ciclo 1 (las cuatro raíces
+//! Todas las pruebas usan el mismo sandbox (las cuatro raíces
 //! reubicadas a temporales, declaradas en el entorno y pasadas como dato) más el
 //! servidor falso apuntado por variable. Ninguna sale a internet ni toca la
 //! instalación real: el bundle servido es sintético y sale del manifiesto.

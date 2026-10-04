@@ -284,10 +284,12 @@ fn entries_with_prefix(dir: &Path, prefix: &str) -> Vec<PathBuf> {
 /// PID del proceso dueño de un temporal propio, si el nombre lo lleva.
 ///
 /// Se busca la primera racha de dígitos de tres o más porque la convención de
-/// los temporales del borrado diferido es `avi-deferred-<pid>-<ms>` (con
-/// extensión `.ps1` o `.ready`), y porque
-/// un número de una cifra es más probablemente un contador que un PID: con eso,
-/// un temporal como `avi_clone_x_1.qvoice` no se confunde con un proceso.
+/// los temporales con dueño es `<algo>-<pid>-<ms>`: las copias del limpiador
+/// propio (`avi-cleaner-<pid>-<ms>.exe`) y, de versiones anteriores, los
+/// auxiliares retirados (`avi-deferred-<pid>-<ms>` con extensión `.ps1` o
+/// `.ready`). Un número de una cifra es más probablemente un contador que un
+/// PID: con eso, un temporal como `avi_clone_x_1.qvoice` no se confunde con un
+/// proceso.
 fn owner_pid(name: &str) -> Option<u32> {
     let bytes: Vec<char> = name.chars().collect();
     let mut i = 0;

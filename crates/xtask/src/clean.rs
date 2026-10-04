@@ -21,7 +21,7 @@
 //! (`avi-process`).
 //!
 //! Las rutas de la capa app viven en `avi-shared` y las ejecuta el binario
-//! del repositorio: este módulo no replica ni una (fuente única del ciclo 4).
+//! del repositorio: este módulo no replica ni una (fuente única en `avi-shared`).
 
 use anyhow::{bail, Result};
 use std::io::{IsTerminal, Write};
@@ -482,9 +482,19 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
 
     if deferred_target {
         #[cfg(windows)]
-        avi_process::spawn_deferred_removal(&target_dir, std::process::id())?;
+        {
+            let log = std::env::temp_dir().join(format!(
+                "avi-xtask-clean-{}-{}.log",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            ));
+            avi_process::schedule_clean_removal(&target_dir, std::process::id(), &log)?;
+        }
         println!(
-            "  … {} se termina de borrar al salir este proceso (helper en segundo plano)",
+            "  … {} se termina de borrar al salir este proceso (limpiador en segundo plano)",
             target_dir.display()
         );
     }

@@ -17,7 +17,7 @@ pub use windows_sys::Win32::System::Threading::{
 #[cfg(windows)]
 mod deferred;
 #[cfg(windows)]
-pub use deferred::spawn_deferred_removal;
+pub use deferred::schedule_clean_removal;
 
 /// Identidad observable de un proceso: la hora de creación y el nombre de la
 /// imagen. Un PID reasignado a otro programa tiene otra identidad, de modo que

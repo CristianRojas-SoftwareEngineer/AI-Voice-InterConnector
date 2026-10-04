@@ -8,9 +8,9 @@
 //! ejecutar desde la propia instalación.
 //!
 //! **La opción oculta `--channel dev` vive aquí.** El comando que la
-//! invoca —`cargo xtask install`— es del Ciclo 4, y ejecuta la otra mitad:
-//! `package --no-compress` sobre un staging hermano. Lo que este
-//! ciclo fija es el otro valor del canal: **qué queda escrito en el recibo**, y que
+//! invoca —`cargo xtask install`— ejecuta la otra mitad:
+//! `package --no-compress` sobre un staging hermano. Lo que aquí
+//! se fija es el otro valor del canal: **qué queda escrito en el recibo**, y que
 //! el valor surte efecto **solo cuando el recibo se crea por primera vez**, de modo
 //! que reparar una instalación no reescriba su canal.
 //!
@@ -284,6 +284,10 @@ pub struct Outcome {
     pub foreign_in_path: Option<PathBuf>,
     /// Archivos que la recuperación no pudo limpiar.
     pub recovery_kept: Vec<PathBuf>,
+    /// Restos del aparcado que el reemplazo transaccional (paso 6) no pudo
+    /// borrar por estar en uso. El llamador los programa con el limpiador;
+    /// vacío en reparación (sin reemplazo) y cuando nada quedó pendiente.
+    pub parked_leftovers: Vec<PathBuf>,
 }
 
 impl Outcome {
@@ -316,7 +320,7 @@ impl Outcome {
     /// veredicto con el código, que es lo que hace `self install`.
     ///
     /// Es el **único** sitio donde se decide el `reason` de la operación, de modo que
-    /// `self update` en el ciclo 2 no tenga que reinventarlo.
+    /// `self update` no tenga que reinventarlo.
     pub fn lifecycle_error(&self) -> Option<LifecycleError> {
         match &self.models {
             ModelsState::Failed { cause } => Some(LifecycleError::setup_failed(
@@ -357,6 +361,7 @@ impl Outcome {
             daemon: StopOutcome::default(),
             foreign_in_path: None,
             recovery_kept: Vec::new(),
+            parked_leftovers: Vec::new(),
         }
     }
 }
@@ -488,8 +493,10 @@ pub async fn install(
     // ── Paso 6. Reemplazo transaccional ───────────────────────────────────────
     // En reparación **no se copia nada**: se reaplican integración, permisos,
     // cuarentena y recibo sobre lo que ya está.
+    let mut parked_leftovers = Vec::new();
     if mode == Mode::Install {
-        let _ = transaction::replace(&env.program_dir, &bundle)?;
+        let outcome = transaction::replace(&env.program_dir, &bundle)?;
+        parked_leftovers = outcome.leftovers;
     }
 
     // ── Paso 7. Cuarentena, en macOS ──────────────────────────────────────────
@@ -564,6 +571,7 @@ pub async fn install(
         daemon,
         foreign_in_path,
         recovery_kept: recovery.kept,
+        parked_leftovers,
     })
 }
 

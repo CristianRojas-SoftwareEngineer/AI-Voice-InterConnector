@@ -9,7 +9,7 @@
 //! `avi-store`.
 //!
 //! Este módulo **no descarga, no extrae y no verifica checksums**: son
-//! responsabilidades de `self update` (Ciclo 2) y del bootstrap (Ciclo 3).
+//! responsabilidades de `self update` y del bootstrap.
 //! Solo mira qué archivos hay alrededor del ejecutable, y no toca el disco.
 
 use crate::target;

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 // Rutas canónicas, temporales y revisiones de modelos: viven en `avi-shared`
-// (fuente única del ciclo 4) y aquí se reexportan para conservar la API; los
+// (fuente única) y aquí se reexportan para conservar la API; los
 // llamadores no cambian.
 pub use avi_shared::logs::{create_log, LOG_RETENTION};
 pub use avi_shared::paths::{

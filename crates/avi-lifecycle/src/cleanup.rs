@@ -20,7 +20,7 @@
 //! `self uninstall`— y aparece en el plan solo como recurso compartido que se
 //! conserva. En la raíz de modelos **exclusiva** el borrado es de directorio
 //! entero, con los snapshots, los locks y `xet` dentro, porque
-//! `xet` cuelga de ella (decisión 1 del plan). En la raíz **compartida** que el
+//! `xet` cuelga de ella. En la raíz **compartida** que el
 //! usuario eligió con `HF_HUB_CACHE` o `HF_HOME` solo se borran los repos fijados
 //! y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de
 //! otra herramienta (criterio 23).

@@ -267,6 +267,7 @@ name = "avi-process"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ctor",
  "serde",
  "windows-sys 0.52.0",
 ]

@@ -6,7 +6,7 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 anyhow = "1.0"
-# Fuente única de rutas, temporales y revisiones de modelos (ciclo 4): este
+# Fuente única de rutas, temporales y revisiones de modelos: este
 # crate conserva su API reexportándola, sin red añadida.
 avi-shared = { path = "../avi-shared" }
 serde = { version = "1.0", features = ["derive"] }

@@ -115,13 +115,17 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ### Cambiado
 
+- `self update` programa con el limpiador propio los restos del aparcado que el reemplazo no pudo borrar por estar en uso (antes se descartaban en silencio): abre el HANDLE del proceso que los retiene al programar, aguarda su muerte por el sistema y reintenta con retroceso, con el resultado en `data/logs/cleaner_<pid>_<ms>.log`; lo que siga bloqueado lo recoge la recuperación de la siguiente operación (y `doctor --repair`).
+- El borrado diferido de Windows ya no genera un auxiliar PowerShell (`.ps1` con marca `.ready`): lo hace una copia del propio ejecutable en `%TEMP%` (`avi-cleaner-<pid>-<ms>.exe`), relanzada desacoplada y oculta, con el mismo mecanismo para el staging, el aparcado y `self uninstall` (también lo usa `cargo xtask clean` para `target/`).
+- `doctor` gana el flag `--repair`: toma el bloqueo, ejecuta el barrido existente (solo lo que el barrido recoge: aparcados, stagings y temporales) y reevalúa el informe; sin el flag sigue sin modificar nada.
 - La parada, el reclamo de `daemon start` y Ctrl+C reconocen un PID reasignado a otro programa tras un apagado abrupto: lo tratan como proceso ajeno, no lo matan y no bloquean `daemon stop` (antes salía con exit 5, y `self install`, `self uninstall`, `self update` y `cleanup` con exit 16, de forma permanente). El mensaje de lo que queda vivo ya solo nombra procesos que lo están.
 - `RUST_LOG` manda sobre el nivel de traza por defecto, tanto en la CLI como en `daemon serve` (sintaxis de `tracing`, tolerante a directivas inválidas); sin ella, la CLI emite `warn` y `daemon serve` emite `info` de los crates propios y `warn` de las dependencias. stderr no lleva color ANSI cuando no es una terminal.
 - Cada `daemon start`/`restart` escribe el stdout y el stderr del daemon en `data/logs/daemon_<pid>_<ms>.log`, y los fallos de arranque terminan con `Log del daemon: <ruta>` sin cambiar `reason` ni exit code. El motor Qwen3-TTS escribe en `data/logs/qwen3-tts_<pid>_<ms>.log`.
-- Se conservan los 10 logs más recientes de cada familia (`daemon_*` y `qwen3-tts_*`); la poda ocurre al crear un log nuevo y no toca otros ficheros.
+- Se conservan los 10 logs más recientes de cada familia (`daemon_*`, `qwen3-tts_*` y `cleaner_*`); la poda ocurre al crear un log nuevo y no toca otros ficheros.
 
 ### Corregido
 
+- `doctor` indica `doctor --repair` en stderr cuando falla por restos pendientes (antes fallaba con exit 1 sin decir cómo recogerlos).
 - `voice clone` ya no vuelca la salida del motor en la terminal, ni por la vía directa ni por el daemon; el error `voice_clone_failed` termina con `Log del motor: <ruta>`.
 - Los errores del daemon en segundo plano ya quedan registrados: antes su salida se descartaba y un arranque fallido no dejaba rastro.
 - Los logs del motor ya no se acumulan sin límite en `data/logs/`.
@@ -408,7 +412,7 @@ daemon sigue en `"3"`, porque es un contrato independiente.
 - `setup` se traslada al motor conservando su semántica (selección por banderas, idempotencia
   por presencia del snapshot, purga de `--force-update` sobre la misma selección, conversión
   CT2 atómica y verificada con el mismo gate que la acepta). La **selección persistida en
-  configuración** y la **poda de revisiones obsoletas** llegan con `self update`, en el ciclo 2.
+   configuración** y la **poda de revisiones obsoletas** llegan con `self update`.
 - Los cuatro builds empaquetan con `cargo xtask package --expect-version "${CIRCLE_TAG#v}"`
   más el humo de `self install` en sandbox, en lugar de los cuatro stagings duplicados con
   expresiones de versión propias.

@@ -1,7 +1,7 @@
 //! Interrupción de la transacción y recuperación en la siguiente operación; plan T18,
 //! acción 5.
 //!
-//! La garantía que se demuestra es la del criterio 14 escrita para el Ciclo 1: una
+//! La garantía que se demuestra es la del criterio 14: una
 //! interrupción en cualquier punto **deja la versión anterior operativa** y la siguiente
 //! operación de ciclo de vida **completa la recuperación**, sin residuo.
 //!

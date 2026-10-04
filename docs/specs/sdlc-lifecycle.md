@@ -520,7 +520,7 @@ ai-voice-interconnector self update [--check] [--version X.Y.Z] [--force] [--no-
 7. **Preparar el bundle nuevo**: descargar el archivo y `SHA256SUMS.txt` en un staging hermano, verificar el SHA-256 (y la firma, cuando exista, [§11](#11-seguridad)), extraer, y comprobar que el binario nuevo arranca y que `--version` coincide con la versión objetivo.
 8. **Parar el daemon con el binario actual**, que conoce su propio protocolo y la ruta de su `daemon.pid`. Se anota si estaba en ejecución.
 9. **Traspaso**: ejecutar `<staging>/ai-voice-interconnector self install --yes` heredando la consola, con las preferencias registradas en el recibo (por ejemplo, `--no-modify-path` si se usó al instalar) y `--no-setup` si se pidió. Se espera a que termine y se propaga su resultado.
-10. **Limpiar**: borrar el staging. Lo aparcado que siga en uso (en Windows, el ejecutable del proceso que actualiza) se elimina con un proceso auxiliar desacoplado que espera a que ese proceso termine y borra con reintentos acotados. Si el auxiliar no llega a hacerlo, la recuperación de la siguiente operación lo completa.
+10. **Limpiar**: borrar el staging. Los restos del aparcado que sigan en uso (en Windows, los retiene el ejecutable del proceso que actualiza) se programan con el limpiador propio, que espera a que ese proceso termine y borra con reintentos acotados. Si el limpiador no llega a hacerlo, la recuperación de la siguiente operación lo completa.
 11. **Resultado**: `0.23.1 → 0.24.0`. Si el daemon estaba activo, el resumen indica cómo reiniciarlo.
 
 **Garantías.** Un fallo antes del traspaso deja todo intacto. Un fallo durante el traspaso se revierte con la transacción del `self install` nuevo. Una interrupción en cualquier punto se recupera en la siguiente operación de ciclo de vida.
@@ -547,7 +547,7 @@ Actúa sobre la instalación registrada, sea cual sea la copia del binario que l
    - el enlace, solo si apunta al directorio de programa;
    - los bloques delimitados de los perfiles;
     - la entrada del registro, con comparación canónica, conservando el tipo del valor y difundiendo `WM_SETTINGCHANGE`.
-8. **Borrar el directorio de programa** (con la regla R2). En Unix, directamente. En Windows, si el ejecutable en uso está dentro, un proceso auxiliar desacoplado espera a que termine y borra el directorio con reintentos acotados → `removal_scheduled`; el auxiliar confirma su arranque con una marca y, si muere sin darla, el borrado no se da por programado. Si el directorio no se puede borrar ni programar → `program_dir_kept`, sin borrado parcial.
+8. **Borrar el directorio de programa** (con la regla R2). En Unix, directamente. En Windows, si el ejecutable en uso está dentro, el limpiador propio desacoplado espera a que termine y borra el directorio con reintentos acotados → `removal_scheduled`, con su resultado en un registro bajo `data/logs/`. Si el directorio no se puede borrar ni programar → `program_dir_kept`, sin borrado parcial.
 9. **Borrar el archivo de bloqueo.**
 
 **Idempotencia:** sin instalación ni estado, termina con éxito y `not_installed`. **Residuo:** cero dentro de las raíces de propiedad exclusiva. Lo compartido que no se borra se informa explícitamente.
@@ -736,9 +736,9 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `USAGE.md` | Guía de usuario del ciclo de vida |
 | `docs/CLI/README.md` | **Índice** de `docs/CLI/`: el árbol de documentos, la tabla de comandos de nivel superior (con `self` y **sin** `uninstall`) y la tabla de códigos de salida con los siete enteros del ciclo de vida |
 | `docs/CLI/CONTRACT.md` | Contrato de `self *`, `setup`, `cleanup` y `doctor`: flags, `reason` y códigos de salida, sobre `--json` y las dos versiones de esquema |
-| `docs/CLI/commands/SELF.md` | Documento del grupo `self`, creado en el ciclo 1 y con 201 líneas: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
+| `docs/CLI/commands/SELF.md` | Documento del grupo `self`, con 201 líneas: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
 | `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1–R3, el gate de categoría y la confirmación destructiva |
-| `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y lo que llega en el Ciclo 2 |
+| `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y la selección persistida, la poda y las migraciones que usa `self update` |
 | `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del sobre, las cuatro retiradas, los seis chequeos y el veredicto de un solo objeto |
 | `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
@@ -798,7 +798,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 
 **Organización**
 
-28. La raíz del repositorio no contiene scripts de ciclo de vida, y ninguna ruta de instalación o de estado se define fuera de `avi-shared` —la fuente única, reexportada por `avi-store` para conservar la API de los llamadores—. La fuente se movió a `avi-shared` en el ciclo 4, cuando las rutas pasaron a ser datos que también consume `xtask` sin red ni TLS; el listón no baja por el cambio de crate, porque la exigencia sigue siendo **una sola definición de rutas**, y la unicidad ahora se comprueba en el sitio donde vive la definición.
+28. La raíz del repositorio no contiene scripts de ciclo de vida, y ninguna ruta de instalación o de estado se define fuera de `avi-shared` —la fuente única, reexportada por `avi-store` para conservar la API de los llamadores—. La fuente se movió a `avi-shared`, donde las rutas son datos que también consume `xtask` sin red ni TLS; el listón no baja por el cambio de crate, porque la exigencia sigue siendo **una sola definición de rutas**, y la unicidad ahora se comprueba en el sitio donde vive la definición.
 
 ## 15. Decisiones cerradas
 

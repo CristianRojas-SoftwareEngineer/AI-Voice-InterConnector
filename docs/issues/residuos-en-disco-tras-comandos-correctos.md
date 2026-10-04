@@ -5,7 +5,7 @@
 | Estado | abierto |
 | Severidad | baja |
 | Tipo | funcional |
-| Componente | CLI (`src/main.rs`), daemon (`crates/avi-daemon`) y ciclo de vida (`self update`) |
+| Componente | CLI (`src/main.rs`), daemon (`crates/avi-daemon`) |
 | Versión detectada | 0.25.0 |
 | Plataforma | Windows 11 con PowerShell 5.1 |
 | Reproducibilidad | siempre |
@@ -14,7 +14,7 @@
 ## Resumen
 
 Varios comandos que terminan con el resultado correcto dejan en disco ficheros que ya no
-sirven: WAV temporales y artefactos de la actualización.
+sirven: WAV temporales.
 Todo queda a cargo de `cleanup`, cuando el criterio debería ser que quien crea un
 fichero lo borre.
 
@@ -46,7 +46,7 @@ temporales.
 
 ## Análisis de causa
 
-### 1. `speech say` y `speech dub` dejan WAV en `%TEMP%` o informan de uno ya borrado
+### `speech say` y `speech dub` dejan WAV en `%TEMP%` o informan de uno ya borrado
 
 - **Síntoma:** los dos comandos sintetizan a un WAV temporal para reproducirlo y
   devuelven su ruta en `audio_path` (en modo humano, en «Reproduciendo: …» y «Doblaje
@@ -68,39 +68,13 @@ temporales.
   falla la reproducción, `%TEMP%` no contiene `avi_say_*.wav` ni `avi_dub_*.wav`, y el
   JSON no contiene una ruta a un fichero inexistente.
 
-### 2. `self update` deja el binario aparcado y el staging con el `.zip`
-
-- **Síntoma:** tras `self update --force` quedan el binario anterior aparcado (`.old-*`)
-  en el directorio del programa y el `.zip` descargado. `doctor` informa
-  `pending_artifacts` con un aparcado hasta que el barrido lo recoge, un rato después.
-- **Causa (parcial):**
-  - El binario anterior no se puede borrar en caliente en Windows y se aparca por
-    diseño. Solo lo recoge el barrido que ejecutan las operaciones de ciclo de vida
-    (`self update`, instalación, desinstalación y `cleanup`); mientras tanto, `doctor`
-    lo cuenta como fallo.
-  - El `.zip` no se descarga en el directorio del programa, sino en un directorio de
-    staging hermano (`.ai-voice-interconnector-staging-update-<versión>`, junto al
-    directorio del programa). Al terminar, `cleanup_staging`
-    (`crates/avi-lifecycle/src/update.rs`) intenta borrarlo; si está en uso, en Windows
-    programa su borrado con un proceso auxiliar desacoplado que espera a que termine el
-    proceso en curso, y si tampoco puede, lo deja para el barrido. Queda por ver cuál de
-    esos pasos falló para que el staging sobreviviera.
-- **Esperado:** el staging desaparece al terminar la actualización, y el aparcado se
-  recoge sin esperar a otra operación de ciclo de vida, sin que `doctor` lo marque como
-  fallo mientras tanto.
-- **Criterio:** tras `self update` y otra invocación cualquiera, junto al directorio del
-  programa no queda ningún staging, el directorio del programa solo contiene lo
-  instalado y `doctor` pasa.
-
 ## Diagnóstico sugerido
 
-El síntoma 1 tiene corrección local. El 2 necesita
-una reproducción instrumentada de `self update` que registre el resultado de la
-limpieza del staging.
+El síntoma tiene corrección local.
 
 ## Criterio de aceptación
 
-Se cumplen los criterios de los dos síntomas.
+Se cumple el criterio del síntoma.
 
 ## Relacionados
 

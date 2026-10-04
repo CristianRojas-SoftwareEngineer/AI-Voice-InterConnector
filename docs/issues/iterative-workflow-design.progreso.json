@@ -15,7 +15,7 @@
     "D10": { "status": "resolved", "choice": "A con N2", "notes": "trazas del motor a su log; sin RUST_LOG, la CLI usa warn y el daemon info", "date": "2026-09-30" },
     "D11.1": { "status": "resolved", "choice": "B", "notes": "vigía por tubería en la entrada estándar del motor; se retira el Job Object", "date": "2026-09-30" },
     "D11.2": { "status": "resolved", "choice": "A", "notes": "el retraso acotado en macOS se acepta y se documenta", "date": "2026-09-30" },
-    "D12.1": { "status": "resolved", "choice": "A", "notes": "se corrige el auxiliar PowerShell de borrado diferido", "date": "2026-09-30" },
+    "D12.1": { "status": "resolved", "choice": "B", "notes": "limpiador propio en Rust con espera por HANDLE, auto-copia a %TEMP% y registro en data/logs/; se retira el .ps1; reabierta desde A en la preparación de C6", "date": "2026-10-04" },
     "D12.2": { "status": "resolved", "choice": "A", "notes": "doctor --repair ejecuta el barrido existente", "date": "2026-09-30" },
     "D12.3": { "status": "resolved", "choice": "A", "notes": "doctor sin --repair falla (exit 1) ante restos, con la pista doctor --repair", "date": "2026-09-30" },
     "D12.4": { "status": "resolved", "choice": "A", "notes": "--repair solo alcanza lo que recoge el barrido", "date": "2026-09-30" },
@@ -163,7 +163,24 @@
       "foreign_changes": [],
       "commits": ["d39e25d"]
     },
-    "C6": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] },
+    "C6": {
+      "status": "closed",
+      "phase": "closed",
+      "gates": [
+        { "gate": "plan", "verdict": "approved", "date": "2026-10-04", "notes": "D12.1 B (limpiador Rust con HANDLE, auto-copia y registro); D12.2-D12.5 intactas; se retira el .ps1 en el mismo cambio" },
+        { "gate": "tests", "verdict": "approved", "date": "2026-10-04", "notes": "5 pruebas en rojo por aserción: 2 del limpiador (esqueleto sin implementar), 1 de schedule_leftovers (unimplemented), doctor --repair rechazado con exit 2 y falta la pista doctor --repair en stderr; lo existente sigue verde" },
+        { "gate": "result", "verdict": "approved", "date": "2026-10-04", "notes": "implementación verificada con §5.3 (cargo test --all y full con recursos en verde, clippy y fmt limpios, licenses en sincronía); revisor con B1/I1-I5/M1-M5 corregidos; limpieza de identificadores transitorios verificada a cero; compromisos en la rama e integración con merge --no-ff" }
+      ],
+      "tasks": [
+        { "id": "C6.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "preparación en la rama fix/artefactos-self-update, creada desde main con el árbol limpio y el índice del grafo al día. Ficha contrastada con el código; D12.1 reabierta de A a B con espera por HANDLE, auto-copia a %TEMP% y registro en data/logs/; G-Plan aprobado" },
+        { "id": "C6.2", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/deferred.rs", "crates/avi-process/src/lib.rs", "crates/avi-process/tests/deferred_removal_windows.rs", "crates/avi-lifecycle/src/update.rs", "tests/cli_golden.rs"], "notes": "esqueletos sin cambio de comportamiento (schedule_clean_removal y schedule_leftovers, aún no implementados) y 5 pruebas en rojo, cada una con su síntoma y decisión; lo existente sigue verde. G-Pruebas aprobado" },
+        { "id": "C6.3", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/deferred.rs", "crates/avi-process/src/lib.rs", "crates/avi-process/tests/deferred_removal_windows.rs", "crates/avi-process/Cargo.toml", "crates/avi-lifecycle/src/update.rs", "crates/avi-lifecycle/src/install.rs", "crates/avi-lifecycle/src/lib.rs", "crates/avi-lifecycle/src/uninstall.rs", "crates/avi-lifecycle/src/recovery.rs", "crates/avi-shared/src/paths.rs", "crates/xtask/src/clean.rs", "src/main.rs", "Cargo.lock"], "notes": "implementación T2 a T5 del plan: limpiador propio con HANDLE heredado y auto-copia a %TEMP% (nueva dependencia directa ctor, ya fijada en el lock), schedule_leftovers con PID del traspaso por variable interna, flag doctor --repair con barrido y pista, migración de los tres llamadores y retirada del .ps1 con sus comentarios. Desviaciones justificadas: la prueba del limpiador con ruta bloqueada abre el retén sin compartir el borrado (File::open lo comparte y el borrado salía adelante); install propaga los restos por el Outcome en vez de recibir el removedor (sin cambio de firma); el registro del limpiador es de la familia cleaner con retención" },
+        { "id": "C6.4", "status": "done", "attempts": 1, "files": ["docs/CLI/commands/SELF.md", "docs/CLI/commands/DOCTOR.md", "CHANGELOG.md", "docs/issues/residuos-en-disco-tras-comandos-correctos.md", "docs/CLI/CONTRACT.md"], "notes": "documentación T6 del plan: limpiador en SELF/CONTRACT, --repair con alcance y pista en DOCTOR/CONTRACT, entradas en ## [No publicado], ficha S6 retirada conservando informe y fila (S8 sigue abierto). Adaptación justificada: sdlc-lifecycle.md:232 no se toca, es del doctor de xtask (desarrollo), no del doctor del producto" },
+        { "id": "C6.5", "status": "done", "attempts": 2, "files": [], "notes": "verificación §5.3 y paquete G-Resultado (T7): cargo test --all en verde; cargo test --workspace --features full -- --include-ignored en verde al segundo intento (intento 1: 1 fallo sin identificar + caída del arnés con 0xC0000409; intento 2: cli_golden 110/0 con caída a la salida con el mismo código; intento 3: verde completo 37 objetivos; ambas incidencias no reproducibles, clase S28/S29 en observación); clippy -D warnings y fmt limpios; licenses --check en sincronía; revisor independiente con B1/I1-I5/M1-M5 corregidos; MANUAL §10 no aplica (C6 no toca daemon ni clonado); reproducción en vivo de self update --force no ejecutada (mutaría la instalación real; cubierta por pruebas de integración con procesos y HANDLE reales). G-Resultado presentado, veredicto pendiente" }
+      ],
+      "foreign_changes": [],
+      "commits": ["25ef5b3", "ec1044e", "519da5a", "c181744", "db20ad1"]
+    },
     "C7": { "status": "pending", "phase": null, "gates": [], "tasks": [], "foreign_changes": [], "commits": [] }
   },
   "release": { "status": "pending", "gates": [], "version": null }
