@@ -167,7 +167,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | `self uninstall` | `--keep-data` · `--dry-run` · `--yes` · `--json` | Vigente |
 | `setup` | `--with-voice-cloning` · `--force-update` · `--yes`/`-y` · `--json` | Vigente |
 | `cleanup` | `--model` · `--voices` · `--synthetic-speech` · `--all` · `--dry-run` · `--yes`/`-y` · `--json` | Vigente |
-| `doctor` | `--json` | Vigente |
+| `doctor` | `--repair` · `--json` | Vigente |
 
 `--json` es **global** (`Cli::json`, `src/main.rs`): lo declara la raíz, no cada sub-acción, y por eso aparece en todas las filas. `--channel` es la única opción de `self install` que no aparece aquí porque está **oculta** (`hide = true`): la reserva `cargo xtask install` (§9.5 de la especificación), y solo surte efecto cuando el recibo se crea por primera vez.
 
@@ -619,12 +619,13 @@ Las tres reglas de compatibilidad y la regla de promoción son contrato **de con
 - Por esa razón, trazas de nivel `info` como el progreso de descarga de `setup` no salen por defecto: se piden con `RUST_LOG=info`.
 - stderr no lleva color ANSI cuando no es una terminal.
 
-**Los logs viven en `data/logs/`** y hay dos familias, ambas con nombre `<familia>_<pid>_<ms>.log` (`<ms>` es la marca de tiempo de creación en milisegundos):
+**Los logs viven en `data/logs/`** y hay tres familias, todas con nombre `<familia>_<pid>_<ms>.log` (`<ms>` es la marca de tiempo de creación en milisegundos):
 
 | Familia | Fichero | Contenido |
 |---|---|---|
 | Daemon | `daemon_<pid>_<ms>.log` | stdout y stderr del daemon; uno por cada `daemon start`/`restart` (`<pid>` es el de la CLI lanzadora) |
 | Motor Qwen3-TTS | `qwen3-tts_<pid>_<ms>.log` | salida del motor residente y del motor de `voice clone` (`<pid>` es el del proceso que lo crea: el daemon, o la CLI en la vía directa) |
+| Limpiador | `cleaner_<pid>_<ms>.log` | resultado del borrado diferido de Windows (`<pid>` es el del proceso que lo programa) |
 
 **Retención: los 10 logs más recientes por familia**, ordenados por el `<ms>` del nombre. La poda ocurre al crear un log nuevo; no toca otras familias ni ficheros ajenos, y un log en uso que no se pueda borrar se ignora.
 
@@ -670,7 +671,7 @@ Son **dos, independientes**: el sobre de la CLI va por `"4"` y el protocolo del 
 - **Actúan sobre la instalación registrada, no sobre la copia que se invoca.** Las raíces efectivas salen del recibo (`cleanup::Roots::from_receipt`), de modo que la operación acierta aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén definidas (§7.2).
 - **Toman un bloqueo exclusivo de SO** sobre el archivo de bloqueo, y por eso un segundo proceso concurrente sale con `lifecycle_locked` (17) en vez de esperar.
 - **Ejecutan la recuperación antes de componer el plan**, para que el plan que el usuario ve y confirma sea el que queda después del barrido de aparcados, stagings huérfanos y temporales propios.
-- **El binario aporta lo que el motor no puede tener**: el control de procesos (parada del daemon) y el borrado diferido de Windows. El motor decide; el binario ejecuta esas dos primitivas de plataforma (`ProductProcesses`, `ProgramRemoval`, esta última sobre `avi_process::spawn_deferred_removal`).
+- **El binario aporta lo que el motor no puede tener**: el control de procesos (parada del daemon) y el borrado diferido de Windows. El motor decide; el binario ejecuta esas dos primitivas de plataforma (`ProductProcesses`, `ProgramRemoval`, esta última sobre `avi_process::schedule_clean_removal`).
 
 | Sub-acción | Qué hace | `reason` de éxito parcial o de fallo |
 |---|---|---|
@@ -680,7 +681,7 @@ Son **dos, independientes**: el sobre de la CLI va por `"4"` y el protocolo del 
 
 **`self uninstall` sin `--keep-data` borra la raíz de datos entera, no el plan de `cleanup --all`.** La diferencia es deliberada y está en `uninstall::compose_plan`: `cleanup --all` protege las voces de fábrica (`default`, `ryan`, `vivian`) porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar. Al desinstalar **el programa desaparece**, y con él las voces de fábrica: dejarlas sería residuo dentro de una raíz de propiedad exclusiva, que es exactamente lo que prohíbe el criterio 17. Con `--keep-data` sí se aplica el plan de `cleanup --all` **filtrado** —modelos, voces y habla quedan fuera— y el directorio de programa se borra igualmente.
 
-**Idempotencia**: sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_installed` (criterio 21). En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se programa para cuando el proceso termine y el `status` es `removal_scheduled`, que también es éxito porque el auxiliar confirmó que su script arrancó. Si no se puede programar, el `status` es `uninstalled` con `reason` `program_dir_kept` y salida 22.
+**Idempotencia**: sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_installed` (criterio 21). En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se programa para cuando el proceso termine y el `status` es `removal_scheduled`, que también es éxito porque el limpiador quedó programado con su registro. Si no se puede programar, el `status` es `uninstalled` con `reason` `program_dir_kept` y salida 22.
 
 El detalle completo —los doce pasos de `self install`, los once de `self update` con traspaso y borrado diferido, el bundle y su manifiesto, el recibo y la integración de `PATH`— está en [`commands/SELF.md`](commands/SELF.md).
 
@@ -785,7 +786,7 @@ El shape `--json` no cambia con el despacho: emite `{"text", "source"}` en los t
 
 Si el modelo `parakeet-tdt-0.6b-v3` no está provisionado, sale con **4** (`ExitCode::ModelMissing`), remitiendo a `ai-voice-interconnector setup`; un fallo de la inferencia con el modelo ya cargado, o de la captura del micrófono, sale con **10** (`ExitCode::TranscriptionFailed`, §9) — mismo criterio de asignación que distingue **4** de **9** en `translate`. La lectura del `--audio` no sale con 10: un archivo inexistente sale con **3** (`ExitCode::NotFound`, `audio_not_found`), un WAV corrupto, truncado o no decodificable con **2** (`ExitCode::InvalidInput`, `invalid_audio`) y un fallo de E/S al leerlo con **1** (`io_error`). El audio de `--audio` o `--mic` dura como máximo 300 s (`MAX_TRANSCRIBE_AUDIO_SECS`; `audio_too_long`, exit **2**, §6). En la ruta daemon, un fallo de comunicación —daemon inactivo— sale con **5** (`ExitCode::DaemonUnreachable`), sin degradación silenciosa a modo directo. Un error HTTP del daemon se traduce por su `reason` con la tabla única (p. ej. 404 `model_missing` → **4**, 404 `voice_not_found` → **3**); un 404 sin `reason` ni `error` (un daemon que no expone la ruta) sale con **1** (`daemon_error`) y el mensaje «El daemon no expone esta ruta (HTTP 404): reinícialo con el binario actual ejecutando `avi daemon restart`, o usa un build que incluya la función.», nunca con 5.
 
-**Divergencia deliberada del shape `--json` frente a `translate` (D5).** `translate --json` emite `source`/`target` como los códigos **ISO crudos** que recibieron `--from`/`--to` (`es`, `en`): ahí el ISO es exacto porque el parámetro mismo está restringido a `choices=["es","en"]`. `speech transcribe --json`, en cambio, emite `source` como el **token CLI verbatim** de `--source-language` (p. ej. `es-latam`, sin resolver a `es`) — no lo normaliza. La razón es de simetría con el resto de `speech`: `speech say`/`synthesize` aceptan y exponen `es-latam` en su propia taxonomía de idioma (nunca lo colapsan a ISO de cara al usuario), y `speech transcribe` es una sub-acción de ese mismo grupo, no un primo de `translate`. Colapsar `source` a ISO ahí introduciría una inconsistencia dentro del propio grupo `speech` a cambio de una consistencia superficial con un comando de otro grupo. La resolución a ISO (`resolve_language`) sigue ocurriendo internamente para seleccionar el idioma que `ParakeetEngine` recibe; solo la salida `--json` preserva el token de entrada.
+**Divergencia deliberada del shape `--json` frente a `translate`.** `translate --json` emite `source`/`target` como los códigos **ISO crudos** que recibieron `--from`/`--to` (`es`, `en`): ahí el ISO es exacto porque el parámetro mismo está restringido a `choices=["es","en"]`. `speech transcribe --json`, en cambio, emite `source` como el **token CLI verbatim** de `--source-language` (p. ej. `es-latam`, sin resolver a `es`) — no lo normaliza. La razón es de simetría con el resto de `speech`: `speech say`/`synthesize` aceptan y exponen `es-latam` en su propia taxonomía de idioma (nunca lo colapsan a ISO de cara al usuario), y `speech transcribe` es una sub-acción de ese mismo grupo, no un primo de `translate`. Colapsar `source` a ISO ahí introduciría una inconsistencia dentro del propio grupo `speech` a cambio de una consistencia superficial con un comando de otro grupo. La resolución a ISO (`resolve_language`) sigue ocurriendo internamente para seleccionar el idioma que `ParakeetEngine` recibe; solo la salida `--json` preserva el token de entrada.
 
 ### `speech dub`: el bucle voz→voz en un comando dedicado
 

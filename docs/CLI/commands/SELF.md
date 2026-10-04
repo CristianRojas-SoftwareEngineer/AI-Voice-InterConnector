@@ -4,7 +4,7 @@
 
 La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§5.4 superficie, §8.1 reglas transversales, §8.3 `self install`, §8.5 `self uninstall`); el contrato de la CLI —flags, `reason`, códigos de salida, sobre `--json`— está en [`../CONTRACT.md`](../CONTRACT.md). Este documento describe **dónde vive cada cosa y por qué**.
 
-**Implementación:** el motor es el crate `avi-lifecycle` (`crates/avi-lifecycle/src/install.rs` y `uninstall.rs`), sin punto de entrada propio: el parseo de la CLI y el cableado se quedan en `src/main.rs` (`handle_self`), porque el motor no depende de `clap` ni de `avi-core` (§5.3 de la especificación). El binario aporta las dos primitivas que el motor no puede tener —el control de procesos (`ProductProcesses`, que vive en `avi-daemon`/`avi-tts`) y el borrado diferido de Windows (`ProgramRemoval`, que usa `avi_process::spawn_deferred_removal`)—. El motor decide; el binario ejecuta esas dos.
+**Implementación:** el motor es el crate `avi-lifecycle` (`crates/avi-lifecycle/src/install.rs` y `uninstall.rs`), sin punto de entrada propio: el parseo de la CLI y el cableado se quedan en `src/main.rs` (`handle_self`), porque el motor no depende de `clap` ni de `avi-core` (§5.3 de la especificación). El binario aporta las dos primitivas que el motor no puede tener —el control de procesos (`ProductProcesses`, que vive en `avi-daemon`/`avi-tts`) y el borrado diferido de Windows (`ProgramRemoval`, que usa `avi_process::schedule_clean_removal`)—. El motor decide; el binario ejecuta esas dos.
 
 ---
 
@@ -34,7 +34,7 @@ El modo lo decide **la posición del ejecutable**, no un flag:
 
 La comparación es por **clave canónica** (`avi_store::canonical_path_entry_matches`), no de cadenas: las dos rutas llegan de resoluciones distintas y una barra final de más daría un modo equivocado sin dar ningún error (`install::detect_mode`).
 
-**El caso del ejecutable sin bundle es el que más confunde y el que hay que saber de memoria:** `target\debug\ai-voice-interconnector.exe self install` responde `bundle_invalid` con salida 15 no porque la instalación esté rota, sino porque no hay nada alrededor del binario que instalar. El bundle se produce con `cargo xtask package`, que es el ciclo 3.
+**El caso del ejecutable sin bundle es el que más confunde y el que hay que saber de memoria:** `target\debug\ai-voice-interconnector.exe self install` responde `bundle_invalid` con salida 15 no porque la instalación esté rota, sino porque no hay nada alrededor del binario que instalar. El bundle se produce con `cargo xtask package`.
 
 ---
 
@@ -74,7 +74,7 @@ El orden es el de §8.4 y está escrito en el propio código (`handle_self`, bra
 7. **Preparar el bundle nuevo**: descarga del archivo y de `SHA256SUMS.txt` en un staging hermano con HTTPS y reintentos acotados, verificación de coincidencia exacta en `SHA256SUMS.txt` (discrepancia o línea ausente → `checksum_mismatch`, 21, con staging borrado), extracción y comprobación de arranque con coincidencia de `--version` (si no → `binary_incompatible`, 19) y validación contra el manifiesto.
 8. **Parar el daemon con el binario actual**, que conoce su protocolo y su `daemon.pid`, anotando si estaba en ejecución. Si no se detiene → `daemon_stop_failed` (16) sin tocar nada y con el staging retirado.
 9. **Traspaso**: ejecuta `<staging>/ai-voice-interconnector self install --yes` heredando la consola, con las preferencias del recibo (`--no-modify-path` si la instalación no tocaba el `PATH`), `--no-setup` si se pidió, y **`--force` propagado cuando el `update` lo recibió**. Se espera y se propaga el resultado: éxito, `setup_failed` parcial con `models_cause`, o `rolled_back`.
-10. **Limpiar**: borra siempre el staging; lo aparcado que siga en uso (en Windows, el ejecutable del proceso que actualiza) queda a borrado diferido con un auxiliar desacoplado que espera la muerte del proceso y reintenta de forma acotada, o a la recuperación de la siguiente operación. En Unix no hay diferido.
+10. **Limpiar**: borra siempre el staging; los restos del aparcado que el reemplazo no pudo borrar por estar en uso (en Windows, los retiene el ejecutable del proceso que actualiza) se programan con el limpiador propio en vez de descartarse, o caen a la recuperación de la siguiente operación. En Unix no hay diferido.
 11. **Resultado**: `anterior → nueva`. Sin reinicio automático del daemon: si estaba activo, el resumen indica cómo relanzarlo con el comando habitual.
 
 **Garantías.** Un fallo antes del traspaso deja todo intacto (staging borrado, instalación intacta). Un fallo durante el traspaso revierte la transacción nueva del `self install` invocado. Una interrupción en cualquier punto queda recuperable en la siguiente operación de ciclo de vida.
@@ -147,7 +147,7 @@ Con `--keep-data` el directorio de programa **se borra igual**: la bandera conse
 
 **R2 gobierna el paso 8 y por eso tiene su propia función pública** (`program_dir_is_removable`). Exige las dos mitades de la regla: la positiva —el directorio contiene el recibo o el ejecutable, que es lo que lo convierte *en* el directorio de programa— y la negativa —nunca es la raíz de una unidad, `$HOME`, un ancestro de `$HOME` ni coincide con otra raíz del producto—. Ni una variable de reubicación ni un recibo manipulado pueden ampliar el alcance.
 
-En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se **programa** para cuando termine el proceso (`removal_scheduled`, que es éxito) en vez de hacerse de forma síncrona. El auxiliar es un `powershell.exe` con consola oculta cuyo script escribe una marca `.ready` como primera instrucción (con `Set-Content`); el comando solo da el borrado por programado cuando la marca aparece o el auxiliar sigue vivo tras el plazo, y borra el script y la marca si el auxiliar muere sin arrancar. Si el borrado no se puede programar (o, fuera de Windows, el directorio no se puede borrar), el resto de la desinstalación se completa y el comando termina con `status` `uninstalled`, `reason` `program_dir_kept` y salida 22, sin borrado parcial del directorio.
+En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se **programa** para cuando termine el proceso (`removal_scheduled`, que es éxito) en vez de hacerse de forma síncrona. El limpiador es una copia del propio ejecutable en `%TEMP%`, relanzada desacoplada y oculta: abre el HANDLE del proceso esperado al programar (sin carrera de PID), aguarda su muerte por el sistema, borra con reintentos acotados con retroceso y escribe su resultado en un registro bajo `data/logs/`. Si el borrado no se puede programar (o, fuera de Windows, el directorio no se puede borrar), el resto de la desinstalación se completa y el comando termina con `status` `uninstalled`, `reason` `program_dir_kept` y salida 22, sin borrado parcial del directorio.
 
 ### Idempotencia y residuo
 
@@ -198,4 +198,4 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `checksum_mismatch` | 21 | El hash no coincide o falta en `SHA256SUMS.txt`; staging borrado y nada más modificado |
 | `program_dir_kept` | 22 | `self uninstall`: el resto se completó, pero el directorio de programa no se pudo borrar ni programar su borrado |
 
-Los `reason` del ciclo 3 salen con el **1** genérico: los declara el ciclo que también fija su entero.
+Los `reason` del empaquetado salen con el **1** genérico: ningún `reason` nuevo de esa superficie tiene entero propio.

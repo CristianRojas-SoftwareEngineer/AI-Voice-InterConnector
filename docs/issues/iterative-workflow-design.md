@@ -756,18 +756,27 @@ fallo (exit 1) hasta que otra operación de ciclo de vida los barre.
 | Alternativa | A favor | En contra |
 |---|---|---|
 | **A. Corregir el auxiliar PowerShell**: programar con él el borrado del aparcado a partir de la lista de restos; que deje rastro de su resultado y no dé por bueno un arranque sin confirmar; lanzarlo separado del Job Object de la terminal, y sin separarlo si el Job no lo permite | Un único mecanismo para el staging, el aparcado y `self uninstall`; ataca las tres causas candidatas del staging residual; cambio acotado | Sigue dependiendo de PowerShell, que una directiva de grupo puede bloquear; ese caso queda para la red de D12.2 |
-| **B. Un auxiliar en Rust: el binario nuevo se relanza en un modo oculto que borra** | Sin PowerShell; se prueba en Rust y escribe en el log del producto | No sirve para `self uninstall`, porque el binario está dentro del directorio que hay que borrar, así que quedarían dos mecanismos; añade un subcomando oculto al contrato |
+| **B. Limpiador propio en Rust con espera por HANDLE**: el binario se auto-copia a `%TEMP%` y se relanza en un modo oculto interno, fuera de la ayuda y del contrato; abre el HANDLE del proceso esperado al programar y aguarda por el sistema, sin carrera de PID; borra con reintentos acotados con retroceso, escribe su resultado en un registro bajo `data/logs/` y se auto-limpia; cubre el staging, el aparcado y `self uninstall` con el mismo mecanismo; el `.ps1` se retira en el mismo cambio | Sin PowerShell ni elevación; sin carrera de PID; testeable y observable; un solo mecanismo para las tres rutas | Añade un modo oculto interno; el diferido sigue siendo asíncrono y lo no borrado cae al barrido con `doctor --repair` |
 | **C. Invertir el traspaso: la CLI vieja lanza la nueva y termina, y la nueva reemplaza** | Nadie retiene el aparcado | Reescribe la transacción, con su diario, su rollback y su recuperación; desproporcionado para un síntoma de severidad baja o media |
 | **D. `MoveFileEx` con borrado al reiniciar** | Lo hace el sistema operativo | Exige privilegios de administrador, y ninguna operación del producto los pide; el resto dura hasta el siguiente reinicio |
 
-**Recomendación: A.** Es la única que cubre las tres rutas con un solo mecanismo y sin
-pedir elevación.
+**Recomendación: B.** Es la única que cubre las tres rutas con un solo mecanismo y sin
+pedir elevación, y además elimina la dependencia bloqueable por directiva (PowerShell)
+y la carrera del PID de la espera.
 
-**Decisión:** A (2026-09-30).
+**Decisión:** B (2026-10-04), reabierta en la preparación de C6 desde A (2026-09-30).
 
-**D12.2 · Red para lo que el auxiliar no borre.** Hace falta aunque el auxiliar funcione:
-una directiva de grupo que bloquee PowerShell, un antivirus que retenga el archivo más
-que los reintentos, o un `doctor` ejecutado en el segundo que el auxiliar tarda en borrar.
+**Ampliación (2026-10-04, preparación de C6).** La objeción original a B —que no cubría
+`self uninstall`— cae con la auto-copia a `%TEMP%`: el limpiador corre fuera del
+directorio que borra. La espera es por HANDLE abierto al programar, no por PID. El
+rastro es un registro bajo `data/logs/`, que lee la verificación del ciclo; lo no
+borrado cae al barrido y a `doctor --repair` (D12.2). El Job retirado en C5 era el del
+lanzamiento del motor, no el de la terminal del que aquí se intenta separar al
+limpiador. A queda descartada.
+
+**D12.2 · Red para lo que el limpiador no borre.** Hace falta aunque el limpiador funcione:
+un antivirus que retenga el archivo más que los reintentos, o un `doctor` ejecutado en
+el segundo que el limpiador tarda en borrar.
 
 | Alternativa | A favor | En contra |
 |---|---|---|
@@ -806,7 +815,7 @@ que los reintentos, o un `doctor` ejecutado en el segundo que el auxiliar tarda 
 
 | Alternativa | A favor | En contra |
 |---|---|---|
-| **A. Sin diagnóstico previo**: la verificación del ciclo reproduce `self update --force` y lee el rastro del auxiliar; si el staging sigue quedando, se abre un G-Desvío | La causa exacta no cambia el plan: D12.1 cubre las tres candidatas y D12.2 recoge el resto; una fase y una compuerta menos | La causa se confirma después de corregir, no antes |
+| **A. Sin diagnóstico previo**: la verificación del ciclo reproduce `self update --force` y lee el registro del limpiador; si el staging sigue quedando, se abre un G-Desvío | La causa exacta no cambia el plan: D12.1 cubre las tres candidatas y D12.2 recoge el resto; una fase y una compuerta menos | La causa se confirma después de corregir, no antes |
 | **B. Reproducción instrumentada y G-Diag antes de corregir** | La causa se confirma antes de tocar el código | Instrumenta a mano un auxiliar que se va a reescribir, sin que el resultado cambie lo que se implementa |
 
 **Recomendación: A.**
@@ -1319,26 +1328,32 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   diferido falla sin dejar rastro, y no hay forma de pedir la limpieza sin una operación
   de ciclo de vida.
 - **Síntomas:** S6.
-- **Decisiones:** D12.1 a D12.5, resueltas en G0. Sin diagnóstico previo (D12.5).
+- **Decisiones:** D12.1 a D12.5. D12.1, reabierta de A a B en la preparación de C6
+  (2026-10-04); D12.2 a D12.5, resueltas en G0. Sin diagnóstico previo (D12.5).
 - **Tareas:**
-  1. Programar el borrado del aparcado con el auxiliar a partir de la lista de restos de
-     la transacción (D12.1).
-  2. Corregir el auxiliar: deja rastro de su resultado, no da por bueno un arranque sin
-     confirmar y se lanza separado del Job Object de la terminal, o sin separarlo si el
-     Job no lo permite (D12.1).
+  1. Programar el borrado del aparcado con el limpiador a partir de la lista de restos de
+     la transacción, que hoy se descarta; el limpiador espera al proceso viejo por HANDLE
+     (D12.1).
+  2. Sustituir el auxiliar PowerShell por el limpiador propio en Rust: auto-copia a
+     `%TEMP%`, espera por HANDLE, reintentos acotados con retroceso, registro del
+     resultado bajo `data/logs/`, arranque confirmado e intento de separación del Job
+     Object de la terminal, o sin separarlo si el Job no lo permite; el `.ps1` se retira
+     en el mismo cambio (D12.1).
   3. `doctor --repair`: toma el bloqueo, ejecuta el barrido y vuelve a evaluar (D12.2,
      D12.4).
   4. La fila de restos de `doctor` falla con la pista `doctor --repair` (D12.3).
 - **Pruebas en rojo:**
-  - el auxiliar borra una ruta cuando el proceso que la bloquea termina, también
-    lanzado desde un proceso dentro de un Job Object con cierre por muerte;
-  - el auxiliar informa del fallo si la ruta sigue bloqueada al agotar los reintentos;
+  - el limpiador borra una ruta cuando el proceso que la bloquea termina, también
+    lanzado desde un proceso dentro de un Job Object con cierre por muerte, sin
+    PowerShell;
+  - el limpiador informa del fallo en su registro si la ruta sigue bloqueada al agotar
+    los reintentos;
   - tras `self update`, el aparcado y el staging desaparecen al terminar la CLI;
   - `doctor` con restos sale con exit 1 y la pista; `doctor --repair` los recoge, no
     toca lo que está en uso y sale con exit 0 si no queda ninguno;
   - `doctor` sin el flag no modifica nada.
-- **Verificación:** reproducir `self update --force` en Windows y leer el rastro del
-  auxiliar. Si el staging sigue quedando, G-Desvío.
+- **Verificación:** reproducir `self update --force` en Windows y leer el registro del
+  limpiador. Si el staging sigue quedando, G-Desvío.
 - **Documentación:** `self`, `doctor` (el flag nuevo y su alcance) y la entrada del
   CHANGELOG.
 - **Cierra:** la ficha de `self update` de `residuos-en-disco-tras-comandos-correctos.md`.
@@ -1451,7 +1466,7 @@ disco y con `git log`.
 
 | Riesgo | Tratamiento |
 |---|---|
-| Tras corregir el auxiliar (C6), el staging sigue quedando en disco | G-Desvío con el rastro del auxiliar; el humano decide si se diagnostica la causa, se aplaza el ciclo o se acepta la red de `doctor --repair` como mitigación documentada |
+| Tras corregir con el limpiador (C6), el staging sigue quedando en disco | G-Desvío con el registro del limpiador; el humano decide si se diagnostica la causa, se aplaza el ciclo o se acepta la red de `doctor --repair` como mitigación documentada |
 | Una prueba con recursos locales falla al dejar de saltarse, porque llevaba tiempo sin ejecutarse | Se corrige la prueba o el código en C2 si es un defecto pequeño; si destapa un defecto del producto, G-Desvío y el humano decide si se corrige dentro del ciclo o se registra como síntoma nuevo |
 | `cargo xtask release` tarda lo que dura la suite con modelos y exige tener los recursos instalados | Es el coste buscado de la puerta; la orden es la misma que se usa en cada ciclo, así que el tiempo no es una sorpresa al publicar |
 | Una decisión de G0 resulta inviable al implementarla | G-Desvío; la decisión se reabre con las alternativas actualizadas |

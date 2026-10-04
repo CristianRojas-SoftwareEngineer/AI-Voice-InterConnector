@@ -1,6 +1,6 @@
 # `doctor`
 
-Diagnóstico del sistema y del estado del ciclo de vida, **sin efectos secundarios**: no descarga, no instala, no borra y no inicia procesos. Es la única operación del ciclo de vida que el usuario puede ejecutar sin riesgo, y por eso es donde el estado de la instalación tiene que ser legible: versión y target, canal, instalación y recibo, `PATH` con duplicados y precedencia, pendientes de una operación anterior y modelos.
+Diagnóstico del sistema y del estado del ciclo de vida, **sin efectos secundarios salvo `--repair`**: sin flags no descarga, no instala, no borra y no inicia procesos. Es la única operación del ciclo de vida que el usuario puede ejecutar sin riesgo (en su modo sin flags), y por eso es donde el estado de la instalación tiene que ser legible: versión y target, canal, instalación y recibo, `PATH` con duplicados y precedencia, pendientes de una operación anterior y modelos.
 
 Emite un **veredicto** —texto o JSON— y termina con exit code **1** si algún chequeo falla.
 
@@ -13,10 +13,10 @@ Emite un **veredicto** —texto o JSON— y termina con exit code **1** si algú
 ## Definición CLI (parser)
 
 ```
-ai-voice-interconnector doctor [--json]
+ai-voice-interconnector doctor [--repair] [--json]
 ```
 
-`Doctor` es una variante **sin campos** del enum `Commands`: no admite subcomandos ni flags propias. Solo hereda el flag global `--json`. Los flags globales `--daemon`/`--no-daemon` no aplican porque `doctor` nunca dialoga con el daemon: la llamada es síncrona y no recibe `daemon_mode`.
+`Doctor` admite un solo flag propio, `--repair`: recoge los restos pendientes (aparcados, stagings y temporales, solo lo que el barrido recoge) tomando el bloqueo, y vuelve a evaluar el informe sobre lo que quedó. Sin flags no admite subcomandos. Hereda el flag global `--json`. Los flags globales `--daemon`/`--no-daemon` no aplican porque `doctor` nunca dialoga con el daemon: la llamada es síncrona y no recibe `daemon_mode`.
 
 ---
 
@@ -66,7 +66,7 @@ ai-voice-interconnector doctor [--json]
 | `models_provisioned` | Falta algún repo de la selección efectiva (los obligatorios más Base si el usuario activó el clonado) | Solo presencia de snapshot, con los ficheros críticos |
 **El modelo Base de clonado no es un chequeo.** `qwen3-tts-0.6b-base` es opt-in: su ausencia es un dato (`models.base = "missing_opt_in"`), nunca un fallo, porque no es obligatorio para que el producto funcione.
 
-**Nada de esto escribe en disco.** La recuperación de §8.1 se ejecuta aquí en **modo informe**: `doctor` **calcula** lo que la recuperación haría —con la misma decisión que usa el barrido real— y lo publica en `pending`, sin tomar el bloqueo y sin modificar nada. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del producto en uno que borra temporales de la máquina que lo invoca.
+**Nada de esto escribe en disco, salvo `--repair`.** La recuperación de §8.1 se ejecuta aquí en **modo informe**: `doctor` **calcula** lo que la recuperación haría —con la misma decisión que usa el barrido real— y lo publica en `pending`, sin tomar el bloqueo y sin modificar nada. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del producto en uno que borra temporales de la máquina que lo invoca. La excepción es `--repair`, que toma el bloqueo, ejecuta ese mismo barrido y reevalúa: su alcance es exactamente lo que el barrido recoge, ni más ni menos.
 
 ---
 
@@ -78,7 +78,7 @@ Este es el punto donde el contrato es más estricto y donde el comportamiento se
 - Si algún chequeo falla, el código de salida es **1** y **no se adjunta el objeto `error` detrás**. Es una **salida por veredicto** (`Salida::Veredicto`), no un error: el comando corrió sin error y su resultado es negativo.
 - Devolver `Err(CliError)` desde aquí haría que `main` escribiera un segundo objeto `error` detrás del reporte y el sobre sería ilegible, que es exactamente el defecto que «cada invocación emite exactamente un objeto JSON» prohíbe.
 
-Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea de veredicto detrás; si todo pasa, la lista completa con `✓` va a stdout.
+Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea de veredicto detrás; si entre ellos está `pending_artifacts`, se añade la pista de recoger los restos con `doctor --repair`. Si todo pasa, la lista completa con `✓` va a stdout.
 
 ---
 
@@ -137,7 +137,7 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
 | Algún chequeo falló | **1** | — (no hay `reason`: el veredicto va en `checks`/`failed`) |
 | No se pudo resolver el ejecutable en ejecución | 1 | `doctor_failed` |
 
-**`doctor` no tiene `reason` de contrato propios.** Un fallo de chequeo no es un error de la operación: es el dictamen que el comando existe para dar. La única excepción es `doctor_failed`, que es un fallo real del comando (no se pudo resolver `current_exe` o serializar el reporte) y sale por el canal de error normal.
+**`doctor` no tiene `reason` de contrato propios.** Un fallo de chequeo no es un error de la operación: es el dictamen que el comando existe para dar. La única excepción es `doctor_failed`, que es un fallo real del comando (no se pudo resolver `current_exe` o serializar el reporte) y sale por el canal de error normal. `--repair` no añade códigos ni `reason`: tras barrer, el informe se reevalúa y el exit sigue al veredicto (0 si todo quedó limpio, 1 si algo sigue fallando).
 
 ---
 
@@ -145,6 +145,7 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
 
 ```bash
 ai-voice-interconnector doctor                       # reporte en texto, exit 0 o 1
+ai-voice-interconnector doctor --repair              # barre los restos pendientes y reevalúa
 ai-voice-interconnector --json doctor                # sobre con las nueve claves
 ai-voice-interconnector --json doctor | jq .failed   # solo los chequeos que fallan
 ```
