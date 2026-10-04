@@ -2,7 +2,7 @@
 
 Borrado del estado por categorías, sin tocar el programa. Es la operación que hace posible quedarse con el programa y perder los datos (o al revés): borra modelos, voces, habla sintética, configuración, logs y estado del daemon, y **nunca** el directorio de programa ni su integración de `PATH` — eso es `self uninstall`.
 
-**Implementación:** el motor es el módulo `cleanup` de `avi-lifecycle` (`crates/avi-lifecycle/src/cleanup.rs`), que resuelve la lista de destinos, la confirmación, la parada del daemon y el barrido. En `src/main.rs` solo queda `handle_cleanup`, que convierte tipos y compone el sobre `--json`. `uninstall` **no** es su reverso ni su supera: `self uninstall` reutiliza el mismo planificador para el estado y añade el directorio de programa, y es el único que borra el programa.
+**Implementación:** el motor es el módulo `cleanup` de `avi-lifecycle` (`crates/avi-lifecycle/src/cleanup.rs`), que resuelve la lista de destinos, la confirmación, la parada del daemon y el barrido. En `src/main.rs` solo queda `handle_cleanup`, que convierte tipos y compone el envelope `--json`. `uninstall` **no** es su reverso ni su supera: `self uninstall` reutiliza el mismo planificador para el estado y añade el directorio de programa, y es el único que borra el programa.
 
 ---
 
@@ -88,7 +88,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 
 `status` toma `cleanup_complete` o `cancelled`. `removed` son las rutas del plan con lo que la operación borró, o —con `--dry-run`— lo que habría borrado. Exactamente un objeto JSON por invocación, incluso cuando falla: sin categoría con `--json` sale el objeto de error de §10 del contrato (`error` + `reason`), y nada más.
 
-`schema_version` vale **`"4"`** (el sobre de la CLI); el protocolo del daemon va por `"4"` porque es otro contrato.
+`schema_version` vale **`"4"`** (el envelope de la CLI); el protocolo del daemon va por `"4"` porque es otro contrato.
 
 ---
 

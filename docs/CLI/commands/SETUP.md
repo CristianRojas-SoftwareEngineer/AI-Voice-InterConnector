@@ -2,7 +2,7 @@
 
 Provisiona el runtime: descarga los modelos pinneados desde HuggingFace Hub, incluidos los modelos de traducción, que ya vienen convertidos. Es **idempotente**: una segunda ejecución con todo presente no descarga nada.
 
-**Implementación:** el motor es el módulo `setup` de `avi-lifecycle` (`crates/avi-lifecycle/src/setup.rs`), que es una **traducción fiel, no un rediseño**: conserva la semántica que ya existía —selección por banderas, idempotencia por presencia del snapshot, purga de `--force-update` sobre la selección y validación de cada modelo por presencia de sus ficheros—. En `src/main.rs` quedan solo `handle_setup` y el sobre `--json`, porque el parseo de la CLI y el emisor no viven en ese crate.
+**Implementación:** el motor es el módulo `setup` de `avi-lifecycle` (`crates/avi-lifecycle/src/setup.rs`), que es una **traducción fiel, no un rediseño**: conserva la semántica que ya existía —selección por banderas, idempotencia por presencia del snapshot, purga de `--force-update` sobre la selección y validación de cada modelo por presencia de sus ficheros—. En `src/main.rs` quedan solo `handle_setup` y el envelope `--json`, porque el parseo de la CLI y el emisor no viven en ese crate.
 
 ---
 
@@ -29,7 +29,7 @@ No existe `--with-stt` (`parakeet-tdt-v3` se provisiona siempre): pasarlo falla 
 2. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar. Purgar el modelo de clonado cuando el usuario no lo pidió dejaría la instalación sin lo que sí quiere. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
 3. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§8.7).
 4. **Descargar** lo pendiente, repo a repo, en la revisión fijada.
-5. **Sobre `--json`** o mensaje humano.
+5. **Envelope `--json`** o mensaje humano.
 
 La traducción es **obligatoria**: `setup` siempre provisiona `opus-mt-es-en` y `opus-mt-en-es`, que son modelos CTranslate2 int8 ya convertidos y publicados, sin pasos locales de conversión. Cada uno se lee directo del snapshot de HuggingFace y se valida por presencia de sus cinco ficheros (`config.json`, `model.bin`, `shared_vocabulary.json`, `source.spm`, `target.spm`), todos con tamaño mayor que cero.
 
@@ -84,7 +84,7 @@ El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `
 | Causa del fallo de provisión | Anidada en `models_cause.reason`: `network_error` |
 | Qué hacer | Reintentar con `setup` |
 
-Es un **éxito parcial**, y por eso el sobre de `self install` sale por veredicto y no con el objeto `error` detrás. El detalle está en [`SELF.md`](SELF.md) y en §11 de [`../CONTRACT.md`](../CONTRACT.md).
+Es un **éxito parcial**, y por eso el envelope de `self install` sale por veredicto y no con el objeto `error` detrás. El detalle está en [`SELF.md`](SELF.md) y en §11 de [`../CONTRACT.md`](../CONTRACT.md).
 
 Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo de descarga sale con `network_error` y **20**, y un fallo de conversión con `setup_failed` y **11**.
 

@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 a C5 cerrados, C6 siguiente |
+| Estado | G0 aprobada, C1 a C6 cerrados, C7 siguiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -46,7 +46,7 @@ leer el código ni haber estado en la sesión en que se diseñó.
 - **Modo automático.** La CLI decide la vía en cada invocación. Con `--daemon` se fuerza
   la vía daemon.
 - **Contrato.** Es el comportamiento documentado de la CLI:
-  - la salida JSON: un sobre con `schema_version`, un `status` y, en caso de error, un
+  - la salida JSON: un envelope con `schema_version`, un `status` y, en caso de error, un
     `reason`;
   - los códigos de salida numéricos (0 éxito, 1 error genérico, 2 entrada inválida, 4
     modelo ausente, 5 daemon inalcanzable, 7 no aplica, etc.);
@@ -218,7 +218,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S15 | Un 404 de `/dub` con `reason` propio (`voice_not_found`, `model_missing`) no se traduce con la tabla: el cliente lo toma por un daemon sin `/dub` | Revisión de C1 | Baja | C3 |
 | S16 | El contrato promete exit 5 cuando el daemon no tiene `/transcribe`; el cliente sale con 1 y no indica reiniciar el daemon | Revisión de C1 | Baja | C3 |
 | S17 | `sudo_not_supported` se emite, pero no está en el contrato ni en el oráculo de la tabla | Revisión de C1 | Baja | C1 |
-| S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el sobre de la CLI en `"3"` | Revisión de C1 | Baja | C7 |
+| S18 | Las guías de `devices`, `translate`, `voice` y el `status` del daemon declaran el envelope de la CLI en `"3"` | Revisión de C1 | Baja | C7 |
 | S19 | `/synthesize` responde `model_missing` a una temperatura fuera de rango si falta el modelo de síntesis | Revisión de C1 | Baja | C1 |
 | S20 | 53 pruebas, en 66 puntos del código, se aprueban solas cuando falta un recurso externo (modelos, binario del motor, dispositivo de audio, `ModelStore` escribible, puerto 8765 libre): imprimen `skip: …` y hacen `return`; cada una decide con sus propios auxiliares, uno de ellos duplicado, y uno de ellos ejecuta el `doctor` real sobre la instalación del mantenedor; otras cuatro comprueban un feature en tiempo de ejecución en lugar de declararlo con `cfg` | Revisión de C1 | Alta; un verde no demuestra que la prueba se ejecutó | C2 |
 | S21 | Nada ejecuta las pruebas con recursos locales antes de publicar: CircleCI corre solo en tags, sin features nativas ni modelos, y ni la skill `release` ni `cargo xtask release` piden más que `cargo test --all` (o nada); esas pruebas cuentan como verdes sin haberse ejecutado | Revisión de C1 | Alta; los falsos verdes llegan hasta la puerta de la release | C2 |
@@ -230,7 +230,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S27 | `self install`, `self uninstall` y `self update` detienen el daemon siempre en `127.0.0.1:8765` y `cleanup` solo respeta `AVI_DAEMON_PORT=0`; sin pidfile, `daemon stop`, `daemon status` y el resto de clientes del daemon lo buscan siempre en 8765; diez pruebas de contrato llamaban así a `daemon_stop::stop` contra el daemon real del mantenedor | Verificación de C2 | Media | C2 |
 | S28 | `tts::dub_audio_passthrough_es_es`, de la clase con recursos, falla de forma intermitente (1 de 4 intentos): el proceso `--no-daemon speech dub --audio parakeet_sample_16k.wav --source-language es-latam --target-language es-latam` termina a los 13,9 s con el código 0xC0000409 (caída nativa), sin fallo de aserción; la puerta de `cargo xtask release` aborta cuando ocurre | Verificación de C2 | Media | En observación |
 | S29 | `tts::h03_pipe_stdio_must_not_remain_blocked`, de la clase con recursos, falla de forma intermitente (en la suite completa y en 1 de 3 repeticiones aisladas): el pipe del lanzador sigue bloqueado a los 5 s y solo se libera al matar el daemon, como si el daemon retuviera el stdio heredado pese a `disinherit_standard_handles` | Verificación de C3 | Media | En observación |
-| S30 | Cuando clap rechaza los argumentos (flag desconocido, valor inválido, subcomando inexistente), el binario imprime un mensaje de texto por stderr y sale con 2, incluso con `--json`; el contrato dice que ese fallo entra por el mismo canal JSON que los demás, con `reason` `usage_error` en stdout, así que un consumidor programado que pase `--json` no recibe sobre | Verificación de C4 | Baja | C7 |
+| S30 | Cuando clap rechaza los argumentos (flag desconocido, valor inválido, subcomando inexistente), el binario imprime un mensaje de texto por stderr y sale con 2, incluso con `--json`; el contrato dice que ese fallo entra por el mismo canal JSON que los demás, con `reason` `usage_error` en stdout, así que un consumidor programado que pase `--json` no recibe envelope | Verificación de C4 | Baja | C7 |
 | S31 | `daemon stop` y el resto de operaciones que reutilizan la parada dan el daemon por detenido sin comprobar que el residente murió: con el daemon muerto y el residente vivo, borran el pidfile y con él el `resident_pid`; la rama que informaría del residente es inalcanzable | Verificación del plan de C5 | Media | C5 |
 | S32 | Un proceso que muere mientras guarda la referencia de un clonado deja un directorio de voz vacío: `voice list` lo muestra y `voice_exists` impide clonar de nuevo con ese nombre | Verificación del plan de C5 | Baja | C5 |
 
@@ -239,7 +239,7 @@ lo pone quien lo imprime.
 
 S15 a S19 los detectó el revisor de C1 y no tienen informe propio: se asignan al ciclo
 que ya trata su causa raíz. S17 y S19 se corrigieron dentro de C1; S18 espera a C7
-porque la subida del sobre a `"5"` edita esas mismas líneas.
+porque la subida del envelope a `"5"` edita esas mismas líneas.
 
 S20 a S26 también salieron de la revisión de C1 y no tienen informe propio: forman un ciclo
 nuevo, C2, porque comparten una causa raíz que no pertenece a ningún informe: las pruebas no
@@ -265,8 +265,8 @@ en un ciclo propio.
 
 S30 salió de la verificación de C4 y no tiene informe propio. Es una discrepancia entre el
 contrato y el binario sobre los fallos de parseo de la CLI, y comparte causa raíz con el
-resto de C7: un sobre JSON que no describe lo que pasó. Se asigna a C7 porque ese ciclo
-ya reescribe el contrato y sube el sobre a la versión 5, y una sola subida por versión
+resto de C7: un envelope JSON que no describe lo que pasó. Se asigna a C7 porque ese ciclo
+ya reescribe el contrato y sube el envelope a la versión 5, y una sola subida por versión
 publicada admite el cambio si se decide alinear el binario con el contrato.
 
 S31 y S32 salieron de la verificación del plan de C5 y no tienen informe propio. Comparten
@@ -535,7 +535,7 @@ el humano.
 | **D. Un valor por comando** (`would_uninstall`, `would_clean`) | Explícito | Multiplica los valores sin aportar información que `planned` no dé |
 
 **Recomendación: A, conservando las claves del resultado.** Con `status: "planned"`, el
-sobre entero se lee como un plan, incluida la lista `removed`. Renombrar las claves en
+envelope entero se lee como un plan, incluida la lista `removed`. Renombrar las claves en
 el simulacro rompería la comparación entre simulacro y ejecución real, que es la razón
 por la que comparten resultado. El texto humano de `self uninstall --dry-run` se
 corrige en la misma tarea.
@@ -546,8 +546,8 @@ corrige en la misma tarea.
 
 | Alternativa | A favor | En contra |
 |---|---|---|
-| **A. Alinear el simulacro con la ejecución**: `removed` solo con las entradas del plan, como en `cleanup`, y `path_reverted` con el valor previsto según el recibo | El sobre entero es un plan veraz y comparable; los dos comandos siguen la misma regla | Algo más de código en el simulacro |
-| **B. Documentar la diferencia** | Ningún cambio de código | El sobre `planned` contiene un dato falso y una lista que no se puede comparar |
+| **A. Alinear el simulacro con la ejecución**: `removed` solo con las entradas del plan, como en `cleanup`, y `path_reverted` con el valor previsto según el recibo | El envelope entero es un plan veraz y comparable; los dos comandos siguen la misma regla | Algo más de código en el simulacro |
+| **B. Documentar la diferencia** | Ningún cambio de código | El envelope `planned` contiene un dato falso y una lista que no se puede comparar |
 | **C. Quitar esas claves del simulacro** | No afirma nada falso | Rompe la comparación entre simulacro y ejecución real |
 
 **Recomendación: A.** Sin ella, D7.1 corrige el `status` y deja mentir a las claves que
@@ -560,8 +560,8 @@ da `planned`, y un simulacro nunca da otro valor.
 
 | Alternativa | A favor | En contra |
 |---|---|---|
-| **A. Retirarla de los sobres de `self uninstall` y `cleanup`** | Cada hecho se dice en un solo sitio; sin dos campos que mantener coherentes | Otra clave retirada, dentro de la misma subida del esquema |
-| **B. Conservarla como eco de la entrada** | El sobre conserva su forma | Redundante; en la ejecución real es ruido; solo se justifica por compatibilidad |
+| **A. Retirarla de los envelopes de `self uninstall` y `cleanup`** | Cada hecho se dice en un solo sitio; sin dos campos que mantener coherentes | Otra clave retirada, dentro de la misma subida del esquema |
+| **B. Conservarla como eco de la entrada** | El envelope conserva su forma | Redundante; en la ejecución real es ruido; solo se justifica por compatibilidad |
 
 **Recomendación: A.**
 
@@ -824,7 +824,7 @@ el segundo que el limpiador tarda en borrar.
 
 ### D13 · Versión de los esquemas (transversal)
 
-**Problema.** El sobre JSON de la CLI está en el esquema 4 y el protocolo del daemon, en
+**Problema.** El envelope JSON de la CLI está en el esquema 4 y el protocolo del daemon, en
 el 3. Según el contrato:
 
 - añadir una clave o un `reason` no sube la versión;
@@ -834,7 +834,7 @@ el 3. Según el contrato:
 Los cambios de esta iteración que suben un esquema son estos:
 
 - **Protocolo del daemon:** la unidad de `text_length` pasa a caracteres (C1).
-- **Sobre de la CLI:** los nuevos valores de `status` (D6 y D7) y la retirada de
+- **Envelope de la CLI:** los nuevos valores de `status` (D6 y D7) y la retirada de
   `dry_run` (D7.3) y de `audio_path` (D8), todos en C7.
 - **Ninguno de los dos:** el cambio de código de salida de D5 no toca ninguna clave.
   Cambia el contrato, pero no el esquema, y se documenta en el CHANGELOG.
@@ -849,7 +849,7 @@ Los cambios de esta iteración que suben un esquema son estos:
 
 - C1 sube el protocolo del daemon de 3 a 4 y documenta `text_length` en caracteres, la
   misma unidad que el tope de 500 caracteres de `--text`.
-- C7 sube el sobre de la CLI de 4 a 5.
+- C7 sube el envelope de la CLI de 4 a 5.
 
 Con un solo release al final de la iteración y cada esquema roto en un único ciclo, A y
 B producen hoy el mismo resultado; A se prefiere porque sigue siendo correcta si eso
@@ -1185,7 +1185,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   3. Salida del motor durante el clonado hacia su log.
   4. Filtro de trazas configurable con `RUST_LOG`: sin la variable, `warn` en los
      comandos de la CLI e `info` en el daemon. Corrige de paso el comentario de la
-     inicialización de las trazas, que cita un esquema del sobre JSON ya superado.
+     inicialización de las trazas, que cita un esquema del envelope JSON ya superado.
   5. Retirada de `setup --with-stt` y de la clave `with_stt` del JSON de `setup`.
 - **Decisiones de plan:**
   - **P1:** sin `RUST_LOG`, el daemon usa `info` para los crates propios y `warn` para
@@ -1360,15 +1360,15 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 
 ### C7 · JSON veraz y temporales
 
-- **Causa raíz:** algunos sobres JSON describen lo que se pidió o lo que habría pasado,
+- **Causa raíz:** algunos envelopes JSON describen lo que se pidió o lo que habría pasado,
   no lo que pasó, y quien crea un fichero temporal no siempre lo borra.
 - **Síntomas:** S7, S8, S18 y S30.
-- **Decisiones:** D6, D7, D8 y D13 (la subida del sobre de la CLI), resueltas en G0. Queda
+- **Decisiones:** D6, D7, D8 y D13 (la subida del envelope de la CLI), resueltas en G0. Queda
   una abierta, que se resuelve en la G-Plan de C7: si el fallo de parseo de la CLI entra
   por el canal JSON cuando se pide `--json` (se alinea el binario con el contrato) o si
   el contrato pasa a documentar que ese fallo se imprime como texto por stderr con
   exit 2 (se alinea el contrato con el binario). La recomendación es la primera, porque
-  `--json` promete un sobre en stdout y quien lo parsea hoy recibe un stdout vacío.
+  `--json` promete un envelope en stdout y quien lo parsea hoy recibe un stdout vacío.
 - **Tareas:**
   1. `daemon stop` sin daemon responde `status: "not_running"` y «El daemon no estaba
      en ejecución», a partir del dato de la parada (D6).
@@ -1377,14 +1377,14 @@ aprobar. Las pruebas que se enumeran son las mínimas.
      (D7.1).
   3. El simulacro de `self uninstall` alinea `removed` y `path_reverted` con la
      ejecución real (D7.2).
-  4. Retirar `dry_run` de los sobres de `self uninstall` y `cleanup` (D7.3).
+  4. Retirar `dry_run` de los envelopes de `self uninstall` y `cleanup` (D7.3).
   5. Un guardián único del WAV temporal en `say` y `dub`, por todas sus vías; se retira
      `audio_path` del JSON y la ruta del texto humano (D8.1, D8.2).
-  6. Sobre de la CLI en la versión 5 (D13), también en las guías que aún lo declaran en
+  6. Envelope de la CLI en la versión 5 (D13), también en las guías que aún lo declaran en
      `"3"`: `DEVICES.md`, `TRANSLATE.md`, `VOICE.md` y el `status` de `DAEMON.md`
      (S18).
   7. El fallo de parseo de la CLI, según lo que resuelva la decisión abierta: o se
-     traduce a un error `usage_error` con exit 2 que sale por el sobre JSON cuando se
+     traduce a un error `usage_error` con exit 2 que sale por el envelope JSON cuando se
      pidió `--json` (hay que inspeccionar los argumentos crudos para saberlo, porque al
      fallar el parseo no existe la estructura de la CLI), o se corrige el contrato
      para describir el texto por stderr.
@@ -1397,13 +1397,13 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   - tras `speech say` y `speech dub`, por la vía directa y la daemon, también cuando
     fallan la síntesis o la reproducción, no queda ningún WAV temporal y el JSON no
     contiene `audio_path`;
-  - el sobre de la CLI declara `schema_version` 5;
+  - el envelope de la CLI declara `schema_version` 5;
   - un flag desconocido, un valor inválido y un subcomando inexistente, con `--json`,
-    salen con exit 2 y un sobre `usage_error` en stdout sin texto suelto por stderr (si
+    salen con exit 2 y un envelope `usage_error` en stdout sin texto suelto por stderr (si
     la decisión alinea el binario con el contrato), y sin `--json` siguen mostrando el
     mensaje en español con la línea `Uso:`.
 - **Documentación:** el contrato (valores de `status`, claves retiradas, versión 5 del
-  sobre y el canal por el que sale el fallo de parseo), `speech`, `daemon`, `self`, `cleanup`, `devices`, `translate`, `voice` y la
+  envelope y el canal por el que sale el fallo de parseo), `speech`, `daemon`, `self`, `cleanup`, `devices`, `translate`, `voice` y la
   entrada del CHANGELOG.
 - **Cierra:** `status-json-afirma-operaciones-no-realizadas.md` y
   `residuos-en-disco-tras-comandos-correctos.md`, que para entonces se queda sin fichas.

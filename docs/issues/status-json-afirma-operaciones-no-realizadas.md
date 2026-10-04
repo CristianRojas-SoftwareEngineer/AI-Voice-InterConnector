@@ -64,7 +64,7 @@ Recogida en cada síntoma.
 
 ### 2. `self uninstall --dry-run --json` devuelve `status: "uninstalled"`
 
-- **Síntoma:** el simulacro no modifica nada (correcto), pero el sobre dice
+- **Síntoma:** el simulacro no modifica nada (correcto), pero el envelope dice
   `status: "uninstalled"` junto a `dry_run: true`.
 - **Causa (confirmada por la salida):** el `status` describe el resultado que tendría
   la operación, no lo que ha pasado.
@@ -74,7 +74,7 @@ Recogida en cada síntoma.
 
 ### 3. `cleanup --dry-run --json` devuelve `status: "cleanup_complete"`
 
-- **Síntoma:** el simulacro no modifica el disco (correcto), pero el sobre dice
+- **Síntoma:** el simulacro no modifica el disco (correcto), pero el envelope dice
   `status: "cleanup_complete"` junto a `dry_run: true`, y la lista `removed` contiene
   las rutas que se borrarían, no las borradas.
 - **Causa (confirmada por lectura del código):** `simulate`

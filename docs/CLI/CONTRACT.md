@@ -511,7 +511,7 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 
 **Los doce enteros del 11 al 22 son de la tabla cerrada del ciclo de vida, uno por `reason`**, y no se reparten por el eje de dos preguntas de §1 como los anteriores: cada uno corresponde a un `reason` que §8.1 de la especificación declara, y la correspondencia es 1:1 con la variante de `ExitCode` (`crates/avi-core/src/exit_codes.rs`). Los dos casos que rompen el patrón son deliberados y son los que hay que recordar al leer la tabla:
 
-- **El 11 no es un error.** `setup_failed` es un **éxito parcial**: el programa está instalado, el resumen y el sobre se emiten igual, y lo único que cambia es el `reason` del sobre y el código de salida. Por eso el sobre de `self install` sale por *veredicto* y no por el objeto `error` de §10.
+- **El 11 no es un error.** `setup_failed` es un **éxito parcial**: el programa está instalado, el resumen y el envelope se emiten igual, y lo único que cambia es el `reason` del envelope y el código de salida. Por eso el envelope de `self install` sale por *veredicto* y no por el objeto `error` de §10.
 - **El 15 y el 17 son los que el ejecutable sin bundle alrededor y el bloqueo ya tomado producen**, y son los dos que un usuario se encuentra sin haber hecho nada mal: `target\debug\ai-voice-interconnector.exe self install` responde `bundle_invalid` (15) porque no hay bundle alrededor, no porque la instalación esté rota.
 
 `unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20), `checksum_mismatch` (21) y `program_dir_kept` (22) **tienen variante propia**: los emiten `self update`, la descarga de `setup`, la comprobación de arranque del bundle y el paso 8 de `self uninstall`, con la traducción en `ExitCode::from_reason` y las variantes en la cabecera de `crates/avi-core/src/exit_codes.rs`.
@@ -573,13 +573,13 @@ La reexportación desde `src/main.rs` crea dos sitios donde *parecen* vivir las 
 
 ### La invariante del canal
 
-**Bajo `--json`, toda salida no-cero emite el payload de error, salvo la salida por veredicto.** `error` (el mensaje) y `reason` son obligatorios en el payload; el código **no viaja en el sobre**, lo transporta el estado de salida del proceso, y por eso un consumidor tiene que leer las dos cosas.
+**Bajo `--json`, toda salida no-cero emite el payload de error, salvo la salida por veredicto.** `error` (el mensaje) y `reason` son obligatorios en el payload; el código **no viaja en el envelope**, lo transporta el estado de salida del proceso, y por eso un consumidor tiene que leer las dos cosas.
 
 El canal tiene **tres formatos**, y cada invocación emite **exactamente un objeto JSON**:
 
 1. **Éxito**: el payload propio del comando, vía `emit_raw_json()`, con salida 0.
 2. **Error**: el objeto `{"error": …, "reason": …}`, vía `CliError` traducido por `main()`, con salida ≠ 0.
-3. **Veredicto**: código ≠ 0 con el payload **propio** del comando ya emitido y **sin** objeto `error`. Es un dictamen, no un fallo: el comando corrió sin error pero su resultado es negativo. Hay **dos** casos: **`doctor`**, cuyo exit 1 con FAIL (§9) emite solo el reporte (`checks`, `failed`), y **`self install` con `setup_failed`**, que emite su sobre completo con `status` `installed` y sale con **11** sin adjuntar objeto `error` (§11).
+3. **Veredicto**: código ≠ 0 con el payload **propio** del comando ya emitido y **sin** objeto `error`. Es un dictamen, no un fallo: el comando corrió sin error pero su resultado es negativo. Hay **dos** casos: **`doctor`**, cuyo exit 1 con FAIL (§9) emite solo el reporte (`checks`, `failed`), y **`self install` con `setup_failed`**, que emite su envelope completo con `status` `installed` y sale con **11** sin adjuntar objeto `error` (§11).
 
 El payload de error usa **dos claves de primer nivel** —`error` con el mensaje y `reason` con el literal de máquina—, ambas planas y no anidadas, y deja intacto el stderr en castellano para el uso humano:
 
@@ -633,7 +633,7 @@ Cuando un arranque del daemon falla, el mensaje de error de la CLI termina con `
 
 ### Los cinco payloads del grupo `speech`
 
-Ninguno emite ruta, por el criterio de la ruta en los payloads. Todos llevan además los campos transversales del sobre.
+Ninguno emite ruta, por el criterio de la ruta en los payloads. Todos llevan además los campos transversales del envelope.
 
 | Sub-acción | Payload |
 |---|---|
@@ -655,7 +655,7 @@ Los payloads de `daemon start`, `stop` y `restart` no llevan clave booleana prop
 
 ### Las dos versiones de esquema
 
-Son **dos, independientes**: el sobre de la CLI va por `"4"` y el protocolo del daemon, también por `"4"`, pero cada uno llegó ahí por motivos propios.
+Son **dos, independientes**: el envelope de la CLI va por `"4"` y el protocolo del daemon, también por `"4"`, pero cada uno llegó ahí por motivos propios.
 
 - **`crates/avi-daemon/src/lib.rs` (`DaemonState`, `run_daemon_server`) — protocolo IPC del daemon, `DAEMON_SCHEMA_VERSION = "4"`.** Subió a `"2"` porque `/synthesize` identifica la voz por su nombre y no transporta rutas: una forma que no es aditiva y por tanto exige versión propia. Subió otra vez a `"3"` con el rediseño cross-lingual: `model_loaded` pasó de `bool` a `dict[str, bool]` (un modelo cargado por idioma en vez de uno solo), un cambio incompatible de un campo existente (`crates/avi-core/src/engine.rs` `SttEngine`/`TtsEngine`, estados `warm`/`warm_failed`). Subió a `"4"` al alinear sus errores con este contrato: `/transcribe` pasó de responder 200 ante un error a responder 400 (`usage_error`, `invalid_audio`) y 500, y los `reason` propios de audio (`audio_missing`, `audio_decode_error`) se sustituyeron por `usage_error` e `invalid_audio`, un renombrado de valores existentes que no es aditivo. **El ciclo de vida no lo toca**: ni `self install`, ni `self uninstall`, ni `cleanup`, ni la sección de ciclo de vida de `doctor` cambian una clave del protocolo del daemon, así que su versión no se mueve.
 - **`src/main.rs` / `crates/avi-core/src/json_emitter.rs` (`CLI_SCHEMA_VERSION = "4"`) — payloads `--json` de la CLI.** Subió a `"2"` porque el payload de síntesis no lleva clave de ruta de salida, y a `"3"` por la misma razón que el protocolo del daemon (`model_loaded` de booleano a objeto por idioma). Subió a `"4"` con el ciclo de vida, y el motivo es un **cambio incompatible y no aditivo**: `doctor --json` retira cuatro claves de primer nivel —`data_dir`, `hf_cache`, `base_status` e `issues`— y las sustituye por la sección de ciclo de vida (`version`, `target`, `channel`, `install`, `path`, `pending`, `models`), con `checks` y `failed` como veredicto. Retirar claves es incompatible por la asimetría de reversibilidad de §1, y por eso exige subir la versión en vez de dejarse como adición.

@@ -189,8 +189,8 @@ nuevas no lo incrementa; solo un cambio incompatible de las claves existentes lo
 haría. Un consumidor puede leerlo para detectar cambios de contrato.
 
 **Ojo: el protocolo del daemon sigue en `"3"`.** Son dos contratos
-independientes —el sobre de la CLI y el IPC del daemon— y suben por separado: el
-ciclo de vida cambió el sobre (retiró cuatro claves de `doctor`) y **no** tocó el
+independientes —el envelope de la CLI y el IPC del daemon— y suben por separado: el
+ciclo de vida cambió el envelope (retiró cuatro claves de `doctor`) y **no** tocó el
 protocolo del daemon.
 
 ### Referencia de esquemas `--json`

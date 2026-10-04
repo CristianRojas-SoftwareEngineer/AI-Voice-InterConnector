@@ -2,7 +2,7 @@
 
 `self` es el grupo con el que **el binario gestiona su propia instalación**. Reemplaza al comando de nivel superior `uninstall` —que ya no existe, sin alias ni flag deprecado— y cubre los dos lados del ciclo de vida: `self install` instala o repara, `self update` actualiza a la última estable o a una concreta, y `self uninstall` desinstala.
 
-La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§5.4 superficie, §8.1 reglas transversales, §8.3 `self install`, §8.5 `self uninstall`); el contrato de la CLI —flags, `reason`, códigos de salida, sobre `--json`— está en [`../CONTRACT.md`](../CONTRACT.md). Este documento describe **dónde vive cada cosa y por qué**.
+La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§5.4 superficie, §8.1 reglas transversales, §8.3 `self install`, §8.5 `self uninstall`); el contrato de la CLI —flags, `reason`, códigos de salida, envelope `--json`— está en [`../CONTRACT.md`](../CONTRACT.md). Este documento describe **dónde vive cada cosa y por qué**.
 
 **Implementación:** el motor es el crate `avi-lifecycle` (`crates/avi-lifecycle/src/install.rs` y `uninstall.rs`), sin punto de entrada propio: el parseo de la CLI y el cableado se quedan en `src/main.rs` (`handle_self`), porque el motor no depende de `clap` ni de `avi-core` (§5.3 de la especificación). El binario aporta las dos primitivas que el motor no puede tener —el control de procesos (`ProductProcesses`, que vive en `avi-daemon`/`avi-tts`) y el borrado diferido de Windows (`ProgramRemoval`, que usa `avi_process::schedule_clean_removal`)—. El motor decide; el binario ejecuta esas dos.
 
@@ -90,7 +90,7 @@ Si el `setup` del paso 11 falla, **la instalación no falla**. §8.1 lo declara 
 | `status` | `installed` (o `repaired`) |
 | `reason` | `setup_failed` |
 | Código de salida | **11** (`ExitCode::SetupFailed`) |
-| Forma de salida | **Por veredicto**: el sobre y el resumen se emiten igual, y **no** se adjunta el objeto `error` |
+| Forma de salida | **Por veredicto**: el envelope y el resumen se emiten igual, y **no** se adjunta el objeto `error` |
 | Qué hacer | Reintentar con `setup`: el programa está instalado |
 
 El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cause`, con su propio `reason` —`network_error` para un fallo de descarga— y su mensaje. Ese `reason` y `setup_failed` dicen cosas distintas y por eso no se funden: uno dice **qué** falló y el otro **qué dejó de completarse**.
@@ -109,7 +109,7 @@ El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cau
 }
 ```
 
-`models_cause` **solo existe si hubo fallo**: un sobre estable es más fácil de leer que uno con nulos. Los cuatro valores de `models` son `skipped` (`--no-setup`), `already_provisioned`, `provisioned` y `failed`.
+`models_cause` **solo existe si hubo fallo**: un envelope estable es más fácil de leer que uno con nulos. Los cuatro valores de `models` son `skipped` (`--no-setup`), `already_provisioned`, `provisioned` y `failed`.
 
 Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de descarga sale con `network_error` y **20**. El `self update` propaga el mismo parcial: si el `setup` del binario nuevo falla, el resultado es `updated` con `reason` `setup_failed`, salida 11 y causa anidada en `models_cause`.
 

@@ -73,7 +73,7 @@ Comandos exactos, numerados, que un tercero pueda ejecutar tal cual.
 
 ## Resultado observado
 
-Salida literal (stdout/stderr), código de salida, `reason` del sobre JSON y tiempos.
+Salida literal (stdout/stderr), código de salida, `reason` del envelope JSON y tiempos.
 
 ## Resultado esperado
 

@@ -20,7 +20,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 
 ---
 
-## Las nueve claves del sobre
+## Las nueve claves del envelope
 
 | Clave | Contenido |
 |---|---|
@@ -38,7 +38,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 
 ### Las cuatro claves que se retiran
 
-`data_dir`, `hf_cache`, `base_status` e `issues` **ya no son claves de primer nivel**. No se emiten **ni siquiera como nombre**: la prueba del módulo afirma el **conjunto exacto** de claves del sobre, que es una afirmación más fuerte que una lista de prohibidas.
+`data_dir`, `hf_cache`, `base_status` e `issues` **ya no son claves de primer nivel**. No se emiten **ni siquiera como nombre**: la prueba del módulo afirma el **conjunto exacto** de claves del envelope, que es una afirmación más fuerte que una lista de prohibidas.
 
 **La información no se pierde, cambia de sitio:**
 
@@ -49,7 +49,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `base_status` | `models.base`, con los mismos dos valores (`ready` / `missing_opt_in`) |
 | `issues` | `checks` (el detalle por comprobación) y `failed` (los nombres de las que fallan) |
 
-**Por qué se retiran en vez de quedarse**: el contrato niega las claves de primer nivel que duplican lo que una sección ya dice mejor, y §8.8 de la especificación coloca la raíz de datos dentro de `install`, el estado de los modelos dentro de `models` y el `PATH` dentro de `path`. Retirar claves es un cambio **incompatible**, y por eso el sobre de la CLI sube a `"4"` en lugar de quedarse como adición.
+**Por qué se retiran en vez de quedarse**: el contrato niega las claves de primer nivel que duplican lo que una sección ya dice mejor, y §8.8 de la especificación coloca la raíz de datos dentro de `install`, el estado de los modelos dentro de `models` y el `PATH` dentro de `path`. Retirar claves es un cambio **incompatible**, y por eso el envelope de la CLI sube a `"4"` en lugar de quedarse como adición.
 
 ---
 
@@ -76,7 +76,7 @@ Este es el punto donde el contrato es más estricto y donde el comportamiento se
 
 - Con `--json`, `doctor` emite **un único objeto**: el reporte, con el veredicto dentro (`checks` y `failed`).
 - Si algún chequeo falla, el código de salida es **1** y **no se adjunta el objeto `error` detrás**. Es una **salida por veredicto** (`Salida::Veredicto`), no un error: el comando corrió sin error y su resultado es negativo.
-- Devolver `Err(CliError)` desde aquí haría que `main` escribiera un segundo objeto `error` detrás del reporte y el sobre sería ilegible, que es exactamente el defecto que «cada invocación emite exactamente un objeto JSON» prohíbe.
+- Devolver `Err(CliError)` desde aquí haría que `main` escribiera un segundo objeto `error` detrás del reporte y el envelope sería ilegible, que es exactamente el defecto que «cada invocación emite exactamente un objeto JSON» prohíbe.
 
 Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea de veredicto detrás; si entre ellos está `pending_artifacts`, se añade la pista de recoger los restos con `doctor --repair`. Si todo pasa, la lista completa con `✓` va a stdout.
 
@@ -146,6 +146,6 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
 ```bash
 ai-voice-interconnector doctor                       # reporte en texto, exit 0 o 1
 ai-voice-interconnector doctor --repair              # barre los restos pendientes y reevalúa
-ai-voice-interconnector --json doctor                # sobre con las nueve claves
+ai-voice-interconnector --json doctor                # envelope con las nueve claves
 ai-voice-interconnector --json doctor | jq .failed   # solo los chequeos que fallan
 ```

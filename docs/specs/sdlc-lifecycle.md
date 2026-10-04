@@ -337,7 +337,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 
 **Simulación.** Toda operación destructiva acepta `--dry-run`: imprime el plan (rutas, tamaños, cambios de PATH) sin modificar el disco.
 
-**Salida.** El progreso y los avisos van a stderr en español; el resultado, a stdout. Con `--json`, stdout contiene únicamente el sobre estándar del contrato de la CLI, con `status`, `reason` y los campos de cada operación.
+**Salida.** El progreso y los avisos van a stderr en español; el resultado, a stdout. Con `--json`, stdout contiene únicamente el envelope estándar del contrato de la CLI, con `status`, `reason` y los campos de cada operación.
 
 **Resultados.** Los `reason` son contrato de máquina y se mantienen en inglés. Los códigos de salida numéricos se asignan en el contrato de la CLI respetando las familias existentes (0 éxito, 2 error de uso).
 
@@ -735,11 +735,11 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `README.md` | One-liners y los tres comandos esenciales (`self update`, `self uninstall`, `cleanup`) |
 | `USAGE.md` | Guía de usuario del ciclo de vida |
 | `docs/CLI/README.md` | **Índice** de `docs/CLI/`: el árbol de documentos, la tabla de comandos de nivel superior (con `self` y **sin** `uninstall`) y la tabla de códigos de salida con los siete enteros del ciclo de vida |
-| `docs/CLI/CONTRACT.md` | Contrato de `self *`, `setup`, `cleanup` y `doctor`: flags, `reason` y códigos de salida, sobre `--json` y las dos versiones de esquema |
+| `docs/CLI/CONTRACT.md` | Contrato de `self *`, `setup`, `cleanup` y `doctor`: flags, `reason` y códigos de salida, envelope `--json` y las dos versiones de esquema |
 | `docs/CLI/commands/SELF.md` | Documento del grupo `self`, con 201 líneas: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
 | `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1–R3, el gate de categoría y la confirmación destructiva |
 | `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y la selección persistida, la poda y las migraciones que usa `self update` |
-| `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del sobre, las cuatro retiradas, los seis chequeos y el veredicto de un solo objeto |
+| `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del envelope, las cuatro retiradas, los seis chequeos y el veredicto de un solo objeto |
 | `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
 | `docs/SELF-HOSTED-INSTALL.md` | Retirado: no existe en el arbol. Su contenido vigente esta en `docs/DISTRIBUTION.md` |
@@ -747,7 +747,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/GOAL.md` | Especificación ideal del producto y clasificación de specs, con la firma de código en el goal a largo plazo; el criterio de equivalencia entre SO nombra la invocación vigente y conserva la de entonces como constancia |
 | `docs/MANUAL-VALIDATION.md` | Procedimiento operativo de la validación end-to-end manual: la matriz de la CLI que CI no puede ejercitar, con la caché de modelos y la integración de `PATH` vigentes |
 | `docs/RELEASING.md` | El corte de release: bump de las cinco versiones, promoción de `[No publicado]` por `cargo xtask release` y aborted list del gate de publicación |
-| `docs/CLI/commands/VERSION.md` | Documento de `version`, el único comando de nivel superior sin motor en `avi-lifecycle`: lo resuelve `handle_version` en `src/main.rs`, y por eso el sobre `--json` es toda su superficie |
+| `docs/CLI/commands/VERSION.md` | Documento de `version`, el único comando de nivel superior sin motor en `avi-lifecycle`: lo resuelve `handle_version` en `src/main.rs`, y por eso el envelope `--json` es toda su superficie |
 | `THIRD-PARTY-LICENSES.md` | Inventario de licencias de terceros, con la región generada por `cargo xtask licenses` y la región curada arriba; gobierna el aviso de atribución de los pesos de modelo |
 | `SECURITY.md` | Política y runbook: Mark-of-the-Web, los dos bootstrap como única ejecución previa al binario, y el aviso de binarios sin firmar diferido al goal a largo plazo |
 | `AGENTS.md` | Directrices de trabajo en este repositorio: idioma, surgicalidad, disciplina de versionado y prohibiciones; gobierna a quien modifica el proyecto, no al usuario final |

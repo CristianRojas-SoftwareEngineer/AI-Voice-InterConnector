@@ -298,7 +298,7 @@ publicada de este ciclo de vida es la primera instalación para todo el mundo.
 El mismo corte mueve la caché de modelos a una raíz **exclusiva de la aplicación** y los
 datos de usuario a `%LOCALAPPDATA%\ai-voice-interconnector\data` en Windows, con las
 variables `AVI_INSTALL_DIR`, `AVI_BIN_DIR`, `AVI_DATA_DIR` y `AVI_CACHE_DIR` como
-reubicación. Y sube el sobre `--json` de la CLI a `schema_version` `"4"`: el protocolo del
+reubicación. Y sube el envelope `--json` de la CLI a `schema_version` `"4"`: el protocolo del
 daemon sigue en `"3"`, porque es un contrato independiente.
 
 ### Añadido
