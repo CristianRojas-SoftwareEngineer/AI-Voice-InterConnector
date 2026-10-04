@@ -419,7 +419,12 @@ enum Commands {
         action: SelfSub,
     },
     /// Diagnóstico de entorno
-    Doctor,
+    Doctor {
+        /// Recoge los restos pendientes (aparcados, stagings y temporales)
+        /// con el barrido existente y vuelve a evaluar el informe
+        #[arg(long)]
+        repair: bool,
+    },
 }
 
 /// Subcomandos de self. Se llama SelfSub y no SelfComandos por dos razones:
@@ -756,7 +761,7 @@ fn disinherit_standard_handles() {
 /// la disposición global de `SIGPIPE`, así que las escrituras a un daemon
 /// que cerró la conexión siguen devolviendo `EPIPE` como error normal, no
 /// una señal. Los procesos hijos que lanza este binario (motor TTS/STT,
-/// helper de desinstalación, el propio daemon) siempre usan
+/// limpiador de desinstalación, el propio daemon) siempre usan
 /// `Stdio::null()` para su stdin, así que no hay tubería de escritura hacia
 /// un hijo que pueda disparar la señal.
 #[cfg(unix)]
@@ -891,7 +896,7 @@ async fn main() {
         )
         .await),
         Some(Commands::SelfCmd { action }) => handle_self(json_mode, action).await,
-        Some(Commands::Doctor) => handle_doctor(json_mode),
+        Some(Commands::Doctor { repair }) => handle_doctor(json_mode, repair),
         None => ok(handle_version(json_mode)),
     };
 
@@ -2262,7 +2267,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             Ok(())
         }
         DaemonCommands::Stop => {
-            // Parada unificada con deadline global (C1): graceful + árbol preciso
+            // Parada unificada con deadline global: graceful + árbol preciso
             // por PID + verificación a nivel de sistema. El pidfile solo se borra
             // tras muerte verificada (probe down + PID muerto/ausente); si el árbol
             // sigue vivo se conserva la pista y se falla con exit 5.
@@ -2303,7 +2308,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             }
         }
         DaemonCommands::Restart => {
-            // Restart determinista sobre el ayudante único (C2/C3): sin doble techo
+            // Restart determinista sobre el ayudante único: sin doble techo
             // `timeout(5s, wait_health_down(5s))` ni kill por PID duplicado; la
             // parada unificada (deadline global) sirve a start/restart/cleanup/uninstall.
             let t_total = std::time::Instant::now();
@@ -2811,7 +2816,7 @@ fn compose_update_summary(
 ///
 /// El binario aporta lo que el motor no puede tener: el **control de procesos** —que
 /// vive en `avi-daemon` y `avi-tts`— y el **borrado diferido** de Windows, que necesita
-/// `avi_process::spawn_deferred_removal`. El motor decide; el binario ejecuta las dos
+/// `avi_process::schedule_clean_removal`. El motor decide; el binario ejecuta las dos
 /// primitivas de plataforma.
 async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliError> {
     match action {
@@ -2840,6 +2845,37 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             let outcome = lifecycle::install::install(&env, &options, &ProductProcesses)
                 .await
                 .map_err(lifecycle_error_to_cli)?;
+            // Restos del aparcado: el reemplazo no pudo borrarlos
+            // por estar en uso —los retiene el `self update` que lanzó este
+            // traspaso— y se programan con el limpiador en vez de descartarse.
+            // Sin traspaso no hay retenedor conocido: se espera al propio
+            // proceso, que termina enseguida, y lo no programado cae al barrido.
+            if !outcome.parked_leftovers.is_empty() {
+                let wait_pid = std::env::var(lifecycle::update::HANDOVER_PARENT_PID_ENV)
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(std::process::id);
+                let scheduled = lifecycle::update::schedule_leftovers(
+                    &outcome.parked_leftovers,
+                    &LifecyclePaths {
+                        logs_dir: lifecycle::logs_dir_in(&env.data_dir),
+                    },
+                    wait_pid,
+                );
+                if scheduled.scheduled.len() == outcome.parked_leftovers.len() {
+                    eprintln!(
+                        "  el aparcado anterior se borrará al terminar el proceso que lo \
+                         retiene ({} ruta(s) programadas)",
+                        scheduled.scheduled.len()
+                    );
+                } else {
+                    eprintln!(
+                        "  no se pudieron programar {} resto(s) del aparcado: los recogerá \
+                         la recuperación de la siguiente operación",
+                        outcome.parked_leftovers.len() - scheduled.scheduled.len()
+                    );
+                }
+            }
             // `setup_failed` es un **éxito parcial** —el programa está instalado y
             // lo único que falta es la provisión—, con código propio. No es un `CliError`:
             // el resumen del paso 12 y el sobre se emiten igual, y lo único que cambia es
@@ -2901,6 +2937,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 .ok()
                 .flatten();
             let roots = lifecycle::cleanup::Roots::from_receipt(receipt.as_ref());
+            let cleaner_logs = lifecycle::logs_dir_in(&roots.data_dir);
             let env = lifecycle::uninstall::Env {
                 roots,
                 receipt: receipt.as_ref(),
@@ -2916,7 +2953,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     dry_run,
                     assume_yes: yes,
                 },
-                &ProgramRemoval,
+                &ProgramRemoval {
+                    logs_dir: cleaner_logs,
+                },
                 &ProductProcesses,
             )
             .await
@@ -3157,7 +3196,12 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             })
             .await
             .map_err(lifecycle_error_to_cli)?;
-            lifecycle::update::cleanup_staging(&staged.staging, &LifecyclePaths);
+            lifecycle::update::cleanup_staging(
+                &staged.staging,
+                &LifecyclePaths {
+                    logs_dir: lifecycle::logs_dir_in(&roots.data_dir),
+                },
+            );
 
             // ── Resultado `anterior → nueva` ─────────────────────────────────
             // Sin reinicio automático del daemon (D6): el resultado indica cómo
@@ -3225,10 +3269,24 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
 /// `checks` y `failed`, y la salida es 1. Devolver `Err` aquí haría que `main` adjuntara
 /// detrás el objeto `error` y el sobre sería ilegible, que es el defecto que el
 /// contrato prohíbe con «cada invocación emite exactamente un objeto JSON».
-fn handle_doctor(json_mode: bool) -> Result<Outcome, CliError> {
+fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     let exe = std::env::current_exe()
         .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
     let env = lifecycle::doctor::Env::resolve();
+    // `--repair`: toma el bloqueo, ejecuta el barrido
+    // existente —solo lo que el barrido recoge— y reevalúa el informe sobre
+    // lo que quedó. Sin el flag, `doctor` solo informa.
+    if repair {
+        let lock = lifecycle::lock::acquire_at(&env.roots.lock_path())
+            .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+        lifecycle::recovery::recover(lifecycle::recovery::Roots {
+            program_dir: &env.roots.program_dir,
+            temp_root: &env.roots.temp_root,
+            in_use: None,
+        })
+        .map_err(lifecycle_error_to_cli)?;
+        drop(lock);
+    }
     let report = lifecycle::doctor::report(&env, &exe, VERSION);
     let failed = report.is_failure();
 
@@ -3247,6 +3305,11 @@ fn handle_doctor(json_mode: bool) -> Result<Outcome, CliError> {
             "Diagnóstico: {} comprobación(es) fallan.",
             report.failed.len()
         );
+        // Sin `--repair`, ante restos se falla con la pista de reparación:
+        // quien puede recogerlos es el mismo `doctor --repair`.
+        if !repair && report.failed.iter().any(|name| name == "pending_artifacts") {
+            eprintln!("  Pista: recoge los restos con `doctor --repair`.");
+        }
     } else {
         println!("Diagnóstico: todo correcto.");
         for check in &report.checks {
@@ -3311,15 +3374,18 @@ impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
     }
 }
 
-/// Borrado del directorio de programa, con el mecanismo de plataforma (paso 8 de
+/// Borrado del directorio de programa con el mecanismo de plataforma (paso 8 de
 /// la desinstalación).
 ///
 /// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso está dentro —que es
 /// el caso normal, porque el comando se invoca desde la propia instalación—, el
-/// borrado directo es imposible y se programa con el proceso auxiliar desacoplado que
-/// `avi-daemon` ya endureció; el motor decide cuál de los dos casos es y cambia el
+/// borrado directo es imposible y se programa con el limpiador propio desacoplado;
+/// el motor decide cuál de los dos casos es y cambia el
 /// desenlace a `removal_scheduled`.
-struct ProgramRemoval;
+struct ProgramRemoval {
+    /// Directorio de los registros del limpiador (`<datos>/logs`).
+    logs_dir: std::path::PathBuf,
+}
 
 impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
     fn exe_lives_inside(&self, program_dir: &std::path::Path) -> bool {
@@ -3362,10 +3428,12 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         // tenga una implementación silenciosa.
         #[cfg(windows)]
         {
-            // El helper no debe heredar los handles estándar del proceso que lanza la
-            // desinstalación, o su `.ps1` retendría el stdio y el lanzador no vería EOF.
+            // El limpiador solo hereda el HANDLE que fija al proceso esperado:
+            // sin esto retendría el stdio y el lanzador no vería EOF.
             disinherit_standard_handles();
-            avi_process::spawn_deferred_removal(program_dir, pid)?;
+            let (log, _) = lifecycle::create_log(&self.logs_dir, "cleaner")
+                .map_err(|e| anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}"))?;
+            avi_process::schedule_clean_removal(program_dir, pid, &log)?;
             Ok(())
         }
         #[cfg(not(windows))]
@@ -3383,7 +3451,10 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
 /// con el borrado diferido de `avi-process`; el motor decide cuál de los dos
 /// casos es. Es la contrapartida de `ProgramRemoval` para rutas arbitrarias del
 /// ciclo (staging, `.old-*`).
-struct LifecyclePaths;
+struct LifecyclePaths {
+    /// Directorio de los registros del limpiador (`<datos>/logs`).
+    logs_dir: std::path::PathBuf,
+}
 
 impl lifecycle::update::PathRemover for LifecyclePaths {
     fn remove_now(&self, path: &std::path::Path) -> anyhow::Result<()> {
@@ -3401,10 +3472,12 @@ impl lifecycle::update::PathRemover for LifecyclePaths {
         // tenga una implementación silenciosa.
         #[cfg(windows)]
         {
-            // El helper no debe heredar los handles estándar del proceso que lanza la
-            // actualización, o su `.ps1` retendría el stdio y el lanzador no vería EOF.
+            // El limpiador solo hereda el HANDLE que fija al proceso esperado:
+            // sin esto retendría el stdio y el lanzador no vería EOF.
             disinherit_standard_handles();
-            avi_process::spawn_deferred_removal(path, pid)?;
+            let (log, _) = lifecycle::create_log(&self.logs_dir, "cleaner")
+                .map_err(|e| anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}"))?;
+            avi_process::schedule_clean_removal(path, pid, &log)?;
             Ok(())
         }
         #[cfg(not(windows))]

@@ -2450,6 +2450,69 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// `doctor --repair` recoge los restos y `pending_artifacts` sale de `failed`.
+/// El código global sigue reflejando las demás filas (sin
+/// modelos en el sandbox), así que lo que se afirma es el barrido y la salida
+/// de pendientes de `failed`: 0 o 1 según el resto del entorno, nunca el 2 de
+/// flag desconocido.
+#[test]
+fn doctor_repair_collects_leftovers() {
+    let (dir, envs) = sandbox_unique_state("doctorrepair");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let install = dir.join("install");
+    let parked = install.join(format!("{}9999", avi_lifecycle::PARKED_DIR_PREFIX));
+    std::fs::create_dir_all(&parked).expect("plantar aparcado");
+    std::fs::write(parked.join("anterior"), "v1").expect("rellenar aparcado");
+    let staging = dir.join(format!("{}9999", avi_lifecycle::STAGING_DIR_PREFIX));
+    std::fs::create_dir_all(&staging).expect("plantar staging");
+    std::fs::write(staging.join("descargado"), "bundle").expect("rellenar staging");
+
+    let (code, _out, _err) = run_text_env(&["doctor", "--repair"], &envs);
+    assert!(
+        code == 0 || code == 1,
+        "`doctor --repair` debe ejecutar el barrido, no rechazar el flag con 2"
+    );
+    assert!(!parked.exists(), "el aparcado debe haberse recogido");
+    assert!(
+        !staging.exists(),
+        "el staging huérfano debe haberse recogido"
+    );
+    let (_, value) = run_json_env(&["--json", "doctor"], &envs);
+    let failed = value["failed"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !failed
+            .iter()
+            .any(|f| f.as_str().is_some_and(|s| s.contains("pending_artifacts"))),
+        "pending_artifacts debe salir de failed tras --repair: {failed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `doctor` sin el flag no modifica nada y orienta a `--repair`:
+/// sale 1 con restos, los deja en disco y la pista aparece en stderr.
+#[test]
+fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
+    let (dir, envs) = sandbox_unique_state("doctorpista");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let install = dir.join("install");
+    let parked = install.join(format!("{}8888", avi_lifecycle::PARKED_DIR_PREFIX));
+    std::fs::create_dir_all(&parked).expect("plantar aparcado");
+    std::fs::write(parked.join("anterior"), "v1").expect("rellenar aparcado");
+    let staging = dir.join(format!("{}8888", avi_lifecycle::STAGING_DIR_PREFIX));
+    std::fs::create_dir_all(&staging).expect("plantar staging");
+    std::fs::write(staging.join("descargado"), "bundle").expect("rellenar staging");
+
+    let (code, _out, err) = run_text_env(&["doctor"], &envs);
+    assert_eq!(code, 1, "con restos debe fallar");
+    assert!(parked.exists(), "sin --repair no se toca el aparcado");
+    assert!(staging.exists(), "sin --repair no se toca el staging");
+    assert!(
+        err.contains("doctor --repair"),
+        "la pista debe orientar a --repair: {err:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn voice_list_respects_envelope_contract() {
     // El contenido exacto depende del `data_dir` del usuario; se verifican los
@@ -5450,6 +5513,29 @@ fn run_text_with_stderr(args: &[&str]) -> (i32, String, String) {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     (code, stdout, stderr)
+}
+
+/// Ejecuta el binario con `args` y envs extra en modo texto, devolviendo
+/// (código, stdout, stderr). Como `run_text_with_stderr` pero hermético: las
+/// envs aíslan programa, datos y temporal del sandbox (lo necesitan para
+/// afirmar la pista de `doctor --repair` sin tocar la instalación real).
+/// `doctor` no arranca daemons, así que basta `.output()` sin tempfile.
+fn run_text_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
+    let mut cmd = bin_command();
+    cmd.args(args).stdin(std::process::Stdio::null());
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let output = cmd.output().expect("el binario debe ejecutarse");
+    let code = output
+        .status
+        .code()
+        .expect("el proceso debe terminar con un código");
+    (
+        code,
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
 }
 
 /// Todo `--help` de la CLI sale en español: contiene `Uso:` y `Opciones:`

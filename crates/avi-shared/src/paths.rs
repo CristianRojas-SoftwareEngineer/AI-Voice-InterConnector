@@ -67,8 +67,9 @@ pub fn logs_dir_in(data_dir: &Path) -> PathBuf {
     data_dir.join("logs")
 }
 
-/// Directorio de logs vigente: los del daemon (`daemon_*`) y los del motor
-/// (`qwen3-tts_*`), con retención por familia (ver `logs`).
+/// Directorio de logs vigente: los del daemon (`daemon_*`), los del motor
+/// (`qwen3-tts_*`) y los del limpiador (`cleaner_*`), con retención por familia
+/// (ver `logs`).
 pub fn logs_dir() -> PathBuf {
     logs_dir_in(&data_dir())
 }
@@ -189,8 +190,8 @@ pub const PARKED_DIR_PREFIX: &str = ".old-";
 pub const MODELS_XET_SUBDIR: &str = "xet";
 
 /// Prefijos de los temporales de ejecución de la aplicación: `$TMPDIR` en
-/// Unix y `%TEMP%` en Windows. En Windows los temporales del borrado diferido
-/// (`avi-deferred-<pid>-<ms>.ps1` y su marca `.ready`) caen en `avi-`, de modo
+/// Unix y `%TEMP%` en Windows. En Windows las copias del limpiador propio
+/// (`avi-cleaner-<pid>-<ms>.exe`) caen en `avi-`, de modo
 /// que ningún otro prefijo puede sustituir a este conjunto.
 pub const TEMP_PREFIXES: &[&str] = &["avi-", "avi_"];
 
