@@ -19,7 +19,7 @@ use avi_shared::pins;
 use std::path::{Path, PathBuf};
 
 /// Versión de ONNX Runtime empaquetada (pareja del crate `ort` en uso). Se lee
-/// de `packaging/pins.json` (fuente única del ciclo 4, espejo del parámetro
+/// de `packaging/pins.json` (fuente única, espejo del parámetro
 /// `ort_version` de la CI): si el pipeline la sube, el
 /// pin sube con ella o el bundle reutilizado no coincidirá con el que espera
 /// el motor. Sin réplica en el código.

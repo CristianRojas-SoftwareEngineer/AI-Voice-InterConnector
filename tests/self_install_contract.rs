@@ -425,8 +425,8 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
 ///
 /// Y el `reason` del **fallo de provisión** viaja anidado en `models_cause`, que es donde un
 /// consumidor lo encuentra sin perderlo: el de la operación y el de la causa son dos cosas
-/// distintas, y confundirlas perdería el `network_error` de un fallo de descarga, que es un
-/// `reason` del ciclo 2.
+/// distintas, y confundirlas perdería el `network_error` de un fallo de descarga, que es el
+/// `reason` del fallo de provisión.
 #[test]
 fn self_install_setup_failure_exits_11_with_partial_success() {
     let sandbox = Sandbox::new("setupfallido");

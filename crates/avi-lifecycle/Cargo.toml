@@ -15,7 +15,7 @@ faults = []
 # exactamente lo que impide que `xtask` dependa de el: los tipos del manifiesto
 # de bundle viven en `avi-shared` (crate puro) y no en este crate.
 avi-store = { path = "../avi-store" }
-# Tipos del bundle y parseo del manifiesto (fuente única del ciclo 4, sin red).
+# Tipos del bundle y parseo del manifiesto como fuente única, sin red.
 avi-shared = { path = "../avi-shared" }
 # Identidad de proceso (hora de creación e imagen) que el pidfile registra.
 avi-process = { path = "../avi-process" }

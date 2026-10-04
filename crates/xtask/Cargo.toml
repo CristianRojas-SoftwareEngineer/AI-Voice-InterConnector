@@ -11,7 +11,7 @@ clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
 regex = "1.10"
 serde_json = "1.0"
-# Tipos del bundle y pines desde la fuente única (ciclo 4, sin red ni TLS).
+# Tipos del bundle y pines desde la fuente única, sin red ni TLS.
 avi-shared = { path = "../avi-shared" }
 # Primitivas de proceso compartidas con el producto, sin red.
 avi-process = { path = "../avi-process" }

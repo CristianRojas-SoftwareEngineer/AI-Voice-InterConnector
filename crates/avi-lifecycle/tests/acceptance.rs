@@ -1,4 +1,4 @@
-//! Criterios de aceptación del plan que le tocan al Ciclo 1, una prueba por criterio.
+//! Criterios de aceptación del plan que cubre este archivo, una prueba por criterio.
 //!
 //! Los once criterios de este ciclo son el **2**, el **6**, el **7**, el **9** —que solo
 //! se puede ejecutar en macOS y por eso vive en `tests/quarantine.rs`—, y del **17** al
@@ -474,7 +474,7 @@ fn criterion_6_no_setup_provisions_nothing() {
 /// lo que la tabla de reasons declara como **éxito parcial** y lo que el cableado convierte
 /// en código de
 /// salida. Y se afirma también la separación de los dos `reason`, que es lo que mantiene
-/// intacto el criterio del ciclo 2: el de la **operación** es `setup_failed` y el del
+/// intacta la separación que `self update` necesita: el de la **operación** es `setup_failed` y el del
 /// **fallo de provisión** viaja anidado, y en este caso es `network_error`.
 ///
 /// El resumen en texto se afirma por las dos mitades —el estado de los modelos y el aviso

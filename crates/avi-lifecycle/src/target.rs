@@ -3,8 +3,8 @@
 //! La tabla de targets soportados vive aquí, en código, como una sola definición: la
 //! consumen
 //! la validación del bundle (`manifest`), el nombre del archivo que descarga
-//! `self update` en el Ciclo 2 y el nombre que produce `cargo xtask package` en
-//! el Ciclo 3. Que las tres cosas coincidan es lo que impide que un bundle se
+//! `self update` y el nombre que produce `cargo xtask package`.
+//! Que las tres cosas coincidan es lo que impide que un bundle se
 //! valide con una lista y se publique con otra.
 //!
 //! **La detección del target del sistema operativo no se replica aquí.**
@@ -15,7 +15,7 @@
 //! puede discrepar. Lo que este módulo rechaza es un binario compilado para un
 //! triple que no está en la tabla.
 //!
-//! La variante de código propia de `unsupported_platform` la declara el Ciclo 2
+//! La variante de código propia de `unsupported_platform` se declara
 //! junto con `binary_incompatible` y `checksum_mismatch`: el `reason` es el de la
 //! tabla de targets y el código es el 18 de la tabla cerrada.
 
@@ -89,8 +89,8 @@ fn unsupported(triple: &str) -> LifecycleError {
 /// `ai-voice-interconnector-<ver>-<arch>-<os>.<ext>`.
 ///
 /// Es la convención de los cuatro jobs de build de `.circleci/config.yml`, que
-/// es donde vive hoy. La consumen `self update` en el Ciclo 2 y
-/// `cargo xtask package` en el Ciclo 3; el bootstrap del Ciclo 3 la busca con
+/// es donde vive hoy. La consumen `self update` y
+/// `cargo xtask package`; el bootstrap la busca con
 /// el mismo criterio.
 pub fn release_asset_name(triple: &str, version: &str) -> Result<String, LifecycleError> {
     let arch = release_arch(triple)?;
@@ -169,7 +169,7 @@ mod tests {
             assert_eq!(
                 ExitCode::from_reason(err.reason).code(),
                 18,
-                "con variante propia del Ciclo 2, el código es el 18"
+                "con variante propia, el código es el 18"
             );
             assert!(
                 err.message.contains(triple) && err.message.contains("docs/BUILD.md"),

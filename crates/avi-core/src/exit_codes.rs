@@ -6,14 +6,13 @@ use thiserror::Error;
 /// al 17 hay **una variante por cada `reason` nuevo que declara el ciclo de vida**,
 /// con el orden y los enteros que fija la tabla cerrada del plan: `setup_failed`,
 /// `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`,
-/// `daemon_stop_failed` y `lifecycle_locked`. Del 18 al 21, los que el Ciclo 2 declara
-/// para `self update` (red e integridad): `unsupported_platform`,
+/// `daemon_stop_failed` y `lifecycle_locked`. Del 18 al 21, los de `self update`
+/// (red e integridad): `unsupported_platform`,
 /// `binary_incompatible`, `network_error` y `checksum_mismatch`. El 22 es `program_dir_kept`
 /// de `self uninstall`.
 ///
-/// **`unsupported_platform` tiene variante propia desde el Ciclo 2** y sale con 18:
-/// el ciclo que declara también `binary_incompatible` es el que elige su entero, y
-/// ese ciclo es este.
+/// **`unsupported_platform` tiene variante propia** y sale con 18:
+/// su entero lo fija la misma tabla cerrada que declara `binary_incompatible`.
 #[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitCode {
     #[error("Éxito")]

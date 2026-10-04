@@ -1,7 +1,7 @@
 //! Los cuatro canales en las operaciones de este ciclo.
 //!
 //! La tabla de canales tiene una columna por operación y una fila por canal. Las celdas de
-//! `self update` son del Ciclo 2 y este archivo las cubre en lo que le es propio —la
+//! `self update` las cubre este archivo en lo que le es propio —la
 //! detección—, mientras que la negativa sin tocar nada es el criterio 15 en
 //! `tests/update.rs`. Son cuatro cosas distintas que conviene no mezclar:
 //!
@@ -315,7 +315,7 @@ fn env_over_registered<'a>(
     }
 }
 
-/// Lo que `self update` ve en cada canal, del Ciclo 2: `homebrew` y `dev` son los dos
+/// Lo que `self update` ve en cada canal: `homebrew` y `dev` son los dos
 /// que el brazo `Update` declara `externally_managed`, y `script` y `unmanaged` los que
 /// siguen adelante. Es la misma detección de la prueba grande, ejercitada con las
 /// entradas que ese brazo distingue; la negativa sin tocar nada es el criterio 15 en
