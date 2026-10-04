@@ -6,7 +6,7 @@
 //! espera y propaga el resultado. Las preferencias del recibo mandan: si la
 //! instalación registrada no tocaba el `PATH` (`modify_path: false`), el
 //! traspaso pasa `--no-modify-path`; `--no-setup` se hereda si se pidió, y
-//! `--force` se propaga cuando el `update` lo recibió (decisión 5 del Ciclo 2).
+//! `--force` se propaga cuando el `update` lo recibió.
 //!
 //! Garantías: un fallo antes del traspaso deja el staging borrado y la
 //! instalación intacta (lo hace quien llama, con `fetch`, que ya borra el
@@ -22,6 +22,14 @@
 use crate::faults::{self, FaultPoint};
 use crate::LifecycleError;
 use std::path::{Path, PathBuf};
+
+/// Variable interna con el PID del `self update` que lanza el traspaso.
+///
+/// El `self install` del traspaso la lee para esperar a ese proceso al
+/// programar los restos del aparcado: es quien retiene los ficheros
+/// aparcados, porque su imagen sigue cargada desde el directorio de programa.
+/// Interna: no figura en ninguna ayuda ni contrato.
+pub const HANDOVER_PARENT_PID_ENV: &str = "AVI_HANDOVER_PARENT_PID";
 
 /// Código que el `self install` del traspaso devuelve cuando la provisión
 /// falló: éxito parcial (`setup_failed`, el 11 de la tabla cerrada).
@@ -42,7 +50,7 @@ pub struct HandoverRequest {
     pub no_setup: bool,
     /// La instalación registrada no tocaba el `PATH`: el traspaso tampoco.
     pub no_modify_path: bool,
-    /// `--force` del `update`: se propaga al `install` interno (decisión 5).
+    /// `--force` del `update`: se propaga al `install` interno.
     pub force: bool,
 }
 
@@ -105,6 +113,9 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
     let args = handover_args(request);
     let status = tokio::process::Command::new(&request.staging_exe)
         .args(&args)
+        // El hijo necesita saber a quién esperar al programar los restos del
+        // aparcado: este proceso, cuya imagen retiene los ficheros aparcados.
+        .env(HANDOVER_PARENT_PID_ENV, std::process::id().to_string())
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -138,7 +149,7 @@ pub fn partial_setup_message() -> String {
 /// dentro.
 ///
 /// El **mecanismo** es de plataforma y lo implementa el binario —en Unix es
-/// `remove_dir_all`, y en Windows un proceso auxiliar desacoplado—, porque el
+/// `remove_dir_all`, y en Windows el limpiador propio desacoplado—, porque el
 /// motor no lo puede implementar sin arrastrar `avi-daemon`. Es la misma
 /// división que `uninstall::ProgramDirRemover`, pero sobre rutas arbitrarias
 /// del ciclo (staging, `.old-*`) en vez de solo el directorio de programa.
@@ -147,7 +158,7 @@ pub trait PathRemover {
     /// que dejar de existir, y si ya no existe el objetivo está cumplido.
     fn remove_now(&self, path: &Path) -> anyhow::Result<()>;
     /// Programa el borrado para cuando termine el proceso en curso. `Ok` significa que
-    /// el auxiliar está en marcha. Es el caso diferido de Windows.
+    /// el limpiador está en marcha. Es el caso diferido de Windows.
     fn schedule(&self, path: &Path, pid: u32) -> anyhow::Result<()>;
 }
 
@@ -189,6 +200,35 @@ pub fn cleanup_staging(staging: &Path, remover: &dyn PathRemover) -> StagingClea
             StagingCleanup::Kept
         }
     }
+}
+
+/// Resultado de programar los restos del aparcado con el limpiador.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScheduledLeftovers {
+    /// Rutas programadas con el limpiador, en el orden recibido.
+    pub scheduled: Vec<PathBuf>,
+}
+
+/// Programa los restos del aparcado que sobrevivieron al commit con el
+/// limpiador propio, en vez de descartarlos.
+///
+/// `wait_pid` es el proceso cuya muerte libera los restos (el viejo en el
+/// traspaso, el propio en el staging). Lo que el limpiador no borre queda para
+/// el barrido de la siguiente operación y su red (`doctor --repair`).
+pub fn schedule_leftovers(
+    leftovers: &[PathBuf],
+    remover: &dyn PathRemover,
+    wait_pid: u32,
+) -> ScheduledLeftovers {
+    // Programar no falla la operación: lo que el limpiador no acepte queda
+    // para el barrido de la siguiente operación, como el staging `Kept`.
+    let mut scheduled = Vec::with_capacity(leftovers.len());
+    for leftover in leftovers {
+        if remover.schedule(leftover, wait_pid).is_ok() {
+            scheduled.push(leftover.clone());
+        }
+    }
+    ScheduledLeftovers { scheduled }
 }
 
 #[cfg(test)]
@@ -331,6 +371,26 @@ mod tests {
                 }
             ),
             StagingCleanup::Kept
+        );
+    }
+
+    /// Los restos del aparcado se programan con el limpiador en vez de
+    /// descartarse: lo programado es exactamente la lista que la
+    /// transacción no pudo borrar.
+    #[test]
+    fn transaction_leftovers_are_scheduled_not_discarded() {
+        let leftovers = vec![std::path::PathBuf::from("/programa/.old-tx/viejo.exe")];
+        let scheduled = super::schedule_leftovers(
+            &leftovers,
+            &FakeRemover {
+                remove_ok: false,
+                schedule: Ok(()),
+            },
+            1234,
+        );
+        assert_eq!(
+            scheduled.scheduled, leftovers,
+            "los restos deben programarse, no descartarse"
         );
     }
 

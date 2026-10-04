@@ -59,7 +59,7 @@ pub struct Options {
 /// Borrado del directorio de programa cuando el ejecutable en uso está dentro.
 ///
 /// El **mecanismo** es de plataforma y vive en el binario —en Unix es
-/// `remove_dir_all`, y en Windows un proceso auxiliar desacoplado—, porque el motor no
+/// `remove_dir_all`, y en Windows el limpiador propio desacoplado—, porque el motor no
 /// lo puede implementar sin arrastrar `avi-daemon`. Lo que sí es del motor es la
 /// **decisión**: cuándo se borra ya y cuándo se programa, y que el resultado difiera
 /// (`uninstalled` contra `removal_scheduled`). Por eso entra por un rasgo, igual
@@ -71,7 +71,7 @@ pub trait ProgramDirRemover {
     /// Borra el directorio ya. En Unix es lo que hace siempre.
     fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()>;
     /// Programa el borrado para cuando termine el proceso en curso. `Ok` significa que
-    /// el auxiliar está en marcha; si no puede garantizarse, `Err`. Es el caso diferido
+    /// el limpiador está en marcha; si no puede garantizarse, `Err`. Es el caso diferido
     /// del paso 8.
     fn schedule(&self, program_dir: &Path, pid: u32) -> anyhow::Result<()>;
 }
@@ -727,8 +727,8 @@ fn remove_program_dir(
         return Ok(Removal::Now);
     }
     if remover.exe_lives_inside(program_dir) {
-        // Windows: el ejecutable en uso impide el borrado directo. Se pide un
-        // proceso auxiliar desacoplado con reintentos acotados; si no puede
+        // Windows: el ejecutable en uso impide el borrado directo. Se pide el
+        // limpiador propio desacoplado con reintentos acotados; si no puede
         // programarse, el error sube y el directorio queda intacto: borrar aquí
         // sería un borrado parcial con el ejecutable en uso.
         remover.schedule(program_dir, std::process::id())?;
