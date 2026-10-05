@@ -1077,12 +1077,15 @@ async fn disconnect_leaves_no_temporary(
     // Cliente corta sin leer el cuerpo: la fase ve `tx.closed()`, cancela el
     // trabajo y retorna sin esperar al hilo, que sigue en el motor.
     drop(response);
+    // El temporal lo retiene el trabajo en curso, así que existe con certeza
+    // justo tras la desconexión: se muestrea antes de dormir para no perder la
+    // ventana si la máquina va cargada y el hilo termina antes del sondeo.
+    let mut alive_while_working = temp.is_file();
     // El motor aborta por la bandera de cancelación con un tiempo de polls de
     // 100 ms, así que el trabajo sigue vivo un buen rato tras la desconexión:
     // durante esa ventana el WAV debe seguir en pie. Con el guardián en el
     // handler el borrado ocurría al salir de este y no había ventana alguna.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    let mut alive_while_working = false;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !tts.closed.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
         alive_while_working |= temp.is_file();

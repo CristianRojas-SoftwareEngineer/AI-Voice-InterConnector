@@ -114,6 +114,9 @@ impl DaemonState {
         #[cfg(feature = "native-stt")]
         let stt_dir = ModelStore::new().model_dir("parakeet-tdt-v3");
         #[cfg(feature = "native-stt")]
+        // El daemon es de vida larga y su parada es por kill del árbol, así que
+        // conserva construcción directa: el titular de vida-de-proceso es para
+        // procesos de vida corta que salen tras transcribir.
         let stt_engine = ParakeetEngine::new(&stt_dir).map_err(|e| {
             anyhow::anyhow!("fallo al cargar el modelo STT {}: {e}", stt_dir.display())
         })?;
