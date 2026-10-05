@@ -21,6 +21,7 @@
 
 use crate::faults::{self, FaultPoint};
 use crate::LifecycleError;
+use avi_process::{spawn_with_allowlist, RestrictedSpawnRequest, StdinSpec};
 use std::path::{Path, PathBuf};
 
 /// Variable interna con el PID del `self update` que lanza el traspaso.
@@ -111,25 +112,102 @@ pub fn interpret_handover_status(code: Option<i32>) -> anyhow::Result<HandoverOu
 pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutcome> {
     faults::trip(FaultPoint::BeforeHandover)?;
     let args = handover_args(request);
-    let status = tokio::process::Command::new(&request.staging_exe)
-        .args(&args)
+    let staging_exe = request.staging_exe.clone();
+    let status = tokio::task::spawn_blocking(move || {
         // El hijo necesita saber a quién esperar al programar los restos del
         // aparcado: este proceso, cuya imagen retiene los ficheros aparcados.
-        .env(HANDOVER_PARENT_PID_ENV, std::process::id().to_string())
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "no se pudo ejecutar el binario nuevo ({}): {e}",
-                request.staging_exe.display()
-            )
-        })?;
+        std::env::set_var(
+            HANDOVER_PARENT_PID_ENV,
+            std::process::id().to_string(),
+        );
+        // stdio heredado de la consola del invocador, declarado en la
+        // allowlist: entrada por `StdinSpec::Inherit` y salida por el fichero
+        // que envuelve el extremo del padre (duplicado propio).
+        let stdio = inherited_stdio_file();
+        let launched: anyhow::Result<avi_process::RestrictedChild> = match stdio {
+            Ok(log_file) => spawn_with_allowlist(RestrictedSpawnRequest {
+                program: staging_exe.clone(),
+                args,
+                stdin: StdinSpec::Inherit,
+                log_file,
+                creation_flags: 0,
+                extra_allowed: Vec::new(),
+            })
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "no se pudo ejecutar el binario nuevo ({}): {e}",
+                    staging_exe.display()
+                )
+            }),
+            Err(e) => Err(anyhow::anyhow!(
+                "no se pudo preparar el stdio heredado del traspaso: {e}"
+            )),
+        };
+        std::env::remove_var(HANDOVER_PARENT_PID_ENV);
+        match launched {
+            Ok(mut child) => child
+                .wait()
+                .map_err(|e| anyhow::anyhow!("la espera del binario nuevo falló: {e}")),
+            Err(e) => Err(e),
+        }
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("el traspaso se interrumpió: {e}"))??;
     let outcome = interpret_handover_status(status.code())?;
     faults::trip(FaultPoint::DuringHandover)?;
     Ok(outcome)
+}
+
+/// Fichero que envuelve el extremo heredado de la consola del invocador:
+/// duplicado propio del stdout del padre, de modo que el `self install`
+/// del traspaso escribe en la misma consola y su handle queda en la
+/// allowlist (stdout y stderr del hijo apuntan a ese fichero).
+///
+/// En Windows el duplicado marca el handle como heredable y se cierra solo
+/// al soltarse el `File`; en Unix es `dup(1)`. Como el contrato del
+/// lanzamiento restringido ata stdout y stderr a un único fichero, ambos
+/// terminan en el destino del stdout del padre (equivalente a `2>&1`).
+fn inherited_stdio_file() -> anyhow::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle};
+        use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let source = std::io::stdout().as_raw_handle() as isize;
+        let mut target: isize = 0;
+        // SAFETY: duplica el handle del stdout del padre; el duplicado es
+        // propio y su vida queda acotada por el `File` que lo envuelve.
+        unsafe {
+            if DuplicateHandle(
+                GetCurrentProcess(),
+                source,
+                GetCurrentProcess(),
+                &mut target,
+                0,
+                1,
+                DUPLICATE_SAME_ACCESS,
+            ) == 0
+            {
+                return Err(anyhow::anyhow!(
+                    "no se pudo duplicar el stdout del traspaso: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        Ok(unsafe { std::fs::File::from_raw_handle(target as _) })
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::FromRawFd;
+        let fd = unsafe { libc::dup(1) };
+        if fd < 0 {
+            return Err(anyhow::anyhow!(
+                "no se pudo duplicar el stdout del traspaso: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+    }
 }
 
 /// Prosa del éxito parcial del traspaso: el programa

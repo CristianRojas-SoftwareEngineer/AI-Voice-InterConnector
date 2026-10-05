@@ -15,6 +15,7 @@
 use crate::{manifest, target, LifecycleError, STAGING_DIR_PREFIX};
 #[cfg(unix)]
 use avi_shared::manifest::relative_path;
+use avi_process::{spawn_with_allowlist, RestrictedSpawnRequest, StdinSpec};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -199,25 +200,50 @@ pub async fn verify_boot(
 ) -> Result<(), LifecycleError> {
     let section = manifest::target_section(triple)?;
     let exe = staging.join(section.executable_path());
-    let output = tokio::process::Command::new(&exe)
-        .arg("--version")
-        .output()
-        .await
-        .map_err(|e| {
-            LifecycleError::binary_incompatible(format!(
-                "el binario descargado ({triple}) no se puede ejecutar ({}): {e}. \
-                 Compila {APP} desde el código fuente (docs/BUILD.md)",
-                exe.display(),
-            ))
-        })?;
-    if !output.status.success() {
+    // El contrato del lanzamiento restringido ata stdout y stderr a un único
+    // fichero: el `--version` se captura en ese fichero temporal (stdout y
+    // stderr juntos), que se lee y se borra al salir.
+    let log_path = staging.join("verify-boot.log");
+    let log_file = std::fs::File::create(&log_path).map_err(|e| {
+        LifecycleError::binary_incompatible(format!(
+            "no se pudo crear el registro de `--version` ({}): {e}",
+            log_path.display()
+        ))
+    })?;
+    let exe_for_spawn = exe.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        spawn_with_allowlist(RestrictedSpawnRequest {
+            program: exe_for_spawn,
+            args: vec!["--version".to_string()],
+            stdin: StdinSpec::Null,
+            log_file,
+            creation_flags: 0,
+            extra_allowed: Vec::new(),
+        })
+        .and_then(|mut child| child.wait())
+    })
+    .await
+    .map_err(|e| {
+        LifecycleError::binary_incompatible(format!(
+            "la comprobación `--version` se interrumpió: {e}"
+        ))
+    })?
+    .map_err(|e| {
+        LifecycleError::binary_incompatible(format!(
+            "el binario descargado ({triple}) no se puede ejecutar ({}): {e}. \
+             Compila {APP} desde el código fuente (docs/BUILD.md)",
+            exe.display(),
+        ))
+    })?;
+    let reported = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&log_path);
+    if !status.success() {
         return Err(LifecycleError::binary_incompatible(format!(
             "el binario descargado ({triple}) terminó con estado {} al comprobar \
              `--version`: compila {APP} desde el código fuente (docs/BUILD.md)",
-            output.status.code().unwrap_or(-1),
+            status.code().unwrap_or(-1),
         )));
     }
-    let reported = String::from_utf8_lossy(&output.stdout);
     if reported.contains(version) {
         return Ok(());
     }

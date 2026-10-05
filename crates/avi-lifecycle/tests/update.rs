@@ -27,7 +27,7 @@ mod support;
 use avi_core::exit_codes::ExitCode;
 use avi_lifecycle::channel::{self, Channel};
 use avi_lifecycle::confirm;
-use avi_lifecycle::daemon_stop::{self, ProcessControl};
+use avi_lifecycle::daemon_stop::{self, ProcessControl, ProcessIdentity};
 #[cfg(feature = "faults")]
 use avi_lifecycle::install;
 use avi_lifecycle::receipt::{self, InstallReceipt, PathIntegration};
@@ -89,6 +89,16 @@ fn previous_operational(sandbox: &Sandbox, version: &str) -> bool {
             .is_file()
 }
 
+/// Identidad del daemon plantado en el pidfile: la misma que observan
+/// `Killable` y `Stubborn`, para que el contrato de T1 (sin identidad
+/// coincidente no se mata) clasifique el PID como suyo.
+fn daemon_identity() -> ProcessIdentity {
+    ProcessIdentity {
+        start: "111".to_string(),
+        image: "daemon.exe".to_string(),
+    }
+}
+
 /// Control de procesos con un daemon vivo que se deja reclamar por PID: la
 /// primera pregunta dice que vive y el reclamo lo apaga. Es el daemon activo del
 /// criterio 13 sin proceso real.
@@ -140,6 +150,12 @@ impl ProcessControl for Killable {
     fn sweep_resident_by_image(&self) -> bool {
         false
     }
+    // El pidfile plantado por la prueba registra esta identidad: sin un
+    // `identity` observado que coincida, el control no clasifica el PID
+    // como suyo (contrato de T1).
+    fn identity(&self, _pid: u32) -> Option<ProcessIdentity> {
+        Some(daemon_identity())
+    }
 }
 
 /// Control con un daemon que no muere: `pid_alive` siempre afirma y el reclamo
@@ -161,6 +177,11 @@ impl ProcessControl for Stubborn {
     }
     fn sweep_resident_by_image(&self) -> bool {
         false
+    }
+    // Misma identidad que la plantada en el pidfile: sin ella, `Stubborn`
+    // no reconocería al daemon como suyo.
+    fn identity(&self, _pid: u32) -> Option<ProcessIdentity> {
+        Some(daemon_identity())
     }
 }
 
@@ -325,7 +346,7 @@ fn criterion_13_daemon_stops_before_replacement() {
         daemon_pid,
         &support::dead_port(),
         0,
-        None,
+        daemon_identity(),
     )
     .expect("criterio 13: se planta el pidfile");
     let control = Killable::new();
@@ -925,7 +946,7 @@ fn criterion_update_daemon_stop_failure_aborts() {
         daemon_pid,
         &support::dead_port(),
         0,
-        None,
+        daemon_identity(),
     )
     .expect("se planta el pidfile");
     // El pidfile es estado previo de la prueba, no algo que la parada cree: la

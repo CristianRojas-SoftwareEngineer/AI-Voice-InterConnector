@@ -4,7 +4,8 @@
 //! mediante `STARTUPINFOEX` con `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`: solo lo
 //! listado se hereda, aunque el resto de la tabla siga marcado como
 //! heredable. En Unix se delega en `Command` (`close-on-exec` ya da la misma
-//! propiedad).
+//! propiedad) y el hijo nace líder de su propia sesión y grupo con `setsid`
+//! en `pre_exec`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,9 @@ pub enum StdinSpec {
     /// Tubería propia cuyo extremo de escritura queda retenido en el hijo
     /// devuelto (vigía por tubería).
     Piped,
+    /// El extremo de entrada del propio padre: el hijo hereda la misma consola
+    /// o tubería del invocador (traspaso de `self update`).
+    Inherit,
 }
 
 /// Devuelve exactamente los handles declarados, sin añadir ni quitar ninguno.
@@ -256,7 +260,12 @@ pub fn spawn_with_allowlist(request: RestrictedSpawnRequest) -> io::Result<Restr
 }
 
 #[cfg(not(windows))]
+/// Lanza al hijo con `setsid` (vía `libc` en `pre_exec`): nace líder de su
+/// propia sesión y grupo, de modo que el kill de grupo (`kill(-pid)`) alcanza
+/// solo a su árbol y nunca al grupo del lanzador. El resto del cableado
+/// (stdio y registro) no cambia.
 fn spawn_with_allowlist_unix(request: RestrictedSpawnRequest) -> io::Result<RestrictedChild> {
+    use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     let mut cmd = std::process::Command::new(&request.program);
     cmd.args(&request.args);
@@ -267,10 +276,25 @@ fn spawn_with_allowlist_unix(request: RestrictedSpawnRequest) -> io::Result<Rest
         StdinSpec::Piped => {
             cmd.stdin(Stdio::piped());
         }
+        StdinSpec::Inherit => {
+            cmd.stdin(Stdio::inherit());
+        }
     }
     let stdout = request.log_file.try_clone()?;
     cmd.stdout(Stdio::from(stdout));
     cmd.stderr(Stdio::from(request.log_file));
+    // SAFETY: `pre_exec` corre en el hijo recién bifurcado, antes del `exec`;
+    // `setsid` es seguro en ese punto (llamada de sistema sin memoria
+    // compartida ni asignaciones). Un fallo de `setsid` aborta el lanzamiento
+    // en vez de degradar en silencio.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let inner = cmd.spawn()?;
     Ok(RestrictedChild {
         pid: inner.id(),
@@ -295,6 +319,7 @@ fn spawn_with_allowlist_windows(request: RestrictedSpawnRequest) -> io::Result<R
             stdin_holder = Some(OwnedHandleWrap::new(write));
             read
         }
+        StdinSpec::Inherit => duplicate_parent_stdin()?,
     };
     // El handle de entrada del padre se cierra tras duplicarlo al hijo
     // (nulo de un solo uso o extremo de lectura de la tubería: el hijo
@@ -349,6 +374,34 @@ fn spawn_with_allowlist_windows(request: RestrictedSpawnRequest) -> io::Result<R
 fn raw_handle_of(file: &std::fs::File) -> isize {
     use std::os::windows::io::AsRawHandle;
     file.as_raw_handle() as isize
+}
+
+/// Duplica el extremo de entrada del proceso padre como handle propio y
+/// heredable, para que el hijo lo reciba por la allowlist como su entrada.
+#[cfg(windows)]
+fn duplicate_parent_stdin() -> io::Result<isize> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let source = std::io::stdin().as_raw_handle() as isize;
+    let mut target = 0isize;
+    // SAFETY: duplica el handle del padre; el objeto es propio y se marca
+    // heredable para listarlo en la allowlist.
+    unsafe {
+        if DuplicateHandle(
+            GetCurrentProcess(),
+            source,
+            GetCurrentProcess(),
+            &mut target,
+            0,
+            1,
+            DUPLICATE_SAME_ACCESS,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(target)
 }
 
 #[cfg(windows)]
