@@ -31,7 +31,7 @@ pub fn schedule_clean_removal(
         STARTUPINFOW,
     };
 
-    use crate::restricted_spawn::{InheritFlagGuard, OwnedHandleWrap};
+    use crate::restricted_spawn::{quote_arg, InheritFlagGuard, OwnedHandleWrap};
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -356,28 +356,4 @@ fn cleaner_worker_main(args: &[String]) -> i32 {
         );
     }
     code
-}
-
-/// Cita un argumento para la línea de comandos de Windows según las reglas de
-/// `CommandLineToArgvW`: entre comillas, con las barras invertidas duplicadas
-/// ante cada comilla y al final.
-fn quote_arg(arg: &str) -> String {
-    let mut out = String::from("\"");
-    let mut backslashes = 0usize;
-    for c in arg.chars() {
-        if c == '\\' {
-            backslashes += 1;
-            continue;
-        }
-        if c == '"' {
-            out.push_str(&"\\".repeat(backslashes * 2 + 1));
-        } else {
-            out.push_str(&"\\".repeat(backslashes));
-        }
-        out.push(c);
-        backslashes = 0;
-    }
-    out.push_str(&"\\".repeat(backslashes * 2));
-    out.push('"');
-    out
 }

@@ -52,6 +52,7 @@ pub struct RestrictedSpawnRequest {
 
 /// Hijo lanzado con herencia restringida.
 pub struct RestrictedChild {
+    #[cfg(windows)]
     pid: u32,
     #[cfg(windows)]
     process: isize,
@@ -296,10 +297,7 @@ fn spawn_with_allowlist_unix(request: RestrictedSpawnRequest) -> io::Result<Rest
         });
     }
     let inner = cmd.spawn()?;
-    Ok(RestrictedChild {
-        pid: inner.id(),
-        inner,
-    })
+    Ok(RestrictedChild { inner })
 }
 
 #[cfg(windows)]
@@ -351,7 +349,6 @@ fn spawn_with_allowlist_windows(request: RestrictedSpawnRequest) -> io::Result<R
         stderr_handle,
         request.creation_flags,
         &allowed,
-        request.extra_allowed.first().copied(),
     );
 
     // Los guards restauran los flags y cierran los handles al salir de
@@ -464,7 +461,6 @@ fn create_stdin_pipe() -> io::Result<(isize, isize)> {
 }
 
 #[cfg(windows)]
-#[allow(clippy::too_many_arguments)]
 fn launch_process_with_list(
     program: &Path,
     args: &[String],
@@ -473,7 +469,6 @@ fn launch_process_with_list(
     stderr_handle: isize,
     creation_flags: u32,
     allowed: &[isize],
-    _extra_first: Option<isize>,
 ) -> Result<(u32, isize), u32> {
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Threading::{
@@ -558,8 +553,15 @@ fn build_command_line(program: &Path, args: &[String]) -> String {
     parts.join(" ")
 }
 
+/// Cita un argumento para la línea de comandos de Windows según las reglas de
+/// `CommandLineToArgvW`: entre comillas, con las barras invertidas duplicadas
+/// ante cada comilla y al final.
+///
+/// Definición única del crate: la comparten `build_command_line` (lanzamiento
+/// con allowlist) y el limpiador de borrado diferido, que componía su línea de
+/// comandos con una copia idéntica de estas reglas.
 #[cfg(windows)]
-fn quote_arg(arg: &str) -> String {
+pub(crate) fn quote_arg(arg: &str) -> String {
     let mut out = String::from("\"");
     let mut backslashes = 0usize;
     for c in arg.chars() {
@@ -578,4 +580,28 @@ fn quote_arg(arg: &str) -> String {
     out.push_str(&"\\".repeat(backslashes * 2));
     out.push('"');
     out
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::quote_arg;
+
+    /// Todo argumento se cita siempre entre comillas, incluso sin espacios:
+    /// una ruta sin cita se reinterpretaría al partir la línea de comandos.
+    #[test]
+    fn quote_arg_always_quotes() {
+        assert_eq!(quote_arg("avi.exe"), "\"avi.exe\"");
+        assert_eq!(quote_arg("con espacio"), "\"con espacio\"");
+        assert_eq!(quote_arg(""), "\"\"");
+    }
+
+    /// Las comillas internas se escapan con una barra invertida y las barras
+    /// invertidas finales se duplican, como exige `CommandLineToArgvW`: sin ese
+    /// duplicado, una ruta terminada en `\` cerraría la cita antes de tiempo.
+    #[test]
+    fn quote_arg_escapes_quotes_and_trailing_backslashes() {
+        assert_eq!(quote_arg("con\"comilla"), "\"con\\\"comilla\"");
+        assert_eq!(quote_arg("C:\\ruta\\"), "\"C:\\ruta\\\\\"");
+        assert_eq!(quote_arg("C:\\ruta\\\""), "\"C:\\ruta\\\\\\\"\"");
+    }
 }

@@ -1210,72 +1210,27 @@ pub mod resident {
     /// `pub` para el camino de reclamo/parada del CLI: muerte por PID
     /// registrado + verificación de que ese PID quedó muerto; sin PID, el
     /// último recurso es `sweep_resident_by_image` + ausencia por imagen.
+    ///
+    /// Delega en `avi_process::pid_alive_exact`: `OpenProcess` +
+    /// `GetExitCodeProcess` en Windows y `kill(pid, 0)` en Unix. Así el
+    /// residente se verifica con la misma primitiva exacta que el daemon
+    /// (con la guarda de `pid_t`) y sin lanzar `tasklist`, cuya comparación por
+    /// texto hacía que el PID 12 matcheara dentro del 112.
     pub fn resident_pid_alive(pid: u32) -> bool {
-        if pid == 0 {
-            return false;
-        }
-        #[cfg(windows)]
-        {
-            let output = Command::new("tasklist")
-                .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output();
-            match output {
-                Ok(o) if o.status.success() => {
-                    String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())
-                }
-                _ => false,
-            }
-        }
-        #[cfg(unix)]
-        {
-            Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
+        avi_process::pid_alive_exact(pid)
     }
 
-    /// Termina el residente por su PID (sin Mutex). Windows: `taskkill /F /T
-    /// /PID` cierra el árbol por parentesco real. Unix: `kill -9` al PID
-    /// directo — el residente se spawnea a propósito SIN grupo/sesión propia
-    /// (hereda el grupo del daemon para que su cierre lo arrastre), así que un
-    /// `kill` al grupo `-<pid>` apuntaría a un pgid nunca establecido; el
-    /// árbol/grupo lo cierra el daemon, aquí solo se termina el PID puntual del
-    /// camino de reclamo/parada del CLI. No verifica: el llamante
+    /// Termina el residente por su PID (sin Mutex). Delega en
+    /// `avi_process::kill_tree_by_pid_exact`: `taskkill /F /T /PID` en Windows
+    /// (árbol por parentesco real) y `SIGKILL` al grupo y al PID en Unix, sin
+    /// lanzar el ejecutable `kill` ni quedar fuera de la guarda de `pid_t`.
+    ///
+    /// En Unix el kill al grupo no alcanza nunca al daemon: el residente nace
+    /// líder de su propia sesión por el `setsid` de `spawn_with_allowlist`, así
+    /// que su grupo solo contiene su propio árbol. No verifica: el llamante
     /// combina con `resident_pid_alive` o recolecta el estado vía `Child`.
     pub fn kill_tree_resident_by_pid(pid: u32) -> bool {
-        if pid == 0 {
-            return false;
-        }
-        #[cfg(windows)]
-        {
-            Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid.to_string()])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-        #[cfg(unix)]
-        {
-            Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
+        avi_process::kill_tree_by_pid_exact(pid)
     }
 
     /// Barrido por imagen del residente: termina todo proceso cuya imagen sea
