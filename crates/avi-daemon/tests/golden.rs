@@ -7,13 +7,21 @@
 //! Detecta regresiones de contrato (formato JSON, `schema_version`, textos de
 //! estado/error) entre el runtime nativo y lo que el resto del sistema espera.
 //!
-//! El harness construye `DaemonState` con el motor STT real (Parakeet TDT v3 int8,
-//! export de `istupakov`), que solo existe con `native-stt`. Sin el feature, el
-//! harness cae a un `ParakeetEngine` construido con un directorio de modelo
-//! vacío; `oneshot` no ejerce la ruta `/transcribe` en estos tests, así que el
-//! motor se queda sin inicializar y el resto de la suite corre sin ONNX
-//! Runtime. Los tests que sí requieren STT (golden transcribe) son gated
-//! individualmente con `#[cfg(feature = "native-stt")]` en sus cuerpos.
+//! REGLA DE CLASES: el contrato corre en toda combinación de features; solo las
+//! pruebas que ejercitan el motor llevan `#[ignore = "requiere …"]` y, cuando se
+//! ejecutan, fallan con el mensaje de aprovisionamiento si el recurso falta.
+//! Ninguna prueba se omite por activar un feature: no existe
+//! `#[cfg_attr(feature = …, ignore = …)]` en este fichero, porque activando
+//! `full` la clase de contrato no se invierte.
+//!
+//! El estado lo construye `DaemonState::with_stores`, que con `native-stt`
+//! carga el motor STT real (Parakeet TDT v3 int8, export de `istupakov`) y sin
+//! ese feature no tiene motor alguno (`oneshot` no ejerce `/transcribe` en las
+//! pruebas de contrato, de modo que la suite sin features corre sin ONNX
+//! Runtime). Por decisión D17 un daemon sin STT no es un estado del producto,
+//! así que el estado de prueba no se inventa: con `native-stt` activo,
+//! `test_state` exige Parakeet y su ausencia hace fallar la prueba de contrato
+//! con el mensaje de aprovisionamiento, en vez de ocultarla tras un `ignore`.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -191,7 +199,10 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 // (con reaper ruidoso y `verificar_cero_huerfanos`).
 
 /// Exige `nemo128.onnx` del snapshot de Parakeet: la raíz de modelos vive fuera
-/// del repo y la provisiona `ai-voice-interconnector setup`.
+/// del repo y la provisiona `ai-voice-interconnector setup`. El mensaje lleva el
+/// marcador `requiere` porque es la dependencia de recurso que el estado del
+/// daemon carga con `native-stt`: sin el modelo, la prueba que lo exige falla
+/// aquí en vez de omitirse.
 #[cfg(feature = "native-stt")]
 fn require_parakeet() {
     let model_dir = avi_store::ModelStore::new()
@@ -200,7 +211,7 @@ fn require_parakeet() {
     let preprocessor = model_dir.join("nemo128.onnx");
     std::fs::metadata(&preprocessor).unwrap_or_else(|e| {
         panic!(
-            "falta {} ({e}): provisiona Parakeet con `ai-voice-interconnector setup`",
+            "requiere Parakeet: falta {} ({e}): provisiona Parakeet con `ai-voice-interconnector setup`",
             preprocessor.display()
         )
     });
@@ -245,7 +256,6 @@ fn require_clone_binary() {
 }
 
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn health_matches_fixture() {
     // Los almacenes del estado deben anclarse bajo un directorio temporal propio
     // y no en el directorio de datos del usuario; se afirma antes de escribir.
@@ -286,7 +296,6 @@ async fn transcribe_matches_fixture() {
 }
 
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_empty_text_is_contract_error() {
     let (status, bytes) = send(post_json("/synthesize", serde_json::json!({ "text": "" }))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -296,7 +305,6 @@ async fn synthesize_empty_text_is_contract_error() {
 
 /// Texto de 501 caracteres: el daemon lo rechaza con 400 y `text_too_long`.
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_text_too_long_is_contract_error() {
     let (status, bytes) = send(post_json(
         "/synthesize",
@@ -311,7 +319,6 @@ async fn synthesize_text_too_long_is_contract_error() {
 /// Los campos de idioma y temperatura son opcionales: un payload que solo trae
 /// `text` y `voice` se valida igual (mismo error de contrato ante texto vacío).
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_old_payload_without_new_fields() {
     let (status, bytes) = send(post_json(
         "/synthesize",
@@ -326,7 +333,6 @@ async fn synthesize_old_payload_without_new_fields() {
 /// Temperatura fuera de rango (`0`): el stream NDJSON termina en error con
 /// motivo `usage_error`, sin llegar a la síntesis.
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_invalid_temperature_is_usage_error() {
     let (status, bytes) = send(post_json(
         "/synthesize",
@@ -349,7 +355,6 @@ async fn synthesize_invalid_temperature_is_usage_error() {
 }
 
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn synthesize_emits_contract_ndjson_stream() {
     let (status, bytes) = send(post_json(
         "/synthesize",
@@ -504,7 +509,6 @@ fn silent_wav(secs: u32) -> Vec<u8> {
 /// Un cuerpo de más de 2 MiB con nombre de voz inválido se valida y responde 400
 /// `invalid_voice_name`: el límite de cuerpo de la ruta no puede cortar antes con 413.
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn voices_clone_oversized_body_reports_invalid_name_not_413() {
     let oversized = vec![0u8; 3 * 1024 * 1024];
     let (status, bytes) = send(post_json(
@@ -530,7 +534,6 @@ async fn voices_clone_oversized_body_reports_invalid_name_not_413() {
 /// modelo Base para que, mientras falte el tope, la prueba no pueda lanzar el
 /// clonado real aunque el modelo esté provisionado en el equipo.
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn voices_clone_reference_over_limit_is_audio_too_long() {
     #[cfg(feature = "native-stt")]
     require_parakeet();
@@ -804,7 +807,6 @@ async fn supervised_startup_failure_is_terminal() {
 /// La guarda de par corre antes de tocar el modelo: sin CT2 ni TCP.
 #[cfg(feature = "native-translation")]
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn translate_unsupported_pair_returns_400() {
     let (status, bytes) = send(post_json(
         "/translate",
@@ -823,7 +825,6 @@ async fn translate_unsupported_pair_returns_400() {
 /// passthrough con texto intacto aunque el CLI ya rechace ese token.
 #[cfg(feature = "native-translation")]
 #[tokio::test]
-#[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
 async fn translate_es_latam_passthrough_ipc_returns_intact_text() {
     let (status, bytes) = send(post_json(
         "/translate",

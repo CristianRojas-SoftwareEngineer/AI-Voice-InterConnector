@@ -2328,6 +2328,19 @@ pub async fn run_supervised(
     }
 }
 
+/// Pruebas unitarias del daemon.
+///
+/// REGLA DE CLASES: el contrato corre en toda combinación de features; solo una
+/// prueba que ejercite el motor lleva `#[ignore = "requiere …"]` y, al
+/// ejecutarse, falla con el mensaje de aprovisionamiento si el recurso falta.
+/// Ninguna se omite por activar un feature: no hay
+/// `#[cfg_attr(feature = …, ignore = …)]` en este módulo, para que la clase de
+/// contrato no se invierta con `full`.
+///
+/// Estas pruebas construyen el estado con `test_state`, que con `native-stt`
+/// carga Parakeet (decisión D17: un daemon sin STT no es un estado del
+/// producto), así que `test_state` lo exige y su ausencia hace fallar la
+/// prueba de contrato con el mensaje de aprovisionamiento en vez de ocultarla.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2378,7 +2391,10 @@ mod tests {
 
     /// Exige `nemo128.onnx` del snapshot de Parakeet, que el estado del daemon
     /// carga con `native-stt`: la raíz de modelos vive fuera del repo y la
-    /// provisiona `ai-voice-interconnector setup`.
+    /// provisiona `ai-voice-interconnector setup`. El mensaje lleva el marcador
+    /// `requiere` porque nombra la dependencia de recurso que el estado carga con
+    /// ese feature: sin el modelo, la prueba que lo exige falla aquí en vez de
+    /// omitirse.
     #[cfg(feature = "native-stt")]
     fn require_parakeet() {
         let preprocessor = avi_store::ModelStore::new()
@@ -2387,7 +2403,7 @@ mod tests {
             .join("nemo128.onnx");
         assert!(
             preprocessor.is_file(),
-            "falta {}: provisiona Parakeet con `ai-voice-interconnector setup`",
+            "requiere Parakeet: falta {}: provisiona Parakeet con `ai-voice-interconnector setup`",
             preprocessor.display()
         );
     }
@@ -2413,7 +2429,6 @@ mod tests {
 
     /// Router expone `/health` y endpoints `/translate`, `/voices/clone`, `/dub` (7 rutas públicas)
     #[test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     fn build_router_exposes_new_endpoints() {
         let state = Arc::new(test_state());
         // El router debe construirse sin panic con el estado del daemon; la
@@ -2544,7 +2559,6 @@ mod tests {
     /// Mientras otra síntesis retiene el lock, la fase emite latidos `queued` y,
     /// al soltarse, ejecuta el trabajo y entrega su resultado.
     #[tokio::test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_emits_queued_heartbeats_while_lock_held() {
         let state = Arc::new(test_state());
         state.set_warm();
@@ -2577,7 +2591,6 @@ mod tests {
 
     /// Si el daemon está calentando, la espera del lock late con `warming`.
     #[tokio::test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_emits_warming_stage_during_warmup() {
         let state = Arc::new(test_state());
         state.set_warming();
@@ -2613,7 +2626,6 @@ mod tests {
     /// prueba lo suelta cuando ha visto tres latidos. Así los tres latidos son
     /// un hecho observado y no una consecuencia de acertar con una duración.
     #[tokio::test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_slow_job_keeps_heartbeats_and_succeeds() {
         let state = Arc::new(test_state());
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -2679,7 +2691,6 @@ mod tests {
     /// cancelación del trabajo, tanto por el deadline como por el timeout
     /// tipado que devuelve el propio trabajo.
     #[tokio::test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_timeout_cancels_job_and_emits_reason() {
         let state = test_state();
 
@@ -2743,7 +2754,6 @@ mod tests {
     /// Una síntesis correcta devuelve el estado a `warm` aunque el último warmup
     /// hubiera fallado.
     #[tokio::test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_success_marks_warm() {
         let state = test_state();
         state.set_warm_failed("fallo previo".to_string());
@@ -2767,7 +2777,6 @@ mod tests {
     /// trabajo, tanto en la cola como durante la síntesis, y en este último
     /// caso activa la cancelación del trabajo.
     #[tokio::test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_disconnect_cancels_job() {
         let state = Arc::new(test_state());
 
@@ -2816,7 +2825,6 @@ mod tests {
 
     /// Dub sin `audio_b64` responde 400 con el `reason` de contrato `usage_error`
     #[tokio::test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn dub_handler_audio_missing() {
         let (status, body) = post_json("/dub", json!({"voice": "default"})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2824,10 +2832,12 @@ mod tests {
         assert_eq!(body["reason"], "usage_error");
     }
 
-    /// Dub handler rechaza con 400 `audio_too_long` un audio que supera el tope
+    /// Dub handler rechaza con 400 `audio_too_long` un audio que supera el tope.
+    /// Es contrato, pero el `cfg` no es de clase: la validación vive en el bloque
+    /// `#[cfg(feature = "native-stt")]` de `dub_handler` (sin el feature la ruta
+    /// responde `stt_unsupported`), así que la aserción solo existe con el feature.
     #[cfg(feature = "native-stt")]
     #[tokio::test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn dub_handler_audio_too_long() {
         use axum::body::Body;
         use base64::Engine;
@@ -2920,7 +2930,6 @@ mod tests {
     /// `with_stores` ancla los almacenes bajo el directorio recibido: la raíz se
     /// afirma antes de inicializar para no escribir nunca en la instalación real.
     #[test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     fn with_stores_anchors_stores_under_given_dir() {
         #[cfg(feature = "native-stt")]
         require_parakeet();
@@ -2972,7 +2981,6 @@ mod tests {
     /// tiene 7 caracteres y 8 bytes. La temperatura fuera de rango cierra el stream
     /// sin llegar al motor.
     #[tokio::test]
-    #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesize_start_event_counts_chars() {
         let (_, bytes) = post_json(
             "/synthesize",
