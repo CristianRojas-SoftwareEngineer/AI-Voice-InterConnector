@@ -256,12 +256,26 @@
       ],
       "tasks": [
         { "id": "C10.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "preparación en la rama fix/deuda-pre-release, creada desde main (c6f221c) con el árbol limpio; ficha C10 abierta a partir de la auditoría adversarial posterior a C9, sin descomponer en subciclos; G-Plan aprobado" },
-        { "id": "C10.T1", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/src/daemon_stop.rs", "src/main.rs", "crates/avi-tts/src/lib.rs"], "notes": "identidad obligatoria en pidfile; classify_registered sin rama None->Ours; reintento 5x200ms con aviso; tests/update.rs pendiente de adaptacion (E0308), se repara en T6" },
+        { "id": "C10.T1", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/src/daemon_stop.rs", "src/main.rs", "crates/avi-tts/src/lib.rs"], "notes": "identidad obligatoria en pidfile; classify_registered sin rama None->Ours; reintento 5x200ms con aviso; el target tests/update.rs roto por la nueva firma se adapto en T6" },
         { "id": "C10.T2", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/lib.rs", "crates/avi-process/Cargo.toml", "crates/avi-daemon/src/spawn.rs"], "notes": "pid_alive_exact/kill_tree_by_pid_exact en avi-process; spawn delega; tasklist/kill externos retirados; libc en rama Unix" },
-        { "id": "C10.T5", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/restricted_spawn.rs", "crates/avi-process/src/deferred.rs"], "notes": "RAII con OwnedHandleWrap/InheritFlagGuard/AttributeListGuard; sentinel stdin_is_null_holder retirada; cargo test -p avi-process verde" }
+        { "id": "C10.T5", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/restricted_spawn.rs", "crates/avi-process/src/deferred.rs"], "notes": "RAII con OwnedHandleWrap/InheritFlagGuard/AttributeListGuard; sentinel stdin_is_null_holder retirada; cargo test -p avi-process verde" },
+        { "id": "C10.T3", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/restricted_spawn.rs", "crates/avi-process/src/lib.rs", "crates/avi-daemon/src/spawn.rs", "crates/avi-process/tests/restricted_spawn.rs"], "notes": "pre_exec(setsid) restaurado; process_identity Unix con una sola ps y LC_ALL=C; pruebas getpgid == child bajo cfg(unix); verificado con check cruzado aarch64-apple-darwin (ejecucion Unix pendiente del pase D-11)" },
+        { "id": "C10.T4", "status": "done", "attempts": 1, "files": ["crates/avi-process/tests/restricted_spawn.rs"], "notes": "handle_outside_the_list_does_not_reach_the_child (doble powershell que registra eof/open/closed); TEMP_COUNTER global" },
+        { "id": "C10.T6", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/restricted_spawn.rs", "crates/avi-lifecycle/src/update.rs", "crates/avi-lifecycle/src/update_fetch.rs", "crates/avi-lifecycle/tests/update.rs"], "notes": "StdinSpec::Inherit; handover y verify_boot por allowlist; reparacion del target tests/update.rs roto por T1 (E0308)" },
+        { "id": "C10.T7", "status": "done", "attempts": 1, "files": ["crates/avi-shared/src/logs.rs", "crates/avi-shared/Cargo.toml", "src/main.rs", "Cargo.lock"], "notes": "prune omite PIDs vivos con sondeo inyectado; el log del daemon se renombra con el PID del hijo antes del ready" },
+        { "id": "C10.T8", "status": "done", "attempts": 1, "files": ["crates/avi-audio/src/lib.rs", "crates/avi-tts/src/lib.rs", "crates/avi-store/src/lib.rs"], "notes": "helper tomar_lock en avi-audio; cero lock().unwrap() en codigo no-test de los tres crates" },
+        { "id": "C10.T9", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/src/update_fetch.rs", "crates/avi-process/src/deferred.rs", "crates/avi-daemon/src/lib.rs"], "notes": "trazas en apply_permissions, restrict_staging, cleaner y emit_ndjson; ampliada por el orquestador al remove_dir_all del staging y al remove_file de verify-boot.log" },
+        { "id": "C10.T10", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
+        { "id": "C10.T11", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
+        { "id": "C10.T12", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
+        { "id": "C10.T13", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
+        { "id": "C10.T14", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
+        { "id": "C10.T15", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
+        { "id": "C10.T16", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
+        { "id": "C10.T17", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" }
       ],
       "foreign_changes": [],
-      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f"]
+      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f", "03987d0", "656c24f", "a56f215", "0bd3aba", "fdc6d95", "03e8aeb"]
     }
   },
   "release": { "status": "pending", "gates": [], "version": null }
