@@ -265,9 +265,9 @@
         { "id": "C10.T7", "status": "done", "attempts": 1, "files": ["crates/avi-shared/src/logs.rs", "crates/avi-shared/Cargo.toml", "src/main.rs", "Cargo.lock"], "notes": "prune omite PIDs vivos con sondeo inyectado; el log del daemon se renombra con el PID del hijo antes del ready" },
         { "id": "C10.T8", "status": "done", "attempts": 1, "files": ["crates/avi-audio/src/lib.rs", "crates/avi-tts/src/lib.rs", "crates/avi-store/src/lib.rs"], "notes": "helper tomar_lock en avi-audio; cero lock().unwrap() en codigo no-test de los tres crates" },
         { "id": "C10.T9", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/src/update_fetch.rs", "crates/avi-process/src/deferred.rs", "crates/avi-daemon/src/lib.rs"], "notes": "trazas en apply_permissions, restrict_staging, cleaner y emit_ndjson; ampliada por el orquestador al remove_dir_all del staging y al remove_file de verify-boot.log" },
-        { "id": "C10.T10", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
-        { "id": "C10.T11", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
-        { "id": "C10.T12", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
+        { "id": "C10.T10", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/src/daemon_stop.rs", "src/main.rs"], "notes": "fuente unica de STOP_DEADLINE_GLOBAL, DEFAULT_ADDR y DAEMON_PORT_ENV; un resolver por semantica; pruebas que releen el codigo para fallar si el lanzador redeclara" },
+        { "id": "C10.T11", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/restricted_spawn.rs", "crates/avi-process/src/deferred.rs", "crates/avi-tts/src/lib.rs"], "notes": "quote_arg unica; resident de avi-tts delegando en avi-process; _extra_first retirado y pid de RestrictedChild acotado a Windows; grep a cero" },
+        { "id": "C10.T12", "status": "done", "attempts": 1, "files": ["tests/cli_golden.rs", "crates/avi-lifecycle/tests/install.rs", "crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs"], "notes": "sondeos con deadline en puerto, mtime, latidos y temporal; reparados cuatro sembradores de pidfile sin identidad (fallos heredados de T1); cli_golden de 89/8 a 97/0 en tres pasadas" },
         { "id": "C10.T13", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
         { "id": "C10.T14", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
         { "id": "C10.T15", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
@@ -275,7 +275,7 @@
         { "id": "C10.T17", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" }
       ],
       "foreign_changes": [],
-      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f", "03987d0", "656c24f", "a56f215", "0bd3aba", "fdc6d95", "03e8aeb"]
+      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f", "03987d0", "656c24f", "a56f215", "0bd3aba", "fdc6d95", "03e8aeb", "cb4f773", "48769d9", "b14592a", "938a537"]
     }
   },
   "release": { "status": "pending", "gates": [], "version": null }
