@@ -24,14 +24,14 @@ pub fn schedule_clean_removal(
     wait_pid: u32,
     log_path: &Path,
 ) -> anyhow::Result<PathBuf> {
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, SetHandleInformation, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0,
-    };
+    use windows_sys::Win32::Foundation::{GetLastError, SetHandleInformation, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0};
     use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB,
         STARTUPINFOW,
     };
+
+    use crate::restricted_spawn::{InheritFlagGuard, OwnedHandleWrap};
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -49,15 +49,26 @@ pub fn schedule_clean_removal(
     unsafe {
         // El HANDLE se abre al programar: fija la identidad del proceso
         // esperado aunque su PID se reutilice después. Un PID ya muerto (o el
-        // 0) no se espera: se pasa el nulo como centinela.
+        // 0) no se espera: se pasa el nulo como centinela. El guard lo cierra
+        // en todos los caminos, incluidos los de error.
         let wait_handle = if wait_pid == 0 {
             0
         } else {
             OpenProcess(SYNCHRONIZE, 0, wait_pid)
         };
-        if wait_handle != 0 {
+        let _wait_guard = if wait_handle != 0 {
+            Some(OwnedHandleWrap::new(wait_handle))
+        } else {
+            None
+        };
+        // El guard restaura la marca de heredabilidad al salir de este
+        // ámbito, también si el lanzamiento del limpiador falla.
+        let _inherit_guard = if wait_handle != 0 {
             SetHandleInformation(wait_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-        }
+            Some(InheritFlagGuard::new(wait_handle))
+        } else {
+            None
+        };
         let cmdline = format!(
             "{} {CLEANER_WORKER_ARG} {} {} {} {}",
             quote_arg(&copy.to_string_lossy()),
@@ -91,17 +102,18 @@ pub fn schedule_clean_removal(
             &allowed,
         )
         .or_else(|| launch_cleaner(cmdline.as_mut_ptr(), &startup, base_flags, &allowed));
-        if wait_handle != 0 {
-            CloseHandle(wait_handle);
-        }
         let Some((process, thread)) = child.take() else {
             let code = GetLastError();
             let _ = std::fs::remove_file(&copy);
             anyhow::bail!("no se pudo lanzar el limpiador (código {code})");
         };
-        if thread != 0 {
-            CloseHandle(thread);
-        }
+        // Los guards cierran el hilo y el proceso en todos los caminos.
+        let _thread_guard = if thread != 0 {
+            Some(OwnedHandleWrap::new(thread))
+        } else {
+            None
+        };
+        let _process_guard = OwnedHandleWrap::new(process);
         // Confirmación de arranque: si el limpiador murió al instante con
         // fallo, programar no sirvió. Si terminó bien (ruta ya ausente) o
         // sigue en marcha, la programación vale.
@@ -109,13 +121,10 @@ pub fn schedule_clean_removal(
         if wait == WAIT_OBJECT_0 {
             let mut code = 1u32;
             GetExitCodeProcess(process, &mut code);
-            CloseHandle(process);
             if code != 0 {
                 let _ = std::fs::remove_file(&copy);
                 anyhow::bail!("el limpiador terminó con fallo al arrancar");
             }
-        } else {
-            CloseHandle(process);
         }
     }
     Ok(copy)
@@ -135,10 +144,12 @@ unsafe fn launch_cleaner(
     allowed: &[isize],
 ) -> Option<(isize, isize)> {
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+        CreateProcessW, InitializeProcThreadAttributeList,
         UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTUPINFOEXW,
     };
+
+    use crate::restricted_spawn::AttributeListGuard;
 
     let mut size = 0usize;
     InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
@@ -147,6 +158,8 @@ unsafe fn launch_cleaner(
     if InitializeProcThreadAttributeList(list, 1, 0, &mut size) == 0 {
         return None;
     }
+    // Mover el `Vec` no realoca: el puntero sigue válido y queda guardado.
+    let list_guard = AttributeListGuard::new(buffer, list);
     // Lista vacía: el hijo no hereda ningún handle del padre. Una lista de
     // atributos no admite tamaño cero, así que se lista el handle nulo, que
     // no designa ningún objeto y resulta inocuo para el hijo.
@@ -157,7 +170,7 @@ unsafe fn launch_cleaner(
         (allowed.as_ptr(), allowed.len())
     };
     let updated = UpdateProcThreadAttribute(
-        list,
+        list_guard.as_ptr(),
         0,
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
         list_ptr as *mut std::ffi::c_void,
@@ -166,7 +179,6 @@ unsafe fn launch_cleaner(
         std::ptr::null_mut(),
     );
     if updated == 0 {
-        DeleteProcThreadAttributeList(list);
         return None;
     }
 
@@ -174,7 +186,7 @@ unsafe fn launch_cleaner(
     extended.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     extended.StartupInfo.dwFlags = startup.dwFlags;
     extended.StartupInfo.wShowWindow = startup.wShowWindow;
-    extended.lpAttributeList = list;
+    extended.lpAttributeList = list_guard.as_ptr();
 
     let mut info: PROCESS_INFORMATION = std::mem::zeroed();
     let launched = CreateProcessW(
@@ -189,7 +201,6 @@ unsafe fn launch_cleaner(
         &extended.StartupInfo,
         &mut info,
     );
-    DeleteProcThreadAttributeList(list);
     if launched == 0 {
         return None;
     }
@@ -243,8 +254,9 @@ unsafe fn dispatch_cleaner_worker() {
 /// registro. Nunca entra en pánico: cualquier fallo termina en el registro y
 /// en el código de salida, porque nadie lee su terminal.
 fn cleaner_worker_main(args: &[String]) -> i32 {
-    use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+
+    use crate::restricted_spawn::OwnedHandleWrap;
 
     let path = args.first().map(String::as_str).unwrap_or_default();
     let wait_pid: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -261,11 +273,13 @@ fn cleaner_worker_main(args: &[String]) -> i32 {
     // El proceso esperado se aguarda por el sistema, sin sondeo ni PID.
     let mut waited = false;
     if wait_handle != 0 {
+        // El guard cierra el handle heredado al salir de este ámbito,
+        // también si la espera falla.
+        let _wait_guard = OwnedHandleWrap::new(wait_handle);
         // SAFETY: el handle lo abrió quien programó y lo heredó este proceso
-        // con derecho de espera; se cierra tras aguardar.
+        // con derecho de espera; el guard lo cierra tras aguardar.
         unsafe {
             WaitForSingleObject(wait_handle, INFINITE);
-            CloseHandle(wait_handle);
         }
         waited = true;
     }

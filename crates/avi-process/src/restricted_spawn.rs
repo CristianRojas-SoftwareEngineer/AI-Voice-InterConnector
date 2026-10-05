@@ -61,8 +61,15 @@ pub struct RestrictedChild {
 }
 
 #[cfg(windows)]
-struct OwnedHandleWrap {
-    handle: isize,
+pub(crate) struct OwnedHandleWrap {
+    pub(crate) handle: isize,
+}
+
+#[cfg(windows)]
+impl OwnedHandleWrap {
+    pub(crate) fn new(handle: isize) -> Self {
+        Self { handle }
+    }
 }
 
 #[cfg(windows)]
@@ -71,6 +78,64 @@ impl Drop for OwnedHandleWrap {
         // SAFETY: el handle es propio y válido hasta aquí.
         unsafe {
             windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+/// Restaura la marca de heredabilidad de un handle al salir de ámbito:
+/// desmarca `HANDLE_FLAG_INHERIT`, que el lanzamiento con allowlist activó
+/// temporalmente para prepararlo.
+#[cfg(windows)]
+pub(crate) struct InheritFlagGuard {
+    handle: isize,
+}
+
+#[cfg(windows)]
+impl InheritFlagGuard {
+    pub(crate) fn new(handle: isize) -> Self {
+        Self { handle }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for InheritFlagGuard {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+        // SAFETY: el handle sigue siendo válido hasta este punto del flujo.
+        unsafe {
+            SetHandleInformation(self.handle, HANDLE_FLAG_INHERIT, 0);
+        }
+    }
+}
+
+/// Dueño de la attribute list: mantiene vivo el búfer y la libera con
+/// `DeleteProcThreadAttributeList` en todos los caminos de salida.
+#[cfg(windows)]
+pub(crate) struct AttributeListGuard {
+    // Lo retiene para que la attribute list no quede colgando.
+    #[allow(dead_code)]
+    buffer: Vec<u8>,
+    list: *mut std::ffi::c_void,
+}
+
+#[cfg(windows)]
+impl AttributeListGuard {
+    pub(crate) fn new(buffer: Vec<u8>, list: *mut std::ffi::c_void) -> Self {
+        Self { buffer, list }
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut std::ffi::c_void {
+        self.list
+    }
+}
+
+#[cfg(windows)]
+impl Drop for AttributeListGuard {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Threading::DeleteProcThreadAttributeList;
+        // SAFETY: la lista fue inicializada y el búfer sigue vivo.
+        unsafe {
+            DeleteProcThreadAttributeList(self.list);
         }
     }
 }
@@ -215,75 +280,69 @@ fn spawn_with_allowlist_unix(request: RestrictedSpawnRequest) -> io::Result<Rest
 
 #[cfg(windows)]
 fn spawn_with_allowlist_windows(request: RestrictedSpawnRequest) -> io::Result<RestrictedChild> {
-    use windows_sys::Win32::Foundation::{CloseHandle, SetHandleInformation, HANDLE_FLAG_INHERIT};
-
-    // Prepara el stdio del hijo y la allowlist.
-    let mut marked: Vec<isize> = Vec::new();
+    // Prepara el stdio del hijo y la allowlist. Los guards de restauración
+    // se declaran DESPUÉS que los de cierre para que, al soltarse en orden
+    // inverso, los flags se restauren ANTES de cerrar los handles.
+    let mut close_guards: Vec<OwnedHandleWrap> = Vec::new();
+    let mut inherit_guards: Vec<InheritFlagGuard> = Vec::new();
     let mut stdin_holder: Option<OwnedHandleWrap> = None;
+    let mut marked: Vec<isize> = Vec::new();
 
-    // SAFETY: todas las llamadas al sistema usan handles propios y búferes
-    // locales; cada handle marcado se restaura tras el lanzamiento.
-    unsafe {
-        let (stdin_handle, stdin_is_null_holder): (isize, Option<()>) = match request.stdin {
-            StdinSpec::Null => (open_null_handle()?, None),
-            StdinSpec::Piped => {
-                let (read, write) = create_stdin_pipe()?;
-                stdin_holder = Some(OwnedHandleWrap { handle: write });
-                (read, None)
-            }
-        };
-        let _ = stdin_is_null_holder;
-        // El handle de entrada del padre se cierra tras duplicarlo al hijo
-        // (nulo de un solo uso o extremo de lectura de la tubería: el hijo
-        // tiene su propia copia y el extremo de escritura vive en el holder).
-        let close_after_spawn: Vec<isize> = vec![stdin_handle];
-        mark_inheritable(stdin_handle);
-        marked.push(stdin_handle);
-
-        let stdout_handle = raw_handle_of(&request.log_file);
-        mark_inheritable(stdout_handle);
-        marked.push(stdout_handle);
-        // stdout y stderr comparten el mismo fichero de registro.
-        let stderr_handle = stdout_handle;
-
-        for extra in &request.extra_allowed {
-            mark_inheritable(*extra);
-            marked.push(*extra);
+    let stdin_handle: isize = match request.stdin {
+        StdinSpec::Null => open_null_handle()?,
+        StdinSpec::Piped => {
+            let (read, write) = create_stdin_pipe()?;
+            stdin_holder = Some(OwnedHandleWrap::new(write));
+            read
         }
+    };
+    // El handle de entrada del padre se cierra tras duplicarlo al hijo
+    // (nulo de un solo uso o extremo de lectura de la tubería: el hijo
+    // tiene su propia copia y el extremo de escritura vive en el holder).
+    close_guards.push(OwnedHandleWrap::new(stdin_handle));
+    mark_inheritable(stdin_handle);
+    marked.push(stdin_handle);
+    inherit_guards.push(InheritFlagGuard::new(stdin_handle));
 
-        let allowed = allowed_handle_list(&marked);
-        let result = launch_process_with_list(
-            &request.program,
-            &request.args,
-            stdin_handle,
-            stdout_handle,
-            stderr_handle,
-            request.creation_flags,
-            &allowed,
-            request.extra_allowed.first().copied(),
-        );
+    let stdout_handle = raw_handle_of(&request.log_file);
+    mark_inheritable(stdout_handle);
+    marked.push(stdout_handle);
+    inherit_guards.push(InheritFlagGuard::new(stdout_handle));
+    // stdout y stderr comparten el mismo fichero de registro.
+    let stderr_handle = stdout_handle;
 
-        // Restaura las marcas para no contaminar futuros lanzamientos con
-        // `Command` clásico (p. ej. `tasklist` breves).
-        for handle in &marked {
-            SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, 0);
-        }
-        for handle in close_after_spawn {
-            CloseHandle(handle);
-        }
-
-        let (pid, process) = match result {
-            Ok(pair) => pair,
-            Err(code) => {
-                return Err(io::Error::from_raw_os_error(code as i32));
-            }
-        };
-        Ok(RestrictedChild {
-            pid,
-            process,
-            stdin_holder,
-        })
+    for extra in &request.extra_allowed {
+        mark_inheritable(*extra);
+        marked.push(*extra);
+        inherit_guards.push(InheritFlagGuard::new(*extra));
     }
+
+    let allowed = allowed_handle_list(&marked);
+    let result = launch_process_with_list(
+        &request.program,
+        &request.args,
+        stdin_handle,
+        stdout_handle,
+        stderr_handle,
+        request.creation_flags,
+        &allowed,
+        request.extra_allowed.first().copied(),
+    );
+
+    // Los guards restauran los flags y cierran los handles al salir de
+    // este ámbito, en todos los caminos (incluido el error de spawn, que
+    // deja los handles del padre en su estado original).
+    let (pid, process) = match result {
+        Ok(pair) => pair,
+        Err(code) => {
+            return Err(io::Error::from_raw_os_error(code as i32));
+        }
+    };
+    Ok(RestrictedChild {
+        pid,
+        process,
+        stdin_holder,
+    })
 }
 
 #[cfg(windows)]
@@ -363,9 +422,9 @@ fn launch_process_with_list(
     allowed: &[isize],
     _extra_first: Option<isize>,
 ) -> Result<(u32, isize), u32> {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+        CreateProcessW, InitializeProcThreadAttributeList,
         UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES,
         STARTUPINFOEXW,
@@ -385,8 +444,11 @@ fn launch_process_with_list(
         if InitializeProcThreadAttributeList(list, 1, 0, &mut size) == 0 {
             return Err(GetLastError());
         }
+        // Mover el `Vec` no realoca: el puntero sigue válido y queda dentro
+        // del guard, que además la libera en todos los caminos.
+        let list_guard = AttributeListGuard::new(buffer, list);
         let updated = UpdateProcThreadAttribute(
-            list,
+            list_guard.as_ptr(),
             0,
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
             allowed.as_ptr() as *mut std::ffi::c_void,
@@ -395,9 +457,7 @@ fn launch_process_with_list(
             std::ptr::null_mut(),
         );
         if updated == 0 {
-            let code = GetLastError();
-            DeleteProcThreadAttributeList(list);
-            return Err(code);
+            return Err(GetLastError());
         }
 
         let mut startup: STARTUPINFOEXW = std::mem::zeroed();
@@ -407,7 +467,7 @@ fn launch_process_with_list(
         startup.StartupInfo.hStdInput = stdin_handle;
         startup.StartupInfo.hStdOutput = stdout_handle;
         startup.StartupInfo.hStdError = stderr_handle;
-        startup.lpAttributeList = list;
+        startup.lpAttributeList = list_guard.as_ptr();
 
         let mut info: PROCESS_INFORMATION = std::mem::zeroed();
         let launched = CreateProcessW(
@@ -423,13 +483,15 @@ fn launch_process_with_list(
             &mut info,
         );
         let code = GetLastError();
-        DeleteProcThreadAttributeList(list);
         if launched == 0 {
             return Err(code);
         }
-        if info.hThread != 0 {
-            CloseHandle(info.hThread);
-        }
+        // El guard cierra el hilo principal del hijo en todos los caminos.
+        let _thread_guard = if info.hThread != 0 {
+            Some(OwnedHandleWrap::new(info.hThread))
+        } else {
+            None
+        };
         Ok((info.dwProcessId, info.hProcess))
     }
 }
