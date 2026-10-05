@@ -508,7 +508,17 @@ impl Qwen3TtsEngine {
             VoiceEngine::Cloned(p) => format!("clone:{}", p.display()),
         };
         let url = {
-            let mut guard = self.resident.lock().unwrap();
+            // Un hilo que murió con el mutex del residente tomado lo deja
+            // envenenado; un `unwrap()` convertiría eso en un pánico que tumba
+            // el proceso. Lo que envenenó el mutex fue ese hilo, no el estado
+            // del residente, así que se registra la traza y la decisión
+            // reutilizar/arrancar se sigue tomando sobre el guard recuperado.
+            let mut guard = self.resident.lock().unwrap_or_else(|poisoned| {
+                eprintln!(
+                    "Aviso: mutex del residente envenenado; se sigue sobre el estado recuperado"
+                );
+                poisoned.into_inner()
+            });
             if guard.as_ref().map(|s| s.voice_key.as_str()) != Some(voice_key.as_str()) {
                 *guard = Some(self.start_resident(model_dir, voice, voice_key)?);
             } else if let Err(_e) = guard

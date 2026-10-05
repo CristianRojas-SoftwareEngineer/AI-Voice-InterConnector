@@ -912,7 +912,14 @@ fn indicatif_progress() -> hf_hub::progress::Progress {
                     hf_hub::progress::DownloadEvent::Progress { files },
                 ) => {
                     let mut acc = 0u64;
-                    let mut map = self.per_file.lock().unwrap();
+                    // El acumulador por archivo solo lo escribe este handler, así
+                    // que un veneno no lo invalida: un `unwrap()` mataría la
+                    // descarga por un pánico de otro hilo. Se registra la traza
+                    // y la barra sigue avanzando sobre el estado recuperado.
+                    let mut map = self.per_file.lock().unwrap_or_else(|poisoned| {
+                        tracing::warn!("mutex del progreso por archivo envenenado; se recupera");
+                        poisoned.into_inner()
+                    });
                     for f in files {
                         map.insert(f.filename.clone(), f.bytes_completed);
                     }

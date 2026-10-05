@@ -41,6 +41,21 @@ pub struct AudioDevice {
     pub latency_ms: f32,
 }
 
+/// Toma el mutex de audio recuperando el veneno en lugar de propagarlo.
+///
+/// Un hilo que muere con el mutex tomado lo deja envenenado, y el siguiente
+/// `lock()` devuelve `Err` con el guard dentro. Un `unwrap()` convertiría ese
+/// estado recuperable en un pánico que tumba el proceso desde el hilo de
+/// audio, así que el veneno deja traza y la operación continúa sobre el estado
+/// recuperado (`PoisonError::into_inner`): lo que envenenó el mutex fue el
+/// pánico del hilo anterior, no el dato que guarda.
+fn tomar_lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        eprintln!("Aviso: mutex «{label}» envenenado; se sigue sobre el estado recuperado");
+        poisoned.into_inner()
+    })
+}
+
 /// Servicio de Audio sobre CPAL (Playback, Capture, Enumeración)
 pub struct AudioService {
     host: cpal::Host,
@@ -137,7 +152,7 @@ impl AudioService {
                 device.build_output_stream(
                     &config,
                     move |data: &mut [f32], _| {
-                        let mut idx = idx_arc.lock().unwrap();
+                        let mut idx = tomar_lock(&idx_arc, "índice de reproducción");
                         for sample in data.iter_mut() {
                             if *idx < samples.len() {
                                 *sample = samples[*idx];
@@ -156,7 +171,7 @@ impl AudioService {
                 device.build_output_stream(
                     &config,
                     move |data: &mut [i16], _| {
-                        let mut idx = idx_arc.lock().unwrap();
+                        let mut idx = tomar_lock(&idx_arc, "índice de reproducción");
                         for sample in data.iter_mut() {
                             if *idx < samples.len() {
                                 *sample = (samples[*idx].clamp(-1.0, 1.0) * 32767.0) as i16;
@@ -175,7 +190,7 @@ impl AudioService {
                 device.build_output_stream(
                     &config,
                     move |data: &mut [u16], _| {
-                        let mut idx = idx_arc.lock().unwrap();
+                        let mut idx = tomar_lock(&idx_arc, "índice de reproducción");
                         for sample in data.iter_mut() {
                             if *idx < samples.len() {
                                 *sample = (((samples[*idx].clamp(-1.0, 1.0) + 1.0) * 0.5)
@@ -197,7 +212,7 @@ impl AudioService {
         stream.play()?;
 
         // Esperar a que finalice la reproducción de las muestras
-        while *sample_idx.lock().unwrap() < total_samples {
+        while *tomar_lock(&sample_idx, "índice de reproducción") < total_samples {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
@@ -223,7 +238,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[f32], _| {
-                        let mut buffer = rec.lock().unwrap();
+                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
                         buffer.extend_from_slice(data);
                     },
                     |err| eprintln!("Error en captura de micrófono: {}", err),
@@ -235,7 +250,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[i16], _| {
-                        let mut buffer = rec.lock().unwrap();
+                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
                         buffer.extend(data.iter().map(|&s| s as f32 / 32768.0));
                     },
                     |err| eprintln!("Error en captura de micrófono: {}", err),
@@ -247,7 +262,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[u16], _| {
-                        let mut buffer = rec.lock().unwrap();
+                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
                         buffer.extend(
                             data.iter()
                                 .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
@@ -264,7 +279,7 @@ impl AudioService {
         std::thread::sleep(std::time::Duration::from_secs(duration_secs));
         drop(stream);
 
-        let raw_samples = recorded_samples.lock().unwrap().clone();
+        let raw_samples = tomar_lock(&recorded_samples, "buffer de grabación").clone();
         Ok(finish(raw_samples, channels, sample_rate))
     }
 
@@ -293,7 +308,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[f32], _| {
-                        let mut buffer = rec.lock().unwrap();
+                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
                         buffer.extend_from_slice(data);
                     },
                     |err| eprintln!("Error en captura de micrófono: {}", err),
@@ -305,7 +320,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[i16], _| {
-                        let mut buffer = rec.lock().unwrap();
+                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
                         buffer.extend(data.iter().map(|&s| s as f32 / 32768.0));
                     },
                     |err| eprintln!("Error en captura de micrófono: {}", err),
@@ -317,7 +332,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[u16], _| {
-                        let mut buffer = rec.lock().unwrap();
+                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
                         buffer.extend(
                             data.iter()
                                 .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
@@ -358,7 +373,7 @@ impl AudioService {
 
         drop(stream);
 
-        let raw_samples = recorded_samples.lock().unwrap().clone();
+        let raw_samples = tomar_lock(&recorded_samples, "buffer de grabación").clone();
         Ok(finish(raw_samples, channels, sample_rate))
     }
 }
@@ -614,6 +629,29 @@ pub fn write_zero_rate_wav(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    /// Un mutex de audio envenenado no tumba el proceso: el recover entrega
+    /// el estado que el hilo muerto dejó puesto y la operación sigue sobre él.
+    #[test]
+    fn test_tomar_lock_recupera_el_veneno() {
+        let mutex = std::sync::Arc::new(std::sync::Mutex::new(7usize));
+        // Un hilo muere con el mutex tomado: eso es lo que lo envenena.
+        let dying = std::sync::Arc::clone(&mutex);
+        let _ = std::thread::spawn(move || {
+            let _guard = dying
+                .lock()
+                .expect("el hilo toma el mutex antes de morir");
+            panic!("el hilo muere con el mutex tomado");
+        })
+        .join();
+        assert!(mutex.is_poisoned(), "el mutex debe quedar envenenado");
+
+        // Un `unwrap()` habría tumbado el test aquí; el recover no.
+        assert_eq!(*crate::tomar_lock(&mutex, "índice de reproducción"), 7);
+        // El estado recuperado sigue siendo utilizable.
+        *crate::tomar_lock(&mutex, "índice de reproducción") += 1;
+        assert_eq!(*mutex.lock().unwrap_or_else(|p| p.into_inner()), 8);
+    }
+
     #[test]
     fn test_audio_resampling_linear() {
         let input = vec![0.0, 0.5, 1.0, 0.5, 0.0];
