@@ -3,5 +3,6 @@
   "status": "planned",
   "reason": null,
   "removed": [],
-  "planned": []
+  "planned": [],
+  "path_reverted": false
 }
