@@ -268,14 +268,14 @@
         { "id": "C10.T10", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/src/daemon_stop.rs", "src/main.rs"], "notes": "fuente unica de STOP_DEADLINE_GLOBAL, DEFAULT_ADDR y DAEMON_PORT_ENV; un resolver por semantica; pruebas que releen el codigo para fallar si el lanzador redeclara" },
         { "id": "C10.T11", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/restricted_spawn.rs", "crates/avi-process/src/deferred.rs", "crates/avi-tts/src/lib.rs"], "notes": "quote_arg unica; resident de avi-tts delegando en avi-process; _extra_first retirado y pid de RestrictedChild acotado a Windows; grep a cero" },
         { "id": "C10.T12", "status": "done", "attempts": 1, "files": ["tests/cli_golden.rs", "crates/avi-lifecycle/tests/install.rs", "crates/avi-daemon/src/lib.rs", "crates/avi-daemon/tests/golden.rs"], "notes": "sondeos con deadline en puerto, mtime, latidos y temporal; reparados cuatro sembradores de pidfile sin identidad (fallos heredados de T1); cli_golden de 89/8 a 97/0 en tres pasadas" },
-        { "id": "C10.T13", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
-        { "id": "C10.T14", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
-        { "id": "C10.T15", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
+        { "id": "C10.T13", "status": "done", "attempts": 1, "files": ["crates/avi-daemon/tests/golden.rs", "crates/avi-daemon/src/lib.rs"], "notes": "las 21 cfg_attr retiradas: contrato corre en featureless y native-stt (de 24/11 ignoradas a 35/0); recurso con ignore+requiere; no se aplico la alternativa B de D17" },
+        { "id": "C10.T14", "status": "done", "attempts": 1, "files": ["tests/test_classes.rs"], "notes": "reglas de ignore-sin-requiere y de return-en-puerta con regresion sembrada; el return se tolera solo si afirma disponibilidad" },
+        { "id": "C10.T15", "status": "done", "attempts": 1, "files": ["docs/CLI/README.md", "docs/CLI/CONTRACT.md", "USAGE.md", "docs/MANUAL-VALIDATION.md", "docs/DESIGN.md", "docs/BUILD.md", "docs/DAEMON-MODE.md", "docs/CLI/commands/DAEMON.md", "crates/avi-core/src/engine.rs", "CHANGELOG.md", "tests/contract_conformance.rs"], "notes": "los nueve puntos de drift alineados mas la deriva de DAEMON_ADDR de T10; tres tests de conformidad nuevos; MANUAL-VALIDATION 284-288 ya coincidia" },
         { "id": "C10.T16", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
         { "id": "C10.T17", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" }
       ],
       "foreign_changes": [],
-      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f", "03987d0", "656c24f", "a56f215", "0bd3aba", "fdc6d95", "03e8aeb", "cb4f773", "48769d9", "b14592a", "938a537"]
+      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f", "03987d0", "656c24f", "a56f215", "0bd3aba", "fdc6d95", "03e8aeb", "cb4f773", "48769d9", "b14592a", "938a537", "683341a", "3c144fe", "1f65add"]
     }
   },
   "release": { "status": "pending", "gates": [], "version": null }
