@@ -50,8 +50,8 @@ pub fn spawn_background(
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW: el daemon tiene una consola oculta propia, que heredan
-        // `cmd`, `tasklist` y `taskkill` lanzados por él. Con DETACHED_PROCESS cada
-        // uno quedaría sin consola y abriría una ventana visible.
+        // `cmd` y `taskkill` lanzados por él. Con DETACHED_PROCESS cada uno
+        // quedaría sin consola y abriría una ventana visible.
         // CREATE_NEW_PROCESS_GROUP: grupo propio.
         // La herencia queda restringida a la lista explícita (registro del
         // daemon); el pipe del lanzador no viaja al hijo por construcción.
@@ -82,98 +82,29 @@ pub fn spawn_background(
 
 /// Viveza real de un PID a nivel de sistema (sin probe HTTP ni pidfile).
 ///
-/// Windows: `tasklist` con filtro exacto; Unix: `kill -0` (éxito = vivo).
-/// `0` nunca está vivo. Bloqueante y breve: apto para el handler de Ctrl+C y
-/// para los bucles de verificación con deadline de las paradas.
+/// Delega en la primitiva exacta de `avi-process` (Windows: `OpenProcess` +
+/// `GetExitCodeProcess`; Unix: `libc::kill(pid, 0)`); ya no se lanzan
+/// `tasklist` ni `kill` externos: la comparación por texto sobre `tasklist`
+/// hacía que el PID 12 matcheara dentro del 112. `0` nunca está vivo.
+/// Bloqueante y breve: apto para el handler de Ctrl+C y para los bucles de
+/// verificación con deadline de las paradas.
 pub fn pid_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    #[cfg(windows)]
-    {
-        let output = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                let text = String::from_utf8_lossy(&o.stdout);
-                text.contains(&pid.to_string())
-            }
-            _ => false,
-        }
-    }
-    #[cfg(unix)]
-    {
-        if !fits_pid_t(pid) {
-            return false;
-        }
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
+    avi_process::pid_alive_exact(pid)
 }
 
-/// Un PID de Unix es un `pid_t` con signo de 32 bits. `kill` trunca a ese tipo
-/// el número que recibe, así que un valor mayor (de un pidfile corrupto) señala
-/// a otro proceso: 4294967294 se convierte en el grupo -2 y su negativo, en el
-/// PID 2. Un PID que no cabe no es un proceso y nunca se pasa a `kill`.
-#[cfg(unix)]
-fn fits_pid_t(pid: u32) -> bool {
-    i32::try_from(pid).is_ok()
-}
-
-/// Mata el árbol preciso por PID: Windows `taskkill /F /T /PID` (mata el árbol); Unix `kill -9` al
-/// grupo (`-<pid>`, el daemon es líder de sesión por `setsid`) y luego al PID.
+/// Mata el árbol preciso por PID: Windows `taskkill /F /T /PID` (mata el árbol);
+/// Unix `libc::kill` con `SIGKILL` al grupo (`-<pid>`, el daemon es líder de
+/// sesión por `setsid`) y luego al PID, vía la primitiva de `avi-process`.
 /// No toca pidfile ni verifica: el llamante combina con `pid_alive` y deadline.
-/// Nunca mata el PID 0; la guarda contra auto-muerte (`pid != proceso propio`
-/// para la imagen compartida CLI/daemon) vive en el llamante.
+/// Nunca mata el PID 0 ni un PID que no cabe en `pid_t` (guarda en la
+/// primitiva); la guarda contra auto-muerte (`pid != proceso propio` para la
+/// imagen compartida CLI/daemon) vive en el llamante.
 ///
 /// Reutilizada además para el reclamo por grupo ante líder muerto: el
 /// llamante la invoca aunque el PID ya esté muerto para alcanzar al residente
 /// reparentado del mismo grupo, con verificación por 8766.
 pub fn kill_tree_by_pid(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    #[cfg(windows)]
-    {
-        std::process::Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-    #[cfg(unix)]
-    {
-        if !fits_pid_t(pid) {
-            return false;
-        }
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &format!("-{}", pid)])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        std::process::Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
+    avi_process::kill_tree_by_pid_exact(pid)
 }
 
 /// Espera bloqueante a la muerte del PID hasta el deadline (sondeo 100 ms).
@@ -201,5 +132,19 @@ mod tests {
         let pid = u32::MAX - 1;
         assert!(!pid_alive(pid));
         assert!(!kill_tree_by_pid(pid));
+    }
+
+    /// La viveza es del PID exacto: el propio está vivo y el 0 no.
+    ///
+    /// Causa del caso 112/12: la implementación anterior de Windows ejecutaba
+    /// `tasklist` y decidía con `text.contains(pid)`, de modo que preguntar por
+    /// el PID 12 daba vivo cuando existía el 112 (la cadena "12" aparece dentro
+    /// de "112"). La primitiva exacta de `avi-process` (`OpenProcess` +
+    /// `GetExitCodeProcess`, vivo solo si `STILL_ACTIVE`) consulta el PID
+    /// puntual y no compara texto.
+    #[test]
+    fn own_pid_is_alive_and_zero_is_not() {
+        assert!(pid_alive(std::process::id()));
+        assert!(!pid_alive(0));
     }
 }

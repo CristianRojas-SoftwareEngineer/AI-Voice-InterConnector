@@ -109,6 +109,109 @@ pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
     Some(ProcessIdentity { start, image })
 }
 
+/// Viveza exacta de un PID a nivel de sistema.
+///
+/// Windows: `OpenProcess` + `GetExitCodeProcess` (vivo solo si el código de
+/// salida es `STILL_ACTIVE`); no se consulta `tasklist`, cuya comparación por
+/// texto hace que el PID 12 matchee dentro del 112. Unix: `libc::kill(pid, 0)`
+/// (éxito = vivo), sin lanzar el ejecutable `kill` externo.
+/// `0` nunca está vivo. Bloqueante y breve.
+#[cfg(windows)]
+pub fn pid_alive_exact(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: el handle se abre con permiso de solo consulta y se cierra
+    // siempre antes de volver; el código de salida es una variable local.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 {
+            return false;
+        }
+        let mut exit_code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        // `STILL_ACTIVE` es `i32` en windows-sys y el código de salida es u32.
+        ok != 0 && exit_code == STILL_ACTIVE as u32
+    }
+}
+
+/// Viveza exacta de un PID a nivel de sistema.
+///
+/// Unix: `libc::kill(pid, 0)` (éxito = vivo), sin lanzar el ejecutable `kill`
+/// externo. `0` nunca está vivo. Bloqueante y breve.
+#[cfg(unix)]
+pub fn pid_alive_exact(pid: u32) -> bool {
+    if pid == 0 || !fits_pid_t(pid) {
+        return false;
+    }
+    // SAFETY: la señal 0 no se entrega; solo sondea la existencia del PID, ya
+    // validado como `pid_t` representable.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Un PID de Unix es un `pid_t` con signo de 32 bits. `kill` trunca a ese tipo
+/// el número que recibe, así que un valor mayor (de un pidfile corrupto) señala
+/// a otro proceso: 4294967294 se convierte en el grupo -2 y su negativo, en el
+/// PID 2. Un PID que no cabe no es un proceso y nunca se pasa a `kill`. La
+/// guarda vive aquí, en la primitiva, y cubre a todo llamante (daemon y
+/// residente).
+#[cfg(unix)]
+fn fits_pid_t(pid: u32) -> bool {
+    i32::try_from(pid).is_ok()
+}
+
+/// Mata el árbol preciso por PID. Windows: `taskkill /F /T /PID` (mata el
+/// árbol; es exacto por PID). Unix: `libc::kill(-pid, SIGKILL)` al grupo (el
+/// daemon es líder de sesión por `setsid`) y luego `libc::kill(pid, SIGKILL)`,
+/// sin lanzar el ejecutable `kill` externo. No verifica: el llamante combina
+/// con `pid_alive_exact` y deadline. Nunca mata el PID 0 ni un PID que no
+/// cabe en `pid_t`; la guarda contra auto-muerte (`pid != proceso propio`)
+/// vive en el llamante.
+#[cfg(windows)]
+pub fn kill_tree_by_pid_exact(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Mata el árbol preciso por PID: `libc::kill(-pid, SIGKILL)` al grupo (el
+/// daemon es líder de sesión por `setsid`) y luego `libc::kill(pid, SIGKILL)`,
+/// sin lanzar el ejecutable `kill` externo. No verifica: el llamante combina
+/// con `pid_alive_exact` y deadline. Nunca mata el PID 0 ni un PID que no cabe
+/// en `pid_t`; la guarda contra auto-muerte (`pid != proceso propio`) vive en
+/// el llamante.
+///
+/// Reutilizada además para el reclamo por grupo ante líder muerto: el llamante
+/// la invoca aunque el PID ya esté muerto para alcanzar al residente
+/// reparentado del mismo grupo.
+#[cfg(unix)]
+pub fn kill_tree_by_pid_exact(pid: u32) -> bool {
+    if pid == 0 || !fits_pid_t(pid) {
+        return false;
+    }
+    let pid = pid as i32;
+    // SAFETY: señales `SIGKILL` a un PID ya validado como `pid_t`
+    // representable; el negativo señala al grupo de ese PID.
+    unsafe {
+        let _ = libc::kill(-pid, libc::SIGKILL);
+        libc::kill(pid, libc::SIGKILL) == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +231,53 @@ mod tests {
     fn absent_pid_has_no_identity() {
         assert_eq!(process_identity(0), None);
         assert_eq!(process_identity(4_000_000_000), None);
+    }
+
+    /// El PID propio está vivo: la primitiva exacta debe reconocerlo.
+    #[test]
+    fn own_pid_is_alive() {
+        assert!(pid_alive_exact(std::process::id()));
+    }
+
+    /// El PID 0 nunca está vivo ni se mata.
+    #[test]
+    fn zero_pid_is_neither_alive_nor_killed() {
+        assert!(!pid_alive_exact(0));
+        assert!(!kill_tree_by_pid_exact(0));
+    }
+
+    /// Un PID que no cabe en `pid_t` firmado no está vivo ni se mata: en Unix
+    /// `kill` trunca el valor a 32 bits con signo y señalaría a otro proceso
+    /// (4294967294 se convierte en el grupo -2 y su negativo, en el PID 2); en
+    /// Windows `OpenProcess` no abre un PID inexistente.
+    #[test]
+    fn out_of_range_pid_is_neither_alive_nor_killed() {
+        let pid = u32::MAX - 1;
+        assert!(!pid_alive_exact(pid));
+        assert!(!kill_tree_by_pid_exact(pid));
+    }
+
+    /// Un hijo muerto y recolectado deja de estar vivo: la viveza es del PID
+    /// exacto, no de una coincidencia de texto sobre la tabla de procesos
+    /// (causa del fallo 112/12: `text.contains("12")` matcheaba el PID 112).
+    #[test]
+    fn dead_child_is_not_alive() {
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("se lanza el hijo");
+        #[cfg(not(windows))]
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("se lanza el hijo");
+        let pid = child.id();
+        assert!(pid_alive_exact(pid), "el hijo vivo está vivo");
+        child.kill().expect("se mata al hijo");
+        child.wait().expect("se espera al hijo");
+        assert!(!pid_alive_exact(pid), "el hijo muerto no está vivo");
     }
 
     /// Un hijo vivo tiene identidad distinta de la propia y deja de tenerla al morir.
