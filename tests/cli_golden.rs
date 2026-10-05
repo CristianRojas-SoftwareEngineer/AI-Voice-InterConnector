@@ -270,6 +270,28 @@ fn port_open(port: u16) -> bool {
     .is_ok()
 }
 
+/// Afirma que `port` sigue libre durante `window`, sondeando cada 50 ms y
+/// fallando en el instante en que algo lo enlace. Los 3 s del llamante no son
+/// una espera ciega: son el umbral que cubre varios ciclos del reintento de
+/// 500 ms del daemon supervisado, y cada muestra convierte esa cobertura en un
+/// diagnóstico («re-enlazado tras X ms») en vez de un veredicto tardío.
+fn assert_no_rebind_while_free(port: u16, window: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < window {
+        assert!(
+            !port_open(port),
+            "ningún daemon debe enlazar el puerto liberado: reenlace tras {:?}",
+            start.elapsed()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !port_open(port),
+        "ningún daemon debe enlazar el puerto liberado tras {:?}",
+        window
+    );
+}
+
 /// ¿Hay algún proceso residente vivo por imagen (`qwen_tts(.exe)`),
 /// independiente del pidfile? Faro estable de descubrimiento/verificación del
 /// residente cuando el `resident_pid` no está disponible (pidfile perdido).
@@ -656,7 +678,16 @@ fn d03_reaper_without_live_pid_does_not_fail() {
         "el PID de prueba debe estar muerto"
     );
     let path = sandbox.join("daemon.pid");
-    std::fs::write(&path, format!("{{\"pid\": {}}}", dead_pid))
+    // Con las claves de identidad presentes: el pidfile tiene que ser legible
+    // para que lo que este test afirma sea «un PID muerto registrado», y no
+    // «un fichero que el esquema descarta».
+    let rancio = serde_json::json!({
+        "pid": dead_pid,
+        "resident_pid": 0,
+        "identity": { "start": "0", "image": "identidad-falsa.exe" },
+        "resident_identity": serde_json::Value::Null,
+    });
+    std::fs::write(&path, rancio.to_string())
         .expect("escribir pidfile rancio en el sandbox");
     // El reaper best-effort no debe fallar con PID muerto y sin residente:
     // llegar hasta aquí ya prueba que retornó sin hacer panic.
@@ -1316,6 +1347,10 @@ fn seed_pinned_models(models_root: &std::path::Path, names: &[&str]) {
 /// que consulte o detenga el daemon no cae a 127.0.0.1:8765 (el del usuario)
 /// ni barre por imagen los `qwen_tts` de la máquina, porque el `resident_pid`
 /// registrado no es 0.
+///
+/// Las claves `identity`/`resident_identity` van presentes porque el esquema las
+/// exige: sin ellas el fichero es ilegible y se descarta, así que la dirección
+/// señuela no desviaría nada y la orden caería al puerto por defecto.
 fn seed_decoy_daemon_pidfile(data_dir: &std::path::Path) {
     let port = std::net::TcpListener::bind(("127.0.0.1", 0))
         .expect("reservar puerto efímero")
@@ -1323,10 +1358,13 @@ fn seed_decoy_daemon_pidfile(data_dir: &std::path::Path) {
         .expect("dirección del puerto reservado")
         .port();
     let dead_pid = u32::MAX - 1;
+    let fake = serde_json::json!({ "start": "0", "image": "identidad-falsa.exe" });
     let content = serde_json::json!({
         "pid": dead_pid,
         "addr": format!("127.0.0.1:{port}"),
         "resident_pid": dead_pid,
+        "identity": fake,
+        "resident_identity": fake,
     });
     std::fs::create_dir_all(data_dir).expect("crear directorio de datos");
     std::fs::write(data_dir.join("daemon.pid"), content.to_string())
@@ -1948,13 +1986,18 @@ impl FakeDaemon {
         }
     }
 
-    /// Sustituye el pidfile señuelo del sandbox por uno que apunta a este servidor.
+    /// Sustituye el pidfile señuelo del sandbox por uno que apunta a este
+    /// servidor. Lleva las claves de identidad porque el esquema las exige: sin
+    /// ellas el pidfile se descarta y la orden consultaría el 8765 real.
     fn publish_in(&self, data_dir: &std::path::Path) {
         let dead_pid = u32::MAX - 1;
+        let fake = serde_json::json!({ "start": "0", "image": "identidad-falsa.exe" });
         let content = serde_json::json!({
             "pid": dead_pid,
             "addr": self.addr.to_string(),
             "resident_pid": dead_pid,
+            "identity": fake,
+            "resident_identity": fake,
         });
         std::fs::write(data_dir.join("daemon.pid"), content.to_string())
             .expect("publicar el pidfile del daemon falso");
@@ -4259,11 +4302,7 @@ mod tts {
         assert_start_port_in_use(&inst, port, &[]);
         assert_start_port_in_use(&inst, port, &["--auto-restart"]);
         drop(holder);
-        std::thread::sleep(Duration::from_secs(3));
-        assert!(
-            !port_open(port),
-            "tras un arranque fallido ningún daemon debe enlazar el puerto liberado"
-        );
+        assert_no_rebind_while_free(port, Duration::from_secs(3));
     }
 
     /// El fallo de un `daemon start` queda en
@@ -5799,10 +5838,16 @@ fn daemon_stop_fails_with_still_running_verdict() {
     });
     let (dir, envs) = sandbox_unique_state("stop-fallo");
     let dead_pid = u32::MAX - 1;
+    // El esquema exige las claves de identidad: sin ellas el pidfile se
+    // descarta como ilegible, la parada sería un no-op y este test perdería el
+    // veredicto que afirma.
+    let fake = serde_json::json!({ "start": "0", "image": "identidad-falsa.exe" });
     let content = serde_json::json!({
         "pid": dead_pid,
         "addr": addr,
         "resident_pid": dead_pid,
+        "identity": fake,
+        "resident_identity": fake,
     });
     std::fs::write(dir.join("daemon.pid"), content.to_string())
         .expect("sembrar pidfile del daemon falso");

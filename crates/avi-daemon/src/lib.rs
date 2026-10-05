@@ -2497,6 +2497,43 @@ mod tests {
         events
     }
 
+    /// Espera a que el canal entregue al menos `objetivo` latidos de la etapa
+    /// `stage`, con `plazo` como límite duro, y devuelve todos los eventos
+    /// leídos hasta ese momento (los que sobren, para las aserciones
+    /// posteriores).
+    ///
+    /// El hecho que espera es «llegaron N latidos de esta etapa», no «ha pasado
+    /// un tiempo»: por eso sondea el canal en vez de dormir, y por eso al
+    /// agotarse el plazo falla diciendo cuántos llegaron y en cuánto.
+    async fn esperar_latidos(
+        rx: &mut tokio::sync::mpsc::Receiver<String>,
+        stage: &str,
+        objetivo: usize,
+        plazo: std::time::Duration,
+    ) -> Vec<Value> {
+        let limite = std::time::Instant::now() + plazo;
+        let mut eventos = Vec::new();
+        let mut vistos = 0usize;
+        while vistos < objetivo {
+            let restante = limite.saturating_duration_since(std::time::Instant::now());
+            let line = tokio::time::timeout(restante, rx.recv())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "no llegaron {objetivo} latidos de la etapa `{stage}` en {plazo:?} \
+                         (llegaron {vistos})"
+                    )
+                })
+                .expect("la fase sigue viva: su emisor no debe cerrarse antes de los latidos");
+            let evento: Value = serde_json::from_str(&line).expect("cada evento es JSON");
+            if evento["event"] == "heartbeat" && evento["stage"] == stage {
+                vistos += 1;
+            }
+            eventos.push(evento);
+        }
+        eventos
+    }
+
     fn heartbeats_with_stage(events: &[Value], stage: &str) -> usize {
         events
             .iter()
@@ -2525,11 +2562,15 @@ mod tests {
             )
             .await
         });
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // No se duerme a ciegas: se espera a que la fase haya emitido los dos
+        // latidos `queued` que este test afirma, y solo entonces se suelta el
+        // lock. Un plazo fijo dependería de que la máquina llegue a esos 150 ms.
+        let mut events =
+            esperar_latidos(&mut rx, "queued", 2, std::time::Duration::from_secs(5)).await;
         drop(guard);
         let res = phase.await.expect("join").expect("hay resultado");
         assert_eq!(res.expect("el trabajo termina bien"), 7);
-        let events = drain_events(&mut rx);
+        events.extend(drain_events(&mut rx));
         assert!(heartbeats_with_stage(&events, "queued") >= 2);
         assert_eq!(heartbeats_with_stage(&events, "warming"), 0);
     }
@@ -2554,36 +2595,55 @@ mod tests {
             )
             .await
         });
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // Igual que arriba: se espera el hecho (los latidos `warming`), no un
+        // tiempo, antes de soltar el lock.
+        let mut events =
+            esperar_latidos(&mut rx, "warming", 2, std::time::Duration::from_secs(5)).await;
         drop(guard);
         assert!(phase.await.expect("join").is_some());
-        let events = drain_events(&mut rx);
+        events.extend(drain_events(&mut rx));
         assert!(heartbeats_with_stage(&events, "warming") >= 2);
         assert_eq!(heartbeats_with_stage(&events, "queued"), 0);
     }
 
     /// Un trabajo más largo que varios latidos, pero dentro del presupuesto,
     /// mantiene los latidos `synthesis` y termina con `Ok`.
+    ///
+    /// El trabajo no «dura» 150 ms: espera a que la prueba lo suelte, y la
+    /// prueba lo suelta cuando ha visto tres latidos. Así los tres latidos son
+    /// un hecho observado y no una consecuencia de acertar con una duración.
     #[tokio::test]
     #[cfg_attr(feature = "native-stt", ignore = "requiere Parakeet")]
     async fn synthesis_phase_slow_job_keeps_heartbeats_and_succeeds() {
-        let state = test_state();
+        let state = Arc::new(test_state());
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
-        let res = run_synthesis_phase_with(
-            &tx,
-            &state,
-            std::time::Duration::from_secs(5),
-            TEST_HEARTBEAT,
-            std::time::Duration::from_secs(1),
-            |_cancel| {
-                std::thread::sleep(std::time::Duration::from_millis(150));
-                Ok("listo")
-            },
-        )
-        .await
-        .expect("hay resultado");
+        let (suelta, espera) = std::sync::mpsc::channel::<()>();
+        let phase_state = state.clone();
+        let phase = tokio::spawn(async move {
+            run_synthesis_phase_with(
+                &tx,
+                &phase_state,
+                std::time::Duration::from_secs(5),
+                TEST_HEARTBEAT,
+                std::time::Duration::from_secs(1),
+                move |_cancel| {
+                    // Bloquea el hilo del trabajo hasta que la prueba lo libera.
+                    espera.recv().map_err(|_| {
+                        anyhow::anyhow!("la prueba soltó el trabajo antes de tiempo")
+                    })?;
+                    Ok("listo")
+                },
+            )
+            .await
+        });
+        let mut events =
+            esperar_latidos(&mut rx, "synthesis", 3, std::time::Duration::from_secs(5)).await;
+        suelta
+            .send(())
+            .expect("el trabajo sigue esperando a que lo liberen");
+        let res = phase.await.expect("join").expect("hay resultado");
         assert_eq!(res.expect("el trabajo termina bien"), "listo");
-        let events = drain_events(&mut rx);
+        events.extend(drain_events(&mut rx));
         assert!(heartbeats_with_stage(&events, "synthesis") >= 3);
     }
 

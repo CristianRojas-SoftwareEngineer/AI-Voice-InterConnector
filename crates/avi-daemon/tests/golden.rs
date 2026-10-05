@@ -1085,7 +1085,11 @@ async fn disconnect_leaves_no_temporary(
     // 100 ms, así que el trabajo sigue vivo un buen rato tras la desconexión:
     // durante esa ventana el WAV debe seguir en pie. Con el guardián en el
     // handler el borrado ocurría al salir de este y no había ventana alguna.
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    //
+    // La ventana se recorre por sondeo, sin espera fija: se muestrea cada 2 ms
+    // (el mínimo por debajo del poll de 100 ms del motor) mientras el trabajo
+    // siga vivo, y se para en cuanto termina. El muestreo inmediato anterior
+    // cubre el caso en que el hilo termina antes del primer sondeo.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !tts.closed.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
         alive_while_working |= temp.is_file();

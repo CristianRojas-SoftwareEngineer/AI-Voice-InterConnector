@@ -387,6 +387,32 @@ async fn install_twice_is_idempotent() {
     sandbox.clear();
 }
 
+/// Sondea el reloj hasta que `medida` tenga al menos `resolucion` de antigüedad
+/// (1 s es el peor caso conocido de resolución de `mtime`), con `plazo` como
+/// límite duro: agotado el plazo, falla con `panic!` en vez de seguir y
+/// comparar marcas que aún no se distinguen.
+///
+/// El hecho que espera es «la marca medida ya está fuera del tick del reloj», no
+/// «ha pasado un segundo»: por eso sondea y no duerme, y por eso el diagnóstico
+/// dice cuánto faltó en vez de callar.
+fn esperar_resolucion_mtime(medida: std::time::SystemTime, plazo: std::time::Duration) {
+    const RESOLUCION: std::time::Duration = std::time::Duration::from_secs(1);
+    let start = std::time::Instant::now();
+    loop {
+        let transcurrido = medida.elapsed().unwrap_or_default();
+        if transcurrido >= RESOLUCION {
+            return;
+        }
+        assert!(
+            start.elapsed() < plazo,
+            "el reloj no avanzó lo necesario para separar la mtime (faltaban {:?} de {:?})",
+            RESOLUCION - transcurrido,
+            RESOLUCION
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// La reparación desde dentro del directorio de programa no copia archivos: reaplica
 /// integración de `PATH`, cuarentena y recibo.
 ///
@@ -420,7 +446,13 @@ async fn repair_from_inside_program_dir_copies_nothing() {
     let before = std::fs::metadata(&placed)
         .and_then(|m| m.modified())
         .expect("el ejecutable colocado tiene fecha");
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // La separación de `mtime` se consigue por sondeo del reloj, no durmiendo a
+    // ciegas: se espera, con plazo acotado y fallo ruidoso si no llega, a que la
+    // marca vigente haya superado la resolución del sistema de ficheros (1 s es
+    // el peor caso conocido). Ese margen es lo que hace concluyente la
+    // comparación posterior: sin él, una copia hecha durante la reparación
+    // podría caer en el mismo tick y conservar la marca.
+    esperar_resolucion_mtime(before, std::time::Duration::from_secs(5));
 
     // Ahora se invoca **desde dentro** del directorio de programa.
     let env = sandbox.env(&placed);
