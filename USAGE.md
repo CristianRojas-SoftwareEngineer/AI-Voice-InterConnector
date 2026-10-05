@@ -184,20 +184,23 @@ Tanto los comandos de lectura (`version`, `doctor`, `devices`, `voice list`,
 `ai-voice-interconnector` desde otro programa: ningún comando obliga a parsear texto.
 
 Todo payload `--json` incluye el campo **`"schema_version"`** (actualmente
-`"4"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
+`"5"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
 nuevas no lo incrementa; solo un cambio incompatible de las claves existentes lo
 haría. Un consumidor puede leerlo para detectar cambios de contrato.
 
-**Ojo: el protocolo del daemon sigue en `"3"`.** Son dos contratos
+**Ojo: el protocolo del daemon sigue en `"4"`.** Son dos contratos
 independientes —el envelope de la CLI y el IPC del daemon— y suben por separado: el
-ciclo de vida cambió el envelope (retiró cuatro claves de `doctor`) y **no** tocó el
-protocolo del daemon.
+ciclo de vida movió el envelope (retiró cuatro claves de `doctor`) y el envelope volvió a
+moverse con la retirada de `audio_path` de `say`/`dub` y de `dry_run` de los
+simulacros, con `daemon stop` bindeando `was_running` y `daemon_fully_stopped` y
+su fallo saliendo por veredicto con `still_running`);
+**ninguno** de los dos tocó el protocolo del daemon.
 
 ### Referencia de esquemas `--json`
 
 Los payloads siguientes son **parte del contrato programático**: sus claves son
 estables (los cambios solo pueden ser aditivos mientras `schema_version` sea
-`"4"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
+`"5"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
 diagnóstico/progreso va a stderr. La clave `schema_version` (string) se omite de
 las tablas por brevedad: está presente en todos.
 
@@ -212,12 +215,12 @@ campo a campo en modo directo y vía daemon.
 | `audio_path` | string | Ruta del WAV en el almacén (`speech/<voz>/<etiqueta>.wav`) |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
 
-**`speech say --json`** — no persiste nada; emite ruta temporal y voz.
+**`speech say --json`** — no persiste nada y **no informa de ruta**: el WAV va a un
+temporal autogestionado que se borra al terminar.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `status` | string | Siempre `"reproduced"` |
-| `audio_path` | string | Ruta del WAV temporal reproducido |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
 
 **`speech play --json`** / **`speech remove --json`** — identifican la locución y el resultado.
@@ -241,8 +244,11 @@ fallo emite el payload de error (`error`) y sale no-cero, no una clave `ok`.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `action` | string | `"start"`, `"stop"` o `"restart"` |
+| `status` | string | `start`: `"started"` (arrancado) o `"already_running"` (ya sano, sin tocarlo). `restart`: `"restarted"`. `stop`: `"not_running"` si no había daemon, `"shutdown_sent"` si lo había y se verificó detenido |
+| `daemon` | string | `"running"` en `start`/`restart`; `"stopped"` en `stop` |
 | `pid` | number | Solo en `start`/`restart` con éxito, si el gestor expone el PID del daemon lanzado |
+| `was_running` | boolean | Solo en `stop`: el veredicto del motor sobre si había daemon antes de parar |
+| `daemon_fully_stopped` | boolean | Solo en `stop`: el veredicto completo de la verificación a nivel de sistema (sin respuesta, sin PID vivo y sin residente vivo) |
 
 `daemon serve` (servidor en primer plano) no tiene `--json`: su contrato es el
 stream NDJSON de `/synthesize`, no un payload de una sola línea.
@@ -296,11 +302,14 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `cleanup`: `"cleanup_complete"` / `"cancelled"` (cancelación de la confirmación, exit 0). `self uninstall`: `"uninstalled"` / `"removal_scheduled"` (Windows, borrado diferido) / `"not_installed"` (idempotencia) / `"cancelled"` |
+| `status` | string | `cleanup`: `"cleanup_complete"` / `"planned"` (simulacro) / `"cancelled"` (cancelación de la confirmación, exit 0). `self uninstall`: `"uninstalled"` / `"removal_scheduled"` (Windows, borrado diferido) / `"not_installed"` (idempotencia) / `"planned"` (simulacro) / `"cancelled"` |
 | `reason` | string \| null | `null` en el desenlace normal; con `--json`, un fallo emite el objeto `error` + `reason` de §10 del contrato |
-| `removed` | array de strings | Rutas efectivamente eliminadas (o las del plan con `--dry-run`); vacío si no había nada |
-| `dry_run` | boolean | `cleanup`: `true` con `--dry-run`, `false` en borrado real |
+| `removed` | array de strings | Rutas efectivamente eliminadas; con `--dry-run` copia `planned`; vacío si no había nada |
+| `planned` | array de strings | Lo que la operación iba a borrar, también en el borrado real: simulacro y ejecución salen del mismo cálculo, así que no pueden divergir. Con `--dry-run` es lo único que dice el envelope, y su `status` es `"planned"` |
 | `path_reverted` | boolean | Solo `self uninstall`: `true` si se revirtió la integración de `PATH` registrada en el recibo |
+
+El simulacro **no lleva `dry_run`**: con `status` `"planned"` y su recibo `planned`, la
+clave sería redundante, y se retiró del contrato.
 
 **`self install --json`**
 
@@ -531,11 +540,16 @@ ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
 
 **Qué esperar:** en modo directo (sin daemon) se resuelve la voz, se sintetiza
 con Qwen3-TTS y el audio suena por los altavoces. Con el daemon activo, el CLI
-delega vía HTTP y el modelo ya está caliente en memoria. Salida típica (stderr):
+delega vía HTTP y el modelo ya está caliente en memoria. Salida típica (stdout):
 
 ```
-Reproduciendo: C:\Users\<u>\AppData\Local\Temp\avi_say_<pid>.wav
+Reproduciendo.
 ```
+
+El WAV va a un temporal autogestionado que se borra al terminar, así que el texto
+no dice ruta; quien quiera el fichero en disco usa `speech synthesize`, que lo
+persiste y sí devuelve su `audio_path`. `say` es humo de punta a punta, sin
+puerta de calidad sobre lo que sonó.
 
 **Orígenes de voz (resolución usuario→fábrica):**
 - **Fábrica**: voz `default` embebida en el binario (`crates/avi-store/assets/default/`),
@@ -716,7 +730,10 @@ Composición voz→voz: transcribe la entrada hablada (archivo o micrófono),
 traduce si `--source-language` difiere de `--target-language`, sintetiza con
 la voz elegida y reproduce el resultado. Reutiliza las etapas de
 `speech transcribe`, la traducción de `speech say`/`synthesize` y el despacho
-de síntesis; no guarda nada en el almacén (sin `--label` ni `--json`).
+de síntesis; no guarda nada en el almacén (no tiene `--label`). Con `--json`
+emite `{"status":"dubbed","text"}` con el texto ya traducido y **sin
+`audio_path`**: el WAV es un temporal que se borra al terminar. Como `say`,
+`dub` es humo sin puerta de calidad sobre lo que sonó.
 
 `--audio` y `--mic` son **mutuamente excluyentes y exactamente una de las dos
 es requerida**. Con `--mic`, la grabación es **push-to-talk** por defecto
@@ -912,11 +929,11 @@ ai-voice-interconnector cleanup --voices              # voces no-fábrica + arra
 ai-voice-interconnector cleanup --synthetic-speech    # raíz speech/ entera (incluye default)
 ai-voice-interconnector cleanup --model               # la raíz de modelos: entera si es exclusiva, o solo lo atribuible si es compartida
 ai-voice-interconnector cleanup --all                 # las tres categorías + configuración, logs y estado del daemon (sin programa ni PATH)
-ai-voice-interconnector cleanup --all --dry-run       # lista sin borrar (exit 0, --json con removed/dry_run)
+ai-voice-interconnector cleanup --all --dry-run       # lista sin borrar (exit 0, --json con status planned y su recibo planned)
 ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y alias)
 ```
 
-**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o la raíz de modelos. En la raíz de modelos **exclusiva** el borrado es de directorio entero (snapshots, locks y `xet` cuelgan de ella); si el usuario eligió una caché HF compartida con `HF_HUB_CACHE`/`HF_HOME`, solo se borran los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `CristianRojaas/opus-mt-*-ct2-int8`, `istupakov/parakeet-tdt-0.6b-v3-onnx`) y sus locks, y **`xet` y el `.locks` completo se conservan y se anuncian** (`doctor` dice si la raíz es compartida con `models.shared_root`). `--all` es la unión de las tres categorías **sin programa ni PATH** — solo `self uninstall` borra el programa y el `PATH`. El borrado es quirúrgico: nunca toca modelos de otros proyectos en una caché compartida. `--dry-run` lista el plan sin borrar **y sin tomar el bloqueo**; `--yes/-y` omite la confirmación interactiva, y **sin terminal es obligatorio**: sin él sale con `confirmation_required` (2) y no borra nada. Con `--json` emite `{"schema_version":"4","status":"cleanup_complete","reason":null,"removed":[...],"dry_run":bool}`. Todo es recuperable: `setup` re-descarga los modelos y
+**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o la raíz de modelos. En la raíz de modelos **exclusiva** el borrado es de directorio entero (snapshots, locks y `xet` cuelgan de ella); si el usuario eligió una caché HF compartida con `HF_HUB_CACHE`/`HF_HOME`, solo se borran los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `CristianRojaas/opus-mt-*-ct2-int8`, `istupakov/parakeet-tdt-0.6b-v3-onnx`) y sus locks, y **`xet` y el `.locks` completo se conservan y se anuncian** (`doctor` dice si la raíz es compartida con `models.shared_root`). `--all` es la unión de las tres categorías **sin programa ni PATH** — solo `self uninstall` borra el programa y el `PATH`. El borrado es quirúrgico: nunca toca modelos de otros proyectos en una caché compartida. `--dry-run` lista el plan sin borrar **y sin tomar el bloqueo**; `--yes/-y` omite la confirmación interactiva, y **sin terminal es obligatorio**: sin él sale con `confirmation_required` (2) y no borra nada. Con `--json` emite `{"schema_version":"5","status":"cleanup_complete","reason":null,"removed":[...],"planned":[...]}` al borrar de verdad, y `{"schema_version":"5","status":"planned","reason":null,"removed":[...],"planned":[...]}` con `--dry-run` (el mismo plan como recibo, sin `dry_run`: el `planned` ya dice que nada se modificó). Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
 
 ---
@@ -937,7 +954,7 @@ ai-voice-interconnector self uninstall --keep-data   # conserva modelos, voces y
 —la integración de `PATH` se *retira*, no se borra el archivo, y una caché HF compartida se
 conserva—. Sin terminal, `--yes` es obligatorio: sin él sale con `confirmation_required`
 (exit 2) y no borra nada. Cancelar la confirmación no es un error: `status` `cancelled` y
-exit 0. Con `--json` emite `{"schema_version":"4","status":…,"reason":null,"removed":[…],"path_reverted":bool,"dry_run":bool}`.
+exit 0. Con `--json` emite `{"schema_version":"5","status":…,"reason":null,"removed":[…],"planned":[…],"path_reverted":bool}`, y con `--dry-run` el `status` es `planned` y `removed` copia `planned` (sin `dry_run`: con `planned` la clave sobraba).
 
 **Sin `--keep-data` se borra la raíz de datos entera**, no el plan de `cleanup --all`, y la
 diferencia es deliberada: `cleanup --all` protege las voces de fábrica porque van embebidas
@@ -1045,7 +1062,7 @@ Trazas y logs: `RUST_LOG` (sintaxis de `tracing`) fija el nivel de traza de la C
 
 Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
 
-`daemon stop` responde `Señal de apagado enviada al daemon en <addr>.` (parada unificada de daemon y residente con verificación y borrado de `daemon.pid` y `daemon.ready`; si el residente registrado sigue vivo, la parada no se da por completa y sale con exit 5) y `daemon restart` hace la misma parada unificada seguida del mismo lanzamiento que `daemon start`, con los mismos códigos de fallo.
+`daemon stop` responde `Señal de apagado enviada al daemon en <addr>.` (parada unificada de daemon y residente con verificación y borrado de `daemon.pid` y `daemon.ready`; si el residente registrado sigue vivo, la parada no se da por completa y sale por veredicto con `still_running` y exit 5, sin borrar la pista) y `daemon restart` hace la misma parada unificada seguida del mismo lanzamiento que `daemon start`, con los mismos códigos de fallo.
 
 ### Uso con daemon
 
@@ -1071,15 +1088,15 @@ ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 **Qué esperar** con el daemon activo: `speech say` omite la carga del modelo y
 la síntesis empieza de inmediato. Mientras sintetiza, el daemon mantiene viva la
 conexión con latidos NDJSON (ver [docs/DAEMON-MODE.md](docs/DAEMON-MODE.md#streaming-ndjson));
-el cliente no muestra progreso intermedio. Al terminar la reproducción imprime
-la ruta del WAV temporal reproducido, igual que en modo directo:
+el cliente no muestra progreso intermedio. Al terminar la reproducción imprime lo
+mismo que en modo directo, sin ruta:
 
 ```
-Reproduciendo: <ruta del WAV temporal>
+Reproduciendo.
 ```
 
 Con `--json`, en lugar de esa línea emite el payload
-`{"status":"reproduced","audio_path":…,"voice":…}` en stdout.
+`{"status":"reproduced","voice":…}` en stdout.
 
 ---
 

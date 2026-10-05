@@ -34,7 +34,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
 
-`schema_version` lo inyecta `emit_raw_json` y vale **`"4"`**. El protocolo del daemon va por `"4"`: son contratos independientes y este no lo toca.
+`schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**. El protocolo del daemon va por `"4"`: son contratos independientes y este no lo toca.
 
 ### Las cuatro claves que se retiran
 
@@ -49,7 +49,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `base_status` | `models.base`, con los mismos dos valores (`ready` / `missing_opt_in`) |
 | `issues` | `checks` (el detalle por comprobación) y `failed` (los nombres de las que fallan) |
 
-**Por qué se retiran en vez de quedarse**: el contrato niega las claves de primer nivel que duplican lo que una sección ya dice mejor, y §8.8 de la especificación coloca la raíz de datos dentro de `install`, el estado de los modelos dentro de `models` y el `PATH` dentro de `path`. Retirar claves es un cambio **incompatible**, y por eso el envelope de la CLI sube a `"4"` en lugar de quedarse como adición.
+**Por qué se retiran en vez de quedarse**: el contrato niega las claves de primer nivel que duplican lo que una sección ya dice mejor, y §8.8 de la especificación coloca la raíz de datos dentro de `install`, el estado de los modelos dentro de `models` y el `PATH` dentro de `path`. Retirar claves es un cambio **incompatible**, y por eso el envelope de la CLI subió a `"4"` en lugar de quedarse como adición.
 
 ---
 
@@ -86,7 +86,7 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
 
 ```json
 {
-  "schema_version": "4",
+  "schema_version": "5",
   "version": "0.23.1",
   "target": "x86_64-pc-windows-msvc",
   "channel": "script",

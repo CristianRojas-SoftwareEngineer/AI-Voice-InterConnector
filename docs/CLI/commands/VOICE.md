@@ -187,9 +187,10 @@ metadatos de ruta).
 
 `precomputed` depende de la ruta: `true` en la ruta daemon (warm-on-clone
 iniciado; completitud en `GET /health`) y `false` en la ruta local (motor
-efímero, sin residente que calentar). `schema_version` (`"3"`) lo añade
-`emit_raw_json` (`crates/avi-core/src/json_emitter.rs`) en el CLI, y `with_sv`
-en las respuestas del daemon.
+efímero, sin residente que calentar). `schema_version` (`"5"` en el CLI,
+`"4"` en las respuestas del daemon) lo añade `emit_raw_json`
+(`crates/avi-core/src/json_emitter.rs`) en el CLI, y `with_sv` en las respuestas
+del daemon.
 
 ---
 

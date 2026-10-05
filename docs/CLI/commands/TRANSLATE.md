@@ -160,7 +160,7 @@ de `DaemonState::ct2_engine`.
 
 | Clave | Tipo | Significado |
 |---|---|---|
-| `schema_version` | string | `"3"`, inyectada por `with_schema_version`/`emit_raw_json` (`crates/avi-core/src/json_emitter.rs`) |
+| `schema_version` | string | `"5"`, inyectada por `with_schema_version`/`emit_raw_json` (`crates/avi-core/src/json_emitter.rs`) |
 | `translated` | string | Texto traducido (o el texto de entrada intacto en passthrough) |
 | `source` | string | Token de `--from` tal como se pasó (no el ISO normalizado) |
 | `target` | string | Token de `--to` tal como se pasó (no el ISO normalizado) |
@@ -169,7 +169,7 @@ Error, stdout (vía el manejador genérico de `main`, `src/main.rs`):
 
 | Clave | Tipo | Significado |
 |---|---|---|
-| `schema_version` | string | `"3"` |
+| `schema_version` | string | `"5"` |
 | `error` | string | Mensaje humano del error |
 | `reason` | string | Código de motivo (`empty_text`, `unsupported_language_pair`, `model_missing`, `translation_failed`, `translation_unsupported`, `daemon_unreachable`, `daemon_error`) |
 

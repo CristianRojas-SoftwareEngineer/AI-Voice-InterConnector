@@ -109,7 +109,7 @@ Consecuencia práctica: la selección es **la guardada en la instalación**, no 
 | `status` | string | `"completed"` |
 | `models_provisioned` | array de strings | Los modelos de la selección disponibles tras la ejecución |
 
-No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a stderr, reservando stdout para el JSON; `schema_version` lo inyecta el emisor y vale **`"4"`**.
+No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a stderr, reservando stdout para el JSON; `schema_version` lo inyecta el emisor y vale **`"5"`**.
 
 ---
 

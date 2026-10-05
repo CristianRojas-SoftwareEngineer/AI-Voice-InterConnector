@@ -226,10 +226,19 @@ Despacho: `say_via_daemon` si aplica, o rama directa con
 ### Contrato `--json`
 
 ```json
-{ "status": "reproduced", "audio_path": "<ruta temporal del WAV>", "voice": "<voz>" }
+{ "status": "reproduced", "voice": "<voz>" }
 ```
 
 (Mismo envelope en la rama local y vía daemon.)
+
+**No hay `audio_path`.** La síntesis va a un WAV temporal con dueño
+(`TempWav`, `crates/avi-shared/src/temp_wav.rs`), que lo borra al salir de
+ámbito: al terminar la reproducción, pero también si la reproducción falla, que
+era el camino por el que el fichero se quedaba. El texto humano dice
+«Reproduciendo.» sin ruta. Quien quiera el fichero en disco usa
+`speech synthesize`, que sí lo persiste y sí devuelve su `audio_path`.
+`say` es humo de punta a punta, sin puerta de calidad sobre lo que sonó; la
+paridad de inteligibilidad la cubre `synthesize`.
 
 ---
 
@@ -322,12 +331,20 @@ En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo
 ### Contrato `--json` (CLI)
 
 ```json
-{ "status": "dubbed", "text": "<texto final, traducido o passthrough>", "audio_path": "<ruta temporal del WAV reproducido>" }
+{ "status": "dubbed", "text": "<texto final, traducido o passthrough>" }
 ```
 
 (Mismo envelope en las dos rutas —local y vía `/dub`—;
 nótese que el campo del CLI se llama `text`, aunque el handler del daemon
 distingue internamente `text`/`translated`.)
+
+**No hay `audio_path`, por la misma razón que en `say`.** El WAV temporal que
+el daemon sintetiza para el doblaje lo borra su dueño al salir de ámbito, y en
+el CLI el que reproduce es otro temporal con el mismo mecanismo. En el lado del
+daemon el borrado cubre también el caso de que falle la lectura del WAV
+sintetizado: el temporal se iba antes. Quien quiera conservar el audio del
+doblaje usa `speech synthesize` con el texto traducido. Como `say`, `dub` es
+humo sin puerta de calidad sobre lo que sonó.
 
 ---
 
