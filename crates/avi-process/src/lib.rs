@@ -92,21 +92,38 @@ pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
     if pid == 0 || i32::try_from(pid).is_err() {
         return None;
     }
-    let ps = |field: &str| -> Option<String> {
-        let out = std::process::Command::new("ps")
-            .args(["-o", field, "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (!text.is_empty()).then_some(text)
-    };
-    let start = ps("lstart=")?;
-    let comm = ps("comm=")?;
+    // Una sola invocación de `ps` con `LC_ALL=C`: dos llamadas separadas
+    // observaban dos vidas distintas del PID (TOCTOU) y, sin locale fijo,
+    // `lstart` cambia de forma y la identidad deja de coincidir con la
+    // registrada (se degradaría a solo-PID). `lstart=` y `comm=` viajan juntos
+    // para leer ambas en el mismo resultado.
+    let out = std::process::Command::new("ps")
+        .env("LC_ALL", "C")
+        .args(["-o", "lstart=,comm=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let (start, comm) = split_ps_identity(&out.stdout)?;
     let image = comm.rsplit('/').next()?.to_string();
     Some(ProcessIdentity { start, image })
+}
+
+/// Separa `lstart` y `comm` de la línea de una única invocación de
+/// `ps -o lstart=,comm=`: `lstart` ocupa sus 24 caracteres fijos
+/// (`%a %b %e %H:%M:%S %Y`, p. ej. `Wed Oct  5 12:34:56 2026`) y `comm` es lo
+/// que sigue tras los espacios separadores.
+#[cfg(unix)]
+fn split_ps_identity(stdout: &[u8]) -> Option<(String, String)> {
+    let text = String::from_utf8_lossy(stdout);
+    let line = text.trim();
+    let start = line.get(..24)?;
+    let comm = line.get(24..)?.trim_start();
+    if comm.is_empty() {
+        return None;
+    }
+    Some((start.to_string(), comm.to_string()))
 }
 
 /// Viveza exacta de un PID a nivel de sistema.

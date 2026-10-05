@@ -4,8 +4,10 @@
 /// lanzamiento usa `STARTUPINFOEX` con lista explícita (`avi-process`): la
 /// entrada nula y el fichero de registro viajan al hijo; el pipe de captura
 /// del lanzador, los sockets y cualquier otro handle heredable del padre no
-/// llegan al daemon por construcción. En Unix `fork/exec` con `setsid` +
-/// `FD_CLOEXEC` ya logra lo análogo.
+/// llegan al daemon por construcción. En Unix el hijo se bifurca y ejecuta con
+/// `FD_CLOEXEC` y `pre_exec(setsid)`: nace líder de su propia sesión y grupo
+/// (`getpgid(child) == child`), así el kill de grupo alcanza solo a su árbol y
+/// nunca al grupo del lanzador.
 ///
 /// NOTA (cierre garantizado): el apagado ya no depende solo de
 /// `shutdown_handler` del crate vía `with_graceful_shutdown` + `tokio::sync::Notify`
@@ -146,5 +148,55 @@ mod tests {
     fn own_pid_is_alive_and_zero_is_not() {
         assert!(pid_alive(std::process::id()));
         assert!(!pid_alive(0));
+    }
+
+    /// En Unix el hijo del lanzamiento nace líder de su propio grupo
+    /// (`setsid`): `getpgid(child) == child`. Es la propiedad que hace exacto
+    /// el kill de grupo (`kill(-pid)`): alcanza solo al árbol del daemon y
+    /// nunca al grupo del lanzador. La prueba ejercita la primitiva que usa
+    /// `spawn_background` con un hijo longevo; lanzar el binario de pruebas con
+    /// los argumentos del daemon no es determinista (saldría de inmediato).
+    #[cfg(unix)]
+    #[test]
+    fn unix_child_is_group_leader() {
+        let log_path = std::env::temp_dir().join(format!(
+            "avi-daemon-setsid-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let log_file = std::fs::File::create(&log_path).expect("debe crear el registro");
+        let request = avi_process::RestrictedSpawnRequest {
+            program: std::path::PathBuf::from("sleep"),
+            args: vec![String::from("30")],
+            stdin: avi_process::StdinSpec::Null,
+            log_file,
+            creation_flags: 0,
+            extra_allowed: Vec::new(),
+        };
+        let mut child = avi_process::spawn_with_allowlist(request).expect("debe lanzar al hijo");
+        let pid = child.id() as i32;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            // SAFETY: `getpgid` solo consulta el grupo de un PID vivo recién
+            // lanzado y representable como `pid_t`.
+            let pgid = unsafe { libc::getpgid(pid) };
+            if pgid == pid {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "el hijo del lanzamiento no es líder de su grupo: pgid {pgid}, pid {pid}"
+            );
+            // El padre puede observar al hijo antes de que corra su
+            // `pre_exec`: se espera la transición observable, con deadline, no
+            // un tiempo fijo.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        child.kill().expect("debe poder matar al hijo");
+        child.wait().expect("debe poder recolectar al hijo");
+        let _ = std::fs::remove_file(&log_path);
     }
 }
