@@ -76,12 +76,21 @@ pub fn schedule_clean_removal(
         // padre vive en un Job que lo permite, el limpiador sobrevive a la
         // muerte del padre; si el Job no lo permite, se lanza sin separar y lo
         // no borrado cae al barrido de la siguiente operación.
+        // Herencia restringida a la lista explícita: solo el HANDLE de espera
+        // viaja a la copia (vacía si no hay proceso que aguardar); el stdio
+        // del padre no llega al limpiador por construcción.
+        let allowed: Vec<isize> = if wait_handle != 0 {
+            vec![wait_handle]
+        } else {
+            Vec::new()
+        };
         let mut child = launch_cleaner(
             cmdline.as_mut_ptr(),
             &startup,
             base_flags | CREATE_BREAKAWAY_FROM_JOB,
+            &allowed,
         )
-        .or_else(|| launch_cleaner(cmdline.as_mut_ptr(), &startup, base_flags));
+        .or_else(|| launch_cleaner(cmdline.as_mut_ptr(), &startup, base_flags, &allowed));
         if wait_handle != 0 {
             CloseHandle(wait_handle);
         }
@@ -112,17 +121,60 @@ pub fn schedule_clean_removal(
     Ok(copy)
 }
 
-/// Lanza la copia limpiadora con esas flags de creación. Devuelve los handles
-/// de proceso e hilo; el hilo lo cierra el llamador.
+/// Lanza la copia limpiadora con esas flags de creación y herencia
+/// restringida a `allowed` (normalmente solo el HANDLE de espera; vacío si no
+/// hay proceso que aguardar). Devuelve los handles de proceso e hilo; el hilo
+/// lo cierra el llamador.
 ///
 /// SAFETY: la línea de comandos es un búfer local válido y terminado en nulo;
-/// el arranque no hereda más que los handles marcados (el de espera).
+/// el arranque solo hereda los handles listados.
 unsafe fn launch_cleaner(
     cmdline: *mut u16,
     startup: &windows_sys::Win32::System::Threading::STARTUPINFOW,
     flags: u32,
+    allowed: &[isize],
 ) -> Option<(isize, isize)> {
-    use windows_sys::Win32::System::Threading::{CreateProcessW, PROCESS_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+        UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTUPINFOEXW,
+    };
+
+    let mut size = 0usize;
+    InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
+    let mut buffer = vec![0u8; size];
+    let list = buffer.as_mut_ptr() as *mut std::ffi::c_void;
+    if InitializeProcThreadAttributeList(list, 1, 0, &mut size) == 0 {
+        return None;
+    }
+    // Lista vacía: el hijo no hereda ningún handle del padre. Una lista de
+    // atributos no admite tamaño cero, así que se lista el handle nulo, que
+    // no designa ningún objeto y resulta inocuo para el hijo.
+    let null_handle = 0isize;
+    let (list_ptr, list_len) = if allowed.is_empty() {
+        (&null_handle as *const isize, 1usize)
+    } else {
+        (allowed.as_ptr(), allowed.len())
+    };
+    let updated = UpdateProcThreadAttribute(
+        list,
+        0,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+        list_ptr as *mut std::ffi::c_void,
+        list_len * std::mem::size_of::<isize>(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    );
+    if updated == 0 {
+        DeleteProcThreadAttributeList(list);
+        return None;
+    }
+
+    let mut extended: STARTUPINFOEXW = std::mem::zeroed();
+    extended.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    extended.StartupInfo.dwFlags = startup.dwFlags;
+    extended.StartupInfo.wShowWindow = startup.wShowWindow;
+    extended.lpAttributeList = list;
 
     let mut info: PROCESS_INFORMATION = std::mem::zeroed();
     let launched = CreateProcessW(
@@ -131,12 +183,13 @@ unsafe fn launch_cleaner(
         std::ptr::null_mut(),
         std::ptr::null_mut(),
         1,
-        flags,
+        flags | EXTENDED_STARTUPINFO_PRESENT,
         std::ptr::null(),
         std::ptr::null(),
-        startup,
+        &extended.StartupInfo,
         &mut info,
     );
+    DeleteProcThreadAttributeList(list);
     if launched == 0 {
         return None;
     }

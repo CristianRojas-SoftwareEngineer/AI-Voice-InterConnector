@@ -19,6 +19,11 @@ mod deferred;
 #[cfg(windows)]
 pub use deferred::schedule_clean_removal;
 
+pub mod restricted_spawn;
+pub use restricted_spawn::{
+    allowed_handle_list, spawn_with_allowlist, RestrictedChild, RestrictedSpawnRequest, StdinSpec,
+};
+
 /// Identidad observable de un proceso: la hora de creación y el nombre de la
 /// imagen. Un PID reasignado a otro programa tiene otra identidad, de modo que
 /// compararla con la registrada distingue a nuestro proceso de uno ajeno.

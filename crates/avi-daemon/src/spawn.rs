@@ -1,21 +1,11 @@
-use std::process::Command;
-
 /// Lanza el daemon en segundo plano desacoplado del proceso padre.
 ///
-/// El daemon hijo **no debe heredar handles del padre**. En Windows el padre suele
-/// ser el CLI raíz, pero en los E2E de `cli_golden` el CLI a su vez es hijo de
-/// `cargo test` capturando su salida vía `Command::output()` (un *pipe*).
-/// Ninguna creation flag de consola deshabilita la herencia de handles: con
-/// `bInheritHandles=TRUE` (default de `CreateProcessW`, no forzable a FALSE en Rust
-/// estable) el daemon hijo —y `qwen_tts.exe`— heredan el handle de escritura del
-/// pipe. Como `output()` solo retorna cuando todos los holders del pipe lo cierran,
-/// el daemon (que vive ~10 s en graceful shutdown) colgaba el test. Redirigir los
-/// STD del hijo aquí no basta (no impide heredar OTROS handles
-/// heredables del padre): la protección real es cortar la herencia en la raíz con
-/// `SetHandleInformation(HANDLE_FLAG_INHERIT, 0)` sobre los STD del proceso que
-/// spawnea (`main::disinherit_standard_handles`, llamado en `handle_daemon`). No
-/// existe una creation flag que desactive la herencia. En Unix `fork/exec` con
-/// `setsid` + `FD_CLOEXEC` ya logra lo análogo.
+/// El daemon hijo **solo hereda los handles declarados**. En Windows el
+/// lanzamiento usa `STARTUPINFOEX` con lista explícita (`avi-process`): la
+/// entrada nula y el fichero de registro viajan al hijo; el pipe de captura
+/// del lanzador, los sockets y cualquier otro handle heredable del padre no
+/// llegan al daemon por construcción. En Unix `fork/exec` con `setsid` +
+/// `FD_CLOEXEC` ya logra lo análogo.
 ///
 /// NOTA (cierre garantizado): el apagado ya no depende solo de
 /// `shutdown_handler` del crate vía `with_graceful_shutdown` + `tokio::sync::Notify`
@@ -42,63 +32,52 @@ pub fn spawn_background(
     warm_voice: &str,
     ready_file: Option<&std::path::Path>,
     log: std::fs::File,
-) -> anyhow::Result<std::process::Child> {
+) -> anyhow::Result<avi_process::RestrictedChild> {
     let exe = std::env::current_exe()?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("daemon").arg("serve");
+    let mut args = vec![String::from("daemon"), String::from("serve")];
     if auto_restart {
-        cmd.arg("--auto-restart");
+        args.push(String::from("--auto-restart"));
     }
-    cmd.arg("--max-retries").arg(max_retries.to_string());
-    cmd.arg("--warm-voice").arg(warm_voice);
+    args.push(String::from("--max-retries"));
+    args.push(max_retries.to_string());
+    args.push(String::from("--warm-voice"));
+    args.push(warm_voice.to_string());
     if let Some(path) = ready_file {
-        cmd.arg("--ready-file").arg(path);
+        args.push(String::from("--ready-file"));
+        args.push(path.to_string_lossy().into_owned());
     }
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        use std::process::Stdio;
-        // En Windows Rust hereda por default `GetStdHandle(STD_*_HANDLE)` del padre. En
-        // los E2E `cli_golden` el padre es el CLI lanzado vía `Command::output()`
-        // (pipe): heredar el write-end haría que `output()` del test no retornara hasta
-        // que el daemon (10 s) termine. stdin va a NUL; stdout y stderr van a un
-        // fichero, que no tiene extremo de tubería. El daemon deshereda sus handles
-        // estándar al arrancar, así que el motor que lanza no hereda este log.
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::from(log.try_clone()?))
-            .stderr(Stdio::from(log));
         // CREATE_NO_WINDOW: el daemon tiene una consola oculta propia, que heredan
         // `cmd`, `tasklist` y `taskkill` lanzados por él. Con DETACHED_PROCESS cada
         // uno quedaría sin consola y abriría una ventana visible.
         // CREATE_NEW_PROCESS_GROUP: grupo propio.
-        // La herencia de handles se corta en la raíz vía `SetHandleInformation`
-        // (`main::disinherit_standard_handles`), no con una creation flag.
-        cmd.creation_flags(avi_process::CREATE_NO_WINDOW | avi_process::CREATE_NEW_PROCESS_GROUP);
+        // La herencia queda restringida a la lista explícita (registro del
+        // daemon); el pipe del lanzador no viaja al hijo por construcción.
+        let request = avi_process::RestrictedSpawnRequest {
+            program: exe,
+            args,
+            stdin: avi_process::StdinSpec::Null,
+            log_file: log,
+            creation_flags: avi_process::CREATE_NO_WINDOW | avi_process::CREATE_NEW_PROCESS_GROUP,
+            extra_allowed: Vec::new(),
+        };
+        Ok(avi_process::spawn_with_allowlist(request)?)
     }
 
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
-        use std::process::Stdio;
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::from(log.try_clone()?))
-            .stderr(Stdio::from(log));
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
+        let request = avi_process::RestrictedSpawnRequest {
+            program: exe,
+            args,
+            stdin: avi_process::StdinSpec::Null,
+            log_file: log,
+            creation_flags: 0,
+            extra_allowed: Vec::new(),
+        };
+        Ok(avi_process::spawn_with_allowlist(request)?)
     }
-
-    // Grupo propio ya garantizado por flags (Windows: CREATE_NEW_PROCESS_GROUP;
-    // Unix: setsid): el árbol es matable de forma precisa por PID con
-    // `kill_tree_by_pid` (alternativa admitida: taskkill `/F /T` por PID con
-    // verificación posterior). El motor muere con el daemon porque vigila su
-    // entrada estándar, no por un agrupamiento del sistema operativo.
-    let child = cmd.spawn()?;
-    Ok(child)
 }
 
 /// Viveza real de un PID a nivel de sistema (sin probe HTTP ni pidfile).

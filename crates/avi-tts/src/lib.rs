@@ -911,28 +911,37 @@ pub fn clone_voice(
         };
     // La entrada del motor es una tubería con `--watch-stdin`: el motor termina
     // si su entrada se cierra, así que el proceso que clona muere con él aunque
-    // sea abatido. `Child::wait` cierra el stdin del hijo antes de esperar, por lo
-    // que el extremo de escritura se extrae y se conserva en `_watch_pipe` hasta
-    // que `wait` devuelve; si no, el motor vería fin de fichero al instante.
+    // sea abatido. El extremo de escritura queda retenido en el hijo
+    // restringido hasta que `wait` devuelve; si no, el motor vería fin de
+    // fichero al instante. La herencia queda restringida a la lista explícita
+    // (tubería de entrada y fichero de registro).
     let status = (|| -> Result<std::process::ExitStatus> {
-        let stdout = log_file.try_clone()?;
-        let mut child = Command::new(&bin)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::from(stdout))
-            .stderr(std::process::Stdio::from(log_file))
-            .arg("-d")
-            .arg(model_dir.as_ref())
-            .arg("--ref-audio")
-            .arg(&ref_wav)
-            .arg("--save-voice")
-            .arg(out_qvoice)
-            .arg("--voice-name")
-            .arg(name)
-            .arg("-l")
-            .arg(language)
-            .arg("--watch-stdin")
-            .spawn()?;
-        let _watch_pipe = child.stdin.take();
+        let args = vec![
+            String::from("-d"),
+            model_dir.as_ref().to_string_lossy().into_owned(),
+            String::from("--ref-audio"),
+            ref_wav.to_string_lossy().into_owned(),
+            String::from("--save-voice"),
+            out_qvoice.to_string_lossy().into_owned(),
+            String::from("--voice-name"),
+            name.to_string(),
+            String::from("-l"),
+            language.to_string(),
+            String::from("--watch-stdin"),
+        ];
+        #[cfg(windows)]
+        let creation_flags = avi_process::DETACHED_PROCESS;
+        #[cfg(not(windows))]
+        let creation_flags = 0u32;
+        let request = avi_process::RestrictedSpawnRequest {
+            program: bin.clone(),
+            args,
+            stdin: avi_process::StdinSpec::Piped,
+            log_file,
+            creation_flags,
+            extra_allowed: Vec::new(),
+        };
+        let mut child = avi_process::spawn_with_allowlist(request)?;
         Ok(child.wait()?)
     })();
     let _ = std::fs::remove_file(&ref_wav);
@@ -962,45 +971,47 @@ pub mod resident {
     use std::io::Write;
     #[cfg(test)]
     use std::net::TcpListener;
-    use std::process::Child;
     use std::thread;
     use std::time::Duration;
 
     /// Gestor del proceso servidor del motor.
     pub struct Qwen3TtsResident {
-        child: Option<Child>,
+        child: Option<avi_process::RestrictedChild>,
         pub port: u16,
         /// Ruta del fichero de log de stderr del motor (incluida en errores de healthcheck).
         #[allow(dead_code)]
         pub(crate) log_path: PathBuf,
     }
 
-    /// Construye el `Command` de arranque del residente, sin
-    /// I/O real: `-d <model_dir> --serve <port> --host 127.0.0.1 --int4 -j 4 --stream
-    /// --watch-stdin [--load-voice <qvoice> --icl-only]`. `--watch-stdin` hace que
-    /// el motor termine al cerrarse su entrada estándar.
+    /// Construye el argv de arranque del residente, sin I/O real:
+    /// programa más argumentos `-d <model_dir> --serve <port> --host 127.0.0.1
+    /// --int4 -j 4 --stream --watch-stdin [--load-voice <qvoice> --icl-only]`.
+    /// `--watch-stdin` hace que el motor termine al cerrarse su entrada estándar.
     pub(crate) fn build_resident_command(
         bin: &Path,
         model_dir: &Path,
         port: u16,
         load_voice: Option<&Path>,
-    ) -> Command {
-        let mut cmd = Command::new(bin);
-        cmd.arg("-d")
-            .arg(model_dir)
-            .arg("--serve")
-            .arg(port.to_string())
-            .arg("--host")
-            .arg(crate::RESIDENT_HOST.to_string())
-            .arg("--int4")
-            .arg("-j")
-            .arg("4")
-            .arg("--stream")
-            .arg("--watch-stdin");
+    ) -> (PathBuf, Vec<String>) {
+        let mut args = vec![
+            String::from("-d"),
+            model_dir.to_string_lossy().into_owned(),
+            String::from("--serve"),
+            port.to_string(),
+            String::from("--host"),
+            crate::RESIDENT_HOST.to_string(),
+            String::from("--int4"),
+            String::from("-j"),
+            String::from("4"),
+            String::from("--stream"),
+            String::from("--watch-stdin"),
+        ];
         if let Some(lv) = load_voice {
-            cmd.arg("--load-voice").arg(lv).arg("--icl-only");
+            args.push(String::from("--load-voice"));
+            args.push(lv.to_string_lossy().into_owned());
+            args.push(String::from("--icl-only"));
         }
-        cmd
+        (bin.to_path_buf(), args)
     }
 
     impl Qwen3TtsResident {
@@ -1028,38 +1039,33 @@ pub mod resident {
         }
     }
 
-    /// Lanza el proceso del motor residente: construye el comando de arranque,
-    /// configura la entrada, la salida y el error estándar (el error va a
-    /// `log_file`) y los creation flags de Windows, y devuelve el `Child` sin
-    /// esperar a que el motor esté sano.
+    /// Lanza el proceso del motor residente: construye el argv de arranque,
+    /// configura la entrada por tubería propia y el error al fichero de
+    /// registro, y devuelve el hijo con herencia restringida sin esperar a
+    /// que el motor esté sano.
     pub(crate) fn launch_resident_process(
         bin: &Path,
         model_dir: &Path,
         port: u16,
         load_voice: Option<&Path>,
         log_file: std::fs::File,
-    ) -> Result<Child> {
-        let mut cmd = build_resident_command(bin, model_dir, port, load_voice);
+    ) -> Result<avi_process::RestrictedChild> {
+        let (program, args) = build_resident_command(bin, model_dir, port, load_voice);
         {
             // La entrada estándar es una tubería cuyo extremo de escritura queda
-            // dentro del `Child` devuelto (no se extrae ni se suelta): mientras el
-            // residente viva, quien lo guarda mantiene la tubería abierta. El motor,
-            // lanzado con `--watch-stdin`, lee su entrada hasta fin de fichero y
-            // termina; así, si el daemon muere de forma abrupta, el sistema cierra
-            // el extremo de escritura y el residente muere con él. El stdout va a
-            // null porque no se consume.
-            use std::process::Stdio;
-            // Windows: `qwen_tts.exe` NO debe heredar handles ni abrir terminal del
-            // padre. `DETACHED_PROCESS` lo deja sin consola: `qwen_tts` no lanza
-            // procesos de consola, así que no necesita una propia, y va sin grupo
-            // propio para que `taskkill /T` lo alcance.
-            // La herencia del pipe (write-end) del proceso abuelo (test CLI) se corta
-            // en la raíz: el daemon que spawnea este motor ya desheredó sus STD vía
-            // `SetHandleInformation` (`main::disinherit_standard_handles`); no existe
-            // una creation flag que desactive la herencia. Los handles de stdin
-            // (tubería propia) y stdout (null) se crean para este hijo, así que no
-            // arrastran los del padre; stderr va al log, que solo llega a este
-            // hijo porque el daemon ya desheredó sus handles estándar.
+            // retenido dentro del hijo devuelto: mientras el residente viva,
+            // quien lo guarda mantiene la tubería abierta. El motor, lanzado
+            // con `--watch-stdin`, lee su entrada hasta fin de fichero y
+            // termina; así, si el daemon muere de forma abrupta, el sistema
+            // cierra el extremo de escritura y el residente muere con él. El
+            // stdout va a null porque no se consume.
+            // Windows: `qwen_tts.exe` NO debe heredar handles del padre salvo
+            // los declarados. `DETACHED_PROCESS` lo deja sin consola:
+            // `qwen_tts` no lanza procesos de consola, así que no necesita
+            // una propia, y va sin grupo propio para que `taskkill /T` lo
+            // alcance. La herencia queda restringida a la lista explícita
+            // (tubería de entrada y fichero de registro): el pipe del abuelo
+            // no viaja al motor por construcción.
             // Sin `CREATE_NEW_PROCESS_GROUP` ni breakaway, para que
             // `taskkill /F /T /PID <daemon>` alcance al residente como descendiente.
             // En Unix tampoco se hace `setsid` aquí: hereda el grupo del daemon.
@@ -1067,27 +1073,25 @@ pub mod resident {
             // el residente termina por sí mismo; los dobles de test nunca
             // reproducen la muerte abrupta del padre.
             #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::from(log_file))
-                    .creation_flags(avi_process::DETACHED_PROCESS);
-            }
-            #[cfg(unix)]
-            {
-                cmd.stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::from(log_file));
-            }
+            let creation_flags = avi_process::DETACHED_PROCESS;
+            #[cfg(not(windows))]
+            let creation_flags = 0u32;
+            let request = avi_process::RestrictedSpawnRequest {
+                program,
+                args,
+                stdin: avi_process::StdinSpec::Piped,
+                log_file,
+                creation_flags,
+                extra_allowed: Vec::new(),
+            };
+            avi_process::spawn_with_allowlist(request).map_err(|e| {
+                anyhow!(
+                    "No se pudo arrancar el servidor Qwen3-TTS ({}): {}",
+                    bin.display(),
+                    e
+                )
+            })
         }
-        cmd.spawn().map_err(|e| {
-            anyhow!(
-                "No se pudo arrancar el servidor Qwen3-TTS ({}): {}",
-                bin.display(),
-                e
-            )
-        })
     }
 
     impl Qwen3TtsResident {
@@ -1095,7 +1099,7 @@ pub mod resident {
         /// configurables para los tests de reintentos). `log_path` se guarda en el
         /// struct para incluirse en errores de `wait_health`.
         pub(crate) fn spawn_with_child(
-            child: Child,
+            child: avi_process::RestrictedChild,
             port: u16,
             log_path: PathBuf,
             retries: usize,
@@ -1264,7 +1268,7 @@ pub mod resident {
     /// (el `child` terminó inesperadamente) de *hang* (timeout agotado). En caso
     /// de crash incluye el código de salida y la ruta del log de stderr.
     pub(crate) fn wait_health(
-        child: &mut Child,
+        child: &mut avi_process::RestrictedChild,
         port: u16,
         retries: usize,
         interval_ms: u64,
@@ -1484,16 +1488,13 @@ mod tests {
     /// integración ejercitaba.
     #[test]
     fn build_resident_command_includes_int4_threads_stream() {
-        let cmd = resident::build_resident_command(
+        let (program, args) = resident::build_resident_command(
             Path::new("qwen_tts.exe"),
             Path::new("vendor/qwen3-tts/qwen3-tts-0.6b"),
             8766,
             None,
         );
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        assert_eq!(program, PathBuf::from("qwen_tts.exe"));
         assert_eq!(
             args,
             vec![
@@ -1511,16 +1512,13 @@ mod tests {
             ]
         );
 
-        let cmd = resident::build_resident_command(
+        let (program, args) = resident::build_resident_command(
             Path::new("qwen_tts.exe"),
             Path::new("md"),
             8766,
             Some(Path::new("voz.qvoice")),
         );
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        assert_eq!(program, PathBuf::from("qwen_tts.exe"));
         assert_eq!(
             args,
             vec![
@@ -1750,7 +1748,7 @@ fn main() {
 
     /// Lanza el motor doble con la función de arranque del residente y un log
     /// temporal propio. Devuelve el hijo y la limpieza.
-    fn launch_double(bin: &Path, dir: &Path) -> (std::process::Child, DoubleCleanup) {
+    fn launch_double(bin: &Path, dir: &Path) -> (avi_process::RestrictedChild, DoubleCleanup) {
         let log_file = std::fs::File::create(dir.join("engine.log")).expect("log del doble");
         let child =
             resident::launch_resident_process(bin, Path::new("modelos"), 8766, None, log_file)
@@ -1998,18 +1996,7 @@ fn main() {
     #[test]
     fn wait_health_distinguishes_crash_from_hang() {
         // Proceso que muere inmediatamente (exit 1) en lugar de servir.
-        let mut child = if cfg!(windows) {
-            Command::new("cmd")
-                .args(["/C", "exit 1"])
-                .spawn()
-                .expect("cmd debe existir en Windows")
-        } else {
-            Command::new("sh")
-                .arg("-c")
-                .arg("exit 1")
-                .spawn()
-                .expect("sh debe existir en Unix")
-        };
+        let mut child = exiting_process();
         // Se espera la muerte del hijo antes del healthcheck: lo que se prueba es
         // el diagnóstico de un hijo muerto, no cuánto tarda el SO en terminarlo.
         child.wait().expect("el proceso debe terminar");
@@ -2034,18 +2021,7 @@ fn main() {
     /// informar de un cuelgue. Sin intentos, solo esa comprobación final lo ve.
     #[test]
     fn wait_health_detects_crash_after_retries_exhausted() {
-        let mut child = if cfg!(windows) {
-            Command::new("cmd")
-                .args(["/C", "exit 1"])
-                .spawn()
-                .expect("cmd debe existir en Windows")
-        } else {
-            Command::new("sh")
-                .arg("-c")
-                .arg("exit 1")
-                .spawn()
-                .expect("sh debe existir en Unix")
-        };
+        let mut child = exiting_process();
         child.wait().expect("el proceso debe terminar");
         let log_path = test_log_path();
         let err = resident::wait_health(&mut child, 1, 0, 50, log_path.as_path())
@@ -2236,8 +2212,9 @@ fn main() {
         std::env::temp_dir().join("avi-tts-test-engine.log")
     }
 
-    /// Proceso que duerme para simular el hijo del residente en tests. Hijo
-    /// directo bien portado (recolectable vía `Child`): no reproduce el
+    /// Proceso que duerme para simular el hijo del residente en tests, lanzado
+    /// con herencia restringida como el producto. Hijo directo bien portado
+    /// (recolectable vía `RestrictedChild`): no reproduce el
     /// desacoplo del `qwen_tts` real ni la daemonización, así que queda ciego
     /// a ese escenario; nunca reproduce `panic!` con lock retenido ni aborto
     /// externo (solo el harness lo cubre) ni la ventana spawn→write ni señales
@@ -2245,22 +2222,61 @@ fn main() {
     /// `qwen_tts`, así que queda ciego al barrido por imagen del residente;
     /// el cierre preciso por árbol se cubre en
     /// `resident_kill_tree_by_pid_terminates_child`.
-    fn sleeping_process() -> std::process::Child {
-        if cfg!(windows) {
-            Command::new("powershell")
-                .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("powershell debe existir en Windows")
+    fn sleeping_process() -> avi_process::RestrictedChild {
+        let log_file = std::fs::File::create(
+            std::env::temp_dir().join(format!("avi-tts-sleep-{}.log", std::process::id())),
+        )
+        .expect("log del proceso durmiente");
+        let (program, args) = if cfg!(windows) {
+            (
+                PathBuf::from("powershell"),
+                vec![
+                    String::from("-NoProfile"),
+                    String::from("-Command"),
+                    String::from("Start-Sleep -Seconds 30"),
+                ],
+            )
         } else {
-            Command::new("sleep")
-                .arg("30")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("sleep debe existir en Unix")
-        }
+            (PathBuf::from("sleep"), vec![String::from("30")])
+        };
+        let request = avi_process::RestrictedSpawnRequest {
+            program,
+            args,
+            stdin: avi_process::StdinSpec::Null,
+            log_file,
+            creation_flags: 0,
+            extra_allowed: Vec::new(),
+        };
+        avi_process::spawn_with_allowlist(request).expect("debe lanzar el proceso durmiente")
+    }
+
+    /// Hijo que termina de inmediato con exit 1, lanzado con herencia
+    /// restringida como el producto.
+    fn exiting_process() -> avi_process::RestrictedChild {
+        let log_file = std::fs::File::create(
+            std::env::temp_dir().join(format!("avi-tts-exit-{}.log", std::process::id())),
+        )
+        .expect("log del proceso saliente");
+        let (program, args) = if cfg!(windows) {
+            (
+                PathBuf::from("cmd"),
+                vec![String::from("/C"), String::from("exit 1")],
+            )
+        } else {
+            (
+                PathBuf::from("sh"),
+                vec![String::from("-c"), String::from("exit 1")],
+            )
+        };
+        let request = avi_process::RestrictedSpawnRequest {
+            program,
+            args,
+            stdin: avi_process::StdinSpec::Null,
+            log_file,
+            creation_flags: 0,
+            extra_allowed: Vec::new(),
+        };
+        avi_process::spawn_with_allowlist(request).expect("debe lanzar el proceso saliente")
     }
 
     /// ¿Sigue vivo el proceso con `pid`? Doble de test: delega en
