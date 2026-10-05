@@ -11,7 +11,7 @@ use avi_lifecycle as lifecycle;
 use avi_store as store;
 use avi_store::{ModelStore, SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
-use avi_stt::ParakeetEngine;
+use avi_stt::EngineHolder;
 use avi_tts::Qwen3TtsEngine;
 // El motor de traducción real solo entra en scope con `native-translation`.
 #[cfg(feature = "native-translation")]
@@ -72,6 +72,13 @@ const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs
 /// pidfile; lo fija `launch_daemon` (en `start` y `restart`) justo tras
 /// `spawn_background` y lo pone a 0 al abortar un arranque fallido.
 static IN_MEMORY_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Titular del motor de transcripción para la vida del proceso: lo crea una
+/// sola vez y lo conserva sin destruirlo hasta la salida, de modo que ningún
+/// destructor de ONNX Runtime corre durante la salida. El sistema operativo
+/// reclama la memoria al terminar el proceso.
+#[cfg(feature = "native-stt")]
+static STT_HOLDER: EngineHolder = EngineHolder::new();
 
 /// Resuelve un token de idioma de la CLI (`es-latam`/`en`) al código ISO que
 /// exige el motor STT: `es-latam` -> `es`; cualquier otro valor pasa verbatim
@@ -1666,7 +1673,8 @@ async fn handle_speech(
                     avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
                 )?;
 
-                let engine = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3"))
+                let engine = STT_HOLDER
+                    .get_or_try_init(ModelStore::new().model_dir("parakeet-tdt-v3"))
                     .map_err(|e| {
                         CliError::new(
                             ExitCode::TranscriptionFailed,
@@ -2001,7 +2009,8 @@ async fn handle_speech(
                     "El audio del doblaje",
                     avi_core::MAX_DUB_AUDIO_SECS,
                 )?;
-                let stt = ParakeetEngine::new(ModelStore::new().model_dir("parakeet-tdt-v3"))
+                let stt = STT_HOLDER
+                    .get_or_try_init(ModelStore::new().model_dir("parakeet-tdt-v3"))
                     .map_err(|e| {
                         CliError::new(
                             ExitCode::TranscriptionFailed,

@@ -9,11 +9,11 @@
 #[cfg(feature = "native-stt")]
 pub mod parakeet;
 #[cfg(feature = "native-stt")]
-pub use parakeet::{detect_language, normalize_text, ParakeetEngine};
+pub use parakeet::{detect_language, normalize_text, EngineHolder, ParakeetEngine};
 
 #[cfg(all(test, feature = "native-stt"))]
 mod tests {
-    use crate::{detect_language, normalize_text, ParakeetEngine};
+    use crate::{detect_language, normalize_text, EngineHolder, ParakeetEngine};
     use avi_core::engine::SttEngine;
 
     /// Directorio del snapshot de Parakeet, exigiendo `nemo128.onnx`: la raíz de
@@ -70,6 +70,49 @@ mod tests {
         assert!(
             result.is_err(),
             "una ruta de modelo inexistente debe fallar"
+        );
+    }
+
+    /// El titular devuelve siempre la misma instancia y exige los mismos
+    /// límites de concurrencia que el motor (`Send` + `Sync`), de modo que
+    /// varios hilos pueden compartirlo sin destruirlo nunca.
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[ignore = "requiere Parakeet"]
+    fn process_holder_returns_shared_instance() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<EngineHolder>();
+        assert_send_sync::<ParakeetEngine>();
+        let holder = EngineHolder::new();
+        let dir = require_parakeet();
+        let first = holder.get_or_try_init(&dir).expect("el motor debe cargar");
+        let second = holder
+            .get_or_try_init(&dir)
+            .expect("la segunda resolución reutiliza");
+        assert!(
+            std::ptr::eq(first, second),
+            "el titular debe devolver siempre la misma instancia"
+        );
+    }
+
+    /// El fallo de carga queda retenido: repetir la resolución sobre el mismo
+    /// titular devuelve el error sin reintentar. No necesita modelos y corre
+    /// siempre, como la prueba del constructor con ruta inexistente.
+    #[cfg(feature = "native-stt")]
+    #[test]
+    fn process_holder_caches_load_failure() {
+        let holder = EngineHolder::new();
+        assert!(
+            holder
+                .get_or_try_init("ruta/que/no/existe/parakeet")
+                .is_err(),
+            "una ruta inexistente debe fallar sin crear instancia"
+        );
+        assert!(
+            holder
+                .get_or_try_init("ruta/que/no/existe/parakeet")
+                .is_err(),
+            "la segunda resolución repite el fallo retenido"
         );
     }
 
