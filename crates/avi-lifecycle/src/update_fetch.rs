@@ -156,7 +156,12 @@ pub async fn fetch(
     restrict_staging(&staging);
     let outcome = fetch_into(client, request, &staging).await;
     if outcome.is_err() {
-        let _ = std::fs::remove_dir_all(&staging);
+        if let Err(e) = std::fs::remove_dir_all(&staging) {
+            eprintln!(
+                "Aviso: el staging {} de la descarga fallida quedó sin borrar: {e}",
+                staging.display()
+            );
+        }
     }
     outcome
 }
@@ -236,7 +241,12 @@ pub async fn verify_boot(
         ))
     })?;
     let reported = std::fs::read_to_string(&log_path).unwrap_or_default();
-    let _ = std::fs::remove_file(&log_path);
+    if let Err(e) = std::fs::remove_file(&log_path) {
+        eprintln!(
+            "Aviso: el log de `verify_boot` {} quedó sin borrar: {e}",
+            log_path.display()
+        );
+    }
     if !status.success() {
         return Err(LifecycleError::binary_incompatible(format!(
             "el binario descargado ({triple}) terminó con estado {} al comprobar \
