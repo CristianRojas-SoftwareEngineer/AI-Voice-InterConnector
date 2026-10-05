@@ -76,7 +76,7 @@ fn entry() -> PathBuf {
 #[test]
 fn criterion_7_windows_user_path_type_and_vars_survive() {
     let _guard = support::exclusively();
-    let mut sandbox = Sandbox::new("c7");
+    let mut sandbox = Sandbox::new("reversion-path-windows");
     sandbox.bin_dir = sandbox.program_dir.clone();
     sandbox.seed_env();
     let key = sandbox.registry_subkey.clone();

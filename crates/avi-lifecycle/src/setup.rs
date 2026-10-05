@@ -482,7 +482,7 @@ pub struct Outcome {
 /// Es el punto de entrada que el binario cablea. La descarga vive en
 /// [`provision`], compartida con `self install`; `run` añade la migración, la
 /// persistencia de la selección, la purga, la confirmación y la poda. Lo único que se
-/// queda en el binario es el sobre `--json` y la prosa, porque el parseo de la CLI y
+/// queda en el binario es el envelope `--json` y la prosa, porque el parseo de la CLI y
 /// el emisor no viven en este crate.
 ///
 /// La confirmación destructiva de `--force-update` y la del tamaño pendiente se

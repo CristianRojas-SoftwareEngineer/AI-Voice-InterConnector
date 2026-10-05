@@ -25,7 +25,9 @@
 //! ([`program_dir_is_removable`]): el directorio de programa solo se borra si contiene
 //! el recibo o el ejecutable, y nunca si es la raíz de una unidad, `$HOME`, un
 //! ancestro de `$HOME` o una de las otras raíces del producto. Ni una variable de
-//! reubicación ni un recibo manipulado pueden ampliar el alcance.
+//! reubicación ni un recibo manipulado pueden ampliar el alcance. Se aplica en
+//! [`compose_plan`] y no solo en el paso 8: el plan no puede prometer un directorio que
+//! la ejecución real conservaría, así que cuando R2 lo rechaza entra como `preserved`.
 //!
 //! **Idempotencia**: sin instalación ni estado, éxito con `not_installed`.
 //! **Residuo**: cero dentro de las raíces de propiedad exclusiva, y
@@ -94,6 +96,13 @@ pub struct Plan {
     /// Lo que se conserva a propósito, con el motivo: recursos compartidos (R3) y la
     /// integración de `PATH`, que se revierte en vez de borrarse.
     pub preserved: Vec<Preserved>,
+    /// Destino del plan que se lleva el directorio de programa cuando R2 le impide
+    /// borrarlo por su cuenta. Va en el plan porque cambia lo que el comando afirma:
+    /// si el directorio de programa vive dentro de una raíz que el propio plan borra
+    /// —típico, con `AVI_INSTALL_DIR` dentro de la raíz de datos— entonces **sí** se
+    /// borra, y anunciarlo como conservado afirmaría una preservación que la operación
+    /// no cumple. Con `None` y `program_dir` a `None`, R2 lo preserva de verdad.
+    pub program_dir_swallowed_by: Option<PathBuf>,
 }
 
 impl Plan {
@@ -159,17 +168,28 @@ pub enum Removal {
 /// Desenlace de `self uninstall`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outcome {
-    /// `uninstalled`, `removal_scheduled`, `not_installed` o `cancelled`.
+    /// `uninstalled`, `removal_scheduled`, `not_installed`, `cancelled` o `planned`
+    /// (simulacro).
     pub status: &'static str,
-    /// Rutas borradas en esta ejecución, incluido el directorio de programa.
+    /// Rutas borradas en esta ejecución, incluido el directorio de programa. En el
+    /// simulacro, las entradas del plan, sin el barrido.
     pub removed: Vec<String>,
+    /// Recibo del plan anunciado: el mismo que `removed` en el simulacro y el plan
+    /// ejecutado en la real. Es lo que permite compararlas.
+    pub planned: Vec<String>,
     /// Del barrido transversal.
     pub swept: Vec<String>,
     /// Lo que no se pudo borrar.
     pub kept: Vec<String>,
     /// Recursos compartidos que se conservan, con el motivo.
     pub preserved: Vec<Preserved>,
-    /// `true` si se invirtió la integración de `PATH`.
+    /// `true` si se invirtió algo de la integración de `PATH`.
+    ///
+    /// Lo publica el mismo predicado en las dos ramas
+    /// ([`path_would_be_reverted`](fn@path_would_be_reverted)), consultado **antes** de
+    /// revertir: la marca `modify_path` del recibo dice que se integró el `PATH`, no que
+    /// quede algo que revertir, y un plan que afirmara lo contrario sería un plan que
+    /// miente.
     pub path_reverted: bool,
     /// `true` si el directorio de programa se borró de verdad; `false` si quedó
     /// programado para después de salir, o si R2 lo impidió.
@@ -188,7 +208,7 @@ impl Outcome {
     ///
     /// Es éxito parcial con código propio: el resto de la desinstalación se completó y lo
     /// único que falta es ese directorio. La exclusión por R2 no es un fallo sino
-    /// preservación deliberada, así que no llega aquí. Quien cablea emite el sobre con este
+    /// preservación deliberada, así que no llega aquí. Quien cablea emite el envelope con este
     /// `reason` y sale por veredicto con su código, como hace `self install`.
     pub fn lifecycle_error(&self) -> Option<LifecycleError> {
         self.program_dir_kept.as_ref().map(|detail| {
@@ -241,7 +261,7 @@ pub async fn run(
     // Antes del bloqueo a propósito: tomar el bloqueo crea el archivo, y una
     // simulación que deja un archivo detrás no es una simulación (criterio 20).
     if options.dry_run {
-        return Ok(simulate(roots, receipt, &program_dir, options));
+        return Ok(simulate(roots, receipt, &program_dir, &env.home, options));
     }
 
     // Ninguna operación pide elevación.
@@ -256,6 +276,12 @@ pub async fn run(
     // ── Paso 2. Plan ──────────────────────────────────────────────────────────────
     let plan = compose_plan(roots, receipt, &program_dir, options);
     let entries = plan.entries();
+    // El recibo del plan, que el desenlace publica para comparar el simulacro con
+    // la ejecución real.
+    let planned: Vec<String> = entries
+        .iter()
+        .map(|e| e.path.display().to_string())
+        .collect();
 
     // ── Paso 4. Confirmación destructiva ─────────────────────────────────────────
     let summary = compose_summary(&plan, options);
@@ -263,6 +289,7 @@ pub async fn run(
     if decision == Decision::Cancelled {
         return Ok(Outcome {
             status: "cancelled",
+            planned,
             preserved: plan.preserved,
             ..Outcome::default()
         });
@@ -287,11 +314,19 @@ pub async fn run(
     }
 
     // ── Paso 7. Revertir el `PATH` exactamente según el recibo ───────────────────
-    let path_reverted = revert_path(receipt, &env.home);
+    // El valor que se publica sale del mismo predicado que usa el simulacro, y se
+    // consulta **antes** de revertir: después ya no quedaría nada que prever, y la
+    // reversión —que sí se hace, y siempre— es la que decide qué se tocó.
+    let path_pending = path_would_be_reverted(receipt, &env.home);
+    let path_reverted = revert_path(receipt, &env.home) && path_pending;
 
     // ── Paso 8. Borrar el directorio de programa aplicando R2 ────────────────────
+    // La decisión no se vuelve a tomar aquí: sale del plan, que ya la aplicó al
+    // componerse. `program_dir` solo es destino si R2 lo permite, y R2 exige recibo
+    // o ejecutable **dentro** del directorio, así que ser destino implica que el
+    // directorio existe.
     let mut program_dir_kept = None;
-    let (program_dir_removed, status) = if program_dir_is_removable(roots, &program_dir) {
+    let (program_dir_removed, status) = if plan.program_dir.is_some() {
         match remove_program_dir(remover, &program_dir) {
             Ok(Removal::Now) => {
                 removed.push(program_dir.display().to_string());
@@ -305,11 +340,17 @@ pub async fn run(
                 (false, "uninstalled")
             }
         }
+    } else if plan.program_dir_swallowed_by.is_some() {
+        // R2 le impidió borrarlo por su cuenta, pero un destino del plan se lo lleva:
+        // no hay nada que anunciar aquí porque **sí** se borra, y el destino que lo
+        // hace ya está en `removed` si lo consiguió. Anunciarlo como conservado
+        // sería falso.
+        (false, "uninstalled")
     } else {
         eprintln!(
-            "  no se borra {}: R2 no permite borrar un directorio de programa sin \
-             recibo ni ejecutable, ni uno que sea raíz del sistema o del perfil",
-            program_dir.display()
+            "  no se borra {}: {}",
+            program_dir.display(),
+            R2_PROGRAM_DIR_REASON
         );
         (false, "uninstalled")
     };
@@ -323,6 +364,7 @@ pub async fn run(
     Ok(Outcome {
         status,
         removed,
+        planned,
         swept: recovery
             .removed_parked
             .iter()
@@ -359,6 +401,11 @@ pub async fn run(
 /// de datos **entera** —que R1 permite porque es exclusiva— en vez de la lista de
 /// categorías. Con `--keep-data` sí se aplica el plan de `cleanup --all` filtrado, que es
 /// lo coherente: el usuario ha pedido conservar el estado.
+///
+/// El directorio de programa es el otro destino, y lo decide **R2** —y lo decide aquí, no
+/// en el paso 8— porque es la misma regla la que gobierna las dos ramas: si R2 no lo
+/// permite, el plan lo anuncia como `preserved` en vez de listarlo como destino, que es lo
+/// que la ejecución real hace al conservarlo.
 pub fn compose_plan(
     roots: &Roots,
     receipt: Option<&InstallReceipt>,
@@ -431,11 +478,51 @@ pub fn compose_plan(
             .cmp(&b.category)
             .then_with(|| a.path.cmp(&b.path))
     });
+    // R2 gobierna el paso 8, y el plan no puede prometer lo que R2 impide: un
+    // directorio de programa dentro de una raíz del producto, de `$HOME` o de una
+    // unidad no se borraría por su cuenta, así que no entra como destino. Pero R2 dice
+    // «no lo borro yo», no «no se borra»: si el directorio vive dentro de una raíz que
+    // este mismo plan borra, la operación se lo lleva igual, y anunciarlo como
+    // conservado afirmaría una preservación que la operación no cumple. La pregunta
+    // que decide es de cobertura —¿lo recorre ya algún destino?— y se responde sobre
+    // los destinos del plan, no sobre las reglas. La decisión vive en el planificador
+    // del que salen las dos ramas —simulacro y ejecución real— para que `--dry-run` no
+    // anuncie más de lo que la operación hace.
+    let (program_dir_entry, program_dir_swallowed_by) =
+        if program_dir_is_removable(roots, program_dir) {
+            (
+                program_dir.is_dir().then(|| PlanEntry::of(program_dir)),
+                None,
+            )
+        } else if let Some(swallower) = target_covering(&state.targets, program_dir) {
+            (None, Some(swallower))
+        } else {
+            preserved.push(Preserved {
+                path: program_dir.to_path_buf(),
+                reason: R2_PROGRAM_DIR_REASON,
+            });
+            (None, None)
+        };
     Plan {
         state,
-        program_dir: program_dir.is_dir().then(|| PlanEntry::of(program_dir)),
+        program_dir: program_dir_entry,
         preserved,
+        program_dir_swallowed_by,
     }
+}
+
+/// Destino del plan que contiene —o es— el directorio de programa, si alguno lo
+/// contiene.
+///
+/// Es la pregunta de cobertura que decide si R2 preserva o no: R2 impide borrar el
+/// directorio de programa cuando vive dentro de una raíz del producto, y casi
+/// siempre esa raíz es un destino del propio plan.
+fn target_covering(targets: &[cleanup::Target], program_dir: &Path) -> Option<PathBuf> {
+    let key = crate::canonical_path_key(program_dir);
+    targets
+        .iter()
+        .find(|t| is_same_or_descendant(&key, &crate::canonical_path_key(&t.path)))
+        .map(|t| t.path.clone())
 }
 
 /// Anuncia la integración de `PATH` como lo que se va a **revertir**, no a borrar.
@@ -465,10 +552,22 @@ fn describe_path_integration(receipt: &InstallReceipt, preserved: &mut Vec<Prese
 }
 
 /// Paso 3: la simulación.
+///
+/// Es el mismo plan que la ejecución real, serializado con `status: "planned"`: el
+/// recibo (`planned` y `removed`) sale de [`compose_plan`], el barrido va separado
+/// en `swept` como en la ejecución, y `path_reverted` es lo que
+/// [`path_would_be_reverted`] prevé que se revertiría —el mismo predicado que gobierna
+/// ese valor en la ejecución real—, sin tocar el disco. Nunca pide confirmación: es de
+/// solo lectura y `cancelled` no existe en el simulacro.
+///
+/// `home` va como parámetro y no se deduce de `roots` por el motivo que explica
+/// [`Env::home`]: los bloques delimitados se escribieron con el `$HOME` de aquel momento
+/// y compararlos contra otro no los encontraría.
 pub fn simulate(
     roots: &Roots,
     receipt: Option<&InstallReceipt>,
     program_dir: &Path,
+    home: &Path,
     options: &Options,
 ) -> Outcome {
     let plan = compose_plan(roots, receipt, program_dir, options);
@@ -489,23 +588,31 @@ pub fn simulate(
     for item in &plan.preserved {
         eprintln!("  no se tocará {}: {}", item.path.display(), item.reason);
     }
-    let mut removed: Vec<String> = plan
+    // `removed` son las entradas del plan y `swept` el barrido previsto, en las dos
+    // ramas: mezclar el barrido dentro de `removed` en la simulación y no en la
+    // ejecución haría que `--dry-run` y la real no se pudieran comparar, que es
+    // justamente la propiedad que el plan único garantiza.
+    let planned: Vec<String> = plan
         .entries()
         .iter()
         .map(|e| e.path.display().to_string())
         .collect();
-    removed.extend(preview.all().iter().map(|p| p.display().to_string()));
     Outcome {
-        status: "uninstalled",
-        removed,
-        swept: Vec::new(),
+        status: "planned",
+        removed: planned.clone(),
+        planned,
+        swept: preview
+            .all()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
         kept: preview
             .temporaries_kept
             .iter()
             .map(|p| p.display().to_string())
             .collect(),
         preserved: plan.preserved,
-        path_reverted: false,
+        path_reverted: path_would_be_reverted(receipt, home),
         program_dir_removed: false,
         program_dir_kept: None,
         dry_run: true,
@@ -571,6 +678,69 @@ fn confirm(
     )
 }
 
+/// ¿Revertiría algo la reversión del `PATH`?
+///
+/// Es el predicado que gobierna `path_reverted` en **las dos ramas** —el simulacro y la
+/// ejecución real—, y por eso no es `modify_path`: la marca del recibo dice que se
+/// integró el `PATH`, no que quede algo que revertir. Un recibo con `modify_path: true` al
+/// que ya no le queda enlace, bloque delimitado ni entrada de registro no invierte nada,
+/// y un plan que afirmara lo contrario sería un plan que miente.
+///
+/// Solo lee. Delega en las mismas reglas que usa [`revert_path`] —el enlace solo si
+/// apunta al directorio de programa, el bloque delimitado si está al final del perfil, la
+/// entrada del registro con la comparación canónica—, pero sin escribir, y devuelve
+/// exactamente lo que cada una de ellas tocaría: por eso el valor que publica el
+/// simulacro es el mismo que publicaría la ejecución real.
+pub fn path_would_be_reverted(receipt: Option<&InstallReceipt>, home: &Path) -> bool {
+    let Some(receipt) = receipt else {
+        return false;
+    };
+    if !receipt.path_integration.modify_path {
+        return false;
+    }
+    let integration: &PathIntegration = &receipt.path_integration;
+    let mut would = false;
+
+    #[cfg(unix)]
+    if let Some(symlink) = &integration.symlink {
+        let program_exe = receipt.install_dir.join(executable_name(receipt));
+        would |= matches!(
+            path_unix::classify_existing(symlink, &program_exe),
+            path_unix::Existing::Ours(_)
+        );
+    }
+    if let Some(blocks) = &integration.profile_blocks {
+        let bin_dir = receipt_bin_dir(receipt);
+        for block in blocks {
+            would |= block_would_be_removed(block, &bin_dir, home);
+        }
+    }
+    #[cfg(windows)]
+    if let Some(entry) = &integration.registry_entry {
+        would |= match crate::path_windows::read_path(crate::path_windows::ENV_SUBKEY) {
+            Ok(actual) => crate::path_windows::plan_revert(actual.as_ref(), entry).changed,
+            Err(_) => false,
+        };
+    }
+    would
+}
+
+/// `true` si el bloque delimitado está al final del perfil, que es la única forma en que
+/// [`path_unix::remove_block`] lo quitaría.
+///
+/// Reproduce su criterio —el sufijo exacto, con el separador que `append` pone delante o
+/// sin él— sin escribir: el simulacro no puede tocar el disco.
+fn block_would_be_removed(path: &Path, bin_dir: &Path, home: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let block = path_unix::block_text(bin_dir, home);
+    content.strip_suffix(&block).is_some()
+        || content
+            .strip_suffix(&format!("\n{block}"))
+            .is_some_and(|before| !before.is_empty())
+}
+
 /// Paso 7: revertir el `PATH` exactamente según el recibo.
 ///
 /// Unix: el enlace, **solo si apunta al directorio de programa** —un enlace que apunta
@@ -578,6 +748,11 @@ fn confirm(
 /// de los perfiles. Windows: la entrada del registro con comparación canónica, que
 /// `path_windows` hace conservando el tipo del valor y propagando
 /// `WM_SETTINGCHANGE`.
+///
+/// Devuelve si **tocó** algo, que no es lo mismo que la marca del recibo:
+/// [`path_would_be_reverted`] es lo que responde a la pregunta de qué se va a revertir, y
+/// el paso 7 lo consulta antes de revertir. Lo que esta función revierte no cambia por
+/// eso: sigue revirtiendo exactamente lo mismo.
 ///
 /// `--no-modify-path` dejó `modify_path: false` en el recibo: no hay nada que
 /// revertir, y por eso el desenlace es `false` y no un error.
@@ -665,6 +840,15 @@ fn receipt_bin_dir(receipt: &InstallReceipt) -> PathBuf {
         .map(Path::to_path_buf)
         .unwrap_or_else(crate::bin_dir)
 }
+
+/// Motivo con el que R2 conserva el directorio de programa.
+///
+/// Lo comparten las dos ramas: el plan lo anuncia como `preserved` y el paso 8 lo avisa
+/// por stderr, así que el motivo que ve el usuario es el mismo en el simulacro y en la
+/// ejecución real.
+pub const R2_PROGRAM_DIR_REASON: &str = "R2 no permite borrar un directorio de programa sin \
+                                        recibo ni ejecutable, ni uno que sea raíz del sistema \
+                                        o del perfil";
 
 /// R2: ¿se puede borrar este directorio de programa?
 ///

@@ -329,7 +329,7 @@ fn env_uninstall<'a>(
     }
 }
 
-/// Las rutas del plan, como cadenas, que es la forma en que el sobre las publica.
+/// Las rutas del plan, como cadenas, que es la forma en que el envelope las publica.
 fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
     plan.targets
         .iter()

@@ -494,8 +494,7 @@ async fn bundle_without_required_files_is_rejected() {
 
     // `install` devuelve `anyhow::Error` porque hay fallos de E/S sin `reason` propio,
     // pero los que la tabla de reasons declara viajan dentro como `LifecycleError`, que
-    // es lo que el
-    // sobre emite.
+    // es lo que el envelope emite.
     let failure = err
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .unwrap_or_else(|| panic!("el fallo declara un `reason`: {err:#}"));

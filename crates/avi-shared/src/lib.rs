@@ -12,8 +12,10 @@ pub mod logs;
 pub mod manifest;
 pub mod paths;
 pub mod pins;
+pub mod temp_wav;
 
 pub use console::force_utf8_console;
+pub use temp_wav::TempWav;
 
 /// Tamaño legible en escala decimal (B, KB, MB, GB, TB) con un decimal.
 /// Es el único formateador de tamaños del workspace, compartido por el producto

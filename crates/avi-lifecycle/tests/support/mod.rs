@@ -625,7 +625,7 @@ pub fn dead_port() -> String {
     addr.to_string()
 }
 
-/// Rutas del plan de borrado, como cadenas, que es la forma en que el sobre las
+/// Rutas del plan de borrado, como cadenas, que es la forma en que el envelope las
 /// publica.
 pub fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
     plan.targets

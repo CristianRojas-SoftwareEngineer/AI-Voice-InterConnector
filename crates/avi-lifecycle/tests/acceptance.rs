@@ -479,7 +479,7 @@ fn criterion_6_no_setup_provisions_nothing() {
 ///
 /// El resumen en texto se afirma por las dos mitades —el estado de los modelos y el aviso
 /// con el motivo de la causa y la instrucción de reintentar—, porque es la otra salida de
-/// la misma operación y no puede decir una cosa mientras el sobre dice otra.
+/// la misma operación y no puede decir una cosa mientras el envelope dice otra.
 #[test]
 fn criterion_6_setup_failure_keeps_install() {
     let _guard = support::exclusively();
@@ -609,7 +609,7 @@ fn criterion_6_setup_failure_keeps_install() {
     // `reason` de contrato, y por eso el cableado sale por `Hecho` y con código 0. La
     // prueba de al lado lo demuestra con la provisión entera, sin atajos.
 
-    // El resumen en texto dice lo mismo que el sobre.
+    // El resumen en texto dice lo mismo que el envelope.
     assert!(
         outcome
             .summary
@@ -1891,5 +1891,433 @@ fn criterion_23_shared_resources_survive() {
         !support::exists(&s.models_dir),
         "criterio 23: en la raíz exclusiva `--model` borra el directorio entero, `xet` y \
          `.locks` incluidos, porque son de la aplicación"
+    );
+}
+
+// ─── El simulacro nunca pide confirmación ─────────────────────────────────────────
+
+/// El simulacro de `self uninstall` nunca pide confirmación: con
+/// `--dry-run` y sin `--yes` termina en éxito con `planned`, con el recibo del
+/// plan y sin modificar el disco.
+///
+/// Sin la salida temprana del paso 3, `run` llegaría a la confirmación y, sin
+/// terminal y sin `--yes`, fallaría con `confirmation_required` (criterio 19);
+/// que esta llamada se ejecute ya demuestra que el simulacro no pregunta. El
+/// patrón de sandbox es el de las pruebas de simulacro del crate (criterio 20).
+#[test]
+fn uninstall_dry_run_needs_no_confirmation() {
+    let _guard = support::exclusively();
+    let sandbox = Sandbox::new("simulacro-sin-confirmacion");
+    sandbox.seed_env();
+    sandbox.seed_state();
+    let receipt = sandbox.install_registered(PathIntegration::none());
+    let before = sandbox.snapshot();
+
+    // Sin `--yes` a propósito: si el simulacro preguntara, esto fallaría.
+    let outcome = support::runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
+            &uninstall::Options {
+                dry_run: true,
+                ..Default::default()
+            },
+            &Now,
+            &Inert,
+        ))
+        .expect("el simulacro sin `--yes` se ejecuta sin pedir confirmación");
+    assert_eq!(
+        outcome.status, "planned",
+        "el simulacro se lee como un plan"
+    );
+    assert_eq!(
+        outcome.planned, outcome.removed,
+        "el recibo del plan es el que se anuncia"
+    );
+    assert!(
+        !outcome.removed.is_empty(),
+        "el plan no está vacío: hay instalación registrada"
+    );
+    assert!(
+        !outcome.path_reverted,
+        "el recibo no integra el `PATH`, así que nada se prevé revertir"
+    );
+    assert_eq!(
+        sandbox.snapshot(),
+        before,
+        "el simulacro no modifica el disco"
+    );
+
+    // Y con un recibo que dice haber integrado el `PATH`, el simulacro no promete una
+    // reversión que no tocaría nada: la marca del recibo dice que se integró, no que
+    // quede algo que revertir, y aquí no queda ni enlace, ni bloque, ni entrada de
+    // registro.
+    let mut with_path = receipt.clone();
+    with_path.path_integration.modify_path = true;
+    let preview = uninstall::simulate(
+        &sandbox.roots(),
+        Some(&with_path),
+        &sandbox.program_dir,
+        &sandbox.home,
+        &uninstall::Options {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    assert!(
+        !preview.path_reverted,
+        "sin artefactos de integración la ejecución real no tocaría nada, y el \
+         simulacro no dice lo contrario"
+    );
+    assert_eq!(
+        preview.planned, preview.removed,
+        "el recibo del plan es el que se anuncia"
+    );
+    assert_eq!(
+        sandbox.snapshot(),
+        before,
+        "la previsión tampoco modifica el disco"
+    );
+}
+
+/// El simulacro y la ejecución real publican el mismo `path_reverted`, en las dos
+/// direcciones.
+///
+/// El valor sale de un único predicado —[`uninstall::path_would_be_reverted`], que además
+/// de la marca del recibo mira si existe de verdad lo que se revertiría—, y no de dos
+/// implementaciones paralelas que podían divergir. Se afirma en las dos direcciones porque
+/// un plan veraz no puede mentir en ninguna:
+///
+/// - **Con bloque delimitado**: el simulacro dice `true` y la ejecución también, porque
+///   el bloque está y se quita.
+/// - **Sin nada que revertir**: el simulacro dice `false` y la ejecución también. Aquí el
+///   `false` del simulacro es la mitad difícil: la marca `modify_path` del recibo es
+///   `true`, así que un simulacro que la leyera afirmaría una reversión que no ocurre.
+///
+/// El bloque delimitado se usa porque es el artefacto de integración que existe en las dos
+/// plataformas —el enlace es de Unix y la entrada de registro es de Windows—, así que la
+/// equivalencia se afirma en todas.
+#[test]
+fn uninstall_path_reverted_matches_the_real_run() {
+    let _guard = support::exclusively();
+    let sandbox = Sandbox::new("reversion-con-bloque");
+    sandbox.seed_env();
+    sandbox.seed_state();
+    let receipt = sandbox.install_registered(PathIntegration::none());
+
+    let bin_dir = sandbox.bin_dir.clone();
+    let profile = sandbox.home.join(".profile");
+    let with_block = {
+        // El enlace del recibo hace que `receipt_bin_dir` deduzca el `bin_dir` de su
+        // directorio padre, así que el bloque se escribe con ese mismo valor.
+        let link = bin_dir.join("avi-voice-interconnector");
+        let mut copy = receipt.clone();
+        copy.path_integration = PathIntegration::unix(link, vec![profile.clone()]);
+        avi_lifecycle::path_unix::write_block(&profile, &bin_dir, &sandbox.home)
+            .expect("se escribe el bloque delimitado");
+        copy
+    };
+    let without_block = {
+        let mut integration = with_block.path_integration.clone();
+        // El recibo sigue diciendo que integró el `PATH`, pero ya no queda el bloque: es el
+        // caso en que la marca dice una cosa y el disco otra.
+        integration.profile_blocks = Some(vec![sandbox.home.join("nunca-existio")]);
+        let mut copy = with_block.clone();
+        copy.path_integration = integration;
+        copy
+    };
+
+    let preview_of = |r: &InstallReceipt| {
+        uninstall::simulate(
+            &sandbox.roots(),
+            Some(r),
+            &sandbox.program_dir,
+            &sandbox.home,
+            &uninstall::Options {
+                dry_run: true,
+                assume_yes: true,
+                ..Default::default()
+            },
+        )
+    };
+    assert!(
+        preview_of(&with_block).path_reverted,
+        "con el bloque en el disco el simulacro prevé la reversión"
+    );
+    assert!(
+        !preview_of(&without_block).path_reverted,
+        "sin bloque, aunque el recibo diga `modify_path`, no se prevé revertir nada"
+    );
+
+    // Y ahora la ejecución real, con el bloque presente: el mismo `true`.
+    let preview = preview_of(&with_block);
+    let real = support::runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(&with_block), Channel::Script),
+            &uninstall::Options {
+                assume_yes: true,
+                ..Default::default()
+            },
+            &Now,
+            &Inert,
+        ))
+        .expect("la desinstalación real se ejecuta");
+    assert_eq!(
+        preview.path_reverted, real.path_reverted,
+        "el simulacro y la ejecución real dicen lo mismo"
+    );
+    assert!(
+        real.path_reverted,
+        "y aquí los dos dicen que sí, porque el bloque estaba"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&profile).expect("el perfil se lee"),
+        "",
+        "el bloque delimitado se quita de verdad"
+    );
+
+    // Y en la dirección contraria, sin nada que revertir: los dos dicen `false`.
+    let sandbox = Sandbox::new("reversion-sin-bloque");
+    sandbox.seed_env();
+    sandbox.seed_state();
+    let bare = sandbox.install_registered(PathIntegration::none());
+    let mut bare_integration = bare.path_integration.clone();
+    bare_integration.modify_path = true;
+    let bare = InstallReceipt {
+        path_integration: bare_integration,
+        ..bare
+    };
+    let preview = uninstall::simulate(
+        &sandbox.roots(),
+        Some(&bare),
+        &sandbox.program_dir,
+        &sandbox.home,
+        &uninstall::Options {
+            dry_run: true,
+            assume_yes: true,
+            ..Default::default()
+        },
+    );
+    let real = support::runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(&bare), Channel::Script),
+            &uninstall::Options {
+                assume_yes: true,
+                ..Default::default()
+            },
+            &Now,
+            &Inert,
+        ))
+        .expect("la desinstalación real sin integración se ejecuta");
+    assert!(
+        !preview.path_reverted && !real.path_reverted,
+        "la marca `modify_path` sin artefactos no invierte nada en ninguna de las dos \
+         ramas: el simulacro no promete una reversión que la ejecución no hace"
+    );
+}
+
+/// El plan no promete un directorio de programa que R2 no permite borrar.
+///
+/// Con un directorio de programa que R2 rechaza —porque es `$HOME`, un ancestro suyo, una
+/// raíz de unidad o una raíz del producto—, la ejecución real lo conserva. El plan tenía
+/// su propia decisión —`program_dir.is_dir()`— y por eso lo listaba como destino:
+/// `self uninstall --dry-run` anunciaba un borrado que la operación no hace, que es la
+/// propiedad que un plan veraz no puede tener.
+///
+/// Se afirma en las dos ramas: el simulacro no lo lista como destino y la ejecución real
+/// tampoco lo borra, y las dos lo anuncian como `preserved` con el motivo de R2.
+///
+/// El caso elegido es `$HOME` como directorio de programa, con el recibo plantado dentro:
+/// es la mitad negativa de R2 —la positiva sí se cumple— y además el que **no** cuelga de
+/// una raíz que el plan ya borra entera, así que el directorio sobrevive de verdad a la
+/// operación. Un directorio de programa dentro de la raíz de datos no serviría para
+/// afirmar la conservación: R1 borra esa raíz completa, con él dentro.
+#[test]
+fn uninstall_plan_does_not_promise_what_r2_refuses() {
+    let _guard = support::exclusively();
+    let sandbox = Sandbox::new("programa-rechazado-por-r2");
+    sandbox.seed_env();
+    sandbox.seed_state();
+    let program_dir = sandbox.home.clone();
+    let receipt = InstallReceipt::new(
+        "0.24.0",
+        avi_lifecycle::target::host_triple(),
+        Channel::Script,
+        &program_dir,
+        vec![uninstall::executable_name_default()],
+        PathIntegration::none(),
+        receipt::Roots {
+            data_dir: sandbox.data_dir.clone(),
+            cache_dir: sandbox.models_dir.clone(),
+        },
+        None,
+    );
+    receipt::write_to(&receipt, &program_dir).expect("se planta el recibo");
+    let roots = sandbox.roots();
+    assert!(
+        !uninstall::program_dir_is_removable(&roots, &program_dir),
+        "R2 rechaza este directorio de programa, que es la premisa de la prueba"
+    );
+
+    let options = uninstall::Options {
+        assume_yes: true,
+        ..Default::default()
+    };
+    let plan = uninstall::compose_plan(&roots, Some(&receipt), &program_dir, &options);
+    assert!(
+        plan.program_dir.is_none(),
+        "el plan no lo ofrece como destino: la ejecución real no lo borraría"
+    );
+    assert!(
+        !plan.entries().iter().any(|e| e.path == program_dir),
+        "y no aparece en las entradas del plan, que es lo que se anuncia y se borra"
+    );
+    assert!(
+        plan.preserved
+            .iter()
+            .any(|p| p.path == program_dir && p.reason == uninstall::R2_PROGRAM_DIR_REASON),
+        "el plan lo conserva con el motivo de R2, que es lo que hace la ejecución real: \
+         {:?}",
+        plan.preserved
+    );
+
+    // El simulacro hereda la misma decisión, porque sale del mismo planificador.
+    let preview = uninstall::simulate(
+        &roots,
+        Some(&receipt),
+        &program_dir,
+        &sandbox.home,
+        &options,
+    );
+    assert_eq!(preview.planned, preview.removed, "el simulacro es el plan");
+    assert!(
+        !preview
+            .removed
+            .iter()
+            .any(|p| p == &program_dir.display().to_string()),
+        "y no anuncia el borrado que no ocurriría"
+    );
+
+    // Y la ejecución real lo conserva, con el mismo `status` de siempre.
+    let real = support::runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
+            &options,
+            &Now,
+            &Inert,
+        ))
+        .expect("la desinstalación se ejecuta");
+    assert_eq!(
+        real.status, "uninstalled",
+        "la exclusión por R2 es preservación deliberada, no un fallo"
+    );
+    assert!(
+        !real.program_dir_removed && real.program_dir_kept.is_none(),
+        "y no cambia el significado de los dos desenlaces del paso 8"
+    );
+    assert!(
+        support::exists(&program_dir),
+        "el directorio de programa sigue en su sitio, como antes"
+    );
+    assert!(
+        real.preserved
+            .iter()
+            .any(|p| p.path == program_dir && p.reason == uninstall::R2_PROGRAM_DIR_REASON),
+        "la ejecución real también lo anuncia como conservado"
+    );
+    assert!(
+        !real
+            .removed
+            .iter()
+            .any(|p| p == &program_dir.display().to_string()),
+        "y no lo cuenta entre lo borrado"
+    );
+    assert_eq!(
+        real.planned, preview.planned,
+        "el plan que ve el usuario y el que se ejecutó son el mismo"
+    );
+}
+
+/// Un directorio de programa que R2 rechaza por vivir dentro de una raíz del
+/// producto **no** se anuncia como conservado cuando esa raíz es un destino del
+/// plan, porque la operación sí se lo lleva.
+///
+/// R2 dice «no lo borro yo», no «no se borra». Sin esta distinción, con
+/// `AVI_INSTALL_DIR` dentro de la raíz de datos —una disposición posible— el
+/// comando anunciaba «no se tocará» sobre un directorio que el paso 6 borraba con
+/// la raíz entera: la misma afirmación falsa que el envelope del plan y el
+/// resumen en texto tienen que evitar.
+#[test]
+fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
+    let _guard = support::exclusively();
+    let sandbox = Sandbox::new("programa-dentro-de-raiz");
+    sandbox.seed_env();
+    sandbox.seed_state();
+    // Directorio de programa dentro de la raíz de datos: R2 lo rechaza porque
+    // cuelga de una raíz del producto, y R1 borra esa raíz completa.
+    let program_dir = sandbox.data_dir.join("bin").join("ai-voice-interconnector");
+    std::fs::create_dir_all(&program_dir).expect("se crea el directorio anidado");
+    let receipt = InstallReceipt::new(
+        "0.24.0",
+        avi_lifecycle::target::host_triple(),
+        Channel::Script,
+        &program_dir,
+        vec![uninstall::executable_name_default()],
+        PathIntegration::none(),
+        receipt::Roots {
+            data_dir: sandbox.data_dir.clone(),
+            cache_dir: sandbox.models_dir.clone(),
+        },
+        None,
+    );
+    receipt::write_to(&receipt, &program_dir).expect("se planta el recibo");
+    let roots = sandbox.roots();
+    assert!(
+        !uninstall::program_dir_is_removable(&roots, &program_dir),
+        "R2 rechaza este directorio de programa, que es la premisa de la prueba"
+    );
+
+    let options = uninstall::Options {
+        assume_yes: true,
+        ..Default::default()
+    };
+    let plan = uninstall::compose_plan(&roots, Some(&receipt), &program_dir, &options);
+    assert_eq!(
+        plan.program_dir_swallowed_by.as_deref(),
+        Some(sandbox.data_dir.as_path()),
+        "el plan registra que la raíz de datos se lo lleva"
+    );
+    assert!(
+        !plan.preserved.iter().any(|p| p.path == program_dir),
+        "y no lo anuncia como conservado, porque no se conserva: {:?}",
+        plan.preserved
+    );
+
+    // El simulacro y la ejecución real coinciden, y los dos lo borran.
+    let preview = uninstall::simulate(
+        &roots,
+        Some(&receipt),
+        &program_dir,
+        &sandbox.home,
+        &options,
+    );
+    let real = support::runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
+            &options,
+            &Now,
+            &Inert,
+        ))
+        .expect("la desinstalación se ejecuta");
+    assert_eq!(
+        preview.planned, real.planned,
+        "el plan que ve el usuario y el que se ejecutó son el mismo"
+    );
+    assert!(
+        !real.preserved.iter().any(|p| p.path == program_dir),
+        "la ejecución real tampoco lo anuncia como conservado"
+    );
+    assert!(
+        !support::exists(&program_dir),
+        "y el directorio desaparece con la raíz, como dice el plan"
     );
 }
