@@ -16,6 +16,8 @@
 //! individualmente con `#[cfg(feature = "native-stt")]` en sus cuerpos.
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::OnceLock;
@@ -831,4 +833,386 @@ async fn translate_es_latam_passthrough_ipc_returns_intact_text() {
     assert_eq!(status, StatusCode::OK);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
     assert_eq!(actual["translated"], Value::String("Hola".to_string()));
+}
+
+/// `/dub` no deja su WAV temporal en ninguna salida, tampoco si la
+/// lectura del fichero sintetizado falla.
+///
+/// La rama de error no se puede provocar sin motor (la síntesis escribe el
+/// fichero que luego se lee), así que este test fija el invariante de punta a
+/// punta con el motor cuando hay recursos: tras `/dub` no queda ningún
+/// `avi_daemon_dub_*.wav`, salga el doblaje o un error. La rama `Err` se
+/// corrige por construcción con el tipo dueño.
+#[tokio::test]
+#[ignore = "requiere Parakeet y el binario del motor Qwen3-TTS"]
+async fn dub_leaves_no_temporary_on_any_outcome() {
+    let _temporaries = lock_temporaries().await;
+    #[cfg(feature = "native-stt")]
+    require_parakeet();
+    require_clone_binary();
+    let pcm: Vec<u8> = vec![0i16; 16_000]
+        .iter()
+        .flat_map(|s| s.to_le_bytes())
+        .collect();
+    let (status, bytes) = send_to(
+        clone_state(),
+        post_json(
+            "/dub",
+            serde_json::json!({
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&pcm),
+                "from": "es",
+                "to": "es",
+                "voice": "default",
+            }),
+        ),
+    )
+    .await;
+    if status == StatusCode::OK {
+        let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+        let events: Vec<Value> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+            .collect();
+        let final_event = events.last().expect("debe haber al menos un evento");
+        assert!(
+            final_event.get("event").and_then(|v| v.as_str()) == Some("result")
+                || final_event.get("event").and_then(|v| v.as_str()) == Some("error"),
+            "el evento final es result o error: {final_event:?}"
+        );
+    } else {
+        let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+        assert!(
+            actual.get("reason").and_then(|v| v.as_str()).is_some(),
+            "el error lleva reason: {actual:?}"
+        );
+    }
+    let residue: Vec<String> = std::fs::read_dir(std::env::temp_dir())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.starts_with("avi_daemon_dub_") && n.ends_with(".wav"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        residue.is_empty(),
+        "tras /dub no debe quedar temporal: {residue:?}"
+    );
+}
+
+// ─── el guardián del WAV temporal pertenece al trabajo bloqueante ───────
+
+/// Las pruebas que dejan trabajo en vuelo mantienen su temporal vivo ~100 ms
+/// (hasta que el hilo bloqueante termina) y el binario de pruebas corre en
+/// paralelo, así que se serializan entre sí: si no, el barrido de residuo de una
+/// vería el temporal en vuelo de la otra. Cerrojo asíncrono para no retener un
+/// `std::sync::MutexGuard` a través de un `await`.
+static TEMPORALS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Toma el cerrojo de temporales del binario de pruebas.
+async fn lock_temporaries() -> tokio::sync::MutexGuard<'static, ()> {
+    TEMPORALS_LOCK.lock().await
+}
+
+/// Temporales del daemon con el prefijo dado que pertenecen a este proceso: el
+/// nombre del guardián incluye el PID (`<prefijo><pid>_<contador>_<nanos>.wav`),
+/// así que el filtro no mezcla los de esta prueba con los de las demás del
+/// mismo binario.
+fn temp_wavs(prefix: &str) -> Vec<PathBuf> {
+    let own = format!("{prefix}{}_", std::process::id());
+    std::fs::read_dir(std::env::temp_dir())
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().starts_with(&own))
+                        .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Temporales del prefijo dado que no estaban en la foto `previous`: el conjunto
+/// que esta prueba puede atribuirse. Las pruebas del binario corren en paralelo
+/// y comparten PID, así que un residuo ajeno no puede hacer fallar la afirmación.
+fn new_temp_wavs(prefix: &str, previous: &[PathBuf]) -> Vec<PathBuf> {
+    temp_wavs(prefix)
+        .into_iter()
+        .filter(|p| !previous.contains(p))
+        .collect()
+}
+
+/// El temporal que la fase de esta prueba acaba de crear: exactamente uno de los
+/// nuevos.
+fn new_temp_wav(prefix: &str, previous: &[PathBuf]) -> PathBuf {
+    let found = new_temp_wavs(prefix, previous);
+    assert_eq!(
+        found.len(),
+        1,
+        "la fase debe crear un único temporal {prefix}<pid>_*: {found:?}"
+    );
+    found.into_iter().next().expect("afirmado arriba")
+}
+
+/// Motor TTS falso que responde `200` con un WAV en el `POST /v1/tts`: fija el
+/// camino feliz de la fase, donde el guardián vuelve del trabajo al handler y lo
+/// borra cuando este ya leyó el fichero. Devuelve el puerto y el hilo.
+fn serve_tts_wav(wav: Vec<u8>) -> (u16, std::thread::JoinHandle<()>) {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("puerto libre para el motor falso");
+    let port = listener.local_addr().expect("puerto local").port();
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut chunk = [0u8; 4096];
+        let _ = stream.read(&mut chunk);
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            wav.len()
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(&wav);
+        let _ = stream.flush();
+    });
+    (port, server)
+}
+
+/// Motor TTS falso que acepta el `POST /v1/tts` y retiene la conexión sin
+/// responder: el trabajo bloqueante del daemon sigue vivo hasta que el cliente
+/// corta, que es lo que activa la cancelación y hace que el motor cierre el
+/// socket. `arrived` marca que la fase pesada ya está en vuelo; `closed` que el
+/// hilo del daemon terminó su intercambio.
+struct HeldTts {
+    port: u16,
+    arrived: Arc<AtomicBool>,
+    closed: Arc<AtomicBool>,
+    server: std::thread::JoinHandle<()>,
+}
+
+fn hold_tts_connection() -> HeldTts {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("puerto libre para el motor falso");
+    let port = listener.local_addr().expect("puerto local").port();
+    let arrived = Arc::new(AtomicBool::new(false));
+    let closed = Arc::new(AtomicBool::new(false));
+    let (thread_arrived, thread_closed) = (arrived.clone(), closed.clone());
+    let server = std::thread::spawn(move || {
+        use std::io::Read;
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        thread_arrived.store(true, Ordering::SeqCst);
+        // Lee hasta EOF: el motor cierra la conexión al abortar por cancelación.
+        let mut chunk = [0u8; 1024];
+        while matches!(stream.read(&mut chunk), Ok(n) if n > 0) {}
+        thread_closed.store(true, Ordering::SeqCst);
+    });
+    HeldTts {
+        port,
+        arrived,
+        closed,
+        server,
+    }
+}
+
+/// Estado de contrato cuyo único camino de síntesis es el motor falso: la voz
+/// pedida es un preset (sin `reference.qvoice`), así que el daemon hace el POST
+/// a `server_url` en lugar de arrancar un residente.
+fn state_with_held_tts(tts_port: u16, dir_prefix: &str) -> Arc<DaemonState> {
+    prepare_shared_env();
+    let mut state = contract_state(dir_prefix);
+    let missing = std::env::temp_dir().join("avi_golden_motor_inexistente");
+    state.tts_engine.binary_path = Some(missing.clone());
+    state.tts_engine.model_dir = Some(missing);
+    state.tts_engine.server_url = Some(format!("http://127.0.0.1:{tts_port}"));
+    Arc::new(state)
+}
+
+// El motor que estas pruebas necesitan no existe, y el estado lo dice sin tocar
+// el entorno: `state_with_held_tts` fija `binary_path` y `model_dir` en una ruta
+// inexistente del temporal, así que el repliegue que el motor recorre tras la
+// cancelación (`synthesize_via_resident`) no puede arrancar un residente real.
+// Fijar `QWEN3_TTS_BIN` serviría igual, pero es una variable de proceso
+// compartida: en un binario de pruebas que corre en paralelo, el pin se filtraba
+// a las pruebas vecinas y las hacía fallar con «no se puede encontrar el archivo
+// especificado».
+
+/// Sondea `cond` cada 2 ms hasta que sea cierta o venza `tope`.
+async fn wait_until(what: &str, limit: std::time::Duration, mut cond: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if cond() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    assert!(cond(), "no se cumplió a tiempo: {what}");
+}
+
+/// Recorrido común de la salida por desconexión: el cliente suelta el cuerpo con
+/// el trabajo en vuelo y se afirma que el WAV temporal sobrevive al handler (su
+/// dueño es el hilo que escribe en él) y que desaparece cuando el hilo termina,
+/// sin dejar residuo en el temporal.
+async fn disconnect_leaves_no_temporary(
+    prefix: &str,
+    previous: &[PathBuf],
+    tts: &HeldTts,
+    response: axum::response::Response,
+) {
+    assert_eq!(response.status(), StatusCode::OK);
+    // La fase pesada está en vuelo: el motor ya recibió el POST.
+    wait_until(
+        "el motor recibe el POST de síntesis",
+        std::time::Duration::from_secs(15),
+        || tts.arrived.load(Ordering::SeqCst),
+    )
+    .await;
+    let temp = new_temp_wav(prefix, previous);
+    // Cliente corta sin leer el cuerpo: la fase ve `tx.closed()`, cancela el
+    // trabajo y retorna sin esperar al hilo, que sigue en el motor.
+    drop(response);
+    // El motor aborta por la bandera de cancelación con un tiempo de polls de
+    // 100 ms, así que el trabajo sigue vivo un buen rato tras la desconexión:
+    // durante esa ventana el WAV debe seguir en pie. Con el guardián en el
+    // handler el borrado ocurría al salir de este y no había ventana alguna.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let mut alive_while_working = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !tts.closed.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        alive_while_working |= temp.is_file();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    assert!(
+        alive_while_working,
+        "el WAV debe seguir existiendo mientras el trabajo no ha terminado ({})",
+        temp.display()
+    );
+    // El hilo terminó: su guardián borra el WAV y no queda residuo.
+    wait_until(
+        "el motor cierra la conexión",
+        std::time::Duration::from_secs(15),
+        || tts.closed.load(Ordering::SeqCst),
+    )
+    .await;
+    wait_until(
+        "el WAV temporal se borra al terminar el trabajo",
+        std::time::Duration::from_secs(15),
+        || !temp.is_file(),
+    )
+    .await;
+    let residue = new_temp_wavs(prefix, previous);
+    assert!(
+        residue.is_empty(),
+        "tras la desconexión no debe quedar temporal: {residue:?}"
+    );
+}
+
+/// El camino feliz no cambia con el guardián movido al trabajo: el handler lee el
+/// WAV que el motor escribió (el guardián vuelve con el resultado y solo se
+/// suelta ya leído), entrega exactamente esos bytes y no deja temporal.
+#[tokio::test]
+async fn synthesize_result_delivers_the_file_the_engine_wrote() {
+    let _temporaries = lock_temporaries().await;
+    let previous = temp_wavs("avi_daemon_synth_");
+    let wav = silent_wav(1);
+    let (port, server) = serve_tts_wav(wav.clone());
+    let state = state_with_held_tts(port, "avi_golden_happy");
+    let (status, bytes) = send_to(
+        state,
+        post_json(
+            "/synthesize",
+            serde_json::json!({ "text": "hola", "voice": "default" }),
+        ),
+    )
+    .await;
+    server.join().expect("el motor falso cierra su hilo");
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let events: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .collect();
+    let result = events.last().expect("debe haber un evento final");
+    assert_eq!(result["event"], "result", "evento final: {result:?}");
+    let audio = base64::engine::general_purpose::STANDARD
+        .decode(result["audio_b64"].as_str().expect("audio_b64"))
+        .expect("el audio_b64 debe decodificar");
+    assert_eq!(
+        audio, wav,
+        "el handler debe entregar lo que el motor escribió en el temporal"
+    );
+    let residue = new_temp_wavs("avi_daemon_synth_", &previous);
+    assert!(
+        residue.is_empty(),
+        "la ruta feliz tampoco debe dejar temporal: {residue:?}"
+    );
+}
+
+/// Al abandonar la fase por desconexión el WAV temporal sigue siendo del
+/// trabajo bloqueante y desaparece cuando este termina, no cuando el handler
+/// retorna.
+///
+/// El cliente corta sin leer el cuerpo mientras el motor retiene el `POST`: la
+/// fase ve `tx.closed()`, cancela el trabajo y retorna sin esperar al hilo (que
+/// `spawn_blocking` no puede cancelar). Con el guardián en el ámbito del handler
+/// el WAV se borraba al salir de este y el hilo podía escribirlo después,
+/// recreándolo; con el guardián en el trabajo el borrado ocurre cuando el hilo
+/// acaba y no queda residuo.
+#[tokio::test]
+async fn synthesize_disconnect_removes_temporary_when_blocking_work_ends() {
+    let _temporaries = lock_temporaries().await;
+    let previous = temp_wavs("avi_daemon_synth_");
+    let tts = hold_tts_connection();
+    let state = state_with_held_tts(tts.port, "avi_golden_disconnect");
+    let response = build_router_with_state(state)
+        .oneshot(post_json(
+            "/synthesize",
+            serde_json::json!({ "text": "hola", "voice": "default" }),
+        ))
+        .await
+        .expect("el router debe responder");
+    disconnect_leaves_no_temporary("avi_daemon_synth_", &previous, &tts, response).await;
+    tts.server.join().expect("el motor falso cierra su hilo");
+}
+
+/// En `/dub`: misma salida por desconexión sobre la ruta de doblaje, con su
+/// prefijo de temporal. Requiere Parakeet porque `/dub` transcribe antes de
+/// sintetizar, así que sin el modelo la ruta no llega al temporal.
+#[cfg(feature = "native-stt")]
+#[tokio::test]
+#[ignore = "requiere Parakeet"]
+async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
+    require_parakeet();
+    let _temporaries = lock_temporaries().await;
+    let previous = temp_wavs("avi_daemon_dub_");
+    let tts = hold_tts_connection();
+    let state = state_with_held_tts(tts.port, "avi_golden_dubdisconnect");
+    // `/dub` exige que la voz exista en el almacén; un preset sin referencia
+    // clonada mantiene la síntesis en el motor falso.
+    std::fs::create_dir_all(state.voice_store.root().join("default")).expect("registrar la voz");
+    let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
+    let pcm = avi_audio::load_wav_16k_mono_pcm(assets.join("corpus_respuestas_16k.wav"))
+        .expect("el WAV corpus debe cargarse");
+    let audio: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let response = build_router_with_state(state)
+        .oneshot(post_json(
+            "/dub",
+            serde_json::json!({
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio),
+                "from": "es",
+                "to": "es",
+                "voice": "default",
+            }),
+        ))
+        .await
+        .expect("el router debe responder");
+    disconnect_leaves_no_temporary("avi_daemon_dub_", &previous, &tts, response).await;
+    tts.server.join().expect("el motor falso cierra su hilo");
 }

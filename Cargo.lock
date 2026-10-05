@@ -226,6 +226,7 @@ dependencies = [
  "avi-audio",
  "avi-core",
  "avi-process",
+ "avi-shared",
  "avi-store",
  "avi-stt",
  "avi-translation",

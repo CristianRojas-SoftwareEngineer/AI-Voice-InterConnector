@@ -13,6 +13,7 @@ axum = "0.7"
 avi-audio = { path = "../avi-audio" }
 avi-core = { path = "../avi-core" }
 avi-process = { path = "../avi-process" }
+avi-shared = { path = "../avi-shared" }
 avi-store = { path = "../avi-store" }
 avi-stt = { path = "../avi-stt" }
 avi-tts = { path = "../avi-tts" }
