@@ -688,11 +688,9 @@ fn d03_reaper_without_live_pid_does_not_fail() {
 /// hijo (y este, a su vez, `qwen_tts.exe` vendido/precompilado) que heredan el pipe del
 /// test: `output()` no retorna hasta que **todos** los holders del write-end lo cierran —
 /// es decir, hasta el graceful shutdown del daemon (~10 s) — colgando el E2E en timeout
-/// (exit 124). El fix real (`disinherit_standard_handles` en `handle_daemon`, corte de
-/// herencia vía `SetHandleInformation`) + `Stdio::null` no basta si se captura por pipe:
-/// Rust std deja `bInheritHandles=TRUE` y no hay creation flag que lo desactive. Al
-/// redirigir `stdout` a
-/// un tempfile **no hay pipe** para heredar: `spawn()`+`wait()` retorna en cuanto el CLI
+/// (exit 124). El lanzamiento restringe la herencia a su lista explícita y
+/// `Stdio::null` evita compartir la entrada: al redirigir `stdout` a
+/// un tempfile **no hay pipe** que retener: `spawn()`+`wait()` retorna en cuanto el CLI
 /// termina (~1.3 s tras `daemon start` con el bind-first).
 ///
 /// Patrón de espera: el daemon no comparte I/O (pipe) con el
@@ -4814,148 +4812,6 @@ mod tts {
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn hard_kill_of_supervised_daemon_leaves_no_resident() {
         assert_hard_kill_stops_resident("hard_kill_supervised", &["--auto-restart"]);
-    }
-
-    /// Regresión (daemon retiene el stdio del proceso que lo lanzó): reproduce
-    /// la condición exacta observada, con captura de
-    /// `daemon start` vía **pipe** (`Stdio::piped()`, no tempfile) — porque
-    /// un tempfile nunca crea un handle heredable y no puede detectar la
-    /// retención. Si el daemon (o `qwen_tts` a través de él) heredan el
-    /// write-end pese a `disinherit_standard_handles` (corte de herencia vía
-    /// `SetHandleInformation` en `handle_daemon`), la
-    /// lectura del pipe no verá EOF hasta que el holder cierre el handle —
-    /// exactamente el síntoma documentado: "matar el motor no libera el log
-    /// del lanzador; matar el daemon sí". Diferencial: mata primero solo el
-    /// motor (residente en 8766) y comprueba si el pipe sigue bloqueado;
-    /// luego mata el árbol del daemon y comprueba que se libera.
-    #[test]
-    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
-    fn pipe_stdio_must_not_remain_blocked() {
-        require_tts_model();
-        require_tts_binary();
-        let _tts = lock_tts();
-        hit_start_heavy("tts::pipe_stdio_must_not_remain_blocked");
-        let _reaper = arm_reaper("pipe_stdio_must_not_remain_blocked");
-        // Instancia aislada propia (puerto efímero + sandbox); el sandbox
-        // nace detenido y vacío, sin precondición de sesión.
-        let inst = IsolatedInstance::new("pipe");
-        let child_envs: Vec<(String, String)> = inst.envs.clone();
-
-        // Localiza (sin matar) al residente por PID registrado en `daemon.pid`
-        // Un solo camino portable, sin `netstat` ni rama por plataforma.
-        let dir_pipe = inst.dir.clone();
-        let registered_resident_pid = move || -> Option<u32> {
-            let pid = read_resident_pid_dir(&dir_pipe);
-            if pid != 0 && avi_tts::resident::resident_pid_alive(pid) {
-                Some(pid)
-            } else {
-                None
-            }
-        };
-
-        // `daemon start` capturado vía PIPE en un hilo aparte: `output()` no
-        // retorna hasta que el proceso hijo termina Y todos los holders del
-        // write-end del pipe lo cierran. Sano: retorna en ~1-2 s (la vida del
-        // CLI lanzador). Retenido: no retorna hasta que muera quien heredó
-        // el handle. El hijo recibe las envs de la instancia (sandbox +
-        // puerto efímero); el tempfile anti-cuelgue no aplica aquí a
-        // propósito (el pipe es el instrumento de detección).
-        let t0 = Instant::now();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let output = bin_command()
-                .args(["--json", "daemon", "start"])
-                .envs(child_envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output();
-            let _ = tx.send(output);
-        });
-
-        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(output) => {
-                let output = output.expect("`daemon start` debe poder ejecutarse");
-                assert!(
-                    output.status.success(),
-                    "`daemon start` debe salir 0: {:?}",
-                    output
-                );
-                milestone(&format!(
-                    "pipe liberado en {} ms sin intervención — no reproduce (sin retención)",
-                    t0.elapsed().as_millis()
-                ));
-                let a = inst.args();
-                wait_for_running_without_warm(WARM_FAILSAFE_RETRIES, &a);
-                stop_instance(&inst, "pipe_stdio");
-                hit_end("tts::pipe_stdio_must_not_remain_blocked");
-                return;
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                milestone(&format!(
-                    "pipe SIGUE bloqueado tras {} ms (umbral sano ~1-2 s) — investigando retención",
-                    t0.elapsed().as_millis()
-                ));
-            }
-            Err(e) => fail_with_reaper(
-                "pipe_stdio_must_not_remain_blocked(canal)",
-                format!("canal del hilo lector cerrado inesperadamente: {}", e),
-            ),
-        }
-
-        // El pipe sigue retenido más allá de la vida del CLI lanzador: mata
-        // solo el motor primero (si hay PID registrado vivo) para replicar el
-        // orden exacto del síntoma documentado.
-        if let Some(engine_pid) = registered_resident_pid() {
-            milestone(&format!("matando solo el motor (pid {})", engine_pid));
-            avi_daemon::kill_tree_by_pid(engine_pid);
-            avi_daemon::wait_for_pid_death(engine_pid, std::time::Duration::from_secs(8));
-            if let Ok(output) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
-                let output = output.expect("`daemon start` debe poder ejecutarse");
-                milestone(&format!(
-                    "el pipe se liberó al matar SOLO el motor (inesperado vs. síntoma documentado, exit {:?})",
-                    output.status.code()
-                ));
-                stop_instance(&inst, "pipe_stdio_motor");
-                hit_end("tts::pipe_stdio_must_not_remain_blocked (liberado por motor)");
-                return;
-            }
-            milestone(
-                "matar solo el motor NO liberó el pipe (coincide con el síntoma documentado)",
-            );
-        }
-
-        // Mata el árbol completo del daemon: si el síntoma reproduce, esto
-        // debe liberar el pipe.
-        let pid_daemon = inst.read_daemon_pid();
-        if let Some(pid) = pid_daemon {
-            milestone(&format!("matando el árbol del daemon (pid {})", pid));
-            avi_daemon::kill_tree_by_pid(pid);
-            avi_daemon::wait_for_pid_death(pid, std::time::Duration::from_secs(8));
-        }
-
-        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
-            Ok(output) => {
-                let output = output.expect("`daemon start` debe poder ejecutarse");
-                fail_with_reaper(
-                    "pipe_stdio_must_not_remain_blocked",
-                    format!(
-                        "Reproduce: el pipe del lanzador solo se liberó al matar el daemon (no el motor), tras {} ms totales (exit {:?}). El daemon retiene el stdio del proceso que lo lanzó pese al corte de herencia por SetHandleInformation (disinherit_standard_handles).",
-                        t0.elapsed().as_millis(),
-                        output.status.code()
-                    ),
-                );
-            }
-            Err(_) => {
-                fail_with_reaper(
-                    "pipe_stdio_must_not_remain_blocked",
-                    format!(
-                        "el pipe del lanzador sigue bloqueado incluso tras matar el árbol del daemon (>{} ms): retención más allá de lo documentado",
-                        t0.elapsed().as_millis()
-                    ),
-                );
-            }
-        }
     }
 
     // La traducción solo existe con `native-translation`.

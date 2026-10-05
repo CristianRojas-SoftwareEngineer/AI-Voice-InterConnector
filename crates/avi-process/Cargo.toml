@@ -12,7 +12,7 @@ serde = { version = "1.0", features = ["derive"] }
 # Único crate que fija flags de creación de procesos: el resto del repositorio
 # las importa de aquí con los nombres oficiales de `windows-sys`.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Pipes", "Win32_UI_WindowsAndMessaging"] }
 # Despacho temprano del limpiador: la copia relanzada debe trabajar antes de
 # `main` (también antes del arnés de pruebas), sin depender del binario que
 # la lanzó. Solo se usa bajo `cfg(windows)`, en `deferred.rs`.

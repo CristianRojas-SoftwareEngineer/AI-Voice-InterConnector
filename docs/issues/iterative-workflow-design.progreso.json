@@ -230,12 +230,23 @@
       "commits": ["3dfb81b", "2d86b12"]
     },
     "C9": {
-      "status": "planned",
-      "phase": "plan",
-      "gates": [],
-      "tasks": [],
+      "status": "closed",
+      "phase": "closed",
+      "gates": [
+        { "gate": "plan", "verdict": "approved", "date": "2026-10-05", "notes": "S29 en alcance; sin cambio de contrato; allowlist incondicionada por denylist insuficiente por construcción; 3 pruebas deterministas; testigo intermitente eliminado, no parchado" },
+        { "gate": "diagnosis", "verdict": "approved", "date": "2026-10-05", "notes": "F0 0/3 (pipes libres a 4.0-4.7s); orden corte-antes-de-spawn verificado; la denylist no cubre la tabla heredable: allowlist para los cuatro lanzamientos sin depender del holder" },
+        { "gate": "result", "verdict": "approved", "date": "2026-10-05", "notes": "verificación §5.3 en verde (test --all, full con recursos cli_golden 120/0 y golden 22/22, clippy/fmt/licenses, 2 humos con modelos); revisor con 2 hallazgos corregidos (fuga de lectura en el padre, sentencia muerta); S29 sale del mapa" }
+      ],
+      "tasks": [
+        { "id": "C9.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "preparación en la rama fix/retencion-stdio desde main con el árbol limpio; G-Plan aprobado" },
+        { "id": "C9.2", "status": "done", "attempts": 1, "files": [], "notes": "diagnóstico F0 + auditoría: 0/3 repro, orden correcto; G-Diag presentado y aprobado" },
+        { "id": "C9.3", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/restricted_spawn.rs", "crates/avi-process/src/lib.rs", "crates/avi-process/Cargo.toml", "crates/avi-daemon/src/spawn.rs", "crates/avi-tts/src/lib.rs", "crates/avi-process/src/deferred.rs", "src/main.rs"], "notes": "costura allowlist + migración de daemon, residente, clonado y limpiador + retirada del corte en la raíz; verifica con cargo check/clippy del workspace" },
+        { "id": "C9.4", "status": "done", "attempts": 2, "files": ["crates/avi-process/tests/restricted_spawn.rs", "tests/cli_golden.rs"], "notes": "3 pruebas deterministas en verde (lista exacta, salida del hijo, registro declarado); testigo intermitente borrado; el hijo de prueba usa powershell porque cmd no admite switches entrecomillados" },
+        { "id": "C9.5", "status": "done", "attempts": 1, "files": ["CHANGELOG.md", "docs/CLI/commands/DAEMON.md", "docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "guía del daemon, changelog y ficha C9 sincronizados al mecanismo nuevo" },
+        { "id": "C9.6", "status": "done", "attempts": 1, "files": [], "notes": "verificación §5.3 en verde: cargo test --all sin fallos, full con recursos sin fallos (cli_golden 120/0, golden 22/22), clippy/fmt/licenses limpios, 2 humos con modelos verdes, sin procesos residuales; G-Resultado aprobado" }
+      ],
       "foreign_changes": [],
-      "commits": []
+      "commits": ["3970b4b", "2c62909"]
     }
   },
   "release": { "status": "pending", "gates": [], "version": null }

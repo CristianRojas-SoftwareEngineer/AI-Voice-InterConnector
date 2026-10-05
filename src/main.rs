@@ -720,41 +720,6 @@ fn install_sigint_handler() {
     .expect("Error al instalar el handler de Ctrl+C");
 }
 
-/// Desactiva la herencia de los 3 handles estándar del proceso actual (Windows).
-///
-/// Causa raíz: en Rust estable `Command::spawn` llama a `CreateProcessW`
-/// con `bInheritHandles=TRUE` sin posibilidad de forzarlo a FALSE (no expuesto en
-/// estable). Con ese flag TODO handle heredable de la tabla del padre se duplica
-/// al hijo, no solo sus 3 handles estándar. Cuando el CLI corre bajo un pipe
-/// heredable del lanzador (p. ej. `Command::output()`), su stdout es justamente
-/// ese write-end: se re-hereda al daemon y de ahí al motor, y el lanzador no ve
-/// EOF hasta que todos lo cierren. NO existe una creation flag para desactivar la
-/// herencia (el histórico `0x02000000` es `CREATE_PRESERVE_CODE_AUTHZ_LEVEL`,
-/// no-op); la herencia se controla por handle con `SetHandleInformation`.
-///
-/// Se quita `HANDLE_FLAG_INHERIT` de STD_IN/OUT/ERROR: corta la propagación en la
-/// raíz sin matar el árbol. El stderr del motor no se ve afectado: va al
-/// fichero de log vía `Stdio::from` (handle explícito con mecanismo aparte).
-/// Best-effort silencioso: salta handles nulos / `INVALID_HANDLE_VALUE`.
-#[cfg(windows)]
-fn disinherit_standard_handles() {
-    use windows_sys::Win32::Foundation::{
-        SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-    };
-    use windows_sys::Win32::System::Console::{
-        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
-    };
-    unsafe {
-        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-            let h = GetStdHandle(id);
-            if h == 0 || h == INVALID_HANDLE_VALUE {
-                continue;
-            }
-            SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
-        }
-    }
-}
-
 /// Restaura `SIGPIPE` a `SIG_DFL` en Unix para los modos CLI en primer plano.
 ///
 /// Rust ignora `SIGPIPE` por defecto (`SIG_IGN`): una escritura a un pipe
@@ -2188,11 +2153,6 @@ async fn handle_speech(
 // ─── Daemon ──────────────────────────────────────────────────────────
 
 async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcome, CliError> {
-    // Corta en la raíz la herencia de los handles estándar antes de spawnear
-    // ningún hijo del rol daemon. Cubre el CLI (`Start`/`Restart` → `spawn_background`)
-    // y el propio daemon (`Serve` → motor), incluido `serve` lanzado bajo un pipe.
-    #[cfg(windows)]
-    disinherit_standard_handles();
     match action {
         DaemonCommands::Serve {
             auto_restart,
@@ -3498,9 +3458,6 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         // tenga una implementación silenciosa.
         #[cfg(windows)]
         {
-            // El limpiador solo hereda el HANDLE que fija al proceso esperado:
-            // sin esto retendría el stdio y el lanzador no vería EOF.
-            disinherit_standard_handles();
             let (log, _) = lifecycle::create_log(&self.logs_dir, "cleaner")
                 .map_err(|e| anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}"))?;
             avi_process::schedule_clean_removal(program_dir, pid, &log)?;
@@ -3542,9 +3499,6 @@ impl lifecycle::update::PathRemover for LifecyclePaths {
         // tenga una implementación silenciosa.
         #[cfg(windows)]
         {
-            // El limpiador solo hereda el HANDLE que fija al proceso esperado:
-            // sin esto retendría el stdio y el lanzador no vería EOF.
-            disinherit_standard_handles();
             let (log, _) = lifecycle::create_log(&self.logs_dir, "cleaner")
                 .map_err(|e| anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}"))?;
             avi_process::schedule_clean_removal(path, pid, &log)?;
@@ -3762,7 +3716,7 @@ Log del daemon: {}",
 /// puede reutilizarse, así que el kill por PID no alcanza a un proceso ajeno;
 /// si ya había terminado no se mata nada (en el arranque aún no existe el
 /// residente TTS, que solo lanza el warmup posterior a estar listo).
-async fn abort_launch(child: &mut std::process::Child, ready_path: &std::path::Path) {
+async fn abort_launch(child: &mut avi_process::RestrictedChild, ready_path: &std::path::Path) {
     if let Ok(None) = child.try_wait() {
         daemon::kill_tree_by_pid(child.id());
         let start = std::time::Instant::now();
