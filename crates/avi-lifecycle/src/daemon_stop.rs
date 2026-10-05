@@ -35,8 +35,9 @@ pub use avi_process::ProcessIdentity;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Plazo global de la parada. Viene de `STOP_DEADLINE_GLOBAL` en el
-/// binario y no cambia: es el presupuesto de todo el protocolo.
+/// Plazo global de la parada. Es el presupuesto de todo el protocolo y **fuente
+/// única**: el lanzador lo toma de aquí en lugar de declararlo por su cuenta, de
+/// modo que los 8 s del protocolo se affirmen en un solo sitio.
 pub const STOP_DEADLINE_GLOBAL: Duration = Duration::from_secs(8);
 
 /// Presupuesto del `POST /shutdown` acotado. El daemon puede tardar en cerrar; el
@@ -47,8 +48,15 @@ pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1500);
 /// timeout largo del cliente de la CLI.
 pub const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Dirección por defecto cuando no hay pidfile. Es la que publica el binario.
+/// Dirección por defecto cuando no hay pidfile. También **fuente única**: es la
+/// que publica el binario, que la toma de aquí en lugar de escribir un literal
+/// propio.
 pub const DEFAULT_ADDR: &str = "127.0.0.1:8765";
+
+/// Variable de entorno que desvía el puerto del daemon por instancia. Vive aquí
+/// con la resolución que la lee, que es su única usuaria: el binario ya no la
+/// nombra por su cuenta.
+pub const DAEMON_PORT_ENV: &str = "AVI_DAEMON_PORT";
 
 /// Nombre del pidfile dentro de la raíz de datos.
 pub const PID_FILE: &str = "daemon.pid";
@@ -193,26 +201,27 @@ pub fn read_addr(data_dir: &Path) -> Option<String> {
 }
 
 /// Dirección del cliente: la del pidfile cuando existe, y cuando no la derivada de
-/// `AVI_DAEMON_PORT` (`127.0.0.1:8765` si la variable falta o no es un puerto).
+/// [`DAEMON_PORT_ENV`] (`DEFAULT_ADDR` si la variable falta o no es un puerto).
 ///
 /// Este es el **supuesto asumido de D4**: la raíz de datos es la vigente, así que un
 /// daemon de la versión anterior, con su pidfile en la raíz antigua, no se
 /// encuentra y la conexión va a la dirección de respaldo.
+///
+/// Es el **único** resolver con esta semántica: el lanzador no declara otro.
 pub fn resolve_client_addr(data_dir: &Path) -> String {
-    resolve_client_addr_with(data_dir, std::env::var("AVI_DAEMON_PORT").ok().as_deref())
+    resolve_client_addr_with(data_dir, std::env::var(DAEMON_PORT_ENV).ok().as_deref())
 }
 
 /// Variante de [`resolve_client_addr`] que recibe el valor crudo de
-/// `AVI_DAEMON_PORT` en lugar de leer el entorno, para poder probarla sin
+/// [`DAEMON_PORT_ENV`] en lugar de leer el entorno, para poder probarla sin
 /// tocar variables del proceso.
 pub fn resolve_client_addr_with(data_dir: &Path, port_env: Option<&str>) -> String {
     read_addr(data_dir).unwrap_or_else(|| addr_for_port_env(port_env))
 }
 
-/// Dirección de parada a partir del valor crudo de `AVI_DAEMON_PORT`: el daemon
-/// escucha en `127.0.0.1:<puerto>` con el puerto recortado (`0` pide uno
-/// efímero), y un valor ausente o que no es un `u16` deja la dirección por
-/// defecto.
+/// Dirección a partir del valor crudo de [`DAEMON_PORT_ENV`]: el daemon escucha en
+/// `127.0.0.1:<puerto>` con el puerto recortado (`0` pide uno efímero), y un valor
+/// ausente o que no es un `u16` deja la dirección por defecto.
 pub fn addr_for_port_env(raw: Option<&str>) -> String {
     match raw.and_then(|value| value.trim().parse::<u16>().ok()) {
         Some(port) => format!("127.0.0.1:{port}"),
@@ -220,9 +229,11 @@ pub fn addr_for_port_env(raw: Option<&str>) -> String {
     }
 }
 
-/// Dirección en la que detener el daemon, según `AVI_DAEMON_PORT` del entorno.
+/// Dirección del daemon en la que listen el binario y se para, según
+/// [`DAEMON_PORT_ENV`] del entorno. Es el **único** resolver con esta semántica:
+/// el lanzador lo usa también para escuchar, en vez de rederivar el puerto.
 pub fn default_addr() -> String {
-    addr_for_port_env(std::env::var("AVI_DAEMON_PORT").ok().as_deref())
+    addr_for_port_env(std::env::var(DAEMON_PORT_ENV).ok().as_deref())
 }
 
 /// Borra el pidfile. Solo lo hace quien ha comprobado antes que el daemon está
@@ -1366,7 +1377,17 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// Los plazos del protocolo son los de hoy y no cambian con el traslado.
+    /// Fuente del lanzador (`src/main.rs`), que es quien debe tomarlos de aquí en
+    /// lugar de declararlos por su cuenta.
+    fn launcher_source() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/main.rs");
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("se lee {}: {e}", path.display()))
+    }
+
+    /// Los plazos del protocolo son los de hoy y no cambian con el traslado. Y son
+    /// además la **fuente única**: el lanzador los toma de aquí, sin redeclarar ni
+    /// el plazo global ni la dirección por defecto, que es lo que hace que este
+    /// módulo sea el que los afirma.
     #[test]
     fn protocol_deadlines_are_preserved() {
         assert_eq!(STOP_DEADLINE_GLOBAL, Duration::from_secs(8));
@@ -1376,6 +1397,70 @@ mod tests {
             PROBE_TIMEOUT < SHUTDOWN_TIMEOUT && SHUTDOWN_TIMEOUT < STOP_DEADLINE_GLOBAL,
             "el presupuesto está anidado: un sondeo no puede agotar el del POST, ni el POST el global"
         );
+        assert_eq!(
+            DEFAULT_ADDR, "127.0.0.1:8765",
+            "la dirección por defecto del protocolo se afirma aquí, no en el lanzador"
+        );
+
+        let launcher = launcher_source();
+        let own_stop = ["const STOP_DEADLINE_", "GLOBAL"].concat();
+        let own_addr = ["const DAEMON_", "ADDR"].concat();
+        assert!(
+            !launcher.contains(&own_stop),
+            "el lanzador no redeclara el plazo global: lo toma de `daemon_stop`"
+        );
+        assert!(
+            !launcher.contains(&own_addr),
+            "el lanzador no redeclara la dirección por defecto: la toma de `daemon_stop`"
+        );
+        assert!(
+            launcher.contains("daemon_stop::STOP_DEADLINE_GLOBAL"),
+            "el lanzador usa el plazo global del protocolo"
+        );
+        assert!(
+            launcher.contains("daemon_stop::DEFAULT_ADDR"),
+            "el lanzador usa la dirección por defecto del protocolo"
+        );
+    }
+
+    /// Las dos semánticas de resolución de dirección tienen un único dueño: el
+    /// cliente (pidfile primero) y el entorno (parada y escucha). El lanzador no
+    /// declara un resolver propio del cliente —usa el de aquí— y el de escucha solo
+    /// convierte a `SocketAddr` lo que este módulo resuelve, sin volver a derivar el
+    /// puerto.
+    #[test]
+    fn address_resolvers_have_a_single_owner() {
+        let data = scratch("resolvers");
+        let own_client = ["fn resolve_client_", "addr()"].concat();
+        let listen = ["fn resolve_daemon_", "addr()"].concat();
+        let port_parse = ["parse::<", "u16>()"].concat();
+        let launcher = launcher_source();
+        assert!(
+            !launcher.contains(&own_client),
+            "el lanzador no declara su propio resolver de cliente: usa el del protocolo"
+        );
+        assert_eq!(
+            launcher.matches(&listen).count(),
+            1,
+            "una sola resolución de escucha, que delega en vez de repetirla"
+        );
+        assert!(
+            launcher.contains("lifecycle::daemon_stop::default_addr()"),
+            "escuchar toma la dirección del resolver de entorno del protocolo"
+        );
+        assert!(
+            !launcher.contains(&port_parse),
+            "el lanzador no vuelve a derivar el puerto desde el entorno"
+        );
+
+        // Y las dos rutas dan el mismo valor cuando no hay pidfile: cliente y
+        // parada convergen en la dirección por defecto del protocolo.
+        assert_eq!(
+            resolve_client_addr_with(&data, None),
+            addr_for_port_env(None)
+        );
+        assert_eq!(addr_for_port_env(None), DEFAULT_ADDR);
+        std::fs::remove_dir_all(&data).ok();
     }
 
     /// La línea de estado se interpreta bien, que es de lo que depende que un

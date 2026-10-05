@@ -27,27 +27,25 @@ use std::process::exit;
 
 const VERSION: &str = "0.28.0";
 const APP_NAME: &str = "ai-voice-interconnector";
-/// Dirección del daemon nativo; el cliente HTTP async apunta a este address.
-const DAEMON_ADDR: &str = "127.0.0.1:8765";
-/// Variable de entorno para desviar el puerto del daemon por instancia
-/// (permite aislamiento por instancia). Acepta `0` para puerto efímero (`:0`,
-/// el SO asigna y el servidor imprime el real vía `local_addr()`).
-const DAEMON_PORT_ENV: &str = "AVI_DAEMON_PORT";
 
-/// Resuelve la dirección de escucha del daemon: override por
-/// `AVI_DAEMON_PORT` (aislamiento por instancia) con fallback a `DAEMON_ADDR`.
+/// Resuelve la dirección de escucha del daemon. Delega en la fuente única del
+/// protocolo —`AVI_DAEMON_PORT` con reserva en `DEFAULT_ADDR`—, y solo convierte
+/// el resultado a `SocketAddr`, que es lo que necesita el servidor: el lanzador no
+/// vuelve a derivar el puerto por su cuenta.
 /// Sin fichero de configuración a propósito: el arranque no debe acoplarse
 /// al data_dir compartido (colisionaría entre instancias).
 fn resolve_daemon_addr() -> SocketAddr {
-    if let Ok(raw) = std::env::var(DAEMON_PORT_ENV) {
-        if let Ok(port) = raw.trim().parse::<u16>() {
-            return SocketAddr::from(([127, 0, 0, 1], port));
-        }
-    }
-    DAEMON_ADDR
+    lifecycle::daemon_stop::default_addr()
         .parse()
-        .expect("la dirección por defecto del daemon debe parsear")
+        .expect("la dirección del daemon debe parsear")
 }
+
+// Plazos del **lanzador**, no del protocolo: los del arranque —espera del ready,
+// cadencia de sondeo y recolector del hijo-, los de la limpieza acotada ante Ctrl+C
+// y el del reclamo degradado que este binario ejecuta en `start`. Los plazos del
+// protocolo de parada no viven aquí: los declara `avi-lifecycle` y se toman de allí
+// (`lifecycle::daemon_stop::STOP_DEADLINE_GLOBAL`), igual que la dirección por
+// defecto (`lifecycle::daemon_stop::DEFAULT_ADDR`).
 /// Techo de la espera del resultado de arranque en `daemon start/restart`: el
 /// registro de éxito, el de fallo o la muerte del hijo, más la confirmación por
 /// `/health`. Cubre spawn + validación + bind + carga del estado (~1-2 s sanos);
@@ -63,9 +61,6 @@ const DAEMON_LAUNCH_CLEANUP_DEADLINE: std::time::Duration = std::time::Duration:
 /// Deadline breve para la limpieza acotada ante Ctrl+C: mata el árbol
 /// preciso con verificación; vencido, sale igualmente con 130 sin colgarse.
 const CTRL_C_CLEANUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
-/// Deadline global para la parada unificada del árbol daemon+residente
-/// (graceful + árbol preciso por PID + verificación a nivel de sistema).
-const STOP_DEADLINE_GLOBAL: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// PID hijo en memoria desde el `spawn`: estrecha la ventana
 /// spawn→write del pidfile. El handler Ctrl+C lo reclama cuando aún no hay
@@ -2160,9 +2155,8 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
             warm_voice,
             ready_file,
         } => {
-            // La dirección se resuelve por `AVI_DAEMON_PORT` (aislamiento por
-            // instancia) con fallback al literal (reversión: restaurar el
-            // literal directo).
+            // La dirección la resuelve el protocolo (`AVI_DAEMON_PORT` con
+            // reserva en la dirección por defecto); aquí solo se pasa al servidor.
             let addr: SocketAddr = resolve_daemon_addr();
             // Transporte flag+fichero: el flag designa el fichero de
             // señalización y viaja intra-proceso por env hasta
@@ -2297,10 +2291,15 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
         DaemonCommands::Stop => {
             // Parada unificada con deadline global: el veredicto lo da el motor
             // (`StopOutcome`), sin re-sondeos fuera de él. El pidfile ya lo borró
-            // el motor tras muerte verificada; la CLI solo informa.
-            let outcome =
-                lifecycle::daemon_stop::stop(&effective_data_dir(), DAEMON_ADDR, &ProductProcesses)
-                    .await;
+            // el motor tras muerte verificada; la CLI solo informa. La reserva sin
+            // pidfile es la dirección por defecto del protocolo, que es donde
+            // escucha el daemon de la instancia cuando nadie ha desviado el puerto.
+            let outcome = lifecycle::daemon_stop::stop(
+                &effective_data_dir(),
+                lifecycle::daemon_stop::DEFAULT_ADDR,
+                &ProductProcesses,
+            )
+            .await;
             if outcome.stopped {
                 let status = stop_status(outcome.was_running);
                 if json_mode {
@@ -2312,17 +2311,18 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
                     }));
                 } else if outcome.was_running {
                     // Los mensajes diagnostican la dirección descubierta (con
-                    // pidfile efímero difiere del literal; sin pidfile es idéntica).
-                    println!(
-                        "Señal de apagado enviada al daemon en {}.",
-                        resolve_client_addr()
-                    );
+                    // pidfile efímero difiere de la por defecto; sin pidfile es
+                    // idéntica).
+                    let client_addr =
+                        lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+                    println!("Señal de apagado enviada al daemon en {}.", client_addr);
                 } else {
                     println!("El daemon no estaba en ejecución.");
                 }
                 Ok(Outcome::Done)
             } else {
-                let client_addr = resolve_client_addr();
+                let client_addr =
+                    lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
                 // El matiz del residente lo dice el predicado del motor
                 // (`StopOutcome::resident_alive`), no el texto de `remaining`: atarlo
                 // al vocabulario de la frase degradaba el error en silencio ante
@@ -2361,8 +2361,12 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
             let t_total = std::time::Instant::now();
             let budget = std::time::Duration::from_secs(12);
             let client = daemon_client();
-            lifecycle::daemon_stop::stop(&effective_data_dir(), DAEMON_ADDR, &ProductProcesses)
-                .await;
+            lifecycle::daemon_stop::stop(
+                &effective_data_dir(),
+                lifecycle::daemon_stop::DEFAULT_ADDR,
+                &ProductProcesses,
+            )
+            .await;
             require_model_provisioned()?;
             let elapsed = t_total.elapsed();
             let remaining = budget
@@ -2431,7 +2435,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
             // El probe apunta a la dirección descubierta (fallback idéntico
             // sin pidfile).
             let client = daemon_client();
-            let client_addr = resolve_client_addr();
+            let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
             match tokio::time::timeout(
                 std::time::Duration::from_millis(500),
                 client.get(format!("http://{}/health", client_addr)).send(),
@@ -2615,7 +2619,7 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
     let daemon_ours = state == lifecycle::daemon_stop::Registered::Ours;
     // El probe apunta a la dirección descubierta (fallback idéntico sin
     // pidfile; vía nueva solo con pidfile vivo de addr efímera).
-    let client_addr = resolve_client_addr();
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     let probe = probe_health(client, &client_addr).await;
     // `Stopped` con residente vivo no es vía libre.
     if !probe && !daemon_ours && resident_alive_by_pid() {
@@ -2764,7 +2768,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
         )
     });
     // Graceful y verificación contra la dirección descubierta.
-    let client_addr = resolve_client_addr();
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     // 1) Graceful breve si el probe responde (no hereda el techo `REQUEST_FAILSAFE` del cliente HTTP).
     if probe_health(client, &client_addr).await {
         let _ = tokio::time::timeout(
@@ -2774,7 +2778,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
                 .send(),
         )
         .await;
-        let remaining = STOP_DEADLINE_GLOBAL
+        let remaining = lifecycle::daemon_stop::STOP_DEADLINE_GLOBAL
             .checked_sub(start.elapsed())
             .unwrap_or(std::time::Duration::from_millis(500));
         let wait = std::cmp::min(remaining, std::time::Duration::from_secs(3));
@@ -2813,7 +2817,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
     }
     // 3) Verificación con el restante del deadline global (probe down + PID muerto;
     // en Unix además residente muerto ante líder muerto).
-    while start.elapsed() < STOP_DEADLINE_GLOBAL {
+    while start.elapsed() < lifecycle::daemon_stop::STOP_DEADLINE_GLOBAL {
         let alive = pid.is_some_and(|p| {
             lifecycle::daemon_stop::classify_registered(
                 &ProductProcesses,
@@ -2842,7 +2846,8 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
 /// Fuente única de verdad para detener el daemon residente y `qwen_tts` huérfano,
 /// al servicio de `start` (reclamo), `restart`, `cleanup` y `uninstall`.
 ///
-/// Parada unificada con deadline global (`STOP_DEADLINE_GLOBAL`): graceful
+/// Parada unificada con el deadline global del protocolo
+/// (`lifecycle::daemon_stop::STOP_DEADLINE_GLOBAL`, 8 s): graceful
 /// (`POST /shutdown` acotado + espera de `/health` down) si el daemon responde;
 /// árbol preciso por PID (`taskkill /F /T /PID` en Windows, `kill -9` al grupo
 /// en Unix) con guarda anti-auto-muerte cuando sigue vivo; sin PID del
@@ -3634,12 +3639,6 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Resuelve la dirección del cliente CLI: `addr` del pidfile cuando existe; sin pidfile
-/// usa la dirección derivada de `AVI_DAEMON_PORT` (`127.0.0.1:8765` si falta).
-fn resolve_client_addr() -> String {
-    lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir())
-}
-
 /// Ruta del fichero ready de esta instancia: absoluta bajo el
 /// `data_dir` vigente, de modo que cada sandbox (`AVI_DATA_DIR`) posee el
 /// suyo sin depender de la unidad del proceso ni de `%TEMP%`.
@@ -3861,9 +3860,9 @@ async fn wait_health_down(
 // ─── Cliente HTTP async del daemon ────────────────────────────────────────
 
 /// Cliente `reqwest` hacia el daemon (HTTP, sin TLS: basta para
-/// localhost). La dirección destino la resuelve cada llamada con
-/// `resolve_client_addr()`. Timeout de conexión breve para que el probe
-/// Auto→local sea rápido cuando el daemon no está en ejecución.
+/// localhost). La dirección destino la resuelve cada llamada el protocolo
+/// (`daemon_stop::resolve_client_addr`). Timeout de conexión breve para que el
+/// probe Auto→local sea rápido cuando el daemon no está en ejecución.
 fn daemon_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_millis(500))
@@ -3886,10 +3885,10 @@ async fn probe_health(client: &reqwest::Client, addr: &str) -> bool {
     }
 }
 
-/// Probe de vida sobre la dirección descubierta (pidfile o fallback a
-/// `DAEMON_ADDR`); `false` habilita el fallback Auto→local.
+/// Probe de vida sobre la dirección descubierta (pidfile o, sin él, la dirección
+/// por defecto del protocolo); `false` habilita el fallback Auto→local.
 async fn daemon_active(client: &reqwest::Client) -> bool {
-    let client_addr = resolve_client_addr();
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     probe_health(client, &client_addr).await
 }
 
@@ -3930,7 +3929,7 @@ async fn transcribe_via_daemon(
 ) -> Result<(), CliError> {
     // El POST apunta a la dirección descubierta (fallback idéntico sin
     // pidfile).
-    let client_addr = resolve_client_addr();
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     let pcm = acquire_pcm(audio, mic, duration, avi_core::MAX_TRANSCRIBE_AUDIO_SECS).await?;
     ensure_pcm_within_limit(
         &pcm,
@@ -3985,7 +3984,7 @@ async fn translate_via_daemon(
 ) -> Result<(), CliError> {
     let payload = serde_json::json!({ "text": text, "from": from, "to": to });
     // El POST apunta a la dirección descubierta.
-    let client_addr = resolve_client_addr();
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     let fut = client
         .post(format!("http://{}/translate", client_addr))
         .json(&payload)
@@ -4057,7 +4056,7 @@ async fn daemon_synthesize_wav(
         payload["temperature"] = serde_json::json!(t);
     }
     // El POST apunta a la dirección descubierta.
-    let client_addr = resolve_client_addr();
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     let resp = client
         .post(format!("http://{}/synthesize", client_addr))
         .json(&payload)
@@ -4149,7 +4148,7 @@ async fn consume_ndjson_stream(
     let start = std::time::Instant::now();
     let mut rest = String::new();
     // Los diagnósticos nombran la dirección descubierta.
-    let client_addr = resolve_client_addr();
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     loop {
         if start.elapsed() >= STREAM_TOTAL_DEADLINE {
             return Err(CliError::new(
@@ -4475,7 +4474,7 @@ async fn clone_via_daemon(
     // responde 200 de inmediato); el trabajo pesado se consume como stream con
     // inactividad 1500 ms + failsafe `REQUEST_FAILSAFE` hasta el evento final.
     // El POST apunta a la dirección descubierta.
-    let client_addr = resolve_client_addr();
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     let fut = client
         .post(format!("http://{}/voices/clone", client_addr))
         .json(&payload)
@@ -4546,7 +4545,7 @@ async fn dub_via_daemon(
     // validar barato); el pipeline se consume como stream con inactividad
     // 1500 ms + failsafe `REQUEST_FAILSAFE` hasta el evento final.
     // El POST apunta a la dirección descubierta.
-    let client_addr = resolve_client_addr();
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     let fut = client
         .post(format!("http://{}/dub", client_addr))
         .json(&payload)
