@@ -10,7 +10,7 @@ La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§5.4 superficie
 
 ## Definición CLI (parser)
 
-`SelfSub` (`src/main.rs`), el enum de subcomandos. Se llama `SelfSub` y no `SelfComandos` por dos razones que el propio código declara: `Self` es palabra reservada de Rust, y el nombre no debe colisionar por subcadena con el enum de comandos de nivel superior, cuya variante de desinstalación este ciclo retira —una comprobación de que esa variante ya no aparece en el árbol tiene que dar cero, y un enum cuyo nombre la contenga daría una coincidencia sin que el comando existiera—.
+`SelfSub` (`src/main.rs`), el enum de subcomandos. Se llama `SelfSub` y no `SelfComandos` por dos razones que el propio código declara: `Self` es palabra reservada de Rust, y el nombre no debe colisionar por subcadena con el enum de comandos de nivel superior, cuya variante de desinstalación el producto ya no expone —una comprobación de que esa variante ya no aparece en el árbol tiene que dar cero, y un enum cuyo nombre la contenga daría una coincidencia sin que el comando existiera—.
 
 | Subcomando | Flags | Efecto |
 |---|---|---|
@@ -97,7 +97,7 @@ El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cau
 
 ```json
 {
-  "schema_version": "4",
+  "schema_version": "5",
   "status": "installed",
   "reason": "setup_failed",
   "install_dir": "…/ai-voice-interconnector",
@@ -147,6 +147,13 @@ Con `--keep-data` el directorio de programa **se borra igual**: la bandera conse
 
 **R2 gobierna el paso 8 y por eso tiene su propia función pública** (`program_dir_is_removable`). Exige las dos mitades de la regla: la positiva —el directorio contiene el recibo o el ejecutable, que es lo que lo convierte *en* el directorio de programa— y la negativa —nunca es la raíz de una unidad, `$HOME`, un ancestro de `$HOME` ni coincide con otra raíz del producto—. Ni una variable de reubicación ni un recibo manipulado pueden ampliar el alcance.
 
+**La consulta ocurre en el planificador, no en el paso 8.** `compose_plan` es la fuente única que usan el simulacro y la ejecución, así que es él quien decide si el directorio de programa entra como destino. Cuando R2 lo prohíbe no entra, y ahí hay dos casos que el plan distingue porque dicen cosas distintas:
+
+- **Ningún destino del plan lo contiene** → se conserva de verdad, y pasa a la lista `preserved` con el motivo de R2. Es el caso de un directorio de programa que es `$HOME` o un ancestro suyo.
+- **Un destino del plan lo contiene** —típico con `AVI_INSTALL_DIR` dentro de la raíz de datos— → **no se conserva**: el paso 6 borra la raíz entera y se lo lleva. El plan no lo anuncia ni como destino propio ni como conservado, porque la raíz que lo borra ya está en la lista.
+
+R2 dice «no lo borro yo», no «no se borra». Sin esa distinción, el comando anunciaba «no se tocará» sobre un directorio que un paso antes borraba entero.
+
 En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se **programa** para cuando termine el proceso (`removal_scheduled`, que es éxito) en vez de hacerse de forma síncrona. El limpiador es una copia del propio ejecutable en `%TEMP%`, relanzada desacoplada y oculta: abre el HANDLE del proceso esperado al programar (sin carrera de PID), aguarda su muerte por el sistema, borra con reintentos acotados con retroceso y escribe su resultado en un registro bajo `data/logs/`. Si el borrado no se puede programar (o, fuera de Windows, el directorio no se puede borrar), el resto de la desinstalación se completa y el comando termina con `status` `uninstalled`, `reason` `program_dir_kept` y salida 22, sin borrado parcial del directorio.
 
 ### Idempotencia y residuo
@@ -169,9 +176,13 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 |---|---|
 | `self install` | `status` · `reason` · `install_dir` · `version` · `channel` · `path_integrated` · `models` · `models_cause` (solo si `models` es `failed`) |
 | `self update` | `status` (`updated` o `already_up_to_date` o `check`) · `reason` (`setup_failed` en el parcial) · `previous_version` · `version`/`latest` · `channel` · `current`/`update_available` (en `--check` y `already_up_to_date`) · `models_cause` (solo en el parcial) |
-| `self uninstall` | `status` · `reason` (`null`) · `removed` · `path_reverted` · `dry_run` |
+| `self uninstall` | `status` · `reason` (`null`) · `removed` · `planned` · `path_reverted` |
 
-`status` toma los valores `installed` / `repaired` en `self install`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` en `self uninstall`. `schema_version` lo inyecta `emit_raw_json` y vale **`"4"`**; el protocolo del daemon va por `"4"` porque es otro contrato.
+`status` toma los valores `installed` / `repaired` en `self install`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` / `planned` en `self uninstall`. `schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**; el protocolo del daemon va por `"4"` porque es otro contrato.
+
+`planned` es el recibo de `compose_plan`, el mismo que usa la ejecución real, así que `--dry-run` anuncia exactamente lo que ocurriría. Con `--dry-run` el `status` es `planned`, `removed` copia `planned` y `path_reverted` es el valor previsto; la clave `dry_run` se retiró del envelope porque un `planned` ya dice que nada se modificó.
+
+**`path_reverted` previsto y real salen del mismo predicado.** No basta con leer la marca `modify_path` del recibo: puede decir que se integró el `PATH` y que hoy no queda nada que revertir —el enlace se borró a mano, el bloque ya no está en el perfil—. El valor publicado lo decide `path_would_be_reverted`, que además de la marca comprueba la existencia real de cada artefacto (el enlace solo si apunta al directorio de programa, el bloque delimitado del perfil, la entrada de registro en Windows), y lo usan tanto el simulacro como la ejecución. Por eso `--dry-run` no puede afirmar una reversión que la operación real no haría.
 
 `--json` no cambia ninguna fila de éxito: el comando hace lo mismo y además emite su payload. La excepción es `setup_failed`, que sí cambia la salida, y por eso está declarado como salida por veredicto y no como error.
 

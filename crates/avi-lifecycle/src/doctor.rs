@@ -15,9 +15,9 @@
 //!
 //! **Las claves que se retiran.** El contrato niega cuatro claves de primer nivel del
 //! reporte —la ruta de la caché, la del directorio de datos, el estado del modelo opt-in
-//! de clonado y la lista de problemas— y el sobre las cubre con `install`, `path` y
+//! de clonado y la lista de problemas— y el envelope las cubre con `install`, `path` y
 //! `models`. Aquí no se emiten, **ni siquiera como nombre**: la prueba de este módulo
-//! afirma el **conjunto exacto** de claves del sobre en vez de una lista de
+//! afirma el **conjunto exacto** de claves del envelope en vez de una lista de
 //! prohibidas, que es una afirmación más fuerte y no necesita nombrarlas. La
 //! información no se pierde, cambia de sitio: la raíz de datos es el campo `data_dir` de
 //! `install`, el estado del modelo opt-in de clonado es el campo `base` de `models` con
@@ -105,7 +105,7 @@ pub struct Install {
     pub dir: PathBuf,
     /// Raíz de datos efectiva, del recibo si lo hay.
     pub data_dir: PathBuf,
-    /// `valid` o `absent`, que es como el sobre nombra el estado del recibo.
+    /// `valid` o `absent`, que es como el envelope nombra el estado del recibo.
     pub receipt: &'static str,
     /// Versión instalada, si el recibo la declara.
     pub version: Option<String>,
@@ -162,8 +162,8 @@ impl Pending {
 /// Fila `models` del reporte: provisionados, faltantes y con tamaños.
 ///
 /// El estado del modelo opt-in de clonado es el campo `base` de esta fila y no una clave
-/// del sobre: es un dato de modelos, no un veredicto aparte. Se llama así, y no como la
-/// clave plana que el contrato retira, para que el sobre no vuelva a exponer un nombre
+/// del envelope: es un dato de modelos, no un veredicto aparte. Se llama así, y no como la
+/// clave plana que el contrato retira, para que el envelope no vuelva a exponer un nombre
 /// que el contrato niega.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Models {
@@ -188,7 +188,7 @@ pub struct Check {
     pub detail: String,
 }
 
-/// Reporte de `doctor`: las siete claves del sobre más `checks` y `failed`.
+/// Reporte de `doctor`: las siete claves del envelope más `checks` y `failed`.
 ///
 /// Es serializable y **no** lleva `status`: el veredicto son `checks` y `failed`, y el
 /// código de salida lo decide el binario conservando el 1 del contrato, sin adjuntar un
@@ -617,7 +617,7 @@ mod tests {
         crate::uninstall::executable_name_default()
     }
 
-    /// Las nueve claves del sobre —las siete del contrato más `checks` y `failed`— están, y
+    /// Las nueve claves del envelope —las siete del contrato más `checks` y `failed`— están, y
     /// ninguna de las cuatro que el contrato retira está. La raíz de datos y el estado
     /// del modelo Base sobreviven **dentro** de `install` y de `models`, que es donde el
     /// contrato los coloca.

@@ -42,7 +42,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Categoría a la que pertenece un destino, para el mensaje humano y para
-/// que el sobre pueda decir qué se borró y por qué.
+/// que el envelope pueda decir qué se borró y por qué.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Category {
     /// `--model`: los modelos provisionados.
@@ -60,7 +60,7 @@ pub enum Category {
 }
 
 impl Category {
-    /// Literal de la categoría, el que va en el sobre y en el resumen.
+    /// Literal de la categoría, el que va en el envelope y en el resumen.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Model => "model",
@@ -484,10 +484,12 @@ fn program_dir_exists(program_dir: &Path) -> bool {
 /// Desenlace de `cleanup`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outcome {
-    /// `cleanup_complete` o `cancelled`.
+    /// `cleanup_complete`, `planned` o `cancelled`.
     pub status: &'static str,
     /// Rutas borradas en esta ejecución, en el orden del plan.
     pub removed: Vec<String>,
+    /// Recibo del plan: lo que se borraría, en el orden del plan.
+    pub planned: Vec<String>,
     /// Del barrido transversal, cuando lo hubo.
     pub swept: Vec<String>,
     /// Lo que quedó sin poder borrar, con el motivo. No es un fallo: se considera
@@ -561,8 +563,15 @@ pub async fn run(
         .collect();
     let decision = confirm(&plan, &entries, options)?;
     if decision == Decision::Cancelled {
+        // Recibo del plan aunque se cancele: lo que se habría borrado.
+        let planned: Vec<String> = plan
+            .paths()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
         return Ok(Outcome {
             status: "cancelled",
+            planned,
             preserved: plan.preserved,
             ..Outcome::default()
         });
@@ -590,9 +599,17 @@ pub async fn run(
 
     drop(lock);
 
+    // Recibo del plan: la lista completa que `plan` calculó, aunque algún
+    // destino haya fallado y no esté en `removed`.
+    let planned: Vec<String> = plan
+        .paths()
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
     Ok(Outcome {
         status: "cleanup_complete",
         removed,
+        planned,
         swept: recovery
             .removed_parked
             .iter()
@@ -644,13 +661,18 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     // ramas**: mezclar el barrido dentro de `removed` en la simulación y no en la
     // ejecución haría que `--dry-run` y la real no se pudieran comparar, que es
     // justamente la propiedad que el planificador único garantiza.
+    // `planned` es el recibo de `removed` en el simulacro, para que el envelope se
+    // lea como un plan.
+    let removed: Vec<String> = plan
+        .paths()
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    let planned = removed.clone();
     Outcome {
-        status: "cleanup_complete",
-        removed: plan
-            .paths()
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect(),
+        status: "planned",
+        removed,
+        planned,
         swept: preview
             .all()
             .iter()

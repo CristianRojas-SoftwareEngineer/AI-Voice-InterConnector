@@ -160,8 +160,8 @@ mod tests {
         // otra, esta prueba falla, que es lo que evita que el cambio de la CLI arrastre
         // al protocolo del daemon o al revés.
         assert_eq!(
-            CLI_SCHEMA_VERSION, "4",
-            "el sobre --json de la CLI subió a \"4\": retira y renombra claves de `doctor`"
+            CLI_SCHEMA_VERSION, "5",
+            "el envelope --json de la CLI subió a \"5\": planned en los simulacros, veredicto bindeado en la parada, usage_error en el parseo y sin audio_path en say/dub"
         );
         assert_eq!(
             DAEMON_SCHEMA_VERSION, "4",
@@ -173,6 +173,23 @@ mod tests {
             val.get("schema_version").and_then(|v| v.as_str()),
             Some(CLI_SCHEMA_VERSION),
             "el envelope debe llevar schema_version=\"{CLI_SCHEMA_VERSION}\""
+        );
+    }
+
+    /// El envelope de la CLI sube a `"5"` por sus cambios incompatibles: los
+    /// simulacros añaden `planned` y retiran `dry_run`, la parada bindea
+    /// `was_running` y `daemon_fully_stopped`, los fallos de parseo con `--json`
+    /// salen como envelope `usage_error`, y `say`/`dub` retiran `audio_path`. El
+    /// protocolo del daemon queda en `"4"` porque ninguno de esos cambios lo toca.
+    #[test]
+    fn cli_schema_version_is_5_and_daemon_stays_4() {
+        assert_eq!(
+            CLI_SCHEMA_VERSION, "5",
+            "el envelope --json de la CLI sube a \"5\": retirar una clave del contrato obliga a subir la versión"
+        );
+        assert_eq!(
+            DAEMON_SCHEMA_VERSION, "4",
+            "el protocolo del daemon queda en \"4\": es un contrato independiente del envelope de la CLI y ninguno de sus cambios lo toca"
         );
     }
 

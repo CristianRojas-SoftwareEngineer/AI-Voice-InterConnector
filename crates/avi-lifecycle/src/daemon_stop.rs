@@ -237,6 +237,18 @@ pub struct StopOutcome {
     /// La parada se completó: no queda daemon ni residente registrado vivos. Con
     /// el pidfile perdido no hay PID de residente que verificar.
     pub stopped: bool,
+    /// Veredicto completo de la verificación a nivel de sistema, formado por los tres
+    /// hechos que el motor observa por separado en el paso final: el daemon no
+    /// responde, su PID registrado no está vivo y el residente tampoco. Vale `false`
+    /// cuando la parada no concluye, y entonces es lo que distingue «el árbol sigue
+    /// vivo» de «solo quedó vivo el residente». Es el dato que el envelope de la CLI
+    /// expone como `daemon_fully_stopped`, sin sondeos fuera del motor.
+    pub daemon_fully_stopped: bool,
+    /// El residente registrado en el pidfile sigue vivo: el predicado
+    /// `resident_alive_by_pid` que la verificación a nivel de sistema ya evaluó,
+    /// expuesto como campo para que quien lee el desenlace no tenga que deducirlo de
+    /// la frase de `remaining`.
+    pub resident_alive: bool,
     /// PID del daemon registrado, si lo había.
     pub pid: Option<u32>,
     /// El pidfile se borró, lo que solo ocurre tras muerte verificada.
@@ -340,7 +352,20 @@ pub async fn stop(
     // 4) Veredicto y borrado del pidfile solo tras muerte verificada.
     let (pid_final, final_state) = daemon_registered(data_dir, control);
     let final_alive = final_state == Registered::Ours;
-    let stopped = !probe(&addr).await && !final_alive && !resident_alive_by_pid(data_dir, control);
+    // Los tres hechos de la verificación a nivel de sistema se observan una vez cada
+    // uno y se nombran: el veredicto completo, la frase de lo que quedó vivo y el
+    // borrado del pidfile se apoyan en la misma observación, en lugar de repetir
+    // sondeos que pueden discrepar entre sí.
+    let resident_alive = resident_alive_by_pid(data_dir, control);
+    let responding = probe(&addr).await;
+    // El veredicto completo: el daemon no responde, su PID registrado no está vivo y
+    // el residente tampoco. Lo afirma el motor también cuando la parada no concluye, y
+    // entonces vale `false`: quien recibe el desenlace necesita saber si lo que quedó
+    // vivo es el residente.
+    let daemon_fully_stopped = !responding && !final_alive && !resident_alive;
+    // `stopped` es el mismo veredicto aplicado a las mutaciones del protocolo: sin él
+    // el pidfile se conserva como pista y el fichero ready no se borra.
+    let stopped = daemon_fully_stopped;
     let remaining = if stopped {
         None
     } else {
@@ -348,10 +373,10 @@ pub async fn stop(
         if let (Some(pid), true) = (pid_final, final_alive) {
             parts.push(format!("daemon pid {pid}"));
         }
-        if probe(&addr).await {
+        if responding {
             parts.push(format!("el daemon en {addr} responde"));
         }
-        if resident_alive_by_pid(data_dir, control) {
+        if resident_alive {
             parts.push(format!("residente pid {}", read_resident_pid(data_dir)));
         }
         Some(parts.join("; "))
@@ -367,6 +392,8 @@ pub async fn stop(
     StopOutcome {
         was_running,
         stopped,
+        daemon_fully_stopped,
+        resident_alive,
         pid: previous_pid,
         pidfile_removed,
         remaining,
@@ -638,6 +665,14 @@ mod tests {
 
         assert!(!outcome.was_running, "no había daemon en ejecución");
         assert!(outcome.stopped, "parar nada es parar bien");
+        assert!(
+            outcome.daemon_fully_stopped,
+            "sin nada vivo la parada está completa según el motor"
+        );
+        assert!(
+            !outcome.resident_alive,
+            "sin pidfile no hay residente registrado que pueda quedar vivo"
+        );
         assert_eq!(outcome.pid, None, "no hay PID que registrar");
         assert!(
             outcome.remaining.is_none(),
@@ -668,6 +703,10 @@ mod tests {
             "pero se conserva para el resumen"
         );
         assert!(outcome.stopped);
+        assert!(
+            outcome.daemon_fully_stopped,
+            "con el PID muerto la parada está completa según el motor"
+        );
         assert!(
             outcome.pidfile_removed,
             "el pidfile se borra tras verificar"
@@ -833,6 +872,14 @@ mod tests {
         assert!(outcome.was_running, "el daemon seguía vivo");
         assert!(!outcome.stopped, "y no se pudo parar");
         assert!(
+            !outcome.daemon_fully_stopped,
+            "con el daemon vivo la parada no está completa según el motor"
+        );
+        assert!(
+            !outcome.resident_alive,
+            "lo que sigue vivo es el árbol del daemon, no el residente"
+        );
+        assert!(
             !outcome.pidfile_removed,
             "el pidfile se conserva como pista"
         );
@@ -982,6 +1029,14 @@ mod tests {
         assert!(
             !outcome.stopped,
             "el residente sigue vivo: la parada no está completa"
+        );
+        assert!(
+            !outcome.daemon_fully_stopped,
+            "con el residente vivo la parada no está completa según el motor"
+        );
+        assert!(
+            outcome.resident_alive,
+            "el predicado del motor lo dice sin que haya que leer la frase de `remaining`"
         );
         assert!(
             !outcome.pidfile_removed,

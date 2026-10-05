@@ -2,7 +2,7 @@
 //!
 //! Invoca el binario compilado con argumentos fijos y compara `stdout` (JSON) y el
 //! código de salida contra fixtures en `tests/golden/`, verificando el contrato de
-//! la CLI: `schema_version == "4"` (vía
+//! la CLI: `schema_version == "5"` (vía
 //! `avi_core::json_emitter`) y los códigos de salida de `avi_core::exit_codes`.
 //!
 //! Se ubica como test de integración del paquete raíz (y no dentro de `src/main.rs`)
@@ -37,6 +37,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use serde_json::Value;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1392,7 +1393,7 @@ fn speech_transcribe_with_audio_matches_contract() {
         &inst.args(),
     );
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
     assert_eq!(actual["source"], Value::String("es-latam".to_string()));
     let text = actual["text"].as_str().expect("`text` debe ser un string");
     assert!(!text.is_empty(), "`text` no debe estar vacío");
@@ -2074,7 +2075,7 @@ fn daemon_status_matches_fixture() {
     let (code, actual) = run_json(&["--json", "daemon", "status"]);
     assert_eq!(code, 0);
     if actual["daemon"] == Value::String("running".to_string()) {
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         let expected = fixture("cli_daemon_status_running.json");
         assert_eq!(actual["daemon"], expected["daemon"]);
     } else {
@@ -2098,7 +2099,7 @@ fn cleanup_matches_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup"]);
     assert_eq!(code, 2, "cleanup sin flags debe ser InvalidInput");
     assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
 }
 
 /// El mismo gate, afirmado por su salida y su `reason` y nada más: es lo que la puerta
@@ -2110,35 +2111,39 @@ fn cleanup_without_flags_exits_2() {
     assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
 }
 
-/// `--voices` en simulación: el sobre estándar, con `status` y `reason`, y el alcance
+/// `--voices` en simulación: el envelope estándar, con `status` y `reason`, y el alcance
 /// de la categoría. No carga fixture: afirma el contrato en línea.
 #[test]
 fn cleanup_voices_matches_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
     assert_eq!(code, 0);
-    assert_eq!(
-        actual["status"],
-        Value::String("cleanup_complete".to_string())
-    );
+    assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert_eq!(actual["reason"], Value::Null, "sin `reason` en el éxito");
-    assert_eq!(actual["dry_run"], Value::Bool(true));
+    assert!(
+        actual.get("dry_run").is_none(),
+        "con status planned la clave dry_run es redundante: {actual}"
+    );
     assert!(actual["removed"].is_array());
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert!(actual["planned"].is_array());
+    assert_eq!(actual["planned"], actual["removed"]);
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
 }
 
-/// `--synthetic-speech` en simulación: el mismo sobre y el alcance de la categoría.
+/// `--synthetic-speech` en simulación: el mismo envelope y el alcance de la categoría.
 #[test]
 fn cleanup_synthetic_speech_matches_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup", "--synthetic-speech", "--dry-run"]);
     assert_eq!(code, 0);
-    assert_eq!(
-        actual["status"],
-        Value::String("cleanup_complete".to_string())
-    );
+    assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert_eq!(actual["reason"], Value::Null);
-    assert_eq!(actual["dry_run"], Value::Bool(true));
+    assert!(
+        actual.get("dry_run").is_none(),
+        "con status planned la clave dry_run es redundante: {actual}"
+    );
     assert!(actual["removed"].is_array());
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert!(actual["planned"].is_array());
+    assert_eq!(actual["planned"], actual["removed"]);
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
 }
 
 /// `--model` en simulación: con la raíz **exclusiva** de la aplicación, el alcance de
@@ -2151,13 +2156,15 @@ fn cleanup_model_matches_fixture() {
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "cleanup", "--model", "--dry-run"], &envs);
     assert_eq!(code, 0, "{}", actual);
-    assert_eq!(
-        actual["status"],
-        Value::String("cleanup_complete".to_string())
-    );
+    assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert_eq!(actual["reason"], Value::Null);
-    assert_eq!(actual["dry_run"], Value::Bool(true));
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert!(
+        actual.get("dry_run").is_none(),
+        "con status planned la clave dry_run es redundante: {actual}"
+    );
+    assert!(actual["planned"].is_array());
+    assert_eq!(actual["planned"], actual["removed"]);
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
     let roots = dir.join("cache");
     assert!(
         actual["removed"]
@@ -2176,31 +2183,36 @@ fn cleanup_model_matches_fixture() {
 fn cleanup_all_matches_fixture() {
     let (code, actual) = run_json(&["--json", "cleanup", "--all", "--dry-run"]);
     assert_eq!(code, 0);
-    assert_eq!(
-        actual["status"],
-        Value::String("cleanup_complete".to_string())
-    );
+    assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert_eq!(actual["reason"], Value::Null);
-    assert_eq!(actual["dry_run"], Value::Bool(true));
+    assert!(
+        actual.get("dry_run").is_none(),
+        "con status planned la clave dry_run es redundante: {actual}"
+    );
     assert!(actual["removed"].is_array());
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert!(actual["planned"].is_array());
+    assert_eq!(actual["planned"], actual["removed"]);
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
 }
 
 /// La **única** prueba de `cleanup` que carga una fixture real, y sigue siendo una
 /// prueba de fixture: compara contra `tests/golden/cli_cleanup_dry_run.json`, que este
-/// ciclo regenera con el plan nuevo de `--dry-run` y con la versión `"4"` del sobre.
+/// ciclo regenera con el plan nuevo de `--dry-run` y con la versión `"5"` del envelope.
 #[test]
 fn cleanup_dry_run_matches_fixture() {
-    // --voices + --dry-run es el caso canónico de dry_run; valida fixture dedicada
+    // --voices + --dry-run es el caso canónico del simulacro; valida fixture dedicada
     let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
     assert_eq!(code, 0);
-    assert_eq!(actual["dry_run"], Value::Bool(true));
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
-    // fixture de referencia para dry_run debe coincidir en status
+    assert_eq!(actual["status"], Value::String("planned".to_string()));
+    assert!(actual.get("dry_run").is_none());
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    // fixture de referencia para el simulacro debe coincidir en status y plan
     let expected = fixture("cli_cleanup_dry_run.json");
     assert_eq!(actual["status"], expected["status"]);
-    assert_eq!(actual["dry_run"], expected["dry_run"]);
+    assert_eq!(actual["planned"], expected["planned"]);
+    assert_eq!(actual["removed"], expected["removed"]);
     assert_eq!(actual["schema_version"], expected["schema_version"]);
+    assert!(expected.get("dry_run").is_none());
 }
 /// `cleanup --model` de punta a punta, en las **dos** formas que puede tomar la raíz de
 /// modelos de la tabla de rutas.
@@ -2417,7 +2429,7 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
             value
         );
     }
-    // Las claves que el contrato retira. El sobre afirma su conjunto exacto en la
+    // Las claves que el contrato retira. El envelope afirma su conjunto exacto en la
     // prueba de doctor del motor; aquí se afirma, de este lado del cable, que la raíz
     // de datos dejó de ser clave de primer nivel.
     assert!(
@@ -2436,8 +2448,8 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
     );
     assert_eq!(
         value["schema_version"],
-        Value::String("4".to_string()),
-        "el sobre de la CLI sube a \"4\""
+        Value::String("5".to_string()),
+        "el envelope de la CLI sube a \"5\""
     );
     // Y el código de salida es el del veredicto: 1 si falló, 0 si no.
     let failed = value["failed"].as_array().is_some_and(|f| !f.is_empty());
@@ -2519,7 +2531,7 @@ fn voice_list_respects_envelope_contract() {
     // invariantes de contrato (envelope + presencia de `default`).
     let (code, actual) = run_json(&["--json", "voice", "list"]);
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
     let voices = actual["voices"]
         .as_array()
         .expect("`voices` debe ser un array");
@@ -2568,7 +2580,7 @@ fn translate_es_to_en_produces_translation() {
         &inst.args(),
     );
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
     assert_eq!(actual["source"], Value::String("es".to_string()));
     assert_eq!(actual["target"], Value::String("en".to_string()));
     let translated = actual["translated"]
@@ -2936,7 +2948,7 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         assert_eq!(actual["status"], Value::String("success".to_string()));
         let audio = actual["audio_path"]
             .as_str()
@@ -3002,7 +3014,7 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         assert_eq!(actual["status"], Value::String("success".to_string()));
         let audio = actual["audio_path"]
             .as_str()
@@ -3228,7 +3240,7 @@ mod tts {
             &inst.contract_args(),
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         let entries = actual["speech"]
             .as_array()
             .expect("`speech` debe ser un array");
@@ -3307,7 +3319,7 @@ mod tts {
             &inst.contract_args(),
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         let entries = actual["speech"]
             .as_array()
             .expect("`speech` debe ser un array");
@@ -3363,13 +3375,13 @@ mod tts {
         );
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("reproduced".to_string()));
-        let audio = actual["audio_path"]
-            .as_str()
-            .expect("audio_path debe existir");
-        let audio_path = Path::new(audio);
-        valid_wav_24k(audio_path);
-        let wer = wer_vs_text(audio_path, "Hola mundo");
-        assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
+        // el envelope ya no lleva `audio_path` y el temporal se borra al
+        // reproducir, así que la verificación sobre archivo (WAV válido + WER)
+        // es imposible; el testigo queda en humo de punta a punta.
+        assert!(
+            actual.get("audio_path").is_none(),
+            "el envelope del say no debe llevar audio_path: {actual}"
+        );
     }
 
     #[test]
@@ -3422,14 +3434,14 @@ mod tts {
         );
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        let audio = actual["audio_path"]
-            .as_str()
-            .expect("audio_path debe existir");
-        let audio_path = Path::new(audio);
-        valid_wav_24k(audio_path);
+        // sin `audio_path` ni temporal, la verificación sobre archivo
+        // (WAV válido + WER) es imposible; queda el texto transcrito.
+        assert!(
+            actual.get("audio_path").is_none(),
+            "el envelope del dub no debe llevar audio_path: {actual}"
+        );
         let text = actual["text"].as_str().expect("text debe existir");
-        let wer = wer_vs_text(audio_path, text);
-        assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
+        assert!(!text.is_empty(), "`text` no debe estar vacío");
     }
 
     #[test]
@@ -3476,7 +3488,7 @@ mod tts {
             &inst.args(),
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(actual["precomputed"], Value::Bool(false));
         // La salida del motor de clonado queda en el log de su familia.
@@ -4009,8 +4021,8 @@ mod tts {
             "con status running el PID de la pista debe estar vivo (pid {:?})",
             pid
         );
-        // Cuando está running, el fixture running debe coincidir (schema_version 4)
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+        // Cuando está running, el fixture running debe coincidir (schema_version 5)
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         let expected = fixture("cli_daemon_status_running.json");
         // Comparar daemon y engine
         assert_eq!(actual["daemon"], expected["daemon"]);
@@ -4506,19 +4518,19 @@ mod tts {
     /// verificados a nivel SO.
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
-    fn h01_simulated_abort_reclaims_and_leaves_no_orphans() {
+    fn simulated_abort_reclaims_and_leaves_no_orphans() {
         require_tts_model();
         require_tts_binary();
         let _tts = lock_tts();
-        hit_start_heavy("tts::h01_simulated_abort_reclaims_and_leaves_no_orphans");
+        hit_start_heavy("tts::simulated_abort_reclaims_and_leaves_no_orphans");
         // Reaper best-effort en todo `panic!` fuera de los polls.
         // (tensado CI Unix): tras cada reclamo se exige además residente
         // ausente por imagen cuando el PID previo murió; en Windows local ese
         // verde se declara no probatorio (runtime Unix diferido a CI).
         // La ventana spawn→write ya no ciega al handler (PID en memoria).
-        let _reaper = arm_reaper("h01_aborto_simulado");
+        let _reaper = arm_reaper("aborto_simulado");
         // Instancia aislada propia; el sandbox nace detenido y vacío.
-        let inst = IsolatedInstance::new("h01_aborto");
+        let inst = IsolatedInstance::new("aborto");
         let a = inst.args();
         // Fase 1 — caída del padre: daemon vivo sin pidfile (el dueño anterior
         // murió sin limpiar). El próximo `start` debe reclamar, no adherirse.
@@ -4595,8 +4607,8 @@ mod tts {
         );
         wait_for_running_without_warm(WARM_FAILSAFE_RETRIES, &a);
         // Cierre: cero huérfanos verificados a nivel SO.
-        stop_instance(&inst, "h01_aborto_simulado");
-        hit_end("tts::h01_simulated_abort_reclaims_and_leaves_no_orphans");
+        stop_instance(&inst, "aborto_simulado");
+        hit_end("tts::simulated_abort_reclaims_and_leaves_no_orphans");
     }
 
     /// Plazo máximo para que, tras matar el daemon a la fuerza, el motor
@@ -4810,15 +4822,15 @@ mod tts {
     /// luego mata el árbol del daemon y comprueba que se libera.
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
-    fn h03_pipe_stdio_must_not_remain_blocked() {
+    fn pipe_stdio_must_not_remain_blocked() {
         require_tts_model();
         require_tts_binary();
         let _tts = lock_tts();
-        hit_start_heavy("tts::h03_pipe_stdio_must_not_remain_blocked");
-        let _reaper = arm_reaper("h03_pipe_stdio_must_not_remain_blocked");
+        hit_start_heavy("tts::pipe_stdio_must_not_remain_blocked");
+        let _reaper = arm_reaper("pipe_stdio_must_not_remain_blocked");
         // Instancia aislada propia (puerto efímero + sandbox); el sandbox
         // nace detenido y vacío, sin precondición de sesión.
-        let inst = IsolatedInstance::new("h03_pipe");
+        let inst = IsolatedInstance::new("pipe");
         let child_envs: Vec<(String, String)> = inst.envs.clone();
 
         // Localiza (sin matar) al residente por PID registrado en `daemon.pid`
@@ -4862,23 +4874,23 @@ mod tts {
                     output
                 );
                 milestone(&format!(
-                    "h03: pipe liberado en {} ms sin intervención — no reproduce (sin retención)",
+                    "pipe liberado en {} ms sin intervención — no reproduce (sin retención)",
                     t0.elapsed().as_millis()
                 ));
                 let a = inst.args();
                 wait_for_running_without_warm(WARM_FAILSAFE_RETRIES, &a);
-                stop_instance(&inst, "h03_pipe_stdio");
-                hit_end("tts::h03_pipe_stdio_must_not_remain_blocked");
+                stop_instance(&inst, "pipe_stdio");
+                hit_end("tts::pipe_stdio_must_not_remain_blocked");
                 return;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 milestone(&format!(
-                    "h03: pipe SIGUE bloqueado tras {} ms (umbral sano ~1-2 s) — investigando retención",
+                    "pipe SIGUE bloqueado tras {} ms (umbral sano ~1-2 s) — investigando retención",
                     t0.elapsed().as_millis()
                 ));
             }
             Err(e) => fail_with_reaper(
-                "h03_pipe_stdio_must_not_remain_blocked(canal)",
+                "pipe_stdio_must_not_remain_blocked(canal)",
                 format!("canal del hilo lector cerrado inesperadamente: {}", e),
             ),
         }
@@ -4887,21 +4899,21 @@ mod tts {
         // solo el motor primero (si hay PID registrado vivo) para replicar el
         // orden exacto del síntoma documentado.
         if let Some(engine_pid) = registered_resident_pid() {
-            milestone(&format!("h03: matando solo el motor (pid {})", engine_pid));
+            milestone(&format!("matando solo el motor (pid {})", engine_pid));
             avi_daemon::kill_tree_by_pid(engine_pid);
             avi_daemon::wait_for_pid_death(engine_pid, std::time::Duration::from_secs(8));
             if let Ok(output) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
                 let output = output.expect("`daemon start` debe poder ejecutarse");
                 milestone(&format!(
-                    "h03: el pipe se liberó al matar SOLO el motor (inesperado vs. síntoma documentado, exit {:?})",
+                    "el pipe se liberó al matar SOLO el motor (inesperado vs. síntoma documentado, exit {:?})",
                     output.status.code()
                 ));
-                stop_instance(&inst, "h03_pipe_stdio_motor");
-                hit_end("tts::h03_pipe_stdio_must_not_remain_blocked (liberado por motor)");
+                stop_instance(&inst, "pipe_stdio_motor");
+                hit_end("tts::pipe_stdio_must_not_remain_blocked (liberado por motor)");
                 return;
             }
             milestone(
-                "h03: matar solo el motor NO liberó el pipe (coincide con el síntoma documentado)",
+                "matar solo el motor NO liberó el pipe (coincide con el síntoma documentado)",
             );
         }
 
@@ -4909,7 +4921,7 @@ mod tts {
         // debe liberar el pipe.
         let pid_daemon = inst.read_daemon_pid();
         if let Some(pid) = pid_daemon {
-            milestone(&format!("h03: matando el árbol del daemon (pid {})", pid));
+            milestone(&format!("matando el árbol del daemon (pid {})", pid));
             avi_daemon::kill_tree_by_pid(pid);
             avi_daemon::wait_for_pid_death(pid, std::time::Duration::from_secs(8));
         }
@@ -4918,7 +4930,7 @@ mod tts {
             Ok(output) => {
                 let output = output.expect("`daemon start` debe poder ejecutarse");
                 fail_with_reaper(
-                    "h03_pipe_stdio_must_not_remain_blocked",
+                    "pipe_stdio_must_not_remain_blocked",
                     format!(
                         "Reproduce: el pipe del lanzador solo se liberó al matar el daemon (no el motor), tras {} ms totales (exit {:?}). El daemon retiene el stdio del proceso que lo lanzó pese al corte de herencia por SetHandleInformation (disinherit_standard_handles).",
                         t0.elapsed().as_millis(),
@@ -4928,7 +4940,7 @@ mod tts {
             }
             Err(_) => {
                 fail_with_reaper(
-                    "h03_pipe_stdio_must_not_remain_blocked",
+                    "pipe_stdio_must_not_remain_blocked",
                     format!(
                         "el pipe del lanzador sigue bloqueado incluso tras matar el árbol del daemon (>{} ms): retención más allá de lo documentado",
                         t0.elapsed().as_millis()
@@ -4970,7 +4982,7 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0, "translate --daemon debe delegar con exit 0");
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         assert!(actual.get("translated").is_some());
         let expected = fixture("cli_translate_daemon.json");
         assert_eq!(actual["source"], expected["source"]);
@@ -5075,7 +5087,7 @@ mod tts {
             t0.elapsed().as_millis()
         ));
         assert_eq!(code, 0, "voice clone --daemon debe delegar con exit 0");
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(
             actual["precomputed"],
@@ -5163,20 +5175,12 @@ mod tts {
         );
         assert_eq!(code, 0, "dub passthrough --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
-        // Verificación sobre el archivo recibido: WAV válido más
-        // texto no vacío. Sin gate WER: este test no lo tenía y añadir un
-        // umbral numérico sobre inferencia sin poder ejecutar la pesada sería
-        // endurecer a ciegas; el gate WER vive en los testigos directos.
-        let audio = actual["audio_path"]
-            .as_str()
-            .expect("audio_path debe existir");
-        let audio_path = Path::new(audio);
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        // el envelope no lleva `audio_path`; queda el texto no vacío.
         assert!(
-            audio_path.is_file(),
-            "el WAV del daemon debe estar persistido"
+            actual.get("audio_path").is_none(),
+            "el envelope del dub no debe llevar audio_path: {actual}"
         );
-        valid_wav_24k(audio_path);
         let text = actual["text"].as_str().expect("text debe existir");
         assert!(!text.is_empty(), "`text` no debe estar vacío");
         // Apagado propio con cero huérfanos verificados a nivel SO.
@@ -5223,20 +5227,13 @@ mod tts {
         );
         assert_eq!(code, 0, "dub con traducción --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("4".to_string()));
-        // Verificación sobre el archivo recibido: WAV válido más
-        // texto traducido no vacío (el daemon devuelve en `text` el final
-        // traducido). Sin gate WER por el mismo
-        // motivo que `dub_daemon_passthrough`: no endurecer a ciegas.
-        let audio = actual["audio_path"]
-            .as_str()
-            .expect("audio_path debe existir");
-        let audio_path = Path::new(audio);
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        // el envelope no lleva `audio_path`; queda el texto traducido
+        // no vacío (el daemon devuelve en `text` el final traducido).
         assert!(
-            audio_path.is_file(),
-            "el WAV del daemon debe estar persistido"
+            actual.get("audio_path").is_none(),
+            "el envelope del dub no debe llevar audio_path: {actual}"
         );
-        valid_wav_24k(audio_path);
         let text = actual["text"].as_str().expect("text debe existir");
         assert!(!text.is_empty(), "`text` no debe estar vacío");
         // Apagado propio con cero huérfanos verificados a nivel SO.
@@ -5857,4 +5854,495 @@ fn test_voice_list_no_panic_on_sigpipe_closed_stdout_before_spawn() {
         status,
         stderr_txt
     );
+}
+
+// ─── JSON veraz y temporales ───────────────────────────────────────────────────
+// Fijan cinco comportamientos: el `status` del simulacro de `self uninstall` y
+// de `cleanup` (`planned`, con el recibo de `removed` y sin `dry_run`); el
+// veredicto de `daemon stop` sin daemon (`not_running` con `was_running`); el
+// borrado del WAV temporal de `dub` y de `say`, también cuando la reproducción
+// falla; el canal del fallo de parseo con `--json` (envelope `usage_error` por
+// stdout y stderr mudo); y la retirada de `audio_path`.
+//
+// `was_running` es el nombre del campo que ya emitía el motor, y
+// `daemon_fully_stopped` el del predicado de apagado completo: el vocabulario
+// final respeta los dos en lugar de inventar otros.
+
+/// `daemon stop` sin daemon informa `not_running` con el veredicto del
+/// motor, en lugar de afirmar `shutdown_sent` sin `was_running`.
+#[test]
+fn daemon_stop_without_daemon_reports_not_running() {
+    let (dir, envs) = contract_sandbox("stop-sin-daemon");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
+    assert_eq!(code, 0, "daemon stop sin daemon debe salir 0: {actual}");
+    assert_eq!(
+        actual["status"],
+        Value::String("not_running".to_string()),
+        "el status debe decir que no había nada que detener: {actual}"
+    );
+    assert_eq!(
+        actual["was_running"],
+        Value::Bool(false),
+        "el envelope debe bindear el was_running del motor: {actual}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// El envelope exacto de `daemon stop` sin daemon coincide con su fixture: es el
+/// veredicto del motor (`not_running` con `was_running` y
+/// `daemon_fully_stopped`), aislado en su propio sandbox.
+#[test]
+fn daemon_stop_without_daemon_matches_fixture() {
+    let (dir, envs) = contract_sandbox("stop_fixture");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
+    assert_eq!(code, 0, "daemon stop sin daemon debe salir 0: {actual}");
+    assert_eq!(actual, fixture("cli_daemon_stop.json"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `daemon stop` con el sondeo vivo tras el plazo emite el veredicto completo
+/// en máquina (`still_running` con `daemon_fully_stopped: false`) y sale con 5
+/// por veredicto, sin objeto `error` y sin borrar la pista.
+///
+/// El daemon falso responde siempre 200 a cualquier petición y nunca se apaga,
+/// así que la parada no puede concluir; sus PIDs son señuelos muertos, de modo
+/// que nada real se mata ni se barre por imagen.
+#[test]
+fn daemon_stop_fails_with_still_running_verdict() {
+    use std::io::{Read, Write};
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("reservar puerto para el daemon falso");
+    let addr = listener
+        .local_addr()
+        .expect("dirección del daemon falso")
+        .to_string();
+    std::thread::spawn(move || {
+        let limite = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        listener.set_nonblocking(true).ok();
+        while std::time::Instant::now() < limite {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    });
+    let (dir, envs) = sandbox_unique_state("stop-fallo");
+    let dead_pid = u32::MAX - 1;
+    let content = serde_json::json!({
+        "pid": dead_pid,
+        "addr": addr,
+        "resident_pid": dead_pid,
+    });
+    std::fs::write(dir.join("daemon.pid"), content.to_string())
+        .expect("sembrar pidfile del daemon falso");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
+    assert_eq!(code, 5, "daemon stop sin concluir debe salir 5: {actual}");
+    assert_eq!(
+        actual["status"],
+        Value::String("still_running".to_string()),
+        "el status debe decir que la parada no concluyó: {actual}"
+    );
+    assert_eq!(
+        actual["daemon_fully_stopped"],
+        Value::Bool(false),
+        "el envelope debe bindear el veredicto del motor: {actual}"
+    );
+    assert_eq!(
+        actual["resident_alive"],
+        Value::Bool(false),
+        "el envelope debe decir si quedó vivo el residente: {actual}"
+    );
+    assert!(
+        actual.get("error").is_none(),
+        "la salida por veredicto no lleva objeto error: {actual}"
+    );
+    assert!(
+        dir.join("daemon.pid").is_file(),
+        "en fallo la pista se conserva para el siguiente intento"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// El simulacro de `cleanup` es un plan (`planned` con el recibo
+/// de `removed`) y no lleva la clave redundante `dry_run`.
+#[test]
+fn cleanup_dry_run_reports_planned() {
+    let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
+    assert_eq!(code, 0, "cleanup --dry-run debe salir 0: {actual}");
+    assert_eq!(
+        actual["status"],
+        Value::String("planned".to_string()),
+        "el simulacro debe leerse como un plan: {actual}"
+    );
+    assert!(
+        actual.get("planned").and_then(|v| v.as_array()).is_some(),
+        "el simulacro debe traer el plan con el recibo de removed: {actual}"
+    );
+    assert!(
+        actual.get("dry_run").is_none(),
+        "con status planned la clave dry_run es redundante: {actual}"
+    );
+}
+
+/// El simulacro de `self uninstall` es un plan (`planned` con el
+/// recibo de `removed` y `path_reverted`) y no lleva `dry_run`.
+#[test]
+fn uninstall_dry_run_reports_planned() {
+    let (code, actual) = run_json(&["--json", "self", "uninstall", "--dry-run"]);
+    assert_eq!(code, 0, "self uninstall --dry-run debe salir 0: {actual}");
+    assert_eq!(
+        actual["status"],
+        Value::String("planned".to_string()),
+        "el simulacro debe leerse como un plan: {actual}"
+    );
+    assert!(
+        actual.get("planned").and_then(|v| v.as_array()).is_some(),
+        "el simulacro debe traer el plan con el recibo de removed: {actual}"
+    );
+    assert!(
+        actual.get("dry_run").is_none(),
+        "con status planned la clave dry_run es redundante: {actual}"
+    );
+}
+
+/// El simulacro de `self uninstall` aislado coincide con su fixture: compara las
+/// claves estables contra `tests/golden/cli_uninstall_dry_run.json`.
+///
+/// `planned` y `removed` llevan rutas del sandbox y por eso no se comparan contra
+/// la fixture (que las deja vacías): se afirma en vivo que son arrays y que el
+/// plan y el recibo coinciden.
+#[test]
+fn uninstall_dry_run_matches_fixture() {
+    let (dir, envs) = contract_sandbox("uninstall-dry-fixture");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "self", "uninstall", "--dry-run"], &envs);
+    assert_eq!(code, 0, "self uninstall --dry-run debe salir 0: {actual}");
+    let expected = fixture("cli_uninstall_dry_run.json");
+    assert_eq!(actual["status"], expected["status"]);
+    assert_eq!(actual["reason"], expected["reason"]);
+    assert_eq!(actual["path_reverted"], expected["path_reverted"]);
+    assert_eq!(actual["schema_version"], expected["schema_version"]);
+    assert!(
+        actual.get("planned").and_then(|v| v.as_array()).is_some(),
+        "el simulacro debe traer el plan: {actual}"
+    );
+    assert_eq!(
+        actual["planned"], actual["removed"],
+        "el plan y el recibo coinciden: {actual}"
+    );
+    assert!(
+        actual.get("dry_run").is_none(),
+        "con status planned la clave dry_run es redundante: {actual}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Con `--json`, un rechazo de clap emite el envelope `usage_error` por
+/// stdout, sale con 2 y **deja stderr en silencio**, en lugar de texto por
+/// stderr sin envelope.
+///
+/// El silencio de stderr es media puerta del contrato y se afirma
+/// aquí: sin esta aserción, una regresión que volviera a imprimir el texto
+/// español por stderr seguiría dejando la puerta en verde, porque el envelope
+/// de stdout no se habría movido.
+#[test]
+fn parse_error_with_json_emits_usage_error_envelope() {
+    for args in [
+        vec![
+            "--json",
+            "speech",
+            "say",
+            "--text",
+            "Hola",
+            "--flag-inexistente",
+        ],
+        vec!["--json", "translate", "--text", "Hola", "--from", "fr"],
+    ] {
+        let (code, stdout, stderr) = run_text_with_stderr(&args);
+        assert_eq!(
+            code,
+            2,
+            "el rechazo de clap debe salir 2: {}",
+            args.join(" ")
+        );
+        assert!(
+            stderr.trim().is_empty(),
+            "con --json el rechazo de clap sale entero por stdout y stderr queda mudo; \
+             ante {} se escribió por stderr: {:?}",
+            args.join(" "),
+            stderr
+        );
+        let val: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!(
+                "stdout debe ser el envelope JSON ante {} ({e}): {:?}",
+                args.join(" "),
+                stdout
+            )
+        });
+        assert_eq!(
+            val["reason"],
+            Value::String("usage_error".to_string()),
+            "el envelope debe señalar usage_error: {val}"
+        );
+        assert!(
+            val.get("schema_version").and_then(|v| v.as_str()).is_some(),
+            "el envelope de parseo lleva schema_version: {val}"
+        );
+    }
+}
+
+/// Silencio de 1 s en base64 para alimentar al daemon falso: es un WAV válido,
+/// así que la reproducción lo acepta donde haya dispositivo.
+///
+/// `path` debe vivir dentro del sandbox de la prueba: el WAV se arma en el
+/// temporal de la máquina si se le pasa una ruta de `std::env::temp_dir()`, y un
+/// pánico antes de borrar deja ese residuo fuera del alcance del `remove_dir_all`
+/// que lo barre todo.
+fn silent_wav_b64(path: &std::path::Path) -> String {
+    write_silent_wav(path, 1);
+    let bytes = std::fs::read(path).expect("leer el WAV de silencio");
+    base64::engine::general_purpose::STANDARD.encode(&bytes)
+}
+
+/// `audio_b64` con bytes que no son un WAV: la reproducción los rechaza al
+/// abrirlos y falla con `playback_failed`. El fallo ocurre en la apertura, antes
+/// de mirar el dispositivo de salida, así que se produce igual en una máquina
+/// con audio y en una sin él: la puerta no depende del host.
+fn unreadable_audio_b64() -> String {
+    base64::engine::general_purpose::STANDARD.encode(b"esto no es un WAV: audio_b64 de mentira")
+}
+
+/// Exige un dispositivo de salida para poder afirmar el envelope de éxito.
+///
+/// `say` y `dub` reproducen de verdad, así que sin dispositivo el envelope sería
+/// `playback_failed` y una prueba chamada «success» no podría demostrar nada. Es
+/// el mismo requisito que declaran los recursos
+/// `#[ignore = "requiere … un dispositivo de audio"]`, comprobado con la misma
+/// enumeración que usa `devices`.
+fn require_output_device() {
+    let hay_dispositivo = avi_audio::get_devices_json()
+        .map(|d| !d.is_empty())
+        .unwrap_or(false);
+    assert!(
+        hay_dispositivo,
+        "esta máquina no expone dispositivo de salida de audio: el envelope de éxito de \
+         say/dub es inalcanzable aquí y la prueba no podría demostrar nada"
+    );
+}
+
+/// Rutas con el prefijo dado dentro del temporal del hijo del sandbox.
+fn residue_with_prefix(dir: &std::path::Path, prefix: &str) -> Vec<String> {
+    std::fs::read_dir(dir.join("tmp-hijo"))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.starts_with(prefix))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `speech dub` por daemon con respuesta válida **sale bien**, no
+/// deja su WAV temporal en ninguna salida y su envelope no lleva `audio_path`.
+///
+/// El nombre afirma «success» y la puerta lo demuestra: el código 0 y el `status`
+/// `dubbed` se exigen **antes** de mirar el residuo. Sin ellos la prueba pasa en
+/// vacío cuando la invocación falla —un envelope de error tampoco lleva
+/// `audio_path`— y cuando el daemon falso deja de responder no se crea ningún
+/// temporal que assertar.
+#[test]
+fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
+    require_output_device();
+    let (dir, envs) = contract_sandbox("dub-sin-residuo");
+    let body_wav = dir
+        .join("tmp-hijo")
+        .join(format!("dub_body_{}.wav", std::process::id()));
+    let wav_b64 = silent_wav_b64(&body_wav);
+    let fake = FakeDaemon::start(
+        200,
+        serde_json::json!({
+            "event": "result", "status": "dubbed",
+            "text": "hola", "translated": "hola",
+            "audio_b64": wav_b64, "voice": "default",
+        }),
+    );
+    fake.publish_in(&dir);
+    let wav = dir.join("entrada_1s.wav");
+    write_silent_wav(&wav, 1);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "--daemon",
+            "speech",
+            "dub",
+            "--audio",
+            wav.to_str().expect("ruta UTF-8"),
+            "--source-language",
+            "es-latam",
+            "--target-language",
+            "es-latam",
+        ],
+        &envs,
+    );
+    assert_eq!(
+        code, 0,
+        "el dub por daemon debe salir 0: un envelope de error también pasa la aserción de \
+         audio_path y no demostraría que la reproducción ocurrió: {actual}"
+    );
+    assert_eq!(
+        actual["status"],
+        Value::String("dubbed".to_string()),
+        "el envelope debe afirmar que se dobló, no solo que no falló: {actual}"
+    );
+    let residue = residue_with_prefix(&dir, "avi_dub_");
+    assert!(
+        residue.is_empty(),
+        "el temporal del dub debe borrarse en todas las salidas: {residue:?}"
+    );
+    assert!(
+        actual.get("audio_path").is_none(),
+        "el envelope del dub no debe llevar audio_path: {actual}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// El guardián del temporal de `dub` borra su WAV también cuando **la
+/// reproducción falla**, que es el caso en que antes el WAV quedaba como
+/// residuo sobreviviente en el temporal.
+///
+/// El fallo se fuerza con un `audio_b64` que no es un WAV, de modo que la puerta
+/// dice algo en cualquier máquina y no solo donde la reproducción falla por falta
+/// de dispositivo.
+#[test]
+fn dub_daemon_playback_failure_leaves_no_residue() {
+    let fake = FakeDaemon::start(
+        200,
+        serde_json::json!({
+            "event": "result", "status": "dubbed",
+            "text": "hola", "translated": "hola",
+            "audio_b64": unreadable_audio_b64(), "voice": "default",
+        }),
+    );
+    let (dir, envs) = contract_sandbox("dub-repro-fallida");
+    fake.publish_in(&dir);
+    let wav = dir.join("entrada_1s.wav");
+    write_silent_wav(&wav, 1);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "--daemon",
+            "speech",
+            "dub",
+            "--audio",
+            wav.to_str().expect("ruta UTF-8"),
+            "--source-language",
+            "es-latam",
+            "--target-language",
+            "es-latam",
+        ],
+        &envs,
+    );
+    assert_eq!(
+        code, 1,
+        "si la reproducción falla el dub no puede salir 0 (playback_failed es exit 1): {actual}"
+    );
+    assert_eq!(
+        actual["reason"],
+        Value::String("playback_failed".to_string()),
+        "el fallo debe nombrarse playback_failed y no io_error o daemon_error: {actual}"
+    );
+    let residue = residue_with_prefix(&dir, "avi_dub_");
+    assert!(
+        residue.is_empty(),
+        "el guardián debe borrar el temporal del dub también cuando la reproducción \
+         falla: {residue:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `speech say` por daemon con respuesta válida **sale bien**, no
+/// deja su WAV temporal en ninguna salida y su envelope no lleva `audio_path`. Vale
+/// lo dicho en el test del dub sobre cada aserción.
+#[test]
+fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
+    require_output_device();
+    let (dir, envs) = contract_sandbox("say-sin-residuo");
+    let body_wav = dir
+        .join("tmp-hijo")
+        .join(format!("say_body_{}.wav", std::process::id()));
+    let wav_b64 = silent_wav_b64(&body_wav);
+    let fake = FakeDaemon::start(
+        200,
+        serde_json::json!({ "event": "result", "audio_b64": wav_b64 }),
+    );
+    fake.publish_in(&dir);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(
+        &["--json", "--daemon", "speech", "say", "--text", "Hola"],
+        &envs,
+    );
+    assert_eq!(
+        code, 0,
+        "el say por daemon debe salir 0: un envelope de error también pasa la aserción de \
+         audio_path y no demostraría que la reproducción ocurrió: {actual}"
+    );
+    assert_eq!(
+        actual["status"],
+        Value::String("reproduced".to_string()),
+        "el envelope debe afirmar que se reprodujo, no solo que no falló: {actual}"
+    );
+    let residue = residue_with_prefix(&dir, "avi_say_");
+    assert!(
+        residue.is_empty(),
+        "el temporal del say debe borrarse en todas las salidas: {residue:?}"
+    );
+    assert!(
+        actual.get("audio_path").is_none(),
+        "el envelope del say no debe llevar audio_path: {actual}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// El guardián del temporal de `say` borra su WAV también cuando **la
+/// reproducción falla**. Vale lo dicho en el test del dub: el fallo se fuerza con
+/// audio ilegible, no confiando en que la máquina tenga o no dispositivo.
+#[test]
+fn say_daemon_playback_failure_leaves_no_residue() {
+    let fake = FakeDaemon::start(
+        200,
+        serde_json::json!({ "event": "result", "audio_b64": unreadable_audio_b64() }),
+    );
+    let (dir, envs) = contract_sandbox("say-repro-fallida");
+    fake.publish_in(&dir);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(
+        &["--json", "--daemon", "speech", "say", "--text", "Hola"],
+        &envs,
+    );
+    assert_eq!(
+        code, 1,
+        "si la reproducción falla el say no puede salir 0 (playback_failed es exit 1): {actual}"
+    );
+    assert_eq!(
+        actual["reason"],
+        Value::String("playback_failed".to_string()),
+        "el fallo debe nombrarse playback_failed y no io_error o daemon_error: {actual}"
+    );
+    let residue = residue_with_prefix(&dir, "avi_say_");
+    assert!(
+        residue.is_empty(),
+        "el guardián debe borrar el temporal del say también cuando la reproducción \
+         falla: {residue:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -7,7 +7,7 @@
 //! regla de rutas tenga una única implementación por target.
 //!
 //! Es una biblioteca sin punto de entrada propio: el parseo de la CLI y el
-//! cableado se quedan en el binario, que es quien conoce `clap` y el sobre
+//! cableado se quedan en el binario, que es quien conoce `clap` y el envelope
 //! `--json`.
 //!
 //! Las rutas y los recursos del producto no se definen aquí: `avi-store` es la

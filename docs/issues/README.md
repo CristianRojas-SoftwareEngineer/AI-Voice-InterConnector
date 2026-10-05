@@ -111,7 +111,7 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 ## Defectos abiertos
 
-| Documento | Severidad | Síntoma |
-|---|---|---|
-| [residuos-en-disco-tras-comandos-correctos.md](residuos-en-disco-tras-comandos-correctos.md) | Baja | WAV temporales |
-| [status-json-afirma-operaciones-no-realizadas.md](status-json-afirma-operaciones-no-realizadas.md) | Baja | `daemon stop` sin daemon dice `shutdown_sent`, y los simulacros de `self uninstall` y `cleanup` dicen `uninstalled` y `cleanup_complete` |
+Ninguno. Los cinco informes que motivaron los ciclos C1 a C7 se han eliminado al
+cerrarse su última ficha, con su contenido vigente incorporado a los documentos
+canónicos y su corrección anotada en el CHANGELOG. Un defecto nuevo vuelve a la
+forma de la plantilla de arriba, con su propia fila en esta sección.

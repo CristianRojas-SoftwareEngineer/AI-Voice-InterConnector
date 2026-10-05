@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 a C6 cerrados, C7 siguiente |
+| Estado | G0 aprobada, C1 a C7 cerrados, G-Resultado de C7 en revisión |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -233,6 +233,7 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S30 | Cuando clap rechaza los argumentos (flag desconocido, valor inválido, subcomando inexistente), el binario imprime un mensaje de texto por stderr y sale con 2, incluso con `--json`; el contrato dice que ese fallo entra por el mismo canal JSON que los demás, con `reason` `usage_error` en stdout, así que un consumidor programado que pase `--json` no recibe envelope | Verificación de C4 | Baja | C7 |
 | S31 | `daemon stop` y el resto de operaciones que reutilizan la parada dan el daemon por detenido sin comprobar que el residente murió: con el daemon muerto y el residente vivo, borran el pidfile y con él el `resident_pid`; la rama que informaría del residente es inalcanzable | Verificación del plan de C5 | Media | C5 |
 | S32 | Un proceso que muere mientras guarda la referencia de un clonado deja un directorio de voz vacío: `voice list` lo muestra y `voice_exists` impide clonar de nuevo con ese nombre | Verificación del plan de C5 | Baja | C5 |
+| S33 | El handler `/dub` del daemon no borra su WAV temporal si falla la lectura del fichero sintetizado | Investigación de C7 | Baja | C7 |
 
 S11 no abre ninguna decisión: el mensaje del error se escribe sin prefijo y el prefijo
 lo pone quien lo imprime.
@@ -275,6 +276,10 @@ en ese ciclo: el primero porque el vigía solo hace improbable el residente hué
 parada debe verificarlo; el segundo porque contradecía la afirmación de que un clonado
 interrumpido no deja nada roto en el almacén.
 
+S33 salió de la investigación previa al G-Plan de C7 y no tiene informe propio. Comparte
+la causa raíz de C7 con S8, que un temporal sin dueño no se borra en todas las salidas, y se corrige
+en ese ciclo con el tipo dueño único.
+
 ## 8. Orden de los ciclos y dependencias
 
 ```text
@@ -297,7 +302,7 @@ C0 Preparación y decisiones ──G0──►
   C6 Artefactos de self update (S6)
     │
     ▼
-  C7 JSON veraz y temporales (S7 S8 S18)
+  C7 JSON veraz y temporales (S7 S8 S18 S30 S33)
 
 G-Release: una sola vez, tras cerrar e integrar C7
 ```
@@ -1362,34 +1367,30 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 
 - **Causa raíz:** algunos envelopes JSON describen lo que se pidió o lo que habría pasado,
   no lo que pasó, y quien crea un fichero temporal no siempre lo borra.
-- **Síntomas:** S7, S8, S18 y S30.
+- **Síntomas:** S7, S8, S18, S30 y S33.
 - **Decisiones:** D6, D7, D8 y D13 (la subida del envelope de la CLI), resueltas en G0. Queda
   una abierta, que se resuelve en la G-Plan de C7: si el fallo de parseo de la CLI entra
   por el canal JSON cuando se pide `--json` (se alinea el binario con el contrato) o si
   el contrato pasa a documentar que ese fallo se imprime como texto por stderr con
   exit 2 (se alinea el contrato con el binario). La recomendación es la primera, porque
   `--json` promete un envelope en stdout y quien lo parsea hoy recibe un stdout vacío.
+- **Decisiones de plan:**
+  - **P1:** el fallo de parseo se alinea con el contrato: con `--json`, envelope `usage_error` con exit 2 en stdout y silencio por stderr; sin `--json`, texto actual con `Uso:`. La detección usa un pre-análisis puro de los argumentos crudos que solo decide si se emite, no qué.
+  - **P2:** los simulacros se unifican en un único plan puro del que derivan ambos envelopes; si la predicción pura de algún campo resultara inviable, se cae al repliegue de alinear `simulate` por campos, sin reabrir G0.
+  - **P3:** el tipo dueño del temporal vive en `avi-shared`, el crate común que ya comparten la CLI y el daemon.
+  - **P4:** el simulacro nunca pide confirmación: es de solo lectura y `cancelled` no existe en dry-run.
+  - **P5:** entran en el alcance la fuga del temporal de `/dub` en el daemon (S33, misma causa que S8) y las pruebas de conformidad de vocabulario, forma y guías.
 - **Tareas:**
-  1. `daemon stop` sin daemon responde `status: "not_running"` y «El daemon no estaba
-     en ejecución», a partir del dato de la parada (D6).
-  2. Los simulacros de `self uninstall` y `cleanup` responden `status: "planned"`, y el
-     texto humano de `self uninstall --dry-run` deja de anunciar la desinstalación
-     (D7.1).
-  3. El simulacro de `self uninstall` alinea `removed` y `path_reverted` con la
-     ejecución real (D7.2).
-  4. Retirar `dry_run` de los envelopes de `self uninstall` y `cleanup` (D7.3).
-  5. Un guardián único del WAV temporal en `say` y `dub`, por todas sus vías; se retira
-     `audio_path` del JSON y la ruta del texto humano (D8.1, D8.2).
-  6. Envelope de la CLI en la versión 5 (D13), también en las guías que aún lo declaran en
-     `"3"`: `DEVICES.md`, `TRANSLATE.md`, `VOICE.md` y el `status` de `DAEMON.md`
-     (S18).
-  7. El fallo de parseo de la CLI, según lo que resuelva la decisión abierta: o se
-     traduce a un error `usage_error` con exit 2 que sale por el envelope JSON cuando se
-     pidió `--json` (hay que inspeccionar los argumentos crudos para saberlo, porque al
-     fallar el parseo no existe la estructura de la CLI), o se corrige el contrato
-     para describir el texto por stderr.
+  1. `daemon stop` bindea el `Outcome` que hoy descarta: sin daemon previo responde `status: "not_running"` y «El daemon no estaba en ejecución» con exit 0; con daemon detenido y muerte verificada, `shutdown_sent`; con el residente vivo, el error actual. Base: `daemon_fully_stopped` de C5 (D6).
+  2. Un único plan puro en `uninstall` y `cleanup` del que derivan simulacro y ejecución: `removed` sin barrido y `swept` separado en las dos ramas, `path_reverted` predicho desde el recibo sin tocar disco, `status` y `program_dir_removed` predichos con la regla de programa en uso; el simulacro serializa el plan con `status: "planned"` (D7.1, D7.2).
+  3. Retirar `dry_run` de los envelopes de `self uninstall` y `cleanup`, y corregir el texto humano del simulacro de `self uninstall`, que deja de anunciar la desinstalación (D7.1, D7.3).
+  4. Un tipo dueño del WAV temporal en `avi-shared`, usado en las cuatro vías de `say` y `dub` de la CLI y en los handlers `/synthesize` y `/dub` del daemon; se retira `audio_path` del JSON de `say` y `dub` y la ruta del texto humano; `/dub` borra también en error de lectura (D8.1, D8.2, S33).
+  5. El fallo de parseo según P1: pre-análisis puro de `--json` en los argumentos crudos y rama JSON en el render de errores de clap, conservando ayuda y versión en texto.
+  6. Envelope de la CLI en la versión 5 (D13), con inventario previo de menciones a versiones separando las del envelope, que migran, de las del protocolo del daemon, que se quedan en 4; también las guías que aún lo declaran en `"3"`: `DEVICES.md`, `TRANSLATE.md`, `VOICE.md` y el `status` de `DAEMON.md` (S18).
+   7. Pruebas de conformidad: vocabulario cerrado de `status` por comando, forma simulacro-frente-a-real sobre el mismo recibo, y guías contra la constante de versión.
+   8. Veredicto de fallo de `daemon stop` por veredicto (C7.10): con el árbol o el residente vivos, envelope con `status: "still_running"` y el veredicto completo y salida 5 por veredicto, sin objeto `error`; la firma `handle_daemon` devuelve `Outcome`. Nota de humo en `say`/`dub`: sin puerta de calidad sobre lo que sonó, la paridad la cubre `synthesize`.
 - **Pruebas en rojo:**
-  - golden de `daemon stop` sin daemon, con `not_running` y exit 0;
+  - golden de `daemon stop` sin daemon, con `not_running` y exit 0 (actualiza el golden que hoy afirma `shutdown_sent`);
   - golden de `self uninstall --dry-run` y de `cleanup --dry-run`, con `planned`, sin
     `dry_run` y con las mismas claves que la ejecución real;
   - el `removed` del simulacro de `self uninstall` no incluye las rutas del barrido, y
@@ -1397,16 +1398,47 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   - tras `speech say` y `speech dub`, por la vía directa y la daemon, también cuando
     fallan la síntesis o la reproducción, no queda ningún WAV temporal y el JSON no
     contiene `audio_path`;
+  - unitarias del tipo dueño: crear y soltar elimina el fichero; soltar tras borrado externo no falla;
   - el envelope de la CLI declara `schema_version` 5;
   - un flag desconocido, un valor inválido y un subcomando inexistente, con `--json`,
-    salen con exit 2 y un envelope `usage_error` en stdout sin texto suelto por stderr (si
-    la decisión alinea el binario con el contrato), y sin `--json` siguen mostrando el
-    mensaje en español con la línea `Uso:`.
+    salen con exit 2 y un envelope `usage_error` en stdout sin texto por stderr, y sin `--json` siguen mostrando el
+    mensaje en español con la línea `Uso:`;
+  - conformidad: el `status` de cada comando está en el vocabulario cerrado; la forma del simulacro coincide con la real sobre el mismo recibo; ninguna guía declara una versión distinta de la constante.
 - **Documentación:** el contrato (valores de `status`, claves retiradas, versión 5 del
   envelope y el canal por el que sale el fallo de parseo), `speech`, `daemon`, `self`, `cleanup`, `devices`, `translate`, `voice` y la
   entrada del CHANGELOG.
 - **Cierra:** `status-json-afirma-operaciones-no-realizadas.md` y
-  `residuos-en-disco-tras-comandos-correctos.md`, que para entonces se queda sin fichas.
+  `residuos-en-disco-tras-comandos-correctos.md`, que para entonces se queda sin fichas. S33 no tiene informe propio y se corrige dentro del ciclo.
+- **Resultado de la ejecución (2026-10-04):**
+  - **Verificación:** `cargo test --all` en verde; `cargo test --workspace --features full
+    -- --include-ignored` en verde; `cargo clippy --all-targets` limpio con y sin `full`;
+    `cargo fmt --all --check` limpio.
+  - **Desviaciones respecto al plan, todas con motivo:** el `planned` se afirma en el sobre
+    de la CLI y no en `cleanup_uninstall.rs`, porque el `Outcome` del motor no serializa; el
+    vocabulario es `was_running` (el del motor y el de D6) en vez de `daemon_was_running`; el
+    campo interno `Outcome::dry_run` se conserva aunque salga del sobre, porque cuatro
+    pruebas de motor lo afirman; `simulate` de `uninstall` gana el parámetro `home` para poder
+    usar el mismo predicado de `path_reverted` que la ejecución real.
+  - **Correcciones de la revisión independiente:** los simulacros dejaron de prometer un
+    directorio de programa que R2 prohíbe (la decisión se movió a `compose_plan`), y
+    `path_reverted` previsto y real salen ahora del mismo predicado, que además de la marca
+    del recibo comprueba la existencia real de lo que se revertiría. El guardián del WAV
+    temporal pasó a ser propiedad del trabajo bloqueante en el daemon: antes, al abandonar
+    la fase por plazo o por desconexión, el `Drop` borraba el fichero mientras el hilo podía
+    terminar su escritura después y recrearlo. El binario dejó de deducir `resident_alive`
+    de si la frase de error del motor contenía la palabra «residente», y ahora lo bindea de
+    un campo del recibo.
+   - **Verificación que se pierde y por qué:** los cuatro testigos con recursos de `say` y
+     `dub` afirmaban el WAV en disco con `valid_wav_24k` y WER, lo que D8.1 vuelve imposible
+     porque el temporal se borra y `audio_path` desaparece. Su lugar lo ocupa `synthesize`,
+     que sigue persistiendo y verificando el audio; el cambio es coherente con la decisión,
+     pero es una pérdida real de cobertura de la voz sintetizada en esos dos comandos.
+     `say` y `dub` quedan documentados como humo intencional, sin ciclo propio.
+   - **Enmienda C7.10 (2026-10-05):** el fallo de `daemon stop` sale por veredicto con
+     `still_running` y el veredicto completo, sin objeto `error`; `handle_daemon`
+     devuelve `Outcome`. Prueba dorada de fallo con daemon falso que siempre responde,
+     fixture `cli_daemon_stop_failed.json` y vocabulario cerrado ampliado, todo dentro
+     del esquema 5 aún no publicado.
 - **Cierre de la iteración:** el agente propone eliminar este documento y su registro
   de progreso, y lo presenta en la misma G-Resultado. Con C7 integrado en `main`, se
   abre G-Release.

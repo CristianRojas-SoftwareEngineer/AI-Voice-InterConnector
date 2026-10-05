@@ -48,7 +48,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Literal del `status` del sobre, que es lo que el contrato de la CLI ve.
+    /// Literal del `status` del envelope, que es lo que el contrato de la CLI ve.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Install => "installed",
@@ -241,7 +241,7 @@ pub enum ModelsState {
 }
 
 impl ModelsState {
-    /// Literal para el sobre.
+    /// Literal para el envelope.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Skipped => "skipped",
@@ -266,7 +266,7 @@ pub struct Outcome {
     pub summary: Vec<String>,
     /// Resumen previo, paso 4, el que se mostró **antes** de confirmar. Se
     /// conserva porque es el que anuncia los cambios y el que el motor de T16 compone
-    /// el sobre; el final es el estado.
+    /// el envelope; el final es el estado.
     pub summary_before: Vec<String>,
     /// Estado de la integración del `PATH`, tal como queda en el recibo y como lo
     /// revierte `self uninstall`. Registra el estado, no el diff de esta pasada.
@@ -316,7 +316,7 @@ impl Outcome {
     /// 11` de la tabla cerrada—, no un error: el programa está instalado y lo único que
     /// falta es la provisión. Por eso vive aquí y no como `Err` de [`install`], que
     /// perdería el resumen del paso 12 y dejaría al usuario sin el estado de su
-    /// instalación. Quien cablea decide qué hacer con él: emitir el sobre y salir por
+    /// instalación. Quien cablea decide qué hacer con él: emitir el envelope y salir por
     /// veredicto con el código, que es lo que hace `self install`.
     ///
     /// Es el **único** sitio donde se decide el `reason` de la operación, de modo que
@@ -577,7 +577,7 @@ pub async fn install(
 
 /// Aplica la tabla de confirmaciones. `stdin` y `stderr` se toman aquí porque son la
 /// única entrada y salida del prompt, y el prompt va a stderr para no contaminar el
-/// sobre `--json`.
+/// envelope `--json`.
 fn confirm(
     summary: &[String],
     entries: &[confirm::PlanEntry],
@@ -813,7 +813,7 @@ async fn provision(options: &Options, provisioner: &impl setup::Provisioner) -> 
 /// Prose de `setup_failed`: el programa queda instalado y basta
 /// reintentar con `setup`.
 ///
-/// **Una sola fuente** para el resumen del paso 12 y para el `reason` del sobre, para que
+/// **Una sola fuente** para el resumen del paso 12 y para el `reason` del envelope, para que
 /// las dos salidas no puedan divergir: es la razón de que el mensaje viva aquí y no en las
 /// dos ramas que lo imprimen.
 fn setup_failed_message(program_dir: &Path, cause: &LifecycleError) -> String {
@@ -970,7 +970,7 @@ fn final_summary(
     }
     out.push(format!("  Modelos:   {}", models.as_str()));
     if let ModelsState::Failed { cause } = models {
-        // La misma frase que `Outcome::lifecycle_error` pone en el `reason` del sobre, y
+        // La misma frase que `Outcome::lifecycle_error` pone en el `reason` del envelope, y
         // con la causa debajo: el usuario ve qué falló, no solo que algo falló.
         out.push(format!(
             "  Aviso: {}.",

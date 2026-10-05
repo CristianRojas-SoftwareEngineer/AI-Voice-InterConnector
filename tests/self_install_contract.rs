@@ -7,7 +7,7 @@
 //! `crates/avi-lifecycle/tests/acceptance.rs::criterion_6_setup_failure_keeps_install`: el
 //! programa queda instalado, el estado del desenlace es un fallo de provisión y
 //! `Outcome::lifecycle_error()` da `setup_failed` con el 11 de la tabla cerrada. Lo que **no**
-//! se puede observar desde el motor es el `reason` del sobre ni el **código de salida del
+//! se puede observar desde el motor es el `reason` del envelope ni el **código de salida del
 //! proceso**, y eso solo se ve ejecutando el binario.
 //!
 //! Y aquí no cabe en `cli_golden.rs`: el fallo de provisión pasa por la descarga de un
@@ -282,7 +282,7 @@ impl Sandbox {
         Self { exe, envs, root }
     }
 
-    /// Ejecuta el hijo y devuelve su código de salida y su sobre.
+    /// Ejecuta el hijo y devuelve su código de salida y su envelope.
     ///
     /// El `stderr` del hijo se captura en un temporal hermano: si la salida no
     /// es JSON, el pánico muestra el código y la cola del error en vez de un
@@ -420,7 +420,7 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
 }
 
 /// `self install` sin `--no-setup` y con la provisión fallida: el programa queda
-/// instalado, el `reason` del sobre es `setup_failed` y el código de salida es el 11 de la
+/// instalado, el `reason` del envelope es `setup_failed` y el código de salida es el 11 de la
 /// tabla cerrada, que es lo que la tabla de reasons llama éxito parcial.
 ///
 /// Y el `reason` del **fallo de provisión** viaja anidado en `models_cause`, que es donde un
@@ -443,9 +443,9 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
     assert_eq!(
         code, 11,
         "`setup_failed` es éxito parcial con código propio, `SetupFailed = 11` de la \
-         tabla cerrada; el sobre fue {actual:?}"
+         tabla cerrada; el envelope fue {actual:?}"
     );
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
     assert_eq!(
         actual["status"],
         Value::String("installed".to_string()),
@@ -468,7 +468,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
     );
     assert!(
         actual.get("error").is_none(),
-        "un éxito parcial no lleva `error`: el sobre es el del desenlace, no el de un \
+        "un éxito parcial no lleva `error`: el envelope es el del desenlace, no el de un \
          fallo de operación: {actual:?}"
     );
 
@@ -492,7 +492,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
     );
     assert!(
         actual["version"].as_str().is_some_and(|v| !v.is_empty()),
-        "y el sobre dice qué versión quedó instalada: {actual:?}"
+        "y el envelope dice qué versión quedó instalada: {actual:?}"
     );
 }
 
@@ -512,7 +512,7 @@ fn self_install_no_setup_exits_0_without_reason() {
     ]);
 
     assert_eq!(code, 0, "`--no-setup` sale con éxito: {actual:?}");
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
     assert_eq!(actual["status"], Value::String("installed".to_string()));
     assert_eq!(actual["reason"], Value::Null, "sin `reason` en el éxito");
     assert_eq!(actual["models"], Value::String("skipped".to_string()));

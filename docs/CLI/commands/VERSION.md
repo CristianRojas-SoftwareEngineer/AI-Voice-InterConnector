@@ -79,11 +79,11 @@ const APP_NAME: &str = "ai-voice-interconnector";
 `emit_raw_json` (`crates/avi-core/src/json_emitter.rs`) serializa el
 `Value` e inyecta `schema_version` vía `with_schema_version`
 (`crates/avi-core/src/json_emitter.rs`), que usa
-`CLI_SCHEMA_VERSION = "4"` (`crates/avi-core/src/json_emitter.rs`). Salida real:
+`CLI_SCHEMA_VERSION = "5"` (`crates/avi-core/src/json_emitter.rs`). Salida real:
 
 ```json
 {
-  "schema_version": "4",
+  "schema_version": "5",
   "name": "ai-voice-interconnector",
   "version": "X.Y.Z"
 }

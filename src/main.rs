@@ -216,7 +216,10 @@ fn localize_arg(arg: clap::Arg) -> clap::Arg {
 /// Traduce los errores comunes de parseo de clap al español conservando el
 /// exit code. Ayuda/versión y los tipos sin mapear conservan el render
 /// original de clap.
-fn render_clap_error(err: clap::Error) -> ! {
+/// Con `json_mode` el rechazo mapeado sale como envelope `usage_error` por
+/// stdout (vía el emisor existente, que aporta `schema_version`); sin él se
+/// conserva el texto español por stderr.
+fn render_clap_error(err: clap::Error, json_mode: bool) -> ! {
     use clap::error::{ContextKind, ErrorKind};
     let kind = err.kind();
     let mapped = matches!(
@@ -329,6 +332,15 @@ fn render_clap_error(err: clap::Error) -> ! {
         lines.push(format!("Uso: {text}"));
     }
     lines.push("Para más información, ejecuta '--help'.".to_string());
+    // Con `--json` el mismo texto español entra al envelope por stdout y stderr
+    // queda en silencio; sin él se conserva la salida histórica por stderr.
+    if json_mode {
+        emit_raw_json(json!({
+            "error": lines.join("\n"),
+            "reason": "usage_error",
+        }));
+        std::process::exit(err.exit_code())
+    }
     eprintln!("{}", lines.join("\n"));
     std::process::exit(err.exit_code())
 }
@@ -816,10 +828,15 @@ async fn main() {
     install_sigint_handler();
 
     let cmd = localize_command(Cli::command());
+    // Pre-análisis puro de los args crudos: al fallar el parseo no existe
+    // `Cli`, así que solo decide si el rechazo se emite como JSON, no qué.
+    let json_hint = std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--json" || arg.starts_with("--json="));
     let matches = cmd
         .try_get_matches()
-        .unwrap_or_else(|e| render_clap_error(e));
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| render_clap_error(e));
+        .unwrap_or_else(|e| render_clap_error(e, json_hint));
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| render_clap_error(e, json_hint));
     let json_mode = cli.json;
     let daemon_mode = cli.daemon_mode();
     let daemon_serve = matches!(
@@ -872,7 +889,7 @@ async fn main() {
         Some(Commands::Speech { action }) => {
             ok(handle_speech(json_mode, daemon_mode, action).await)
         }
-        Some(Commands::Daemon { action }) => ok(handle_daemon(json_mode, action).await),
+        Some(Commands::Daemon { action }) => handle_daemon(json_mode, action).await,
         Some(Commands::Setup {
             with_voice_cloning,
             force_update,
@@ -906,7 +923,7 @@ async fn main() {
         // su payload
         // propio y solo queda fijar el código. Es lo que hace que `doctor --json`
         // emita **un solo objeto** también cuando falla: si esto fuera un `CliError`,
-        // `main` adjuntaría detrás el objeto `error` y el sobre sería ilegible.
+        // `main` adjuntaría detrás el objeto `error` y el envelope sería ilegible.
         Ok(Outcome::Verdict(code)) => {
             std::io::stdout().flush().ok();
             exit(code);
@@ -930,9 +947,10 @@ async fn main() {
 /// que permite el contrato.
 ///
 /// Existe como tipo y no como `Result<(), CliError>` porque el veredicto **no es un
-/// error**: es un comando que corrió bien y cuyo resultado es negativo. El único caso
-/// es `doctor`, y su reporte —con `checks` y `failed`— ya está en `stdout` cuando llega
-/// aquí.
+/// error**: es un comando que corrió bien y cuyo resultado es negativo. Los casos
+/// son `doctor`, cuyo reporte —con `checks` y `failed`— ya está en `stdout`
+/// cuando llega aquí, y `daemon stop` cuando la parada no concluye, cuyo
+/// envelope con `still_running` ya está en `stdout`.
 enum Outcome {
     Done,
     Verdict(i32),
@@ -1848,29 +1866,32 @@ async fn handle_speech(
                     format!("La voz '{}' no existe.", voice),
                 ));
             }
-            let tmp_wav = std::env::temp_dir().join(format!("avi_say_{}.wav", std::process::id()));
+            // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
+            let tmp_wav = avi_shared::TempWav::new("avi_say_")
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
             let engine = Qwen3TtsEngine::new(None);
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
             engine
-                .synthesize_with_temperature(&final_text, &voice, temperature, Some(&tmp_wav))
+                .synthesize_with_temperature(&final_text, &voice, temperature, Some(tmp_wav.path()))
                 .map_err(synthesis_cli_error)?;
             // Divergencia 5 corregida: `say` reproduce de verdad.
-            audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "playback_failed",
-                    format!("Fallo al reproducir la locución: {}", e),
-                )
-            })?;
+            audio::AudioService::new()
+                .play_wav(tmp_wav.path())
+                .map_err(|e| {
+                    CliError::new(
+                        ExitCode::Error,
+                        "playback_failed",
+                        format!("Fallo al reproducir la locución: {}", e),
+                    )
+                })?;
             if json_mode {
                 emit_raw_json(json!({
                     "status": "reproduced",
-                    "audio_path": tmp_wav.to_string_lossy(),
                     "voice": voice,
                 }));
             } else {
-                println!("Reproduciendo: {}", tmp_wav.display());
+                println!("Reproduciendo.");
             }
             Ok(())
         }
@@ -2072,27 +2093,34 @@ async fn handle_speech(
                         format!("La voz '{}' no existe.", voice),
                     ));
                 }
-                let tmp_wav =
-                    std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
+                // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
+                let tmp_wav = avi_shared::TempWav::new("avi_dub_")
+                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
                 let engine = Qwen3TtsEngine::new(None);
                 engine
-                    .synthesize_with_temperature(&final_text, &voice, temperature, Some(&tmp_wav))
-                    .map_err(synthesis_cli_error)?;
-                audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "playback_failed",
-                        format!("Fallo al reproducir el doblaje: {}", e),
+                    .synthesize_with_temperature(
+                        &final_text,
+                        &voice,
+                        temperature,
+                        Some(tmp_wav.path()),
                     )
-                })?;
+                    .map_err(synthesis_cli_error)?;
+                audio::AudioService::new()
+                    .play_wav(tmp_wav.path())
+                    .map_err(|e| {
+                        CliError::new(
+                            ExitCode::Error,
+                            "playback_failed",
+                            format!("Fallo al reproducir el doblaje: {}", e),
+                        )
+                    })?;
                 if json_mode {
                     emit_raw_json(json!({
                         "status": "dubbed",
                         "text": final_text,
-                        "audio_path": tmp_wav.to_string_lossy(),
                     }));
                 } else {
-                    println!("Doblaje reproducido: {}", tmp_wav.display());
+                    println!("Doblaje reproducido.");
                 }
                 Ok(())
             }
@@ -2150,7 +2178,7 @@ async fn handle_speech(
 
 // ─── Daemon ──────────────────────────────────────────────────────────
 
-async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), CliError> {
+async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcome, CliError> {
     // Corta en la raíz la herencia de los handles estándar antes de spawnear
     // ningún hijo del rol daemon. Cubre el CLI (`Start`/`Restart` → `spawn_background`)
     // y el propio daemon (`Serve` → motor), incluido `serve` lanzado bajo un pipe.
@@ -2204,7 +2232,8 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             .map_err(|e| match e.downcast_ref::<daemon::StartupError>() {
                 Some(startup) => startup_error_to_cli(startup),
                 None => CliError::new(ExitCode::Error, "daemon_error", e.to_string()),
-            })
+            })?;
+            Ok(Outcome::Done)
         }
         DaemonCommands::Start {
             auto_restart,
@@ -2226,7 +2255,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     } else {
                         println!("Daemon ya en ejecución (pid {}).", pid);
                     }
-                    return Ok(());
+                    return Ok(Outcome::Done);
                 }
                 ResidualState::Degraded { reason } => {
                     eprintln!(
@@ -2264,47 +2293,66 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             } else {
                 println!("Daemon iniciado correctamente (pid {}).", pid);
             }
-            Ok(())
+            Ok(Outcome::Done)
         }
         DaemonCommands::Stop => {
-            // Parada unificada con deadline global: graceful + árbol preciso
-            // por PID + verificación a nivel de sistema. El pidfile solo se borra
-            // tras muerte verificada (probe down + PID muerto/ausente); si el árbol
-            // sigue vivo se conserva la pista y se falla con exit 5.
-            let client = daemon_client();
-            lifecycle::daemon_stop::stop(&effective_data_dir(), DAEMON_ADDR, &ProductProcesses)
-                .await;
-            let (pid, daemon_state) = registered_daemon(false);
-            let alive = daemon_state == lifecycle::daemon_stop::Registered::Ours;
-            let active = daemon_active(&client).await;
-            // Los mensajes diagnostican la dirección descubierta (con
-            // pidfile efímero difiere del literal; sin pidfile es idéntica).
-            let client_addr = resolve_client_addr();
-            let resident_alive = resident_alive_by_pid();
-            if daemon_fully_stopped(active, alive, resident_alive) {
-                let _ = lifecycle::daemon_stop::remove_pid_file(&effective_data_dir());
+            // Parada unificada con deadline global: el veredicto lo da el motor
+            // (`StopOutcome`), sin re-sondeos fuera de él. El pidfile ya lo borró
+            // el motor tras muerte verificada; la CLI solo informa.
+            let outcome =
+                lifecycle::daemon_stop::stop(&effective_data_dir(), DAEMON_ADDR, &ProductProcesses)
+                    .await;
+            if outcome.stopped {
+                let status = stop_status(outcome.was_running);
                 if json_mode {
-                    emit_raw_json(json!({ "status": "shutdown_sent", "daemon": "stopped" }));
+                    emit_raw_json(json!({
+                        "status": status,
+                        "daemon": "stopped",
+                        "was_running": outcome.was_running,
+                        "daemon_fully_stopped": outcome.daemon_fully_stopped
+                    }));
+                } else if outcome.was_running {
+                    // Los mensajes diagnostican la dirección descubierta (con
+                    // pidfile efímero difiere del literal; sin pidfile es idéntica).
+                    println!(
+                        "Señal de apagado enviada al daemon en {}.",
+                        resolve_client_addr()
+                    );
                 } else {
-                    println!("Señal de apagado enviada al daemon en {}.", client_addr);
+                    println!("El daemon no estaba en ejecución.");
                 }
-                Ok(())
+                Ok(Outcome::Done)
             } else {
-                Err(CliError::new(
-                    ExitCode::DaemonUnreachable,
-                    "daemon_unreachable",
-                    if resident_alive {
-                        format!(
-                            "El daemon no se apagó tras el deadline (pid {:?} en {}); el residente sigue vivo",
-                            pid, client_addr
-                        )
-                    } else {
-                        format!(
-                            "El daemon no se apagó tras el deadline (pid {:?} sigue vivo en {})",
-                            pid, client_addr
-                        )
-                    },
-                ))
+                let client_addr = resolve_client_addr();
+                // El matiz del residente lo dice el predicado del motor
+                // (`StopOutcome::resident_alive`), no el texto de `remaining`: atarlo
+                // al vocabulario de la frase degradaba el error en silencio ante
+                // cualquier reescritura de ese mensaje.
+                let message = if outcome.resident_alive {
+                    format!(
+                        "El daemon no se apagó tras el deadline (pid {:?} en {}); el residente sigue vivo",
+                        outcome.pid, client_addr
+                    )
+                } else {
+                    format!(
+                        "El daemon no se apagó tras el deadline (pid {:?} sigue vivo en {})",
+                        outcome.pid, client_addr
+                    )
+                };
+                if json_mode {
+                    emit_raw_json(json!({
+                        "status": stop_failed_status(),
+                        "daemon": "running",
+                        "was_running": outcome.was_running,
+                        "daemon_fully_stopped": outcome.daemon_fully_stopped,
+                        "resident_alive": outcome.resident_alive,
+                        "pid": outcome.pid,
+                        "remaining": outcome.remaining,
+                    }));
+                } else {
+                    eprintln!("Error: {}", message);
+                }
+                Ok(Outcome::Verdict(ExitCode::DaemonUnreachable.code()))
             }
         }
         DaemonCommands::Restart => {
@@ -2347,7 +2395,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
             } else {
                 println!("Daemon reiniciado (pid {}).", pid);
             }
-            Ok(())
+            Ok(Outcome::Done)
         }
         DaemonCommands::Status => {
             // GET /health → running; sin respuesta (timeout/conexión) → stopped
@@ -2398,7 +2446,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                             warm_label.unwrap_or("desconocido")
                         );
                     }
-                    Ok(())
+                    Ok(Outcome::Done)
                 }
                 _ => {
                     if json_mode {
@@ -2406,7 +2454,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
                     } else {
                         println!("Daemon: no está en ejecución.");
                     }
-                    Ok(())
+                    Ok(Outcome::Done)
                 }
             }
         }
@@ -2414,10 +2462,10 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<(), Cl
 }
 
 // ─── Setup / Cleanup / Doctor ────────────────────────────────────────
-/// `setup`: delega en el motor y compone el sobre `--json`.
+/// `setup`: delega en el motor y compone el envelope `--json`.
 ///
 /// Todo el cuerpo —la purga por plan y la idempotencia por presencia del snapshot—
-/// vive en `lifecycle::setup`. Aquí solo queda la prosa y el sobre, porque el parseo
+/// vive en `lifecycle::setup`. Aquí solo queda la prosa y el envelope, porque el parseo
 /// de la CLI y el emisor no están en ese crate.
 async fn handle_setup(
     json_mode: bool,
@@ -2452,11 +2500,11 @@ async fn handle_setup(
     Ok(())
 }
 
-/// `cleanup`: delega íntegro en el motor y compone el sobre `--json`.
+/// `cleanup`: delega íntegro en el motor y compone el envelope `--json`.
 ///
 /// Lo que hay aquí es la conversión de tipos y la prosa; **la lista de destinos, el
 /// gate de categoría, la confirmación, la parada del daemon y el barrido** son los del
-/// motor. La lista que el sobre publica es la misma que el plan calculó, porque las dos
+/// motor. La lista que el envelope publica es la misma que el plan calculó, porque las dos
 /// salen de `lifecycle::cleanup::plan` —que es exactamente lo que fallaba antes, cuando
 /// `--dry-run` y la ejecución eran dos listas.
 async fn handle_cleanup(
@@ -2486,7 +2534,7 @@ async fn handle_cleanup(
             "status": outcome.status,
             "reason": Value::Null,
             "removed": outcome.removed,
-            "dry_run": outcome.dry_run
+            "planned": outcome.planned
         }));
     } else if outcome.status == "cancelled" {
         println!("Cancelado.");
@@ -2626,14 +2674,21 @@ fn resident_alive_by_pid() -> bool {
     registered_resident().1 == lifecycle::daemon_stop::Registered::Ours
 }
 
-/// Predicado puro de la parada completa: el daemon no responde, su PID está
-/// muerto o ausente y el residente ya no está vivo.
-fn daemon_fully_stopped(
-    daemon_responds: bool,
-    daemon_pid_alive: bool,
-    resident_alive: bool,
-) -> bool {
-    !daemon_responds && !daemon_pid_alive && !resident_alive
+/// Estado JSON de la parada a partir del veredicto del motor: sin ejecución
+/// previa es `not_running`, con ella `shutdown_sent`. Función pura para poder
+/// probarla sin daemon.
+fn stop_status(was_running: bool) -> &'static str {
+    if was_running {
+        "shutdown_sent"
+    } else {
+        "not_running"
+    }
+}
+
+/// Estado JSON del fallo de la parada: no concluyó y el daemon sigue vivo.
+/// Función pura para probarla sin daemon.
+fn stop_failed_status() -> &'static str {
+    "still_running"
 }
 
 /// Predicado puro del reclamo Unix ante líder muerto (testeable sin
@@ -2878,10 +2933,10 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             }
             // `setup_failed` es un **éxito parcial** —el programa está instalado y
             // lo único que falta es la provisión—, con código propio. No es un `CliError`:
-            // el resumen del paso 12 y el sobre se emiten igual, y lo único que cambia es
+            // el resumen del paso 12 y el envelope se emiten igual, y lo único que cambia es
             // el `reason` y el código de salida. `Salida::Veredicto` es el mecanismo que ya
             // existe para eso —el comando emitió su payload y solo queda fijar el código—,
-            // y es el mismo que usa `doctor` para su sobre único.
+            // y es el mismo que usa `doctor` para su envelope único.
             let partial = outcome.lifecycle_error();
             if json_mode {
                 let mut on = json!({
@@ -2899,7 +2954,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 // El `reason` de la operación es `setup_failed`; el del fallo de provisión
                 // viaja anidado en `models_cause`, que es donde un consumidor encuentra
                 // `network_error` sin perderlo. Solo existe si
-                // hubo fallo: un sobre estable es más fácil de leer que uno con nulos.
+                // hubo fallo: un envelope estable es más fácil de leer que uno con nulos.
                 if let lifecycle::install::ModelsState::Failed { cause } = &outcome.models {
                     on["models_cause"] = json!({
                         "reason": cause.reason,
@@ -2961,10 +3016,12 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             .await
             .map_err(lifecycle_error_to_cli)?;
             // `program_dir_kept` es un éxito parcial con código propio: el resto se completó
-            // y el directorio de programa sigue en disco. Se emite el sobre igual y solo
+            // y el directorio de programa sigue en disco. Se emite el envelope igual y solo
             // cambian el `reason` y el código de salida, como en `self install`.
             let kept = outcome.lifecycle_error();
             if json_mode {
+                // Sin `dry_run`: con `status: "planned"` el simulacro ya se lee como
+                // un plan y la clave sería redundante.
                 emit_raw_json(json!({
                     "status": outcome.status,
                     "reason": match &kept {
@@ -2972,11 +3029,15 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                         None => Value::Null,
                     },
                     "removed": outcome.removed,
-                    "path_reverted": outcome.path_reverted,
-                    "dry_run": outcome.dry_run
+                    "planned": outcome.planned,
+                    "path_reverted": outcome.path_reverted
                 }));
             } else if outcome.status == "cancelled" {
                 println!("Cancelado.");
+            } else if outcome.status == "planned" {
+                // El motor ya escribió por stderr la lista de lo que no se toca,
+                // al componer el plan; aquí solo el encabezado.
+                println!("Plan de desinstalación (nada se ha modificado).");
             } else {
                 for line in &outcome.preserved {
                     println!("  no se tocará {}: {}", line.path.display(), line.reason);
@@ -3261,13 +3322,13 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
     }
 }
 
-/// `doctor`: compone el sobre a partir de la sección de ciclo de vida del motor y
+/// `doctor`: compone el envelope a partir de la sección de ciclo de vida del motor y
 /// devuelve el **veredicto** como código de salida, que es lo que permite el
 /// contrato.
 ///
 /// Un solo objeto en `stdout` **también cuando falla**: el veredicto va dentro, en
 /// `checks` y `failed`, y la salida es 1. Devolver `Err` aquí haría que `main` adjuntara
-/// detrás el objeto `error` y el sobre sería ilegible, que es el defecto que el
+/// detrás el objeto `error` y el envelope sería ilegible, que es el defecto que el
 /// contrato prohíbe con «cada invocación emite exactamente un objeto JSON».
 fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     let exe = std::env::current_exe()
@@ -3293,7 +3354,7 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     if json_mode {
         // El motor devuelve el reporte ya serializable y con las nueve claves del
         // contrato
-        // más las del contrato: aquí solo se estampa la versión del sobre.
+        // más las del contrato: aquí solo se estampa la versión del envelope.
         let value = serde_json::to_value(&report)
             .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
         emit_raw_json(value);
@@ -4321,26 +4382,28 @@ async fn say_via_daemon(
         temperature,
     )
     .await?;
-    let tmp = std::env::temp_dir().join(format!("avi_say_{}.wav", std::process::id()));
-    std::fs::write(&tmp, &wav)
+    // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
+    let tmp = avi_shared::TempWav::new("avi_say_")
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-    audio::AudioService::new().play_wav(&tmp).map_err(|e| {
-        CliError::new(
-            ExitCode::Error,
-            "playback_failed",
-            format!("Fallo al reproducir la locución: {}", e),
-        )
-    })?;
+    std::fs::write(tmp.path(), &wav)
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    audio::AudioService::new()
+        .play_wav(tmp.path())
+        .map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "playback_failed",
+                format!("Fallo al reproducir la locución: {}", e),
+            )
+        })?;
     if json_mode {
         emit_raw_json(json!({
             "status": "reproduced",
-            "audio_path": tmp.to_string_lossy(),
             "voice": voice,
         }));
     } else {
-        println!("Reproduciendo: {}", tmp.display());
+        println!("Reproduciendo.");
     }
-    let _ = std::fs::remove_file(&tmp);
     Ok(())
 }
 
@@ -4506,24 +4569,27 @@ async fn dub_via_daemon(
         .or_else(|| val["text"].as_str())
         .unwrap_or("")
         .to_string();
-    let tmp_wav = std::env::temp_dir().join(format!("avi_dub_{}.wav", std::process::id()));
-    std::fs::write(&tmp_wav, &wav_bytes)
+    // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
+    let tmp_wav = avi_shared::TempWav::new("avi_dub_")
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-    audio::AudioService::new().play_wav(&tmp_wav).map_err(|e| {
-        CliError::new(
-            ExitCode::Error,
-            "playback_failed",
-            format!("Fallo al reproducir el doblaje: {}", e),
-        )
-    })?;
+    std::fs::write(tmp_wav.path(), &wav_bytes)
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    audio::AudioService::new()
+        .play_wav(tmp_wav.path())
+        .map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "playback_failed",
+                format!("Fallo al reproducir el doblaje: {}", e),
+            )
+        })?;
     if json_mode {
         emit_raw_json(json!({
             "status": "dubbed",
             "text": final_text,
-            "audio_path": tmp_wav.to_string_lossy(),
         }));
     } else {
-        println!("Doblaje reproducido: {}", tmp_wav.display());
+        println!("Doblaje reproducido.");
     }
     Ok(())
 }
@@ -4691,26 +4757,20 @@ mod tests {
         assert!(!unix_claim_verified(false, false, true));
     }
 
-    /// La parada solo está completa si el daemon no responde, su PID está
-    /// muerto y el residente ya no está vivo: un residente vivo la invalida.
+    /// El estado de la parada sale del `was_running` del motor: sin ejecución
+    /// previa es `not_running`, con ella `shutdown_sent`. La parada completa
+    /// (`daemon_fully_stopped`) la verifica el motor en `StopOutcome`.
     #[test]
-    fn daemon_fully_stopped_false_when_resident_alive() {
-        assert!(!daemon_fully_stopped(false, false, true));
+    fn stop_status_follows_was_running_from_motor() {
+        assert_eq!(stop_status(false), "not_running");
+        assert_eq!(stop_status(true), "shutdown_sent");
     }
 
-    /// Con todo detenido (daemon sin responder, PID muerto, residente muerto)
-    /// la parada se da por completa.
+    /// El fallo de la parada tiene `status` propio, distinto de los de éxito:
+    /// `still_running` dice que no concluyó, sin afirmar un apagado que no ocurrió.
     #[test]
-    fn daemon_fully_stopped_true_when_everything_down() {
-        assert!(daemon_fully_stopped(false, false, false));
-    }
-
-    /// Un daemon que responde o cuyo PID sigue vivo impide dar la parada por
-    /// completa aunque el residente esté muerto.
-    #[test]
-    fn daemon_fully_stopped_false_when_daemon_up_even_if_resident_dead() {
-        assert!(!daemon_fully_stopped(true, false, false));
-        assert!(!daemon_fully_stopped(false, true, false));
+    fn stop_failure_status_is_still_running() {
+        assert_eq!(stop_failed_status(), "still_running");
     }
 
     /// `Stopped` con residente vivo (resident_pid vivo) es degradado para

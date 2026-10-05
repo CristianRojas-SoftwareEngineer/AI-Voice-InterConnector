@@ -84,7 +84,7 @@ inyecta `schema_version` sobre el objeto antes de serializar
     { "id": 0, "name": "Altavoces (Realtek Audio)", "latency": 0.0116 },
     { "id": 1, "name": "Auriculares (USB)", "latency": 0.0102 }
   ],
-  "schema_version": "3"
+  "schema_version": "5"
 }
 ```
 
@@ -94,7 +94,7 @@ inyecta `schema_version` sobre el objeto antes de serializar
 | `devices[].id` | integer | Índice secuencial 0-based asignado durante la iteración de `host.output_devices()` (`crates/avi-audio/src/lib.rs`) |
 | `devices[].name` | string | Nombre del dispositivo reportado por `cpal`, o `"Dispositivo {idx}"` si el backend no expone el nombre |
 | `devices[].latency` | number | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs`); en salida texto se reconvierte a milisegundos para mostrarse |
-| `schema_version` | string | `"3"`, inyectado por `emit_raw_json`/`with_schema_version` — no forma parte del payload que construye el handler |
+| `schema_version` | string | `"5"`, inyectado por `emit_raw_json`/`with_schema_version` — no forma parte del payload que construye el handler |
 
 Nota de orden de claves: `with_schema_version` inserta `schema_version` en el
 mapa ya construido, por lo que en la salida serializada aparece **después**
@@ -125,7 +125,7 @@ reconvertida de segundos a milisegundos (`* 1000.0`) solo para esta vista.
 | `audio_enumeration_failed` | 1 (`ExitCode::Error`) | `AudioService::list_output_devices` devolvió `Err` (fallo del host `cpal` al construir el stream/config; la ausencia de dispositivos por sí sola NO es un error, produce lista vacía) |
 
 El error se envuelve en `main` (`src/main.rs`): con `--json` emite
-`{"error": <mensaje>, "reason": "audio_enumeration_failed", "schema_version": "3"}`
+`{"error": <mensaje>, "reason": "audio_enumeration_failed", "schema_version": "5"}`
 a stdout; sin `--json`, `Error: <mensaje>` a stderr. En ambos casos el
 proceso termina con exit code 1.
 

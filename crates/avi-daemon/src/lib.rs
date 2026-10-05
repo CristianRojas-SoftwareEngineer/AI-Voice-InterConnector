@@ -183,7 +183,7 @@ type SharedState = Arc<DaemonState>;
 /// JSON directamente.
 ///
 /// **El protocolo del daemon tiene su propia versión**, `DAEMON_SCHEMA_VERSION`, que
-/// este ciclo no cambia: el emisor compartido de `avi-core` lo comparte con el sobre `--json`
+/// este ciclo no cambia: el emisor compartido de `avi-core` lo comparte con el envelope `--json`
 /// de la CLI, pero los dos son contratos independientes y sus versiones se gobiernan por
 /// separado. Por eso la versión se pasa explícitamente en vez de leerse de una
 /// constante única: subir la de la CLI no puede arrastrar a esta.
@@ -267,6 +267,11 @@ impl Drop for CancelOnDrop {
 /// incluido el fallo del hilo), y `None` cuando la fase ya no tiene nada que
 /// entregar: el cliente se desconectó (el trabajo se cancela) o venció el
 /// presupuesto (el evento de error ya se emitió). El llamante solo retorna.
+///
+/// Abandonar la fase no suelta nada del trabajo en vuelo: el guardián del WAV
+/// temporal viaja dentro de `job`, de modo que lo borra el hilo cuando termina
+/// (y no el handler al retornar). Es lo que impide que un borrado temprano
+/// compita con la escritura del motor y quede el fichero recreado detrás.
 async fn run_synthesis_phase<T>(
     tx: &tokio::sync::mpsc::Sender<String>,
     state: &DaemonState,
@@ -632,7 +637,29 @@ async fn synthesize_handler(
         // Sin flag se usa la config de producción (temperature=0.35); con flag
         // se sobrescribe la temperatura ya validada.
         let options = GenerationOptions::with_temperature(temperature);
-        let tmp = std::env::temp_dir().join(format!("avi_daemon_synth_{}.wav", std::process::id()));
+        // Guardián del temporal: su dueño es el trabajo que escribe en él, no el
+        // ámbito del handler. La propiedad pasa al `job` bloqueante y solo vuelve
+        // al handler en el éxito, para que lea el WAV ya sintetizado y lo borre al
+        // salir de su brazo. Si la fase se abandona (plazo o desconexión) nadie
+        // suelta el guardián aquí: lo suelta el hilo cuando termina, de modo que
+        // el borrado nunca antecede a la escritura del motor y este no puede
+        // recrear el fichero detrás; así no queda residuo en ninguna salida, ni
+        // en el camino feliz ni en las salidas por plazo y desconexión.
+        let tmp_guard = match avi_shared::TempWav::new("avi_daemon_synth_") {
+            Ok(guard) => guard,
+            Err(e) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "io_error",
+                        "message": format!("Error creando el WAV temporal de síntesis: {}", e),
+                    }),
+                )
+                .await;
+                return;
+            }
+        };
         // La síntesis sobre el residente es síncrona y puede colgarse; la fase
         // espera el lock con latidos y acota el trabajo al presupuesto del texto
         // que realmente se sintetiza (ya traducido). Al vencer o irse el
@@ -644,16 +671,26 @@ async fn synthesize_handler(
             // Reloj de trabajo tomado dentro del trabajo, ya con el lock: mide
             // la síntesis pura y excluye la espera en cola.
             let work_t0 = std::time::Instant::now();
-            state_synth
-                .tts_engine
-                .synthesize_cancellable(&text_final, &profile, &options, Some(&tmp), &cancel)
-                .map(|path| (path, work_t0.elapsed()))
+            match state_synth.tts_engine.synthesize_cancellable(
+                &text_final,
+                &profile,
+                &options,
+                Some(tmp_guard.path()),
+                &cancel,
+            ) {
+                // Solo el éxito devuelve el guardián al handler, que lo lee y lo
+                // borra. El fallo lo suelta aquí mismo, al acabar el trabajo.
+                Ok(path) => Ok(((path, work_t0.elapsed()), tmp_guard)),
+                Err(e) => Err(e),
+            }
         };
         let Some(synth_res) = run_synthesis_phase(&tx, &state, budget, job).await else {
             return;
         };
         match synth_res {
-            Ok((path, work_elapsed)) => {
+            // `_tmp_guard` es el dueño del WAV leído: lo borra al salir de este
+            // brazo, ya con el audio entregado.
+            Ok(((path, work_elapsed), _tmp_guard)) => {
                 match std::fs::read(&path) {
                     Ok(wav_bytes) => {
                         emit_ndjson(
@@ -685,7 +722,7 @@ async fn synthesize_handler(
                         .await;
                     }
                 }
-                let _ = std::fs::remove_file(&path);
+                // Sin borrado manual: lo hace `_tmp_guard` al salir de este brazo.
             }
             Err(e) => {
                 emit_ndjson(
@@ -1564,8 +1601,28 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                 name: voice.clone(),
                 qvoice_path: state.voice_store.find_reference(&voice),
             };
-            let tmp =
-                std::env::temp_dir().join(format!("avi_daemon_dub_{}.wav", std::process::id()));
+            // Guardián del temporal: su dueño es el trabajo que escribe en él,
+            // no el ámbito del handler. La propiedad pasa al `job` bloqueante y
+            // solo vuelve al handler en el éxito, para que lea el WAV ya
+            // sintetizado y lo borre al salir de su brazo; si la fase se abandona
+            // por plazo o desconexión, lo suelta el hilo cuando termina, así el
+            // borrado nunca antecede a la escritura del motor ni este recrea el
+            // fichero detrás y no queda residuo en ninguna salida.
+            let tmp_guard = match avi_shared::TempWav::new("avi_daemon_dub_") {
+                Ok(guard) => guard,
+                Err(e) => {
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "reason": "io_error",
+                            "message": format!("Error creando el WAV temporal del doblaje: {}", e),
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            };
             let budget = avi_core::synthesis_budget(final_text.chars().count());
             let text_synth = final_text.clone();
             let synth_state = state.clone();
@@ -1574,26 +1631,31 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                 // Reloj de trabajo tomado dentro del trabajo, ya con el lock: mide
                 // solo la fase de síntesis, no transcribe/translate ni la cola.
                 let work_t0 = std::time::Instant::now();
-                synth_state
-                    .tts_engine
-                    .synthesize_cancellable(
-                        &text_synth,
-                        &profile,
-                        &synth_options,
-                        Some(&tmp),
-                        &cancel,
-                    )
-                    .map(|path| (path, work_t0.elapsed()))
+                match synth_state.tts_engine.synthesize_cancellable(
+                    &text_synth,
+                    &profile,
+                    &synth_options,
+                    Some(tmp_guard.path()),
+                    &cancel,
+                ) {
+                    // Solo el éxito devuelve el guardián al handler, que lo lee y
+                    // lo borra. El fallo lo suelta aquí mismo, al acabar el trabajo.
+                    Ok(path) => Ok(((path, work_t0.elapsed()), tmp_guard)),
+                    Err(e) => Err(e),
+                }
             };
             let Some(synth_res) = run_synthesis_phase(&tx, &state, budget, job).await else {
                 return;
             };
             match synth_res {
-                Ok((path, work_elapsed)) => {
+                // `_tmp_guard` es el dueño del WAV leído: lo borra al salir de
+                // este brazo, ya con el audio entregado.
+                Ok(((path, work_elapsed), _tmp_guard)) => {
                     match std::fs::read(&path) {
                         Ok(wav_bytes) => {
                             let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
-                            let _ = std::fs::remove_file(&path);
+                            // Sin borrado manual: lo hace `_tmp_guard` al salir de
+                            // este brazo.
                             emit_ndjson(
                                 &tx,
                                 json!({

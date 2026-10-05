@@ -18,7 +18,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 | `--all` | `bool` | datos | Las tres categorías **más** configuración, logs (`data/logs/`, con las familias `daemon_*`, `qwen3-tts_*` y `cleaner_*`) y estado del daemon. La retención de 10 logs por familia no es una opción de `cleanup`: se aplica sola al crear cada log |
 | `--dry-run` | `bool` | — | Lista el plan sin borrar nada y **sin tomar el bloqueo** |
 | `--yes`, `-y` | `bool` | — | Omite la confirmación interactiva |
-| `--json` | `bool` | — | Global (`Cli::json`); con `cleanup` emite `status` + `reason` + `removed` + `dry_run` |
+| `--json` | `bool` | — | Global (`Cli::json`); con `cleanup` emite `status` + `reason` + `removed` + `planned` (el plan como recibo, en ejecución y en `--dry-run`) |
 
 **Gate `sin categoría → 2`.** Sin ninguna de las cuatro categorías, `cleanup` sale con `usage_error` (**2**) y **no borra nada**: la comprobación es la primera de `cleanup::run`, antes incluso de mirar privilegios o el bloqueo, de modo que una invocación mal formada no deja ni el archivo de bloqueo detrás (criterio 22).
 
@@ -28,7 +28,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 `cleanup::plan(roots, options)` construye la lista de destinos con sus tamaños aplicando **R1 a R3**, y la usan **las tres cosas que la necesitan**: el resumen de la confirmación, la salida de `--dry-run` y la ejecución. No puede haber divergencia entre lo que se anuncia y lo que ocurre porque no hay dos implementaciones.
 
-**Lo que sustituye.** Antes de este ciclo, `handle_cleanup` en `src/main.rs` calculaba la lista de candidatas y la lista de borrado **por separado**: el plan de `--dry-run` anunciaba `xet` y `.locks` sin mirar si la raíz de modelos era compartida, mientras el ejecutor devolvía `Ok(false)` bajo R3. El resultado era que `cleanup --model --dry-run` anunciaba un borrado que no ocurría, y que ninguna prueba lo detectaba porque nadie comparaba las dos listas. Hoy la hay (`plan_and_execution_agree_under_shared_root`).
+**Lo que sustituye.** Antes de que el planificador único existiera, `handle_cleanup` en `src/main.rs` calculaba la lista de candidatas y la lista de borrado **por separado**: el plan de `--dry-run` anunciaba `xet` y `.locks` sin mirar si la raíz de modelos era compartida, mientras el ejecutor devolvía `Ok(false)` bajo R3. El resultado era que `cleanup --model --dry-run` anunciaba un borrado que no ocurría, y que ninguna prueba lo detectaba porque nadie comparaba las dos listas. Hoy la hay (`plan_and_execution_agree_under_shared_root`).
 
 ### R1 a R3, en una frase cada una
 
@@ -78,17 +78,17 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 
 ```json
 {
-  "schema_version": "4",
+  "schema_version": "5",
   "status": "cleanup_complete",
   "reason": null,
   "removed": ["…/data/voices/mi_voz", "…/speech/mi_voz"],
-  "dry_run": false
+  "planned": ["…/data/voices/mi_voz", "…/speech/mi_voz"]
 }
 ```
 
-`status` toma `cleanup_complete` o `cancelled`. `removed` son las rutas del plan con lo que la operación borró, o —con `--dry-run`— lo que habría borrado. Exactamente un objeto JSON por invocación, incluso cuando falla: sin categoría con `--json` sale el objeto de error de §10 del contrato (`error` + `reason`), y nada más.
+`status` toma `cleanup_complete`, `planned` o `cancelled`. `planned` es el recibo de `plan()`: lo que la operación iba a borrar, y en `--dry-run` lo único que dice, porque no borra nada. `removed` son las rutas del plan con lo que la operación borró de verdad, y con `--dry-run` copia `planned`, que es lo que permite comparar el simulacro con la ejecución real. **Los dos salen de la misma llamada al planificador**, así que no pueden divergir. Exactamente un objeto JSON por invocación, incluso cuando falla: sin categoría con `--json` sale el objeto de error de §10 del contrato (`error` + `reason`), y nada más.
 
-`schema_version` vale **`"4"`** (el envelope de la CLI); el protocolo del daemon va por `"4"` porque es otro contrato.
+`schema_version` vale **`"5"`** (el envelope de la CLI); el protocolo del daemon va por `"4"` porque es otro contrato. La subida es incompatible: el simulacro cambia de `status` y pierde la clave `dry_run`, que con `planned` sobraba.
 
 ---
 
