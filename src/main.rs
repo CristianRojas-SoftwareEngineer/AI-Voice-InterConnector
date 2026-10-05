@@ -3658,7 +3658,10 @@ fn ready_file_path() -> PathBuf {
 ///
 /// Un hijo vivo que no publica antes de `deadline`, o que publica y no responde
 /// a `/health`, sale con exit 5 `daemon_unreachable`. Cada arranque crea un log
-/// `daemon_<pid>_<ms>.log` con stdout y stderr del hijo, y todo error posterior
+/// `daemon_<pid>_<ms>.log` con stdout y stderr del hijo, renombrado acto seguido
+/// con el PID del hijo (el del lanzador solo sirve para crearlo), de modo que el
+/// nombre identifica al proceso que escribe y la poda puede conservarlo mientras
+/// siga vivo. Todo error posterior
 /// al lanzamiento cita su ruta sin cambiar `reason` ni el código. Ante cualquier fallo no
 /// deja nada vivo: mata el árbol del hijo si sigue vivo, lo recolecta y borra
 /// `daemon.ready`. No escribe el pidfile: lo hace el llamante con el resultado.
@@ -3693,30 +3696,35 @@ async fn launch_daemon(
                 format!("No se pudo crear el log del daemon: {}", e),
             )
         })?;
-    let with_log = |mut e: CliError| {
-        e.message = format!(
-            "{}
-Log del daemon: {}",
-            e.message,
-            log_path.display()
-        );
-        e
-    };
-    let mut child = daemon::spawn_background(
+    let mut child = match daemon::spawn_background(
         auto_restart,
         max_retries,
         warm_voice,
         Some(&ready_path),
         log_file,
-    )
-    .map_err(|e| {
-        with_log(CliError::new(
-            ExitCode::Error,
-            "daemon_error",
-            format!("No se pudo lanzar el daemon: {}", e),
-        ))
-    })?;
+    ) {
+        Ok(child) => child,
+        Err(e) => {
+            return Err(CliError::new(
+                ExitCode::Error,
+                "daemon_error",
+                format!(
+                    "No se pudo lanzar el daemon: {}\nLog del daemon: {}",
+                    e,
+                    log_path.display()
+                ),
+            ))
+        }
+    };
     let pid = child.id();
+    // El log nació con el PID del lanzador porque su handle se entrega al
+    // spawn; ya conocido el del hijo, el nombre pasa a identificar al proceso
+    // que escribe, y la poda puede reconocer por PID el log de un daemon vivo.
+    let log_path = avi_shared::logs::rename_log_to_pid(&log_path, daemon::DAEMON_LOG_FAMILY, pid);
+    let with_log = |mut e: CliError| {
+        e.message = format!("{}\nLog del daemon: {}", e.message, log_path.display());
+        e
+    };
     // PID hijo en memoria desde el spawn para que el handler Ctrl+C lo
     // reclame aunque aún no haya pidfile (ventana spawn → espera → write).
     IN_MEMORY_PID.store(pid, std::sync::atomic::Ordering::Relaxed);

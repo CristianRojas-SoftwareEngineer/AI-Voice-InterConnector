@@ -278,6 +278,7 @@ dependencies = [
 name = "avi-shared"
 version = "0.1.0"
 dependencies = [
+ "avi-process",
  "directories",
  "serde",
  "serde_json",
