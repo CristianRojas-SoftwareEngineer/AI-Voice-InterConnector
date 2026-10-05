@@ -206,12 +206,28 @@
       "commits": ["da01cfd", "94b7d80", "c39dd28", "4f201cf", "2124211", "e3fd0e0"]
     },
     "C8": {
-      "status": "planned",
-      "phase": "plan",
-      "gates": [],
-      "tasks": [],
+      "status": "closed",
+      "phase": "closed",
+      "gates": [
+        { "gate": "plan", "verdict": "approved", "date": "2026-10-05", "notes": "S28 en alcance, S29 a C9; sin pruebas nuevas (testigo dub_audio_passthrough_es_es); candidatos src/main.rs, parakeet.rs y lib.rs de avi-audio sin autorización de edición; diagnóstico E1-E4; bloqueador: este entorno no tiene motor TTS ni modelos" },
+        { "gate": "diagnosis", "verdict": "approved", "date": "2026-10-05", "notes": "sin repro en 3 contextos (aislado 1/1, grupo tts 52/52, workspace full cli_golden 121/0); H1 carrera en teardown como hipótesis de trabajo; autorizada E3 con instrumentación temporal (marcas stderr, sin cambios de temporización)" },
+        { "gate": "deviation", "verdict": "approved", "date": "2026-10-05", "notes": "flaky ajeno en golden (ventana de observación bajo carga, sin indicio de bug de producto): se endurece el test con muestreo inmediato tras la desconexión; solo test, sin cambios de producto" },
+        { "gate": "plan", "verdict": "approved", "date": "2026-10-05", "notes": "re-plan (corrección): titular de vida-de-proceso por binario + constructor compartido en avi-stt (sin globales ocultos), 3 sitios (transcribe/dub directos, helper wer), daemon/benches fuera; unitaria determinista + aceptación 5 suites full exit 0; tras feature native-stt" },
+        { "gate": "result", "verdict": "approved", "date": "2026-10-05", "notes": "5 suites full exit 0 (cli_golden 121/0, golden 22/22), unitaria nueva verde, clippy/fmt/4 puertas/test --all verdes; revisor sin bloqueantes (4 importantes + 1 menor corregidos)" }
+      ],
+      "tasks": [
+        { "id": "C8.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.progreso.json"], "notes": "preparación en la rama fix/caida-nativa-dub, creada desde main (705c4f6) con el árbol limpio; ficha C8 contrastada con el código, sin desfase; G-Plan aprobado" },
+        { "id": "C8.2", "status": "done", "attempts": 1, "files": [], "notes": "diagnóstico E1/E2: testigo aislado verde, grupo tts verde, workspace full verde; sin rastro stderr; recursos verificados en este entorno; G-Diag presentado y aprobado (E3)" },
+        { "id": "C8.3", "status": "done", "attempts": 1, "files": [], "notes": "E3 externo agotado sin repro: testigo aislado 1/1, grupo tts 52/52 y 3 pasadas full (cli_golden 121/0 las tres, golden 22/22 en la 3ª); 5 contextos verdes, 0 caídas; flaky de golden ajeno visto 1 vez bajo carga; pendiente decisión (aparcar en observación o volcados WER)" },
+        { "id": "C8.4", "status": "done", "attempts": 1, "files": ["crates/avi-daemon/tests/golden.rs"], "notes": "endurecimiento del flaky ajeno (desvío aprobado): muestreo inmediato del temporal tras la desconexión; solo test; verificado en T4 (golden 22/22 en las 5 pasadas)" },
+        { "id": "C8.5", "status": "done", "attempts": 1, "files": [], "notes": "REPRO clase S28 en pasada de verificación: cli_golden 121/0 en verde (testigo dub ok) + abort 0xc0000409 a la salida del propio arnés; sin rastro en el Visor de eventos; sospechoso: sesiones ort en proceso vía wer_vs_text" },
+        { "id": "C8.6", "status": "done", "attempts": 1, "files": [], "notes": "caza del módulo: WER LocalDumps configurado pero silencioso (2 caídas sin volcado ni evento); bisección ort / cpal / ort+cpal verde a la salida; el trigger exige suite completa" },
+        { "id": "C8.7", "status": "done", "attempts": 1, "files": [], "notes": "G-Diag v2 con ProcDump: AV C0000005 previo + fail-fast 409 subcódigo 7 (CORRUPT_LIST_ENTRY) a la salida; causa clase teardown ORT confirmada por upstream (onnxruntime#24891, lean-ctx#519); canal propio ort =2.0.0-rc.13 + bundle 1.28.0" },
+        { "id": "C8.8", "status": "done", "attempts": 1, "files": ["crates/avi-stt/src/lib.rs", "crates/avi-stt/src/parakeet.rs", "src/main.rs", "tests/cli_golden.rs"], "notes": "titular + unitaria + migración de los 3 sitios (transcribe/dub directos, helper wer); cero transitorios, fmt limpio, compila featureless y full; humo verde" },
+        { "id": "C8.9", "status": "done", "attempts": 1, "files": ["CHANGELOG.md"], "notes": "verificación §5.3 en verde: test --all, 5 suites full exit 0 (cli_golden 121/0 las cinco, golden 22/22), clippy con/sin full, fmt, 4 puertas; cierre documental con entrada en [No publicado]; WER revertido y temporales eliminados" }
+      ],
       "foreign_changes": [],
-      "commits": []
+      "commits": ["3dfb81b", "2d86b12"]
     },
     "C9": {
       "status": "planned",

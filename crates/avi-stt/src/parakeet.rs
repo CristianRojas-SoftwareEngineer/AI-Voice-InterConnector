@@ -108,6 +108,47 @@ impl ParakeetEngine {
     }
 }
 
+/// Titular del motor para procesos de vida corta: lo crea una sola vez y lo
+/// conserva hasta la salida del proceso sin destruirlo nunca (los estáticos
+/// no tienen destructor), de modo que ningún destructor de ONNX Runtime corre
+/// durante la salida. El sistema operativo reclama la memoria al terminar el
+/// proceso. Pensado para vivir en un estático de cada binario, nunca como
+/// global oculto de la librería.
+pub struct EngineHolder {
+    engine: std::sync::OnceLock<anyhow::Result<ParakeetEngine>>,
+}
+
+impl EngineHolder {
+    /// Titular vacío, listo para declararse como estático del binario.
+    pub const fn new() -> Self {
+        Self {
+            engine: std::sync::OnceLock::new(),
+        }
+    }
+    /// Devuelve el motor compartido, creándolo en el primer uso. Las llamadas
+    /// concurrentes se serializan y reciben la misma instancia. Si la primera
+    /// carga falla, el fallo queda retenido y las siguientes resoluciones lo
+    /// repiten sin reintentar (los procesos que lo usan son de vida corta y
+    /// salen con error).
+    pub fn get_or_try_init(&self, model_dir: impl AsRef<Path>) -> anyhow::Result<&ParakeetEngine> {
+        match self
+            .engine
+            .get_or_init(|| ParakeetEngine::new(model_dir))
+            .as_ref()
+        {
+            Ok(engine) => Ok(engine),
+            Err(failure) => Err(anyhow::anyhow!("{failure}")),
+        }
+    }
+}
+
+impl Default for EngineHolder {
+    /// Equivale a un titular vacío.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SttEngine for ParakeetEngine {
     fn transcribe(&self, audio_pcm: &[i16], _language: Option<&str>) -> anyhow::Result<String> {
         // i16 mono 16 kHz → f32 normalizado a [-1, 1] (el preprocesador NeMo

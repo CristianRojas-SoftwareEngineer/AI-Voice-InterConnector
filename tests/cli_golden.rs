@@ -2758,6 +2758,13 @@ mod tts {
     /// paralelizar únicamente los tests que NO adquieren `lock_tts()`).
     pub(crate) static TTS_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Titular del motor de transcripción para la vida del arnés: lo crea una
+    /// sola vez y lo conserva sin destruirlo hasta la salida, de modo que
+    /// ningún destructor de ONNX Runtime corre durante la salida del proceso
+    /// de test. El sistema operativo reclama la memoria al terminar.
+    #[cfg(feature = "native-stt")]
+    static STT_HOLDER: avi_stt::EngineHolder = avi_stt::EngineHolder::new();
+
     pub(crate) fn lock_tts() -> std::sync::MutexGuard<'static, ()> {
         TTS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -2826,8 +2833,9 @@ mod tts {
         let snapshot = avi_store::ModelStore::new()
             .model_snapshot_path("parakeet-tdt-v3")
             .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
-        let engine =
-            avi_stt::ParakeetEngine::new(snapshot).expect("el modelo Parakeet TDT v3 debe existir");
+        let engine = STT_HOLDER
+            .get_or_try_init(&snapshot)
+            .expect("el modelo Parakeet TDT v3 debe existir");
         let transcribed = engine
             .transcribe(&pcm, Some("es"))
             .expect("la transcripción no debe fallar");
