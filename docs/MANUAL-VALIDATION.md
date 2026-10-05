@@ -389,18 +389,41 @@ el daemon lanzó dos procesos a la vez (riesgo teórico, sin verificar).
 
 ## 11. Casos de error por exit code canónico
 
-Cada exit code de dominio con una sonda que lo dispara. Todos escriben el mensaje
-en **español a stderr** (con `reason` legible por máquina) y dejan stdout limpio.
+Tabla completa de los códigos de salida de dominio que el binario produce, con el
+`reason` que cada uno lleva y el **canal** por el que lo emite. La columna `Canal`
+distingue los dos regímenes: en texto el mensaje va a **stderr** y stdout queda limpio;
+con `--json` lo que sale es el envelope por **stdout** (`schema_version` `"5"`), con el
+`reason` anidado donde corresponda. Las fuentes son `ExitCode::from_reason`
+(`crates/avi-core/src/exit_codes.rs`) y el brazo de cada comando en `src/main.rs`; las
+salidas 11–22 las emite el motor `avi-lifecycle` y la traducción a código es siempre
+esa misma función.
 
-| Exit | Significado | Sonda |
-|---|---|---|
-| **2** | Entrada inválida (`usage_error`) | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es-latam < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica) |
-| **3** | Recurso no encontrado | `speech play --label etiqueta_que_no_existe`; `voice remove --name voz_que_no_existe`; `speech transcribe --audio no_existe.wav --source-language es-latam` |
-| **4** | Modelo no provisionado | cualquier síntesis/transcripción **sin** haber corrido `setup`; también `dub`/`say`/`synthesize`/`translate` con idiomas distintos y el modelo de traducción del par sin provisionar (`model_missing`) |
-| **5** | Daemon inalcanzable | `speech say --text x --daemon` con el daemon detenido |
-| **6** | Conflicto de estado | `speech synthesize --text x --label ya_existe` sin `--force` (colisión de etiqueta) |
-| **9** | Fallo del pipeline de traducción | `dub`/`say`/`synthesize`/`translate` con idiomas que difieren, el modelo de traducción **ya provisionado**, y la inferencia falla en tiempo de ejecución (`translation_failed`) |
-| **10** | Fallo del pipeline de transcripción o de la captura del micrófono | difícil de sondear a mano: un `--audio` inexistente sale con 3, ilegible con 2 y con error de E/S con 1 |
+Los códigos **7** (`NotApplicable`) y **8** (`PreconditionFailed`) están declarados en el
+enum pero **ninguna ruta los produce**, así que no tienen sonda y por eso no tienen fila.
+
+| Exit | Significado (`reason`) | Canal | Sonda |
+|---|---|---|---|
+| **1** | Error genérico (`io_error`) | stderr, stdout limpio | `speech transcribe --audio <wav.tomlado en exclusiva por otro proceso>`: existe como fichero (`validate_audio_arg` pasa) pero leerlo falla por E/S |
+| **2** | Entrada inválida (`usage_error`, `invalid_audio`, `invalid_identifier`, `audio_too_long`, `daemon_not_supported`, `unsupported_language_pair`) | stderr; envelope por stdout con `--json` | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es-latam < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica); `speech play --voice default --daemon` (local-only con `--daemon`) |
+| **3** | Recurso no encontrado (`audio_not_found`, `voice_not_found`, `speech_not_found`) | stderr, stdout limpio | `speech play --label etiqueta_que_no_existe`; `voice remove --name voz_que_no_existe`; `speech transcribe --audio no_existe.wav --source-language es-latam` |
+| **4** | Modelo no provisionado (`model_missing`) | stderr, stdout limpio | cualquier síntesis/transcripción **sin** haber corrido `setup`; también `dub`/`say`/`synthesize`/`translate` con idiomas distintos y el modelo de traducción del par sin provisionar |
+| **5** | Daemon inalcanzable (`daemon_unreachable`) | stderr; envelope por stdout con `--json` | `speech say --text x --daemon` con el daemon detenido |
+| **6** | Conflicto de estado (`label_exists`, `voice_exists`) | stderr, stdout limpio | `speech synthesize --text x --label ya_existe` sin `--force` (colisión de etiqueta); `voice clone --name mi_voz --speech-reference habla.wav` dos veces sin `--force` |
+| **9** | Fallo del pipeline de traducción (`translation_failed`) | stderr, stdout limpio | `dub`/`say`/`synthesize`/`translate` con idiomas que difieren, el modelo de traducción **ya provisionado**, y la inferencia falla en tiempo de ejecución |
+| **10** | Fallo del pipeline de transcripción o de la captura del micrófono (`transcription_failed`) | stderr, stdout limpio | difícil de sondear a mano: un `--audio` inexistente sale con 3, ilegible con 2 y con error de E/S con 1. Se alcanza con un modelo provisionado y corrupto, o forzando un fallo de la captura |
+| **11** | Provisión de modelos fallida (`setup_failed`): **éxito parcial**, el programa queda instalado y reintentable con `setup` | envelope por stdout **también sin `--json`** (`status` del resultado + `reason: "setup_failed"` + `models_cause` anidado con `network_error`); resumen por stdout | `setup` o `self install` sin red (o con la descarga de modelos bloqueada): instala igual y sale 11 |
+| **12** | La copia la gestiona otra herramienta (`externally_managed`) | stderr; envelope `error` por stdout con `--json` | `self update` sobre una copia del canal `homebrew` o del canal `dev` (`cargo xtask install`): no toca nada y remite a `brew upgrade --cask` o al propio xtask |
+| **13** | Fallo en el reemplazo; versión anterior restaurada (`rolled_back`) | stderr; envelope `error` por stdout con `--json` | `self update` en el que la copia nueva no puede reemplazar la anterior (permisos o proceso reteniendo el ejecutable): restaura y deja la versión previa en pie |
+| **14** | Conflicto en la ruta del enlace del `PATH` (`path_conflict`) | stderr; envelope `error` por stdout con `--json` | `self install` o `self uninstall` con el enlace del `PATH` ya tomado por otro programa |
+| **15** | Falta un archivo obligatorio del bundle (`bundle_invalid`) | stderr; envelope `error` por stdout con `--json` | `self install`/`self update` cuyo archivo comprimido no trae el ejecutable esperado |
+| **16** | No se pudo detener el daemon; nada modificado (`daemon_stop_failed`) | stderr; envelope `error` por stdout con `--json` | `cleanup`, `self install`, `self uninstall` o `self update` con un daemon registrado **vivo** que no se puede parar (mismo camino que el `still_running` de `daemon stop`) |
+| **17** | Hay otra operación de ciclo de vida en curso (`lifecycle_locked`) | stderr; envelope `error` por stdout con `--json` | dos comandos de ciclo de vida simultáneos sobre la misma raíz (p. ej. un `self install` lento y un `cleanup`): el segundo no entra en cola |
+| **18** | Plataforma no soportada (`unsupported_platform`) | stderr; envelope `error` por stdout con `--json` | `self update` con un triple del host fuera de la tabla soportada (falla antes de tocar la red); los instaladores emiten el mismo `reason` en su mensaje, pero **ellos salen con 1**, no con 18 |
+| **19** | Binario descargado incompatible (`binary_incompatible`) | stderr; envelope `error` por stdout con `--json` | `self update` cuyo artefacto descargado no arranca en este sistema o no responde a `--version` |
+| **20** | Fallo de red (`network_error`) | stderr; envelope `error` por stdout con `--json` | `self update` sin red al resolver la última versión o al descargar el artefacto |
+| **21** | El archivo descargado no coincide con su hash (`checksum_mismatch`) | stderr; envelope `error` por stdout con `--json` | `self update` contra un `SHA256SUMS.txt` manipulado (o el artefacto alterado en tránsito); el staging se borra sin tocar la instalación |
+| **22** | El directorio de programa no se pudo borrar (`program_dir_kept`): **éxito parcial**, el resto sí se desinstaló | envelope por stdout **también sin `--json`** (`status` + `reason` + `removed`/`planned`/`path_reverted`) y el motivo por stderr | `self uninstall` con el directorio de programa tomado (un proceso vivo lo tiene abierto o faltan permisos): borra el estado de usuario y deja el directorio |
+| **130** | Interrupción por el usuario. **Sin `reason` ni envelope**: el handler de Ctrl+C de `src/main.rs` llama a `exit(130)` tras la limpieza acotada de 2 s, y el código se preserva en todos los modos | stderr (limpieza acotada de 2 s) | **Ctrl+C** durante `daemon start`/`restart`/`serve` o durante una síntesis: sale 130 con el estado preservado y el árbol del daemon reclamado |
 
 ```bash
 # Ejemplos directos:

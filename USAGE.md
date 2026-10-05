@@ -189,12 +189,10 @@ nuevas no lo incrementa; solo un cambio incompatible de las claves existentes lo
 haría. Un consumidor puede leerlo para detectar cambios de contrato.
 
 **Ojo: el protocolo del daemon sigue en `"4"`.** Son dos contratos
-independientes —el envelope de la CLI y el IPC del daemon— y suben por separado: el
-ciclo de vida movió el envelope (retiró cuatro claves de `doctor`) y el envelope volvió a
-moverse con la retirada de `audio_path` de `say`/`dub` y de `dry_run` de los
-simulacros, con `daemon stop` bindeando `was_running` y `daemon_fully_stopped` y
-su fallo saliendo por veredicto con `still_running`);
-**ninguno** de los dos tocó el protocolo del daemon.
+independientes —el envelope de la CLI y el IPC del daemon— y suben por separado; el
+número de cada uno se lee de su propia constante, `CLI_SCHEMA_VERSION` y
+`DAEMON_SCHEMA_VERSION` (`crates/avi-core/src/json_emitter.rs`), y el historial de
+subidas de cada uno vive en el [CHANGELOG](CHANGELOG.md).
 
 ### Referencia de esquemas `--json`
 
@@ -258,7 +256,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `name` | string | Siempre `"ai-voice-interconnector"` |
-| `version` | string | Versión del programa (p. ej. `"0.18.1"`) |
+| `version` | string | Versión del programa (p. ej. `"0.28.0"`) |
 
 **`doctor --json`**
 
@@ -1111,7 +1109,11 @@ De principio a fin, desde grabar tu voz hasta escucharla sintetizada:
 
 # 2. Clona la voz
 ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav
-# → Voz 'mi_voz' clonada: (rutas de los dos archivos copiados)
+# → Voz 'mi_voz' clonada.
+
+# 2b. Con --json, el único artefacto que se guarda
+ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav --json
+# → {"name":"mi_voz","speech":"…/voices/mi_voz/reference.qvoice","precomputed":false}
 
 # 3. Verifica que aparece
 ai-voice-interconnector voice list
@@ -1125,6 +1127,12 @@ ai-voice-interconnector speech say --text "Hola, esto es una prueba" --voice mi_
 ai-voice-interconnector speech synthesize --text "Hola, esto es una prueba" --label prueba --voice mi_voz
 # → Locución 'prueba' guardada (voz 'mi_voz').
 ```
+
+Lo que queda en disco es **un único artefacto por voz**, `voices/<nombre>/reference.qvoice`:
+el timbre y el habla quedan fundidos en él durante el clonado y no se guarda ninguna copia de
+los WAV de referencia. `voice clone` escribe `Voz '<nombre>' clonada.` por stdout, o con
+`--json` el envelope de arriba, cuyo `speech` es esa ruta y cuyo `precomputed` es `false` en la
+vía directa (el motor es efímero por proceso): solo la vía del daemon lo deja en `true`.
 
 La voz queda guardada de forma permanente: en futuras sesiones basta con
 `--voice mi_voz`, sin volver a clonar nada.

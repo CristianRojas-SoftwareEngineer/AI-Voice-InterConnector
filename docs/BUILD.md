@@ -65,9 +65,11 @@ El toolchain de Rust basta para compilar y empaquetar; no se requiere ningún ot
 >
 > - **Windows → 1 (x86_64)** por **decisión**: Windows-on-ARM es marginal en la
 >   población objetivo.
-> - **macOS → 1 (arm64)** por **imposibilidad técnica heredada**: el toolchain
->   previo (torch) no publicaba wheels x86_64; en Rust se mantiene por paridad
->   y coste de runners Intel.
+> - **macOS → 1 (arm64)** por **decisión**: el único runner de macOS disponible es
+>   Apple Silicon (`macos: xcode 26.4.0` con `resource_class: m4pro.medium`), así que es
+>   la única arquitectura que se compila, prueba y publica aquí. Publicar también Intel
+>   exigiría un runner propio que no existe, y su población es residual junto a la de
+>   Apple Silicon.
 > - **Linux → 2 (x86_64 + arm64)** porque **ambas** arquitecturas tienen usuarios
 >   y runners nativos (`arm.medium`).
 

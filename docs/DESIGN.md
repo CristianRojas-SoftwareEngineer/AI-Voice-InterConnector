@@ -52,7 +52,7 @@ AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 └─────────────────────────────────────────────────────────────┘
 ```
 
-El binario expone el CLI (`src/main.rs` + crates) y gestiona el daemon HTTP en `127.0.0.1:8765` por defecto (`DAEMON_ADDR`, con override `AVI_DAEMON_PORT`, `0` = efímero). Los modelos se provisionan vía `ai-voice-interconnector setup` en la **caché exclusiva de la aplicación** (`models_cache_dir()`: `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS, `$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux) y `data_dir()` por SO (con override `AVI_DATA_DIR` por instancia; sin él, resolución idéntica). Solo si el usuario define `HF_HUB_CACHE` o `HF_HOME` esa raíz pasa a ser compartida.
+El binario expone el CLI (`src/main.rs` + crates) y gestiona el daemon HTTP en `127.0.0.1:8765` por defecto (`lifecycle::daemon_stop::default_addr()`, que aplica `AVI_DAEMON_PORT`, `0` = efímero; su reserva es `lifecycle::daemon_stop::DEFAULT_ADDR`, en `crates/avi-lifecycle/src/daemon_stop.rs`, la fuente única de la que también la toma el lanzador). Los modelos se provisionan vía `ai-voice-interconnector setup` en la **caché exclusiva de la aplicación** (`models_cache_dir()`: `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS, `$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux) y `data_dir()` por SO (con override `AVI_DATA_DIR` por instancia; sin él, resolución idéntica). Solo si el usuario define `HF_HUB_CACHE` o `HF_HOME` esa raíz pasa a ser compartida.
 
 ## Estructura del proyecto
 
@@ -115,7 +115,7 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
 | **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 |
 
-Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato de invocación (`--int4 -j 4 --stream`, residente HTTP).
+Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato de invocación: el residente se lanza como `--serve <puerto> --host 127.0.0.1 --int4 -j 4 --stream --watch-stdin` (más `--load-voice <qvoice> --icl-only` cuando se le carga una voz), y el clonado por proceso local como `-d <modelo> … --save-voice <out> --voice-name <nombre> -l <idioma> --watch-stdin`. El `--watch-stdin` es una divergencia propia del motor respecto al upstream y es lo que ata su vida a la de quien lo lanzó: el lanzador mantiene abierta la tubería de su entrada estándar y el motor termina solo al cerrarse.
 
 ## Traducción cross-lingual (opus-mt / CTranslate2)
 

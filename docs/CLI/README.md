@@ -85,8 +85,13 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 | 15 | `ExitCode::BundleInvalid` | Falta un archivo obligatorio del bundle alrededor del ejecutable |
 | 16 | `ExitCode::DaemonStopFailed` | No se pudo detener el daemon; nada modificado |
 | 17 | `ExitCode::LifecycleLocked` | Hay otra operación de ciclo de vida en curso |
+| 18 | `ExitCode::UnsupportedPlatform` | Plataforma no soportada (triple del host fuera de la tabla); compilar desde el código fuente |
+| 19 | `ExitCode::BinaryIncompatible` | El binario descargado no arranca en este sistema o no informa de su versión |
+| 20 | `ExitCode::NetworkError` | Fallo de red al resolver o descargar la versión objetivo |
+| 21 | `ExitCode::ChecksumMismatch` | El archivo descargado no coincide con el hash de `SHA256SUMS.txt` |
+| 22 | `ExitCode::ProgramDirKept` | El resto se desinstaló pero el directorio de programa no se pudo borrar |
 | 130 | `ExitCode::Interrupted` | Interrupción por usuario (Ctrl+C, con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria) |
 
-Los códigos 0–10 y el 130 son los del contrato de la CLI y no cambian. Los siete del 11 al 17 son la tabla cerrada del ciclo de vida, **uno por `reason` de §8.1** (`crates/avi-core/src/exit_codes.rs`).
+Los códigos 0–10 y el 130 son los del contrato de la CLI y no cambian. Los siete del 11 al 17 son la tabla cerrada del ciclo de vida, **uno por `reason` de §8.1** (`crates/avi-core/src/exit_codes.rs`). Los cinco del 18 al 22 son la tabla cerrada de `self update` (18–21: plataforma, compatibilidad del binario, red e integridad) más `program_dir_kept` (22) de `self uninstall`; los doce del 11 al 22 salen por `ExitCode::from_reason`, que es la traducción única de `reason` a código.
 
 Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). El envelope de la CLI lleva `schema_version` `"5"`; el **protocolo del daemon va por `"4"`**, porque son contratos independientes. `CliError` vive en `crates/avi-core/src/exit_codes.rs` y se traduce en `src/main.rs` (`ExitCode` + `reason`).

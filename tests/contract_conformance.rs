@@ -1,13 +1,14 @@
 //! Pruebas de conformidad del contrato de la CLI que **no** aporta
-//! `cli_golden.rs`: la sincronía de versión de las guías y el vocabulario cerrado de
-//! `status` por comando.
+//! `cli_golden.rs`: la sincronía de versión de las guías, el vocabulario cerrado de
+//! `status` por comando, la completitud de las tablas de códigos de salida y la
+//! derivación de los flags globales.
 //!
 //! Lo demás que afirmaba este fichero —la forma del envelope de parada, la de los
 //! simulacros de `cleanup`/`self uninstall` y el envelope `usage_error` del rechazo de
 //! parseo— ya está en `cli_golden.rs`, que es el dueño del arnés (sandbox con
 //! `daemon.pid` señuelo y `TEMP` reubicado) y de las fixtures doradas. Duplicar aquí
 //! ese arnés solo multiplicaba su coste de mantenimiento, así que este fichero ya no
-//! ejecuta el binario: las dos pruebas siguientes leen documentos, fixtures y código.
+//! ejecuta el binario: las pruebas siguientes leen documentos, fixtures y código.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +21,18 @@ const ROOT_GUIDES: [&str; 2] = ["README.md", "USAGE.md"];
 
 /// Subárbol de documentación que también describe el contrato.
 const DOCS_ROOT: &str = "docs";
+
+/// Fuente única de los códigos de salida: el enum y su única traducción de `reason`.
+const EXIT_CODES_SOURCE: &str = "crates/avi-core/src/exit_codes.rs";
+
+/// Documentos que llevan una tabla de códigos de salida con su constante.
+const EXIT_CODE_TABLE_DOC: (&str, &str) = ("docs/CLI/README.md", "ExitCode::");
+
+/// Barrido manual donde cada código de dominio tiene su fila con su canal.
+const MANUAL_VALIDATION_DOC: &str = "docs/MANUAL-VALIDATION.md";
+
+/// Contrato normativo: flags globales, regla de exclusión y tabla de `speech dub`.
+const CONTRACT_DOC: &str = "docs/CLI/CONTRACT.md";
 
 /// Caracteres posteriores a la mención en los que puede aparecer el valor que
 /// declara. Cubre la redacción real, incluido el salto de línea de
@@ -351,4 +364,207 @@ fn real_envelope_status_is_in_closed_vocabulary() {
             );
         }
     }
+}
+
+/// Líneas del bloque que abre `head`, hasta la primera que cierre solo con `}` (o hasta
+/// el final del documento si no la hay). Acota la lectura a la declaración que se quiere
+/// contrastar sin depender de su número de línea, que las correcciones desplazan.
+fn block_after(text: &str, head: &str) -> Vec<String> {
+    let start = text
+        .find(head)
+        .unwrap_or_else(|| panic!("{head:?} no aparece en el documento"))
+        + head.len();
+    text[start..]
+        .lines()
+        .take_while(|line| line.trim_end() != "}")
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Variantes del enum `ExitCode` con su entero, tal y como las declara el código: los
+/// enteros se leen del discriminante, no de una copia de la tabla, para que un
+/// intercambio de valores en el enum también haga fallar la comprobación.
+fn declared_exit_codes() -> Vec<(i32, String)> {
+    let path = repo_root().join(EXIT_CODES_SOURCE);
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("no se pudo leer {EXIT_CODES_SOURCE}: {e}"));
+    let mut declared = Vec::new();
+    for line in block_after(&source, "pub enum ExitCode {") {
+        let line = line.trim();
+        let Some((name, code)) = line.split_once(" = ") else {
+            continue;
+        };
+        let Some(code) = code.trim_end_matches(',').parse::<i32>().ok() else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            declared.push((code, name.to_string()));
+        }
+    }
+    assert!(
+        !declared.is_empty(),
+        "{EXIT_CODES_SOURCE} no declara ninguna variante de `ExitCode`: el recorrido está \
+         desalineado con el código"
+    );
+    declared
+}
+
+/// Long names de los flags que `Cli` declara globales en `src/main.rs`, deducidos del
+/// nombre del campo en kebab-case igual que hace `clap`. Recorre solo el bloque de
+/// `struct Cli`: un `global = true` en otro parser no es un flag global de la invocación y
+/// no tiene por qué aparecer en el contrato de la raíz.
+fn cli_global_flags() -> Vec<String> {
+    let path = repo_root().join("src/main.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("no se pudo leer src/main.rs: {e}"));
+    let mut flags = Vec::new();
+    let mut pending_global = false;
+    for line in block_after(&source, "struct Cli {") {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[arg(") || trimmed.starts_with("#[command(") {
+            pending_global = trimmed.contains("global = true");
+            continue;
+        }
+        if !pending_global {
+            continue;
+        }
+        let Some((field, _)) = trimmed.split_once(':') else {
+            continue;
+        };
+        pending_global = false;
+        // Kebab-case de `clap`: los `_` son separadores de palabra y cada mayúscula abre
+        // una nueva, así que `no_daemon` se declara `--no-daemon`.
+        let kebab = field
+            .trim()
+            .chars()
+            .flat_map(|c| match c {
+                '_' => vec!['-'],
+                upper if upper.is_ascii_uppercase() => vec!['-', upper.to_ascii_lowercase()],
+                other => vec![other],
+            })
+            .collect::<String>();
+        flags.push(format!("--{kebab}"));
+    }
+    assert!(
+        flags.contains(&"--json".to_string()),
+        "src/main.rs declara `json` global: sin él esta comprobación no miraría nada"
+    );
+    flags
+}
+
+/// Líneas de la sección markdown que abre `heading`, hasta el siguiente encabezado de
+/// cualquier nivel. Acota la afirmación a su propia sección en vez de al documento
+/// entero, que es donde dos frases se contradicen sin que ninguna se entere.
+fn section_after(text: &str, heading: &str) -> Vec<String> {
+    let start = text
+        .find(heading)
+        .unwrap_or_else(|| panic!("la sección {heading:?} no aparece en el documento"))
+        + heading.len();
+    text[start..]
+        .lines()
+        .take_while(|line| !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Toda variante de `ExitCode` tiene su fila en la tabla de `docs/CLI/README.md`.
+///
+/// La tabla se quedó en 17 durante el ciclo de vida y no recogió los cinco códigos que
+/// `self update` y `self uninstall` añadieron después. Recorrer el enum es lo que
+/// convierte la afirmación en sincronía: un código nuevo nace sin fila y esta puerta
+/// falla hasta que la guía lo declare.
+#[test]
+fn cli_guide_table_declares_every_exit_code() {
+    let (document, marker) = EXIT_CODE_TABLE_DOC;
+    let path = repo_root().join(document);
+    let guide = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("no se pudo leer {document}: {e}"));
+
+    let mut missing = Vec::new();
+    for (code, variant) in declared_exit_codes() {
+        let row = format!("| {code} | `{marker}{variant}` |");
+        if !guide.contains(&row) {
+            missing.push(format!("{code} (`ExitCode::{variant}`)"));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "la tabla de códigos de {document} no declara {} variante(s) de `ExitCode` \
+         ({EXIT_CODES_SOURCE}):\n  {}",
+        missing.len(),
+        missing.join("\n  ")
+    );
+}
+
+/// El barrido manual nombra todos los códigos de salida de error, con su canal.
+///
+/// El 0 queda fuera: la sección es de casos de error y el éxito no tiene sonda que
+/// disparar. De los demás no se exige una fila —`speech transcribe` con un `--audio`
+/// ilegible no sabe producir el 10 a mano y el documento lo dice— pero sí que el código
+/// aparezca, sea en su fila o en la frase que explica por qué no la tiene. Lo que vigila
+/// es que el barrido no se quede atrás al añadirse una salida.
+#[test]
+fn manual_validation_names_every_exit_code() {
+    let path = repo_root().join(MANUAL_VALIDATION_DOC);
+    let manual = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("no se pudo leer {MANUAL_VALIDATION_DOC}: {e}"));
+
+    let mut missing = Vec::new();
+    for (code, variant) in declared_exit_codes() {
+        if code == 0 {
+            continue;
+        }
+        if !manual.contains(&format!("**{code}**")) {
+            missing.push(format!("{code} (`ExitCode::{variant}`)"));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "{MANUAL_VALIDATION_DOC} no menciona {} código(s) de salida, así que el barrido \
+         queda incompleto para ellos:\n  {}",
+        missing.len(),
+        missing.join("\n  ")
+    );
+}
+
+/// Todo flag que `Cli` declara global aparece en el contrato como global, y `speech dub`
+/// declara el `--json` que hereda.
+///
+/// Cierra los dos fallos que el barrido manual no podía ver: un flag global que el
+/// contrato leía como propio de tres subcomandos, y un comando que afirmaba no declarar
+/// `--json` cuando lo recibe de la raíz. La regla es de sincronía en las dos
+/// direcciones: la lista sale del parser y el contrato tiene que cubrirla entera.
+#[test]
+fn contract_declares_every_global_flag() {
+    let path = repo_root().join(CONTRACT_DOC);
+    let contract = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("no se pudo leer {CONTRACT_DOC}: {e}"));
+
+    let global = cli_global_flags();
+    let undocumented: Vec<&str> = global
+        .iter()
+        .map(String::as_str)
+        .filter(|flag| {
+            !contract
+                .lines()
+                .any(|line| line.contains(flag) && line.contains("global"))
+        })
+        .collect();
+    assert!(
+        undocumented.is_empty(),
+        "el contrato no declara estos flags globales de `Cli` como globales: {undocumented:?} \
+         ({CONTRACT_DOC}, src/main.rs); o el flag dejó de ser global, o el contrato no lo \
+         nombra en una frase que lo llame global"
+    );
+
+    assert!(
+        section_after(&contract, "### `speech dub`")
+            .iter()
+            .any(|line| line.starts_with('|') && line.contains("--json")),
+        "la tabla de parámetros de `speech dub` debe listar `--json`: el flag es global \
+         (`Cli::json`) y el comando lo honra en las dos vías"
+    );
 }
