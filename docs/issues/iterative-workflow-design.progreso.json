@@ -182,8 +182,8 @@
       "commits": ["25ef5b3", "ec1044e", "519da5a", "c181744", "db20ad1"]
     },
     "C7": {
-      "status": "in_progress",
-      "phase": "result",
+      "status": "closed",
+      "phase": "closed",
       "gates": [
         { "gate": "plan", "verdict": "approved", "date": "2026-10-04", "notes": "P1: parseo alineado con el contrato (envelope usage_error con exit 2 ante --json); P2: plan puro único con repliegue a alineación por campos sin reabrir G0; P3: tipo dueño en avi-shared; P4: el simulacro nunca pide confirmación; P5: S33 y pruebas de conformidad en alcance" },
         { "gate": "tests", "verdict": "approved", "date": "2026-10-04", "notes": "11 pruebas nuevas: 6 en cli_golden, 4 en conformidad y 1 anti-desfase, todas rojas por la causa documentada; 1 invariante S33 con recursos (rojo por deducción, precedente C3). Adaptaciones aceptadas: planned en el sobre CLI (el Outcome no serializa) y vocabulario was_running (D6 y motor) en vez de daemon_was_running" },
@@ -202,6 +202,22 @@
         { "id": "C7.10", "status": "done", "attempts": 1, "files": ["src/main.rs", "tests/cli_golden.rs", "tests/contract_conformance.rs", "tests/golden/cli_daemon_stop_failed.json", "docs/CLI/CONTRACT.md", "docs/CLI/commands/DAEMON.md", "docs/CLI/commands/SPEECH.md", "USAGE.md", "CHANGELOG.md", "docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "veredicto de fallo de daemon stop por veredicto dentro de C7, sin ciclos nuevos: status still_running con el veredicto completo y salida 5 por veredicto, sin objeto error; handle_daemon devuelve Outcome; esquema 5 sin bump (aún no publicado). Prueba dorada de fallo con daemon falso que siempre responde (9 s), fixture cli_daemon_stop_failed.json, vocabulario cerrado ampliado y unitaria stop_failed_status; las tres en rojo antes de implementar y en verde después. Nota de humo intencional en say/dub (contrato, SPEECH.md, USAGE.md, CHANGELOG) sin cambios de código. Punto 2 sin tarea ni ciclo." },
         { "id": "C7.11", "status": "done", "attempts": 1, "files": ["tests/cli_golden.rs", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "renombrado de las dos pruebas con etiqueta de hallazgo de auditoría a nombres por comportamiento, como C7.9: h01_simulated_abort_reclaims_and_leaves_no_orphans pasa a simulated_abort_reclaims_and_leaves_no_orphans y h03_pipe_stdio_must_not_remain_blocked a pipe_stdio_must_not_remain_blocked, con sus hitos, sandboxes y contextos. Cero h01/h03 en src/tests/crates. Compila y clippy limpios; ambas son con recursos (ignore), sin cambio de comportamiento." }
       ],
+      "foreign_changes": [],
+      "commits": ["da01cfd", "94b7d80", "c39dd28", "4f201cf", "2124211", "e3fd0e0"]
+    },
+    "C8": {
+      "status": "planned",
+      "phase": "plan",
+      "gates": [],
+      "tasks": [],
+      "foreign_changes": [],
+      "commits": []
+    },
+    "C9": {
+      "status": "planned",
+      "phase": "plan",
+      "gates": [],
+      "tasks": [],
       "foreign_changes": [],
       "commits": []
     }

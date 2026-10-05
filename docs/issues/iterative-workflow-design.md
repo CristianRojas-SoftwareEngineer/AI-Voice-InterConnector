@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 a C7 cerrados, G-Resultado de C7 en revisión |
+| Estado | G0 aprobada, C1 a C7 cerrados e integrados, C8 y C9 planificados (S28/S29), G-Release pendiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -228,8 +228,8 @@ G-Resultado ──► commits ──► merge --no-ff a main ──► registro 
 | S25 | `docs/BRANCHING.md` afirma que los jobs de test corren en `main` y en ramas, y solo corren en tags | Revisión de C1 | Baja | C2 |
 | S26 | La verificación de los ciclos usa órdenes ad hoc (como `cargo test -p avi-daemon --features native-stt` en C1) que dependen de la instalación real del mantenedor | Revisión de C1 | Baja | C2 |
 | S27 | `self install`, `self uninstall` y `self update` detienen el daemon siempre en `127.0.0.1:8765` y `cleanup` solo respeta `AVI_DAEMON_PORT=0`; sin pidfile, `daemon stop`, `daemon status` y el resto de clientes del daemon lo buscan siempre en 8765; diez pruebas de contrato llamaban así a `daemon_stop::stop` contra el daemon real del mantenedor | Verificación de C2 | Media | C2 |
-| S28 | `tts::dub_audio_passthrough_es_es`, de la clase con recursos, falla de forma intermitente (1 de 4 intentos): el proceso `--no-daemon speech dub --audio parakeet_sample_16k.wav --source-language es-latam --target-language es-latam` termina a los 13,9 s con el código 0xC0000409 (caída nativa), sin fallo de aserción; la puerta de `cargo xtask release` aborta cuando ocurre | Verificación de C2 | Media | En observación |
-| S29 | `tts::h03_pipe_stdio_must_not_remain_blocked`, de la clase con recursos, falla de forma intermitente (en la suite completa y en 1 de 3 repeticiones aisladas): el pipe del lanzador sigue bloqueado a los 5 s y solo se libera al matar el daemon, como si el daemon retuviera el stdio heredado pese a `disinherit_standard_handles` | Verificación de C3 | Media | En observación |
+| S28 | `tts::dub_audio_passthrough_es_es`, de la clase con recursos, falla de forma intermitente (1 de 4 intentos): el proceso `--no-daemon speech dub --audio parakeet_sample_16k.wav --source-language es-latam --target-language es-latam` termina a los 13,9 s con el código 0xC0000409 (caída nativa), sin fallo de aserción; la puerta de `cargo xtask release` aborta cuando ocurre | Verificación de C2 | Media | C8 |
+| S29 | `tts::pipe_stdio_must_not_remain_blocked`, de la clase con recursos, falla de forma intermitente (en la suite completa y en 1 de 3 repeticiones aisladas): el pipe del lanzador sigue bloqueado a los 5 s y solo se libera al matar el daemon, como si el daemon retuviera el stdio heredado pese a `disinherit_standard_handles` | Verificación de C3 | Media | C9 |
 | S30 | Cuando clap rechaza los argumentos (flag desconocido, valor inválido, subcomando inexistente), el binario imprime un mensaje de texto por stderr y sale con 2, incluso con `--json`; el contrato dice que ese fallo entra por el mismo canal JSON que los demás, con `reason` `usage_error` en stdout, así que un consumidor programado que pase `--json` no recibe envelope | Verificación de C4 | Baja | C7 |
 | S31 | `daemon stop` y el resto de operaciones que reutilizan la parada dan el daemon por detenido sin comprobar que el residente murió: con el daemon muerto y el residente vivo, borran el pidfile y con él el `resident_pid`; la rama que informaría del residente es inalcanzable | Verificación del plan de C5 | Media | C5 |
 | S32 | Un proceso que muere mientras guarda la referencia de un clonado deja un directorio de voz vacío: `voice list` lo muestra y `voice_exists` impide clonar de nuevo con ese nombre | Verificación del plan de C5 | Baja | C5 |
@@ -255,14 +255,14 @@ ejecuciones aisladas del mismo comando; la única caída ocurrió con la suite c
 ejecuta en paralelo otras pruebas con modelos. La duración coincide con la de una
 ejecución completa, y la hipótesis más probable es una carrera en el cierre del proceso
 entre la liberación de las sesiones de ONNX Runtime de Parakeet y la del stream de audio,
-sin demostrar. Queda en observación, sin ciclo: las pruebas de la CLI muestran ahora el
-stderr del proceso hijo cuando fallan, y si la caída se repite, con ese rastro se abre un
-G-Desvío en el ciclo en curso o un ciclo propio.
+sin demostrar. Las pruebas de la CLI muestran ahora el
+stderr del proceso hijo cuando fallan. Se diagnostica y corrige en C8, con G-Diag
+porque la causa no está demostrada.
 
 S29 salió de la verificación de C3, que no toca el arranque del daemon ni la herencia de
-handles; la misma prueba pasó en la verificación anterior del ciclo. Queda en observación,
-sin ciclo: si se repite, se diagnostica la herencia del stdio en el arranque del daemon
-en un ciclo propio.
+handles; la misma prueba pasó en la verificación anterior del ciclo. Se diagnostica
+la herencia del stdio en el arranque del daemon en C9, con G-Diag porque la causa
+no está demostrada.
 
 S30 salió de la verificación de C4 y no tiene informe propio. Es una discrepancia entre el
 contrato y el binario sobre los fallos de parseo de la CLI, y comparte causa raíz con el
@@ -303,8 +303,14 @@ C0 Preparación y decisiones ──G0──►
     │
     ▼
   C7 JSON veraz y temporales (S7 S8 S18 S30 S33)
+    │
+    ▼
+  C8 Caída nativa del dub (S28)
+    │
+    ▼
+  C9 Retención del stdio (S29)
 
-G-Release: una sola vez, tras cerrar e integrar C7
+G-Release: una sola vez, tras cerrar e integrar C9
 ```
 
 Justificación del orden:
@@ -324,6 +330,13 @@ Justificación del orden:
   a ciegas.
 - **C6 y C7 no dependen entre sí.** C6 va antes por severidad. El humano puede
   invertirlos en el G-Plan de C6.
+- **C8 va antes que C9.** S28 aborta la puerta del release cuando ocurre; S29 es
+  una retención diagnosticable sin caída. Ninguno depende del otro, pero los
+  ciclos no se ejecutan en paralelo: ambos pueden tocar el arranque del daemon
+  y la revisión humana tendría que separar cambios entrelazados.
+- **C8 y C9 requieren G-Diag.** Sus causas son hipótesis sin demostrar y la
+  dirección de la corrección se decide tras el diagnóstico. C0 a C7 no tuvieron
+  G-Diag.
 - **Los ciclos no se ejecutan en paralelo.** Casi todos tocan el binario principal
   (`src/main.rs`), y en paralelo la revisión humana tendría que separar cambios
   entrelazados.
@@ -332,8 +345,9 @@ Justificación del orden:
 
 Todas las decisiones siguen el mismo esquema: el problema, las alternativas con sus
 argumentos a favor y en contra, la recomendación y el ciclo que la aplica. El campo
-**Decisión** lo rellena el humano en G0. Ninguna depende de un diagnóstico, así que
-ningún ciclo tiene G-Diag.
+**Decisión** lo rellena el humano en G0. Las decisiones D1 a D18 no dependen de un
+diagnóstico, así que ningún ciclo de C0 a C7 tuvo G-Diag. C8 y C9 sí la requieren:
+sus causas son hipótesis y la dirección se decide en su G-Diag.
 
 ### D1 · Tope del audio de transcripción en las dos vías (S1) — C3
 
@@ -1439,9 +1453,45 @@ aprobar. Las pruebas que se enumeran son las mínimas.
      devuelve `Outcome`. Prueba dorada de fallo con daemon falso que siempre responde,
      fixture `cli_daemon_stop_failed.json` y vocabulario cerrado ampliado, todo dentro
      del esquema 5 aún no publicado.
-- **Cierre de la iteración:** el agente propone eliminar este documento y su registro
-  de progreso, y lo presenta en la misma G-Resultado. Con C7 integrado en `main`, se
+- **Cierre de la iteración:** C7 se integró en `main` y este documento queda
+  abierto: S28 y S29 se diagnostican y corrigen en C8 y C9, y solo entonces se
   abre G-Release.
+
+### C8 · Caída nativa del dub
+
+- **Causa raíz (hipótesis, sin demostrar):** carrera en el cierre del proceso
+  entre la liberación de las sesiones de ONNX Runtime de Parakeet y la del
+  stream de audio, solo con la suite completa en paralelo.
+- **Depende de:** C7 integrado. Requiere G-Diag: la dirección se decide tras el
+  diagnóstico.
+- **Síntomas:** S28.
+- **Diagnóstico y G-Diag:** repeticiones aisladas frente a suite completa, rastro
+  del stderr del hijo, orden de teardown de sesiones y stream; hipótesis
+  descartadas con su evidencia y, si la corrección abre decisiones, sus
+  alternativas con recomendación.
+- **Tareas (tras G-Diag):** prueba que reproduce el cierre, corrección del
+  teardown, reverde con la suite completa en paralelo.
+- **Pruebas en rojo:** las fija el G-Diag; la existente
+  `dub_audio_passthrough_es_es` queda como testigo.
+- **Documentación:** la que pida la corrección y su entrada del CHANGELOG.
+- **Cierra:** nada documental salvo lo anterior; S28 sale del mapa al cerrarse.
+
+### C9 · Retención del stdio
+
+- **Causa raíz (hipótesis, sin demostrar):** herencia de handles del stdio en el
+  arranque del daemon pese al corte por `SetHandleInformation`.
+- **Depende de:** C7 integrado. Requiere G-Diag: la dirección se decide tras el
+  diagnóstico.
+- **Síntomas:** S29.
+- **Diagnóstico y G-Diag:** auditoría de la herencia en `spawn_background`, el
+  corte en la raíz y el lanzamiento del motor; la prueba
+  `pipe_stdio_must_not_remain_blocked` ya es el instrumento de repro.
+- **Tareas (tras G-Diag):** prueba en rojo del holder heredado, corrección del
+  lanzamiento, reverde aislado y en suite completa.
+- **Pruebas en rojo:** las fija el G-Diag; la existente
+  `pipe_stdio_must_not_remain_blocked` queda como testigo.
+- **Documentación:** la que pida la corrección y su entrada del CHANGELOG.
+- **Cierra:** nada documental salvo lo anterior; S29 sale del mapa al cerrarse.
 
 ## 11. Registro de progreso
 
