@@ -2243,20 +2243,50 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
                 DAEMON_READY_DEADLINE,
             )
             .await?;
-            lifecycle::daemon_stop::write_pid(
-                &effective_data_dir(),
-                pid,
-                &addr_real,
-                0,
-                avi_process::process_identity(pid),
-            )
-            .map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "daemon_error",
-                    format!("No se pudo escribir daemon.pid: {}", e),
-                )
-            })?;
+            // La identidad es obligatoria para que la parada no confunda un
+            // PID reasignado con el daemon: reintento acotado (5 × 200 ms,
+            // deadline 1 s) y, si sigue sin observarse, no se escribe el
+            // pidfile y se avisa citando el log del daemon.
+            let identity = {
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(1);
+                let mut observed = None;
+                while std::time::Instant::now() < deadline {
+                    if let Some(id) = avi_process::process_identity(pid) {
+                        observed = Some(id);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                observed
+            };
+            match identity {
+                Some(identity) => {
+                    lifecycle::daemon_stop::write_pid(
+                        &effective_data_dir(),
+                        pid,
+                        &addr_real,
+                        0,
+                        identity,
+                    )
+                    .map_err(|e| {
+                        CliError::new(
+                            ExitCode::Error,
+                            "daemon_error",
+                            format!("No se pudo escribir daemon.pid: {}", e),
+                        )
+                    })?;
+                }
+                None => {
+                    eprintln!(
+                        "Aviso: no se pudo observar la identidad del daemon (pid {}); \
+                         no se escribe daemon.pid. La parada por PID no estará disponible; \
+                         revisa el log del daemon en {}",
+                        pid,
+                        store::logs_dir().display()
+                    );
+                }
+            }
             if json_mode {
                 emit_raw_json(json!({ "status": "started", "daemon": "running", "pid": pid }));
             } else {
@@ -2345,20 +2375,49 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
             // códigos de fallo.
             let (pid, addr_real) =
                 launch_daemon(&client, false, 3, "default", ready_deadline).await?;
-            lifecycle::daemon_stop::write_pid(
-                &effective_data_dir(),
-                pid,
-                &addr_real,
-                0,
-                avi_process::process_identity(pid),
-            )
-            .map_err(|e| {
-                CliError::new(
-                    ExitCode::Error,
-                    "daemon_error",
-                    format!("No se pudo escribir daemon.pid: {}", e),
-                )
-            })?;
+            // Reintento acotado de la identidad (deadline 1 s) y, si no se
+            // observa, no se escribe pidfile con aviso ruidoso al log del
+            // daemon: la identidad es obligatoria para clasificar la parada.
+            let identity = {
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(1);
+                let mut observed = None;
+                while std::time::Instant::now() < deadline {
+                    if let Some(id) = avi_process::process_identity(pid) {
+                        observed = Some(id);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                observed
+            };
+            match identity {
+                Some(identity) => {
+                    lifecycle::daemon_stop::write_pid(
+                        &effective_data_dir(),
+                        pid,
+                        &addr_real,
+                        0,
+                        identity,
+                    )
+                    .map_err(|e| {
+                        CliError::new(
+                            ExitCode::Error,
+                            "daemon_error",
+                            format!("No se pudo escribir daemon.pid: {}", e),
+                        )
+                    })?;
+                }
+                None => {
+                    eprintln!(
+                        "Aviso: no se pudo observar la identidad del daemon (pid {}); \
+                         no se escribe daemon.pid. La parada por PID no estará disponible; \
+                         revisa el log del daemon en {}",
+                        pid,
+                        store::logs_dir().display()
+                    );
+                }
+            }
             if json_mode {
                 emit_raw_json(json!({ "status": "restarted", "daemon": "running", "pid": pid }));
             } else {

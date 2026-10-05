@@ -545,32 +545,69 @@ impl Qwen3TtsEngine {
 }
 
 /// Actualiza `resident_pid` en `daemon.pid` preservando el resto del esquema
-/// como campo plano. Escritura atómica por tmp+rename; best-effort y
-/// silenciosa: si no hay pidfile (p. ej. `serve` en foreground) o no parsea,
-/// no hay nada que actualizar y se ignora. La lectura tolerante vive en el CLI
-/// (`read_resident_pid`: ausente = 0/desconocido).
+/// como campo plano. Escritura atómica por tmp+rename; si no hay pidfile
+/// (p. ej. `serve` en foreground) o no parsea, no hay nada que actualizar,
+/// pero el descarte deja traza: nunca es silencioso. La lectura tolerante
+/// vive en el CLI (`read_resident_pid`: ausente = 0/desconocido).
 fn update_resident_pid_in_pidfile(pid: u32) {
     update_resident_pid_at(&avi_store::data_dir().join("daemon.pid"), pid);
 }
 
 /// Cuerpo de [`update_resident_pid_in_pidfile`] sobre una ruta concreta.
+///
+/// Sin `resident_identity` observable no se registra `resident_pid`: la
+/// parada del residente cae entonces al barrido por imagen, que ya existe.
+/// Los fallos de lectura/parseo/escritura dejan traza; nunca son silenciosos.
 fn update_resident_pid_at(path: &Path, pid: u32) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!(
+                "Aviso: no se pudo leer {} para registrar el residente: {}",
+                path.display(),
+                e
+            );
+            return;
+        }
     };
     let mut v: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!(
+                "Aviso: {} no se entiende como JSON y no se registra el residente: {}",
+                path.display(),
+                e
+            );
+            return;
+        }
     };
-    v["resident_pid"] = serde_json::Value::from(pid);
     // La identidad se observa ahora, con el residente recién creado: es la que
     // la parada compara después para no confundir un PID reasignado con él.
-    v["resident_identity"] =
-        serde_json::to_value(avi_process::process_identity(pid)).unwrap_or(serde_json::Value::Null);
+    let identity = avi_process::process_identity(pid);
+    let Some(identity) = identity else {
+        eprintln!(
+            "Aviso: no se pudo observar la identidad del residente (pid {}); no se registra resident_pid",
+            pid
+        );
+        return;
+    };
+    v["resident_pid"] = serde_json::Value::from(pid);
+    v["resident_identity"] = serde_json::to_value(identity).unwrap_or(serde_json::Value::Null);
     let tmp = path.with_extension("pid.tmp");
-    if std::fs::write(&tmp, serde_json::to_string_pretty(&v).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
+    match std::fs::write(&tmp, serde_json::to_string_pretty(&v).unwrap_or_default()) {
+        Ok(()) => {
+            if let Err(e) = std::fs::rename(&tmp, path) {
+                eprintln!(
+                    "Aviso: no se pudo renombrar {} a {}: {}",
+                    tmp.display(),
+                    path.display(),
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("Aviso: no se pudo escribir {}: {}", tmp.display(), e);
+        }
     }
 }
 
