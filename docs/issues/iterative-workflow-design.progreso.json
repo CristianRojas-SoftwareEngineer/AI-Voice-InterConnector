@@ -247,6 +247,16 @@
       ],
       "foreign_changes": [],
       "commits": ["3970b4b", "2c62909"]
+    },
+    "C10": {
+      "status": "open",
+      "phase": "preparation",
+      "gates": [],
+      "tasks": [
+        { "id": "C10.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "preparación en la rama fix/deuda-pre-release, creada desde main (c6f221c) con el árbol limpio; ficha C10 abierta a partir de la auditoría adversarial posterior a C9, sin descomponer en subciclos; G-Plan pendiente" }
+      ],
+      "foreign_changes": [],
+      "commits": []
     }
   },
   "release": { "status": "pending", "gates": [], "version": null }

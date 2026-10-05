@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 a C9 cerrados e integrados, G-Release pendiente |
+| Estado | G0 aprobada, C1 a C9 cerrados e integrados, C10 en preparación, G-Release pendiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -315,8 +315,11 @@ C0 Preparación y decisiones ──G0──►
     │
     ▼
   C9 Retención del stdio (S29)
+    │
+    ▼
+  C10 Cierre de la deuda pre-release (auditoría adversarial posterior a C9)
 
-G-Release: una sola vez, tras cerrar e integrar C9
+G-Release: una sola vez, tras cerrar e integrar C10
 ```
 
 Justificación del orden:
@@ -1504,7 +1507,54 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 - **Documentación:** guía del daemon, entrada del CHANGELOG y comentarios de
   los cuatro lanzamientos reescritos al mecanismo nuevo.
 - **Cierra:** nada documental salvo lo anterior; S29 sale del mapa al cerrarse.
-  Al cerrar e integrar C9 se abre G-Release.
+  Al cerrar e integrar C9 se abre C10.
+
+### C10 · Cierre de la deuda pre-release
+
+- **Alcance:** cierre, en un único ciclo, de la deuda técnica detectada por la
+  auditoría adversarial posterior a C9, antes de abrir G-Release. No se
+  descompone en subciclos: una sola ronda de G-Plan → pruebas en rojo →
+  implementación → verificación → documentación → residuos → G-Resultado.
+- **Depende de:** C9 integrado. No requiere G-Diag: la auditoría ya fijó causa y
+  dirección por cada deuda.
+- **Deuda en alcance:**
+  - Seguridad de vida de procesos: identidad de pidfile obligatoria (sin
+    identidad no se mata, se degrada), `pid_alive` de Windows exacto (hoy
+    substring), `libc::kill` en Unix con `LC_ALL=C` y una sola invocación de
+    `ps`, y restauración de `setsid` en el arranque Unix del daemon con prueba
+    de que el hijo es líder de su grupo.
+  - Cobertura de la propiedad C9: prueba negativa de la allowlist (handle
+    testigo fuera de la lista no llega al hijo), migración de los dos
+    lanzamientos longevos con `Command` clásico (traspaso de self update y
+    `--version` del binario descargado), y endurecimiento del `unsafe` del
+    allowlist con RAII y fallo ruidoso.
+  - Diagnosticabilidad: poda de logs que no borre el log de un daemon vivo,
+    aviso explícito de staging huérfano en cleanup, recuperación de veneno en
+    los `lock().unwrap()` de producto, traza en los `let _ =` best-effort,
+    fuente única de deadlines y puertos, y deduplicación de `quote_arg`,
+    `pid_alive` y `kill_tree`.
+  - Tests: retirada de `sleep` fijos y ventanas estrechas, corrección de los
+    `cfg_attr(ignore)` que invierten la clase bajo `full`, endurecimiento de
+    la puerta de clases contra `return` silencioso y `#[ignore]` sin `requiere`,
+    y nombres de temporales únicos en las pruebas de allowlist.
+  - Drift documental: tabla de salidas incompleta, `--json` de `dub`, rutas de
+    clonado retiradas, exclusión de `transcribe`/`dub` de `--daemon/--no-daemon`,
+    historia de versiones en la guía estable, contradicción del menú de zonas,
+    cita del motor sin `--watch-stdin`, fósiles de torch/pysbd y párrafo suelto
+    del CHANGELOG.
+- **Tareas:** las fija el G-Plan de C10 sobre el inventario anterior, con
+  verificación por tarea y contratos afectados; distingue lo bloqueante de lo
+  pospuesto con motivo escrito.
+- **Pruebas en rojo:** las de lo bloqueante (identidad obligatoria, `pid_alive`
+  exacto, `setsid` en Unix, prueba negativa de allowlist, no-borrar-log-vivo),
+  cada una enrojecida por la causa que documenta.
+- **Documentación:** la que pida cada corrección, más el barrido de drift
+  documental y la entrada en `## [No publicado]` del CHANGELOG.
+- **Cierra:** la deuda pre-release. Al cerrar e integrar C10 se abre G-Release,
+  una sola vez, con el número de versión que fije el humano. La versión de la
+  beta corresponde a minor (envelope 5 de la CLI, sin publicar), no a patch.
+  D-11 (pase manual en Linux x64 y macOS arm64) es un gate de proceso que no
+  puede cerrarse desde el entorno de desarrollo de C10 y se pacta en G-Release.
 
 ## 11. Registro de progreso
 
