@@ -484,7 +484,16 @@ fn apply_permissions(triple: &str, staging: &Path) -> Result<(), LifecycleError>
                 0o644
             };
             let path = staging.join(relative_path(&relative));
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode));
+            // El permiso es best-effort: un fallo no invalida el bundle ya
+            // verificado, pero un archivo ejecutable sin permiso queda
+            // arrancable y la traza es lo único que lo delata.
+            if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)) {
+                eprintln!(
+                    "Aviso: no se pudo aplicar el modo {mode:o} a {}: {e}; \
+                     puede quedar sin permiso de ejecución",
+                    path.display()
+                );
+            }
         }
         Ok(())
     }
@@ -529,7 +538,15 @@ fn restrict_staging(staging: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(staging, std::fs::Permissions::from_mode(0o700));
+        // Best-effort con traza: si el staging no queda acotado al usuario, el
+        // motivo tiene que quedar escrito, porque nadie vuelve a mirar esa
+        // ruta.
+        if let Err(e) = std::fs::set_permissions(staging, std::fs::Permissions::from_mode(0o700)) {
+            eprintln!(
+                "Aviso: no se pudo dejar el staging {} solo para el usuario: {e}",
+                staging.display()
+            );
+        }
     }
     #[cfg(not(unix))]
     {

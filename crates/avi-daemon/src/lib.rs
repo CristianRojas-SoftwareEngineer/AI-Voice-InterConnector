@@ -195,10 +195,18 @@ fn with_sv(val: Value) -> Value {
 }
 
 /// Serializa un evento NDJSON con envelope de schema_version al canal de salida.
+/// Best-effort con traza: si el receptor ya no existe, el evento se pierde sin
+/// que nada lo delate, así que el motivo del descarte queda escrito. El
+/// `SendError` devuelve la línea, así que el evento perdido se imprime entero
+/// sin copiarlo antes.
 async fn emit_ndjson(tx: &tokio::sync::mpsc::Sender<String>, event: Value) {
-    let _ = tx
-        .send(serde_json::to_string(&with_sv(event)).unwrap_or_default())
-        .await;
+    let line = serde_json::to_string(&with_sv(event)).unwrap_or_default();
+    if let Err(e) = tx.send(line).await {
+        eprintln!(
+            "aviso: evento NDJSON perdido, el canal está cerrado: {}",
+            e.0
+        );
+    }
 }
 
 /// Intervalo de latido de los streams NDJSON con trabajo pesado: entre

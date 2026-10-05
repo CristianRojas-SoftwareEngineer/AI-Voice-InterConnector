@@ -252,7 +252,8 @@ unsafe fn dispatch_cleaner_worker() {
 
 /// Trabajador del limpiador: espera, borra con reintentos e informa en el
 /// registro. Nunca entra en pánico: cualquier fallo termina en el registro y
-/// en el código de salida, porque nadie lee su terminal.
+/// en el código de salida, porque nadie lee su terminal; cuando el propio
+/// registro no se puede escribir, el motivo sale por stderr.
 fn cleaner_worker_main(args: &[String]) -> i32 {
     use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
 
@@ -263,10 +264,16 @@ fn cleaner_worker_main(args: &[String]) -> i32 {
     let log = args.get(2).map(String::as_str).unwrap_or_default();
     let wait_handle: isize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
 
+    // Si el directorio del registro no se puede crear, el informe no tendrá
+    // dónde escribirse: la causa se guarda para incluirla en él y no depender
+    // solo del propio fallo de escritura.
+    let mut log_dir_note = String::new();
     if !log.is_empty() {
         if let Some(parent) = Path::new(log).parent() {
             if !parent.as_os_str().is_empty() {
-                let _ = std::fs::create_dir_all(parent);
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    log_dir_note = format!("; el directorio del registro no se pudo crear ({e})");
+                }
             }
         }
     }
@@ -314,7 +321,7 @@ fn cleaner_worker_main(args: &[String]) -> i32 {
     } else {
         String::new()
     };
-    let (report, code) = if target.exists() {
+    let (mut report, code) = if target.exists() {
         (
             format!(
                 "fallo: no se pudo retirar {path} tras {attempts} intentos{waited_note} ({last_error}); queda para el barrido"
@@ -327,12 +334,27 @@ fn cleaner_worker_main(args: &[String]) -> i32 {
             0,
         )
     };
+    // La causa del fallo de creación del directorio viaja en el informe: si el
+    // registro no tiene dónde escribirse, al menos se intentó decirlo.
+    report.push_str(&log_dir_note);
     if !log.is_empty() {
-        let _ = std::fs::write(log, report);
+        // El registro es el único sitio donde este trabajo es observable (nadie
+        // lee la terminal de un proceso desacoplado): si no se puede escribir,
+        // el motivo sale por stderr antes de terminar.
+        if let Err(e) = std::fs::write(log, &report) {
+            eprintln!("avi-cleaner: no se pudo escribir el registro {log}: {e}; informe: {report}");
+        }
     }
     // La copia en uso no se puede borrar a sí misma en Windows: el barrido de
-    // temporales recoge las copias rancias por su prefijo.
-    let _ = std::fs::remove_file(std::env::current_exe().unwrap_or_default());
+    // temporales recoge las copias rancias por su prefijo. Si el borrado falla
+    // por otra causa, se deja dicho para no perder la pista del resto.
+    if let Err(e) = std::fs::remove_file(std::env::current_exe().unwrap_or_default()) {
+        eprintln!(
+            "avi-cleaner: no se pudo borrar la copia de sí mismo ({}): {e}; \
+             la recogerá el barrido de temporales",
+            std::env::current_exe().unwrap_or_default().display()
+        );
+    }
     code
 }
 
