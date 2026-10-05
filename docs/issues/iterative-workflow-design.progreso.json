@@ -33,13 +33,10 @@
       "phase": "closed",
       "gates": [
         { "gate": "g0", "verdict": "approved", "date": "2026-09-30", "notes": "D1 a D13 resueltas" }
-,
-        { "id": "C10.T1", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/src/daemon_stop.rs", "src/main.rs", "crates/avi-tts/src/lib.rs"], "notes": "identidad obligatoria en pidfile; classify_registered sin rama None->Ours; reintento 5x200ms con aviso; tests/update.rs pendiente de adaptacion (E0308), se repara en T6" },
-        { "id": "C10.T2", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/lib.rs", "crates/avi-process/Cargo.toml", "crates/avi-daemon/src/spawn.rs"], "notes": "pid_alive_exact/kill_tree_by_pid_exact en avi-process; spawn delega; tasklist/kill externos retirados; libc en rama Unix" },
-        { "id": "C10.T5", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/restricted_spawn.rs", "crates/avi-process/src/deferred.rs"], "notes": "RAII con OwnedHandleWrap/InheritFlagGuard/AttributeListGuard; sentinel stdin_is_null_holder retirada; cargo test -p avi-process verde" }
       ],
+      "tasks": [],
       "foreign_changes": [],
-      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f"]
+      "commits": []
     },
     "C1": {
       "status": "closed",
@@ -258,10 +255,13 @@
         { "gate": "plan", "verdict": "approved", "date": "2026-10-05", "notes": "G-Plan C10 aprobado con T1 a T17" }
       ],
       "tasks": [
-        { "id": "C10.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "preparación en la rama fix/deuda-pre-release, creada desde main (c6f221c) con el árbol limpio; ficha C10 abierta a partir de la auditoría adversarial posterior a C9, sin descomponer en subciclos; G-Plan aprobado" }
+        { "id": "C10.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "preparación en la rama fix/deuda-pre-release, creada desde main (c6f221c) con el árbol limpio; ficha C10 abierta a partir de la auditoría adversarial posterior a C9, sin descomponer en subciclos; G-Plan aprobado" },
+        { "id": "C10.T1", "status": "done", "attempts": 1, "files": ["crates/avi-lifecycle/src/daemon_stop.rs", "src/main.rs", "crates/avi-tts/src/lib.rs"], "notes": "identidad obligatoria en pidfile; classify_registered sin rama None->Ours; reintento 5x200ms con aviso; tests/update.rs pendiente de adaptacion (E0308), se repara en T6" },
+        { "id": "C10.T2", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/lib.rs", "crates/avi-process/Cargo.toml", "crates/avi-daemon/src/spawn.rs"], "notes": "pid_alive_exact/kill_tree_by_pid_exact en avi-process; spawn delega; tasklist/kill externos retirados; libc en rama Unix" },
+        { "id": "C10.T5", "status": "done", "attempts": 1, "files": ["crates/avi-process/src/restricted_spawn.rs", "crates/avi-process/src/deferred.rs"], "notes": "RAII con OwnedHandleWrap/InheritFlagGuard/AttributeListGuard; sentinel stdin_is_null_holder retirada; cargo test -p avi-process verde" }
       ],
       "foreign_changes": [],
-      "commits": []
+      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f"]
     }
   },
   "release": { "status": "pending", "gates": [], "version": null }
