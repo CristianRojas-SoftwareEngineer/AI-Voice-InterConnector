@@ -116,10 +116,7 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
     let status = tokio::task::spawn_blocking(move || {
         // El hijo necesita saber a quién esperar al programar los restos del
         // aparcado: este proceso, cuya imagen retiene los ficheros aparcados.
-        std::env::set_var(
-            HANDOVER_PARENT_PID_ENV,
-            std::process::id().to_string(),
-        );
+        std::env::set_var(HANDOVER_PARENT_PID_ENV, std::process::id().to_string());
         // stdio heredado de la consola del invocador, declarado en la
         // allowlist: entrada por `StdinSpec::Inherit` y salida por el fichero
         // que envuelve el extremo del padre (duplicado propio).

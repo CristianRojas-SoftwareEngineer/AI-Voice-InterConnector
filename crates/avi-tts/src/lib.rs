@@ -1026,7 +1026,6 @@ pub mod resident {
         child: Option<avi_process::RestrictedChild>,
         pub port: u16,
         /// Ruta del fichero de log de stderr del motor (incluida en errores de healthcheck).
-        #[allow(dead_code)]
         pub(crate) log_path: PathBuf,
     }
 

@@ -5,10 +5,12 @@
 //! su familia a los `LOG_RETENTION` más recientes, de modo que el disco no crece
 //! con cada arranque.
 //!
-//! La poda nunca borra el log de un proceso vivo: su PID se lee del nombre y se
-//! contrasta con la viveza exacta del sistema. Sin esa guarda, con diez o más
-//! arranques se podría borrar el log de un daemon en marcha, porque el nombre
-//! solo ordena por antigüedad.
+//! La poda nunca borra el log de un proceso vivo ajeno: su PID se lee del nombre
+//! y se contrasta con la viveza exacta del sistema. Sin esa guarda, con diez o
+//! más arranques se podría borrar el log de un daemon en marcha, porque el nombre
+//! solo ordena por antigüedad. La exención es solo para PID distintos del propio:
+//! los logs antiguos del proceso que poda sí se retiran, que es justo lo que la
+//! rotación necesita.
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};

@@ -637,9 +637,7 @@ mod tests {
         // Un hilo muere con el mutex tomado: eso es lo que lo envenena.
         let dying = std::sync::Arc::clone(&mutex);
         let _ = std::thread::spawn(move || {
-            let _guard = dying
-                .lock()
-                .expect("el hilo toma el mutex antes de morir");
+            let _guard = dying.lock().expect("el hilo toma el mutex antes de morir");
             panic!("el hilo muere con el mutex tomado");
         })
         .join();

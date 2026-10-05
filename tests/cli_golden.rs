@@ -687,8 +687,7 @@ fn d03_reaper_without_live_pid_does_not_fail() {
         "identity": { "start": "0", "image": "identidad-falsa.exe" },
         "resident_identity": serde_json::Value::Null,
     });
-    std::fs::write(&path, rancio.to_string())
-        .expect("escribir pidfile rancio en el sandbox");
+    std::fs::write(&path, rancio.to_string()).expect("escribir pidfile rancio en el sandbox");
     // El reaper best-effort no debe fallar con PID muerto y sin residente:
     // llegar hasta aquí ya prueba que retornó sin hacer panic.
     reaper_on_failure("d03-prueba", false);

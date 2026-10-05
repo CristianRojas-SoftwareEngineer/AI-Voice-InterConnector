@@ -155,8 +155,8 @@ pub fn read_pid_file(data_dir: &Path) -> Option<PidFile> {
             return None;
         }
     };
-    let has_identity_keys = value.get("identity").is_some()
-        && value.get("resident_identity").is_some();
+    let has_identity_keys =
+        value.get("identity").is_some() && value.get("resident_identity").is_some();
     if !has_identity_keys {
         eprintln!(
             "Aviso: {} descartado, falta la identidad obligatoria: se trata como ausente.",
@@ -748,7 +748,14 @@ mod tests {
         // Con un pidfile que apunta a un proceso muerto, el desenlace es el mismo
         // salvo que ahora sí hubo un PID: es lo que permite al resumen decir que
         // no hace falta reiniciar nada.
-        write_pid(&data, 999_999, "127.0.0.1:1", 0, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            999_999,
+            "127.0.0.1:1",
+            0,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
         let outcome = stop(&data, &dead_port(), &control).await;
         assert!(!outcome.was_running, "el PID registrado no está vivo");
         assert_eq!(
@@ -792,7 +799,14 @@ mod tests {
         );
         assert_eq!(resolve_client_addr_with(&data, None), DEFAULT_ADDR);
 
-        write_pid(&data, 4242, "127.0.0.1:7001", 77, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            4242,
+            "127.0.0.1:7001",
+            77,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
         assert_eq!(
             resolve_client_addr_with(&data, Some("9123")),
             "127.0.0.1:7001",
@@ -842,7 +856,14 @@ mod tests {
         }
 
         // 4. La escritura es atómica: temporal hermano y renombrado, sin residuo.
-        write_pid(&data, 4242, "127.0.0.1:8765", 77, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            4242,
+            "127.0.0.1:8765",
+            77,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(
             serde_json::from_str::<PidFile>(&written).is_ok(),
@@ -863,7 +884,14 @@ mod tests {
         //    estado completo y coherente, nunca una mezcla de dos escrituras.
         for round in 0..64u32 {
             let pid = 1000 + round;
-            write_pid(&data, pid, "127.0.0.1:9", round, identity_of("111", "daemon.exe")).unwrap();
+            write_pid(
+                &data,
+                pid,
+                "127.0.0.1:9",
+                round,
+                identity_of("111", "daemon.exe"),
+            )
+            .unwrap();
             if let (Some(loaded), Some(addr)) = (read_pid(&data), read_addr(&data)) {
                 assert_eq!(loaded, pid, "el PID leído es el último escrito");
                 assert_eq!(
@@ -895,7 +923,14 @@ mod tests {
         let data = scratch("autoguardia");
         let control = Inert::new();
         let own = std::process::id();
-        write_pid(&data, own, &dead_port(), own, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            own,
+            &dead_port(),
+            own,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
 
         let outcome = stop(&data, &dead_port(), &control).await;
         assert_eq!(
@@ -925,7 +960,14 @@ mod tests {
             pid,
             identity: Some(identity_of("111", "daemon.exe")),
         };
-        write_pid(&data, pid, &dead_port(), 0, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            pid,
+            &dead_port(),
+            0,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
 
         let outcome = stop(&data, &dead_port(), &control).await;
         assert!(outcome.was_running, "el daemon seguía vivo");
@@ -966,7 +1008,14 @@ mod tests {
         let data = scratch("residente");
 
         let without_pid = Inert::new();
-        write_pid(&data, 999_999, &dead_port(), 0, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            999_999,
+            &dead_port(),
+            0,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
         stop(&data, &dead_port(), &without_pid).await;
         assert_eq!(
             without_pid.swept.load(Ordering::Relaxed),
@@ -975,7 +1024,14 @@ mod tests {
         );
 
         let with_pid = Inert::new();
-        write_pid(&data, 999_999, &dead_port(), 888_888, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            999_999,
+            &dead_port(),
+            888_888,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
         stop(&data, &dead_port(), &with_pid).await;
         assert_eq!(
             with_pid.swept.load(Ordering::Relaxed),
@@ -1026,7 +1082,14 @@ mod tests {
     #[tokio::test]
     async fn stop_removes_ready_file_after_verified_stop() {
         let data = scratch("ready-borrado");
-        write_pid(&data, 999_999, &dead_port(), 0, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            999_999,
+            &dead_port(),
+            0,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
         crate::test_support::write_file(&data.join(READY_FILE), &ready_content(999_999));
 
         let outcome = stop(&data, &dead_port(), &Inert::new()).await;
@@ -1051,7 +1114,10 @@ mod tests {
                 "addr=127.0.0.1:8765\nwarm=ok\npid={ready_pid}\nstart=111\nimage=daemon.exe\n"
             ),
         );
-        let control = Observed::new(&[ready_pid], &[(ready_pid, identity_of("111", "daemon.exe"))]);
+        let control = Observed::new(
+            &[ready_pid],
+            &[(ready_pid, identity_of("111", "daemon.exe"))],
+        );
 
         let outcome = stop(&data, &dead_port(), &control).await;
         assert!(
@@ -1079,7 +1145,15 @@ mod tests {
         assert!(!ready.exists(), "un ready ilegible es rancio y se borra");
 
         crate::test_support::write_file(&ready, &ready_content(own));
-        let outcome = stop(&data, &dead_port(), &Alive { pid: own, identity: None }).await;
+        let outcome = stop(
+            &data,
+            &dead_port(),
+            &Alive {
+                pid: own,
+                identity: None,
+            },
+        )
+        .await;
         assert!(outcome.stopped);
         assert!(
             !ready.exists(),
@@ -1096,12 +1170,27 @@ mod tests {
         let data = scratch("residente-vivo");
         let resident = 888_888;
         let resident_id = identity_of("222", "qwen_tts.exe");
-        write_pid(&data, 999_999, &dead_port(), resident, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            999_999,
+            &dead_port(),
+            resident,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
         let mut file = read_pid_file(&data).unwrap();
         file.resident_identity = Some(resident_id.clone());
         crate::test_support::write_file(&pid_path(&data), &serde_json::to_string(&file).unwrap());
 
-        let outcome = stop(&data, &dead_port(), &ResidentSurvives { resident, identity: resident_id }).await;
+        let outcome = stop(
+            &data,
+            &dead_port(),
+            &ResidentSurvives {
+                resident,
+                identity: resident_id,
+            },
+        )
+        .await;
         assert!(
             !outcome.stopped,
             "el residente sigue vivo: la parada no está completa"
@@ -1282,7 +1371,14 @@ mod tests {
     async fn stop_spares_resident_pid_with_foreign_identity() {
         let data = scratch("residente-ajeno");
         let resident = 424_244;
-        write_pid(&data, 999_999, &dead_port(), resident, identity_of("111", "daemon.exe")).unwrap();
+        write_pid(
+            &data,
+            999_999,
+            &dead_port(),
+            resident,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
         let mut file = read_pid_file(&data).unwrap();
         file.resident_identity = Some(identity_of("222", "qwen_tts.exe"));
         crate::test_support::write_file(&pid_path(&data), &serde_json::to_string(&file).unwrap());

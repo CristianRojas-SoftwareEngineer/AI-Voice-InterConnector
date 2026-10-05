@@ -2242,8 +2242,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
             // deadline 1 s) y, si sigue sin observarse, no se escribe el
             // pidfile y se avisa citando el log del daemon.
             let identity = {
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_secs(1);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
                 let mut observed = None;
                 while std::time::Instant::now() < deadline {
                     if let Some(id) = avi_process::process_identity(pid) {
@@ -2383,8 +2382,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
             // observa, no se escribe pidfile con aviso ruidoso al log del
             // daemon: la identidad es obligatoria para clasificar la parada.
             let identity = {
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_secs(1);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
                 let mut observed = None;
                 while std::time::Instant::now() < deadline {
                     if let Some(id) = avi_process::process_identity(pid) {

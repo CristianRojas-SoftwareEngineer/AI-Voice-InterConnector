@@ -472,10 +472,9 @@ fn launch_process_with_list(
 ) -> Result<(u32, isize), u32> {
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, InitializeProcThreadAttributeList,
-        UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES,
-        STARTUPINFOEXW,
+        CreateProcessW, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
+        EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 

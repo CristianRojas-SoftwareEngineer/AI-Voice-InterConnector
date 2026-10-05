@@ -24,7 +24,9 @@ pub fn schedule_clean_removal(
     wait_pid: u32,
     log_path: &Path,
 ) -> anyhow::Result<PathBuf> {
-    use windows_sys::Win32::Foundation::{GetLastError, SetHandleInformation, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{
+        GetLastError, SetHandleInformation, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0,
+    };
     use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB,
@@ -144,9 +146,9 @@ unsafe fn launch_cleaner(
     allowed: &[isize],
 ) -> Option<(isize, isize)> {
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, InitializeProcThreadAttributeList,
-        UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTUPINFOEXW,
+        CreateProcessW, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
+        EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        STARTUPINFOEXW,
     };
 
     use crate::restricted_spawn::AttributeListGuard;

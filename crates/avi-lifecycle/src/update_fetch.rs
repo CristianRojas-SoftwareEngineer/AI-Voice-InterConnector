@@ -13,9 +13,9 @@
 //! en Windows (feature `system-proxy`).
 
 use crate::{manifest, target, LifecycleError, STAGING_DIR_PREFIX};
+use avi_process::{spawn_with_allowlist, RestrictedSpawnRequest, StdinSpec};
 #[cfg(unix)]
 use avi_shared::manifest::relative_path;
-use avi_process::{spawn_with_allowlist, RestrictedSpawnRequest, StdinSpec};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

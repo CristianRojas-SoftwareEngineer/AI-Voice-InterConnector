@@ -76,9 +76,7 @@ fn listed_log_handle_receives_child_output() {
 #[cfg(windows)]
 #[test]
 fn handle_outside_the_list_does_not_reach_the_child() {
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, SetHandleInformation, HANDLE_FLAG_INHERIT,
-    };
+    use windows_sys::Win32::Foundation::{CloseHandle, SetHandleInformation, HANDLE_FLAG_INHERIT};
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::System::Pipes::CreatePipe;
 
@@ -104,7 +102,8 @@ fn handle_outside_the_list_does_not_reach_the_child() {
     unsafe { SetHandleInformation(write, HANDLE_FLAG_INHERIT, 0) };
 
     // El valor numérico del extremo viaja al hijo por un fichero conocido.
-    std::fs::write(dir.join("handle.txt"), read.to_string()).expect("debe escribir el valor del handle");
+    std::fs::write(dir.join("handle.txt"), read.to_string())
+        .expect("debe escribir el valor del handle");
 
     // Doble del hijo (modelado sobre el motor doble de avi-tts): sondea el
     // handle recibido y registra en `stdin.txt` si llegó a EOF sin datos o no.
@@ -138,18 +137,13 @@ public static class Probe {
     let log_file = std::fs::File::create(&log_path).expect("debe crear el registro");
     let request = avi_process::RestrictedSpawnRequest {
         program: PathBuf::from("powershell"),
-        args: vec![
-            String::from("-NoProfile"),
-            String::from("-Command"),
-            script,
-        ],
+        args: vec![String::from("-NoProfile"), String::from("-Command"), script],
         stdin: avi_process::StdinSpec::Null,
         log_file,
         creation_flags: 0,
         extra_allowed: Vec::new(),
     };
-    let mut child =
-        avi_process::spawn_with_allowlist(request).expect("debe lanzar al hijo");
+    let mut child = avi_process::spawn_with_allowlist(request).expect("debe lanzar al hijo");
 
     // El padre retiene los extremos hasta aquí y los cierra: a partir de este
     // momento el extremo de lectura solo puede devolver EOF sin datos.
@@ -160,8 +154,8 @@ public static class Probe {
     let status = child.wait().expect("debe poder esperar al hijo");
     assert!(status.success(), "el doble debe salir 0: {status:?}");
 
-    let witness = std::fs::read_to_string(dir.join("stdin.txt"))
-        .expect("el doble debe escribir el testigo");
+    let witness =
+        std::fs::read_to_string(dir.join("stdin.txt")).expect("el doble debe escribir el testigo");
     let witness = witness.trim();
     assert_eq!(
         witness, "closed",
