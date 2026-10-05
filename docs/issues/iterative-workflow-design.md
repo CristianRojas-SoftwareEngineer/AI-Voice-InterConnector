@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 a C7 cerrados e integrados, C8 y C9 planificados (S28/S29), G-Release pendiente |
+| Estado | G0 aprobada, C1 a C9 cerrados e integrados, G-Release pendiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -263,6 +263,12 @@ S29 salió de la verificación de C3, que no toca el arranque del daemon ni la h
 handles; la misma prueba pasó en la verificación anterior del ciclo. Se diagnostica
 la herencia del stdio en el arranque del daemon en C9, con G-Diag porque la causa
 no está demostrada.
+
+Diagnóstico de C9: el orden corte-antes-de-spawn se cumple en todos los
+caminos y el testigo sale en verde con margen estrecho; la denylist no puede
+cubrir toda la tabla heredable por construcción, así que G-Diag fija
+allowlist incondicionada y el testigo intermitente se elimina en lugar de
+parcharse.
 
 S30 salió de la verificación de C4 y no tiene informe propio. Es una discrepancia entre el
 contrato y el binario sobre los fallos de parseo de la CLI, y comparte causa raíz con el
@@ -1478,20 +1484,27 @@ aprobar. Las pruebas que se enumeran son las mínimas.
 
 ### C9 · Retención del stdio
 
-- **Causa raíz (hipótesis, sin demostrar):** herencia de handles del stdio en el
-  arranque del daemon pese al corte por `SetHandleInformation`.
-- **Depende de:** C7 integrado. Requiere G-Diag: la dirección se decide tras el
-  diagnóstico.
+- **Causa raíz:** herencia por denylist: el corte limpia solo los tres STD
+  mientras `CreateProcessW` duplica toda la tabla heredable, así que
+  cualquier handle heredable creado en la ventana (tracing, runtime,
+  sockets, log, write-ends de auto-restart) retiene el pipe del lanzador.
+- **Depende de:** C8 integrado. Dirección decidida en G-Diag: allowlist por
+  spawn con `STARTUPINFOEX` (solo lo listado se hereda), sin re-corte ni
+  parche del testigo.
 - **Síntomas:** S29.
-- **Diagnóstico y G-Diag:** auditoría de la herencia en `spawn_background`, el
-  corte en la raíz y el lanzamiento del motor; la prueba
-  `pipe_stdio_must_not_remain_blocked` ya es el instrumento de repro.
-- **Tareas (tras G-Diag):** prueba en rojo del holder heredado, corrección del
-  lanzamiento, reverde aislado y en suite completa.
-- **Pruebas en rojo:** las fija el G-Diag; la existente
-  `pipe_stdio_must_not_remain_blocked` queda como testigo.
-- **Documentación:** la que pida la corrección y su entrada del CHANGELOG.
+- **Diagnóstico y G-Diag:** baseline de 3 testigos aislados y auditoría del
+  holder; la corrección no depende de qué holder retuviera: con allowlist
+  ningún holder no declarado puede retener por construcción.
+- **Tareas:** costura allowlist en `avi-process`, migración de los cuatro
+  lanzamientos (daemon, residente, clonado y limpiador), retirada del corte
+  en la raíz, tres pruebas deterministas y borrado del testigo intermitente.
+- **Pruebas en rojo:** las tres de `crates/avi-process/tests/restricted_spawn.rs`
+  (lista exacta, salida del hijo, registro declarado); el testigo
+  `pipe_stdio_must_not_remain_blocked` se elimina por intermitente, no se parcha.
+- **Documentación:** guía del daemon, entrada del CHANGELOG y comentarios de
+  los cuatro lanzamientos reescritos al mecanismo nuevo.
 - **Cierra:** nada documental salvo lo anterior; S29 sale del mapa al cerrarse.
+  Al cerrar e integrar C9 se abre G-Release.
 
 ## 11. Registro de progreso
 
