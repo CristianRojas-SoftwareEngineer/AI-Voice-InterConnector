@@ -269,6 +269,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ctor",
+ "libc",
  "serde",
  "windows-sys 0.52.0",
 ]
