@@ -34,7 +34,6 @@ retrocompatibilidad y fallbacks.
 - [1. Introducción y contexto](#1-introducción-y-contexto)
 - [Tabla de contenidos](#tabla-de-contenidos)
 - [2. Hallazgos con solución estructural trivial](#2-hallazgos-con-solución-estructural-trivial)
-  - [H2 — Dos pruebas sin puerta require](#h2--dos-pruebas-sin-puerta-require)
 - [3. Hallazgos parciales y pendientes de decisión](#3-hallazgos-parciales-y-pendientes-de-decisión)
   - [H5 — Degradación de la garantía de T7](#h5--degradación-de-la-garantía-de-t7)
   - [H8 — let _ de disco fuera de T9](#h8--let-_-de-disco-fuera-de-t9)
@@ -54,32 +53,6 @@ retrocompatibilidad y fallbacks.
   - [Allows y matices de código muerto](#allows-y-matices-de-código-muerto)
 
 ## 2. Hallazgos con solución estructural trivial
-
-### H2 — Dos pruebas sin puerta require
-
-`synthesize_result_delivers_the_file_the_engine_wrote`
-(`crates/avi-daemon/tests/golden.rs:1128`) y
-`synthesize_disconnect_removes_temporary_when_blocking_work_ends` (`:1177`)
-llegan a `with_stores().expect(...)` (`:85-89`) sin `#[ignore]` ni
-`require_parakeet()` (barrido completo de puertas: `:74/:117/:289/:416/:471/:539/:852/:1200`;
-ninguna en estos dos tests). Bajo `native-stt` sin modelo,
-`ParakeetEngine::new(...)?` (`crates/avi-daemon/src/lib.rs:120-122`) hace
-fallar el `expect` con el error de carga del modelo, no con el `requiere
-Parakeet: …` y la instrucción de provisionado que la cabecera promete
-(`golden.rs:10-24`, que solo nombra a `test_state` como ayudante con puerta). **Categoría 1. VERIFICADO** (el texto exacto del pánico
-en máquina sin provisionar: HIPÓTESIS). Objetivo incumplido: T13-objetivos
-(plan:303-304, "falla con `requiere`").
-
-**Solución.** Una línea `#[cfg(feature = "native-stt")] require_parakeet();`
-dentro de `contract_state` (`golden.rs:83`) cubre sus tres llamadores
-(`test_state:76`, `state_without_base_model:99`, `state_with_held_tts:1030`) y,
-con ellos, los dos tests. En featureless compila a nada. Punto único: imposible
-olvidar la puerta. `clone_state` llama a `with_stores` directo (`:120`) y conserva
-su puerta propia (`:117`), de modo que todos los caminos al constructor quedan
-cubiertos. Las puertas por test (`:74/:289/:416/:471/:539/:852/:1200`) quedan
-redundantes o inertes y no se tocan (borrarlas no es parte del cambio). La
-cabecera (`:16-23`) se reescribe para decir que la puerta vive en `contract_state`
-y la heredan sus tres derivados, no solo `test_state`.
 
 ## 3. Hallazgos parciales y pendientes de decisión
 

@@ -20,8 +20,9 @@
 //! pruebas de contrato, de modo que la suite sin features corre sin ONNX
 //! Runtime). Por decisión D17 un daemon sin STT no es un estado del producto,
 //! así que el estado de prueba no se inventa: con `native-stt` activo,
-//! `test_state` exige Parakeet y su ausencia hace fallar la prueba de contrato
-//! con el mensaje de aprovisionamiento, en vez de ocultarla tras un `ignore`.
+//! `contract_state` exige Parakeet y la heredan sus derivados; su ausencia hace
+//! fallar la prueba de contrato con el mensaje de aprovisionamiento, en vez de
+//! ocultarla tras un `ignore`.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -81,6 +82,8 @@ fn test_state() -> Arc<DaemonState> {
 /// Estado de contrato con los almacenes en el directorio temporal `dir_prefix`
 /// del proceso y el motor TTS sin binario.
 fn contract_state(dir_prefix: &str) -> DaemonState {
+    #[cfg(feature = "native-stt")]
+    require_parakeet();
     let tmp = std::env::temp_dir().join(format!("{dir_prefix}_{}", std::process::id()));
     let mut state = DaemonState::with_stores(
         VoiceStore::at(tmp.join("voices")),
