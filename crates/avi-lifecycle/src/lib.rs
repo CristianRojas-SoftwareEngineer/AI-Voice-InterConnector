@@ -176,8 +176,7 @@ pub(crate) use avi_shared::human_bytes;
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::path::Path;
     use std::sync::Mutex;
 
     /// Serializa las pruebas que tocan el entorno del proceso: el entorno es
@@ -185,19 +184,34 @@ pub(crate) mod test_support {
     /// de `avi-store` usan su propio candado; este cubre las de este crate.
     pub static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    /// Directorio de trabajo de una prueba con dueño: se borra al soltarse el
+    /// valor, también cuando la prueba falla o entra en pánico.
+    pub struct Scratch(tempfile::TempDir);
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            self.0.path()
+        }
+    }
+
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            self.0.path()
+        }
+    }
 
     /// Directorio de trabajo limpio y único para una prueba. El prefijo es
     /// deliberadamente neutro: los barridos de recuperación solo tocan
     /// temporales con los prefijos propios de la tabla de rutas (`avi-`, `avi_`), y el sandbox
     /// de una prueba no debe ser confundido con un temporal del producto.
-    pub fn scratch(tag: &str) -> PathBuf {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("lifecycle-test-{tag}-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("se puede crear el sandbox de la prueba");
-        path
+    pub fn scratch(tag: &str) -> Scratch {
+        Scratch(
+            tempfile::Builder::new()
+                .prefix(&format!("lifecycle-test-{tag}-"))
+                .tempdir()
+                .expect("se puede crear el sandbox de la prueba"),
+        )
     }
 
     /// Escribe un fichero con `contenido`, creando los directorios intermedios.

@@ -780,6 +780,5 @@ mod path_size_tests {
             15,
             "el blob y su enlace duro suman una vez, más el archivo independiente"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

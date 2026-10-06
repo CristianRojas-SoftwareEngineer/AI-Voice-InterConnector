@@ -455,8 +455,6 @@ mod tests {
             "solo se queda el que pertenece a un proceso vivo, y no es un fallo"
         );
         assert!(!outcome.is_clean());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// El informe del barrido y el barrido coinciden, y el informe no toca nada:
@@ -505,8 +503,6 @@ mod tests {
         assert_eq!(outcome.removed_stagings, findings.stagings);
         assert_eq!(outcome.removed_temporaries, findings.temporaries);
         assert!(alive.exists(), "lo que el informe conservaba se conserva");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// El staging que la operación en curso va a instalar **no** es un staging
@@ -542,7 +538,6 @@ mod tests {
             !outcome.kept.contains(&mine),
             "y el propio tampoco se reporta como pendiente"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Un diario confirmado se completa como commit y uno sin confirmar se
@@ -586,7 +581,6 @@ mod tests {
             "el diario desaparece"
         );
         assert!(outcome.is_clean());
-        std::fs::remove_dir_all(&dir).ok();
 
         // Sin confirmar: se revierte y la versión anterior vuelve a ser la
         // operativa, que es lo que promete la recuperación.
@@ -644,6 +638,5 @@ mod tests {
         assert!(!parked.exists(), "el aparcado desaparece tras restaurarlo");
         assert!(transaction::read_journal(&program).unwrap().is_none());
         assert!(outcome.is_clean());
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

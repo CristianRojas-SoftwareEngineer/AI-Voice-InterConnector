@@ -357,7 +357,6 @@ mod tests {
 
         // Sin recibo no hay instalación: se distingue de un recibo ilegible.
         assert_eq!(read_from(&scratch("receipt-empty")).unwrap(), None);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Los campos desconocidos se ignoran: un binario antiguo puede leer un
@@ -403,7 +402,6 @@ mod tests {
         without_source.source = None;
         write_to(&without_source, &dir).unwrap();
         assert_eq!(read_from(&dir).unwrap().unwrap().source, None);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Un `schema_version` mayor aborta con un mensaje que pide actualizar, y
@@ -432,7 +430,6 @@ mod tests {
             err.to_string().contains("schema_version"),
             "recibo sin schema_version: {err}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Los valores efectivos de `roots` sobreviven a que la variable de
@@ -485,6 +482,5 @@ mod tests {
             roots,
             "sin recibo se resuelven las de ahora, que no son las de la instalación"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

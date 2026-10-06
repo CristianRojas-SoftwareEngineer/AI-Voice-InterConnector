@@ -177,6 +177,5 @@ mod tests {
         );
         let second = acquire_at(&path).expect("el bloqueo vuelve a estar libre");
         drop(second);
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -260,6 +260,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tar",
+ "tempfile",
  "tokio",
  "windows-sys 0.52.0",
  "zip",

@@ -646,6 +646,7 @@ async fn wait_health_down(addr: &str, timeout: Duration) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::scratch;
     use avi_core::exit_codes::ExitCode;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -717,13 +718,6 @@ mod tests {
             }
             None
         }
-    }
-
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("daemon-stop-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     /// Tokio necesita un runtime: el protocolo es asíncrono y la prueba también.
@@ -798,7 +792,6 @@ mod tests {
             "el pidfile se borra tras verificar"
         );
         assert!(!pid_path(&data).exists());
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// La dirección de parada sigue el puerto de `AVI_DAEMON_PORT` como el
@@ -837,7 +830,6 @@ mod tests {
             "127.0.0.1:7001",
             "el pidfile prevalece sobre la variable"
         );
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// El pidfile sobrevive a un fichero a medio escribir, y el protocolo no se
@@ -937,7 +929,6 @@ mod tests {
             "un pidfile ilegible no impide parar: no hay daemon"
         );
         assert_eq!(outcome.pid, None);
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// La guarda anti-auto-muerte sobrevive al traslado: un pidfile obsoleto que
@@ -972,7 +963,6 @@ mod tests {
             0,
             "la guarda `pid != process::id()` impide reclamar el árbol propio"
         );
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Un daemon que no se puede parar produce `daemon_stop_failed` con el código
@@ -1023,7 +1013,6 @@ mod tests {
             16,
             "`DaemonStopFailed = 16` de la tabla única"
         );
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Sin `resident_pid` registrado no se mata ningún proceso por imagen: un
@@ -1060,7 +1049,6 @@ mod tests {
             !outcome.resident_alive,
             "el veredicto solo ve al residente que el pidfile registra"
         );
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Control con el daemon muerto y un residente que sigue vivo pase lo que
@@ -1118,7 +1106,6 @@ mod tests {
             !data.join(READY_FILE).exists(),
             "el fichero ready se borra tras la parada verificada"
         );
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Si el PID que contiene el propio fichero ready sigue vivo, el fichero no se
@@ -1147,7 +1134,6 @@ mod tests {
             data.join(READY_FILE).exists(),
             "el PID del ready sigue vivo: el fichero se conserva"
         );
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Un fichero ready ilegible o con el PID del propio proceso es obsoleto y se
@@ -1178,7 +1164,6 @@ mod tests {
             !ready.exists(),
             "un ready con el PID del propio proceso es obsoleto y se borra"
         );
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Un residente registrado que sigue vivo tras los intentos de parada impide
@@ -1232,7 +1217,6 @@ mod tests {
             .as_deref()
             .expect("se nombra lo que quedó vivo");
         assert!(remaining.contains(&resident.to_string()), "{remaining}");
-        std::fs::remove_dir_all(&data).ok();
     }
 
     fn identity_of(start: &str, image: &str) -> ProcessIdentity {
@@ -1314,7 +1298,6 @@ mod tests {
         crate::test_support::write_file(&pid_path(&data), &serde_json::to_string(&file).unwrap());
         let back = read_pid_file(&data).unwrap();
         assert_eq!(back, file);
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Un pidfile escrito sin identidades es ilegible: se propaga como ausencia.
@@ -1331,7 +1314,6 @@ mod tests {
         );
         assert_eq!(read_pid(&data), None);
         assert_eq!(read_resident_pid(&data), 0);
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// La lectura sin efectos distingue los tres desenlaces: sin fichero es
@@ -1366,7 +1348,6 @@ mod tests {
             observe_pid_file(&data),
             PidFileRead::Present(file) if file.pid == 4242
         ));
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Un pidfile con las claves de identidad presentes pero en `null` se
@@ -1385,7 +1366,6 @@ mod tests {
             classify_registered(&control, file.pid, true, file.identity.as_ref()),
             Registered::Absent
         );
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Un PID de daemon reasignado a otro programa no bloquea la parada y no se mata.
@@ -1414,7 +1394,6 @@ mod tests {
             "no se mata al ajeno"
         );
         assert!(control.is_alive(pid));
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Un PID de residente reasignado a otro programa no bloquea la parada y no se mata.
@@ -1445,7 +1424,6 @@ mod tests {
             "no se mata al ajeno"
         );
         assert!(control.is_alive(resident));
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Con la identidad registrada coincidente, el daemon es nuestro y se mata.
@@ -1462,7 +1440,6 @@ mod tests {
         assert!(outcome.stopped);
         assert_eq!(control.killed.load(Ordering::Relaxed), 1);
         assert!(!control.is_alive(pid));
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Un pidfile sin identidad, aunque su PID siga vivo, no es nuestro: la
@@ -1497,7 +1474,6 @@ mod tests {
             "un PID vivo sin identidad registrada no se mata"
         );
         assert!(control.is_alive(pid));
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Un ready cuyo PID pertenece ya a otro programa es obsoleto y se borra.
@@ -1521,7 +1497,6 @@ mod tests {
             "el PID del ready es de un ajeno: el fichero es obsoleto"
         );
         assert_eq!(control.killed.load(Ordering::Relaxed), 0);
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// Fuente del lanzador (`src/main.rs`), que es quien debe tomarlos de aquí en
@@ -1607,7 +1582,6 @@ mod tests {
             addr_for_port_env(None)
         );
         assert_eq!(addr_for_port_env(None), DEFAULT_ADDR);
-        std::fs::remove_dir_all(&data).ok();
     }
 
     /// La línea de estado se interpreta bien, que es de lo que depende que un

@@ -87,7 +87,7 @@ mod tests {
     use avi_core::exit_codes::ExitCode;
 
     /// Monta un bundle completo del target pedido y devuelve su raíz.
-    fn complete_bundle(tag: &str, triple: &str) -> std::path::PathBuf {
+    fn complete_bundle(tag: &str, triple: &str) -> crate::test_support::Scratch {
         let dir = scratch(tag);
         for relative in &target_section(triple).unwrap().required {
             write_file(&dir.join(relative_path(relative)), "contenido");
@@ -271,8 +271,5 @@ mod tests {
                 .reason,
             "unsupported_platform"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::remove_dir_all(&empty).ok();
     }
 }

@@ -617,7 +617,9 @@ pub(crate) mod tests {
     /// Fija `AVI_CACHE_DIR` a un directorio de pruebas y devuelve el guard que lo
     /// restaura. `avi-store` resuelve la raíz de modelos por esa variable, así que
     /// sin ella la prueba tocaría la caché de quien la ejecuta.
-    pub(crate) fn cache_relocated(tag: &str) -> (MutexGuard<'static, ()>, PathBuf) {
+    pub(crate) fn cache_relocated(
+        tag: &str,
+    ) -> (MutexGuard<'static, ()>, crate::test_support::Scratch) {
         let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = scratch(tag);
         std::env::set_var("AVI_CACHE_DIR", dir.join("models"));
@@ -678,7 +680,7 @@ pub(crate) mod tests {
     /// que es lo que permite que `self install` lo invoque sin preguntar.
     #[test]
     fn provisioning_is_idempotent() {
-        let (_guard, root) = cache_relocated("setup-idempotent");
+        let (_guard, _root) = cache_relocated("setup-idempotent");
         let store = avi_store::ModelStore::new();
         let with_clone = Options::user(true, false, true);
 
@@ -713,7 +715,6 @@ pub(crate) mod tests {
             pending(&store, &without_clone).is_empty(),
             "lo que no se pidió tampoco se exige"
         );
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Con todos los pines de la tabla provisionados no queda nada pendiente: los
@@ -721,7 +722,7 @@ pub(crate) mod tests {
     /// local falta por producir.
     #[test]
     fn nothing_is_pending_when_every_pin_is_provisioned() {
-        let (_guard, root) = cache_relocated("setup-all-pinned");
+        let (_guard, _root) = cache_relocated("setup-all-pinned");
         for pin in avi_store::MODEL_REVISIONS {
             fake_snapshot(&pin.repo.replace('/', "--"), pin.revision);
         }
@@ -731,14 +732,13 @@ pub(crate) mod tests {
             plan.is_empty(),
             "con todos los pines sembrados no queda nada: {plan:?}"
         );
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// La purga de `--force-update` respeta el filtro de la selección: borra lo
     /// seleccionado y **no** lo que el usuario no pidió.
     #[test]
     fn force_update_respects_selection() {
-        let (_guard, root) = cache_relocated("setup-purge");
+        let (_guard, _root) = cache_relocated("setup-purge");
         let store = avi_store::ModelStore::new();
 
         // Snapshot del modelo de clonado, que solo se purga si se pidió.
@@ -777,7 +777,6 @@ pub(crate) mod tests {
             outcome.snapshots
         );
         assert!(!clone_dir.exists(), "y su snapshot desaparece de verdad");
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// La selección sobrevive a un update: `setup
@@ -830,7 +829,6 @@ pub(crate) mod tests {
             !selection(&Options::user(false, false, true)).contains(&CLONING_MODEL),
             "el `setup` directo manda con sus flags"
         );
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// La poda elimina justo las revisiones fuera del pin: la pinneada se
@@ -897,7 +895,6 @@ pub(crate) mod tests {
             again.removed.is_empty() && again.is_clean(),
             "idempotente: la segunda pasada no encuentra nada"
         );
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// En raíz compartida la poda solo toca los snapshots propios: `xet` y
@@ -934,7 +931,6 @@ pub(crate) mod tests {
             root.join(".locks").join("sentinel").is_file(),
             "ni `.locks`"
         );
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Las migraciones son idempotentes y no pisan una selección válida: la
@@ -1005,6 +1001,5 @@ pub(crate) mod tests {
             vec![SELECTION_FILE_NAME.to_string()],
             "solo queda la selección, ningún temporal hermano"
         );
-        std::fs::remove_dir_all(&root).ok();
     }
 }

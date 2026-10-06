@@ -362,8 +362,6 @@ mod tests {
         assert!(!affirmative("no\n", Kind::NonDestructive));
         assert!(!affirmative("cancelar\n", Kind::NonDestructive));
         assert!(Kind::Destructive.is_destructive() && !Kind::NonDestructive.is_destructive());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Destructiva sin terminal y sin `--yes`: `confirmation_required` con
@@ -427,7 +425,6 @@ mod tests {
             Decision::Proceed
         );
         assert_eq!(snapshot(&dir), before);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `--dry-run` imprime el plan y no modifica el disco: mismo árbol, mismos
@@ -499,6 +496,5 @@ mod tests {
             before,
             "tampoco al combinarla con otras banderas"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -571,7 +571,6 @@ mod tests {
             files_in_source(&source).is_empty(),
             "el origen se movió, no se copió"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Una interrupción en cualquier punto del algoritmo deja la versión anterior
@@ -692,8 +691,6 @@ mod tests {
             assert!(read_journal(&program).unwrap().is_none());
             assert!(parked(&program).is_empty());
             assert!(source.is_dir(), "el staging sigue existiendo");
-
-            std::fs::remove_dir_all(&dir).ok();
         }
     }
 }

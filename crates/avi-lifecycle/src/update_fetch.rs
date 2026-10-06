@@ -713,7 +713,6 @@ mod tests {
             std::fs::read_to_string(dest.join("dir").join("b.txt")).unwrap(),
             "beta"
         );
-        std::fs::remove_dir_all(&sandbox).ok();
     }
 
     /// El `.zip` con una entrada que escapa (`../`) se rechaza sin extraerla.
@@ -727,7 +726,6 @@ mod tests {
         let err = extract_bundle(&asset, &dest).unwrap_err();
         assert_eq!(err.reason, "bundle_invalid");
         assert!(!sandbox.join("evil.txt").exists());
-        std::fs::remove_dir_all(&sandbox).ok();
     }
 
     /// Nota sobre `..` en `.tar.gz`: `extract_tar_gz` lo rechaza con doble
@@ -817,7 +815,6 @@ mod tests {
                 .await
                 .expect("el guion informa la versión");
         }
-        std::fs::remove_dir_all(&sandbox).ok();
         std::fs::remove_dir_all(&staged.staging).ok();
     }
 
@@ -874,7 +871,6 @@ mod tests {
             "instalación previa"
         );
         handle.await.expect("el servidor local termina");
-        std::fs::remove_dir_all(&sandbox).ok();
     }
 
     /// Un binario que no informa la versión es `binary_incompatible` con el 19.
@@ -905,6 +901,5 @@ mod tests {
             assert_eq!(err.reason, "binary_incompatible");
             assert_eq!(ExitCode::from_reason(err.reason).code(), 19);
         }
-        std::fs::remove_dir_all(&sandbox).ok();
     }
 }
