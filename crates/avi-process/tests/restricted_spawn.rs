@@ -76,6 +76,32 @@ fn listed_log_handle_receives_child_output() {
 #[cfg(windows)]
 #[test]
 fn handle_outside_the_list_does_not_reach_the_child() {
+    let witness = run_pipe_probe(false);
+    assert_eq!(
+        witness, "closed",
+        "un handle fuera de la allowlist no debió llegar al hijo (eof/open indican fuga)"
+    );
+}
+
+/// Un handle listado en `extra_allowed` sí llega al hijo: el padre cierra el
+/// otro extremo de la tubería, así que el hijo lee EOF sin datos y escribe el
+/// testigo `eof`. Si la sonda del doble falla (por ejemplo `Add-Type`
+/// bloqueado), el testigo es `closed` y esta prueba enrojece.
+#[cfg(windows)]
+#[test]
+fn listed_handle_reaches_the_child() {
+    let witness = run_pipe_probe(true);
+    assert_eq!(
+        witness, "eof",
+        "un handle listado en extra_allowed debió llegar al hijo"
+    );
+}
+
+/// Lanza un hijo que sondea el extremo de lectura de una tubería creada por el
+/// padre y devuelve el testigo que escribe (`eof`, `open` o `closed`).
+/// `listed` indica si ese extremo entra en `extra_allowed`.
+#[cfg(windows)]
+fn run_pipe_probe(listed: bool) -> String {
     use windows_sys::Win32::Foundation::{CloseHandle, SetHandleInformation, HANDLE_FLAG_INHERIT};
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::System::Pipes::CreatePipe;
@@ -88,8 +114,8 @@ fn handle_outside_the_list_does_not_reach_the_child() {
     std::fs::create_dir_all(&dir).expect("debe crear el directorio temporal");
 
     // Tubería creada por el padre: el extremo de lectura queda heredable y a
-    // propósito NO entra en `extra_allowed`; el de escritura se desmarca para
-    // que el hijo nunca pueda retenerlo abierto.
+    // propósito entra en `extra_allowed` solo si `listed`; el de escritura se
+    // desmarca para que el hijo nunca pueda retenerlo abierto.
     let mut read = 0isize;
     let mut write = 0isize;
     let attributes = SECURITY_ATTRIBUTES {
@@ -142,7 +168,7 @@ public static class Probe {
         stderr_file: log_file.try_clone().expect("debe clonar el registro"),
         stdout_file: log_file,
         creation_flags: 0,
-        extra_allowed: Vec::new(),
+        extra_allowed: if listed { vec![read] } else { Vec::new() },
     };
     let mut child = avi_process::spawn_with_allowlist(request).expect("debe lanzar al hijo");
 
@@ -157,12 +183,8 @@ public static class Probe {
 
     let witness =
         std::fs::read_to_string(dir.join("stdin.txt")).expect("el doble debe escribir el testigo");
-    let witness = witness.trim();
-    assert_eq!(
-        witness, "closed",
-        "un handle fuera de la allowlist no debió llegar al hijo (eof/open indican fuga)"
-    );
     let _ = std::fs::remove_dir_all(&dir);
+    witness.trim().to_string()
 }
 
 /// En Unix el hijo debe nacer líder de su propio grupo (`setsid`):

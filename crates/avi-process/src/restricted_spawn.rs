@@ -48,7 +48,8 @@ pub struct RestrictedSpawnRequest {
     /// ignoran.
     pub creation_flags: u32,
     /// Handles extra que el hijo debe heredar además de su stdio
-    /// (p. ej. el HANDLE de espera del limpiador). Normalmente vacío.
+    /// (p. ej. el extremo de lectura de una tubería creada por el padre que el
+    /// hijo debe leer). Normalmente vacío.
     pub extra_allowed: Vec<isize>,
 }
 

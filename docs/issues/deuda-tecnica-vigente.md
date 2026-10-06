@@ -36,7 +36,6 @@ retrocompatibilidad y fallbacks.
 - [2. Hallazgos con solución estructural trivial](#2-hallazgos-con-solución-estructural-trivial)
   - [H2 — Dos pruebas sin puerta require](#h2--dos-pruebas-sin-puerta-require)
   - [H6 — Avisos por stop](#h6--avisos-por-stop)
-  - [H7 y H11 — Control positivo común](#h7-y-h11--control-positivo-común)
   - [H9 — Caso rancio sin documentar](#h9--caso-rancio-sin-documentar)
   - [H12 — Arista avi-shared a avi-process](#h12--arista-avi-shared-a-avi-process)
 - [3. Hallazgos parciales y pendientes de decisión](#3-hallazgos-parciales-y-pendientes-de-decisión)
@@ -116,36 +115,6 @@ anterior de este análisis, dejaría 3 avisos idénticos por parada. `read_pid`,
 (barrido de `crates`, `src`, `tests`). Ningún test afirma el texto del aviso
 (barrido de `descartado`: solo los 3 `eprintln!` y usos ajenos en `main.rs`,
 `avi-daemon` y `avi-tts`).
-
-### H7 y H11 — Control positivo común
-
-El doble PowerShell escribe `'closed'` ante **cualquier** excepción
-(`crates/avi-process/tests/restricted_spawn.rs:130-132`): si `Add-Type` está
-bloqueado o el script tiene una errata, pasa aunque la allowlist esté rota
-(la dependencia de máquina es HIPÓTESIS; el `catch` total, VERIFICADO). Y el
-bucle de `extra_allowed` (`restricted_spawn.rs:337`) no itera nunca: 11
-constructores, todos `Vec::new()` (3 en `spawn.rs`, 4 en `avi-tts`, 2 en tests,
-`update.rs` y `update_fetch`); su doc cita "el HANDLE de espera del
-limpiador" (`:48-50`) pero `crates/avi-process/src/deferred.rs:95-99` construye
-su allowlist en línea, sin pasar por el struct.
-**Categoría 1 (H7) y 2 (H11, origen C9; T11 no lo retiró). VERIFICADO.**
-
-**Solución (común).** Extraer el cuerpo de
-`handle_outside_the_list_does_not_reach_the_child`
-(`crates/avi-process/tests/restricted_spawn.rs:78-165`) a un ayudante que reciba
-si el extremo de lectura se lista y devuelva el testigo. El negativo afirma
-`closed` (no listado); el positivo nuevo —`#[cfg(windows)]` como el negativo—
-lista el handle en `extra_allowed` y afirma `eof`: el padre cierra el otro
-extremo, así que el hijo lee EOF sin datos. La misma prueba demuestra que la
-sonda funciona (si `Add-Type` falla o el script tiene una errata, el `catch`
-escribe `closed` y el positivo enrojece) y ejecuta por primera vez el bucle de
-`restricted_spawn.rs:337`. El rojo previo no sale de código nuevo, porque el
-mecanismo ya funciona: se obtiene por mutación, vaciando el bucle (o no listando
-el handle), que debe dar `closed` y fallar el positivo. Más corregir el doc de
-`extra_allowed` (`:48-50`): el ejemplo del limpiador es falso (ese lanzamiento no
-usa el struct) y se sustituye por el uso real que ejerce la prueba. Solo test +
-una línea de doc. (El CHANGELOG:115 bendice `extra_allowed` como vía de
-migración, así que se conserva y se estrena, no se borra.)
 
 ### H9 — Caso rancio sin documentar
 
