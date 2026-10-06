@@ -394,7 +394,7 @@ pub async fn stop(
     }
 
     // 2) Árbol preciso por PID si sigue vivo, en las dos plataformas, con la
-    // guarda `pid != process::id()`. Sin ella, un pidfile rancio con el PID del
+    // guarda `pid != process::id()`. Sin ella, un pidfile obsoleto con el PID del
     // propio invocador lo mataría — de ahí el bug de v0.18.10 a v0.18.25.
     // Solo se mata un proceso nuestro: un PID reasignado a otro programa cuenta
     // como muerto y se respeta.
@@ -466,7 +466,10 @@ pub async fn stop(
     let pidfile_removed = stopped && remove_pid_file(data_dir).is_ok();
     // El fichero ready se borra con la parada verificada, salvo que el PID que
     // publica el propio fichero siga vivo: entonces es la única pista de ese
-    // proceso. Un ready ilegible, sin PID o con el PID del propio proceso es rancio.
+    // proceso. Es obsoleto un ready ilegible, sin PID, con el PID del propio proceso,
+    // con un PID vivo pero sin las líneas `start=` e `image=` (no declara a su PID
+    // como propio: cuenta como muerto) o con un PID que el sistema reasignó a otro
+    // programa (la identidad observada no coincide con la registrada).
     if stopped && !ready_file_owner_alive(data_dir, control) {
         let _ = remove_ready_file(data_dir);
     }
@@ -550,7 +553,10 @@ fn resident_registered(data_dir: &Path, control: &dyn ProcessControl) -> Registe
 
 /// ¿Vive el proceso cuyo PID publica el fichero ready (línea `pid=<n>`)? Un
 /// fichero ausente, ilegible, sin esa línea o con el PID del propio proceso no
-/// tiene dueño vivo: es rancio.
+/// tiene dueño vivo: es obsoleto. También lo es el que lleva un PID vivo pero sin
+/// las líneas `start=` e `image=` (no declara a su PID como propio y cuenta como
+/// muerto) y el que lleva un PID que el sistema reasignó a otro programa (la
+/// identidad observada no coincide con la registrada).
 fn ready_file_owner_alive(data_dir: &Path, control: &dyn ProcessControl) -> bool {
     let Ok(text) = std::fs::read_to_string(data_dir.join(READY_FILE)) else {
         return false;
@@ -699,7 +705,7 @@ mod tests {
     }
 
     /// Control que dice que un PID dado vive siempre: sirve para el caso del
-    /// pidfile rancio, donde la parada no puede concluir.
+    /// pidfile obsoleto, donde la parada no puede concluir.
     struct Alive {
         pid: u32,
         identity: Option<ProcessIdentity>,
@@ -950,7 +956,7 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// La guarda anti-auto-muerte sobrevive al traslado: un pidfile rancio que
+    /// La guarda anti-auto-muerte sobrevive al traslado: un pidfile obsoleto que
     /// lleva el PID del propio proceso **no** lo mata. Es el bug de v0.18.10 a
     /// v0.18.25, y por eso la comprobación no es "si el PID existe, mátalo".
     #[tokio::test]
@@ -971,7 +977,7 @@ mod tests {
         assert_eq!(
             outcome.pid,
             Some(own),
-            "el PID rancio se conserva en el desenlace"
+            "el PID obsoleto se conserva en el desenlace"
         );
         assert!(
             outcome.stopped,
@@ -1113,7 +1119,7 @@ mod tests {
     }
 
     /// Tras una parada verificada, el fichero ready desaparece junto al pidfile:
-    /// un ready rancio haría creer al siguiente arranque que el daemon sigue listo.
+    /// un ready obsoleto haría creer al siguiente arranque que el daemon sigue listo.
     #[tokio::test]
     async fn stop_removes_ready_file_after_verified_stop() {
         let data = scratch("ready-borrado");
@@ -1166,18 +1172,18 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// Un fichero ready ilegible o con el PID del propio proceso es rancio y se
+    /// Un fichero ready ilegible o con el PID del propio proceso es obsoleto y se
     /// borra, incluso si el control de procesos diera ese PID por vivo.
     #[tokio::test]
     async fn stop_removes_stale_ready_file() {
-        let data = scratch("ready-rancio");
+        let data = scratch("ready-stale");
         let ready = data.join(READY_FILE);
         let own = std::process::id();
 
         crate::test_support::write_file(&ready, "basura sin formato");
         let outcome = stop(&data, &dead_port(), &Inert::new()).await;
         assert!(outcome.stopped);
-        assert!(!ready.exists(), "un ready ilegible es rancio y se borra");
+        assert!(!ready.exists(), "un ready ilegible es obsoleto y se borra");
 
         crate::test_support::write_file(&ready, &ready_content(own));
         let outcome = stop(
@@ -1192,7 +1198,7 @@ mod tests {
         assert!(outcome.stopped);
         assert!(
             !ready.exists(),
-            "un ready con el PID del propio proceso es rancio y se borra"
+            "un ready con el PID del propio proceso es obsoleto y se borra"
         );
         std::fs::remove_dir_all(&data).ok();
     }
@@ -1519,7 +1525,7 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// Un ready cuyo PID pertenece ya a otro programa es rancio y se borra.
+    /// Un ready cuyo PID pertenece ya a otro programa es obsoleto y se borra.
     #[tokio::test]
     async fn stop_removes_ready_file_whose_pid_is_foreign() {
         let data = scratch("ready-ajeno");
@@ -1537,7 +1543,7 @@ mod tests {
         assert!(outcome.stopped);
         assert!(
             !data.join(READY_FILE).exists(),
-            "el PID del ready es de un ajeno: el fichero es rancio"
+            "el PID del ready es de un ajeno: el fichero es obsoleto"
         );
         assert_eq!(control.killed.load(Ordering::Relaxed), 0);
         std::fs::remove_dir_all(&data).ok();

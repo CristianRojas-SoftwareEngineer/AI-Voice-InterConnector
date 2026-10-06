@@ -1260,7 +1260,7 @@ aprobar. Las pruebas que se enumeran son las mínimas.
     del lanzador del clonado y del almacén.
   - **P4:** `daemon stop` borra `daemon.ready` solo si el daemon quedó detenido y el PID
     que contiene el propio fichero no está vivo; un fichero ilegible o con el PID del
-    propio proceso es rancio y se borra. El fichero guarda el PID del daemon, no el del
+    propio proceso es obsoleto y se borra. El fichero guarda el PID del daemon, no el del
     residente, que solo vive en el pidfile.
   - **P5:** si hay un `resident_pid` registrado y sigue vivo tras los intentos de parada,
     la parada no se da por completa: se conserva el pidfile y se informa del residente.

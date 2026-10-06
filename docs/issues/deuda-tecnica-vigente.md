@@ -35,7 +35,6 @@ retrocompatibilidad y fallbacks.
 - [Tabla de contenidos](#tabla-de-contenidos)
 - [2. Hallazgos con solución estructural trivial](#2-hallazgos-con-solución-estructural-trivial)
   - [H2 — Dos pruebas sin puerta require](#h2--dos-pruebas-sin-puerta-require)
-  - [H9 — Caso rancio sin documentar](#h9--caso-rancio-sin-documentar)
 - [3. Hallazgos parciales y pendientes de decisión](#3-hallazgos-parciales-y-pendientes-de-decisión)
   - [H5 — Degradación de la garantía de T7](#h5--degradación-de-la-garantía-de-t7)
   - [H8 — let _ de disco fuera de T9](#h8--let-_-de-disco-fuera-de-t9)
@@ -81,29 +80,6 @@ cubiertos. Las puertas por test (`:74/:289/:416/:471/:539/:852/:1200`) quedan
 redundantes o inertes y no se tocan (borrarlas no es parte del cambio). La
 cabecera (`:16-23`) se reescribe para decir que la puerta vive en `contract_state`
 y la heredan sus tres derivados, no solo `test_state`.
-
-### H9 — Caso rancio sin documentar
-
-Sin `start=`/`image=`, `recorded = None` (`daemon_stop.rs:531-534`) y, sin la
-rama `None → Ours` que T1 retiró, el fichero se clasifica `Absent` y **se
-borra** (`:435-437`); antes se conservaba. Ninguna enumeración nombra el quinto
-caso, PID vivo sin identidad: ni el comentario de `stop` (`:432-434`, enumera 3:
-ilegible, sin PID, PID propio), ni el doc de `ready_file_owner_alive`
-(`:516-518`, enumera 4: ausente, ilegible, sin línea `pid=`, PID propio), ni la
-guía (`docs/CLI/commands/DAEMON.md:82`), cuya frase «un fichero sin identidad
-registrada es ilegible: se descarta con aviso» describe al pidfile y, leída en
-contexto, parece aplicar también al ready, que se borra por rancio y sin aviso.
-El texto ya existe en `docs/CLI/CONTRACT.md:656` («un ready sin las dos no
-declara a su PID como propio (cuenta como muerto, no bloquea la parada y se
-borra por rancio)») y en `CHANGELOG.md:114`. Los dos comentarios del código
-omiten además el PID reasignado a otro programa (identidad que no coincide,
-ya cubierto por la guía y por una prueba, `:1452`). **Categoría 1. VERIFICADO.**
-
-**Solución.** Propagar la enumeración a los tres sitios: copiar el texto de
-`CONTRACT.md:656`, sin redactar nada nuevo. En los dos comentarios del código,
-añadir los dos casos omitidos; en la guía, solo el de identidad ausente. El
-comportamiento es correcto y principista (sin identidad no hay propiedad
-demostrable); terminar el cambio no es parchear.
 
 ## 3. Hallazgos parciales y pendientes de decisión
 

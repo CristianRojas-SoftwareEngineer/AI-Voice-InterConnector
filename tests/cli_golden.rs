@@ -664,14 +664,14 @@ fn d03_poisoned_lock_propagates() {
 /// el 8765 ni arranca un residente, así que no puede dejar huérfanos propios.
 /// Llama al reaper sin barrido por imagen, de modo que un residente `qwen_tts`
 /// ajeno que esté vivo no se toca ni condiciona el resultado.
-/// El pidfile rancio vive en un directorio de estado propio de la instancia
+/// El pidfile obsoleto vive en un directorio de estado propio de la instancia
 /// (`AVI_DATA_DIR`), sin tocar el `data_dir` real (reversión: volver a
 /// `avi_store::data_dir()`).
 #[test]
 fn d03_reaper_without_live_pid_does_not_fail() {
     let (sandbox, _envs) = sandbox_unique_state("d03reaper");
     CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = Some(sandbox.clone()));
-    // Pidfile rancio: PID garantizado muerto, solo en el sandbox.
+    // Pidfile obsoleto: PID garantizado muerto, solo en el sandbox.
     let dead_pid = 2_000_000_000u32;
     assert!(
         !avi_daemon::pid_alive(dead_pid),
@@ -681,13 +681,13 @@ fn d03_reaper_without_live_pid_does_not_fail() {
     // Con las claves de identidad presentes: el pidfile tiene que ser legible
     // para que lo que este test afirma sea «un PID muerto registrado», y no
     // «un fichero que el esquema descarta».
-    let rancio = serde_json::json!({
+    let stale = serde_json::json!({
         "pid": dead_pid,
         "resident_pid": 0,
         "identity": { "start": "0", "image": "identidad-falsa.exe" },
         "resident_identity": serde_json::Value::Null,
     });
-    std::fs::write(&path, rancio.to_string()).expect("escribir pidfile rancio en el sandbox");
+    std::fs::write(&path, stale.to_string()).expect("escribir pidfile obsoleto en el sandbox");
     // El reaper best-effort no debe fallar con PID muerto y sin residente:
     // llegar hasta aquí ya prueba que retornó sin hacer panic.
     reaper_on_failure("d03-prueba", false);
@@ -4423,7 +4423,7 @@ mod tts {
                 u32::MAX - 1
             ),
         )
-        .expect("sembrar daemon.ready rancio");
+        .expect("sembrar daemon.ready obsoleto");
         let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &inst.contract_args());
         assert_eq!(
             code, 0,
@@ -4435,7 +4435,7 @@ mod tts {
         );
         assert!(
             !ready.exists(),
-            "tras daemon stop no debe quedar daemon.ready rancio"
+            "tras daemon stop no debe quedar daemon.ready obsoleto"
         );
     }
 
@@ -4557,7 +4557,7 @@ mod tts {
     /// Prueba pesada de limpieza: cero huérfanos tras aborto simulado, en dos
     /// fases. Fase 1 (caída del padre: pidfile borrado con daemon vivo) →
     /// `start` reclama el árbol (payload `started`, PID previo muerto). Fase 2
-    /// (timeout sin graceful: árbol matado sin POST /shutdown, pista rancia) →
+    /// (timeout sin graceful: árbol matado sin POST /shutdown, pista obsoleta) →
     /// `start` parte de cero con `started`. Cierra con cero huérfanos
     /// verificados a nivel SO.
     #[test]
@@ -4621,7 +4621,7 @@ mod tts {
         );
         milestone("aborto simulado (fase 1): reclamo ok, residual muerto y fresco vivo");
         // Fase 2 — timeout/aborto sin graceful: se mata el árbol sin POST
-        // /shutdown (la pista queda rancia a propósito). El próximo `start`
+        // /shutdown (la pista queda obsoleta a propósito). El próximo `start`
         // parte de cero con `started`.
         avi_daemon::kill_tree_by_pid(pid_b);
         avi_daemon::wait_for_pid_death(pid_b, std::time::Duration::from_secs(8));

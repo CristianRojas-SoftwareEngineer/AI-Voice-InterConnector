@@ -2584,7 +2584,7 @@ async fn handle_cleanup(
 enum ResidualState {
     /// Probe responde y el PID de la pista está vivo: instancia sana única.
     Healthy(u32),
-    /// Probe y PID discrepan (colgado, pista rancia o sin pista): reclama y rearranca.
+    /// Probe y PID discrepan (colgado, pista obsoleta o sin pista): reclama y rearranca.
     Degraded { reason: &'static str },
     /// Sin probe ni proceso: vía libre para arranque fresco.
     Stopped,
@@ -2610,7 +2610,7 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
     // Recuperación de reclamo: con pidfile perdido (padre caído sin
     // limpiar), el `daemon.ready` sobrevive y conserva el PID del árbol
     // efímero. El fallback solo aplica sin pidfile; `pid_alive` gatea después,
-    // así que un ready rancio con PID muerto sigue cayendo a `Stopped`.
+    // así que un ready obsoleto con PID muerto sigue cayendo a `Stopped`.
     // Un PID cuya identidad no coincide con la registrada es de otro programa:
     // cuenta como muerto.
     let (pid, state) = registered_daemon(true);
@@ -2854,7 +2854,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
 /// la comparte con el CLI); verificación posterior a nivel de sistema (probe +
 /// `pid_alive` + `resident_pid` muerto).
 ///
-/// El pidfile solo se borra tras muerte verificada o pista rancia reconciliada
+/// El pidfile solo se borra tras muerte verificada o pista obsoleta reconciliada
 /// (PID muerto + probe down); si el árbol sigue vivo se conserva la pista.
 /// Sin kill por imagen para el daemon (imagen compartida con el CLI); el
 /// residente `qwen_tts` (imagen propia) se reclama en `avi-tts` por PID
@@ -3689,7 +3689,7 @@ async fn launch_daemon(
         })?;
     }
     // Invalidar la señal previa: el fichero es determinista por instancia y
-    // un contenido rancio se leería como resultado de este arranque.
+    // un contenido obsoleto se leería como resultado de este arranque.
     let _ = std::fs::remove_file(&ready_path);
     let (log_path, log_file) = store::create_log(
         &store::logs_dir(),

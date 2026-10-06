@@ -348,7 +348,7 @@ fn cleaner_worker_main(args: &[String]) -> i32 {
         }
     }
     // La copia en uso no se puede borrar a sí misma en Windows: el barrido de
-    // temporales recoge las copias rancias por su prefijo. Si el borrado falla
+    // temporales recoge las copias obsoletas por su prefijo. Si el borrado falla
     // por otra causa, se deja dicho para no perder la pista del resto.
     if let Err(e) = std::fs::remove_file(std::env::current_exe().unwrap_or_default()) {
         eprintln!(
