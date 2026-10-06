@@ -35,7 +35,6 @@ retrocompatibilidad y fallbacks.
 - [Tabla de contenidos](#tabla-de-contenidos)
 - [2. Hallazgos con solución estructural trivial](#2-hallazgos-con-solución-estructural-trivial)
   - [H2 — Dos pruebas sin puerta require](#h2--dos-pruebas-sin-puerta-require)
-  - [H6 — Avisos por stop](#h6--avisos-por-stop)
   - [H9 — Caso rancio sin documentar](#h9--caso-rancio-sin-documentar)
 - [3. Hallazgos parciales y pendientes de decisión](#3-hallazgos-parciales-y-pendientes-de-decisión)
   - [H5 — Degradación de la garantía de T7](#h5--degradación-de-la-garantía-de-t7)
@@ -82,38 +81,6 @@ cubiertos. Las puertas por test (`:74/:289/:416/:471/:539/:852/:1200`) quedan
 redundantes o inertes y no se tocan (borrarlas no es parte del cambio). La
 cabecera (`:16-23`) se reescribe para decir que la puerta vive en `contract_state`
 y la heredan sus tres derivados, no solo `test_state`.
-
-### H6 — Avisos por stop
-
-Tres `eprintln!` en `read_pid_file`
-(`crates/avi-lifecycle/src/daemon_stop.rs:150/161/170`; los tres avisos no
-coexisten: cada uno precede a un `return None`), y cada lectura de un pidfile
-descartado emite uno. Un `stop` con el pidfile descartado lo lee 6 veces fuera
-del lazo (`resolve_addr` en `:343` vía `read_addr`, `:344`, `:366`, `:379`,
-`:400`, `:406`) y 2 por vuelta del lazo de verificación (`:390-397`:
-`daemon_registered` en `:391` y `resident_alive_by_pid` en `:392`; ≈ 80 avisos
-en ~40 vueltas de 200 ms en 8 s). El lazo sale en la primera vuelta si nada
-está vivo (`:393`), así que el spam exige daemon vivo: el escenario de upgrade
-con un `daemon.pid` anterior sin identidad. Que antes de T1 esa función no
-avisara es origen histórico no verificable por lectura (sin diff disponible; no
-afecta a la solución). **Categoría 1. VERIFICADO.**
-
-**Solución.** Separar observación de reporte. Extraer de `read_pid_file` una
-lectura sin efectos que devuelva el desenlace (ausente, descartado con su
-motivo, presente); `read_pid_file` queda como esa lectura más el `eprintln!` del
-motivo, con el mismo texto y la misma firma, de modo que `main.rs:2649/:2684`
-(decisiones de la CLI) y los 9 sitios de test que la llaman directo no cambian.
-Los 5 helpers internos (`read_pid`, `read_resident_pid`, `read_addr`,
-`daemon_registered`, `resident_registered`) pasan a la lectura sin efectos, que
-los vuelve silenciosos. `stop` avisa una sola vez, al entrar y antes de
-`resolve_addr` (`:343`): observa el desenlace y reporta si fue descartado; el
-resto de sus lecturas (`:344`, `:366`, `:379`, `:400`, `:406` y el lazo) quedan
-silenciosas. Avisar también en `:344` y `:400`, como proponía una versión
-anterior de este análisis, dejaría 3 avisos idénticos por parada. `read_pid`,
-`read_resident_pid` y `read_addr` no tienen llamadores fuera de `daemon_stop.rs`
-(barrido de `crates`, `src`, `tests`). Ningún test afirma el texto del aviso
-(barrido de `descartado`: solo los 3 `eprintln!` y usos ajenos en `main.rs`,
-`avi-daemon` y `avi-tts`).
 
 ### H9 — Caso rancio sin documentar
 

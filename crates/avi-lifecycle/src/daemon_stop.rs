@@ -134,12 +134,24 @@ pub fn write_pid(
     }
 }
 
-/// Lee el pidfile completo. `Ok(None)` si no hay —ausencia normal—, y
-/// también si está ilegible o es un esquema que no se entiende (p. ej. sin
-/// identidad, el campo obligatorio): ese descarte se avisa, y el llamante
-/// cae al valor por defecto sin que el protocolo falle.
-pub fn read_pid_file(data_dir: &Path) -> Option<PidFile> {
-    let text = std::fs::read_to_string(pid_path(data_dir)).ok()?;
+/// Desenlace de leer el pidfile sin efectos.
+#[derive(Debug)]
+pub enum PidFileRead {
+    /// No hay fichero: ausencia normal.
+    Absent,
+    /// El fichero está ilegible o su esquema no se entiende; lleva el motivo
+    /// listo para avisar.
+    Discarded(String),
+    /// Fichero válido.
+    Present(PidFile),
+}
+
+/// Lee el pidfile sin emitir nada: devuelve el desenlace y deja el aviso a quien
+/// decide cuándo darlo.
+pub fn observe_pid_file(data_dir: &Path) -> PidFileRead {
+    let Ok(text) = std::fs::read_to_string(pid_path(data_dir)) else {
+        return PidFileRead::Absent;
+    };
     // La identidad es obligatoria del esquema: las claves tienen que estar
     // (aunque el valor sea `null`); un fichero sin ellas es de un esquema
     // anterior y se descarta, no se degrada a «PID solo». Como `Option<T>`
@@ -147,40 +159,56 @@ pub fn read_pid_file(data_dir: &Path) -> Option<PidFile> {
     let value: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!(
-                "Aviso: {} descartado, no se entiende su esquema ({}): se trata como ausente.",
-                pid_path(data_dir).display(),
-                e
-            );
-            return None;
+            return PidFileRead::Discarded(format!("no se entiende su esquema ({e})"));
         }
     };
     let has_identity_keys =
         value.get("identity").is_some() && value.get("resident_identity").is_some();
     if !has_identity_keys {
-        eprintln!(
-            "Aviso: {} descartado, falta la identidad obligatoria: se trata como ausente.",
-            pid_path(data_dir).display()
-        );
-        return None;
+        return PidFileRead::Discarded("falta la identidad obligatoria".to_string());
     }
     match serde_json::from_value(value) {
-        Ok(file) => Some(file),
-        Err(e) => {
-            eprintln!(
-                "Aviso: {} descartado, no se entiende su esquema ({}): se trata como ausente.",
-                pid_path(data_dir).display(),
-                e
-            );
+        Ok(file) => PidFileRead::Present(file),
+        Err(e) => PidFileRead::Discarded(format!("no se entiende su esquema ({e})")),
+    }
+}
+
+/// Emite el aviso de un pidfile descartado.
+fn warn_discarded(data_dir: &Path, reason: &str) {
+    eprintln!(
+        "Aviso: {} descartado, {}: se trata como ausente.",
+        pid_path(data_dir).display(),
+        reason
+    );
+}
+
+/// Lee el pidfile completo. `None` si no hay —ausencia normal—, y también si
+/// está ilegible o es un esquema que no se entiende (p. ej. sin identidad, el
+/// campo obligatorio): ese descarte se avisa, y el llamante cae al valor por
+/// defecto sin que el protocolo falle.
+pub fn read_pid_file(data_dir: &Path) -> Option<PidFile> {
+    match observe_pid_file(data_dir) {
+        PidFileRead::Present(file) => Some(file),
+        PidFileRead::Absent => None,
+        PidFileRead::Discarded(reason) => {
+            warn_discarded(data_dir, &reason);
             None
         }
+    }
+}
+
+/// Lectura silenciosa: el fichero válido, o `None` en ausencia y en descarte.
+fn read_pid_file_silent(data_dir: &Path) -> Option<PidFile> {
+    match observe_pid_file(data_dir) {
+        PidFileRead::Present(file) => Some(file),
+        PidFileRead::Absent | PidFileRead::Discarded(_) => None,
     }
 }
 
 /// PID del daemon registrado, o `None` si no hay pidfile, es ilegible o el esquema
 /// no trae `pid`.
 pub fn read_pid(data_dir: &Path) -> Option<u32> {
-    read_pid_file(data_dir)
+    read_pid_file_silent(data_dir)
         .map(|f| f.pid)
         .filter(|pid| *pid != 0)
 }
@@ -188,13 +216,15 @@ pub fn read_pid(data_dir: &Path) -> Option<u32> {
 /// PID del residente registrado. Lectura tolerante: esquema viejo sin el campo,
 /// fichero ausente o valor inválido es `0`, que significa desconocido.
 pub fn read_resident_pid(data_dir: &Path) -> u32 {
-    read_pid_file(data_dir).map(|f| f.resident_pid).unwrap_or(0)
+    read_pid_file_silent(data_dir)
+        .map(|f| f.resident_pid)
+        .unwrap_or(0)
 }
 
 /// Dirección publicada en el pidfile. Fichero ausente, ilegible o esquema viejo
 /// sin el campo dan `None`, y el llamante cae al valor por defecto.
 pub fn read_addr(data_dir: &Path) -> Option<String> {
-    read_pid_file(data_dir)
+    read_pid_file_silent(data_dir)
         .and_then(|f| f.addr)
         .map(|addr| addr.trim().to_string())
         .filter(|addr| !addr.is_empty())
@@ -340,6 +370,11 @@ pub async fn stop(
     control: &dyn ProcessControl,
 ) -> StopOutcome {
     let start = std::time::Instant::now();
+    // Un pidfile descartado se avisa una sola vez por parada; el resto de las
+    // lecturas del protocolo son silenciosas.
+    if let PidFileRead::Discarded(reason) = observe_pid_file(data_dir) {
+        warn_discarded(data_dir, &reason);
+    }
     let addr = resolve_addr(data_dir, default_addr);
     let (previous_pid, previous_state) = daemon_registered(data_dir, control);
     // "Estaba en ejecución" se decide antes de tocar nada: es lo que el resumen de
@@ -488,7 +523,7 @@ pub fn classify_registered(
 
 /// PID del daemon del pidfile y su clasificación.
 fn daemon_registered(data_dir: &Path, control: &dyn ProcessControl) -> (Option<u32>, Registered) {
-    let Some(file) = read_pid_file(data_dir).filter(|f| f.pid != 0) else {
+    let Some(file) = read_pid_file_silent(data_dir).filter(|f| f.pid != 0) else {
         return (None, Registered::Absent);
     };
     let state = classify_registered(
@@ -502,7 +537,7 @@ fn daemon_registered(data_dir: &Path, control: &dyn ProcessControl) -> (Option<u
 
 /// Clasificación del residente del pidfile.
 fn resident_registered(data_dir: &Path, control: &dyn ProcessControl) -> Registered {
-    let Some(file) = read_pid_file(data_dir) else {
+    let Some(file) = read_pid_file_silent(data_dir) else {
         return Registered::Absent;
     };
     classify_registered(
@@ -1315,6 +1350,41 @@ mod tests {
         );
         assert_eq!(read_pid(&data), None);
         assert_eq!(read_resident_pid(&data), 0);
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// La lectura sin efectos distingue los tres desenlaces: sin fichero es
+    /// ausente, un JSON truncado o sin identidad se descarta con su motivo, y un
+    /// fichero válido es presente.
+    #[test]
+    fn observe_pid_file_distinguishes_three_outcomes() {
+        let data = scratch("observa-desenlaces");
+        assert!(matches!(observe_pid_file(&data), PidFileRead::Absent));
+
+        crate::test_support::write_file(&pid_path(&data), "{\"pid\": 4242, \"add");
+        assert!(matches!(
+            observe_pid_file(&data),
+            PidFileRead::Discarded(reason) if !reason.is_empty()
+        ));
+
+        crate::test_support::write_file(&pid_path(&data), r#"{"pid": 4242}"#);
+        assert!(matches!(
+            observe_pid_file(&data),
+            PidFileRead::Discarded(reason) if reason.contains("identidad")
+        ));
+
+        write_pid(
+            &data,
+            4242,
+            "127.0.0.1:7001",
+            77,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
+        assert!(matches!(
+            observe_pid_file(&data),
+            PidFileRead::Present(file) if file.pid == 4242
+        ));
         std::fs::remove_dir_all(&data).ok();
     }
 
