@@ -23,38 +23,29 @@ origen de los hallazgos 2/3 se apoya en el alcance declarado de cada tarea
 del plan (`C:\Users\Cristian\.claude\plans\cosmic-gathering-reddy.md`) y en
 el ledger (`docs/issues/iterative-workflow-design.progreso.json`).
 
-**Qué cuenta como "solución estructural trivial".** La que elimina la causa
-(no compensa el síntoma) y o bien borra código, o bien unifica un mecanismo,
-o bien el compilador guía todos los puntos de cambio. Quedan prohibidos:
-parches ad-hoc, parches superficiales, parches de síntomas, parches de
-retrocompatibilidad y fallbacks.
-
 ## Tabla de contenidos
 
 - [1. Introducción y contexto](#1-introducción-y-contexto)
 - [Tabla de contenidos](#tabla-de-contenidos)
-- [2. Hallazgos con solución estructural trivial](#2-hallazgos-con-solución-estructural-trivial)
-- [3. Hallazgos parciales y pendientes de decisión](#3-hallazgos-parciales-y-pendientes-de-decisión)
+- [2. Hallazgos parciales y pendientes de decisión](#2-hallazgos-parciales-y-pendientes-de-decisión)
   - [H5 — Degradación de la garantía de T7](#h5--degradación-de-la-garantía-de-t7)
   - [H8 — let _ de disco fuera de T9](#h8--let-_-de-disco-fuera-de-t9)
   - [H13 — Puerto literal frente a entorno](#h13--puerto-literal-frente-a-entorno)
   - [H3a — kill bloqueante en stop async (diseño pendiente)](#h3a--kill-bloqueante-en-stop-async-diseño-pendiente)
   - [H10 — Tests por substring (garantía sin reemplazo)](#h10--tests-por-substring-garantía-sin-reemplazo)
-- [4. Hallazgos no triviales: análisis y diseño](#4-hallazgos-no-triviales-análisis-y-diseño)
+- [3. Hallazgos no triviales: análisis y diseño](#3-hallazgos-no-triviales-análisis-y-diseño)
   - [H3b — Muerte sin binario externo](#h3b--muerte-sin-binario-externo)
   - [H4 — Código solo-Unix sin ejecutar](#h4--código-solo-unix-sin-ejecutar)
   - [H14 — Pata full solo en máquina provisionada](#h14--pata-full-solo-en-máquina-provisionada)
   - [H15 — Locks en avi-stt](#h15--locks-en-avi-stt)
   - [H16 — Residuos de suite](#h16--residuos-de-suite)
   - [H17 — Doble probe](#h17--doble-probe)
-- [5. Hipótesis refutadas](#5-hipótesis-refutadas)
+- [4. Hipótesis refutadas](#4-hipótesis-refutadas)
   - [Hueco en stop paso 2b](#hueco-en-stop-paso-2b)
   - [Sleeps restantes en cli_golden](#sleeps-restantes-en-cli_golden)
   - [Allows y matices de código muerto](#allows-y-matices-de-código-muerto)
 
-## 2. Hallazgos con solución estructural trivial
-
-## 3. Hallazgos parciales y pendientes de decisión
+## 2. Hallazgos parciales y pendientes de decisión
 
 ### H5 — Degradación de la garantía de T7
 
@@ -107,7 +98,7 @@ bloqueante sin plazo (`avi-process/src/lib.rs:198-205`) y `stop()` es async
 (usa `.await` en `daemon_stop.rs:348`; el kill va en `:370`). **Categoría 1.
 VERIFICADO** (que `taskkill` llegue a colgarse: HIPÓTESIS).
 
-**Por qué no es trivial (degradado desde §2 en verificación).** "Envolver en
+**Por qué no es trivial (degradado desde trivial en verificación).** "Envolver en
 `spawn_blocking`" no compila tal cual: `stop()` recibe `control: &dyn
 ProcessControl` prestado (no-`'static`, `daemon_stop.rs:337-341`), el trait no
 exige `Send`/`Sync` (`:256-275`), `spawn_blocking` exige `'static` y
@@ -126,7 +117,7 @@ para no autodetectarse (`:1502-1503`, `:1530-1532`). Se rompen con un
 `use ... as` inocuo; pasan si se redeclara con otro nombre. **Categoría 1.
 VERIFICADO.**
 
-**Por qué no es trivial (degradado desde §2 en auditoría adversarial).**
+**Por qué no es trivial (degradado desde trivial en auditoría adversarial).**
 Borrar los dos bloques (`:1501-1519` y `:1533-1550`, más el helper
 `:1478-1481`) deja ambos tests con aserciones (valores en `:1489`, `:1497` y
 `:1554-1558`), pero esas solo afirman valores (8 s, 8765, convergencia de
@@ -135,7 +126,7 @@ dirección y los toma de `daemon_stop`— desaparece sin reemplazo. Lo que queda
 NO protege lo mismo. Decisión abierta: aceptar la pérdida o reubicar el check
 sin leer el workspace (p. ej. vía API o en build-time).
 
-## 4. Hallazgos no triviales: análisis y diseño
+## 3. Hallazgos no triviales: análisis y diseño
 
 ### H3b — Muerte sin binario externo
 
@@ -188,7 +179,7 @@ un sondeo y el veredicto re-sondea, contra el comentario de "los tres hechos
 se observan una vez" (`:402-405`). Ninguna tarea de C10 lo toca (origen previo
 inferido, sin diff disponible). **Categoría 2. VERIFICADO.**
 
-## 5. Hipótesis refutadas
+## 4. Hipótesis refutadas
 
 No son deuda; se registran para no reabrirlas.
 
@@ -210,4 +201,4 @@ objetivo T12 se cumple aquí.
 Legítimos: `unix_claim_verified` se llama en `src/main.rs:2830` bajo
 `cfg(unix)`; `stdin_holder` se puebla en `restricted_spawn.rs:317` y se mueve
 al struct en `:366` (retenido solo por `Drop`, lo declarado). Y precisión:
-`extra_allowed` no es código muerto sino API viva nunca poblada (H11).
+`extra_allowed` no es código muerto sino API viva que solo puebla la prueba de la allowlist.
