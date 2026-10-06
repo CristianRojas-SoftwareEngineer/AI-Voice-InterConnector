@@ -966,20 +966,10 @@ mod r2_tests {
     //! impide es que sea el propio `$HOME`, un ancestro suyo u otra raíz.
 
     use super::*;
-    use std::path::PathBuf;
+    use crate::test_support::{scratch, Scratch};
 
-    fn sandbox(tag: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "uninstall-r2-{}-{}-{}",
-            tag,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("reloj del sistema")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("se crea el temporal");
-        root
+    fn sandbox(tag: &str) -> Scratch {
+        scratch(&format!("uninstall-r2-{tag}"))
     }
 
     fn roots(home: &Path, program: &Path) -> Roots {
@@ -1008,7 +998,6 @@ mod r2_tests {
             program_dir_is_removable(&roots(&home, &program), &program),
             "el caso real de todas las plataformas no puede rechazarse"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1020,7 +1009,6 @@ mod r2_tests {
             !program_dir_is_removable(&roots(&home, &home), &home),
             "el propio $HOME nunca es borrable"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1032,7 +1020,6 @@ mod r2_tests {
             !program_dir_is_removable(&roots(&home, &root), &root),
             "un ancestro de $HOME se llevaría el perfil"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1046,7 +1033,6 @@ mod r2_tests {
             !program_dir_is_removable(&r, &data),
             "otra raíz del producto nunca es borrable"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1059,6 +1045,5 @@ mod r2_tests {
             !program_dir_is_removable(&roots(&home, &program), &program),
             "la mitad positiva exige recibo o ejecutable"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

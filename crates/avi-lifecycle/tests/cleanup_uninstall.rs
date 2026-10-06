@@ -92,6 +92,8 @@ impl uninstall::ProgramDirRemover for Unschedulable {
 
 /// Sandbox con las cinco raíces.
 struct Sandbox {
+    /// Dueño del directorio: lo borra al soltarse, también si la prueba falla.
+    _guard: tempfile::TempDir,
     root: PathBuf,
     program_dir: PathBuf,
     data_dir: PathBuf,
@@ -109,14 +111,13 @@ impl Sandbox {
         // usuario. El valor es constante, así que escribirlo desde pruebas
         // concurrentes no altera el resultado.
         std::env::set_var("AVI_DAEMON_PORT", "0");
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or_default();
-        let root =
-            std::env::temp_dir().join(format!("cleanup-e2e-{}-{tag}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("cleanup-e2e-{tag}-"))
+            .tempdir()
+            .expect("se crea el sandbox");
+        let root = guard.path().to_path_buf();
         let sandbox = Self {
+            _guard: guard,
             program_dir: root.join("opt").join("ai-voice-interconnector"),
             data_dir: root.join("data"),
             models_dir: root.join("models"),
@@ -451,8 +452,6 @@ fn cleanup_categories_are_scoped() {
     // Lo que no está en el alcance sobrevive.
     assert!(exists(&sandbox.program_dir), "el programa sobrevive");
     assert!(exists(&voices.join("default")));
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// El gate sin categoría: `usage_error`, sin borrar nada (criterio 22).
@@ -487,8 +486,6 @@ fn cleanup_without_category_is_usage_error() {
         before,
         "y no borra nada, ni siquiera el barrido"
     );
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// `--dry-run` lista rutas con tamaños y no modifica el disco (criterio 20), y la lista
@@ -543,8 +540,6 @@ fn dry_run_lists_paths_without_touching_disk() {
         real_removed, planned_removed,
         "la ejecución borra exactamente lo que el plan dice"
     );
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// Con la raíz de modelos compartida, R3 manda: se borran los repos propios y sus
@@ -637,8 +632,6 @@ fn shared_hf_cache_keeps_foreign_entries() {
     );
     assert!(exists(&foreign), "el repo de otra herramienta sobrevive");
     assert!(exists(&hub), "la raíz compartida no se borra entera");
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// Un temporal propio sin PID se barre: la regla exige que cualquier invocación barra los
@@ -677,8 +670,6 @@ fn orphan_temporary_without_pid_is_swept() {
         outcome.swept
     );
     assert!(exists(&foreign), "lo ajeno al producto no se toca");
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// `self uninstall` deja residuo cero en las raíces de propiedad exclusiva y termina
@@ -715,8 +706,6 @@ fn uninstall_leaves_no_residue_in_exclusive_roots() {
         "datos: residuo cero, voces de fábrica incluidas: el programa ya no está para \
          re-materializarlas"
     );
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// `--keep-data` conserva modelos, voces y habla (criterio 18).
@@ -763,8 +752,6 @@ fn uninstall_keep_data_preserves_models_voices_and_speech() {
             outcome.preserved
         );
     }
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// Repetido sobre un sistema limpio termina con éxito y `not_installed` (criterio 21).
@@ -808,8 +795,6 @@ fn uninstall_is_idempotent() {
         "repetido sobre un sistema limpio termina en éxito con not_installed"
     );
     assert!(second.removed.is_empty());
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// El canal `homebrew` es `externally_managed` con el comando correcto, y nada se toca.
@@ -847,8 +832,6 @@ fn uninstall_homebrew_is_externally_managed() {
         "y sugiere `cleanup --all` para el estado"
     );
     assert_eq!(sandbox.snapshot(), before, "nada se toca");
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// R2: el directorio de programa no se borra si no contiene recibo ni ejecutable, ni si
@@ -907,8 +890,6 @@ fn uninstall_refuses_unsafe_program_dir() {
         !uninstall::program_dir_is_removable(&roots, Path::new("")),
         "una ruta vacía no es un directorio de programa"
     );
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// En Windows, con el ejecutable en uso dentro del directorio de programa, el borrado se
@@ -946,8 +927,6 @@ fn uninstall_schedules_removal_when_the_executable_is_inside() {
     );
     // El estado sí se borró: el programa es lo único que espera.
     assert!(!exists(&sandbox.data_dir));
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// Si el borrado del directorio de programa no se puede programar, el desenlace es
@@ -998,8 +977,6 @@ fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
     );
     // El estado de usuario sí se borró: solo el programa quedó en disco.
     assert!(!exists(&sandbox.data_dir));
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// `--dry-run` de `self uninstall` imprime el plan y no modifica el disco (criterio 20).
@@ -1033,8 +1010,6 @@ fn uninstall_dry_run_touches_nothing() {
         "y el programa aparece en el plan: {:?}",
         outcome.removed
     );
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// La reversión del `PATH` sale del recibo, no de donde esté el ejecutable (paso 7
@@ -1123,6 +1098,4 @@ fn uninstall_reverts_path_from_the_receipt() {
         "un enlace que no apunta al programa no se toca"
     );
     assert!(foreign_link.symlink_metadata().is_ok());
-
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }

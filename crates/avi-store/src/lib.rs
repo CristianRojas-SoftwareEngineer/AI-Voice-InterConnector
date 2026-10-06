@@ -1213,7 +1213,11 @@ mod tests {
     fn canonical_path_entry_comparison_handles_percent_vars() {
         let _guard = ENV_LOCK.lock().unwrap();
         let saved = env_guard(&["AVI_TEST_PATH_ROOT"]);
-        let root = std::env::temp_dir().join("avi_store_path_entry");
+        let root_dir = tempfile::Builder::new()
+            .prefix("avi_store_path_entry_")
+            .tempdir()
+            .unwrap();
+        let root = root_dir.path().to_path_buf();
         std::env::set_var("AVI_TEST_PATH_ROOT", &root);
 
         let real = root.join("Programs").join(APP_NAME);
@@ -1355,12 +1359,24 @@ mod tests {
         cursor.into_inner()
     }
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("avi_store_test_{}_{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// Directorio de trabajo de una prueba con dueño: se borra al soltarse el valor,
+    /// también cuando la prueba falla.
+    struct OwnedDir(tempfile::TempDir);
+
+    impl std::ops::Deref for OwnedDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            self.0.path()
+        }
+    }
+
+    fn temp_dir(tag: &str) -> OwnedDir {
+        OwnedDir(
+            tempfile::Builder::new()
+                .prefix(&format!("avi_store_test_{tag}_"))
+                .tempdir()
+                .unwrap(),
+        )
     }
 
     /// Normalización de mayúsculas en todas las operaciones del almacén, según
@@ -1410,7 +1426,6 @@ mod tests {
                 .to_string_lossy(),
             "reference.qvoice"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `list_by_voice` devuelve solo la voz pedida (insensible a
@@ -1438,7 +1453,6 @@ mod tests {
 
         assert!(speech.list_by_voice("nonexistent").unwrap().is_empty());
         assert_eq!(speech.list().unwrap().len(), 2);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// round-trip `save` → `find` con `duration_secs` calculada del WAV.
@@ -1457,7 +1471,6 @@ mod tests {
         assert_eq!(entry.metadata.text, "Hola");
         // 1 muestra a 24 kHz → 1/24000 s
         assert!((entry.metadata.duration_secs - 1.0 / 24_000.0).abs() < 1e-9);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// sidecar ausente/corrupto es tolerable en `list` (contrato
@@ -1476,7 +1489,6 @@ mod tests {
         // Sin sidecar no hay entrada.
         std::fs::remove_file(speech.voice_dir("ryan").join("greeting.json")).unwrap();
         assert!(speech.list().unwrap().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `validate_name` acepta el regex del contrato y rechaza lo demás.
@@ -1517,7 +1529,6 @@ mod tests {
             voices.find_reference("OTHER").is_none(),
             "sin reference.qvoice no resuelve como clonada"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Guardar la referencia de una voz nueva desde un origen inexistente
@@ -1539,7 +1550,6 @@ mod tests {
             voices.list().unwrap().iter().all(|v| v.name != "fresh"),
             "un guardado fallido no debe dejar la voz en el listado"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Con la voz ya existente, un guardado fallido por origen inexistente
@@ -1555,7 +1565,6 @@ mod tests {
         assert!(voices.save_reference("existing", &missing).is_err());
         assert!(voices.voice_dir("existing").is_dir());
         assert_eq!(std::fs::read(&saved).unwrap(), b"QVCE");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `ensure_initialized` registra voces de fábrica (`default` clonada
@@ -1652,7 +1661,6 @@ mod tests {
             voices.find_reference("OTHER").is_none(),
             "sin qvoice no resuelve como clonada"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `revision_of("qwen3-tts-0.6b-base")` existe con repo público confirmado y hash
@@ -1669,11 +1677,11 @@ mod tests {
         // Snapshot resuelve contra la raíz de modelos reubicada
         let saved = env_guard(&["AVI_CACHE_DIR", "HF_HUB_CACHE", "HF_HOME"]);
         let tmp = temp_dir("base_snapshot");
-        std::env::set_var("AVI_CACHE_DIR", &tmp);
+        std::env::set_var("AVI_CACHE_DIR", tmp.as_os_str());
         std::env::remove_var("HF_HUB_CACHE");
         std::env::remove_var("HF_HOME");
         let store = ModelStore::new();
-        assert_eq!(models_cache_dir(), tmp);
+        assert_eq!(models_cache_dir(), &*tmp);
         // Crear snapshot vacío con al menos un fichero para que is_provisioned sea true
         let (repo2, rev2) = ModelStore::revision_of("qwen3-tts-0.6b-base").unwrap();
         let repo_dir = models_cache_dir().join(format!("models--{}", repo2.replace('/', "--")));
@@ -1684,7 +1692,5 @@ mod tests {
         let resolved = store.model_snapshot_path("qwen3-tts-0.6b-base").unwrap();
         assert!(resolved.is_dir());
         env_restore(saved);
-        let _ = std::fs::remove_dir_all(&tmp);
-        let _ = std::fs::remove_dir_all(&repo_dir);
     }
 }

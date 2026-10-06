@@ -344,14 +344,11 @@ pub fn revert_symlink(link: &Path, program_exe: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::write_file;
+    use crate::test_support::{scratch, write_file, Scratch};
     use avi_core::exit_codes::ExitCode;
 
-    fn sandbox(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("path-unix-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn sandbox(tag: &str) -> Scratch {
+        scratch(&format!("path-unix-{tag}"))
     }
 
     /// El bloque se escribe una vez y no se duplica por reintentarlo: es el
@@ -418,8 +415,6 @@ mod tests {
             "con `AVI_BIN_DIR` el bloque lleva la ruta real: {block}"
         );
         assert!(!block.contains("$HOME/.local/bin"));
-        std::fs::remove_dir_all(&home).ok();
-        std::fs::remove_dir_all(&relocated).ok();
     }
 
     /// La reversión deja el perfil **exactamente** como estaba, incluido el caso
@@ -466,7 +461,6 @@ mod tests {
             "un bloque ajeno no se quita"
         );
         assert_eq!(std::fs::read_to_string(&bashrc).unwrap(), foreign);
-        std::fs::remove_dir_all(&home).ok();
     }
 
     /// En la ruta del enlace hay algo que no es enlace propio: `path_conflict` con
@@ -522,7 +516,6 @@ mod tests {
             Existing::Foreign,
             "un fichero común no es un enlace nuestro"
         );
-        std::fs::remove_dir_all(&home).ok();
     }
 
     /// El mecanismo del enlace —atomicidad, reejecución y reversión verbatim— es
@@ -570,7 +563,6 @@ mod tests {
             "un enlace ajeno no lo revierte la instalación"
         );
         assert!(link.symlink_metadata().is_ok());
-        std::fs::remove_dir_all(&home).ok();
     }
 
     /// Los archivos de arranque que se tocan son los de la tabla, y
@@ -630,7 +622,6 @@ mod tests {
         assert_eq!(Shell::from_env(Some("/usr/local/bin/fish")), Shell::Fish);
         assert_eq!(Shell::from_env(Some("/bin/dash")), Shell::Sh);
         assert_eq!(Shell::from_env(None), Shell::Sh);
-        std::fs::remove_dir_all(&home).ok();
     }
 
     /// El bloque solo se añade cuando el directorio del enlace no está en el
@@ -682,7 +673,6 @@ mod tests {
             needs_block("", &bin, &home),
             "un PATH vacío necesita el bloque"
         );
-        std::fs::remove_dir_all(&home).ok();
     }
 
     /// La forma sin expandir que escribe el propio bloque —`$HOME/.local/bin`— se
@@ -709,6 +699,5 @@ mod tests {
             needs_block("/usr/bin:$OTHER/.local/bin", &bin, &home),
             "ni una variable que no es `HOME`"
         );
-        std::fs::remove_dir_all(&home).ok();
     }
 }

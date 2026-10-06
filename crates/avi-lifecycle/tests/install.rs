@@ -51,7 +51,9 @@ impl ProcessControl for Inert {
 ///
 /// Sandbox con las siete raíces reubicadas.
 struct Sandbox {
-    /// Raíz del sandbox, para borrarlo entero al terminar.
+    /// Dueño del directorio: lo borra al soltarse, también si la prueba falla.
+    _guard: tempfile::TempDir,
+    /// Raíz del sandbox.
     root: PathBuf,
     /// Directorio de programa: hermano de `opt`, con el nombre del producto.
     program_dir: PathBuf,
@@ -71,15 +73,14 @@ struct Sandbox {
 impl Sandbox {
     /// Levanta un sandbox nuevo. `etiqueta` distingue los de una misma ejecución.
     fn new(tag: &str) -> Self {
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or_default();
-        let root =
-            std::env::temp_dir().join(format!("install-e2e-{}-{tag}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("install-e2e-{tag}-"))
+            .tempdir()
+            .expect("se crea el sandbox");
+        let root = guard.path().to_path_buf();
         let opt = root.join("opt");
         let sandbox = Self {
+            _guard: guard,
             program_dir: opt.join("ai-voice-interconnector"),
             staging: opt.join(format!("{}test-{tag}", avi_lifecycle::STAGING_DIR_PREFIX)),
             bin_dir: root.join("home/ana/.local/bin"),
@@ -183,16 +184,16 @@ impl Sandbox {
             with_voice_cloning: false,
         }
     }
+}
 
-    /// Borra la clave de registro de prueba y el árbol del sandbox. El directorio se
-    /// borra aunque la prueba haya fallado antes, para que un sandbox huérfano en
-    /// `%TEMP%` no se acumule.
-    fn clear(&self) {
+/// Borra la clave de registro de prueba aunque la prueba haya fallado antes. El árbol
+/// del sandbox lo borra `_guard` justo después, al soltarse los campos.
+impl Drop for Sandbox {
+    fn drop(&mut self) {
         #[cfg(windows)]
         {
             let _ = avi_lifecycle::path_windows::delete_key(&self.registry_subkey);
         }
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -380,8 +381,6 @@ async fn install_twice_is_idempotent() {
         loaded.path_integration, integration,
         "el recibo de disco coincide con el que devolvió la operación"
     );
-
-    sandbox.clear();
 }
 
 /// Sondea el reloj hasta que `measured` tenga al menos `RESOLUTION` de antigüedad
@@ -497,7 +496,6 @@ async fn repair_from_inside_program_dir_copies_nothing() {
         "y el resumen previo lo anuncia antes de confirmar: {:?}",
         repair.summary_before
     );
-    sandbox.clear();
 }
 
 /// Sin bundle alrededor, `self install` termina con `bundle_invalid` y no modifica
@@ -546,7 +544,6 @@ async fn bundle_without_required_files_is_rejected() {
         receipt::read_from(&sandbox.program_dir).unwrap().is_none(),
         "y no hay recibo"
     );
-    sandbox.clear();
 }
 
 /// `--no-modify-path` no toca ni el perfil ni el registro, y el recibo lo dice para
@@ -581,7 +578,6 @@ async fn no_modify_path_leaves_path_untouched() {
             == PathIntegration::none(),
         "el recibo dice que no se integró nada"
     );
-    sandbox.clear();
 }
 
 /// Sobre una instalación ya integrada el plan del `PATH` es un no-op y el resumen
@@ -631,7 +627,6 @@ async fn integrated_install_announces_no_path_change() {
         "{:?}",
         second.summary_before
     );
-    sandbox.clear();
 }
 
 /// Un `path_conflict` —algo que no es un enlace nuestro en la ruta del enlace— aborta
@@ -697,7 +692,6 @@ async fn foreign_path_is_conflict_and_installs_nothing() {
         "el bundle quedó colocado en el directorio de programa: el conflicto es del \
          paso 8, no de la colocación"
     );
-    sandbox.clear();
 }
 
 /// El estado del sandbox, **sin el archivo de bloqueo**.

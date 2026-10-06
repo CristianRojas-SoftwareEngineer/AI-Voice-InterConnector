@@ -570,15 +570,11 @@ fn display_all(paths: &[PathBuf]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::write_file;
+    use crate::test_support::{scratch, write_file, Scratch};
 
-    fn env(tag: &str) -> Env {
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or_default();
-        let root = std::env::temp_dir().join(format!("doctor-{}-{tag}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+    /// Sandbox con dueño: el `Scratch` devuelto se borra al soltarse, también si la prueba falla.
+    fn env(tag: &str) -> (Scratch, Env) {
+        let root = scratch(&format!("doctor-{tag}"));
         let roots = cleanup::Roots {
             program_dir: root.join("opt/ai-voice-interconnector"),
             data_dir: root.join("data"),
@@ -595,11 +591,12 @@ mod tests {
         ] {
             std::fs::create_dir_all(dir).expect("se crea el sandbox");
         }
-        Env {
+        let env = Env {
             roots,
             path_env: String::new(),
             registry_subkey: String::new(),
-        }
+        };
+        (root, env)
     }
 
     fn keys(report: &Report) -> Vec<String> {
@@ -623,7 +620,7 @@ mod tests {
     /// contrato los coloca.
     #[test]
     fn doctor_reports_every_lifecycle_key() {
-        let env = env("keys");
+        let (_scratch, env) = env("keys");
         let exe = env.roots.program_dir.join(exe_name());
         let report = report(&env, &exe, "0.24.0");
 
@@ -659,8 +656,6 @@ mod tests {
             report.is_failure(),
             "sin nada instalado, el veredicto es negativo"
         );
-
-        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 
     /// La fila de modelos describe la raíz que recibe el reporte y no la del
@@ -670,7 +665,7 @@ mod tests {
     /// provisionado la máquina que ejecuta la suite.
     #[test]
     fn doctor_reports_models_of_the_root_it_describes() {
-        let env = env("models-root");
+        let (_scratch, env) = env("models-root");
         // El layout es el de la caché HF: `models--<org>--<repo>/snapshots/<rev>`.
         // La revisión pinneada se toma de `MODEL_REVISIONS` en vez de fijarla a
         // mano, para que un bump de pin no pueda volver obsoleta la prueba.
@@ -702,8 +697,6 @@ mod tests {
                 .contains(&crate::setup::CLONING_MODEL.to_string()),
             "el modelo de clonación figura provisionado en la raíz que describe el reporte"
         );
-
-        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 
     /// Planta en la raíz del sandbox los snapshots pinneados de todos los modelos
@@ -746,7 +739,7 @@ mod tests {
     /// lista los pines `opus-mt-*`.
     #[test]
     fn translation_models_have_no_derived_check() {
-        let env = env("translation-without-derived");
+        let (_scratch, env) = env("translation-without-derived");
         plant_required_models(&env);
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(
@@ -760,26 +753,24 @@ mod tests {
                 report.models.provisioned
             );
         }
-        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 
     /// Sin clonado seleccionado, el modelo Base ausente no es un faltante: el
     /// chequeo pasa y `base` lo informa como opt-in.
     #[test]
     fn models_provisioned_passes_without_opt_in_base() {
-        let env = env("models-without-base");
+        let (_scratch, env) = env("models-without-base");
         plant_required_models(&env);
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(models_check(&report).ok, "{:?}", report.models.missing);
         assert!(report.models.missing.is_empty());
         assert_eq!(report.models.base, "missing_opt_in");
-        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 
     /// Con el clonado seleccionado, la ausencia del Base sí hace fallar el chequeo.
     #[test]
     fn models_provisioned_fails_when_cloning_selected_and_base_absent() {
-        let env = env("models-cloning");
+        let (_scratch, env) = env("models-cloning");
         plant_required_models(&env);
         crate::setup::write_selection_to(
             &env.roots.data_dir,
@@ -795,7 +786,6 @@ mod tests {
             .models
             .missing
             .contains(&crate::setup::CLONING_MODEL.to_string()));
-        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 
     /// Sin nada en la raíz que describe el reporte, la fila de modelos dice que
@@ -804,21 +794,20 @@ mod tests {
     /// modelo, que es justo lo que hacía fallar la suite.
     #[test]
     fn doctor_reports_absent_models_for_an_empty_root() {
-        let env = env("empty-root");
+        let (_scratch, env) = env("empty-root");
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert_eq!(
             report.models.base, "missing_opt_in",
             "una raíz vacía no puede declarar provisionado nada"
         );
         assert_eq!(report.models.provisioned.len(), 0);
-        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 
     /// Dos instalaciones simultáneas, una de ellas del Cask, y cuál tiene precedencia
     /// en el `PATH`. La registrada no se lista a sí misma.
     #[test]
     fn doctor_reports_coexisting_installations() {
-        let mut env = env("coexistence");
+        let (_scratch, mut env) = env("coexistence");
         let registered = env.roots.program_dir.clone();
         write_file(&registered.join(exe_name()), "binario");
         let second = env.roots.temp_root.join("second-install");
@@ -855,15 +844,13 @@ mod tests {
         assert_eq!(coexisting[0].path, cask, "y la que precede es la del Cask");
         assert!(report.path.duplicate_entries.len() > 1, "y hay duplicados");
         assert!(report.is_failure());
-
-        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 
     /// El informe de pendientes con un `.old-*` y un staging huérfano plantados, y
     /// `doctor` **no toca nada**: es un modo informe.
     #[test]
     fn doctor_reports_pending_artifacts() {
-        let env = env("pending");
+        let (_scratch, env) = env("pending");
         let parked = env
             .roots
             .program_dir
@@ -916,20 +903,16 @@ mod tests {
         );
         let with_journal = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(with_journal.pending.transaction_journal);
-
-        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 
     /// La cabecera del reporte es la versión del producto recibida, no la del
     /// crate de librería: con una versión ficticia se distingue el origen.
     #[test]
     fn doctor_reports_product_version_not_crate_version() {
-        let env = env("product-version");
+        let (_scratch, env) = env("product-version");
         let exe = env.roots.program_dir.join(exe_name());
         let report = report(&env, &exe, "9.9.9");
         assert_eq!(report.version, "9.9.9");
         assert_ne!(report.version, env!("CARGO_PKG_VERSION"));
-
-        let _ = std::fs::remove_dir_all(env.roots.program_dir.parent().unwrap().parent().unwrap());
     }
 }

@@ -27,6 +27,8 @@ tracing = "0.1"
 # de `snapshots/` y su blob son el mismo archivo (enlace duro en Windows,
 # symlink en Unix).
 same-file = "1"
+# Directorios de trabajo de las pruebas con dueño: se borran al soltarse.
+tempfile = "3"
 # Servidor HTTP local de la prueba; `net` e `io-util` no los activa la
 # dependencia normal.
 tokio = { version = "1.35", features = ["rt", "macros", "net", "io-util"] }

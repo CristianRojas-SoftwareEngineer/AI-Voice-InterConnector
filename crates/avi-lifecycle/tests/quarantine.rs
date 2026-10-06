@@ -151,18 +151,14 @@ impl Quarantine for Fake {
     }
 }
 
-/// Directorio único por etiqueta y por nanosegundo, para que dos pruebas simultáneas —o
-/// dos ejecuciones del mismo binario— no se pisen.
-fn unique(tag: &str) -> PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or_default();
-    let root =
-        std::env::temp_dir().join(format!("quarantine-e2e-{}-{tag}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("se crea la raíz del sandbox");
-    root
+/// Directorio único por etiqueta, para que dos pruebas simultáneas —o dos ejecuciones del
+/// mismo binario— no se pisen. Quien lo recibe es su dueño: se borra al soltarlo,
+/// también si la prueba falla.
+fn unique(tag: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("quarantine-e2e-{tag}-"))
+        .tempdir()
+        .expect("se crea la raíz del sandbox")
 }
 
 /// Une un fragmento del manifiesto con la raíz del bundle.
@@ -200,7 +196,9 @@ fn write_bundle(dest: &Path) -> Vec<PathBuf> {
 /// [`Arbol::colocados`] lo traslada al directorio de programa, que es donde la
 /// instalación lo coloca y donde la limpieza se ejecuta.
 struct Tree {
-    /// Raíz del sandbox, para borrarla entera.
+    /// Dueño del directorio: lo borra al soltarse, también si la prueba falla.
+    _guard: tempfile::TempDir,
+    /// Raíz del sandbox.
     root: PathBuf,
     /// Staging hermano del directorio de programa, con el prefijo de la tabla de rutas.
     staging: PathBuf,
@@ -212,12 +210,14 @@ struct Tree {
 
 impl Tree {
     fn new(tag: &str) -> Self {
-        let root = unique(tag);
+        let guard = unique(tag);
+        let root = guard.path().to_path_buf();
         let opt = root.join("opt");
         let staging = opt.join(format!("{}test", avi_lifecycle::STAGING_DIR_PREFIX));
         let program = opt.join("ai-voice-interconnector");
         let files = write_bundle(&staging);
         Self {
+            _guard: guard,
             root,
             staging,
             program,
@@ -456,7 +456,6 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
             .is_some(),
         "criterio 9: la instalación dejó recibo, que es lo que la distingue de un copiado"
     );
-    let _ = std::fs::remove_dir_all(&sandbox.root);
 }
 
 /// **Criterio 9 fuera de macOS.** La mitad del criterio que se puede comprobar donde el
@@ -575,7 +574,6 @@ fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
         before,
         "criterio 9: y el disco no cambia, ni dentro ni fuera"
     );
-    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// `true` si el oráculo dice que la ruta conserva el atributo, para el control del hermano
@@ -699,7 +697,6 @@ fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
         asks_about_derived(&asked),
         "el motor derivado se limpia también, no solo el ejecutable: {asked:?}"
     );
-    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// Un fallo en un archivo **no corta** el recorrido: los demás también necesitan
@@ -741,7 +738,6 @@ fn quarantine_strip_reports_failures_and_keeps_going() {
         "los demás se limpiaron igualmente: el fallo no cortó el recorrido"
     );
     assert_eq!(fake.remaining(), 1, "solo queda en cuarentena el que falló");
-    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// El límite de profundidad se respeta, y es lo que evita que un directorio con un lazo
@@ -803,7 +799,6 @@ fn quarantine_strip_respects_the_depth_limit() {
         "y los anidados siguen en cuarentena, que es lo que el límite delimita"
     );
     assert!(outcome.is_clear(), "sin fallos: {:?}", outcome.failed);
-    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// Limpiar dos veces no cambia nada, y la segunda pasada informa de que no hay nada que
@@ -840,7 +835,6 @@ fn quarantine_strip_is_idempotent() {
         first_cleared,
         "y no se volvió a limpiar nada"
     );
-    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// El resultado por defecto es «no hay nada que hacer», que es lo que la instalación
@@ -909,7 +903,6 @@ fn quarantine_outside_macos_has_nothing_to_do_and_touches_nothing() {
         "no tocar\n",
         "el hermano del directorio de programa está intacto"
     );
-    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// Fuera de macOS, `put` es un no-op y `has` es `false`: no hay atributo que poner, y una
@@ -927,7 +920,6 @@ fn quarantine_outside_macos_attributes_are_inert() {
             "y `has` sigue diciendo que no: no hay atributo que poner"
         );
     }
-    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 // ─── Solo en macOS: el criterio 9 y `xattr` de verdad ─────────────────────────────
@@ -1045,7 +1037,6 @@ async fn install_strips_quarantine_from_whole_program_dir() {
             .is_some(),
         "y dejó recibo, que es lo que distingue una instalación de un copiado"
     );
-    let _ = std::fs::remove_dir_all(&tree.root);
 }
 
 /// El límite de profundidad contra un **lazo real** de directorios, que es el caso que lo
@@ -1055,7 +1046,8 @@ async fn install_strips_quarantine_from_whole_program_dir() {
 #[cfg(target_os = "macos")]
 #[test]
 fn quarantine_strip_survives_a_real_directory_loop() {
-    let root = unique("loop");
+    let guard = unique("loop");
+    let root = guard.path().to_path_buf();
     let program = root.join("opt/ai-voice-interconnector");
     let dir = program.join("vendor/qwen3-tts");
     std::fs::create_dir_all(&dir).expect("se crea el árbol");
@@ -1074,7 +1066,6 @@ fn quarantine_strip_survives_a_real_directory_loop() {
         !quarantine::has(&engine),
         "y la limpieza alcanzó al derivado antes de encontrarse con el lazo"
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// La premisa de la puerta de macOS: `xattr` existe y responde. Si no, el criterio 9 no
@@ -1097,6 +1088,8 @@ fn quarantine_gate_needs_xattr() {
 /// Rutas de la tabla del producto en la prueba del criterio 9.
 #[cfg(target_os = "macos")]
 struct Sandbox {
+    /// Dueño del directorio: lo borra al soltarse, también si la prueba falla.
+    _guard: tempfile::TempDir,
     root: PathBuf,
     program_dir: PathBuf,
     staging: PathBuf,
@@ -1111,11 +1104,13 @@ impl Sandbox {
     /// Árbol con la forma de la instalación: el bundle se escribe primero en
     /// el staging hermano, que es donde lo deja el bootstrap.
     fn new(tag: &str) -> Self {
-        let root = unique(tag);
+        let guard = unique(tag);
+        let root = guard.path().to_path_buf();
         let staging = root
             .join("opt")
             .join(format!("{}test", avi_lifecycle::STAGING_DIR_PREFIX));
         Self {
+            _guard: guard,
             program_dir: root.join("opt").join("ai-voice-interconnector"),
             home: root.join("home"),
             data_dir: root.join("data"),
