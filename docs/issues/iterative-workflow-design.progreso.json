@@ -249,10 +249,11 @@
       "commits": ["3970b4b", "2c62909"]
     },
     "C10": {
-      "status": "in_progress",
-      "phase": "implementation",
+      "status": "closed",
+      "phase": "closed",
       "gates": [
-        { "gate": "plan", "verdict": "approved", "date": "2026-10-05", "notes": "G-Plan C10 aprobado con T1 a T17" }
+        { "gate": "plan", "verdict": "approved", "date": "2026-10-05", "notes": "G-Plan C10 aprobado con T1 a T17" },
+        { "gate": "result", "verdict": "approved", "date": "2026-10-05", "notes": "G-Resultado aprobado: bateria 5.3 en verde, sin intermitencias, sin residuos y revision independiente sin bloqueantes" }
       ],
       "tasks": [
         { "id": "C10.1", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "preparación en la rama fix/deuda-pre-release, creada desde main (c6f221c) con el árbol limpio; ficha C10 abierta a partir de la auditoría adversarial posterior a C9, sin descomponer en subciclos; G-Plan aprobado" },
@@ -271,11 +272,11 @@
         { "id": "C10.T13", "status": "done", "attempts": 1, "files": ["crates/avi-daemon/tests/golden.rs", "crates/avi-daemon/src/lib.rs"], "notes": "las 21 cfg_attr retiradas: contrato corre en featureless y native-stt (de 24/11 ignoradas a 35/0); recurso con ignore+requiere; no se aplico la alternativa B de D17" },
         { "id": "C10.T14", "status": "done", "attempts": 1, "files": ["tests/test_classes.rs"], "notes": "reglas de ignore-sin-requiere y de return-en-puerta con regresion sembrada; el return se tolera solo si afirma disponibilidad" },
         { "id": "C10.T15", "status": "done", "attempts": 1, "files": ["docs/CLI/README.md", "docs/CLI/CONTRACT.md", "USAGE.md", "docs/MANUAL-VALIDATION.md", "docs/DESIGN.md", "docs/BUILD.md", "docs/DAEMON-MODE.md", "docs/CLI/commands/DAEMON.md", "crates/avi-core/src/engine.rs", "CHANGELOG.md", "tests/contract_conformance.rs"], "notes": "los nueve puntos de drift alineados mas la deriva de DAEMON_ADDR de T10; tres tests de conformidad nuevos; MANUAL-VALIDATION 284-288 ya coincidia" },
-        { "id": "C10.T16", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" },
-        { "id": "C10.T17", "status": "pending", "attempts": 0, "files": [], "notes": "pendiente" }
+        { "id": "C10.T16", "status": "done", "attempts": 1, "files": ["CHANGELOG.md", "USAGE.md", "docs/CLI/CONTRACT.md", "docs/CLI/commands/DAEMON.md", "docs/DAEMON-MODE.md", "crates/avi-shared/src/logs.rs", "crates/avi-tts/src/lib.rs", "crates/avi-audio/src/lib.rs", "crates/avi-lifecycle/src/daemon_stop.rs", "crates/avi-lifecycle/src/update.rs", "crates/avi-lifecycle/src/update_fetch.rs", "crates/avi-process/src/deferred.rs", "crates/avi-process/src/restricted_spawn.rs", "crates/avi-process/tests/restricted_spawn.rs", "src/main.rs", "tests/cli_golden.rs"], "notes": "allow(dead_code) redundante retirado, deriva de fmt corregida en nueve ficheros, drift de identidad obligatoria y de PID del log del hijo propagado a cuatro documentos, entrada de C10 en ## [No publicado]" },
+        { "id": "C10.T17", "status": "done", "attempts": 1, "files": ["docs/issues/iterative-workflow-design.md", "docs/issues/iterative-workflow-design.progreso.json"], "notes": "G-Resultado APROBADO: bateria 5.3 en verde (593+643 pruebas, clippy -D warnings con y sin full, fmt y licenses limpios), cuatro ejecuciones identicas sin intermitencias, cero residuos en procesos, puerto 8765 e instalacion real, revision independiente sin bloqueantes; tres desviaciones no bloqueantes recogidas (tres lock().unwrap() preexistentes en avi-stt, copias del limpiador sin barrer por la suite, aislamiento de data/speech en los tests de TTS)" }
       ],
       "foreign_changes": [],
-      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f", "03987d0", "656c24f", "a56f215", "0bd3aba", "fdc6d95", "03e8aeb", "cb4f773", "48769d9", "b14592a", "938a537", "683341a", "3c144fe", "1f65add"]
+      "commits": ["c47603b", "ff0268f", "8cc4348", "5170d6f", "03987d0", "656c24f", "a56f215", "0bd3aba", "fdc6d95", "03e8aeb", "cb4f773", "48769d9", "b14592a", "938a537", "683341a", "3c144fe", "1f65add", "bef1c0f"]
     }
   },
   "release": { "status": "pending", "gates": [], "version": null }

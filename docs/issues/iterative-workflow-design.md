@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | G0 aprobada, C1 a C9 cerrados e integrados, C10 en preparación, G-Release pendiente |
+| Estado | G0 aprobada, C1 a C10 cerrados e integrados, G-Release pendiente |
 | Alcance | Los cinco informes de defectos abiertos en `docs/issues/` |
 | Fecha | 2026-09-30 |
 | Ciclo de vida | Este documento y su registro de progreso se eliminan cuando se cierra el último ciclo |
@@ -1555,6 +1555,32 @@ aprobar. Las pruebas que se enumeran son las mínimas.
   beta corresponde a minor (envelope 5 de la CLI, sin publicar), no a patch.
   D-11 (pase manual en Linux x64 y macOS arm64) es un gate de proceso que no
   puede cerrarse desde el entorno de desarrollo de C10 y se pacta en G-Release.
+
+#### Resultado de C10 (G-Resultado aprobado)
+
+- **Tareas T1 a T16 cerradas**, cada una con su commit y su entrada en el
+  ledger; el G-Plan aprobado y el G-Resultado verificado quedan registrados en
+  `iterative-workflow-design.progreso.json`.
+- **Verificación §5.3 en verde:** `cargo test --all` (593 pruebas, 18 ignoradas),
+  `cargo test --workspace --features full -- --include-ignored` (643 pruebas, 0
+  ignoradas), clippy `-D warnings` con y sin `full`, `cargo fmt --check` y
+  `cargo xtask licenses --check`.
+- **Sin intermitencias:** cuatro ejecuciones consecutivas de `cargo test --all`
+  con resultados idénticos.
+- **Sin residuos:** ningún proceso `qwen_tts` o daemon sin registrar, ninguna
+  conexión en `127.0.0.1:8765` y ninguna escritura en la instalación real
+  atribuible a la verificación.
+- **Desviaciones no bloqueantes, recogidas para su seguimiento:**
+  - Quedan tres `lock().unwrap()` en `crates/avi-stt/src/parakeet.rs`; el
+    fichero no tiene módulo de pruebas, luego es producto, pero no forma parte
+    del diff de C10 (preexistente en `main`).
+  - El barrido de temporales documentado existe pero la suite no lo invoca: cada
+    `cargo test --all` deja unas copias del limpiador en `%TEMP%`.
+  - Los tests de TTS con `--include-ignored` escriben en la raíz de datos real
+    del usuario en vez de un sandbox.
+- **Pendiente de proceso:** D-11 (pase manual en Linux x64 y macOS arm64) sigue
+  abierto; las ramas `cfg(unix)` de T3 y T11 se verificaron por compilación
+  cruzada y por razonamiento, no por ejecución en Unix.
 
 ## 11. Registro de progreso
 
