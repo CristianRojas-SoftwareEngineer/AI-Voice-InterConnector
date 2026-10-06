@@ -212,17 +212,17 @@ impl Sandbox {
             "ajeno",
         );
         // Voces: dos de fábrica y una de usuario, con su namespace de habla.
-        for voice in ["default", "ryan", "mia"] {
+        for voice in ["default", "ryan", "mine"] {
             write(
                 &self
                     .data_dir
                     .join("voices")
                     .join(voice)
                     .join("reference.qvoice"),
-                "voz",
+                "voice",
             );
         }
-        for voice in ["default", "mia"] {
+        for voice in ["default", "mine"] {
             write(
                 &self.data_dir.join("speech").join(voice).join("hello.wav"),
                 "wav",
@@ -370,9 +370,9 @@ fn cleanup_categories_are_scoped() {
         },
     );
     let planned_removed = paths(&voices_only);
-    assert!(planned_removed.contains(&voices.join("mia").display().to_string()));
+    assert!(planned_removed.contains(&voices.join("mine").display().to_string()));
     assert!(
-        planned_removed.contains(&speech.join("mia").display().to_string()),
+        planned_removed.contains(&speech.join("mine").display().to_string()),
         "el arrastre de la locución de la voz: {planned_removed:?}"
     );
     assert!(
@@ -405,7 +405,7 @@ fn cleanup_categories_are_scoped() {
     let planned_removed = paths(&all_plan);
     for expected in [
         sandbox.models_dir.display().to_string(),
-        voices.join("mia").display().to_string(),
+        voices.join("mine").display().to_string(),
         speech.display().to_string(),
         sandbox.data_dir.join("config.json").display().to_string(),
         sandbox.data_dir.join("logs").display().to_string(),
@@ -446,7 +446,7 @@ fn cleanup_categories_are_scoped() {
         outcome.failed
     );
     assert!(!exists(&sandbox.models_dir), "los modelos se van enteros");
-    assert!(!exists(&voices.join("mia")));
+    assert!(!exists(&voices.join("mine")));
     assert!(!exists(&speech));
     assert!(!exists(&sandbox.data_dir.join("config.json")));
     assert!(!exists(&sandbox.data_dir.join("logs")));
@@ -750,7 +750,7 @@ fn uninstall_keep_data_preserves_models_voices_and_speech() {
         "los modelos se quedan: {:?}",
         outcome.preserved
     );
-    assert!(exists(&voices.join("mia")), "las voces se quedan");
+    assert!(exists(&voices.join("mine")), "las voces se quedan");
     assert!(
         exists(&sandbox.data_dir.join("speech").join("default")),
         "el habla se queda"

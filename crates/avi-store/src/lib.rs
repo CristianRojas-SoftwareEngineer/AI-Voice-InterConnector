@@ -1373,37 +1373,37 @@ mod tests {
         std::fs::write(&wav_src, min_wav()).unwrap();
 
         let saved = speech
-            .save("VIVIAN", "SaludoDePrueba", "Hola", &wav_src)
+            .save("VIVIAN", "TestGreeting", "Hola", &wav_src)
             .unwrap();
         let rel = saved
             .strip_prefix(dir.join("speech"))
             .unwrap()
             .to_string_lossy()
             .to_string();
-        assert_eq!(rel.replace('\\', "/"), "vivian/saludodeprueba.wav");
+        assert_eq!(rel.replace('\\', "/"), "vivian/testgreeting.wav");
 
-        assert!(speech.find("vivian", "saludodeprueba").is_some());
-        assert!(speech.find("VIVIAN", "SALUDODEPRUEBA").is_some());
+        assert!(speech.find("vivian", "testgreeting").is_some());
+        assert!(speech.find("VIVIAN", "TESTGREETING").is_some());
         let entries = speech.list().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].metadata.voice, "vivian");
-        assert_eq!(entries[0].metadata.label, "saludodeprueba");
+        assert_eq!(entries[0].metadata.label, "testgreeting");
 
-        speech.remove("VIVIAN", "SALUDODEPRUEBA").unwrap();
-        assert!(speech.find("vivian", "saludodeprueba").is_none());
+        speech.remove("VIVIAN", "TESTGREETING").unwrap();
+        assert!(speech.find("vivian", "testgreeting").is_none());
 
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         voices.ensure_initialized().unwrap();
-        let vdir = voices.voice_dir("MiVoz");
+        let vdir = voices.voice_dir("MyVoice");
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("reference.qvoice"), b"QVCE").unwrap();
         assert!(
-            voices.exists("MIVOZ"),
+            voices.exists("MYVOICE"),
             "exists debe normalizar a minúsculas"
         );
         assert_eq!(
             voices
-                .find_reference("MIVOZ")
+                .find_reference("MYVOICE")
                 .unwrap()
                 .file_name()
                 .unwrap()
@@ -1422,21 +1422,21 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
-        speech.save("ryan", "saludo", "Hola", &wav_src).unwrap();
+        speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
         speech
-            .save("vivian", "despedida", "Adiós", &wav_src)
+            .save("vivian", "farewell", "Adiós", &wav_src)
             .unwrap();
 
         let ryan = speech.list_by_voice("RYAN").unwrap();
         assert_eq!(ryan.len(), 1);
         assert_eq!(ryan[0].metadata.voice, "ryan");
-        assert_eq!(ryan[0].metadata.label, "saludo");
+        assert_eq!(ryan[0].metadata.label, "greeting");
 
         let were_alive = speech.list_by_voice("vivian").unwrap();
         assert_eq!(were_alive.len(), 1);
-        assert_eq!(were_alive[0].metadata.label, "despedida");
+        assert_eq!(were_alive[0].metadata.label, "farewell");
 
-        assert!(speech.list_by_voice("inexistente").unwrap().is_empty());
+        assert!(speech.list_by_voice("nonexistent").unwrap().is_empty());
         assert_eq!(speech.list().unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1449,10 +1449,10 @@ mod tests {
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
 
-        let path = speech.save("ryan", "saludo", "Hola", &wav_src).unwrap();
+        let path = speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
         assert!(path.is_file());
         let entry = speech
-            .find("ryan", "saludo")
+            .find("ryan", "greeting")
             .expect("la locución debe existir");
         assert_eq!(entry.metadata.text, "Hola");
         // 1 muestra a 24 kHz → 1/24000 s
@@ -1468,13 +1468,13 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
-        speech.save("ryan", "saludo", "Hola", &wav_src).unwrap();
+        speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
         // Sidecar corrupto → la locución se omite, pero no se cae el listado.
-        std::fs::write(speech.voice_dir("ryan").join("saludo.json"), b"{roto").unwrap();
+        std::fs::write(speech.voice_dir("ryan").join("greeting.json"), b"{roto").unwrap();
         let entries = speech.list().unwrap();
         assert!(entries.is_empty());
         // Sin sidecar no hay entrada.
-        std::fs::remove_file(speech.voice_dir("ryan").join("saludo.json")).unwrap();
+        std::fs::remove_file(speech.voice_dir("ryan").join("greeting.json")).unwrap();
         assert!(speech.list().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1501,20 +1501,20 @@ mod tests {
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         let src = dir.join("clone.qvoice");
         std::fs::write(&src, b"QVCE").unwrap();
-        let saved = voices.save_reference("MiVoz", &src).unwrap();
+        let saved = voices.save_reference("MyVoice", &src).unwrap();
         assert_eq!(
             saved.file_name().unwrap().to_string_lossy(),
             "reference.qvoice"
         );
         assert!(saved.is_file());
-        assert_eq!(voices.find_reference("mivoz").unwrap(), saved);
+        assert_eq!(voices.find_reference("myvoice").unwrap(), saved);
 
         // Sin fallback wav: solo qvoice es canónico.
-        let vdir = voices.voice_dir("otra");
+        let vdir = voices.voice_dir("other");
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("speech-reference.wav"), b"RIFF").unwrap();
         assert!(
-            voices.find_reference("OTRA").is_none(),
+            voices.find_reference("OTHER").is_none(),
             "sin reference.qvoice no resuelve como clonada"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1530,13 +1530,13 @@ mod tests {
         std::fs::create_dir_all(&voices_dir).unwrap();
         let voices = VoiceStore::with_base_dir(voices_dir);
         let missing = dir.join("missing.qvoice");
-        assert!(voices.save_reference("nueva", &missing).is_err());
+        assert!(voices.save_reference("fresh", &missing).is_err());
         assert!(
-            !voices.voice_dir("nueva").exists(),
+            !voices.voice_dir("fresh").exists(),
             "un guardado fallido no debe dejar el directorio de la voz"
         );
         assert!(
-            voices.list().unwrap().iter().all(|v| v.name != "nueva"),
+            voices.list().unwrap().iter().all(|v| v.name != "fresh"),
             "un guardado fallido no debe dejar la voz en el listado"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1550,10 +1550,10 @@ mod tests {
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         let src = dir.join("clone.qvoice");
         std::fs::write(&src, b"QVCE").unwrap();
-        let saved = voices.save_reference("existente", &src).unwrap();
+        let saved = voices.save_reference("existing", &src).unwrap();
         let missing = dir.join("missing.qvoice");
-        assert!(voices.save_reference("existente", &missing).is_err());
-        assert!(voices.voice_dir("existente").is_dir());
+        assert!(voices.save_reference("existing", &missing).is_err());
+        assert!(voices.voice_dir("existing").is_dir());
         assert_eq!(std::fs::read(&saved).unwrap(), b"QVCE");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1610,7 +1610,7 @@ mod tests {
             );
         }
         // Idempotencia: segunda inicialización no borra directorios ni datos de usuario
-        let custom_dir = voices.voice_dir("mivoz");
+        let custom_dir = voices.voice_dir("myvoice");
         std::fs::create_dir_all(&custom_dir).unwrap();
         std::fs::write(custom_dir.join("reference.qvoice"), b"QVCE").unwrap();
         voices.ensure_initialized().unwrap();
@@ -1645,11 +1645,11 @@ mod tests {
             );
         }
         // Voz sin qvoice no resuelve como clonada aunque tenga wav legado inerte
-        let clone_dir = voices.voice_dir("otra");
+        let clone_dir = voices.voice_dir("other");
         std::fs::create_dir_all(&clone_dir).unwrap();
         std::fs::write(clone_dir.join("speech-reference.wav"), b"RIFF").unwrap();
         assert!(
-            voices.find_reference("OTRA").is_none(),
+            voices.find_reference("OTHER").is_none(),
             "sin qvoice no resuelve como clonada"
         );
         let _ = std::fs::remove_dir_all(&dir);

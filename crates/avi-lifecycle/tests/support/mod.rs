@@ -368,17 +368,17 @@ impl Sandbox {
         );
         // Estado de usuario: voces de fábrica y de usuario, habla, configuración, logs
         // y pidfile.
-        for voice in ["default", "ryan", "mia"] {
+        for voice in ["default", "ryan", "mine"] {
             write(
                 &self
                     .data_dir
                     .join("voices")
                     .join(voice)
                     .join("reference.qvoice"),
-                "voz",
+                "voice",
             );
         }
-        for voice in ["default", "mia"] {
+        for voice in ["default", "mine"] {
             write(
                 &self.data_dir.join("speech").join(voice).join("hello.wav"),
                 "wav",
@@ -652,9 +652,9 @@ pub fn entries(plan: &[avi_lifecycle::confirm::PlanEntry]) -> Vec<String> {
 // hijo termine en éxito, de modo que el trabajo nunca se omite.
 
 /// Variable que marca este proceso como el hijo sin terminal.
-pub const MARK_WITHOUT_TERMINAL: &str = "AVI_LIFECYCLE_HIJO_SIN_TERMINAL";
+pub const MARK_WITHOUT_TERMINAL: &str = "AVI_LIFECYCLE_CHILD_WITHOUT_TERMINAL";
 /// Variable con la raíz del sandbox que el hijo debe reconstruir.
-pub const VAR_ROOT: &str = "AVI_LIFECYCLE_RAIZ";
+pub const VAR_ROOT: &str = "AVI_LIFECYCLE_ROOT";
 /// Variable con la etiqueta del sandbox que el hijo debe reconstruir.
 pub const VAR_TAG: &str = "AVI_LIFECYCLE_TAG";
 /// Prefijo de las líneas con las que el hijo informa al padre.

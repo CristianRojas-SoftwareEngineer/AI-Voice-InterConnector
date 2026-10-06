@@ -130,8 +130,8 @@ mod tests {
     /// el TDT 0.6B v3 auto-detecta idioma y un saludo breve es fonéticamente
     /// ambiguo. Ese output activa la guardia `detect_language`
     /// (`EN-SOSPECHOSO`), que el daemon anexa como `language_warning`. Por eso:
-    /// - los corpus en español (`corpus_watermark`, `corpus_sintesis`,
-    ///   `corpus_respuestas`) validan WER ≤ 0.25 (el threshold estricto 0.05
+    /// - los corpus en español (`corpus_watermark`, `corpus_synthesis`,
+    ///   `corpus_responses`) validan WER ≤ 0.25 (el threshold estricto 0.05
     ///   el modelo real alcanza 0.08–0.21);
     /// - `parakeet_sample` valida, por el contrario, que `detect_language` marque
     ///   el output como `EN-SOSPECHOSO` (la guardia funciona sobre un fixture
@@ -150,22 +150,22 @@ mod tests {
         let corpus: [(&str, &str, bool); 4] = [
             (
                 "parakeet_sample_16k.wav",
-                "parakeet_sample_16k.referencia.txt",
+                "parakeet_sample_16k.reference.txt",
                 true,
             ),
             (
                 "corpus_watermark_16k.wav",
-                "corpus_watermark_16k.referencia.txt",
+                "corpus_watermark_16k.reference.txt",
                 false,
             ),
             (
-                "corpus_sintesis_16k.wav",
-                "corpus_sintesis_16k.referencia.txt",
+                "corpus_synthesis_16k.wav",
+                "corpus_synthesis_16k.reference.txt",
                 false,
             ),
             (
-                "corpus_respuestas_16k.wav",
-                "corpus_respuestas_16k.referencia.txt",
+                "corpus_responses_16k.wav",
+                "corpus_responses_16k.reference.txt",
                 false,
             ),
         ];

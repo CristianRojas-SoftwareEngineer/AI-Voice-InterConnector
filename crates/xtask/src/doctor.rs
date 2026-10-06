@@ -1077,18 +1077,18 @@ fn print_json(report: &Report, pins: &Pins) {
         .map(|r| {
             serde_json::json!({
                 "id": r.id,
-                "requisito": r.label,
-                "obligatorio": r.mandatory,
-                "estado": status_text(&r.status),
-                "encontrada": r.found,
-                "esperada": r.want,
-                "comando": r.hint,
+                "requirement": r.label,
+                "mandatory": r.mandatory,
+                "status": status_text(&r.status),
+                "found": r.found,
+                "expected": r.want,
+                "command": r.hint,
             })
         })
         .collect();
     let out = serde_json::json!({
         "ok": report.ok(),
-        "pines": {
+        "pins": {
             "rust": pins.rust,
             "ort": pins.ort,
             "sccache": pins.sccache,
@@ -1098,11 +1098,11 @@ fn print_json(report: &Report, pins: &Pins) {
             "msys2_make": pins.msys2_make,
             "ninja": pins.ninja,
         },
-        "requisitos": rows,
-        "deriva": {
-            "motor": report.engine_drift,
+        "requirements": rows,
+        "drift": {
+            "engine": report.engine_drift,
             "onnx": report.onnx_drift,
-            "modelos": report.models_drift,
+            "models": report.models_drift,
         },
     });
     println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());

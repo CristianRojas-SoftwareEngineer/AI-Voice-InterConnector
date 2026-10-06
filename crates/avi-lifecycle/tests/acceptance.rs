@@ -879,7 +879,7 @@ fn criterion_18_keep_data_preserves_state() {
     // Punto de partida: los tres conjuntos están.
     assert!(support::exists(&sandbox.models_dir.join("xet")));
     assert!(support::exists(
-        &sandbox.data_dir.join("voices").join("mia")
+        &sandbox.data_dir.join("voices").join("mine")
     ));
     assert!(support::exists(
         &sandbox.data_dir.join("speech").join("default")
@@ -919,13 +919,13 @@ fn criterion_18_keep_data_preserves_state() {
         "criterio 18: los modelos se quedan: {:?}",
         outcome.preserved
     );
-    for voice in ["default", "ryan", "mia"] {
+    for voice in ["default", "ryan", "mine"] {
         assert!(
             support::exists(&sandbox.data_dir.join("voices").join(voice)),
             "criterio 18: la voz {voice} se queda"
         );
     }
-    for voice in ["default", "mia"] {
+    for voice in ["default", "mine"] {
         assert!(
             support::exists(&sandbox.data_dir.join("speech").join(voice)),
             "criterio 18: la locución de {voice} se queda"
@@ -1030,7 +1030,7 @@ fn criterion_19_no_tty_without_yes_refuses() {
         "criterio 19: el directorio de programa sigue"
     );
     assert!(
-        support::exists(&sandbox.data_dir.join("voices").join("mia")),
+        support::exists(&sandbox.data_dir.join("voices").join("mine")),
         "criterio 19: el estado de usuario sigue"
     );
     assert!(
@@ -1431,7 +1431,7 @@ fn criterion_22_cleanup_scope_and_usage_error() {
         "criterio 22: --model borra los modelos"
     );
     assert!(
-        support::exists(&s.data_dir.join("voices").join("mia")),
+        support::exists(&s.data_dir.join("voices").join("mine")),
         "criterio 22: --model no toca las voces"
     );
     assert!(
@@ -1457,11 +1457,11 @@ fn criterion_22_cleanup_scope_and_usage_error() {
         },
     );
     assert!(
-        !support::exists(&s.data_dir.join("voices").join("mia")),
+        !support::exists(&s.data_dir.join("voices").join("mine")),
         "criterio 22: --voices borra la voz de usuario"
     );
     assert!(
-        !support::exists(&s.data_dir.join("speech").join("mia")),
+        !support::exists(&s.data_dir.join("speech").join("mine")),
         "criterio 22: y la locución que arrastra"
     );
     assert!(
@@ -1525,7 +1525,7 @@ fn criterion_22_cleanup_scope_and_usage_error() {
         "criterio 22: --all borra los modelos"
     );
     assert!(
-        !support::exists(&s.data_dir.join("voices").join("mia")),
+        !support::exists(&s.data_dir.join("voices").join("mine")),
         "criterio 22: y las voces de usuario"
     );
     assert!(!support::exists(&s.data_dir.join("speech")));
@@ -1712,7 +1712,7 @@ fn criterion_23_shared_resources_survive() {
         "criterio 23, caso 6: la raíz compartida no se borra entera"
     );
     assert!(
-        support::exists(&sandbox.data_dir.join("voices").join("mia")),
+        support::exists(&sandbox.data_dir.join("voices").join("mine")),
         "criterio 23: `--model` no toca el estado de usuario"
     );
     // Caso 11: el barrido es selectivo por prefijo, no por directorio.
@@ -1761,7 +1761,7 @@ fn criterion_23_shared_resources_survive() {
         "criterio 23, caso 8: la raíz compartida sigue ahí"
     );
     assert!(
-        !support::exists(&s.data_dir.join("voices").join("mia")),
+        !support::exists(&s.data_dir.join("voices").join("mine")),
         "criterio 23, caso 8: y el estado de usuario, que sí es nuestro, sí cae"
     );
     assert!(

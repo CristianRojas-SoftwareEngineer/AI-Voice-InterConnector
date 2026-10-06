@@ -775,7 +775,7 @@ fn unreadable_journal_stops_the_operation_without_deleting() {
     );
     assert!(
         support::exists(&sandbox.program_dir)
-            && support::exists(&sandbox.data_dir.join("voices").join("mia"))
+            && support::exists(&sandbox.data_dir.join("voices").join("mine"))
             && support::exists(&sandbox.models_dir),
         "criterio 14: las tres raíces siguen donde estaban"
     );

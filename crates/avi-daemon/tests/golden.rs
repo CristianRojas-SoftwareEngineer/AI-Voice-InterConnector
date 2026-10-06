@@ -419,9 +419,9 @@ async fn transcribe_long_audio_transcribes_in_one_pass() {
     require_parakeet();
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
     let corpus = [
-        "corpus_sintesis_16k.wav",
+        "corpus_synthesis_16k.wav",
         "corpus_watermark_16k.wav",
-        "corpus_respuestas_16k.wav",
+        "corpus_responses_16k.wav",
         "parakeet_sample_16k.wav",
     ];
     let mut pcm: Vec<i16> = Vec::new();
@@ -1209,7 +1209,7 @@ async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
     // clonada mantiene la síntesis en el motor falso.
     std::fs::create_dir_all(state.voice_store.root().join("default")).expect("registrar la voz");
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
-    let pcm = avi_audio::load_wav_16k_mono_pcm(assets.join("corpus_respuestas_16k.wav"))
+    let pcm = avi_audio::load_wav_16k_mono_pcm(assets.join("corpus_responses_16k.wav"))
         .expect("el WAV corpus debe cargarse");
     let audio: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let response = build_router_with_state(state)

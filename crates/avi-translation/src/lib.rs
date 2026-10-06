@@ -333,8 +333,8 @@ mod tests {
         // Pares (subdirectorio de modelo, fixture del corpus de referencia),
         // ambos dentro de la raíz del crate.
         let corpus: [(&str, &str); 2] = [
-            ("opus-mt-es-en", "translate_es_en.referencia.json"),
-            ("opus-mt-en-es", "translate_en_es.referencia.json"),
+            ("opus-mt-es-en", "translate_es_en.reference.json"),
+            ("opus-mt-en-es", "translate_en_es.reference.json"),
         ];
 
         let mut wer_total = 0.0;
