@@ -13,3 +13,6 @@ avi-core = { path = "../avi-core" }
 avi-store = { path = "../avi-store" }
 avi-process = { path = "../avi-process" }
 avi-audio = { path = "../avi-audio" }
+
+[dev-dependencies]
+tempfile = "3"

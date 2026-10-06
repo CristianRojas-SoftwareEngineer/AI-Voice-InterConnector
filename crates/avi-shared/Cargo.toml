@@ -14,3 +14,6 @@ directories = "5.0"
 # Arranque de consola en UTF-8 (`console`): solo Windows, Unix sigue puro.
 # `Win32_Foundation` lo exige el BOOL que devuelven las fijaciones.
 windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Globalization"] }
+
+[dev-dependencies]
+tempfile = "3"

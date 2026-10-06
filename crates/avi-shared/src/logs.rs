@@ -133,18 +133,6 @@ fn prune(dir: &Path, family: &str, keep: &Path, pid_alive: &dyn Fn(u32) -> bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    fn unique_dir() -> PathBuf {
-        static N: AtomicU32 = AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "avi_logs_test_{}_{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
 
     fn names(dir: &Path) -> Vec<String> {
         let mut v: Vec<String> = std::fs::read_dir(dir)
@@ -164,7 +152,8 @@ mod tests {
     /// Doce creaciones dejan solo los diez logs más recientes de la familia.
     #[test]
     fn create_log_keeps_ten_most_recent_per_family() {
-        let dir = unique_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         for ms in 1..=12u128 {
             create_log_at_with(&dir, "daemon", std::process::id(), ms, &none_alive).unwrap();
         }
@@ -177,7 +166,6 @@ mod tests {
         for ms in 3..=12u128 {
             assert!(present.contains(&format!("daemon_{pid}_{ms}.log")));
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Sondeo fijo: ningún PID ajeno está vivo.
@@ -188,7 +176,8 @@ mod tests {
     /// La poda no toca otras familias ni ficheros ajenos al patrón.
     #[test]
     fn create_log_leaves_other_families_and_foreign_files() {
-        let dir = unique_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("daemon.log"), "x").unwrap();
         std::fs::write(dir.join("notes.txt"), "x").unwrap();
@@ -207,31 +196,30 @@ mod tests {
             .count();
         let daemon = present.iter().filter(|n| n.starts_with("daemon_")).count();
         assert_eq!((tts, daemon), (LOG_RETENTION, LOG_RETENTION), "{present:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Dos logs de la misma familia en el mismo milisegundo no colisionan.
     #[test]
     fn create_log_retries_when_the_name_is_taken() {
-        let dir = unique_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let pid = std::process::id();
         let (first, _a) = create_log_at_with(&dir, "daemon", pid, 7, &none_alive).unwrap();
         let (second, _b) = create_log_at_with(&dir, "daemon", pid, 7, &none_alive).unwrap();
         assert_ne!(first, second);
         assert!(second.to_string_lossy().ends_with("_8.log"), "{second:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn create_log_names_family_pid_and_millis() {
-        let dir = unique_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let (path, _file) =
             create_log_at_with(&dir, "daemon", std::process::id(), 42, &none_alive).unwrap();
         assert_eq!(
             path.file_name().unwrap().to_string_lossy(),
             format!("daemon_{}_42.log", std::process::id())
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// La poda conserva el log de un PID sembrado vivo aunque sea el más
@@ -240,7 +228,8 @@ mod tests {
     /// arranque.
     #[test]
     fn prune_skips_logs_of_live_pids() {
-        let dir = unique_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let alive = |pid: u32| pid == LIVE_PID;
         // El log del PID vivo es el más antiguo de la familia.
         let (live_path, _live_file) =
@@ -263,7 +252,6 @@ mod tests {
         assert_eq!(dead.len(), LOG_RETENTION, "{present:?}");
         assert!(!present.contains(&log_name(DEAD_PID, 2)), "{present:?}");
         assert!(present.contains(&log_name(DEAD_PID, 3)), "{present:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// El recién creado es `keep`: sobrevive a su propia poda aunque no sea el
@@ -271,7 +259,8 @@ mod tests {
     /// que pasa con el proceso que poda, siempre en marcha).
     #[test]
     fn prune_never_deletes_the_just_created_log() {
-        let dir = unique_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let alive = |pid: u32| pid == LIVE_PID || pid == DEAD_PID;
         // Doce logs del PID que el control declara vivo: sin `keep` y sin la
         // guarda de viveza, cada creación podaría el recién creado por ser el
@@ -283,7 +272,6 @@ mod tests {
         }
         // Con la guarda de viveza todos sobreviven; el control los declara vivos.
         assert_eq!(names(&dir).len(), 12);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// El PID propio nunca se consulta al sondeo: aunque este lo declare vivo
@@ -291,7 +279,8 @@ mod tests {
     /// podables y la retención se cumple.
     #[test]
     fn prune_ignores_the_probe_for_the_own_pid() {
-        let dir = unique_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let all_alive = |_pid: u32| true;
         for ms in 1..=12u128 {
             create_log_at_with(&dir, "daemon", std::process::id(), ms, &all_alive).unwrap();
@@ -302,14 +291,14 @@ mod tests {
             !present.contains(&log_name(std::process::id(), 1)),
             "{present:?}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// El renombrado deja el nombre con el PID del hijo; el contenido del log no
     /// cambia porque el proceso escribe por su handle, no por su nombre.
     #[test]
     fn rename_log_to_pid_puts_the_child_pid_in_the_name() {
-        let dir = unique_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let (path, _file) =
             create_log_at_with(&dir, "daemon", std::process::id(), 77, &none_alive).unwrap();
         let renamed = rename_log_to_pid(&path, "daemon", 555);
@@ -319,19 +308,18 @@ mod tests {
         );
         assert!(renamed.exists());
         assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Un nombre que no sigue el patrón se devuelve tal cual, sin fallar: el
     /// renombrado es una mejora del nombre, nunca un requisito del arranque.
     #[test]
     fn rename_log_to_pid_leaves_unparsable_names_untouched() {
-        let dir = unique_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let odd = dir.join("daemon.log");
         std::fs::write(&odd, "x").unwrap();
         assert_eq!(rename_log_to_pid(&odd, "daemon", 555), odd);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn log_name(pid: u32, ms: u128) -> String {

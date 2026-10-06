@@ -1853,7 +1853,8 @@ fn main() {
             resolve_voice_engine("default", None),
             VoiceEngine::Preset("default".to_string())
         );
-        let q = std::env::temp_dir().join("avi_tts_test_reference.qvoice");
+        let tmp = tempfile::tempdir().unwrap();
+        let q = tmp.path().join("reference.qvoice");
         std::fs::write(&q, b"QVCE").unwrap();
         assert_eq!(
             resolve_voice_engine("my_voice", Some(&q)),
@@ -1864,7 +1865,6 @@ fn main() {
             resolve_voice_engine("vivian", None),
             VoiceEngine::Preset("vivian".to_string())
         );
-        std::fs::remove_file(&q).ok();
     }
 
     /// El healthcheck responde cuando el listener simula `/v1/health`, y
@@ -2034,13 +2034,13 @@ fn main() {
             name: "default".to_string(),
             qvoice_path: None,
         };
-        let out = std::env::temp_dir().join("avi_tts_test_out.wav");
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out.wav");
         let res = engine
             .synthesize_with_options("Hola", &profile, &GenerationOptions::default(), Some(&out))
             .expect("la síntesis HTTP simulada debe completarse");
         drop(handle);
         assert!(res.is_file());
-        std::fs::remove_file(&out).ok();
         let parsed: serde_json::Value = serde_json::from_str(&body.lock().unwrap()).unwrap();
         assert_eq!(parsed["temperature"], 0.5);
         assert_eq!(parsed["top_p"], 1.0);
@@ -2077,7 +2077,8 @@ fn main() {
             thread::sleep(Duration::from_millis(1500));
         });
         let engine = Qwen3TtsEngine::new(None);
-        let out = std::env::temp_dir().join("avi_tts_test_timeout.wav");
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("timeout.wav");
         let budget = Duration::from_millis(200);
         let err = engine
             .synthesize_via_http(
@@ -2208,10 +2209,7 @@ fn main() {
     /// `qwen_tts`; el cierre preciso por árbol se cubre en
     /// `resident_kill_tree_by_pid_terminates_child`.
     fn sleeping_process() -> avi_process::RestrictedChild {
-        let log_file = std::fs::File::create(
-            std::env::temp_dir().join(format!("avi-tts-sleep-{}.log", std::process::id())),
-        )
-        .expect("log del proceso durmiente");
+        let log_file = tempfile::tempfile().expect("log del proceso durmiente");
         let (program, args) = if cfg!(windows) {
             (
                 PathBuf::from("powershell"),
@@ -2239,10 +2237,7 @@ fn main() {
     /// Hijo que termina de inmediato con exit 1, lanzado con herencia
     /// restringida como el producto.
     fn exiting_process() -> avi_process::RestrictedChild {
-        let log_file = std::fs::File::create(
-            std::env::temp_dir().join(format!("avi-tts-exit-{}.log", std::process::id())),
-        )
-        .expect("log del proceso saliente");
+        let log_file = tempfile::tempfile().expect("log del proceso saliente");
         let (program, args) = if cfg!(windows) {
             (
                 PathBuf::from("cmd"),

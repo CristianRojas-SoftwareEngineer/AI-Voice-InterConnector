@@ -284,6 +284,7 @@ dependencies = [
  "directories",
  "serde",
  "serde_json",
+ "tempfile",
  "windows-sys 0.52.0",
 ]
 
@@ -340,6 +341,7 @@ dependencies = [
  "hound",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
