@@ -561,7 +561,11 @@ mod tests {
 
     #[test]
     fn repo_targets_curated_and_keep_sources() {
-        let root = std::env::temp_dir().join(format!("xtask_clean_repo_{}", std::process::id()));
+        let root_guard = tempfile::Builder::new()
+            .prefix("xtask_clean_repo_")
+            .tempdir()
+            .unwrap();
+        let root = root_guard.path().to_path_buf();
         let engine = root.join("vendor/qwen3-tts");
         let ingot = engine.join("third_party/ingot/src");
         std::fs::create_dir_all(&ingot).unwrap();
@@ -575,7 +579,6 @@ mod tests {
         std::fs::write(engine.join("third_party/ingot/libingot.a"), b"x").unwrap();
 
         let got = repo_targets(&root);
-        let _ = std::fs::remove_dir_all(&root);
 
         for keep in ["main.c", "Makefile", "presets"] {
             assert!(!got.contains(&engine.join(keep)), "no debe borrar {}", keep);
@@ -596,7 +599,11 @@ mod tests {
     /// fuentes, la compilación vigente y el triple del host.
     #[test]
     fn prune_targets_selective() {
-        let root = std::env::temp_dir().join(format!("xtask_clean_prune_{}", std::process::id()));
+        let root_guard = tempfile::Builder::new()
+            .prefix("xtask_clean_prune_")
+            .tempdir()
+            .unwrap();
+        let root = root_guard.path().to_path_buf();
         let target = root.join("target");
         let debug_deps = target.join("debug/deps");
         std::fs::create_dir_all(target.join("debug/incremental")).unwrap();
@@ -633,7 +640,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), b"x").unwrap();
 
         let got = prune_targets(&root);
-        let _ = std::fs::remove_dir_all(&root);
 
         for gone in [
             target.join("debug/incremental"),

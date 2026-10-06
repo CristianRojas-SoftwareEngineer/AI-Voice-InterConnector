@@ -206,6 +206,7 @@ dependencies = [
  "hound",
  "rubato",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -329,6 +330,7 @@ dependencies = [
  "ct2rs",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -5041,6 +5043,7 @@ dependencies = [
  "regex",
  "serde_json",
  "tar",
+ "tempfile",
  "zip",
 ]
 

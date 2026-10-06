@@ -161,15 +161,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unix_child_is_group_leader() {
-        let log_path = std::env::temp_dir().join(format!(
-            "avi-daemon-setsid-{}-{}.log",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        let log_file = std::fs::File::create(&log_path).expect("debe crear el registro");
+        // Registro anónimo: el sistema lo retira al soltar el último manejador.
+        let log_file = tempfile::tempfile().expect("debe crear el registro");
         let request = avi_process::RestrictedSpawnRequest {
             program: std::path::PathBuf::from("sleep"),
             args: vec![String::from("30")],
@@ -200,6 +193,5 @@ mod tests {
         }
         child.kill().expect("debe poder matar al hijo");
         child.wait().expect("debe poder recolectar al hijo");
-        let _ = std::fs::remove_file(&log_path);
     }
 }

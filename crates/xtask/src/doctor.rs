@@ -1175,10 +1175,11 @@ mod tests {
     /// exige las obligatorias (`sccache` y `target-hygiene` no bloquean).
     #[test]
     fn check_yields_all_rows_in_order() {
-        let root = std::env::temp_dir().join(format!("xtask_doctor_{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let report = check(&root, &toy_pins());
-        std::fs::remove_dir_all(&root).ok();
+        let root_guard = tempfile::Builder::new()
+            .prefix("xtask_doctor_")
+            .tempdir()
+            .unwrap();
+        let report = check(root_guard.path(), &toy_pins());
         let ids: Vec<&str> = report.rows.iter().map(|r| r.id).collect();
         assert_eq!(ids, ROW_IDS);
         let optional: Vec<&str> = report
@@ -1269,10 +1270,11 @@ mod tests {
 
     #[test]
     fn onnx_row_reports_missing_bundle() {
-        let root = std::env::temp_dir().join(format!("xtask_doctor_onnx_{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let row = check_onnx(&root, &toy_pins());
-        std::fs::remove_dir_all(&root).ok();
+        let root_guard = tempfile::Builder::new()
+            .prefix("xtask_doctor_onnx_")
+            .tempdir()
+            .unwrap();
+        let row = check_onnx(root_guard.path(), &toy_pins());
         assert_eq!(row.id, "onnx");
         assert_eq!(row.status, Status::Missing);
         assert_eq!(row.want, Some("1.28.0".to_string()));

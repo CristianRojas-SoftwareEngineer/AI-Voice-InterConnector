@@ -373,8 +373,10 @@ de 10 s en morir, o queda una voz vacía, es un fallo. Limpieza posterior: `daem
 retira el `daemon.pid` y el `daemon.ready` que dejó el daemon muerto.
 
 Un clonado interrumpido deja en el directorio temporal del sistema, a lo sumo,
-`avi_daemon_clone_<nombre>_<pid>.wav`, `avi_daemon_clone_<nombre>_<pid>.qvoice` y
-`avi_tts_ref24k_<pid>_<nanos>.wav` (el `<pid>` es el del daemon). Una pasada de
+el directorio `avi_daemon_clone_<pid>_<sufijo>` (con la referencia y el `.qvoice`
+parcial) y `avi_tts_ref24k_<pid>_<sufijo>.wav` (el `<pid>` es el del daemon); estos
+temporales tienen dueño y solo sobreviven si el proceso muere sin ejecutar sus
+destructores. Una pasada de
 `cleanup` los barre una vez que ese proceso ya no existe, porque su recuperación borra los
 temporales con prefijo `avi_`/`avi-` cuyo PID está muerto. Si el proceso muere durante el
 renombrado de la referencia puede quedar además un directorio

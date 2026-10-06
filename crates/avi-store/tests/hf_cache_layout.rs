@@ -57,8 +57,12 @@ async fn serve_model_file() -> String {
 #[tokio::test(flavor = "current_thread")]
 async fn pointer_and_blob_are_the_same_file() {
     let endpoint = serve_model_file().await;
-    let cache = std::env::temp_dir().join(format!("avi_store_hf_layout_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&cache);
+    // Caché con dueño: se borra al salir, también si una aserción falla.
+    let cache_guard = tempfile::Builder::new()
+        .prefix("avi_store_hf_layout_")
+        .tempdir()
+        .expect("directorio temporal de la caché");
+    let cache = cache_guard.path().to_path_buf();
 
     let client = hf_hub::HFClient::builder()
         .endpoint(endpoint)
@@ -85,6 +89,4 @@ async fn pointer_and_blob_are_the_same_file() {
         same_file::is_same_file(&pointer, &blob).expect("puntero y blob son comparables"),
         "el puntero debe ser el mismo archivo que el blob, no una copia"
     );
-
-    let _ = std::fs::remove_dir_all(&cache);
 }

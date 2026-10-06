@@ -629,6 +629,17 @@ pub fn write_zero_rate_wav(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    /// Reserva un `.wav` temporal con dueño: el fichero se borra al soltar la
+    /// ruta devuelta, también si la prueba falla.
+    fn temp_wav_path(name: &str) -> tempfile::TempPath {
+        tempfile::Builder::new()
+            .prefix(&format!("avi_audio_test_{name}_"))
+            .suffix(".wav")
+            .tempfile()
+            .unwrap()
+            .into_temp_path()
+    }
+
     /// Un mutex de audio envenenado no tumba el proceso: el recover entrega
     /// el estado que el hilo muerto dejó puesto y la operación sigue sobre él.
     #[test]
@@ -700,11 +711,10 @@ mod tests {
             writer.finalize().unwrap();
         }
 
-        let tmp_path = std::env::temp_dir().join("avi_audio_test_load_wav_16k_mono_pcm.wav");
+        let tmp_path = temp_wav_path("load_wav_16k_mono_pcm");
         std::fs::write(&tmp_path, cursor.into_inner()).unwrap();
 
         let pcm = crate::load_wav_16k_mono_pcm(&tmp_path).expect("debe cargar y normalizar el WAV");
-        std::fs::remove_file(&tmp_path).ok();
 
         // 300 muestras estéreo -> 150 muestras mono @48kHz -> ~50 muestras @16kHz.
         assert!(!pcm.is_empty());
@@ -713,8 +723,10 @@ mod tests {
 
     #[test]
     fn test_load_wav_16k_mono_pcm_missing_file_is_not_found() {
-        let path = std::env::temp_dir().join("avi_audio_test_never_exists.wav");
-        std::fs::remove_file(&path).ok();
+        // Ruta inexistente: se reserva y se cierra, de modo que no queda fichero.
+        let reserved = temp_wav_path("never_exists");
+        let path = reserved.to_path_buf();
+        reserved.close().unwrap();
         let err = crate::load_wav_16k_mono_pcm(&path).unwrap_err();
         assert!(
             matches!(err, crate::WavLoadError::NotFound),
@@ -724,10 +736,9 @@ mod tests {
 
     #[test]
     fn test_load_wav_16k_mono_pcm_garbage_bytes_is_invalid() {
-        let path = std::env::temp_dir().join("avi_audio_test_garbage.wav");
+        let path = temp_wav_path("garbage");
         std::fs::write(&path, b"esto no es un archivo wav, solo bytes basura").unwrap();
         let result = crate::load_wav_16k_mono_pcm(&path);
-        std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();
         assert!(
             matches!(err, crate::WavLoadError::Invalid(_)),
@@ -755,11 +766,10 @@ mod tests {
             writer.finalize().unwrap();
         }
 
-        let tmp_path = std::env::temp_dir().join("avi_audio_test_load_wav_24k_mono_pcm.wav");
+        let tmp_path = temp_wav_path("load_wav_24k_mono_pcm");
         std::fs::write(&tmp_path, cursor.into_inner()).unwrap();
 
         let pcm = crate::load_wav_24k_mono_pcm(&tmp_path).expect("debe cargar y normalizar el WAV");
-        std::fs::remove_file(&tmp_path).ok();
 
         // 160 muestras mono @16kHz -> ~240 muestras @24kHz (factor 1.5).
         assert!(!pcm.is_empty());
@@ -769,10 +779,10 @@ mod tests {
         );
     }
 
-    /// Escribe en el directorio temporal un WAV válido de 200 muestras al que se le
+    /// Escribe en un temporal con dueño un WAV válido de 200 muestras al que se le
     /// recortan los últimos bytes, de modo que la cabecera declara más datos de los
     /// que contiene el archivo.
-    fn write_truncated_wav(name: &str) -> std::path::PathBuf {
+    fn write_truncated_wav(name: &str) -> tempfile::TempPath {
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 16_000,
@@ -789,16 +799,14 @@ mod tests {
         }
         let mut bytes = cursor.into_inner();
         bytes.truncate(bytes.len() - 100);
-        let path =
-            std::env::temp_dir().join(format!("avi_audio_test_{name}_{}.wav", std::process::id()));
+        let path = temp_wav_path(name);
         std::fs::write(&path, bytes).unwrap();
         path
     }
 
     /// Escribe el WAV de frecuencia nula en un archivo temporal propio de la prueba.
-    fn zero_rate_wav_in_temp(name: &str) -> std::path::PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("avi_audio_test_{name}_{}.wav", std::process::id()));
+    fn zero_rate_wav_in_temp(name: &str) -> tempfile::TempPath {
+        let path = temp_wav_path(name);
         crate::write_zero_rate_wav(&path);
         path
     }
@@ -807,7 +815,6 @@ mod tests {
     fn test_load_wav_16k_mono_pcm_zero_sample_rate_is_invalid() {
         let path = zero_rate_wav_in_temp("rate0_16k");
         let result = crate::load_wav_16k_mono_pcm(&path);
-        std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();
         assert!(
             matches!(err, crate::WavLoadError::Invalid(_)),
@@ -819,7 +826,6 @@ mod tests {
     fn test_load_wav_24k_mono_pcm_zero_sample_rate_is_invalid() {
         let path = zero_rate_wav_in_temp("rate0_24k");
         let result = crate::load_wav_24k_mono_pcm(&path);
-        std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();
         assert!(
             matches!(err, crate::WavLoadError::Invalid(_)),
@@ -831,7 +837,6 @@ mod tests {
     fn test_load_wav_16k_mono_pcm_truncated_is_invalid() {
         let path = write_truncated_wav("truncated_16k");
         let result = crate::load_wav_16k_mono_pcm(&path);
-        std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();
         assert!(
             matches!(err, crate::WavLoadError::Invalid(_)),
@@ -843,7 +848,6 @@ mod tests {
     fn test_load_wav_24k_mono_pcm_truncated_is_invalid() {
         let path = write_truncated_wav("truncated_24k");
         let result = crate::load_wav_24k_mono_pcm(&path);
-        std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();
         assert!(
             matches!(err, crate::WavLoadError::Invalid(_)),
@@ -853,13 +857,9 @@ mod tests {
 
     #[test]
     fn test_load_wav_24k_mono_pcm_garbage_bytes_is_invalid() {
-        let path = std::env::temp_dir().join(format!(
-            "avi_audio_test_garbage_24k_{}.wav",
-            std::process::id()
-        ));
+        let path = temp_wav_path("garbage_24k");
         std::fs::write(&path, b"esto no es un archivo wav, solo bytes basura").unwrap();
         let result = crate::load_wav_24k_mono_pcm(&path);
-        std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();
         assert!(
             matches!(err, crate::WavLoadError::Invalid(_)),

@@ -341,11 +341,16 @@ pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, ort_version: &str) ->
     }
     std::fs::create_dir_all(&bundle)?;
     let (file, url) = ort_download(triple, ort_version)?;
-    let dest = std::env::temp_dir().join(format!("avi-ort-{ort_version}-{file}"));
+    // Archivo descargado con dueño: se borra al salir, también si falla la
+    // descarga o la extracción.
+    let dest = tempfile::Builder::new()
+        .prefix(&format!("avi-ort-{ort_version}-"))
+        .suffix(&format!("-{file}"))
+        .tempfile()?
+        .into_temp_path();
     eprintln!("Descargando ONNX Runtime {ort_version}: {url}");
     download_https(&url, &dest)?;
     extract_ort_library(&dest, &bundle, triple, ort_version)?;
-    std::fs::remove_file(&dest).ok();
     #[cfg(windows)]
     copy_vc_runtime(&bundle)?;
     std::fs::write(bundle.join(ORT_MARKER), ort_version)?;
@@ -609,16 +614,12 @@ pub fn run(
             bail!("librería no encontrada en {}: {lib}", bundle.display());
         }
     }
-    let stage = std::env::temp_dir().join(format!("avi-package-{triple}-{}", std::process::id()));
-    if stage.is_dir() {
-        std::fs::remove_dir_all(&stage)?;
-    }
-    std::fs::create_dir_all(&stage)?;
-    let result = stage_bundle(section, &sources, &root, &bundle, &stage);
-    if let Err(e) = result {
-        std::fs::remove_dir_all(&stage).ok();
-        return Err(e);
-    }
+    // Directorio de montaje con dueño: se borra al salir por cualquier camino.
+    let stage_guard = tempfile::Builder::new()
+        .prefix(&format!("avi-package-{triple}-"))
+        .tempdir()?;
+    let stage = stage_guard.path().to_path_buf();
+    stage_bundle(section, &sources, &root, &bundle, &stage)?;
     let out_dir = out.unwrap_or_else(|| root.join("artifacts"));
     std::fs::create_dir_all(&out_dir)?;
     let asset = release_asset_name(triple, &version)?;
@@ -628,7 +629,6 @@ pub fn run(
             std::fs::remove_dir_all(&dest)?;
         }
         copy_tree(&stage, &dest)?;
-        std::fs::remove_dir_all(&stage).ok();
         println!("Bundle sin comprimir: {}", dest.display());
         return Ok(());
     }
@@ -638,7 +638,6 @@ pub fn run(
     } else {
         compress_tar_gz(&stage, &dest, Some(section))?;
     }
-    std::fs::remove_dir_all(&stage).ok();
     println!("Artefacto: {}", dest.display());
     Ok(())
 }
@@ -703,8 +702,11 @@ mod tests {
             "x86_64-unknown-linux-gnu"
         };
         let section = sections.get(triple).unwrap();
-        let tag = format!("xtask_package_layout_{}", std::process::id());
-        let base = std::env::temp_dir().join(&tag);
+        let base_guard = tempfile::Builder::new()
+            .prefix("xtask_package_layout_")
+            .tempdir()
+            .unwrap();
+        let base = base_guard.path().to_path_buf();
         let src = base.join("src");
         let stage = base.join("stage");
         std::fs::create_dir_all(&src).unwrap();
@@ -729,7 +731,6 @@ mod tests {
         let mut required = section.required.clone();
         required.sort();
         assert_eq!(staged, required);
-        std::fs::remove_dir_all(&base).ok();
     }
 
     /// `--expect-version` divergente falla y el coincidente pasa (con y sin `v`).
@@ -804,8 +805,11 @@ mod tests {
         } else {
             "x86_64-unknown-linux-gnu"
         };
-        let base = std::env::temp_dir().join(format!("xtask_package_ort_{}", std::process::id()));
-        std::fs::create_dir_all(&base).unwrap();
+        let base_guard = tempfile::Builder::new()
+            .prefix("xtask_package_ort_")
+            .tempdir()
+            .unwrap();
+        let base = base_guard.path().to_path_buf();
         for lib in ort_expected_libs(triple).unwrap() {
             std::fs::write(base.join(lib), b"x").unwrap();
         }
@@ -819,7 +823,6 @@ mod tests {
         // Vacía (descarga truncada) tampoco es fresca: fuerza reconstruir.
         std::fs::write(base.join(ort_expected_libs(triple).unwrap()[0]), b"").unwrap();
         assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
-        std::fs::remove_dir_all(&base).ok();
     }
 
     /// El asset de Linux lista `libonnxruntime.so.1` (enlace, 0 bytes) antes
@@ -827,9 +830,11 @@ mod tests {
     /// los del enlace.
     #[test]
     fn extract_ignores_symlink_before_real_library() {
-        let base =
-            std::env::temp_dir().join(format!("xtask_package_symlink_{}", std::process::id()));
-        std::fs::create_dir_all(&base).unwrap();
+        let base_guard = tempfile::Builder::new()
+            .prefix("xtask_package_symlink_")
+            .tempdir()
+            .unwrap();
+        let base = base_guard.path().to_path_buf();
         let archive_path = base.join("ort.tgz");
         {
             let file = std::fs::File::create(&archive_path).unwrap();
@@ -861,13 +866,16 @@ mod tests {
             std::fs::read(bundle.join("libonnxruntime.so")).unwrap(),
             b"REAL"
         );
-        std::fs::remove_dir_all(&base).ok();
     }
 
     /// Compresión determinista: dos pasadas sobre el mismo árbol dan el mismo    /// archivo con exactamente las entradas del manifiesto.
     #[test]
     fn compression_is_deterministic() {
-        let base = std::env::temp_dir().join(format!("xtask_package_zip_{}", std::process::id()));
+        let base_guard = tempfile::Builder::new()
+            .prefix("xtask_package_zip_")
+            .tempdir()
+            .unwrap();
+        let base = base_guard.path().to_path_buf();
         let stage = base.join("stage");
         std::fs::create_dir_all(stage.join("vendor/qwen3-tts")).unwrap();
         std::fs::write(stage.join("ai-voice-interconnector"), b"bin").unwrap();
@@ -904,7 +912,6 @@ mod tests {
                 "vendor/qwen3-tts/qwen_tts"
             ]
         );
-        std::fs::remove_dir_all(&base).ok();
     }
 
     /// El destino del árbol sin comprimir: con `--flat` cuelga de la raíz de

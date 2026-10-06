@@ -884,21 +884,21 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String)> {
 
 /// Normaliza `ref_audio` (WAV de cualquier tasa/canales) al formato que exige el
 /// clonado del motor —24 kHz / 16-bit / mono— escribiéndolo en un WAV temporal
-/// único y devolviendo su ruta. El motor rechaza referencias que no sean 24 kHz;
+/// único con dueño y devolviendo su ruta: el fichero se borra al soltar el valor
+/// devuelto, por cualquier camino de salida. El motor rechaza referencias que no sean 24 kHz;
 /// el benchmark preprocesaba la referencia de la misma forma. El fallo de carga se
 /// propaga como `avi_audio::WavLoadError` dentro del `anyhow::Error`, de modo que
 /// quien llama lo recupera con `downcast_ref`.
-fn reference_24k_mono(ref_audio: &Path) -> Result<PathBuf> {
+fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
     let pcm = avi_audio::load_wav_24k_mono_pcm(ref_audio)?;
-    let unique = format!(
-        "avi_tts_ref24k_{}_{}.wav",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
-    let out_path = std::env::temp_dir().join(unique);
+    // `into_temp_path` cierra el manejador abierto: así el escritor y el motor
+    // hijo abren el fichero por ruta sin choque de uso compartido en Windows.
+    // El PID en el nombre permite al barrido del producto reconocer al dueño vivo.
+    let out_path = tempfile::Builder::new()
+        .prefix(&format!("avi_tts_ref24k_{}_", std::process::id()))
+        .suffix(".wav")
+        .tempfile()?
+        .into_temp_path();
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 24_000,
@@ -939,7 +939,6 @@ pub fn clone_voice(
     // rechaza sin depender de que el motor esté provisionado.
     let ref_wav = reference_24k_mono(ref_audio)?;
     let Some(bin) = resolve_binary() else {
-        let _ = std::fs::remove_file(&ref_wav);
         return Err(anyhow!(
             "El binario de clonado Qwen3-TTS no está provisionado."
         ));
@@ -951,7 +950,6 @@ pub fn clone_voice(
     ) {
         Ok(log) => log,
         Err(e) => {
-            let _ = std::fs::remove_file(&ref_wav);
             return Err(anyhow!("No se pudo crear el log del motor: {}", e));
         }
     };
@@ -991,7 +989,8 @@ pub fn clone_voice(
         let mut child = avi_process::spawn_with_allowlist(request)?;
         Ok(child.wait()?)
     })();
-    let _ = std::fs::remove_file(&ref_wav);
+    // La referencia normalizada se borra al soltar `ref_wav`, tras esperar al hijo.
+    drop(ref_wav);
     let status = status?;
     if status.success() {
         Ok(())
@@ -1386,10 +1385,11 @@ mod tests {
     /// Al registrar el residente, el pidfile trae su identidad y conserva el resto.
     #[test]
     fn resident_update_records_resident_identity() {
-        let dir = std::env::temp_dir().join(format!("avi_tts_pidfile_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("daemon.pid");
+        let dir = tempfile::Builder::new()
+            .prefix("avi_tts_pidfile_")
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("daemon.pid");
         std::fs::write(
             &path,
             r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 0}"#,
@@ -1407,7 +1407,6 @@ mod tests {
         assert_eq!(v["resident_identity"]["image"], own.image.as_str());
         assert_eq!(v["pid"], 4242);
         assert_eq!(v["addr"], "127.0.0.1:7001");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Los defaults del host deben coincidir con los defaults del motor
@@ -1631,13 +1630,13 @@ mod tests {
     /// temporal al soltarse, también si la prueba falla, para no dejar procesos.
     struct DoubleCleanup {
         pid: u32,
-        dir: PathBuf,
+        dir: tempfile::TempDir,
     }
 
     impl Drop for DoubleCleanup {
         fn drop(&mut self) {
+            // El directorio se borra al soltar el campo `dir`, ya sin el proceso.
             let _ = resident::kill_tree_resident_by_pid(self.pid);
-            let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
 
@@ -1648,10 +1647,12 @@ mod tests {
     /// abierta). Con `hold`: si la tubería estaba abierta espera a que se cierre
     /// y sale; si vio `eof` no sale por sí mismo (duerme 60 s). Sin `hold`
     /// sale tras el sondeo.
-    fn write_engine_double(name: &str, hold: bool) -> (PathBuf, PathBuf) {
-        let dir =
-            std::env::temp_dir().join(format!("avi-tts-double-{}-{}", name, std::process::id()));
-        std::fs::create_dir_all(&dir).expect("debe poder crear el directorio del doble");
+    fn write_engine_double(name: &str, hold: bool) -> (PathBuf, tempfile::TempDir) {
+        let temp = tempfile::Builder::new()
+            .prefix(&format!("avi-tts-double-{name}-"))
+            .tempdir()
+            .expect("debe poder crear el directorio del doble");
+        let dir = temp.path().to_path_buf();
         // El doble se compila con `rustc` como ejecutable nativo en lugar de un
         // script: un `.cmd` intermedio bajo `DETACHED_PROCESS` abre una consola
         // nueva y el script hijo hereda su entrada de consola (siempre abierta)
@@ -1714,7 +1715,7 @@ fn main() {
             "no se pudo compilar el doble: {}",
             String::from_utf8_lossy(&compiled.stderr)
         );
-        (bin, dir)
+        (bin, temp)
     }
 
     /// Espera (hasta 20 s) a que `path` exista con contenido y lo devuelve
@@ -1734,14 +1735,17 @@ fn main() {
 
     /// Lanza el motor doble con la función de arranque del residente y un log
     /// temporal propio. Devuelve el hijo y la limpieza.
-    fn launch_double(bin: &Path, dir: &Path) -> (avi_process::RestrictedChild, DoubleCleanup) {
-        let log_file = std::fs::File::create(dir.join("engine.log")).expect("log del doble");
+    fn launch_double(
+        bin: &Path,
+        dir: tempfile::TempDir,
+    ) -> (avi_process::RestrictedChild, DoubleCleanup) {
+        let log_file = std::fs::File::create(dir.path().join("engine.log")).expect("log del doble");
         let child =
             resident::launch_resident_process(bin, Path::new("modelos"), 8766, None, log_file)
                 .expect("debe poder lanzar el motor doble");
         let cleanup = DoubleCleanup {
             pid: child.id(),
-            dir: dir.to_path_buf(),
+            dir,
         };
         (child, cleanup)
     }
@@ -1751,8 +1755,8 @@ fn main() {
     #[test]
     fn launch_resident_process_passes_watch_stdin() {
         let (bin, dir) = write_engine_double("args", false);
-        let (_child, _cleanup) = launch_double(&bin, &dir);
-        let args = wait_for_marker(&dir.join("args.txt"));
+        let (_child, cleanup) = launch_double(&bin, dir);
+        let args = wait_for_marker(&cleanup.dir.path().join("args.txt"));
         assert!(
             args.split_whitespace().any(|a| a == "--watch-stdin"),
             "el motor debe recibir --watch-stdin; argumentos recibidos: {args}"
@@ -1764,8 +1768,8 @@ fn main() {
     #[test]
     fn launch_resident_process_keeps_stdin_pipe_open() {
         let (bin, dir) = write_engine_double("stdin", false);
-        let (_child, _cleanup) = launch_double(&bin, &dir);
-        let state = wait_for_marker(&dir.join("stdin.txt"));
+        let (_child, cleanup) = launch_double(&bin, dir);
+        let state = wait_for_marker(&cleanup.dir.path().join("stdin.txt"));
         assert_eq!(
             state, "open",
             "la entrada del motor debe ser una tubería abierta mientras corre"
@@ -1779,10 +1783,10 @@ fn main() {
     #[test]
     fn spawn_with_child_failure_terminates_engine() {
         let (bin, dir) = write_engine_double("health", true);
-        let (child, cleanup) = launch_double(&bin, &dir);
+        let (child, cleanup) = launch_double(&bin, dir);
         // El sondeo de entrada del doble debe haber concluido antes de provocar
         // el fallo, para que el cierre de la tubería llegue después de verla abierta.
-        let _ = wait_for_marker(&dir.join("stdin.txt"));
+        let _ = wait_for_marker(&cleanup.dir.path().join("stdin.txt"));
         let result = resident::Qwen3TtsResident::spawn_with_child(child, 1, test_log_path(), 2, 30);
         assert!(result.is_err(), "sin servidor el healthcheck debe fallar");
         let deadline = Instant::now() + Duration::from_secs(5);

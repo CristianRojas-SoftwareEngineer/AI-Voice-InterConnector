@@ -1200,16 +1200,17 @@ async fn handle_voice(
                     "El modelo Base de clonado TTS no está provisionado. Ejecuta 'setup' primero.",
                 )
             })?;
-            // Prefijo `avi_` para que el barrido de temp de `cleanup`/`uninstall`
-            // lo alcance si el proceso muere antes del borrado explícito.
-            let tmp_qvoice = std::env::temp_dir().join(format!(
-                "avi_clone_{}_{}.qvoice",
-                name,
-                std::process::id()
-            ));
+            // Temporal con dueño: se borra al soltarse por cualquier camino. El
+            // prefijo `avi_` deja que el barrido de temp de `cleanup`/`uninstall`
+            // lo alcance si el proceso muere antes del borrado.
+            let tmp_qvoice = tempfile::Builder::new()
+                .prefix(&format!("avi_clone_{}_", std::process::id()))
+                .suffix(".qvoice")
+                .tempfile()
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
+                .into_temp_path();
             let cloned = avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name, "es")
                 .and_then(|()| voice_store.save_reference(&name, &tmp_qvoice));
-            let _ = std::fs::remove_file(&tmp_qvoice);
             let saved_qvoice = cloned.map_err(|e| {
                 // Una referencia ilegible se clasifica igual que en transcripción.
                 match e.downcast_ref::<avi_audio::WavLoadError>() {
@@ -1734,7 +1735,10 @@ async fn handle_speech(
                 ));
             }
 
-            let tmp_wav = std::env::temp_dir().join(format!("avi_tts_{}.wav", label));
+            // Guardián del temporal: lo borra al salir de ámbito por cualquier camino.
+            let tmp_guard = avi_shared::TempWav::new("avi_tts_")
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+            let tmp_wav = tmp_guard.path().clone();
             let engine = Qwen3TtsEngine::new(None);
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
@@ -4323,7 +4327,10 @@ async fn synthesize_via_daemon(
         temperature,
     )
     .await?;
-    let tmp = std::env::temp_dir().join(format!("avi_tts_{}.wav", label_lower));
+    // Guardián del temporal: lo borra al salir de ámbito por cualquier camino.
+    let tmp_guard = avi_shared::TempWav::new("avi_tts_")
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    let tmp = tmp_guard.path().clone();
     std::fs::write(&tmp, &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
 
@@ -4357,7 +4364,6 @@ async fn synthesize_via_daemon(
             Some(saved) => saved,
             None => {
                 // Opción 4 / EOF: descartado, exit 0 (RF-12.3).
-                let _ = std::fs::remove_file(&tmp);
                 if json_mode {
                     emit_raw_json(json!({ "status": "discarded", "voice": voice }));
                 } else {
@@ -4371,7 +4377,6 @@ async fn synthesize_via_daemon(
             .save(voice, &label_lower, text, &tmp)
             .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?
     };
-    let _ = std::fs::remove_file(&tmp);
     if let Some(out) = output {
         std::fs::copy(&saved, out)
             .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;

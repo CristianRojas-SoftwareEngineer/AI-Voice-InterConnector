@@ -242,12 +242,13 @@ mod tests {
         render_toolchain(&toy_pins())
     }
 
-    /// Directorio temporal propio de cada prueba: dos pruebas con el mismo
-    /// nombre se pisarían si corrieran en el mismo proceso en paralelo.
-    fn own_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("xtask_pins_{name}_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// Directorio temporal propio de cada prueba, con dueño: se borra al soltarse,
+    /// también si la prueba falla.
+    fn own_dir(name: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("xtask_pins_{name}_"))
+            .tempdir()
+            .unwrap()
     }
 
     #[test]
@@ -317,7 +318,8 @@ mod tests {
 
     #[test]
     fn sync_writes_channel_from_pins() {
-        let dir = own_dir("sync");
+        let guard = own_dir("sync");
+        let dir = guard.path();
         std::fs::create_dir_all(dir.join("packaging")).unwrap();
         std::fs::write(
             dir.join("packaging/pins.json"),
@@ -330,15 +332,15 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        run(false, true, Some(&dir)).unwrap();
+        run(false, true, Some(dir)).unwrap();
         let written = std::fs::read_to_string(dir.join("rust-toolchain.toml")).unwrap();
         assert_eq!(channel_of(&written).as_deref(), Some("1.96.0"));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn check_reads_tree_from_disk() {
-        let dir = own_dir("check");
+        let guard = own_dir("check");
+        let dir = guard.path();
         std::fs::create_dir_all(dir.join("packaging")).unwrap();
         std::fs::create_dir_all(dir.join(".circleci")).unwrap();
         std::fs::write(
@@ -354,7 +356,6 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join(".circleci/config.yml"), toy_config()).unwrap();
         std::fs::write(dir.join("rust-toolchain.toml"), toy_toolchain()).unwrap();
-        run(true, false, Some(&dir)).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
+        run(true, false, Some(dir)).unwrap();
     }
 }

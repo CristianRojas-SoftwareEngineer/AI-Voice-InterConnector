@@ -32,6 +32,7 @@ avi-translation = { path = "crates/avi-translation" }
 avi-lifecycle = { path = "crates/avi-lifecycle" }
 # Arranque de consola en UTF-8 compartido con `xtask` (`force_utf8_console`).
 avi-shared = { path = "crates/avi-shared" }
+tempfile = "3"
 # Cliente HTTP async del CLI para el dispatch 3-modos contra el daemon.
 # `default-features = false` preserva el cliente ligero (HTTP sin TLS, suficiente
 # para localhost); el daemon expone solo rutas HTTP en 127.0.0.1:8765.
@@ -67,8 +68,6 @@ libc = "0.2"
 
 [dev-dependencies]
 hound = "3"
-# Solo para los tests: sandboxes y capturas con dueño que se borran al soltarse.
-tempfile = "3"
 avi-stt = { path = "crates/avi-stt" }
 # Solo para los tests: expone el generador de WAV de frecuencia nula.
 avi-audio = { path = "crates/avi-audio", features = ["test-support"] }

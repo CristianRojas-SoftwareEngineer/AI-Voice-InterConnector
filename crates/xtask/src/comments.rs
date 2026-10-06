@@ -320,24 +320,22 @@ mod tests {
     /// Escribe un árbol de fixtures en el temporal y lo escanea, para probar el rechazo
     /// sin tocar el repositorio.
     ///
-    /// El directorio lleva un contador y no el número de ficheros porque las pruebas
-    /// corren en paralelo dentro del mismo proceso: dos fixtures con el mismo número de
-    /// ficheros comparten nombre y una lee los archivos de la otra, que es como cinco de
-    /// estas pruebas fallaron a la vez la primera vez.
+    /// El directorio es único por llamada y con dueño: las pruebas corren en paralelo
+    /// dentro del mismo proceso y dos fixtures no deben compartir nombre, y se borra al
+    /// salir aunque la prueba falle.
     fn scan_fixture(files: &[(&str, String)]) -> Vec<Hit> {
-        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("xtask-comments-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let guard = tempfile::Builder::new()
+            .prefix("xtask-comments-")
+            .tempdir()
+            .unwrap();
+        let dir = guard.path().to_path_buf();
         for (rel, body) in files {
             let path = dir.join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, body).unwrap();
         }
         let collected = collect_files(&dir).unwrap();
-        let hits = scan(&dir, &collected);
-        let _ = std::fs::remove_dir_all(&dir);
-        hits
+        scan(&dir, &collected)
     }
 
     #[test]
@@ -420,11 +418,11 @@ mod tests {
             "//! La oferta cita la {} de la licencia.\n",
             section_citation()
         );
-        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1000);
-        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("xtask-comments-allow-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let guard = tempfile::Builder::new()
+            .prefix("xtask-comments-allow-")
+            .tempdir()
+            .unwrap();
+        let dir = guard.path().to_path_buf();
         // Se replica la estructura real del fichero con supervivencia: la lista blanca
         // compara la ruta relativa, así que basta el mismo caminho relativo.
         let path = dir.join(ALLOWLIST[0].file);
@@ -432,7 +430,6 @@ mod tests {
         std::fs::write(&path, &body).unwrap();
         let collected = collect_files(&dir).unwrap();
         let hits = scan(&dir, &collected);
-        let _ = std::fs::remove_dir_all(&dir);
         assert!(
             hits.is_empty(),
             "un fichero de la lista blanca no se reporta: {hits:?}"

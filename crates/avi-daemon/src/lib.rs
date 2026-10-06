@@ -1131,12 +1131,27 @@ async fn voices_clone_handler(
                 .into_response();
         }
     };
-    // Escribir audio a temporal WAV para clone_voice
-    let tmp_wav = std::env::temp_dir().join(format!(
-        "avi_daemon_clone_{}_{}.wav",
-        name,
-        std::process::id()
-    ));
+    // Directorio de trabajo con dueño: contiene el WAV de referencia y el
+    // `.qvoice` parcial, y se borra al soltarse por cualquier camino de salida.
+    // El PID en el nombre permite al barrido del producto reconocer al dueño vivo.
+    let work_dir = match tempfile::Builder::new()
+        .prefix(&format!("avi_daemon_clone_{}_", std::process::id()))
+        .tempdir()
+    {
+        Ok(dir) => dir,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(with_sv(json!({
+                    "error": "io_error",
+                    "reason": "io_error",
+                    "message": "No se pudo crear el directorio temporal.",
+                }))),
+            )
+                .into_response();
+        }
+    };
+    let tmp_wav = work_dir.path().join("reference.wav");
     if std::fs::write(&tmp_wav, &audio_bytes).is_err() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1148,11 +1163,7 @@ async fn voices_clone_handler(
         )
             .into_response();
     }
-    let tmp_qvoice = std::env::temp_dir().join(format!(
-        "avi_daemon_clone_{}_{}.qvoice",
-        name,
-        std::process::id()
-    ));
+    let tmp_qvoice = work_dir.path().join("voice.qvoice");
     // Stream NDJSON: las validaciones baratas ya pasaron en JSON plano;
     // `started` inmediato antes del trabajo pesado, latidos cada ~500 ms y
     // evento final con la forma contractual actual (`precomputed: true` =
@@ -1161,29 +1172,22 @@ async fn voices_clone_handler(
     tokio::spawn(async move {
         emit_ndjson(&tx, json!({ "event": "started", "name": name })).await;
         let event_name = name.clone();
-        let tmp_qvoice_cleanup = tmp_qvoice.clone();
+        let clone_qvoice = tmp_qvoice.clone();
         let clone_work = tokio::task::spawn_blocking(move || {
-            let r = avi_tts::clone_voice(
+            avi_tts::clone_voice(
                 &base_model_dir,
                 &tmp_wav,
-                &tmp_qvoice,
+                &clone_qvoice,
                 &name,
                 DEFAULT_CLONE_LANGUAGE,
-            );
-            let _ = std::fs::remove_file(&tmp_wav);
-            match r {
-                Ok(()) => Ok((tmp_qvoice, name)),
-                Err(e) => {
-                    let _ = std::fs::remove_file(&tmp_qvoice);
-                    Err(e)
-                }
-            }
+            )
+            .map(|()| (work_dir, name))
         });
-        let (tmp_qvoice, name) = match with_heartbeats(&tx, "clone", clone_work).await {
+        // `_work_dir` mantiene vivo el directorio hasta el final de la tarea.
+        let (_work_dir, name) = match with_heartbeats(&tx, "clone", clone_work).await {
             None => {
-                // Cliente desconectado: trabajo abortado; limpieza best-effort
-                // del parcial (el hilo bloqueante puede seguir hasta su retorno).
-                let _ = std::fs::remove_file(&tmp_qvoice_cleanup);
+                // Cliente desconectado: el hilo bloqueante conserva el directorio
+                // de trabajo y lo borra al retornar.
                 return;
             }
             Some(Ok(Ok(v))) => v,
@@ -1222,13 +1226,11 @@ async fn voices_clone_handler(
         };
         // Sin entrega a cliente caído: no persistir (sin fuga de estado).
         if tx.is_closed() {
-            let _ = std::fs::remove_file(&tmp_qvoice);
             return;
         }
         let saved_qvoice = match state.voice_store.save_reference(&name, &tmp_qvoice) {
             Ok(p) => p,
             Err(e) => {
-                let _ = std::fs::remove_file(&tmp_qvoice);
                 emit_ndjson(
                     &tx,
                     json!({
@@ -1242,7 +1244,6 @@ async fn voices_clone_handler(
                 return;
             }
         };
-        let _ = std::fs::remove_file(&tmp_qvoice);
         // Warm-on-clone (A): precalienta la voz recién clonada en segundo plano
         // para eliminar el cold-start del residente en la primera síntesis del
         // flujo clonar→sintetizar. Se conserva en `spawn_blocking` y se anuncia
@@ -1835,17 +1836,20 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()>
     // Reloj de trabajo tomado tras el lock: mide warmup puro y excluye la espera
     // en cola contra tráfico vivo.
     let work_t0 = std::time::Instant::now();
-    let tmp = std::env::temp_dir().join(format!("avi_daemon_warmup_{}.wav", std::process::id()));
-    let result = state
-        .tts_engine
-        .synthesize_with_options(
-            "Calentamiento del daemon.",
-            &profile,
-            &GenerationOptions::production(),
-            Some(&tmp),
-        )
-        .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e));
-    let _ = std::fs::remove_file(&tmp);
+    // El WAV de calentamiento tiene dueño: se borra al salir, también si falla.
+    let result = avi_shared::TempWav::new("avi_daemon_warmup_")
+        .map_err(|e| anyhow::anyhow!("No se pudo reservar el WAV de calentamiento: {}", e))
+        .and_then(|tmp| {
+            state
+                .tts_engine
+                .synthesize_with_options(
+                    "Calentamiento del daemon.",
+                    &profile,
+                    &GenerationOptions::production(),
+                    Some(tmp.path()),
+                )
+                .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e))
+        });
     eprintln!(
         "[daemon] warm_voice_engine '{}': {:.1} s tras locks (éxito={}).",
         voice,
@@ -2409,28 +2413,29 @@ mod tests {
     }
 
     /// Estado del daemon con los almacenes anclados en un directorio temporal
-    /// único por llamada (pid + contador), sin tocar el directorio de datos real.
-    fn test_state() -> DaemonState {
+    /// único por llamada, sin tocar el directorio de datos real. Devuelve también
+    /// el directorio con dueño: el llamante lo retiene mientras use el estado y
+    /// se borra al soltarse.
+    fn test_state() -> (DaemonState, tempfile::TempDir) {
         #[cfg(feature = "native-stt")]
         require_parakeet();
-        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let tmp = std::env::temp_dir().join(format!(
-            "avi_daemon_test_state_{}_{}",
-            std::process::id(),
-            n
-        ));
-        DaemonState::with_stores(
-            VoiceStore::at(tmp.join("voices")),
-            SpeechStore::at(tmp.join("speech")),
+        let tmp = tempfile::Builder::new()
+            .prefix("avi_daemon_test_state_")
+            .tempdir()
+            .expect("directorio temporal del estado");
+        let state = DaemonState::with_stores(
+            VoiceStore::at(tmp.path().join("voices")),
+            SpeechStore::at(tmp.path().join("speech")),
         )
-        .expect("daemon state")
+        .expect("daemon state");
+        (state, tmp)
     }
 
     /// Router expone `/health` y endpoints `/translate`, `/voices/clone`, `/dub` (7 rutas públicas)
     #[test]
     fn build_router_exposes_new_endpoints() {
-        let state = Arc::new(test_state());
+        let (state, _dir) = test_state();
+        let state = Arc::new(state);
         // El router debe construirse sin panic con el estado del daemon; la
         // existencia de cada ruta se ejercita en los tests de handlers (p. ej.
         // `dub_handler_audio_missing`), no vía el `Debug` del `Router` — axum no
@@ -2560,7 +2565,8 @@ mod tests {
     /// al soltarse, ejecuta el trabajo y entrega su resultado.
     #[tokio::test]
     async fn synthesis_phase_emits_queued_heartbeats_while_lock_held() {
-        let state = Arc::new(test_state());
+        let (state, _dir) = test_state();
+        let state = Arc::new(state);
         state.set_warm();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let guard = state.synthesis_lock.lock().await;
@@ -2592,7 +2598,8 @@ mod tests {
     /// Si el daemon está calentando, la espera del lock late con `warming`.
     #[tokio::test]
     async fn synthesis_phase_emits_warming_stage_during_warmup() {
-        let state = Arc::new(test_state());
+        let (state, _dir) = test_state();
+        let state = Arc::new(state);
         state.set_warming();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let guard = state.synthesis_lock.lock().await;
@@ -2627,7 +2634,8 @@ mod tests {
     /// un hecho observado y no una consecuencia de acertar con una duración.
     #[tokio::test]
     async fn synthesis_phase_slow_job_keeps_heartbeats_and_succeeds() {
-        let state = Arc::new(test_state());
+        let (state, _dir) = test_state();
+        let state = Arc::new(state);
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let (release, hold) = std::sync::mpsc::channel::<()>();
         let phase_state = state.clone();
@@ -2692,7 +2700,7 @@ mod tests {
     /// tipado que devuelve el propio trabajo.
     #[tokio::test]
     async fn synthesis_phase_timeout_cancels_job_and_emits_reason() {
-        let state = test_state();
+        let (state, _dir) = test_state();
 
         // Deadline de la fase: el trabajo tarda más que presupuesto + margen.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -2755,7 +2763,7 @@ mod tests {
     /// hubiera fallado.
     #[tokio::test]
     async fn synthesis_phase_success_marks_warm() {
-        let state = test_state();
+        let (state, _dir) = test_state();
         state.set_warm_failed("fallo previo".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel::<String>(64);
         let res = run_synthesis_phase_with(
@@ -2778,7 +2786,8 @@ mod tests {
     /// caso activa la cancelación del trabajo.
     #[tokio::test]
     async fn synthesis_phase_disconnect_cancels_job() {
-        let state = Arc::new(test_state());
+        let (state, _dir) = test_state();
+        let state = Arc::new(state);
 
         // Desconexión durante la espera del lock.
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -2843,7 +2852,8 @@ mod tests {
         use base64::Engine;
         use http_body_util::BodyExt;
         use tower::ServiceExt;
-        let state = Arc::new(test_state());
+        let (state, _dir) = test_state();
+        let state = Arc::new(state);
         let app = build_router_with_state(state);
         // 41 s de silencio PCM 16 kHz mono (i16 little-endian).
         let silence = vec![0u8; 41 * 16_000 * 2];
@@ -2962,7 +2972,8 @@ mod tests {
         use axum::body::Body;
         use http_body_util::BodyExt;
         use tower::ServiceExt;
-        let state = Arc::new(test_state());
+        let (state, _dir) = test_state();
+        let state = Arc::new(state);
         let app = build_router_with_state(state);
         let req = axum::http::Request::builder()
             .uri(uri)

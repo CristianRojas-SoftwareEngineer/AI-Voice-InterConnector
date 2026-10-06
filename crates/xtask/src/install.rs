@@ -168,7 +168,11 @@ mod tests {
     /// nivel por debajo; si no está, no hay instalación.
     #[test]
     fn staged_binary_resolution() {
-        let base = std::env::temp_dir().join(format!("xtask_install_{}", std::process::id()));
+        let base_guard = tempfile::Builder::new()
+            .prefix("xtask_install_")
+            .tempdir()
+            .unwrap();
+        let base = base_guard.path().to_path_buf();
         let flat = base.join("flat");
         let nested = base.join("nested").join("inner");
         let empty = base.join("empty");
@@ -187,15 +191,17 @@ mod tests {
             nested.join(product_bin_name())
         );
         assert!(find_staged_binary(&empty).is_none());
-
-        std::fs::remove_dir_all(&base).ok();
     }
 
     /// El staging se borra ante el fallo (aquí simulado: borrar dos veces
     /// no falla y la segunda no encuentra nada).
     #[test]
     fn staging_removal_is_idempotent() {
-        let dir = std::env::temp_dir().join(format!("xtask_install_rm_{}", std::process::id()));
+        let guard = tempfile::Builder::new()
+            .prefix("xtask_install_rm_")
+            .tempdir()
+            .unwrap();
+        let dir = guard.path().to_path_buf();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub").join("f"), b"x").unwrap();
         remove_staging(&dir);

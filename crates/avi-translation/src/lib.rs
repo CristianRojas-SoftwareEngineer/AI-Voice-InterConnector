@@ -291,9 +291,11 @@ mod tests {
     fn ct2_dir_with_only_model_bin_loader_fails() {
         use crate::Ct2TranslationEngine;
 
-        let dir = std::env::temp_dir().join(format!("avi_ct2_broken_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("crear dir temporal");
+        let guard = tempfile::Builder::new()
+            .prefix("avi_ct2_broken_")
+            .tempdir()
+            .expect("crear dir temporal");
+        let dir = guard.path().to_path_buf();
         std::fs::write(dir.join("model.bin"), b"senyuelo-sin-tokenizador")
             .expect("escribir model.bin señuelo");
 
@@ -301,7 +303,6 @@ mod tests {
             Ct2TranslationEngine::new(&dir).is_err(),
             "el loader debe rechazar un dir sin tokenizador"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Test de conformidad funcional contra el corpus de referencia.

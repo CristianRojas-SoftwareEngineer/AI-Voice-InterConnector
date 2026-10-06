@@ -51,12 +51,9 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Ruta al binario bajo test, inyectada por Cargo en tests de integración.
 const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Prefijo de los directorios que crea este archivo.
 ///
@@ -78,41 +75,22 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// en `Sandbox::nuevo`, y `sweep_never_touches_a_foreign_test_sandbox`, en
 /// `crates/avi-lifecycle/tests/recovery.rs`, la comprueba contra el barrido real.
 const PREFIX_SANDBOX: &str = "contract-sandbox_";
-/// Prefijo del tempfile donde se captura la salida del hijo. Mismo criterio, y el motivo es
-/// que un `.tmp` con prefijo del producto sería un temporal propio de pleno derecho.
-const PREFIX_TMP: &str = "contract-stdout_";
+/// Captura anónima para la salida del hijo: un fichero sin nombre en el directorio, que
+/// el sistema retira al soltar el último manejador, así que no queda residuo ni con
+/// pánico y no existe nombre que el barrido del producto pudiera alcanzar.
+fn anonymous_capture() -> std::fs::File {
+    tempfile::tempfile().expect("no se pudo crear la captura anónima")
+}
 
-/// Crea un tempfile único con semántica atómica `O_CREAT|O_EXCL`.
-///
-/// Es el mismo primitivo que usa `cli_golden.rs`, y está aquí duplicado a propósito: el
-/// archivo no comparte utils con aquel porque aquel es un binario de prueba y este otro, y
-/// un `mod` común entre `tests/*.rs` de paquetes distintos no existe sin tocar la
-/// estructura de la suite.
-fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
-    let dir = std::env::temp_dir();
-    for attempt in 0..64u32 {
-        let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = dir.join(format!(
-            "{PREFIX_TMP}{}_{}_{}_{}",
-            std::process::id(),
-            attempt,
-            n,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or_default()
-        ));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(file) => return (path, file),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => panic!("no se pudo crear el tempfile {}: {}", path.display(), e),
-        }
-    }
-    panic!("no se pudo crear un tempfile único tras 64 intentos");
+/// Lee la captura desde el principio: el hijo escribió por un manejador duplicado y el
+/// desplazamiento compartido está al final.
+fn read_capture(file: &mut std::fs::File) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0)).expect("rebobinar la captura");
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .unwrap_or_else(|e| panic!("no se pudo leer la captura: {e}"));
+    text
 }
 
 /// Ruta a la CRT real del sistema para un archivo del bundle, si lo es.
@@ -174,17 +152,17 @@ struct Sandbox {
     /// Entorno del hijo. `TEMP`/`TMP`/`TMPDIR` reubican su temporal, que la tabla no permite
     /// reubicar por variable de la aplicación.
     envs: Vec<(String, String)>,
+    /// Dueño del directorio raíz: lo borra al soltarse el sandbox, también con pánico.
+    _guard: tempfile::TempDir,
 }
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or_default();
-        let root =
-            std::env::temp_dir().join(format!("{PREFIX_SANDBOX}{tag}_{}_{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("{PREFIX_SANDBOX}{tag}_"))
+            .tempdir()
+            .expect("crear el directorio del sandbox");
+        let root = guard.path().to_path_buf();
         let staging = root.join("opt").join(format!(
             "{}contract-{tag}",
             avi_lifecycle::STAGING_DIR_PREFIX
@@ -279,7 +257,12 @@ impl Sandbox {
             ),
         ];
         envs.sort();
-        Self { exe, envs, root }
+        Self {
+            exe,
+            envs,
+            root,
+            _guard: guard,
+        }
     }
 
     /// Ejecuta el hijo y devuelve su código de salida y su envelope.
@@ -288,13 +271,21 @@ impl Sandbox {
     /// es JSON, el pánico muestra el código y la cola del error en vez de un
     /// fichero vacío que no dice nada (un fallo así en CI es ciego sin esto).
     fn run(&self, args: &[&str]) -> (i32, Value) {
-        let (tmp, file) = open_atomic_tmp();
-        let (err_tmp, err_file) = open_atomic_tmp();
+        let mut out_capture = anonymous_capture();
+        let mut err_capture = anonymous_capture();
         let mut cmd = Command::new(&self.exe);
         cmd.args(args)
             .stdin(std::process::Stdio::null())
-            .stdout(file)
-            .stderr(err_file);
+            .stdout(
+                out_capture
+                    .try_clone()
+                    .expect("duplicar la captura de stdout"),
+            )
+            .stderr(
+                err_capture
+                    .try_clone()
+                    .expect("duplicar la captura de stderr"),
+            );
         // Sin consola propia, un invocador sin consola vería abrirse y cerrarse una
         // ventana por cada ejecución del binario.
         #[cfg(windows)]
@@ -308,11 +299,8 @@ impl Sandbox {
         let status = cmd.spawn().expect("el hijo debe arrancar").wait();
         let status = status.expect("el hijo debe terminar");
         let code = status.code().expect("el hijo debe terminar con un código");
-        let stdout = std::fs::read_to_string(&tmp)
-            .unwrap_or_else(|e| panic!("no se pudo leer {}: {}", tmp.display(), e));
-        let _ = std::fs::remove_file(&tmp);
-        let stderr = std::fs::read_to_string(&err_tmp).unwrap_or_default();
-        let _ = std::fs::remove_file(&err_tmp);
+        let stdout = read_capture(&mut out_capture);
+        let stderr = read_capture(&mut err_capture);
         let tail: String = stderr
             .chars()
             .rev()
@@ -355,12 +343,6 @@ impl Sandbox {
     }
 }
 
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
 /// El invariante del prefijo, desde el lado de este archivo.
 ///
 /// Son dos porque este archivo es el peor de los dos casos: **ejecuta `self install`**, que
@@ -373,10 +355,7 @@ impl Drop for Sandbox {
 /// dos formas naturales colisionan, como demuestra el propio mensaje.
 #[test]
 fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
-    for (name, prefix) in [
-        ("el sandbox", PREFIX_SANDBOX),
-        ("el tempfile de salida", PREFIX_TMP),
-    ] {
+    for (name, prefix) in [("el sandbox", PREFIX_SANDBOX)] {
         for product in avi_store::TEMP_PREFIXES {
             assert!(
                 !prefix.starts_with(product),

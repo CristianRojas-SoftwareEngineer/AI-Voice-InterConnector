@@ -18,3 +18,5 @@ avi-process = { path = "../avi-process" }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1.1"
+# Temporales con dueño: se borran al soltarse, por cualquier camino de salida.
+tempfile = "3"
