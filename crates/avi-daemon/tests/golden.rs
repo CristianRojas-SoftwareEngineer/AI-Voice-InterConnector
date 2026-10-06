@@ -41,16 +41,69 @@ use tower::ServiceExt;
 use avi_daemon::{build_router_with_state, DaemonState, WarmState};
 use avi_store::{SpeechStore, VoiceStore};
 
+/// Raíz temporal única de este proceso de pruebas: `<temp>/golden-avi-daemon/<pid>`.
+/// Los estados estáticos no ejecutan `Drop`, así que sus carpetas no pueden
+/// tener dueño; en su lugar viven bajo esta raíz y la siguiente ejecución
+/// barre las raíces de procesos que ya no existen.
+fn process_root() -> &'static std::path::Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let parent = std::env::temp_dir().join("golden-avi-daemon");
+        sweep_dead_process_dirs(&parent);
+        let root = parent.join(std::process::id().to_string());
+        std::fs::create_dir_all(&root).expect("crear la raíz temporal del proceso");
+        root
+    })
+}
+
+/// Borra de `parent` solo las carpetas cuyo nombre es un PID sin vida. Un PID
+/// reutilizado por un proceso vivo se respeta, y cualquier otro nombre se deja.
+fn sweep_dead_process_dirs(parent: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        if !avi_process::pid_alive_exact(pid) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// El barrido borra solo la carpeta de un PID muerto: la de otro formato y la
+/// de un PID vivo (el propio) quedan intactas. Opera sobre un padre temporal
+/// propio para no tocar la raíz compartida de otras ejecuciones.
+#[test]
+fn sweep_removes_only_dead_pid_dirs() {
+    let parent = tempfile::tempdir().expect("directorio temporal");
+    let dead = parent.path().join("2000000000");
+    let other = parent.path().join("otro-formato");
+    let alive = parent.path().join(std::process::id().to_string());
+    for dir in [&dead, &other, &alive] {
+        std::fs::create_dir_all(dir.join("sub")).expect("crear carpeta de prueba");
+    }
+    sweep_dead_process_dirs(parent.path());
+    assert!(!dead.exists(), "la carpeta del PID muerto debe borrarse");
+    assert!(other.is_dir(), "una carpeta de otro formato no se toca");
+    assert!(alive.is_dir(), "la carpeta de un PID vivo no se toca");
+}
+
 /// Prepara una sola vez por proceso el entorno que comparten los dos estados:
-/// `AVI_DATA_DIR` apunta al directorio temporal propio del proceso para que los
+/// `AVI_DATA_DIR` apunta a la raíz temporal propia del proceso para que los
 /// logs del motor residente que lanza el clonado no caigan en el directorio de
 /// datos del usuario, y el motor residente escucha en un puerto efímero propio
 /// (`QWEN3_TTS_PORT`) para no chocar con el del daemon del usuario.
 fn prepare_shared_env() {
     static PREPARED: Once = Once::new();
     PREPARED.call_once(|| {
-        let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
-        std::env::set_var("AVI_DATA_DIR", &tmp);
+        std::env::set_var("AVI_DATA_DIR", process_root().join("data"));
         let tts_port = std::net::TcpListener::bind("127.0.0.1:0")
             .and_then(|listener| listener.local_addr())
             .expect("reservar un puerto efímero para el motor residente")
@@ -74,17 +127,16 @@ fn test_state() -> Arc<DaemonState> {
             #[cfg(feature = "native-stt")]
             require_parakeet();
             prepare_shared_env();
-            Arc::new(contract_state("avi_golden_state"))
+            Arc::new(contract_state(&process_root().join("state")))
         })
         .clone()
 }
 
-/// Estado de contrato con los almacenes en el directorio temporal `dir_prefix`
-/// del proceso y el motor TTS sin binario.
-fn contract_state(dir_prefix: &str) -> DaemonState {
+/// Estado de contrato con los almacenes bajo la carpeta `tmp` y el motor TTS
+/// sin binario.
+fn contract_state(tmp: &std::path::Path) -> DaemonState {
     #[cfg(feature = "native-stt")]
     require_parakeet();
-    let tmp = std::env::temp_dir().join(format!("{dir_prefix}_{}", std::process::id()));
     let mut state = DaemonState::with_stores(
         VoiceStore::at(tmp.join("voices")),
         SpeechStore::at(tmp.join("speech")),
@@ -99,7 +151,7 @@ fn contract_state(dir_prefix: &str) -> DaemonState {
 /// esté provisionado en el equipo.
 fn state_without_base_model() -> Arc<DaemonState> {
     prepare_shared_env();
-    let mut state = contract_state("avi_golden_reflimit");
+    let mut state = contract_state(&process_root().join("reflimit"));
     state.tts_engine.base_model_dir = None;
     Arc::new(state)
 }
@@ -119,7 +171,7 @@ fn clone_state() -> Arc<DaemonState> {
             #[cfg(feature = "native-stt")]
             require_parakeet();
             prepare_shared_env();
-            let tmp = std::env::temp_dir().join(format!("avi_golden_clone_{}", std::process::id()));
+            let tmp = process_root().join("clone");
             let mut state = DaemonState::with_stores(
                 VoiceStore::at(tmp.join("voices")),
                 SpeechStore::at(tmp.join("speech")),
@@ -262,15 +314,15 @@ fn require_clone_binary() {
 async fn health_matches_fixture() {
     // Los almacenes del estado deben anclarse bajo un directorio temporal propio
     // y no en el directorio de datos del usuario; se afirma antes de escribir.
-    let tmp = std::env::temp_dir().join(format!("avi_golden_state_{}", std::process::id()));
+    let tmp = process_root();
     let state = test_state();
     assert!(
-        state.voice_store.root().starts_with(&tmp),
+        state.voice_store.root().starts_with(tmp),
         "raíz de voces fuera del temporal: {}",
         state.voice_store.root().display()
     );
     assert!(
-        state.speech_store.root().starts_with(&tmp),
+        state.speech_store.root().starts_with(tmp),
         "raíz de habla fuera del temporal: {}",
         state.speech_store.root().display()
     );
@@ -709,7 +761,8 @@ async fn warm_voice_fail_fast_and_acceptance() {
     // Fail-fast: voz inexistente → Err antes del bind.
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let nonexistent_voice = format!("warm_nonexistent_{}", std::process::id());
-    let tmp = std::env::temp_dir().join(format!("avi_golden_warm_missing_{}", std::process::id()));
+    let dir = tempfile::tempdir().expect("directorio temporal");
+    let tmp = dir.path();
     let res = avi_daemon::run_daemon_server(
         addr,
         nonexistent_voice.clone(),
@@ -730,21 +783,18 @@ async fn warm_voice_fail_fast_and_acceptance() {
     );
 
     // Aceptación: una voz existente satisface el predicado de la guarda.
-    let store = VoiceStore::at(
-        std::env::temp_dir().join(format!("avi_golden_warm_ok_{}", std::process::id())),
-    );
-    let tmp = std::env::temp_dir().join(format!("warm_ok_{}.qvoice", std::process::id()));
-    std::fs::write(&tmp, b"qvoice-fixture").expect("escribir fixture qvoice");
+    let ok_dir = tempfile::tempdir().expect("directorio temporal");
+    let store = VoiceStore::at(ok_dir.path().join("voices"));
+    let qvoice = ok_dir.path().join("warm_ok.qvoice");
+    std::fs::write(&qvoice, b"qvoice-fixture").expect("escribir fixture qvoice");
     let name = format!("warm_ok_{}", std::process::id());
     store
-        .save_reference(&name, &tmp)
+        .save_reference(&name, &qvoice)
         .expect("registrar voz de prueba");
-    let _ = std::fs::remove_file(&tmp);
     assert!(
         store.find_reference(&name).is_some(),
         "la voz registrada debe pasar la validación de --warm-voice"
     );
-    let _ = store.remove(&name);
 }
 
 /// Puerto ocupado: `run_daemon_server` devuelve `StartupError::PortInUse` con
@@ -755,12 +805,12 @@ async fn port_in_use_fails_before_loading_models() {
     let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("ocupar un puerto");
     let busy = holder.local_addr().unwrap();
     let start = std::time::Instant::now();
-    let tmp = std::env::temp_dir().join(format!("avi_golden_port_busy_{}", std::process::id()));
+    let dir = tempfile::tempdir().expect("directorio temporal");
     let err = avi_daemon::run_daemon_server(
         busy,
         "default".into(),
-        VoiceStore::at(tmp.join("voices")),
-        SpeechStore::at(tmp.join("speech")),
+        VoiceStore::at(dir.path().join("voices")),
+        SpeechStore::at(dir.path().join("speech")),
     )
     .await
     .expect_err("un puerto ocupado debe abortar el arranque");
@@ -784,14 +834,14 @@ async fn supervised_startup_failure_is_terminal() {
     let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("ocupar un puerto");
     let busy = holder.local_addr().unwrap();
     let start = std::time::Instant::now();
-    let tmp = std::env::temp_dir().join(format!("avi_golden_supervised_{}", std::process::id()));
+    let dir = tempfile::tempdir().expect("directorio temporal");
     let err = avi_daemon::run_supervised(
         busy,
         true,
         3,
         "default".into(),
-        VoiceStore::at(tmp.join("voices")),
-        SpeechStore::at(tmp.join("speech")),
+        VoiceStore::at(dir.path().join("voices")),
+        SpeechStore::at(dir.path().join("speech")),
     )
     .await
     .expect_err("un puerto ocupado debe abortar la supervisión");
@@ -1030,7 +1080,7 @@ fn hold_tts_connection() -> HeldTts {
 /// a `server_url` en lugar de arrancar un residente.
 fn state_with_held_tts(tts_port: u16, dir_prefix: &str) -> Arc<DaemonState> {
     prepare_shared_env();
-    let mut state = contract_state(dir_prefix);
+    let mut state = contract_state(&process_root().join(dir_prefix));
     let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
     state.tts_engine.binary_path = Some(missing.clone());
     state.tts_engine.model_dir = Some(missing);

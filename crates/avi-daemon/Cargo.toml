@@ -34,3 +34,5 @@ native-translation = ["avi-translation/native-translation"]
 # sin abrir un socket TCP real (tower::ServiceExt::oneshot).
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Solo para los tests: carpetas temporales con dueño que se borran al soltarse.
+tempfile = "3"

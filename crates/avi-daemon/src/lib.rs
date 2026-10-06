@@ -2933,8 +2933,8 @@ mod tests {
     fn with_stores_anchors_stores_under_given_dir() {
         #[cfg(feature = "native-stt")]
         require_parakeet();
-        let tmp = std::env::temp_dir().join(format!("avi_daemon_stores_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
+        let dir = tempfile::tempdir().expect("directorio temporal");
+        let tmp = dir.path().to_path_buf();
         let state = DaemonState::with_stores(
             VoiceStore::at(tmp.join("voices")),
             SpeechStore::at(tmp.join("speech")),
@@ -2955,7 +2955,6 @@ mod tests {
             .ensure_initialized()
             .expect("inicializar voces");
         assert!(tmp.join("voices").join("default").is_dir());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Envía un POST JSON al router y devuelve el estado y el cuerpo completo.
@@ -3055,19 +3054,11 @@ mod tests {
         );
     }
 
-    /// Ruta de fichero ready en un directorio temporal propio de cada prueba.
-    fn ready_path(test: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("avi_daemon_ready_{}_{}", test, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("crear directorio temporal");
-        dir.join("daemon.ready")
-    }
-
     /// Cada clase de fallo sobrevive la ida y vuelta por el fichero ready.
     #[test]
     fn ready_failure_round_trips_each_class() {
-        let path = ready_path("failure_round_trip");
+        let dir = tempfile::tempdir().expect("directorio temporal");
+        let path = dir.path().join("daemon.ready");
         for err in [
             StartupError::PortInUse { port: 8765 },
             StartupError::WarmVoiceMissing {
@@ -3080,13 +3071,13 @@ mod tests {
             write_ready_failure(&path, &err);
             assert_eq!(read_ready_signal(&path), Some(ReadySignal::Failed(err)));
         }
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// El registro de éxito se lee como `Ready` con el PID propio y sin `error`.
     #[test]
     fn ready_success_reads_addr_and_pid() {
-        let path = ready_path("success");
+        let dir = tempfile::tempdir().expect("directorio temporal");
+        let path = dir.path().join("daemon.ready");
         let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
         write_ready_file(&path, &addr, "warming");
         let Some(ReadySignal::Ready { addr, pid, .. }) = read_ready_signal(&path) else {
@@ -3094,13 +3085,13 @@ mod tests {
         };
         assert_eq!(addr, "127.0.0.1:8765");
         assert_eq!(pid, Some(std::process::id()));
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// El ready publica la identidad propia del daemon y el lector la devuelve.
     #[test]
     fn ready_file_publishes_own_identity() {
-        let path = ready_path("identity");
+        let dir = tempfile::tempdir().expect("directorio temporal");
+        let path = dir.path().join("daemon.ready");
         let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
         write_ready_file(&path, &addr, "ok");
         let own = avi_process::process_identity(std::process::id()).expect("identidad propia");
@@ -3117,23 +3108,23 @@ mod tests {
             panic!("el registro de éxito se lee como Ready");
         };
         assert_eq!(identity, Some(own));
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// Fichero ausente o vacío: aún no hay señal.
     #[test]
     fn ready_missing_or_empty_is_none() {
-        let path = ready_path("missing");
+        let dir = tempfile::tempdir().expect("directorio temporal");
+        let path = dir.path().join("daemon.ready");
         assert_eq!(read_ready_signal(&path), None);
         std::fs::write(&path, "").unwrap();
         assert_eq!(read_ready_signal(&path), None);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// Una clase desconocida se entrega como `Failed` con la clase en el mensaje.
     #[test]
     fn ready_unknown_failure_class_is_failed() {
-        let path = ready_path("unknown_class");
+        let dir = tempfile::tempdir().expect("directorio temporal");
+        let path = dir.path().join("daemon.ready");
         std::fs::write(&path, "error=cosa_nueva\n").unwrap();
         match read_ready_signal(&path) {
             Some(ReadySignal::Failed(StartupError::Failed { message })) => {
@@ -3141,13 +3132,13 @@ mod tests {
             }
             other => panic!("se esperaba Failed, llegó {:?}", other),
         }
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// Un mensaje multilínea queda en una sola línea del registro.
     #[test]
     fn ready_failure_message_is_flattened() {
-        let path = ready_path("flatten");
+        let dir = tempfile::tempdir().expect("directorio temporal");
+        let path = dir.path().join("daemon.ready");
         let err = StartupError::Failed {
             message: "línea uno\r\nlínea dos\nlínea tres".to_string(),
         };
@@ -3158,6 +3149,5 @@ mod tests {
                 message: "línea uno  línea dos línea tres".to_string(),
             }))
         );
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
