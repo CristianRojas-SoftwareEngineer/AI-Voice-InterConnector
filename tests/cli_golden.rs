@@ -3605,18 +3605,45 @@ mod tts {
         assert_eq!(actual["reason"], Value::String("voice_exists".to_string()));
     }
 
+    /// Compila `source` con `rustc` como ejecutable nativo `name` dentro de `dir`.
+    /// En Windows los dobles de motor son ejecutables nativos y no scripts: el
+    /// motor se lanza sin consola, y un `.cmd` crearía una consola propia visible.
+    #[cfg(windows)]
+    fn compile_engine_double(dir: &Path, name: &str, source: &str) -> PathBuf {
+        use std::os::windows::process::CommandExt;
+        let src = dir.join(format!("{name}.rs"));
+        std::fs::write(&src, source).expect("escribir el código del doble");
+        let bin = dir.join(format!("{name}.exe"));
+        let compiled = Command::new("rustc")
+            .args(["--edition", "2021"])
+            .arg(&src)
+            .arg("-o")
+            .arg(&bin)
+            .creation_flags(avi_process::CREATE_NO_WINDOW)
+            .output()
+            .expect("rustc debe estar disponible para compilar el doble");
+        assert!(
+            compiled.status.success(),
+            "no se pudo compilar el doble: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        bin
+    }
+
     /// Escribe en `dir` un motor falso que imprime una marca por stdout y otra por
     /// stderr y sale con 1; devuelve su ruta.
     fn write_fake_engine(dir: &Path) -> PathBuf {
         #[cfg(windows)]
         {
-            let path = dir.join("motor_falso.cmd");
-            std::fs::write(
-                &path,
-                "@echo off\r\necho MARCA_MOTOR_STDOUT\r\necho MARCA_MOTOR_STDERR 1>&2\r\nexit /b 1\r\n",
+            compile_engine_double(
+                dir,
+                "motor_falso",
+                "fn main() {\n\
+                 \x20   println!(\"MARCA_MOTOR_STDOUT\");\n\
+                 \x20   eprintln!(\"MARCA_MOTOR_STDERR\");\n\
+                 \x20   std::process::exit(1);\n\
+                 }\n",
             )
-            .expect("escribir motor falso");
-            path
         }
         #[cfg(unix)]
         {
@@ -3706,27 +3733,29 @@ mod tts {
     fn write_stdin_probe_engine(dir: &Path) -> PathBuf {
         #[cfg(windows)]
         {
-            let script = dir.join("motor_sonda.ps1");
-            std::fs::write(
-                &script,
-                "$flag = if ($args -contains '--watch-stdin') { 'con' } else { 'sin' }\r\n\
-                 $in = [Console]::OpenStandardInput()\r\n\
-                 $buf = New-Object byte[] 1\r\n\
-                 $task = $in.ReadAsync($buf, 0, 1)\r\n\
-                 if ($task.Wait(500)) {\r\n\
-                 \x20 if ($task.Result -eq 0) { $stdin = 'eof' } else { $stdin = 'datos' }\r\n\
-                 } else { $stdin = 'abierto' }\r\n\
-                 Set-Content -Path $env:AVI_FAKE_ENGINE_REPORT -Value \"flag=$flag\", \"stdin=$stdin\"\r\n\
-                 exit 1\r\n",
+            compile_engine_double(
+                dir,
+                "motor_sonda",
+                "use std::io::Read;\n\
+                 use std::time::Duration;\n\
+                 fn main() {\n\
+                 \x20   let flag = if std::env::args().any(|a| a == \"--watch-stdin\") { \"con\" } else { \"sin\" };\n\
+                 \x20   let (tx, rx) = std::sync::mpsc::channel();\n\
+                 \x20   std::thread::spawn(move || {\n\
+                 \x20       let mut buf = [0u8; 1];\n\
+                 \x20       let read = std::io::stdin().read(&mut buf).unwrap_or(0);\n\
+                 \x20       let _ = tx.send(read);\n\
+                 \x20   });\n\
+                 \x20   let stdin = match rx.recv_timeout(Duration::from_millis(500)) {\n\
+                 \x20       Ok(0) => \"eof\",\n\
+                 \x20       Ok(_) => \"datos\",\n\
+                 \x20       Err(_) => \"abierto\",\n\
+                 \x20   };\n\
+                 \x20   let report = std::env::var(\"AVI_FAKE_ENGINE_REPORT\").unwrap();\n\
+                 \x20   std::fs::write(report, format!(\"flag={flag}\\nstdin={stdin}\\n\")).unwrap();\n\
+                 \x20   std::process::exit(1);\n\
+                 }\n",
             )
-            .expect("escribir el script del motor sonda");
-            let path = dir.join("motor_sonda.cmd");
-            std::fs::write(
-                &path,
-                "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0motor_sonda.ps1\" %*\r\nexit /b 1\r\n",
-            )
-            .expect("escribir el motor sonda");
-            path
         }
         #[cfg(unix)]
         {

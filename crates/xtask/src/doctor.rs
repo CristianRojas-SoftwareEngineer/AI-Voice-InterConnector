@@ -95,7 +95,7 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
 
 /// Comando de sonda sin ventana de consola propia en Windows: un invocador sin
 /// consola vería abrirse y cerrarse una ventana por cada sonda.
-fn probe_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+pub(crate) fn probe_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
     #[cfg(windows)]
     {
@@ -788,7 +788,7 @@ pub(crate) fn target_hygiene_warn(size_bytes: u64, hook_active: Option<bool>) ->
 /// ¿Apunta `core.hooksPath` a `.githooks`? `None` si git no responde: no
 /// penalizar un entorno sin git por un aviso de higiene.
 fn probe_hooks_path(root: &Path) -> Option<bool> {
-    let out = std::process::Command::new("git")
+    let out = probe_command("git")
         .current_dir(root)
         .args(["config", "core.hooksPath"])
         .output()

@@ -476,10 +476,10 @@ fn main() -> Result<()> {
                 check_licenses_gate()?;
                 check_code_quality_gate()?;
                 let last = last_tag()?;
-                let diff_status = std::process::Command::new("git")
+                let diff_status = doctor::probe_command("git")
                     .args(["diff", "--quiet"])
                     .status()?;
-                let diff_cached_status = std::process::Command::new("git")
+                let diff_cached_status = doctor::probe_command("git")
                     .args(["diff", "--cached", "--quiet"])
                     .status()?;
                 if !diff_status.success() || !diff_cached_status.success() {
@@ -487,7 +487,7 @@ fn main() -> Result<()> {
                         "working tree con cambios pendientes: commitea o stashea antes de release (git status debe estar limpio)"
                     );
                 }
-                let log_out = std::process::Command::new("git")
+                let log_out = doctor::probe_command("git")
                     .args(["log", &format!("v{}..HEAD", last), "--oneline"])
                     .output()?;
                 if !log_out.status.success() {
@@ -834,7 +834,7 @@ fn bump_version(version: &str) -> Result<()> {
 
 /// Resuelve el último tag anotado en el repositorio.
 fn last_tag() -> Result<String> {
-    let output = std::process::Command::new("git")
+    let output = doctor::probe_command("git")
         .args(["describe", "--tags", "--abbrev=0"])
         .output()?;
     if !output.status.success() {
@@ -934,7 +934,7 @@ fn today_iso() -> String {
         }
     }
     // Fallback: obtener de git (último commit)
-    if let Ok(out) = std::process::Command::new("git")
+    if let Ok(out) = doctor::probe_command("git")
         .args(["log", "-1", "--format=%ad", "--date=format:%Y-%m-%d"])
         .output()
     {
