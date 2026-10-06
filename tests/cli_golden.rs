@@ -3637,7 +3637,7 @@ mod tts {
         {
             compile_engine_double(
                 dir,
-                "motor_falso",
+                "fake_engine",
                 "fn main() {\n\
                  \x20   println!(\"MARCA_MOTOR_STDOUT\");\n\
                  \x20   eprintln!(\"MARCA_MOTOR_STDERR\");\n\
@@ -3648,7 +3648,7 @@ mod tts {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let path = dir.join("motor_falso.sh");
+            let path = dir.join("fake_engine.sh");
             std::fs::write(
                 &path,
                 "#!/bin/sh\necho MARCA_MOTOR_STDOUT\necho MARCA_MOTOR_STDERR 1>&2\nexit 1\n",
@@ -3735,7 +3735,7 @@ mod tts {
         {
             compile_engine_double(
                 dir,
-                "motor_sonda",
+                "probe_engine",
                 "use std::io::Read;\n\
                  use std::time::Duration;\n\
                  fn main() {\n\
@@ -3760,7 +3760,7 @@ mod tts {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let path = dir.join("motor_sonda.sh");
+            let path = dir.join("probe_engine.sh");
             std::fs::write(
                 &path,
                 "#!/bin/bash\n\
@@ -3796,7 +3796,7 @@ mod tts {
         );
         let engine = write_stdin_probe_engine(&inst.dir);
         let engine_path = engine.to_string_lossy().to_string();
-        let report = inst.dir.join("informe_motor.txt");
+        let report = inst.dir.join("engine_report.txt");
         let report_path = report.to_string_lossy().to_string();
         let mut envs = inst.contract_args();
         envs.push(("QWEN3_TTS_BIN", engine_path.as_str()));
