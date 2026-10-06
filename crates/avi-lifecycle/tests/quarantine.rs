@@ -950,9 +950,6 @@ impl ProcessControl for Inert {
     fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
         false
     }
-    fn sweep_resident_by_image(&self) -> bool {
-        false
-    }
 }
 
 /// El criterio 9: instalar quita la cuarentena de **todo** el directorio de programa, no

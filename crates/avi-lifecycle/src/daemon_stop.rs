@@ -281,8 +281,7 @@ pub fn remove_pid_file(data_dir: &Path) -> std::io::Result<()> {
 ///
 /// Lo implementa el binario, con las funciones que ya endurecieron el protocolo:
 /// `avi_daemon::pid_alive` y `kill_tree_by_pid`, y
-/// `avi_tts::resident::{resident_pid_alive, kill_tree_resident_by_pid,
-/// sweep_resident_by_image}`.
+/// `avi_tts::resident::{resident_pid_alive, kill_tree_resident_by_pid}`.
 pub trait ProcessControl {
     /// ¿Vive el proceso de ese PID?
     fn pid_alive(&self, pid: u32) -> bool;
@@ -294,9 +293,6 @@ pub trait ProcessControl {
     fn resident_pid_alive(&self, pid: u32) -> bool;
     /// Reclama el árbol del residente por su PID registrado.
     fn kill_tree_resident_by_pid(&self, pid: u32) -> bool;
-    /// Último recurso: barrido del residente **por imagen propia** (`qwen_tts`),
-    /// que sí es seguro porque la imagen es del producto y no del CLI.
-    fn sweep_resident_by_image(&self) -> bool;
     /// Identidad observada del proceso con ese PID, o `None` si no existe o no se
     /// puede observar. Por defecto no se observa nada.
     fn identity(&self, _pid: u32) -> Option<ProcessIdentity> {
@@ -408,17 +404,14 @@ pub async fn stop(
     }
 
     // 2b) Residente por identidad estable. Con PID registrado se mata su árbol
-    // preciso; sin PID —pidfile perdido— el último recurso es el barrido por
-    // imagen `qwen_tts`, seguro porque la imagen es del producto. La
-    // verificación por `resident_pid` muerto vive en el paso 3.
+    // preciso; sin PID registrado no hay residente que reclamar y nada se mata
+    // por imagen. La verificación por `resident_pid` muerto vive en el paso 3.
     let resident = read_resident_pid(data_dir);
     if resident != 0
         && resident != std::process::id()
         && resident_registered(data_dir, control) == Registered::Ours
     {
         control.kill_tree_resident_by_pid(resident);
-    } else if resident == 0 {
-        control.sweep_resident_by_image();
     }
 
     // 3) Verificación con lo que queda del plazo global.
@@ -671,14 +664,12 @@ mod tests {
     /// llegó a reclamar.
     struct Inert {
         killed: AtomicU32,
-        swept: AtomicU32,
     }
 
     impl Inert {
         fn new() -> Self {
             Self {
                 killed: AtomicU32::new(0),
-                swept: AtomicU32::new(0),
             }
         }
     }
@@ -696,10 +687,6 @@ mod tests {
         }
         fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
             self.killed.fetch_add(1, Ordering::Relaxed);
-            true
-        }
-        fn sweep_resident_by_image(&self) -> bool {
-            self.swept.fetch_add(1, Ordering::Relaxed);
             true
         }
     }
@@ -722,9 +709,6 @@ mod tests {
             false
         }
         fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
-            false
-        }
-        fn sweep_resident_by_image(&self) -> bool {
             false
         }
         fn identity(&self, pid: u32) -> Option<ProcessIdentity> {
@@ -1042,13 +1026,13 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// El barrido por imagen del residente es el último recurso y solo se dispara
-    /// sin PID registrado: con PID, la vía es el árbol preciso.
+    /// Sin `resident_pid` registrado no se mata ningún proceso por imagen: un
+    /// residente vivo no registrado sobrevive a la parada y el motor no lo
+    /// reclama, porque solo se reclama lo que el pidfile identifica.
     #[tokio::test]
-    async fn resident_sweep_only_without_registered_pid() {
+    async fn stop_without_registered_resident_kills_nothing() {
         let data = scratch("resident");
-
-        let without_pid = Inert::new();
+        let unregistered = 888_888;
         write_pid(
             &data,
             999_999,
@@ -1057,27 +1041,24 @@ mod tests {
             identity_of("111", "daemon.exe"),
         )
         .unwrap();
-        stop(&data, &dead_port(), &without_pid).await;
-        assert_eq!(
-            without_pid.swept.load(Ordering::Relaxed),
-            1,
-            "sin PID de residente se barre por imagen propia"
+        let control = Observed::new(
+            &[unregistered],
+            &[(unregistered, identity_of("222", "qwen_tts.exe"))],
         );
 
-        let with_pid = Inert::new();
-        write_pid(
-            &data,
-            999_999,
-            &dead_port(),
-            888_888,
-            identity_of("111", "daemon.exe"),
-        )
-        .unwrap();
-        stop(&data, &dead_port(), &with_pid).await;
+        let outcome = stop(&data, &dead_port(), &control).await;
         assert_eq!(
-            with_pid.swept.load(Ordering::Relaxed),
+            control.killed.load(Ordering::Relaxed),
             0,
-            "con PID de residente no se barre por imagen: se mata su árbol"
+            "sin PID de residente registrado no se mata nada"
+        );
+        assert!(
+            control.is_alive(unregistered),
+            "el residente no registrado sigue vivo: no se barre por imagen"
+        );
+        assert!(
+            !outcome.resident_alive,
+            "el veredicto solo ve al residente que el pidfile registra"
         );
         std::fs::remove_dir_all(&data).ok();
     }
@@ -1100,9 +1081,6 @@ mod tests {
             pid == self.resident
         }
         fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
-            false
-        }
-        fn sweep_resident_by_image(&self) -> bool {
             false
         }
         fn identity(&self, pid: u32) -> Option<ProcessIdentity> {
@@ -1304,9 +1282,6 @@ mod tests {
         }
         fn kill_tree_resident_by_pid(&self, pid: u32) -> bool {
             self.kill(pid)
-        }
-        fn sweep_resident_by_image(&self) -> bool {
-            false
         }
         fn identity(&self, pid: u32) -> Option<ProcessIdentity> {
             if !self.is_alive(pid) {

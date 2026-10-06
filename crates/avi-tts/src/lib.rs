@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -25,10 +24,8 @@ pub const DEFAULT_PORT: u16 = 8766;
 pub const RESIDENT_HOST: std::net::Ipv4Addr = std::net::Ipv4Addr::LOCALHOST;
 
 /// Nombre de imagen del proceso residente (`qwen_tts`). Fuente única para la
-/// resolución del binario y para el barrido por imagen de último recurso
-/// (`resident::sweep_resident_by_image`). El residente tiene imagen propia
-/// —a diferencia del daemon, que comparte imagen con el CLI—, así que el
-/// kill-por-imagen es seguro sólo para el residente.
+/// resolución del binario del residente. Nunca se usa para matar por imagen: el
+/// residente muere con su daemon y se reclama por PID registrado.
 #[cfg(windows)]
 pub const RESIDENT_IMAGE_NAME: &str = "qwen_tts.exe";
 #[cfg(unix)]
@@ -372,11 +369,10 @@ impl Qwen3TtsEngine {
     /// PID (señal que no requiere el lock, con verificación inmediata sin espera);
     /// el `shutdown` mata por PID exacto, no por imagen —si el árbol preciso no lo
     /// termina, la verificación con deadline la hace el llamante (graceful del
-    /// daemon / parada del CLI) y el fallo es ruidoso. El barrido por imagen
-    /// (`sweep_resident_by_image`) queda como último recurso del camino de
-    /// reclamo cuando no hay `resident_pid` registrado. La recolección del estado
-    /// se hace best-effort con `try_lock` (si el warmup lo tiene, no esperamos:
-    /// el proceso ya está muerto y su `Drop` recolectará el estado al liberarse).
+    /// daemon / parada del CLI) y el fallo es ruidoso. Sin `resident_pid`
+    /// registrado no hay nada que matar. La recolección del estado se hace
+    /// best-effort con `try_lock` (si el warmup lo tiene, no esperamos: el
+    /// proceso ya está muerto y su `Drop` recolectará el estado al liberarse).
     pub fn shutdown(&self) {
         let pid = self.resident_pid.load(Ordering::Relaxed);
         if pid != 0 {
@@ -566,7 +562,7 @@ fn update_resident_pid_in_pidfile(pid: u32) {
 /// Cuerpo de [`update_resident_pid_in_pidfile`] sobre una ruta concreta.
 ///
 /// Sin `resident_identity` observable no se registra `resident_pid`: la
-/// parada del residente cae entonces al barrido por imagen, que ya existe.
+/// residente queda sin registrar y no se reclama por PID.
 /// Los fallos de lectura/parseo/escritura dejan traza; nunca son silenciosos.
 fn update_resident_pid_at(path: &Path, pid: u32) {
     let content = match std::fs::read_to_string(path) {
@@ -1201,7 +1197,7 @@ pub mod resident {
         fn drop(&mut self) {
             if let Some(mut child) = self.child.take() {
                 // Cierre por árbol con recolección: el `shutdown()` previo ya mató el
-                // árbol preciso por PID (imagen solo como último recurso); aquí
+                // árbol preciso por PID; aquí
                 // `kill+wait` recolecta el estado del `child` (ya muerto entonces,
                 // o vivo en un drop normal). Insuficiente ante caída a medio
                 // `spawn` (sin `Child` que recolectar): por eso `run_supervised`
@@ -1215,8 +1211,8 @@ pub mod resident {
 
     /// Viveza real de un PID a nivel de sistema (sin Mutex ni HTTP).
     /// `pub` para el camino de reclamo/parada del CLI: muerte por PID
-    /// registrado + verificación de que ese PID quedó muerto; sin PID, el
-    /// último recurso es `sweep_resident_by_image` + ausencia por imagen.
+    /// registrado + verificación de que ese PID quedó muerto; sin PID no hay
+    /// residente que reclamar.
     ///
     /// Delega en `avi_process::pid_alive_exact`: `OpenProcess` +
     /// `GetExitCodeProcess` en Windows y `kill(pid, 0)` en Unix. Así el
@@ -1238,43 +1234,6 @@ pub mod resident {
     /// combina con `resident_pid_alive` o recolecta el estado vía `Child`.
     pub fn kill_tree_resident_by_pid(pid: u32) -> bool {
         avi_process::kill_tree_by_pid_exact(pid)
-    }
-
-    /// Barrido por imagen del residente: termina todo proceso cuya imagen sea
-    /// `qwen_tts(.exe)` (`RESIDENT_IMAGE_NAME`). Faro de último recurso e
-    /// independiente del pidfile: se usa cuando no hay `resident_pid` registrado
-    /// (pidfile perdido tras un aborto duro) para no dejar huérfanos. Seguro
-    /// sólo porque el residente tiene imagen propia —el daemon comparte imagen
-    /// con el CLI y por eso su kill-por-imagen está prohibido—. Best-effort y
-    /// sin verificación interna: el llamante verifica la ausencia
-    /// (`resident_pid_alive == false` y/o ausencia por imagen).
-    pub fn sweep_resident_by_image() -> bool {
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // Sin consola propia, un invocador sin consola vería abrirse y cerrarse
-            // una ventana por cada `taskkill`.
-            Command::new("taskkill")
-                .args(["/F", "/IM", RESIDENT_IMAGE_NAME])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .creation_flags(avi_process::CREATE_NO_WINDOW)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-        #[cfg(unix)]
-        {
-            Command::new("pkill")
-                .args(["-9", "-x", RESIDENT_IMAGE_NAME])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
     }
 
     /// Healthcheck `GET /v1/health` con reintentos. Distingue *crash* del motor
@@ -1332,9 +1291,9 @@ pub mod resident {
     /// terminación real de un árbol de procesos; nunca reproduce `panic!` con
     /// lock retenido ni aborto externo (solo el harness lo cubre) ni crash con
     /// puerto ocupado (solo `run_supervised` lo cubre); no corre bajo la imagen
-    /// real `qwen_tts`, así que queda ciego al reclamo por PID/imagen del
+    /// real `qwen_tts`, así que queda ciego al reclamo por PID del
     /// residente huérfano. La ausencia real de huérfanos a nivel SO —verificada
-    /// por `resident_pid` muerto más ausencia por imagen— solo la comprueba la
+    /// por `resident_pid` muerto— solo la comprueba la
     /// serie pesada de extremo a extremo.
     #[cfg(test)]
     pub(crate) fn simulate_server(
@@ -1419,7 +1378,7 @@ mod tests {
     use std::io::Read;
     use std::io::Write;
     use std::net::TcpListener;
-    use std::process::Stdio;
+    use std::process::{Command, Stdio};
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
@@ -2246,8 +2205,7 @@ fn main() {
     /// a ese escenario; nunca reproduce `panic!` con lock retenido ni aborto
     /// externo (solo el harness lo cubre) ni la ventana spawn→write ni señales
     /// (solo harness/producto lo cubren); no corre bajo la imagen real
-    /// `qwen_tts`, así que queda ciego al barrido por imagen del residente;
-    /// el cierre preciso por árbol se cubre en
+    /// `qwen_tts`; el cierre preciso por árbol se cubre en
     /// `resident_kill_tree_by_pid_terminates_child`.
     fn sleeping_process() -> avi_process::RestrictedChild {
         let log_file = std::fs::File::create(

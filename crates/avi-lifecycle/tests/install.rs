@@ -41,9 +41,6 @@ impl ProcessControl for Inert {
     fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
         false
     }
-    fn sweep_resident_by_image(&self) -> bool {
-        false
-    }
 }
 
 /// Las pruebas de este archivo tocan el registro de Windows y crean directorios con

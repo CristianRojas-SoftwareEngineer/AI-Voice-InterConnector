@@ -130,9 +130,9 @@ sin leer el workspace (p. ej. vía API o en build-time).
 
 ### H3b — Muerte sin binario externo
 
-`kill_tree_by_pid_exact` (Windows) y `sweep_resident_by_image`
-(`avi-tts/src/lib.rs:1243-1265`, `taskkill`/`pkill`) dependen de binarios
-externos en la ruta central de parada, tras centralizar en ellos T2 y T11.
+`kill_tree_by_pid_exact` (Windows) y las primitivas de muerte por PID
+(`taskkill`/`pkill`) dependen de binarios externos en la ruta central de
+parada, tras centralizar en ellos T2 y T11.
 Eliminarlos exige enumeración nativa del árbol (Toolhelp en Windows):
 esfuerzo medio, con sus propios riesgos de `unsafe`. **Categoría 1
 (centralización) sobre base 2/3 (los binarios ya se usaban). VERIFICADO.**

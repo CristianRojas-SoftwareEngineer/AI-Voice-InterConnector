@@ -147,9 +147,6 @@ impl ProcessControl for Killable {
     fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
         false
     }
-    fn sweep_resident_by_image(&self) -> bool {
-        false
-    }
     // El pidfile plantado por la prueba registra esta identidad: sin un
     // `identity` observado que coincida, el control no clasifica el PID
     // como suyo (contrato de T1).
@@ -173,9 +170,6 @@ impl ProcessControl for Stubborn {
         false
     }
     fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
-        false
-    }
-    fn sweep_resident_by_image(&self) -> bool {
         false
     }
     // Misma identidad que la plantada en el pidfile: sin ella, `Stubborn`

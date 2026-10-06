@@ -2695,9 +2695,8 @@ fn registered_resident() -> (u32, lifecycle::daemon_stop::Registered) {
 
 /// ¿Sigue vivo el residente registrado en `daemon.pid`? Identidad estable del
 /// residente: el `resident_pid` del pidfile por instancia. Sin PID registrado
-/// (pidfile perdido tras aborto duro) devuelve `false`; en ese caso la
-/// ausencia se confirma con el barrido por imagen de último recurso
-/// (`avi_tts::resident::sweep_resident_by_image`), no con este predicado. Un PID
+/// (pidfile perdido tras aborto duro) devuelve `false`: un residente vivo sin
+/// registrar no lo ve este predicado ni se barre por imagen. Un PID
 /// reasignado a otro programa (identidad distinta de la registrada) no cuenta
 /// como vivo.
 fn resident_alive_by_pid() -> bool {
@@ -2724,7 +2723,7 @@ fn stop_failed_status() -> &'static str {
 /// Predicado puro del reclamo Unix ante líder muerto (testeable sin
 /// plataforma): el reclamo queda verificado cuando el probe del daemon está
 /// caído, el PID del líder está muerto y el residente ya no está vivo (por su
-/// PID registrado, tras el barrido por imagen cuando no hay PID).
+/// PID registrado).
 #[allow(dead_code)]
 fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, resident_alive: bool) -> bool {
     !probe_daemon && !pid_alive && !resident_alive
@@ -2734,9 +2733,8 @@ fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, resident_alive: bool
 /// preciso por PID con verificación y deja vía libre para rearrancar desde cero.
 /// Sin kill por imagen para el daemon (comparte imagen con el CLI: se auto-mataría);
 /// el residente `qwen_tts` se reclama por su PID registrado en `daemon.pid`
-/// (árbol preciso + verificación por `resident_pid` muerto) y, sin PID
-/// registrado, por el barrido por imagen de último recurso
-/// (`sweep_resident_by_image`, seguro por imagen propia del residente).
+/// (árbol preciso + verificación por `resident_pid` muerto); sin PID
+/// registrado no hay residente que reclamar.
 /// No emite payload.
 ///
 /// En Unix el daemon nace líder de sesión (`setsid`) y el residente hereda
@@ -2746,9 +2744,8 @@ fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, resident_alive: bool
 /// que ya mata al grupo en Unix) con verificación por residente muerto más PID
 /// sin viveza. El runtime Unix se verifica en CI; aquí quedan compilación,
 /// revisión lógica y unitarios no-plataformeros (prohibido simular Unix).
-/// Ante `Stopped` con residente vivo (PID registrado o imagen) se reclama su
-/// árbol por PID registrado —o por imagen si no hay PID— antes de declarar
-/// fresco (imagen del daemon prohibida; sólo el residente tiene imagen propia).
+/// Ante `Stopped` con residente registrado vivo se reclama su árbol por PID
+/// registrado antes de declarar fresco.
 async fn reclaim_degraded_residual(client: &reqwest::Client) {
     let start = std::time::Instant::now();
     // La identidad se clasifica antes del graceful, que puede borrar los
@@ -2801,17 +2798,15 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
         }
     }
     // 2c) Residente por identidad estable: si hay PID registrado vivo se mata
-    // su árbol preciso; sin PID (pidfile perdido) el último recurso es el
-    // barrido por imagen `qwen_tts` (seguro por imagen propia). La verificación
-    // por `resident_pid` muerto vive en el paso 3.
+    // su árbol preciso; sin PID registrado no hay residente que reclamar y
+    // nada se mata por imagen. La verificación por `resident_pid` muerto vive
+    // en el paso 3.
     let (resident, resident_state) = registered_resident();
     if resident != 0
         && resident != std::process::id()
         && resident_state == lifecycle::daemon_stop::Registered::Ours
     {
         avi_tts::resident::kill_tree_resident_by_pid(resident);
-    } else if resident == 0 {
-        avi_tts::resident::sweep_resident_by_image();
     }
     // 3) Verificación con el restante del deadline global (probe down + PID muerto;
     // en Unix además residente muerto ante líder muerto).
@@ -2849,16 +2844,13 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
 /// (`POST /shutdown` acotado + espera de `/health` down) si el daemon responde;
 /// árbol preciso por PID (`taskkill /F /T /PID` en Windows, `kill -9` al grupo
 /// en Unix) con guarda anti-auto-muerte cuando sigue vivo; sin PID del
-/// daemon pero con residente vivo se reclama su árbol por PID registrado, o por
-/// imagen `qwen_tts` como último recurso sin PID (imagen del daemon prohibida:
-/// la comparte con el CLI); verificación posterior a nivel de sistema (probe +
+/// daemon pero con residente registrado vivo se reclama su árbol por PID
+/// registrado; verificación posterior a nivel de sistema (probe +
 /// `pid_alive` + `resident_pid` muerto).
 ///
 /// El pidfile solo se borra tras muerte verificada o pista obsoleta reconciliada
 /// (PID muerto + probe down); si el árbol sigue vivo se conserva la pista.
-/// Sin kill por imagen para el daemon (imagen compartida con el CLI); el
-/// residente `qwen_tts` (imagen propia) se reclama en `avi-tts` por PID
-/// registrado, con barrido por imagen como último recurso sin PID.
+/// Nada se mata por imagen: el residente sin PID registrado no se reclama.
 ///
 /// Por qué el fallback es por PID y nunca por imagen: daemon y CLI comparten la misma
 /// imagen `ai-voice-interconnector.exe` (el daemon es el mismo binario lanzado con
@@ -3455,10 +3447,6 @@ impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
 
     fn kill_tree_resident_by_pid(&self, pid: u32) -> bool {
         avi_tts::resident::kill_tree_resident_by_pid(pid)
-    }
-
-    fn sweep_resident_by_image(&self) -> bool {
-        avi_tts::resident::sweep_resident_by_image()
     }
 
     fn identity(&self, pid: u32) -> Option<avi_process::ProcessIdentity> {
