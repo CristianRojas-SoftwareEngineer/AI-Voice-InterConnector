@@ -38,7 +38,7 @@ el ledger (`docs/issues/iterative-workflow-design.progreso.json`).
   - [H4 — Código solo-Unix sin ejecutar](#h4--código-solo-unix-sin-ejecutar)
   - [H14 — Pata full solo en máquina provisionada](#h14--pata-full-solo-en-máquina-provisionada)
   - [H15 — Locks en avi-stt](#h15--locks-en-avi-stt)
-  - [H16 — Residuos de suite](#h16--residuos-de-suite)
+  - [H16 — Residuos de suite en %TEMP%](#h16--residuos-de-suite-en-temp)
   - [H17 — Doble probe](#h17--doble-probe)
 - [4. Hipótesis refutadas](#4-hipótesis-refutadas)
   - [Hueco en stop paso 2b](#hueco-en-stop-paso-2b)
@@ -166,11 +166,26 @@ C10. Requiere decidir si se aplica el patrón `into_inner` de T8 o se
 documenta por qué las sesiones ORT no se envenenan. **Categoría 2.
 VERIFICADO.**
 
-### H16 — Residuos de suite
+### H16 — Residuos de suite en %TEMP%
 
-Barrido de temporales no invocado por la suite y escrituras de los tests de
-TTS en `data/speech` real (del informe T17; no re-verificados en esta pasada).
-**Categoría 2.**
+Las pruebas de `avi-daemon` (`tests/golden.rs` y el módulo de pruebas de
+`src/lib.rs`) crean directorios `avi_golden_*` y `avi_daemon_*` bajo `%TEMP%`,
+con el PID del proceso en el nombre, y nunca los borran: cada ejecución del
+binario de pruebas añade uno por familia (medido en `%TEMP%`: 151 de cada
+`warm_ok`, `warm_missing`, `supervised` y `port_busy`, y 75 de `state`).
+También quedan `avi-tts-sleep-<pid>.log` (`avi-tts`) y `avi_logs_test_*`
+(`avi-shared`).
+
+Descartado por medición: que la suite escriba en la raíz de datos real. Un
+`cargo test --workspace --features full -- --include-ignored` completo dejó
+`%LOCALAPPDATA%\ai-voice-interconnector` idéntico (154 ficheros, mismas marcas
+de tiempo y tamaños), porque las pruebas anclan los almacenes con
+`VoiceStore::at`/`SpeechStore::at` y `AVI_DATA_DIR`.
+
+Solución abierta: el harness de Rust no tiene un punto de cierre por proceso,
+así que el borrado exige un guardián con `Drop` por prueba (los estados
+compartidos de `test_state` y `clone_state` no lo admiten) o un barrido de
+directorios de PID muertos al arrancar. **Categoría 2.**
 
 ### H17 — Doble probe
 
